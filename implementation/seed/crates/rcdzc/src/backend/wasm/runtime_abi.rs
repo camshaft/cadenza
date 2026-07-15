@@ -15,6 +15,11 @@
 /// rebuilt from the core byte. `core_byte` is the core-module import functype's valtype;
 /// `comp_byte` is the component instance-type's primitive valtype. Both are wasm-spec
 /// constants (a TARGET concern) so they live here in the backend, not in the generated data.
+/// The runtime interface itself uses only `U32`/`S64`/`Bool`/`F64`/`F32`; the remaining
+/// variants (the narrower aliased int widths `S8`/`U8`/`S16`/`U16`/`S32`/`U64`, and `Char`)
+/// are used by the HOST-op boundary (`host::abi_val_type`), where a delegated effect operation
+/// may carry any aliased scalar as a parameter or result — each crosses as its faithful
+/// component-model primitive, lowered to the core i32/i64/f32/f64 slot the canonical ABI uses.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum AbiValType {
     U32,
@@ -22,27 +27,51 @@ pub enum AbiValType {
     Bool,
     F64,
     F32,
+    S8,
+    U8,
+    S16,
+    U16,
+    S32,
+    U64,
+    Char,
 }
 impl AbiValType {
-    /// The CORE wasm valtype byte a lowered handle/scalar occupies (i32=0x7F, i64=0x7E,
-    /// f64=0x7C, f32=0x7D) — a `u32` handle / `bool` both lower to i32.
+    /// The CORE wasm valtype byte a lowered scalar occupies (i32=0x7F, i64=0x7E, f64=0x7C,
+    /// f32=0x7D). A `u32` handle / `bool` / `char` / every aliased int of width ≤32 lowers to
+    /// core i32 (the canonical ABI sign/zero-extends a narrow value into the i32 slot); a 64-bit
+    /// int is i64.
     pub fn core_byte(self) -> u8 {
         match self {
-            AbiValType::U32 | AbiValType::Bool => 0x7F,
-            AbiValType::S64 => 0x7E,
+            AbiValType::U32
+            | AbiValType::Bool
+            | AbiValType::S8
+            | AbiValType::U8
+            | AbiValType::S16
+            | AbiValType::U16
+            | AbiValType::S32
+            | AbiValType::Char => 0x7F,
+            AbiValType::S64 | AbiValType::U64 => 0x7E,
             AbiValType::F64 => 0x7C,
             AbiValType::F32 => 0x7D,
         }
     }
-    /// The COMPONENT-model primitive valtype byte (u32=0x79, s64=0x78, bool=0x7F, f64=0x75,
-    /// f32=0x76) — the faithful boundary type the import instance-type declares.
+    /// The COMPONENT-model primitive valtype byte — the faithful boundary type the import
+    /// instance-type declares (wasm-spec constants: bool=0x7F, s8=0x7E, u8=0x7D, s16=0x7C,
+    /// u16=0x7B, s32=0x7A, u32=0x79, s64=0x78, u64=0x77, f32=0x76, f64=0x75, char=0x74).
     pub fn comp_byte(self) -> u8 {
         match self {
+            AbiValType::Bool => 0x7F,
+            AbiValType::S8 => 0x7E,
+            AbiValType::U8 => 0x7D,
+            AbiValType::S16 => 0x7C,
+            AbiValType::U16 => 0x7B,
+            AbiValType::S32 => 0x7A,
             AbiValType::U32 => 0x79,
             AbiValType::S64 => 0x78,
-            AbiValType::Bool => 0x7F,
-            AbiValType::F64 => 0x75,
+            AbiValType::U64 => 0x77,
             AbiValType::F32 => 0x76,
+            AbiValType::F64 => 0x75,
+            AbiValType::Char => 0x74,
         }
     }
 }

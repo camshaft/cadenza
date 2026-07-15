@@ -47328,6 +47328,13 @@ mod r2_runtime_resource {
             AbiValType::Bool => PrimitiveValType::Bool,
             AbiValType::F64 => PrimitiveValType::F64,
             AbiValType::F32 => PrimitiveValType::F32,
+            AbiValType::S8 => PrimitiveValType::S8,
+            AbiValType::U8 => PrimitiveValType::U8,
+            AbiValType::S16 => PrimitiveValType::S16,
+            AbiValType::U16 => PrimitiveValType::U16,
+            AbiValType::S32 => PrimitiveValType::S32,
+            AbiValType::U64 => PrimitiveValType::U64,
+            AbiValType::Char => PrimitiveValType::Char,
         })
     }
 
@@ -47336,8 +47343,16 @@ mod r2_runtime_resource {
     fn op_core_functype(op: &RtOp) -> (Vec<wasm_encoder::ValType>, Vec<wasm_encoder::ValType>) {
         use wasm_encoder::ValType;
         let core = |p: AbiValType| match p {
-            AbiValType::U32 | AbiValType::Bool => ValType::I32,
-            AbiValType::S64 => ValType::I64,
+            // Every aliased int ≤32 (+ bool/char) lowers to core i32; a 64-bit int to i64.
+            AbiValType::U32
+            | AbiValType::Bool
+            | AbiValType::S8
+            | AbiValType::U8
+            | AbiValType::S16
+            | AbiValType::U16
+            | AbiValType::S32
+            | AbiValType::Char => ValType::I32,
+            AbiValType::S64 | AbiValType::U64 => ValType::I64,
             AbiValType::F64 => ValType::F64,
             AbiValType::F32 => ValType::F32,
         };
@@ -48939,6 +48954,36 @@ mod sidecar_driven {
             out.has_error(),
             "a non-representable property param must decline, not emit an uncallable export"
         );
+    }
+
+    #[test]
+    fn a_host_op_result_crosses_at_every_aliased_int_width() {
+        // The host-op boundary ABI (`host::abi_val_type`) crosses EVERY aliased INT width — the narrow
+        // ints `Int8`/`Int16`/`Int32` + unsigned `UInt8`, not only the earlier `Int64`/`UInt32`. Each
+        // crosses as its faithful component-model primitive (s8/u8/s16/s32/…), lowered to the core i32 slot
+        // the canonical ABI uses. Before, a narrow-int result DECLINED ("no component boundary form"). Here
+        // each op is performed + its result compared to a sample (so the export result stays an Int64
+        // scalar the boundary already crossed) and the program must EMIT. A narrow result arrives correctly
+        // — the canonical lowering sign/zero-extends into the i32 slot that IS the guest's narrow-int rep.
+        // (`Float32` also crosses via `abi_val_type`, but consuming a runtime Float32 in-guest hits an
+        // unrelated float-op gap — its result-crossing is exercised through the run path, not here.)
+        for (w, sample) in [
+            ("Int8", "(: 100 Int8)"),
+            ("Int16", "(: 100 Int16)"),
+            ("Int32", "(: 100 Int32)"),
+            ("UInt8", "(: 100 UInt8)"),
+        ] {
+            let src = format!(
+                "(do (effect Test (op g (-> Int64 {w}))) \
+                 (def (main) (host (Test) (if (= ((. Test g) 0) {sample}) 1 0))) (export main))"
+            );
+            let out = compile(&inputs(&src, &[Request::Emit(Target::Wasm)]), &[]);
+            assert!(
+                !out.has_error() && out.artifacts.iter().any(|a| a.kind == "component"),
+                "a host op with a `{w}` result must cross the boundary + emit: {:?}",
+                out.diagnostics
+            );
+        }
     }
 
     #[test]
@@ -57772,6 +57817,13 @@ mod cross_component_oracle {
             AbiValType::Bool => PrimitiveValType::Bool,
             AbiValType::F64 => PrimitiveValType::F64,
             AbiValType::F32 => PrimitiveValType::F32,
+            AbiValType::S8 => PrimitiveValType::S8,
+            AbiValType::U8 => PrimitiveValType::U8,
+            AbiValType::S16 => PrimitiveValType::S16,
+            AbiValType::U16 => PrimitiveValType::U16,
+            AbiValType::S32 => PrimitiveValType::S32,
+            AbiValType::U64 => PrimitiveValType::U64,
+            AbiValType::Char => PrimitiveValType::Char,
         })
     }
 
@@ -57779,8 +57831,15 @@ mod cross_component_oracle {
     fn op_core_functype(op: &RtOp) -> (Vec<ValType>, Vec<ValType>) {
         use crate::backend::wasm::runtime_abi::AbiValType;
         let core = |p: AbiValType| match p {
-            AbiValType::U32 | AbiValType::Bool => ValType::I32,
-            AbiValType::S64 => ValType::I64,
+            AbiValType::U32
+            | AbiValType::Bool
+            | AbiValType::S8
+            | AbiValType::U8
+            | AbiValType::S16
+            | AbiValType::U16
+            | AbiValType::S32
+            | AbiValType::Char => ValType::I32,
+            AbiValType::S64 | AbiValType::U64 => ValType::I64,
             AbiValType::F64 => ValType::F64,
             AbiValType::F32 => ValType::F32,
         };
