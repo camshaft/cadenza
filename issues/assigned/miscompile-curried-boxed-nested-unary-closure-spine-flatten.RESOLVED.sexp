@@ -29,3 +29,5 @@
     (def (main) (run ((. Box C) add) 3 4))
     (export main)))
   (output (: 7 Int64)))
+
+;; RESOLVED 2026-07-15 (trunk@0c7d182c1, fix 38b5c71f2): a boxed nested-unary curried closure (-> A (-> B R)) no longer traps "indirect call type mismatch". Fix = flatten a directly-nested curried lambda to ONE multi-param lift in lower_lambda_value (value-side; closure ABI untouched) so it matches the flat (env,a,b)->r shape the caller spine-flattens to. Wasmtime regression test + 09-functions.sexp pin. Returns 7.
