@@ -35087,6 +35087,40 @@ mod diagnostics {
     }
 
     #[test]
+    fn a_def_named_quote_binds_its_parameter_and_is_not_hijacked_by_reification() {
+        // `quote`/`quasiquote` are grammar heads recognized STRUCTURALLY only when they head an
+        // EXPRESSION — like `if`/`match`/`bin`, all freely definable as ordinary function names because
+        // a definition's SIGNATURE is never resolved as an expression. Quote reification, however, is a
+        // shape-driven PRE-PASS over every `(quote …)`/`(quasiquote …)` node, and it wrongly rewrote the
+        // def signature `(quote x)` into `(Ast.Name "x")`, ERASING the parameter binder — the body's `x`
+        // then resolved CDZ0101 "unbound name". `quote::binder_position_nodes` now excludes a
+        // def-signature / fn-params list from reification, so a user function named `quote` scans as
+        // ordinary and its parameter binds. No diagnostic at all (no CDZ0101, no CDZ0306-unused).
+        for name in ["quote", "quasiquote"] {
+            let src = format!("(module m (def ({name} (: x Int64)) (+ x 2)) (export {name}))");
+            let diags = diags_of(&src);
+            assert!(
+                diags.is_empty(),
+                "a def named `{name}` must bind its parameter (no CDZ0101/CDZ0306): {:?}",
+                diags
+                    .iter()
+                    .map(|d| (d.code.clone(), d.message.clone()))
+                    .collect::<Vec<_>>()
+            );
+        }
+        // Regression guard on the OTHER direction: a genuine `(quote …)` in EXPRESSION position still
+        // reifies to an `Ast` value (it is NOT left as a bare quote/decline). `(quote 1)` == `(Ast.Int 1)`.
+        let genuine = "(module m (def (main) (= (quote 1) (Ast.Int 1))) (export main))";
+        assert!(
+            diags_of(genuine)
+                .iter()
+                .all(|d| d.severity != crate::abi::Severity::Error),
+            "a genuine quote expression must still reify: {:?}",
+            diags_of(genuine)
+        );
+    }
+
+    #[test]
     fn an_unused_binding_carries_a_verified_underscore_prefix_fix() {
         // The first MACHINE-APPLICABLE fix (`spec/capabilities/diagnostics.md` §A Confirmed Fix Is
         // Marked Verified): the CDZ0306 warning's prose "prefix with `_`" is now a structural fix an

@@ -950,3 +950,30 @@
             (export main)))
   (call   main (: 0 Int64))
   (output (: 4 Int64)))
+
+; --- `quote` is a grammar head in EXPRESSION position, not a reserved DEFINITION name -------------
+; `quote`/`quasiquote` are grammar forms the resolver dispatches STRUCTURALLY only when they head an
+; EXPRESSION — exactly as `if`/`match`/`bin`, all of which are freely definable as ordinary function
+; names because a definition's SIGNATURE is never resolved as an expression. A user may therefore
+; `def quote(x) = x + 2`; its signature is spelled `(quote x)`, a `(quote …)`-headed list that is a
+; BINDING form, not a quote. The regression this pins: quote REIFICATION is a shape-driven pre-pass
+; over every `(quote …)`/`(quasiquote …)` node, and it wrongly rewrote the def signature `(quote x)`
+; into `(Ast.Name "x")`, erasing the parameter binder — the body's `x` then resolved CDZ0101
+; "unbound name". The fix excludes a def-signature / fn-params list from reification (see
+; `quote::binder_position_nodes`), so the def scans as an ordinary function named `quote` whose
+; parameter binds. A bare reference to it (as a higher-order value here) reaches the def and computes
+; `quote(5) = 7`; a genuine `(quote …)` in EXPRESSION position (the cases above) still reifies.
+(case "a user function may be named quote — its signature is a binding form, not a quote"
+  (doc    "Witnesses that `quote`/`quasiquote` are grammar heads in EXPRESSION position only, not
+           reserved definition names — like `if`/`match`, a user may `def quote(x) = x + 2`. The
+           def signature `(quote x)` MUST NOT be reified by the quote pre-pass (which would erase the
+           parameter binder and report the body's `x` as CDZ0101 unbound); it scans as an ordinary
+           function named `quote`. Referenced as a first-class value through `apply1`, it computes
+           `quote(5) = 7`.")
+  (input  (do
+            (def (quote (: x Int64)) (+ x 2))
+            (def (apply1 (: f (-> Int64 Int64)) (: n Int64)) (f n))
+            (def (main (: d Int64)) (apply1 quote 5))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 7 Int64)))

@@ -1660,6 +1660,7 @@ pass	a unary variant applied to a wrong-arity tuple payload is a type error
 pass	a unary variant applied to a wrong-type payload is a type error
 pass	a unit multiplied by its own inverse cancels to the dimensionless unit
 pass	a user Name variant does not capture the Ast sum's Name variant
+pass	a user function may be named quote — its signature is a binding form, not a quote
 pass	a user sum NAMED `Box` wrapping a recursive type does not collide with the heap pointer
 pass	a user sum NAMED after a prelude sum shadows it without a duplicate definition
 pass	a user sum's nullary variant escapes with its bare variant name
