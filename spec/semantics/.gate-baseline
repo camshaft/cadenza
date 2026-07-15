@@ -606,6 +606,7 @@ pass	a genuinely-narrow op with a wrapped-down if-operand yields the exact value
 pass	a guard over a variant pattern gates on the payload
 pass	a guard reads a binding from the enclosing scope, not only its pattern's
 pass	a guard sees the names its pattern binds and arms are tried in order
+pass	a guard-elided masked add computes inline over runtime operands
 pass	a guarded arm is selected when its guard holds
 pass	a guarded list-match arm body reads its element binder
 pass	a guarded list-match arm whose guard fails falls through to the catch-all
@@ -1218,7 +1219,10 @@ pass	a runtime left shift multiplies by a power of two
 pass	a runtime less-than at the integer extremes is signed
 pass	a runtime less-than-or-equal holds at the equal-operand boundary
 pass	a runtime less-than-or-equal is signed at the integer extremes
+pass	a runtime list consumed by push in one operand is unchanged when read in a later operand
 pass	a runtime list of lists escapes with its nested element type
+pass	a runtime list parameter consumed by push in a self-recursive call's sibling operand is unchanged
+pass	a runtime map shared across two recursive-call operands is not mutated by an insert in one
 pass	a runtime mixed-unit sum emits the scale conversion (Int)
 pass	a runtime modulo of the minimum integer by -1 is zero on every backend
 pass	a runtime multiplication that overflows traps
@@ -1237,6 +1241,7 @@ pass	a runtime right shift by the bit width or more traps
 pass	a runtime scrutinee matching no arm traps
 pass	a runtime scrutinee of one sum type rejects a foreign sum's pattern
 pass	a runtime scrutinee selects a non-first literal arm
+pass	a runtime set shared across two recursive-call operands is not mutated by an insert in one
 pass	a runtime set-difference result escapes to the host as its value form
 pass	a runtime set-union result escapes to the host as its value form
 pass	a runtime string bound from a sum payload compares equal to a string parameter
@@ -1911,9 +1916,12 @@ pass	encoding and decoding a constructor-built compound AST round-trips
 pass	equality across incompatible dimensions is a compile-time error
 pass	equality across types is rejected regardless of operand order
 pass	equality applied to one operand is rejected, not a crash
+pass	equality of a record with a subset of another's fields is a type error
 pass	equality of an integer and a boolean is a type error
 pass	equality of an integer and a float is rejected, not silently promoted
 pass	equality of an integer and a string is a type error
+pass	equality of two records with different field sets is a type error
+pass	equality of two tuples of different arity is a type error
 pass	equality over a partly-un-built sum with a free Err type compiles on every backend
 pass	eval is optional for macros and interactive use
 pass	eval of a quasiquote splicing a compile-time-known value
