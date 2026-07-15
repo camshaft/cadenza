@@ -1416,6 +1416,83 @@ fn a_wide_record_read_field_by_field_sums_correctly() {
     );
 }
 
+/// A COMPOSED call over a record-transforming function whose field is a CHECKED-ARITH op compiles to a
+/// VALID module and runs to the right value — the regression guard for the record-field slot-collision
+/// miscompile (`adv-nested-call-multifield-record-arith-field-invalid-wasm`). `f` takes a ≥2-field
+/// record and rebuilds it with field `a` bumped by a checked `+` (which stashes an i64 into a scratch
+/// slot behind an overflow guard) and `b` copied. Applied twice — `f(f({a:0,b:5}))` — the inner call's
+/// record RESULT feeds the outer call's ARGUMENT, and the `Core::Record` arm used to emit every field at
+/// a FIXED `base`, so field `a`'s i64 arith scratch reused a slot the outer record-assembler had already
+/// typed i32 → one wasm local declared at two widths → `wasm-tools validate: expected i64, found i32`,
+/// the component rejected at load. The fix advances each field's scratch base past the running
+/// high-water (the same disjoint-slot discipline `Core::Tuple`/`Core::ListNew` already applied), so
+/// sibling/nested fields never alias a slot at two widths. `f(f({a:0,b:5}))` → `{a:2, b:5}`, `.a` = 2.
+#[test]
+fn a_composed_call_over_a_record_with_a_checked_arith_field_runs() {
+    use crate::testkit::parse;
+    // The fix must at minimum produce a VALID module — the miscompile was a wasm-validation failure
+    // (`expected i64, found i32`), so `compile_component` returning `Ok` + `required_runtime` parsing
+    // the bytes is itself the primary guard (it re-validates the component). The composed run below then
+    // confirms the VALUE when the runtime store is present.
+    let src = "(module m \
+                 (def (f (: r (Record (a Int64) (b Int64)))) \
+                    (record (a (+ (. r a) 1)) (b (. r b)))) \
+                 (def (main) (. (f (f (record (a 0) (b 5)))) a)) (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src)))
+        .expect("a composed record-transform call must compile");
+    assert!(
+        cdz_run::required_runtime(&bytes)
+            .expect("the emitted component must be valid wasm")
+            .is_some(),
+        "the nested record-transform builds a runtime record, so it imports the value-heap runtime"
+    );
+    let Some(runtime) = find_runtime_wasm() else {
+        eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
+        return;
+    };
+    let opts = cdz_run::RunOpts {
+        export: Some("main".to_string()),
+        args: Vec::new(),
+        runtime: Some(runtime.clone()),
+        runtime_cache_dir: None,
+        host_responses: Vec::new(),
+    };
+    match cdz_run::run(&bytes, &opts).expect("run") {
+        cdz_run::Outcome::Value(s) => {
+            assert_eq!(
+                s, "2",
+                "f(f({{a:0,b:5}})) bumps a twice → {{a:2,b:5}}, so .a = 2"
+            )
+        }
+        cdz_run::Outcome::Trap(t) => panic!("composed record-transform trapped (miscompile?): {t}"),
+    }
+    // A THREE-field record with TWO checked-arith fields and the arith field read LAST — exercises more
+    // than one arith scratch interleaved with the assembler slots. `(* c 3)` twice over c=2 → 18.
+    let three = "(module m \
+                   (def (f (: r (Record (a Int64) (b Int64) (c Int64)))) \
+                      (record (a (+ (. r a) 1)) (b (. r b)) (c (* (. r c) 3)))) \
+                   (def (main) (. (f (f (record (a 0) (b 5) (c 2)))) c)) (export main))";
+    let three_bytes = compile_component(&crate::codec::encode(&parse(three)))
+        .expect("a three-field composed record-transform call must compile");
+    assert!(
+        cdz_run::required_runtime(&three_bytes)
+            .expect("the three-field component must be valid wasm")
+            .is_some(),
+        "the three-field nested record-transform imports the value-heap runtime"
+    );
+    let three_opts = cdz_run::RunOpts {
+        export: Some("main".to_string()),
+        args: Vec::new(),
+        runtime: Some(runtime),
+        runtime_cache_dir: None,
+        host_responses: Vec::new(),
+    };
+    match cdz_run::run(&three_bytes, &three_opts).expect("run") {
+        cdz_run::Outcome::Value(s) => assert_eq!(s, "18", "c = 2 tripled twice = 2*3*3 = 18"),
+        cdz_run::Outcome::Trap(t) => panic!("three-field record-transform trapped: {t}"),
+    }
+}
+
 /// A synthesized (β-reduced) scope form's parameters still resolve — the regression guard for the
 /// per-scope binder index. The index is built at load over the ORIGINAL arena, but β-reduction copies
 /// a lambda/def body into FRESH `fn`/`def` nodes; a parameter reference inside such a copy must find
@@ -3827,6 +3904,78 @@ fn an_if_condition_selfcall_then_branch_perform_declines_cleanly() {
         "the decline must not leak an internal state-param name, got: {}",
         err.message
     );
+}
+
+// --- HOST-COMPOSITION INVARIANT boundary (§4.4: a reified/duplicated continuation must NOT span a host
+// call or an outer handler's effect). These are documented in 14-effects-and-handlers.sexp as a "clean
+// decline" but were not pinned by any test — so a future fold change that admitted the multi-shot /
+// re-reducing path over such a body could silently DOUBLE the escaping effect (run a host call or an
+// outer-handler op twice per resume) with nothing to catch it. The multi-shot fold is repeatedly
+// miscompile-prone; these lock the boundary as a clean decline until the E5 frame machinery lands. ---
+
+/// A MULTI-shot handler arm whose continuation SPANS A HOST CALL must DECLINE, not fold. The body
+/// `(+ (Amb.flip) (Ask.ask))` gives the leading `Amb.flip` the continuation `C = (+ [] (Ask.ask))`, and
+/// the multi-shot arm `(+ (resume 1 s) (resume 2 s))` would splice `C` TWICE — running the host-delegated
+/// `Ask.ask` once per resume. That violates the host-composition invariant (§4.4: "a reified continuation
+/// must not span a host call" — a re-deriving host cannot reconstruct a chain of run-local heap handles),
+/// so it stays a clean decline. A single-shot arm over the same body is likewise not yet reducible; the
+/// PIN here is that the multi-shot host-spanning shape never runs to a value (a doubled host call).
+#[test]
+fn a_multishot_continuation_spanning_a_host_call_declines_not_doubles_the_call() {
+    use crate::testkit::parse;
+    let src = "(do (effect Amb (op flip (-> Unit Int64))) (effect Ask (op ask (-> Unit Int64))) \
+               (def (main) (host (Ask) \
+                 (handle Amb 0 ((flip (u) s (+ (resume 1 s) (resume 2 s)))) \
+                   (+ (Amb.flip) (Ask.ask))))) (export main))";
+    let err = compile_component(&crate::codec::encode(&parse(src))).expect_err(
+        "a multi-shot continuation spanning a host call must decline (host-composition invariant)",
+    );
+    assert!(
+        !err.message.contains("#eff") && !err.message.contains("$s"),
+        "the decline must not leak an internal state-param name, got: {}",
+        err.message
+    );
+}
+
+/// A MULTI-shot handler arm whose continuation reaches an OUTER handler's effect must DECLINE, not fold.
+/// The body `(+ (Ctr.tick) (Amb.flip))` under an inner multi-shot `Amb` handler nested in an outer `Ctr`
+/// handler: the `Amb.flip` continuation is spliced twice by `(+ (resume 1 s) (resume 2 s))`, which would
+/// re-issue the OUTER-handler-discharged `Ctr.tick` per resume — advancing the outer state more than once
+/// for a single perform. The re-reducing fold is sound only when every performed op in the continuation is
+/// discharged BY THIS handler (folded away to pure code); an effect that escapes to an outer handler stays
+/// a clean decline until the frame machinery reifies the continuation.
+#[test]
+fn a_multishot_continuation_reaching_an_outer_handler_effect_declines_not_doubles_it() {
+    use crate::testkit::parse;
+    let src = "(do (effect Amb (op flip (-> Unit Int64))) (effect Ctr (op tick (-> Unit Int64))) \
+               (def (main) \
+                 (handle Ctr 0 ((tick (u) s (resume s (+ s 1)))) \
+                   (handle Amb 0 ((flip (u) s (+ (resume 1 s) (resume 2 s)))) \
+                     (+ (Ctr.tick) (Amb.flip))))) (export main))";
+    let err = compile_component(&crate::codec::encode(&parse(src)))
+        .expect_err("a multi-shot continuation reaching an outer handler's effect must decline");
+    assert!(
+        !err.message.contains("#eff") && !err.message.contains("$s"),
+        "the decline must not leak an internal state-param name, got: {}",
+        err.message
+    );
+}
+
+/// A handler arm that RETURNS its continuation as an escaping value (`k` reified and applied OUTSIDE the
+/// handle) must be REFUSED, never run to a value. `(flip (u) s (fn (x) (resume x s)))` yields the resume
+/// as a lambda; the handle value is that lambda, applied as `(k 5)` after the handle closes. This is the
+/// genuine captured-`k` frontier (§4.4) — it needs a reified `Ty::Cont` heap value the seed does not build
+/// yet — so it must be rejected up front (here: the handle value is a function with no machine
+/// representation at the boundary), not compiled to a trapping or wrong-valued artifact.
+#[test]
+fn an_escaping_captured_continuation_is_refused_not_miscompiled() {
+    use crate::testkit::parse;
+    let src = "(do (effect Amb (op flip (-> Unit Int64))) \
+               (def (main) \
+                 (let ((k (handle Amb 0 ((flip (u) s (fn (x) (resume x s)))) (+ 100 (Amb.flip))))) \
+                   (k 5))) (export main))";
+    compile_component(&crate::codec::encode(&parse(src)))
+        .expect_err("an escaping captured continuation must be refused, not miscompiled");
 }
 
 /// An exported parameter with NO annotation is ambiguous — its machine width is unfixed, so the
@@ -9518,6 +9667,69 @@ mod runtime_ops {
     }
 
     #[test]
+    fn a_wide_literal_match_builds_its_decision_tree_in_bounded_time() {
+        // REGRESSION (perf): `lower::build_tree`'s lit-test arm compiles a wide literal match
+        // (`(match t ((tuple 0 a) …) ((tuple 1 a) …) … (_ -1))`) as an N-DEEP chain of `LitTest` nodes.
+        // Each level built the MATCHED-branch sub-matrix as `matched_rows = [this row, with its first
+        // lit-test consumed] ++ rows[1..]`, cloning the whole O(N) remaining-rows tail. But when the
+        // matched row is now an UNCONDITIONAL LEAF (no further tests, no guard — the common single-lit-test
+        // arm), `build_tree` returns `Leaf` on that first row and never reads the appended tail, so those
+        // clones were pure waste → O(N²) over the N levels (profile: `build_tree`/`build_lit_test` ~92%
+        // inclusive, `Vec::clone` ~33% + heavy malloc; N=400/800/1600/3200 = 33/93/342/1295ms, ~3.8×/dbl).
+        // FIX: skip the tail append when the matched row is a leaf; only a fall-through-capable matched row
+        // (a further lit-test — e.g. `(tuple 0 0)` before `(tuple 0 a)` — or a guard) needs the tail.
+        //
+        // The NOISE-FREE signal is `BUILD_TREE_LITTEST_ROWS_CLONED` — the `MatchRow`s cloned into the
+        // matched sub-matrix, a pure function of the program. For N single-lit-test leaf arms it must stay
+        // O(N) (zero, in fact — every matched row is a leaf), NOT O(N²). Correctness (the dispatch selects
+        // the right arm, and a multi-lit-test arm's fall-through still reaches the same-prefix binding arm)
+        // is pinned by the run-value + fall-through match tests.
+        fn wide_tuple_lit_match_src(n: usize) -> String {
+            // `(def (f (: t (Tuple Int64 Int64))) (match t ((tuple 0 a) 0) … ((tuple {n-1} a) {n-1}) (_ -1)))`
+            // — N arms each testing the FIRST element against a distinct literal, binding the second. Every
+            // arm is a single-lit-test unconditional leaf (the case the wasted-tail-clone bit).
+            let mut arms = String::new();
+            for i in 0..n {
+                arms.push_str(&format!("((tuple {i} a) {i}) "));
+            }
+            format!(
+                "(module m (def (f (: t (Tuple Int64 Int64))) (match t {arms}(_ -1))) \
+                 (def (main) (f (tuple 1 5))) (export main))"
+            )
+        }
+        // A small instance compiles with no error diagnostics (a valid wide literal match).
+        let diags = crate::diagnostics(&mut crate::db::Db::load(parse(&wide_tuple_lit_match_src(
+            4,
+        ))));
+        assert!(
+            diags
+                .iter()
+                .all(|d| d.severity != crate::abi::Severity::Error),
+            "a wide literal match compiles with no error diagnostics: {diags:?}"
+        );
+        fn rows_cloned(src: &str) -> u64 {
+            crate::host::run_with_compiler_stack(|| {
+                crate::db::BUILD_TREE_LITTEST_ROWS_CLONED.with(|c| c.set(0));
+                let _ = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+                crate::db::BUILD_TREE_LITTEST_ROWS_CLONED.with(|c| c.get())
+            })
+        }
+        // Width 200→400 is a 2× match; O(N) tail clones ⇒ ≤ ~2×, the O(N²) per-level tail append was ~4×.
+        // For a pure leaf-arm match the count is 0 either doubling (no matched row is a fall-through), so
+        // guard the ratio only when the base is non-zero — else assert the absolute count stays bounded
+        // (well under the O(N²) figure a revert produces: N=400 would clone ~400² / 2 ≈ 80k rows).
+        let n200 = rows_cloned(&wide_tuple_lit_match_src(200));
+        let n400 = rows_cloned(&wide_tuple_lit_match_src(400));
+        assert!(
+            n400 < 4 * 400,
+            "a wide literal match must build its decision tree without cloning the O(N) remaining-rows \
+             tail at each leaf level (`build_tree`'s lit-test arm must skip the append when the matched \
+             row is an unconditional leaf): width-400 cloned {n400} rows (n200={n200}); O(N) is ≤ ~N, the \
+             per-level tail append was ~N²/2 (~80000 at N=400)"
+        );
+    }
+
+    #[test]
     fn a_deep_nested_let_chain_collects_binding_uses_in_bounded_time() {
         // REGRESSION (perf): `lower::lower_let` collects each binding's use facts by walking its whole `let`
         // REGION (all inits + body) in one pass (fix-44, which fused a WIDE let's per-binding walks). But a
@@ -11999,6 +12211,31 @@ mod recursion {
             run_returns_with::<i64>(&bytes, "f", &[Val::S64(3)]),
             36,
             "go(0, 3, 0) = 6 iterations * (3*2)"
+        );
+    }
+
+    #[test]
+    fn a_loop_invariant_in_a_match_scrutinee_is_hoisted_to_valid_wasm() {
+        // REGRESSION (9bccb36a): a loop-invariant subexpression in a MATCH SCRUTINEE — `(match (< i (+ n 1))
+        // …)`, `(+ n 1)` invariant since `n` threads unchanged — was hoisted into a pre-loop slot, but its
+        // checked-add guard's TRANSIENT scratch slot was left inside the body's reusable range. The loop body
+        // then reused that slot for the i32 bool DISCRIMINANT while the hoist had recorded it at i64, so the
+        // one wasm local was declared at two widths and the module failed to validate (`type mismatch:
+        // expected i32, found i64` in func 1). The if-condition twin was fine; only the match-scrutinee hoist
+        // mis-wired. Fix: raise the body scratch floor past ALL scratch the invariant's emit touched, not just
+        // the persistent value slot. This test compiles the WHOLE program (so the emitted module is validated)
+        // and runs it: `loop 0 4` iterates i:0→5 while `i < 5` and returns 5.
+        let src = "(do (def (loop (: i Int64) (: n Int64)) \
+                        (match (< i (+ n 1)) (true (loop (+ i 1) n)) (false i))) \
+                      (def (main) (loop 0 4)) \
+                      (export main))";
+        // compile_component runs the emitted module through wasm validation — before the fix this panicked
+        // with the func-1 type mismatch, so reaching the run is itself the regression guard.
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        assert_eq!(
+            run_returns::<i64>(&bytes, "main"),
+            5,
+            "loop 0 4 counts i:0→5 while i < n+1 (=5) and returns 5"
         );
     }
 }
@@ -33117,6 +33354,100 @@ mod diagnostics {
     }
 
     #[test]
+    fn a_refining_arm_shadowed_by_an_earlier_full_variant_cover_is_redundant() {
+        // VARIANT-REFINEMENT SUBSUMPTION: a FULL-variant cover `(Some _)` matches every value of the `Some`
+        // variant, so a LATER refining arm of the SAME variant (`(Some (Some x))`, an `ArmCover::Shape`) is
+        // unreachable. Beyond the exact-duplicate `Shape` check (Inc 28) — this is a BROADER earlier arm
+        // shadowing a NARROWER same-variant later one. Each source emits exactly one CDZ0213 on the later arm.
+        for src in [
+            // `(Some _)` [full Some] then `(Some (Some x))` [refining Some] — the refinement is dead.
+            "(module m (def (f (: o (Option (Option Int64)))) \
+               (match o ((Some _) 0) ((Some (Some x)) x) ((None) -1))) \
+             (def (main) (f (None))) (export main))",
+            // A bare binder payload `(Some p)` is also a full cover; a later `(Some (None))` is shadowed.
+            "(module m (def (f (: o (Option (Option Int64)))) \
+               (match o ((Some p) 1) ((Some (None)) 2) ((None) -1))) \
+             (def (main) (f (None))) (export main))",
+            // A refining TUPLE payload after a full tuple-payload cover (`(Some (tuple _ _))` covers whole Some).
+            "(module m (def (f (: o (Option (Tuple Bool Int64)))) \
+               (match o ((Some (tuple _ _)) 0) ((Some (tuple true c)) c) ((None) -1))) \
+             (def (main) (f (None))) (export main))",
+        ] {
+            let redundant = redundant_arms_of(src);
+            assert_eq!(
+                redundant.len(),
+                1,
+                "a refining arm shadowed by an earlier full-variant cover is redundant (CDZ0213): `{src}`, got {redundant:?}"
+            );
+        }
+        // FALSE-POSITIVE guards: a refining arm is NOT shadowed when NO earlier arm covered its variant in
+        // FULL — a refinement BEFORE the full cover is reachable, and refinements of a variant never covered
+        // in full (`(Some (Some x))` + `(Some (None))`, jointly exhausting Some but neither a full cover) do
+        // not shadow each other.
+        for src in [
+            // The refinement comes FIRST — reachable; the later full `(Some _)` is broader, not shadowed.
+            "(module m (def (f (: o (Option (Option Int64)))) \
+               (match o ((Some (Some x)) x) ((Some _) 0) ((None) -1))) \
+             (def (main) (f (None))) (export main))",
+            // Two refinements of Some, no full-Some cover — jointly exhaustive, neither shadows the other.
+            "(module m (def (f (: o (Option (Option Int64)))) \
+               (match o ((Some (Some x)) x) ((Some (None)) 0) ((None) -1))) \
+             (def (main) (f (None))) (export main))",
+        ] {
+            assert!(
+                redundant_arms_of(src).is_empty(),
+                "a refinement not shadowed by an earlier full cover must not warn CDZ0213: `{src}` got {:?}",
+                redundant_arms_of(src)
+            );
+        }
+    }
+
+    #[test]
+    fn an_all_wildcard_tuple_arm_is_a_catch_all_that_shadows_later_arms() {
+        // An ALL-IRREFUTABLE tuple `(tuple x y)` / `(tuple _ _)` matches EVERY value of its tuple type — it
+        // is a whole-type CatchAll (`is_irrefutable_cover`), so any arm after it is unreachable. The
+        // product-subsumption whole-tuple case; before, only a BARE `_`/binder was a catch-all and a broader
+        // tuple arm silently shadowed with no warning. Composes through nesting (`(tuple _ (tuple a b))`) and
+        // a ctor payload (`(Some (tuple _ _))` covers the whole `Some` variant). Each emits exactly one CDZ0213.
+        for src in [
+            // A binder-only tuple arm shadows a later refining tuple arm.
+            "(module m (def (f (: t (Tuple Bool Int64))) \
+               (match t ((tuple x y) y) ((tuple true c) c))) \
+             (def (main) (f (tuple true 1))) (export main))",
+            // `(tuple _ _)` before a literal arm.
+            "(module m (def (f (: t (Tuple Bool Int64))) \
+               (match t ((tuple _ _) 0) ((tuple true c) c))) \
+             (def (main) (f (tuple true 1))) (export main))",
+            // NESTED all-wildcard tuple is still a whole cover.
+            "(module m (def (f (: t (Tuple Bool (Tuple Int64 Int64)))) \
+               (match t ((tuple x (tuple a b)) a) ((tuple true (tuple c d)) c))) \
+             (def (main) (f (tuple true (tuple 1 2)))) (export main))",
+        ] {
+            let redundant = redundant_arms_of(src);
+            assert_eq!(
+                redundant.len(),
+                1,
+                "an all-wildcard tuple catch-all shadows the later arm (CDZ0213): `{src}`, got {redundant:?}"
+            );
+        }
+        // FALSE-POSITIVE guard: an all-wildcard tuple as the SOLE arm is exhaustive, not self-redundant; and
+        // a REFINING tuple arm BEFORE a wildcard tuple arm does not shadow it (the refinement covers less).
+        for src in [
+            "(module m (def (f (: t (Tuple Bool Int64))) (match t ((tuple x y) y))) \
+             (def (main) (f (tuple true 1))) (export main))",
+            "(module m (def (f (: t (Tuple Bool Int64))) \
+               (match t ((tuple true a) a) ((tuple x y) y))) \
+             (def (main) (f (tuple true 1))) (export main))",
+        ] {
+            assert!(
+                redundant_arms_of(src).is_empty(),
+                "an exhaustive / refining-before-wildcard tuple match must not warn CDZ0213: `{src}` got {:?}",
+                redundant_arms_of(src)
+            );
+        }
+    }
+
+    #[test]
     fn an_exhaustive_finite_match_without_a_trailing_catch_all_does_not_warn() {
         // The boundary: coverage closes AFTER the last covering arm, so an EXHAUSTIVE finite match with no
         // trailing arm has nothing to flag (no false positive). A wildcard that is REACHABLE (the specific
@@ -33388,6 +33719,70 @@ mod stage1 {
                     .iter()
                     .all(|d| !d.message.contains("`do` block")),
                 "a well-formed do produces no do-block fault: {ok}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_lambda_valued_def_body_is_type_checked_by_the_diagnostics_query() {
+        // A `(def name (fn (p…) body))` LAMBDA-VALUED def registers a def whose `body` occurrence IS the
+        // `fn` node (empty `db.defs` params). The def-body walk runs `type_errors` over that lambda node,
+        // whose `collect_node` arm used to check ONLY param-linearity — never descending into the body. So
+        // a type fault / unbound name in a lambda-valued def body silently PASSED `cdz check` (and
+        // `compile`, when the def is unreached) while the SAME logic written `(def (name p…) body)` was
+        // rejected — a check/compile discrepancy on a purely syntactic surface choice, the lambda-valued
+        // analogue of the pattern-fault / binop-arity / do-block `check`≡`compile` gaps. `collect_node`'s
+        // `Lambda` arm now descends into the body when the lambda IS a registered def body.
+        //
+        // A numeric-mix type fault in a NON-exported lambda-valued def body is now caught (CDZ0301).
+        let mismatch = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def helper (fn ((: x Int64)) (+ x 1.0))))",
+        )));
+        assert!(
+            mismatch
+                .iter()
+                .any(|d| d.code.as_deref() == Some("CDZ0301")),
+            "an ill-typed lambda-valued def body must be caught by check: {mismatch:?}"
+        );
+        // An unbound name in a non-exported lambda-valued def body is caught (CDZ0101) — unbound is
+        // unconditional well-formedness, not gated on the def being reached.
+        let unbound = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def helper (fn ((: x Int64)) (nonexistent x))))",
+        )));
+        assert!(
+            unbound
+                .iter()
+                .any(|d| d.code.as_deref() == Some("CDZ0101") && d.message.contains("nonexistent")),
+            "an unbound name in a lambda-valued def body must be caught: {unbound:?}"
+        );
+        // Reported EXACTLY ONCE when the lambda-valued def is ALSO reached via a call (no infer/emit
+        // double, and no double between the standalone body walk and the reached-poison walk).
+        let called = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def helper (fn ((: x Int64)) (+ x 1.0))) \
+             (def (main (: x Int64)) (helper x)) (export main))",
+        )));
+        assert_eq!(
+            called
+                .iter()
+                .filter(|d| d.code.as_deref() == Some("CDZ0301"))
+                .count(),
+            1,
+            "the ill-typed lambda-valued body reports once, not a double: {called:?}"
+        );
+        // NO false positive over an INLINE / let-bound lambda: it is NOT a registered def body, so it is
+        // checked at its β-reduction call site (unchanged) — a well-typed HOF argument stays clean, and an
+        // UNINSTANTIATED generic body raises no spurious fault here.
+        for ok in [
+            "(module m (def (apply-it (: f (-> Int64 Int64)) (: x Int64)) (f x)) \
+             (def (main (: x Int64)) (apply-it (fn ((: y Int64)) (+ y 1)) x)) (export main))",
+            "(module m (def helper (fn ((: x Int64)) (+ x 1))) (export helper))",
+        ] {
+            let clean = crate::diagnostics(&mut crate::db::Db::load(parse(ok)));
+            assert!(
+                clean
+                    .iter()
+                    .all(|d| d.severity != crate::abi::Severity::Error),
+                "a well-typed lambda body must produce no error: {ok} → {clean:?}"
             );
         }
     }

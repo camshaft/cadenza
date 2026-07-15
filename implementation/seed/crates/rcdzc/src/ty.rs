@@ -680,7 +680,7 @@ pub enum Ty {
     /// compiler (reusing `num-bigint`, already the backing of `ast::IntValue`); a runtime-valued `BigInt`
     /// is a sign-magnitude limb-array heap leaf (the `Bytes`-leaf shape — raw bytes, zero handles). Its
     /// boundary representation is a `list<u8>` in the pinned two's-complement encoding, so it MAY cross an
-    /// exported signature. See `implementation/DESIGN-bigint-and-rational-rcdzc.md`. B0 adds the type
+    /// exported signature. See `implementation/design/DESIGN-bigint-and-rational-rcdzc.md`. B0 adds the type
     /// through the closed universe (byte-neutral — nothing constructs one yet).
     BigInt,
     /// An EXACT RATIONAL number — `Rational`, a normalized pair of arbitrary-precision integers

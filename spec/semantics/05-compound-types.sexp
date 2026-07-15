@@ -1358,6 +1358,56 @@
             (def (main) (build 0 3 (list))) (export main)))
   (output (: (list 0 1 2) (List Int64))))
 
+; --- A consuming List op leaves a shared let-bound operand UNCHANGED (persistence) ----------------
+; `List.push`/`update`/`concat` are PERSISTENT — each produces a new list and MUST leave its operand
+; unchanged (memory-and-resource-model.md: a value must not be observably mutated through one reference
+; while read through another). A list bound by `let` and read TWICE — once consumed by a push/update/
+; concat, once read as the original — is SHARED, so the consuming op must copy, not mutate in place. It
+; did the reverse: a kept multi-use binding had refcount 1, so the FBIP in-place fast path mutated the
+; shared list and the later read saw the mutated value (a silent wrong value — no recursion needed). The
+; compiler now emits a Perceus RETAIN (`dup`) at a consumed occurrence of a binding with a later live use
+; (`collect_dup_sites`), so the op path-copies; a SINGLE-use accumulator (the push-loop above) is still
+; updated in place (the FBIP happy path — no dup). These graded cases pin the persistence guarantee.
+(case "a list consumed by List.push in one operand is unchanged for a later read of the same binding"
+  (doc    "`(let ((xs (List.push (list) 7))) (+ (List.len (List.push xs 9)) (List.len xs)))` — `xs = [7]`
+           read twice: the left operand appends 9 and reads the length (→2), the right reads the ORIGINAL
+           `xs` length (→1), so 2 + 1 = 3. It returned 4 (= 2 + 2): `List.push` mutated the shared `xs` in
+           place (an FBIP update whose retain was missing on a multi-use `let`-binding), so the second read
+           saw [7,9]. Order-sensitive (reading `xs` first → 3), the tell of an in-place mutation. Pins that
+           a persistent push leaves a shared operand unchanged.")
+  (input  (do
+            (def (main)
+              (let ((xs (List.push (list) 7)))
+                (+ (List.len (List.push xs 9)) (List.len xs))))
+            (export main)))
+  (output (: 3 Int64)))
+
+(case "a list consumed by List.update in one operand keeps its element view for a later read"
+  (doc    "The ELEMENT-view companion: `xs = [7,8]`; `(List.update xs 0 99)` reads element 0 → 99, the
+           sibling `(List.at xs 0)` reads the ORIGINAL element 0 → 7, so 99 + 7 = 106. It returned 198
+           (= 99 + 99): `List.update` set `xs[0] = 99` in place, so the sibling read of the original saw
+           the mutated element. Pins that a persistent update leaves a shared operand's ELEMENTS unchanged
+           (the complement of push, which corrupts the length view).")
+  (input  (do
+            (def (main)
+              (let ((xs (List.push (List.push (list) 7) 8)))
+                (+ (Option.expect (List.at (List.update xs 0 99) 0) "v")
+                   (Option.expect (List.at xs 0) "v"))))
+            (export main)))
+  (output (: 106 Int64)))
+
+(case "a list consumed by List.concat in one operand keeps its element view for a later read"
+  (doc    "`xs = [5,7]`; `(List.concat xs (list 9))` → length 3, the sibling `(List.at xs 0)` reads the
+           ORIGINAL element 0 → 5, so 3 + 5 = 8. It returned 3: `List.concat` spliced the shared `xs` in
+           place, corrupting the later element read. `concat` consumes and thus must copy a shared operand
+           in EITHER position. Pins persistence of a concatenated shared operand.")
+  (input  (do
+            (def (main)
+              (let ((xs (List.push (List.push (list) 5) 7)))
+                (+ (List.len (List.concat xs (list 9))) (Option.expect (List.at xs 0) "v"))))
+            (export main)))
+  (output (: 8 Int64)))
+
 (case "a map built at run time escapes to the host as its value form"
   (doc    "A Map built at RUN TIME (an insert-loop, not a constant literal) crosses the host boundary.
            Like a runtime list/set, it escapes via the runtime value-encode walker guided by a
@@ -1369,6 +1419,62 @@
             (def (build m n) (if (< n 1) m (build (Map.insert m n n) (- n 1))))
             (def (main) (build Map.empty 3)) (export main)))
   (output (: (map (1 1) (2 2) (3 3)) (Map Int64 Int64))))
+
+(case "a map inserted-into in one recursive sub-call is unchanged for a sibling sub-call's read"
+  (doc    "`Map.insert` is persistent — it must leave its operand map unchanged. `h` recurses with a depth
+           counter: at depth>0 it sums `(h (Map.insert env \"x\" 2) 0)` (insert x=2, read it back → 2) and
+           `(h env 0)` (read the ORIGINAL env's x → 1), so `h (insert (map) \"x\" 1) 1` = 2 + 1 = 3. It
+           returned 4: the left sub-call's `Map.insert` mutated the shared `env` PARAM in place, so the
+           sibling `(h env 0)` read x=2. Evaluation-order-sensitive (reading the original first → 3), the
+           tell of an in-place mutation across a self-recursive-call seam. The Map/self-call companion of
+           the shared-`let` List cases above — the same Perceus retain (`dup` at a consumed occurrence with
+           a later live use) leaves the operand map intact. The env-interpreter shadowing shape.")
+  (input  (do
+            (def (h (: env (Map String Int64)) (: d Int64))
+              (if (= d 0) (Option.expect (Map.lookup env "x") "v")
+                  (+ (h (Map.insert env "x" 2) 0) (h env 0))))
+            (def (main) (h (Map.insert (map) "x" 1) 1))
+            (export main)))
+  (output (: 3 Int64)))
+
+; The mutual-recursion companion of the still-live-binding family above: the IDIOMATIC homoiconic-AST
+; walker shape — a `fc` (per-node) / `fl` (per-child-list) mutual pair over a recursive `Ast` sum. Here
+; `fc` matches a `List` node binding its child list `elems`, reads the head OUT OF `elems` directly
+; (`head-e elems`), AND passes `elems` to `fl`, which recurses back into `fc`. Because the head is read
+; from `elems` (the value the arm binds) rather than by re-extracting `node`'s payload in a sibling
+; operand, there is ONE path to the child array and no borrowed sum-payload alias to corrupt: the walk
+; folds the child `fc`s (`Name` → 1, `Int` → 0) and the sibling head-read (Some "a" → 100) is independent,
+; so `fc (List [Name "a", Int 5])` = 100 + 1 = 101. Pins the correct mutual `fc↔fl` tree walk — a
+; scope-checker / resolver / free-var pass written the natural way over the canonical AST. (The DISTINCT
+; failing shape — reading the head by re-extracting `node`'s payload, `head-of node`, in a sibling operand
+; WHILE `fl(elems)` consumes the shared payload alias — is a backend Perceus limit tracked outside the
+; corpus: a `SumPayload` binder consumed by a mutual-recursive call while its scrutinee is still read needs
+; a `dup` the retain analysis does not yet place for payload aliases. This case pins the reading-from-elems
+; idiom that AVOIDS it, so a refcount change in the payload-read path cannot silently break the walker.)
+
+(case "a mutually-recursive AST walker reads a node's child list without corrupting a sibling head-read"
+  (doc    "The idiomatic homoiconic-AST walk: `fc` (node) and `fl` (child list) mutually recurse over a
+           recursive `Ast` sum. `fc`'s `List` arm binds the child list `elems`, reads the head from `elems`
+           directly (`head-e elems` → Some \"a\" → 100), and folds the children via `fl` (which calls `fc`
+           back): `Name` → 1, `Int` → 0, so `fl [Name \"a\", Int 5]` = 1. `fc (List [Name \"a\", Int 5])` =
+           100 + 1 = 101. Pins the correct mutual `fc↔fl` walk that reads the payload once through the arm-
+           bound child list — the shape a scope-checker/resolver over the canonical AST takes — so a
+           refcount change in the sum-payload read path cannot silently regress the self-hosted walker.")
+  (input  (do
+            (type Ast (Int Int64) (Str String) (Bool Bool) (Name String) (List (List Ast)))
+            (def (head-e (: elems (List Ast)))
+              (match elems ((list ((. Ast Name) n) .. _) (Some n)) (_ (None unit))))
+            (def (fc (: node Ast))
+              (match node
+                (((. Ast Name) _) 1)
+                (((. Ast List) elems)
+                  (+ (match (head-e elems) ((Some _) 100) ((None _) 0)) (fl elems)))
+                (_ 0)))
+            (def (fl (: elems (List Ast)))
+              (match elems ((list) 0) ((list h .. r) (+ (fc h) (fl r)))))
+            (def (main) (fc ((. Ast List) ("list" ((. Ast Name) "a") ((. Ast Int) 5)))))
+            (export main)))
+  (output (: 101 Int64)))
 
 (case "a map with a user-sum VALUE looks up and matches the stored variant"
   (doc    "A user sum used as a Map VALUE — `(Map.insert Map.empty 1 (C.R))` stores the variant `C.R` at key
@@ -4979,6 +5085,34 @@
   (call   main)
   (output (: 7 Int64)))
 
+(case "an all-wildcard tuple arm is a catch-all that shadows a later refining arm"
+  (doc    "Beyond an EXACT-duplicate arm (above), a BROADER arm shadows a later NARROWER one by
+           product-subsumption: `(tuple x y)` binds every value of the tuple type (both elements
+           irrefutable), so it is a CATCH-ALL and the later `(tuple 3 4)` arm — a refinement of it — is
+           unreachable. `(f 3 4)` takes the wildcard arm → 3+4 = 7, NOT 100 (the dead refining arm), build
+           succeeds (CDZ0213 warning). Pins that an all-irrefutable tuple arm is recognized as a whole-type
+           cover, not just a bare `_`/binder — so a specific arm placed AFTER it is dead.")
+  (input  (do
+            (def (f (: a Int64) (: b Int64))
+              (match (tuple a b) ((tuple x y) (+ x y)) ((tuple 3 4) 100) (_ 0)))
+            (def (main) (f 3 4)) (export main)))
+  (call   main)
+  (output (: 7 Int64)))
+
+(case "a constructor with an all-irrefutable payload shadows a later refining arm of the same variant"
+  (doc    "The variant face of the same product-subsumption: `(Some (tuple a b))` covers the WHOLE `Some`
+           variant (its payload pattern is all-irrefutable), so the later `(Some (tuple 3 4))` arm — a
+           refinement — is unreachable. `(f (Some (tuple 3 4)))` takes the broad `Some` arm → 7, NOT 100,
+           build succeeds (CDZ0213 warning). Pins that a ctor whose payload is all-irrefutable is a
+           full-variant cover (not only a bare-name payload like `(Some p)`), so it shadows a later
+           refining arm of the same variant — the ctor companion of the wildcard-tuple case.")
+  (input  (do
+            (def (f (: o (Option (Tuple Int64 Int64))))
+              (match o ((Some (tuple a b)) (+ a b)) ((Some (tuple 3 4)) 100) (None 0)))
+            (def (main) (f (Some (tuple 3 4)))) (export main)))
+  (call   main)
+  (output (: 7 Int64)))
+
 (case "a nullary constructor is a single-arity function taking unit"
   (doc    "Witnesses core-semantics.md #A Sum Type Constructor Is A Single-Arity Function Producing
            The Tagged Variant (2nd sentence): a 'nullary' variant is a constructor whose argument type
@@ -7641,3 +7775,22 @@
   (input  (do (def (main (: a Int64) (: p (Tuple (Tuple Int64 Int64) Int64))) (list a (. (. p 0) 0) (. p 1))) (export main)))
   (call   main (: 9 Int64) (: (tuple (tuple 5 6) 7) (Tuple (Tuple Int64 Int64) Int64)))
   (output (: (list 9 5 7) (List Int64))))
+
+(case "a composed call over a record-transforming function with an arithmetic field compiles"
+  (doc    "`(f (f (record (a 0) (b 5))))` where `f : (Record (a Int64) (b Int64)) -> (Record …)`
+           increments field `a` via `(+ (. r a) 1)` and copies `b`. `f` applied twice gives {a:2, b:5},
+           so `.a` = 2. The record is BOTH the inner call's result and the outer call's argument. Each
+           field of a `Core::Record` is materialized into the value-heap array; a checked-arith field
+           initializer stashes its i64 result behind an overflow guard in a scratch slot. Emitting every
+           field at a FIXED base let field `a`'s i64 arith scratch reuse a slot the outer
+           record-assembler had already typed i32, declaring one wasm local at two widths — the emitted
+           module FAILED wasm validation (`expected i64, found i32`) and the component was rejected at
+           load. Needs all three: a ≥2-field record, a checked-arith field init, and a composed/nested
+           call. The fix advances each field's scratch base past the running high-water (the disjoint-slot
+           discipline tuples/lists already use). Expected: 2.")
+  (input  (do
+            (def (f (: r (Record (a Int64) (b Int64))))
+              (record (a (+ (. r a) 1)) (b (. r b))))
+            (def (main) (. (f (f (record (a 0) (b 5)))) a))
+            (export main)))
+  (output (: 2 Int64)))

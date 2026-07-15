@@ -1186,6 +1186,21 @@
                 (. (tuple (Fresh.next) (Fresh.next)) 1))) (export main)))
   (output (: 1 Int64)))
 
+(case "a perform composes as the SOURCE of a pipeline"
+  (doc    "An effect operation composes as the LHS value of a `|>` pipeline — the common surface form for
+           `f(perform())`. `(|> (Fresh.next) (+ 100))` desugars to the application `(+ (Fresh.next) 100)`
+           (the pipeline splices its value as the first argument of the rhs application), so the perform is
+           an ordinary strict operand the fold threads. `Fresh.next` seeded 5 resumes 5, and `5 + 100` = 105.
+           Pins that the pipeline desugar preserves the perform's strict-operand position — a performed value
+           flows through `|>` exactly as through a direct application, the way an effectful pass reads
+           `input |> transform`.")
+  (input  (do
+            (effect Fresh (op next (-> Int64)))
+            (def (main)
+              (handle Fresh 5 ((next () s (resume s (+ s 1))))
+                (|> (Fresh.next) (+ 100)))) (export main)))
+  (output (: 105 Int64)))
+
 (case "performs in the ELEMENTS of a tuple / list CONSTRUCTOR thread left-to-right"
   (doc    "A perform in a tuple or list CONSTRUCTOR element is a strict, ordered position — each element is
            evaluated exactly once, left to right, before the compound is built — so the fold threads it like
@@ -1991,6 +2006,24 @@
             (def (main) (handle Mul unit ((by (x) s (resume (* x 100) s))) (mid))) (export main)))
   (output (: 10 Int64))
   (host-calls))
+
+(case "two LEXICALLY-NESTED handlers of the same effect partition the performs by region"
+  (doc    "The lexical-nesting companion of the call-chain shadow above: two handlers of the SAME effect `E`
+           nest in ONE expression, and TWO performs are partitioned by which handler's region they sit in. `(+
+           (handle E 5 … (E.get)) (E.get))`: the FIRST `(E.get)` is inside the inner `handle E 5`, so it
+           resolves to the inner seed 5; the SECOND `(E.get)` is OUTSIDE the inner handle (a sibling operand
+           of the `+`), so it escapes the inner region and reaches the OUTER `handle E 100`, resolving to 100.
+           Both arms resume with the state unchanged (`(get (u) s (resume s s))`), so `(+ 5 100)` = 105. Pins
+           that lexical handler nesting of the same effect partitions performs by REGION — the inner handle
+           discharges only the performs textually within its body, and a perform outside it reaches the next
+           enclosing handler (distinct from the call-chain case, where the whole callee runs under the nearer
+           handler). Both backends agree.")
+  (input  (do
+            (effect E (op get (-> Unit Int64)))
+            (def (main)
+              (handle E 100 ((get (u) s (resume s s)))
+                (+ (handle E 5 ((get (u) s (resume s s))) (E.get)) (E.get)))) (export main)))
+  (output (: 105 Int64)))
 
 (case "the same function called under two handlers is discharged by each in turn"
   (doc    "Witnesses capabilities-and-effects.md #Handler Resolution Is Dynamic In Extent And Statically

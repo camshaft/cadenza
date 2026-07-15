@@ -1258,10 +1258,23 @@ the component type. The new work:
   multi-export + distinct-sig for free. Oracle `a_result_tuple_payload_closure_arg_crosses_by_native_flattening`
   pins the join ABI under wasmtime. Corpus: 6 cases (ok-compound/err-scalar drive both arms, both-compound,
   err-compound/ok-scalar, multi-export, distinct-sig).
+- **🛠 FIX (`spec@66f79a3a`) — a sum-arg closure returning a LIST emitted an INVALID component.** A single-export
+  closure taking a sum (Option/Result) arg AND returning a variable-length List/Map/Set (or byte-rope / fixed
+  compound) COMPILED but produced an unparseable module: the boundary `call` functype carried the sum's
+  flattened `(disc, payload)` params (from `arg_vts`) while the chosen list-result core (bytes / value-form /
+  value-encode) threads only a TUPLE-arg rebuild, not a `SumArgRebuild` — so the core `call` signature and the
+  lifted functype disagreed (wasm-tools: "lowered parameter types [I32] do not match [I32, I32, I64]"). The
+  scalar-result sum path guards `!ret_is_collection` and returns first, but a sum arg + LIST result fell through
+  to the list blocks, which ignore `sum_arg`. FIX: a clean decline for `sum_arg.is_some() && (ret_is_bytes ||
+  ret_is_compound || ret_is_collection)` before the list blocks — honest reject, not garbage. Corpus: a `todo`
+  case pinning the decline (flips to `pass` when the list-cores thread sums). 🔑 the envelopes ALREADY accept
+  the sum `ArgSlot` (`closure_call_list_functype_slots` handles it) — so the remaining work is purely threading
+  `sums: &[SumArgRebuild]` through the 3 list core BODIES (mechanical, mirrors the scalar core), a next brick.
   **REMAINING within SUM-arg:** a general USER sum / >2 variants (needs a NAMED
   `variant<…>` — the export-a-named-type step, oracle-scoped as a real architectural lift, not an ABI wall); a
   DIFFERING-per-position-width compound Result payload (per-leaf wrap inside the compound rebuild); a LIST result
-  over a sum arg (the list cores thread tuples, not sums).
+  over a sum arg (list cores thread tuples, not sums — envelope-ready, core-body threading pending; miscompile
+  now a clean decline).
 - **REMAINING (all optional, none blocking) — the DIRECT-CALL arg frontier, all HOST→GUEST transfer:** these
   are GENUINE declines (confirmed by probing, distinct from the record-DRIVER test-harness gap).
   (4) a **VARIABLE-LENGTH collection arg** (needs a `value-decode` runtime op that

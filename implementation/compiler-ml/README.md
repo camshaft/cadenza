@@ -61,7 +61,7 @@ non-colliding names from a sibling.
 ## Structure (mirrors the rcdzc stages)
 
 Source modules live under `src/`; `Project.cdz`, `README.md`, `TESTING.md`, and `repros/` sit at the
-top. Current `src/` modules (each with same-file `@test`s — 383 tests total across 39 modules):
+top. Current `src/` modules (each with same-file `@test`s — 393 tests total across 40 modules):
 
 - `src/ast.cdz` — the AST datatype + pure traversals (`node-count`, `head-name`; the `ast.rs`
   analogue). One recursive sum; a node contains its children (no arena — the language has real
@@ -276,6 +276,13 @@ top. Current `src/` modules (each with same-file `@test`s — 383 tests total ac
   check(t)` factoring declined "no local slot" → inlined into one self-recursive `check`; (2) nested
   nullary matches (`match rt { TInt => … | TBool => … }`, `Result.Ok(TInt)` patterns) drew spurious
   CDZ0306/CDZ0213 warnings → compare types via a scalar `tag` instead. Both in the findings log.
+- `src/scopecheck.cdz` — a SCOPE / FREE-VARIABLE resolver over the canonical homoiconic `Ast` (cross-file
+  from `ast`): count unbound `Name`s under a `Set String` of bound names, recognizing the `(let ((x v))
+  b)` and `(fn (p…) b)` binder forms. 🎉 UNBLOCKED iter 48 — this was withheld (iter 42) because the
+  still-live family corrupted the `Set` scope threaded through the recursion (`free-vars (let ((x 5)) (+ x
+  x))` → 3 not 1); the sibling compiler-side dup fix landed, so a `Set` scope now survives a recursive
+  `Ast` walk and this real resolver runs. Walks each list by INDEX (keeps `node` live via borrowing
+  reads). 10 `@test`s (let/fn binding, shadowing, recursive-let, deep nesting). Confirmed WORKING.
 - `src/encode.cdz` — the INVERSE of `decode`: serialize an `Ast` to a flat byte buffer at RUN TIME
   (`Ast → Bytes`, via `Bytes.of`/`Bytes.concat` + `UInt8.wrap` over recursively-assembled fragments) —
   runtime byte CONSTRUCTION, the complement to `decode`'s reading. Its `@test`s prove the full ROUND-TRIP
@@ -301,11 +308,11 @@ A `resolve` pass (lexical scope-check accumulating unbound-variable diagnostics 
 threaded down, a `List String` of faults threaded through, `Let` binding + shadowing) is written and
 `cdz check`s clean; its logic runs correctly when exported singly, but the FULL module's `@test` suite
 DECLINES on the borrow-ownership gap at the test-emit layout (threshold-dependent — 1 test compiles, the
-full suite doesn't). Kept as `repros/decline-borrow-scope-resolver-test-emit-threshold.cdz`. A newer
-SCOPE-CHECKER over the CANONICAL `Ast` (`let`/`fn` binders, a `Set String` scope) `cdz check`s clean and
-its `fn`+leaf tests PASS, but its `let` tests MISCOMPILE (the extended scope is LOST through the recursion
-— the mutual-recursion still-live face); withheld as `repros/blocked-scopecheck-mutual-recursion-scope-
-loss.cdz`.
+full suite doesn't). Kept as `repros/decline-borrow-scope-resolver-test-emit-threshold.cdz`. A
+SCOPE-CHECKER over the CANONICAL `Ast` (`let`/`fn` binders, a `Set String` scope) was withheld at iter 42
+for the same still-live-binding reason (its `let` tests lost the extended scope through the recursion) —
+🎉 now UNBLOCKED (iter 48, the sibling compiler-side dup fix) and PROMOTED to `src/scopecheck.cdz` (all 10
+tests pass).
 
 The `infer` pass (HM inference over an expression language, composing `unify`) is written and `cdz
 check`s clean but currently lives in `repros/blocked-infer-cross-file-hm-borrow.cdz` — its `@test`s
@@ -370,10 +377,22 @@ still needs that seed fix; the STRUCTURE-and-scalars decode proves the arena→t
   O(n²) via `concat`. `List.map`/`List.filter`/`List.fold` are the obvious missing higher-order list ops.
   `src/traverse.cdz` now provides these hand-rolled (map/filter/fold + Ast predicate-count/fold).
 
-- **OPEN (seed `rcdzc` — MISCOMPILE, silent wrong value): a consuming persistent-collection op MUTATES a
-  STILL-LIVE binding (Map/List/Set).** 🔬 ROOT + MINIMAL form (iter 33)
-  `repros/miscompile-consuming-op-mutates-still-live-binding.sexp` — no recursion, no self-call, one
-  `let` used twice: `let xs = [7] in (List.len (List.push xs 9)) + (List.len xs)` returns **4**, not 3 —
+- **✅ MOSTLY FIXED (iter 48, sibling compiler-side dup landed) — 5 of 6 faces of the still-live-binding
+  family now compute correctly; ONLY the mutual-recursion face remains open.** Re-verified iter 48: the
+  core `let xs=[7] in len(push xs 9)+len(xs)` → **3** ✓, `List.concat`-LHS → **8** ✓, `Map.insert`
+  shadow-interpreter (`let x=1 in (let x=10 in x)+x`) → **11** ✓, the self-recursive shared-param case →
+  **5** ✓, and `Map.insert`-shared-recursive-param → **3** ✓. Their repros are retired to `fixed-*`. The
+  ONE survivor is the MUTUAL-RECURSION face (`repros/miscompile-node-payload-consumed-by-mutual-recursion-
+  corrupts-sibling-read.cdz` → still 1 not 101) — see the "MUTUAL-RECURSION FACE" note at the end of this
+  entry; the sibling pinned its root (`spec@049ae3da`) but the fix is not yet landed. The historical
+  analysis (now mostly resolved) follows. FIX: a general Perceus RETAIN pass in `backend/wasm/select.rs`
+  (`collect_dup_sites`/`mark_binder_dups`) `dup`s each `LocalRef`/`Param` occurrence CONSUMED while its
+  binding has a LATER LIVE USE, so the op path-copies (a single-use consume stays in-place FBIP). The List
+  faces + the Map self-call face are migrated to the GRADED corpus (`spec/semantics/05-compound-types.sexp`:
+  push length, update/concat element, Map self-call) so the gate guards them.
+  🔬 ROOT + MINIMAL form (iter 33)
+  `repros/fixed-consuming-op-mutates-still-live-binding.sexp` — no recursion, no self-call, one
+  `let` used twice: `let xs = [7] in (List.len (List.push xs 9)) + (List.len xs)` returned **4**, not 3 —
   the `List.push` consumes/mutates `xs` in place, so the later `List.len xs` reads `[7,9]`. ORDER-
   SENSITIVE (the tell): borrowing BEFORE the consume (`(len xs) + (len (push xs 9))`) returns 3
   (correct). 🔬 WAT-CONFIRMED (iter 34): the body does `call build; local.tee 1; …; vec-push; vec-len;
@@ -417,11 +436,14 @@ still needs that seed fix; the STRUCTURE-and-scalars decode proves the arena→t
   a single index-walk fn). Fix locus: dup the aggregate/collection operand of a (mutual-)recursive call
   whose callee consumes a payload/scope a sibling still reads.
 
-- **OPEN (seed `rcdzc` — MISCOMPILE, silent wrong value, iter 37): `List.concat` corrupts its still-live
-  LHS where `List.push` does NOT — a DISTINCT face of the still-live-binding family.**
-  `repros/miscompile-concat-consumes-still-live-lhs-then-element-read.sexp`.
-  `let xs = [5,7] in (List.len (List.concat xs [9])) + (e xs 0)` (where `e xs i = List.at xs i or -1`)
-  returns **3**, not 8 — after `concat` consumes `xs`, the later `List.at xs 0` reads as if `xs` is EMPTY.
+- **✅ FIXED (seed `rcdzc`, 2026-07-15, was iter 37): `List.concat`'s still-live-LHS/RHS element-view face
+  — fixed with the whole still-live-binding family by the general Perceus retain pass above.**
+  `repros/miscompile-concat-consumes-still-live-lhs-then-element-read.sexp` now returns 8 (was 3). The
+  retain (`dup` at the consumed occurrence) makes `vec-concat` path-copy a shared operand in either
+  position. Migrated to the graded corpus (`spec/semantics/05-compound-types.sexp`).
+  🔬 ORIGINAL (iter 37): `let xs = [5,7] in (List.len (List.concat xs [9])) + (e xs 0)` (where `e xs i =
+  List.at xs i or -1`) returned **3**, not 8 — after `concat` consumed `xs`, the later `List.at xs 0` read
+  as if `xs` is EMPTY.
   🔑 DISCRIMINATOR: the IDENTICAL shape with `List.push` instead of `List.concat` computes CORRECTLY (8) —
   so `push` (`vec-push`) dup-guards its still-live list operand but `concat` (`vec-concat`) does not. SHARP
   (each necessary): the op is `List.concat`; `xs` is a still-live `let` binding (a param is safe); the

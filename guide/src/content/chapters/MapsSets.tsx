@@ -41,13 +41,14 @@ export default function MapsSets() {
       <H2>Set algebra</H2>
       <P>
         Sets combine the way they do in maths: <C>Set.union</C> (in either), <C>Set.intersection</C> (in
-        both), <C>Set.difference</C> (in the first but not the second). Each returns a new set; measure it
-        with <C>Set.len</C>:
+        both), <C>Set.difference</C> (in the first but not the second). Each returns a new set — Run it and
+        you see the set itself:
       </P>
-      <Runnable source={`(Set.len (Set.union (Set.of (list 1 2)) (Set.of (list 2 3 4))))`} />
+      <Runnable source={`(Set.union (Set.of (list 1 2)) (Set.of (list 2 3 4)))`} />
       <P>
-        <C>{`{1,2}`}</C> ∪ <C>{`{2,3,4}`}</C> = <C>{`{1,2,3,4}`}</C>, so four distinct elements. Try{" "}
-        <C>Set.intersection</C> in its place — you'll get <C>1</C> (just the shared <C>2</C>).
+        <C>{`{1,2}`}</C> ∪ <C>{`{2,3,4}`}</C> = <C>{`{1,2,3,4}`}</C> — the duplicate <C>2</C> collapses, so
+        four distinct elements. Put <C>Set.intersection</C> in its place and Run again: only the shared{" "}
+        <C>2</C> survives, so you get <C>{`{2}`}</C>.
       </P>
       <P>
         <C>Set.difference</C> is the one where <em>order matters</em>: it keeps what's in the first set and

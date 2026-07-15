@@ -10330,10 +10330,26 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         | Resolved::Unit
         | Resolved::TypeVal(_) => {}
         // An anonymous LAMBDA `(fn (params…) body)`: check its parameter list is LINEAR, exactly as a
-        // top-level def's is (`(fn (x x) …)` shadowed the first `x` and silently bound nothing). The body
-        // is checked at the application site (β-reduction), so only the param-linearity is added here.
-        Resolved::Lambda { params, .. } => {
+        // top-level def's is (`(fn (x x) …)` shadowed the first `x` and silently bound nothing).
+        Resolved::Lambda { params, body } => {
             param_list_linearity_faults(db, &params, out);
+            // A NAMED-DEF lambda body — the `(def name (fn (p…) body))` form, which registers a def whose
+            // `body` occurrence IS this lambda node — must be type-checked STANDALONE, exactly as the
+            // `(def (name p…) body)` form's body is (the def-body loop in `compile::collect_faults` runs
+            // `type_errors` over every def body; for the lambda-valued form that body is this `fn` node).
+            // Its parameters are bound (a `(: x Int64)` param types fine), so an unbound name or a type
+            // fault in the body is real well-formedness — the same "check missed a fault on a param /
+            // non-exported body" hole `match_pattern_fault` / `binop_arity_fault` / the do-block poison
+            // close. Without this, an ill-typed lambda-valued def body (`(def f (fn ((: x Int64)) (+ x
+            // 1.0)))`) PASSED `cdz check` (and `compile`, when the def is unreached) while the exact same
+            // logic written `(def (f (: x Int64)) (+ x 1.0))` was rejected — a check/compile discrepancy on
+            // a purely syntactic surface choice. An INLINE / let-bound lambda (`(let ((g (fn (x) …))) …)`,
+            // an argument `(hof (fn (x) …))`) is NOT a registered def body, so `def_index_by_body` is
+            // `None` and it is skipped here — its body is checked at the β-reduction call site as before,
+            // avoiding a double report and a spurious fault over an uninstantiated generic body.
+            if db.def_index_by_body(id).is_some() {
+                collect(db, body, out);
+            }
         }
     }
 }

@@ -1,9 +1,13 @@
 # =============================================================================
-# The Cadenza repository. `main` holds the durable source of truth — the specification tree,
-# the neutral build-loop commands (commands/), the entry point (start.sh), and the seed
-# toolchain under implementation/seed/. Regenerated, machine-local, and agent-local artifacts
-# are ignored below: the built `implementation/stable` binary, the target/ dirs, and the
-# gitignored .claude/ (into which commands/ and skills/ are installed as local generated targets).
+# The Cadenza repository. The tracked source of truth is the specification tree, the neutral
+# build-loop commands (commands/), the entry point (start.sh), the seed toolchain under
+# implementation/seed/, the design docs under implementation/design/, and the issue archive
+# under issues/. Locally, `trunk` is the integration branch (mapped onto origin/main via PR);
+# the hub is a bare repo, so all work happens in worktrees under the gitignored .claude/.
+# Ignored below: the built `implementation/stable` binary, the target/ dirs, and the gitignored
+# .claude/ (the local install target for commands/ + skills/, plus the fleet state in
+# .claude/fleet/ — registry, inboxes, per-agent worktrees, and the live work queue that the
+# pr-sync agent mirrors into the tracked issues/ archive).
 # =============================================================================
 
 # Editor / OS / agent-local

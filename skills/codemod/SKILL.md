@@ -32,7 +32,7 @@ A codemod here is **structural search-and-replace over the homoiconic AST**, not
 Because every Cadenza form is `(head child…)` data, a pattern that matches code *is itself code* — a
 rewrite rule reads in the shape of what it rewrites. The structural tool lives in `cadenza-syntax`
 (the `query` module + the `query`/`rewrite`/`diff`/`lint`/`clones` subcommands). It is **Rung 2** of
-`implementation/DESIGN-query-engine.md` (a built-in Rust driver) standing in for the eventual
+`implementation/design/DESIGN-query-engine.md` (a built-in Rust driver) standing in for the eventual
 self-hosted sidecar — see `implementation/PROTOTYPE-codemod.md` for the full write-up.
 
 > **The binary is now `cdz`, not `cdz-syntax`.** The front-end (convert + this codemod) and the

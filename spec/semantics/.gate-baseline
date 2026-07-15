@@ -458,6 +458,7 @@ pass	a constructor pattern in a tuple payload slot is matched in one arm
 pass	a constructor pattern nested under Some matches a runtime list element
 pass	a constructor selected at RUNTIME is a first-class value that is then applied
 pass	a constructor whose payload is a constructor keeps the outer variant tag
+pass	a constructor with an all-irrefutable payload shadows a later refining arm of the same variant
 pass	a consumed bare None type-checks without annotation (ambiguity is escape-only)
 pass	a consumer applies TWO handed-back closures
 pass	a consumer applies the handed-back closure inside a larger expression
@@ -721,6 +722,9 @@ pass	a list built by a recursive push-loop is then iterated by index
 pass	a list built by a runtime-length loop has that many elements
 pass	a list chosen by a runtime if is length-measured without emitting invalid wasm
 pass	a list compound export under a non-main name crosses to the host
+pass	a list consumed by List.concat in one operand keeps its element view for a later read
+pass	a list consumed by List.push in one operand is unchanged for a later read of the same binding
+pass	a list consumed by List.update in one operand keeps its element view for a later read
 pass	a list element position composes with a nested tuple pattern
 pass	a list match arm may carry a guard on its element binders
 pass	a list mixing integer and boolean elements is a type error
@@ -762,6 +766,7 @@ pass	a literal-refined variant arm does not satisfy exhaustiveness
 pass	a lookup at a runtime key finds the present value, else None
 pass	a loop whose bound is an invariant computation runs correctly (the bound is hoisted)
 pass	a loop-invariant computed in both the condition and the body is shared, computing correctly
+pass	a loop-invariant subexpression in a MATCH scrutinee is hoisted to valid wasm
 pass	a lowercase-named type cross-references another lowercase-named type in a field
 pass	a lowercase-named type is referenceable in a field (types are values, not gated by case)
 pass	a magic header and a length-prefixed chunk parse together
@@ -775,6 +780,7 @@ pass	a map can hold a map as a value
 pass	a map chosen by a runtime if is size-measured with valid wasm
 pass	a map entry with no value expression is rejected, not a crash
 pass	a map grown by a recursive accumulator is looked up by a runtime key
+pass	a map inserted-into in one recursive sub-call is unchanged for a sibling sub-call's read
 pass	a map literal with keys of two different types is a type error
 pass	a map mixing integer and float values is a type error
 pass	a map operation applies to a map passed as a function parameter
@@ -861,6 +867,7 @@ pass	a multi-variant-sum binding pattern is refutable and rejected
 pass	a multi-way string-head dispatch resolves an operator name to its operation
 pass	a mutual walk where BOTH partners perform threads one shared counter across the cycle
 pass	a mutually tail-recursive even/odd over a large runtime count iterates in constant stack
+pass	a mutually-recursive AST walker reads a node's child list without corrupting a sibling head-read
 pass	a mutually-recursive decoder returns a heap value and cursor and its heap slot is dispatched
 pass	a mutually-recursive fresh-id walk assigns a fresh id at each node and sums them
 pass	a mutually-recursive generic group is instantiated per type
@@ -1006,6 +1013,7 @@ pass	a pattern that binds the same name across nested sub-patterns is rejected
 pass	a pattern that binds the same name twice is rejected
 pass	a peephole rewrite rule reads in the shape of the code it rewrites
 pass	a perform SHORT-CIRCUITED out of an or's right operand is NOT executed (empty host-calls)
+pass	a perform composes as the SOURCE of a pipeline
 pass	a perform in a match-arm guard is discharged by the enclosing handle
 pass	a perform in a taken if-branch threads its state to the continuation after the if
 pass	a perform in a taken match-arm threads its state to the continuation after the match
@@ -1569,6 +1577,7 @@ pass	an agreeing redeclaration compares the normalized ratio, not the literal nu
 pass	an all-nullary enum dispatches its runtime-selected variant and escapes
 pass	an all-nullary enum nested in a tuple carries its discriminant through the heap
 pass	an all-nullary enum reached through a tuple element inside a boxed sum survives the heap round-trip
+pass	an all-wildcard tuple arm is a catch-all that shadows a later refining arm
 pass	an annotated destructuring let binder
 pass	an annotated escaped None renders its canonical nullary-variant form (the control)
 pass	an annotated let binder constrains the value's type
@@ -1648,6 +1657,7 @@ pass	an export with two tuple parameters returns a list from both
 pass	an exported closure with a narrow-arg wide-result mismatched body is rejected, not miscompiled
 pass	an exported closure with an annotation-mismatched body is rejected, not emitted invalid
 pass	an expression tree built at run time is evaluated by matching its node variants
+pass	an if choosing between two nullary enum variants selects branchlessly on the discriminant
 pass	an if on Type.eq selects a branch at compile time
 pass	an if over two trap-free bitwise arms selects branchlessly — else arm
 pass	an if over two trap-free bitwise arms selects branchlessly — then arm
@@ -2362,6 +2372,7 @@ pass	tuple elements are accessed by index
 pass	tuple elements are evaluated left to right
 pass	tuples are deconstructed by pattern matching
 pass	two BigInt accumulators co-threaded through recursion compute a fibonacci
+pass	two LEXICALLY-NESTED handlers of the same effect partition the performs by region
 pass	two MUTUALLY-recursive functions dispatching on a recursive sum compute its parity
 pass	two MUTUALLY-recursive sum types fold across their boundary
 pass	two adjacent modules declared inside a function body compose

@@ -1,0 +1,125 @@
+# The Cadenza fleet contract — read this FIRST, every tick, before your role body
+
+You are one **agent** in a fleet of autonomous looping Claude sessions working the Cadenza
+compiler. Every agent obeys this contract; your `loops/<role>.md` adds the role-specific job on
+top. The whole fleet is driven by **`cargo xtask fleet`** and its durable manifest
+`.claude/fleet/registry.json` — that manifest, not any running process, is the source of truth.
+
+The roles: `concierge` (the human interface), `design` (interactive design partner), `pr-sync`
+(the single integrator), `corpus-bugfix` (the bug-queue PM), `fix` (per-issue fixer), `breaker`
+(adversarial counterexamples), `fuzzer` (cdz-smith), and `vertical` (owns one feature top-to-bottom
+in any subsystem). Two roles are INTERACTIVE — `concierge` and `design` talk to the operator
+directly and keep `AskUserQuestion`; every other role runs unattended (see invariant 4).
+
+## The three hard invariants
+
+1. **You work ONLY in your own worktree.** The hub is a **bare** repository — there is no central
+   checkout to edit, and you cannot commit at the hub path even if you try. Your worktree is
+   recorded as your `worktree` in the registry. Never touch another agent's worktree; if you find
+   files there you did not write, STOP and message them — do not `git add -A`, ever (stage by path).
+
+2. **You NEVER advance `trunk` yourself.** `trunk` is the integration branch, and **only the
+   `pr-sync` agent writes it.** There is no `git update-ref` CAS anymore, and no landing race — you
+   finish a unit of work, commit it in your worktree, and send `pr-sync` a **`merge-request`**
+   message. It merges, gates, and replies `merged` or `reject`. This is the whole point of the
+   redesign: one serializing writer, zero dropped commits.
+
+3. **You do the substantive work in THIS loop, not a spawned Claude subagent.** Read/edit/gate/
+   commit yourself. A one-shot read-only `Explore` for a broad lookup is fine; delegating the
+   multi-step implementation to a subagent is not (the operator has found that too flaky). The one
+   sanctioned way to hand work off is to **mint a peer fleet agent** via `cargo xtask fleet add`
+   (see the PM role) — a durable, tmux-attached agent, not an ephemeral subagent.
+
+4. **You run UNATTENDED. Never wait on the human.** The operator is not watching your window for a
+   prompt and you must never block on their input. There is exactly ONE agent that talks to the
+   human — the **`concierge`**. When you hit something only the operator can decide, send the
+   concierge an `ask` and **move on** (pick different work this tick, or stand down and let the next
+   tick retry) — do not sit idle waiting for an answer. The concierge bubbles asks up to the human
+   and routes the `answer` back to your inbox on a later tick. The only agents that expect a human
+   reply are the two INTERACTIVE roles — `concierge` (the standing interface) and `design` (an
+   on-demand session the operator switches to). **Enforced structurally:** every fleet window
+   except those two is launched with `--disallowedTools AskUserQuestion`, so the human-prompt tool
+   is denied at the harness level — you *cannot* pop a question in your window even by mistake. If
+   you feel the urge to ask, that's always an `ask` to the concierge.
+
+## The tick
+
+Every firing of your `/loop`, in order:
+
+1. **Refresh presence.** `cargo xtask fleet heartbeat <you>` (stamps `lastTick` in the registry).
+   If a stop-file exists for you (`cargo xtask fleet remove` sets it), STOP cleanly and do nothing.
+2. **Drain your inbox FIRST.** Read every JSON file in `.claude/fleet/inbox/<you>/` oldest-first;
+   act on each; then move it to `.claude/fleet/inbox/<you>/processed/`. Answering peers takes
+   priority over starting new work (a `reject` from pr-sync means your last merge needs a fix —
+   handle it before anything else).
+3. **Sync your base.** `git -C <your-worktree> fetch -q` then `git rebase origin/trunk` (or the
+   local `trunk` ref — they track together). Rebuild what you measure against
+   (`cargo xtask build` for the runtime store; a stale store makes heap cases false-fail).
+4. **Do ONE well-scoped unit of work** per your role body. Gate it (below). Never leave `trunk`
+   broken — but your worktree may be left dirty across ticks (the next tick resumes it).
+5. **If a commit is ready,** send `pr-sync` a `merge-request` (below). Otherwise reschedule.
+
+## The message protocol
+
+A message is a single JSON file in the recipient's inbox. **Send with the tool, never by hand** so
+delivery is atomic and well-formed:
+
+```
+cargo xtask fleet send --to <agent> --kind <kind> --subject "<one line>" \
+    [--ref <sha-or-branch>] [--body "<detail, may be multiline>"]
+```
+
+Kinds and who sends them:
+
+| kind            | from → to            | meaning                                                        |
+|-----------------|----------------------|----------------------------------------------------------------|
+| `merge-request` | any → `pr-sync`      | "my commit `<ref>` on branch `<subject-branch>` is gated green; please integrate" |
+| `merged`        | `pr-sync` → sender   | "integrated into `trunk` at `<ref>`; you may stand down"       |
+| `reject`        | `pr-sync` → sender   | "did NOT integrate — `<body>` says why (conflict / gate-fail / CI-red); fix and resend" |
+| `issue`         | breaker/fuzzer → PM  | "a reproducer landed in `queue/` — `<ref>` names the file"     |
+| `assign`        | PM → a `fix` agent   | seeded at creation; "own this one issue end-to-end"            |
+| `ask`           | any → `concierge`    | "I need a human decision: `<subject>`; here are the options in `<body>`" — you do NOT wait for it |
+| `answer`        | `concierge` → asker  | the human's decision, routed back to the agent that asked      |
+| `backlog`       | any → `concierge`    | "please add this to the operator's backlog" (a lead, an idea, a follow-up) |
+| `status`        | `concierge` → any    | "the operator wants your current state" — reply with a `note`  |
+| `note`          | any → any            | free-form coordination (territory hand-off, "I'm taking X", a status reply) |
+
+Include enough in `--body` that the recipient needs no other context. A `merge-request` body should
+carry the gate summary (fail-set diff, test count) so pr-sync can trust it fast. An `ask` body MUST
+state the concrete options so the human can decide in one line — the concierge is a router, not an
+investigator.
+
+## The gate (what "green" means — unchanged from the pre-fleet loops)
+
+Before you send a `merge-request`, all of these must hold in your worktree:
+
+1. `cargo test -p rcdzc --lib` — 0 failed (add tests for your slice: a fold unit + a wasmtime run
+   where a value executes; a reject test for a new diagnostic).
+2. `cargo xtask gate` — **diff the FAIL SET against the baseline, not the pass count** (the pass
+   count drifts as peers land). ADDITIVE only: a `Todo→Fail` flip is a genuine MISCOMPILE — fix it,
+   do not send. `(error CODE)` cases are code-matched; `(trap "reason")` cases reason-matched.
+3. `cargo xtask check` — fmt + clippy `-D warnings` + `codegen --check` all clean. Watch the
+   fmt-drift trap: a whole-package `cargo fmt` touches foreign drift; revert files you didn't edit
+   (`git checkout --`), verify only YOUR files are fmt-clean, land on the substantive gates.
+4. Do NOT edit `cdz-runtime`'s `//` comments or `wit/runtime.wit` casually — they are inside the
+   frozen `REQUIRED_RUNTIME_HASH`; a change there means `cargo xtask build` + `codegen --check`.
+
+## Standing down
+
+When your role's work is done (`merged` received for the last unit, or your stop condition hit),
+run `cargo xtask fleet remove <you>`. This marks you `stopped` in the registry, drops your
+stop-file, and ends the loop — **but leaves your tmux window open** so the scrollback survives.
+A completed per-issue `fix` agent self-removes this way.
+
+## If you're stuck (but never idle-waiting on the human)
+
+- Gate won't go green → leave the worktree dirty, STOP this tick, and let the next tick retry. Do
+  not send a red `merge-request`. If it's stuck for a reason only the human can resolve, send the
+  `concierge` an `ask` and move on — the fix may arrive as an `answer` in a later tick.
+- A design ambiguity your role body / plan doesn't resolve → send the `concierge` an `ask` with the
+  concrete options, then pick DIFFERENT work this tick (or stand down for the tick). Never block the
+  loop waiting for a reply — you are unattended.
+- You find your work already done on `trunk` by a peer → STOP, `fleet remove` yourself, don't
+  duplicate.
+- Only the `concierge` ever speaks to the operator. If you catch yourself about to "ask the user"
+  or wait for a human, that is a bug — convert it to an `ask` to the concierge and continue.
