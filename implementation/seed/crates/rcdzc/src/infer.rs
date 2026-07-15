@@ -6767,12 +6767,17 @@ fn check_application(
             trace!(target: "rcdzc::infer", head = head.0, "fault: Map.insert key type disagrees with the map's key type (CDZ0201)");
             // Name the map's KEY type and the inserted key's type (like the map-literal heterogeneity
             // message), and offer the int-literal→float retype when that bridges the clash — the
-            // Map.insert twin of the map-literal check (M75).
+            // Map.insert twin of the map-literal check (M75). When the two are same-kind compounds that
+            // differ structurally (a record field-set / tuple arity / sum payload), append the
+            // minimal-conflict delta the map-LITERAL arm already carries — the map's key type is the
+            // EXPECTED side, the inserted key the ACTUAL, so this is the directional `structural_delta_hint`
+            // (M184 audit: the Map.insert op arm missed the delta its peer-join twin carries).
+            let delta = structural_delta_hint(&kt, &key_ty).unwrap_or_default();
             let mut reject = Reject::coded(
                 Code::Malformed,
                 format!(
                     "a map associates keys of one type, but this key's type differs: the map's keys are \
-                     {}, this key is {}",
+                     {}, this key is {}{delta}",
                     kt.render_name(),
                     key_ty.render_name()
                 ),
@@ -6784,11 +6789,15 @@ fn check_application(
         }
         if !vt.agrees_with(&val_ty) {
             trace!(target: "rcdzc::infer", head = head.0, "fault: Map.insert value type disagrees with the map's value type (CDZ0201)");
+            // Append the same directional structural-delta the key arm now carries — the map's value type
+            // is EXPECTED, the inserted value ACTUAL — so a same-kind compound value mismatch names the
+            // field/element/payload conflict rather than leaving the reader to diff two rendered types.
+            let delta = structural_delta_hint(&vt, &val_ty).unwrap_or_default();
             let mut reject = Reject::coded(
                 Code::Malformed,
                 format!(
                     "a map associates values of one type, but this value's type differs: the map's \
-                     values are {}, this value is {}",
+                     values are {}, this value is {}{delta}",
                     vt.render_name(),
                     val_ty.render_name()
                 ),

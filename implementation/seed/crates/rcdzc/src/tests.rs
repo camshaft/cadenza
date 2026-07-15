@@ -19054,6 +19054,29 @@ mod match_engine {
             "an int value inserted into a Float-valued map offers the retype: {}",
             f.message
         );
+        // M184 audit: when the inserted VALUE and the map's value type are SAME-KIND compounds that differ
+        // structurally (a record field-set diff here), the Map.insert arm appends the minimal-conflict
+        // delta the map-LITERAL peer-join arm already carries — it names the field rather than leaving the
+        // reader to diff `(Record (x Int64))` against `(Record (y Int64))`.
+        let cd = reject_full(
+            "(module m (def (f (: mm (Map String (Record (x Int64))))) \
+             ((. Map insert) mm \"k\" (record (y 2)))) (export f))",
+        )
+        .expect("a Map.insert compound value-type clash must reject");
+        assert!(
+            cd.message.contains("this value's type differs")
+                && cd.message.contains("field `x`")
+                && cd.message.contains('y'),
+            "names the field-level delta on a compound value clash: {}",
+            cd.message
+        );
+        // NO spurious delta on a SCALAR key clash — the earlier String-vs-Int64 key case carries no
+        // structural-delta tail (structural_delta_hint is None for two scalars).
+        assert!(
+            !key.message.contains(" — "),
+            "a scalar key clash carries no structural-delta tail: {}",
+            key.message
+        );
     }
 
     #[test]
