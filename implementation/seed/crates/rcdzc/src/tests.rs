@@ -45911,6 +45911,37 @@ mod stage1 {
             .is_ok(),
             "a well-formed const param is valid"
         );
+        // ONE clean error, no consequent noise: an EXPORTED def whose sole param is the malformed const
+        // reports ONLY the const-shape CDZ0201 — NOT also a spurious "parameter type is ambiguous — annotate
+        // it" (the malformed const strips to a SYNTHESIZED `p$0` binder that never resolved a type; the
+        // export-boundary ambiguous check now skips a non-user-node param, deferring to the const-shape
+        // reject). A GENUINE bare unannotated exported param still draws the ambiguous error.
+        let cdiags = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def (mk (const n Int64)) (: 5 (UInt n))) (export mk))",
+        )));
+        assert!(
+            cdiags
+                .iter()
+                .any(|d| d.message.contains("wraps exactly ONE annotated binder")),
+            "the const-shape reject is present: {:?}",
+            cdiags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        assert!(
+            !cdiags
+                .iter()
+                .any(|d| d.message.contains("parameter type is ambiguous")),
+            "no consequent 'parameter type is ambiguous' on the synthesized const-strip binder: {:?}",
+            cdiags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        // A GENUINE bare unannotated exported param (a USER node) still gets the ambiguous error + fix.
+        assert!(
+            crate::diagnostics(&mut crate::db::Db::load(parse(
+                "(module m (def (mk x) x) (export mk))"
+            )))
+            .iter()
+            .any(|d| d.message.contains("parameter type is ambiguous")),
+            "a genuine unannotated exported param still warns ambiguous"
+        );
     }
 
     #[test]
