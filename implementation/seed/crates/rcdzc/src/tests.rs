@@ -1416,6 +1416,83 @@ fn a_wide_record_read_field_by_field_sums_correctly() {
     );
 }
 
+/// A COMPOSED call over a record-transforming function whose field is a CHECKED-ARITH op compiles to a
+/// VALID module and runs to the right value — the regression guard for the record-field slot-collision
+/// miscompile (`adv-nested-call-multifield-record-arith-field-invalid-wasm`). `f` takes a ≥2-field
+/// record and rebuilds it with field `a` bumped by a checked `+` (which stashes an i64 into a scratch
+/// slot behind an overflow guard) and `b` copied. Applied twice — `f(f({a:0,b:5}))` — the inner call's
+/// record RESULT feeds the outer call's ARGUMENT, and the `Core::Record` arm used to emit every field at
+/// a FIXED `base`, so field `a`'s i64 arith scratch reused a slot the outer record-assembler had already
+/// typed i32 → one wasm local declared at two widths → `wasm-tools validate: expected i64, found i32`,
+/// the component rejected at load. The fix advances each field's scratch base past the running
+/// high-water (the same disjoint-slot discipline `Core::Tuple`/`Core::ListNew` already applied), so
+/// sibling/nested fields never alias a slot at two widths. `f(f({a:0,b:5}))` → `{a:2, b:5}`, `.a` = 2.
+#[test]
+fn a_composed_call_over_a_record_with_a_checked_arith_field_runs() {
+    use crate::testkit::parse;
+    // The fix must at minimum produce a VALID module — the miscompile was a wasm-validation failure
+    // (`expected i64, found i32`), so `compile_component` returning `Ok` + `required_runtime` parsing
+    // the bytes is itself the primary guard (it re-validates the component). The composed run below then
+    // confirms the VALUE when the runtime store is present.
+    let src = "(module m \
+                 (def (f (: r (Record (a Int64) (b Int64)))) \
+                    (record (a (+ (. r a) 1)) (b (. r b)))) \
+                 (def (main) (. (f (f (record (a 0) (b 5)))) a)) (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src)))
+        .expect("a composed record-transform call must compile");
+    assert!(
+        cdz_run::required_runtime(&bytes)
+            .expect("the emitted component must be valid wasm")
+            .is_some(),
+        "the nested record-transform builds a runtime record, so it imports the value-heap runtime"
+    );
+    let Some(runtime) = find_runtime_wasm() else {
+        eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
+        return;
+    };
+    let opts = cdz_run::RunOpts {
+        export: Some("main".to_string()),
+        args: Vec::new(),
+        runtime: Some(runtime.clone()),
+        runtime_cache_dir: None,
+        host_responses: Vec::new(),
+    };
+    match cdz_run::run(&bytes, &opts).expect("run") {
+        cdz_run::Outcome::Value(s) => {
+            assert_eq!(
+                s, "2",
+                "f(f({{a:0,b:5}})) bumps a twice → {{a:2,b:5}}, so .a = 2"
+            )
+        }
+        cdz_run::Outcome::Trap(t) => panic!("composed record-transform trapped (miscompile?): {t}"),
+    }
+    // A THREE-field record with TWO checked-arith fields and the arith field read LAST — exercises more
+    // than one arith scratch interleaved with the assembler slots. `(* c 3)` twice over c=2 → 18.
+    let three = "(module m \
+                   (def (f (: r (Record (a Int64) (b Int64) (c Int64)))) \
+                      (record (a (+ (. r a) 1)) (b (. r b)) (c (* (. r c) 3)))) \
+                   (def (main) (. (f (f (record (a 0) (b 5) (c 2)))) c)) (export main))";
+    let three_bytes = compile_component(&crate::codec::encode(&parse(three)))
+        .expect("a three-field composed record-transform call must compile");
+    assert!(
+        cdz_run::required_runtime(&three_bytes)
+            .expect("the three-field component must be valid wasm")
+            .is_some(),
+        "the three-field nested record-transform imports the value-heap runtime"
+    );
+    let three_opts = cdz_run::RunOpts {
+        export: Some("main".to_string()),
+        args: Vec::new(),
+        runtime: Some(runtime),
+        runtime_cache_dir: None,
+        host_responses: Vec::new(),
+    };
+    match cdz_run::run(&three_bytes, &three_opts).expect("run") {
+        cdz_run::Outcome::Value(s) => assert_eq!(s, "18", "c = 2 tripled twice = 2*3*3 = 18"),
+        cdz_run::Outcome::Trap(t) => panic!("three-field record-transform trapped: {t}"),
+    }
+}
+
 /// A synthesized (β-reduced) scope form's parameters still resolve — the regression guard for the
 /// per-scope binder index. The index is built at load over the ORIGINAL arena, but β-reduction copies
 /// a lambda/def body into FRESH `fn`/`def` nodes; a parameter reference inside such a copy must find

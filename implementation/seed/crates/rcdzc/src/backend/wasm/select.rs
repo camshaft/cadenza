@@ -4751,9 +4751,18 @@ fn emit(
             out.push(Lir::ConstI32(fields.len() as i32));
             out.push(Lir::CallImport(OP_ARR_ALLOC)); // → [arr]
             for (i, (_, &value)) in fields.iter().enumerate() {
+                // Each field starts its scratch ABOVE the running high-water, NOT at a fixed `base` — the
+                // same disjoint-slot discipline `Core::Tuple`/`Core::ListNew` apply. A field initialized by
+                // a checked-arith op stashes an i64 into a scratch slot; if a sibling (or an enclosing
+                // call-boundary) slot at that number was already typed i32, reusing it re-types one wasm
+                // local to two widths → an invalid module (`expected i64, found i32`). This is the
+                // composed-call miscompile: `(f (f (record (a (+ (. r a) 1)) (b (. r b)))))` had field
+                // `a`'s i64 arith `$r` collide with a record-assembler i32 slot. Advancing `field_base`
+                // past each field's high-water hands each field fresh, never-typed slots.
+                let field_base = base.max(*high);
                 // [arr] ; push index ; push (box, if scalar) the field value ; arr-set → [arr]
                 out.push(Lir::ConstI32(i as i32)); // [arr, i]
-                emit(db, value, slots, base, high, scratch_ty, layout, out)?; // [arr, i, value]
+                emit(db, value, slots, field_base, high, scratch_ty, layout, out)?; // [arr, i, value]
                 // A scalar element boxes to a handle (a NARROW int first extends i32→i64, as box-int
                 // takes an i64 cell); a nested compound is ALREADY a u32 handle → `arr-set` it directly.
                 if let Some(op) = box_op(db, value)? {
