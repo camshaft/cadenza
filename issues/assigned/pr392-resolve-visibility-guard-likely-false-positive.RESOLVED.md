@@ -33,3 +33,5 @@ prelude-colliding variant ctor NOT exported to file B; file B references that na
 position — it must REJECT (unbound / prelude), NOT resolve to A's variant. If it rejects, this is a
 confirmed false positive (dismiss). If it resolves, amazon-q is right and the guard needs the explicit
 `Some(Err(()))` arm. Fix (if any) on `trunk`. Quote + link in queue file.
+
+<!-- RESOLVED 2026-07-15 (FALSE POSITIVE, verified + pinned): PR #392 was WRONG — resolve.rs step 3d scoped.is_none() guard is LOAD-BEARING (weakening it to fire on Some(Err(())) re-opens a real sibling-hidden-variant leak). NO visibility-logic change. fix-resolve-visibility-guard landed a regression pin (5a3bd463c): a_sibling_files_prelude_colliding_variant_ctor_does_not_leak_in_construct_position in link.rs (two-file repro + local-shadow contrast). Merged. -->
