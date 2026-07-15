@@ -1455,7 +1455,17 @@ impl<'a> Printer<'a> {
         let docs_end = 1 + args[1..].iter().take_while(|&&a| self.is_doc(a)).count();
         let name = args[0];
         let docs = &args[1..docs_end];
-        let variants = &args[docs_end..];
+        let mut variants = &args[docs_end..];
+        // OPEN SUM: a trailing `.. r` row-variable marker is the flat two-sibling pair `Name("..")` then
+        // a lowercase `Name` at the END of the variant list (open-sums OS1). Peel it off so it prints as
+        // a trailing `.. r` (the ML surface for an open sum), NOT as two spurious `| ..` / `| r` variants
+        // (which is what the uniform variant loop would emit — the garbage-render that would not
+        // round-trip). Mirrors the reader's trailing-`.. name` parse in `type_expr`.
+        let mut row_var: Option<StructId> = None;
+        if variants.len() >= 2 && self.a.as_name(variants[variants.len() - 2]) == Some("..") {
+            row_var = Some(variants[variants.len() - 1]);
+            variants = &variants[..variants.len() - 2];
+        }
         self.doc.cbox(INDENT);
         for &d in docs {
             if let Some(a) = self.a.as_form(d, "doc") {
@@ -1473,6 +1483,13 @@ impl<'a> Printer<'a> {
             self.doc.hardbreak();
             self.doc.word("| ");
             self.print_variant(v);
+        }
+        // The open-sum tail prints after the last variant, on its own line, as `.. r` — re-read by
+        // `type_expr`'s trailing row-var parse to the same two sibling atoms (round-trip identity).
+        if let Some(r) = row_var {
+            self.doc.hardbreak();
+            self.doc.word(".. ");
+            self.expr(r, 0);
         }
         self.doc.end();
     }
@@ -3113,6 +3130,38 @@ mod tests {
         assert_eq!(
             print(&a, 80),
             "type FL =\n  | FNil\n  | FCons(Tuple(Int64, FL))"
+        );
+    }
+
+    #[test]
+    fn open_sum_row_variable_round_trips() {
+        // OPEN SUM (open-sums OS1): a trailing `.. r` row-variable marker after the last variant. It is
+        // the flat two-sibling convention — `Name("..")` then a lowercase `Name` — as the type list's
+        // final two children, NOT a wrapper node (matches `db.rs::scan_type_decl` + the s-expr corpus).
+        // It prints on its own line as `.. r` (NOT as spurious `| ..` / `| r` variants).
+        assert_eq!(
+            sexpr::print(
+                &parser::read_ml("type T =\n  | Known(Int64)\n  | Unknown(String)\n  .. r").arenas
+            ),
+            "(type T (Known Int64) (Unknown String) .. r)"
+        );
+        assert_eq!(
+            assert_roundtrip("type T = | Known(Int64) | Unknown(String) .. r", 80),
+            "type T =\n  | Known(Int64)\n  | Unknown(String)\n  .. r"
+        );
+        // The canonical s-expr open sum prints back to the `.. r` ML surface.
+        assert_eq!(
+            print(
+                &sexpr::read("(type Vocab (Known Unit) (Unknown Unit) .. r)").unwrap(),
+                80
+            ),
+            "type Vocab =\n  | Known(Unit)\n  | Unknown(Unit)\n  .. r"
+        );
+        // A CLOSED sum (no `.. r`) is unchanged — a trailing lowercase would be a nullary variant, but
+        // there is none here; the two-sibling peel only fires on a `..` second-to-last atom.
+        assert_eq!(
+            assert_roundtrip("type C = | A | B(Int64)", 80),
+            "type C =\n  | A\n  | B(Int64)"
         );
     }
 

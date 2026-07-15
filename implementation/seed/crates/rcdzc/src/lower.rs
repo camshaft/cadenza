@@ -3721,7 +3721,7 @@ fn clone_literal_atom(db: &mut Db, e: StructId) -> StructId {
 /// both present) JOINTLY covers every NON-EMPTY list — the first element is `true` or `false`, nothing else —
 /// so together with a `(list)` arm the match is total WITHOUT a `_`.
 //= spec/capabilities/core-semantics.md#a-list-is-deconstructed-by-element-patterns-with-an-optional-rest
-//# A set of list-element arms MUST be treated as exhaustive when it covers both the empty list and every non-empty list.
+//# A set of list-element arms MUST be treated as exhaustive when it covers both the empty list and every non-empty list — for example an empty-list arm together with a leading-element-plus-rest arm, or an arm ending in a rest binder that names no leading elements — and a set of arms that leaves some length uncovered MUST be a compile-time error under *Matching Is Exhaustive Or Rejected* unless a later arm (a name or wildcard pattern) covers the remainder.
 ///
 /// The length-dispatch matcher cannot see this on its own: each bool-lead arm desugars (via the literal
 /// pass) to a GUARDED rest arm, and a guarded arm is excluded from length-coverage → a spurious CDZ0210.
@@ -3864,6 +3864,17 @@ fn desugar_refutable_literal_list_elements(
     scrutinee: StructId,
     arms: &[(StructId, StructId)],
 ) -> Option<Core> {
+    // CAPTURE the ORIGINAL match's lexical parent NOW, before any `push_list` re-wires `scrutinee`'s
+    // parent: the original match is `scrutinee`'s current parent (scrutinee is its tail-0 child). The
+    // rewritten match REPLACES it, and must ascend to the SAME enclosing scope so a user guard cond that
+    // reads an enclosing `let` binding (`(let ((lim 5)) (match xs ((guard (list 0 x) (> x lim)) …)))`)
+    // re-resolves that binding after this def is INLINED (the β-copy re-parents the `let`/`match` and this
+    // desugar re-runs on the copy). Without it `rewritten`'s parent is `None`, so `resolve_subtree` below
+    // memoizes the guard cond's `lim` as UNBOUND — the false CDZ0101 that surfaces only on the inlined path
+    // (a direct-export / non-inlined call resolves the original before the copy, dodging it).
+    let orig_match_parent: Option<(Option<StructId>, u32)> = db
+        .parent_of(scrutinee)
+        .map(|orig_match| (db.parent_of(orig_match), db.child_ix_of(orig_match) as u32));
     // Detect whether ANY arm's list pattern has a refutable literal LEADING element. Scan the arm patterns
     // (peeling a `(guard …)` wrapper), find each `(list …)`'s leading positions (before a `..` marker), and
     // check each for a scalar/string literal. Bail early if none — the common case pays only this scan.
@@ -3985,6 +3996,16 @@ fn desugar_refutable_literal_list_elements(
     let mut items = vec![match_head, scrutinee];
     items.extend(new_arms);
     let rewritten = db.push_list(items);
+    // WIRE `rewritten`'s PARENT pointer to the original match's parent, so its lexical-scope ASCENT reaches
+    // the enclosing scope (the `let` a guard cond reads) during the scope-skip extension + `resolve_subtree`
+    // below. Only the parent POINTER is set (not the parent's child-LIST): lowering consumes the returned
+    // `Core` directly, never walks DOWN from the parent to `rewritten`, so leaving the parent's children
+    // pointing at the original match is harmless — whereas rewriting the child-list would risk corrupting a
+    // sibling walk. `extend_scope_skip_into_subtree` seeds the root's skip from this parent, and the
+    // exhaustive `resolve` walk ascends through it, so the guard cond's enclosing-`let` reference resolves.
+    if let Some((new_parent, child_ix)) = orig_match_parent {
+        db.reparent(rewritten, new_parent, child_ix);
+    }
     // The synth arms hold a `(guard (list …) (and (and (= __le0 …) …) …))` whose guard COND is an O(N)-
     // DEEP left-nested `and`-chain (`and` is strictly binary). Those synth nodes are past-load, so without
     // scope-skip coverage each `__leK` guard reference (and each prelude `=`/`and`) walks O(depth) `and`
@@ -3992,6 +4013,12 @@ fn desugar_refutable_literal_list_elements(
     // extension (the `and`-spine is non-binding, the one `(guard …)` node is a candidate its children skip
     // TO) so every inner reference hops O(1). See `Db::extend_scope_skip_into_subtree`.
     db.extend_scope_skip_into_subtree(rewritten);
+    // FORGET any stale memoized resolution in the subtree before re-resolving: the user guard cond
+    // (`(> x lim)`) is REUSED from the (copied) source arm, so a reference may already be memoized against
+    // its pre-desugar position (unbound, from the β-copy). Clearing the column lets `resolve_subtree`
+    // re-resolve against the now-correct parent ascent. Fresh synth nodes are unmemoized; this matters only
+    // for the reused cond/body — bounded to `rewritten`'s subtree.
+    crate::resolve::forget_subtree(db, rewritten);
     crate::resolve::resolve_subtree(db, rewritten);
     trace!(target: "rcdzc::lower", scrutinee = scrutinee.0, "list match with refutable literal elements → fresh-binder + value-test guards");
     Some(core_of(db, rewritten))
@@ -4034,7 +4061,7 @@ fn refutable_ctor_element_head(db: &mut Db, elem_pat: StructId) -> Option<Struct
 /// sum's variant set (EVERY variant present) JOINTLY covers every NON-EMPTY list — the first element is one
 /// of the sum's variants, nothing else — so together with a `(list)` arm the match is total WITHOUT a `_`.
 //= spec/capabilities/core-semantics.md#a-list-is-deconstructed-by-element-patterns-with-an-optional-rest
-//# A set of list-element arms MUST be treated as exhaustive when it covers both the empty list and every non-empty list.
+//# A set of list-element arms MUST be treated as exhaustive when it covers both the empty list and every non-empty list — for example an empty-list arm together with a leading-element-plus-rest arm, or an arm ending in a rest binder that names no leading elements — and a set of arms that leaves some length uncovered MUST be a compile-time error under *Matching Is Exhaustive Or Rejected* unless a later arm (a name or wildcard pattern) covers the remainder.
 ///
 /// The bool case (Inc-23) replaces the last saturating arm's literal with `_` (a bool literal is a pure
 /// test, binds nothing). A CTOR element binds a PAYLOAD, so it cannot be dropped — instead the LAST
@@ -10878,11 +10905,21 @@ fn const_value_ast(db: &mut Db, b: &mut crate::ast::Builder, id: StructId) -> Op
     // checked FIRST (before the core match) because the erased core is a bare scalar (`ConstFloat`),
     // which would otherwise render as the bare number, losing the quantity the corpus records.
     if let crate::ty::Ty::Qty { inner, unit } = crate::infer::type_of(db, id) {
-        // The inner VALUE: the erased core IS the inner value (Qty.of erases to it), so render it at the
-        // inner type by recursing on the SAME node with the quantity peeled — build a synthetic inner
-        // render by matching the core directly (the node's core is the inner numeric's core).
-        let inner_val = const_value_ast_at(db, b, id, &inner)?;
-        let unit_ast = unit_value_ast(b, &unit);
+        // A quantity DISPLAYS at its dimension's REFERENCE unit, with its magnitude SCALED to that
+        // reference — the same normalize-to-reference the mixed-unit combine path runs, so a single
+        // quantity and a homogeneous combine render identically (`5 kilometer` and `5 km + 0 m` both
+        // → `(Qty.of 5000.0 (Unit.base #"meter"))`). This is the fix for the calc relabel bug
+        // (mlrepro-calc-bare-quantity-relabels-to-base-without-scaling): the OLD render took the unit's
+        // exponent-map NAME (`meter`) but dropped its SCALE (`1000`), so the number (`5`) and unit
+        // (`meter`) disagreed. Scaling here is a DISPLAY concern only — construction is untouched, so no
+        // stored value is truncated (DESIGN-quantity-reference-normalized-unwrap.md §1a REVISED: lazy,
+        // not eager). `Unit.in` still converts by the exact direct source→target ratio (unaffected — it
+        // renders a bare number, not a Qty). The scale is applied in the inner numeric type: Float
+        // rounds, Rational is exact, Int truncates on a non-whole ratio — the same rule the combine path
+        // and the numeric core already use (a scale-1 reference unit is a no-op, byte-neutral).
+        let (num, den) = unit.scale();
+        let inner_val = const_value_ast_scaled(db, b, id, &inner, num, den)?;
+        let unit_ast = unit_value_ast(b, &unit.at_reference());
         // `((. Qty of) <value> <unit>)` — the member-access form the reader normalizes `(Qty.of …)` to
         // (a dotted name `Qty.of` desugars to `(. Qty of)`), so the baked value re-reads/re-prints to
         // the SAME canonical shape the corpus records.
@@ -11117,6 +11154,55 @@ fn const_value_ast(db: &mut Db, b: &mut crate::ast::Builder, id: StructId) -> Op
 /// (int/float/bool) the value form is the same as `const_value_ast`'s scalar arms, so match the core
 /// directly here. (A quantity over a COMPOUND inner type is not a Layer-1 case — the numeric core is
 /// scalar — so a non-scalar inner declines the escape by `None`.)
+/// Render a quantity's magnitude SCALED to its dimension's reference unit — `value × (num/den)` in the
+/// inner numeric type — for the value-form display of a `(Qty T u)` (`const_value_ast`'s Qty arm). The
+/// scale `(num, den)` is the unit's exact ratio to its reference (`unit.scale()`); a reference unit is
+/// `(1, 1)`, a no-op that delegates to the unscaled render. Mirrors the mixed-unit combine's constant
+/// fold so a single quantity and a homogeneous combine display identically: Float multiplies then
+/// rounds to a finite decimal, Rational scales exactly (cross-multiply + renormalize), Int multiplies
+/// then truncates on a non-whole ratio (the numeric core's integer-division rule). Declines (None) on a
+/// non-scalar inner or a Float scale with no finite decimal form.
+fn const_value_ast_scaled(
+    db: &mut Db,
+    b: &mut crate::ast::Builder,
+    id: StructId,
+    expect: &crate::ty::Ty,
+    num: i128,
+    den: i128,
+) -> Option<StructId> {
+    use crate::ast::{Leaf, Radix};
+    // Reference unit (scale 1/1) — no scaling, render the magnitude as-is.
+    if num == 1 && den == 1 {
+        return const_value_ast_at(db, b, id, expect);
+    }
+    match core_of(db, id) {
+        Core::ConstInt(v) => {
+            let scaled = v.to_i128()?.checked_mul(num)? / den;
+            Some(b.atom_leaf(Leaf::Int {
+                value: IntValue::from_i128(scaled),
+                radix: Radix::Dec,
+            }))
+        }
+        Core::ConstFloat(d) => {
+            let scaled = f64::from_bits(d.to_f64_bits()) * (num as f64) / (den as f64);
+            crate::ast::Decimal::from_f64(scaled).map(|dec| b.atom_leaf(Leaf::Float(dec)))
+        }
+        Core::ConstRational(n, dd) => {
+            // Exact: (n/dd) × (num/den) = (n·num)/(dd·den), renormalized to lowest terms.
+            let sn = n.mul(&IntValue::from_i128(num));
+            let sd = dd.mul(&IntValue::from_i128(den));
+            match normalized_rational(sn, sd) {
+                Core::ConstRational(rn, rd) => {
+                    let text = format!("{}/{}", rn.to_decimal_string(), rd.to_decimal_string());
+                    Some(b.atom_leaf(Leaf::Name(text)))
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
 fn const_value_ast_at(
     db: &mut Db,
     b: &mut crate::ast::Builder,
@@ -17885,6 +17971,29 @@ fn lower_bytes_slice(
 /// runtime "binary value does not fit segment" trap). `(bin)` (no segments) is the empty byte sequence.
 /// A `bytes` splice, or a RUNTIME (non-constant) value, is not folded here yet — declines cleanly (BN4
 /// dependent-bytes + the runtime path).
+/// The rich CDZ0304 message for a CONSTANT value that does not fit its `(signed, bits)` bin INTEGER/BITS
+/// segment — names the offending VALUE, the segment's width TYPE, and the VALID RANGE, mirroring the
+/// annotation-position CDZ0302 ("the valid range is 0..=255") rather than the terse "binary value does
+/// not fit segment". A `bits k` field is an UNSIGNED k-bit value (`signed=false`). `bits` is the segment's
+/// value width in bits (a byte-aligned int segment is `w*8`; a `(bits k)` field is `k`). The width type is
+/// spelled off the aliasing — a bound name for an aliased width (`UInt8`), the `(UInt k)` ctor form
+/// otherwise (a bit-field's `(UInt 4)`), reusing `width_module_spelling` so the named type actually
+/// resolves. The range clause is omitted only for a malformed width `int_width_range` can't render.
+fn bin_segment_overrange_message(v: &crate::ast::IntValue, signed: bool, bits: u32) -> String {
+    let ty = crate::infer::width_module_spelling(&crate::ty::IntTy::fixed(signed, bits));
+    let val = v.to_decimal_string();
+    match crate::infer::int_width_range(signed, bits) {
+        Some(range) => format!(
+            "the value {val} does not fit this bin segment's {bits}-bit {ty} field (the valid range \
+             is {range}) — a bin segment never truncates; narrow the value explicitly to fit",
+        ),
+        None => format!(
+            "the value {val} does not fit this bin segment's {bits}-bit {ty} field — a bin segment \
+             never truncates; narrow the value explicitly to fit",
+        ),
+    }
+}
+
 fn lower_bin_build(db: &mut Db, id: StructId, segs: &[crate::resolved::Segment]) -> Core {
     use crate::resolved::SegKind;
     // RUNTIME construction: if ANY segment's value is not a compile-time constant, the `bin` can't fold to
@@ -17954,10 +18063,13 @@ fn lower_bin_build(db: &mut Db, id: StructId, segs: &[crate::resolved::Segment])
                     if let Core::ConstInt(v) = core_of(db, seg.slot)
                         && !v.fits_width(*signed, (*width as u32) * 8)
                     {
-                        return Core::Poison(Reject::coded(
-                            Code::ConstTrap,
-                            "binary value does not fit segment",
-                        ));
+                        return Core::Poison(
+                            Reject::coded(
+                                Code::ConstTrap,
+                                bin_segment_overrange_message(&v, *signed, (*width as u32) * 8),
+                            )
+                            .at(seg.slot),
+                        );
                     }
                     int_run.push(crate::core::BinSeg {
                         width: *width,
@@ -17985,10 +18097,13 @@ fn lower_bin_build(db: &mut Db, id: StructId, segs: &[crate::resolved::Segment])
                     if let Core::ConstInt(v) = core_of(db, seg.slot)
                         && !v.fits_width(false, k)
                     {
-                        return Core::Poison(Reject::coded(
-                            Code::ConstTrap,
-                            "binary value does not fit segment",
-                        ));
+                        return Core::Poison(
+                            Reject::coded(
+                                Code::ConstTrap,
+                                bin_segment_overrange_message(&v, false, k),
+                            )
+                            .at(seg.slot),
+                        );
                     }
                     flush_ints(db, &mut int_run, &mut pieces);
                     bits_run.push(crate::core::BinBitsField { k, value: seg.slot });
@@ -18060,10 +18175,13 @@ fn lower_bin_build(db: &mut Db, id: StructId, segs: &[crate::resolved::Segment])
                         // Range: the value must fit the segment's (signed, bits) width — else a provable
                         // trap (never truncate). `(u8 256)`/`(u8 -1)` fail here.
                         if !v.fits_width(*signed, bits) {
-                            return Core::Poison(Reject::coded(
-                                Code::ConstTrap,
-                                "binary value does not fit segment",
-                            ));
+                            return Core::Poison(
+                                Reject::coded(
+                                    Code::ConstTrap,
+                                    bin_segment_overrange_message(&v, *signed, bits),
+                                )
+                                .at(seg.slot),
+                            );
                         }
                         // The low `w` bytes of the value's two's-complement representation, big-endian
                         // (MSB first). `to_i64_bits` gives the 64-bit two's-complement pattern; for a
@@ -18095,12 +18213,24 @@ fn lower_bin_build(db: &mut Db, id: StructId, segs: &[crate::resolved::Segment])
                 match core_of(db, seg.slot) {
                     Core::Poison(r) => return Core::Poison(r),
                     Core::ConstInt(v) => {
-                        // A bit-field is an unsigned k-bit value; out of range (or negative) → trap.
-                        if k == 0 || k > 63 || !v.fits_width(false, k) {
+                        // A malformed bit width (0, or > 63 here) is a well-formedness fault (infer's
+                        // CDZ0220 normally catches it); keep the terse message for that degenerate case.
+                        if k == 0 || k > 63 {
                             return Core::Poison(Reject::coded(
                                 Code::ConstTrap,
                                 "binary value does not fit segment",
                             ));
+                        }
+                        // A bit-field is an unsigned k-bit value; out of range (or negative) → the rich
+                        // "value V does not fit this K-bit (UInt K) field (valid range 0..=…)" message.
+                        if !v.fits_width(false, k) {
+                            return Core::Poison(
+                                Reject::coded(
+                                    Code::ConstTrap,
+                                    bin_segment_overrange_message(&v, false, k),
+                                )
+                                .at(seg.slot),
+                            );
                         }
                         let val = v.to_i64_bits() as u64 & ((1u64 << k) - 1);
                         acc = (acc << k) | val;

@@ -1358,6 +1358,62 @@
   (input  (^ (^ 42 255) 255))
   (output (: 42 Int64)))
 
+; ── XOR-cancellation `(^ (^ v w) w) → v` on a RUNTIME operand — a backend-independent Core fold ───────
+; The involution case above is a CONSTANT fold (both operands known). The compiler ALSO recognizes the
+; cancellation on a RUNTIME value in `arith_identity` (lower.rs): `(^ (^ v w) w)` simplifies to `v`
+; because `w ^ w == 0` and `v ^ 0 == v`, for a constant OR a runtime key `w`. That fold is a Core rewrite
+; above the backend split, so it must yield `v` identically on BOTH backends — and a constant-scrutinee
+; test never exercises it (a constant `v` folds through the const path instead). The runtime-key case also
+; pins that the fold does NOT require `w` to be known: the two XORs by the SAME occurrence cancel whatever
+; its value. (The discarded `w` is trap-free here — a bare parameter — so eliding the redundant pair is
+; sound; a trapping `w` would be kept, the same is_trap_free discipline the annihilator cases above pin.)
+
+(case "XOR cancellation returns the original runtime value (constant key)"
+  (doc    "`(^ (^ v 255) 255)` over a runtime parameter `v` simplifies to `v` — the two XORs by the same
+           constant key cancel. A runtime operand keeps this out of the constant fold, so it exercises the
+           emitted code: v = 42 → 42, and a NEGATIVE v = -7 → -7 (the top bits toggle and toggle back, so
+           the sign survives). The runtime companion of the constant involution case above; pins the fold
+           is value-exact at run time on both backends, not just for a constant `v`.")
+  (input  (do (def (main (: v Int64)) (^ (^ v 255) 255)) (export main)))
+  (call   main (: 42 Int64))
+  (output (: 42 Int64))
+  (call   main (: -7 Int64))
+  (output (: -7 Int64)))
+
+(case "XOR cancellation returns the original value even when the key is a runtime value"
+  (doc    "`(^ (^ v k) k)` over TWO runtime parameters simplifies to `v` — the cancellation does not need
+           `k` known, only that both XORs use the SAME `k` (`k ^ k == 0`). v = 42, k = 99 → 42: the key is
+           never constant-folded, so this pins that the Core fold recognizes the shared runtime occurrence
+           and both backends drop the redundant XOR pair, recovering `v` exactly.")
+  (input  (do (def (main (: v Int64) (: k Int64)) (^ (^ v k) k)) (export main)))
+  (call   main (: 42 Int64) (: 99 Int64))
+  (output (: 42 Int64)))
+
+; ── The KEEPING identities (`x + 0`, `x << 0`, `x >> 0`) preserve a runtime operand exactly ──────────
+; The additive/shift-by-zero identities RETURN the surviving operand (unlike the annihilators, which
+; discard it), so a boundary-crossing runtime `x` must come back unchanged — including the extreme
+; Int64.min, whose bit pattern a fold that re-derived the boundary would corrupt. `x + 0`, `x << 0`,
+; `x >> 0` are all no-ops that keep `x` and its own traps; these pin them on an operand that CROSSES the
+; boundary at run time (a constant `x` folds before reaching the identity), on both backends.
+
+(case "the additive-zero identity preserves a boundary-crossing runtime operand"
+  (doc    "`(+ x 0)` over a runtime parameter is the identity — adding zero never overflows and returns
+           `x`. Called with Int64.min it comes back Int64.min exactly (a fold that dropped the sign or
+           re-derived the boundary would corrupt it). Pins `x + 0 = x` on a genuinely runtime operand.")
+  (input  (do (def (main (: x Int64)) (+ x 0)) (export main)))
+  (call   main (: -9223372036854775808 Int64))
+  (output (: -9223372036854775808 Int64)))
+
+(case "shift-by-zero is a no-op on a runtime operand for both directions"
+  (doc    "`(<< x 0)` and `(>> x 0)` are no-ops — a zero shift count keeps `x` (the count is the RIGHT
+           operand; `arith_identity` elides the shift). `(f x)` = `(tuple (<< x 0) (>> x 0))` returns `x`
+           twice: with x = -7 both are -7 (a right shift by 0 does not touch the sign bit either). Pins
+           the shift-count-zero identities preserve a runtime operand, including a negative one, on both
+           backends.")
+  (input  (do (def (main (: x Int64)) (tuple (<< x 0) (>> x 0))) (export main)))
+  (call   main (: -7 Int64))
+  (output (: (tuple -7 -7) (Tuple Int64 Int64))))
+
 (case "arithmetic right shift"
   (doc    "The compiler needs right shift for LEB128 encoding: (>> n 7) shifts n right by 7 bits,
            extracting the next group. Arithmetic shift preserves sign for signed LEB128.")

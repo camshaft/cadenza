@@ -374,6 +374,25 @@ pub enum FleetCmd {
         #[arg(long, default_value = "")]
         body: String,
     },
+    /// Audit the integration record for SILENT DROPS: every merge-request pr-sync archived into
+    /// `processed/` MUST have produced exactly one `merged`/`reject` reply to its sender. This is the
+    /// backstop for the intermittent bug where an MR is consumed without a reply — the sender's
+    /// gated-green work then vanishes invisibly. For each processed merge-request, this looks for a
+    /// reply (in the sender's inbox + `processed/`) whose `in_reply_to` names that request file, and
+    /// reports any ORPHAN (archived, no reply). Requests archived before the `in_reply_to` field
+    /// existed, or resolved by a hand-`send` instead of `fleet ack`, are reported as UNVERIFIABLE
+    /// (not counted as orphans). Exits non-zero if any orphan is found. Run it from any worktree.
+    Audit {
+        /// Show every checked request, not just the orphans/unverifiable summary.
+        #[arg(long)]
+        verbose: bool,
+        /// Exit non-zero if any orphan is found. OFF by default: `in_reply_to` correlation only exists
+        /// for MRs resolved via `fleet ack`, so the historical backlog (pre-`ack`, or hand-`send`
+        /// resolutions) reports as orphans that may actually have landed — noise for a gate. Use
+        /// `--strict` once `fleet ack` is the universal resolution path (then an orphan is a real drop).
+        #[arg(long)]
+        strict: bool,
+    },
     /// Self-heal the fleet, in two passes. RE-ARM: any ACTIVE agent whose `/loop` has stalled — each
     /// agent stamps a heartbeat touch-file (`.claude/fleet/heartbeat/<agent>`) at the top of every
     /// tick; if that file is older than `min(--stale-mult × interval, --stale-cap)`, its loop is
@@ -426,6 +445,13 @@ struct Message {
     /// A monotonic ordinal (not wall-clock — the toolchain forbids `Date::now`); makes filenames
     /// sort in send order within a run. Combined with pid for cross-process uniqueness.
     seq: u64,
+    /// For a `merged`/`reject` reply emitted by `fleet ack`: the FILENAME of the merge-request it
+    /// resolves (in pr-sync's inbox). Empty for every other message. `fleet audit` uses it to prove
+    /// each archived merge-request got exactly one reply — the structural backstop against the silent
+    /// drop (an MR moved to `processed/` with no reply). Absent on replies sent before this field
+    /// existed / by a hand-`send` rather than `ack`, which audit reports as "unverifiable", not orphaned.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    in_reply_to: String,
 }
 
 pub fn run(paths: &Paths, cmd: FleetCmd) {
@@ -471,6 +497,7 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
             r#ref,
             body,
         } => ack(&fleet, &request, &outcome, &r#ref, &body),
+        FleetCmd::Audit { verbose, strict } => audit(&fleet, verbose, strict),
     }
 }
 
@@ -697,6 +724,7 @@ fn add(
                     r#ref: fname,
                     body: format!("Seed case copied to your inbox at {}.", dest.display()),
                     seq: next_seq(),
+                    in_reply_to: String::new(),
                 },
             );
         } else {
@@ -790,6 +818,7 @@ fn send(
             r#ref: r#ref.to_string(),
             body: body.to_string(),
             seq: next_seq(),
+            in_reply_to: String::new(),
         },
     );
     println!("fleet send: {from} → {to} [{kind}] {subject}");
@@ -868,6 +897,12 @@ fn ack(fleet: &Fleet, request: &str, outcome: &str, r#ref: &str, body: &str) {
     } else {
         format!("reject: {}", mr.subject)
     };
+    // Record WHICH merge-request this reply resolves (its filename), so `fleet audit` can prove the
+    // request↔reply pairing and catch a silent drop (an archived MR with no matching reply).
+    let request_fname = path
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default();
     deliver(
         fleet,
         &Message {
@@ -878,6 +913,7 @@ fn ack(fleet: &Fleet, request: &str, outcome: &str, r#ref: &str, body: &str) {
             r#ref: r#ref.to_string(),
             body: body.to_string(),
             seq: next_seq(),
+            in_reply_to: request_fname,
         },
     );
     println!(
@@ -907,6 +943,120 @@ fn ack(fleet: &Fleet, request: &str, outcome: &str, r#ref: &str, body: &str) {
         WakeOutcome::Woke => println!("  ↑ nudged '{}' awake (immediate tick)", mr.from),
         WakeOutcome::Skipped(why) => println!("  (sender not woken: {why})"),
     }
+}
+
+/// Audit the integration record for silent drops: every merge-request pr-sync archived into
+/// `processed/` should have produced exactly one reply carrying its filename in `in_reply_to`. See the
+/// `Audit` doc comment. Exits non-zero if any ORPHAN (archived, no reply) is found.
+fn audit(fleet: &Fleet, verbose: bool, strict: bool) {
+    // The set of request filenames some reply claims to answer (its `in_reply_to`), gathered across
+    // EVERY agent's inbox + processed/ (a reply could be sitting unread in the sender's inbox, or
+    // already archived there).
+    let mut answered: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let inbox_root = fleet.root.join("inbox");
+    if let Ok(rd) = std::fs::read_dir(&inbox_root) {
+        for agent_dir in rd.filter_map(Result::ok).map(|e| e.path()) {
+            if !agent_dir.is_dir() {
+                continue;
+            }
+            for sub in [agent_dir.clone(), agent_dir.join("processed")] {
+                for msg in read_messages(&sub) {
+                    if !msg.in_reply_to.is_empty() {
+                        answered.insert(msg.in_reply_to);
+                    }
+                }
+            }
+        }
+    }
+
+    // Every merge-request archived in pr-sync/processed is a resolution we expect a reply for.
+    let processed = fleet.inbox("pr-sync").join("processed");
+    let mut orphans: Vec<(String, String)> = Vec::new(); // (filename, sender)
+    let mut unverifiable = 0usize;
+    let mut verified = 0usize;
+    let mut total = 0usize;
+    let Ok(rd) = std::fs::read_dir(&processed) else {
+        println!("fleet audit: no pr-sync processed/ dir yet — nothing to audit.");
+        return;
+    };
+    for entry in rd.filter_map(Result::ok) {
+        let p = entry.path();
+        let fname = entry.file_name().to_string_lossy().to_string();
+        if !fname.ends_with("merge-request.json") {
+            continue;
+        }
+        total += 1;
+        let Ok(text) = std::fs::read_to_string(&p) else {
+            continue;
+        };
+        let mr: Message = match serde_json::from_str(&text) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        if answered.contains(&fname) {
+            verified += 1;
+            if verbose {
+                println!("  ✓ {fname} (from {}) — reply found", mr.from);
+            }
+        } else {
+            // No reply names this request. It's either a genuine orphan (silent drop) or was resolved
+            // before `in_reply_to` existed / via a hand-`send`. We can't prove a reply for the latter,
+            // so classify conservatively: only flag as ORPHAN when the sender is a STILL-ACTIVE agent
+            // that would be stuck waiting (a stale one-shot fix agent's pre-audit request is noise).
+            let sender_active = fleet
+                .load()
+                .agents
+                .iter()
+                .any(|a| a.name == mr.from && a.status == "active");
+            if sender_active {
+                orphans.push((fname.clone(), mr.from.clone()));
+            } else {
+                unverifiable += 1;
+                if verbose {
+                    println!(
+                        "  ? {fname} (from {}) — no reply recorded; sender not active (pre-audit / stale) — unverifiable",
+                        mr.from
+                    );
+                }
+            }
+        }
+    }
+
+    println!(
+        "fleet audit: {total} archived merge-request(s) — {verified} verified-replied, \
+         {} orphan(s), {unverifiable} unverifiable (pre-audit / not via `fleet ack`).",
+        orphans.len()
+    );
+    if !orphans.is_empty() {
+        eprintln!(
+            "\n  ⚠ SILENT DROP(S) — an active agent's merge-request was archived with NO reply:"
+        );
+        for (fname, from) in &orphans {
+            eprintln!("    • {fname}  (sender '{from}' is active and waiting)");
+        }
+        eprintln!(
+            "  These senders may be stuck waiting on a merged/reject that never came. pr-sync should \
+             re-process them via `cargo xtask fleet ack`, or the senders should resend. (Some may have \
+             actually landed pre-`ack` without a reply-stamp — verify before assuming loss.)\n"
+        );
+        if strict {
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Read every `*.json` message in a directory (non-recursive), skipping unparseable files. Used by
+/// `audit` to scan inboxes + processed dirs.
+fn read_messages(dir: &Path) -> Vec<Message> {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    rd.filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "json"))
+        .filter_map(|p| std::fs::read_to_string(&p).ok())
+        .filter_map(|t| serde_json::from_str::<Message>(&t).ok())
+        .collect()
 }
 
 /// Why a delivery did or didn't wake the recipient.
@@ -1839,5 +1989,37 @@ mod tests {
         ] {
             assert!(!is_safe_component(bad), "should reject {bad:?}");
         }
+    }
+
+    #[test]
+    fn in_reply_to_round_trips_and_is_omitted_when_empty() {
+        // A reply from `fleet ack` carries the resolved request's filename so `fleet audit` can pair
+        // them; a plain message omits the field entirely (so old JSON stays readable + diffs stay clean).
+        let reply = Message {
+            from: "pr-sync".into(),
+            to: "v-x".into(),
+            kind: "merged".into(),
+            subject: "merged: fleet/v-x".into(),
+            r#ref: "trunk@abc".into(),
+            body: "ok".into(),
+            seq: 1,
+            in_reply_to: "000000000001-42-merge-request.json".into(),
+        };
+        let json = serde_json::to_string(&reply).unwrap();
+        assert!(json.contains("in_reply_to"));
+        let back: Message = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.in_reply_to, "000000000001-42-merge-request.json");
+
+        let plain = Message {
+            in_reply_to: String::new(),
+            ..reply
+        };
+        let json = serde_json::to_string(&plain).unwrap();
+        assert!(!json.contains("in_reply_to"), "empty field must be omitted");
+        // And a message with NO in_reply_to key deserializes fine (default).
+        let old: Message =
+            serde_json::from_str(r#"{"from":"a","to":"b","kind":"note","subject":"s","seq":9}"#)
+                .unwrap();
+        assert_eq!(old.in_reply_to, "");
     }
 }

@@ -85,6 +85,39 @@
   (input  (Qty.of 3.0 Unit.one))
   (output (: (Qty.of 3.0 Unit.one) (Qty Float64 Unit.one))))
 
+; A quantity in a NON-REFERENCE unit DISPLAYS at its dimension's reference unit with the magnitude
+; SCALED to that reference — the same normalize-to-reference the mixed-unit combine runs, so a single
+; quantity and a homogeneous combine render identically. This is the fix for the calc relabel bug
+; (a bare `5 kilometer` printed `5 meter`: the render took the base-dimension NAME but dropped the ×1000
+; SCALE, so the number and unit disagreed). Scaling is a DISPLAY concern — construction stores the value
+; exactly and `Unit.in` converts by the exact direct ratio; the render applies the scale in the inner
+; numeric type (Float rounds, Rational exact, Int truncates on a non-whole ratio — the numeric core's rule).
+
+(case "a prefixed quantity displays scaled to its reference unit (Float)"
+  (doc    "`5 kilometer` = `(Qty.of 5.0 (Unit.prefix kilo meter))` DISPLAYS as `5000.0 meter`: the render
+           normalizes to the reference `meter`, applying the ×1000 scale to the magnitude so the number
+           and unit AGREE. Pins the calc-relabel-bug fix — the OLD render showed `5.0 meter` (base name,
+           scale dropped). Same value form a homogeneous combine (`5 km + 0 m`) produces (one source of
+           truth).")
+  (input  (Qty.of 5.0 (Unit.prefix kilo (Unit.base #"meter"))))
+  (output (: (Qty.of 5000.0 (Unit.base #"meter")) (Qty Float64 (Unit.base #"meter")))))
+
+(case "a family quantity displays scaled exactly to its reference (Rational)"
+  (doc    "`5 mile` = `(Qty.of (Rational.of 5 1) (Unit.of #\"mile\"))` DISPLAYS as `201168/25 meter`
+           EXACTLY: mile = 201168/125 m, so 5 mile = 5·201168/125 = 201168/25 m, scaled at the reference
+           with no rounding (the magnitude is Rational). Pins that a family unit's display scale is exact
+           over Rational — the `5 mile → 5 meter` relabel bug is fixed with the correct scaled value.")
+  (input  (Qty.of (Rational.of 5 1) (Unit.of #"mile")))
+  (output (: (Qty.of 201168/25 (Unit.base #"meter")) (Qty Rational (Unit.base #"meter")))))
+
+(case "an IEC-prefixed quantity displays scaled to its reference over Int64"
+  (doc    "`1 KiB` = `(Qty.of 1 (Unit.prefix kibi byte))` DISPLAYS as `1024 byte`: the kibi scale (1024,
+           a whole ratio) applies exactly over Int64 at the reference `byte`. Pins the display scaling
+           over an integer magnitude at a whole-ratio prefix — number and unit agree (`1 byte` would be
+           the relabel bug).")
+  (input  (Qty.of 1 (Unit.prefix kibi (Unit.base #"byte"))))
+  (output (: (Qty.of 1024 (Unit.base #"byte")) (Qty Int64 (Unit.base #"byte")))))
+
 ; Unit extraction — `(Qty.unit q)` recovers a quantity's UNIT as a first-class compile-time unit value,
 ; the inverse of `Qty.of`'s unit argument. It lets a program construct another quantity in the SAME unit
 ; as an existing one — `(Qty.of new (Qty.unit y))` — without re-spelling the unit expression. The unit is

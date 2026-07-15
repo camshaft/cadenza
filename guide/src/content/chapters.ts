@@ -195,6 +195,14 @@ export const CHAPTERS: Chapter[] = [
     Component: lazy(() => import("./chapters/Units.tsx")),
   },
   {
+    slug: "types-as-values",
+    title: "Types as values",
+    blurb: "A type is an ordinary value: reflect it, compare it, branch on it — all at compile time.",
+    section: "What makes Cadenza different",
+    exercises: 2,
+    Component: lazy(() => import("./chapters/TypesAsValues.tsx")),
+  },
+  {
     slug: "metaprogramming",
     title: "Metaprogramming",
     blurb: "Code is data: quote a program to an AST value, take it apart, build it up, eval it.",

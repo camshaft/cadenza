@@ -71,6 +71,13 @@ pub enum Code {
     Malformed,
     /// A type mismatch (e.g. an `if` condition that is not a boolean; branches of differing type).
     TypeMismatch,
+    /// A `?`/`try` operator with NO fallible boundary that admits it — the enclosing function's result
+    /// type is neither `Result` nor `Option` (or the `?` is not inside a function at all), so there is no
+    /// boundary for its short-circuit to exit to (`DESIGN-try-operator-rcdzc.md` §6). The fix hint tells
+    /// the user to annotate the enclosing function's return type as `(Result _ e)` / `(Option _)` (or, in
+    /// v2, wrap the expression in a `try { … }` block). DISTINCT from the CDZ0203 `TypeMismatch` a `?` on
+    /// a non-fallible OPERAND raises: this is about the missing BOUNDARY, that one about the operand shape.
+    TryNoBoundary,
     /// A comparison ACROSS THE NOMINAL BOUNDARY — comparing two values whose types are distinct NOMINAL
     /// types even when structurally identical (`(= (A.Mk 1) (B.Mk 1))` for two same-shape sums `A`/`B`;
     /// a nominal record vs a plain record of the same shape). A nominal type's identity is its
@@ -328,6 +335,7 @@ impl Code {
             Code::AbsentField => "CDZ0212",
             Code::RedundantArm => "CDZ0213",
             Code::AbstractCtor => "CDZ0214",
+            Code::TryNoBoundary => "CDZ0230",
             Code::EffectNoHome => "CDZ0401",
             Code::HandlerUndeclaredOp => "CDZ0403",
             Code::HandlerNotExhaustive => "CDZ0405",

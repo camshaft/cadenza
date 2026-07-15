@@ -1185,6 +1185,59 @@ mod tests {
         assert!(out.artifact(Target::Wasm.artifact_kind()).is_some());
     }
 
+    /// PRIVACY — the prelude-collision construct-shadow path (`resolve_name` step 3d) does NOT leak a
+    /// sibling file's private variant constructor. This pins amazon-q PR #392's "sibling variant leak"
+    /// (the `scoped.is_none()` guard on the `prelude_colliding_variant_ctor` fall-through) as a FALSE
+    /// POSITIVE — `Some(Err(()))` already does not leak — AND that the guard is LOAD-BEARING: rewriting
+    /// it to also fire on `Some(Err(()))` (file known, variant not visible) re-opens a real leak.
+    ///
+    /// The subtlety: `prelude_colliding_variant_ctor` is a PACKAGE-WIDE flat index (every file's
+    /// prelude-colliding variants), and step 3d precedes the prelude map. So if `Some(Err(()))` — the
+    /// entry's file knows the collision surface but `Int` is not a visible ctor there — fell through to
+    /// that index, the entry's bare `(Int …)` would bind `lib`'s PRIVATE `Foo.Int`. The `is_none()`
+    /// guard confines the fall-through to the indeterminate/single-file case, so a linked file's hidden
+    /// collision instead falls to the prelude WIDTH constructor (`Int` = the width type, no runtime form).
+    #[test]
+    fn a_sibling_files_prelude_colliding_variant_ctor_does_not_leak_in_construct_position() {
+        // `lib` declares a prelude-colliding variant `Int` (lands in the package-wide flat index) but
+        // exports only `mk` — nothing of `Foo`. The entry constructs bare `(Int 5)` in HEAD position
+        // WITHOUT importing `Foo`. It must NOT bind `lib`'s private `Foo.Int`; bare `Int` here can only
+        // mean the prelude WIDTH TYPE constructor, which is a type value with no runtime form → rejected.
+        let out = compile_package(
+            "(do (type Foo (Int Int64)) (def (mk) (Int 7)) (export mk))",
+            "(do (import \"lib\" (mk)) (def (main) (Int 5)) (export main))",
+        );
+        assert!(
+            out.has_error(),
+            "bare `(Int 5)` in a sibling file that neither declares nor imports `Foo` must NOT leak \
+             `lib`'s private `Foo.Int` — it falls to the prelude width `Int` (a type value, no runtime \
+             form); got a clean compile {:?}",
+            out.diagnostics
+        );
+        assert!(
+            out.diagnostics
+                .iter()
+                .any(|d| d.message.contains("type value has no runtime form")),
+            "the reject must be the prelude WIDTH-type reading of `Int`, not a resolution to `Foo.Int`; \
+             got {:?}",
+            out.diagnostics
+        );
+        // Contrast — the LEGITIMATE case: when the entry declares its OWN `Foo` with the colliding
+        // variant, bare `(Int 5)` DOES shadow to that local variant (`Some(Ok(_))`) and compiles. This
+        // is the `file_scoped_variant_ctor_qualified == Some(Ok(_))` first arm, unaffected by the guard.
+        let local = compile_package(
+            "(do (def (helper) 1) (export helper))",
+            "(do (import \"lib\" (helper)) (type Foo (Int Int64)) (def (main) (Int 5)) (export main))",
+        );
+        assert!(
+            !local.has_error(),
+            "a LOCALLY-declared colliding variant `Int` must still construct-shadow in its own file; \
+             got {:?}",
+            local.diagnostics
+        );
+        assert!(local.artifact(Target::Wasm.artifact_kind()).is_some());
+    }
+
     /// Compile an N-file package: `files` is `(name, source)` pairs, `entry` names the entry file.
     fn compile_files(files: &[(&str, &str)], entry: &str) -> crate::abi::CompileOutput {
         let mut inputs: Vec<Artifact> = files

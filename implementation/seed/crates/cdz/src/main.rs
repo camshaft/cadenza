@@ -502,6 +502,7 @@ fn run_test(args: &TestArgs) -> ExitCode {
         match run_test_file(
             file,
             args.filter.as_deref(),
+            args.tag.as_deref(),
             &cdz_run,
             &store,
             args.trials,
@@ -537,6 +538,7 @@ fn run_test(args: &TestArgs) -> ExitCode {
 fn run_test_file(
     file: &str,
     filter: Option<&str>,
+    tag: Option<&str>,
     cdz_run: &std::path::Path,
     store: &std::path::Path,
     trials: u64,
@@ -619,6 +621,12 @@ fn run_test_file(
         }
         let name = db.defs[i].name.clone();
         if filter.is_some_and(|needle| !name.contains(needle)) {
+            continue;
+        }
+        // `--tag <t>`: keep only a test whose def carries the `@tag("t")` string tag. AND-composed with
+        // `--filter` (both are additive selectors; an absent one imposes no constraint). A test with no
+        // `@tag` is skipped under `--tag`, and every test runs when `--tag` is absent.
+        if tag.is_some_and(|want| !db.tags_of(i).iter().any(|t| t == want)) {
             continue;
         }
         if !seen.insert(name.clone()) {
@@ -1298,6 +1306,10 @@ struct TestArgs {
     /// Run only tests whose name CONTAINS this substring (a filter). Absent = run every `@test`.
     #[arg(long)]
     filter: Option<String>,
+    /// Run only tests whose def carries this `@tag("…")` string tag. Absent = no tag constraint. Composes
+    /// with `--filter` by AND (a test runs iff it matches BOTH the name substring and carries this tag).
+    #[arg(long)]
+    tag: Option<String>,
     /// The content-addressed runtime store `cdz-run` resolves the value-heap runtime from, if a test
     /// builds heap values. Defaults to `<repo>/target/cadenza-store` (built by `cargo xtask build`).
     #[arg(long)]

@@ -3329,6 +3329,27 @@
   (call   main (: 9223372036854775807 Int64))
   (output (: 9223372036854775807 Int64)))
 
+; The DIVIDE-BY-ZERO face of the same elision: the trap-observation rule is about WHETHER the value is
+; observed, not WHICH trap it would raise. An unused binding whose init is a divide-by-zero (`(/ 100 d)`
+; at d = 0) is elided exactly as the overflow one above — the ÷0 trap does not occur and the body's value
+; is returned. Pins that the ruling covers every DEFINED trap kind (÷0, %0, zero-denominator Rational.of),
+; not only overflow, so an agent probing the div/rem/rational faces sees the conformant behavior witnessed
+; rather than re-discovering it as a "miscompile." Uses a runtime parameter so it is a real emitted-code
+; question on both backends. (The constant-fold form `(/ 100 0)` additionally earns the non-error CDZ0305
+; provably-would-trap diagnostic — asserted by a compiler unit test — while still yielding its value.)
+(case "an unused let binding whose init would divide by zero is elided, so its trap does not occur"
+  (doc    "`(let ((q (/ 100 d))) 1)` with d = 0: the binding `q = 100 / d` would trap (integer divide by
+           zero), but the body returns the constant `1`, never referencing `q`. `q`'s value is unobserved,
+           so the binding need not be evaluated and its ÷0 trap does not occur — the program yields 1. The
+           divide-by-zero companion of the overflow elision above: the trap-observation rule
+           (core-semantics.md §A Trap Occurs Only Where Its Computation Is Observed) is about observation,
+           not the trap kind, so it covers ÷0/%0/zero-denominator `Rational.of` identically. A runtime
+           parameter (the arg crosses the boundary) keeps it a genuine emitted-code question on both
+           backends; the referenced-binding anchor above pins that observing such a binding DOES trap.")
+  (input  (do (def (main (: d Int64)) (let ((q (/ 100 d))) 1)) (export main)))
+  (call   main (: 0 Int64))
+  (output (: 1 Int64)))
+
 ; --- The common-OPERATOR if-arm hoist preserves trap and order semantics ---------------------------
 ; ba26196c9 hoists a common operator out of both if arms — `(if c (+ a 1) (+ b 1))` → `(+ (if c a b)
 ; 1)` — one checked op + one guard instead of two. Unlike the constructor hoist (payloads stay
@@ -3602,3 +3623,107 @@
   (output (: 0 Int64))
   (call   main (: 7 Int64))
   (output (: 1 Int64)))
+
+; --- Remaining faces of the arith/compare hoist order guard (position, complement, selection) ------
+; The first-position shared-trapping-operand faces are pinned (arith + compare heads); these pin the
+; neighbors: second position, the trap-free-cond complement, selection-only trapping for DIFFERING
+; operands, the effect-timing face, and the comparison extension's selection/decline obligations.
+
+(case "a shared trapping second operand does not preempt a trapping condition"
+  (doc    "`(if (< (+ x 1) 5) (+ a (/ 10 d)) (+ b (/ 10 d)))` at x = Int64.max, d = 0 — the shared
+           trapping divide sits AFTER the differing operand this time. Source order: the cond's
+           overflow fires first → 'integer overflow'. The position complement of the first-position
+           order-guard case: one that hoisted any shared operand above cond regardless of position
+           would surface 'divide by zero'.")
+  (input  (do
+            (def (main (: x Int64) (: d Int64) (: a Int64) (: b Int64))
+              (if (< (+ x 1) 5) (+ a (/ 10 d)) (+ b (/ 10 d))))
+            (export main)))
+  (call   main (: 9223372036854775807 Int64) (: 0 Int64) (: 1 Int64) (: 2 Int64))
+  (trap   "integer overflow"))
+
+(case "a shared trapping operand traps under a trap-free condition"
+  (doc    "The complement that keeps the order guard honest: same shared `(/ 10 d)`, but the condition
+           `(< x 5)` is trap-free — the taken arm evaluates and the divide-by-zero IS the program's
+           outcome. A guard that declined the hoist AND suppressed the arm's own evaluation would miss
+           the trap: the guard protects ORDER, never reachability.")
+  (input  (do
+            (def (main (: x Int64) (: d Int64) (: a Int64) (: b Int64))
+              (if (< x 5) (+ (/ 10 d) a) (+ (/ 10 d) b)))
+            (export main)))
+  (call   main (: 1 Int64) (: 0 Int64) (: 1 Int64) (: 2 Int64))
+  (trap   "divide by zero"))
+
+(case "differing trapping operands trap by selection only under the arith hoist"
+  (doc    "`(if (> c 0) (+ (/ 10 a) 1) (+ (/ 10 b) 1))` — the DIFFERING operands are the trapping
+           ones (the shared `1` is inert): the per-operand `(if c (/ 10 a) (/ 10 b))` must evaluate
+           only the SELECTED divide. c false, a = 0, b = 2 → 5 + 1 = 6 (the zero divisor is untaken);
+           c true → 'divide by zero'.")
+  (input  (do
+            (def (main (: c Int64) (: a Int64) (: b Int64))
+              (if (> c 0) (+ (/ 10 a) 1) (+ (/ 10 b) 1)))
+            (export main)))
+  (call   main (: 0 Int64) (: 0 Int64) (: 2 Int64))
+  (output (: 6 Int64))
+  (call   main (: 1 Int64) (: 0 Int64) (: 2 Int64))
+  (trap   "divide by zero"))
+
+(case "an effectful shared operand performs after the condition, exactly once"
+  (doc    "The EFFECT face of the order guard, counter-observable end to end: `(if (< (Ctr.tick) 1)
+           (+ (Ctr.tick) v) (+ (Ctr.tick) w))` — the arm-shared `(Ctr.tick)` is core_equiv across
+           arms, so the hoist would love to share it; but it must perform AFTER the cond's own tick
+           and exactly once. Order: cond tick returns 0 (→ then-arm), arm tick returns 1, + v = 100 →
+           101, trailing tick returns 2 → 103. A hoist that evaluated the shared tick BEFORE the cond
+           flips the branch (the cond's tick then returns 1, not 0) and skews every subsequent read —
+           any wrong order or count misses 103.")
+  (input  (do
+            (effect Ctr (op tick (-> Unit Int64)))
+            (def (main (: v Int64) (: w Int64))
+              (handle Ctr 0 ((tick (_) s (resume s (+ s 1))))
+                (+ (if (< (Ctr.tick unit) 1)
+                       (+ (Ctr.tick unit) v)
+                       (+ (Ctr.tick unit) w))
+                   (Ctr.tick unit))))
+            (export main)))
+  (call   main (: 100 Int64) (: 200 Int64))
+  (output (: 103 Int64)))
+
+(case "the selected operand decides a hoisted comparison"
+  (doc    "`(if (> c 0) (< a 10) (< b 10))` → the hoisted `(< (if c a b) 10)`: c = 1 selects a = 5 →
+           true → 1; c = 0 selects b = 50 → false → 0. Both branch directions pin that the single
+           compare receives the SELECTED operand (a positional mispairing answers the other arm's
+           boolean).")
+  (input  (do
+            (def (main (: c Int64) (: a Int64) (: b Int64))
+              (if (if (> c 0) (< a 10) (< b 10)) 1 0))
+            (export main)))
+  (call   main (: 1 Int64) (: 5 Int64) (: 50 Int64))
+  (output (: 1 Int64))
+  (call   main (: 0 Int64) (: 5 Int64) (: 50 Int64))
+  (output (: 0 Int64)))
+
+(case "mixed comparison operators across if arms keep their own arms"
+  (doc    "`(if (> c 0) (< a 10) (> a 10))` — SAME operand, DIFFERENT comparison operators: the hoist
+           must decline (operator identity, not operand agreement, is the trigger). a = 5: c = 1 →
+           `(< 5 10)` true → 1; c = 0 → `(> 5 10)` false → 0. A hoist keyed on the shared operand
+           would emit ONE comparison and answer one direction wrong.")
+  (input  (do
+            (def (main (: c Int64) (: a Int64))
+              (if (if (> c 0) (< a 10) (> a 10)) 1 0))
+            (export main)))
+  (call   main (: 1 Int64) (: 5 Int64))
+  (output (: 1 Int64))
+  (call   main (: 0 Int64) (: 5 Int64))
+  (output (: 0 Int64)))
+
+(case "a comparison's trapping shared bound fires under a trap-free condition"
+  (doc    "The compare-head reachability complement (the trapping-cond order face is pinned by the
+           compare-head order-guard case): the cond `(< x 5)` is trap-free, the taken arm evaluates,
+           and the shared bound's divide-by-zero IS the outcome. Order protection must not become
+           trap suppression on the comparison shape either.")
+  (input  (do
+            (def (main (: x Int64) (: d Int64) (: a Int64) (: b Int64))
+              (if (if (< x 5) (< a (/ 10 d)) (< b (/ 10 d))) 1 0))
+            (export main)))
+  (call   main (: 1 Int64) (: 0 Int64) (: 1 Int64) (: 2 Int64))
+  (trap   "divide by zero"))

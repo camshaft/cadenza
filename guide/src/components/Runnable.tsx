@@ -11,7 +11,7 @@
 /// "Open in playground" hands the current buffer to the full `/playground` experience.
 
 import { useState } from "react";
-import { CodeEditor } from "../editor/CodeEditor.tsx";
+import { LazyCodeEditor as CodeEditor } from "../editor/LazyCodeEditor.tsx";
 import { useCadenzaEditor, wrapModule, type EditorOutcome } from "./useCadenzaEditor.ts";
 import { StatusIcon } from "./StatusIcon.tsx";
 import { OpenInPlayground } from "./OpenInPlayground.tsx";

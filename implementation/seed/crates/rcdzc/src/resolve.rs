@@ -1253,7 +1253,21 @@ fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Reso
             let tail = db.ast.as_form(form, "let")?;
             let bindings_occ = tail.first().copied()?;
             let body_occ = tail.get(1).copied();
-            if Some(from) == body_occ {
+            // The body-match is normally `body_occ` by identity. But a lowering-time desugar
+            // (`desugar_refutable_literal_list_elements`) REPLACES the body match with a freshly-built
+            // `rewritten` match reparented into the body SLOT — same parent + child position, DIFFERENT
+            // node id — without updating the `let`'s recorded `body_occ` (the arena list is immutable). So
+            // also accept `from` when it occupies the body's child POSITION under this `let` (its parent is
+            // `form` and its child index equals `body_occ`'s). Without this, a guard-cond reference to a
+            // `let` binding in such a rewritten body ascends to the `let` but fails the identity check →
+            // spurious CDZ0101 unbound (the inlined guarded-literal-list bug: the β-copy re-parents the
+            // `let`/`match`, the desugar re-runs on the copy, and the copied `let`'s `body_occ` still points
+            // at the pre-desugar copied match). Position-based, so it never widens a genuine non-body child.
+            let from_is_body = Some(from) == body_occ
+                || (body_occ.is_some()
+                    && db.parent_of(from) == Some(form)
+                    && body_occ.is_some_and(|b| db.child_ix_of(from) == db.child_ix_of(b)));
+            if from_is_body {
                 // The body sees EVERY binding — no `stop_before`. A bare-name binder resolves to a
                 // `Ref`, a destructuring tuple-pattern binder to a `SumPayload` (handled inside).
                 return last_binder_named(db, bindings_occ, name, None);
@@ -1446,7 +1460,7 @@ fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Reso
     // scope). This is the missed face of the privacy landing (0c008299) — a private member participating in
     // a mutual-recursion cycle rejected CDZ0101 at its co-member call site.
     //= spec/capabilities/modules-and-namespaces.md#visibility-is-explicit
-    //# A private definition MUST remain visible to the other definitions in its own module.
+    //# The explicit visibility rule MUST govern only a definition's reachability from outside its module; a definition MUST remain visible to the other definitions in its own module regardless of whether it is made visible outside, so that a module's members are mutually visible and a private helper stays reachable by its siblings.
     if let Some(binder) = module_form_sibling_binds(db, form, name) {
         return Some(binder);
     }

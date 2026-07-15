@@ -133,6 +133,8 @@ pass	UInt64.max crossing the boundary compares as a large unsigned, not -1
 pass	Unit.in converts a quantity to a chosen larger unit (Float)
 pass	Unit.in converts a quantity to a chosen smaller unit exactly (Int)
 pass	Unit.in to a unit of a different dimension is a compile-time error
+pass	XOR cancellation returns the original runtime value (constant key)
+pass	XOR cancellation returns the original value even when the key is a runtime value
 pass	`try` takes exactly one operand — a two-operand form is malformed
 pass	`try` takes exactly one operand — a zero-operand form is malformed
 pass	a 2-arm match→SELECT with a performed scrutinee and pure arms stays sound
@@ -173,6 +175,7 @@ pass	a CBOR skip walks past a whole nested item to the next offset
 pass	a CONSTANT recursive sum compares equal to a differently-built RUNTIME one
 pass	a Char-payload sum value escapes across the boundary in its canonical form
 pass	a DOUBLY-nested Tuple ARG (three levels deep) crosses the direct-call boundary
+pass	a DOUBLY-nested projected list, consumed then read, is unchanged (child retain through a proj chain)
 pass	a FLAT runtime string nested in a tuple is unaffected (control)
 pass	a FLOAT-field Tuple closure ARG flattens + rebuilds (box-float imported)
 pass	a FLOAT-result effect op threads a float state and its resume folds under a float-dispatched operator
@@ -240,6 +243,7 @@ pass	a Rational-payload sum value escapes across the boundary in its canonical f
 pass	a Result built by an if with the Err branch first type-checks
 pass	a Result carrying a Result is matched by a nested pattern to its inner value
 pass	a Result pipeline short-circuits on the first Err
+pass	a Result-valued `?` under an Option boundary is a type error
 pass	a SOLE RECORD closure ARG crosses the direct-call boundary
 pass	a STRING-result effect op resumes with a string that folds through a concat
 pass	a SUM constructor payload that is a compound built from performs threads and destructures
@@ -273,6 +277,7 @@ pass	a UInt64 closure round-trips through a consumer export
 pass	a UInt64 holds a value above the signed 64-bit maximum
 pass	a `?` on a String operand is a type error
 pass	a `?` on a non-fallible operand is a type error
+pass	a `?` with no fallible enclosing function boundary is rejected
 pass	a bare arithmetic keyword is rejected, not a crash
 pass	a bare binding form with no bindings and no body is rejected, not a crash
 pass	a bare built-in constructor Some is passed as a first-class function
@@ -431,6 +436,7 @@ pass	a closure whose CALL returns an Option crosses as the value form
 pass	a closure whose body applies a nested lambda in place runs through a recursive HOF
 pass	a closure whose body calls a top-level helper function
 pass	a collection-carrying recursion whose base arm does a fallible indexed read compiles
+pass	a comparison's trapping shared bound fires under a trap-free condition
 pass	a comparison-predicate function returns its boolean result
 pass	a compile-time type branch reads a runtime parameter's static type
 pass	a component's manifest is the union of two entrypoints' distinct rows
@@ -570,6 +576,7 @@ pass	a factory RETURNS a closure that captures a let-bound inner closure
 pass	a failing guard falls through to a later arm
 pass	a fallible parser threads a Result((value,cursor),String) through mutual recursion, short-circuiting on Err
 pass	a false variant guard shields its arm's trapping body
+pass	a family quantity displays scaled exactly to its reference (Rational)
 pass	a far-miss segment kind keeps the plain unrecognized message
 pass	a field is projected from a record chosen across a call boundary by a runtime conditional
 pass	a field is projected from a record returned across a call boundary
@@ -640,6 +647,7 @@ pass	a generic unwrap helper consumes a fallible Bytes.at result
 pass	a genuinely-narrow op with a wrapped-down MATCH-operand yields the exact value
 pass	a genuinely-narrow op with a wrapped-down if-operand still traps on overflow
 pass	a genuinely-narrow op with a wrapped-down if-operand yields the exact value when in range
+pass	a guard on a literal-element list pattern reads an enclosing let binding through inlining
 pass	a guard over a variant pattern gates on the payload
 pass	a guard reads a binding from the enclosing scope, not only its pattern's
 pass	a guard sees the names its pattern binds and arms are tried in order
@@ -827,6 +835,7 @@ pass	a map chosen by a runtime if is size-measured with valid wasm
 pass	a map entry with no value expression is rejected, not a crash
 pass	a map grown by a recursive accumulator is looked up by a runtime key
 pass	a map inserted-into in one recursive sub-call is unchanged for a sibling sub-call's read
+pass	a map inserted-into on one path and size-read on another keeps copy-on-write across recursion
 pass	a map literal with keys of two different types is a type error
 pass	a map mixing integer and float values is a type error
 pass	a map operation applies to a map passed as a function parameter
@@ -867,6 +876,8 @@ pass	a match on a record-field-access scrutinee dispatches on the field value
 pass	a match on a runtime integer scrutinee producing a boolean
 pass	a match on a tuple-element-access scrutinee dispatches on the element value
 pass	a match on a value of one sum type rejects a pattern from a different sum type
+pass	a match on an open sum omitting the open-tail arm is rejected
+pass	a match on an open sum with an open-tail arm is exhaustive
 pass	a match on an uninhabited scrutinee is exhaustive with zero arms
 pass	a match on the result of a match threads sum values through nested control flow
 pass	a match over bytes with only a bin arm and no catch-all is non-exhaustive
@@ -1101,6 +1112,7 @@ pass	a plain record compared to a nominal record of the same shape is a type err
 pass	a plural family-unit spelling names the same unit as its singular
 pass	a positional tuple access out of the tuple's static arity is a type error
 pass	a predicate closure returning Bool drives an early-exit recursive HOF
+pass	a prefixed quantity displays scaled to its reference unit (Float)
 pass	a prefixed unit combines with its base by converting to the reference (Float)
 pass	a prelude Option value crosses a module boundary as an export result
 pass	a private module member is still visible to a sibling
@@ -1444,8 +1456,11 @@ pass	a set type whose element position holds a value is rejected
 pass	a set with elements of two different types is a type error
 pass	a shadowed-constructor application types at the binding's return type
 pass	a shared and a differing element hoist across same-length list arms
+pass	a shared list concatenated with itself has twice its length
 pass	a shared trapping operand before the differing one does not preempt a trapping condition
 pass	a shared trapping operand before the differing one does not preempt a trapping condition (compare head)
+pass	a shared trapping operand traps under a trap-free condition
+pass	a shared trapping second operand does not preempt a trapping condition
 pass	a short-circuit connective threads a branch perform to the continuation
 pass	a shorter string that is a prefix of a longer one compares Less
 pass	a signed i8 segment encodes as two's complement
@@ -1470,6 +1485,8 @@ pass	a slice with a negative start yields None
 pass	a sparse three-arm match's terminal pair dispatches branchlessly — the default
 pass	a sparse three-arm match's terminal pair dispatches branchlessly — the middle probe
 pass	a specific constructor export exposes one variant and keeps the rest private
+pass	a spliced boolean drives an evaluated conditional through the lifted leaf
+pass	a spliced string participates in an evaluated equality
 pass	a stateful handler threads its counter across a function boundary
 pass	a straight-line tuple built from callee params is projected in the caller
 pass	a strength-reduced multiply nested as an operand computes in place
@@ -1673,6 +1690,7 @@ pass	an 8-bit-integer closure crosses the host boundary
 pass	an AST from quasiquoting a runtime value equals the same AST built by quote
 pass	an IEC binary prefix converts exactly over Int64
 pass	an IEC binary prefix scales a unit by a power of two
+pass	an IEC-prefixed quantity displays scaled to its reference over Int64
 pass	an Int argument to a Bool-annotated parameter is rejected
 pass	an Int argument to a parameter used as a Bool condition is rejected
 pass	an N suffix lets a huge literal need no annotation
@@ -1762,6 +1780,7 @@ pass	an effect-built heap list bound in a let is USED TWICE and retained across 
 pass	an effectful condition is performed exactly once under the operator hoist
 pass	an effectful condition of a same-constructor if is performed exactly once
 pass	an effectful match scrutinee is performed exactly once across a two-position sink
+pass	an effectful shared operand performs after the condition, exactly once
 pass	an element is projected from a runtime-constructed tuple
 pass	an element is projected from a tuple returned by a function
 pass	an element is projected from a tuple returned by a nullary function
@@ -1846,6 +1865,7 @@ pass	an internally ill-typed unselected match arm body is a type error
 pass	an intra-program handler interposes on a delegated effect, counts it, and forwards to the boundary
 pass	an octal-prefixed token is a malformed literal, not an unbound name
 pass	an offered ordering is total and deterministic
+pass	an open sum's open-tail arm dispatches a variant the specific arms do not name
 pass	an operation on mismatched types is rejected at compile time
 pass	an operation with a RECORD parameter binds the compound and the arm reads its fields
 pass	an operation with a TUPLE parameter binds the compound and the arm projects it
@@ -1899,6 +1919,7 @@ pass	an unsigned runtime value is not accepted by a signed segment of the same w
 pass	an unsigned segment reads the same sign-bit-only byte as 128
 pass	an unsigned-byte entrypoint takes and returns a u8 at the boundary
 pass	an untaken arm's overflowing operand does not trap under the operator hoist
+pass	an unused let binding whose init would divide by zero is elided, so its trap does not occur
 pass	an unused let binding whose init would overflow is elided, so its trap does not occur
 pass	an unused let-init that does not reduce to a value is eliminated, so it does not diverge
 pass	an unusual in-range width is a first-class type
@@ -2024,6 +2045,7 @@ pass	deeply nested pattern matching
 pass	demoting a Float64 to Float32 rounds to the nearest binary32
 pass	difference cardinality with a runtime-element subtrahend
 pass	difference over a runtime-element set removes exactly that element
+pass	differing trapping operands trap by selection only under the arith hoist
 pass	dimensional equality is decided by canonical exponent map, not written form
 pass	disjunction is false exactly when both operands are false
 pass	disjunction shields a trapping right operand when the left is true
@@ -2218,6 +2240,8 @@ pass	merging two empty records is the empty record
 pass	merging two records with disjoint fields unions their fields
 pass	merging with the empty record on the left is the identity
 pass	merging with the empty record on the right is the identity
+pass	mixed bool and int splices evaluate in one template
+pass	mixed comparison operators across if arms keep their own arms
 pass	mixed operators across the if arms keep their own arms
 pass	mixed payload widths across the variant set dispatch and read correctly
 pass	mixed: two closure exports alongside a plain export — driving the plain export
@@ -2407,6 +2431,7 @@ pass	set equality is independent of the order elements are written
 pass	set union is associative on generated inputs (the order merges are grouped does not matter)
 pass	set union is commutative on generated inputs (a grow-only-set CRDT merge converges)
 pass	set union is idempotent on generated inputs (re-delivering a set changes nothing)
+pass	shift-by-zero is a no-op on a runtime operand for both directions
 pass	shrinking reports the minimal failing input
 pass	signed 8-bit addition that overflows its width is rejected at compile time
 pass	size after a runtime-key insert reflects replace-vs-add
@@ -2456,6 +2481,7 @@ pass	textually-identical performs are DISTINCT state-advancing reads, not a comm
 pass	the AST is a sum type deconstructible by pattern matching
 pass	the Bool generator covers both values across seeds (it is not a constant)
 pass	the LEB128 byte composition runs on a runtime operand
+pass	the additive-zero identity preserves a boundary-crossing runtime operand
 pass	the arithmetic operator rejects a float-first mixed operand pair
 pass	the bitwise-AND-with-zero annihilator does not discard a trapping runtime operand
 pass	the boolean less-than operator agrees with compare over Bool
@@ -2542,6 +2568,7 @@ pass	the same program with a different response gives a different deterministic 
 pass	the same-core-shape sibling dispatches ITS body, not the first
 pass	the scalar length of a runtime multi-byte string counts scalars, not bytes
 pass	the second distinct-signature closure export returns its own type
+pass	the selected operand decides a hoisted comparison
 pass	the shrinking search terminates via its fuel bound rather than searching unboundedly
 pass	the slice overflow guard holds on a chained slice-of-a-slice
 pass	the taken arm's checked add still overflows under the operator hoist
@@ -2697,10 +2724,9 @@ todo	`?` on the success variant unwraps the payload (Option, happy path)
 todo	a closure returning Unit is declined — Unit has no machine representation
 todo	a closure-typed closure ARG on the DIRECT-CALL path is declined — host would supply the closure
 todo	a map match over a map literal with a runtime key selects by value, not a const fold
-pass	a match on an open sum omitting the open-tail arm is rejected
-pass	a match on an open sum with an open-tail arm is exhaustive
 todo	a producer capturing a host-supplied COMPOUND parameter is declined — host→guest decode
 todo	an open sum payload that does not match its schema yields a typed failure, not a trap
+pass	an open sum's open-tail arm dispatches a variant the specific arms do not name
 todo	an open sum's payload decodes against a schema to a typed result
 todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional

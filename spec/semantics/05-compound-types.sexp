@@ -1435,6 +1435,31 @@
   (call   main (: 1 Int64)) (output (: 3 Int64))
   (call   main (: 5 Int64)) (output (: 11 Int64)))
 
+(case "a DOUBLY-nested projected list, consumed then read, is unchanged (child retain through a proj chain)"
+  (doc    "The projection-DEPTH companion of the case above: the shared list lives TWO projections deep,
+           `(. (. t 0) 0)`, inside `t : (Tuple (Tuple (List Int64) Int64) Int64)`. The consuming op's operand
+           is a `Proj`-of-`Proj` (an intermediate BORROW `(. t 0)` reads the inner tuple, then `(. … 0)`
+           reads the list). Consumed by `(List.push (. (. t 0) 0) 99)` (len → 4) and read again as
+           `(. (. t 0) 0)` (len → 3) → 4 + 3 = 7. It returned 8: the retain that fixed the single-level case
+           gated on a DIRECT binder operand, so a two-deep chain got no child `dup` and `List.push`
+           FBIP-mutated the innermost list in place. The fix walks the projection CHAIN to its root binder
+           (each link an intermediate borrow that aliases a cell inside `t`) and `dup`s the innermost child
+           at the consuming leaf; only the OUTERMOST projection of the chain dups (no wasted intermediate
+           dup). `build` threads the list so `t` is a genuine runtime value (no fold).")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: acc (Tuple (Tuple (List Int64) Int64) Int64)))
+              (if (< i n)
+                (build (+ i 1) n
+                  (tuple (tuple (List.push (. (. acc 0) 0) i) (. (. acc 0) 1)) (+ (. acc 1) 1)))
+                acc))
+            (def (main (: n Int64))
+              (let ((t (build 0 n (tuple (tuple (list) 0) 0))))
+                (+ (List.len (List.push (. (. t 0) 0) 99)) (List.len (. (. t 0) 0)))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 7 Int64))
+  (call   main (: 1 Int64)) (output (: 3 Int64))
+  (call   main (: 5 Int64)) (output (: 11 Int64)))
+
 (case "a map built at run time escapes to the host as its value form"
   (doc    "A Map built at RUN TIME (an insert-loop, not a constant literal) crosses the host boundary.
            Like a runtime list/set, it escapes via the runtime value-encode walker guided by a
@@ -2910,6 +2935,29 @@
             (def (main) (f (list 7)))
             (export main)))
   (output (: 0 Int64)))
+
+(case "a guard on a literal-element list pattern reads an enclosing let binding through inlining"
+  (doc    "A user guard on a list pattern with a LITERAL leading element (`0`), whose guard cond `(> x lim)`
+           reads an enclosing `let` binding `lim` — checked through the INLINING path (`main` calls `f`, so
+           `f`'s body is β-copied at the call site). The literal element forces the refutable-literal desugar
+           to rewrite the arm into a synth `(guard (list __le0 x .. r) (and (= __le0 0) (> x lim)))`, whose
+           rewritten `(match …)` REPLACES the copied match in the enclosing `let`'s body slot. The copied
+           `lim` must re-resolve against the COPIED `let` — but the copied `let`'s recorded body-occurrence
+           still pointed at the pre-desugar copied match, so the scope walk reached the `let` yet failed its
+           by-identity body check → spurious `CDZ0101 unbound lim`. Fix (three coordinated): the desugar
+           reparents the rewritten match into the original match's slot; `binder_in`'s `let` case accepts a
+           body-POSITION child (not only the recorded body node); and `extend_scope_skip_into_subtree` seeds
+           the rewritten root's skip TO a binding-candidate parent. A PARAM/top-level `lim`, the arm BODY, and
+           a plain binder-head guard all resolved `lim` fine already — only this {literal element × user guard
+           × enclosing let × inlined} combination broke. `f (list 0 7 2)`: head `0` matches, `x`=7 > `lim`=5 →
+           7. (Pre-existing false reject; reproduces at 170bf40a.)")
+  (input  (do
+            (def (f (: xs (List Int64)))
+              (let ((lim 5))
+                (match xs ((guard (list 0 x .. r) (> x lim)) x) (_ -1))))
+            (def (main) (f (list 0 7 2)))
+            (export main)))
+  (output (: 7 Int64)))
 
 (case "a list pattern in a sum-variant payload matches a runtime node by its child count"
   (doc    "THE COMPILER-AST SHAPE: a sum-variant whose payload is a LIST — `(type Node (Lit Int64) (Call
@@ -8303,3 +8351,42 @@
             (export main)))
   (call   main (: 0 Int64))
   (output (: 3 Int64)))
+
+; --- A SHARED map consumed on one recursion path and READ on another keeps copy-on-write (v-runtime) ------
+; The value heap is immutable + Perceus-refcounted: `Map.insert` on a map with rc>1 must COPY-on-write
+; (build a new map) rather than mutate the shared value, so a sibling that still holds the ORIGINAL map
+; observes the unchanged size. This pins that invariant for maps — the shape a miscompile in the
+; shared-heap-consume-then-use family (a binding consumed by an insert on one path + read on another with
+; no dup) would corrupt. `go` inserts into `m` on the recursive path AND reads `Map.size m` (the pre-insert
+; map) on the return path; if the insert mutated the shared `m`, the size reads would over-count. The
+; recursion defeats const-folding (a runtime map threaded through both a consuming insert and a borrowing
+; size). main(n) = sum over k=1..n of k = n(n+1)/2: main(3)=6, main(4)=10, main(0)=0.
+(case "a map inserted-into on one path and size-read on another keeps copy-on-write across recursion"
+  (doc    "`go(m,n) = if n=0 then Map.size m else go(Map.insert m n n, n-1) + Map.size m` threads a runtime
+           map `m` that is CONSUMED by `Map.insert` on the recursive path AND BORROWED by `Map.size m` on the
+           return path. Immutability + Perceus copy-on-write means the `Map.size m` at each level sees the
+           map BEFORE that level's insert (size k-1 at level k), so main(n) sums 1..n. If the insert mutated
+           the shared map in place, the sizes would over-count. main(3)=6, main(4)=10, empty main(0)=0.
+           Guards the shared-heap-consume-then-use invariant for the map/CHAMP path.")
+  (input  (do
+            (def (go (: m (Map Int64 Int64)) (: n Int64))
+              (if (= n 0) (Map.size m)
+                  (+ (go (Map.insert m n n) (- n 1)) (Map.size m))))
+            (def (main (: n Int64)) (go Map.empty n))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 6 Int64))
+  (call   main (: 4 Int64)) (output (: 10 Int64))
+  (call   main (: 0 Int64)) (output (: 0 Int64)))
+
+(case "a shared list concatenated with itself has twice its length"
+  (doc    "`(List.concat xs xs)` over a runtime-built `xs` (rc≥2 — the binding is used as BOTH operands)
+           yields a list of twice the length: the shared list is read twice without one consumption
+           corrupting the other. main(5) → concat of a 5-element list with itself = 10. Guards that a
+           self-`List.concat` (both operands the same shared binding) dups correctly rather than
+           consuming the shared value once and reading freed memory for the second operand.")
+  (input  (do
+            (def (mk (: n Int64)) (if (= n 0) (list) (List.push (mk (- n 1)) n)))
+            (def (main (: n Int64)) (let ((xs (mk n))) (List.len (List.concat xs xs))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 10 Int64))
+  (call   main (: 0 Int64)) (output (: 0 Int64)))

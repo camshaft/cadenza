@@ -6,13 +6,14 @@
 ; synthesized `Mir::Block` + `Mir::Break`), so it adds no user-visible effect and nothing to the effect
 ; row. See README.md for the case vocabulary.
 ;
-; STAGE STATUS. T0a (landed): `(try e)` is carried first-class through resolve/infer — its type is the
-; operand's success payload, an operand that is not a fallible sum is CDZ0203, and a wrong-arity `(try …)`
-; is CDZ0201. The BOUNDARY check (a `?` with no enclosing `Result`/`Option` function → CDZ0230) and the
-; function-boundary DESUGAR (a value executing through wasmtime, both the happy and the short-circuit
-; path) are the next slices; until the desugar lands a well-formed `(try e)` DECLINES (scored *todo* by
-; the gate, never a miscompile). The executing cases below are the ones that will matter most once T1
-; lands — a value must come out the far side, since `?` is control.
+; STAGE STATUS. T0a+T0b (landed): `(try e)` is carried first-class through resolve/infer — its type is
+; the operand's success payload; an operand that is not a fallible sum is CDZ0203; a wrong-arity `(try …)`
+; is CDZ0201; a `?` with no enclosing `Result`/`Option` function boundary is CDZ0230; and a `Result`-`?`
+; under an `Option` boundary (or vice-versa) is CDZ0203 (no coercion). The function-boundary DESUGAR (a
+; value executing through wasmtime, both the happy and the short-circuit path) is the next slice; until it
+; lands a well-formed `(try e)` DECLINES (scored *todo* by the gate, never a miscompile). The executing
+; cases below are the ones that matter most once T1 lands — a value must come out the far side, since `?`
+; is control.
 
 ; ── T0a: rejections (these PASS today) ──────────────────────────────────────────────────────────────
 
@@ -44,6 +45,25 @@
            with `quote`. Pins the upper arity bound of `resolve_try`.")
   (input  (do (def (main) (try (Ok 1) (Ok 2))) (export main)))
   (error  CDZ0201))
+
+(case "a `?` with no fallible enclosing function boundary is rejected"
+  (doc    "`(def (main) (try (Ok 1)))` — main's body IS the `?`, whose type is the UNWRAPPED `Int64`, so
+           main returns `Int64`, neither `Result` nor `Option`. A `?` short-circuits the enclosing
+           function's fallible result type (DESIGN-try-operator-rcdzc.md §4/§6); with no fallible boundary
+           to exit to, the program is rejected, CDZ0230. Pins the boundary half of the `?` rule — distinct
+           from CDZ0203 (a `?` on a non-fallible OPERAND); here the operand IS fallible but the BOUNDARY
+           is not.")
+  (input  (do (def (main) (try (Ok 1))) (export main)))
+  (error  CDZ0230))
+
+(case "a Result-valued `?` under an Option boundary is a type error"
+  (doc    "`(def (main) (let ((x (try (Ok 1)))) (Some x)))` — the body's tail `(Some x)` makes main's
+           result type `Option`, but the `?`'s operand `(Ok 1)` is a `Result`. A `Result`-`?` cannot
+           short-circuit an `Option` boundary — the kinds disagree and Cadenza has NO auto-conversion
+           (§5.1, against Rust's `?`-via-`From`), so it is CDZ0203. The explicit idiom is
+           `Option.ok-or` / `Result.map-err` to reconcile the types first.")
+  (input  (do (def (main) (let ((x (try (Ok 1)))) (Some x))) (export main)))
+  (error  CDZ0203))
 
 ; ── T1 target: executing cases (DECLINE → *todo* until the boundary desugar lands) ──────────────────
 ; These are the operator's actual ask — the nested-`match`-collapse shapes, run through wasmtime. They

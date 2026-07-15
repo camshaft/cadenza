@@ -22297,6 +22297,42 @@ mod match_engine {
                 .as_deref(),
             Some("CDZ0304"),
         );
+        // The message is ACTIONABLE, not the terse "binary value does not fit segment": it names the
+        // offending VALUE, the segment's width TYPE, and the VALID RANGE (mirroring the annotation-position
+        // CDZ0302), so a bin over-range reads as clearly as a `(: 300 UInt8)` annotation over-range.
+        let d = reject_full("(module m (def (main) (Bytes.len (bin (u8 300)))) (export main))")
+            .expect("`(u8 300)` over-range rejects");
+        assert!(
+            d.message.contains("300")
+                && d.message.contains("UInt8")
+                && d.message.contains("0..=255"),
+            "the bin over-range message names the value, width type, and range: {}",
+            d.message
+        );
+        // A NON-ALIASED bit-field width spells its type as the `(UInt k)` ctor form (a bare `UInt4` is
+        // unbound), and names the k-bit range — `(bits 20 4)` → "the value 20 does not fit … 4-bit
+        // (UInt 4) field (the valid range is 0..=15)".
+        let bits = reject_full(
+            "(module m (def (main) (Bytes.len (bin (bits 20 4) (bits 0 4)))) (export main))",
+        )
+        .expect("`(bits 20 4)` over-range rejects");
+        assert!(
+            bits.message.contains("20")
+                && bits.message.contains("(UInt 4)")
+                && bits.message.contains("0..=15"),
+            "a non-aliased bit-field over-range names the `(UInt k)` type + range: {}",
+            bits.message
+        );
+        // A SIGNED segment names the signed type + its (negative-inclusive) range — `(i8 200)` overflows
+        // Int8's -128..=127.
+        let signed =
+            reject_full("(module m (def (main) (Bytes.len (bin (i8 200)))) (export main))")
+                .expect("`(i8 200)` over-range rejects");
+        assert!(
+            signed.message.contains("Int8") && signed.message.contains("-128..=127"),
+            "a signed segment names the signed type + range: {}",
+            signed.message
+        );
     }
 
     #[test]
@@ -23423,6 +23459,34 @@ mod match_engine {
     }
 
     #[test]
+    fn a_doubly_nested_projected_list_consumed_then_reread_is_retained() {
+        // The projection-DEPTH face: the shared list lives TWO projections deep, `(. (. t 0) 0)`, inside a
+        // `(Tuple (Tuple (List Int64) Int64) Int64)`. The consuming op's operand is a Proj-of-Proj (an
+        // intermediate borrow reads the inner tuple, then the list). The single-level retain gated on a
+        // DIRECT binder operand, so this got no child dup and `List.push` FBIP-mutated the innermost list
+        // (→ 8, want 7). The fix walks the projection chain to the root binder and dups the innermost child
+        // at the consuming leaf (only the OUTERMOST projection dups — no wasted intermediate dup). `build 0
+        // 3` → `[0 1 2]`; consumed len 4 + re-read original len 3 = 7.
+        let Some(out) = run_on_heap(
+            "(module m \
+               (def (build i n acc) (if (< i n) \
+                   (build (+ i 1) n (tuple (tuple ((. List push) (. (. acc 0) 0) i) (. (. acc 0) 1)) \
+                                           (+ (. acc 1) 1))) acc)) \
+               (def (main) (let ((t (build 0 3 (tuple (tuple (list) 0) 0)))) \
+                             (+ ((. List len) ((. List push) (. (. t 0) 0) 99)) \
+                                ((. List len) (. (. t 0) 0))))) \
+               (export main))",
+        ) else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
+            return;
+        };
+        assert_eq!(
+            out, "7",
+            "a doubly-nested projected list must retain its innermost child through the proj chain"
+        );
+    }
+
+    #[test]
     fn a_list_concat_joins_and_its_runtime_length_sums() {
         // `List.concat(a, b)` joins two lists into a new persistent one (`vec-concat`, consuming both). To
         // exercise the RUNTIME concat (a constant-list concat now folds), a RUNTIME-built list (`build 0 2`
@@ -24539,6 +24603,50 @@ mod match_engine {
             .unwrap(),
             "0",
             "a guarded list arm whose guard fails falls through to the catch-all (body binder did not break the guard)"
+        );
+    }
+
+    #[test]
+    fn a_guard_on_a_literal_list_element_reads_an_enclosing_let_through_inlining() {
+        // REGRESSION (issue adv-literal-list-pattern-guard-cant-see-enclosing-let): a user guard on a list
+        // pattern with a LITERAL leading element, whose guard cond reads an ENCLOSING `let` binding, false-
+        // rejected `CDZ0101 unbound` — but ONLY when the def is INLINED (β-copied at a call site). Root: the
+        // refutable-literal desugar rewrites the arm into a synth `(guard (list __le0 x ..) (and (= __le0 0)
+        // (> x lim)))` and its rewritten `(match …)` REPLACES the copied match in the enclosing `let`'s body
+        // slot; the copied `let`'s recorded body-occurrence still pointed at the PRE-desugar copied match, so
+        // the copied `lim` reached the `let` in the scope walk but failed its by-identity body check. Fix
+        // (3 coordinated): the desugar reparents the rewritten match into the original match's slot;
+        // `binder_in`'s `let` case accepts a body-POSITION child (not only the recorded body node); and
+        // `extend_scope_skip_into_subtree` seeds the rewritten root's skip TO a binding-candidate parent.
+        // `main` CALLS `f` (forcing the inline copy), so this exercises the inlined path (a direct export
+        // resolved the original before the copy and never hit it). `f (list 0 7 2)`: head `0` matches,
+        // `x`=7 > `lim`=5 → 7. And a guard-FAIL falls through to the catch-all (-1).
+        let Some(v) = run_heap_value(
+            "(module m \
+               (def (f (: xs (List Int64))) \
+                 (let ((lim 5)) (match xs ((guard (list 0 x .. r) (> x lim)) x) (_ -1)))) \
+               (def (main) (f (list 0 7 2))) (export main))",
+            vec![],
+        ) else {
+            eprintln!("runtime wasm not found; skipping literal-list-guard-enclosing-let run");
+            return;
+        };
+        assert_eq!(
+            v, "7",
+            "guard cond reads the enclosing let `lim` through inlining (0 matches, 7 > 5)"
+        );
+        // Guard FAILS (x=3 not > 5) → falls through to the catch-all -1. `9` as `x` (>5) still matches → 9.
+        assert_eq!(
+            run_heap_value(
+                "(module m \
+                   (def (f (: xs (List Int64))) \
+                     (let ((lim 5)) (match xs ((guard (list 0 x .. r) (> x lim)) x) (_ -1)))) \
+                   (def (main) (f (list 0 3 2))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "-1",
+            "guard fails (3 not > 5) → catch-all -1, enclosing-let binding still resolved"
         );
     }
 
@@ -31143,6 +31251,30 @@ mod match_engine {
                 "main"
             ),
             2005
+        );
+    }
+
+    #[test]
+    fn a_prefixed_quantity_displays_scaled_to_its_reference_unit() {
+        // Calc relabel bug fix (mlrepro-calc-bare-quantity-relabels-to-base-without-scaling): a quantity
+        // in a NON-REFERENCE unit displays at its dimension's reference with the magnitude SCALED, so the
+        // number and unit AGREE. `5 kilometer` renders `(Qty.of 5000.0 (Unit.base #"meter"))`, NOT the old
+        // buggy `5.0 meter` (base name, scale dropped). A DISPLAY concern only — construction is untouched
+        // (no eager truncation), and `Unit.in` still converts exactly by the direct ratio. Reuses the same
+        // normalize-to-reference the mixed-unit combine runs (one source of truth). Rendered value-form is
+        // asserted through the host boundary escape.
+        let src = "(do (def (main) ((. Qty of) 5.0 ((. Unit prefix) kilo ((. Unit base) #\"meter\")))) \
+                   (export main))";
+        let Some(rendered) = run_heap_value_escape(src) else {
+            return; // runtime wasm absent (no store built) — skip, the corpus gate covers it e2e
+        };
+        assert!(
+            rendered.contains("5000") && rendered.contains("meter"),
+            "5 kilometer must display 5000 meter (scaled to reference), got: {rendered}"
+        );
+        assert!(
+            !rendered.contains("5.0 ((. Unit base"),
+            "must NOT show the unscaled 5.0 (the relabel bug), got: {rendered}"
         );
     }
 
@@ -49477,15 +49609,51 @@ mod stage1 {
     }
 
     #[test]
-    fn a_well_formed_try_declines_until_the_boundary_desugar_lands() {
-        // T0a carries `(try e)` through resolve/infer but does NOT lower it yet (the boundary `Mir::Block`
-        // + `Mir::Break` desugar is T1). A well-formed `(try (Ok 1))` therefore DECLINES — a Todo, never a
-        // miscompile (self-hosting-and-bootstrap.md §An Unsupported Construct Is Declined). This test
-        // FLIPS to an executing-value test when T1 lands.
-        let msg = expect_decline("(try (Ok 1))");
+    fn a_try_with_no_fallible_enclosing_function_is_cdz0230() {
+        // T0b boundary check (DESIGN-try-operator-rcdzc.md §6): a `?` short-circuits the enclosing
+        // function's fallible result type. `(def (main) (try (Ok 1)))` — main's body IS the `?`, whose
+        // type is the unwrapped `Int64`, so main returns `Int64`, NOT a `Result`/`Option`. There is no
+        // boundary the `?` can exit to → CDZ0230.
+        let d = expect_error("(try (Ok 1))");
+        assert_eq!(
+            d.code.as_deref(),
+            Some("CDZ0230"),
+            "a `?` in a non-fallible function is CDZ0230, got: {}",
+            d.message
+        );
+        assert!(
+            d.message.contains("boundary"),
+            "message names the missing fallible boundary: {}",
+            d.message
+        );
+    }
+
+    #[test]
+    fn a_result_try_under_an_option_boundary_is_a_type_mismatch() {
+        // A `Result`-valued `?` under an `Option` boundary cannot short-circuit — the kinds disagree, and
+        // there is no coercion (§5). The body's tail `(Some …)` makes the enclosing function's result
+        // `Option`, but the `?`'s operand `(Ok 1)` is a `Result` → CDZ0203.
+        let src = "(module m (def (main) (let ((x (try (Ok 1)))) (Some x))) (export main))";
+        let d = compile_component(&crate::codec::encode(&parse(src))).expect_err("must reject");
+        assert_eq!(
+            d.code.as_deref(),
+            Some("CDZ0203"),
+            "a Result-`?` under an Option boundary is CDZ0203, got: {}",
+            d.message
+        );
+    }
+
+    #[test]
+    fn a_well_formed_try_under_a_matching_boundary_declines_until_t1() {
+        // A `?` whose operand kind MATCHES the enclosing function's fallible result type is well-formed at
+        // the type level (no CDZ0230, no CDZ0203). It does NOT lower yet — the boundary `Mir::Block` +
+        // `Mir::Break` desugar is T1 — so it DECLINES, a Todo (self-hosting-and-bootstrap.md §An
+        // Unsupported Construct Is Declined), never a miscompile. The body's tail `(Some …)` makes the
+        // boundary `Option`, matching the `?`'s Option operand. FLIPS to an executing-value test in T1.
+        let msg = expect_decline("(let ((x (try (Int64.checked-add 20 22)))) (Some x))");
         assert!(
             msg.contains("try") || msg.contains('?') || msg.contains("boundary"),
-            "a well-formed `(try …)` declines pending the desugar: {msg}"
+            "a well-formed `(try …)` under a matching boundary declines pending the desugar: {msg}"
         );
     }
 }
@@ -62946,6 +63114,52 @@ mod cross_component_oracle {
                 && msg.contains("2 argument(s)")
                 && msg.contains("1 argument(s)"),
             "the compose error must name the op + both arities, not be an opaque trap: {msg}"
+        );
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // PL6 — the TYPE face of the peer signature check: a peer op whose arity MATCHES but whose param/
+    // result TYPE disagrees with the consumer's binding (consumer `neg : Int64->Int64`, peer `neg :
+    // Float64->Float64`) is rejected at compose time naming the position + both types, not left to trap
+    // opaquely. Extends PL5 (arity) to the subtler same-arity/different-type mismatch.
+    // ------------------------------------------------------------------------------------------------
+    #[test]
+    fn a_peer_op_type_mismatch_is_rejected_at_compose_time() {
+        use crate::testkit::parse;
+        // PROVIDER: `neg` over Float64 (its boundary type is f64).
+        let provider = compile_provider(
+            "(do (def (neg (: x Float64)) (+ x x)) (export neg))",
+            "cadenza:m/api",
+        );
+        // CONSUMER: binds `M.neg` over Int64 (boundary s64) — SAME arity (1→1), DIFFERENT type.
+        let src = "(do \
+            (effect M (op neg (-> Int64 Int64))) \
+            (bind M \"cadenza:m/api\") \
+            (def (main (: x Int64)) (host (M) (M.neg x))) \
+            (export main))";
+        let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .unwrap_or_else(|d| panic!("consumer compiles: {} [{:?}]", d.message, d.code));
+        let peers = vec![cdz_run::Peer {
+            bytes: provider,
+            interface: "cadenza:m/api".to_string(),
+        }];
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec!["5".to_string()],
+            runtime: super::find_runtime_wasm(),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        let err = cdz_run::run_with_peers(&consumer, &peers, &opts)
+            .expect_err("a type-mismatched peer (arity ok) must be REJECTED, not run to a trap");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("type mismatch")
+                && msg.contains("neg")
+                && msg.contains("argument 0")
+                && msg.contains("S64")
+                && msg.contains("Float64"),
+            "the compose error must name the op, position, and both types: {msg}"
         );
     }
 

@@ -20,7 +20,9 @@
 ///     is empty or already ends in `-`), then it is lowercased (`fA` → `f-a`, `myFunc` → `my-func`,
 ///     `Foo` → `foo`);
 ///   * an UNDERSCORE `_` becomes a `-` word separator (`my_func` → `my-func`);
-///   * a `-`, a lowercase letter, or a digit is kept as-is;
+///   * a `-`, a lowercase letter, or a digit is kept as-is — EXCEPT a digit immediately after a word
+///     separator, which cannot START a kebab word (`[a-z][a-z0-9]*`): the pending `-` is dropped so the
+///     digit joins the PRECEDING word (`a_0` → `a0`, `my_2nd` → `my2nd`), never the invalid `a-0`;
 ///   * runs of separators are collapsed and leading/trailing separators trimmed, so the result is a
 ///     well-formed kebab name (no `--`, no edge `-`).
 ///
@@ -40,8 +42,18 @@ pub fn kebab_extern_name(name: &str) -> String {
             if !out.is_empty() && !out.ends_with('-') {
                 out.push('-');
             }
+        } else if c.is_ascii_digit() {
+            // A digit CANNOT start a kebab word (a word is `[a-z][a-z0-9]*`), so a digit landing right
+            // after a word separator (`a_0`, `my_2nd`) must NOT begin a new word — drop the pending `-`
+            // so the digit joins the PRECEDING word (`a_0` → `a0`). Emitting `a-0` produced an INVALID
+            // extern name that `wasmtime` rejects at load with no diagnostic (the recurring
+            // invalid-component miscompile). A digit after a letter is already fine (`a1`, `foo-bar2`).
+            if out.ends_with('-') {
+                out.pop();
+            }
+            out.push(c);
         } else {
-            // A lowercase letter or a digit — kept verbatim.
+            // A lowercase letter — kept verbatim (a valid word-start char after a separator).
             out.push(c);
         }
     }
@@ -167,10 +179,81 @@ mod tests {
     }
 
     #[test]
+    fn kebab_extern_name_always_yields_a_valid_kebab_word() {
+        // The LOAD-BEARING invariant: for ANY letter-led source identifier, `kebab_extern_name` must
+        // produce a string `wasmtime` accepts as a kebab extern-name word (`is_kebab_word`), and be
+        // idempotent (normalizing the result is a fixed point). A violation is the recurring
+        // invalid-component miscompile — a name emitted verbatim that fails to load with no diagnostic
+        // (see the module header). This sweeps every letter-led identifier over a stress alphabet
+        // (mixed case, digits, `_`, `-`) up to length 4 — the shapes source names actually take — so a
+        // regression that lets some identifier normalize to a non-kebab word (a `--`, an edge `-`, a
+        // stray char) is caught. Digit-led tokens are numeric literals (rejected earlier), so a source
+        // identifier always starts with a letter; the sweep starts each name with a letter accordingly.
+        let alphabet = ['a', 'B', 'z', 'Q', '0', '9', '_', '-'];
+        let first = ['a', 'Z', 'm', 'A']; // a source identifier is letter-led
+        let mut count = 0usize;
+        for &f in &first {
+            // lengths 1..=4: the leading letter plus 0..=3 alphabet chars, enumerated exhaustively.
+            for len in 0..=3usize {
+                let combos = alphabet.len().pow(len as u32);
+                for mut n in 0..combos {
+                    let mut name = String::new();
+                    name.push(f);
+                    for _ in 0..len {
+                        name.push(alphabet[n % alphabet.len()]);
+                        n /= alphabet.len();
+                    }
+                    let k = kebab_extern_name(&name);
+                    // The result is a valid kebab word (or empty — impossible for a letter-led name, but
+                    // an empty string is trivially not emitted as an extern name).
+                    assert!(
+                        !k.is_empty() && is_kebab_word(&k),
+                        "{name:?} normalized to {k:?}, which is NOT a valid kebab extern-name word"
+                    );
+                    // Idempotent: the normalized form is a fixed point (so a re-normalization anywhere
+                    // downstream cannot drift it).
+                    assert_eq!(
+                        kebab_extern_name(&k),
+                        k,
+                        "normalization not idempotent for {name:?}"
+                    );
+                    count += 1;
+                }
+            }
+        }
+        assert!(count > 2_000, "swept a meaningful space, got {count}");
+    }
+
+    #[test]
     fn separators_are_collapsed_and_trimmed() {
         assert_eq!(kebab_extern_name("a__b"), "a-b");
         assert_eq!(kebab_extern_name("a-_b"), "a-b");
         assert_eq!(kebab_extern_name("a_"), "a");
+    }
+
+    #[test]
+    fn a_digit_after_a_separator_joins_the_previous_word_not_a_new_one() {
+        // Regression: a digit cannot START a kebab word, so a digit right after a word separator
+        // (`_`/`-`/an uppercase boundary) must join the PRECEDING word, not begin a new (invalid) one.
+        // The old rule emitted `a-0` / `my-2nd` — extern names `wasmtime` REJECTS at load with no
+        // compiler diagnostic (the recurring invalid-component miscompile). Found by the property sweep.
+        assert_eq!(kebab_extern_name("a_0"), "a0");
+        assert_eq!(kebab_extern_name("my_2nd"), "my2nd");
+        assert_eq!(kebab_extern_name("x_1y"), "x1y");
+        assert_eq!(kebab_extern_name("a-0"), "a0");
+        // An uppercase boundary immediately before a digit likewise joins (the `-` from the boundary is
+        // dropped): `A0` → `a0` (the `A` starts the word, `0` extends it — no separator between them).
+        assert_eq!(kebab_extern_name("A0"), "a0");
+        // A digit after a LETTER is unaffected — it extends the current word normally.
+        assert_eq!(kebab_extern_name("foo2"), "foo2");
+        assert_eq!(kebab_extern_name("fooBar2"), "foo-bar2");
+        // Every result is a valid kebab word.
+        for n in ["a_0", "my_2nd", "x_1y", "a-0", "A0", "foo2", "fooBar2"] {
+            assert!(
+                is_kebab_word(&kebab_extern_name(n)),
+                "{n} → not a kebab word"
+            );
+        }
     }
 
     #[test]
