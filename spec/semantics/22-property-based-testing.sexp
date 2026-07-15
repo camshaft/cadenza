@@ -257,3 +257,85 @@
                     (= (Set.of (list a)) (Set.of (list b))))))
               (export main)))
   (call   main (: 5 Int64)) (output (: false Bool)))
+
+; --- §Refinements Constrain Generation, by REJECTION SAMPLING ---------------------------------------
+; The masked-generator case above constrains generation by CONSTRUCTION (a bitmask can only produce an
+; in-range value). The general way a harness makes "the generator produces only values satisfying the
+; refinement" hold for a predicate a mask cannot express is REJECTION SAMPLING: draw from the seed
+; stream, keep the draw if it satisfies the refinement, otherwise ADVANCE the seed and draw again —
+; bounded by fuel so the search is TOTAL (the same fuel discipline the shrinking search uses). These pin
+; that a rejection-sampled draw satisfies its refinement, and that the loop terminates on fuel
+; exhaustion rather than searching unboundedly (a refinement no draw in range satisfies must not hang).
+
+(case "rejection sampling draws until the refinement holds — an only-even generator produces an even value"
+  (doc    "Witnesses §Refinements Constrain Generation for a predicate a bitmask cannot directly impose:
+           `draw-even` advances the seed until an EVEN value appears, then returns it. The result's low
+           bit is 0 for any seed — `(& (draw-even seed 50) 1)` = 0 — so the generator produces only values
+           satisfying the `even` refinement. Fuel-bounded (50 draws) so the loop is total. Runs at the
+           boundary (the seed is a parameter), so the search executes rather than folding.")
+  (input  (do (def (next (: s Int64)) (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
+              (def (draw-even (: s Int64) (: fuel Int64))
+                (let ((v (next s)))
+                  (if (= (& v 1) 0) v (if (= fuel 0) v (draw-even v (- fuel 1))))))
+              (def (main (: seed Int64)) (& (draw-even seed 50) 1))
+              (export main)))
+  (call   main (: 12345 Int64)) (output (: 0 Int64))
+  (call   main (: 999 Int64)) (output (: 0 Int64)))
+
+(case "rejection sampling into a narrow range refinement produces only in-range values"
+  (doc    "Rejection into a range the mask alone cannot give: mask to `0..16` then REJECT anything `>= 10`,
+           re-drawing until the value lands in `0..10`. The returned value satisfies `0 <= v < 10` for any
+           seed — `(if (>= v 0) (< v 10) false)` = true. This is the harness-side realization of
+           §Refinements Constrain Generation for an arbitrary decidable refinement, fuel-bounded (100
+           draws).")
+  (input  (do (def (next (: s Int64)) (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
+              (def (draw (: s Int64) (: fuel Int64))
+                (let ((v (& (next s) 15)))
+                  (if (< v 10) v (if (= fuel 0) 0 (draw (next s) (- fuel 1))))))
+              (def (main (: seed Int64)) (let ((v (draw seed 100))) (if (>= v 0) (< v 10) false)))
+              (export main)))
+  (call   main (: 12345 Int64)) (output (: true Bool))
+  (call   main (: 42 Int64)) (output (: true Bool))
+  (call   main (: 7 Int64)) (output (: true Bool)))
+
+(case "rejection sampling terminates on fuel exhaustion when the refinement is unsatisfiable"
+  (doc    "The termination guarantee: a refinement NO draw can satisfy (`v < 0` for a non-negative masked
+           draw) must not hang. The fuel bound fires and the search returns its fallback (-1) after 5
+           draws rather than looping forever — the total-search discipline §Shrinking …MUST terminate
+           applies equally to a rejection-sampling generator. Pins that a mis-stated refinement fails
+           closed (bounded) rather than diverging.")
+  (input  (do (def (next (: s Int64)) (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
+              (def (draw (: s Int64) (: fuel Int64))
+                (let ((v (& (next s) 15)))
+                  (if (< v 0) v (if (= fuel 0) -1 (draw (next s) (- fuel 1))))))
+              (def (main (: seed Int64)) (draw seed 5))
+              (export main)))
+  (call   main (: 12345 Int64)) (output (: -1 Int64)))
+
+; --- A Bool generator (the enum-shaped generator) ---------------------------------------------------
+; Generation is not only over integers: a property over a Bool (or a small enum) needs a generator for
+; that type. The seed's low bit is a Bool generator — `gen-bool s = (next s & 1) = 0`. These pin it is
+; reproducible (same seed → same Bool, §Generation Is Seeded And Reproducible) and covers both values
+; across seeds (not a constant), the two properties a usable generator for a finite type must have.
+
+(case "a Bool generator derived from the seed is reproducible (same seed, same Bool)"
+  (doc    "Witnesses §Generation Is Seeded And Reproducible for a Bool-typed generator: `gen-bool` reads
+           the low bit of the LCG output, so `(= (gen-bool seed) (gen-bool seed))` = true — the generated
+           Bool is a deterministic function of the seed, exactly as the integer generator is. This is the
+           generator a property quantified over a Bool draws from.")
+  (input  (do (def (next (: s Int64)) (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
+              (def (gen-bool (: s Int64)) (= (& (next s) 1) 0))
+              (def (main (: seed Int64)) (= (gen-bool seed) (gen-bool seed)))
+              (export main)))
+  (call   main (: 12345 Int64)) (output (: true Bool)))
+
+(case "the Bool generator covers both values across seeds (it is not a constant)"
+  (doc    "The coverage counterpart: two seeds whose LCG low bits differ generate DIFFERENT Bools, so
+           `(= (gen-bool s1) (gen-bool s2))` = false — the generator explores both `true` and `false`
+           rather than pinning one. A degenerate Bool generator that ignored its seed would make this
+           true and never test the `false` branch of a property; this case pins that it does not.")
+  (input  (do (def (next (: s Int64)) (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
+              (def (gen-bool (: s Int64)) (= (& (next s) 1) 0))
+              (def (main (: s1 Int64) (: s2 Int64)) (= (gen-bool s1) (gen-bool s2)))
+              (export main)))
+  (call   main (: 1 Int64) (: 2 Int64)) (output (: false Bool)))

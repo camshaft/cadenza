@@ -146,6 +146,7 @@ pass	a BigInt is usable as a map key, matched by its arbitrary-precision value
 pass	a BigInt is usable as a set element, deduplicated by its arbitrary-precision value
 pass	a BigInt operation does not silently promote a fixed-width operand
 pass	a Bool argument to a parameter used in integer addition is rejected
+pass	a Bool generator derived from the seed is reproducible (same seed, same Bool)
 pass	a Bool match with its arms in either order is exhaustive
 pass	a Bool match with only the true arm is non-exhaustive
 pass	a Bytes-returning closure alongside a plain export — the closure runs
@@ -2283,6 +2284,9 @@ pass	recursive fibonacci over a RUNTIME argument computes the predecessors corre
 pass	recursive fibonacci with literal match base cases
 pass	redeclaring a built-in unit with its own conversion is admissible
 pass	redeclaring a user-declared unit with the same conversion is admissible
+pass	rejection sampling draws until the refinement holds — an only-even generator produces an even value
+pass	rejection sampling into a narrow range refinement produces only in-range values
+pass	rejection sampling terminates on fuel exhaustion when the refinement is unsatisfiable
 pass	removing a key drops its association and the size
 pass	removing a runtime element drops it or is a no-op if absent
 pass	removing a runtime element lowers the cardinality only when present
@@ -2400,6 +2404,7 @@ pass	symbol identity follows String normalization
 pass	symbols interned from different strings are unequal
 pass	textually-identical performs are DISTINCT state-advancing reads, not a common subexpression
 pass	the AST is a sum type deconstructible by pattern matching
+pass	the Bool generator covers both values across seeds (it is not a constant)
 pass	the LEB128 byte composition runs on a runtime operand
 pass	the arithmetic operator rejects a float-first mixed operand pair
 pass	the bitwise-AND-with-zero annihilator does not discard a trapping runtime operand
