@@ -155,6 +155,17 @@ enum Cmd {
         #[arg(long)]
         save: bool,
     },
+    /// Citation-coverage regression gate (wired into `check`): run `duvet report`, count the `//=` /
+    /// `//#` citation annotations, and fail if the count drops below the committed floor in
+    /// `.duvet/coverage-floor.json` — a deleted/stranded citation turns the gate red. Gates on a
+    /// machine-STABLE count, NOT the churny (gitignored) `.duvet/snapshot.txt`. Fail-soft: SKIPS (does
+    /// not fail) when `duvet` isn't installed, so it never reddens `check` on a machine lacking the tool.
+    DuvetCheck {
+        /// Record the current counts as the new floor (what `v-duvet-coverage` runs after adding
+        /// citations), then exit. Without it, enforce the committed floor.
+        #[arg(long)]
+        save: bool,
+    },
     /// Run the cdz-runtime test suite under Miri — the UB oracle for the refcount/FBIP heap core.
     /// Miri interprets the tests and flags use-after-free, out-of-bounds, uninitialized reads, and
     /// aliasing violations (Stacked Borrows) that the normal test run cannot see. The runtime's
@@ -226,6 +237,7 @@ fn main() {
         Cmd::Emit { file, from, out } => emit(&paths, profile, &file, &from, out),
         Cmd::Codegen { check } => codegen::run(&paths, check),
         Cmd::Bench { save } => bench::run(&paths, save),
+        Cmd::DuvetCheck { save } => duvet_check::run(&paths, save),
         Cmd::Miri { filter } => miri(&paths, &filter),
         Cmd::GuideWasm { store } => guide_wasm(&paths, store),
         Cmd::Fleet { cmd } => fleet::run(&paths, cmd),
@@ -270,6 +282,7 @@ fn miri(paths: &Paths, filter: &str) {
 
 mod bench;
 mod codegen;
+mod duvet_check;
 mod fleet;
 
 /// The workspace directory anchors, resolved once from this crate's manifest location. xtask lives
@@ -2660,6 +2673,11 @@ fn check(paths: &Paths, profile: &str) {
         format!("{xtask} --profile {profile} gate")
     };
     log.step_show("gate", &gate_cmd, repo);
+
+    // Citation-coverage regression gate: fail if a `//=` / `//#` duvet citation was deleted/stranded
+    // (live cited < the committed floor). Fail-soft when `duvet` isn't installed, so it never reddens
+    // `check` on a machine lacking the optional tool — a machine with duvet enforces the floor.
+    log.step_show("duvet-check", &format!("{xtask} duvet-check"), repo);
 
     println!("\ncheck: all green ✓  (full log: {})", log.path.display());
 }
