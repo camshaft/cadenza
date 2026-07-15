@@ -138,6 +138,45 @@ export default function Metaprogramming() {
   ((Err _) 0))`}
       />
 
+      <H2>Interpolating a computed subtree</H2>
+      <P>
+        The point of a template is a hole you fill at run time. Here the argument isn't written out — it's
+        a <em>computed</em> value (<C>(* 3 7)</C> = 21) spliced into the tree, which is then evaluated. The
+        built <C>(+ 21 4)</C> runs to <C>25</C>:
+      </P>
+      <Runnable
+        source={`(def (main)
+  (let ((x (* 3 7)))
+    (eval (Ast.List (list (Ast.Name "+") (Ast.Int x) (Ast.Int 4))))))`}
+      />
+      <P>
+        The <C>(Ast.Int x)</C> lifts the runtime value <C>x</C> into a leaf of the tree — this is
+        interpolation: the shape is fixed, one piece comes from a computation. The conventional surface
+        writes exactly this with a quasiquote and an unquote — <C>{"`(+ ,x 4)"}</C> — the comma marking the
+        spot the value <C>x</C> drops into. Template with holes, holes filled by values.
+      </P>
+
+      <H2>Matching a tree by shape</H2>
+      <P>
+        Construction has a dual: taking a tree apart by matching its shape. Because a compound form is an{" "}
+        <C>Ast.List</C>, you match one and reach into its parts — here checking that the head of a quoted
+        form is the operator <C>+</C>:
+      </P>
+      <Runnable
+        source={`(def (main)
+  (match (quote (+ 1 2))
+    ((Ast.List (list (Ast.Name op) .. rest))
+      (if (= op "+") 1 0))
+    (_ 0)))`}
+      />
+      <P>
+        The pattern binds <C>op</C> to the head's name (<C>"+"</C>) and <C>rest</C> to the arguments, so a
+        macro can dispatch on what a form <em>is</em> before rewriting it. The conventional surface offers a
+        quasiquote <em>pattern</em> for the common shapes — <C>{"`(+ ,a ,b)"}</C> as a match arm binds the
+        two operands <C>a</C> and <C>b</C> directly — the mirror image of building with{" "}
+        <C>{"`(+ ,x 4)"}</C>.
+      </P>
+
       <Why tenet="One representation for code, and it's an ordinary value">
         Many languages bolt on a separate macro system — a second little language, with its own rules,
         for programs that write programs. Cadenza doesn't. The AST is a sum type declared like any other,
