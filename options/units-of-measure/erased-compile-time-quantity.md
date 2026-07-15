@@ -126,9 +126,16 @@ like `Int64`→`Float64` promotion:
   auto-conversion applies *within* a dimension, never *across* one. The safety the layer exists for is
   untouched; only the within-dimension unit change becomes automatic.
 
-A program that prefers every conversion visible in the source MAY still write it explicitly with
-`(Unit.in u q)` — convert `q` to unit `u` — which is also how a program pins the result unit when it
-does not want the reference (`(Unit.in (Unit.of #"inch") (+ a b))`).
+A program that wants a conversion visible in the source, or that wants the count in a *specific* unit
+rather than the reference, writes it explicitly with `(Unit.in u q)` (surface `q as u` / `q in u`).
+**`Unit.in` UNWRAPS**: it converts `q`'s magnitude into unit `u`'s scale and yields the **bare
+dimensionless number** counting how many `u` the quantity is — *not* a quantity
+(units-of-measure.md #An Explicit Conversion Unwraps To A Bare Number). `(Unit.in (Unit.of #"inch")
+(+ a b))` is a plain number of inches; `u` must share `q`'s dimension (else `CDZ0501`), but the result
+is an ordinary number of `q`'s underlying numeric type, subject to ordinary numeric rules and no longer
+dimension-checked. This is the operator's chosen model: `as`/`in` is the deliberate **exit** from the
+units world — you asked "how many inches?", you get the number of inches. There is no "convert but stay
+dimensioned" operation; a program that wants to keep working in units never leaves the reference.
 
 ## Constructing and observing a quantity
 

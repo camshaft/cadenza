@@ -540,11 +540,13 @@
 (case "converting a unit to another unit of the same dimension is an exact rational scale"
   (doc    "`(Unit.in (Unit.of #\"meter\") (Qty.of (Rational.of 1 1) (Unit.of #\"inch\")))` converts 1 inch
            to meters by its exact scale 127/5000 — an exact `Rational` conversion, not an approximation
-           (units-of-measure.md #A Unit Carries An Exact Scale To Its Dimension's Reference). The result
-           is `(Qty Rational meter)` = 127/5000 m. Pins that a within-dimension conversion is the exact
-           scale the family declares.")
+           (units-of-measure.md #A Unit Carries An Exact Scale To Its Dimension's Reference). `Unit.in`
+           UNWRAPS: the result is the bare dimensionless number 127/5000 : Rational (the *count* of
+           meters), NOT a `(Qty Rational meter)` — `as`/`in` is the deliberate exit from the units world
+           (DESIGN-quantity-reference-normalized-unwrap.md §1b). Pins that a within-dimension conversion
+           yields the exact scale the family declares, as a plain number.")
   (input  (Unit.in (Unit.of #"meter") (Qty.of (Rational.of 1 1) (Unit.of #"inch"))))
-  (output (: (Qty.of 127/5000 (Unit.base #"meter")) (Qty Rational (Unit.base #"meter")))))
+  (output (: 127/5000 Rational)))
 
 (case "adding two units of one dimension converts to the reference unit exactly"
   (doc    "THE mixing case: `(+ (Qty 1 inch) (Qty 1 mm))` over exact rational magnitudes — both are
@@ -584,25 +586,27 @@
 (case "an SI decimal prefix scales a unit by a power of ten"
   (doc    "`(Unit.in (Unit.of #\"meter\") (Qty.of (Rational.of 3 1) (Unit.prefix kilo (Unit.of #\"meter\"))))`
            converts 3 km to meters: `(Unit.prefix kilo meter)` has scale 1000·1 = 1000, so 3 km = 3000 m.
-           Pins that a prefixed unit is a unit of the same dimension differing by the exact prefix
-           factor.")
+           `Unit.in` UNWRAPS to the bare number 3000/1 : Rational. Pins that a prefixed unit is a unit of
+           the same dimension differing by the exact prefix factor, converted to a plain count.")
   (input  (Unit.in (Unit.of #"meter") (Qty.of (Rational.of 3 1) (Unit.prefix kilo (Unit.of #"meter")))))
-  (output (: (Qty.of 3000/1 (Unit.base #"meter")) (Qty Rational (Unit.base #"meter")))))
+  (output (: 3000/1 Rational)))
 
 (case "a negative-power SI prefix is an exact rational scale"
   (doc    "`(Unit.in (Unit.of #\"second\") (Qty.of (Rational.of 5 1) (Unit.prefix milli (Unit.of #\"second\"))))`
-           converts 5 ms to seconds: `milli` = 10⁻³ = 1/1000, so 5 ms = 5/1000 = 1/200 s. Pins that
-           negative-power prefixes are exact `Rational` scales — the second reason exact rationals are
-           load-bearing for units (a milli/micro/nano factor has no exact float or integer form).")
+           converts 5 ms to seconds: `milli` = 10⁻³ = 1/1000, so 5 ms = 5/1000 = 1/200 s. `Unit.in`
+           UNWRAPS to the bare number 1/200 : Rational. Pins that negative-power prefixes are exact
+           `Rational` scales — the second reason exact rationals are load-bearing for units (a
+           milli/micro/nano factor has no exact float or integer form).")
   (input  (Unit.in (Unit.of #"second") (Qty.of (Rational.of 5 1) (Unit.prefix milli (Unit.of #"second")))))
-  (output (: (Qty.of 1/200 (Unit.base #"second")) (Qty Rational (Unit.base #"second")))))
+  (output (: 1/200 Rational)))
 
 (case "an IEC binary prefix scales a unit by a power of two"
   (doc    "`(Unit.in (Unit.of #\"byte\") (Qty.of (Rational.of 1 1) (Unit.prefix mebi (Unit.of #\"byte\"))))`
-           converts 1 MiB to bytes: `mebi` = 2²⁰ = 1048576, so 1 MiB = 1048576 byte. Pins the binary
-           prefix family (kibi/mebi/gibi) alongside the decimal one — distinct scales for `information`.")
+           converts 1 MiB to bytes: `mebi` = 2²⁰ = 1048576, so 1 MiB = 1048576 byte. `Unit.in` UNWRAPS to
+           the bare number 1048576/1 : Rational. Pins the binary prefix family (kibi/mebi/gibi) alongside
+           the decimal one — distinct scales for `information`.")
   (input  (Unit.in (Unit.of #"byte") (Qty.of (Rational.of 1 1) (Unit.prefix mebi (Unit.of #"byte")))))
-  (output (: (Qty.of 1048576/1 (Unit.base #"byte")) (Qty Rational (Unit.base #"byte")))))
+  (output (: 1048576/1 Rational)))
 
 (case "a decimal kilobyte and a binary kibibyte are distinct units of one dimension"
   (doc    "`(+ (Qty 1 KiB) (Qty 1 kB))` over the `information` dimension: kibibyte = 1024 byte and
@@ -649,7 +653,7 @@
            inexact numeric the seed already has — the scale ratio (1/1000) applies as float arithmetic, so
            the result is 0.005 (a value with no exact float form beyond this rounding, which is precisely
            the precision the spec permits `only where the underlying numeric type is itself inexact`).")
-  (input  (Qty.value (Unit.in (Unit.of #"second") (Qty.of 5.0 (Unit.prefix milli (Unit.of #"second"))))))
+  (input  (Unit.in (Unit.of #"second") (Qty.of 5.0 (Unit.prefix milli (Unit.of #"second")))))
   (output (: 0.005 Float64)))
 
 (case "an IEC binary prefix converts exactly over Int64"
@@ -659,7 +663,7 @@
            integer numeric the seed has — the whole scale is an exact integer multiply, so no precision is
            lost. Pairs with the decimal-prefix Float case to cover both prefix systems over concrete
            numerics via explicit `Unit.in`.")
-  (input  (Qty.value (Unit.in (Unit.of #"byte") (Qty.of 1 (Unit.prefix mebi (Unit.of #"byte"))))))
+  (input  (Unit.in (Unit.of #"byte") (Qty.of 1 (Unit.prefix mebi (Unit.of #"byte")))))
   (output (: 1048576 Int64)))
 
 (case "comparing quantities of one dimension at different scales converts before comparing"
@@ -725,14 +729,14 @@
   (doc    "`(Unit.in meter (Qty.of 3.0 kilometer))` converts 3 km to meters: 3 * 1000 = 3000 m. The
            magnitude is multiplied by the source-to-target scale ratio (km's 1000 over meter's 1) in the
            inner Float64 type; the result is `(Qty Float64 meter)`.")
-  (input  (Qty.value (Unit.in (Unit.of #"meter") (Qty.of 3.0 (Unit.of #"kilometer")))))
+  (input  (Unit.in (Unit.of #"meter") (Qty.of 3.0 (Unit.of #"kilometer"))))
   (output (: 3000.0 Float64)))
 
 (case "Unit.in converts a quantity to a chosen smaller unit exactly (Int)"
   (doc    "`(Unit.in kilometer (Qty.of 2000 meter))` converts 2000 m to kilometers: 2000 / 1000 = 2 km,
            exact integer arithmetic (the ratio divides). Pins that Unit.in over Int64 is exact when the
            conversion is whole; a non-dividing ratio truncates (opting into integer math).")
-  (input  (Qty.value (Unit.in (Unit.of #"kilometer") (Qty.of 2000 (Unit.of #"meter")))))
+  (input  (Unit.in (Unit.of #"kilometer") (Qty.of 2000 (Unit.of #"meter"))))
   (output (: 2 Int64)))
 
 (case "Unit.in to a unit of a different dimension is a compile-time error"
@@ -741,6 +745,27 @@
            one; there is no scale relating a length to a time.")
   (input  (Unit.in (Unit.of #"meter") (Qty.of 3.0 (Unit.of #"second"))))
   (error  CDZ0501))
+
+(case "an unwrapped conversion result is a bare number under ordinary numeric rules"
+  (doc    "`Unit.in` UNWRAPS: its result is a bare dimensionless number, so ordinary numeric arithmetic
+           applies with NO dimension checking (DESIGN-quantity-reference-normalized-unwrap.md §1b —
+           the deliberate exit from the units world). `(+ (Unit.in meter (Qty.of 2000 kilometer)) 5)`
+           converts 2000 km to 2000000 m, unwraps to the bare Int64 2000000, then adds 5 as plain
+           integer arithmetic → 2000005. Pins that after `as`/`in` you hold a number, not a quantity.")
+  (input  (+ (Unit.in (Unit.of #"meter") (Qty.of 2000 (Unit.of #"kilometer"))) 5))
+  (output (: 2000005 Int64)))
+
+(case "an unwrapped length adds to an unwrapped time with no dimension error"
+  (doc    "The unwrap is a REAL exit from dimensional checking: two `Unit.in` results of DIFFERENT
+           dimensions add without CDZ0501, because each is already a bare number (the unit was
+           intentionally dropped by `in`). `(+ (Unit.in meter (Qty.of 3 kilometer)) (Unit.in second
+           (Qty.of 2 minute)))` = 3000 (meters) + 120 (seconds) = 3120 as plain integers — nonsensical
+           dimensionally, but that is the user's choice once they unwrap. Contrast `(+ (Qty 3 km) (Qty 2
+           minute))` which IS CDZ0501. Pins the headline unwrap semantic: `as`/`in` leaves the units
+           world entirely.")
+  (input  (+ (Unit.in (Unit.of #"meter") (Qty.of 3 (Unit.of #"kilometer")))
+             (Unit.in (Unit.of #"second") (Qty.of 2 (Unit.of #"minute")))))
+  (output (: 3120 Int64)))
 
 ; ============================================================================================
 ; RUNTIME mixed-unit conversion — the scale multiply reaches the emitted component only when a magnitude
@@ -766,7 +791,7 @@
            sum.")
   (input  (do
             (def (main (: v Int64))
-              (Qty.value (Unit.in (Unit.of #"meter") (Qty.of v (Unit.of #"kilometer")))))
+              (Unit.in (Unit.of #"meter") (Qty.of v (Unit.of #"kilometer"))))
             (export main)))
   (call   main (: 3 Int64))
   (output (: 3000 Int64)))
@@ -783,7 +808,7 @@
   (doc    "`(Unit.in byte-per-second (Qty.of 1.0 mbps))` converts 1 megabit-per-second to bytes-per-
            second: a megabit is 10^6 bits = 10^6/8 bytes, so 1 mbps = 125000 byte/s. `mbps` is a named
            unit of the DERIVED dimension `information/time`, converting to its reference `byte/second`.")
-  (input  (Qty.value (Unit.in (Unit.of #"byte-per-second") (Qty.of 1.0 (Unit.of #"mbps")))))
+  (input  (Unit.in (Unit.of #"byte-per-second") (Qty.of 1.0 (Unit.of #"mbps"))))
   (output (: 125000.0 Float64)))
 
 (case "a rate derived by division mixes with a named rate unit of the same dimension"
@@ -791,9 +816,9 @@
            a computed rate and an `mbps` quantity combine and convert: (250000 byte / 1 s) + 1 mbps =
            250000 + 125000 = 375000 byte/s. Pins that a NAMED derived-dimension unit and a DERIVED-by-
            arithmetic dimension are one free-abelian-group element, mixing and converting freely.")
-  (input  (Qty.value (Unit.in (Unit.of #"byte-per-second")
+  (input  (Unit.in (Unit.of #"byte-per-second")
                        (+ (/ (Qty.of 250000.0 (Unit.of #"byte")) (Qty.of 1.0 (Unit.of #"second")))
-                          (Qty.of 1.0 (Unit.of #"mbps"))))))
+                          (Qty.of 1.0 (Unit.of #"mbps")))))
   (output (: 375000.0 Float64)))
 
 (case "combining a named rate with a length is a dimensional error"
@@ -819,7 +844,7 @@
            fixes the mechanism, a program supplies its own vocabulary.")
   (input  (do
             (Unit.define #"furlong" (Unit.of #"foot") 660 1)
-            (def (main) (Qty.value (Unit.in (Unit.of #"meter") (Qty.of 1.0 (Unit.of #"furlong")))))
+            (def (main) (Unit.in (Unit.of #"meter") (Qty.of 1.0 (Unit.of #"furlong"))))
             (export main)))
   (output (: 201.168 Float64)))
 
@@ -843,7 +868,7 @@
            agreement.")
   (input  (do
             (Unit.define #"foot" (Unit.of #"meter") 381 1250)
-            (def (main) (Qty.value (Unit.in (Unit.of #"meter") (Qty.of 2.0 (Unit.of #"foot")))))
+            (def (main) (Unit.in (Unit.of #"meter") (Qty.of 2.0 (Unit.of #"foot"))))
             (export main)))
   (output (: 0.6096 Float64)))
 
@@ -855,7 +880,7 @@
            are one conversion, so 2 ft = 0.6096 m as before.")
   (input  (do
             (Unit.define #"foot" (Unit.of #"meter") 762 2500)
-            (def (main) (Qty.value (Unit.in (Unit.of #"meter") (Qty.of 2.0 (Unit.of #"foot")))))
+            (def (main) (Unit.in (Unit.of #"meter") (Qty.of 2.0 (Unit.of #"foot"))))
             (export main)))
   (output (: 0.6096 Float64)))
 
@@ -868,7 +893,7 @@
   (input  (do
             (Unit.define #"span" (Unit.of #"meter") 3 1)
             (Unit.define #"span" (Unit.of #"meter") 3 1)
-            (def (main) (Qty.value (Unit.in (Unit.of #"meter") (Qty.of 2.0 (Unit.of #"span")))))
+            (def (main) (Unit.in (Unit.of #"meter") (Qty.of 2.0 (Unit.of #"span"))))
             (export main)))
   (output (: 6.0 Float64)))
 

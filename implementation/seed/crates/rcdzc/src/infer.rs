@@ -3486,20 +3486,20 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
     {
         return ty;
     }
-    // `Unit.in target q` — explicit conversion. The result is a quantity at the TARGET unit (read from
-    // arg0 by `unit_of`), carrying q's inner numeric type: `(Unit.in meter (Qty.of 3.0 km))` :
-    // `(Qty Float64 meter)`. A dimensional mismatch (target dimension ≠ q's) is reported by
-    // `check_application` (CDZ0501); here we fill the value-column type. If the target unit doesn't
-    // reduce, or q isn't a quantity, fall through (→ Any, faulted elsewhere).
+    // `Unit.in target q` — explicit conversion that UNWRAPS to a bare dimensionless number
+    // (DESIGN-quantity-reference-normalized-unwrap.md §1b): it converts q's magnitude into the target
+    // unit's scale AND strips the quantity wrapper, so `(Unit.in meter (Qty.of 3.0 km))` : `Float64`
+    // (the *number* of meters, 3000.0), NOT `(Qty Float64 meter)`. `as`/`in` is the deliberate EXIT
+    // from the units world — the result is an ordinary number, no longer dimension-checked. The target
+    // is still required to share q's DIMENSION (`check_application`, CDZ0501); here we fill the
+    // value-column type with q's INNER numeric type. If the target unit doesn't reduce, or q isn't a
+    // quantity, fall through (→ Any, faulted elsewhere).
     if crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::UnitIn)
         && args.len() == 2
-        && let (Some(target), Ty::Qty { inner, .. }) =
+        && let (Some(_target), Ty::Qty { inner, .. }) =
             (crate::eval::unit_of(db, args[0]), type_of(db, args[1]))
     {
-        return Ty::Qty {
-            inner,
-            unit: target,
-        };
+        return *inner;
     }
     // A binary OPERATOR applied to QUANTITIES — the dimensional result type (units-of-measure.md §How
     // Arithmetic Composes Dimensions). Only engages when an operand is a `Ty::Qty` (two bare numbers take

@@ -30483,6 +30483,28 @@ mod match_engine {
     }
 
     #[test]
+    fn unit_in_unwraps_to_a_bare_number_usable_in_ordinary_arithmetic() {
+        // Q3 (DESIGN-quantity-reference-normalized-unwrap.md §1b): `Unit.in`/`as` UNWRAPS — its result is
+        // a BARE dimensionless number of the quantity's inner type, NOT a `(Qty T u)`, so it is subject to
+        // ordinary numeric rules and no longer dimension-checked. `(+ (Unit.in meter (Qty.of 2 kilometer))
+        // 5)` converts 2 km to 2000 m, unwraps to the bare Int64 2000, then adds 5 as plain integer
+        // arithmetic → 2005. If `Unit.in` still returned a `(Qty Int64 meter)`, the `+ 5` (a bare number)
+        // would be a CDZ0501 dimension mismatch (quantity + bare number) and this would not compile — so
+        // the fact it compiles + runs to 2005 pins the unwrap. NO `Qty.value` wrapper is needed.
+        let src = "(do (def (main) \
+                   (+ ((. Unit in) ((. Unit of) #\"meter\") ((. Qty of) 2 ((. Unit of) #\"kilometer\"))) 5)) \
+                   (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("an unwrapped Unit.in result adds to a bare number and runs"),
+                "main"
+            ),
+            2005
+        );
+    }
+
+    #[test]
     fn a_prefixed_unit_auto_converts_to_the_reference_over_int() {
         // F2-1: `1 KiB + 1 kB` over Int64 — two units of the `information` dimension at DIFFERENT scales
         // (kibi = 1024, kilo = 1000) — each converts to the reference `byte` and sums to 2024 (NOT 2000:
@@ -30550,12 +30572,12 @@ mod match_engine {
         // group dimension `mbps` names, so a computed rate and an `mbps` quantity MIX and convert:
         // (250000 byte / 1 s) + 1 mbps = 250000 + 125000 = 375000 byte/s (1 mbps = 10^6 bit / 8 = 125000
         // byte/s). The "name what bytes-over-time means as its own convertible family" case, over Float,
-        // NO bignum. Compiles + RUNS.
-        let src = "(do (def (main) ((. Qty value) \
+        // NO bignum. `Unit.in` UNWRAPS to the bare byte/s count (Q3) — no `Qty.value` needed. Compiles + RUNS.
+        let src = "(do (def (main) \
                    ((. Unit in) ((. Unit of) #\"byte-per-second\") \
                      (+ (/ ((. Qty of) 250000.0 ((. Unit of) #\"byte\")) \
                            ((. Qty of) 1.0 ((. Unit of) #\"second\"))) \
-                        ((. Qty of) 1.0 ((. Unit of) #\"mbps\")))))) \
+                        ((. Qty of) 1.0 ((. Unit of) #\"mbps\"))))) \
                    (export main))";
         assert_eq!(
             run_returns::<f64>(
@@ -30588,11 +30610,11 @@ mod match_engine {
     fn a_program_declares_and_converts_its_own_family_unit() {
         // F2-6: `(Unit.define #"furlong" (Unit.of #"foot") 660 1)` declares a user family unit = 660 feet;
         // `(Unit.of #"furlong")` then resolves it and converts: 1 furlong = 660 * 381/1250 = 201.168 m.
-        // The user family-declaration surface, RUNS.
+        // The user family-declaration surface, RUNS. `Unit.in` UNWRAPS to the bare meter count (Q3).
         let src = "(do \
                    ((. Unit define) #\"furlong\" ((. Unit of) #\"foot\") 660 1) \
-                   (def (main) ((. Qty value) ((. Unit in) ((. Unit of) #\"meter\") \
-                     ((. Qty of) 1.0 ((. Unit of) #\"furlong\"))))) \
+                   (def (main) ((. Unit in) ((. Unit of) #\"meter\") \
+                     ((. Qty of) 1.0 ((. Unit of) #\"furlong\")))) \
                    (export main))";
         assert_eq!(
             run_returns::<f64>(
@@ -30646,10 +30668,11 @@ mod match_engine {
     #[test]
     fn unit_in_converts_a_quantity_to_a_chosen_unit_exactly_over_int() {
         // F2-3: `(Unit.in kilometer (Qty.of 2000 meter))` explicitly converts 2000 m to km: 2000/1000 =
-        // 2 km, exact integer arithmetic (the source→target scale ratio divides). Unit.in pins the RESULT
-        // unit; the magnitude is `value * (source.scale / target.scale)` in the inner T. Compiles + RUNS.
-        let src = "(do (def (main) ((. Qty value) \
-                   ((. Unit in) ((. Unit of) #\"kilometer\") ((. Qty of) 2000 ((. Unit of) #\"meter\"))))) \
+        // 2 km, exact integer arithmetic (the source→target scale ratio divides). `Unit.in` UNWRAPS (Q3):
+        // it yields the bare km count (2 : Int64), not a `(Qty Int64 km)`; the magnitude is
+        // `value * (source.scale / target.scale)` in the inner T. No `Qty.value` needed. Compiles + RUNS.
+        let src = "(do (def (main) \
+                   ((. Unit in) ((. Unit of) #\"kilometer\") ((. Qty of) 2000 ((. Unit of) #\"meter\")))) \
                    (export main))";
         assert_eq!(
             run_returns::<i64>(

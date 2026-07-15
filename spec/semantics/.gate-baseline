@@ -1828,6 +1828,8 @@ pass	an unsigned-byte entrypoint takes and returns a u8 at the boundary
 pass	an unused let-init that does not reduce to a value is eliminated, so it does not diverge
 pass	an unusual in-range width is a first-class type
 pass	an unusual-width value that overflows its computed range is rejected at compile time
+pass	an unwrapped conversion result is a bare number under ordinary numeric rules
+pass	an unwrapped length adds to an unwrapped time with no dimension error
 pass	and evaluates the right operand when the left is true
 pass	and performs the right operand's effect when the left is true
 pass	and short-circuit does not perform the right operand's effect
