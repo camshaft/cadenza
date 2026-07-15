@@ -832,6 +832,7 @@ pass	a map chosen by a runtime if is size-measured with valid wasm
 pass	a map entry with no value expression is rejected, not a crash
 pass	a map grown by a recursive accumulator is looked up by a runtime key
 pass	a map inserted-into in one recursive sub-call is unchanged for a sibling sub-call's read
+pass	a map inserted-into on one path and size-read on another keeps copy-on-write across recursion
 pass	a map literal with keys of two different types is a type error
 pass	a map mixing integer and float values is a type error
 pass	a map operation applies to a map passed as a function parameter
@@ -1452,6 +1453,7 @@ pass	a set type whose element position holds a value is rejected
 pass	a set with elements of two different types is a type error
 pass	a shadowed-constructor application types at the binding's return type
 pass	a shared and a differing element hoist across same-length list arms
+pass	a shared list concatenated with itself has twice its length
 pass	a shared trapping operand before the differing one does not preempt a trapping condition
 pass	a shared trapping operand before the differing one does not preempt a trapping condition (compare head)
 pass	a short-circuit connective threads a branch perform to the continuation

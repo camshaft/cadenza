@@ -8351,3 +8351,42 @@
             (export main)))
   (call   main (: 0 Int64))
   (output (: 3 Int64)))
+
+; --- A SHARED map consumed on one recursion path and READ on another keeps copy-on-write (v-runtime) ------
+; The value heap is immutable + Perceus-refcounted: `Map.insert` on a map with rc>1 must COPY-on-write
+; (build a new map) rather than mutate the shared value, so a sibling that still holds the ORIGINAL map
+; observes the unchanged size. This pins that invariant for maps — the shape a miscompile in the
+; shared-heap-consume-then-use family (a binding consumed by an insert on one path + read on another with
+; no dup) would corrupt. `go` inserts into `m` on the recursive path AND reads `Map.size m` (the pre-insert
+; map) on the return path; if the insert mutated the shared `m`, the size reads would over-count. The
+; recursion defeats const-folding (a runtime map threaded through both a consuming insert and a borrowing
+; size). main(n) = sum over k=1..n of k = n(n+1)/2: main(3)=6, main(4)=10, main(0)=0.
+(case "a map inserted-into on one path and size-read on another keeps copy-on-write across recursion"
+  (doc    "`go(m,n) = if n=0 then Map.size m else go(Map.insert m n n, n-1) + Map.size m` threads a runtime
+           map `m` that is CONSUMED by `Map.insert` on the recursive path AND BORROWED by `Map.size m` on the
+           return path. Immutability + Perceus copy-on-write means the `Map.size m` at each level sees the
+           map BEFORE that level's insert (size k-1 at level k), so main(n) sums 1..n. If the insert mutated
+           the shared map in place, the sizes would over-count. main(3)=6, main(4)=10, empty main(0)=0.
+           Guards the shared-heap-consume-then-use invariant for the map/CHAMP path.")
+  (input  (do
+            (def (go (: m (Map Int64 Int64)) (: n Int64))
+              (if (= n 0) (Map.size m)
+                  (+ (go (Map.insert m n n) (- n 1)) (Map.size m))))
+            (def (main (: n Int64)) (go Map.empty n))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 6 Int64))
+  (call   main (: 4 Int64)) (output (: 10 Int64))
+  (call   main (: 0 Int64)) (output (: 0 Int64)))
+
+(case "a shared list concatenated with itself has twice its length"
+  (doc    "`(List.concat xs xs)` over a runtime-built `xs` (rc≥2 — the binding is used as BOTH operands)
+           yields a list of twice the length: the shared list is read twice without one consumption
+           corrupting the other. main(5) → concat of a 5-element list with itself = 10. Guards that a
+           self-`List.concat` (both operands the same shared binding) dups correctly rather than
+           consuming the shared value once and reading freed memory for the second operand.")
+  (input  (do
+            (def (mk (: n Int64)) (if (= n 0) (list) (List.push (mk (- n 1)) n)))
+            (def (main (: n Int64)) (let ((xs (mk n))) (List.len (List.concat xs xs))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 10 Int64))
+  (call   main (: 0 Int64)) (output (: 0 Int64)))
