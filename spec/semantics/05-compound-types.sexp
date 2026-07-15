@@ -8249,12 +8249,11 @@
   (doc    "`(match (map ((add 2 3) 42)) ((map (5 v) .. rest) v) (_ -1))` — the map literal's KEY `(add 2 3)`
            is a runtime call = 5, and the arm matches key 5, so it must bind v=42 → 42. The const map-match
            fold tested key presence with `const_compound_eq`, which reports the runtime key ABSENT, so it
-           WRONGLY took the catch-all → -1 (a silent miscompile). The fix routes a runtime-key `MapNew` to
-           the runtime map matcher (key comparison by value). That matcher does not yet handle a
-           `MapNew`-with-runtime-key scrutinee threaded through the presence chain, so this currently
-           DECLINES (todo) — a sound decline replacing the wrong answer; it flips to a pass when the runtime
-           matcher gains that capability. Reverting the fold guard reintroduces the miscompile (Todo→Fail).
-           Expected: 42.")
+           WRONGLY took the catch-all → -1 (a silent miscompile). The fix: a `MapNew` scrutinee that is NOT
+           a compile-time constant (`is_const_value` false — a runtime key/value) reads its value binder via
+           the RUNTIME map matcher (`lower_map_field_runtime` — `Map.lookup` compares keys by VALUE), exactly
+           as any runtime map. So key 5 is found by value and binds v=42. Reverting the fold guard reintroduces
+           the miscompile (Todo→Fail). Expected: 42.")
   (input  (do
             (def (add (: x Int64) (: n Int64)) (if (< n 1) x (add (+ x 1) (- n 1))))
             (def (main)

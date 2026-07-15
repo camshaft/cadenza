@@ -16680,6 +16680,17 @@ fn lower_map_field(
             }
         }
     };
+    // A `MapNew` whose keys/values are NOT all compile-time constants (`(map ((add 2 3) 42))` — a runtime
+    // key) is a RUNTIME map for matching purposes: `const_compound_eq` cannot decide its key presence, so the
+    // fold below would report a present runtime key ABSENT and mis-select an arm (the miscompile
+    // `desugar_runtime_map_match` guards by routing such a scrutinee to the runtime presence-chain). At the
+    // DIRECT-match (empty path) the runtime VALUE/REST read applies to the `MapNew` value verbatim (it builds
+    // a real CHAMP map at run time, so `Map.lookup`/`Map.remove` over it work). So a non-constant `MapNew` at
+    // an empty path reads via `lower_map_field_runtime`, not the const fold — treat it like any runtime map.
+    if matches!(&map_core, Core::MapNew { .. }) && path.is_empty() && !is_const_value(db, scrutinee)
+    {
+        return lower_map_field_runtime(db, id, scrutinee, key, named, value_steps, value_heads);
+    }
     let Core::MapNew { entries, .. } = map_core else {
         // A RUNTIME map scrutinee (not a compile-time-constant `MapNew`). Only the DIRECT map match (empty
         // path) has the runtime read wired: the arm was SELECTED by the runtime presence-test `if`-chain
