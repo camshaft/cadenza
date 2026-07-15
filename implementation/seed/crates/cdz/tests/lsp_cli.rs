@@ -63,15 +63,6 @@ fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
 /// definition, completion, documentSymbol, references, semanticTokens) → shutdown → exit, then closes
 /// stdin and reads stdout to EOF (a clean server exit).
 fn drive_session(program: &str) -> Vec<serde_json::Value> {
-    let exe = env!("CARGO_BIN_EXE_cdz");
-    let mut child = Command::new(exe)
-        .arg("lsp")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn cdz lsp");
-
     let uri = "file:///t.cdz";
     let msgs = vec![
         serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{},"processId":null,"rootUri":null}}),
@@ -92,9 +83,25 @@ fn drive_session(program: &str) -> Vec<serde_json::Value> {
         serde_json::json!({"jsonrpc":"2.0","id":99,"method":"shutdown","params":null}),
         serde_json::json!({"jsonrpc":"2.0","method":"exit","params":null}),
     ];
+    drive_messages(&msgs)
+}
+
+/// Spawn `cdz lsp`, send each framed message on stdin, then close stdin (EOF) so the server's reader
+/// thread ends and the process exits cleanly; return every framed message the server emitted. The
+/// generic driver `drive_session` and the lifecycle tests build on — the caller supplies the exact
+/// message sequence (which MUST end with shutdown+exit for a clean exit).
+fn drive_messages(msgs: &[serde_json::Value]) -> Vec<serde_json::Value> {
+    let exe = env!("CARGO_BIN_EXE_cdz");
+    let mut child = Command::new(exe)
+        .arg("lsp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn cdz lsp");
     {
         let stdin = child.stdin.as_mut().expect("stdin");
-        for m in &msgs {
+        for m in msgs {
             stdin.write_all(&frame(m)).expect("write");
         }
         stdin.flush().expect("flush");
@@ -279,5 +286,63 @@ fn lsp_session_publishes_diagnostics_for_a_broken_program() {
             .and_then(|m| m.as_str())
             .is_some_and(|m| m.contains("unbound name") && m.contains("mystery"))),
         "expected an unbound-name diagnostic, got {diags:?}"
+    );
+}
+
+/// Every `publishDiagnostics` notification's diagnostics array, in emission order.
+fn diagnostic_pushes(msgs: &[serde_json::Value]) -> Vec<&Vec<serde_json::Value>> {
+    msgs.iter()
+        .filter(|m| {
+            m.get("method").and_then(|v| v.as_str()) == Some("textDocument/publishDiagnostics")
+        })
+        .filter_map(|m| m.pointer("/params/diagnostics").and_then(|v| v.as_array()))
+        .collect()
+}
+
+#[test]
+fn lsp_didchange_re_lints_and_didclose_clears() {
+    // The core "diagnostics as you type" loop: open a BROKEN buffer (unbound name) → a non-empty
+    // diagnostics push; didChange to a CLEAN buffer → a fresh EMPTY push (the fix cleared the squiggle);
+    // didClose → an empty push (stale diagnostics cleared for a closed file). Each edit must trigger its
+    // own publish, in order — the protocol path the single-didOpen tests don't exercise.
+    let uri = "file:///live.cdz";
+    let broken = "def double(x: Int64) -> Int64 = x + mystery";
+    let fixed = "def double(x: Int64) -> Int64 = x + x";
+    let msgs = drive_messages(&[
+        serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{},"processId":null,"rootUri":null}}),
+        serde_json::json!({"jsonrpc":"2.0","method":"initialized","params":{}}),
+        serde_json::json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":uri,"languageId":"cadenza","version":1,"text":broken}}}),
+        // Edit the buffer to the fixed text (FULL sync — the whole new text).
+        serde_json::json!({"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":uri,"version":2},"contentChanges":[{"text":fixed}]}}),
+        // Close the document.
+        serde_json::json!({"jsonrpc":"2.0","method":"textDocument/didClose","params":{"textDocument":{"uri":uri}}}),
+        serde_json::json!({"jsonrpc":"2.0","id":99,"method":"shutdown","params":null}),
+        serde_json::json!({"jsonrpc":"2.0","method":"exit","params":null}),
+    ]);
+    let pushes = diagnostic_pushes(&msgs);
+    // Three pushes: open (broken → non-empty), change (fixed → empty), close (→ empty).
+    assert_eq!(
+        pushes.len(),
+        3,
+        "expected 3 diagnostics pushes (open/change/close), got {}",
+        pushes.len()
+    );
+    assert!(
+        pushes[0].iter().any(|d| d
+            .get("message")
+            .and_then(|m| m.as_str())
+            .is_some_and(|m| m.contains("mystery"))),
+        "the open push should carry the unbound-name diagnostic: {:?}",
+        pushes[0]
+    );
+    assert!(
+        pushes[1].is_empty(),
+        "the didChange to fixed text should clear the diagnostic: {:?}",
+        pushes[1]
+    );
+    assert!(
+        pushes[2].is_empty(),
+        "the didClose should clear diagnostics: {:?}",
+        pushes[2]
     );
 }
