@@ -927,6 +927,34 @@
             (def (main) (dec (Bytes.of (list 255)))) (export main)))
   (output (: -1 Int64)))
 
+; The helper cases above decode a FLAT byte leaf (`Bytes.of (list …)`). A `String.from-bytes` over a
+; ROPE input — a `Bytes.concat` tree whose `raw` holds header bytes, NOT content — exercises a distinct
+; runtime path: `op_str_from_bytes` must `bytes_flatten` the rope BEFORE the strict UTF-8 validate (else
+; it would validate the header bytes as UTF-8, garbage). These pin the rope-input decode (well-formed and
+; ill-formed), with a runtime `UInt8.wrap`'d element so the Bytes is genuinely runtime-built (not folded).
+(case "decoding a runtime ROPE Bytes as UTF-8 flattens before validating (well-formed)"
+  (doc    "`String.from-bytes` of a `Bytes.concat` ROPE ([104,105] ++ [n]) with a runtime UInt8 element n:
+           the op flattens the rope to its content bytes THEN validates. n=33 (`!`) → the 3 bytes \"hi!\"
+           are well-formed UTF-8 → `(Some s)`, byte-len 3. Pins that a rope input decodes by CONTENT, not by
+           its concat-node header bytes (which `bytes_flatten` materializes first).")
+  (input  (do
+            (def (mk (: n Int64)) (Bytes.concat (Bytes.of (list (UInt8.wrap 104) (UInt8.wrap 105))) (Bytes.of (list (UInt8.wrap n)))))
+            (def (main (: n Int64))
+              (match (String.from-bytes (mk n)) ((Some s) (String.byte-len s)) ((None _) (- 0 1))))
+            (export main)))
+  (call   main (: 33 Int64)) (output (: 3 Int64)))
+
+(case "decoding a runtime ROPE Bytes that is ill-formed yields none"
+  (doc    "The ill-formed rope companion: a runtime `Bytes.of (list (UInt8.wrap n) 255)` whose second byte
+           is `0xFF` (an invalid UTF-8 lead) → `None` → -1. The rope/runtime-element form of the total
+           decode's failure arm; the flatten-then-validate path rejects malformed content, never traps.")
+  (input  (do
+            (def (mk (: n Int64)) (Bytes.of (list (UInt8.wrap n) (UInt8.wrap 255))))
+            (def (main (: n Int64))
+              (match (String.from-bytes (mk n)) ((Some s) (String.byte-len s)) ((None _) (- 0 1))))
+            (export main)))
+  (call   main (: 104 Int64)) (output (: -1 Int64)))
+
 (case "a utf8 bin segment binds a decoded string when the bytes are well-formed"
   (doc    "The `bin` pattern `(bin (u8 n) (utf8 name n))` reads a length byte n, then decodes exactly the
            next n bytes as UTF-8 into `name : String`. Against `(list 3 102 111 111)` — n=3, then the

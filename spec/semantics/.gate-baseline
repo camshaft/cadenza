@@ -2061,6 +2061,8 @@ pass	converting a unit to another unit of the same dimension is an exact rationa
 pass	converting an out-of-range integer to a char yields None
 pass	declaring a unit with a conversion conflicting with a built-in is an error
 pass	decoding a four-byte sequence for a code point above U+10FFFF yields none
+pass	decoding a runtime ROPE Bytes as UTF-8 flattens before validating (well-formed)
+pass	decoding a runtime ROPE Bytes that is ill-formed yields none
 pass	decoding a surrogate code point encoded as UTF-8 yields none
 pass	decoding an encoded string round-trips to the same bytes (the inverse direction)
 pass	decoding an overlong UTF-8 encoding yields none
