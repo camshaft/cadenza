@@ -33,6 +33,9 @@
 ///   - `TakeI((n, src))`   — yield at most the first `n` elements of `src`.
 ///   - `DropI((n, src))`   — yield `src` with its first `n` elements skipped.
 ///   - `TakeWhileI((p, src))` — yield `src`'s leading run for which `p` holds, then stop.
+///   - `ChainI((a, b))`       — yield all of `a`, then all of `b` (concatenation).
+///   - `ZipWithI((f, (a, b)))`— yield `f(x, y)` for each pair `x` from `a`, `y` from `b`; stops when
+///                              either runs out (the shorter one bounds the result).
 type Iter =
   | FromList(List(Int64))
   | RangeI(Tuple(Int64, Int64))
@@ -41,6 +44,8 @@ type Iter =
   | TakeI(Tuple(Int64, Iter))
   | DropI(Tuple(Int64, Iter))
   | TakeWhileI(Tuple((Int64 -> Bool), Iter))
+  | ChainI(Tuple(Iter, Iter))
+  | ZipWithI(Tuple((Int64 -> Int64 -> Int64), Tuple(Iter, Iter)))
 
 /// Step once: yield `Option((element, rest))` — `None` at exhaustion, never a trap. Total and pure;
 /// `rest` is a fresh iterator for the remainder, so an iterator is re-steppable and shareable.
@@ -69,6 +74,17 @@ def next(it) = match it with
     | Option.None(_) => Option.None(unit)
     | Option.Some(pr) => (match pr with | (v, rest) =>
         if p(v) then Option.Some((v, Iter.TakeWhileI((p, rest)))) else Option.None(unit))))
+  | Iter.ChainI(ab) => (match ab with | (a, b) => (match next(a) with
+    // drain `a` first; when `a` is exhausted, step straight into `b`
+    | Option.None(_) => next(b)
+    | Option.Some(p) => (match p with | (v, rest) => Option.Some((v, Iter.ChainI((rest, b)))))))
+  | Iter.ZipWithI(zf) => (match zf with | (f, ab) => (match ab with | (a, b) => (match next(a) with
+    // stop as soon as EITHER side runs out — the shorter iterator bounds the result
+    | Option.None(_) => Option.None(unit)
+    | Option.Some(pa) => (match pa with | (va, ra) => (match next(b) with
+      | Option.None(_) => Option.None(unit)
+      | Option.Some(pb) => (match pb with | (vb, rb) =>
+          Option.Some((f(va, vb), Iter.ZipWithI((f, (ra, rb)))))))))))
 
 // ── Producers ──────────────────────────────────────────────────────────────────────────────────
 
@@ -97,6 +113,12 @@ def drop(it, n) = Iter.DropI((n, it))
 
 /// Yield the leading run of elements for which `p` holds, then stop.
 def take-while(it, p: Int64 -> Bool) = Iter.TakeWhileI((p, it))
+
+/// Concatenate: yield all of `it`, then all of `other`.
+def chain(it, other) = Iter.ChainI((it, other))
+
+/// Zip two iterators with `f`: yield `f(x, y)` for paired elements, stopping when either runs out.
+def zip-with(it, other, f: Int64 -> Int64 -> Int64) = Iter.ZipWithI((f, (it, other)))
 
 // ── Consumers (drive the pull) ──────────────────────────────────────────────────────────────────
 
@@ -235,5 +257,51 @@ def re-steppable() =
 def compose-take-drop() =
   // drop 2 then take 2 of 0..10 -> [2,3]
   if int-list-eq(collect-list(take(drop(range(0, 10), 2), 2)), [2, 3]) then unit else trap("drop2 take2")
+
+@test
+def chain-concatenates() =
+  if int-list-eq(collect-list(chain(from-list([1, 2]), from-list([3, 4]))), [1, 2, 3, 4]) then
+    unit
+  else
+    trap("chain [1,2]++[3,4] = [1,2,3,4]")
+
+@test
+def chain-with-empty-left() =
+  if int-list-eq(collect-list(chain(empty(), range(0, 3))), [0, 1, 2]) then unit else trap("[]++0..3")
+
+@test
+def chain-with-empty-right() =
+  if int-list-eq(collect-list(chain(range(0, 3), empty())), [0, 1, 2]) then unit else trap("0..3++[]")
+
+@test
+def chain-is-lazy() =
+  // take 2 across a chain whose right side is a huge range pulls only from the left
+  if int-list-eq(collect-list(take(chain(from-list([7, 8]), range(0, 1000000)), 2)), [7, 8]) then
+    unit
+  else
+    trap("chain take 2")
+
+@test
+def zip-with-adds() =
+  if int-list-eq(collect-list(zip-with(from-list([1, 2, 3]), from-list([10, 20, 30]), fn(x, y) => x + y)), [11, 22, 33]) then
+    unit
+  else
+    trap("zip-with + = [11,22,33]")
+
+@test
+def zip-with-stops-at-shorter() =
+  // left has 5, right has 2 -> only 2 pairs
+  if int-list-eq(collect-list(zip-with(range(0, 5), from-list([100, 200]), fn(x, y) => x + y)), [100, 201]) then
+    unit
+  else
+    trap("zip stops at shorter side")
+
+@test
+def zip-with-is-lazy() =
+  // both sides huge, take 3 -> only 3 pairs pulled
+  if int-list-eq(collect-list(take(zip-with(range(0, 1000000), range(0, 1000000), fn(x, y) => x * y), 3)), [0, 1, 4]) then
+    unit
+  else
+    trap("zip-with lazy take 3 of squares")
 
 export { Iter.* }
