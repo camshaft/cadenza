@@ -14,10 +14,11 @@
 //!
 //! Capabilities implemented so far: the `initialize`/`shutdown` handshake, full-document sync
 //! (`didOpen`/`didChange`/`didClose`), `textDocument/publishDiagnostics` (← the `Diagnostics` query),
-//! `textDocument/hover` (← the `TypeAt` query), and `textDocument/semanticTokens/full` (← the
-//! `Highlight` query). Go-to-definition (← `ResolveOf`), references (← `UsesOf`), completion (←
-//! `ScopeAt`), and code actions (← the `Diagnostics` fix columns) are the next increments — each a
-//! read of a column the query engine already exposes, wired to its LSP request.
+//! `textDocument/hover` (← the `TypeAt` query), `textDocument/semanticTokens/full` (← the `Highlight`
+//! query), `textDocument/definition` (← `ResolveOf`), `textDocument/references` (← `UsesOf`), and
+//! `textDocument/completion` (← `ScopeAt` + `Symbols`). Code actions (← the `Diagnostics` fix columns)
+//! are the next increment — each a read of a column the query engine already exposes, wired to its LSP
+//! request.
 
 use std::collections::HashMap;
 
@@ -27,9 +28,11 @@ use lsp_types::notification::{
     PublishDiagnostics,
 };
 use lsp_types::request::{
-    GotoDefinition, HoverRequest, References, Request as _, SemanticTokensFullRequest, Shutdown,
+    Completion, GotoDefinition, HoverRequest, References, Request as _, SemanticTokensFullRequest,
+    Shutdown,
 };
 use lsp_types::{
+    CompletionItem, CompletionItemKind, CompletionOptions, CompletionParams, CompletionResponse,
     Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
     DidOpenTextDocumentParams, GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents,
     HoverParams, HoverProviderCapability, InitializeParams, InitializeResult, Location,
@@ -76,14 +79,19 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Sync + Send>> {
 /// diagnostics via `publishDiagnostics` (a push the server sends on open/change, so no explicit
 /// capability flag beyond sync is required for the classic push model), `hover` (the "type at
 /// cursor" read, backed by the `TypeAt` query), `definition` (go-to, backed by `ResolveOf`),
-/// `references` (find-all-uses, backed by `UsesOf`), and `semanticTokens/full` (colour-by-meaning,
-/// backed by the `Highlight` query — the token legend is `semantic_token_legend`).
+/// `references` (find-all-uses, backed by `UsesOf`), `completion` (scope bindings + top-level symbols,
+/// backed by `ScopeAt` + `Symbols`), and `semanticTokens/full` (colour-by-meaning, backed by the
+/// `Highlight` query — the token legend is `semantic_token_legend`).
 fn capabilities() -> ServerCapabilities {
     ServerCapabilities {
         text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
         hover_provider: Some(HoverProviderCapability::Simple(true)),
         definition_provider: Some(lsp_types::OneOf::Left(true)),
         references_provider: Some(lsp_types::OneOf::Left(true)),
+        // Completion with no trigger characters — the client invokes it on the usual identifier typing /
+        // Ctrl-Space. We return the full candidate set (locals + top-level symbols) and let the client
+        // filter by the typed prefix (the standard "server offers, client filters" model).
+        completion_provider: Some(CompletionOptions::default()),
         semantic_tokens_provider: Some(SemanticTokensServerCapabilities::SemanticTokensOptions(
             SemanticTokensOptions {
                 work_done_progress_options: WorkDoneProgressOptions::default(),
@@ -240,6 +248,11 @@ impl Server {
                 let result = self.references(&params);
                 self.send_response(Response::new_ok(id, result))
             }
+            Completion::METHOD => {
+                let (id, params) = cast_request::<Completion>(req)?;
+                let result = self.completion(&params);
+                self.send_response(Response::new_ok(id, result))
+            }
             _ => {
                 let resp = Response::new_err(
                     req.id.clone(),
@@ -303,6 +316,17 @@ impl Server {
             &pos.text_document.uri,
             include_decl,
         ))
+    }
+
+    /// Answer a `textDocument/completion`: the names in scope at the cursor — local bindings (backed by
+    /// `ScopeAt`, with their types) plus the module's top-level declarations (backed by `Symbols`),
+    /// deduped by name (a local shadows a top-level of the same name). The client filters this candidate
+    /// set by the typed prefix. `None` when the document is not open; an empty list otherwise (total).
+    fn completion(&self, params: &CompletionParams) -> Option<CompletionResponse> {
+        let pos = &params.text_document_position;
+        let doc = self.docs.get(&pos.text_document.uri)?;
+        let items = completions_at(&doc.text, doc.is_ml, pos.position);
+        Some(CompletionResponse::Array(items))
     }
 
     /// Dispatch a client NOTIFICATION — the document-sync lifecycle. Each open/change recomputes and
@@ -800,6 +824,88 @@ fn references_at(
     locations
 }
 
+// ── the analysis: cursor → completion candidates, via the `ScopeAt` + `Symbols` queries ──────────────
+
+/// Compute the completion candidates at `pos` — the names available to type there. Two sources, both
+/// reads of columns the compiler fills: LOCAL bindings in scope (the `ScopeAt` query, keyed by the
+/// cursor node — `let`s, parameters, match binders, each with its inferred type as the item detail),
+/// and the module's TOP-LEVEL declarations (the `Symbols` query — defs / types / effects / modules).
+///
+/// Deduped by name — a local binding SHADOWS a top-level of the same name (the local wins), matching how
+/// resolution itself would bind the name. The client filters this set by the prefix the user has typed.
+/// TOTAL: a buffer that does not parse yields whatever partial set the queries produce, never a panic.
+fn completions_at(text: &str, is_ml: bool, pos: Position) -> Vec<CompletionItem> {
+    let Ok((arenas, spans, _errors)) = parse_surface(text, is_ml) else {
+        return Vec::new();
+    };
+    // A name → item map; INSERT top-level first, then locals OVERWRITE (a local shadows a top-level).
+    let mut items: std::collections::BTreeMap<String, CompletionItem> =
+        std::collections::BTreeMap::new();
+
+    // Top-level declarations (name<TAB>kind<TAB>node) — kind ∈ value/function/type/effect/module.
+    if let Some(answer) = run_query_text(
+        &arenas,
+        rcdzc::sidecar::Query::Symbols,
+        rcdzc::sidecar::KIND_SYMBOLS,
+    ) {
+        for line in answer.lines() {
+            let mut cols = line.splitn(3, '\t');
+            if let (Some(name), Some(kind)) = (cols.next(), cols.next()) {
+                items.insert(
+                    name.to_string(),
+                    CompletionItem {
+                        label: name.to_string(),
+                        kind: Some(symbol_kind_to_completion_kind(kind)),
+                        detail: Some(kind.to_string()),
+                        ..Default::default()
+                    },
+                );
+            }
+        }
+    }
+
+    // Local bindings in scope at the cursor (name<TAB>type<TAB>binder) — overwrite to shadow a top-level.
+    let byte = position_to_byte(text, pos);
+    if let Some(node) = spans.node_at_offset(byte)
+        && let Some(answer) = run_query_text(
+            &arenas,
+            rcdzc::sidecar::Query::ScopeAt { node: node.0 },
+            rcdzc::sidecar::KIND_SCOPE,
+        )
+    {
+        for line in answer.lines() {
+            let mut cols = line.splitn(3, '\t');
+            if let (Some(name), Some(ty)) = (cols.next(), cols.next()) {
+                items.insert(
+                    name.to_string(),
+                    CompletionItem {
+                        label: name.to_string(),
+                        kind: Some(CompletionItemKind::VARIABLE),
+                        detail: Some(ty.to_string()),
+                        ..Default::default()
+                    },
+                );
+            }
+        }
+    }
+
+    items.into_values().collect()
+}
+
+/// Map a `Symbols`-query kind spelling to the LSP `CompletionItemKind`. `value`→CONSTANT, `function`→
+/// FUNCTION, `type`→CLASS (LSP has no "sum type"; CLASS is the nearest a theme colours as a type),
+/// `effect`→EVENT, `module`→MODULE. An unknown kind → TEXT (a plain candidate).
+fn symbol_kind_to_completion_kind(kind: &str) -> CompletionItemKind {
+    match kind {
+        "value" => CompletionItemKind::CONSTANT,
+        "function" => CompletionItemKind::FUNCTION,
+        "type" => CompletionItemKind::CLASS,
+        "effect" => CompletionItemKind::EVENT,
+        "module" => CompletionItemKind::MODULE,
+        _ => CompletionItemKind::TEXT,
+    }
+}
+
 // ── the analysis: source text → LSP semantic tokens, via the `Highlight` query ──────────────────────
 
 /// Compute the LSP semantic tokens for `text` — colour-by-meaning, backed by the `Highlight` query
@@ -1210,5 +1316,52 @@ mod tests {
         let text = "def answer = 42";
         let refs = references_at(text, true, Position::new(0, 13), &test_uri(), false);
         assert!(refs.is_empty(), "expected no references, got {refs:?}");
+    }
+
+    #[test]
+    fn completion_offers_top_level_symbols() {
+        // The candidate set at any point includes the module's top-level declarations, each with a kind.
+        let text = "def helper(x: Int64) -> Int64 = x\ndef answer = 42\ndef main = answer";
+        // Cursor in main's body (line 2, after `def main = `).
+        let items = completions_at(text, true, Position::new(2, 11));
+        let by_name: std::collections::HashMap<_, _> =
+            items.iter().map(|i| (i.label.as_str(), i)).collect();
+        assert!(by_name.contains_key("helper"), "helper missing: {items:?}");
+        assert!(by_name.contains_key("answer"), "answer missing: {items:?}");
+        assert_eq!(
+            by_name["helper"].kind,
+            Some(CompletionItemKind::FUNCTION),
+            "helper is a function"
+        );
+        assert_eq!(
+            by_name["answer"].kind,
+            Some(CompletionItemKind::CONSTANT),
+            "answer is a nullary value"
+        );
+    }
+
+    #[test]
+    fn completion_includes_local_bindings_with_their_types() {
+        // Inside a function body, the parameter is a completion candidate, shown as a VARIABLE with its
+        // inferred type as the detail.
+        let text = "def double(x: Int64) -> Int64 = x + x";
+        // Cursor at the `x + x` body (line 0, char ~32).
+        let items = completions_at(text, true, Position::new(0, 33));
+        let x = items.iter().find(|i| i.label == "x");
+        let x =
+            x.unwrap_or_else(|| panic!("param `x` should be a completion candidate: {items:?}"));
+        assert_eq!(x.kind, Some(CompletionItemKind::VARIABLE));
+        assert!(
+            x.detail.as_deref().is_some_and(|d| d.contains("Int")),
+            "the local's detail should show its type, got {:?}",
+            x.detail
+        );
+    }
+
+    #[test]
+    fn completion_is_total_on_malformed_source() {
+        // A buffer that does not parse yields a defined (possibly empty) candidate set, never a panic.
+        let _ = completions_at("def (f x = (", true, Position::new(0, 5));
+        let _ = completions_at("", true, Position::new(0, 0));
     }
 }
