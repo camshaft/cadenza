@@ -514,7 +514,6 @@ pass	a consumer applies the handed-back closure inside a larger expression
 pass	a consumer applies the handed-back closure to an internal constant
 pass	a consumer returns a different type than the closure it applies
 pass	a consumer takes the handed-back closure as its SECOND parameter
-pass	a consuming op in the deep differing payload keeps its retain under composed hoists
 pass	a consuming op inside a hoisted list element respects a still-live binding
 pass	a consuming op on a still-live binding inside one match arm's payload keeps its retain
 pass	a correctly-annotated function parameter is accepted
@@ -852,6 +851,7 @@ pass	a map built at run time escapes to the host as its value form
 pass	a map can be a key, compared by its value
 pass	a map can hold a map as a value
 pass	a map chosen by a runtime if is size-measured with valid wasm
+pass	a map consumed by Map.insert in one operand is unchanged for a later read of the same binding
 pass	a map entry with no value expression is rejected, not a crash
 pass	a map grown by a recursive accumulator is looked up by a runtime key
 pass	a map inserted-into in one recursive sub-call is unchanged for a sibling sub-call's read
@@ -1064,6 +1064,7 @@ pass	a non-first field is projected from a record returned across a call boundar
 pass	a non-linear tuple binding pattern is rejected
 pass	a non-matching literal inside a constructor pattern binds the runtime payload
 pass	a non-power-of-two float width is rejected
+pass	a non-recursive generic producer composes at two element types via inlining
 pass	a non-tail accumulable recursion runs to a large runtime N in constant stack
 pass	a non-tail call passing a heap-match argument compiles to valid wasm
 pass	a non-tail recursion with a fallible read in its base arm composes
@@ -1162,6 +1163,7 @@ pass	a pure let-bound lambda and a performing one are both applied in the handle
 pass	a qualified construct and a bare match name the same colliding variant
 pass	a quantity built from an extracted unit is dimensionally checked
 pass	a quantity is constructed from a numeric value and a unit
+pass	a quantity over a BigInt magnitude runs unbounded arithmetic on the erased handles
 pass	a quantity over an exact rational magnitude divides exactly and derives its dimension
 pass	a quantity raised to the zeroth power is a dimensionless one
 pass	a quantity's erased value is the identical numeric value the bare literal has
@@ -1585,7 +1587,6 @@ pass	a three-deep tuple projection chain retains the innermost consumed child
 pass	a three-element runtime tuple is returned as a result
 pass	a three-parameter closure is applied at full arity through a recursive HOF
 pass	a three-payload constructor fully curried builds the variant
-pass	a three-way nested common constructor selects by both conditions
 pass	a top-level module is named by a top-level def's body
 pass	a top-level sum value definition may reference a sum value defined later
 pass	a top-level tuple pattern matches a tuple produced by a runtime conditional
@@ -1607,7 +1608,6 @@ pass	a trapping element in the untaken arm of a same-length list if does not tra
 pass	a trapping field in the untaken arm of a same-shape record if does not trap
 pass	a trapping payload in a non-taken arm of a same-constructor match does not trap
 pass	a trapping payload in the TAKEN arm of a same-constructor if still traps
-pass	a trapping payload in the deep untaken arm of composed hoists does not trap
 pass	a trapping payload in the taken arm of a same-constructor match still traps
 pass	a trapping payload in the untaken arm of a same-constructor if does not trap
 pass	a trapping scrutinee of a same-constructor match traps before any arm
@@ -1879,6 +1879,8 @@ pass	an if on Type.eq selects a branch at compile time
 pass	an if over different-length list arms keeps each branch's own list
 pass	an if over two trap-free bitwise arms selects branchlessly — else arm
 pass	an if over two trap-free bitwise arms selects branchlessly — then arm
+pass	an if returning false/true folds to the negation of a runtime condition
+pass	an if returning true/false folds to the runtime condition itself
 pass	an if whose untaken arm would trap keeps the branch (no select of checked arith)
 pass	an if with a narrow branch and a bare-literal branch computes at the narrow width
 pass	an if with identical branches folds to the branch when the condition is trap-free
@@ -1914,6 +1916,8 @@ pass	an internally ill-typed unselected match arm body is a type error
 pass	an intra-program handler interposes on a delegated effect, counts it, and forwards to the boundary
 pass	an octal-prefixed token is a malformed literal, not an unbound name
 pass	an offered ordering is total and deterministic
+pass	an open sum nested as another sum's payload matches with an inner wildcard
+pass	an open sum with a guarded named arm plus an open-tail arm is exhaustive
 pass	an open sum's open-tail arm dispatches a NAMED-but-uncovered variant, not only unnamed ones
 pass	an open sum's open-tail arm dispatches a variant the specific arms do not name
 pass	an operation on mismatched types is rejected at compile time
@@ -1969,7 +1973,6 @@ pass	an unsigned runtime value is not accepted by a signed segment of the same w
 pass	an unsigned segment reads the same sign-bit-only byte as 128
 pass	an unsigned-byte entrypoint takes and returns a u8 at the boundary
 pass	an untaken arm's overflowing operand does not trap under the operator hoist
-pass	an untaken inner condition's trap does not fire under composed hoists
 pass	an unused let binding whose init would divide by zero is elided, so its trap does not occur
 pass	an unused let binding whose init would overflow is elided, so its trap does not occur
 pass	an unused let-init that does not reduce to a value is eliminated, so it does not diverge

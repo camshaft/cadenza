@@ -1,0 +1,15 @@
+# Files excluded from a packaged `.vsix` (when someone runs `vsce package`).
+#
+# NOTE: `node_modules/` is deliberately NOT excluded — the extension's ONE runtime dependency
+# (`vscode-languageclient`) must ship inside the `.vsix`. `vsce` prunes devDependencies itself; we have
+# none, so the whole tree is runtime and stays.
+
+# Per-machine install artifact baked by `cargo xtask install-lsp` — must NOT be published (it points at
+# one machine's `cdz` binary). A published `.vsix` resolves the server via the `cadenza.server.path`
+# setting or `cdz` on PATH instead.
+.cdz-server-path
+
+# Dev/repo bookkeeping — not part of the shipped extension.
+.gitignore
+package-lock.json
+**/*.vsix

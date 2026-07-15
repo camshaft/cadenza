@@ -545,3 +545,22 @@
             (export has2) (export has9)))
   (call   has2) (output (: 1 Int64))
   (call   has9) (output (: 0 Int64)))
+
+(case "Set.to-list enumerates the elements as a List in canonical (sorted) order"
+  (doc    "`(List.at (Set.to-list (Set.of (list 5 2 8 2))) 0)` — Set.to-list yields the set's elements as a
+           `List` in CANONICAL element-value order (sorted, deduped: {2,5,8}), NOT hash/insertion order,
+           realizing collections-and-text.md §Map/Set iteration is deterministic. The element at index 0 is
+           the smallest, 2. The inverse of Set.of. Expected: 2.")
+  (input  (do
+            (def (main) (match (List.at (Set.to-list (Set.of (list 5 2 8 2))) 0)
+                          ((Some v) v)
+                          ((None u) -1))) (export main)))
+  (output (: 2 Int64)))
+
+(case "Set.to-list length is the set's cardinality (deduped)"
+  (doc    "`(List.len (Set.to-list (Set.of (list 3 1 2 1 3))))` — the enumerated list has one element per
+           DISTINCT set element ({1,2,3} → 3), so its length equals Set.len. Pins the dedup + round count.
+           Expected: 3.")
+  (input  (do
+            (def (main) (List.len (Set.to-list (Set.of (list 3 1 2 1 3))))) (export main)))
+  (output (: 3 Int64)))

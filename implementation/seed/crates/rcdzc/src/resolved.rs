@@ -333,7 +333,7 @@ pub enum Prim {
     /// is a BARE field NAME (a label). An absent field is CDZ0212 — a record field name is a static label,
     /// never a runtime `None` (contrast `List.at` on a runtime index).
     RecordPop,
-    /// The TUPLE positional CONCATENATE — `(Tuple.cat a b)` appends `b`'s elements after `a`'s, yielding
+    /// The TUPLE positional CONCATENATE — `(Tuple.concat a b)` appends `b`'s elements after `a`'s, yielding
     /// a tuple of the combined arity, each element keeping its source position's type (`type-system.md`
     /// §Two Tuples Are Concatenated Into One Of Their Combined Length). Both operands are tuple VALUES (no
     /// disjointness — positions are anonymous). Folds two constant `Core::Tuple`s to their concatenation.
@@ -345,7 +345,7 @@ pub enum Prim {
     /// Value). `k` outside `0..=arity` is CDZ0201 (the static-bounds rule `(. x N)` uses). The second
     /// operand is a compile-time integer LITERAL (like a tuple index).
     TupleSplitAt,
-    /// The TUPLE positional POP — `(Tuple.pop t)` takes element 0 off, yielding `(tuple (. t 0) <rest>)`
+    /// The TUPLE positional POP — `(Tuple.remove t)` takes element 0 off, yielding `(tuple (. t 0) <rest>)`
     /// — the positional analogue of `Record.pop`, `(Tuple.split-at t 1)` with the singleton prefix
     /// unwrapped to its element. A one-operand op over a tuple of arity ≥ 1.
     TuplePop,
@@ -703,6 +703,16 @@ pub enum Prim {
     /// (each element at most once). Lowers to `set-empty` + a `set-insert` per list element (a constant
     /// list folds to a canonical `Core::SetOf`). The one set CONSTRUCTOR (the set analogue of `Bytes.of`).
     SetOf,
+    /// `Map.to-list` — enumerate the map's entries as a `List (Tuple k v)` in CANONICAL KEY order:
+    /// `∀k v. (Map k v) → (List (Tuple k v))` (collections-and-text.md §A Map Renders As Its Entries In
+    /// Canonical Key Order). Lowers to the runtime `map-to-list` op with a compiler-baked map shape
+    /// descriptor. The map companion of `Set.to-list`.
+    MapToList,
+    /// `Set.to-list` — enumerate the set's elements as a `List` in CANONICAL element-value order:
+    /// `∀a. (Set a) → (List a)` (the inverse of `Set.of`; realizes collections-and-text.md §Map/Set
+    /// iteration is deterministic). Lowers to the runtime `set-to-list` op with a compiler-baked element
+    /// shape descriptor.
+    SetToList,
     /// `Set.contains` — the TOTAL membership predicate `∀a. (Set a) → a → Bool` (never traps; no positional
     /// access — a set is unordered). Lowers to the runtime `set-contains` op (returns a `bool` directly,
     /// UNLIKE `Map.lookup`'s Option). A constant set + constant element folds to `ConstBool`.
@@ -829,6 +839,7 @@ impl Prim {
             "map-lookup" => Some(Prim::MapLookup),
             "map-remove" => Some(Prim::MapRemove),
             "map-size" => Some(Prim::MapSize),
+            "map-to-list" => Some(Prim::MapToList),
             "map-swap" => Some(Prim::MapSwap),
             "map-take" => Some(Prim::MapTake),
             "unit-one" => Some(Prim::UnitOne),
@@ -849,6 +860,7 @@ impl Prim {
             "type-eq" => Some(Prim::TypeEq),
             "Set" => Some(Prim::SetCtor),
             "set-of" => Some(Prim::SetOf),
+            "set-to-list" => Some(Prim::SetToList),
             "set-contains" => Some(Prim::SetContains),
             "set-len" => Some(Prim::SetLen),
             "set-insert" => Some(Prim::SetInsert),

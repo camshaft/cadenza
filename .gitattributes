@@ -1,0 +1,24 @@
+# Git attributes for the Cadenza repo.
+#
+# ── Concurrent-append merge policy ───────────────────────────────────────────────────────────────
+# `spec/semantics/.gate-baseline` (and its per-backend siblings) is the corpus verdict baseline that
+# EVERY corpus-adding agent appends to (`cargo xtask gate --save` writes one `verdict<TAB>description`
+# line per case). Under the fleet, many agents add cases concurrently, so a plain 3-way merge conflicts
+# constantly on this one file — it was the #1 source of merge-request bounces (a fix agent could be
+# rejected 4× purely on baseline contention, never touching the same case).
+#
+# `merge=union` (a BUILT-IN git driver — no registration needed) resolves such a conflict by keeping
+# BOTH sides' lines instead of flagging it. That is exactly right here: the file is line-oriented and
+# order-independent — `gate --check` parses it into a description-keyed map (see `check_baseline` in
+# xtask), and `gate --save` re-sorts + de-dupes on the next write. So concurrent appends of DIFFERENT
+# cases union cleanly; the only residue is a possible duplicate line when two agents touch the SAME
+# case, which the map-load tolerates and the next `--save` collapses. Net: baseline appends stop
+# blocking integration.
+spec/semantics/.gate-baseline           merge=union
+spec/semantics/.gate-baseline-rust      merge=union
+spec/semantics/.gate-baseline-rust-async merge=union
+#
+# NOTE: the executable-semantics corpus files (`spec/semantics/NN-*.sexp`) are deliberately NOT
+# union-merged. Each `(case …)` is a multi-line s-expression BLOCK; unioning interleaved lines from two
+# branches would corrupt the s-expr structure (mismatched parens / spliced cases). Those need
+# case-level (block) merging or per-vertical file splitting, not line-union — a separate change.

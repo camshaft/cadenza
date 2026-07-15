@@ -12,6 +12,9 @@
 /// Count every node in a reified `Ast`.
 def nc(a: Ast) = match a with
   | Ast.Int(_) => 1
+  | Ast.Str(_) => 1
+  | Ast.Bool(_) => 1
+  | Ast.Float(_) => 1
   | Ast.Name(_) => 1
   | Ast.List(es) => 1 + ncl(es)
 
@@ -22,6 +25,9 @@ def ncl(xs: List(Ast)) = match xs with
 /// Sum every Int leaf of a reified `Ast`.
 def isum(a: Ast) = match a with
   | Ast.Int(v) => v
+  | Ast.Str(_) => 0
+  | Ast.Bool(_) => 0
+  | Ast.Float(_) => 0
   | Ast.Name(_) => 0
   | Ast.List(es) => isuml(es)
 

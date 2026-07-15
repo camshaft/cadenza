@@ -1,0 +1,188 @@
+/// normalize.cdz — NORMAL-ORDER β-NORMALIZATION over nameless (de Bruijn) terms of the canonical `Ast`
+/// (imported cross-file from `ast`). Drives single-step β-reduction to a β-normal form: repeatedly find
+/// the LEFTMOST-OUTERMOST redex `(app (fn () body) arg)` — including inside binder bodies and argument
+/// positions (the congruence walk) — and reduce it, until no redex remains or the fuel bound is hit.
+/// This is the evaluator that turns `beta.cdz`'s single-step reducer into a full λ-calculus normalizer,
+/// the last rung of the resolver/binder family (scopecheck → alpha → debruijn → beta → normalize).
+///
+/// Normal ORDER (leftmost-outermost) is the reduction strategy that reaches a normal form whenever one
+/// exists. `step` returns `(changed, term')`: it reduces the leftmost redex reachable by walking head-
+/// first, descending into children only when the current node is not itself a redex. `norm` iterates
+/// `step` under a FUEL bound (β-reduction need not terminate — e.g. `(app Ω Ω)` — so a bound keeps the
+/// normalizer total; a well-typed / terminating term normalizes well within it).
+///
+/// Self-contained (its own shift/subst, like beta.cdz): a single-file `cdz compile` does not link sibling
+/// module functions, so each pass imports only the `Ast` datatype and carries its own index calculus.
+
+import { Ast } from "ast"
+
+/// The `Name` at position `i` of `elems`, or None (a borrowing indexed read).
+def name-at(elems: List(Ast), i: Int64) = match List.at(elems, i) with
+  | Option.Some(Ast.Name(n)) => Some(n)
+  | _ => None(unit)
+
+/// The child `Ast` at position `i`, or a Unit-Int sentinel.
+def child-at(elems: List(Ast), i: Int64) = match List.at(elems, i) with
+  | Option.Some(c) => c
+  | Option.None(_) => Ast.Int(0)
+
+/// Prepend `x` to `xs`.
+def cons(x: Ast, xs: List(Ast)) = List.concat([x], xs)
+
+/// Is this list a nameless binder `(fn () <body>)`?
+def is-fn(e: List(Ast)) = match name-at(e, 0) with
+  | Some(h) => h == "fn"
+  | None(_) => false
+
+/// Raise every free index (>= cutoff `c`) in `t` by `d`; cutoff +1 under each binder.
+def shift(d: Int64, c: Int64, t: Ast) = match t with
+  | Ast.Int(k) => (if k >= c then Ast.Int(k + d) else Ast.Int(k))
+  | Ast.Str(s) => Ast.Str(s)
+  | Ast.Bool(b) => Ast.Bool(b)
+  | Ast.Name(n) => Ast.Name(n)
+  | Ast.List(e) => (if is-fn(e)
+      then Ast.List([Ast.Name("fn"), Ast.List([]), shift(d, c + 1, child-at(e, 2))])
+      else Ast.List(shift-list(d, c, e)))
+
+def shift-list(d: Int64, c: Int64, e: List(Ast)) = match e with
+  | [] => []
+  | [h, .. r] => cons(shift(d, c, h), shift-list(d, c, r))
+
+/// Replace free index `j` in `t` with `s`, shifting `s` up under each binder.
+def subst(j: Int64, s: Ast, t: Ast) = match t with
+  | Ast.Int(k) => (if k == j then s else Ast.Int(k))
+  | Ast.Str(x) => Ast.Str(x)
+  | Ast.Bool(b) => Ast.Bool(b)
+  | Ast.Name(n) => Ast.Name(n)
+  | Ast.List(e) => (if is-fn(e)
+      then Ast.List([Ast.Name("fn"), Ast.List([]), subst(j + 1, shift(1, 0, s), child-at(e, 2))])
+      else Ast.List(subst-list(j, s, e)))
+
+def subst-list(j: Int64, s: Ast, e: List(Ast)) = match e with
+  | [] => []
+  | [h, .. r] => cons(subst(j, s, h), subst-list(j, s, r))
+
+/// The contractum of a redex `(app (fn () body) arg)`.
+def contract(fbody: Ast, arg: Ast) = shift(0 - 1, 0, subst(0, shift(1, 0, arg), fbody))
+
+/// One normal-order (leftmost-outermost) step. Returns `(changed, term')`: `changed=false` means `t` is
+/// already in normal form (no redex anywhere).
+def step(t: Ast) = match t with
+  | Ast.List(e) => (match name-at(e, 0) with
+    | Some(h) => (if h == "app" then step-app(e) else step-children(e))
+    | None(_) => step-children(e))
+  | _ => (false, t)
+
+/// An application node: if its function is a binder, it IS a redex (contract it — outermost). Otherwise
+/// descend into the children left-to-right (congruence).
+def step-app(e: List(Ast)) =
+  match child-at(e, 1) with
+    | Ast.List(fe) => (if is-fn(fe)
+        then (true, contract(child-at(fe, 2), child-at(e, 2)))
+        else step-children(e))
+    | _ => step-children(e)
+
+/// Reduce the FIRST reducible child (left-to-right); rebuild the node around the reduced child. This is
+/// how reduction descends under binders and into argument positions.
+def step-children(e: List(Ast)) = match step-list(e) with
+  | (ch, e2) => (ch, Ast.List(e2))
+
+def step-list(e: List(Ast)) = match e with
+  | [] => (false, [])
+  | [h, .. r] => (match step(h) with
+    | (true, h2) => (true, cons(h2, r))
+    | (false, _) => (match step-list(r) with | (ch, r2) => (ch, cons(h, r2))))
+
+/// Normalize `t` to β-normal form, bounded by `fuel` reduction steps (β need not terminate).
+def norm(fuel: Int64, t: Ast) =
+  if fuel == 0 then
+    t
+  else
+    (match step(t) with
+      | (true, t2) => norm(fuel - 1, t2)
+      | (false, _) => t)
+
+/// Normalize with a generous default fuel.
+def normalize(t: Ast) = norm(1000, t)
+
+/// Builders (nameless: binder `(fn () body)`, bound var `Int index`).
+def nm(s: String) = Ast.Name(s)
+def lst(xs: List(Ast)) = Ast.List(xs)
+def nfn(b: Ast) = lst([nm("fn"), lst([]), b])
+def app(f: Ast, x: Ast) = lst([nm("app"), f, x])
+def idx(i: Int64) = Ast.Int(i)
+
+/// The de Bruijn index at the root, or a sentinel.
+def root-index(t: Ast) = match t with | Ast.Int(n) => n | _ => 0 - 99
+/// Is `t` a nameless binder?
+def is-binder(t: Ast) = match t with | Ast.List(e) => is-fn(e) | _ => false
+/// The body of a binder (element 2), or a sentinel.
+def binder-body(t: Ast) = match t with | Ast.List(e) => child-at(e, 2) | _ => Ast.Int(0 - 1)
+
+@test
+def norm-already-normal-index() =
+  // A bare index is normal.
+  if root-index(normalize(idx(4))) == 4 then unit else trap("bare index is normal")
+
+@test
+def norm-already-normal-binder() =
+  // (fn () 0) is normal (no redex).
+  if is-binder(normalize(nfn(idx(0)))) then unit else trap("a binder with no redex is normal")
+
+@test
+def norm-single-redex() =
+  // (app (fn () 0) 5) → 5 (identity; arg index 5, net-zero shift).
+  if root-index(normalize(app(nfn(idx(0)), idx(5)))) == 5 then unit else trap("identity app normalizes to its arg")
+
+@test
+def norm-nested-redexes() =
+  // (app (fn () 0) (app (fn () 0) 7)) → 7: inner identity reduces first (normal order reduces the
+  // outer, whose arg then reduces), both to 7.
+  if root-index(normalize(app(nfn(idx(0)), app(nfn(idx(0)), idx(7))))) == 7 then unit else trap("nested identities normalize to 7")
+
+@test
+def norm-reduces-under-binder() =
+  // (fn () (app (fn () 0) 3)) → (fn () 3): the redex INSIDE the binder body is reduced (congruence).
+  let r = normalize(nfn(app(nfn(idx(0)), idx(3)))) in
+  if is-binder(r) then (if root-index(binder-body(r)) == 3 then unit else trap("body reduces to index 3")) else trap("result is a binder")
+
+@test
+def norm-reduces-in-argument() =
+  // (app 9 (app (fn () 0) 2)) → (app 9 2): the redex in ARGUMENT position reduces though the head (index
+  // 9) is not a binder (so the whole app is not a redex — only its arg reduces).
+  let r = normalize(app(idx(9), app(nfn(idx(0)), idx(2)))) in
+  match r with
+    | Ast.List(e) => (match name-at(e, 0) with
+      | Some(h) => (if h == "app"
+          then (if root-index(child-at(e, 1)) == 9 then (if root-index(child-at(e, 2)) == 2 then unit else trap("arg reduced to 2")) else trap("head index 9"))
+          else trap("still an app"))
+      | None(_) => trap("head app"))
+    | _ => trap("result is (app 9 2)")
+
+@test
+def norm-const-applied-twice() =
+  // (app (app (fn () (fn () 1)) 5) 6) → 5: K combinator applied to 5 and 6 keeps the FIRST (index 1 in
+  // the inner body refers to the outer binder → 5; after both binders consumed it lands as index 5).
+  // (app (fn()(fn()1)) 5) → (fn () <1 replaced by shifted 5 = 6, then binder consumed → 5>) = (fn () 5);
+  // applied to 6 → 5 (index 5 free, unchanged net). Verifies K = λx.λy.x picks the first arg.
+  if root-index(normalize(app(app(nfn(nfn(idx(1))), idx(5)), idx(6)))) == 5 then unit else trap("K keeps the first argument")
+
+@test
+def norm-fuel-caps-nonterminating() =
+  // norm with fuel 0 returns the term untouched (the fuel bound keeps `norm` total even for a redex).
+  match norm(0, app(nfn(idx(0)), idx(5))) with
+    | Ast.List(e) => (match name-at(e, 0) with | Some(h) => (if h == "app" then unit else trap("fuel 0 leaves the redex")) | None(_) => trap("still app"))
+    | _ => trap("fuel 0 returns the unreduced redex")
+
+@test
+def norm-identity-of-identity() =
+  // (app (fn () 0) (fn () 0)) → (fn () 0): applying identity to the identity FUNCTION yields identity.
+  if is-binder(normalize(app(nfn(idx(0)), nfn(idx(0))))) then unit else trap("id applied to id is id")
+
+@test
+def norm-step-reports-no-change-on-normal() =
+  // step on a normal term reports changed=false.
+  match step(nfn(idx(0))) with
+    | (changed, _) => (if changed then trap("a normal term does not step") else unit)
+
+export { normalize, step }

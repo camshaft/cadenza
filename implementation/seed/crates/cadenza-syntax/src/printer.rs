@@ -1846,8 +1846,18 @@ impl<'a> Printer<'a> {
     /// shape: `[<tag-name>, (chunks <one-str>), (holes)]`. A node with holes (until B2 lands) or an odd
     /// shape returns false so it prints as a generic call (structure visible, never garbage).
     fn is_tagged_template_shape(&self, args: &[StructId]) -> bool {
-        if args.len() != 3 || self.a.as_name(args[0]).is_none() {
+        if args.len() != 3 {
             return false;
+        }
+        // The tag must be a BARE-SAFE name: the `tag"…"` sugar glues the tag directly before the quote,
+        // and the lexer only re-lexes an ident (not a backtick-escaped name) glued to `"` as a
+        // TaggedTemplate. A non-bare tag would print as `weird`"…" via `emit_name`, which does NOT
+        // re-lex — a garbage render (PR #405). So gate the sugar on bare-safety; a non-bare tag falls
+        // through to the generic `(tagged-template …)` call form, which round-trips
+        // ([[garbage-render-means-not-canonical-fix-the-source]]).
+        match self.a.as_name(args[0]) {
+            Some(tag) if name_is_bare_safe(tag) => {}
+            _ => return false,
         }
         // Note: `self.a.head_name` reads a LIST's head atom (the Arenas helper); the printer's local
         // `self.head_name` takes an atom id and would return None for these list nodes.
@@ -3098,6 +3108,34 @@ mod tests {
         assert_eq!(
             sexpr::print(&parser::read_ml("def m() = e\"\"").arenas),
             "(def (m) (tagged-template e (chunks \"\") (holes)))"
+        );
+    }
+
+    #[test]
+    fn tagged_template_non_bare_tag_falls_back_to_call_form() {
+        // PR #405: the `tag"…"` sugar glues the tag directly before the quote, and the lexer only
+        // re-lexes a BARE ident (not a backtick-escaped name) glued to `"`. A non-bare-safe tag (here
+        // `a+b`, which `emit_name` would backtick-quote) must NOT sugar — `` `a+b`"…" `` would not
+        // re-lex, a garbage render. It falls back to the generic `(tagged-template …)` call form, which
+        // round-trips (the tag is backtick-escaped in call-head position and re-reads as a name).
+        let a = sexpr::read("(tagged-template a+b (chunks \"hi\") (holes))").unwrap();
+        let ml = print(&a, 80);
+        assert!(
+            !ml.starts_with('`') && ml.contains("tagged-template("),
+            "a non-bare tag must print as the generic call form, not garbage sugar; got {ml:?}"
+        );
+        // And it round-trips: re-reading the ML yields the same tree.
+        assert!(
+            parser::read_ml(&ml).arenas.structurally_eq(&a),
+            "the call-form fallback must round-trip; ml = {ml:?}"
+        );
+        // A BARE-safe tag still sugars to `tag"…"`.
+        assert_eq!(
+            print(
+                &sexpr::read("(tagged-template jsx (chunks \"hi\") (holes))").unwrap(),
+                80
+            ),
+            "jsx\"hi\""
         );
     }
 

@@ -188,3 +188,87 @@ fn cdz_run_peer_reports_a_signature_mismatch_clearly_not_a_trap() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn cdz_run_peer_a_nullary_op_crosses_and_its_arity_is_checked() {
+    // A NULLARY peer op `(-> Unit Int64)` — a distinct boundary shape: the Unit DOMAIN is elided, so the
+    // op crosses as `func() -> s64` (zero params). Pins (a) a matching nullary op RUNS end-to-end over
+    // the boundary, and (b) the signature check counts the ELIDED-Unit params correctly — a nullary
+    // consumer vs a 1-arg peer is caught as "0 argument(s) … 1 argument(s)", not a trap. Scalar result,
+    // no value-heap runtime store needed.
+    let dir = temp_dir("nullary-peer");
+    // Provider: nullary `now` returning 100, published as cadenza:clock/api.
+    let prov = dir.join("prov.sexp");
+    std::fs::write(&prov, "(do (def (now) 100) (export now))").unwrap();
+    let compile_prov = |src: &std::path::Path, out: &std::path::Path| {
+        run(&[
+            "compile",
+            src.to_str().unwrap(),
+            "--component-name",
+            "cadenza:clock/api",
+            "-o",
+            out.to_str().unwrap(),
+        ])
+    };
+    let (ok, _o, err) = compile_prov(&prov, &dir.join("prov.wasm"));
+    assert!(ok, "nullary provider compile failed: {err}");
+    // Consumer: binds nullary `Clock.now`, performs `(+ x (Clock.now))`.
+    let cons = dir.join("cons.sexp");
+    std::fs::write(
+        &cons,
+        "(do (effect Clock (op now (-> Unit Int64))) (bind Clock \"cadenza:clock/api\") \
+         (def (main (: x Int64)) (host (Clock) (+ x (Clock.now)))) (export main))",
+    )
+    .unwrap();
+    let (ok, _o, err) = run(&[
+        "compile",
+        cons.to_str().unwrap(),
+        "-o",
+        dir.join("cons.wasm").to_str().unwrap(),
+    ]);
+    assert!(ok, "nullary consumer compile failed: {err}");
+    let peer_arg = format!(
+        "cadenza:clock/api={}",
+        dir.join("prov.wasm").to_str().unwrap()
+    );
+    // (a) matching nullary op runs: main(5) = 5 + now() = 5 + 100 = 105.
+    let (ok, out, err) = run(&[
+        "run",
+        dir.join("cons.wasm").to_str().unwrap(),
+        "--peer",
+        &peer_arg,
+        "--call",
+        "main",
+        "--arg",
+        "5",
+    ]);
+    assert!(ok, "a matching nullary peer op must run: {err}");
+    assert_eq!(out.trim(), "105", "5 + now() = 105: {out}");
+    // (b) a 1-arg peer against the nullary binding is caught as an arity mismatch (0 vs 1).
+    let prov_bad = dir.join("prov_bad.sexp");
+    std::fs::write(&prov_bad, "(do (def (now (: x Int64)) 100) (export now))").unwrap();
+    let (ok, _o, err) = compile_prov(&prov_bad, &dir.join("prov_bad.wasm"));
+    assert!(ok, "bad-arity provider compile failed: {err}");
+    let peer_bad = format!(
+        "cadenza:clock/api={}",
+        dir.join("prov_bad.wasm").to_str().unwrap()
+    );
+    let (ok, _out, err) = run(&[
+        "run",
+        dir.join("cons.wasm").to_str().unwrap(),
+        "--peer",
+        &peer_bad,
+        "--call",
+        "main",
+        "--arg",
+        "5",
+    ]);
+    assert!(!ok, "a nullary-vs-1-arg peer must be rejected: {err}");
+    assert!(
+        err.contains("signature mismatch")
+            && err.contains("0 argument(s)")
+            && err.contains("1 argument(s)"),
+        "the check must count the elided-Unit params (0 vs 1): {err}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

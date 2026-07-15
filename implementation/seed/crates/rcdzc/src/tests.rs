@@ -3786,6 +3786,88 @@ fn a_heap_element_inserted_into_an_empty_set_runs_and_leaves_no_extra_leak() {
     );
 }
 
+/// `Set.to-list` enumerates a set's elements as a `List` in CANONICAL element-value order (sorted,
+/// deduped) — the inverse of `Set.of`, realizing collections-and-text.md §Map/Set iteration is
+/// deterministic. Runs under wasmtime: `(List.at (Set.to-list (Set.of (list 5 2 8 2))) 0)` is the
+/// SMALLEST element (2), NOT the insertion/hash-order first, and `(List.len (Set.to-list …))` is the
+/// deduped cardinality (3). `#[ignore]` — needs the runtime store (`cargo xtask build`).
+#[test]
+#[ignore]
+fn set_to_list_enumerates_in_canonical_order() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
+        eprintln!("[set-to-list] runtime not in the store; skipping");
+        return;
+    };
+    // First (index 0) of the canonical list of {2,5,8} is the smallest, 2 — not hash/insertion order.
+    let first_src = "(module m (def (main) \
+                     (match (List.at (Set.to-list (Set.of (list 5 2 8 2))) 0) ((Some v) v) ((None u) -1))) \
+                     (export main))";
+    let first =
+        compile_component(&crate::codec::encode(&parse(first_src))).expect("Set.to-list compiles");
+    let mut rt = ComposedRuntime::new(&first, &runtime_bytes);
+    assert_eq!(
+        rt.call("main", &[]),
+        Val::S64(2),
+        "Set.to-list yields elements in canonical (sorted) order — index 0 is the min, 2"
+    );
+
+    // The enumerated list length is the DEDUPED cardinality ({1,2,3} → 3).
+    let len_src = "(module m (def (main) \
+                   (List.len (Set.to-list (Set.of (list 3 1 2 1 3))))) (export main))";
+    let len = compile_component(&crate::codec::encode(&parse(len_src))).expect("compiles");
+    let mut rt_len = ComposedRuntime::new(&len, &runtime_bytes);
+    assert_eq!(
+        rt_len.call("main", &[]),
+        Val::S64(3),
+        "Set.to-list length is the set's distinct-element count"
+    );
+}
+
+/// `Map.to-list` enumerates a map's entries as a `List (Tuple k v)` in CANONICAL KEY order — the map
+/// companion of `Set.to-list`, realizing collections-and-text.md §A Map Renders As Its Entries In
+/// Canonical Key Order. Runs under wasmtime: the first entry's KEY is the smallest (canonical, not
+/// hash/insertion order), and the list length is the distinct-key count (a re-insert at an existing key
+/// overwrites, not appends). `#[ignore]` — needs the runtime store (`cargo xtask build`).
+#[test]
+#[ignore]
+fn map_to_list_enumerates_entries_in_canonical_key_order() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
+        eprintln!("[map-to-list] runtime not in the store; skipping");
+        return;
+    };
+    // First (index 0) entry's key of {5:50, 2:20, 8:80} is the smallest, 2 — canonical key order.
+    let key_src = "(module m (def (main) \
+                   (match (List.at (Map.to-list (Map.insert (Map.insert (Map.insert Map.empty 5 50) 2 20) 8 80)) 0) \
+                     ((Some p) (match p ((tuple k v) k))) ((None u) -1))) \
+                   (export main))";
+    let key =
+        compile_component(&crate::codec::encode(&parse(key_src))).expect("Map.to-list compiles");
+    let mut rt = ComposedRuntime::new(&key, &runtime_bytes);
+    assert_eq!(
+        rt.call("main", &[]),
+        Val::S64(2),
+        "Map.to-list yields entries in canonical KEY order — index 0's key is the min, 2"
+    );
+
+    // Length is the distinct-key count ({1,2} → 2; the re-insert at key 1 overwrites).
+    let len_src = "(module m (def (main) \
+                   (List.len (Map.to-list (Map.insert (Map.insert (Map.insert Map.empty 1 10) 2 20) 1 99)))) \
+                   (export main))";
+    let len = compile_component(&crate::codec::encode(&parse(len_src))).expect("compiles");
+    let mut rt_len = ComposedRuntime::new(&len, &runtime_bytes);
+    assert_eq!(
+        rt_len.call("main", &[]),
+        Val::S64(2),
+        "Map.to-list length is the distinct-key count"
+    );
+}
+
 /// `Set.contains`/`Set.remove`/`Set.insert` must NOT fold against a `Set.of` that holds a RUNTIME element.
 /// `Set.of (list …)` folds a constant list to a canonical constant `Core::SetOf`, and these ops fold
 /// against a constant set by comparing elements at COMPILE TIME (`const_compound_eq`). But a `SetOf` can
@@ -20036,6 +20118,58 @@ mod match_engine {
     }
 
     #[test]
+    fn a_set_of_and_member_op_arg_reject_anchor_at_the_culprit() {
+        // The `Set.of` homogeneity reject (CDZ0201) and the prelude MEMBER-OP wrong-arg-type reject
+        // (CDZ0203, `Module.op expects an argument of type …`) must anchor at the CULPRIT — the outlier
+        // set element, or the wrong-typed argument — not the whole `(Set.of …)` / `(Module.op …)` node, so
+        // the squiggle points at the minimal locus (the PR #399 anchoring family; behavior unchanged).
+        let anchor_of = |src: &str| -> Option<String> {
+            let d = reject_full(src)?;
+            let db = crate::db::Db::load(parse(src));
+            d.node
+                .and_then(|n| db.ast.as_str(crate::ast::StructId(n)).map(str::to_string))
+        };
+        // Set.of — the outlier element `"z"` (a String among Int64s) is the locus, not the `(Set.of …)`.
+        assert_eq!(
+            anchor_of("(module m (def x (Set.of (list 1 2 \"z\"))) (export x))").as_deref(),
+            Some("z"),
+            "the Set.of homogeneity reject anchors at the outlier element `\"z\"`, not the call"
+        );
+        // member-op — the wrong-typed argument `"a"` (a String where List.at wants an Int64 index) is the
+        // locus, not the `(List.at …)` application node.
+        assert_eq!(
+            anchor_of("(module m (def (f (: xs (List Int64))) ((. List at) xs \"a\")) (export f))")
+                .as_deref(),
+            Some("a"),
+            "the member-op wrong-arg-type reject anchors at the argument `\"a\"`, not the call"
+        );
+        // NO REGRESSION on the deferring decline: `Symbol.of 5` (a non-string to a runtime-string op) still
+        // reports exactly ONE error — the CDZ0203 (now anchored at the arg), not also the "operand is not a
+        // string" lowering decline (which the flag-based dedup drops, since the two no longer share a node).
+        let out = crate::compile::compile(
+            &[crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "m",
+                crate::codec::encode(&parse(
+                    "(module m (def (main) ((. Symbol of) 5)) (export main))",
+                )),
+            )],
+            &[crate::backend::Target::Wasm],
+        );
+        let errors: Vec<&crate::abi::Diagnostic> = out
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == crate::abi::Severity::Error)
+            .collect();
+        assert_eq!(
+            errors.len(),
+            1,
+            "Symbol.of on a non-string = ONE error even with the arg-anchored CDZ0203: {:?}",
+            out.diagnostics
+        );
+    }
+
+    #[test]
     fn a_map_insert_type_clash_names_the_map_and_operand_types() {
         // The Map.insert twin of the map-literal heterogeneity message (M75): inserting a key/value whose
         // type differs from the map's names BOTH the map's type and the operand's type (was a generic "the
@@ -31598,6 +31732,37 @@ mod match_engine {
     }
 
     #[test]
+    fn a_bigint_inner_quantity_runs_bigint_arithmetic_not_the_fixnum_path() {
+        // MISCOMPILE FIX: a `(Qty BigInt meter)` `+`/`-`/`*`/`/` must run the runtime bigint ops on the
+        // erased inner HANDLES, not the default fixnum integer path. The `+` dispatch and the
+        // constant-materialize / borrow-ownership sites keyed on `Ty::BigInt` MISSED a `(Qty BigInt u)`
+        // (whose solved type is `Ty::Qty { inner: BigInt }`, not `Ty::BigInt`), so a BigInt-inner quantity
+        // add fell to the fixnum path and emitted an i64 where the i32 BigInt handle was expected → INVALID
+        // wasm (cdz check passed, wasm-tools rejected). Now dispatch + materialize peel the quantity. Here
+        // a RUNTIME BigInt quantity + a CONSTANT BigInt quantity (the mixed const/runtime shape that hit
+        // the materialize gap): main(5) = 5 + 100 = 105, recovered via Qty.value.
+        // A NULLARY BigInt-inner-quantity add (both a runtime-narrowed and a constant BigInt operand, the
+        // mixed shape that hit the materialize gap) — Qty.value crosses the result to the host. Uses the
+        // FULL runtime (bigint-add lives there); skips if the runtime store is absent (the corpus gate
+        // covers the parameterized form e2e regardless).
+        let src = "(do \
+                   (def (rt) ((. Int64 of) ((. BigInt of) 5))) \
+                   (def (main) \
+                     ((. Qty value) (+ ((. Qty of) ((. BigInt of) (rt)) ((. Unit base) #\"meter\")) \
+                                       ((. Qty of) ((. BigInt of) 100) ((. Unit base) #\"meter\"))))) \
+                   (export main))";
+        let Some(rendered) = run_heap_value_escape(src) else {
+            return; // no runtime store — the corpus gate is the e2e witness
+        };
+        // Before the fix this module was INVALID wasm (i32/i64 mismatch); a successful run rendering the
+        // BigInt sum 105 witnesses that a (Qty BigInt meter) add runs the bigint op, not the fixnum path.
+        assert!(
+            rendered.contains("105"),
+            "a (Qty BigInt meter) add must run the bigint op (5 + 100 = 105): {rendered}"
+        );
+    }
+
+    #[test]
     fn a_bare_number_where_a_quantity_is_expected_offers_the_qty_of_wrap() {
         // The ARGUMENT/binder twin of the dimensional-mismatch `Qty.of` wrap: a bare `Int64` passed to a
         // `(Qty …)` PARAMETER, or bound to a `(Qty …)`-annotated let-binder, gets the `(Qty.of <n> <unit>)`
@@ -38506,10 +38671,10 @@ mod stage1 {
                 "the canonical collection-op name must resolve + compile: {src}"
             );
         }
-        // …and a value EXECUTES under the new name: `(Tuple.remove (tuple 7 8 9))` drops the last element
-        // (leaving `(7 8)`), so reading element 0 folds to the constant `7` the component returns — no
-        // runtime store needed (the positional reshape is compile-time known). Exercises the renamed
-        // `Tuple.remove` end-to-end through wasmtime.
+        // …and a value EXECUTES under the new name: `(Tuple.remove (tuple 7 8 9))` pops element 0 (the
+        // head), returning the pair `(tuple 7 (tuple 8 9))` — so reading element 0 of the result folds to
+        // the head `7` the component returns (no runtime store needed — the positional reshape is
+        // compile-time known). Exercises the renamed `Tuple.remove` end-to-end through wasmtime.
         let bytes = compile_component(&crate::codec::encode(&parse(
             "(module m (def (main) (. (Tuple.remove (tuple 7 8 9)) 0)) (export main))",
         )))
@@ -38517,7 +38682,7 @@ mod stage1 {
         assert_eq!(
             run_returns::<i64>(&bytes, "main"),
             7,
-            "Tuple.remove drops the last element, so element 0 of the result stays 7"
+            "Tuple.remove pops element 0, returning (tuple head rest); element 0 of the result is the head 7"
         );
     }
 
@@ -49438,6 +49603,27 @@ mod stage1 {
         };
         assert_eq!(r, "6"); // 3·2
         assert_eq!(run_closure(src, 4).unwrap(), "12"); // 3·4
+    }
+
+    #[test]
+    fn a_non_recursive_generic_producer_composes_at_two_element_types() {
+        // COVERAGE (v-inference): a NON-recursive generic PRODUCER — `wrap1 : a -> Box a` (builds a user
+        // generic sum without recursing) — monomorphizes by INLINING at each call site, so it composes at
+        // MULTIPLE element types with no result-element tie. `unwrap(wrap1(n)) + byte-len(unwrap(wrap1("ab")))`
+        // = `n + 2`, used at Int64 AND String in one program. This is the BOUNDARY of the recursive-producer
+        // gap (a recursive `List a -> Iter a` producer at ≥2 types is gated on the not-yet-built tie); a
+        // non-recursive producer is unaffected because the call site's concrete arg type flows into the
+        // inlined body. Pins that non-recursive generic producers stay working across ≥2 instantiations.
+        let src = "(module m \
+            (type Box (Wrap a)) \
+            (def (wrap1 x) (Box.Wrap x)) \
+            (def (unwrap b) (match b ((Box.Wrap v) v))) \
+            (def (main (: n Int64)) (+ (unwrap (wrap1 n)) (String.byte-len (unwrap (wrap1 \"ab\"))))) \
+            (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        use wasmtime::component::Val;
+        assert_eq!(run_returns_with::<i64>(&bytes, "main", &[Val::S64(5)]), 7); // 5 + byte-len("ab")=2
+        assert_eq!(run_returns_with::<i64>(&bytes, "main", &[Val::S64(40)]), 42); // 40 + 2
     }
 
     #[test]

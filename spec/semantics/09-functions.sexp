@@ -3320,6 +3320,31 @@
 ; before emitting a component interface because generics do not cross the boundary"). Each copy emits as
 ; an ordinary monomorphic function with its own machine valtypes; two calls at the SAME type share one.
 
+; A NON-RECURSIVE generic PRODUCER — a function that BUILDS a generic value from a generic input but does
+; NOT recurse — monomorphizes by ordinary inlining (β-reduction at the call site IS specialization), so it
+; works at MULTIPLE element types with no special machinery: `(wrap1 x) = (Box.Wrap x)` is `∀a. a → Box a`,
+; and `(wrap1 5)` / `(wrap1 "ab")` each inline to a concrete construction. This is the contrast case to the
+; RECURSIVE generic producer (which cannot inline and needs the result-element tie the monomorphizer does
+; not yet make — the `List a -> Iter a` ≥2-type limit): non-recursive producers are unaffected because the
+; call site's concrete argument type flows straight into the inlined body. Pins that a non-recursive generic
+; producer composes at ≥2 element types (Int64 + String) — the boundary of the recursive-producer gap.
+
+(case "a non-recursive generic producer composes at two element types via inlining"
+  (doc    "`wrap1 : a -> Box a` builds a user generic sum WITHOUT recursing, so it monomorphizes by
+           inlining at each call site — no result-element tie needed. Used at Int64 (`(wrap1 n)`) AND
+           String (`(wrap1 \"ab\")`) in one program, each `(unwrap (wrap1 …))` inlines to its concrete type.
+           `unwrap(wrap1(n)) + byte-len(unwrap(wrap1(\"ab\")))` = `n + 2`. Pins that a NON-recursive generic
+           producer composes at ≥2 element types (unlike the recursive `List a -> Iter a` producer, which is
+           gated on the not-yet-built result-element tie) — the boundary of that gap.")
+  (input  (do
+            (type Box (Wrap a))
+            (def (wrap1 x) (Box.Wrap x))
+            (def (unwrap b) (match b ((Box.Wrap v) v)))
+            (def (main (: n Int64)) (+ (unwrap (wrap1 n)) (String.byte-len (unwrap (wrap1 "ab")))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 7 Int64))
+  (call   main (: 40 Int64)) (output (: 42 Int64)))
+
 (case "a recursive generic function is instantiated at two different types"
   (doc    "`loopn` counts `n` down, threading `x` UNCHANGED — so `x` is generic (the body never fixes its
            type). Called at Int64 (`(loopn 3 40)` → 40, an i64 slot) AND at String (`(loopn 2 \"hi\")` →

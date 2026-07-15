@@ -603,6 +603,21 @@ pub enum Core {
         elem: StructId,
         elem_ty: crate::ty::Ty,
     },
+    /// `Set.to-list` — enumerate the set's elements as a `List` in CANONICAL element-value order. Emits
+    /// `set-to-list(set, desc)` (BORROWS the set; `desc` is a compiler-baked element-shape descriptor the
+    /// runtime reads to order by). `elem_ty` bakes that descriptor. Yields a `List a` handle.
+    SetToList {
+        set: StructId,
+        elem_ty: crate::ty::Ty,
+    },
+    /// `Map.to-list` — enumerate the map's entries as a `List (Tuple k v)` in CANONICAL KEY order. Emits
+    /// `map-to-list(map, desc)` (BORROWS the map; `desc` is a compiler-baked MAP-shape descriptor the
+    /// runtime reads to order by key). `key_ty`/`val_ty` bake that descriptor. Yields a `List (Tuple k v)`.
+    MapToList {
+        map: StructId,
+        key_ty: crate::ty::Ty,
+        val_ty: crate::ty::Ty,
+    },
     /// `Set.insert` — add `elem` to `set`, returning the new set (runtime `set-insert`; persistent, CONSUMES
     /// the set handle + the boxed element). Inserting a present element is a no-op value. The set analogue
     /// of `MapInsert` (no value column).

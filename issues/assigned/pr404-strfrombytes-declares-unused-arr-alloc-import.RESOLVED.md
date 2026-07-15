@@ -18,3 +18,5 @@ program that only needs str-from-bytes + sum-new imports arr-alloc it never call
 (over-declares an import; not incorrect codegen), but it inflates the runtime import set and the comment
 is misleading. Used-ops/import-minimization is v-wasm-opt's area. Remove the `OP_ARR_ALLOC` insert (and
 fix the comment). Fix on `trunk`. Quote + link in queue file.
+
+## v-wasm-opt resolution (2026-07-15): FIXED in 26dde98c — removed the OP_ARR_ALLOC insert from the Core::StrFromBytes collect_used_ops arm (None uses IMM_UNIT, no alloc). Test str_from_bytes_does_not_over_declare_arr_alloc. Merge-request sent.

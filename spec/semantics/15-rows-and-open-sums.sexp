@@ -469,6 +469,35 @@
             (def (main) (rd (Wrap (Some 5)))) (export main)))
   (output (: 5 Int64)))
 
+(case "an open sum nested as another sum's payload matches with an inner wildcard"
+  (doc    "Witnesses type-system.md #A Sum Type May Be Open, With A Mandatory Open-Tail Arm composed with
+           #Patterns Compose: an OPEN sum can be the payload of another (closed) sum — here an
+           `(Option Inner)` where `Inner` is open. A match nesting into the `Some` payload
+           (`(Some (A n))`) plus a `(Some _)` arm covering the open Inner's other/unnamed variants plus
+           `(None)` is exhaustive: the outer `Option` is CLOSED (Some/None both covered), and the inner
+           open `Inner` is covered by the `(Some _)` wildcard. `(rd (Some (B 5)))` falls through `(Some
+           (A n))` to `(Some _)` → 0. Pins that an open sum composes as a generic sum's payload and its
+           open tail is satisfied by an inner `_` at the nesting level.")
+  (input  (do
+            (type Inner (A Int64) (B Int64) .. r)
+            (def (rd (: o (Option Inner)))
+              (match o ((Some (A n)) n) ((Some _) 0) ((None) -1)))
+            (def (main) (rd (Some (B 5)))) (export main)))
+  (output (: 0 Int64)))
+
+(case "an open sum with a guarded named arm plus an open-tail arm is exhaustive"
+  (doc    "Witnesses type-system.md #A Sum Type May Be Open, With A Mandatory Open-Tail Arm composed with
+           the guarded-arm rule (a guarded arm covers no variant, so it never satisfies exhaustiveness on
+           its own): an open sum matched by a GUARDED named arm `(guard (A n) (> n 0))` plus the open-tail
+           `_` is exhaustive — the `_` covers both the guard's false-fallthrough and the open/unnamed
+           variants. `(rd (A 7))` satisfies the guard (7 > 0) → 7. Pins that the open-tail arm composes
+           with a guard exactly as it does for a closed sum's guarded arms.")
+  (input  (do
+            (type V (A Int64) (B Int64) .. r)
+            (def (rd (: v V)) (match v ((guard (A n) (> n 0)) n) (_ 0)))
+            (def (main) (rd (A 7))) (export main)))
+  (output (: 7 Int64)))
+
 (case "an open sum's payload decodes against a schema to a typed result"
   (doc    "Witnesses type-system.md #An Open Sum's Payload May Be Schema-Typed: a variant's payload is
            decoded against a schema resolved at run time, yielding a typed Ok result on a match. A

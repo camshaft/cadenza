@@ -3142,7 +3142,7 @@ fn op_str_get(h: Handle) -> String {
 /// `op_str_get`/`op_bytes_get`/value-encode's `Shape::Str` arm do. Returns `Handle::NULL` for invalid
 /// UTF-8 so the compiler can build the `(Option String)` sum (`Some buf` / `None`), or wrap directly.
 ///
-/// WIT-EXPORTED at index 83 (`str-from-bytes`) — the runtime half of the coordinated `String.from-bytes`
+/// WIT-EXPORTED at index 85 (`str-from-bytes`) — the runtime half of the coordinated `String.from-bytes`
 /// op, called by the `Guest::str_from_bytes` method. The compiler emits it (`Core::StrFromBytes`) when
 /// `String.from-bytes` is applied to a RUNTIME byte sequence (a constant `Bytes.of` still folds in
 /// lower.rs). The load-bearing logic (flatten + strict validate + consume/re-tag) lives here.
@@ -3222,7 +3222,7 @@ fn op_bytes_scalar_at(buf: Handle, scalar_index: u32) -> u32 {
 // had no remaining coordination path and was dead maintenance surface (unexported → DCE'd → hash-neutral
 // either way); removed it + its test. The underlying primitives it composed — `bytes_flatten` +
 // `champ_eq` — stay thoroughly covered by the collection fuzzers + the `compact_makes_a_*_canonical`
-// contract tests. (`op_str_from_bytes` is now WIT-EXPORTED at index 83 — the string round-trip blocker is
+// contract tests. (`op_str_from_bytes` is now WIT-EXPORTED at index 85 — the string round-trip blocker is
 // wired; `op_bytes_scalar_at` remains prepared-but-unexported: scalar-at the lexer's random-access read.)
 
 // ─── Map: dynamic-key collection of (key, value) handle pairs, stored verbatim ──────────

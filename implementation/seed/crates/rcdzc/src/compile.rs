@@ -2627,6 +2627,18 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>, has_bakeable_type_export: bool) ->
     let has_not_a_function_reject = faults
         .iter()
         .any(|r| r.code.is_some() && r.message.starts_with(crate::diag::NOT_A_FUNCTION_PREFIX));
+    // A member-op wrong-argument-TYPE reject (`Symbol.of 5` / `List.at xs true` → CDZ0203 "`Module.op`
+    // expects an argument of type …") makes the op's LOWERING decline "this operation's operand is not a
+    // string (see the type error above)" (`runtime_string_op_decline`). That decline is EXPLICITLY the
+    // weaker consequence — its own text says "see the type error above". It used to be dropped by the
+    // node-keyed `coded_nodes` dedup (both stamped the app node), but once the CDZ0203 anchors at the
+    // ARGUMENT (better locus, PR #399 anchoring), the two land on DIFFERENT nodes and the node-keyed drop
+    // misses it. Drop it by FLAG whenever a member-op wrong-arg-type CDZ0203 is present — the decline is
+    // the same defect surfacing at lowering. (Keyed on the stable "expects an argument of type" phrase the
+    // member-op arm always emits.)
+    let has_member_op_arg_type_reject = faults.iter().any(|r| {
+        r.code == Some(Code::TypeMismatch) && r.message.contains("expects an argument of type")
+    });
     // A TYPE VALUE used where a runtime value is wanted — `(+ Color 1)`, a first-class type in an
     // arithmetic/operand position — is reported by `infer` as the coded CDZ0201 kind-boundary ("a Type and
     // an Int64 are different types …"). Lowering that same operand ALSO hits the SPANLESS uncoded "a type
@@ -2955,6 +2967,16 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>, has_bakeable_type_export: bool) ->
             if has_not_a_function_reject
                 && r.is_decline()
                 && r.message == crate::diag::NOT_APPLYABLE_DECLINE
+            {
+                return false;
+            }
+            // Drop the "operand is not a string (see the type error above)" decline when a member-op
+            // wrong-arg-type CDZ0203 is present — the decline defers to it explicitly (and once the CDZ0203
+            // anchors at the argument, they no longer share a node for the node-keyed dedup below).
+            if has_member_op_arg_type_reject
+                && r.is_decline()
+                && r.message
+                    .contains("this operation's operand is not a string (see the type error above)")
             {
                 return false;
             }
@@ -3509,6 +3531,8 @@ fn collect_reached_poisons_at(db: &mut Db, id: StructId, out: &mut Vec<Reject>) 
         }
         // `Set.len` unconditionally evaluates the set operand — descend.
         Core::SetLen { set } => collect_reached_poisons(db, set, out),
+        Core::SetToList { set, .. } => collect_reached_poisons(db, set, out),
+        Core::MapToList { map, .. } => collect_reached_poisons(db, map, out),
         // A set-algebra op unconditionally evaluates both operand sets — descend into each.
         Core::SetAlgebra { lhs, rhs, .. } => {
             collect_reached_poisons(db, lhs, out);

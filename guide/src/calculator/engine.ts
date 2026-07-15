@@ -15,6 +15,11 @@
 
 import { replEval, type Surface } from "../compiler/client.ts";
 import { run as runComponent } from "../runner/client.ts";
+import { classify } from "./classify.ts";
+
+// `classify`/`isIdentifier` moved to the React-free `./classify.ts` so `node --test` can cover them
+// (this module transitively imports the wasm runtime). Re-exported for existing importers.
+export { classify } from "./classify.ts";
 
 /// The implicit variable holding the last result's source — `ans` recalls (and, by `let`-shadowing,
 /// composes with) the previous line.
@@ -28,11 +33,6 @@ export type Eval =
   | { kind: "timeout" }
   | { kind: "error"; message: string };
 
-/// A classified input line.
-type Line =
-  | { kind: "assign"; name: string; expr: string }
-  | { kind: "expr"; expr: string };
-
 /// A stored binding: a name, the SOURCE expression it was assigned (never a value form — see the header
 /// on why), and the rendered value it evaluated to at assignment time (for the variables panel, so the
 /// panel never has to RE-run — re-running would collide with the run worker's one-at-a-time guard).
@@ -40,39 +40,6 @@ interface Binding {
   name: string;
   src: string;
   display: string;
-}
-
-/// A single Cadenza identifier: letters/`_` to start, then letters/digits/`-`/`_`/`.` (kebab + dotted
-/// member paths like `String.scalar-len`). Mirrors the native crate's `is_identifier`.
-function isIdentifier(s: string): boolean {
-  return /^[A-Za-z_][A-Za-z0-9_.-]*$/.test(s);
-}
-
-/// Classify a typed line as an assignment `name = expr` or a bare expression. An assignment is a single
-/// leading identifier, one `=` that is not part of `==`/`<=`/`>=`/`!=`, then a non-empty expression.
-/// Everything else — an equality `a == b`, a comparison, a multi-token left side — is an expression.
-/// Mirrors the native crate's `classify`.
-export function classify(line: string): Line {
-  const trimmed = line.trim();
-  for (let i = 0; i < trimmed.length; i++) {
-    if (trimmed[i] !== "=") continue;
-    const prev = i > 0 ? trimmed[i - 1] : "";
-    const next = i + 1 < trimmed.length ? trimmed[i + 1] : "";
-    const isComparison =
-      next === "=" || prev === "=" || prev === "<" || prev === ">" || prev === "!";
-    if (!isComparison) {
-      const lhs = trimmed.slice(0, i).trim();
-      const rhs = trimmed.slice(i + 1).trim();
-      if (isIdentifier(lhs) && rhs.length > 0) {
-        return { kind: "assign", name: lhs, expr: rhs };
-      }
-      // A `=` that isn't a clean `ident = expr` → treat the whole line as an expression.
-      return { kind: "expr", expr: trimmed };
-    }
-    // Skip the whole comparison operator so `a == b == c` isn't misread.
-    if (next === "=") i++;
-  }
-  return { kind: "expr", expr: trimmed };
 }
 
 /// The calculator's session state. One surface per instance (ML by default), matching the native crate.

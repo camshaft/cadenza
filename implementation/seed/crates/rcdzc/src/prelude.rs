@@ -628,6 +628,7 @@ fn map_module(ast: &mut Arenas) -> StructId {
     let lookup_lambda = map_lookup_type_lambda(ast);
     let remove_lambda = map_remove_type_lambda(ast);
     let size_lambda = map_size_type_lambda(ast);
+    let to_list_lambda = map_to_list_type_lambda(ast);
     let swap_lambda = map_swap_type_lambda(ast);
     let take_lambda = map_take_type_lambda(ast);
     let mut children = vec![head, apply_field];
@@ -637,6 +638,7 @@ fn map_module(ast: &mut Arenas) -> StructId {
         ("lookup", "map-lookup", lookup_lambda),
         ("remove", "map-remove", remove_lambda),
         ("len", "map-size", size_lambda),
+        ("to-list", "map-to-list", to_list_lambda),
         ("swap", "map-swap", swap_lambda),
         ("take", "map-take", take_lambda),
     ] {
@@ -665,6 +667,7 @@ fn set_module(ast: &mut Arenas) -> StructId {
     let builder = intrinsic_node(ast, "Set");
     let apply_field = meta_field(ast, "apply", builder);
     let of_lambda = set_of_type_lambda(ast);
+    let to_list_lambda = set_to_list_type_lambda(ast);
     let contains_lambda = set_contains_type_lambda(ast);
     let len_lambda = set_len_type_lambda(ast);
     let insert_lambda = set_elem_to_set_type_lambda(ast); // (Set a) → a → (Set a)
@@ -675,6 +678,7 @@ fn set_module(ast: &mut Arenas) -> StructId {
     let mut children = vec![head, apply_field];
     for (name, prim, lambda) in [
         ("of", "set-of", of_lambda),
+        ("to-list", "set-to-list", to_list_lambda),
         ("contains", "set-contains", contains_lambda),
         ("len", "set-len", len_lambda),
         ("insert", "set-insert", insert_lambda),
@@ -703,6 +707,16 @@ fn set_of_type_lambda(ast: &mut Arenas) -> StructId {
     let set_a = set_a_type(ast);
     let list_a = list_a_type(ast);
     let body = arrow_type(ast, list_a, set_a); // (-> (List a) (Set a))
+    list_type_lambda(ast, body)
+}
+
+/// `(fn (a) (-> (Set a) (List a)))` for `Set.to-list` — `∀a. (Set a) → (List a)`: enumerate the set's
+/// elements as a list in CANONICAL element-value order (the inverse of `Set.of`; realizes
+/// collections-and-text.md §Map/Set iteration is deterministic).
+fn set_to_list_type_lambda(ast: &mut Arenas) -> StructId {
+    let set_a = set_a_type(ast);
+    let list_a = list_a_type(ast);
+    let body = arrow_type(ast, set_a, list_a); // (-> (Set a) (List a))
     list_type_lambda(ast, body)
 }
 
@@ -819,6 +833,24 @@ fn map_size_type_lambda(ast: &mut Arenas) -> StructId {
     let map_l = map_k_v_type(ast);
     let int64 = push_atom(ast, Leaf::Name("Int64".to_string()));
     let body = arrow_type(ast, map_l, int64); // (-> (Map k v) Int64)
+    map_type_lambda(ast, body)
+}
+
+/// `(fn (k v) (-> (Map k v) (List (Tuple k v))))` for `Map.to-list` — `∀k v. (Map k v) → (List (Tuple k
+/// v))`: enumerate the map's entries as a list of `(key, value)` tuples in CANONICAL KEY order
+/// (collections-and-text.md §A Map Renders As Its Entries In Canonical Key Order). The map companion of
+/// `Set.to-list`.
+fn map_to_list_type_lambda(ast: &mut Arenas) -> StructId {
+    let map_l = map_k_v_type(ast);
+    // (Tuple k v)
+    let tuple = push_atom(ast, Leaf::Name("Tuple".to_string()));
+    let k = push_atom(ast, Leaf::Name("k".to_string()));
+    let v = push_atom(ast, Leaf::Name("v".to_string()));
+    let tuple_kv = push_list(ast, vec![tuple, k, v]);
+    // (List (Tuple k v))
+    let list = push_atom(ast, Leaf::Name("List".to_string()));
+    let list_tuple = push_list(ast, vec![list, tuple_kv]);
+    let body = arrow_type(ast, map_l, list_tuple); // (-> (Map k v) (List (Tuple k v)))
     map_type_lambda(ast, body)
 }
 

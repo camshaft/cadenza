@@ -606,4 +606,19 @@ fn a_list_parameter_test_is_property_tested_by_a_synthesized_generator() {
         stdout.contains("counterexample") && stdout.contains("seed 0"),
         "a counterexample + replay seed are reported: {stdout}"
     );
+
+    // G2: the element type need not be an integer — a `(List Bool)` is generated too (each element from
+    // a `Test.gen` int read as a boolean). Pins that the generator recurses over the element kind.
+    let bools = write(
+        &d,
+        "bools.cdz",
+        "@test def bools_len(bs: List(Bool)) = if List.len(bs) >= 0 then unit else trap(\"neg\")\n\
+         @test def anchor2() = if 1 == 1 then unit else trap(\"a\")\n",
+    );
+    let (ok, stdout, stderr) = run(&["test", &bools, "--trials", "10"]);
+    assert!(ok, "a List Bool property passes: {stdout}{stderr}");
+    assert!(
+        stdout.contains("PASS bools_len-gen (10 trials)"),
+        "a List Bool parameter is property-tested via the synthesized wrapper: {stdout}"
+    );
 }

@@ -31,9 +31,24 @@ next reload. `cargo xtask install-lsp --uninstall` removes the symlink.
 - `cadenza.trace.server` — `off` | `messages` | `verbose`, to trace the JSON-RPC traffic when
   debugging the extension.
 
+## Packaging a `.vsix` (distribution)
+
+`cargo xtask install-lsp` (the symlink install above) is the primary path for local development. To
+produce a shareable `.vsix`:
+
+```
+cd integrations/vscode
+npx @vscode/vsce package     # needs Node 20+
+```
+
+`.vscodeignore` excludes the per-machine `.cdz-server-path` (a published `.vsix` resolves the server
+via the `cadenza.server.path` setting or `cdz` on `PATH` instead), plus repo bookkeeping; it KEEPS
+`node_modules/` because the runtime dependency (`vscode-languageclient`) must ship inside the package.
+
 ## Layout
 
 - `package.json` — the manifest (language registration, grammar, activation, the `vscode-languageclient` dep).
 - `extension.js` — the LSP client (resolve `cdz`, launch `cdz lsp` over stdio, forward requests).
 - `language-configuration.json` — comments/brackets/auto-closing.
 - `syntaxes/cadenza.tmLanguage.json` — baseline lexical highlighting (the semantic-tokens fallback).
+- `.vscodeignore` — what a packaged `.vsix` excludes (the per-machine server path + dev bookkeeping).

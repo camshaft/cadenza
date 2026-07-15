@@ -281,6 +281,7 @@ const OP_MAP_INSERT: &str = "map-insert";
 const OP_MAP_LOOKUP: &str = "map-lookup";
 const OP_MAP_REMOVE: &str = "map-remove";
 const OP_MAP_SIZE: &str = "map-size";
+const OP_MAP_TO_LIST: &str = "map-to-list";
 /// Persistent CHAMP set ops (CHAMP-minus-value-column). `set-empty() -> handle`; `set-insert(s, elem) ->
 /// handle` (consumes s, elem); `set-contains(s, elem) -> bool` (BORROWS both); `set-remove(s, elem) ->
 /// handle` (consumes s; borrows elem); `set-size(s) -> u32` (borrows, O(1)); `set-union`/`set-intersection`/
@@ -290,6 +291,7 @@ const OP_SET_INSERT: &str = "set-insert";
 const OP_SET_CONTAINS: &str = "set-contains";
 const OP_SET_REMOVE: &str = "set-remove";
 const OP_SET_SIZE: &str = "set-size";
+const OP_SET_TO_LIST: &str = "set-to-list";
 const OP_SET_UNION: &str = "set-union";
 const OP_SET_INTERSECTION: &str = "set-intersection";
 const OP_SET_DIFFERENCE: &str = "set-difference";
@@ -510,6 +512,8 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
         }
         // `Set.len` BORROWS its set operand (`set-size` reads the root without consuming) — like `Map.size`.
         Core::SetLen { set } => binding_escapes(db, set, binder, true),
+        Core::SetToList { set, .. } => binding_escapes(db, set, binder, true),
+        Core::MapToList { map, .. } => binding_escapes(db, map, binder, true),
         // A set-algebra op CONSUMES both operand sets into the result — either escapes if used here.
         Core::SetAlgebra { lhs, rhs, .. } => {
             binding_escapes(db, lhs, binder, false) || binding_escapes(db, rhs, binder, false)
@@ -704,6 +708,8 @@ pub fn core_child_ids(db: &mut Db, id: StructId) -> Vec<StructId> {
         | Core::BytesCompact { operand }
         | Core::MapSize { map: operand }
         | Core::SetLen { set: operand }
+        | Core::SetToList { set: operand, .. }
+        | Core::MapToList { map: operand, .. }
         | Core::Proj { operand, .. }
         | Core::SumPayload {
             scrutinee: operand, ..
@@ -1002,6 +1008,8 @@ fn mark_binder_dups_inner(
         }
         Core::MapSize { map } => borrow(db, map, live_after, sites),
         Core::SetLen { set } => borrow(db, set, live_after, sites),
+        Core::SetToList { set, .. } => borrow(db, set, live_after, sites),
+        Core::MapToList { map, .. } => borrow(db, map, live_after, sites),
         Core::SumPayload { scrutinee, .. } | Core::SumExpect { scrutinee, .. } => {
             borrow(db, scrutinee, live_after, sites)
         }
@@ -1903,6 +1911,20 @@ fn collect_used_ops_into(
             collect_used_ops_into(db, set, out);
             collect_used_ops_into(db, elem, out);
         }
+        // `Set.to-list` = `set-to-list` + the inline descriptor `Bytes` build (`bytes-alloc`/`bytes-set`).
+        Core::SetToList { set, .. } => {
+            out.insert(OP_SET_TO_LIST);
+            out.insert(OP_BYTES_ALLOC);
+            out.insert(OP_BYTES_SET);
+            collect_used_ops_into(db, set, out);
+        }
+        // `Map.to-list` = `map-to-list` + the inline descriptor `Bytes` build (`bytes-alloc`/`bytes-set`).
+        Core::MapToList { map, .. } => {
+            out.insert(OP_MAP_TO_LIST);
+            out.insert(OP_BYTES_ALLOC);
+            out.insert(OP_BYTES_SET);
+            collect_used_ops_into(db, map, out);
+        }
         // `Set.len` = `set-size` (→ u32, extended to i64) — reads the set operand.
         Core::SetLen { set } => {
             out.insert(OP_SET_SIZE);
@@ -2043,14 +2065,21 @@ fn collect_used_ops_into(
             collect_used_ops_into(db, operand, out);
         }
         // `String.from-bytes` on a runtime Bytes: `str-from-bytes` (→ the String handle, or NULL when the
-        // buffer is invalid UTF-8), then build `Some(handle)` / `None` (`sum-new`, `arr-alloc` for None's
-        // unit). The returned handle is already OWNED (str-from-bytes consumes the buffer and transfers it
-        // out), so it is used DIRECTLY as the `Some` payload — no `dup`. The None branch has no handle to
-        // drop (the runtime consumed the buffer on failure).
+        // buffer is invalid UTF-8), then build `Some(handle)` / `None` via `sum-new`. The returned handle is
+        // already OWNED (str-from-bytes consumes the buffer and transfers it out), so it is used DIRECTLY as
+        // the `Some` payload — no `dup`. The None branch's unit payload is the inline `IMM_UNIT` CONSTANT
+        // (matching the emit, exactly as `Map.lookup`/`Bytes.at` build their None), NOT an `arr-alloc(0)`
+        // call — so `arr-alloc` must NOT be imported here (the emit never calls it; importing it declares a
+        // DEAD runtime op for a program using only str-from-bytes + sum-new). The None branch has no handle
+        // to drop (the runtime consumed the buffer on failure).
         Core::StrFromBytes { bytes, .. } => {
+            // `str-from-bytes` decodes the buffer to a String handle or NULL; the emit then builds
+            // `Some(handle)` / `None` via `sum-new`. The `None` payload is the INLINE-unit constant
+            // (`IMM_UNIT`), not an allocated cell — so `sum-new` is the only heap op, no `arr-alloc`.
+            // (An earlier version over-declared `OP_ARR_ALLOC` "for None's unit"; None uses no alloc, so
+            // importing it forced an unnecessary runtime import — PR #404 Copilot review.)
             out.insert(OP_STR_FROM_BYTES);
             out.insert(OP_SUM_NEW);
-            out.insert(OP_ARR_ALLOC);
             collect_used_ops_into(db, bytes, out);
         }
         Core::If { cond, then_, else_ } => {
@@ -2293,7 +2322,7 @@ fn collect_used_ops_into(
         // an i64-fitting value, or `bytes-alloc`/`bytes-set`/`bigint-of-bytes` for a beyond-i64 one — declare
         // whichever it needs here to match `emit_const_bigint_leaf`. (A whole-export constant BigInt takes
         // the baked-bytes path and never reaches `emit`, but an unused import would be harmless if it did.)
-        Core::ConstInt(_) if matches!(type_of(db, id), Ty::BigInt) => {
+        Core::ConstInt(_) if is_bigint_valued(db, id) => {
             insert_const_bigint_materialize_ops(db, id, out);
         }
         // A constant Rational used as an in-body runtime value MATERIALIZES via `bigint-of-i64` (×2 the
@@ -4980,9 +5009,11 @@ fn emit(
             // fits i64 — a beyond-i64 constant BigInt is not yet built and declines earlier). A CONSTANT
             // BigInt that is a whole nullary EXPORT takes the baked-bytes `constant_value_form` path and
             // never reaches here; this is only the in-body runtime-value use.
-            if matches!(type_of(db, id), Ty::BigInt) {
+            if is_bigint_valued(db, id) {
                 // Materialize the constant as a heap leaf: fits-i64 via `bigint-of-i64`, beyond-i64 via
                 // `bigint-of-bytes` on its baked canonical sign-magnitude bytes (`emit_const_bigint_leaf`).
+                // `is_bigint_valued` also fires for a BigInt-inner quantity (`(Qty.of (BigInt.of k) u)`) —
+                // it erases to this ConstInt and equally needs the handle, not a raw `i64.const`.
                 emit_const_bigint_leaf(&v, out);
                 return Ok(());
             }
@@ -5907,6 +5938,52 @@ fn emit(
             out.push(Lir::CallImport(OP_SET_SIZE)); // → [size:i32]
             out.push(Lir::I64ExtendI32U); // → [size:i64]
             Ok(())
+        }
+        // `Set.to-list(s)` — enumerate the set's elements as a `List` in canonical element order. Emit the
+        // set handle, then build the compiler-baked element-shape descriptor as a constant `Bytes` handle
+        // inline (`bytes-alloc(n)` then a `bytes-set` per descriptor byte — `bytes-set` returns the buffer,
+        // so the desc handle threads on the stack), then `set-to-list(s, desc)` (BORROWS both; the runtime
+        // reads the desc to order by element value and returns a fresh owned `List`). The descriptor is a
+        // `Set`-rooted shape (NOT the value-form `Framed` wrapper), which is what `op_set_to_list` resolves.
+        Core::SetToList { set, elem_ty } => {
+            let Some(desc) = crate::lower::set_shape_descriptor(db, &elem_ty) else {
+                return Err(Reject::decline(
+                    "Set.to-list element shape has no orderable descriptor",
+                ));
+            };
+            emit(db, set, slots, base, high, scratch_ty, layout, out)?; // [set]
+            out.push(Lir::ConstI32(desc.len() as i32)); // [set, len]
+            out.push(Lir::CallImport(OP_BYTES_ALLOC)); // → [set, desc-buf]
+            for (j, &byte) in desc.iter().enumerate() {
+                out.push(Lir::ConstI32(j as i32)); // [set, buf, index]
+                out.push(Lir::ConstI32(byte as i32)); // [set, buf, index, byte]
+                out.push(Lir::CallImport(OP_BYTES_SET)); // → [set, buf] (bytes-set returns the buffer)
+            }
+            out.push(Lir::CallImport(OP_SET_TO_LIST)); // [set, desc] → [list]
+            Ok(()) // leaves [list]
+        }
+        // `Map.to-list(m)` — the map companion: emit the map, bake a MAP-rooted key/value shape descriptor
+        // inline, then `map-to-list(m, desc)` → a `List (Tuple k v)` in canonical KEY order.
+        Core::MapToList {
+            map,
+            key_ty,
+            val_ty,
+        } => {
+            let Some(desc) = crate::lower::map_shape_descriptor(db, &key_ty, &val_ty) else {
+                return Err(Reject::decline(
+                    "Map.to-list key/value shape has no orderable descriptor",
+                ));
+            };
+            emit(db, map, slots, base, high, scratch_ty, layout, out)?; // [map]
+            out.push(Lir::ConstI32(desc.len() as i32)); // [map, len]
+            out.push(Lir::CallImport(OP_BYTES_ALLOC)); // → [map, desc-buf]
+            for (j, &byte) in desc.iter().enumerate() {
+                out.push(Lir::ConstI32(j as i32)); // [map, buf, index]
+                out.push(Lir::ConstI32(byte as i32)); // [map, buf, index, byte]
+                out.push(Lir::CallImport(OP_BYTES_SET)); // → [map, buf]
+            }
+            out.push(Lir::CallImport(OP_MAP_TO_LIST)); // [map, desc] → [list]
+            Ok(()) // leaves [list]
         }
         // A runtime `Set.contains(s, e)` — the TOTAL membership predicate. Box the element, `set-contains(s,
         // key)` (BORROWS both; returns a `bool` directly — UNLIKE `Map.lookup`'s NULL-or-handle → Option).
@@ -8396,6 +8473,17 @@ fn elem_needs_rope_compaction(db: &mut Db, id: StructId) -> bool {
     matches!(peel(&type_of(db, id)), Ty::String | Ty::Symbol | Ty::Bytes)
 }
 
+/// Whether `id`'s solved type is BigInt-VALUED — a bare `Ty::BigInt` OR a quantity over a BigInt
+/// magnitude (`Ty::Qty { inner: BigInt }`). A `(Qty BigInt u)` erases to its inner BigInt handle, so
+/// every place that materializes / classifies a constant BigInt as a heap handle (the `Core::ConstInt`
+/// emit choke-point, the const-materialize-ops inserters, the borrow-ownership classifier) must treat a
+/// BigInt-inner quantity the same — else a `(Qty.of (BigInt.of k) u)` constant emits as a raw `i64.const`
+/// where an i32 handle is expected (invalid wasm). One helper so the peel is consistent across all sites.
+fn is_bigint_valued(db: &mut Db, id: StructId) -> bool {
+    matches!(type_of(db, id), Ty::BigInt)
+        || matches!(type_of(db, id), Ty::Qty { inner, .. } if matches!(*inner, Ty::BigInt))
+}
+
 fn heap_operand_ownership(db: &mut Db, id: StructId) -> Result<HandleOwnership, Reject> {
     match core_of(db, id) {
         // Constructors and calls produce a fresh owned reference (ownership transfers out). A map
@@ -8443,7 +8531,12 @@ fn heap_operand_ownership(db: &mut Db, id: StructId) -> Result<HandleOwnership, 
         // arm routes a BigInt-typed constant through `bigint-of-i64`), exactly like `ConstStr` above — so
         // as a borrowing-op operand it is Owned and the emit drops it. This is what lets `Int64.of (if c
         // (BigInt.of 1) (BigInt.of 2))` narrow a BigInt-valued `if` whose branches are constant BigInts.
-        Core::ConstInt(_) if matches!(type_of(db, id), Ty::BigInt) => Ok(HandleOwnership::Owned),
+        // A constant BigInt (bare OR a BigInt-inner quantity — `is_bigint_valued` peels the `Qty`)
+        // materializes to a FRESH owned handle at emit (the `Core::ConstInt` arm routes it through
+        // `bigint-of-i64`), exactly like `ConstStr` — so as a borrowing bigint-op operand it is Owned and
+        // the emit drops it. Covers `(+ (Qty.of (BigInt.of v) m) (Qty.of (BigInt.of 100) m))` (runtime +
+        // constant BigInt quantity) and `Int64.of (if c (BigInt.of 1) (BigInt.of 2))`.
+        Core::ConstInt(_) if is_bigint_valued(db, id) => Ok(HandleOwnership::Owned),
         // A CONSTANT Rational likewise materializes to a FRESH owned handle at `emit` (`bigint-of-i64` ×2
         // + `rational-of`), so as a borrowing-op operand it is Owned.
         Core::ConstRational(_, _) => Ok(HandleOwnership::Owned),
@@ -8561,7 +8654,7 @@ fn insert_const_bigint_materialize_ops(
     out: &mut std::collections::BTreeSet<&'static str>,
 ) {
     if let Core::ConstInt(v) = core_of(db, operand)
-        && matches!(type_of(db, operand), Ty::BigInt)
+        && is_bigint_valued(db, operand)
     {
         if v.to_i64().is_some() {
             out.insert(OP_BIGINT_OF_I64);
@@ -8628,7 +8721,7 @@ fn emit_bigint_operand(
     out: &mut Emit,
 ) -> Result<HandleOwnership, Reject> {
     if let Core::ConstInt(v) = core_of(db, operand)
-        && matches!(type_of(db, operand), Ty::BigInt)
+        && is_bigint_valued(db, operand)
     {
         // A constant BigInt operand has no heap leaf of its own — materialize one (fits-i64 via
         // `bigint-of-i64`, beyond-i64 via `bigint-of-bytes` on its baked sign-magnitude bytes). A FRESH
@@ -13937,6 +14030,36 @@ mod tests {
             1,
             "the repeated keyed lookup shares one map-lookup (CSE), got: {:?}",
             f.code
+        );
+    }
+
+    #[test]
+    fn str_from_bytes_does_not_over_declare_arr_alloc() {
+        // `String.from-bytes` emits `str-from-bytes` (decode → handle-or-NULL) then builds `Some(handle)` /
+        // `None` via `sum-new`; the `None` payload is the INLINE-unit constant (`IMM_UNIT`), so no
+        // `arr-alloc` is ever called. The used-ops collector must therefore NOT import `arr-alloc` for a
+        // body whose only heap op is `str-from-bytes` (an earlier version over-declared it "for None's
+        // unit", forcing an unnecessary runtime import — PR #404 Copilot review). The bytes come from a
+        // PARAMETER so no construction op contributes other imports.
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: b Bytes)) (String.from-bytes b)) (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let (_params, body) = function_of(&mut db, "f");
+        let mut ops: std::collections::BTreeSet<&'static str> = std::collections::BTreeSet::new();
+        collect_used_ops(&mut db, body, &mut ops);
+        assert!(
+            ops.contains(OP_STR_FROM_BYTES),
+            "str-from-bytes must be imported, got: {ops:?}"
+        );
+        assert!(
+            ops.contains(OP_SUM_NEW),
+            "sum-new (Some/None build) must be imported, got: {ops:?}"
+        );
+        assert!(
+            !ops.contains(OP_ARR_ALLOC),
+            "arr-alloc must NOT be imported — None uses the inline-unit constant, not an allocation; \
+             got: {ops:?}"
         );
     }
 

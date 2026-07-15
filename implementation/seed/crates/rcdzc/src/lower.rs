@@ -596,7 +596,7 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                     } else if let Core::Tuple { elems } = core_of(db, operand) {
                         // The RESOLVED fold (`reduce_to_tuple_elems`) sees through a `(tuple …)` literal
                         // but NOT an operand whose tuple is produced by a tuple OPERATION — `Tuple.split-at`
-                        // / `Tuple.pop`, which `lower_tuple_split_at`/`lower_tuple_pop` FOLD to a constant
+                        // / `Tuple.remove`, which `lower_tuple_split_at`/`lower_tuple_pop` FOLD to a constant
                         // `Core::Tuple` but which resolve as a `Prim` application, not a `Resolved::Tuple`.
                         // Fold the projection through that constant tuple's CORE, exactly as the literal
                         // path does: `(. (Tuple.split-at (tuple 10 20) 0) 1)` → element 1 = the suffix tuple
@@ -1315,6 +1315,19 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                     trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: quantity rational arithmetic (inner Rational)");
                     lower_rational_arith(db, prim, args[0], args[1])
                 }
+                // A quantity over a BIGINT magnitude combined with `+`/`-`/`*`/`/` runs the UNBOUNDED
+                // bigint arithmetic on the erased inner handles — the bigint analogue of the Float/Rational
+                // inner arms. A BigInt inner is a heap HANDLE (i32), so it MUST route to `lower_bigint_arith`
+                // (the runtime `bigint-*` ops / constant fold); the default integer path would treat the
+                // handle as an i64 fixnum → an i32/i64 miscompile (invalid wasm). Checked before the
+                // `bigint_operand` arm below because that reads the operand's type as `Ty::BigInt`, which a
+                // `(Qty BigInt u)` is NOT (its type is `Ty::Qty { inner: BigInt }`).
+                Some(prim @ (Prim::Add | Prim::Sub | Prim::Mul | Prim::Div))
+                    if quantity_inner_is_bigint(db, id, &args) =>
+                {
+                    trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: quantity bigint arithmetic (inner BigInt)");
+                    lower_bigint_arith(db, prim, args[0], args[1])
+                }
                 // A `+`/`-`/`*`/`/` over BIGINT operands — the unbounded arithmetic. A constant pair folds
                 // exactly via `num-bigint` (the value never overflows — the point of the type); a runtime
                 // operand emits the runtime `bigint-add`/`-sub`/`-mul`/`-div` (B3b). Checked before the
@@ -1474,7 +1487,7 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 Some(Prim::RecordPop) if args.len() == 2 => {
                     lower_record_pop(db, id, args[0], args[1])
                 }
-                // `Tuple.cat a b` — concatenate two constant `Core::Tuple`s (elements of `a` then `b`).
+                // `Tuple.concat a b` — concatenate two constant `Core::Tuple`s (elements of `a` then `b`).
                 Some(Prim::TupleCat) if args.len() == 2 => {
                     lower_tuple_cat(db, id, args[0], args[1])
                 }
@@ -1482,7 +1495,7 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 Some(Prim::TupleSplitAt) if args.len() == 2 => {
                     lower_tuple_split_at(db, id, args[0], args[1])
                 }
-                // `Tuple.pop t` — `(tuple (. t 0) <rest>)`.
+                // `Tuple.remove t` — `(tuple (. t 0) <rest>)`.
                 Some(Prim::TuplePop) if args.len() == 1 => lower_tuple_pop(db, id, args[0]),
                 // `vec-len`). One operand: the list.
                 Some(Prim::ListLen) if args.len() == 1 => {
@@ -1895,6 +1908,7 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                         _ => Core::MapSize { map },
                     }
                 }
+                Some(Prim::MapToList) if args.len() == 1 => lower_map_to_list(db, args[0]),
                 // `Set.of` — construct a set from a LIST of elements (dedup). Emit `Core::SetOf` carrying
                 // the element occurrences + the solved element type; a constant list folds to a canonical
                 // set. `Set.contains`/`len`/`insert`/`remove` + the algebra ops each lower to their runtime
@@ -1904,6 +1918,7 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 Some(Prim::SetContains) if args.len() == 2 => {
                     lower_set_contains(db, args[0], args[1])
                 }
+                Some(Prim::SetToList) if args.len() == 1 => lower_set_to_list(db, args[0]),
                 Some(Prim::SetLen) if args.len() == 1 => {
                     let set = args[0];
                     match core_of(db, set) {
@@ -10300,6 +10315,32 @@ pub fn sum_form_template(db: &mut Db, ty: &crate::ty::Ty) -> Option<SumFormTempl
 /// frame — the input to the runtime `value-encode` op. Handles a RECURSIVE sum: a sum decl already in
 /// the table is referenced by index (`Ref`), closing the cycle. `None` if any payload type has no
 /// renderable shape yet (a Float/Str/Bytes payload — a later slice; the escape then declines cleanly).
+/// Build a `Set`-ROOTED shape descriptor for `set-to-list`: the runtime `op_set_to_list` resolves the
+/// descriptor's ROOT and requires `Shape::Set(elem)` DIRECTLY (to order by the element shape), NOT the
+/// `Framed(<type-node>, …)` value-form wrapper `sum_shape_descriptor` produces. So encode the bare
+/// `shape_of(Set elem)` root. Returns `None` if the element shape has no descriptor (unorderable).
+pub fn set_shape_descriptor(db: &mut Db, elem_ty: &crate::ty::Ty) -> Option<Vec<u8>> {
+    let mut builder = ShapeTableBuilder::default();
+    let set_ty = crate::ty::Ty::Set(Box::new(elem_ty.clone()));
+    let root = builder.shape_of(db, &set_ty)?;
+    Some(builder.encode(root))
+}
+
+/// Build a `Map`-ROOTED shape descriptor for `map-to-list`: `op_map_to_list` resolves the root and
+/// requires `Shape::Map(key, val)` DIRECTLY (to order by the KEY shape), NOT the `Framed` value-form
+/// wrapper. Encode the bare `shape_of(Map key val)` root. `None` if the key/value shape has no
+/// descriptor (unorderable). The map companion of [`set_shape_descriptor`].
+pub fn map_shape_descriptor(
+    db: &mut Db,
+    key_ty: &crate::ty::Ty,
+    val_ty: &crate::ty::Ty,
+) -> Option<Vec<u8>> {
+    let mut builder = ShapeTableBuilder::default();
+    let map_ty = crate::ty::Ty::Map(Box::new(key_ty.clone()), Box::new(val_ty.clone()));
+    let root = builder.shape_of(db, &map_ty)?;
+    Some(builder.encode(root))
+}
+
 pub fn sum_shape_descriptor(db: &mut Db, ty: &crate::ty::Ty) -> Option<Vec<u8>> {
     let mut builder = ShapeTableBuilder::default();
     match ty {
@@ -11714,6 +11755,22 @@ fn quantity_inner_is_rational(db: &mut Db, id: StructId, args: &[StructId]) -> b
     }
     args.first()
         .map(|&a| is_qty_rat(&crate::infer::type_of(db, a)))
+        .unwrap_or(false)
+}
+
+/// Whether this `+`/`-`/`*`/`/` is over a quantity with a BIGINT inner magnitude — a `(Qty BigInt u)`.
+/// A BigInt inner is a heap HANDLE (i32), not a fixnum, so its arithmetic must route to the runtime
+/// `bigint-*` ops (`lower_bigint_arith`), exactly as a bare-BigInt `+` does — NOT the default integer
+/// path (which treats the operand as an i64 fixnum → an i32/i64 miscompile). The plain `bigint_operand`
+/// check misses this because a quantity's solved type is `Ty::Qty { inner: BigInt }`, not `Ty::BigInt`;
+/// this peels the quantity to see the inner, mirroring `quantity_inner_is_rational`.
+fn quantity_inner_is_bigint(db: &mut Db, id: StructId, args: &[StructId]) -> bool {
+    let is_qty_big = |t: &crate::ty::Ty| matches!(t, crate::ty::Ty::Qty { inner, .. } if matches!(**inner, crate::ty::Ty::BigInt));
+    if is_qty_big(&crate::infer::type_of(db, id)) {
+        return true;
+    }
+    args.first()
+        .map(|&a| is_qty_big(&crate::infer::type_of(db, a)))
         .unwrap_or(false)
 }
 
@@ -14703,6 +14760,8 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::MapTake
         | Prim::SetCtor
         | Prim::SetOf
+                | Prim::MapToList
+| Prim::SetToList
         | Prim::SetContains
         | Prim::SetLen
         | Prim::SetInsert
@@ -16694,6 +16753,41 @@ fn lower_set_contains(db: &mut Db, set: StructId, elem: StructId) -> Core {
     Core::SetContains { set, elem, elem_ty }
 }
 
+/// Lower `(Set.to-list set)` → `Core::SetToList`. Always emits the runtime op (no const-fold): the
+/// canonical element ORDER is the runtime's sorted walk, so even a constant set must go through the
+/// runtime to observe that order (mirrors the runtime-element collection-fold rule). The element type
+/// comes from the operand set's solved `Ty::Set`, and bakes the shape descriptor the runtime orders by.
+fn lower_set_to_list(db: &mut Db, set: StructId) -> Core {
+    if let Core::Poison(r) = core_of(db, set) {
+        return Core::Poison(r);
+    }
+    let Some(elem_ty) = set_elem_type(db, set) else {
+        return Core::Poison(Reject::decline(
+            "Set.to-list operand is not a solved set type",
+        ));
+    };
+    Core::SetToList { set, elem_ty }
+}
+
+/// Lower `(Map.to-list map)` → `Core::MapToList`. Like `Set.to-list`, no const-fold (canonical KEY
+/// order is the runtime sorted walk). The key/value types come from the operand map's solved `Ty::Map`
+/// and bake the map-shape descriptor the runtime orders by.
+fn lower_map_to_list(db: &mut Db, map: StructId) -> Core {
+    if let Core::Poison(r) = core_of(db, map) {
+        return Core::Poison(r);
+    }
+    let Some((key_ty, val_ty)) = map_kv_types(db, map) else {
+        return Core::Poison(Reject::decline(
+            "Map.to-list operand is not a solved map type",
+        ));
+    };
+    Core::MapToList {
+        map,
+        key_ty,
+        val_ty,
+    }
+}
+
 /// Lower `(Set.insert set elem)` / `(Set.remove set elem)`. FOLD onto a constant set (`Core::SetOf`) when
 /// the element is constant: insert appends (no-op if already present, by value); remove drops the matching
 /// element (no-op if absent). Else emit the runtime `Core::SetInsert`/`Core::SetRemove`. The element type
@@ -17734,7 +17828,7 @@ fn lower_record_pop(db: &mut Db, id: StructId, record: StructId, name: StructId)
     }
 }
 
-/// Lower `(Tuple.cat a b)` — concatenate two constant `Core::Tuple`s: the elements of `a` in order
+/// Lower `(Tuple.concat a b)` — concatenate two constant `Core::Tuple`s: the elements of `a` in order
 /// followed by `b`'s (each element carrying its source occurrence). A poison operand propagates; a
 /// non-constant/non-tuple operand declines (the runtime op is a later increment).
 fn lower_tuple_cat(db: &mut Db, id: StructId, a: StructId, b: StructId) -> Core {
@@ -17743,7 +17837,7 @@ fn lower_tuple_cat(db: &mut Db, id: StructId, a: StructId, b: StructId) -> Core 
         (Core::Tuple { elems: ea }, Core::Tuple { elems: eb }) => {
             let mut elems = ea;
             elems.extend(eb);
-            trace!(target: "rcdzc::fold", node = id.0, n = elems.len(), "Tuple.cat folds two constant tuples");
+            trace!(target: "rcdzc::fold", node = id.0, n = elems.len(), "Tuple.concat folds two constant tuples");
             Core::Tuple { elems }
         }
         _ => Core::Poison(Reject::decline(
@@ -17799,7 +17893,7 @@ fn lower_tuple_split_at(db: &mut Db, id: StructId, tuple: StructId, pos: StructI
     }
 }
 
-/// Lower `(Tuple.pop t)` — element 0 off: `(tuple (. t 0) <rest>)`, the rest a synthesized tuple of the
+/// Lower `(Tuple.remove t)` — element 0 off: `(tuple (. t 0) <rest>)`, the rest a synthesized tuple of the
 /// remaining elements (`(Tuple.split-at t 1)` with the singleton prefix unwrapped). A poison / non-
 /// constant / empty tuple operand propagates/declines.
 fn lower_tuple_pop(db: &mut Db, id: StructId, tuple: StructId) -> Core {
@@ -17815,7 +17909,7 @@ fn lower_tuple_pop(db: &mut Db, id: StructId, tuple: StructId) -> Core {
         return Core::Poison(Reject::decline("Tuple.remove of an empty tuple"));
     };
     let rest_tuple = synth_tuple(db, rest.to_vec());
-    trace!(target: "rcdzc::fold", node = id.0, "Tuple.pop folds to a (element0, rest) tuple");
+    trace!(target: "rcdzc::fold", node = id.0, "Tuple.remove folds to a (element0, rest) tuple");
     Core::Tuple {
         elems: vec![first, rest_tuple],
     }
@@ -19317,6 +19411,8 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::TypeEq => "type-eq",
         Prim::SetCtor => "Set",
         Prim::SetOf => "set-of",
+        Prim::MapToList => "map-to-list",
+        Prim::SetToList => "set-to-list",
         Prim::SetContains => "set-contains",
         Prim::SetLen => "set-len",
         Prim::SetInsert => "set-insert",
