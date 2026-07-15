@@ -147,10 +147,47 @@ pub fn prelude_decls(ast: &mut Arenas) -> Vec<TypeDecl> {
             ],
         )
     };
-    [option, result, sign, ordering, ast_decl]
-        .into_iter()
-        .filter_map(|item| crate::db::scan_type_decl(ast, item))
-        .collect()
+    // `(type DecodeError TypeMismatch Eof)` — the failure type in a schema `decode`'s `Err` arm
+    // (`value-interchange.md` §Decode Inverts Serialize And Refuses Otherwise; type-system.md §An Open
+    // Sum's Payload May Be Schema-Typed, mismatch → typed failure). A MULTI-VARIANT sum naming the decode
+    // failure KINDS — `TypeMismatch` (the payload's type does not match the schema's target) and `Eof`
+    // (a truncated/absent payload, the runtime-decode kind, reserved). Multi-variant (not a 1-variant
+    // sum) for two reasons: (1) a decode error genuinely HAS kinds (the concierge's design call —
+    // "a decode error usually has kinds"); (2) a single-variant sum newtype-ERASES so its ctor name
+    // vanishes at render (`(: unit DecodeError)`), whereas a multi-variant sum RENDERS its variant name
+    // — so `decode`'s mismatch yields `(Err TypeMismatch)`, an honest canonical spelling, not the
+    // unproducible `(DecodeError unit)`. `decode` builds `TypeMismatch` (disc 0) on a schema mismatch.
+    // A program reaches these as the `Err` payload of `decode`'s result; nothing privileged — the same
+    // `type_form`/`scan_type_decl` path as Option/Result.
+    let decode_error = type_form(ast, "DecodeError", &[("TypeMismatch", &[]), ("Eof", &[])]);
+    // `(type Schema (Schema-wit a) Schema-none)` — the GENERIC schema-witness sum: `(Schema Int64)` is
+    // the type of `Int64-schema`, the compile-time witness `decode` is directed by
+    // (`value-interchange.md` §Decode Is Directed By A Known Type; OS2 design OQ-2). The phantom
+    // parameter `a` is the target type the schema decodes to — it appears in a variant's payload so
+    // `scan_type_decl` derives it as the sum's type parameter, letting `(Schema Int64)` reduce to
+    // `Ty::Sum{Schema, [Int64]}`. TWO variants (a payload one + a nullary one) so `Schema` stays a
+    // BOXED `Ty::Sum` that RENDERS+CARRIES its type argument — a single-variant sum would newtype-erase
+    // to a `Ty::Nominal` and DROP the arg from `type_of` (so `decode` could not recover the target). The
+    // value is never constructed by a program (it comes only from a `«T»-schema` prelude witness the
+    // `decode` fold consumes), so the variants' runtime shapes are irrelevant — they exist only to keep
+    // the sum a two-variant carrier of the param.
+    let schema = type_form(
+        ast,
+        "Schema",
+        &[("Schema-wit", &["a"]), ("Schema-none", &[])],
+    );
+    [
+        option,
+        result,
+        sign,
+        ordering,
+        ast_decl,
+        decode_error,
+        schema,
+    ]
+    .into_iter()
+    .filter_map(|item| crate::db::scan_type_decl(ast, item))
+    .collect()
 }
 
 /// Build a `(type NAME (V payload-node…)…)` declaration form from PRE-BUILT payload TYPE-EXPRESSION nodes

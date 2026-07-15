@@ -503,6 +503,7 @@
            decoded against a schema resolved at run time, yielding a typed Ok result on a match. A
            successful decode of an Int64 payload yields (Ok 7).")
   (input  (do
+            (type Reading (Measured Int64) (Labeled String) .. r)
             (def (main)
               (decode Int64-schema (payload-of (Measured 7)))) (export main)))
   (output (: (Ok 7) (Result Int64 DecodeError))))
@@ -511,8 +512,12 @@
   (doc    "Witnesses type-system.md #An Open Sum's Payload May Be Schema-Typed (a mismatch yields a typed
            failure result rather than a trap): decoding a String payload against an Int64 schema yields
            an Err, so a fold over an open vocabulary handles a malformed payload as data rather than
-           halting.")
+           halting. The error is `DecodeError`'s `TypeMismatch` kind — a decode failure names its KIND
+           (DecodeError is a multi-variant sum `(TypeMismatch | Eof)`, not a payload-carrying newtype),
+           so the `Err` renders `(TypeMismatch unit)` (a nullary variant crosses the boundary as `(Name
+           unit)`, like `(Pos unit)` for `Sign.Pos`). Never a trap.")
   (input  (do
+            (type Reading (Measured Int64) (Labeled String) .. r)
             (def (main)
               (decode Int64-schema (payload-of (Labeled "x")))) (export main)))
-  (output (: (Err (DecodeError unit)) (Result Int64 DecodeError))))
+  (output (: (Err (TypeMismatch unit)) (Result Int64 DecodeError))))

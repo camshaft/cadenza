@@ -432,6 +432,32 @@ pub enum Prim {
     //= spec/capabilities/self-hosting-surface.md#a-reader-converts-text-to-the-canonical-representation
     //# A reader MUST convert the text of a program to the program's canonical representation, so that a program can be written as text before a surface syntax exists.
     Read,
+    /// `«T»-schema` (`Int64-schema`) — the compile-time SCHEMA WITNESS for a type `T`: a value of type
+    /// `(Schema T)` that `decode` is directed by (`value-interchange.md` §Decode Is Directed By A Known
+    /// Type; type-system.md §An Open Sum's Payload May Be Schema-Typed). OS2 realizes only the
+    /// compile-time-witness form (OQ-2): the schema value carries its target type in its `(meta t)`
+    /// scheme (`Int64-schema : (Schema Int64)`), which `decode` reads to pick the target. It has no
+    /// runtime representation (the fold consumes it entirely) — a runtime schema registry is deferred.
+    SchemaOf,
+    /// `payload-of` — extract an open sum variant's PAYLOAD as an opaque, schema-checkable value
+    /// (`type-system.md §An Open Sum's Payload May Be Schema-Typed`; OS2 design §2.1). Reads the single
+    /// payload slot of a variant value, yielding a value whose only sanctioned consumer is `decode`
+    /// (which re-types it against a schema). OS2 folds a CONSTANT variant (`(Measured 7)` →
+    /// `Core::SumNew{disc, [payload]}`) to its constant payload core, tagged with the payload's own type;
+    /// a runtime variant declines (the runtime payload path is deferred, OQ-4). Like `SumExpect` reading
+    /// disc-0's payload, but WITHOUT the absent-variant trap — `payload-of` reads whatever variant it is
+    /// handed (the discriminant is irrelevant; the payload slot is what a schema decodes).
+    PayloadOf,
+    /// `decode` — decode a `payload-of` value against a `«T»-schema` to a typed `Result`:
+    /// `∀t. (Schema t) → Payload → (Result t DecodeError)` (`value-interchange.md` §Decode Inverts
+    /// Serialize And Refuses Otherwise; type-system.md §An Open Sum's Payload May Be Schema-Typed). OS2
+    /// folds the CONSTANT path (OQ-4 defers runtime): the payload's static type AGREES with the schema's
+    /// target → `(Ok payload)` (`Core::SumNew` at the Result `Ok` disc); a MISMATCH → `(Err (DecodeError
+    /// unit))`, NEVER a trap (§214 — a schema mismatch is a typed failure, so a fold over an open
+    /// vocabulary handles a malformed payload as data). Modelled on `lower_ast_decode` + `result_discs`.
+    /// NOTE: distinct from `Ast.decode` (`AstDecode`, a Bytes→Result deserializer) — this is the
+    /// schema-directed open-sum-payload decode, a DIFFERENT prim with a different intrinsic name.
+    SchemaDecode,
     /// `Bytes.of` — construct a byte sequence from a list of integers in `0..=255`: `(List Int64) →
     /// Bytes`. The `(meta apply)` of the `of` field of the `Bytes` module. A CONSTANT list literal folds
     /// to the baked byte value (range-checking each element: `< 0` or `> 255` is a compile-time trap,
@@ -808,6 +834,9 @@ impl Prim {
             "ast-lift" => Some(Prim::AstLift),
             "ast-encode" => Some(Prim::AstEncode),
             "ast-decode" => Some(Prim::AstDecode),
+            "schema-of" => Some(Prim::SchemaOf),
+            "payload-of" => Some(Prim::PayloadOf),
+            "schema-decode" => Some(Prim::SchemaDecode),
             "print" => Some(Prim::Print),
             "read" => Some(Prim::Read),
             "List" => Some(Prim::ListCtor),

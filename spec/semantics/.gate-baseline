@@ -2811,5 +2811,7 @@ todo	a tagged template weaves a hole into its expansion
 todo	a tagged template's spliced result folds through the ordinary path
 todo	an open sum payload that does not match its schema yields a typed failure, not a trap
 todo	an open sum's payload decodes against a schema to a typed result
+pass	an open sum payload that does not match its schema yields a typed failure, not a trap
+pass	an open sum's payload decodes against a schema to a typed result
 todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
