@@ -14374,6 +14374,51 @@ mod match_engine {
     }
 
     #[test]
+    fn a_mismatch_between_two_same_named_distinct_types_disambiguates_the_shared_name() {
+        // A user type that SHADOWS a prelude type name — `(type Int64 (A))` — makes `Int64` in a type
+        // position denote the user sum. Passing the prelude `Int64` literal `5` to a `(: x Int64)` parameter
+        // is then a genuine mismatch between two DIFFERENT types that both render "Int64" — the bare
+        // "this argument is an Int64, but a value of type Int64 is expected here" reads as a contradiction.
+        // The message now appends a tail explaining the names collide via a shadowing declaration.
+        // The CALL-ARGUMENT path.
+        let arg = reject_full(
+            "(module m (type Int64 (A)) (def (f (: x Int64)) x) (def (main) (f 5)) (export main))",
+        )
+        .expect("passing a prelude Int64 where the shadowing user Int64 is wanted rejects");
+        assert_eq!(arg.code.as_deref(), Some("CDZ0203"), "got: {}", arg.message);
+        assert!(
+            arg.message
+                .contains("two DIFFERENT types printed with the same name")
+                && arg.message.contains("shadows a built-in"),
+            "the argument mismatch disambiguates the shared name: {}",
+            arg.message
+        );
+        // The DIRECT value-annotation path (`(: 5 Int64)`) shares the same hint chain.
+        let annot =
+            reject_full("(module m (type Int64 (A)) (def (main) (: 5 Int64)) (export main))")
+                .expect("annotating a prelude literal with the shadowing user Int64 rejects");
+        assert!(
+            annot
+                .message
+                .contains("two DIFFERENT types printed with the same name"),
+            "the value-annotation mismatch disambiguates too: {}",
+            annot.message
+        );
+        // NO false positive: an ordinary mismatch between DIFFERENT names (Int64 vs String) gets NO such
+        // tail — the render already distinguishes them.
+        let ordinary =
+            reject_full("(module m (def (f (: x Int64)) x) (def (main) (f \"s\")) (export main))")
+                .expect("Int64 vs String rejects");
+        assert!(
+            !ordinary
+                .message
+                .contains("two DIFFERENT types printed with the same name"),
+            "a distinct-name mismatch adds no same-name tail: {}",
+            ordinary.message
+        );
+    }
+
+    #[test]
     fn an_unsolved_type_variable_renders_as_underscore_not_an_internal_number() {
         // An UNSOLVED type variable in a rendered type — the error type of a bare `(Ok 1)` is `(Result
         // Int64 _)`, inference never pins the `Err` payload — must render as `_` (rustc's placeholder for
@@ -21042,6 +21087,41 @@ mod match_engine {
                 "bin pattern decodes: {body}"
             );
         }
+    }
+
+    #[test]
+    fn a_bin_pattern_over_a_non_bytes_scrutinee_is_a_type_error() {
+        // A `(bin …)` pattern decodes a Bytes value, so it is only well-formed over a Bytes scrutinee.
+        // Matching it against a DEFINITE non-Bytes scrutinee (Int64/String/List) was silently accepted at
+        // `check` and gave the misleading generic "not a scalar literal or `_`" decline at compile. Now it
+        // is a clean CDZ0203 naming the real scrutinee type, the bin twin of the map-key / list-element
+        // pattern-type checks.
+        for (ty, val, name) in [
+            ("Int64", "n", "Int64"),
+            ("String", "s", "String"),
+            ("(List Int64)", "xs", "(List Int64)"),
+        ] {
+            let d = reject_full(&format!(
+                "(module m (def (f (: {val} {ty})) (match {val} ((bin (u8 x)) x) (_ 0))) (export f))"
+            ))
+            .unwrap_or_else(|| panic!("a bin pattern over {name} must reject"));
+            assert_eq!(d.code.as_deref(), Some("CDZ0203"), "{name}: {}", d.message);
+            assert!(
+                d.message
+                    .contains("`(bin …)` pattern decodes a Bytes value")
+                    && d.message.contains(name),
+                "{name}: names the bin-vs-scrutinee mismatch: {}",
+                d.message
+            );
+        }
+        // NO false reject: a bin pattern over a BYTES scrutinee is well-formed.
+        assert!(
+            reject_code(
+                "(module m (def (f (: b Bytes)) (match b ((bin (u8 x)) x) (_ 0))) (export f))"
+            )
+            .is_none(),
+            "a bin pattern over Bytes is valid"
+        );
     }
 
     #[test]
@@ -52754,6 +52834,263 @@ mod closure_host_resource {
             .expect("call(handle, Err(-5))");
         call.post_return(&mut store).expect("call post_return");
         assert_eq!(out3[0], Val::S64(-5), "match Err(-5) → -5 (sign-extended)");
+    }
+
+    /// COMPOUND-SUM-PAYLOAD oracle core: a closure `(fn (o) (match o ((Some p) (+ (. p 0) (. p 1))) (None 0)))`
+    /// whose ONE argument is `(Option (Tuple Int64 Int64))` — a sum whose payload is itself a fixed-shape TUPLE
+    /// (not a bare scalar). The HYPOTHESIS: `option<tuple<s64,s64>>` (both formers anonymous-allowed — no variant
+    /// wall) flattens by the canonical ABI to `(disc: i32, f0: i64, f1: i64)` — the disc then the payload
+    /// tuple's OWN recursively-flattened leaves (depth-first), exactly as a bare `tuple<s64,s64>` arg flattens to
+    /// its 2 leaves. So the guest `call` receives `(i32 self, i32 disc, i64 f0, i64 f1)`; the Some arm rebuilds
+    /// the payload tuple CELL from `(f0, f1)` (arr-alloc + box + arr-set, like `emit_tuple_rebuild`) then
+    /// `sum-new`s the Some over that handle; the None arm builds `sum-new(None, unit)`. If it validates + runs, a
+    /// compound (tuple) sum payload is an implementation gap (recurse the tuple rebuild inside the sum arm), NOT
+    /// an ABI wall. Standalone (no heap): the lifted body sums the two flattened leaves directly (Some), 0 (None).
+    fn closure_option_tuple_payload_call_core() -> Vec<u8> {
+        use wasm_encoder::*;
+        let mut m = Module::new();
+        // 0 = resource-new/rep (i32)->i32; 1 = make ()->i32;
+        // 2 = call (i32 self, i32 disc, i64 f0, i64 f1)->i64 (self + flattened disc + the payload tuple's 2 leaves).
+        let mut types = TypeSection::new();
+        types.ty().function(vec![ValType::I32], vec![ValType::I32]); // 0
+        types.ty().function(vec![], vec![ValType::I32]); // 1 make
+        types.ty().function(
+            vec![ValType::I32, ValType::I32, ValType::I64, ValType::I64],
+            vec![ValType::I64],
+        ); // 2 call
+        m.section(&types);
+
+        let mut imports = ImportSection::new();
+        imports.import("heap", "resource-new", EntityType::Function(0));
+        imports.import("heap", "resource-rep", EntityType::Function(0));
+        m.section(&imports);
+        let f_rnew = 0u32;
+
+        let mut funcs = FunctionSection::new();
+        funcs.function(1); // make
+        funcs.function(2); // call
+        m.section(&funcs);
+        let f_make = 2u32;
+        let f_call = 3u32;
+
+        let mut exports = ExportSection::new();
+        exports.export("make", ExportKind::Func, f_make);
+        exports.export("call", ExportKind::Func, f_call);
+        m.section(&exports);
+
+        let mut code = CodeSection::new();
+        let mut make = Function::new(vec![]);
+        make.instruction(&Instruction::I32Const(0));
+        make.instruction(&Instruction::Call(f_rnew));
+        make.instruction(&Instruction::End);
+        code.function(&make);
+        // call(self, disc, f0, f1) = if disc==1 { f0 + f1 (Some p → p.0 + p.1) } else { 0 (None) }.
+        // (component `option` sends Some=1; the flattened payload leaves f0/f1 are the Some tuple's fields.)
+        let mut call = Function::new(vec![]);
+        call.instruction(&Instruction::LocalGet(1)); // disc
+        call.instruction(&Instruction::I32Const(1)); // Some's boundary disc
+        call.instruction(&Instruction::I32Eq);
+        call.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
+        call.instruction(&Instruction::LocalGet(2)); // f0
+        call.instruction(&Instruction::LocalGet(3)); // f1
+        call.instruction(&Instruction::I64Add); // f0 + f1
+        call.instruction(&Instruction::Else);
+        call.instruction(&Instruction::I64Const(0));
+        call.instruction(&Instruction::End);
+        call.instruction(&Instruction::End);
+        code.function(&call);
+        m.section(&code);
+        m.finish()
+    }
+
+    /// The inner re-export component for the COMPOUND-SUM-PAYLOAD closure: `call`'s argument is an
+    /// `option<tuple<s64,s64>>` DEFINED TYPE — the inner `tuple<s64,s64>` minted first, then `option`
+    /// referencing it by index. Both formers are anonymous-allowed (unlike `variant`), so this validates.
+    fn inner_reexport_component_option_tuple_payload() -> wasm_encoder::ComponentBuilder {
+        use wasm_encoder::*;
+        let mut c = ComponentBuilder::default();
+        let imp_t = c.import(
+            "import-type-t",
+            ComponentTypeRef::Type(TypeBounds::SubResource),
+        );
+        let (own_imp, od) = c.type_defined();
+        od.own(imp_t);
+        let (make_ty, mut mf) = c.type_function();
+        mf.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Type(own_imp)));
+        let make_fn = c.import("import-func-make", ComponentTypeRef::Func(make_ty));
+        // option<tuple<s64,s64>>: mint the inner tuple first, then the option referencing it.
+        let (tup_imp, od_t) = c.type_defined();
+        od_t.tuple([
+            ComponentValType::Primitive(PrimitiveValType::S64),
+            ComponentValType::Primitive(PrimitiveValType::S64),
+        ]);
+        let (opt_imp, od_o) = c.type_defined();
+        od_o.option(ComponentValType::Type(tup_imp));
+        let (own_imp2, od2) = c.type_defined();
+        od2.own(imp_t);
+        let (call_ty, mut cf) = c.type_function();
+        cf.params([
+            ("self", ComponentValType::Type(own_imp2)),
+            ("o", ComponentValType::Type(opt_imp)),
+        ])
+        .result(Some(ComponentValType::Primitive(PrimitiveValType::S64)));
+        let call_fn = c.import("import-func-call", ComponentTypeRef::Func(call_ty));
+        let exp_t = c.export("t", ComponentExportKind::Type, imp_t, None);
+        let (own_exp, od3) = c.type_defined();
+        od3.own(exp_t);
+        let (make_exp_ty, mut mf2) = c.type_function();
+        mf2.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Type(own_exp)));
+        c.export(
+            "make",
+            ComponentExportKind::Func,
+            make_fn,
+            Some(ComponentTypeRef::Func(make_exp_ty)),
+        );
+        let (tup_exp, od_t2) = c.type_defined();
+        od_t2.tuple([
+            ComponentValType::Primitive(PrimitiveValType::S64),
+            ComponentValType::Primitive(PrimitiveValType::S64),
+        ]);
+        let (opt_exp, od_o2) = c.type_defined();
+        od_o2.option(ComponentValType::Type(tup_exp));
+        let (own_exp2, od4) = c.type_defined();
+        od4.own(exp_t);
+        let (call_exp_ty, mut cf2) = c.type_function();
+        cf2.params([
+            ("self", ComponentValType::Type(own_exp2)),
+            ("o", ComponentValType::Type(opt_exp)),
+        ])
+        .result(Some(ComponentValType::Primitive(PrimitiveValType::S64)));
+        c.export(
+            "call",
+            ComponentExportKind::Func,
+            call_fn,
+            Some(ComponentTypeRef::Func(call_exp_ty)),
+        );
+        c
+    }
+
+    /// The outer oracle component for the COMPOUND-SUM-PAYLOAD closure: `call` lifted against `(self: own<t>, o:
+    /// option<tuple<s64,s64>>) -> s64`, NO canon options — the flatten hypothesis is `(i32 disc, i64 f0, i64
+    /// f1)`.
+    fn oracle_closure_option_tuple_payload_component(core: &[u8]) -> Vec<u8> {
+        use wasm_encoder::*;
+        let mut c = ComponentBuilder::default();
+        let dtor_idx = c.core_module_raw(&dtor_stub_module());
+        let dtor_inst = c.core_instantiate(dtor_idx, std::iter::empty::<(&str, ModuleArg)>());
+        let dtor_core = c.core_alias_export(dtor_inst, "t-dtor", ExportKind::Func);
+        let res_ty = c.type_resource(ValType::I32, Some(dtor_core));
+        let rnew_core = c.resource_new(res_ty);
+        let rrep_core = c.resource_rep(res_ty);
+        let heap_inst = c.core_instantiate_exports([
+            ("resource-new", ExportKind::Func, rnew_core),
+            ("resource-rep", ExportKind::Func, rrep_core),
+        ]);
+        let module_idx = c.core_module_raw(core);
+        let prog_inst = c.core_instantiate(module_idx, [("heap", ModuleArg::Instance(heap_inst))]);
+        let make_core = c.core_alias_export(prog_inst, "make", ExportKind::Func);
+        let call_core = c.core_alias_export(prog_inst, "call", ExportKind::Func);
+        let (own_t, odef) = c.type_defined();
+        odef.own(res_ty);
+        let (make_ty, mut mf) = c.type_function();
+        mf.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Type(own_t)));
+        let make_comp = c.lift_func(make_core, make_ty, []);
+        let (own_t2, odef2) = c.type_defined();
+        odef2.own(res_ty);
+        let (tup_t, od_t) = c.type_defined();
+        od_t.tuple([
+            ComponentValType::Primitive(PrimitiveValType::S64),
+            ComponentValType::Primitive(PrimitiveValType::S64),
+        ]);
+        let (opt_t, od_o) = c.type_defined();
+        od_o.option(ComponentValType::Type(tup_t));
+        let (call_ty, mut cf) = c.type_function();
+        cf.params([
+            ("self", ComponentValType::Type(own_t2)),
+            ("o", ComponentValType::Type(opt_t)),
+        ])
+        .result(Some(ComponentValType::Primitive(PrimitiveValType::S64)));
+        let call_comp = c.lift_func(call_core, call_ty, []);
+        let inner_idx = c.component(inner_reexport_component_option_tuple_payload());
+        let inst = c.instantiate(
+            inner_idx,
+            [
+                ("import-type-t", ComponentExportKind::Type, res_ty),
+                ("import-func-make", ComponentExportKind::Func, make_comp),
+                ("import-func-call", ComponentExportKind::Func, call_comp),
+            ],
+        );
+        c.export(
+            "cadenza:closure/exports",
+            ComponentExportKind::Instance,
+            inst,
+            None,
+        );
+        c.finish()
+    }
+
+    /// THE REFUTATION ATTEMPT: does an `(Option (Tuple Int64 Int64))` closure ARGUMENT (a COMPOUND sum payload)
+    /// cross by native flattening (`option<tuple<s64,s64>>` → `(disc: i32, f0: i64, f1: i64)`)? `make()`, then
+    /// `call(handle, Some((3,4)))` → 7 and a fresh `call(h2, None)` → 0. If it validates + runs, a compound
+    /// (tuple) sum payload is an implementation gap (recurse the tuple rebuild inside the sum arm), NOT an ABI
+    /// wall — the natural next widening after scalar sum payloads.
+    #[test]
+    fn an_option_tuple_payload_closure_arg_crosses_by_native_flattening() {
+        use wasmtime::component::{Component, Linker, Val};
+        use wasmtime::{Engine, Store};
+        let comp = oracle_closure_option_tuple_payload_component(
+            &closure_option_tuple_payload_call_core(),
+        );
+        let mut validator =
+            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+        validator
+            .validate_all(&comp)
+            .expect("option-tuple-payload closure component validates");
+
+        let engine = Engine::default();
+        let component = Component::from_binary(&engine, &comp).expect("valid component");
+        let linker: Linker<()> = Linker::new(&engine);
+        let mut store = Store::new(&engine, ());
+        let instance = linker
+            .instantiate(&mut store, &component)
+            .expect("instantiate");
+        let iface = instance
+            .get_export_index(&mut store, None, "cadenza:closure/exports")
+            .expect("closure interface");
+        let make_idx = instance
+            .get_export_index(&mut store, Some(&iface), "make")
+            .expect("make export");
+        let call_idx = instance
+            .get_export_index(&mut store, Some(&iface), "call")
+            .expect("call export");
+        let make = instance.get_func(&mut store, make_idx).expect("make func");
+        let call = instance.get_func(&mut store, call_idx).expect("call func");
+
+        // call(handle, Some((3,4))) → 7 (the payload tuple's flattened leaves f0=3, f1=4).
+        let mut handle = [Val::Bool(false)];
+        make.call(&mut store, &[], &mut handle).expect("make call");
+        make.post_return(&mut store).expect("make post_return");
+        let some_arg = Val::Option(Some(Box::new(Val::Tuple(vec![Val::S64(3), Val::S64(4)]))));
+        let mut out = [Val::Bool(false)];
+        call.call(&mut store, &[handle[0].clone(), some_arg], &mut out)
+            .expect("call(handle, Some((3,4)))");
+        call.post_return(&mut store).expect("call post_return");
+        assert_eq!(out[0], Val::S64(7), "match Some((3,4)) → 7");
+
+        // A fresh handle: call(h2, None) → 0.
+        let mut handle2 = [Val::Bool(false)];
+        make.call(&mut store, &[], &mut handle2)
+            .expect("make call 2");
+        make.post_return(&mut store).expect("make post_return 2");
+        let none_arg = Val::Option(None);
+        let mut out2 = [Val::Bool(false)];
+        call.call(&mut store, &[handle2[0].clone(), none_arg], &mut out2)
+            .expect("call(handle, None)");
+        call.post_return(&mut store).expect("call post_return");
+        assert_eq!(out2[0], Val::S64(0), "match None → 0");
     }
 
     /// NESTED-COMPOUND oracle core: a closure `(fn (p) (+ (. p 0) (+ (. (. p 1) 0) (. (. p 1) 1))))` whose ONE

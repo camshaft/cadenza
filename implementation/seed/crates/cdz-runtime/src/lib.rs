@@ -3111,42 +3111,16 @@ fn op_bytes_scalar_at(buf: Handle, scalar_index: u32) -> u32 {
     })
 }
 
-/// CONTENT (storage-independent) byte/String equality — equal iff `a` and `b` denote the SAME byte
-/// sequence, regardless of rope SHAPE (a `Bytes.slice`/`.concat` view vs a flat leaf vs a differently-
-/// split rope of the same content). This is the equality core-semantics.md §Equality Is Structural
-/// wants for a String/Bytes value, which the physical `champ_eq` (WIT `value-eq`) does NOT provide: a
-/// String IS a bytes rope (`@b77b3ae0`), so `champ_eq` compares each node's `raw` HEADER (a slice's
-/// `[off, len]`, a concat's `[len]`), making two equal strings at different rope shapes COMPARE UNEQUAL
-/// (the `String.at`-content-equality miscompile — a slice of `"banana"` at index 1 ≠ a flat `"a"`).
-///
-/// Fixes it the way `op_str_get`/`op_bytes_get`/value-encode already read a rope: FLATTEN each operand
-/// to its leaf first (iterative `bytes_flatten`, so a deep rope can't overflow the stack; content-
-/// preserving, so UNOBSERVABLE even on a shared/borrowed value), THEN `champ_eq` — now both are flat
-/// leaves whose `raw` IS the content, so the physical compare is the content compare.
-///
-/// BORROWS both operands (an inspector, like `value-eq`/`champ_eq`: reads only, touches no refcount) —
-/// it does NOT consume, which is the whole point. The consuming `bytes-compact` forced the compiler
-/// into an ownership dance that FAILED three ways on a borrowed/reused `String.at` source (compact a
-/// borrowed slice → trap; compact-then-`value-eq` → double-free). A borrowing content-eq the compiler
-/// can emit for `(= s1 s2)` on Strings exactly where it emits `value-eq` today — no dup, no compact,
-/// no ownership transfer — sidesteps all three.
-///
-/// ⚠ NOT YET WIT-EXPORTED — the ready runtime half of a coordinated `bytes-eq-content` op (the compiler
-/// still routes String `=` through the physical `value-eq`, which declines a rope-leaf compound at
-/// lower.rs `compound_eq_heap_walkable`). Kept UNEXPORTED (no `Guest` method, no WIT line) so it stays
-/// out of the shipped wasm (DCE'd — no reachable caller) and the frozen runtime hash is UNCHANGED. When
-/// the compiler wires this for String/Bytes equality it adds ONLY the one-line WIT export + a `Guest`
-/// method calling THIS ready+tested fn — the load-bearing logic (flatten-both + physical compare) is
-/// done and proven here.
-#[cfg_attr(not(test), allow(dead_code))]
-fn op_bytes_eq_content(a: Handle, b: Handle) -> bool {
-    // Flatten each to a leaf (borrow-safe: `bytes_flatten` mutates representation, not the logical
-    // value, so a shared operand is unaffected). An immediate or already-flat leaf is left untouched.
-    bytes_flatten(a);
-    bytes_flatten(b);
-    // Both are now flat leaves (or immediates) — `champ_eq`'s raw-byte compare IS the content compare.
-    champ_eq(a, b)
-}
+// NOTE: a prepared-but-unexported `op_bytes_eq_content` (a borrowing flatten-both + `champ_eq` content
+// equality) lived here to unblock the `String.at`-content-equality miscompile. RETIRED `spec@<this>`:
+// the compiler fixed that bug the OTHER way — COMPACT-AT-PRODUCER (compact the `bytes-slice` to a flat
+// leaf in the `Core::StrAt` emit + compact rope operands before `value-eq`/CHAMP-key, backend/wasm/
+// select.rs), which the existing consuming `bytes-compact` op already serves. So the borrowing content-eq
+// had no remaining coordination path and was dead maintenance surface (unexported → DCE'd → hash-neutral
+// either way); removed it + its test. The underlying primitives it composed — `bytes_flatten` +
+// `champ_eq` — stay thoroughly covered by the collection fuzzers + the `compact_makes_a_*_canonical`
+// contract tests. (The other two prepared coordination ops — `op_str_from_bytes`, `op_bytes_scalar_at` —
+// remain LIVE: str-from-bytes is the string-round-trip blocker, scalar-at the lexer's random-access read.)
 
 // ─── Map: dynamic-key collection of (key, value) handle pairs, stored verbatim ──────────
 // Pairs are flattened into `handles` as [k0, v0, k1, v1, …]; pair count = handles.len() / 2. OOB
@@ -12944,116 +12918,6 @@ mod tests {
             live_nodes(),
             before,
             "no leak (scalar-at borrows, never consumes)"
-        );
-    }
-
-    /// CONTENT (storage-independent) byte equality: `op_bytes_eq_content` is TRUE iff two operands denote
-    /// the same byte sequence regardless of rope SHAPE — the equality a String/Bytes value wants, which the
-    /// physical `champ_eq` (WIT `value-eq`) does NOT give (it compares rope-node HEADERS). Covers: (1) the
-    /// exact `String.at`-eq miscompile shape (a slice view vs a flat leaf) — `champ_eq` FALSE (vacuity),
-    /// content-eq TRUE; (2) rope-vs-flat and two DIFFERENTLY-SPLIT ropes of the same content; (3) genuinely
-    /// unequal content → FALSE (flat and rope); (4) it BORROWS — both operands stay readable after and the
-    /// node count balances (no consume, no double-free); (5) it AGREES with `champ_eq` wherever `champ_eq`
-    /// is already correct (two flat leaves), i.e. it is a conservative EXTENSION; (6) empty/immediate.
-    #[test]
-    fn bytes_eq_content_is_storage_independent_and_borrows() {
-        reset();
-        let before = live_nodes();
-        // (1) THE MISCOMPILE SHAPE: a slice of "banana" at [1,1] == "a" by content; `op_bytes_slice`
-        //     CONSUMES the parent (the slice node owns it), so do NOT drop the parent separately.
-        let sl = op_bytes_slice(bytes_leaf(b"banana"), 1, 1);
-        let flat_a = op_str_new(String::from("a"));
-        assert!(
-            !champ_eq(sl, flat_a),
-            "VACUITY: physical champ_eq compares the slice header [off,len] ≠ the flat leaf → false"
-        );
-        assert!(
-            op_bytes_eq_content(sl, flat_a),
-            "content-eq flattens the slice → same bytes 'a' → true"
-        );
-        // (4) BORROW: neither operand consumed — both still read their content after the compare.
-        assert_eq!(
-            op_str_get(sl),
-            "a",
-            "the slice operand survives content-eq (borrowed)"
-        );
-        assert_eq!(
-            op_str_get(flat_a),
-            "a",
-            "the flat operand survives content-eq (borrowed)"
-        );
-        op_drop(sl);
-        op_drop(flat_a);
-        // (2a) a rope (Bytes.concat, é split across the seam) == the flat string of the same content.
-        let rope = op_bytes_concat(bytes_leaf(b"caf"), bytes_leaf("é".as_bytes()));
-        let flat = op_str_new(String::from("café"));
-        assert!(
-            !champ_eq(rope, flat),
-            "VACUITY: concat header [len] + 2 children ≠ a flat leaf"
-        );
-        assert!(
-            op_bytes_eq_content(rope, flat),
-            "rope vs flat of equal content → true"
-        );
-        op_drop(rope);
-        op_drop(flat);
-        // (2b) two DIFFERENTLY-SPLIT ropes of "cafe": champ_eq descends but differs at the first child
-        //      ("ca" ≠ "caf"); content-eq flattens both → equal.
-        let r1 = op_bytes_concat(bytes_leaf(b"ca"), bytes_leaf(b"fe"));
-        let r2 = op_bytes_concat(bytes_leaf(b"caf"), bytes_leaf(b"e"));
-        assert!(
-            !champ_eq(r1, r2),
-            "VACUITY: differently-split ropes differ at a child header"
-        );
-        assert!(
-            op_bytes_eq_content(r1, r2),
-            "same content, different splits → true"
-        );
-        op_drop(r1);
-        op_drop(r2);
-        // (3) genuinely UNEQUAL content → false, both as flat leaves and as ropes.
-        let x = op_str_new(String::from("abc"));
-        let y = op_str_new(String::from("abd"));
-        assert!(!op_bytes_eq_content(x, y), "different flat content → false");
-        op_drop(x);
-        op_drop(y);
-        let rx = op_bytes_concat(bytes_leaf(b"ab"), bytes_leaf(b"c"));
-        let ry = op_bytes_concat(bytes_leaf(b"ab"), bytes_leaf(b"d"));
-        assert!(
-            !op_bytes_eq_content(rx, ry),
-            "different rope content → false"
-        );
-        op_drop(rx);
-        op_drop(ry);
-        // (5) CONSERVATIVE EXTENSION: on two flat leaves content-eq == champ_eq (agrees where champ_eq
-        //     is already correct) — equal pair true both ways, unequal pair false both ways.
-        let f1 = op_str_new(String::from("hello"));
-        let f2 = op_str_new(String::from("hello"));
-        assert_eq!(
-            champ_eq(f1, f2),
-            op_bytes_eq_content(f1, f2),
-            "flat-equal: agrees (both true)"
-        );
-        let g = op_str_new(String::from("world"));
-        assert_eq!(
-            champ_eq(f1, g),
-            op_bytes_eq_content(f1, g),
-            "flat-unequal: agrees (both false)"
-        );
-        op_drop(f1);
-        op_drop(f2);
-        op_drop(g);
-        // (6) empty/immediate: the empty Bytes and the empty String compare equal by content.
-        let e1 = op_bytes_alloc(0);
-        let e2 = op_str_new(String::new());
-        assert!(op_bytes_eq_content(e1, e2), "two empties are content-equal");
-        op_drop(e1);
-        op_drop(e2);
-        // BALANCE: everything created was freed — content-eq leaked nothing and double-freed nothing.
-        assert_eq!(
-            live_nodes(),
-            before,
-            "no leak / no double-free across bytes-eq-content"
         );
     }
 

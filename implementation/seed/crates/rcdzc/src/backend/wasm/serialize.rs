@@ -1558,15 +1558,54 @@ pub struct SumArgArm {
     /// This variant's discriminant IN CADENZA'S DECL — `sum-new(decl_disc, …)` stamps it (a later guest
     /// `match` on the rebuilt cell dispatches on this). May differ from the boundary disc.
     pub decl_disc: u32,
-    /// `Some((box_op, extend))` for a single scalar payload; `None` for a nullary variant (builds IMM_UNIT).
-    pub payload_box: Option<(&'static str, Option<bool>)>,
-    /// The flattened payload param is a WIDER core JOIN (i64) than this arm's own narrow (i32-core) payload —
-    /// the different-width `result<ok,err>` case, where the canonical ABI joins the payload slot to the wider
-    /// of the two sides. When `true`, the guest `i32.wrap_i64`s the joined param FIRST (recovering the narrow
-    /// value's low 32 bits) before this arm's own `extend` (`payload_box`'s `Some(signed)`). Always `false` for
-    /// an Option arm (single payload, no join) and for a same-core-width Result (both sides read the join
-    /// directly). Proven by the `a_diff_width_result_scalar_closure_arg_crosses_by_native_flattening` oracle.
-    pub wrap_join: bool,
+    /// How this arm builds its payload from the flattened core param(s): a nullary variant (inline unit), a
+    /// single boxed scalar leaf, or a compound (tuple/record) cell rebuilt from a run of flattened leaves.
+    pub payload: SumArmPayload,
+}
+
+impl SumArgArm {
+    /// Register (via `out`) every runtime op this arm's payload rebuild emits, so the `call` core imports them:
+    /// a scalar arm's box op; a compound arm's `arr-alloc`/`arr-set` + each field's box op (recursively). A
+    /// nullary arm emits none. (`sum-new` itself is registered by the caller once per sum.)
+    pub fn collect_ops(&self, out: &mut impl FnMut(&'static str)) {
+        match &self.payload {
+            SumArmPayload::Nullary => {}
+            SumArmPayload::Scalar { box_op, .. } => out(box_op),
+            SumArmPayload::Compound(fields) => {
+                out("arr-alloc");
+                out("arr-set");
+                for f in fields {
+                    f.collect_box_ops(out);
+                }
+            }
+        }
+    }
+}
+
+/// How one [`SumArgArm`] builds its variant payload from the flattened core param(s) at the sum's payload base.
+#[derive(Clone)]
+pub enum SumArmPayload {
+    /// A nullary variant — no payload param; the cell's payload is the inline unit (`IMM_UNIT`).
+    Nullary,
+    /// A single aliased-width scalar payload: `box_op` applied to the one flattened leaf at the payload base.
+    /// `extend` = `Some(signed)` when a NARROW int leaf (an i32 core param) must be i32→i64 extended before
+    /// `box-int`. `wrap_join` = the flattened payload slot is a WIDER core JOIN (i64) than this arm's own
+    /// narrow (i32-core) payload — the different-width `result<ok,err>` case, where the canonical ABI joins the
+    /// payload slot to the wider side; the guest `i32.wrap_i64`s the joined param FIRST (recovering the narrow
+    /// value's low 32 bits) before this arm's `extend`. Always `false` for an Option arm (single payload, no
+    /// join) and a same-core-width Result. Proven by the diff-width Result oracle.
+    Scalar {
+        box_op: &'static str,
+        extend: Option<bool>,
+        wrap_join: bool,
+    },
+    /// A COMPOUND (fixed-shape tuple/record) payload: the arm rebuilds a value-heap cell from the payload's
+    /// recursively-flattened leaves (consuming a contiguous run of core params starting at the payload base),
+    /// exactly as a bare tuple arg rebuilds via [`emit_cell_rebuild`], then `sum-new`s the variant over that
+    /// cell handle. The payload crossed the boundary as `option<tuple<…>>` (both formers anonymous-allowed, so
+    /// no `variant` naming wall). Proven by the `an_option_tuple_payload_closure_arg_crosses_by_native_
+    /// flattening` oracle.
+    Compound(Vec<FieldRebuild>),
 }
 
 /// How a closure `call` reassembles ONE flattened fixed-shape SUM argument (an `Option`/`Result` — a
@@ -1595,36 +1634,75 @@ pub struct SumArgRebuild {
     pub arm_false: SumArgArm,
 }
 
-/// Emit ONE arm's cell build: `sum-new(decl_disc, box(payload) | IMM_UNIT)`. Leaves `[sum-handle]` on stack.
+impl SumArgRebuild {
+    /// The number of FLATTENED core params this sum consumes: the `disc` (1) + its payload's leaf count. A
+    /// scalar/nullary payload is 1 leaf (the join slot is present even for a nullary arm), so the classic
+    /// `option<scalar>`/`result<scalar,scalar>` case is 2. A COMPOUND (Option-of-tuple) payload contributes its
+    /// recursively-flattened leaf count, so the sum spans `1 + leaves`. Used to skip the sum's params when
+    /// walking the flattened arg list.
+    pub fn flattened_param_count(&self) -> u32 {
+        // Both arms flatten into the SAME payload slot(s) (the join); take the widest (a nullary arm has 0
+        // OWN leaves but shares the 1 scalar join slot). The payload-carrying arm's leaf count is authoritative.
+        let arm_leaves = |arm: &SumArgArm| -> u32 {
+            match &arm.payload {
+                SumArmPayload::Nullary => 0,
+                SumArmPayload::Scalar { .. } => 1,
+                SumArmPayload::Compound(fields) => {
+                    fields.iter().map(FieldRebuild::leaf_count).sum()
+                }
+            }
+        };
+        1 + arm_leaves(&self.arm_true)
+            .max(arm_leaves(&self.arm_false))
+            .max(1)
+    }
+}
+
+/// Emit ONE arm's cell build: `sum-new(decl_disc, payload)` where the payload is the inline unit (nullary), a
+/// boxed scalar leaf, or a rebuilt compound cell. Leaves `[sum-handle]` on stack. `payload_param` is the
+/// flattened core-param index the payload's leaf/leaves start at (the sum's `base_param + 1`).
 fn emit_sum_arm(arm: &SumArgArm, payload_param: u32, imp: &dyn Fn(&str) -> u64, out: &mut Vec<u8>) {
     use crate::backend::wasm::wasm_abi::op;
     out.push(op::I32_CONST);
     crate::backend::wasm::encode::sleb128(arm.decl_disc as i64, out); // [disc]
-    if let Some((box_op, extend)) = &arm.payload_box {
-        out.push(op::LOCAL_GET);
-        uleb128(payload_param as u64, out); // [disc, payload-leaf]
-        if arm.wrap_join {
-            // The joined payload slot is the WIDER core (i64) but THIS arm's payload is narrow (i32-core): the
-            // narrow value arrived widened into the join, so recover its low 32 bits before this arm's own
-            // (re-)extend. `i32.wrap_i64` keeps the low 32 bits (the raw narrow value, sign/zero irrelevant here
-            // since `extend` below re-applies the correct one). See the diff-width Result oracle.
-            out.push(op::I32_WRAP_I64);
+    match &arm.payload {
+        SumArmPayload::Scalar {
+            box_op,
+            extend,
+            wrap_join,
+        } => {
+            out.push(op::LOCAL_GET);
+            uleb128(payload_param as u64, out); // [disc, payload-leaf]
+            if *wrap_join {
+                // The joined payload slot is the WIDER core (i64) but THIS arm's payload is narrow (i32-core):
+                // the narrow value arrived widened into the join, so recover its low 32 bits before this arm's
+                // own (re-)extend. `i32.wrap_i64` keeps the low 32 bits (the raw narrow value, sign/zero
+                // irrelevant here since `extend` below re-applies the correct one). See the diff-width oracle.
+                out.push(op::I32_WRAP_I64);
+            }
+            if let Some(signed) = extend {
+                out.push(if *signed {
+                    op::I64_EXTEND_I32_S
+                } else {
+                    op::I64_EXTEND_I32_U
+                });
+            }
+            out.push(op::CALL);
+            uleb128(imp(box_op), out); // [disc, payload-handle]
         }
-        if let Some(signed) = extend {
-            out.push(if *signed {
-                op::I64_EXTEND_I32_S
-            } else {
-                op::I64_EXTEND_I32_U
-            });
+        SumArmPayload::Compound(fields) => {
+            // Rebuild the payload's value-heap cell from its recursively-flattened leaves, starting at the
+            // payload base — exactly as a bare tuple arg rebuilds. Leaves the cell handle on the stack.
+            let mut cursor = payload_param;
+            emit_cell_rebuild(fields, &mut cursor, imp, out); // [disc, payload-cell-handle]
         }
-        out.push(op::CALL);
-        uleb128(imp(box_op), out); // [disc, payload-handle]
-    } else {
-        out.push(op::I32_CONST);
-        crate::backend::wasm::encode::sleb128(
-            crate::backend::wasm::runtime_abi::IMM_UNIT as i64,
-            out,
-        ); // [disc, unit]
+        SumArmPayload::Nullary => {
+            out.push(op::I32_CONST);
+            crate::backend::wasm::encode::sleb128(
+                crate::backend::wasm::runtime_abi::IMM_UNIT as i64,
+                out,
+            ); // [disc, unit]
+        }
     }
     out.push(op::CALL);
     uleb128(imp("sum-new"), out); // [sum-handle]
@@ -1776,11 +1854,9 @@ fn emit_closure_call_args_with_sums(
         } else if let Some((si, rebuild)) = sums.iter().enumerate().find(|(_, s)| s.base_param == a)
         {
             emit_sum_arg_rebuild(rebuild, sum_local + si as u32, imp, out);
-            // disc (1) + the payload leaf (1) when the payload variant carries a scalar.
-            // An Option/Result flattens to `(disc, payload)` = 2 core params (the payload slot is the join of
-            // both arms' scalars; a nullary arm's slot is present but unused). `rebuild` is bound below.
-            let _ = rebuild;
-            a += 2;
+            // Skip the sum's flattened params: disc (1) + the payload's leaves. A scalar `option`/`result`
+            // flattens to `(disc, payload)` = 2; a COMPOUND (Option-of-tuple) payload spans `1 + its leaves`.
+            a += rebuild.flattened_param_count();
         } else {
             get(a, out);
             a += 1;

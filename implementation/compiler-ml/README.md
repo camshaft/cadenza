@@ -61,7 +61,7 @@ non-colliding names from a sibling.
 ## Structure (mirrors the rcdzc stages)
 
 Source modules live under `src/`; `Project.cdz`, `README.md`, `TESTING.md`, and `repros/` sit at the
-top. Current `src/` modules (each with same-file `@test`s — 317 tests total across 34 modules):
+top. Current `src/` modules (each with same-file `@test`s — 327 tests total across 35 modules):
 
 - `src/ast.cdz` — the AST datatype + pure traversals (`node-count`, `head-name`; the `ast.rs`
   analogue). One recursive sum; a node contains its children (no arena — the language has real
@@ -241,6 +241,15 @@ top. Current `src/` modules (each with same-file `@test`s — 317 tests total ac
   correct portable design. An `interp` over the instruction list (a `Map Int64 Int64` register file)
   re-executes the SSA form and must agree with `parse`'s tree-walking `run`. 10 `@test`s. Confirmed
   WORKING (registers dense 0..n-1, instr-count == node-count, SSA eval == tree-walk).
+- `src/strlex.cdz` — a STRING LEXER: tokenize a real `String` of source text into a `List Token`
+  (multi-digit ints, `+ - * /`, parens; whitespace skipped; else `Token.Bad`). The TEXT version of
+  `lex.cdz` (which lexes char-CODES to sidestep the once-broken runtime-`String.at` loop), now possible
+  because the runtime-`String.at`-content-equality bug is FIXED — scanning `String.at(s,i) == "<c>"` in a
+  self-recursive loop works. It exercises exactly the once-broken shape (String.at in a loop, its one-char
+  result compared to literals, the string operand threaded through the recursion), so lexing correctly is
+  the end-to-end proof of the fix. 10 `@test`s. ⚠ INLINES `String.at`'s match in each loop arm rather than
+  a `char-at` helper — a String-returning helper whose result is `==`-compared IN A LOOP declines (finding
+  below).
 - `src/encode.cdz` — the INVERSE of `decode`: serialize an `Ast` to a flat byte buffer at RUN TIME
   (`Ast → Bytes`, via `Bytes.of`/`Bytes.concat` + `UInt8.wrap` over recursively-assembled fragments) —
   runtime byte CONSTRUCTION, the complement to `decode`'s reading. Its `@test`s prove the full ROUND-TRIP
@@ -248,6 +257,19 @@ top. Current `src/` modules (each with same-file `@test`s — 317 tests total ac
   exactly (node count + Int-leaf sum survive; verified on flat, deeply-nested, and empty trees). 10
   `@test`s. So the port now runs a real `bytes → Ast → bytes` pipeline (Name/Str content still a
   placeholder pending runtime `String.from-bytes`).
+- `src/iter.cdz` — a LAZY, PULL-DRIVEN ITERATOR realizing the `iterators-as-lazy-pull-computations`
+  proposal. `next : it -> Option((elem, rest))` — total (`None` at exhaustion), pure (the second value
+  is the REST iterator, i.e. the next state — so an iterator is re-steppable/shareable, no "consumed
+  iterator" hazard). Producers (`empty`/`from-list`/`range`), lazy transformers
+  (`map`/`filter`/`take`/`drop`/`take-while` — build a wrapping step, force nothing), and consumers
+  (`fold`/`count`/`sum`/`collect-list`/`find`/`any`/`all` — drive the pull). ENCODING = reified
+  (defunctionalized): a sum of step-shapes `next` interprets, NOT a stored `Unit -> …` thunk (that
+  DECLINES — see the Unit-thunk finding below), so each stored closure is over the element type, never
+  `Unit`. Laziness is real and tested (`take 3` of a million-element `range` pulls exactly 3). 18
+  `@test`s. **Monomorphic over `Int64` — a SPIKE:** the generic `Iter(a)` is blocked by two inference
+  gaps (`repros/decline-generic-iterator-composed-transformers.cdz`,
+  `repros/reject-user-generic-type-var-in-annotation.cdz`); the any-element-type version is the real
+  goal, gated on those.
 
 A `resolve` pass (lexical scope-check accumulating unbound-variable diagnostics — a `Set String` scope
 threaded down, a `List String` of faults threaded through, `Let` binding + shadowing) is written and
@@ -501,8 +523,9 @@ still needs that seed fix; the STRUCTURE-and-scalars decode proves the arena→t
   withheld for this (its shallow cases pass).
 
 - **✅ FIXED (seed `rcdzc`, 2026-07-14 — was a MISCOMPILE, silent wrong value): runtime `String.at`
-  content equality, INCLUDING the loop-context residual.** `repros/miscompile-runtime-string-at-content-
-  equality.sexp`. A `String.at` at a RUNTIME index yielded a one-char String that never `=`-compared equal
+  content equality, INCLUDING the loop-context residual.** `repros/fixed-runtime-string-at-content-
+  equality.sexp` (iter 44: verified `count-a "banana"` → 3 and the 2-iter loop `cnt "aa"` → 2; retired).
+  A `String.at` at a RUNTIME index yielded a one-char String that never `=`-compared equal
   to the same char obtained any other way (a literal, a different-index `String.at`); it equalled only
   ITSELF at the identical index. A sibling had earlier fixed the STRAIGHT-LINE cases (compacting an OWNED
   String operand at the `=` site); the surviving failure was LOOP-CONTEXT — `String.at(s,i) == c` in a
@@ -681,6 +704,13 @@ are the sharp edges.
   and runs correctly when exported singly, but its full `@test` suite DECLINES under the `EmitTests`
   layout — 1 test compiles, the whole suite doesn't (aggregate/total-locals sensitivity, like the
   slot-alias bug). So the borrow gap also scales with the test-emit boundary size.
+  A FOURTH face (iter 44): `repros/decline-returned-string-at-compared-in-a-loop.cdz` — a `String`-
+  returning HELPER (body `match String.at(s,i) { Some(c)=>c | None=>"" }`) whose result is `==`-compared
+  INSIDE a self-recursive loop declines identically. SHARP: inlining the `String.at` match in the loop arm
+  computes correctly (the direct-producer form the recent String.at fix supports); two SINGLE (non-loop)
+  helper calls compare fine; only the RETURNED-then-compared-in-a-loop shape declines. So the residual is
+  a call-RETURNED owned String at a `value-eq` on the loop back-edge. WORKAROUND: inline `String.at`'s
+  match rather than factoring a `char-at` helper (`src/strlex.cdz` does this).
 
 - **OPEN (seed `rcdzc` — a `///` doc comment on an `import` HIDES it; extends the line-comment finding).**
   A `///` doc comment on a `def`/`type`/`module` is stripped by the top-level scan (works), but a `///`
@@ -698,3 +728,37 @@ are the sharp edges.
   IS an Ast, that should splice the node. Blocks the canonical AST-building macro (embed a computed
   subtree). Confirmed WORKING otherwise: quote structural `=`, walking a quoted form via own `Ast`
   match, quoted Ast escaping to host, `unquote-splice` of a list, `(unquote <plain-value>)`.
+
+- **OPEN (seed `rcdzc` — GAP, blocks the ideal lazy thunk): a `Unit`-parameter closure BOXED into a
+  heap sum DECLINES.** `repros/decline-unit-param-closure-boxed-in-sum.cdz`. Storing a `fn(u) => …`
+  (`Unit -> T`) in a sum variant and pulling it back out to call → `error: a closure's parameter type
+  has no machine representation`. **Root-caused:** `backend/wasm/lir.rs valtype_of` returns `None` for
+  `Ty::Unit` (zero-width), and `lower.rs` (~8044) requires every boxed-closure parameter to have a
+  valtype. DISCRIMINATORS: the same `Unit`-param closure called DIRECTLY or passed as a plain ARG works
+  (returns 42); an `Int64`-param closure boxed in the same sum works; a `Unit`-RETURNING boxed closure
+  works — only `Unit` in PARAMETER position at the closure/resource boundary is rejected. This is why
+  the iterators proposal's ideal thunk (`Iter(a) = Susp(Unit -> Option (a, Iter(a)))`) can't be written;
+  `src/iter.cdz` uses a reified encoding instead. SUGGESTED FIX: give `Unit` a zero-info slot at the
+  boxed-closure boundary (elide the param, or lower to a never-read placeholder i32).
+
+- **OPEN (seed `rcdzc` — inference GAP, blocks a generic iterator): a composed generic pull-iterator
+  leaves its element type undetermined.** `repros/decline-generic-iterator-composed-transformers.cdz`.
+  `collect(map(filter(from-list(xs), p), f))` over a polymorphic `Iter(a)` → CDZ0201 "a generic type
+  argument is undetermined" at the recursive consumer / composed call. BISECTED — the gap is the
+  COMPOSITION through `next`-recursion, not any single piece: generic `collect` through `next` works;
+  `collect(map(…))` (one closure-carrying combinator) works and runs; `collect(filter(…))` alone
+  reproduces (its arm calls `next` recursively in the `else`); the monomorphic-`Int64` version of ALL
+  of it works (what `src/iter.cdz` ships). The element type is fully pinned by the source list, so
+  there is no genuine ambiguity — inference just doesn't propagate it through the composed
+  `next`-recursion. This is the blocker to "iterators work for ANY type"; the `Int64` iterator is a
+  spike until it lands.
+
+- **OPEN (seed `rcdzc` — surface/diagnostic GAP): a user-generic type var in an annotation is
+  rejected.** `repros/reject-user-generic-type-var-in-annotation.cdz`. `def next(it: Iter(a)) = …` →
+  CDZ0203 + CDZ0101 "unbound name `a`" — a lowercase type var in an annotation on a USER generic type
+  is not treated as an implicit type parameter (though it IS in a `type` DECLARATION's payloads).
+  WORKAROUND (what the working code uses): leave the params UNANNOTATED — inference derives the
+  polymorphism (`def next(it) = …` compiles and monomorphizes). Low-severity (a signature-surface gap,
+  not a blocker): the natural documenting signature can't be written, and the diagnostic points nowhere
+  useful. DESIRED: accept a lowercase name in a user-generic annotation as an implicit ∀-bound var (the
+  same rule `db.rs:453` already applies in declarations), or hint the working spellings.

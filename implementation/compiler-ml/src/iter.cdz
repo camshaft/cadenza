@@ -1,0 +1,239 @@
+/// iter.cdz — a lazy, pull-driven iterator, realizing the `iterators-as-lazy-pull-computations`
+/// proposal in runnable Cadenza. An iterator is a lazy sequence pulled one element at a time;
+/// transformers (map/filter/take/…) build a new iterator without forcing anything, and a consumer
+/// (fold/count/collect/…) drives the pull.
+///
+/// ENCODING — reified (defunctionalized), not a thunk. The proposal's ideal form is a thunk
+/// `Iter(a) = Susp(Unit -> Option (a, Iter(a)))`, but a `Unit`-parameter closure boxed into a heap sum
+/// currently DECLINES ("a closure's parameter type has no machine representation" — a zero-width `Unit`
+/// has no machine valtype at the closure boundary; see
+/// `repros/decline-unit-param-closure-boxed-in-sum.cdz`). So an iterator is instead a SUM of the known
+/// step-shapes and `next` interprets one step. This is still lazy — `map`/`filter` build a wrapping
+/// variant and force nothing until `next` pulls — and it stores each closure over the ELEMENT type
+/// (representable), never `Unit`.
+///
+/// ELEMENT TYPE — this iterator is monomorphic over `Int64`. A fully generic `Iter(a)` type-checks for
+/// the producers/transformers with unannotated signatures, but a generic recursive CONSUMER that
+/// threads a closure through its recursion (`fold`/`find`) fails to determine the type argument, and
+/// exporting a generic combinator is rejected at the component boundary — see
+/// `repros/decline-generic-recursive-consumer-threads-closure.cdz` and
+/// `repros/reject-user-generic-type-var-in-annotation.cdz`. `Int64` is the port's pervasive element
+/// type, so a monomorphic iterator is the honest, working shape today; the generic version is a
+/// documented follow-up gated on those fixes.
+///
+/// HIGHER-ORDER PARAMETERS carry an explicit ARROW annotation (`f: Int64 -> Int64 -> Int64`,
+/// `p: Int64 -> Bool`). That is required, not decoration: an unannotated closure threaded through a
+/// self-recursive HOF fails to infer its parameter types (the same constraint `traverse.cdz` documents).
+
+/// The reified iterator. Each variant is a step-shape `next` knows how to interpret.
+///   - `FromList(xs)`      — yield the list's elements in order.
+///   - `RangeI((lo, hi))`  — yield `lo, lo+1, …, hi-1` (half-open).
+///   - `MapI((f, src))`    — yield `f(x)` for each `x` from `src`.
+///   - `FilterI((p, src))` — yield each `x` from `src` for which `p(x)` holds.
+///   - `TakeI((n, src))`   — yield at most the first `n` elements of `src`.
+///   - `DropI((n, src))`   — yield `src` with its first `n` elements skipped.
+///   - `TakeWhileI((p, src))` — yield `src`'s leading run for which `p` holds, then stop.
+type Iter =
+  | FromList(List(Int64))
+  | RangeI(Tuple(Int64, Int64))
+  | MapI(Tuple((Int64 -> Int64), Iter))
+  | FilterI(Tuple((Int64 -> Bool), Iter))
+  | TakeI(Tuple(Int64, Iter))
+  | DropI(Tuple(Int64, Iter))
+  | TakeWhileI(Tuple((Int64 -> Bool), Iter))
+
+/// Step once: yield `Option((element, rest))` — `None` at exhaustion, never a trap. Total and pure;
+/// `rest` is a fresh iterator for the remainder, so an iterator is re-steppable and shareable.
+def next(it) = match it with
+  | Iter.FromList(xs) => (match xs with
+    | [] => Option.None(unit)
+    | [h, .. t] => Option.Some((h, Iter.FromList(t))))
+  | Iter.RangeI(r) => (match r with | (lo, hi) =>
+    if lo < hi then Option.Some((lo, Iter.RangeI((lo + 1, hi)))) else Option.None(unit))
+  | Iter.MapI(mf) => (match mf with | (f, src) => (match next(src) with
+    | Option.None(_) => Option.None(unit)
+    | Option.Some(p) => (match p with | (v, rest) => Option.Some((f(v), Iter.MapI((f, rest)))))))
+  | Iter.FilterI(pf) => (match pf with | (p, src) => (match next(src) with
+    | Option.None(_) => Option.None(unit)
+    | Option.Some(pr) => (match pr with | (v, rest) =>
+        if p(v) then Option.Some((v, Iter.FilterI((p, rest)))) else next(Iter.FilterI((p, rest))))))
+  | Iter.TakeI(nf) => (match nf with | (n, src) =>
+    if n <= 0 then Option.None(unit) else (match next(src) with
+      | Option.None(_) => Option.None(unit)
+      | Option.Some(p) => (match p with | (v, rest) => Option.Some((v, Iter.TakeI((n - 1, rest)))))))
+  | Iter.DropI(nf) => (match nf with | (n, src) =>
+    if n <= 0 then next(src) else (match next(src) with
+      | Option.None(_) => Option.None(unit)
+      | Option.Some(p) => (match p with | (v, rest) => next(Iter.DropI((n - 1, rest))))))
+  | Iter.TakeWhileI(pf) => (match pf with | (p, src) => (match next(src) with
+    | Option.None(_) => Option.None(unit)
+    | Option.Some(pr) => (match pr with | (v, rest) =>
+        if p(v) then Option.Some((v, Iter.TakeWhileI((p, rest)))) else Option.None(unit))))
+
+// ── Producers ──────────────────────────────────────────────────────────────────────────────────
+
+/// The empty iterator — yields nothing.
+def empty() = Iter.FromList([])
+
+/// Yield the elements of a list, in order.
+def from-list(xs) = Iter.FromList(xs)
+
+/// Yield `lo, lo+1, …, hi-1` (half-open interval). Empty when `lo >= hi`.
+def range(lo, hi) = Iter.RangeI((lo, hi))
+
+// ── Transformers (lazy — build a wrapping step, force nothing) ──────────────────────────────────
+
+/// Map `f` over every element.
+def map(it, f: Int64 -> Int64) = Iter.MapI((f, it))
+
+/// Keep the elements `p` accepts.
+def filter(it, p: Int64 -> Bool) = Iter.FilterI((p, it))
+
+/// Yield at most the first `n` elements.
+def take(it, n) = Iter.TakeI((n, it))
+
+/// Skip the first `n` elements.
+def drop(it, n) = Iter.DropI((n, it))
+
+/// Yield the leading run of elements for which `p` holds, then stop.
+def take-while(it, p: Int64 -> Bool) = Iter.TakeWhileI((p, it))
+
+// ── Consumers (drive the pull) ──────────────────────────────────────────────────────────────────
+
+/// Left fold: thread `acc` through `f(acc, elem)` over every element.
+def fold(it, acc, f: Int64 -> Int64 -> Int64) = match next(it) with
+  | Option.None(_) => acc
+  | Option.Some(p) => (match p with | (v, rest) => fold(rest, f(acc, v), f))
+
+/// Number of elements the iterator yields.
+def count(it) = fold(it, 0, fn(a, v) => a + 1)
+
+/// Sum of the elements.
+def sum(it) = fold(it, 0, fn(a, v) => a + v)
+
+/// Materialize the iterator back into a list (the bridge from computation back to data).
+def collect-list(it) = match next(it) with
+  | Option.None(_) => []
+  | Option.Some(p) => (match p with | (v, rest) => List.concat([v], collect-list(rest)))
+
+/// The first element `p` accepts, or `None`.
+def find(it, p: Int64 -> Bool) = match next(it) with
+  | Option.None(_) => Option.None(unit)
+  | Option.Some(pr) => (match pr with | (v, rest) => if p(v) then Option.Some(v) else find(rest, p))
+
+/// Does any element satisfy `p`? (short-circuits)
+def any(it, p: Int64 -> Bool) = match find(it, p) with
+  | Option.Some(_) => true
+  | Option.None(_) => false
+
+/// Do all elements satisfy `p`? (short-circuits on the first failure)
+def all(it, p: Int64 -> Bool) = match next(it) with
+  | Option.None(_) => true
+  | Option.Some(pr) => (match pr with | (v, rest) => if p(v) then all(rest, p) else false)
+
+// ── Tests ────────────────────────────────────────────────────────────────────────────────────────
+
+def int-list-eq(a, b) = match a with
+  | [] => (match b with | [] => true | _ => false)
+  | [x, .. xs] => (match b with
+    | [] => false
+    | [y, .. ys] => if x == y then int-list-eq(xs, ys) else false)
+
+@test
+def empty-yields-nothing() = match next(empty()) with
+  | Option.None(_) => unit
+  | Option.Some(_) => trap("empty should be None")
+
+@test
+def range-counts() = if count(range(0, 5)) == 5 then unit else trap("range 0..5 has 5 elements")
+
+@test
+def range-sums() = if sum(range(1, 5)) == 10 then unit else trap("1+2+3+4 = 10")
+
+@test
+def range-empty-when-lo-ge-hi() = if count(range(5, 5)) == 0 then unit else trap("empty range")
+
+@test
+def from-list-collects() =
+  if int-list-eq(collect-list(from-list([3, 1, 4, 1, 5])), [3, 1, 4, 1, 5]) then
+    unit
+  else
+    trap("collect round-trips the list")
+
+@test
+def map-doubles() =
+  if int-list-eq(collect-list(map(from-list([1, 2, 3]), fn(x) => x * 2)), [2, 4, 6]) then
+    unit
+  else
+    trap("map *2")
+
+@test
+def filter-evens() =
+  if int-list-eq(collect-list(filter(range(0, 8), fn(x) => x % 2 == 0)), [0, 2, 4, 6]) then
+    unit
+  else
+    trap("filter evens of 0..8")
+
+@test
+def map-filter-sum-pipeline() =
+  // 1..5 -> evens[2,4] -> doubled[4,8] -> sum 12
+  if sum(map(filter(range(1, 5), fn(x) => x % 2 == 0), fn(x) => x * 2)) == 12 then
+    unit
+  else
+    trap("pipeline should be 12")
+
+@test
+def take-is-lazy-over-a-huge-range() =
+  // take 3 of a million-element range pulls exactly 3 — laziness observable in what is produced
+  if int-list-eq(collect-list(take(range(0, 1000000), 3)), [0, 1, 2]) then
+    unit
+  else
+    trap("take 3 of a huge range")
+
+@test
+def drop-skips() =
+  if int-list-eq(collect-list(drop(range(0, 6), 4)), [4, 5]) then unit else trap("drop 4 of 0..6")
+
+@test
+def take-while-stops-at-first-failure() =
+  if int-list-eq(collect-list(take-while(from-list([2, 4, 5, 6]), fn(x) => x % 2 == 0)), [2, 4]) then
+    unit
+  else
+    trap("take-while even stops at 5")
+
+@test
+def find-hits() = match find(range(0, 10), fn(x) => x > 5) with
+  | Option.Some(v) => if v == 6 then unit else trap("first > 5 is 6")
+  | Option.None(_) => trap("should find 6")
+
+@test
+def find-misses() = match find(range(0, 3), fn(x) => x > 5) with
+  | Option.None(_) => unit
+  | Option.Some(_) => trap("nothing > 5 in 0..3")
+
+@test
+def any-true() = if any(range(0, 5), fn(x) => x == 3) then unit else trap("3 is in 0..5")
+
+@test
+def all-true() = if all(range(0, 5), fn(x) => x < 100) then unit else trap("all < 100")
+
+@test
+def all-false() = if all(range(0, 5), fn(x) => x < 3) then trap("4 is not < 3") else unit
+
+@test
+def re-steppable() =
+  // an iterator is a value: stepping does not consume it — both reads see the same first element
+  let it = range(10, 20) in
+  match next(it) with
+    | Option.None(_) => trap("should yield")
+    | Option.Some(p1) => (match p1 with | (a, _) => (match next(it) with
+      | Option.None(_) => trap("should still yield")
+      | Option.Some(p2) => (match p2 with | (b, _) =>
+          if a == 10 then (if b == 10 then unit else trap("second read differs")) else trap("first read wrong"))))
+
+@test
+def compose-take-drop() =
+  // drop 2 then take 2 of 0..10 -> [2,3]
+  if int-list-eq(collect-list(take(drop(range(0, 10), 2), 2)), [2, 3]) then unit else trap("drop2 take2")
+
+export { Iter.* }

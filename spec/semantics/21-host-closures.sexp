@@ -4373,6 +4373,81 @@
   (call   mk-q (: (Ok -3) (Result Int32 Int64)))
   (output (: false Bool)))
 
+; COMPOUND SUM PAYLOAD: an `(Option compound)` closure arg whose payload is itself a fixed-shape TUPLE/record
+; (not a bare scalar) now crosses. It crosses as a native `option<tuple<…>>` — BOTH the `option` and `tuple`
+; formers are anonymous-allowed (unlike a general `variant`, which would need a NAMED type export — a separate
+; widening), so no naming wall. The canonical ABI flattens `option<tuple<s64,s64>>` to `(disc: i32, f0: i64, f1:
+; i64)` — the disc then the payload tuple's OWN recursively-flattened leaves (depth-first, exactly as a bare
+; tuple arg flattens). The guest `call` rebuilds the payload cell from those leaves (arr-alloc + box + arr-set,
+; recursively for a nested field) then `sum-new`s the Some over that handle; None builds `sum-new(None, unit)`.
+; `SumArmPayload::Compound` drives the arm rebuild; `ArgSlot::OptionCompound` mints the boundary type. Composes
+; with multi-export + distinct-sig for free. Proven runnable by the `an_option_tuple_payload_closure_arg_
+; crosses_by_native_flattening` oracle. (A COMPOUND Result payload / a general user-sum `variant<…>` remain
+; later widenings — the latter needs the named-type-export step.)
+
+(case "COMPOUND SUM PAYLOAD: (Option (Tuple Int64 Int64)) arg, drive Some"
+  (doc    "`mk : (-> (Option (Tuple Int64 Int64)) Int64)`. The Some payload is a 2-field tuple; the arg crosses
+           as `option<tuple<s64,s64>>` flattening to `(disc, f0, f1)`. Driving `Some((3,4))`: the guest rebuilds
+           the payload tuple cell, matches `(Some p)`, and folds `p.0 + p.1` → 7.")
+  (input  (do (def (mk) (fn ((: o (Option (Tuple Int64 Int64)))) (match o ((Some p) (+ (. p 0) (. p 1))) (None 0))))
+              (export mk)))
+  (call   mk (: (Some (tuple 3 4)) (Option (Tuple Int64 Int64))))
+  (output (: 7 Int64)))
+
+(case "COMPOUND SUM PAYLOAD: (Option (Tuple Int64 Int64)) arg, drive None"
+  (doc    "The SAME closure driving `None` → the guest builds `sum-new(None, unit)` (no payload cell) and the
+           `(None 0)` arm folds to 0. Pins the nullary arm coexists with the compound Some arm.")
+  (input  (do (def (mk) (fn ((: o (Option (Tuple Int64 Int64)))) (match o ((Some p) (+ (. p 0) (. p 1))) (None 0))))
+              (export mk)))
+  (call   mk (: None (Option (Tuple Int64 Int64))))
+  (output (: 0 Int64)))
+
+(case "COMPOUND SUM PAYLOAD: (Option (Record (x Int64) (y Int64))) — a RECORD payload"
+  (doc    "The payload is a RECORD (fields in canonical sorted-key order) rather than a positional tuple —
+           crosses as `option<tuple<s64,s64>>` all the same (a record IS a positional cell; field names are
+           compile-time). Driving `Some({x:10, y:20})`: `r.x + r.y` → 30.")
+  (input  (do (def (mk) (fn ((: o (Option (Record (x Int64) (y Int64))))) (match o ((Some r) (+ (. r x) (. r y))) (None -1))))
+              (export mk)))
+  (call   mk (: (Some (record (x 10) (y 20))) (Option (Record (x Int64) (y Int64)))))
+  (output (: 30 Int64)))
+
+(case "COMPOUND SUM PAYLOAD: (Option (Tuple Int64 (Tuple Int64 Int64))) — a NESTED tuple payload"
+  (doc    "The Some payload is a NESTED fixed-shape tuple; its leaves flatten DEPTH-FIRST after the disc
+           (`option<tuple<s64, tuple<s64,s64>>>` → `(disc, a, b, c)`) and the guest rebuilds the nested cell
+           recursively. Driving `Some((1,(2,3)))`: `p.0 + p.1.0 + p.1.1` → 6.")
+  (input  (do (def (mk) (fn ((: o (Option (Tuple Int64 (Tuple Int64 Int64))))) (match o ((Some p) (+ (. p 0) (+ (. (. p 1) 0) (. (. p 1) 1)))) (None 0))))
+              (export mk)))
+  (call   mk (: (Some (tuple 1 (tuple 2 3))) (Option (Tuple Int64 (Tuple Int64 Int64)))))
+  (output (: 6 Int64)))
+
+(case "COMPOUND SUM PAYLOAD: mixed-width tuple payload (Int32, Int64, Bool)"
+  (doc    "The payload tuple mixes core widths — `option<tuple<s32,s64,bool>>` flattens to `(disc, i32, i64,
+           i32)`. Driving `Some((5, 100, true))`: the `if p.2` picks `p.1` → 100. Pins the per-leaf boxing +
+           the bool/narrow-int leaves inside a compound sum payload.")
+  (input  (do (def (mk) (fn ((: o (Option (Tuple Int32 Int64 Bool)))) (match o ((Some p) (if (. p 2) (. p 1) 0)) (None -1))))
+              (export mk)))
+  (call   mk (: (Some (tuple 5 100 true)) (Option (Tuple Int32 Int64 Bool))))
+  (output (: 100 Int64)))
+
+(case "COMPOUND SUM PAYLOAD: two same-sig Option-tuple closures share one call (multi-export)"
+  (doc    "Compound sum payload composes with the MULTI-EXPORT shape: `mk-a`/`mk-b` both take `(Option (Tuple
+           Int64 Int64))` and share one `call`. Driving `mk-b` with `Some((6,7))`: `p.0 * p.1` → 42.")
+  (input  (do (def (mk-a) (fn ((: o (Option (Tuple Int64 Int64)))) (match o ((Some p) (+ (. p 0) (. p 1))) (None 0))))
+              (def (mk-b) (fn ((: o (Option (Tuple Int64 Int64)))) (match o ((Some p) (* (. p 0) (. p 1))) (None 1))))
+              (export mk-a) (export mk-b)))
+  (call   mk-b (: (Some (tuple 6 7)) (Option (Tuple Int64 Int64))))
+  (output (: 42 Int64)))
+
+(case "COMPOUND SUM PAYLOAD: an Option-tuple closure beside a scalar closure (distinct-sig)"
+  (doc    "Compound sum payload composes with the DISTINCT-SIG shape: an `(Option (Tuple Int64 Int64))`-arg
+           closure crosses as its own resource type beside a plain scalar-arg closure. Driving the Option-tuple
+           group with `Some((8,9))`: `p.0 + p.1` → 17.")
+  (input  (do (def (mk-o) (fn ((: o (Option (Tuple Int64 Int64)))) (match o ((Some p) (+ (. p 0) (. p 1))) (None 0))))
+              (def (mk-s) (fn ((: n Int64)) (* n 3)))
+              (export mk-o) (export mk-s)))
+  (call   mk-o (: (Some (tuple 8 9)) (Option (Tuple Int64 Int64))))
+  (output (: 17 Int64)))
+
 ; A higher-order closure whose INNER closure has an UNANNOTATED COMPOUND parameter now compiles: the inner
 ; `(fn (p) …)` param `p` types `Any` bottom-up (no annotation, no def entry), but the higher-order parameter
 ; `g`'s DECLARED arrow `(-> (-> (Tuple …) R) R)` fixes it — `expected_arrow_for_lambda` recovers the inner

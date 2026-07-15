@@ -364,6 +364,47 @@
   (input  (bin (bytes (Bytes.of (list 1 2 3)) 2)))
   (error  CDZ0304))
 
+; --- A bin pattern applies only to a Bytes scrutinee -----------------------------------------
+; A `(bin …)` pattern DECODES a Bytes value, so it is well-formed only over a Bytes scrutinee. Matching
+; it against a definite NON-Bytes scrutinee — an Int64, a String, a List — is a type error (CDZ0203, 'a
+; `(bin …)` pattern decodes a Bytes value, but this scrutinee is <T>'), the bin twin of the map-key /
+; list-element pattern-type checks. It is caught at the offending arm, not silently accepted (which left
+; the arm to fall through to a misleading generic 'pattern not yet supported'). An unsolved (`Any`/`Var`)
+; scrutinee is skipped — a runtime Bytes may still flow in — so the reject fires only on a DEFINITE
+; non-Bytes type, whether a constant or a runtime parameter.
+
+(case "a bin pattern over an Int64 scrutinee is a type error"
+  (doc    "`(match 5 ((bin (u8 x)) x) (_ 0))` matches a `(bin …)` pattern against the Int64 `5`. A bin
+           pattern decodes a Bytes value, and an Int64 is not Bytes, so it is rejected (CDZ0203, naming the
+           scrutinee's type). Pins that the bin pattern's scrutinee-type check fires on a definite non-Bytes
+           scalar — the binary-matching companion of a list pattern over a non-list scrutinee.")
+  (input  (do (def (main) (match 5 ((bin (u8 x)) x) (_ 0))) (export main)))
+  (error  CDZ0203))
+
+(case "a bin pattern over a String scrutinee is a type error"
+  (doc    "`(match \"hi\" ((bin (u8 x)) x) (_ 0))` — a String is not Bytes (text vs a byte sequence are
+           distinct types; the bridge is `String.to-bytes`/`from-bytes`), so a bin pattern over it is
+           rejected (CDZ0203). Pins that a String scrutinee does not silently decode as bytes — the author
+           must encode it first.")
+  (input  (do (def (main) (match "hi" ((bin (u8 x)) x) (_ 0))) (export main)))
+  (error  CDZ0203))
+
+(case "a bin pattern over a List scrutinee is a type error"
+  (doc    "`(match (list 1 2) ((bin (u8 x)) x) (_ 0))` — a `(List Int64)` is not Bytes (a list of integers
+           is not a byte sequence; `Bytes.of` is the explicit bridge), rejected CDZ0203. Pins that the
+           scrutinee-type check covers a compound collection, not only a scalar.")
+  (input  (do (def (main) (match (list 1 2) ((bin (u8 x)) x) (_ 0))) (export main)))
+  (error  CDZ0203))
+
+(case "a bin pattern over a runtime non-Bytes scrutinee is a type error"
+  (doc    "`(match n ((bin (u8 x)) x) (_ 0))` with `n` a runtime Int64 parameter — the scrutinee is a
+           definite non-Bytes type known statically even though its value arrives at run time, so the reject
+           still fires (CDZ0203). Pins that the check is on the scrutinee's static TYPE, not whether it is a
+           constant; a runtime Int64 is rejected exactly as the constant `5` is (distinct from an unsolved
+           `Any`/`Var` scrutinee, which is skipped because a runtime Bytes may flow in).")
+  (input  (do (def (main (: n Int64)) (match n ((bin (u8 x)) x) (_ 0))) (export main)))
+  (error  CDZ0203))
+
 ; ============================================================================================
 ; Protocol round-trips — construct and match are inverse over a whole realistic layout
 ; ============================================================================================
@@ -456,6 +497,50 @@
            the values filling them are dynamic.")
   (input  (let ((k 3)) (bin (bits 1 k))))
   (error  CDZ0220))
+
+; ============================================================================================
+; Unrecognized segment KIND — the kind head names no segment (CDZ0201, distinct from CDZ0220)
+; ============================================================================================
+; A segment's KIND head must be one of the closed vocabulary `bits`/`bytes`/`utf8`/`u8..u64`/`i8..i64`.
+; A head outside it names no segment — a type error (CDZ0201), distinct from the CDZ0220 well-formedness
+; failures above (which have a valid kind but a bad LAYOUT: an unclosed byte, a non-final unsized segment,
+; a non-constant width). A CONFIDENT typo of a known kind (`byte`→`bytes`, `utf`→`utf8`, `bit`→`bits`)
+; carries a rename suggestion — the bin-segment analogue of the member/variant did-you-mean; a wrong
+; INTEGER WIDTH (`u9`) keeps its own dedicated "must be a byte-aligned width" message pointing at `bits`;
+; a far miss keeps the plain "unrecognized kind" message. All CDZ0201; the message differs by how close.
+
+(case "a misspelled segment kind is rejected with a rename suggestion"
+  (doc    "`(bin (byte 5))` uses `byte` where the kind is `bytes` — a confident typo of a known segment
+           kind. The kind head names no segment, so it is rejected (CDZ0201, 'unrecognized bin segment kind
+           `byte` — did you mean `bytes`?'), the bin-segment did-you-mean. Pins the misspelled-kind path
+           (the rename fix), distinct from a valid kind with a bad layout (CDZ0220 above).")
+  (input  (do (def (main) (bin (byte 5))) (export main)))
+  (error  CDZ0201))
+
+(case "a misspelled utf8 segment kind is rejected"
+  (doc    "`(bin (utf 65))` uses `utf` for `utf8` — another confident kind typo, rejected CDZ0201 with the
+           `utf8` rename suggestion. Pins that the did-you-mean covers the text-segment kind as well as
+           `bytes`, so a near-miss on any closed-vocabulary kind is named.")
+  (input  (do (def (main) (bin (utf 65))) (export main)))
+  (error  CDZ0201))
+
+(case "a fixed-width integer segment of a non-byte-aligned width is rejected"
+  (doc    "`(bin (u9 5))` names a 9-bit unsigned integer segment — `uNN` segments are the byte-aligned
+           widths u8/u16/u32/u64 only, so `u9` is not a segment kind (CDZ0201, with the dedicated message
+           pointing at `(bits v k)` for an arbitrary bit width). Distinct from a plain typo: the head is a
+           recognizable `u`-integer shape at a width the byte-aligned segments do not offer, so it keeps its
+           own message rather than a rename. Pins the wrong-integer-width path.")
+  (input  (do (def (main) (bin (u9 5))) (export main)))
+  (error  CDZ0201))
+
+(case "a far-miss segment kind keeps the plain unrecognized message"
+  (doc    "`(bin (zzz 5))` uses `zzz` — a head that is not close to any known kind. It is rejected
+           (CDZ0201) with the plain 'unrecognized bin segment kind (expected uNN/iNN/bits/bytes/utf8)'
+           message, no rename fix (there is no confident correction). Pins the far-miss path, the
+           complement of the misspelled-kind case: the vocabulary is closed and a head outside it — near or
+           far — is rejected.")
+  (input  (do (def (main) (bin (zzz 5))) (export main)))
+  (error  CDZ0201))
 
 ; ============================================================================================
 ; Fit — a value that does not fit its segment has no encoding (rejected when provable, else traps)

@@ -4797,6 +4797,31 @@ fn structural_delta_hint(first: &Ty, other: &Ty) -> Option<String> {
         .or_else(|| collection_element_mismatch_hint(first, other))
         .or_else(|| sum_payload_mismatch_hint(first, other))
         .or_else(|| fn_signature_delta_hint(first, other))
+        .or_else(|| same_name_distinct_type_hint(first, other))
+}
+
+/// A message TAIL for two DISTINCT types that RENDER to the SAME name — "an Int64, but a value of type
+/// Int64 is expected here" reads as a contradiction. This happens when a user type SHADOWS a prelude type
+/// name: `(type Int64 (A))` binds `Int64` to a user sum, so `(f 5)` to a `(: x Int64)` parameter passes the
+/// prelude `Int64` literal where the user's `Int64` sum is expected — two genuinely different types printed
+/// identically. Name that the names collide because a declaration shadows a built-in, so the reader sees the
+/// mismatch is real (not a compiler confusion) and knows to rename the shadowing type. Fires ONLY when the
+/// rendered names are equal AND the types are NOT equal (a real, same-name clash); a normal mismatch (two
+/// different names) renders unambiguously and needs no tail. No mechanical fix — the repair (rename the
+/// shadowing declaration, or the reference) is the author's choice. Guards against a Var/Any side (which can
+/// still unify — not a settled clash) so this only speaks for two CONCRETE same-named-but-distinct types.
+fn same_name_distinct_type_hint(first: &Ty, other: &Ty) -> Option<String> {
+    if matches!(first, Ty::Var(_) | Ty::Any) || matches!(other, Ty::Var(_) | Ty::Any) {
+        return None;
+    }
+    if first == other || first.render_name() != other.render_name() {
+        return None;
+    }
+    Some(
+        " — these are two DIFFERENT types printed with the same name (a declaration shadows a \
+         built-in of that name); rename the shadowing type so the two are distinguishable"
+            .to_string(),
+    )
 }
 
 /// The message TAIL for a PEER-JOIN type clash — two `if` branches, two `match` arm bodies, two `list`
@@ -9817,6 +9842,23 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                             } else {
                                 None
                             };
+                            // LAST resort: two DISTINCT types that RENDER to the SAME name — "an Int64,
+                            // but a value of type Int64 is expected" — which happens when a user type
+                            // SHADOWS a prelude type name (`(type Int64 (A))`). None of the structural
+                            // hints fire (the names match, so there is no field/axis/arity delta to name),
+                            // so without this the reader sees a bare self-contradiction. Explain that the
+                            // names collide via a shadowing declaration. After every structural hint.
+                            let same_name_tail = if wrap.is_none()
+                                && option_tail.is_none()
+                                && record_tail.is_none()
+                                && fn_tail.is_none()
+                                && collection_tail.is_none()
+                                && sum_tail.is_none()
+                            {
+                                same_name_distinct_type_hint(&annot_ty, &expr_ty)
+                            } else {
+                                None
+                            };
                             let tail = wrap
                                 .as_ref()
                                 .map(|w| w.3.clone())
@@ -9827,6 +9869,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                                 .or(sum_tail.clone())
                                 .or(fn_sig_tail)
                                 .or((!qty_tail.is_empty()).then(|| qty_tail.clone()))
+                                .or(same_name_tail)
                                 .unwrap_or_default();
                             let mut reject =
                                 Reject::coded(Code::TypeMismatch, mismatch_lead(&tail));
