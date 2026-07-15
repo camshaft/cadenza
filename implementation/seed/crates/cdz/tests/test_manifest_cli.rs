@@ -657,4 +657,22 @@ fn a_list_parameter_test_is_property_tested_by_a_synthesized_generator() {
             && stdout.contains("PASS nested_ok-gen (8 trials)"),
         "a Tuple param and a nested List(Tuple) param are both property-tested: {stdout}"
     );
+
+    // G4: a `(Record …)` parameter is generated too (`(record (f <gen>) …)`). Written in the SEXPR
+    // canonical form (the record-TYPE ML surface `Record(x: T, …)` is a separate v-syntax concern; the
+    // generator recursion over record fields is what this pins).
+    let rec = write(
+        &d,
+        "rec.sexp",
+        "(do \
+           (@ test (def (rec-ok (: v (Record (x Int64) (y Bool)))) \
+             (if (= (. v x) (. v x)) unit (trap \"r\")))) \
+           (def (anchor3) 1))",
+    );
+    let (ok, stdout, stderr) = run(&["test", &rec, "--trials", "8"]);
+    assert!(ok, "a Record property passes: {stdout}{stderr}");
+    assert!(
+        stdout.contains("PASS rec-ok-gen (8 trials)"),
+        "a Record parameter is property-tested via the synthesized wrapper: {stdout}"
+    );
 }
