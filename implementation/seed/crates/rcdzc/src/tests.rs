@@ -24085,6 +24085,41 @@ mod match_engine {
     }
 
     #[test]
+    fn list_len_over_an_owned_temporary_reclaims_it_but_a_borrowed_list_is_left_to_its_owner() {
+        // LEAK reclamation (mirror the scalar-element `Core::Proj` reclaim): `vec-len` BORROWS the list and
+        // returns a scalar count, so an OWNED-TEMPORARY operand (`List.len (build …)` — a fresh list used
+        // once) must be dropped after the borrow, or it leaks one heap cell per call. The emit imports
+        // `drop` for that case and NOT for a borrowed param/local (whose owner reclaims).
+        let owned = "(module m \
+               (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out i)) out)) \
+               (def (main) ((. List len) (build 0 3 (list)))) (export main))";
+        assert!(
+            component_imports_op(&component(owned), "drop"),
+            "List.len over an owned-temporary list must import `drop` (reclaim the temporary — leak fix)"
+        );
+        if let Some(out) = run_on_heap(owned) {
+            assert_eq!(
+                out, "3",
+                "the value is unchanged by the reclaim (leak-only fix)"
+            );
+        }
+        // A BORROWED list — bound to a `let` and ALSO consumed later (so it is a kept binding the owner
+        // reclaims, NOT an owned temporary of the `List.len`) — must NOT be dropped by the len (that would
+        // free it before the later use → double-free/UAF). Value stays correct: len xs (3) + len(push) (4)
+        // = 7. This guards the reclaim gate against firing on a borrowed operand.
+        let borrowed = "(module m \
+               (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out i)) out)) \
+               (def (main) (let ((xs (build 0 3 (list)))) \
+                             (+ ((. List len) xs) ((. List len) ((. List push) xs 9))))) (export main))";
+        if let Some(out) = run_on_heap(borrowed) {
+            assert_eq!(
+                out, "7",
+                "a borrowed list read by List.len must not be freed early (owner reclaims)"
+            );
+        }
+    }
+
+    #[test]
     fn a_projected_list_consumed_then_reprojected_is_retained_not_mutated() {
         // The PROJECTION face of the still-live-binding retain (repeated-proj-of-let-consumed-then-read): the
         // shared value is a nested-compound PROJECTION `(. t 0)` of a `let`-bound tuple, not the binding

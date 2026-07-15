@@ -1765,6 +1765,15 @@ fn collect_used_ops_into(
         // `List.len` uses `vec-len` and evaluates its operand.
         Core::ListLen { operand } => {
             out.insert(OP_VEC_LEN);
+            // RECLAMATION: a `vec-len` over an OWNED-temporary list drops it after the borrowing read
+            // (mirror the emit's reclaim condition so `drop` is imported). A borrowed param/local is not
+            // dropped (its owner reclaims).
+            if matches!(
+                heap_operand_ownership(db, operand),
+                Ok(HandleOwnership::Owned)
+            ) {
+                out.insert(OP_DROP);
+            }
             collect_used_ops_into(db, operand, out);
         }
         // `Bytes.of` uses `bytes-alloc` + a `bytes-set` per element (each element is a raw byte — an
@@ -1808,6 +1817,14 @@ fn collect_used_ops_into(
         // `Bytes.len` uses `bytes-len` and evaluates its operand.
         Core::BytesLen { operand } => {
             out.insert(OP_BYTES_LEN);
+            // RECLAMATION: a `bytes-len` over an OWNED-temporary bytes drops it after the borrow (mirror the
+            // emit); a borrowed param/local is not dropped (its owner reclaims).
+            if matches!(
+                heap_operand_ownership(db, operand),
+                Ok(HandleOwnership::Owned)
+            ) {
+                out.insert(OP_DROP);
+            }
             collect_used_ops_into(db, operand, out);
         }
         // `List.push` uses `vec-push` (the pushed element boxed by its type); `List.concat` uses `vec-concat`.
@@ -5331,6 +5348,32 @@ fn emit(
         // ("expected i64, found i32"). A folded `List.len` over a literal never reaches here (it becomes
         // a `ConstInt`), which is why the constant control validated while the runtime case did not.
         Core::ListLen { operand } => {
+            // RECLAMATION (mirror the scalar-element `Core::Proj` reclaim): `vec-len` only BORROWS the list
+            // and returns a scalar COUNT, retaining nothing from the sequence. If the operand is a fresh
+            // OWNED TEMPORARY (a call result, a constructor — `heap_operand_ownership == Owned`) rather than
+            // a BORROW of a live binding (a param/local the owner reclaims), nothing else drops it, so it
+            // LEAKS one heap cell per call (`(List.len (build …))`). Stash it in a scratch slot across the
+            // borrowing `vec-len`, then `drop` it — the count is already a scalar on the stack. A BORROWED
+            // operand is left to its owner (declines to Owned only on a proven-fresh producer, else Borrowed
+            // — leak-safe: an unproven ownership just leaves it un-dropped, never double-frees).
+            let reclaim = matches!(
+                heap_operand_ownership(db, operand),
+                Ok(HandleOwnership::Owned)
+            );
+            if reclaim {
+                let list_slot = base;
+                if list_slot + 1 > *high {
+                    *high = list_slot + 1;
+                }
+                scratch_ty.insert(list_slot, ValType::I32);
+                emit(db, operand, slots, base + 1, high, scratch_ty, layout, out)?; // [list]
+                out.push(Lir::LocalTee(list_slot)); // [list], list_slot = the owned list
+                out.push(Lir::CallImport(OP_VEC_LEN)); // → [len:i32] (borrows the list)
+                out.push(Lir::LocalGet(list_slot)); // [len, list]
+                out.push(Lir::CallImport(OP_DROP)); // → [len] (reclaim the owned temporary)
+                out.push(Lir::I64ExtendI32U); // → [len:i64] — List.len : Int64
+                return Ok(());
+            }
             emit(db, operand, slots, base, high, scratch_ty, layout, out)?; // [list]
             out.push(Lir::CallImport(OP_VEC_LEN)); // → [len:i32]
             out.push(Lir::I64ExtendI32U); // → [len:i64] — List.len : Int64
@@ -5623,6 +5666,27 @@ fn emit(
         // `Bytes.len` — emit the bytes handle, then `bytes-len` (→ u32, an i32 slot), then extend to i64
         // (a length is non-negative), since `Bytes.len : Int64`. Mirrors `List.len` exactly.
         Core::BytesLen { operand } => {
+            // RECLAMATION (same as `Core::ListLen`): `bytes-len` BORROWS the bytes and returns a scalar
+            // count, so an OWNED-TEMPORARY operand must be dropped after the borrow or it leaks a heap cell.
+            // A BORROWED param/local is left to its owner (leak-safe: Owned only on a proven-fresh producer).
+            let reclaim = matches!(
+                heap_operand_ownership(db, operand),
+                Ok(HandleOwnership::Owned)
+            );
+            if reclaim {
+                let bytes_slot = base;
+                if bytes_slot + 1 > *high {
+                    *high = bytes_slot + 1;
+                }
+                scratch_ty.insert(bytes_slot, ValType::I32);
+                emit(db, operand, slots, base + 1, high, scratch_ty, layout, out)?; // [bytes]
+                out.push(Lir::LocalTee(bytes_slot)); // [bytes], bytes_slot = the owned bytes
+                out.push(Lir::CallImport(OP_BYTES_LEN)); // → [len:i32] (borrows the bytes)
+                out.push(Lir::LocalGet(bytes_slot)); // [len, bytes]
+                out.push(Lir::CallImport(OP_DROP)); // → [len] (reclaim the owned temporary)
+                out.push(Lir::I64ExtendI32U); // → [len:i64] — Bytes.len : Int64
+                return Ok(());
+            }
             emit(db, operand, slots, base, high, scratch_ty, layout, out)?; // [bytes]
             out.push(Lir::CallImport(OP_BYTES_LEN)); // → [len:i32]
             out.push(Lir::I64ExtendI32U); // → [len:i64] — Bytes.len : Int64
