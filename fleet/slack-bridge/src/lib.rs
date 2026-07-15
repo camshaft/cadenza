@@ -13,6 +13,8 @@
 //! - [`config`] — fail-soft credential/wiring resolution (env > gitignored `slack.toml` > defaults).
 //! - [`sidecar`] — the outbound brain: decide which concierge `ask`/`backlog` to mirror, and the
 //!   `thread_ts → asker` map (persisted to `slack-threads.json`) that routes an operator reply back.
+//! - [`watchdog`] — the daemon's second job (operator decision): the `cargo xtask fleet watchdog` command
+//!   spec + cadence decision, so the long-lived Slack host also heals stalled loops out-of-band.
 //!
 //! The Slack transport (slack-morphism, Socket Mode) binary wires these together in a later slice. Kept a
 //! standalone crate (own workspace) so the async transport tree never enters the seed workspace's lockfile
@@ -22,8 +24,10 @@ pub mod config;
 pub mod format;
 pub mod inbox;
 pub mod sidecar;
+pub mod watchdog;
 
 pub use config::{Config, SlackTokens};
 pub use format::{Intent, help_text, parse_operator_message, render_fleet_message};
 pub use inbox::{Drained, Message, deliver, drain, inbox_dir, is_valid_agent_name, mark_processed};
 pub use sidecar::{MirroredAsk, ThreadMap, ToMirror, is_mirrored_kind, select_to_mirror};
+pub use watchdog::{WatchdogSpec, due};
