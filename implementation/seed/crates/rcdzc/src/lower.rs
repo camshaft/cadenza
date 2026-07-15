@@ -5393,12 +5393,19 @@ fn desugar_runtime_map_match(
     scrutinee: StructId,
     arms: &[(StructId, StructId)],
 ) -> Option<Core> {
-    // Only fire for a RUNTIME map scrutinee — a constant `MapNew` keeps the existing const-fold path (it
-    // selects the arm at compile time, no lookups emitted).
-    if matches!(
-        core_of(db, scrutinee),
-        Core::MapNew { .. } | Core::Poison(_)
-    ) {
+    // Only fire for a RUNTIME map scrutinee — a FULLY-CONSTANT `MapNew` keeps the existing const-fold path
+    // (it selects the arm at compile time, no lookups emitted). But a `MapNew` can carry a RUNTIME key or
+    // value (a call/param result that did not fold — `(map ((f x) 42))`): the const path's key-presence
+    // test (`const_compound_eq`) reports a runtime key ABSENT (its compile-time equality is unknown), so it
+    // would take the catch-all for a key that IS present at run time — a silent MISCOMPILE (the map-match
+    // twin of the `Set.contains`/`Set.remove` runtime-element fold bug). Route such a map to the runtime
+    // matcher below (a `Map.lookup` chain, which compares keys by value at run time). Only a `MapNew` all of
+    // whose keys AND values are compile-time constants (`is_const_value`) keeps the fold; a `Poison`
+    // propagates unchanged.
+    if matches!(core_of(db, scrutinee), Core::Poison(_)) {
+        return None;
+    }
+    if matches!(core_of(db, scrutinee), Core::MapNew { .. }) && is_const_value(db, scrutinee) {
         return None;
     }
     // Require a catch-all (a bare binder / `_`) — a map's key set is unbounded, so without one the match is
