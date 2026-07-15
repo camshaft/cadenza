@@ -29008,6 +29008,9 @@ mod match_engine {
         // T (Int Int64))` made bare `Int` the variant ctor, so an unrelated `(: x Int64)` failed to reduce
         // (`Int` was no longer the width constructor) — a global corruption from one declaration.
         // The unrelated `Int64` annotation still reduces even with a `(type T (Int Int64))` in scope.
+        // (The construct-HEAD position DOES now shadow — a bare `(Int 42)` builds T's variant — but that is
+        // scoped to a user node in head position and does NOT touch the width TYPE in annotation position,
+        // the invariant this test guards. See `a_type_name_colliding_variant_constructs_as_the_local_variant`.)
         assert!(
             reject_code(
                 "(module m (type T (Int Int64)) (def (g (: x Int64)) x) (def (main) (g 5)) (export main))"
@@ -29035,8 +29038,8 @@ mod match_engine {
         // prelude `Int`/`Some`. Without this, the bare head resolved (scope→def→prelude) to the prelude
         // entry and the ctor check rejected CDZ0203, so an AST sum with prelude-colliding variant names
         // could only be matched QUALIFIED. `pattern_constraints` remaps a bare head to the scrutinee decl's
-        // cached ctor for that name. (Construct position stays qualified — no scrutinee to disambiguate,
-        // the deliberate variant-shadows-prelude design.)
+        // cached ctor for that name. (The CONSTRUCT half now shadows too — see
+        // `a_type_name_colliding_variant_constructs_as_the_local_variant` below.)
         let ok = |src: &str| assert!(reject_code(src).is_none(), "must compile: {src}");
         // Single-variant nominal newtype, bare `Int` pattern (qualified construct).
         ok(
@@ -29093,6 +29096,50 @@ mod match_engine {
             vec![],
         ) {
             assert_eq!(v, "5", "bare Other construct is T's own Other arm");
+        }
+    }
+
+    #[test]
+    fn a_type_name_colliding_variant_constructs_as_the_local_variant() {
+        // The CONSTRUCT-position half. A variant whose name collides with a prelude TYPE/MODULE name
+        // (`Int`/`List`/…) is SKIPPED from the bare `variant_ctor_index` (the `9f326a2d` guard) so bare
+        // `Int` stays the width constructor everywhere it means the width TYPE. But in application-HEAD
+        // position on a genuine USER node a bare `(Int 42)` is a VALUE construct of the local variant — so
+        // the user's declaration SHADOWS the colliding prelude name (operator ruling 2026-07-15). Before
+        // the fix the bare construct stayed the prelude width-type ctor (a type value with no runtime form)
+        // and the program was over-rejected; only `(T.Int 42)` worked. `resolve_name` step 3d reaches the
+        // variant via the companion `prelude_colliding_variant_ctor` index, consulted only in head position
+        // on a user node — the same discriminator the same-name-newtype ctor rule uses.
+        let ok = |src: &str| assert!(reject_code(src).is_none(), "must compile: {src}");
+        // Single-variant nominal newtype, bare `(Int 42)` construct (qualified `T.Int` pattern isolates it).
+        ok(
+            "(module m (type T (Int Int64)) (def (f (: t T)) (match t ((T.Int n) n))) (def (main) (f (Int 42))) (export main))",
+        );
+        // Multi-variant sum, bare `(Int 42)` construct beside a nullary variant.
+        ok(
+            "(module m (type T (Int Int64) (Nil)) (def (f (: t T)) (match t ((T.Int n) n) ((T.Nil) 0))) (def (main) (f (Int 42))) (export main))",
+        );
+        // `List`-colliding variant (a prelude MODULE name), bare construct.
+        ok(
+            "(module m (type T (List Int64) (Nada)) (def (f (: t T)) (match t ((T.List n) n) ((T.Nada) 0))) (def (main) (f (List 7))) (export main))",
+        );
+        // The bare `(Int 42)` construct genuinely BUILDS + matches T's `Int` variant → 42 (not a rejection,
+        // not a wrong value from resolving to the prelude width type).
+        if let Some(v) = run_heap_value(
+            "(module m (type T (Int Int64)) (def (f (: t T)) (match t ((T.Int n) n))) (def (main) (f (Int 42))) (export main))",
+            vec![],
+        ) {
+            assert_eq!(v, "42", "bare (Int 42) construct is T's own Int variant");
+        }
+        // NO CORRUPTION of the width type: bare `Int` used as the width TYPE (a `(: x Int64)` annotation
+        // whose reduction touches the prelude `Int` ctor) still works ALONGSIDE the shadowing construct.
+        // The shadow is scoped to construct-head position on a user node; a regression that shadowed `Int`
+        // unconditionally would break this annotation reduction (the global corruption `9f326a2d` fixed).
+        if let Some(v) = run_heap_value(
+            "(module m (type T (Int Int64)) (def (f (: t T)) (match t ((T.Int n) n))) (def (g (: x Int64)) x) (def (main) (+ (f (Int 42)) (g 10))) (export main))",
+            vec![],
+        ) {
+            assert_eq!(v, "52", "construct shadow coexists with the width type Int");
         }
     }
 
@@ -33869,6 +33916,29 @@ mod diagnostics {
                 "expected exactly one dead-trap (CDZ0305) warning for `{src}`, got {dead:?}"
             );
         }
+        // The dead-trap warning fires for EVERY provably-trapping constant, not only integer ÷0 — pin the
+        // full trap-kind axis `core-semantics.md §285` names, so a future change that breaks the fold's
+        // trap-proof for one kind (e.g. modulo, the rational zero-denominator, or overflow) is caught. Each
+        // is a 0-use `let` binding whose init provably traps at compile time; all compile (value unobserved)
+        // AND warn CDZ0305 exactly once. (Integer ÷0 is covered by the position sweep above; these add %0,
+        // the zero-denominator `Rational.of`, and a constant overflow past the Int64 default.)
+        for trap_init in [
+            "(% 100 0)",                 // integer modulo by zero (CDZ0304-class trap)
+            "(Rational.of 1 0)",         // a rational with a zero denominator
+            "(+ 9223372036854775807 1)", // a constant Int64 overflow (max + 1)
+        ] {
+            let src = format!("(module m (def (main) (let ((t {trap_init})) 5)) (export main))");
+            let dead: Vec<_> = warnings_of(&src)
+                .into_iter()
+                .filter(|d| d.code.as_deref() == Some("CDZ0305"))
+                .collect();
+            assert_eq!(
+                dead.len(),
+                1,
+                "a 0-use let binding whose init is `{trap_init}` must warn CDZ0305 (dead trap) exactly \
+                 once and still compile, got {dead:?}"
+            );
+        }
     }
 
     #[test]
@@ -34136,6 +34206,59 @@ mod diagnostics {
         let u = unused_of(mixed);
         assert_eq!(u.len(), 1, "only the unused payload binder n warns: {u:?}");
         assert!(u[0].contains("`n`"), "warns n, not C: {u:?}");
+    }
+
+    /// A BARE (un-dotted) nullary-variant arm pattern (`TInt` in `(match a (TInt …) (TBool …))`) is the
+    /// CONSTRUCTOR, not a binder — even when the match is NESTED inside another match's arm. `match_arm_binds`
+    /// treated a bare-name arm pattern as introducing a binding of that name; scope resolution is
+    /// scope-FIRST, so a NESTED `(match b (TInt 1) (TBool 2))` under an outer `(TInt …)` arm had its inner
+    /// `TInt` resolve to the "binder" the outer arm appeared to introduce instead of to the variant ctor.
+    /// That mis-resolution drew spurious CDZ0306 "unused binding `TInt`" + CDZ0213 "unreachable arm" on the
+    /// inner arms — though the program compiled and ran correctly (the runtime value was the ctor's). A bare
+    /// variant name never binds, so `match_arm_binds` now returns `None` for one (via `variant_ctor_by_name`,
+    /// the same index `resolve_name`'s bare-variant step consults), at every nesting depth.
+    #[test]
+    fn a_bare_nested_nullary_variant_arm_is_a_ctor_not_a_binder_and_never_warns() {
+        // The queue repro (mlrepro-false-warning-nested-nullary-match-unused-binding): the INNER bare
+        // nullary match drew CDZ0306 + CDZ0213. Now CLEAN — no warnings, exit 0.
+        let nested = "(module m (type Ty TInt TBool) \
+            (def (classify (: a Ty) (: b Ty)) \
+              (match a (TInt (match b (TInt 1) (TBool 2))) (TBool 3))) \
+            (export classify))";
+        let all = diags_of(nested);
+        assert!(
+            all.iter().all(|d| d.code.as_deref() != Some("CDZ0306")),
+            "no spurious 'unused binding' on a bare nested nullary-variant arm: {all:?}"
+        );
+        assert!(
+            all.iter().all(|d| d.code.as_deref() != Some("CDZ0213")),
+            "no spurious 'unreachable arm' on a bare nested nullary-variant arm: {all:?}"
+        );
+        // BEHAVIOR PRESERVED: the inner `TInt` is a CTOR, so `classify(TInt, TBool)` selects the `TBool => 2`
+        // arm (a catch-all binder would have matched `TBool` at the FIRST inner arm and returned 1). Build a
+        // nullary export that computes it and run it under wasmtime — the value must be 2.
+        let prog = "(module m (type Ty TInt TBool) \
+            (def (classify (: a Ty) (: b Ty)) \
+              (match a (TInt (match b (TInt 1) (TBool 2))) (TBool 3))) \
+            (def (main) (classify TInt TBool)) (export main))";
+        let component = crate::compile::compile_component(&crate::codec::encode(&parse(prog)))
+            .expect("the nested nullary-variant program compiles");
+        assert_eq!(
+            super::run_returns::<i64>(&component, "main"),
+            2,
+            "the inner bare nullary `TInt` matches as a ctor (→2), not a catch-all binder (→1)"
+        );
+        // The SAME inner match at TOP LEVEL was always clean — pin it stays clean (no regression the other way).
+        let top = "(module m (type Ty TInt TBool) \
+            (def (classify2 (: b Ty)) (match b (TInt 1) (TBool 2))) (export classify2))";
+        assert!(
+            diags_of(top)
+                .iter()
+                .all(|d| d.code.as_deref() != Some("CDZ0306")
+                    && d.code.as_deref() != Some("CDZ0213")),
+            "a top-level bare nullary-variant match stays clean: {:?}",
+            diags_of(top)
+        );
     }
 
     /// A match whose PATTERN is malformed (rejected — a `(tuple a b c)` against a 2-tuple, a `(list … .. r

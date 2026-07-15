@@ -53,3 +53,5 @@
               (def (odd (: n Int64)) (if (= n 0) 0 (even (- n 1)))))
             ((. m even) 4)))
   (output (: 1 Int64)))
+
+;; RESOLVED 2026-07-15 (trunk@3ba79db6b): private module member's body now sees siblings (mutual recursion) — gate PASS

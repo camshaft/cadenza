@@ -42,3 +42,5 @@
     ((. Map size) m))
   (def (main) (count-positive (Map.insert (Map.insert (map) "a" 5) "b" (- 0 3))))
   (export main))
+
+;; BLOCKED 2026-07-15: NOT a front-end fix — needs a RUNTIME op (canonical value-ordering for to-list; CHAMP cursor walks HASH order, no front-end sort). Feature gap, no miscompile. Routed the runtime half to v-runtime; fix-map-set-enumeration escalated ownership to concierge + closed. Do NOT reassign as a plain fix agent until the runtime op exists.

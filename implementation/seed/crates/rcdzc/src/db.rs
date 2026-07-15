@@ -861,6 +861,31 @@ pub struct Db {
     /// ACCELERATOR over `type_decls`, never a source of truth — the ctor's identity is its occurrence.
     variant_ctor_index: crate::fxhash::FxHashMap<String, StructId>,
 
+    /// The variant ctors DELIBERATELY OMITTED from `variant_ctor_index` because their name COLLIDES with
+    /// a prelude TYPE/MODULE name (`Int`/`List`/`Name`/…) — the exact ones the `9f326a2d` skip drops so a
+    /// bare `Int` keeps resolving to the width constructor everywhere it means the width type (a `(Int W)`
+    /// annotation reduction, `Int64`'s synthesized `(Int 64)`). Kept SEPARATE (not in the main bare index)
+    /// so those synthesized/type-position uses are unaffected: `resolve_name` consults THIS map ONLY in
+    /// application-HEAD position on a genuine USER node — the same head-position/user-node discriminator the
+    /// same-name-newtype ctor rule uses — where a bare `(Int 42)` is a value CONSTRUCT of the local variant,
+    /// not a width-type reduction. This realizes the operator ruling that a user variant name SHADOWS the
+    /// colliding prelude name in construct position too (`prelude-and-resolution.md`: binding is lexical, a
+    /// program-defined name shadows the built-in alias). First-declared wins, matching `variant_ctor_index`.
+    prelude_colliding_variant_ctor_index: crate::fxhash::FxHashMap<String, StructId>,
+
+    /// Every node that lies inside a TYPE-EXPRESSION subtree — a variant payload (`(List Ast)` in `(type
+    /// Ast … (List (List Ast)))`), an annotation type slot (`(: x (List Int64))`'s `(List Int64)`), or an
+    /// effect-op arrow (`(op f (-> (List a) Bool))`). The construct-position shadow (step 3d in
+    /// `resolve_name`) fires only in genuine VALUE-construct head position, so it consults this set and
+    /// FALLS THROUGH (to the prelude, as before) for a head inside a type expression: there `(List Ast)`
+    /// means the List TYPE constructor, not a value construct of a `List` variant — diverting it would turn
+    /// a self-referential AST sum's payload into a bogus variant application (CDZ0201). A bare type ATOM
+    /// (`Int64` in `(: x Int64)`) is already spared by the head-position (`child_ix == 0`) gate, so this
+    /// set only needs to cover type-expression APPLICATION heads; marking whole subtrees is a safe superset.
+    /// Built once at load. Missing a root only RE-OVER-REJECTS that type expression (never a miscompile),
+    /// matching the pre-fix behavior — the shadow is additive over a strictly value-position surface.
+    type_expr_nodes: crate::fxhash::FxHashSet<StructId>,
+
     /// For each user-sum TYPE NAME, its synthesized RECORD occurrence (first-declared wins). Built once at
     /// load from `type_decls[].{name,synth}`. `type_decl_by_name` consults it for a name reference that
     /// falls through scope + defs in `resolve_name` (step 3) — and `resolve_name` reaches step 3 for MANY
@@ -1785,6 +1810,12 @@ impl Db {
         // O(variants) scan per bare-variant reference — an N-arm match over an N-variant sum was O(N²).
         let mut variant_ctor_index: crate::fxhash::FxHashMap<String, StructId> =
             crate::fxhash::FxHashMap::default();
+        // The companion index of the variants the prelude-collision guard below SKIPS — a variant whose
+        // name shadows a prelude TYPE/MODULE name (`Int`/`List`/…). `resolve_name` reaches these ONLY in
+        // application-HEAD position on a user node (a genuine `(Int 42)` construct), where the user's
+        // variant shadows the colliding prelude name (operator ruling). First-declared wins.
+        let mut prelude_colliding_variant_ctor_index: crate::fxhash::FxHashMap<String, StructId> =
+            crate::fxhash::FxHashMap::default();
         // Index each sum TYPE NAME → its synthesized record (first-declared wins) — `type_decl_by_name`'s
         // O(1) lookup, replacing an O(types) `find` per name resolution (O(N²) for N sum types).
         let mut type_decl_index: crate::fxhash::FxHashMap<String, StructId> =
@@ -1793,7 +1824,15 @@ impl Db {
         // `same_name_newtype_ctor`, replacing an O(types) `find` per type-name resolution.
         let mut same_name_newtype_ctor_index: crate::fxhash::FxHashMap<String, StructId> =
             crate::fxhash::FxHashMap::default();
-        for decl in &type_decls {
+        // The boundary between USER `(type …)` declarations and the appended BUILT-IN prelude sums (the
+        // last `prelude_sum_count`, e.g. `Ast`/`Option`/`Result`). Only a USER declaration's colliding
+        // variant shadows the prelude in construct position (the operator ruling is about a program-defined
+        // name); the built-in `Ast`'s `Int`/`Name`/`List` variants MUST stay qualified-only (`Ast.Int`) —
+        // indexing them would make a bare `(Int 42)` width-type ctor resolve to `Ast.Int`, re-opening the
+        // `9f326a2d` global corruption via the built-in.
+        let first_prelude_sum = type_decls.len() - prelude_sum_count;
+        for (di, decl) in type_decls.iter().enumerate() {
+            let is_user_decl = di < first_prelude_sum;
             for v in &decl.variants {
                 // A variant's bare name resolves BEFORE the prelude (`resolve` step 3c precedes step 4), so
                 // a variant whose name COLLIDES with a built-in prelude TYPE-CONSTRUCTOR / MODULE name
@@ -1808,6 +1847,16 @@ impl Db {
                 // (the common case). Checking the polluted map would wrongly skip those, so bare `Some`/`None`
                 // would fall through to the built-in generic Option — a silent miscompile.
                 if prelude_type_module_names.contains(&v.name) {
+                    // Skipped from the bare index (so bare `Int` stays the width ctor everywhere it means
+                    // the width type) but — for a USER declaration only — recorded in the companion so a
+                    // HEAD-position user construct `(Int 42)` reaches the local variant (the construct-half
+                    // of the shadowing). A BUILT-IN prelude sum's colliding variant (`Ast.Int`) is NOT
+                    // recorded: it stays qualified-only, else bare `(Int 42)` would resolve to `Ast.Int`.
+                    if is_user_decl && let Some(ctor) = v.ctor {
+                        prelude_colliding_variant_ctor_index
+                            .entry(v.name.clone())
+                            .or_insert(ctor);
+                    }
                     continue;
                 }
                 if let Some(ctor) = v.ctor {
@@ -1899,6 +1948,40 @@ impl Db {
                 collect_default_float_literals(&ast, m.occ, ty_expr, &mut default_float_literals);
             }
         }
+        // Every node inside a TYPE-EXPRESSION subtree — so the construct-position shadow (`resolve_name`
+        // step 3d) fires only in genuine VALUE position and leaves a `(List Ast)` payload / annotation type
+        // as the List TYPE constructor. Roots: every `(: e T)` annotation's type slot, every variant
+        // payload, and every effect-op arrow. Marking the whole subtree of each root is a safe superset (a
+        // value construct never sits inside a type expression). See `type_expr_nodes`.
+        let mut type_expr_nodes = crate::fxhash::FxHashSet::default();
+        // `(: e T)` annotation type slots — anywhere in the program (param/value/return annotations). One
+        // arena walk marks each `:` form's SECOND tail element (the type) and its descendants.
+        for id in 0..ast.structure.len() as u32 {
+            let id = StructId(id);
+            if let Some(t) = ast.as_form(id, ":")
+                && let Some(&ty_slot) = t.get(1)
+            {
+                mark_subtree(&ast, ty_slot, &mut type_expr_nodes);
+            }
+        }
+        // Variant payload type expressions (`(List Ast)` in `(type Ast … (List (List Ast)))`) — not under a
+        // `:`, so seeded from the scanned decls. Prelude sums are included harmlessly (their payloads are
+        // type exprs too); the shadow never reaches them anyway (their variants aren't in the companion).
+        for decl in &type_decls {
+            for v in &decl.variants {
+                for &p in &v.payloads {
+                    mark_subtree(&ast, p, &mut type_expr_nodes);
+                }
+            }
+        }
+        // Effect-op arrows (`(op f (-> (List a) Bool))`) — the op's whole type expression.
+        for e in &effect_decls {
+            for op in &e.ops {
+                if let Some(ty) = op.ty {
+                    mark_subtree(&ast, ty, &mut type_expr_nodes);
+                }
+            }
+        }
         let mut db = Db {
             ast,
             defs,
@@ -1923,6 +2006,8 @@ impl Db {
             def_by_ident: None,
             def_name_index: def_by_name,
             variant_ctor_index,
+            prelude_colliding_variant_ctor_index,
+            type_expr_nodes,
             type_decl_index,
             same_name_newtype_ctor_index,
             type_decl_by_occ_index,
@@ -2987,6 +3072,26 @@ impl Db {
         self.variant_ctor_index.get(name).copied()
     }
 
+    /// The ctor of a bare variant whose name COLLIDES with a prelude TYPE/MODULE name (`Int`/`List`/…) —
+    /// the ones `variant_ctor_by_name` deliberately omits (the `9f326a2d` skip) so bare `Int` stays the
+    /// width constructor everywhere it means the width type. `resolve_name` consults THIS only in
+    /// application-HEAD position on a genuine USER node (a real `(Int 42)` value construct), where the
+    /// user's variant SHADOWS the colliding prelude name (operator ruling) — the construct-position
+    /// analogue of the same-name-newtype head-position rule and the match-pattern remap (`85faf395`).
+    /// `None` if no declared sum has a prelude-colliding variant named `name`. First-declared wins.
+    pub fn prelude_colliding_variant_ctor(&self, name: &str) -> Option<StructId> {
+        self.prelude_colliding_variant_ctor_index.get(name).copied()
+    }
+
+    /// Whether `id` lies inside a TYPE-EXPRESSION subtree (a variant payload, an annotation type slot, an
+    /// effect-op arrow). The construct-position variant shadow (`resolve_name` step 3d) checks this and
+    /// falls through for a type-expression head, so `(List Ast)` in `(type Ast … (List (List Ast)))` stays
+    /// the List TYPE constructor rather than being diverted to a `List` variant construction. See
+    /// [`Db::type_expr_nodes`].
+    pub fn is_type_expr_node(&self, id: StructId) -> bool {
+        self.type_expr_nodes.contains(&id)
+    }
+
     /// The variant-CONSTRUCTOR occurrence for a SAME-NAME NEWTYPE — a declaration `(type UserId (UserId
     /// …))` whose SINGLE variant's name IS the type name. `Some(ctor)` only for that exact shape; `None`
     /// for a multi-variant sum, or one whose variant name differs from the type name. This is what lets
@@ -3207,8 +3312,15 @@ fn is_binding_candidate(
     // pattern's binder in scope for the guard COND (`binder_in`'s Case 5g / `guard_cond_binds`). Without
     // the guard as a candidate the scope-skip index would hop PAST it and Case 5g would never fire, so a
     // guard reference to its binder would be spuriously unbound.
+    //
+    // A `(module …)` DECLARATION form is a candidate too (`binder_in`'s Case R2 / `module_form_sibling_binds`):
+    // its members are mutually visible in each other's bodies. An EXPORTED member's body is reparented under
+    // its synth field lambda beneath the record (Case R lands there), but a PRIVATE member — no field built —
+    // keeps its source parent, so its body's scope walk ascends through the `(module …)` form; without it as a
+    // candidate the skip index would hop PAST it and a private member's sibling reference would spuriously
+    // unbind (the `is_binding_candidate` trap: every binding form MUST be listed here).
     if let Some(h) = ast.head_name(form)
-        && matches!(h, "let" | "fn" | "def" | "guard")
+        && matches!(h, "let" | "fn" | "def" | "guard" | "module")
     {
         return true;
     }
@@ -3491,9 +3603,14 @@ fn build_do_binder_index(
     > = crate::fxhash::FxHashMap::default();
     for i in 0..ast.structure.len() {
         let form = StructId(i as u32);
-        // The root do binds nothing lexically (`binder_in` returns early for it — a merged multi-file
-        // root is not a do-scope), so it needs no index; skip it to match that early return.
-        if form == ast.root {
+        // The root DO binds nothing lexically (`binder_in` returns early for it — a merged multi-file
+        // root is not a do-scope), so it needs no index; skip it to match that early return. But a root
+        // that is itself a `(module …)` (a bare `(module m … (export main))` program) IS a scope — its
+        // members are mutually visible, resolved by `module_form_sibling_binds` (Case R2 / a PRIVATE
+        // member's body, which never reaches the synth record). It must be indexed like any nested module,
+        // else `do_forms_declaring` returns `None` for it and the resolver falls to an O(members) live scan
+        // PER REFERENCE — O(N²) on a wide root module. So skip the root ONLY when it is a `do`.
+        if form == ast.root && ast.as_form(form, "module").is_none() {
             continue;
         }
         // Index the members of a `(do …)` block AND a `(module …)` — both hold a sequence of `def`/`module`
@@ -4332,6 +4449,21 @@ fn collect_default_int_literals(
             && let Some(&def_body) = def_tail.get(1)
         {
             mark_int_literals(ast, def_body, ty_expr, out);
+        }
+    }
+}
+
+/// Mark `node` and every descendant into `out` — the subtree marker behind [`Db::type_expr_nodes`]. A
+/// type expression `(List Ast)` / `(-> A B)` and everything inside it is a type, never a value construct,
+/// so the whole subtree is off-limits to the construct-position variant shadow. Bounded by the subtree
+/// size; a node visited twice (overlapping roots cannot occur, but defensively) is idempotent.
+fn mark_subtree(ast: &Arenas, node: StructId, out: &mut crate::fxhash::FxHashSet<StructId>) {
+    if !out.insert(node) {
+        return;
+    }
+    if let Struct::List(children) = ast.get(node) {
+        for &c in children {
+            mark_subtree(ast, c, out);
         }
     }
 }

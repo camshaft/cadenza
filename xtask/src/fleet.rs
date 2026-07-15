@@ -297,6 +297,14 @@ pub enum FleetCmd {
     },
     /// Deliver a message into another agent's inbox as one atomic JSON file. The whole fleet
     /// coordinates through this — see the message-kind table in AGENTS-fleet.md.
+    ///
+    /// After delivering, this WAKES the recipient: it nudges the recipient's tmux window into an
+    /// immediate tick (`tmux send-keys "continue" Enter`) so a message is reacted to within seconds
+    /// instead of waiting for the next scheduled `/loop`. Delivery == wake. The nudge is skipped for
+    /// a stopped recipient, one with no live window, one already working (mid-tick — the message will
+    /// be drained when it finishes), and — to protect a human — the interactive `concierge`/`design`
+    /// windows. `/loop` remains the safety heartbeat, so a missed nudge is still eventually picked up.
+    /// Pass `--no-wake` to deliver silently (e.g. seeding many messages in a batch).
     Send {
         /// Recipient agent name.
         #[arg(long)]
@@ -317,6 +325,10 @@ pub enum FleetCmd {
         /// Sender name (defaults to `$FLEET_AGENT` if the caller is itself an agent, else `unknown`).
         #[arg(long)]
         from: Option<String>,
+        /// Deliver without nudging the recipient's window awake (it will pick the message up on its
+        /// next scheduled `/loop` tick). Use when seeding a batch of messages.
+        #[arg(long)]
+        no_wake: bool,
     },
     /// Stamp an agent's `lastTick` — the presence heartbeat the loop calls at the top of every tick.
     Heartbeat {
@@ -340,11 +352,35 @@ pub enum FleetCmd {
         #[arg(long)]
         no_commit: bool,
     },
+    /// Resolve a `merge-request` ATOMICALLY: reply to its sender AND archive the request in one step.
+    /// This closes a reliability hole in the single-integrator model — pr-sync used to reply and move
+    /// the request to `processed/` as two decoupled manual steps, so a missed reply left the sender
+    /// idling forever on a silently-dropped MR (`process(mr)` MUST emit exactly one `merged`/`reject`).
+    /// `fleet ack` reads the sender + ref from the request file, delivers the reply, then moves the
+    /// request into `processed/` — you cannot archive without replying. pr-sync calls this instead of a
+    /// bare `send` + hand-move. Run it from pr-sync's worktree (the inbox is hub-anchored either way).
+    Ack {
+        /// The merge-request file to resolve — a path, or just the basename in pr-sync's inbox.
+        request: String,
+        /// The outcome: `merged` (integrated) or `reject` (not integrated; body says why).
+        #[arg(long)]
+        outcome: String,
+        /// The new `trunk` sha for a `merged`, or the branch/base for a `reject` (goes in the reply's
+        /// `ref`). Optional.
+        #[arg(long, default_value = "")]
+        r#ref: String,
+        /// The reply body — for `merged`, the gate summary / trunk sha; for `reject`, WHY + what to do
+        /// (e.g. "conflict in X; rebase on trunk@<sha> and resend").
+        #[arg(long, default_value = "")]
+        body: String,
+    },
     /// Self-heal the fleet, in two passes. RE-ARM: any ACTIVE agent whose `/loop` has stalled — each
     /// agent stamps a heartbeat touch-file (`.claude/fleet/heartbeat/<agent>`) at the top of every
-    /// tick; if that file is older than `--stale-mult` × the agent's interval, its loop is presumed
-    /// dead and this nudges the window back to life (`tmux send-keys "/loop <interval>" Enter` — the
-    /// same recovery an operator does by hand). Skips: agents with no live tmux window, agents mid-tick
+    /// tick; if that file is older than `min(--stale-mult × interval, --stale-cap)`, its loop is
+    /// presumed dead and this nudges the window back to life (`tmux send-keys "/loop <interval>" Enter`
+    /// — the same recovery an operator does by hand). The `--stale-cap` bound is what keeps a
+    /// long-interval agent (e.g. 30m) from getting an hour-long dead window. Skips: agents with no live
+    /// tmux window, agents mid-tick
     /// ("esc to interrupt" — real work in flight), and agents re-armed within `--grace-secs`
     /// (anti-thrash). REAP: any genuinely-DONE agent (registry status=stopped AND a stop-file present)
     /// whose tmux window is still live gets that window killed — role-agnostic, so it catches design/
@@ -360,6 +396,13 @@ pub enum FleetCmd {
         /// Presume a loop stalled once its heartbeat is older than this multiple of its interval.
         #[arg(long, default_value_t = 2)]
         stale_mult: u32,
+        /// Hard CAP (seconds) on the stale window, regardless of interval × mult. The interval is how
+        /// often a HEALTHY agent wants to tick; the stale window is how long we tolerate SILENCE before
+        /// presuming death — they must not scale together unboundedly, or a 30m agent gets a 60min
+        /// dead window (2×30m) and sits stalled for an hour. A heartbeat is stamped at the TOP of every
+        /// tick, so >~10min of silence means stalled no matter the interval. Default 600s (10 min).
+        #[arg(long, default_value_t = 600)]
+        stale_cap: u64,
         /// Grace window (seconds), used two ways: don't re-arm an agent re-armed this recently (gives
         /// the nudge time to land), and don't reap a window whose agent stopped this recently (keeps
         /// its final scrollback glanceable for one cycle).
@@ -411,15 +454,23 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
             r#ref,
             body,
             from,
-        } => send(&fleet, &to, &kind, &subject, &r#ref, &body, from),
+            no_wake,
+        } => send(&fleet, &to, &kind, &subject, &r#ref, &body, from, no_wake),
         FleetCmd::Heartbeat { name } => heartbeat(&fleet, &name),
         FleetCmd::Describe { name } => describe(&fleet, &name),
         FleetCmd::Archive { no_commit } => archive(&fleet, no_commit),
         FleetCmd::Watchdog {
             dry_run,
             stale_mult,
+            stale_cap,
             grace_secs,
-        } => watchdog(&fleet, dry_run, stale_mult, grace_secs),
+        } => watchdog(&fleet, dry_run, stale_mult, stale_cap, grace_secs),
+        FleetCmd::Ack {
+            request,
+            outcome,
+            r#ref,
+            body,
+        } => ack(&fleet, &request, &outcome, &r#ref, &body),
     }
 }
 
@@ -722,6 +773,7 @@ fn send(
     r#ref: &str,
     body: &str,
     from: Option<String>,
+    no_wake: bool,
 ) {
     let from = from
         .or_else(|| std::env::var("FLEET_AGENT").ok())
@@ -741,6 +793,182 @@ fn send(
         },
     );
     println!("fleet send: {from} → {to} [{kind}] {subject}");
+
+    // Wake the recipient so it reacts to this message NOW rather than at its next scheduled tick.
+    // Delivery == wake. `/loop` stays the safety net for any nudge that doesn't land.
+    if !no_wake {
+        match wake_window(fleet, to) {
+            WakeOutcome::Woke => println!("  ↑ nudged '{to}' awake (immediate tick)"),
+            WakeOutcome::Skipped(why) => println!("  (not woken: {why} — picks it up next /loop)"),
+        }
+    }
+}
+
+/// Resolve a `merge-request` atomically: reply to its sender, THEN archive the request — so a request
+/// can never be archived without a reply (the silent-drop hole that left senders idling forever). See
+/// the `Ack` doc comment. Reads the sender + ref from the request file; the outcome must be `merged`
+/// or `reject`.
+fn ack(fleet: &Fleet, request: &str, outcome: &str, r#ref: &str, body: &str) {
+    if outcome != "merged" && outcome != "reject" {
+        eprintln!("fleet ack: --outcome must be `merged` or `reject` (got `{outcome}`)");
+        std::process::exit(1);
+    }
+    // Resolve the request file: an explicit path, or a basename in pr-sync's inbox.
+    let path = {
+        let p = PathBuf::from(request);
+        if p.is_file() {
+            p
+        } else {
+            fleet.inbox("pr-sync").join(request)
+        }
+    };
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!(
+                "fleet ack: cannot read merge-request {}: {e}",
+                path.display()
+            );
+            std::process::exit(1);
+        }
+    };
+    let mr: Message = match serde_json::from_str(&text) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("fleet ack: {} is not a valid message ({e})", path.display());
+            std::process::exit(1);
+        }
+    };
+    if mr.kind != "merge-request" {
+        eprintln!(
+            "fleet ack: {} is a `{}`, not a `merge-request` — refusing to ack",
+            path.display(),
+            mr.kind
+        );
+        std::process::exit(1);
+    }
+
+    // 1) Reply to the sender FIRST (deliver, then archive) — if the archive somehow fails, the sender
+    // has still been told, which is the safe direction: a stray un-archived request re-processes
+    // (idempotent-ish: a second ack just sends a second reply), whereas a lost reply is invisible.
+    let subject = if outcome == "merged" {
+        format!("merged: {}", mr.subject)
+    } else {
+        format!("reject: {}", mr.subject)
+    };
+    deliver(
+        fleet,
+        &Message {
+            from: "pr-sync".to_string(),
+            to: mr.from.clone(),
+            kind: outcome.to_string(),
+            subject,
+            r#ref: r#ref.to_string(),
+            body: body.to_string(),
+            seq: next_seq(),
+        },
+    );
+    println!(
+        "fleet ack: pr-sync → {} [{outcome}] {}",
+        mr.from, mr.subject
+    );
+
+    // 2) Archive the request into pr-sync's processed/ (create it on demand). Only now that the reply
+    // is delivered.
+    let processed = fleet.inbox("pr-sync").join("processed");
+    std::fs::create_dir_all(&processed).ok();
+    let dest = processed.join(
+        path.file_name()
+            .unwrap_or(std::ffi::OsStr::new("request.json")),
+    );
+    match std::fs::rename(&path, &dest) {
+        Ok(()) => println!("  ✓ archived {} → processed/", path.display()),
+        Err(e) => eprintln!(
+            "  ! reply sent, but could not archive {} ({e}) — move it by hand",
+            path.display()
+        ),
+    }
+
+    // 3) Wake the sender so it acts on the reply immediately (a `reject` needs a fast fix; a `merged`
+    // lets a one-shot agent stand down). Same guards as any delivery.
+    match wake_window(fleet, &mr.from) {
+        WakeOutcome::Woke => println!("  ↑ nudged '{}' awake (immediate tick)", mr.from),
+        WakeOutcome::Skipped(why) => println!("  (sender not woken: {why})"),
+    }
+}
+
+/// Why a delivery did or didn't wake the recipient.
+enum WakeOutcome {
+    /// The recipient's window was nudged into an immediate tick.
+    Woke,
+    /// Not nudged; the reason (recipient will still drain the inbox on its next scheduled tick).
+    Skipped(&'static str),
+}
+
+/// Nudge a message recipient's tmux window into an immediate tick, subject to the wake guards:
+///   * not in a tmux session → nothing to nudge;
+///   * a stopped recipient (stop-file present) MUST stay down;
+///   * the interactive `concierge`/`design` windows are left alone — a human may be typing, and a
+///     nudge would clobber their input (they poll their inbox on their own cadence);
+///   * no live tmux window by that name → nothing to nudge (a not-yet-launched or reaped agent);
+///   * a window already mid-tick ("esc to interrupt") does NOT need a nudge — it will drain the
+///     freshly-delivered message when the current tick finishes, and a keystroke mid-turn is noise.
+///
+/// A recipient absent from the registry is still nudged if it has a live window (matches `send`'s
+/// "deliver even if not yet registered" behavior); only an explicit `stopped` status suppresses it.
+fn wake_window(fleet: &Fleet, to: &str) -> WakeOutcome {
+    if !in_tmux() {
+        return WakeOutcome::Skipped("not in a tmux session");
+    }
+    if fleet.stopfile(to).exists() {
+        return WakeOutcome::Skipped("recipient is stopped");
+    }
+    // Interactive roles talk to the human directly; never inject keystrokes into their window.
+    let reg = fleet.load();
+    if let Some(a) = reg.agents.iter().find(|a| a.name == to) {
+        if a.status == "stopped" {
+            return WakeOutcome::Skipped("recipient is stopped");
+        }
+        if matches!(a.role.as_str(), "concierge" | "design") {
+            return WakeOutcome::Skipped("interactive role — left for the human");
+        }
+    }
+    let session = tmux_current_session();
+    if !tmux_windows(&session).iter().any(|w| w == to) {
+        return WakeOutcome::Skipped("no live window");
+    }
+    if window_is_working(&session, to) {
+        return WakeOutcome::Skipped("already mid-tick");
+    }
+    // Nudge an idle loop to run its tick now. We type the word `continue` + Enter rather than
+    // re-invoking `/loop` (which would schedule a DUPLICATE recurring cron each time): the idle
+    // agent's context still holds its role, so a bare "continue" prompt makes it run one tick, and
+    // the existing `/loop` schedule keeps driving the cadence.
+    if nudge_tick(&session, to) {
+        WakeOutcome::Woke
+    } else {
+        WakeOutcome::Skipped("send-keys failed")
+    }
+}
+
+/// Type a one-shot tick prompt into an idle agent's pane (`continue` + Enter). Unlike
+/// [`rearm_window`], this does NOT re-invoke `/loop`, so it never stacks duplicate cron schedules —
+/// it just makes an already-scheduled, currently-idle agent run its next tick immediately.
+fn nudge_tick(session: &str, agent: &str) -> bool {
+    let target = format!("{session}:{agent}");
+    let sent = Command::new("tmux")
+        .args(["send-keys", "-t", &target, "-l", "continue"])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !sent {
+        return false;
+    }
+    Command::new("tmux")
+        .args(["send-keys", "-t", &target, "Enter"])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 fn heartbeat(fleet: &Fleet, name: &str) {
@@ -782,7 +1010,7 @@ fn describe(fleet: &Fleet, name: &str) {
 
 /// Self-heal a stalled fleet: re-arm any active agent whose `/loop` heartbeat has gone stale. See the
 /// `Watchdog` doc comment for the full contract. One pass, then return; a cron drives the cadence.
-fn watchdog(fleet: &Fleet, dry_run: bool, stale_mult: u32, grace_secs: u64) {
+fn watchdog(fleet: &Fleet, dry_run: bool, stale_mult: u32, stale_cap: u64, grace_secs: u64) {
     if !in_tmux() {
         eprintln!(
             "fleet watchdog: not inside a tmux session (no $TMUX) — nothing to re-arm. Run it from\n\
@@ -814,7 +1042,7 @@ fn watchdog(fleet: &Fleet, dry_run: bool, stale_mult: u32, grace_secs: u64) {
         // give the first tick its full stale window before judging it, rather than nuking a booting agent.
         let hb_age = heartbeat_age_secs(fleet, &a.name, now);
         let interval = parse_interval_secs(&a.interval);
-        let stale_after = interval.saturating_mul(stale_mult as u64);
+        let stale_after = stale_window_secs(interval, stale_mult, stale_cap);
         let Some(age) = hb_age else {
             continue; // never stamped yet — a booting agent; leave it for the next pass.
         };
@@ -976,6 +1204,15 @@ fn parse_interval_secs(s: &str) -> u64 {
         "d" => n * 86400,
         _ => 600,
     }
+}
+
+/// How long to tolerate heartbeat SILENCE before presuming a loop dead: `interval × mult`, but hard-
+/// capped at `cap`. The cap is the key: the interval is a healthy agent's tick CADENCE, while this is
+/// our patience for silence — they must not scale together, or a 30m agent gets a 60min dead window.
+/// A heartbeat is stamped at the TOP of every tick, so a `cap` of ~10min is a safe "definitely stalled"
+/// bound for any interval, and the mult keeps a short-interval agent from being judged too eagerly.
+fn stale_window_secs(interval_secs: u64, mult: u32, cap: u64) -> u64 {
+    interval_secs.saturating_mul(mult as u64).min(cap)
 }
 
 /// Does the agent's tmux pane show Claude actively working? Claude Code prints an "esc to interrupt"
@@ -1431,5 +1668,30 @@ mod tests {
     #[test]
     fn interval_tolerates_surrounding_whitespace() {
         assert_eq!(parse_interval_secs("  15m "), 900);
+    }
+
+    #[test]
+    fn stale_window_is_capped_for_long_intervals() {
+        // The bug: a 30m agent at mult=2 got a 3600s (60min) dead window. With the 600s cap it's
+        // bounded to 10min — no agent sits dead for an hour regardless of its interval.
+        let cap = 600;
+        assert_eq!(stale_window_secs(1800, 2, cap), 600); // 30m×2 = 3600 → capped to 600
+        assert_eq!(stale_window_secs(3600, 2, cap), 600); // 60m×2 = 7200 → capped to 600
+    }
+
+    #[test]
+    fn stale_window_uncapped_below_the_cap() {
+        // A short-interval agent still gets the full interval×mult (under the cap), so it isn't
+        // judged stalled too eagerly during a normal-length tick.
+        let cap = 600;
+        assert_eq!(stale_window_secs(60, 2, cap), 120); // 1m×2 = 120, under cap
+        assert_eq!(stale_window_secs(300, 2, cap), 600); // 5m×2 = 600, exactly at cap
+        assert_eq!(stale_window_secs(299, 2, cap), 598); // just under
+    }
+
+    #[test]
+    fn stale_window_never_overflows() {
+        // A huge interval must saturate, not wrap, before the cap applies.
+        assert_eq!(stale_window_secs(u64::MAX, 2, 600), 600);
     }
 }

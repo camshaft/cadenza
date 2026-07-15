@@ -3302,3 +3302,193 @@
   (input  (do (def (main (: x Int64)) (do (+ x 1) x)) (export main)))
   (call   main (: 9223372036854775807 Int64))
   (output (: 9223372036854775807 Int64)))
+
+; --- The common-OPERATOR if-arm hoist preserves trap and order semantics ---------------------------
+; ba26196c9 hoists a common operator out of both if arms — `(if c (+ a 1) (+ b 1))` → `(+ (if c a b)
+; 1)` — one checked op + one guard instead of two. Unlike the constructor hoist (payloads stay
+; guarded), the OP itself moves BELOW the select, so its trap now fires after the selection: sound
+; exactly when the trap depends only on the SELECTED operands. These pin that equivalence at the
+; faces where it could break: overflow at one arm's operand, divisor selection, cond-vs-op trap
+; order, effectful-cond evaluation count, and the mixed-operator decline.
+
+(case "the taken arm's checked add still overflows under the operator hoist"
+  (doc    "`(if (> c 0) (+ a 1) (+ b 1))` with the TAKEN arm's operand at Int64.max: the hoisted
+           single add receives the selected a = max and must trap 'integer overflow' exactly as the
+           un-hoisted taken arm would. Pins the hoist keeps the guard on the shared op.")
+  (input  (do
+            (def (main (: c Int64) (: a Int64) (: b Int64))
+              (if (> c 0) (+ a 1) (+ b 1)))
+            (export main)))
+  (call   main (: 1 Int64) (: 9223372036854775807 Int64) (: 5 Int64))
+  (trap   "integer overflow"))
+
+(case "an untaken arm's overflowing operand does not trap under the operator hoist"
+  (doc    "The complement: b = Int64.max in the UNTAKEN arm while the taken arm computes 1 + 1 = 2.
+           The hoisted add sees only the SELECTED operand (a = 1), so no trap — the operand selection
+           is what makes moving the op below the select value-preserving. A rewrite that evaluated
+           both adds before selecting (op-first) would trap a program that must return 2.")
+  (input  (do
+            (def (main (: c Int64) (: a Int64) (: b Int64))
+              (if (> c 0) (+ a 1) (+ b 1)))
+            (export main)))
+  (call   main (: 1 Int64) (: 1 Int64) (: 9223372036854775807 Int64))
+  (output (: 2 Int64)))
+
+(case "a hoisted division traps by the selected divisor only"
+  (doc    "`(if (> c 0) (/ 100 a) (/ 100 b))` → the hoisted `(/ 100 (if c a b))`: with c false and
+           a = 0, the selected divisor is b = 5 → 20 (the zero divisor sits in the untaken arm and
+           must not trap); with c true the selected divisor IS the zero → 'divide by zero'. Both
+           directions in one case pin that the division's partiality follows the SELECTION.")
+  (input  (do
+            (def (main (: c Int64) (: a Int64) (: b Int64))
+              (if (> c 0) (/ 100 a) (/ 100 b)))
+            (export main)))
+  (call   main (: 0 Int64) (: 0 Int64) (: 5 Int64))
+  (output (: 20 Int64))
+  (call   main (: 1 Int64) (: 0 Int64) (: 5 Int64))
+  (trap   "divide by zero"))
+
+(case "a trapping condition preempts the hoisted operator's trap"
+  (doc    "`(if (< (+ x 1) 5) (/ 100 d) (/ 100 d))` at x = Int64.max, d = 0 — BOTH the condition and
+           the (fully shared) hoisted op trap for these inputs. Source order evaluates the condition
+           first → 'integer overflow', never 'divide by zero'. The operator-hoist twin of the
+           constructor hoist's shared-payload-vs-cond order pin: with every operand position equal,
+           the hoist degenerates to `(/ 100 d)` guarded only by the cond's evaluation — which must
+           still happen first.")
+  (input  (do
+            (def (main (: x Int64) (: d Int64))
+              (if (< (+ x 1) 5) (/ 100 d) (/ 100 d)))
+            (export main)))
+  (call   main (: 9223372036854775807 Int64) (: 0 Int64))
+  (trap   "integer overflow"))
+
+(case "an effectful condition is performed exactly once under the operator hoist"
+  (doc    "`(if (< (Ctr.tick) 1) (+ v 10) (+ v 20))` under a counter handler: the first perform
+           returns 0 → the +10 arm → 15; the trailing `(Ctr.tick)` returns 1 (the state advanced
+           exactly once) → 16. A hoist that re-evaluated the condition for the operand select AND the
+           (degenerate) operator selection would skew the trailing read. The evaluate-once pin for
+           the operator hoist, mirroring the constructor-hoist and match-sink counterparts.")
+  (input  (do
+            (effect Ctr (op tick (-> Unit Int64)))
+            (def (main (: v Int64))
+              (handle Ctr 0 ((tick (_) s (resume s (+ s 1))))
+                (+ (if (< (Ctr.tick unit) 1) (+ v 10) (+ v 20)) (Ctr.tick unit))))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 16 Int64)))
+
+(case "mixed operators across the if arms keep their own arms"
+  (doc    "`(if (> c 0) (+ a 1) (- a 1))` — DIFFERENT operators, so the hoist must decline (there is
+           no common op to lift; only the operand happens to agree): c false → 5 - 1 = 4, c true →
+           5 + 1 = 6. A hoist keyed on operand agreement rather than operator identity would merge
+           the arms into one op and get one direction wrong. The decline pin for the operator hoist.")
+  (input  (do
+            (def (main (: c Int64) (: a Int64))
+              (if (> c 0) (+ a 1) (- a 1)))
+            (export main)))
+  (call   main (: 0 Int64) (: 5 Int64))
+  (output (: 4 Int64))
+  (call   main (: 1 Int64) (: 5 Int64))
+  (output (: 6 Int64)))
+
+; --- Boolean-identity folds preserve the left operand's traps and effects --------------------------
+; fe142112b folds `(not (not x))` → x and and/or with a CONSTANT RIGHT operand: neutral (`and p
+; true` / `or p false`) → p; absorbing (`and p false` / `or p true`) → the constant, but ONLY when
+; the discarded p is trap-free (the `x * 0` discipline — the left operand is the always-evaluated
+; condition). These grade the fold's contract from the running program's side: the absorbing fold
+; must KEEP a trapping/effectful p, the neutral fold must keep p's value AND trap, and negation
+; parity must survive composition.
+
+(case "an absorbing and-false keeps its trapping left operand"
+  (doc    "`(and (> (/ 10 n) 0) false)` at n = 0: the conjunction's VALUE is decided (false), but the
+           left operand traps — and the left of a connective is its always-evaluated condition, so the
+           div-by-zero MUST still fire (core-semantics: partial operations have a defined outcome; the
+           absorbing fold applies only to a trap-free left). A fold that discarded p unconditionally
+           returns 0 where the program must trap.")
+  (input  (do
+            (def (main (: n Int64))
+              (if (and (> (/ 10 n) 0) false) 1 0))
+            (export main)))
+  (call   main (: 0 Int64))
+  (trap   "divide by zero"))
+
+(case "an absorbing and-false discards a trap-free left operand's value"
+  (doc    "The fold's positive face: `(and (> n 0) false)` with a TRAP-FREE left is constantly false
+           — n = 2 (left true) still answers 0. Together with the trapping case above this pins the
+           absorbing fold's exact gate: value-discard is fine, evaluation-discard is not.")
+  (input  (do
+            (def (main (: n Int64))
+              (if (and (> n 0) false) 1 0))
+            (export main)))
+  (call   main (: 2 Int64))
+  (output (: 0 Int64)))
+
+(case "an absorbing or-true keeps an effectful left operand's perform"
+  (doc    "The EFFECT twin of the trap case: `(or (< (Ctr.tick) 99) true)` is constantly true, but the
+           left operand PERFORMS — the counter must advance exactly once before the trailing read.
+           tick returns 0 (condition true → 10), the trailing `(Ctr.tick)` returns 1 → 11. A fold that
+           discarded the effectful left answers 10 (the trailing tick reads 0); one that duplicated it
+           answers 12. Observable state pins evaluate-exactly-once through the absorbing fold.")
+  (input  (do
+            (effect Ctr (op tick (-> Unit Int64)))
+            (def (main (: d Int64))
+              (handle Ctr 0 ((tick (_) s (resume s (+ s 1))))
+                (+ (if (or (< (Ctr.tick unit) 99) true) 10 20) (Ctr.tick unit))))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 11 Int64)))
+
+(case "a neutral and-true keeps both the trap and the value of its left operand"
+  (doc    "`(and p true)` → p — the NEUTRAL fold hands back the left operand whole: its trap fires at
+           n = 0 (the div), and its VALUE decides the conditional at trap-free inputs — n = 20 →
+           `(> 0 0)` false → 0; n = 5 → `(> 2 0)` true → 1. Three calls pin that the neutral fold is
+           the identity on p (not a constant-true absorption, not a trap-suppressing rewrite).")
+  (input  (do
+            (def (main (: n Int64))
+              (if (and (> (/ 10 n) 0) true) 1 0))
+            (export main)))
+  (call   main (: 0 Int64))
+  (trap   "divide by zero")
+  (call   main (: 20 Int64))
+  (output (: 0 Int64))
+  (call   main (: 5 Int64))
+  (output (: 1 Int64)))
+
+(case "double negation of a runtime boolean is the identity"
+  (doc    "`(not (not (> n 0)))` = `(> n 0)` — both truth values verified (n = 5 → 1, n = -1 → 0).
+           The fold cancels the pair; parity (not the mere presence of `not`) must decide the answer.")
+  (input  (do
+            (def (main (: n Int64))
+              (if (not (not (> n 0))) 1 0))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 1 Int64))
+  (call   main (: -1 Int64))
+  (output (: 0 Int64)))
+
+(case "triple negation of a runtime boolean is a single negation"
+  (doc    "`(not (not (not (> n 0))))` — the ODD-parity companion: the fold may cancel exactly one
+           pair, leaving ONE live negation (n = 5 → 0, n = -1 → 1). A cancellation that consumed all
+           three (treating the fold as 'strip every not') flips both answers.")
+  (input  (do
+            (def (main (: n Int64))
+              (if (not (not (not (> n 0)))) 1 0))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 0 Int64))
+  (call   main (: -1 Int64))
+  (output (: 1 Int64)))
+
+(case "an absorbed conjunction composes as a live disjunction's operand"
+  (doc    "`(or (and (> n 0) false) (> m 0))` — the inner conjunction folds to constant false, which
+           is the DISJUNCTION's neutral element, so the whole expression folds to `(> m 0)`: m decides
+           (m = 0 → 0, m = 3 → 1), n never does. Pins the identities COMPOSING: the absorbing fold's
+           output feeds the neutral fold correctly rather than latching the outer connective.")
+  (input  (do
+            (def (main (: n Int64) (: m Int64))
+              (if (or (and (> n 0) false) (> m 0)) 1 0))
+            (export main)))
+  (call   main (: 1 Int64) (: 0 Int64))
+  (output (: 0 Int64))
+  (call   main (: 0 Int64) (: 3 Int64))
+  (output (: 1 Int64)))

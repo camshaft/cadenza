@@ -46,6 +46,8 @@
 ///                              `hi <= lo`. The reverse of `RangeI((lo, hi))`.
 ///   - `InclRangeI((lo, hi))` — the INCLUSIVE range `[lo, hi]`: yield `lo, lo+1, …, hi`. A dedicated
 ///                              variant (not `RangeI((lo, hi+1))`) so `hi == Int64.max` cannot overflow.
+///   - `FlatMapI((f, cur, src))` — map each `x` from `src` to a sub-iterator `f(x)` and flatten in
+///                              order; `cur` is the sub-iterator currently being drained (starts empty).
 type Iter =
   | FromList(List(Int64))
   | RangeI(Tuple(Int64, Int64))
@@ -61,6 +63,7 @@ type Iter =
   | StepRangeI(Tuple(Int64, Tuple(Int64, Int64)))
   | DownRangeI(Tuple(Int64, Int64))
   | InclRangeI(Tuple(Int64, Int64))
+  | FlatMapI(Tuple((Int64 -> Iter), Tuple(Iter, Iter)))
 
 /// Step once: yield `Option((element, rest))` — `None` at exhaustion, never a trap. Total and pure;
 /// `rest` is a fresh iterator for the remainder, so an iterator is re-steppable and shareable.
@@ -129,6 +132,14 @@ def next(it) = match it with
     if lo > hi then Option.None(unit)
     else if lo < hi then Option.Some((lo, Iter.InclRangeI((lo + 1, hi))))
     else Option.Some((lo, Iter.FromList([]))))
+  | Iter.FlatMapI(ff) => (match ff with | (f, cur-src) => (match cur-src with | (cur, src) =>
+    // drain the current sub-iterator; when it is empty, pull the next source element `x` and open
+    // `f(x)` as the new current sub-iterator (recursing to skip any empty sub-iterators)
+    (match next(cur) with
+      | Option.Some(p) => (match p with | (v, rest) => Option.Some((v, Iter.FlatMapI((f, (rest, src))))))
+      | Option.None(_) => (match next(src) with
+        | Option.None(_) => Option.None(unit)
+        | Option.Some(ps) => (match ps with | (x, srest) => next(Iter.FlatMapI((f, (f(x), srest)))))))))
 
 // ── Producers ──────────────────────────────────────────────────────────────────────────────────
 
@@ -183,12 +194,12 @@ def zip-with(it, other, f: Int64 -> Int64 -> Int64) = Iter.ZipWithI((f, (it, oth
 /// Inclusive left scan: yield the running accumulator `f(acc, x)` for each element, seeded with `init`.
 def scan(it, init, f: Int64 -> Int64 -> Int64) = Iter.ScanI((f, (init, it)))
 
-// NOTE — `flat-map` (element → sub-iterator, flattened) is NOT provided: a `FlatMapI` variant storing
-// an `Int64 -> Iter` closure coexisting with `ScanI`'s `Int64 -> Int64 -> Int64` closure in this one
-// sum makes the shared closure-dispatch table decline at lowering ("a runtime closure application has
-// no matching function type"). Each combinator compiles alone; only the coexistence of two
-// distinctly-typed boxed closures breaks. Filed as
-// `mlrepro-decline-two-distinct-closure-typed-variants-in-one-sum.cdz` (queue); `flat-map` is gated on that fix.
+/// Map each element to a sub-iterator via `f` and flatten the results in order. The current
+/// sub-iterator starts empty, so the first `next` pulls the first source element and opens `f(x)`.
+/// (`f`'s `Int64 -> Iter` closure returns the iterator sum itself; this was previously blocked by a
+/// closure-dispatch + closure-param-type gap, both now fixed upstream — see the retired
+/// `mlrepro-decline-two-distinct-closure-typed-variants-in-one-sum` finding.)
+def flat-map(it, f: Int64 -> Iter) = Iter.FlatMapI((f, (empty(), it)))
 
 // ── Consumers (drive the pull) ──────────────────────────────────────────────────────────────────
 
@@ -745,5 +756,95 @@ def max-by-empty-is-none() =
   match max-by(empty(), fn(x) => x) with
     | Option.None(_) => unit
     | Option.Some(_) => trap("empty has no max-by")
+
+// ── Algebraic laws (cross-combinator invariants a future change must not break) ──────────────────
+
+@test
+def law-collect-round-trips-from-list() =
+  // collect-list ∘ from-list = identity, for several shapes
+  let xs = [7, 0, 0 - 3, 42, 5] in
+  if int-list-eq(collect-list(from-list(xs)), xs) then unit else trap("collect ∘ from-list ≠ id")
+
+@test
+def law-count-equals-collected-length() =
+  // count(it) == length(collect-list(it)) — the two ways of measuring agree
+  let it = filter(range(0, 20), fn(x) => x % 3 == 0) in
+  if count(it) == count(from-list(collect-list(it))) then unit else trap("count ≠ collected length")
+
+@test
+def law-chain-is-associative() =
+  // (a ++ b) ++ c  ==  a ++ (b ++ c)
+  let a = from-list([1, 2]) in
+  let b = from-list([3]) in
+  let c = from-list([4, 5]) in
+  if int-list-eq(collect-list(chain(chain(a, b), c)), collect-list(chain(from-list([1, 2]), chain(from-list([3]), from-list([4, 5]))))) then
+    unit
+  else
+    trap("chain not associative")
+
+@test
+def law-map-fusion() =
+  // map(map(it, g), f) == map(it, f∘g) — mapping twice fuses into one composed map. (Uses two fresh
+  // range sources since an iterator is re-steppable but each pipeline consumes its own.)
+  if int-list-eq(collect-list(map(map(range(0, 6), fn(x) => x + 1), fn(y) => y * 2)), collect-list(map(range(0, 6), fn(x) => (x + 1) * 2))) then
+    unit
+  else
+    trap("map fusion law broken")
+
+@test
+def law-take-drop-splits() =
+  // take(it, n) ++ drop(it, n) reconstructs it (for a finite, re-steppable source)
+  let full = collect-list(range(0, 10)) in
+  let split = collect-list(chain(take(range(0, 10), 4), drop(range(0, 10), 4))) in
+  if int-list-eq(split, full) then unit else trap("take n ++ drop n ≠ whole")
+
+@test
+def law-sum-equals-fold-plus() =
+  // sum is the + fold; reduce with + over a non-empty range matches sum
+  match reduce(range(1, 6), fn(a, b) => a + b) with
+    | Option.Some(v) => if v == sum(range(1, 6)) then unit else trap("reduce+ ≠ sum")
+    | Option.None(_) => trap("range 1..6 is non-empty")
+
+// ── flat-map (unblocked: the Int64 -> Iter closure now lowers correctly) ─────────────────────────
+
+@test
+def flat-map-expands() =
+  // each x -> [x, x*10]; [1,2] -> [1,10,2,20]
+  if int-list-eq(collect-list(flat-map(from-list([1, 2]), fn(x) => from-list([x, x * 10]))), [1, 10, 2, 20]) then
+    unit
+  else
+    trap("flat-map [x, x*10]")
+
+@test
+def flat-map-with-ranges() =
+  // each x -> range(0, x); [1,2,3] -> [0][0,1][0,1,2] = [0,0,1,0,1,2]
+  if int-list-eq(collect-list(flat-map(from-list([1, 2, 3]), fn(x) => range(0, x))), [0, 0, 1, 0, 1, 2]) then
+    unit
+  else
+    trap("flat-map range(0,x)")
+
+@test
+def flat-map-skips-empty-subiters() =
+  // odd x -> [x], even x -> [] ; [1,2,3,4] -> [1,3]
+  if int-list-eq(collect-list(flat-map(from-list([1, 2, 3, 4]), fn(x) => if x % 2 == 0 then empty() else from-list([x]))), [1, 3]) then
+    unit
+  else
+    trap("flat-map with empty sub-iterators")
+
+@test
+def flat-map-is-lazy() =
+  // each x -> a huge range; take 3 across the flattened stream pulls only 3
+  if int-list-eq(collect-list(take(flat-map(range(0, 1000000), fn(_x) => range(0, 1000000)), 3)), [0, 1, 2]) then
+    unit
+  else
+    trap("flat-map lazy take 3")
+
+@test
+def flat-map-coexists-with-scan() =
+  // the historical decline: FlatMapI (Int64->Iter) + ScanI (Int64->Int64->Int64) in one program.
+  // Both must compile and run now.
+  let a = collect-list(flat-map(from-list([1, 2]), fn(x) => from-list([x, x]))) in
+  let b = collect-list(scan(range(1, 4), 0, fn(acc, x) => acc + x)) in
+  if int-list-eq(a, [1, 1, 2, 2]) then (if int-list-eq(b, [1, 3, 6]) then unit else trap("scan")) else trap("flat-map")
 
 export { Iter.* }

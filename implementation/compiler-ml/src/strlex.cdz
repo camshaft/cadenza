@@ -17,11 +17,19 @@ type Token =
   | RParen
   | Bad(String)
 
-/// ⚠ NOTE: the per-char scan INLINES `String.at`'s match into each loop arm rather than factoring a
-/// `char-at` helper that RETURNS the char. A `String`-returning helper whose result is `==`-compared
-/// INSIDE a self-recursive loop declines ("borrowing op operand has an ownership this backend cannot yet
-/// prove" — see `mlrepro-decline-returned-string-at-compared-in-a-loop.cdz` (queue)); inlining the `String.at`
-/// match sidesteps it (the direct-producer form the recent String.at fix supports).
+/// 🎉 The scan now factors a `char-at` helper that RETURNS the char (below), read in each loop arm — the
+/// natural form. This once DECLINED ("borrowing op operand has an ownership this backend cannot yet
+/// prove" — a `String`-returning helper whose result is `==`-compared inside a self-recursive loop), so
+/// the scan used to INLINE `String.at`'s match into every arm. That borrow-ownership gap is now FIXED
+/// (queue item `mlrepro-decline-returned-string-at-compared-in-a-loop` is RESOLVED), so the workaround is
+/// gone and the lexer reads one char per position through `char-at`.
+
+/// The 1-char string at position `i` of `s`, or `""` past the end (never a digit/op/paren, so it lexes
+/// as `Bad`/end). A `String`-returning producer read in the recursive loop below — the shape the borrow
+/// fix unblocked.
+def char-at(s: String, i: Int64) = match String.at(s, i) with
+  | Option.Some(c) => c
+  | Option.None(_) => ""
 
 def is-digit(c: String) =
   c == "0" or c == "1" or c == "2" or c == "3" or c == "4"
@@ -37,42 +45,39 @@ def digit-val(c: String) =
   else (if c == "8" then 8 else 9))))))))
 
 /// Scan a run of digits from `i`, accumulating the decimal value into `acc`. Returns `(value, next-index)`.
-/// `String.at` is matched INLINE (see the note above).
+/// Reads each char through the `char-at` helper.
 def scan-number(s: String, i: Int64, acc: Int64) =
   if i == String.byte-len(s) then
     (acc, i)
   else
-    (match String.at(s, i) with
-      | Option.Some(c) => (if is-digit(c) then scan-number(s, i + 1, acc * 10 + digit-val(c)) else (acc, i))
-      | Option.None(_) => (acc, i))
+    let c = char-at(s, i) in
+    if is-digit(c) then scan-number(s, i + 1, acc * 10 + digit-val(c)) else (acc, i)
 
 /// The core loop: from index `i`, append each lexed token onto `acc` (in source order; `List.push`
 /// appends). A tail-recursive self-call threading `s` (re-read each step), `i`, and the growing `acc`.
-/// `String.at` is matched INLINE, and the char `c` classified within that arm.
+/// Each char is read through the `char-at` helper and classified.
 def lex-from(s: String, i: Int64, acc: List(Token)) =
   if i == String.byte-len(s) then
     acc
   else
-    (match String.at(s, i) with
-      | Option.None(_) => acc
-      | Option.Some(c) =>
-        (if is-space(c) then
-          lex-from(s, i + 1, acc)
+    let c = char-at(s, i) in
+    if is-space(c) then
+      lex-from(s, i + 1, acc)
+    else
+      (if is-digit(c) then
+        let scanned = scan-number(s, i, 0) in
+        lex-from(s, scanned.1, List.push(acc, Token.Num(scanned.0)))
+      else
+        (if is-op(c) then
+          lex-from(s, i + 1, List.push(acc, Token.Op(c)))
         else
-          (if is-digit(c) then
-            let scanned = scan-number(s, i, 0) in
-            lex-from(s, scanned.1, List.push(acc, Token.Num(scanned.0)))
+          (if c == "(" then
+            lex-from(s, i + 1, List.push(acc, Token.LParen))
           else
-            (if is-op(c) then
-              lex-from(s, i + 1, List.push(acc, Token.Op(c)))
+            (if c == ")" then
+              lex-from(s, i + 1, List.push(acc, Token.RParen))
             else
-              (if c == "(" then
-                lex-from(s, i + 1, List.push(acc, Token.LParen))
-              else
-                (if c == ")" then
-                  lex-from(s, i + 1, List.push(acc, Token.RParen))
-                else
-                  lex-from(s, i + 1, List.push(acc, Token.Bad(c)))))))))
+              lex-from(s, i + 1, List.push(acc, Token.Bad(c)))))))
 
 /// Lex a whole source string into a `List Token` in source order.
 def lex(s: String) = lex-from(s, 0, [])

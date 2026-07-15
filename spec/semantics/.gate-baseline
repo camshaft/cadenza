@@ -279,6 +279,7 @@ pass	a bare literal exceeding the default-integer pragma's narrow type is reject
 pass	a bare literal that overflows the annotated width does not fit it
 pass	a bare nullary constructor is the nullary sum value
 pass	a bare prelude-colliding variant name matches as the local variant
+pass	a bare type-name-colliding variant name constructs as the local variant
 pass	a bare user constructor is passed as a first-class function to a higher-order function
 pass	a bare variant reusing a prelude DATA-constructor name constructs and matches as the local variant
 pass	a beyond-i64 constant BigInt is an operand of a runtime bigint op
@@ -686,6 +687,7 @@ pass	a higher-order function applies a callback that matches its own sum argumen
 pass	a higher-order left fold applies its combiner, not a fixed operator
 pass	a higher-order left fold over a built-in list with an annotated callback
 pass	a higher-order left fold over a built-in list with an annotated fn parameter
+pass	a hoisted division traps by the selected divisor only
 pass	a hoisted trapping invariant loop-bound still traps when it overflows, even at zero iterations
 pass	a homogeneous nested Option distinguishes its outer and inner None
 pass	a host call's response is an ordinary value that feeds a LATER host call
@@ -696,6 +698,7 @@ pass	a host effect with a non-kebab OPERATION name crosses under a normalized fu
 pass	a host-called closure applied to a different argument tracks the input
 pass	a host-called closure with a different body dispatches the right code
 pass	a key-directed pattern matches a RUNTIME map by looking up its keys
+pass	a keyed lookup of an updated map is not shared with the original's
 pass	a lambda applied in the scope of the binding it captures observes that binding
 pass	a lambda captures an enclosing function parameter and is applied in its body
 pass	a lambda's return type ascription agreeing with the body is transparent
@@ -997,6 +1000,7 @@ pass	a nested tuple-arity mismatch in equality is a type error
 pass	a nested tuple-pattern parameter destructures a runtime tuple
 pass	a nested unquote pattern matches a sub-AST by shape
 pass	a nested-let chain that reuses each binding folds to one value
+pass	a neutral and-true keeps both the trap and the value of its left operand
 pass	a nominal record compared to a plain record of the same shape is a type error
 pass	a non-byte-aligned bit-field width takes its exact arbitrary-width unsigned type
 pass	a non-constructor type applied to arguments in type position is rejected
@@ -1512,6 +1516,7 @@ pass	a transformation maps a syntax tree to a syntax tree and preserves meaning
 pass	a transformation observably rewrites the tree, not just its value
 pass	a transformation over the built-in Ast composes across a function call
 pass	a trapping condition of a same-constructor if traps before either arm
+pass	a trapping condition preempts the hoisted operator's trap
 pass	a trapping element in the taken arm of a same-length list if still traps
 pass	a trapping element in the untaken arm of a same-arity tuple if does not trap
 pass	a trapping element in the untaken arm of a same-length list if does not trap
@@ -1572,6 +1577,7 @@ pass	a two-variant enum match with constant arms dispatches branchlessly — fir
 pass	a two-variant enum match with constant arms dispatches branchlessly — second variant
 pass	a type annotation consistent with the value is transparent
 pass	a type stored in a compound result cannot cross the boundary
+pass	a type-name-colliding variant construct coexists with the width type it collides with
 pass	a type-value in integer-width position is rejected
 pass	a u16 segment encodes an integer big-endian by default
 pass	a u32 segment encodes four big-endian bytes
@@ -1668,6 +1674,10 @@ pass	an abortive perform in the tail of an if branch inside a let body abandons 
 pass	an abortive perform under THREE nested handlers abandons the two resumptive frames above it
 pass	an abortive perform under a non-tail conditional abandons the enclosing computation
 pass	an absolute-value branch traps on the minimum integer it cannot represent
+pass	an absorbed conjunction composes as a live disjunction's operand
+pass	an absorbing and-false discards a trap-free left operand's value
+pass	an absorbing and-false keeps its trapping left operand
+pass	an absorbing or-true keeps an effectful left operand's perform
 pass	an abstract type is used through the module's exported constructor and accessor
 pass	an abstract type's constructor is not reachable outside its module
 pass	an absurd runtime width is rejected, not silently ignored
@@ -1718,6 +1728,7 @@ pass	an effect result drives the bound of a PURE recursive helper called in the 
 pass	an effect that declares an operation name twice is rejected
 pass	an effect-built NESTED-compound value escapes the handle and a nested projection reads through it
 pass	an effect-built heap list bound in a let is USED TWICE and retained across both uses
+pass	an effectful condition is performed exactly once under the operator hoist
 pass	an effectful condition of a same-constructor if is performed exactly once
 pass	an effectful match scrutinee is performed exactly once across a two-position sink
 pass	an element is projected from a runtime-constructed tuple
@@ -1855,6 +1866,7 @@ pass	an unsigned right shift fills with zeros, not the sign bit
 pass	an unsigned runtime value is not accepted by a signed segment of the same width
 pass	an unsigned segment reads the same sign-bit-only byte as 128
 pass	an unsigned-byte entrypoint takes and returns a u8 at the boundary
+pass	an untaken arm's overflowing operand does not trap under the operator hoist
 pass	an unused let binding whose init would overflow is elided, so its trap does not occur
 pass	an unused let-init that does not reduce to a value is eliminated, so it does not diverge
 pass	an unusual in-range width is a first-class type
@@ -2038,6 +2050,7 @@ pass	dividing quantities divides their dimensions
 pass	division by zero traps
 pass	division of an integer and a float does not silently promote
 pass	division of the minimum integer by -1 overflows and traps
+pass	double negation of a runtime boolean is the identity
 pass	dropping an absent field from a record is rejected
 pass	dropping fields from a record leaves the remaining fields
 pass	each definition in a module registers a reachable export field
@@ -2122,6 +2135,7 @@ pass	integer to byte wraps on overflow
 pass	interning the same string twice yields equal symbols
 pass	intersection cardinality with a runtime-element operand
 pass	intersection with the empty set is the empty set
+pass	keyed lookups at different keys are not shared
 pass	left shift
 pass	less-than at the integer extremes is signed, not unsigned
 pass	less-than compares negative operands by signed order
@@ -2170,6 +2184,7 @@ pass	merging two empty records is the empty record
 pass	merging two records with disjoint fields unions their fields
 pass	merging with the empty record on the left is the identity
 pass	merging with the empty record on the right is the identity
+pass	mixed operators across the if arms keep their own arms
 pass	mixed payload widths across the variant set dispatch and read correctly
 pass	mixed: two closure exports alongside a plain export — driving the plain export
 pass	mixing a prefixed unit across DIFFERENT dimensions is still a compile-time error
@@ -2493,6 +2508,7 @@ pass	the scalar length of a runtime multi-byte string counts scalars, not bytes
 pass	the second distinct-signature closure export returns its own type
 pass	the shrinking search terminates via its fuel bound rather than searching unboundedly
 pass	the slice overflow guard holds on a chained slice-of-a-slice
+pass	the taken arm's checked add still overflows under the operator hoist
 pass	the three-way comparison is deconstructed by an exhaustive match
 pass	the three-way comparison orders Bool with false below true
 pass	the three-way comparison orders Float64 by numeric value — Equal
@@ -2522,6 +2538,7 @@ pass	the wrapping additive and multiplicative identities preserve a boundary ope
 pass	three distinct closure signatures cross as three resource types
 pass	three distinct closure signatures cross as three resource types
 pass	three leaf variants in one quoted form each dispatch their own tag
+pass	triple negation of a runtime boolean is a single negation
 pass	true is greater than false
 pass	true is not less than false
 pass	tuple access on a non-tuple is a type error

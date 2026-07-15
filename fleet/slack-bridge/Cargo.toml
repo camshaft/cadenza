@@ -1,0 +1,25 @@
+# Cadenza fleet ↔ Slack bridge — a STANDALONE crate (own `[workspace]` table below), deliberately NOT a
+# member of the seed workspace. The Slack transport (slack-morphism, added in a later slice) drags a heavy
+# async tree (tokio/hyper/rustls) that we do not want in the shared lockfile or on every `cargo xtask
+# check` — the same reason cdz-smith / cdz-runtime / cdz-wasm are excluded from the root workspace. Gate
+# this crate on its own `cargo test` / `cargo build`, run from this directory.
+[package]
+name = "cadenza-slack-bridge"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+description = "Fleet dev tooling: drive the Cadenza fleet concierge from Slack (Socket Mode), via the fleet inbox protocol."
+license = "MIT"
+publish = false
+
+# Empty table = this crate is its OWN workspace root, so cargo does not try to fold it into the seed
+# workspace it physically lives inside. Keeps its dependency resolution isolated.
+[workspace]
+
+[lib]
+name = "cadenza_slack_bridge"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

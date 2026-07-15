@@ -704,6 +704,46 @@ fn resolve_name(db: &Db, id: StructId, name: &str) -> Resolved {
     // is now unified with EFFECTS — a peer contract is an `(effect …)` bound to a peer via `(bind …)`, and
     // an escaping op is an ordinary perform that lowers to a `Core::HostCall` routed to the peer envelope.
     // There is no separate extern-op name to resolve.)
+    // 3d. A bare variant whose name COLLIDES with a prelude TYPE/MODULE name (`Int`/`List`/`Name`/…) —
+    // the ones step 3c's `variant_ctor_by_name` (and the file-scoped bare map) DELIBERATELY omits (the
+    // `9f326a2d` skip) so bare `Int` keeps resolving to the width constructor everywhere it means the
+    // width TYPE (a `(Int W)` annotation reduction, `Int64`'s synthesized `(Int 64)`). But in
+    // application-HEAD position on a genuine USER node a bare `(Int 42)` is a value CONSTRUCT of the local
+    // variant, not a width-type reduction — so the user's variant SHADOWS the colliding prelude name here
+    // (operator ruling 2026-07-15: a program-defined name shadows the built-in alias in construct position
+    // too, consistent with binding-is-lexical and the match-pattern remap `85faf395`). The `child_ix == 0`
+    // + `is_user_node` gate is the SAME head-position/user-node discriminator the same-name-newtype ctor
+    // step uses: it fires on a real source `(Int 42)` construct but NOT on a synthesized `(Int 64)` the
+    // width machinery builds (a non-user node) nor on a non-head `Int` used as the width TYPE. Placed after
+    // the ordinary variant step + before the prelude, so a NON-colliding variant already resolved above and
+    // only a colliding one (skipped from the bare index) reaches here. Generic — no name special-case; the
+    // set of shadowable names is exactly the user's colliding variant declarations.
+    //
+    // EXCLUDE a TYPE-EXPRESSION head: `(List Ast)` in a variant payload / annotation `(: x (List Int64))`
+    // heads a list on a user node too, but there `List` is the TYPE constructor, not a value construct of a
+    // `List` variant — diverting it would turn a self-referential AST sum's payload into a bogus variant
+    // application (CDZ0201). A bare type ATOM (`Int64`) is already spared by the head-position gate; only a
+    // type-expression APPLICATION head needs this. `is_type_expr_node` is the load-time subtree marker.
+    if db.child_ix_of(id) == 0 && db.is_user_node(id) && !db.is_type_expr_node(id) {
+        // FILE-SCOPED for a linked package: consult the QUALIFIED ctor surface (which, unlike the bare
+        // map, retains a prelude-named ctor) confined to this reference's own file, so the shadowing is
+        // scoped exactly like every other declaration — a sibling file's colliding variant does not leak.
+        // A single-file / indeterminate-node compile falls through to the flat companion index.
+        let scoped = if db.is_linked_package() {
+            db.file_scoped_variant_ctor_qualified(id, name)
+        } else {
+            None
+        };
+        if let Some(Ok(value)) = scoped {
+            trace!(target: "rcdzc::resolve", node = id.0, %name, bound_to = value.0, "name → file-scoped prelude-colliding variant ctor (construct-position shadow)");
+            return Resolved::Ref { value };
+        } else if scoped.is_none()
+            && let Some(value) = db.prelude_colliding_variant_ctor(name)
+        {
+            trace!(target: "rcdzc::resolve", node = id.0, %name, bound_to = value.0, "name → prelude-colliding variant ctor (construct-position shadow)");
+            return Resolved::Ref { value };
+        }
+    }
     // 4. The prelude map — a built-in binds to its installed arena node (a record, for a module). The
     // same `Ref` a program binding produces, so member access / folding treats it identically.
     if let Some(&value) = db.prelude.get(name) {
@@ -1389,6 +1429,20 @@ fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Reso
     if let Some(binder) = module_sibling_binds(db, form, name) {
         return Some(binder);
     }
+    // Case R2: `form` is a `(module …)` DECLARATION form, ascended from a member's body. A PRIVATE member
+    // (its name withheld from the module's `(export …)` clause) has NO synth field lambda built for it
+    // (`modules::module_record` skips it), so — unlike an exported member, whose body is reparented under
+    // its field lambda beneath the synth record — its body's parent chain leads up through THIS `(module …)`
+    // form, never reaching the record where Case R fires. Resolving siblings here too makes a private
+    // member's body see its siblings exactly as an exported member's does: the module's members are mutually
+    // visible regardless of export status (the export clause governs OUTWARD reachability, not sibling
+    // scope). This is the missed face of the privacy landing (0c008299) — a private member participating in
+    // a mutual-recursion cycle rejected CDZ0101 at its co-member call site.
+    //= spec/capabilities/modules-and-namespaces.md#visibility-is-explicit
+    //# A private definition MUST remain visible to the other definitions in its own module.
+    if let Some(binder) = module_form_sibling_binds(db, form, name) {
+        return Some(binder);
+    }
     // Case B: `form` is a MATCH ARM `(pattern body)` whose pattern is a `(bin <seg>…)` binary pattern that
     // binds `name` at one of its segments — `(match b ((bin (u16 n)) n) …)`, the `n` in the body. The
     // binder decodes that segment from the scrutinee; it resolves to a `BinField` (the binary analogue of
@@ -1676,8 +1730,33 @@ fn do_local_binds(db: &Db, form: StructId, from: StructId, name: &str) -> Option
 /// call itself (recursion) or a forward sibling.
 fn module_sibling_binds(db: &Db, form: StructId, name: &str) -> Option<Resolved> {
     // Recognize `form` as a module synth record and recover its `(module …)` declaration occurrence (the
-    // reverse of `modules::synthesize`); its members are the module form's tail after NAME.
+    // reverse of `modules::synthesize`), then scan its members.
     let module_form = db.module_by_synth_record(form)?;
+    module_members_bind(db, module_form, name)
+}
+
+/// If `form` is a `(module …)` DECLARATION form, resolve `name` against its members — the twin of
+/// `module_sibling_binds` for a body that ascends through the module FORM itself, not its synth record.
+/// A member whose field is WITHHELD from the export record (a PRIVATE member — its name is absent from
+/// the module's `(export …)` clause) is NOT reparented under a synth field lambda, so its body's parent
+/// chain leads up through the `(module …)` form and NEVER reaches the synth record where
+/// `module_sibling_binds` (Case R) fires. Without this case a private member could not see ANY sibling
+/// (exported or private) — the false-CDZ0101 the privacy landing (0c008299) left for a private member
+/// participating in a cycle, since `modules::module_record` builds no field for it. A module's members
+/// are mutually visible regardless of export status (`modules-and-namespaces.md` §Visibility Is Explicit:
+/// the export clause governs OUTWARD reachability through the record, not sibling visibility), so this
+/// scans ALL members exactly as the record path does. `None` if `form` is not a module form or no member
+/// is named `name`.
+fn module_form_sibling_binds(db: &Db, form: StructId, name: &str) -> Option<Resolved> {
+    db.ast.as_form(form, "module")?;
+    module_members_bind(db, form, name)
+}
+
+/// The shared member scan behind `module_sibling_binds` (from the synth record) and
+/// `module_form_sibling_binds` (from the `(module …)` form): resolve `name` against the module's members,
+/// mutually-visible with no stop-before. `module_form` is the `(module NAME member…)` declaration
+/// occurrence; its members are the tail after NAME.
+fn module_members_bind(db: &Db, module_form: StructId, name: &str) -> Option<Resolved> {
     let members = db.ast.as_form(module_form, "module")?.get(1..)?;
     // O(1) via the per-module member index (`Db::do_binder_index` also indexes `(module …)` forms) — the
     // members declaring `name`, ascending. A name no member declares is absent → an O(1) negative; before,
@@ -1941,6 +2020,21 @@ fn match_arm_binds(db: &Db, form: StructId, from: StructId, name: &str) -> Optio
     // The binder must be a bare name — matching `name`, NOT a literal or the wildcard `_`.
     let pat_name = db.ast.as_name(binder_pat)?;
     if pat_name != name || pat_name == "_" {
+        return None;
+    }
+    // A bare name that IS a NULLARY VARIANT CONSTRUCTOR is the constructor, not a binder — a `(match a
+    // (TInt …) (TBool …))` arm head `TInt` matches the variant refutably and binds NOTHING (lowering reads
+    // it via `variant_disc_by_name`, and a bare variant reference resolves to its ctor). Without this, an
+    // outer nullary-variant arm was treated as binding its own name, so a NESTED bare nullary-variant match
+    // (`(TInt (match b (TInt …) (TBool …)))`) had its inner `TInt` resolve — scope-FIRST — to the "binder"
+    // the outer arm appeared to introduce, instead of to the variant ctor. That mis-resolution then drew
+    // spurious CDZ0306 "unused binding `TInt`" + CDZ0213 "unreachable arm" warnings (the guard in
+    // `collect_unused` keys off `variant_disc_of`, which the mis-resolved occurrence failed). A bare
+    // variant name never binds, so returning `None` here is correct at every match nesting depth. (An
+    // APPLIED variant `(Mk x)` is a `Struct::List`, so `as_name(binder_pat)` is `None` above and never
+    // reaches here — only a lone bare name does. `variant_ctor_by_name` is the same O(1) load-time index
+    // `resolve_name`'s bare-variant step consults, so the classification agrees with resolution.)
+    if db.variant_ctor_by_name(pat_name).is_some() {
         return None;
     }
     // `form`'s parent must be a `(match scrutinee arm…)`, and `form` one of its arms (not the
@@ -4916,5 +5010,46 @@ mod tests {
         let fields = module_record_fields(&mut db, "m");
         assert!(fields.contains(&"a".to_string()), "a present: {fields:?}");
         assert!(fields.contains(&"b".to_string()), "b present: {fields:?}");
+    }
+
+    #[test]
+    fn a_private_module_member_body_sees_an_exported_sibling() {
+        // The false-CDZ0101 the privacy landing left: `even` is exported, `odd` is private (no synth field
+        // built for it), and the two are mutually recursive. `odd`'s body's `(even …)` call must resolve —
+        // `odd`'s body ascends through the `(module …)` FORM (never reparented under a synth record), so the
+        // form itself must resolve siblings (`module_form_sibling_binds` / `binder_in` Case R2). Before the
+        // fix this reference was `Resolved::Poison` (unbound name), the reported bug.
+        let ast = parse(
+            "(do (module m (export even) \
+             (def (even (: n Int64)) (if (= n 0) 1 (odd (- n 1)))) \
+             (def (odd (: n Int64)) (if (= n 0) 0 (even (- n 1))))) \
+             (def (main) ((. m even) 4)) (export main))",
+        );
+        let mut db = Db::load(ast);
+        // The `even` reference INSIDE `odd`'s body: an `even` name occurrence that HEADS an application
+        // `(even (- n 1))` (parent is a list with `even` at child index 0) whose nearest enclosing `(def
+        // (odd …) …)` is `odd`'s. There are two such call heads (`odd`'s call to `even`, and `even`'s own
+        // if-body); the one under `odd` is the one at issue — but BOTH must resolve, so assert every
+        // application-head `even` reference resolves (a private-body ref and an exported-body ref alike).
+        let heads: Vec<StructId> = (0..db.ast.structure.len() as u32)
+            .map(StructId)
+            .filter(|&id| db.ast.as_name(id) == Some("even"))
+            .filter(|&id| {
+                db.parent_of(id).and_then(|p| match db.ast.get(p) {
+                    Struct::List(children) => children.first().copied(),
+                    _ => None,
+                }) == Some(id)
+            })
+            .collect();
+        assert!(
+            !heads.is_empty(),
+            "expected at least one `even` application head"
+        );
+        for head in heads {
+            assert!(
+                !matches!(resolved_of(&mut db, head), Resolved::Poison(_)),
+                "an `even` reference (including from private `odd`'s body) must resolve, not poison"
+            );
+        }
     }
 }

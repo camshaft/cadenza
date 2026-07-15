@@ -99,6 +99,15 @@ carry the gate summary (fail-set diff, test count) so pr-sync can trust it fast.
 state the concrete options so the human can decide in one line — the concierge is a router, not an
 investigator.
 
+**Delivery wakes the recipient.** `fleet send` doesn't just drop the JSON — after delivering it
+nudges the recipient's tmux window into an immediate tick (`send-keys`), so a message is reacted to
+within seconds instead of waiting for the next scheduled `/loop`. Delivery == wake. This means when
+you send a peer a `reject`/`answer`/`assign`/`note`, they generally start acting on it right away —
+you don't need to also poll or wait a full interval. The nudge is automatically skipped for a stopped
+recipient, one with no live window, one already mid-tick (it'll drain your message when it finishes),
+and the interactive `concierge`/`design` windows (a human may be typing). `/loop` remains the safety
+heartbeat, so even a missed nudge is eventually picked up. Pass `--no-wake` when seeding a batch.
+
 ## The gate (what "green" means — unchanged from the pre-fleet loops)
 
 Before you send a `merge-request`, all of these must hold in your worktree:

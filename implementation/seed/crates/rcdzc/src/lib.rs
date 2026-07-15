@@ -64,6 +64,11 @@ pub mod infer;
 pub mod lower;
 pub mod resolve;
 
+// Cost-tiered optimization levels — the `OptLevel` enum + the `PassManager` that gates each
+// backend-independent Core pass by its declared tier, running above the backend seam so every backend
+// inherits its passes (`DESIGN-tiered-optimization-levels-rcdzc.md`).
+pub mod opt;
+
 // The target-neutral boundary layout (exports by declared signature, reachable set, emission order),
 // computed once above the backend seam.
 pub mod layout;
@@ -105,6 +110,7 @@ pub use abi::{
 pub use backend::Target;
 pub use compile::{compile, compile_component, diagnostics};
 pub use host::run_with_compiler_stack;
+pub use opt::{CorePass, OptLevel, PassManager};
 pub use sidecar::{Query, Request};
 
 // Shared test fixtures + the Stage-0 end-to-end tests (compiled only under `#[cfg(test)]`).

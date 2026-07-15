@@ -199,6 +199,31 @@
             ((. m even) 4)))
   (output (: 1 Int64)))
 
+(case "a private module member participates in mutual recursion with an exported sibling"
+  (doc    "The ONE-PRIVATE face of the both-exported cycle above (the false-rejection filed as
+           adv-private-module-member-in-mutual-recursion-false-reject): `even` is exported, `odd` is
+           PRIVATE (absent from the export clause), and the two are mutually recursive, so `((. m even)
+           4)` = 1. Sibling visibility is independent of the export clause (§A Module Function Calls A
+           Sibling Export By Name; the clause governs OUTWARD reachability through the record, not sibling
+           scope) — so a private cycle member must resolve its exported co-member exactly as the both-
+           exported case does. The privacy landing built NO synth field for the private `odd`, so `odd`'s
+           body — unlike an exported member's, which is reparented under its synth field lambda beneath the
+           module record where sibling resolution (`module_sibling_binds`) fires — kept its source parent
+           and its scope walk ascended through the `(module …)` form, which did not resolve siblings; so
+           `odd`'s call to `even` rejected CDZ0101 exactly when `odd` participated in the cycle (a one-
+           directional reference to a private sibling, from an EXPORTED body that does reach the record,
+           resolved fine either order — the cases above). The `(module …)` form now resolves siblings too
+           (`resolve::module_form_sibling_binds`), so a private member's body sees its siblings as an
+           exported member's does. Hiding the private half of a recursive helper pair is the privacy
+           feature's canonical use. Expected: 1.")
+  (input  (do
+            (module m
+              (export even)
+              (def (even (: n Int64)) (if (= n 0) 1 (odd (- n 1))))
+              (def (odd (: n Int64)) (if (= n 0) 0 (even (- n 1)))))
+            ((. m even) 4)))
+  (output (: 1 Int64)))
+
 (case "one module's export clause does not affect a same-named member of another module"
   (doc    "Privacy is PER-MODULE state: module `a` exports only `pub` (hiding its `helper`), while module
            `b` has NO export clause, so ITS `helper` keeps the export-everything default — `(. b helper)`
