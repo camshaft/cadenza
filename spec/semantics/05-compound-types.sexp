@@ -2911,6 +2911,29 @@
             (export main)))
   (output (: 0 Int64)))
 
+(case "a guard on a literal-element list pattern reads an enclosing let binding through inlining"
+  (doc    "A user guard on a list pattern with a LITERAL leading element (`0`), whose guard cond `(> x lim)`
+           reads an enclosing `let` binding `lim` — checked through the INLINING path (`main` calls `f`, so
+           `f`'s body is β-copied at the call site). The literal element forces the refutable-literal desugar
+           to rewrite the arm into a synth `(guard (list __le0 x .. r) (and (= __le0 0) (> x lim)))`, whose
+           rewritten `(match …)` REPLACES the copied match in the enclosing `let`'s body slot. The copied
+           `lim` must re-resolve against the COPIED `let` — but the copied `let`'s recorded body-occurrence
+           still pointed at the pre-desugar copied match, so the scope walk reached the `let` yet failed its
+           by-identity body check → spurious `CDZ0101 unbound lim`. Fix (three coordinated): the desugar
+           reparents the rewritten match into the original match's slot; `binder_in`'s `let` case accepts a
+           body-POSITION child (not only the recorded body node); and `extend_scope_skip_into_subtree` seeds
+           the rewritten root's skip TO a binding-candidate parent. A PARAM/top-level `lim`, the arm BODY, and
+           a plain binder-head guard all resolved `lim` fine already — only this {literal element × user guard
+           × enclosing let × inlined} combination broke. `f (list 0 7 2)`: head `0` matches, `x`=7 > `lim`=5 →
+           7. (Pre-existing false reject; reproduces at 170bf40a.)")
+  (input  (do
+            (def (f (: xs (List Int64)))
+              (let ((lim 5))
+                (match xs ((guard (list 0 x .. r) (> x lim)) x) (_ -1))))
+            (def (main) (f (list 0 7 2)))
+            (export main)))
+  (output (: 7 Int64)))
+
 (case "a list pattern in a sum-variant payload matches a runtime node by its child count"
   (doc    "THE COMPILER-AST SHAPE: a sum-variant whose payload is a LIST — `(type Node (Lit Int64) (Call
            (List Node)))`, a node carrying a list of children — matched over a RUNTIME node by a LIST

@@ -3864,6 +3864,17 @@ fn desugar_refutable_literal_list_elements(
     scrutinee: StructId,
     arms: &[(StructId, StructId)],
 ) -> Option<Core> {
+    // CAPTURE the ORIGINAL match's lexical parent NOW, before any `push_list` re-wires `scrutinee`'s
+    // parent: the original match is `scrutinee`'s current parent (scrutinee is its tail-0 child). The
+    // rewritten match REPLACES it, and must ascend to the SAME enclosing scope so a user guard cond that
+    // reads an enclosing `let` binding (`(let ((lim 5)) (match xs ((guard (list 0 x) (> x lim)) …)))`)
+    // re-resolves that binding after this def is INLINED (the β-copy re-parents the `let`/`match` and this
+    // desugar re-runs on the copy). Without it `rewritten`'s parent is `None`, so `resolve_subtree` below
+    // memoizes the guard cond's `lim` as UNBOUND — the false CDZ0101 that surfaces only on the inlined path
+    // (a direct-export / non-inlined call resolves the original before the copy, dodging it).
+    let orig_match_parent: Option<(Option<StructId>, u32)> = db
+        .parent_of(scrutinee)
+        .map(|orig_match| (db.parent_of(orig_match), db.child_ix_of(orig_match) as u32));
     // Detect whether ANY arm's list pattern has a refutable literal LEADING element. Scan the arm patterns
     // (peeling a `(guard …)` wrapper), find each `(list …)`'s leading positions (before a `..` marker), and
     // check each for a scalar/string literal. Bail early if none — the common case pays only this scan.
@@ -3985,6 +3996,16 @@ fn desugar_refutable_literal_list_elements(
     let mut items = vec![match_head, scrutinee];
     items.extend(new_arms);
     let rewritten = db.push_list(items);
+    // WIRE `rewritten`'s PARENT pointer to the original match's parent, so its lexical-scope ASCENT reaches
+    // the enclosing scope (the `let` a guard cond reads) during the scope-skip extension + `resolve_subtree`
+    // below. Only the parent POINTER is set (not the parent's child-LIST): lowering consumes the returned
+    // `Core` directly, never walks DOWN from the parent to `rewritten`, so leaving the parent's children
+    // pointing at the original match is harmless — whereas rewriting the child-list would risk corrupting a
+    // sibling walk. `extend_scope_skip_into_subtree` seeds the root's skip from this parent, and the
+    // exhaustive `resolve` walk ascends through it, so the guard cond's enclosing-`let` reference resolves.
+    if let Some((new_parent, child_ix)) = orig_match_parent {
+        db.reparent(rewritten, new_parent, child_ix);
+    }
     // The synth arms hold a `(guard (list …) (and (and (= __le0 …) …) …))` whose guard COND is an O(N)-
     // DEEP left-nested `and`-chain (`and` is strictly binary). Those synth nodes are past-load, so without
     // scope-skip coverage each `__leK` guard reference (and each prelude `=`/`and`) walks O(depth) `and`
@@ -3992,6 +4013,12 @@ fn desugar_refutable_literal_list_elements(
     // extension (the `and`-spine is non-binding, the one `(guard …)` node is a candidate its children skip
     // TO) so every inner reference hops O(1). See `Db::extend_scope_skip_into_subtree`.
     db.extend_scope_skip_into_subtree(rewritten);
+    // FORGET any stale memoized resolution in the subtree before re-resolving: the user guard cond
+    // (`(> x lim)`) is REUSED from the (copied) source arm, so a reference may already be memoized against
+    // its pre-desugar position (unbound, from the β-copy). Clearing the column lets `resolve_subtree`
+    // re-resolve against the now-correct parent ascent. Fresh synth nodes are unmemoized; this matters only
+    // for the reused cond/body — bounded to `rewritten`'s subtree.
+    crate::resolve::forget_subtree(db, rewritten);
     crate::resolve::resolve_subtree(db, rewritten);
     trace!(target: "rcdzc::lower", scrutinee = scrutinee.0, "list match with refutable literal elements → fresh-binder + value-test guards");
     Some(core_of(db, rewritten))

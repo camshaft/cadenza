@@ -24579,6 +24579,50 @@ mod match_engine {
     }
 
     #[test]
+    fn a_guard_on_a_literal_list_element_reads_an_enclosing_let_through_inlining() {
+        // REGRESSION (issue adv-literal-list-pattern-guard-cant-see-enclosing-let): a user guard on a list
+        // pattern with a LITERAL leading element, whose guard cond reads an ENCLOSING `let` binding, false-
+        // rejected `CDZ0101 unbound` — but ONLY when the def is INLINED (β-copied at a call site). Root: the
+        // refutable-literal desugar rewrites the arm into a synth `(guard (list __le0 x ..) (and (= __le0 0)
+        // (> x lim)))` and its rewritten `(match …)` REPLACES the copied match in the enclosing `let`'s body
+        // slot; the copied `let`'s recorded body-occurrence still pointed at the PRE-desugar copied match, so
+        // the copied `lim` reached the `let` in the scope walk but failed its by-identity body check. Fix
+        // (3 coordinated): the desugar reparents the rewritten match into the original match's slot;
+        // `binder_in`'s `let` case accepts a body-POSITION child (not only the recorded body node); and
+        // `extend_scope_skip_into_subtree` seeds the rewritten root's skip TO a binding-candidate parent.
+        // `main` CALLS `f` (forcing the inline copy), so this exercises the inlined path (a direct export
+        // resolved the original before the copy and never hit it). `f (list 0 7 2)`: head `0` matches,
+        // `x`=7 > `lim`=5 → 7. And a guard-FAIL falls through to the catch-all (-1).
+        let Some(v) = run_heap_value(
+            "(module m \
+               (def (f (: xs (List Int64))) \
+                 (let ((lim 5)) (match xs ((guard (list 0 x .. r) (> x lim)) x) (_ -1)))) \
+               (def (main) (f (list 0 7 2))) (export main))",
+            vec![],
+        ) else {
+            eprintln!("runtime wasm not found; skipping literal-list-guard-enclosing-let run");
+            return;
+        };
+        assert_eq!(
+            v, "7",
+            "guard cond reads the enclosing let `lim` through inlining (0 matches, 7 > 5)"
+        );
+        // Guard FAILS (x=3 not > 5) → falls through to the catch-all -1. `9` as `x` (>5) still matches → 9.
+        assert_eq!(
+            run_heap_value(
+                "(module m \
+                   (def (f (: xs (List Int64))) \
+                     (let ((lim 5)) (match xs ((guard (list 0 x .. r) (> x lim)) x) (_ -1)))) \
+                   (def (main) (f (list 0 3 2))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "-1",
+            "guard fails (3 not > 5) → catch-all -1, enclosing-let binding still resolved"
+        );
+    }
+
+    #[test]
     fn a_list_pattern_in_a_sum_payload_matches_a_runtime_node() {
         // THE COMPILER-AST SHAPE: a sum-variant payload that is a LIST — `(type Node (Lit Int64) (Call
         // (List Node)))` — matched over a RUNTIME node by a list pattern in the payload position: `((Call

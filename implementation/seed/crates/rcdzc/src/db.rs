@@ -2310,10 +2310,22 @@ impl Db {
         if (root.0 as usize) < covered_boundary || (root.0 as usize) >= self.scope_skip.len() {
             return;
         }
-        // The root's own skip: whatever its parent sees (usually `None` — a freshly-pushed root is
-        // parentless), so a name unbound within the subtree falls through to the root's lexical context.
+        // The root's own skip: the SAME per-node rule the descent below applies to children, but to
+        // root's PARENT — if the parent is a binding CANDIDATE, root skips TO it (`(parent, root)`, so a
+        // name unbound within the subtree is looked up in the parent's bindings), else root inherits the
+        // parent's own skip (path-compression over a non-binding parent). Using the parent's skip
+        // UNCONDITIONALLY skipped PAST a binding parent: a desugar's rewritten `(match …)` reparented into
+        // an enclosing `let`'s body slot then never saw that `let`'s bindings, so a guard-cond reference to
+        // it exhausted the skip → spurious CDZ0101 (the inlined guarded-literal-list bug). A parentless root
+        // (the usual freshly-pushed case) still gets `None` → falls through to its lexical context.
         let root_skip = match self.parent_of(root) {
-            Some(p) if (p.0 as usize) < self.scope_skip.len() => self.scope_skip[p.0 as usize],
+            Some(p) if (p.0 as usize) < self.scope_skip.len() => {
+                if is_binding_candidate(&self.ast, &self.parent, &self.module_records, p) {
+                    Some((p, root))
+                } else {
+                    self.scope_skip[p.0 as usize]
+                }
+            }
             _ => None,
         };
         self.scope_skip[root.0 as usize] = root_skip;
