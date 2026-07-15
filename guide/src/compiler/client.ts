@@ -104,4 +104,10 @@ export function runtimeHash(): Promise<string> {
   return client().runtimeHash();
 }
 
+/// The program's exported names + solved types (`name<TAB>type` lines) — used by the run path to render
+/// a whole-number Float scalar with its `.0` (see `runner/scalarFormat.ts`).
+export function exportTypes(text: string, from: Surface): Promise<string> {
+  return client().exportTypes(text, from);
+}
+
 export type { CompileOutcome, Surface, Diag, DiagFix, TypeAtInfo, DefineAtInfo, SemanticTok, DispositionInfo };

@@ -22,6 +22,7 @@ import init, {
   render_syntax_display as wasmRenderSyntaxDisplay,
   render_value as wasmRenderValue,
   required_runtime_hash as wasmRuntimeHash,
+  export_types as wasmExportTypes,
 } from "../wasm/pkg/cdz_wasm.js";
 // The wasm binary as a URL Vite fingerprints; `--target web` init fetches + compiles it.
 import wasmUrl from "../wasm/pkg/cdz_wasm_bg.wasm?url";
@@ -279,6 +280,14 @@ const api = {
   async runtimeHash(): Promise<string> {
     await ensureReady();
     return wasmRuntimeHash();
+  },
+
+  /// The program's exported names paired with their solved types, as `name<TAB>type` lines. The run
+  /// path uses `main`'s type to render a whole-number Float scalar with its `.0` (jco lowers it to a
+  /// bare JS number that would otherwise print as an int). Empty when nothing parses / no exports.
+  async exportTypes(text: string, from: Surface): Promise<string> {
+    await ensureReady();
+    return wasmExportTypes(text, from);
   },
 };
 
