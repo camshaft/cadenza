@@ -49082,6 +49082,38 @@ mod stage1 {
     }
 
     #[test]
+    fn a_boxed_nested_unary_curried_closure_applies_at_full_arity() {
+        // A closure of type `(-> Int64 (-> Int64 Int64))` written NESTED-UNARY — `(def (add n) (fn (m) (+
+        // n m)))` — boxed in a sum, extracted, and applied CURRIED `((f x) y)`. `run` spine-flattens the
+        // curried application into ONE `Core::CallClosure { args:[x,y] }` needing a `(env,i64,i64)->i64`
+        // functype. The BUG: a nested-unary value lifted CHAINED (an outer `(env,i64)->i32` returning a
+        // closure handle + a separate inner `(env,i64)->i64`), so the flattened `call_indirect` referenced
+        // a functype the chained value did NOT implement — the module validated structurally but TRAPPED
+        // 'indirect call type mismatch' at run time. The fix FLATTENS a directly-nested curried lambda into
+        // one multi-param lift `(fn (n m) …)` — the SAME single `(env,i64,i64)->i64` function the sugar
+        // form `(fn (a b) …)` produces — so the flattened call resolves. `run (C add) 3 4` → add 3 4 = 7.
+        let src = "(module m \
+            (type Box (C (-> Int64 (-> Int64 Int64)))) \
+            (def (run (: b Box) (: x Int64) (: y Int64)) (match b ((Box.C f) ((f x) y)))) \
+            (def (add (: n Int64)) (fn ((: m Int64)) (+ n m))) \
+            (def (main) (run (Box.C add) 3 4)) (export main))";
+        let Some(r) = run_closure_nullary(src) else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
+            return;
+        };
+        assert_eq!(r, "7"); // add 3 4 = 3 + 4
+        // The SUGAR form of the identical type MUST coincide with the nested-unary one's representation —
+        // a curried arrow has ONE machine shape. `run (C (fn (a b) (* a b))) 3 4` → 12. Boxed in the SAME
+        // `Box.C` variant as the nested-unary value, so both must lift to the identical `(env,i64,i64)->i64`
+        // function; a mismatch would trap exactly as the un-flattened nested-unary form did.
+        let src_sugar = "(module m \
+            (type Box (C (-> Int64 (-> Int64 Int64)))) \
+            (def (run (: b Box) (: x Int64) (: y Int64)) (match b ((Box.C f) ((f x) y)))) \
+            (def (main) (run (Box.C (fn ((: a Int64) (: b Int64)) (* a b))) 3 4)) (export main))";
+        assert_eq!(run_closure_nullary(src_sugar).unwrap(), "12"); // (* 3 4)
+    }
+
+    #[test]
     fn a_capturing_closure_crosses_a_recursive_boundary() {
         // A CAPTURING closure: `(fn (x) (+ x k))` closes over the free variable `k` from `main`'s scope.
         // It is a genuine runtime closure with an ENVIRONMENT — a heap cell holding the code pointer AND

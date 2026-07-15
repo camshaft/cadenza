@@ -3782,3 +3782,16 @@
             (def (main) (apply-it (T.Binary (fn ((: a Int64) (: b Int64)) (+ a b))) 5 9))
             (export main)))
   (output (: 14 Int64)))
+
+(case "a boxed nested-unary curried closure applies without trapping"
+  (doc    "A closure of type (-> Int64 (-> Int64 Int64)) written nested-unary (fn (n) (fn (m) (+ n m))),
+           boxed in a sum, extracted and applied curried ((f x) y). The two arrows are distinct lifted
+           lambdas; spine-flattening the call into one 2-arg call_indirect emits a functype no lifted body
+           implements → 'indirect call type mismatch' at runtime. Must return 7 (add 3 4).")
+  (input (do
+    (type Box (C (-> Int64 (-> Int64 Int64))))
+    (def (run (: b Box) (: x Int64) (: y Int64)) (match b (((. Box C) f) ((f x) y))))
+    (def (add (: n Int64)) (fn (m) (+ n m)))
+    (def (main) (run ((. Box C) add) 3 4))
+    (export main)))
+  (output (: 7 Int64)))
