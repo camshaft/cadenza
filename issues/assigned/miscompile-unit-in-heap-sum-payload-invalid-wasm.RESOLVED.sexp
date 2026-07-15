@@ -23,3 +23,12 @@
     (def (main) (get ((. T A) 5 unit)))
     (export main)))
   (output (: 5 Int64)))
+
+;; ── v-wasm-opt confirmation (2026-07-15, trunk@c978178b8) — ALREADY FIXED ──────────────────────────
+;; VERIFIED fixed: the case COMPILES to VALID wasm + runs to 5 (was invalid: stack underflow at sum-new).
+;; Root fix landed in select.rs: `emit_unit_slot` (:1511) pushes the IMM_UNIT sentinel where a Unit
+;; occupies a heap slot, and a Unit projection `Drop`s the slot value (:1531) — so box_op_ty/get_op_ty's
+;; `Ok(None)` for Ty::Unit is now consistently handled as "the slot holds the unit sentinel, no boxed
+;; payload". Corpus pins on trunk (05-compound-types.sexp): "a Unit element in a multi-payload sum
+;; variant compiles to valid wasm" (5780) + "a Unit element between two Int64s in a tuple" (5792). This
+;; item is a STALE duplicate of the landed fix. Renaming .RESOLVED.

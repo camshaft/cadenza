@@ -22,3 +22,11 @@ This neighbors my pr388 finding (`closure_type_index` declines Unit results) —
 handling across heap boundaries needs a coherent story (either an explicit IMM_UNIT heap path, or keep
 Unit unboxable + drop-on-project). Route to `corpus-bugfix` PM to repro (a tuple/record/sum with a Unit
 field; a projection of a Unit element) and confirm/fix. Fix on `trunk`. Quotes + links in queue file.
+
+## v-wasm-opt confirmation (2026-07-15, trunk@c978178b8) — ALREADY FIXED
+Both halves verified fixed: (store) `(tuple 5 unit)` + `((. T A) 5 unit)` compile to VALID wasm and run
+to 5 (was stack-underflow at sum-new/arr-set); (project) projecting a Unit element compiles clean (no
+stack-type mismatch). Root fix in select.rs: `emit_unit_slot` (:1511) pushes the IMM_UNIT sentinel for a
+Unit heap slot, and a Unit projection `Drop`s the handle (:1531). Corpus pins on trunk
+(05-compound-types.sexp: "a Unit element in a multi-payload sum variant…" + "…between two Int64s in a
+tuple"). Same fix as miscompile-unit-in-heap-sum-payload-invalid-wasm.RESOLVED.sexp. Renaming .RESOLVED.
