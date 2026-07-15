@@ -139,3 +139,15 @@
            payload is a first-class value in its continuation.")
   (input  (do (def (main) (let ((x (try (Some 10)))) (Some (+ x 5)))) (export main)))
   (output (: (Some 15) (Option Int64))))
+
+(case "a trapping earlier let-init is NOT dropped by a constant-failure `?` short-circuit"
+  (doc    "Regression pin (PR #409): `(let ((a (/ 1 0)) (x (try (None unit)))) (Some (+ a x)))` — the FIRST
+           binding `a` provably traps (÷0), and `x`'s init is a `?` on a constant `None` that would
+           short-circuit the boundary. `a` is on the UNCONDITIONAL strict spine BEFORE the `?`, so its trap
+           is OBSERVED and MUST fire (§283/§285, dead-binding-drops-a-defined-trap /
+           trap-kind-is-observable) — the short-circuit MUST NOT elide it. A bug guarded the fast-path fold
+           only on host-call-freedom, so a trapping earlier init was folded away, yielding `(None unit)`
+           instead of trapping. The `÷0` is compile-provable, so it is CDZ0304 (a compile-provable trap
+           fails the build); the fold now requires earlier inits to be trap-free too.")
+  (input  (do (def (main) (let ((a (/ 1 0)) (x (try (None unit)))) (Some (+ a x)))) (export main)))
+  (error  CDZ0304))
