@@ -508,6 +508,7 @@ pass	a consumer applies the handed-back closure inside a larger expression
 pass	a consumer applies the handed-back closure to an internal constant
 pass	a consumer returns a different type than the closure it applies
 pass	a consumer takes the handed-back closure as its SECOND parameter
+pass	a consuming op in the deep differing payload keeps its retain under composed hoists
 pass	a consuming op inside a hoisted list element respects a still-live binding
 pass	a consuming op on a still-live binding inside one match arm's payload keeps its retain
 pass	a correctly-annotated function parameter is accepted
@@ -572,6 +573,7 @@ pass	a do-local function declaration is recursive
 pass	a do-local generic function is instantiated per type
 pass	a do-sequence of unit-returning performs runs each for effect, then yields the tail value
 pass	a dotted nullary arm whose body nests a same-type sum match dispatches correctly
+pass	a double-negated condition unwinds to the original selection
 pass	a doubly-nested strength-reduced multiply chains shift into shift
 pass	a doubly-nested tuple map key containing a rope is found by its flat twin
 pass	a duplicate NESTED-CONSTRUCTOR arm is dead code but the program still runs
@@ -1269,6 +1271,7 @@ pass	a referenced let binding whose init overflows IS observed, so its trap occu
 pass	a reflected quantity type rejects a value of a different dimension
 pass	a refutable constructor pattern in a let binder is rejected
 pass	a refutable map value sub-pattern dispatches by the value's constructor
+pass	a repeated condition inside a branch propagates the known truth value
 pass	a repeated let binding shadows the earlier one for what follows
 pass	a repeated runtime checked-multiply is computed once and still traps on overflow
 pass	a repeated runtime subexpression is computed once (CSE) and reused across an operator
@@ -1573,6 +1576,7 @@ pass	a three-deep tuple projection chain retains the innermost consumed child
 pass	a three-element runtime tuple is returned as a result
 pass	a three-parameter closure is applied at full arity through a recursive HOF
 pass	a three-payload constructor fully curried builds the variant
+pass	a three-way nested common constructor selects by both conditions
 pass	a top-level module is named by a top-level def's body
 pass	a top-level sum value definition may reference a sum value defined later
 pass	a top-level tuple pattern matches a tuple produced by a runtime conditional
@@ -1594,6 +1598,7 @@ pass	a trapping element in the untaken arm of a same-length list if does not tra
 pass	a trapping field in the untaken arm of a same-shape record if does not trap
 pass	a trapping payload in a non-taken arm of a same-constructor match does not trap
 pass	a trapping payload in the TAKEN arm of a same-constructor if still traps
+pass	a trapping payload in the deep untaken arm of composed hoists does not trap
 pass	a trapping payload in the taken arm of a same-constructor match still traps
 pass	a trapping payload in the untaken arm of a same-constructor if does not trap
 pass	a trapping scrutinee of a same-constructor match traps before any arm
@@ -1660,6 +1665,7 @@ pass	a unary variant applied to a wrong-arity tuple payload is a type error
 pass	a unary variant applied to a wrong-type payload is a type error
 pass	a unit multiplied by its own inverse cancels to the dimensionless unit
 pass	a user Name variant does not capture the Ast sum's Name variant
+pass	a user function may be named quote — its signature is a binding form, not a quote
 pass	a user sum NAMED `Box` wrapping a recursive type does not collide with the heap pointer
 pass	a user sum NAMED after a prelude sum shadows it without a duplicate definition
 pass	a user sum's nullary variant escapes with its bare variant name
@@ -1864,6 +1870,8 @@ pass	an if over two trap-free bitwise arms selects branchlessly — else arm
 pass	an if over two trap-free bitwise arms selects branchlessly — then arm
 pass	an if whose untaken arm would trap keeps the branch (no select of checked arith)
 pass	an if with a narrow branch and a bare-literal branch computes at the narrow width
+pass	an if with identical branches folds to the branch when the condition is trap-free
+pass	an if with identical branches still evaluates a TRAPPING condition
 pass	an if-operand arithmetic op with deferred-width branches is Int64, and its wide result is correct
 pass	an if-tuple returned from a call, let-bound and projected twice
 pass	an if-wrapped self-application is rejected in bounded time, not an inference hang
@@ -1950,6 +1958,7 @@ pass	an unsigned runtime value is not accepted by a signed segment of the same w
 pass	an unsigned segment reads the same sign-bit-only byte as 128
 pass	an unsigned-byte entrypoint takes and returns a u8 at the boundary
 pass	an untaken arm's overflowing operand does not trap under the operator hoist
+pass	an untaken inner condition's trap does not fire under composed hoists
 pass	an unused let binding whose init would divide by zero is elided, so its trap does not occur
 pass	an unused let binding whose init would overflow is elided, so its trap does not occur
 pass	an unused let-init that does not reduce to a value is eliminated, so it does not diverge

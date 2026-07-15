@@ -827,6 +827,16 @@ fn send(
     let from = from
         .or_else(|| std::env::var("FLEET_AGENT").ok())
         .unwrap_or_else(|| "unknown".to_string());
+    // A `merge-request` with no `--ref` is malformed: pr-sync integrates by the commit sha in `ref`,
+    // and an empty one forces it to parse the body / guess — which has caused a premature merged-ack
+    // against the WRONG commit. Warn loudly (still deliver — non-fatal) so the sender fixes it.
+    if kind == "merge-request" && r#ref.trim().is_empty() {
+        eprintln!(
+            "⚠ fleet send: merge-request with an EMPTY --ref. pr-sync resolves by commit sha; \
+             pass `--ref $(git rev-parse HEAD)` so it integrates + acks the right commit (an empty \
+             ref has caused a mis-verified merged-ack). Delivering anyway."
+        );
+    }
     // Deliver even if the recipient isn't in the registry yet (e.g. seeding before add commits) —
     // the inbox dir is created on demand.
     deliver(

@@ -46,6 +46,11 @@ pub mod effects;
 // `(module …)` synthesis — a nested module declaration realized as an ordinary record (fields = exported
 // defs), the module analogue of `sums`/`effects`. So `(. m field)` is member access, nothing privileged.
 pub mod modules;
+// Compiler-directed generators for property tests over collection types (F1): synthesize a nullary
+// `Test.gen`-driven wrapper for a `@test` whose parameter is a `(List <Int>)`, so `cdz test` can
+// property-test over a list. Runs at load before `strip_annotations`; all synthesized nodes are ordinary
+// AST (`DESIGN-property-test-collection-generators-rcdzc.md`).
+pub mod proptest_gen;
 // `(quote …)` reification — a quote rewritten to the `Ast` constructor application that BUILDS its value
 // (`(quote 42)` -> `(Ast.Int 42)`), so a quote result and a hand-built `Ast.*` value are one thing.
 pub mod quote;

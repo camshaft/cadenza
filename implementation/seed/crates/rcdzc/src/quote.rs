@@ -144,6 +144,18 @@ pub fn reify_quotes(ast: &mut Arenas) -> Vec<StructId> {
     // quote/quasiquote here DESTRUCTURES (desugars to an `Ast.*` PATTERN via `reify_pattern`), it does
     // not construct. Built from a local parent map because this pass runs before `Db`'s `parent_index`.
     let pattern_nodes = pattern_position_nodes(ast, original_len);
+    // The set of BINDER-POSITION nodes — a `def` SIGNATURE list `(NAME param…)` and a `fn` PARAMS list.
+    // A user may DEFINE a function named `quote`/`quasiquote` (`def quote(x) = x + 2`), whose signature
+    // is spelled `(quote x)` — a `(quote …)`-headed list that is NOT a quote EXPRESSION but a binding
+    // form. `quote`/`quasiquote` are grammar heads recognized STRUCTURALLY in EXPRESSION position only
+    // (exactly as `if`/`match`/`bin` are — those are freely definable because they never dispatch on a
+    // signature); a signature/params list is never resolved as an expression. But reification is a
+    // pre-pass over EVERY `(quote …)` node by shape, so without this exclusion it rewrote the signature
+    // `(quote x)` into `(Ast.Name "x")`, erasing the parameter binder — the body's `x` then resolved
+    // CDZ0101 "unbound". Leave a binder-position node untouched so the def scans as an ordinary function
+    // named `quote` and its parameters bind. (Only the signature list ITSELF is excluded, not the body:
+    // a genuine `(quote …)` in the def BODY still reifies.)
+    let binder_nodes = binder_position_nodes(ast, original_len);
     // Quote-pattern nodes carrying a NON-FINAL `,@` splice — ill-formed (a rest binds the tail, meaningful
     // only last). Collected while scanning + reported CDZ0221 by `collect_faults` (the node is left
     // un-reified since `reify_pattern` bails on it).
@@ -151,6 +163,12 @@ pub fn reify_quotes(ast: &mut Arenas) -> Vec<StructId> {
     let mut plans: Vec<QuotePlan> = Vec::new();
     for i in (0..original_len).rev() {
         let id = StructId(i);
+        // A `(quote x)`/`(quasiquote x)` node that IS a def signature or fn params list is a BINDING
+        // form, not a quote expression — skip it entirely so the parameter binder survives (see
+        // `binder_position_nodes`). A user function named `quote` resolves as an ordinary def.
+        if binder_nodes.contains(id.0 as usize) {
+            continue;
+        }
         // A `(quote FORM)`/`(quasiquote TEMPLATE)` in PATTERN position desugars to the equivalent `Ast.*`
         // PATTERN (`reify_pattern` — an unquote is a BINDER). Elsewhere it CONSTRUCTS: a `quote` reifies
         // INERTLY (structural — a quote body never evaluates), a `quasiquote` reifies ACTIVELY (depth 1 —
@@ -301,6 +319,37 @@ fn pattern_position_nodes(ast: &Arenas, original_len: u32) -> BitSet {
         }
     }
     in_pattern
+}
+
+/// The set of original node ids that are a BINDER-position list — a `def` SIGNATURE `(NAME param…)` or
+/// a `fn` PARAMS list `(param…)`. A `(quote …)`/`(quasiquote …)`-headed list here is NOT a quote
+/// expression: it is the signature of a user function named `quote`/`quasiquote` (`def quote(x) = …` →
+/// signature `(quote x)`) or a params list whose first parameter is so named. These heads are grammar
+/// forms the resolver dispatches STRUCTURALLY in EXPRESSION position only — exactly as `if`/`match`/`bin`
+/// (all freely definable, because a signature is never resolved as an expression). Reification is a
+/// shape-driven PRE-PASS, though, so without this exclusion it rewrote the signature into `(Ast.Name …)`
+/// and erased the parameter binders. Only the signature/params LIST ITSELF is marked (not its
+/// descendants): a param is a bare name or a `(: name T)` annotation, never a quote to reify, and a
+/// genuine `(quote …)` in the def BODY must still reify. Returns a bitset over `0..original_len`.
+fn binder_position_nodes(ast: &Arenas, original_len: u32) -> BitSet {
+    let mut binder = BitSet::new(original_len as usize);
+    for i in 0..original_len as usize {
+        let id = StructId(i as u32);
+        // A def's signature is its first tail element; a fn's params list likewise. Marking by the
+        // enclosing `def`/`fn` (rather than by the list's own head) is precise: it flags a list ONLY
+        // when it genuinely occupies the binder slot, never a same-shaped list elsewhere.
+        let binder_list = ast
+            .as_form(id, "def")
+            .or_else(|| ast.as_form(id, "fn"))
+            .and_then(|tail| tail.first().copied());
+        if let Some(list) = binder_list
+            && list.0 < original_len
+            && matches!(ast.get(list), Struct::List(_))
+        {
+            binder.insert(list.0 as usize);
+        }
+    }
+    binder
 }
 
 /// A tiny fixed-size bitset over `0..n` (a `Vec<u64>` of words) — enough for the pattern-position mark.

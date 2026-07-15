@@ -61,6 +61,29 @@ jobs:
           cache-key: test-${{ matrix.os }}
       - run: cargo test --workspace
 
+  # ── standalone-crate gate ───────────────────────────────────────────────────
+  # `fleet/slack-bridge` is its OWN cargo workspace (its slack-morphism/tokio async tree is kept out of
+  # the seed lockfile), so the `--workspace` fmt/clippy/test jobs above DON'T cover it. Run its own gate
+  # here (Rust lib tests + clippy + fmt, and the zero-dep Node smoke test) so a change to the bridge — by
+  # any agent — is caught by CI, not just when its owner happens to run the tests locally.
+  slack-bridge:
+    name: slack-bridge crate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: slack-bridge
+      - name: Rust gate (test + clippy + fmt)
+        working-directory: fleet/slack-bridge
+        run: |
+          cargo test
+          cargo clippy --all-targets -- -D warnings
+          cargo fmt --check
+      - name: Node smoke test
+        working-directory: fleet/slack-bridge
+        run: node smoke.test.js
+
   # ── wasm-runtime-dependent jobs ─────────────────────────────────────────────
   # The value-heap runtime is invisible to `cargo build`; these jobs build it explicitly.
 

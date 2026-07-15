@@ -939,6 +939,61 @@
   (call   main (: false Bool) (: 0 Int64))
   (output (: 7 Int64)))
 
+; ── More `if`-simplification Core rewrites (lower.rs Resolved::If) — backend-independent, both inherit ─
+; Beyond the negated-condition branch swap above, the `if` lowering does three more pure rewrites on a
+; RUNTIME condition, each behavior-preserving and inherited by both backends:
+;  - DOUBLE-NEGATION unwind: `(if (not (not c)) T E)` → `(if c T E)` — each swap cancels a `not` layer.
+;  - CONDITIONAL CONSTANT PROPAGATION on a repeated condition: within the then-branch `c` is known TRUE,
+;    within the else-branch FALSE, so a branch that is ITSELF `(if c A B)` collapses to its `A`/`B` arm
+;    (`(if c (if c A B) E)` → `(if c A E)`). The inner condition must be the SAME pure `c`.
+;  - IDENTICAL-BRANCHES collapse: `(if c V V)` → `V` when the branches are core-equivalent — BUT only when
+;    `c` is TRAP-FREE, since dropping the `if` drops the condition's evaluation (a trapping `c` must still
+;    trap). These pin each on a runtime condition (a constant `c` takes the dead-branch-elimination path).
+
+(case "a double-negated condition unwinds to the original selection"
+  (doc    "`(if (not (not (> b 0))) 10 20)` — two negations cancel (each branch-swap drops one `not`
+           layer), so it selects exactly as `(if (> b 0) 10 20)`: b=5 → 10, b=-5 → 20. Pins the
+           double-negation unwind on a runtime condition, both backends (the iterated companion of the
+           single negated-condition swap above).")
+  (input  (do (def (main (: b Int64)) (if (not (not (> b 0))) 10 20)) (export main)))
+  (call   main (: 5 Int64))
+  (output (: 10 Int64))
+  (call   main (: -5 Int64))
+  (output (: 20 Int64)))
+
+(case "a repeated condition inside a branch propagates the known truth value"
+  (doc    "Within the then-branch of `(if c …)` the condition `c` is known TRUE; within the else-branch,
+           FALSE. So a nested `(if c …)` with the SAME condition collapses to the appropriate arm. Both
+           faces in one program: `(if (> b 0) (if (> b 0) 1 2) (if (> b 0) 8 3))` — the then-side inner
+           takes its true arm (1), the else-side inner takes its false arm (3), so the redundant inner
+           tests are never re-evaluated. b=5 → 1, b=-5 → 3. Pins conditional constant propagation on a
+           repeated pure condition, both backends (an inner arm that survived would give 2 or 8).")
+  (input  (do (def (main (: b Int64)) (if (> b 0) (if (> b 0) 1 2) (if (> b 0) 8 3))) (export main)))
+  (call   main (: 5 Int64))
+  (output (: 1 Int64))
+  (call   main (: -5 Int64))
+  (output (: 3 Int64)))
+
+(case "an if with identical branches folds to the branch when the condition is trap-free"
+  (doc    "`(if (> b 0) 42 42)` — both branches are the same value, so the `if` collapses to `42`
+           regardless of `b` (the condition `(> b 0)` is trap-free, so eliding it drops nothing). b=1 →
+           42, b=-5 → 42. Pins the identical-branches collapse on a runtime, trap-free condition.")
+  (input  (do (def (main (: b Int64)) (if (> b 0) 42 42)) (export main)))
+  (call   main (: 1 Int64))
+  (output (: 42 Int64))
+  (call   main (: -5 Int64))
+  (output (: 42 Int64)))
+
+(case "an if with identical branches still evaluates a TRAPPING condition"
+  (doc    "The trap-preservation anchor: `(if (> (/ 10 z) 0) 42 42)` has identical branches, but the
+           condition `(> (/ 10 z) 0)` divides by zero at z=0 — so the collapse to `42` MUST NOT drop the
+           condition's evaluation. The `if` folds its branches only when the condition is trap-free; a
+           trapping condition keeps being evaluated → z=0 traps. Pins that the identical-branches fold is
+           guarded on a trap-free condition, both backends.")
+  (input  (do (def (main (: z Int64)) (if (> (/ 10 z) 0) 42 42)) (export main)))
+  (call   main (: 0 Int64))
+  (trap   "divide by zero"))
+
 (case "a conjunction guards a let over a runtime value inside a conditional"
   (doc    "An INTEGRATION case: several control constructs composed in one function over a runtime
            parameter, the way a real program (not an isolated feature test) uses the language.
@@ -3727,3 +3782,78 @@
             (export main)))
   (call   main (: 1 Int64) (: 0 Int64) (: 1 Int64) (: 2 Int64))
   (trap   "divide by zero"))
+
+; --- The build-once hoists COMPOSE through synthesized differing positions -------------------------
+; ee5637e2f re-applies the common-ctor/common-arith hoists to the `(if c pᵢ qᵢ)` they synthesize, so
+; a nested-if of a common constructor inside a hoisted position collapses recursively (one build at
+; each level). The recursion multiplies the guard obligations — these pin them at depth 2, promoted
+; from passing breaker probes (the landing carries unit tests only).
+
+(case "a three-way nested common constructor selects by both conditions"
+  (doc    "`(if c1 (tuple (Some a) 1) (if c2 (tuple (Some b) 1) (tuple (Some a) 1)))` — the outer
+           tuple hoists once; its differing field is itself an if-of-`Some` that hoists again (one
+           tuple + one sum-new emitted, was three). All three selection paths verified: c1 → a (15),
+           ¬c1∧c2 → b (17), ¬c1∧¬c2 → a (15). A composition that mispaired the inner arms flips 15/17
+           on one path.")
+  (input  (do
+            (def (main (: c1 Int64) (: c2 Int64) (: a Int64) (: b Int64))
+              (let ((t (if (> c1 0) (tuple (Option.Some a) 1)
+                           (if (> c2 0) (tuple (Option.Some b) 1) (tuple (Option.Some a) 1)))))
+                (+ (match (. t 0) ((Option.Some p) p) (_ -1)) (* 10 (. t 1)))))
+            (export main)))
+  (call   main (: 1 Int64) (: 0 Int64) (: 5 Int64) (: 7 Int64))
+  (output (: 15 Int64))
+  (call   main (: 0 Int64) (: 1 Int64) (: 5 Int64) (: 7 Int64))
+  (output (: 17 Int64))
+  (call   main (: 0 Int64) (: 0 Int64) (: 5 Int64) (: 7 Int64))
+  (output (: 15 Int64)))
+
+(case "a trapping payload in the deep untaken arm of composed hoists does not trap"
+  (doc    "c1 = 1 takes the OUTER arm, so the inner if — including its c2-arm payload `(/ 100 0)` —
+           is never reached: 15, no trap. The recursive re-hoist synthesizes per-position selections
+           two levels deep; each level's payloads must stay behind BOTH conditions (a composed select
+           that evaluated the inner alternatives speculatively traps a program that must return 15).")
+  (input  (do
+            (def (main (: c1 Int64) (: c2 Int64) (: a Int64) (: d Int64))
+              (let ((t (if (> c1 0) (tuple (Option.Some a) 1)
+                           (if (> c2 0) (tuple (Option.Some (/ 100 d)) 1) (tuple (Option.Some a) 1)))))
+                (+ (match (. t 0) ((Option.Some p) p) (_ -1)) (* 10 (. t 1)))))
+            (export main)))
+  (call   main (: 1 Int64) (: 1 Int64) (: 5 Int64) (: 0 Int64))
+  (output (: 15 Int64)))
+
+(case "an untaken inner condition's trap does not fire under composed hoists"
+  (doc    "The inner if's own CONDITION traps (`(+ x 1)` at Int64.max): with c1 = 1 the outer arm is
+           taken and the inner condition is never evaluated → 15; with c1 = 0 the inner condition IS
+           evaluated → 'integer overflow'. Pins that composing the hoists keeps the inner condition
+           guarded by the outer selection (a composition that pre-evaluated the inner cond to feed
+           both synthesized positions traps the c1 = 1 call).")
+  (input  (do
+            (def (main (: c1 Int64) (: x Int64) (: a Int64) (: b Int64))
+              (let ((t (if (> c1 0) (tuple (Option.Some a) 1)
+                           (if (< (+ x 1) 5) (tuple (Option.Some b) 1) (tuple (Option.Some a) 1)))))
+                (+ (match (. t 0) ((Option.Some p) p) (_ -1)) (* 10 (. t 1)))))
+            (export main)))
+  (call   main (: 1 Int64) (: 9223372036854775807 Int64) (: 5 Int64) (: 7 Int64))
+  (output (: 15 Int64))
+  (call   main (: 0 Int64) (: 9223372036854775807 Int64) (: 5 Int64) (: 7 Int64))
+  (trap   "integer overflow"))
+
+(case "a consuming op in the deep differing payload keeps its retain under composed hoists"
+  (doc    "The Perceus face at composition depth: `xs` is multi-use, consumed inside the DIFFERING
+           payload of the hoisted tuple's hoisted `Some` (two synthesized selections deep) and read
+           after the whole if. c1 = 1 → the consuming path: push path-copies → Some 2, len xs = 1 →
+           3; c1 = 0 → 0 + 1 = 1. Pins the dup site surviving BOTH re-hoist moves (each re-hoist
+           relocates the payload expression into a fresh synthesized if).")
+  (input  (do
+            (def (main (: c1 Int64) (: d Int64))
+              (let ((xs (List.push (list) d)))
+                (let ((t (if (> c1 0)
+                             (tuple (Option.Some (List.len (List.push xs 9))) 1)
+                             (tuple (Option.Some 0) 1))))
+                  (+ (match (. t 0) ((Option.Some p) p) (_ -1)) (List.len xs)))))
+            (export main)))
+  (call   main (: 1 Int64) (: 7 Int64))
+  (output (: 3 Int64))
+  (call   main (: 0 Int64) (: 7 Int64))
+  (output (: 1 Int64)))

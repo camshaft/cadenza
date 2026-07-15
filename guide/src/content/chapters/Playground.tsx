@@ -111,6 +111,30 @@ export default function Playground() {
         interactive — reach for it when you want a number now, and the playground when you want a program.
       </P>
 
+      <H2>Beyond the browser: the <C>cdz</C> toolchain</H2>
+      <P>
+        Everything here runs the real compiler in your browser — but the same compiler ships as a single
+        command-line tool, <C>cdz</C>, for working on your own machine. One binary carries the whole loop:
+        <C>cdz compile</C> lowers a program to a WebAssembly component, <C>cdz run</C> executes a compiled
+        one, <C>cdz check</C> reports diagnostics without building, <C>cdz test</C> runs a module's tests,
+        and <C>cdz fmt</C> reprints source in canonical form. There's even a <C>cdz calc</C> — the same
+        exact-arithmetic calculator you met above, at your terminal.
+      </P>
+      <P>
+        And your editor can speak to that compiler directly. <C>cdz lsp</C> is a Language Server, so any
+        editor that speaks the protocol gets the <em>same</em> compiler-backed help the playground has —
+        not a text-based guess, but the type checker's actual understanding. In VS Code (one-step setup
+        with <C>cargo xtask install-lsp</C>) you get, live as you type: diagnostics, hover types, semantic
+        highlighting by role, go-to-definition and find-references, name completion from what's actually in
+        scope, one-click quick-fixes from the compiler's suggested repairs, and an outline of a file's
+        definitions.
+      </P>
+      <Note>
+        It's the same principle as the playground's editor, carried to your own tools: the colours, the
+        completions, the fixes all come from the compiler that will build your code — so what the editor
+        tells you and what the compiler does never drift apart.
+      </Note>
+
       <P>
         Open the <PlaygroundLink>playground</PlaygroundLink> and paste in the last program you wrote in
         this guide — then reach for the REPL and start calling its pieces.

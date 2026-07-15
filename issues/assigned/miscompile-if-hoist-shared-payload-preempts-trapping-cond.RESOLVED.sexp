@@ -29,3 +29,13 @@
     (export main)))
   (call main (: 0 Int64) (: 1 Int64))
   (output (trap "integer overflow")))
+
+;; ── v-wasm-opt resolution (2026-07-15, trunk@138a5c566) — ALREADY FIXED ──────────────────────────
+;; The guard IS in place: hoist_common_ctor (lower.rs ~14353) and hoist_common_arith (~14487) now do
+;; `if !is_trap_free(db, cond)` → require every shared payload/operand PRECEDING the differing position
+;; to be trap-free before hoisting a possibly-trapping cond (the diff==1 gap this item flagged). VERIFIED
+;; LIVE on trunk: this exact case traps "integer overflow" (cond-first, correct) — the shared (/ 10 d) is
+;; NOT hoisted (the `if` is kept, div_s stays inside). The corpus pin "a trapping shared payload before
+;; the differing position must not preempt a trapping cond" (02-binding-and-control.sexp) PASSES. Landed
+;; via the PR#375 review fix (queue: review-common-operator-hoist-trap-reorder.RESOLVED.md +
+;; pr375-if-hoist-trapping-cond-eval-order.RESOLVED.md). This item is a STALE duplicate. Renaming .RESOLVED.

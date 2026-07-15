@@ -1,0 +1,50 @@
+/// MISCOMPILE-CLASS DECLINE — 2026-07-15, seed rcdzc (wasm backend), found by the `v-cad` vertical while
+/// building the G1 `Solid` CAD model library (a real recursion/sums/records/floats stress test, GH #400).
+///
+///   error: "comparison of a compound value needs a heap walk (not yet built)"
+///
+/// `cdz check` is CLEAN; `cdz compile` DECLINES. The compared operands are SCALAR (`Float64`), so this is a
+/// MISCLASSIFICATION: a *scalar* `==` is being routed to the *compound* (heap-walk) comparison path.
+///
+/// SHARP repro (this file, single-export so `cdz compile FILE -o -` reproduces): the trigger is REUSING a
+/// COMPOUND-typed local binding MORE THAN ONCE. `vx(v)` and `vy(v)` each `match` the SAME `v : Vec3`; the
+/// later `x == 1.0` (a Float64 compare) is then misrouted as a compound comparison and declines.
+///
+/// SHARP — each is NECESSARY (removing any one makes it compile + run correctly):
+///   • the binding `v` must be COMPOUND-typed (a sum/record); a scalar `v` never trips it.
+///   • `v` must be USED ≥ 2 TIMES. Using it ONCE (`let a = vx(v) in a == 1.0`) COMPILES + runs (control
+///     `mlrepro-...-CONTROL`-style below). A SINGLE destructuring `match v with V3(x, y, _) => x==1.0 && …`
+///     also COMPILES — so the workaround is "destructure once, don't re-project."
+///   • it is independent of `==`'s side: even with NO `==` on the projections at all
+///     (`let s = vx(v) + vy(v) in if s > 0.5 …`) it still declines — so the reused compound binding, not
+///     the equality per se, is what corrupts the later comparison lowering.
+///   • it is NOT the accessor helpers: inlining the two `match`es on the same `v` inline declines
+///     identically; factoring the double-use INTO a helper (`def add2(v) = vx(v)+vy(v)`) and comparing only
+///     `add2(...)`'s result COMPILES — so it's the compound binding being live across ≥2 projections in the
+///     SAME scope, at the point a sibling scalar comparison is lowered.
+///   • a TUPLE reused via `.0`/`.1` (`let p=(1.0,2.0) in p.0==1.0 && p.1==2.0`) COMPILES — so it is specific
+///     to a SUM/record binding reused via `match` projection, not all compounds.
+///
+/// LIKELY LOCUS: backend/wasm — the `value-eq` / comparison lowering (select.rs) decides scalar-vs-compound
+/// from a liveness/ownership fact about nearby compound bindings rather than from the compared operand's OWN
+/// type. When the compound binding stays live (a second projection ahead), the sibling scalar `=`'s lowering
+/// reads the compound as the comparison operand. Reject-don't-miscompile fires (good — no wrong value), but
+/// the classification is wrong: the operands ARE scalar.
+///
+/// IMPACT: pervasive for idiomatic data code — ANY function that reads two+ fields of the same value and
+/// compares one is affected (a Vec3's x/y/z, a record's two fields). The CAD G1 library works around it by
+/// destructuring each value with ONE `match` binding all components, never re-projecting the same binding.
+///
+/// `run` is exported (single export) so `cdz compile FILE -o -` reproduces the decline directly.
+type Vec3 = | V3(Float64, Float64, Float64)
+
+def vx(v: Vec3) = match v with | Vec3.V3(x, _, _) => x
+def vy(v: Vec3) = match v with | Vec3.V3(_, y, _) => y
+
+/// `v` is used TWICE (vx and vy). `vx(v) == 1.0` is a SCALAR Float64 compare but declines as compound.
+/// Correct value would be 7.
+def run() =
+  let v = Vec3.V3(1.0, 2.0, 3.0) in
+  if vx(v) == 1.0 then (if vy(v) == 2.0 then 7 else 8) else 9
+
+export { run }
