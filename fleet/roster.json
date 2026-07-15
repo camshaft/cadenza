@@ -20,6 +20,7 @@
     { "name": "v-fleet-tooling", "role": "vertical", "vertical": "fleet-tooling", "area": "xtask", "model": "opus", "effort": "high", "interval": "30m" },
     { "name": "v-runtime", "role": "vertical", "vertical": "runtime", "area": "runtime", "model": "opus", "effort": "high", "interval": "30m" },
     { "name": "v-syntax", "role": "vertical", "vertical": "syntax", "area": "cadenza-syntax", "model": "opus", "effort": "high", "interval": "30m" },
-    { "name": "reviewer", "role": "reviewer", "model": "opus", "effort": "high", "interval": "30m" }
+    { "name": "reviewer", "role": "reviewer", "model": "opus", "effort": "high", "interval": "30m" },
+    { "name": "v-quantity", "role": "vertical", "vertical": "quantity", "area": "rcdzc", "model": "opus", "effort": "high", "interval": "30m" }
   ]
 }

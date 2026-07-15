@@ -55,7 +55,12 @@
 //# The canonical form of a program MUST be a stable binary serialization of its abstract syntax tree, such that a program has one canonical byte form independent of any textual rendering.
 //!
 //! `decode` is TOTAL: it verifies the header and refuses (returns `None`) on a wrong header, malformed
-//! length/tag, out-of-range id, or trailing bytes — it never panics and never returns a wrong tree.
+//! length/tag, out-of-range id, a non-tree structure (a cycle or shared subtree among the reachable
+//! nodes), or trailing bytes — it never panics and never returns a wrong tree. The tree check matters
+//! because downstream consumers (e.g. `canon::canonicalize`) walk the structure recursively: a cyclic
+//! arena would diverge and a shared subtree would expand exponentially, so a hostile byte string could
+//! otherwise turn into a stack overflow or a decode-bomb. A canonical encoding is always a tree, so the
+//! check refuses nothing a valid encoder produced.
 //! Determinism ("equal programs -> identical bytes") is a property of CANONICAL arenas (see `canon.rs`),
 //! which `encode` imposes before serializing.
 //!
@@ -313,6 +318,30 @@ pub fn decode(bytes: &[u8]) -> Option<Arenas> {
         }
     }
 
+    // The reachable structure from `root` must be a genuine TREE — every reachable node reached
+    // exactly once. A canonical encoding is always a tree (`encode` re-emits every occurrence as a
+    // fresh node via `canon`, so it never shares a subtree), hence this rejects nothing a valid
+    // encoder produced. It DOES refuse a corrupted or hostile arena whose child ids form a CYCLE
+    // (which would make a recursive consumer such as `canon::canonicalize` diverge and overflow the
+    // stack) or SHARE a subtree (which such a consumer expands, up to exponentially — a decode-bomb).
+    // Iterative walk, so the check itself cannot overflow on deep input. Unreachable ("dead") nodes
+    // remain permitted — `canon` drops them — so this checks only reachability, not full coverage.
+    {
+        let mut visited = vec![false; structure.len()];
+        let mut stack = vec![root.0 as usize];
+        while let Some(id) = stack.pop() {
+            if visited[id] {
+                return None; // a node reached twice: a cycle or a shared subtree — not a tree
+            }
+            visited[id] = true;
+            if let Struct::List(children) = &structure[id] {
+                for StructId(child) in children {
+                    stack.push(*child as usize);
+                }
+            }
+        }
+    }
+
     // No trailing bytes.
     if !r.at_end() {
         return None;
@@ -557,5 +586,183 @@ mod tests {
         leb128::write_u64(&mut bytes, 0); // leaf id 0 — out of range
         leb128::write_u64(&mut bytes, 0); // root
         assert_eq!(decode(&bytes), None);
+    }
+
+    #[test]
+    fn cyclic_structure_refused() {
+        // A hand-built arena whose sole node is a `List` referencing ITSELF. In-bounds (id 0 exists),
+        // so the old id-range check accepted it — but it is not a tree, and `canon`'s recursive walk
+        // would diverge. `decode` must refuse it rather than hand a consumer a cyclic "tree".
+        let mut bytes = SCHEMA_HEADER.to_vec();
+        leb128::write_u64(&mut bytes, 0); // leaf_count = 0
+        leb128::write_u64(&mut bytes, 1); // struct_count = 1
+        bytes.push(TAG_LIST);
+        leb128::write_u64(&mut bytes, 1); // one child...
+        leb128::write_u64(&mut bytes, 0); // ...which is node 0 itself — a self-cycle
+        leb128::write_u64(&mut bytes, 0); // root = 0
+        assert_eq!(
+            decode(&bytes),
+            None,
+            "a self-referential list is not a tree"
+        );
+    }
+
+    #[test]
+    fn shared_subtree_refused() {
+        // Node 2 is a list `[0, 0]` — leaf-atom node 0 appears twice. In-bounds, but a DAG, not a
+        // tree; a naive recursive expander would duplicate the shared subtree (exponential on a chain
+        // of such nodes — a decode-bomb). `decode` must refuse the reachable-twice node.
+        let mut bytes = SCHEMA_HEADER.to_vec();
+        leb128::write_u64(&mut bytes, 1); // leaf_count = 1
+        bytes.push(KIND_BOOL_TRUE); // leaf 0
+        leb128::write_u64(&mut bytes, 2); // struct_count = 2
+        bytes.push(TAG_ATOM);
+        leb128::write_u64(&mut bytes, 0); // node 0 = Atom(leaf 0)
+        bytes.push(TAG_LIST);
+        leb128::write_u64(&mut bytes, 2); // node 1 = List[0, 0] — node 0 shared
+        leb128::write_u64(&mut bytes, 0);
+        leb128::write_u64(&mut bytes, 0);
+        leb128::write_u64(&mut bytes, 1); // root = 1
+        assert_eq!(decode(&bytes), None, "a shared subtree is not a tree");
+    }
+
+    /// A tiny deterministic PRNG (SplitMix64) so the fuzz sweeps below are reproducible without a
+    /// dependency — the crate stays "plain" (see `Cargo.toml`), matching the hand-rolled token-soup
+    /// and never-panic tests in `lexer.rs`/`parser.rs`.
+    struct SplitMix64(u64);
+    impl SplitMix64 {
+        fn next(&mut self) -> u64 {
+            self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+            z ^ (z >> 31)
+        }
+        fn byte(&mut self) -> u8 {
+            (self.next() & 0xff) as u8
+        }
+    }
+
+    #[test]
+    fn decode_is_total_on_arbitrary_bytes() {
+        // The module header promises `decode` is TOTAL: it never panics on untrusted input — it
+        // either reconstructs a tree (`Some`) or refuses (`None`). Pin that with a broad byte-level
+        // fuzz: random junk of every short length, plus random payloads that carry the real header
+        // (so the reader gets past the header check and exercises the leaf/struct decode paths). Any
+        // panic (OOB slice, unwrap, capacity overflow, unchecked arithmetic) fails this test.
+        let mut rng = SplitMix64(0x0bad_c0de_dead_beef);
+        // Bare random bytes, lengths 0..=64.
+        for len in 0..=64usize {
+            for _ in 0..64 {
+                let buf: Vec<u8> = (0..len).map(|_| rng.byte()).collect();
+                let _ = decode(&buf); // must not panic
+            }
+        }
+        // Random bytes PREFIXED with the real header, so the body decode runs on garbage.
+        for len in 0..=96usize {
+            for _ in 0..64 {
+                let mut buf = SCHEMA_HEADER.to_vec();
+                buf.extend((0..len).map(|_| rng.byte()));
+                let _ = decode(&buf); // must not panic
+            }
+        }
+    }
+
+    /// The canonical-form fixed point: for any arena `decode` accepts, its CANONICAL encoding
+    /// (`encode`, which canonicalizes) must round-trip identically — re-decoding the canonical bytes
+    /// and re-encoding reproduces them. This is the bijection guarantee (ast-encoding.md §The Encoding
+    /// Is A Bijection) checked on the canonical form. We do NOT compare against the accepted arena
+    /// itself: `decode` is LENIENT (it accepts non-canonical layouts — forward references, unreferenced
+    /// "dead" leaves), while `encode` canonicalizes, so the raw arena need not be reproduced. Returns
+    /// the accepted count so callers can guard against a vacuous (never-accepts) sweep.
+    fn assert_canonical_fixed_point(bytes: &[u8]) -> bool {
+        let Some(back) = decode(bytes) else {
+            return false;
+        };
+        let canon = encode(&back);
+        let redecoded = decode(&canon).expect("canonical bytes always decode");
+        assert_eq!(
+            canon,
+            encode(&redecoded),
+            "canonical encoding must be a fixed point"
+        );
+        true
+    }
+
+    #[test]
+    fn decode_survives_every_single_byte_mutation_of_a_valid_encoding() {
+        // Take real, valid encodings and corrupt them one byte at a time across a range of byte
+        // values (plus a byte dropped and a byte inserted at each offset). Each corruption must decode
+        // to a well-formed tree or be refused — never panic — and any accepted tree's canonical form
+        // must be a fixed point. This walks the header, the length/tag/id fields, and every leaf
+        // payload with a corruption at every offset.
+        let mut rng = SplitMix64(0x5eed_1234_5678_9abc);
+        for a in [sample(), radix_sample()] {
+            let good = encode(&a);
+            for pos in 0..good.len() {
+                for delta in [1u8, 0x7f, 0x80, 0xff] {
+                    let mut bytes = good.clone();
+                    bytes[pos] = bytes[pos].wrapping_add(delta);
+                    assert_canonical_fixed_point(&bytes); // must not panic; accepted → fixed point
+                }
+                let mut dropped = good.clone();
+                dropped.remove(pos);
+                assert_canonical_fixed_point(&dropped);
+                let mut inserted = good.clone();
+                inserted.insert(pos, rng.byte());
+                assert_canonical_fixed_point(&inserted);
+            }
+        }
+    }
+
+    #[test]
+    fn decode_round_trip_is_idempotent_on_accepted_inputs() {
+        // For ANY accepted byte string, the canonical form is a fixed point (bijection guarantee).
+        // Random bytes after the header almost never decode (a random `leaf_count` truncates), so we
+        // seed the sweep with SMALL mutations of real encodings — those frequently still decode — and
+        // assert we found a non-trivial number of accepted inputs so the test isn't vacuous.
+        let mut rng = SplitMix64(0xfeed_face_cafe_babe);
+        let seeds = [encode(&sample()), encode(&radix_sample())];
+        let mut accepted = 0usize;
+        for _ in 0..20_000 {
+            let seed = &seeds[(rng.next() as usize) % seeds.len()];
+            let mut buf = seed.clone();
+            // Flip 1..=3 random bytes (keeps many inputs decodable, unlike wholesale randomness).
+            let flips = 1 + (rng.next() % 3) as usize;
+            for _ in 0..flips {
+                if !buf.is_empty() {
+                    let i = (rng.next() as usize) % buf.len();
+                    buf[i] = rng.byte();
+                }
+            }
+            if assert_canonical_fixed_point(&buf) {
+                accepted += 1;
+            }
+        }
+        assert!(
+            accepted > 100,
+            "sweep near-vacuous: only {accepted} accepted"
+        );
+    }
+
+    /// A second, structurally different sample used by the mutation sweep: nested lists and every
+    /// leaf kind that carries a payload, so the mutation walk touches more decode arms.
+    fn radix_sample() -> Arenas {
+        let mut b = Builder::new();
+        let sym = b.atom_leaf(Leaf::Sym("sym".to_string()));
+        let ch = b.atom_leaf(Leaf::Char('λ'));
+        let by = b.atom_leaf(Leaf::Bytes(vec![0, 1, 2, 255]));
+        let bad = b.atom_leaf(Leaf::BadChar("\\q".to_string()));
+        let esc = b.atom_leaf(Leaf::BadEscape('z'));
+        let suf = b.atom_leaf(Leaf::Suffixed {
+            value: SuffixBody::Int {
+                value: BigInt::from(255),
+                radix: Radix::Hex,
+            },
+            kind: SuffixKind::BigInt,
+        });
+        let inner = b.list(vec![sym, ch, by]);
+        let root = b.list(vec![inner, bad, esc, suf]);
+        b.finish(root)
     }
 }

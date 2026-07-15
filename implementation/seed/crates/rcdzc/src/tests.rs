@@ -21336,11 +21336,11 @@ mod match_engine {
 
     #[test]
     fn a_bin_value_out_of_range_for_its_segment_is_a_provable_trap() {
-        // A constant segment value that does not fit its width has no encoding → the build fails
-        // (CDZ0304, the compile-provable companion of the runtime "binary value does not fit segment"
-        // trap), rather than truncating. `(u8 256)` needs 9 bits; `(u8 -1)` is negative into unsigned. A
-        // bit-field value wider than its width (`(bits 2 1)` — 2 needs 2 bits) is the sub-byte companion,
-        // also a provable rejection (CDZ0220 mis-alignment or CDZ0304 fit — both refuse, never truncate).
+        // A constant LITERAL segment value that does not fit its width grounds to the segment's width type
+        // and range-checks: it has no encoding → the build fails (CDZ0304), rather than truncating. `(u8
+        // 256)` needs 9 bits; `(u8 -1)` is negative into unsigned. A bit-field value wider than its width
+        // (`(bits 256 8)`) is the sub-byte companion, also a provable rejection. (A non-literal value that
+        // does not fit is a type error, CDZ0203 — see the sibling test.)
         for src in [
             "(module m (def (main) (Bytes.len (bin (u8 256)))) (export main))",
             "(module m (def (main) (Bytes.len (bin (u8 -1)))) (export main))",
@@ -21354,6 +21354,65 @@ mod match_engine {
                 .as_deref(),
             Some("CDZ0304"),
         );
+    }
+
+    #[test]
+    fn a_bin_segment_requires_its_width_typed_value_cdz0203() {
+        // A fixed-width int segment REQUIRES the width-matching typed value — `(u8 v)` takes a `UInt8`,
+        // `(u16 v)` a `UInt16`, `(i8 v)` an `Int8`, `(bits v k)` a `(UInt k)`. A value whose CONCRETE integer
+        // type is wider/differently-signed than the segment (a runtime `Int64` parameter, most commonly) is a
+        // COMPILE-TIME type error (CDZ0203): the value that does not fit is a TYPE failure, not a runtime
+        // trap. Narrowing (`UInt8.wrap` to truncate, `UInt8.of` to check) is the caller's responsibility. This
+        // pins that the runtime range-check-and-trap is GONE — a segment provably fits its value.
+        let msg_0203 = |src: &str| -> String {
+            crate::diagnostics(&mut crate::db::Db::load(crate::testkit::parse(src)))
+                .into_iter()
+                .find(|d| {
+                    d.code.as_deref() == Some("CDZ0203") && d.message.contains("segment takes")
+                })
+                .unwrap_or_else(|| panic!("no CDZ0203 segment type error for {src}"))
+                .message
+        };
+        // An `Int64` into each fixed-width segment kind → CDZ0203, naming the required width type.
+        assert!(
+            msg_0203("(module m (def (main (: n Int64)) (Bytes.len (bin (u8 n)))) (export main))")
+                .contains("UInt8"),
+        );
+        assert!(
+            msg_0203("(module m (def (main (: n Int64)) (Bytes.len (bin (u16 n)))) (export main))")
+                .contains("UInt16"),
+        );
+        // A DIFFERENT-signedness type is also a mismatch: an `Int8` into an UNSIGNED `u8` segment.
+        assert!(
+            msg_0203("(module m (def (main (: n Int8)) (Bytes.len (bin (u8 n)))) (export main))")
+                .contains("UInt8"),
+        );
+        // A raw `Int64` into a `bits` field → CDZ0203 naming `(UInt k)` (here a 4-bit field, byte-closed by a
+        // trailing constant `(bits 5 4)`).
+        assert!(
+            msg_0203(
+                "(module m (def (main (: n Int64)) (Bytes.len (bin (bits n 4) (bits 5 4)))) (export main))"
+            )
+            .contains("UInt4"),
+        );
+        // NO false positive: the width-matching typed value, a narrowed value, a bare literal (grounds to the
+        // width), and a bin PATTERN binder (types as the decoded value) all stay CLEAN.
+        for ok in [
+            "(module m (def (main (: n UInt8)) (Bytes.len (bin (u8 n)))) (export main))",
+            "(module m (def (main (: n UInt16)) (Bytes.len (bin (u16 n)))) (export main))",
+            "(module m (def (main (: n Int8)) (Bytes.len (bin (i8 n)))) (export main))",
+            "(module m (def (main (: n Int64)) (Bytes.len (bin (u8 (UInt8.wrap n))))) (export main))",
+            "(module m (def (main) (Bytes.len (bin (u8 5)))) (export main))",
+            "(module m (def (g (: b Bytes)) (match b ((bin (u8 x)) x) (_ 0))) (export g))",
+        ] {
+            assert!(
+                !crate::diagnostics(&mut crate::db::Db::load(crate::testkit::parse(ok)))
+                    .iter()
+                    .any(|d| d.code.as_deref() == Some("CDZ0203")
+                        && d.message.contains("segment takes")),
+                "unexpected CDZ0203 segment type error for a valid program: {ok}"
+            );
+        }
     }
 
     #[test]
@@ -21733,9 +21792,12 @@ mod match_engine {
     #[test]
     fn a_runtime_bin_construction_builds_and_range_checks_under_wasmtime() {
         // A `(bin …)` whose segment value is a genuine RUNTIME value (an EXPORTED boundary parameter, which
-        // cannot fold) builds a Bytes on the rope heap at run time: `Core::BinBuild` allocs the buffer,
-        // writes each segment's bytes big-endian (`le` reversed), and range-checks each value (trap if out
-        // of range). `main` reads a SCALAR out (a `Bytes.len` or a match round-trip) so no escape is needed.
+        // cannot fold) builds a Bytes on the rope heap at run time: `Core::BinBuild` allocs the buffer and
+        // writes each segment's bytes big-endian (`le` reversed). A fixed-width segment REQUIRES the width-
+        // matching typed value (`(u16 v)` takes a `UInt16`, `(bits v k)` takes a `(UInt k)`), so the value
+        // provably fits and construction NEVER traps — an out-of-range value is a compile-time TYPE error
+        // (CDZ0203), and narrowing (`UInt8.wrap` / `(UInt k).wrap`) is the caller's job. `main` reads a
+        // SCALAR out (a `Bytes.len` or a match round-trip) so no escape is needed.
         let Some(runtime) = super::find_runtime_wasm() else {
             eprintln!("runtime wasm not found; skipping runtime bin construction run");
             return;
@@ -21756,12 +21818,24 @@ mod match_engine {
                 cdz_run::Outcome::Trap(t) => panic!("unexpected trap: {t}"),
             }
         };
-        // (Runtime bin MATCHING — decoding a runtime Bytes scrutinee — is a separate unbuilt slice, so
-        // these read the built bytes back with `Bytes.len` / `Bytes.at`, not a `(bin …)` pattern.)
-        // A runtime u16 built + measured: (bin (u16 n)) with n=258 → 2 bytes.
+        // A fixed-width int segment fed a WIDER runtime type is a COMPILE-TIME type error (CDZ0203): the
+        // value that does not fit becomes a type failure, not a runtime trap. Asserted on the diagnostics,
+        // since such a program never reaches the runtime.
+        let rejects_0203 = |src: &str| {
+            let ds = crate::diagnostics(&mut crate::db::Db::load(crate::testkit::parse(src)));
+            assert!(
+                ds.iter()
+                    .any(|d| d.code.as_deref() == Some("CDZ0203")
+                        && d.message.contains("segment takes")),
+                "expected a CDZ0203 segment type error for {src}, got: {ds:?}"
+            );
+        };
+        // (Runtime bin MATCHING — decoding a runtime Bytes scrutinee — is a separate slice, so these read the
+        // built bytes back with `Bytes.len` / `Bytes.at`, not a `(bin …)` pattern.)
+        // A runtime u16 built + measured: (bin (u16 n)) with n=258 → 2 bytes. `n : UInt16` (the segment width).
         assert_eq!(
             val(
-                "(module m (def (main (: n Int64)) ((. Bytes len) (bin (u16 n)))) (export main))",
+                "(module m (def (main (: n UInt16)) ((. Bytes len) (bin (u16 n)))) (export main))",
                 &["258"]
             ),
             "2",
@@ -21770,7 +21844,7 @@ mod match_engine {
         // Big-endian byte order: (bin (u16 258)) = [0x01, 0x02]; read byte 0 → 1 (MSB first).
         assert_eq!(
             val(
-                "(module m (def (main (: n Int64)) (match ((. Bytes at) (bin (u16 n)) 0) ((Some b) b) ((None _) -1))) (export main))",
+                "(module m (def (main (: n UInt16)) (match ((. Bytes at) (bin (u16 n)) 0) ((Some b) b) ((None _) -1))) (export main))",
                 &["258"]
             ),
             "1",
@@ -21779,51 +21853,45 @@ mod match_engine {
         // Little-endian: (bin (u16 258 le)) = [0x02, 0x01]; byte 0 → 2.
         assert_eq!(
             val(
-                "(module m (def (main (: n Int64)) (match ((. Bytes at) (bin (u16 n le)) 0) ((Some b) b) ((None _) -1))) (export main))",
+                "(module m (def (main (: n UInt16)) (match ((. Bytes at) (bin (u16 n le)) 0) ((Some b) b) ((None _) -1))) (export main))",
                 &["258"]
             ),
             "2",
             "runtime u16 little-endian LSB-first"
         );
-        // Multi-segment: (u8 a)(u16 b) → 3 bytes.
+        // Multi-segment: (u8 a)(u16 b) → 3 bytes. Each param is the segment's width type.
         assert_eq!(
             val(
-                "(module m (def (main (: a Int64) (: b Int64)) ((. Bytes len) (bin (u8 a) (u16 b)))) (export main))",
+                "(module m (def (main (: a UInt8) (: b UInt16)) ((. Bytes len) (bin (u8 a) (u16 b)))) (export main))",
                 &["7", "258"]
             ),
             "3",
             "runtime multi-segment length"
         );
-        // A SIGNED i8 of -1 is IN range (two's complement) → byte 0xFF (255), no trap.
+        // A SIGNED i8 of -1 is IN range (two's complement) → byte 0xFF (255), no trap. `n : Int8`.
         assert_eq!(
             val(
-                "(module m (def (main (: n Int64)) (match ((. Bytes at) (bin (i8 n)) 0) ((Some b) b) ((None _) -1))) (export main))",
+                "(module m (def (main (: n Int8)) (match ((. Bytes at) (bin (i8 n)) 0) ((Some b) b) ((None _) -1))) (export main))",
                 &["-1"]
             ),
             "255",
             "runtime signed i8 -1 → 0xFF"
         );
-        // Range check: a runtime u8 given 256 has no 8-bit encoding → TRAP (does not truncate to 0).
-        assert!(
-            matches!(
-                run(
-                    "(module m (def (main (: n Int64)) ((. Bytes len) (bin (u8 n)))) (export main))",
-                    &["256"]
-                ),
-                cdz_run::Outcome::Trap(_)
-            ),
-            "a runtime u8 of 256 must trap, not truncate"
+        // A wider runtime value (`Int64`) into a `u8` segment is a COMPILE-TIME type error — NOT accepted and
+        // range-checked-then-trapped at run time. The former runtime out-of-range TRAP is gone: a width-typed
+        // segment provably fits its value.
+        rejects_0203(
+            "(module m (def (main (: n Int64)) ((. Bytes len) (bin (u8 n)))) (export main))",
         );
-        // Range check: a runtime u8 given -1 (negative into unsigned) → TRAP.
-        assert!(
-            matches!(
-                run(
-                    "(module m (def (main (: n Int64)) ((. Bytes len) (bin (u8 n)))) (export main))",
-                    &["-1"]
-                ),
-                cdz_run::Outcome::Trap(_)
+        // The caller's explicit narrowing makes it total: `(u8 (UInt8.wrap n))` with a runtime `Int64` n=258
+        // truncates to the low 8 bits = 2, so the byte sequence is one byte (no trap).
+        assert_eq!(
+            val(
+                "(module m (def (main (: n Int64)) ((. Bytes len) (bin (u8 ((. UInt8 wrap) n))))) (export main))",
+                &["258"]
             ),
-            "a runtime u8 of -1 must trap"
+            "1",
+            "runtime u8 via UInt8.wrap: 258 truncates to 2, one byte"
         );
         // A `(bytes b)` splice of a RUNTIME Bytes value: `(bin (u16 3) (bytes b))` builds a length-prefixed
         // frame at run time (a `bytes-concat` of the header + the runtime body). `mk` builds a 3-byte body
@@ -21847,9 +21915,11 @@ mod match_engine {
             "30",
             "runtime bytes-splice: body byte spliced after the header"
         );
-        // RUNTIME BIT-FIELD packing: `(bits (UInt8.wrap n) 4) (bits 5 4)` packs the low nibble of `n` into
-        // the HIGH nibble and constant 5 into the low nibble of one byte (MSB-first). n=10 → 0xA5 = 165.
-        let nibble = "(module m (def (main (: n Int64)) (match ((. Bytes at) (bin (bits (UInt8.wrap n) 4) (bits 5 4)) 0) ((Some b) b) ((None _) -1))) (export main))";
+        // RUNTIME BIT-FIELD packing: `(bits ((UInt 4).wrap n) 4) (bits 5 4)` packs the low nibble of `n`
+        // into the HIGH nibble and constant 5 into the low nibble of one byte (MSB-first). A `(bits v 4)`
+        // field takes a `(UInt 4)`, so the caller narrows `n` with `(UInt 4).wrap` (truncating to the low
+        // four bits) — the segment then provably fits and never traps. n=10 → 0xA5 = 165.
+        let nibble = "(module m (def (main (: n Int64)) (match ((. Bytes at) (bin (bits ((. (UInt 4) wrap) n) 4) (bits 5 4)) 0) ((Some b) b) ((None _) -1))) (export main))";
         assert_eq!(
             val(nibble, &["10"]),
             "165",
@@ -21860,29 +21930,33 @@ mod match_engine {
             "5",
             "runtime bit-field: low nibble only, n=0"
         );
+        // n=15 fits (UInt 4); (15<<4)|5 = 0xF5 = 245.
         assert_eq!(
             val(nibble, &["15"]),
             "245",
             "runtime bit-field: (15<<4)|5 = 0xF5"
         );
-        // A runtime bit-field over its k-bit range TRAPS (a 4-bit field given 16 has no 4-bit encoding).
-        assert!(
-            matches!(
-                run(
-                    "(module m (def (main (: n Int64)) ((. Bytes len) (bin (bits (UInt8.wrap n) 4) (bits 5 4)))) (export main))",
-                    &["16"]
-                ),
-                cdz_run::Outcome::Trap(_)
-            ),
-            "a runtime 4-bit field of 16 must trap, not truncate"
+        // n=31 does NOT fit (UInt 4): `(UInt 4).wrap` truncates to the low four bits (31 → 15), so the pack is
+        // total (no trap) — the narrowing is the caller's explicit choice. (15<<4)|5 = 245.
+        assert_eq!(
+            val(nibble, &["31"]),
+            "245",
+            "runtime bit-field: (UInt 4).wrap truncates 31 → 15, no trap"
         );
-        // A bit-field run spanning TWO bytes: three fields 8+4+4 = 16 bits = 2 bytes. `(bits n 8)(bits 2
-        // 4)(bits 3 4)` → byte0 = n, byte1 = (2<<4)|3 = 0x23 = 35. n=200 → len 2, byte0=200, byte1=35.
+        // A raw runtime `Int64` in a 4-bit field WITHOUT narrowing is a COMPILE-TIME type error — the value
+        // that does not fit the field is a type failure, not a runtime trap.
+        rejects_0203(
+            "(module m (def (main (: n Int64)) ((. Bytes len) (bin (bits n 4) (bits 5 4)))) (export main))",
+        );
+        // A bit-field run spanning TWO bytes: three fields 8+4+4 = 16 bits = 2 bytes. `(bits n8 8)(bits 2
+        // 4)(bits 3 4)` → byte0 = n, byte1 = (2<<4)|3 = 0x23 = 35. The 8-bit field takes a `UInt8`, the two
+        // 4-bit constants ground to `(UInt 4)`. n=200 → len 2, byte0=200, byte1=35.
         let two = "(module m (def (main (: n Int64)) ";
+        let n8 = "((. UInt8 wrap) n)"; // narrow the runtime Int64 to the 8-bit field's UInt8
         assert_eq!(
             val(
                 &format!(
-                    "{two} ((. Bytes len) (bin (bits (UInt8.wrap n) 8) (bits 2 4) (bits 3 4)))) (export main))"
+                    "{two} ((. Bytes len) (bin (bits {n8} 8) (bits 2 4) (bits 3 4)))) (export main))"
                 ),
                 &["200"]
             ),
@@ -21892,7 +21966,7 @@ mod match_engine {
         assert_eq!(
             val(
                 &format!(
-                    "{two} (match ((. Bytes at) (bin (bits (UInt8.wrap n) 8) (bits 2 4) (bits 3 4)) 0) ((Some b) b) ((None _) -1))) (export main))"
+                    "{two} (match ((. Bytes at) (bin (bits {n8} 8) (bits 2 4) (bits 3 4)) 0) ((Some b) b) ((None _) -1))) (export main))"
                 ),
                 &["200"]
             ),
@@ -21902,19 +21976,21 @@ mod match_engine {
         assert_eq!(
             val(
                 &format!(
-                    "{two} (match ((. Bytes at) (bin (bits (UInt8.wrap n) 8) (bits 2 4) (bits 3 4)) 1) ((Some b) b) ((None _) -1))) (export main))"
+                    "{two} (match ((. Bytes at) (bin (bits {n8} 8) (bits 2 4) (bits 3 4)) 1) ((Some b) b) ((None _) -1))) (export main))"
                 ),
                 &["200"]
             ),
             "35",
             "runtime bit-field run: byte1 = (2<<4)|3"
         );
-        // A bit-field run COMPOSED with an int segment: `(bits n 4)(bits 1 4)(u8 42)` → byte0=(n<<4)|1, byte1=42.
+        // A bit-field run COMPOSED with an int segment: `(bits n4 4)(bits 1 4)(u8 42)` → byte0=(n<<4)|1,
+        // byte1=42. The 4-bit field narrows to `(UInt 4)`; the trailing `(u8 42)` is a bare literal → UInt8.
         let mixed = "(module m (def (main (: n Int64)) ";
+        let n4 = "((. (UInt 4) wrap) n)";
         assert_eq!(
             val(
                 &format!(
-                    "{mixed} (match ((. Bytes at) (bin (bits (UInt8.wrap n) 4) (bits 1 4) (u8 42)) 1) ((Some b) b) ((None _) -1))) (export main))"
+                    "{mixed} (match ((. Bytes at) (bin (bits {n4} 4) (bits 1 4) (u8 42)) 1) ((Some b) b) ((None _) -1))) (export main))"
                 ),
                 &["3"]
             ),
@@ -21924,7 +22000,7 @@ mod match_engine {
         assert_eq!(
             val(
                 &format!(
-                    "{mixed} (match ((. Bytes at) (bin (bits (UInt8.wrap n) 4) (bits 1 4) (u8 42)) 0) ((Some b) b) ((None _) -1))) (export main))"
+                    "{mixed} (match ((. Bytes at) (bin (bits {n4} 4) (bits 1 4) (u8 42)) 0) ((Some b) b) ((None _) -1))) (export main))"
                 ),
                 &["3"]
             ),
@@ -21956,19 +22032,20 @@ mod match_engine {
                 cdz_run::Outcome::Trap(t) => panic!("run trapped: {t}"),
             }
         };
-        // u16 round-trip: build (u16 n) at runtime, match it back → n.
+        // u16 round-trip: build (u16 n) at runtime, match it back → n. The build takes a `UInt16` (the
+        // segment width); the decode binds a general integer.
         assert_eq!(
             run(
-                "(module m (def (main (: n Int64)) (match (bin (u16 n)) ((bin (u16 m)) m) (_ -9))) (export main))",
+                "(module m (def (main (: n UInt16)) (match (bin (u16 n)) ((bin (u16 m)) m) (_ -9))) (export main))",
                 &["258"]
             ),
             "258",
             "runtime u16 match round-trip"
         );
-        // Signed i8: byte 0xFF decodes to -1 (two's complement).
+        // Signed i8: byte 0xFF decodes to -1 (two's complement). The build takes an `Int8`.
         assert_eq!(
             run(
-                "(module m (def (main (: n Int64)) (match (bin (i8 n)) ((bin (i8 m)) m) (_ -9))) (export main))",
+                "(module m (def (main (: n Int8)) (match (bin (i8 n)) ((bin (i8 m)) m) (_ -9))) (export main))",
                 &["-1"]
             ),
             "-1",
@@ -21977,7 +22054,7 @@ mod match_engine {
         // Little-endian read matches the little-endian build.
         assert_eq!(
             run(
-                "(module m (def (main (: n Int64)) (match (bin (u16 n le)) ((bin (u16 m le)) m) (_ -9))) (export main))",
+                "(module m (def (main (: n UInt16)) (match (bin (u16 n le)) ((bin (u16 m le)) m) (_ -9))) (export main))",
                 &["258"]
             ),
             "258",
@@ -21986,7 +22063,7 @@ mod match_engine {
         // A leading LITERAL tag dispatches: tag 1 matches → decode the u16; else the catch-all.
         assert_eq!(
             run(
-                "(module m (def (main (: n Int64)) (match (bin (u8 1) (u16 n)) ((bin (u8 1) (u16 m)) m) (_ -9))) (export main))",
+                "(module m (def (main (: n UInt16)) (match (bin (u8 1) (u16 n)) ((bin (u8 1) (u16 m)) m) (_ -9))) (export main))",
                 &["300"]
             ),
             "300",
@@ -21995,7 +22072,7 @@ mod match_engine {
         // A mismatched literal tag (built 2, pattern wants 1) → the catch-all (-9), NOT a wrong decode.
         assert_eq!(
             run(
-                "(module m (def (main (: n Int64)) (match (bin (u8 2) (u16 n)) ((bin (u8 1) (u16 m)) m) (_ -9))) (export main))",
+                "(module m (def (main (: n UInt16)) (match (bin (u8 2) (u16 n)) ((bin (u8 1) (u16 m)) m) (_ -9))) (export main))",
                 &["300"]
             ),
             "-9",
@@ -22004,7 +22081,7 @@ mod match_engine {
         // Whole-scrutinee: a length mismatch (built 1 byte, pattern wants 2) → the catch-all.
         assert_eq!(
             run(
-                "(module m (def (main (: n Int64)) (match (bin (u8 n)) ((bin (u16 m)) m) (_ -9))) (export main))",
+                "(module m (def (main (: n UInt8)) (match (bin (u8 n)) ((bin (u16 m)) m) (_ -9))) (export main))",
                 &["5"]
             ),
             "-9",
@@ -22013,7 +22090,8 @@ mod match_engine {
         // MULTI-ARM dispatch: a leading literal tag selects among 2+ `(bin …)` arms (a chain of `if`s over
         // the runtime scrutinee). tag 1 → x ; tag 2 → y+1000 ; else → catch-all. Exercises the nested-if
         // scratch discipline (each arm's `BinIntRead` re-reads the materialized scrutinee, no slot clash).
-        let m2 = "(module m (def (main (: t Int64) (: v Int64)) (match (bin (u8 t) (u16 v)) ((bin (u8 1) (u16 x)) x) ((bin (u8 2) (u16 y)) (+ y 1000)) (_ -1))) (export main))";
+        // `t : UInt8`, `v : UInt16` — the built segments' width types.
+        let m2 = "(module m (def (main (: t UInt8) (: v UInt16)) (match (bin (u8 t) (u16 v)) ((bin (u8 1) (u16 x)) x) ((bin (u8 2) (u16 y)) (+ y 1000)) (_ -1))) (export main))";
         assert_eq!(run(m2, &["1", "42"]), "42", "runtime multi-arm: tag 1");
         assert_eq!(run(m2, &["2", "42"]), "1042", "runtime multi-arm: tag 2");
         assert_eq!(
@@ -22051,7 +22129,7 @@ mod match_engine {
         // arm binds the tail and returns its length. Payload = the 3-byte `(list 1 2 3)` → rest length 3.
         assert_eq!(
             run(
-                "(module m (def (main (: n Int64)) \
+                "(module m (def (main (: n UInt8)) \
                    (let ((payload (Bytes.of (list 1 2 3)))) \
                      (match (bin (u8 n) (bytes payload)) \
                        ((bin (u8 t) (bytes rest)) (Bytes.len rest)) \
@@ -22065,7 +22143,7 @@ mod match_engine {
         // still holds, and the tail slice is `[1, 0)` → an empty Bytes → length 0.
         assert_eq!(
             run(
-                "(module m (def (main (: n Int64)) \
+                "(module m (def (main (: n UInt8)) \
                    (let ((payload (Bytes.of (list)))) \
                      (match (bin (u8 n) (bytes payload)) \
                        ((bin (u8 t) (bytes rest)) (Bytes.len rest)) \
@@ -22078,7 +22156,7 @@ mod match_engine {
         // A 2-byte header (u16 tag) then a rest: the tail starts at offset 2. Payload of 5 bytes → 5.
         assert_eq!(
             run(
-                "(module m (def (main (: n Int64)) \
+                "(module m (def (main (: n UInt16)) \
                    (let ((payload (Bytes.of (list 9 8 7 6 5)))) \
                      (match (bin (u16 n) (bytes payload)) \
                        ((bin (u16 t) (bytes rest)) (Bytes.len rest)) \
@@ -22092,7 +22170,7 @@ mod match_engine {
         // NOT an out-of-range slice: the `>=` probe fails.
         assert_eq!(
             run(
-                "(module m (def (main (: n Int64)) \
+                "(module m (def (main (: n UInt8)) \
                    (match (bin (u8 n)) \
                      ((bin (u16 t) (bytes rest)) (Bytes.len rest)) \
                      (_ -9))) (export main))",
@@ -58338,7 +58416,7 @@ mod closure_host_resource {
     fn a_tuple_arg_with_a_bytes_result_emits() {
         use crate::testkit::parse;
         let src = "(module m (def (main) (fn ((: p (Tuple Int64 Int64))) \
-                   (bin (u8 (. p 0)) (u8 (. p 1))))) (export main))";
+                   (bin (u8 (UInt8.wrap (. p 0))) (u8 (UInt8.wrap (. p 1)))))) (export main))";
         crate::compile::compile_component(&crate::codec::encode(&parse(src))).expect(
             "a tuple arg with a Bytes result now emits (rebuild threaded through the bytes core)",
         );

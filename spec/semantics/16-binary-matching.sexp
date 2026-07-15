@@ -114,11 +114,14 @@
   (error  CDZ0304))
 
 (case "a length-prefixed frame is built from a size segment and a bytes segment"
-  (doc    "`(bin (u16 (Bytes.len payload)) (bytes payload))` writes payload's length as a big-endian
-           u16 prefix, then splices payload — the length-framing idiom that replaces hand-rolled
-           `(Bytes.concat (Bytes.of (list (& (>> len 8) 255) (& len 255))) payload)`. Pins that a computed
-           value feeds a size segment and an unsized `(bytes …)` splices a whole Bytes value.")
-  (input  (= (bin (u16 (Bytes.len (Bytes.of (list 10 20 30)))) (bytes (Bytes.of (list 10 20 30))))
+  (doc    "`(bin (u16 (UInt16.of (Bytes.len payload))) (bytes payload))` writes payload's length as a
+           big-endian u16 prefix, then splices payload — the length-framing idiom that replaces hand-rolled
+           `(Bytes.concat (Bytes.of (list (& (>> len 8) 255) (& len 255))) payload)`. The `u16` segment takes
+           a `UInt16`, so the caller narrows the `Int64` length with `UInt16.of` (a CHECKED narrow — a
+           payload too long to frame in 16 bits is a real error, not a silent truncation); the length 3 fits.
+           Pins that a computed value narrowed to the segment width feeds a size segment and an unsized
+           `(bytes …)` splices a whole Bytes value.")
+  (input  (= (bin (u16 (UInt16.of (Bytes.len (Bytes.of (list 10 20 30))))) (bytes (Bytes.of (list 10 20 30))))
              (Bytes.of (list 0 3 10 20 30))))
   (output (: true Bool)))
 
@@ -576,18 +579,21 @@
 
 ; ============================================================================================
 ; Runtime segments — a `bin` whose segment value / scrutinee is a RUNTIME value (a def parameter,
-; not a compile-time constant). Construction builds on the byte heap and range-checks at run time;
-; matching decodes the scrutinee's bytes at run time. Each threads its value through `main`'s
-; parameter (via `(call …)`) so the `bin` cannot fold to a constant.
+; not a compile-time constant). A fixed-width integer segment REQUIRES the width-matching typed value —
+; `(u16 v)` takes a `UInt16`, `(bits v k)` takes a `(UInt k)` — so the value provably fits the segment and
+; construction NEVER traps: an out-of-range value is a COMPILE-TIME TYPE ERROR (CDZ0203), and narrowing
+; (`UInt8.wrap` to truncate, `UInt8.of` to check) is the caller's job. Matching decodes the scrutinee's
+; bytes at run time, binding a general integer. Each threads its value through `main`'s parameter (via
+; `(call …)`) so the `bin` cannot fold to a constant.
 ; ============================================================================================
 
 (case "a runtime value is constructed into a fixed-width segment and its length read"
-  (doc    "`(bin (u16 n))` with `n` a RUNTIME parameter (not a constant) builds a two-byte sequence on the
-           byte heap at run time — the construction does not fold. Reading its length back yields 2, the
-           segment's width. Pins that a `bin` construction whose value is only known at run time still
-           produces a well-formed Bytes.")
-  (input  (do (def (main (: n Int64)) (Bytes.len (bin (u16 n)))) (export main)))
-  (call   main (: 258 Int64))
+  (doc    "`(bin (u16 n))` with `n` a RUNTIME `UInt16` parameter (not a constant) builds a two-byte sequence
+           on the byte heap at run time — the construction does not fold. Reading its length back yields 2,
+           the segment's width. Pins that a `bin` construction whose value is only known at run time still
+           produces a well-formed Bytes, and that a `u16` segment takes a `UInt16` value.")
+  (input  (do (def (main (: n UInt16)) (Bytes.len (bin (u16 n)))) (export main)))
+  (call   main (: 258 UInt16))
   (output (: 2 Int64)))
 
 (case "a runtime fixed-width segment is emitted big-endian and read back by index"
@@ -595,43 +601,56 @@
            most-significant `0x01` = 1. Reads it back with `Bytes.at`. Pins that a runtime construction
            lays its bytes most-significant-first, the same order the constant fold and the pattern decode
            agree on.")
-  (input  (do (def (main (: n Int64))
+  (input  (do (def (main (: n UInt16))
                 (match (Bytes.at (bin (u16 n)) 0) ((Some b) b) ((None _) -1)))
               (export main)))
+  (call   main (: 258 UInt16))
+  (output (: 1 Int64)))
+
+(case "a wider runtime value in a fixed-width segment is a compile-time type error"
+  (doc    "`(bin (u8 n))` with `n` a runtime `Int64` is a COMPILE-TIME TYPE ERROR (CDZ0203): a `u8` segment
+           takes a `UInt8`, and an `Int64` may exceed the 8-bit range, so it is NOT silently accepted and
+           range-checked-then-trapped at run time. The value that does not fit becomes a type failure, not a
+           runtime failure — the caller must convert explicitly (`UInt8.wrap` to truncate to the low 8 bits,
+           `UInt8.of` for a checked narrow). Replaces the former runtime out-of-range TRAP: a width-typed
+           segment provably fits its value, so construction never traps.")
+  (input  (do (def (main (: n Int64)) (Bytes.len (bin (u8 n)))) (export main)))
+  (error  CDZ0203))
+
+(case "a runtime value narrowed to the segment width constructs without trapping"
+  (doc    "The idiom the type error above directs the caller to: `(bin (u8 (UInt8.wrap n)))` with a runtime
+           `Int64 n` narrows `n` to `UInt8` (truncating to the low 8 bits, numeric-model.md #wrap Never
+           Traps) BEFORE placing it in the segment, so the `u8` segment gets a value it provably fits and
+           construction is total. `n = 258` wraps to 2, so the byte sequence is one byte and its length is 1.
+           Pins that the caller's explicit narrowing makes the runtime construction total — no trap, the
+           point of requiring the width type.")
+  (input  (do (def (main (: n Int64)) (Bytes.len (bin (u8 (UInt8.wrap n))))) (export main)))
   (call   main (: 258 Int64))
   (output (: 1 Int64)))
 
-(case "constructing a runtime value that does not fit its segment traps"
-  (doc    "`(bin (u8 n))` with a RUNTIME `n = 256` has no 8-bit encoding, so construction TRAPS with reason
-           \"binary value does not fit segment\" rather than truncating to 0 — the runtime companion of the
-           constant out-of-range rejection (which fails the build). Pins that the segment range-check is
-           enforced at run time for a value not known at compile time.")
-  (input  (do (def (main (: n Int64)) (Bytes.len (bin (u8 n)))) (export main)))
-  (call   main (: 256 Int64))
-  (trap   "binary value does not fit segment"))
-
 (case "a runtime bin pattern decodes a fixed-width segment from a runtime scrutinee"
   (doc    "A `(bin …)` pattern matches a RUNTIME Bytes scrutinee: `(bin (u16 n))` is built from a runtime
-           parameter, then matched back with `(bin (u16 m))`, binding `m = n = 258`. The decode reads the
-           scrutinee's bytes at run time (a length probe + a big-endian assemble), round-tripping the
-           construction. Pins that construction and matching are inverse over a runtime value, not just a
-           constant.")
-  (input  (do (def (main (: n Int64)) (match (bin (u16 n)) ((bin (u16 m)) m) (_ -1))) (export main)))
-  (call   main (: 258 Int64))
+           `UInt16` parameter, then matched back with `(bin (u16 m))`, binding `m = n = 258`. The decode
+           reads the scrutinee's bytes at run time (a length probe + a big-endian assemble), round-tripping
+           the construction. Pins that construction (which takes the width type) and matching (which binds a
+           general integer) are inverse over a runtime value, not just a constant.")
+  (input  (do (def (main (: n UInt16)) (match (bin (u16 n)) ((bin (u16 m)) m) (_ -1))) (export main)))
+  (call   main (: 258 UInt16))
   (output (: 258 Int64)))
 
 (case "a runtime bin match dispatches on a literal tag across arms"
   (doc    "A multi-arm `bin` match over a RUNTIME scrutinee: a leading LITERAL tag segment selects the arm
-           (tag 1 vs tag 2), and a runtime `u16` field fills the payload. Built with tag 2, so the second
-           arm fires: `y = 300`, `y + 1000 = 1300`. Pins tag-then-field dispatch across arms at run time —
-           the shape a tagged binary format's parser takes.")
-  (input  (do (def (main (: t Int64) (: v Int64))
+           (tag 1 vs tag 2), and a runtime `u16` field fills the payload. The construction takes a `UInt8`
+           tag and a `UInt16` field (the segments' width types). Built with tag 2, so the second arm fires:
+           `y = 300`, `y + 1000 = 1300`. Pins tag-then-field dispatch across arms at run time — the shape a
+           tagged binary format's parser takes.")
+  (input  (do (def (main (: t UInt8) (: v UInt16))
                 (match (bin (u8 t) (u16 v))
                   ((bin (u8 1) (u16 x)) x)
                   ((bin (u8 2) (u16 y)) (+ y 1000))
                   (_ -1)))
               (export main)))
-  (call   main (: 2 Int64) (: 300 Int64))
+  (call   main (: 2 UInt8) (: 300 UInt16))
   (output (: 1300 Int64)))
 
 (case "a runtime bytes value is spliced into a length-prefixed frame"
@@ -654,13 +673,13 @@
            `bytes-slice(scrutinee, 1, len - 1)`. Built from a runtime tag with a three-byte payload, so
            `rest` is those three bytes and `Bytes.len rest = 3`. Pins the header-plus-rest parser shape —
            a tag followed by an opaque remainder — over a runtime value.")
-  (input  (do (def (main (: n Int64))
+  (input  (do (def (main (: n UInt8))
                 (let ((payload (Bytes.of (list 1 2 3))))
                   (match (bin (u8 n) (bytes payload))
                     ((bin (u8 t) (bytes rest)) (Bytes.len rest))
                     (_ -9))))
               (export main)))
-  (call   main (: 5 Int64))
+  (call   main (: 5 UInt8))
   (output (: 3 Int64)))
 
 (case "a runtime final rest segment binds the empty tail when the scrutinee is only the header"
@@ -668,22 +687,25 @@
            header: `bytes-len >= 1` still holds (the header is present), and the tail slice is `[1, 0)` —
            an empty Bytes, so `Bytes.len rest = 0`. Pins that a rest segment absorbs zero remaining bytes
            without trapping (the degenerate case of the header-plus-rest parser).")
-  (input  (do (def (main (: n Int64))
+  (input  (do (def (main (: n UInt8))
                 (let ((payload (Bytes.of (list))))
                   (match (bin (u8 n) (bytes payload))
                     ((bin (u8 t) (bytes rest)) (Bytes.len rest))
                     (_ -9))))
               (export main)))
-  (call   main (: 7 Int64))
+  (call   main (: 7 UInt8))
   (output (: 0 Int64)))
 
 (case "a runtime bit-field packs a runtime value into a nibble"
-  (doc    "`(bin (bits (UInt8.wrap n) 4) (bits 5 4))` with a RUNTIME `n` packs the low nibble of `n` into
-           the HIGH nibble and the constant 5 into the low nibble of one byte (most-significant field
-           first). n=10 → (10<<4)|5 = 0xA5 = 165. Reads byte 0 back. Pins runtime bit-field packing — the
-           companion of the constant `(bits 1 1)(bits 2 3)(bits 5 4)` case over a runtime value.")
+  (doc    "`(bin (bits ((UInt 4).wrap n) 4) (bits 5 4))` with a RUNTIME `n` packs the low nibble of `n`
+           into the HIGH nibble and the constant 5 into the low nibble of one byte (most-significant field
+           first). A `(bits v 4)` field takes a `(UInt 4)`, so the caller narrows `n` with `(UInt 4).wrap`
+           (truncating to the low four bits) BEFORE the segment — the segment then provably fits its value
+           and never traps. n=10 → (10<<4)|5 = 0xA5 = 165. Reads byte 0 back. Pins runtime bit-field
+           packing — the companion of the constant `(bits 1 1)(bits 2 3)(bits 5 4)` case over a runtime
+           value, with the caller responsible for narrowing to the field width.")
   (input  (do (def (main (: n Int64))
-                (match (Bytes.at (bin (bits (UInt8.wrap n) 4) (bits 5 4)) 0)
+                (match (Bytes.at (bin (bits ((UInt 4).wrap n) 4) (bits 5 4)) 0)
                   ((Some b) b) ((None _) -1)))
               (export main)))
   (call   main (: 10 Int64))
@@ -691,12 +713,13 @@
 
 (case "a runtime bit-field run spans two bytes and composes with an int segment"
   (doc    "A runtime bit-field RUN that spans a byte boundary and is followed by a byte-aligned int
-           segment: `(bits (UInt8.wrap n) 4) (bits 1 4) (u8 42)` packs the low nibble of `n` and the
-           constant 1 into byte 0 = (n<<4)|1, then writes 42 as byte 1. n=3 → byte 1 = 42. Pins that a
-           runtime bit-field run closes to a whole byte before the int segment (CDZ0220 byte-alignment)
-           and the int byte follows immediately.")
+           segment: `(bits ((UInt 4).wrap n) 4) (bits 1 4) (u8 42)` packs the low nibble of `n` and the
+           constant 1 into byte 0 = (n<<4)|1, then writes 42 as byte 1. The 4-bit field takes a `(UInt 4)`
+           (the caller narrows `n` with `(UInt 4).wrap`); the trailing `(u8 42)` takes a `UInt8` (a bare
+           literal grounds to it). n=3 → byte 1 = 42. Pins that a runtime bit-field run closes to a whole
+           byte before the int segment (CDZ0220 byte-alignment) and the int byte follows immediately.")
   (input  (do (def (main (: n Int64))
-                (match (Bytes.at (bin (bits (UInt8.wrap n) 4) (bits 1 4) (u8 42)) 1)
+                (match (Bytes.at (bin (bits ((UInt 4).wrap n) 4) (bits 1 4) (u8 42)) 1)
                   ((Some b) b) ((None _) -1)))
               (export main)))
   (call   main (: 3 Int64))
