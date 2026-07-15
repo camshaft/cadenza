@@ -5894,6 +5894,17 @@ fn referenced_binders(db: &mut Db, body: StructId) -> std::collections::HashSet<
 /// reserved for a genuine two-types-must-AGREE UNIFICATION conflict — an `if`'s branches, a value
 /// annotation `(: e T)`, a cross-shape comparison — NOT a collection's internal heterogeneity. Takes
 /// the peer types for signature stability with the call sites, but the code is now uniform.
+///
+/// Returning `Code::Malformed` (`CDZ0201`) is the reject code every collection-homogeneity fault
+/// carries, and returning ONE code regardless of the peer types `_a`/`_b` is what makes it uniform:
+//= spec/capabilities/collections-and-text.md#a-collection-s-homogeneity-violation-is-a-malformed-collection
+//# A construction whose elements, keys, or values do not share one type MUST be rejected as a malformed collection with the diagnostic code `CDZ0201`, so that a heterogeneous collection is treated as the collection being unbuildable rather than as a value of some other type.
+//= spec/capabilities/collections-and-text.md#a-collection-s-homogeneity-violation-is-a-malformed-collection
+//# The malformed-collection code a heterogeneous construction takes MUST be the same code independent of the collection kind — list, map, or set — so that the diagnostic names one category rather than one per collection kind.
+//= spec/capabilities/collections-and-text.md#a-collection-s-homogeneity-violation-is-a-malformed-collection
+//# The malformed-collection code a heterogeneous construction takes MUST be the same code independent of how the construction is written, whether a literal or a functional-construction operation such as append, replace-at-index, concatenate, or insert, so that the code does not vary with the construction form.
+//= spec/capabilities/collections-and-text.md#a-collection-s-homogeneity-violation-is-a-malformed-collection
+//# The malformed-collection code a heterogeneous construction takes MUST be the same code independent of how the element types differ, whether a cross-kind clash, a numeric mix that does not silently promote, or two same-kind values of different shape, so that a consumer branching on the code sees one category for "this collection is not homogeneous" rather than a code that varies with the incidental shape of the disagreement (*diagnostics.md §Every Diagnostic Has A Stable Code*).
 fn list_homogeneity_code(_a: &Ty, _b: &Ty) -> Code {
     Code::Malformed
 }
