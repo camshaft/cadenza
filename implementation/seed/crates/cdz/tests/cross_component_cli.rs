@@ -122,3 +122,69 @@ fn without_a_component_name_the_export_stays_top_level() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn cdz_run_peer_reports_a_signature_mismatch_clearly_not_a_trap() {
+    // The CONSUMER-run half through the MOUNTED `cdz run --peer` binary (the peer-signature check lives
+    // in cdz-run, surfaced by the unified `cdz` binary). A consumer binding `Math.add` as a 2-arg op
+    // composed with a peer exporting a 1-ARG `add` is an arity mismatch: without the compose-time check
+    // it traps opaquely deep in the callee; the check rejects it BEFORE instantiation naming the op +
+    // both arities. Both peers are scalar (no value-heap runtime), so no runtime store is needed — the
+    // mismatch is caught at compose time regardless. This pins the mismatch diagnostic all the way out
+    // to the real CLI (the library `rcdzc` test pins the `run_with_peers` API; this pins `cdz run`).
+    let dir = temp_dir("peer-mismatch");
+    // Provider: `add` taking ONE argument, published as cadenza:math/api.
+    let prov = dir.join("prov.sexp");
+    std::fs::write(&prov, "(do (def (add (: x Int64)) (+ x 1)) (export add))").unwrap();
+    let (ok, _o, err) = run(&[
+        "compile",
+        prov.to_str().unwrap(),
+        "--component-name",
+        "cadenza:math/api",
+        "-o",
+        dir.join("prov.wasm").to_str().unwrap(),
+    ]);
+    assert!(ok, "provider compile failed: {err}");
+    // Consumer: binds `Math.add` as a TWO-argument op — arity mismatch with the peer.
+    let cons = dir.join("cons.sexp");
+    std::fs::write(
+        &cons,
+        "(do (effect Math (op add (-> Int64 Int64 Int64))) (bind Math \"cadenza:math/api\") \
+         (def (main (: x Int64)) (host (Math) (Math.add x x))) (export main))",
+    )
+    .unwrap();
+    let (ok, _o, err) = run(&[
+        "compile",
+        cons.to_str().unwrap(),
+        "-o",
+        dir.join("cons.wasm").to_str().unwrap(),
+    ]);
+    assert!(ok, "consumer compile failed: {err}");
+    // `cdz run --peer` must REJECT the mismatch with an actionable message, not run to a trap.
+    let peer_arg = format!(
+        "cadenza:math/api={}",
+        dir.join("prov.wasm").to_str().unwrap()
+    );
+    let (ok, _out, err) = run(&[
+        "run",
+        dir.join("cons.wasm").to_str().unwrap(),
+        "--peer",
+        &peer_arg,
+        "--call",
+        "main",
+        "--arg",
+        "5",
+    ]);
+    assert!(
+        !ok,
+        "an arity-mismatched peer run must FAIL, not succeed: {err}"
+    );
+    assert!(
+        err.contains("signature mismatch")
+            && err.contains("add")
+            && err.contains("2 argument(s)")
+            && err.contains("1 argument(s)"),
+        "the CLI must surface the compose-time signature-mismatch diagnostic, not an opaque trap: {err}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
