@@ -436,6 +436,7 @@ pass	a closure whose CALL returns an Option crosses as the value form
 pass	a closure whose body applies a nested lambda in place runs through a recursive HOF
 pass	a closure whose body calls a top-level helper function
 pass	a collection-carrying recursion whose base arm does a fallible indexed read compiles
+pass	a comparison's trapping shared bound fires under a trap-free condition
 pass	a comparison-predicate function returns its boolean result
 pass	a compile-time type branch reads a runtime parameter's static type
 pass	a component's manifest is the union of two entrypoints' distinct rows
@@ -1458,6 +1459,8 @@ pass	a shared and a differing element hoist across same-length list arms
 pass	a shared list concatenated with itself has twice its length
 pass	a shared trapping operand before the differing one does not preempt a trapping condition
 pass	a shared trapping operand before the differing one does not preempt a trapping condition (compare head)
+pass	a shared trapping operand traps under a trap-free condition
+pass	a shared trapping second operand does not preempt a trapping condition
 pass	a short-circuit connective threads a branch perform to the continuation
 pass	a shorter string that is a prefix of a longer one compares Less
 pass	a signed i8 segment encodes as two's complement
@@ -1482,6 +1485,8 @@ pass	a slice with a negative start yields None
 pass	a sparse three-arm match's terminal pair dispatches branchlessly — the default
 pass	a sparse three-arm match's terminal pair dispatches branchlessly — the middle probe
 pass	a specific constructor export exposes one variant and keeps the rest private
+pass	a spliced boolean drives an evaluated conditional through the lifted leaf
+pass	a spliced string participates in an evaluated equality
 pass	a stateful handler threads its counter across a function boundary
 pass	a straight-line tuple built from callee params is projected in the caller
 pass	a strength-reduced multiply nested as an operand computes in place
@@ -1775,6 +1780,7 @@ pass	an effect-built heap list bound in a let is USED TWICE and retained across 
 pass	an effectful condition is performed exactly once under the operator hoist
 pass	an effectful condition of a same-constructor if is performed exactly once
 pass	an effectful match scrutinee is performed exactly once across a two-position sink
+pass	an effectful shared operand performs after the condition, exactly once
 pass	an element is projected from a runtime-constructed tuple
 pass	an element is projected from a tuple returned by a function
 pass	an element is projected from a tuple returned by a nullary function
@@ -2038,6 +2044,7 @@ pass	deeply nested pattern matching
 pass	demoting a Float64 to Float32 rounds to the nearest binary32
 pass	difference cardinality with a runtime-element subtrahend
 pass	difference over a runtime-element set removes exactly that element
+pass	differing trapping operands trap by selection only under the arith hoist
 pass	dimensional equality is decided by canonical exponent map, not written form
 pass	disjunction is false exactly when both operands are false
 pass	disjunction shields a trapping right operand when the left is true
@@ -2232,6 +2239,8 @@ pass	merging two empty records is the empty record
 pass	merging two records with disjoint fields unions their fields
 pass	merging with the empty record on the left is the identity
 pass	merging with the empty record on the right is the identity
+pass	mixed bool and int splices evaluate in one template
+pass	mixed comparison operators across if arms keep their own arms
 pass	mixed operators across the if arms keep their own arms
 pass	mixed payload widths across the variant set dispatch and read correctly
 pass	mixed: two closure exports alongside a plain export — driving the plain export
@@ -2558,6 +2567,7 @@ pass	the same program with a different response gives a different deterministic 
 pass	the same-core-shape sibling dispatches ITS body, not the first
 pass	the scalar length of a runtime multi-byte string counts scalars, not bytes
 pass	the second distinct-signature closure export returns its own type
+pass	the selected operand decides a hoisted comparison
 pass	the shrinking search terminates via its fuel bound rather than searching unboundedly
 pass	the slice overflow guard holds on a chained slice-of-a-slice
 pass	the taken arm's checked add still overflows under the operator hoist

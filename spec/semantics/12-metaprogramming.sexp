@@ -914,3 +914,39 @@
             (export main)))
   (call   main (: 0 Int64))
   (output (: 123 Int64)))
+
+(case "a spliced boolean drives an evaluated conditional through the lifted leaf"
+  (doc    "`(eval `(if ,false 10 20))` = 20 — the active unquote lifts `false` to an Ast.Bool inside
+           the template, and eval's branch dispatch consumes that lifted leaf. The lift cases above
+           pin node identity (unquote == quote); this pins the lifted node WORKING in eval'd control
+           flow — a lift that built the right-looking node with a wrong payload byte answers 10.")
+  (input  (do
+            (def (main (: d Int64))
+              (eval (quasiquote (if (unquote false) 10 20))))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 20 Int64)))
+
+(case "a spliced string participates in an evaluated equality"
+  (doc    "`(eval `(if (= ,\"x\" \"x\") 7 8))` = 7 — the spliced Ast.Str leaf, reconstructed by eval,
+           compares content-equal to the quoted literal it sits beside. The Str companion of the
+           spliced-bool eval case: the lift must produce a leaf whose eval'd value round-trips into
+           the ordinary string-equality path.")
+  (input  (do
+            (def (main (: d Int64))
+              (eval (quasiquote (if (= (unquote "x") "x") 7 8))))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 7 Int64)))
+
+(case "mixed bool and int splices evaluate in one template"
+  (doc    "`(eval `(if ,true (+ ,3 1) 0))` = 4 — two active unquotes of DIFFERENT value kinds (a Bool
+           and an Int) lift in one template, and eval consumes both: the bool selects the branch, the
+           int feeds the arithmetic. Pins the per-kind dispatch (`reify_active`) applying the right
+           lift per operand within a single quasiquote, not latching one kind for the template.")
+  (input  (do
+            (def (main (: d Int64))
+              (eval (quasiquote (if (unquote true) (+ (unquote 3) 1) 0))))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 4 Int64)))
