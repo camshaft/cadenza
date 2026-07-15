@@ -110,3 +110,5 @@
             (def (main) (if (= (record (f (rep "hi" 3)) (g 1)) (record (f "hixxx") (g 1))) 1 0))
             (export main)))
   (output (: 1 Int64)))
+
+;; ASSIGNED 2026-07-15: claimed by v-runtime (rope-canonicalization design). NOT a fix-agent job.
