@@ -3164,6 +3164,10 @@ fn compound_ctor_type(db: &mut Db, prim: crate::resolved::Prim, args: &[StructId
             Some(ast_ty) => Ty::List(Box::new(ast_ty)),
             None => Ty::Any,
         },
+        // `ast-lift : ∀a. a → Ast` — the runtime active-unquote lift (compiler-internal). Whatever the
+        // operand's type, the RESULT is an `Ast` node (identity when the operand is already `Ast`, else a
+        // wrapped `Ast.Int`/`Bool`/`Str`). The operand's type is checked at the fold (`lower_ast_lift`).
+        Prim::AstLift => ast_sum_ty(db).unwrap_or(Ty::Any),
         _ => Ty::Any,
     }
 }
@@ -3731,6 +3735,12 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
     // it, never user surface.
     if crate::eval::prim_of(db, head) == Some(crate::resolved::Prim::AstSpliceLift) {
         return compound_ctor_type(db, crate::resolved::Prim::AstSpliceLift, args);
+    }
+    // The COMPILER-INTERNAL `ast-lift` intrinsic (`(intrinsic "ast-lift") e`) — same direct-prim head as
+    // `ast-splice-lift`. Result is `Ast` (`compound_ctor_type`'s `AstLift` arm) whatever the operand's
+    // type. Only the quasiquote desugar emits it around a runtime active-unquote operand.
+    if crate::eval::prim_of(db, head) == Some(crate::resolved::Prim::AstLift) {
+        return compound_ctor_type(db, crate::resolved::Prim::AstLift, args);
     }
     // The `map` VALUE-constructor alias applied — `(map (k v) …)` written as a bare NAME head. Its `args`
     // are the ENTRY-PAIR nodes (each a two-element `(key value)` list), NOT curried arguments — so type
@@ -5985,6 +5995,13 @@ fn check_application(
         }
         // The operand's own faults are collected by the caller's `collect(head/operand)`; return so the
         // generic scheme-unify below does not ALSO fault (the intrinsic has no HM scheme).
+        return;
+    }
+    // `ast-lift` (the quasiquote desugar's `(intrinsic "ast-lift") e` around a runtime active-unquote
+    // operand) accepts ANY operand type (`∀a. a → Ast`) — the lift is by the operand's inferred type at
+    // lower. So it imposes NO operand constraint here; return so the generic scheme-unify does not fault
+    // (the intrinsic has no HM scheme). The operand's own faults are collected by the caller.
+    if crate::eval::prim_of(db, head) == Some(crate::resolved::Prim::AstLift) && args.len() == 1 {
         return;
     }
     // UNARY NEGATION `(- e)` — the arity-1 subtraction (the ML prefix `-<expr>` desugar). Negation is

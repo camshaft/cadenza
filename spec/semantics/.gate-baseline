@@ -1683,7 +1683,12 @@ pass	an abstract type is used through the module's exported constructor and acce
 pass	an abstract type's constructor is not reachable outside its module
 pass	an absurd runtime width is rejected, not silently ignored
 pass	an active unquote of a boolean literal lifts to an Ast.Bool node
+pass	an active unquote of a computed boolean expression lifts to Ast.Bool
+pass	an active unquote of a let-bound boolean lifts to Ast.Bool by inferred type
+pass	an active unquote of a let-bound integer still lifts to Ast.Int
+pass	an active unquote of a let-bound string lifts to Ast.Str by inferred type
 pass	an active unquote of a string literal lifts to an Ast.Str node
+pass	an active unquote of an Ast-valued expression splices the subtree as identity
 pass	an active-unquoted boolean literal equals the quoted form
 pass	an agreeing redeclaration compares the normalized ratio, not the literal numerator and denominator
 pass	an all-constant Set.of still folds membership with a constant query (control)

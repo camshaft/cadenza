@@ -427,34 +427,33 @@ fn reify_active(ast: &mut Arenas, node: StructId, depth: u32) -> Option<StructId
             if items.len() != 2 {
                 return None;
             }
-            // Wrap the LIVE operand in the `Ast.*` ctor matching its VALUE. The operand stays live (it is
+            // Embed the LIVE operand as the `Ast` leaf its VALUE denotes. The operand stays live (it is
             // evaluated code, not reified) so an unbound name in it is still the ordinary CDZ0101.
             //
-            // When the operand is a VALUE LITERAL whose kind is known structurally here, dispatch to the
-            // matching leaf ctor: an Int → `Ast.Int`, a Bool → `Ast.Bool`, a String → `Ast.Str` (each an
-            // ordinary value-carrying `Ast` variant). Wrapping a literal in the WRONG ctor (e.g. every
-            // literal in `Ast.Int`) would surface a misleading payload type-error and its coercion fix
-            // would silently rewrite the author's value — so a literal the `Ast` sum has no value variant
-            // for yet (a Float/Char) BAILS, and the quasiquote declines honestly ("not yet built").
+            // A VALUE LITERAL's kind is known structurally HERE, so dispatch directly to the matching leaf
+            // ctor (Int → `Ast.Int`, Bool → `Ast.Bool`, String → `Ast.Str`) — no runtime type needed. A
+            // literal the `Ast` sum has no value variant for (a Float/Char) BAILS (declines honestly).
             //
-            // 🔑 A `Leaf::Name` is a runtime REFERENCE (a let-bound var `,n` / a param), NOT a literal —
-            // its type is unknown at reify time (pre-typecheck), so it stays wrapped in `Ast.Int` as
-            // before (the corpus active-unquote operand is Int-valued). A non-Int NAME operand still hits
-            // `Ast.Int`'s payload type-error — the general type-directed lift of a runtime operand (wrap
-            // by the operand's INFERRED type) is a separate later increment. A non-leaf operand (a call
-            // `,(f x)`) is likewise wrapped `Ast.Int`.
-            let ctor = match ast.get(items[1]) {
+            // 🔑 A RUNTIME operand — a `Leaf::Name` (a let-bound var `,n` / a param) or a non-leaf computed
+            // expression (`,(f x)`) — has an unknown type at reify time (this runs pre-typecheck). Wrap it
+            // in the compiler-internal `(ast-lift e)` intrinsic, which `lower` resolves by the operand's
+            // INFERRED type: IDENTITY when `e` is already an `Ast` (splice a sub-tree), else wrap in the
+            // matching `Ast.Int`/`Bool`/`Str` leaf. This replaces the old unconditional `(Ast.Int e)` wrap,
+            // which type-errored a non-Int runtime operand against `Ast.Int`'s Int64 payload
+            // (`[[unquote-computed-ast-needs-inferred-type-lift]]`).
+            match ast.get(items[1]) {
                 Struct::Atom(l) => match ast.leaf(*l) {
-                    Leaf::Int { .. } | Leaf::Name(_) => "Int",
-                    Leaf::Bool(_) => "Bool",
-                    Leaf::Str(_) => "Str",
+                    Leaf::Int { .. } => Some(ast_ctor(ast, "Int", items[1])),
+                    Leaf::Bool(_) => Some(ast_ctor(ast, "Bool", items[1])),
+                    Leaf::Str(_) => Some(ast_ctor(ast, "Str", items[1])),
+                    // A NAME is a runtime reference — lift by inferred type at lower.
+                    Leaf::Name(_) => Some(ast_lift(ast, items[1])),
                     // A literal with no value-carrying `Ast` variant yet (Float/Char/Sym/Bytes) — bail.
-                    _ => return None,
+                    _ => None,
                 },
-                // A non-leaf operand (a computed expression) — its Int64 value lifts to `Ast.Int`.
-                Struct::List(_) => "Int",
-            };
-            Some(ast_ctor(ast, ctor, items[1]))
+                // A non-leaf operand (a computed expression) — a runtime value, lift by inferred type.
+                Struct::List(_) => Some(ast_lift(ast, items[1])),
+            }
         }
         Some("unquote-splicing") if depth == 1 => None,
         // A nested unquote (depth>1) is INERT structure at depth-1; its head + operand reify structurally.
@@ -655,6 +654,18 @@ fn list_form(ast: &mut Arenas, children: Vec<StructId>) -> StructId {
 fn ast_splice_lift(ast: &mut Arenas, operand: StructId) -> StructId {
     let intr = push_atom(ast, Leaf::Name("intrinsic".to_string()));
     let who = push_atom(ast, Leaf::Name("ast-splice-lift".to_string()));
+    let prim = push_list(ast, vec![intr, who]);
+    push_list(ast, vec![prim, operand])
+}
+
+/// Build `((intrinsic "ast-lift") operand)` — the compiler-internal lift `∀a. a → Ast` applied to a
+/// RUNTIME active-unquote operand (a name / a computed expression) that stays LIVE (evaluated code). At
+/// lowering (`lower::lower_ast_lift`) it resolves by the operand's INFERRED type: identity when already
+/// `Ast`, else wrap in the matching `Ast.Int`/`Bool`/`Str` leaf. The runtime-operand companion of the
+/// literal-operand `ast_ctor` dispatch (whose kind is known structurally at reify time).
+fn ast_lift(ast: &mut Arenas, operand: StructId) -> StructId {
+    let intr = push_atom(ast, Leaf::Name("intrinsic".to_string()));
+    let who = push_atom(ast, Leaf::Name("ast-lift".to_string()));
     let prim = push_list(ast, vec![intr, who]);
     push_list(ast, vec![prim, operand])
 }
