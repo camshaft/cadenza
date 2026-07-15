@@ -225,6 +225,8 @@ pass	a RESULT-returning effect op is matched on Ok / Err — the fallible-step i
 pass	a RUNTIME guarded sum-match arm dispatches through its guard
 pass	a RUNTIME payload-literal refinement dispatches through its literal test
 pass	a RUNTIME string scrutinee matches string literals by equality
+pass	a RUNTIME-built Rational is usable as a map key, matched by its exact value
+pass	a RUNTIME-built Rational set deduplicates by exact value
 pass	a Rational accumulator threaded through recursion sums exactly
 pass	a Rational is usable as a map key, matched by its exact value
 pass	a Rational set deduplicates by exact value regardless of how each was written
