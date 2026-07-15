@@ -722,6 +722,9 @@ pass	a list built by a recursive push-loop is then iterated by index
 pass	a list built by a runtime-length loop has that many elements
 pass	a list chosen by a runtime if is length-measured without emitting invalid wasm
 pass	a list compound export under a non-main name crosses to the host
+pass	a list consumed by List.concat in one operand keeps its element view for a later read
+pass	a list consumed by List.push in one operand is unchanged for a later read of the same binding
+pass	a list consumed by List.update in one operand keeps its element view for a later read
 pass	a list element position composes with a nested tuple pattern
 pass	a list match arm may carry a guard on its element binders
 pass	a list mixing integer and boolean elements is a type error
@@ -776,6 +779,7 @@ pass	a map can hold a map as a value
 pass	a map chosen by a runtime if is size-measured with valid wasm
 pass	a map entry with no value expression is rejected, not a crash
 pass	a map grown by a recursive accumulator is looked up by a runtime key
+pass	a map inserted-into in one recursive sub-call is unchanged for a sibling sub-call's read
 pass	a map literal with keys of two different types is a type error
 pass	a map mixing integer and float values is a type error
 pass	a map operation applies to a map passed as a function parameter
