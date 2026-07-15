@@ -2852,8 +2852,5 @@ todo	SUM ARG + LIST RESULT declines cleanly (Option arg, List result)
 todo	a closure returning Unit is declined — Unit has no machine representation
 todo	a closure-typed closure ARG on the DIRECT-CALL path is declined — host would supply the closure
 todo	a producer capturing a host-supplied COMPOUND parameter is declined — host→guest decode
-todo	a tagged template expands via its binding-dispatched tag function
-todo	a tagged template weaves a hole into its expansion
-todo	a tagged template's spliced result folds through the ordinary path
 todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
