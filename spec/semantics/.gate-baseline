@@ -1633,6 +1633,8 @@ pass	an R-suffixed decimal literal is its exact fraction
 pass	an R-suffixed integer literal is that integer over one
 pass	an R-suffixed literal composes with exact rational arithmetic
 pass	an SI decimal prefix scales a unit by a power of ten
+pass	an abort abandons a pending borrowed map lookup and the map survives
+pass	an abort abandons a pending consuming op and the shared binding survives
 pass	an abortive handler abandons a host call in the path it discards
 pass	an abortive handler arm never resumes, so its value becomes the handle's value
 pass	an abortive perform deep in a call chain unwinds every intervening frame to the top handler
@@ -2050,6 +2052,7 @@ pass	greater-than of an integer and a float is rejected
 pass	greater-than-or-equal
 pass	greater-than-or-equal of an integer and a float is rejected
 pass	heap string elements of a hoisted list if select by branch
+pass	heap-valued handler state above an inner abort keeps threading
 pass	hexadecimal, binary, and decimal spellings of one value are equal
 pass	host calls are observed in the order they were made
 pass	identical negative zeros nested in a tuple compare equal
