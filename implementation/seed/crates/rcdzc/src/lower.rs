@@ -17885,6 +17885,29 @@ fn lower_bytes_slice(
 /// runtime "binary value does not fit segment" trap). `(bin)` (no segments) is the empty byte sequence.
 /// A `bytes` splice, or a RUNTIME (non-constant) value, is not folded here yet — declines cleanly (BN4
 /// dependent-bytes + the runtime path).
+/// The rich CDZ0304 message for a CONSTANT value that does not fit its `(signed, bits)` bin INTEGER/BITS
+/// segment — names the offending VALUE, the segment's width TYPE, and the VALID RANGE, mirroring the
+/// annotation-position CDZ0302 ("the valid range is 0..=255") rather than the terse "binary value does
+/// not fit segment". A `bits k` field is an UNSIGNED k-bit value (`signed=false`). `bits` is the segment's
+/// value width in bits (a byte-aligned int segment is `w*8`; a `(bits k)` field is `k`). The width type is
+/// spelled off the aliasing — a bound name for an aliased width (`UInt8`), the `(UInt k)` ctor form
+/// otherwise (a bit-field's `(UInt 4)`), reusing `width_module_spelling` so the named type actually
+/// resolves. The range clause is omitted only for a malformed width `int_width_range` can't render.
+fn bin_segment_overrange_message(v: &crate::ast::IntValue, signed: bool, bits: u32) -> String {
+    let ty = crate::infer::width_module_spelling(&crate::ty::IntTy::fixed(signed, bits));
+    let val = v.to_decimal_string();
+    match crate::infer::int_width_range(signed, bits) {
+        Some(range) => format!(
+            "the value {val} does not fit this bin segment's {bits}-bit {ty} field (the valid range \
+             is {range}) — a bin segment never truncates; narrow the value explicitly to fit",
+        ),
+        None => format!(
+            "the value {val} does not fit this bin segment's {bits}-bit {ty} field — a bin segment \
+             never truncates; narrow the value explicitly to fit",
+        ),
+    }
+}
+
 fn lower_bin_build(db: &mut Db, id: StructId, segs: &[crate::resolved::Segment]) -> Core {
     use crate::resolved::SegKind;
     // RUNTIME construction: if ANY segment's value is not a compile-time constant, the `bin` can't fold to
@@ -17954,10 +17977,13 @@ fn lower_bin_build(db: &mut Db, id: StructId, segs: &[crate::resolved::Segment])
                     if let Core::ConstInt(v) = core_of(db, seg.slot)
                         && !v.fits_width(*signed, (*width as u32) * 8)
                     {
-                        return Core::Poison(Reject::coded(
-                            Code::ConstTrap,
-                            "binary value does not fit segment",
-                        ));
+                        return Core::Poison(
+                            Reject::coded(
+                                Code::ConstTrap,
+                                bin_segment_overrange_message(&v, *signed, (*width as u32) * 8),
+                            )
+                            .at(seg.slot),
+                        );
                     }
                     int_run.push(crate::core::BinSeg {
                         width: *width,
@@ -17985,10 +18011,13 @@ fn lower_bin_build(db: &mut Db, id: StructId, segs: &[crate::resolved::Segment])
                     if let Core::ConstInt(v) = core_of(db, seg.slot)
                         && !v.fits_width(false, k)
                     {
-                        return Core::Poison(Reject::coded(
-                            Code::ConstTrap,
-                            "binary value does not fit segment",
-                        ));
+                        return Core::Poison(
+                            Reject::coded(
+                                Code::ConstTrap,
+                                bin_segment_overrange_message(&v, false, k),
+                            )
+                            .at(seg.slot),
+                        );
                     }
                     flush_ints(db, &mut int_run, &mut pieces);
                     bits_run.push(crate::core::BinBitsField { k, value: seg.slot });
@@ -18060,10 +18089,13 @@ fn lower_bin_build(db: &mut Db, id: StructId, segs: &[crate::resolved::Segment])
                         // Range: the value must fit the segment's (signed, bits) width — else a provable
                         // trap (never truncate). `(u8 256)`/`(u8 -1)` fail here.
                         if !v.fits_width(*signed, bits) {
-                            return Core::Poison(Reject::coded(
-                                Code::ConstTrap,
-                                "binary value does not fit segment",
-                            ));
+                            return Core::Poison(
+                                Reject::coded(
+                                    Code::ConstTrap,
+                                    bin_segment_overrange_message(&v, *signed, bits),
+                                )
+                                .at(seg.slot),
+                            );
                         }
                         // The low `w` bytes of the value's two's-complement representation, big-endian
                         // (MSB first). `to_i64_bits` gives the 64-bit two's-complement pattern; for a
@@ -18095,12 +18127,24 @@ fn lower_bin_build(db: &mut Db, id: StructId, segs: &[crate::resolved::Segment])
                 match core_of(db, seg.slot) {
                     Core::Poison(r) => return Core::Poison(r),
                     Core::ConstInt(v) => {
-                        // A bit-field is an unsigned k-bit value; out of range (or negative) → trap.
-                        if k == 0 || k > 63 || !v.fits_width(false, k) {
+                        // A malformed bit width (0, or > 63 here) is a well-formedness fault (infer's
+                        // CDZ0220 normally catches it); keep the terse message for that degenerate case.
+                        if k == 0 || k > 63 {
                             return Core::Poison(Reject::coded(
                                 Code::ConstTrap,
                                 "binary value does not fit segment",
                             ));
+                        }
+                        // A bit-field is an unsigned k-bit value; out of range (or negative) → the rich
+                        // "value V does not fit this K-bit (UInt K) field (valid range 0..=…)" message.
+                        if !v.fits_width(false, k) {
+                            return Core::Poison(
+                                Reject::coded(
+                                    Code::ConstTrap,
+                                    bin_segment_overrange_message(&v, false, k),
+                                )
+                                .at(seg.slot),
+                            );
                         }
                         let val = v.to_i64_bits() as u64 & ((1u64 << k) - 1);
                         acc = (acc << k) | val;

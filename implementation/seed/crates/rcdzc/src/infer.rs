@@ -787,7 +787,7 @@ fn int_out_of_range_message(annot_ty: &Ty, signed: bool, w: u32) -> String {
 /// `u128` arithmetic can't hold exactly (`w == 0`, or `> 127` signed / `> 128` unsigned — only a
 /// MALFORMED width, since a well-formed integer type is `1..=64`); the caller then omits the range
 /// clause rather than the helper panicking on a shift overflow.
-fn int_width_range(signed: bool, w: u32) -> Option<String> {
+pub(crate) fn int_width_range(signed: bool, w: u32) -> Option<String> {
     if w == 0 {
         return None;
     }
@@ -5140,7 +5140,7 @@ fn total_conversion_wrap(expected: &Ty, actual: &Ty) -> Option<(String, String, 
 /// otherwise — so a diagnostic that suggests `<module>.wrap` never names an identifier that is not in scope
 /// (PR #377 review: the raw `render_name()` suggested `UInt4.wrap`, an unbound name). `signed`/`width` are
 /// read via the grounding accessors (a fixed segment width type is always concrete here).
-fn width_module_spelling(it: &crate::ty::IntTy) -> String {
+pub(crate) fn width_module_spelling(it: &crate::ty::IntTy) -> String {
     let signed = it.ground_signed();
     let width = it.ground_width();
     let stem = if signed { "Int" } else { "UInt" };

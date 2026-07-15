@@ -22297,6 +22297,42 @@ mod match_engine {
                 .as_deref(),
             Some("CDZ0304"),
         );
+        // The message is ACTIONABLE, not the terse "binary value does not fit segment": it names the
+        // offending VALUE, the segment's width TYPE, and the VALID RANGE (mirroring the annotation-position
+        // CDZ0302), so a bin over-range reads as clearly as a `(: 300 UInt8)` annotation over-range.
+        let d = reject_full("(module m (def (main) (Bytes.len (bin (u8 300)))) (export main))")
+            .expect("`(u8 300)` over-range rejects");
+        assert!(
+            d.message.contains("300")
+                && d.message.contains("UInt8")
+                && d.message.contains("0..=255"),
+            "the bin over-range message names the value, width type, and range: {}",
+            d.message
+        );
+        // A NON-ALIASED bit-field width spells its type as the `(UInt k)` ctor form (a bare `UInt4` is
+        // unbound), and names the k-bit range — `(bits 20 4)` → "the value 20 does not fit … 4-bit
+        // (UInt 4) field (the valid range is 0..=15)".
+        let bits = reject_full(
+            "(module m (def (main) (Bytes.len (bin (bits 20 4) (bits 0 4)))) (export main))",
+        )
+        .expect("`(bits 20 4)` over-range rejects");
+        assert!(
+            bits.message.contains("20")
+                && bits.message.contains("(UInt 4)")
+                && bits.message.contains("0..=15"),
+            "a non-aliased bit-field over-range names the `(UInt k)` type + range: {}",
+            bits.message
+        );
+        // A SIGNED segment names the signed type + its (negative-inclusive) range — `(i8 200)` overflows
+        // Int8's -128..=127.
+        let signed =
+            reject_full("(module m (def (main) (Bytes.len (bin (i8 200)))) (export main))")
+                .expect("`(i8 200)` over-range rejects");
+        assert!(
+            signed.message.contains("Int8") && signed.message.contains("-128..=127"),
+            "a signed segment names the signed type + range: {}",
+            signed.message
+        );
     }
 
     #[test]
