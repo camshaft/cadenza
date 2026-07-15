@@ -936,4 +936,46 @@ def step-by-is-lazy() =
   else
     trap("step-by lazy take 3")
 
+// ── Corner cases (empty sides, out-of-range counts, negatives, deep pipelines) ───────────────────
+
+@test
+def drop-past-length-is-empty() =
+  if count(drop(range(0, 3), 10)) == 0 then unit else trap("drop past the end yields nothing")
+
+@test
+def take-zero-is-empty() =
+  if count(take(range(0, 100), 0)) == 0 then unit else trap("take 0 yields nothing")
+
+@test
+def take-negative-is-empty() =
+  if count(take(range(0, 100), -5)) == 0 then unit else trap("take of a negative count yields nothing")
+
+@test
+def zip-with-empty-left-side() =
+  if count(zip-with(empty(), range(0, 5), fn(a, b) => a + b)) == 0 then unit else trap("zip with empty left")
+
+@test
+def zip-with-empty-right-side() =
+  if count(zip-with(range(0, 5), empty(), fn(a, b) => a + b)) == 0 then unit else trap("zip with empty right")
+
+@test
+def negative-range-counts-up-through-zero() =
+  if int-list-eq(collect-list(range(-3, 2)), [-3, -2, -1, 0, 1]) then unit else trap("range(-3, 2) = [-3,-2,-1,0,1]")
+
+@test
+def chain-of-two-empties-is-empty() =
+  if count(chain(empty(), empty())) == 0 then unit else trap("chain of two empties is empty")
+
+@test
+def filter-all-out-is-empty() =
+  if count(filter(range(0, 10), fn(x) => x > 100)) == 0 then unit else trap("filter that keeps nothing")
+
+@test
+def deep-pipeline-map-filter-take() =
+  // squares of the evens in 0..100, first 4 -> [0, 4, 16, 36]
+  if int-list-eq(collect-list(take(map(filter(range(0, 100), fn(x) => x % 2 == 0), fn(x) => x * x), 4)), [0, 4, 16, 36]) then
+    unit
+  else
+    trap("deep map∘filter∘take pipeline")
+
 export { Iter.* }
