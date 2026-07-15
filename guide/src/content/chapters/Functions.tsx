@@ -115,14 +115,26 @@ export default function Functions() {
       />
       <P>
         Each element is incremented and the results summed: <C>6 + 8 + 31 = 45</C>. You write the lambda
-        with no type ceremony and the compiler figures out the types from how the argument is used —
-        the idiomatic style for one-argument callbacks.
+        with no type ceremony and the compiler figures out the types from how the argument is used.
       </P>
       <P>
-        There's one edge to know: a <em>multi-argument</em> callback — a two-argument fold like{" "}
-        <C>(fn (x a) (+ a x))</C> — still needs a type annotation for now, on either the lambda's
-        parameters or the higher-order function's <C>f</C>. The single-argument shape above is the one
-        that infers cleanly today.
+        The same holds for a <em>multi-argument</em> callback — the classic accumulator fold. Here{" "}
+        <C>fold-list</C> takes a two-argument <C>f</C> and threads an accumulator through the list, and the
+        lambda <C>(fn (x a) (+ a x))</C> is again fully unannotated on both sides. Folding{" "}
+        <C>(list 5 7 30)</C> from <C>0</C> sums them to <C>42</C>:
+      </P>
+      <Runnable
+        source={`(def (fold-list f acc xs)
+  (match xs
+    ((list) acc)
+    ((list h .. t) (fold-list f (f h acc) t))))
+(def (main)
+  (fold-list (fn (x a) (+ a x)) 0 (list 5 7 30)))`}
+      />
+      <P>
+        No annotation on the closure's <C>x</C> or <C>a</C>, none on <C>fold-list</C>'s <C>f</C> — inference
+        recovers all of it from how they're used. That's the everyday shape: write the callback inline and
+        let the types follow.
       </P>
 
       <H2>Your turn</H2>
