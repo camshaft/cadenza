@@ -122,3 +122,57 @@ fn build_a_manifest_without_an_entry_errors() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn build_a_glob_entry_matching_one_file_uses_the_resolved_files_name() {
+    // REGRESSION (Copilot PR #413): a GLOB `entry` (`app*.cdz`) must derive the compiler entry NAME from
+    // the RESOLVED file (`app_main.cdz` → `app_main`), NOT the glob pattern (which would pass an invalid
+    // name like `*` and fail package linking). A glob matching exactly one file builds fine.
+    let dir = std::env::temp_dir().join(format!("cdz-build-globentry-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("Project.cdz"), "def entry = \"app*.cdz\"\n").unwrap();
+    std::fs::write(
+        dir.join("app_main.cdz"),
+        "def main(a: Int64) -> Int64 = a + 1\nexport { main }\n",
+    )
+    .unwrap();
+    let (ok, _o, err) = run(&["build", dir.to_str().unwrap(), "-o", dir.to_str().unwrap()]);
+    assert!(
+        ok,
+        "a glob entry matching one file builds (name from the resolved file, not `*`): {err}"
+    );
+    // The component links (the `main` export → main.wasm); a `*` entry name would have failed linking.
+    assert!(
+        dir.join("main.wasm").is_file(),
+        "the resolved entry compiles + links: {err}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn build_a_multi_match_entry_glob_is_rejected() {
+    // REGRESSION (Copilot PR #413): an entry glob matching MULTIPLE files is ambiguous — a component has
+    // ONE boundary — so it must fail with a clear error, not implicitly pick/compile several.
+    let dir = std::env::temp_dir().join(format!("cdz-build-multientry-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("Project.cdz"), "def entry = \"*.cdz\"\n").unwrap();
+    std::fs::write(
+        dir.join("a.cdz"),
+        "def main() -> Int64 = 1\nexport { main }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("b.cdz"),
+        "def helper() -> Int64 = 2\nexport { helper }\n",
+    )
+    .unwrap();
+    let (ok, _o, err) = run(&["build", dir.to_str().unwrap()]);
+    assert!(!ok, "a multi-match entry glob should fail");
+    assert!(
+        err.contains("matched") && err.to_lowercase().contains("single file"),
+        "error explains the entry must be a single file: {err}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

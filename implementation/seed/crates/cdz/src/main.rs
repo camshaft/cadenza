@@ -498,22 +498,44 @@ fn run_build(args: &BuildArgs) -> ExitCode {
         );
         return ExitCode::FAILURE;
     };
-    // Collect the entry + modules, glob-expanded (path-sorted, exclude-filtered) relative to the dir —
-    // the same resolution `cdz test` uses for `tests`. The entry's file STEM is the `--entry` name.
-    let mut specs = expand_manifest_globs(&dir, std::slice::from_ref(&entry_spec), &m.exclude);
-    if specs.is_empty() {
-        eprintln!(
-            "{PROG}: {}: `entry` (`{entry_spec}`) matched no file",
-            mpath.display()
-        );
-        return ExitCode::FAILURE;
-    }
+    // Resolve the entry to its FILE, glob-expanded (path-sorted, exclude-filtered) relative to the dir —
+    // the same resolution `cdz test` uses for `tests`. The entry names the component's single boundary,
+    // so it must resolve to EXACTLY ONE file: zero → no such file; more than one (a multi-match glob like
+    // `src/*.cdz`) → ambiguous, since a component has one entry. Reject both clearly rather than compile a
+    // wrong/invalid entry.
+    let entry_files = expand_manifest_globs(&dir, std::slice::from_ref(&entry_spec), &m.exclude);
+    let entry_file = match entry_files.as_slice() {
+        [] => {
+            eprintln!(
+                "{PROG}: {}: `entry` (`{entry_spec}`) matched no file",
+                mpath.display()
+            );
+            return ExitCode::FAILURE;
+        }
+        [one] => one.clone(),
+        many => {
+            eprintln!(
+                "{PROG}: {}: `entry` (`{entry_spec}`) matched {} files — an entry names the ONE \
+                 component boundary; name a single file (put libraries in `modules`). Matched: {}",
+                mpath.display(),
+                many.len(),
+                many.iter()
+                    .map(|s| program_name(s))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+    // The package entry NAME is the RESOLVED entry file's stem (`app.cdz` → `app`), NOT the (possibly
+    // glob) `entry_spec` — deriving it from the pattern would pass an invalid name like `*` to the
+    // compiler and fail package linking. The entry file leads the spec list; the modules follow.
+    let entry_name = program_name(&entry_file);
+    let mut specs = vec![entry_file];
     specs.extend(expand_manifest_globs(&dir, &m.modules, &m.exclude));
-    // Dedup (a module glob may also match the entry) while preserving order.
+    // Dedup (a module glob may also match the entry) while preserving order (entry stays first).
     let mut seen = std::collections::HashSet::new();
     specs.retain(|s| seen.insert(s.clone()));
-    // The package entry NAME is the entry file's stem (`app.cdz` → `app`) — matches `program_name`.
-    let entry_name = program_name(&entry_spec);
     compile_source_specs(&specs, Some(&entry_name), args.out.clone())
 }
 
