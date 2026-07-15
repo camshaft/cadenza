@@ -621,4 +621,23 @@ fn a_list_parameter_test_is_property_tested_by_a_synthesized_generator() {
         stdout.contains("PASS bools_len-gen (10 trials)"),
         "a List Bool parameter is property-tested via the synthesized wrapper: {stdout}"
     );
+
+    // G3: a `(Tuple …)` parameter is generated too, and nesting composes — a `(List (Tuple Int64 Bool))`
+    // is property-tested. Pins the recursive `<gen:T>` over tuple slots + arbitrary nesting.
+    let tup = write(
+        &d,
+        "tup.cdz",
+        "@test def pair_ok(p: Tuple(Int64, Bool)) = if p.0 == p.0 then unit else trap(\"p\")\n\
+         @test def nested_ok(xs: List(Tuple(Int64, Bool))) = if List.len(xs) >= 0 then unit else trap(\"n\")\n",
+    );
+    let (ok, stdout, stderr) = run(&["test", &tup, "--trials", "8"]);
+    assert!(
+        ok,
+        "a Tuple + nested List(Tuple) property passes: {stdout}{stderr}"
+    );
+    assert!(
+        stdout.contains("PASS pair_ok-gen (8 trials)")
+            && stdout.contains("PASS nested_ok-gen (8 trials)"),
+        "a Tuple param and a nested List(Tuple) param are both property-tested: {stdout}"
+    );
 }
