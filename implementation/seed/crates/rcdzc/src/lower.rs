@@ -2055,11 +2055,15 @@ fn lower_ast_splice_lift(db: &mut Db, id: StructId, elems: &[StructId]) -> Optio
 //   Int  n   →  0x00, then `n` as 8 bytes little-endian (two's-complement i64)
 //   Name s   →  0x01, then `len(s)` as 4 bytes LE, then the `len` UTF-8 bytes
 //   List es  →  0x02, then `count` as 4 bytes LE, then each element encoded in order
+//   Bool b   →  0x03, then one byte (0 = false, 1 = true)
 // The encoding is a pure function of the tree (equal trees → identical bytes) and is self-delimiting
-// (every node carries its own length), so `decode` consumes the WHOLE input or reports an error.
+// (every node carries its own length), so `decode` consumes the WHOLE input or reports an error. Each
+// tag byte is a stable constant (adding a variant appends a NEW tag; existing tags never shift), so a
+// byte stream encoded by one build decodes identically under a later one.
 const AST_TAG_INT: u8 = 0x00;
 const AST_TAG_NAME: u8 = 0x01;
 const AST_TAG_LIST: u8 = 0x02;
+const AST_TAG_BOOL: u8 = 0x03;
 
 /// Lower `(Ast.encode t)` — FOLD a compile-time-visible `Ast` value to a `Core::BytesOf` of its
 /// canonical bytes; a runtime `Ast` (no visible `Core::SumNew`) declines. A poison operand propagates.
@@ -2120,6 +2124,12 @@ fn print_ast_value(db: &mut Db, node: StructId, disc: &AstDiscs, out: &mut Strin
             return None;
         };
         out.push_str(&v.to_i64()?.to_string());
+        Some(())
+    } else if d == disc.bool && payloads.len() == 1 {
+        let Core::ConstBool(b) = core_of(db, payloads[0]) else {
+            return None;
+        };
+        out.push_str(if b { "true" } else { "false" });
         Some(())
     } else if d == disc.name && payloads.len() == 1 {
         let Core::ConstStr(s) = core_of(db, payloads[0]) else {
@@ -2182,6 +2192,7 @@ fn lower_read(db: &mut Db, str_val: StructId) -> Core {
 /// minimal grammar `read` accepts — exactly the shapes `print_ast_value` emits, so the two round-trip.
 enum SNode {
     Int(i64),
+    Bool(bool),
     Name(String),
     List(Vec<SNode>),
 }
@@ -2199,6 +2210,13 @@ fn reify_read_ast(db: &mut Db, node: &SNode, disc: &AstDiscs) -> Core {
             );
             Core::SumNew {
                 disc: disc.int,
+                payloads: vec![payload],
+            }
+        }
+        SNode::Bool(b) => {
+            let payload = synth_core(db, Core::ConstBool(*b), crate::ty::Ty::Bool);
+            Core::SumNew {
+                disc: disc.bool,
                 payloads: vec![payload],
             }
         }
@@ -2293,9 +2311,16 @@ impl<'a> SexprReader<'a> {
             return None; // empty token
         }
         let tok = std::str::from_utf8(&self.bytes[start..self.pos]).ok()?;
-        match tok.parse::<i64>() {
-            Ok(n) => Some(SNode::Int(n)),
-            Err(_) => Some(SNode::Name(tok.to_string())),
+        // `true`/`false` are BOOLEAN literals, not names — `print_ast_value` emits an `Ast.Bool` as the
+        // bare word, and the lexer never yields a `Name` spelled `true`/`false`, so the round-trip is
+        // unambiguous (a name can never collide). Then a decimal `i64`; else a bare name.
+        match tok {
+            "true" => Some(SNode::Bool(true)),
+            "false" => Some(SNode::Bool(false)),
+            _ => match tok.parse::<i64>() {
+                Ok(n) => Some(SNode::Int(n)),
+                Err(_) => Some(SNode::Name(tok.to_string())),
+            },
         }
     }
 }
@@ -2304,6 +2329,7 @@ impl<'a> SexprReader<'a> {
 /// silently mis-tag). `None` if the sum or a variant is missing.
 struct AstDiscs {
     int: u32,
+    bool: u32,
     name: u32,
     list: u32,
     ty: crate::ty::Ty,
@@ -2315,6 +2341,7 @@ fn ast_variant_discs(db: &mut Db) -> Option<AstDiscs> {
     };
     Some(AstDiscs {
         int: variant_disc_by_name(db, &ty, "Int")?,
+        bool: variant_disc_by_name(db, &ty, "Bool")?,
         name: variant_disc_by_name(db, &ty, "Name")?,
         list: variant_disc_by_name(db, &ty, "List")?,
         ty,
@@ -2335,6 +2362,13 @@ fn encode_ast_value(db: &mut Db, node: StructId, disc: &AstDiscs, out: &mut Vec<
         let n = v.to_i64()?;
         out.push(AST_TAG_INT);
         out.extend_from_slice(&n.to_le_bytes());
+        Some(())
+    } else if d == disc.bool && payloads.len() == 1 {
+        let Core::ConstBool(b) = core_of(db, payloads[0]) else {
+            return None;
+        };
+        out.push(AST_TAG_BOOL);
+        out.push(u8::from(b));
         Some(())
     } else if d == disc.name && payloads.len() == 1 {
         let Core::ConstStr(s) = core_of(db, payloads[0]) else {
@@ -2467,6 +2501,25 @@ fn decode_ast_value(db: &mut Db, raw: &[u8], disc: &AstDiscs) -> Option<(StructI
                 disc.ty.clone(),
             );
             Some((node, 1 + 8))
+        }
+        AST_TAG_BOOL => {
+            // Exactly one byte, canonical: 0 = false, 1 = true. Any other byte is NOT a canonical Bool
+            // encoding → `None` (the decode reports the error case, never a wrong value).
+            let b = match rest.first()? {
+                0 => false,
+                1 => true,
+                _ => return None,
+            };
+            let payload = synth_core(db, Core::ConstBool(b), crate::ty::Ty::Bool);
+            let node = synth_core(
+                db,
+                Core::SumNew {
+                    disc: disc.bool,
+                    payloads: vec![payload],
+                },
+                disc.ty.clone(),
+            );
+            Some((node, 1 + 1))
         }
         AST_TAG_NAME => {
             let len_field = rest.get(..4)?;

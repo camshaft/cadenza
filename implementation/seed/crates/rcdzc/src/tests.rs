@@ -28672,12 +28672,79 @@ mod match_engine {
             Some("CDZ0003"),
             "a stray unquote under a plain quote is CDZ0003, not silently reified"
         );
+        // A BOOLEAN literal reifies to `(Ast.Bool b)` — the boolean is a syntactic form, so the `Ast` sum
+        // carries it (type-system.md §The Abstract Syntax Tree Is An Ordinary Sum Type: "an integer, a
+        // float, a string, a boolean, a name, and a list"). `(quote true)` equals the hand-built node.
+        assert!(
+            reject_code("(module m (def (main) (= (quote true) (Ast.Bool true))) (export main))")
+                .is_none(),
+            "a quoted boolean equals the same Ast.Bool node"
+        );
+        // A boolean nested in a compound reifies as an `Ast.Bool` element (structural, like `Ast.Int`).
+        assert!(
+            reject_code(
+                "(module m (def (main) \
+                   (= (quote (f false)) \
+                      (Ast.List (list (Ast.Name \"f\") (Ast.Bool false))))) \
+                 (export main))"
+            )
+            .is_none(),
+            "a quoted compound with a boolean reifies with an Ast.Bool element"
+        );
+        // `Ast.Bool`'s payload is type-checked like any variant ctor: a non-Bool payload is CDZ0201.
+        assert_eq!(
+            reject_code("(module m (def (main) (Ast.Bool 5)) (export main))").as_deref(),
+            Some("CDZ0201"),
+            "Ast.Bool applied to a non-Bool payload is a type error"
+        );
         // A quote whose body mentions a leaf the `Ast` sum can't carry yet (a String literal — no
-        // `Ast.Str` variant this increment) is NOT reified: it DECLINES (a Todo), never a miscompile.
+        // `Ast.Str` variant this increment; Int/Bool/Name/List are realized) is NOT reified: it DECLINES
+        // (a Todo), never a miscompile.
         assert_eq!(
             reject_code("(module m (def (main) (quote \"hi\")) (export main))"),
             None,
             "an un-reifiable quote body declines cleanly (no artifact, no coded rejection)"
+        );
+    }
+
+    #[test]
+    fn an_ast_bool_folds_through_reify_eval_and_the_encode_decode_round_trip() {
+        use crate::testkit::parse;
+        // The `Ast.Bool` leaf variant end-to-end (type-system.md §The Abstract Syntax Tree Is An Ordinary
+        // Sum Type — a boolean is one of the syntactic forms). `(eval (quote true))` reconstructs the
+        // boolean literal and folds to `true`; the encode/decode and print/read round-trips see an
+        // `Ast.Bool` as one canonical value.
+        let quoted_true = "(module m (def (main) (eval (quote true))) (export main))";
+        assert!(
+            run_returns::<bool>(
+                &compile_component(&crate::codec::encode(&parse(quoted_true))).expect("compile"),
+                "main"
+            ),
+            "(eval (quote true)) executes the reconstructed boolean literal to true"
+        );
+        // encode → decode round-trips an `Ast.Bool` (bijection over the whole tree, Ast.decode total).
+        let round_trip = "(module m (def (main) \
+            (match (Ast.decode (Ast.encode (Ast.Bool true))) \
+              ((Ok a) (= a (Ast.Bool true))) \
+              ((Err _) false))) \
+            (export main))";
+        assert!(
+            run_returns::<bool>(
+                &compile_component(&crate::codec::encode(&parse(round_trip))).expect("compile"),
+                "main"
+            ),
+            "encode/decode round-trips an Ast.Bool to an equal value"
+        );
+        // print renders the bare word and read inverts it — `read(print v) == v` over the boolean leaf.
+        let print_read = "(module m (def (main) \
+            (= (read (print (Ast.Bool false))) (Ast.Bool false))) \
+            (export main))";
+        assert!(
+            run_returns::<bool>(
+                &compile_component(&crate::codec::encode(&parse(print_read))).expect("compile"),
+                "main"
+            ),
+            "print/read round-trips an Ast.Bool (bare word true/false)"
         );
     }
 

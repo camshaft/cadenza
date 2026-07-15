@@ -321,6 +321,7 @@ pass	a branching recursive tree fold infers its unannotated callback across both
 pass	a build-time delegated effect whose result a returned closure captures does not escape
 pass	a built map renders its entries in canonical key order
 pass	a built-in Ast constructor applied to a wrong-type payload is a type error
+pass	a built-in Ast.Bool constructor applied to a wrong-type payload is a type error
 pass	a built-in Option is unwrapped by a helper that binds its payload
 pass	a built-in Option tuple payload consumed INLINE in the Some arm projects
 pass	a built-in Result whose two type arguments DIFFER is matched on both variants
@@ -825,6 +826,7 @@ pass	a match arm mixes a payload LITERAL, a wildcard, and a nested-Option patter
 pass	a match arm reading two elements of a boxed payload tuple shares the sum-payload prefix
 pass	a match arm's DESTRUCTURED payload is the argument to a perform in that arm's body
 pass	a match binder over a narrow scrutinee returns the bound value
+pass	a match binds an Ast.Bool payload
 pass	a match not covering the scrutinee is a compile-time rejection
 pass	a match on a BigInt with a single catch-all binder binds and uses it
 pass	a match on a computed runtime value dispatches on the result
@@ -1076,6 +1078,8 @@ pass	a quote pattern matches a fixed arity
 pass	a quote pattern used to recognize a compiler form reads as that form
 pass	a quote-built and constructor-built AST of the same tree encode to identical bytes
 pass	a quote-pattern match with no catch-all is non-exhaustive
+pass	a quoted boolean equals the same node built by the Ast.Bool constructor
+pass	a quoted compound form containing a boolean reifies with an Ast.Bool element
 pass	a quoted compound form equals the same AST built by the Ast.List constructor
 pass	a quoted integer equals the same node built by the Ast.Int constructor
 pass	a quoted name equals the same node built by the Ast.Name constructor
@@ -1974,6 +1978,7 @@ pass	each definition in a module registers a reachable export field
 pass	encoding a decoded string round-trips to the same bytes
 pass	encoding and decoding a constructor-built AST round-trips to an equal value
 pass	encoding and decoding a constructor-built compound AST round-trips
+pass	encoding and decoding an Ast.Bool round-trips to an equal value
 pass	equality across incompatible dimensions is a compile-time error
 pass	equality across types is rejected regardless of operand order
 pass	equality applied to one operand is rejected, not a crash
@@ -1986,6 +1991,7 @@ pass	equality of two tuples of different arity is a type error
 pass	equality over a partly-un-built sum with a free Err type compiles on every backend
 pass	eval is optional for macros and interactive use
 pass	eval of a quasiquote splicing a compile-time-known value
+pass	eval of a quoted boolean executes it to the boolean value
 pass	every not-a-number value is equal to every not-a-number value
 pass	exact rational arithmetic is exact and normalized
 pass	exact rational division is total and exact for a nonzero divisor
@@ -2165,6 +2171,7 @@ pass	popping a field yields its value and the remaining record
 pass	popping a tuple with a runtime element separates the head from the rest
 pass	popping a tuple yields element zero and the remaining tuple
 pass	popping an absent field is rejected
+pass	print of an Ast.Bool renders the bare word and read inverts it
 pass	projecting a field is independent of the order fields are written
 pass	projecting a field of a non-compound argument is rejected at the call site
 pass	projecting a record onto an absent field is rejected
