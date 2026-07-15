@@ -3329,6 +3329,27 @@
   (call   main (: 9223372036854775807 Int64))
   (output (: 9223372036854775807 Int64)))
 
+; The DIVIDE-BY-ZERO face of the same elision: the trap-observation rule is about WHETHER the value is
+; observed, not WHICH trap it would raise. An unused binding whose init is a divide-by-zero (`(/ 100 d)`
+; at d = 0) is elided exactly as the overflow one above — the ÷0 trap does not occur and the body's value
+; is returned. Pins that the ruling covers every DEFINED trap kind (÷0, %0, zero-denominator Rational.of),
+; not only overflow, so an agent probing the div/rem/rational faces sees the conformant behavior witnessed
+; rather than re-discovering it as a "miscompile." Uses a runtime parameter so it is a real emitted-code
+; question on both backends. (The constant-fold form `(/ 100 0)` additionally earns the non-error CDZ0305
+; provably-would-trap diagnostic — asserted by a compiler unit test — while still yielding its value.)
+(case "an unused let binding whose init would divide by zero is elided, so its trap does not occur"
+  (doc    "`(let ((q (/ 100 d))) 1)` with d = 0: the binding `q = 100 / d` would trap (integer divide by
+           zero), but the body returns the constant `1`, never referencing `q`. `q`'s value is unobserved,
+           so the binding need not be evaluated and its ÷0 trap does not occur — the program yields 1. The
+           divide-by-zero companion of the overflow elision above: the trap-observation rule
+           (core-semantics.md §A Trap Occurs Only Where Its Computation Is Observed) is about observation,
+           not the trap kind, so it covers ÷0/%0/zero-denominator `Rational.of` identically. A runtime
+           parameter (the arg crosses the boundary) keeps it a genuine emitted-code question on both
+           backends; the referenced-binding anchor above pins that observing such a binding DOES trap.")
+  (input  (do (def (main (: d Int64)) (let ((q (/ 100 d))) 1)) (export main)))
+  (call   main (: 0 Int64))
+  (output (: 1 Int64)))
+
 ; --- The common-OPERATOR if-arm hoist preserves trap and order semantics ---------------------------
 ; ba26196c9 hoists a common operator out of both if arms — `(if c (+ a 1) (+ b 1))` → `(+ (if c a b)
 ; 1)` — one checked op + one guard instead of two. Unlike the constructor hoist (payloads stay

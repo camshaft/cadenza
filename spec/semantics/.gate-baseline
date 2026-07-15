@@ -867,6 +867,8 @@ pass	a match on a record-field-access scrutinee dispatches on the field value
 pass	a match on a runtime integer scrutinee producing a boolean
 pass	a match on a tuple-element-access scrutinee dispatches on the element value
 pass	a match on a value of one sum type rejects a pattern from a different sum type
+pass	a match on an open sum omitting the open-tail arm is rejected
+pass	a match on an open sum with an open-tail arm is exhaustive
 pass	a match on an uninhabited scrutinee is exhaustive with zero arms
 pass	a match on the result of a match threads sum values through nested control flow
 pass	a match over bytes with only a bin arm and no catch-all is non-exhaustive
@@ -1899,6 +1901,7 @@ pass	an unsigned runtime value is not accepted by a signed segment of the same w
 pass	an unsigned segment reads the same sign-bit-only byte as 128
 pass	an unsigned-byte entrypoint takes and returns a u8 at the boundary
 pass	an untaken arm's overflowing operand does not trap under the operator hoist
+pass	an unused let binding whose init would divide by zero is elided, so its trap does not occur
 pass	an unused let binding whose init would overflow is elided, so its trap does not occur
 pass	an unused let-init that does not reduce to a value is eliminated, so it does not diverge
 pass	an unusual in-range width is a first-class type
@@ -2697,8 +2700,6 @@ todo	`?` on the success variant unwraps the payload (Option, happy path)
 todo	a closure returning Unit is declined — Unit has no machine representation
 todo	a closure-typed closure ARG on the DIRECT-CALL path is declined — host would supply the closure
 todo	a map match over a map literal with a runtime key selects by value, not a const fold
-pass	a match on an open sum omitting the open-tail arm is rejected
-pass	a match on an open sum with an open-tail arm is exhaustive
 todo	a producer capturing a host-supplied COMPOUND parameter is declined — host→guest decode
 todo	an open sum payload that does not match its schema yields a typed failure, not a trap
 todo	an open sum's payload decodes against a schema to a typed result
