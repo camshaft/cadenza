@@ -4791,10 +4791,45 @@ fn desugar_refutable_nested_list_elements(
     Some(core_of(db, rewritten))
 }
 
-/// A copy of the constructor pattern `ctor_pat` (`(C.V p0 p1)` / `(. Sum V)` / a bare variant name) with
-/// every PAYLOAD argument replaced by a wildcard `_` — the discriminant-only test pattern for the guard.
-/// A bare-name / bare-member ctor (nullary, or a whole `(. Sum V)`) has no payload args, so it is reused
-/// verbatim. An applied ctor `(C.V p…)` keeps its HEAD and replaces each arg with a fresh `_`.
+/// A FRESH deep copy of a refutable payload sub-pattern (a literal atom, or a nested compound like `(Some
+/// 0)` / `(. Sum V)`) for reuse in the guard's discriminant-test pattern. A node has ONE parent and
+/// `push_list` reparents, so the guard cannot share the ORIGINAL sub-pattern (the body re-match reuses it) —
+/// this rebuilds it as an independent subtree (atoms via a leaf copy, lists rebuilt child-by-child). Only
+/// used for a KEPT (non-bare-binder) payload, so it never needs to preserve a binder's identity.
+fn clone_refutable_payload(db: &mut Db, e: StructId) -> StructId {
+    match db.ast.get(e) {
+        crate::ast::Struct::Atom(lid) => {
+            let leaf = db.ast.leaf(*lid).clone();
+            db.push_atom(leaf)
+        }
+        crate::ast::Struct::List(children) => {
+            let children = children.clone();
+            let cloned: Vec<StructId> = children
+                .iter()
+                .map(|&c| clone_refutable_payload(db, c))
+                .collect();
+            db.push_list(cloned)
+        }
+    }
+}
+
+/// A copy of the constructor pattern `ctor_pat` (`(C.V p0 p1)` / `(. Sum V)` / a bare variant name) for the
+/// guard's discriminant test, with every BARE-BINDER payload argument replaced by a wildcard `_` but every
+/// REFUTABLE payload sub-pattern (a literal, a nested constructor) KEPT.
+///
+/// 🩸 Why keep refutable payloads: the guard's job is to decide whether this arm's element pattern matches
+/// so the arm fires or FALLS THROUGH. The body re-match `(match __lc (<ctor-pat> body) (_ (trap)))` traps in
+/// its `_` arm, so the guard MUST have already proven the FULL element pattern matches — not just the
+/// discriminant. If a payload sub-pattern is a LITERAL (`(Op.Add 0)`), wildcarding it made the guard pass on
+/// discriminant alone (`Op.Add` present) for an element whose actual payload is `5`, then the body re-match
+/// `(Op.Add 0)` failed to match `(Op.Add 5)` and hit the `_ → trap` — a SILENT TRAP miscompile on what
+/// should be a clean fall-through to a sibling `(Op.Add n)` arm (two same-variant arms refining the payload
+/// by different literals). Keeping the literal in the guard test makes the guard FALSE for payload `5`, so
+/// control falls through correctly and the body-rematch trap is genuinely dead.
+///
+/// A BARE-BINDER payload (`(Op.Add n)`) is still wildcarded — it matches any value, so the guard should not
+/// bind it (the body re-match binds `n`); wildcarding keeps the guard a pure discriminant+refinement test.
+/// A bare-name / bare-member ctor (nullary, or a whole `(. Sum V)`) has no payload args, reused verbatim.
 fn ctor_pattern_with_wildcard_payloads(db: &mut Db, ctor_pat: StructId) -> StructId {
     match db.ast.get(ctor_pat) {
         crate::ast::Struct::List(children) => {
@@ -4804,8 +4839,17 @@ fn ctor_pattern_with_wildcard_payloads(db: &mut Db, ctor_pat: StructId) -> Struc
                 Some(first) if db.ast.as_name(first) == Some(".") => ctor_pat,
                 Some(head) => {
                     let mut new_children = vec![head];
-                    for _ in 1..children.len() {
-                        new_children.push(db.push_name("_"));
+                    for &arg in &children[1..] {
+                        // A BARE BINDER / `_` payload → wildcard it (the guard should not bind, and it
+                        // matches any value so it need not be tested). A REFUTABLE payload (a literal, a
+                        // nested ctor — anything NOT a bare name) is CLONED and kept (a fresh subtree, since
+                        // the ORIGINAL arg is reused by the body re-match — a node has one parent), so the
+                        // guard tests it and a mismatch FALLS THROUGH instead of trapping in the body re-match.
+                        if db.ast.as_name(arg).is_some() {
+                            new_children.push(db.push_name("_"));
+                        } else {
+                            new_children.push(clone_refutable_payload(db, arg));
+                        }
                     }
                     db.push_list(new_children)
                 }

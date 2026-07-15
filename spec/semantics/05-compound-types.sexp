@@ -2866,6 +2866,25 @@
             (def (main) (classify (list (Op.Neg 5) (Op.Add 1)))) (export main)))
   (output (: -5 Int64)))
 
+(case "two same-variant ctor list elements refining the payload by literal fall through, not trap"
+  (doc    "Two list-element arms match the SAME ctor variant but refine the payload with different LITERALS:
+           `((list (Op.Add 0) .. r) 100) ((list (Op.Add n) .. r) n)`. Input `(list (Op.Add 5))`: the first
+           arm's literal-payload element `(Op.Add 0)` must NOT match (5 ≠ 0), so control FALLS THROUGH to
+           `(Op.Add n)`, binding n = 5 → 5. Regression: the ctor-element desugar built the arm guard by
+           WILDCARDING all payloads, so `(Op.Add 0)`'s guard passed on the DISCRIMINANT alone (Add present)
+           for a payload of 5, then the body re-match `(match __e ((Op.Add 0) body) (_ (trap)))` failed and
+           TRAPPED — a silent wrong trap on a clean fall-through. The fix keeps a refutable (literal) payload
+           in the guard test, so the literal mismatch fails the guard and falls through. Expected: 5.")
+  (input  (do
+            (type Op (Add Int64) (Neg Int64))
+            (def (f (: xs (List Op)))
+              (match xs
+                ((list (Op.Add 0) .. r) 100)
+                ((list (Op.Add n) .. r) n)
+                (_                      -1)))
+            (def (main) (f (list (Op.Add 5)))) (export main)))
+  (output (: 5 Int64)))
+
 (case "a nullary variant list element dispatches by its discriminant"
   (doc    "A NULLARY variant is a refutable ctor list element too — `(list C.Red .. r)` matches only a list
            whose first element is `C.Red`, dispatching by the head's tag exactly as an applied ctor

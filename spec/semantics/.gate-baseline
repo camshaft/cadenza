@@ -2738,6 +2738,7 @@ pass	two same-signature Bytes-returning closures share one call — second
 pass	two same-signature String-returning closures share one call
 pass	two same-signature closures alongside a plain export all coexist
 pass	two same-signature closures alongside a plain export — the plain export runs
+pass	two same-variant ctor list elements refining the payload by literal fall through, not trap
 pass	two sets of different sizes are unequal, not a type error
 pass	two sets with different elements are unequal, not a type error
 pass	two sibling modules may each define a private helper of the same name

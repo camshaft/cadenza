@@ -25623,6 +25623,64 @@ mod match_engine {
     }
 
     #[test]
+    fn two_same_variant_ctor_list_elements_refining_the_payload_by_literal_fall_through() {
+        // REGRESSION (silent TRAP miscompile): two list-element arms matching the SAME ctor variant but
+        // refining the payload with different LITERALS — `((list (Op.Add 0) .. r) …) ((list (Op.Add n) .. r)
+        // …)`. The ctor-element desugar (`desugar_refutable_ctor_list_elements`) built the arm GUARD from
+        // `ctor_pattern_with_wildcard_payloads`, which wildcarded ALL payloads — so `(Op.Add 0)`'s guard
+        // passed on the DISCRIMINANT alone (`Op.Add` present) for an element whose actual payload is 5, then
+        // the body re-match `(match __lc ((Op.Add 0) body) (_ (trap)))` failed (5 ≠ 0) and hit the `_ → trap`
+        // — a SILENT WRONG TRAP on what should be a clean fall-through to the sibling `(Op.Add n)` arm. FIX:
+        // the guard KEEPS a refutable (literal/nested-ctor) payload sub-pattern (wildcards only bare binders),
+        // so a literal mismatch fails the guard → falls through, and the body re-match's trap is dead.
+        // `cdz check` was clean (the trap is emit-only) — a check-vs-emit gap.
+        let first = run_heap_value(
+            "(module m (type Op (Add Int64) (Neg Int64)) \
+               (def (f (: xs (List Op))) \
+                 (match xs ((list (Op.Add 0) .. r) 100) ((list (Op.Add n) .. r) n) (_ -1))) \
+               (def (main (: k Int64)) (f (list (Op.Add k)))) (export main))",
+            vec!["5".to_string()],
+        );
+        let Some(v) = first else {
+            eprintln!(
+                "runtime wasm not found; skipping same-variant literal-refinement fall-through run"
+            );
+            return;
+        };
+        assert_eq!(
+            v, "5",
+            "(Op.Add 5) must NOT match the literal-payload arm (Op.Add 0); it FALLS THROUGH to (Op.Add n), \
+             binding n=5 — never trapping (the guard now tests the literal payload, not just the discriminant)"
+        );
+        // The literal-payload arm DOES fire when the payload matches: (Op.Add 0) → 100.
+        assert_eq!(
+            run_heap_value(
+                "(module m (type Op (Add Int64) (Neg Int64)) \
+                   (def (f (: xs (List Op))) \
+                     (match xs ((list (Op.Add 0) .. r) 100) ((list (Op.Add n) .. r) n) (_ -1))) \
+                   (def (main (: k Int64)) (f (list (Op.Add k)))) (export main))",
+                vec!["0".to_string()],
+            )
+            .unwrap(),
+            "100",
+            "(Op.Add 0) matches the literal-payload arm"
+        );
+        // TWO literal-payload arms of the same variant: (Op.Add 0) then (Op.Add 5); input 5 → second → 200.
+        assert_eq!(
+            run_heap_value(
+                "(module m (type Op (Add Int64) (Neg Int64)) \
+                   (def (f (: xs (List Op))) \
+                     (match xs ((list (Op.Add 0) .. r) 100) ((list (Op.Add 5) .. r) 200) (_ -1))) \
+                   (def (main (: k Int64)) (f (list (Op.Add k)))) (export main))",
+                vec!["5".to_string()],
+            )
+            .unwrap(),
+            "200",
+            "the second literal-payload arm fires when the first's literal does not match"
+        );
+    }
+
+    #[test]
     fn a_nullary_variant_list_element_dispatches_by_discriminant() {
         // A NULLARY variant `(list C.R .. r)` is a refutable ctor list element too — Inc-12 handled an
         // APPLIED ctor `(Op.Add n)` (its head `(. Op Add)` is a distinct non-element node) but a nullary
