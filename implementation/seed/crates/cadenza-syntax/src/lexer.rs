@@ -1008,7 +1008,7 @@ mod tests {
         let alphabet: Vec<char> = "0123456789abcxEeNR._+-*/<>=|&^%@#!:;,()[]{}`\"\\\n \tλ中🎉"
             .chars()
             .collect();
-        let mut rng = SplitMix64(0xbadc0de_dead_beef);
+        let mut rng = SplitMix64(0x0bad_c0de_dead_beef);
         for len in 0..=24usize {
             for _ in 0..200 {
                 let s: String = (0..len)
