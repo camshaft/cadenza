@@ -1,2 +1,6 @@
 node_modules/
 package-lock.json
+target/
+Cargo.lock
+# NEVER commit Slack credentials. slack.toml holds the bot/app tokens; it is read fail-soft at runtime.
+slack.toml

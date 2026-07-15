@@ -23,3 +23,7 @@ path = "src/lib.rs"
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# `toml` for the optional gitignored config file (.claude/fleet/slack.toml). This is our OWN isolated
+# workspace/lockfile, so the seed workspace's toml_datetime pin conflict (why cdz-smith is excluded) does
+# not apply here.
+toml = "0.8"
