@@ -48,6 +48,9 @@
 ///                              variant (not `RangeI((lo, hi+1))`) so `hi == Int64.max` cannot overflow.
 ///   - `FlatMapI((f, cur, src))` — map each `x` from `src` to a sub-iterator `f(x)` and flatten in
 ///                              order; `cur` is the sub-iterator currently being drained (starts empty).
+///   - `IntersperseI((sep, pending, src))` — yield `src`'s elements with `sep` between each pair; no
+///                              trailing separator. `pending` = "a separator is due before the next
+///                              element" (false before the very first element).
 type Iter =
   | FromList(List(Int64))
   | RangeI(Tuple(Int64, Int64))
@@ -64,6 +67,7 @@ type Iter =
   | DownRangeI(Tuple(Int64, Int64))
   | InclRangeI(Tuple(Int64, Int64))
   | FlatMapI(Tuple((Int64 -> Iter), Tuple(Iter, Iter)))
+  | IntersperseI(Tuple(Int64, Tuple(Bool, Iter)))
 
 /// Step once: yield `Option((element, rest))` — `None` at exhaustion, never a trap. Total and pure;
 /// `rest` is a fresh iterator for the remainder, so an iterator is re-steppable and shareable.
@@ -140,6 +144,15 @@ def next(it) = match it with
       | Option.None(_) => (match next(src) with
         | Option.None(_) => Option.None(unit)
         | Option.Some(ps) => (match ps with | (x, srest) => next(Iter.FlatMapI((f, (f(x), srest)))))))))
+  | Iter.IntersperseI(isp) => (match isp with | (sep, pending-src) => (match pending-src with | (pending, src) =>
+    // if a separator is pending AND the source still has an element, yield `sep` (then next yields the
+    // element); otherwise yield the next source element and mark a separator pending before the one after
+    if pending then (match next(src) with
+      | Option.None(_) => Option.None(unit)
+      | Option.Some(_) => Option.Some((sep, Iter.IntersperseI((sep, (false, src))))))
+    else (match next(src) with
+      | Option.None(_) => Option.None(unit)
+      | Option.Some(p) => (match p with | (v, rest) => Option.Some((v, Iter.IntersperseI((sep, (true, rest)))))))))
 
 // ── Producers ──────────────────────────────────────────────────────────────────────────────────
 
@@ -200,6 +213,10 @@ def scan(it, init, f: Int64 -> Int64 -> Int64) = Iter.ScanI((f, (init, it)))
 /// closure-dispatch + closure-param-type gap, both now fixed upstream — see the retired
 /// `mlrepro-decline-two-distinct-closure-typed-variants-in-one-sum` finding.)
 def flat-map(it, f: Int64 -> Iter) = Iter.FlatMapI((f, (empty(), it)))
+
+/// Insert `sep` between consecutive elements (no leading or trailing separator). An empty or
+/// single-element source is unchanged. E.g. intersperse([1,2,3], 0) yields 1, 0, 2, 0, 3.
+def intersperse(it, sep) = Iter.IntersperseI((sep, (false, it)))
 
 // ── Consumers (drive the pull) ──────────────────────────────────────────────────────────────────
 
@@ -846,5 +863,34 @@ def flat-map-coexists-with-scan() =
   let a = collect-list(flat-map(from-list([1, 2]), fn(x) => from-list([x, x]))) in
   let b = collect-list(scan(range(1, 4), 0, fn(acc, x) => acc + x)) in
   if int-list-eq(a, [1, 1, 2, 2]) then (if int-list-eq(b, [1, 3, 6]) then unit else trap("scan")) else trap("flat-map")
+
+@test
+def intersperse-inserts-between() =
+  // [1,2,3] with sep 0 -> [1,0,2,0,3] — no leading/trailing separator
+  if int-list-eq(collect-list(intersperse(from-list([1, 2, 3]), 0)), [1, 0, 2, 0, 3]) then
+    unit
+  else
+    trap("intersperse [1,2,3] 0 = [1,0,2,0,3]")
+
+@test
+def intersperse-single-element-unchanged() =
+  if int-list-eq(collect-list(intersperse(from-list([9]), 0)), [9]) then unit else trap("single stays [9]")
+
+@test
+def intersperse-empty-is-empty() =
+  if count(intersperse(empty(), 0)) == 0 then unit else trap("intersperse of empty is empty")
+
+@test
+def intersperse-two-elements() =
+  // exactly one separator between two elements: [5,7] -> [5,0,7]
+  if int-list-eq(collect-list(intersperse(from-list([5, 7]), 0)), [5, 0, 7]) then unit else trap("[5,0,7]")
+
+@test
+def intersperse-is-lazy() =
+  // take 3 of an interspersed huge range pulls only what is needed: [0, 99, 1]
+  if int-list-eq(collect-list(take(intersperse(range(0, 1000000), 99), 3)), [0, 99, 1]) then
+    unit
+  else
+    trap("intersperse lazy take 3")
 
 export { Iter.* }
