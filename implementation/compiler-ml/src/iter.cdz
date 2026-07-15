@@ -51,6 +51,8 @@
 ///   - `IntersperseI((sep, pending, src))` — yield `src`'s elements with `sep` between each pair; no
 ///                              trailing separator. `pending` = "a separator is due before the next
 ///                              element" (false before the very first element).
+///   - `StepByI((n, src))`    — yield every `n`-th element of `src` (the 1st, then skip `n-1`): src's
+///                              elements at indices 0, n, 2n, … A non-positive `n` yields nothing.
 type Iter =
   | FromList(List(Int64))
   | RangeI(Tuple(Int64, Int64))
@@ -68,6 +70,7 @@ type Iter =
   | InclRangeI(Tuple(Int64, Int64))
   | FlatMapI(Tuple((Int64 -> Iter), Tuple(Iter, Iter)))
   | IntersperseI(Tuple(Int64, Tuple(Bool, Iter)))
+  | StepByI(Tuple(Int64, Iter))
 
 /// Step once: yield `Option((element, rest))` — `None` at exhaustion, never a trap. Total and pure;
 /// `rest` is a fresh iterator for the remainder, so an iterator is re-steppable and shareable.
@@ -153,6 +156,12 @@ def next(it) = match it with
     else (match next(src) with
       | Option.None(_) => Option.None(unit)
       | Option.Some(p) => (match p with | (v, rest) => Option.Some((v, Iter.IntersperseI((sep, (true, rest)))))))))
+  | Iter.StepByI(sb) => (match sb with | (n, src) =>
+    // yield the head, then advance the rest by dropping the next `n-1` elements (via the lazy DropI).
+    // A non-positive `n` yields nothing (guards against a zero/negative stride).
+    if n <= 0 then Option.None(unit) else (match next(src) with
+      | Option.None(_) => Option.None(unit)
+      | Option.Some(p) => (match p with | (v, rest) => Option.Some((v, Iter.StepByI((n, Iter.DropI((n - 1, rest)))))))))
 
 // ── Producers ──────────────────────────────────────────────────────────────────────────────────
 
@@ -197,6 +206,10 @@ def drop(it, n) = Iter.DropI((n, it))
 
 /// Yield the leading run of elements for which `p` holds, then stop.
 def take-while(it, p: Int64 -> Bool) = Iter.TakeWhileI((p, it))
+
+/// Yield every `n`-th element of `it`: the element at index 0, then n, 2n, … (keep one, skip `n-1`).
+/// A non-positive `n` yields nothing. Generalizes `range-step` to any iterator source.
+def step-by(it, n) = Iter.StepByI((n, it))
 
 /// Concatenate: yield all of `it`, then all of `other`.
 def chain(it, other) = Iter.ChainI((it, other))
@@ -892,5 +905,35 @@ def intersperse-is-lazy() =
     unit
   else
     trap("intersperse lazy take 3")
+
+@test
+def step-by-every-third() =
+  // every 3rd of 0..10 -> 0, 3, 6, 9
+  if int-list-eq(collect-list(step-by(range(0, 10), 3)), [0, 3, 6, 9]) then
+    unit
+  else
+    trap("step-by 3 of 0..10 = [0,3,6,9]")
+
+@test
+def step-by-one-is-identity() =
+  // stride 1 keeps every element
+  if int-list-eq(collect-list(step-by(range(0, 5), 1)), [0, 1, 2, 3, 4]) then unit else trap("step-by 1 = id")
+
+@test
+def step-by-larger-than-length() =
+  // a stride past the end yields just the first element
+  if int-list-eq(collect-list(step-by(from-list([7, 8, 9]), 10)), [7]) then unit else trap("stride > len = [first]")
+
+@test
+def step-by-nonpositive-yields-nothing() =
+  if count(step-by(range(0, 5), 0)) == 0 then unit else trap("stride 0 yields nothing")
+
+@test
+def step-by-is-lazy() =
+  // every 2nd of a huge range, take 3 -> 0, 2, 4
+  if int-list-eq(collect-list(take(step-by(range(0, 1000000), 2), 3)), [0, 2, 4]) then
+    unit
+  else
+    trap("step-by lazy take 3")
 
 export { Iter.* }
