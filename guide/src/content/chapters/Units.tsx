@@ -15,14 +15,16 @@ export default function Units() {
 
       <P>
         A <strong>quantity</strong> is a number paired with a unit. You build one with <C>Qty.of</C> —
-        give it a value and a unit — and you recover the plain number with <C>Qty.value</C>:
+        give it a value and a unit — and the quantity <em>carries that unit as part of its value</em>. Run
+        this and the result comes back tagged with its unit, <C>5.0 meter</C> — the <C>meter</C> travels
+        with the <C>5.0</C>:
+      </P>
+      <Runnable source={`(Qty.of 5.0 (Unit.of #"meter"))`} />
+      <P>
+        When you want the bare number back — to hand it to something that doesn't speak units —{" "}
+        <C>Qty.value</C> strips the unit off and gives you just the <C>5.0</C>:
       </P>
       <Runnable source={`(Qty.value (Qty.of 5.0 (Unit.of #"meter")))`} />
-      <P>
-        The result is just <C>5.0</C>: <C>Qty.value</C> strips the unit off. Toggle this snippet to the
-        ML surface and you'll see the unit read back as a tidy postfix — <C>5.0 meter</C>. That is the
-        whole idea: the <C>meter</C> travels with the <C>5.0</C> through type-checking, then vanishes.
-      </P>
 
       <H2>The same dimension converts on its own</H2>
       <P>
@@ -32,12 +34,13 @@ export default function Units() {
         meters:
       </P>
       <Runnable
-        source={`(Qty.value
-  (+ (Qty.of 1.0 (Unit.of #"kilometer"))
-     (Qty.of 500.0 (Unit.of #"meter"))))`}
+        source={`(+ (Qty.of 1.0 (Unit.of #"kilometer"))
+   (Qty.of 500.0 (Unit.of #"meter")))`}
       />
       <P>
-        This is the one place Cadenza converts a number for you without being asked — and it earns the
+        The result is a quantity, <C>1500.0 meter</C> — carried with its unit, and reported at the
+        dimension's reference unit (meters), the kilometer scaled in on the way. This is the one place
+        Cadenza converts a number for you without being asked — and it earns the
         exception by being <em>exact</em>: kilometer-to-meter is times a thousand, no rounding, no guess.
         A mix of different <em>dimensions</em> gets no such courtesy, as we'll see in a moment.
       </P>
@@ -45,12 +48,11 @@ export default function Units() {
       <P>
         Because the quantity surface is meant to read like English, common plurals resolve to their
         singular unit — <C>#"feet"</C> is just <C>#"foot"</C>, the same member of the length family. So one
-        meter plus four feet is well-formed and converts exactly, to <C>2.2192</C> meters:
+        meter plus four feet is well-formed and converts exactly, to <C>2.2192 meter</C>:
       </P>
       <Runnable
-        source={`(Qty.value
-  (+ (Qty.of 1.0 (Unit.of #"meter"))
-     (Qty.of 4.0 (Unit.of #"feet"))))`}
+        source={`(+ (Qty.of 1.0 (Unit.of #"meter"))
+   (Qty.of 4.0 (Unit.of #"feet")))`}
       />
       <Note>
         Toggle to the conventional surface and the second quantity reads <C>4.0 feet</C> — the plural
@@ -108,13 +110,13 @@ export default function Units() {
         is thirty meters per second:
       </P>
       <Runnable
-        source={`(Qty.value
-  (/ (Qty.of 240.0 (Unit.of #"meter"))
-     (Qty.of 8.0 (Unit.of #"second"))))`}
+        source={`(/ (Qty.of 240.0 (Unit.of #"meter"))
+   (Qty.of 8.0 (Unit.of #"second")))`}
       />
       <P>
-        The value is <C>30.0</C>, and its <em>unit</em> is meters-per-second — a compound Cadenza built by
-        dividing the two. You can spell such units directly, too: <C>(Unit.* a b)</C> for a product (an
+        The result carries its derived unit: <C>30.0 meter/second</C> — a compound Cadenza built by
+        dividing the two units right along with the numbers. You can spell such units directly, too:{" "}
+        <C>(Unit.* a b)</C> for a product (an
         area is a length times a length), <C>(Unit./ a b)</C> for a quotient, <C>(Unit.^ u n)</C> for a
         power, and <C>Unit.one</C> for a plain dimensionless number.
       </P>
@@ -123,15 +125,16 @@ export default function Units() {
       <P>
         <C>Qty.pow</C> raises a whole quantity — value <em>and</em> unit — to a compile-time integer power.
         Square a length and you get an area; the unit becomes meters-squared while the value squares. A
-        five-meter side gives twenty-five square meters:
+        five-meter side gives twenty-five square meters — <C>25.0 meter^2</C>, the unit squared along with
+        the value:
       </P>
-      <Runnable source={`(Qty.value (Qty.pow (Qty.of 5.0 (Unit.of #"meter")) 2))`} />
+      <Runnable source={`(Qty.pow (Qty.of 5.0 (Unit.of #"meter")) 2)`} />
       <P>
         The exponent can be <em>negative</em>, and that's where units earn their keep. A period is a time;
         its <em>reciprocal</em> is a frequency, with the unit inverted to per-second. A four-second period
-        is a frequency of <C>0.25</C> per second:
+        is a frequency of <C>0.25 1/second</C>:
       </P>
-      <Runnable source={`(Qty.value (Qty.pow (Qty.of 4.0 (Unit.of #"second")) -1))`} />
+      <Runnable source={`(Qty.pow (Qty.of 4.0 (Unit.of #"second")) -1)`} />
       <P>
         That <C>-1</C> didn't just divide the number — it flipped the dimension from <em>time</em> to{" "}
         <em>per-time</em>. Try to add the result to a plain length and you'll get the same CDZ0501 you saw
