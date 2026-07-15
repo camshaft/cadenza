@@ -16,6 +16,9 @@
     { "name": "v-guide", "role": "vertical", "vertical": "guide", "area": "guide", "model": "opus", "effort": "high", "interval": "10m" },
     { "name": "v-compiler-ml", "role": "vertical", "vertical": "compiler-ml", "area": "compiler-ml", "model": "opus", "effort": "high", "interval": "10m" },
     { "name": "v-duvet-coverage", "role": "vertical", "vertical": "duvet-coverage", "area": "spec", "model": "opus", "effort": "high", "interval": "30m" },
-    { "name": "github-liaison", "role": "github-liaison", "model": "opus", "effort": "high", "interval": "30m" }
+    { "name": "github-liaison", "role": "github-liaison", "model": "opus", "effort": "high", "interval": "30m" },
+    { "name": "v-fleet-tooling", "role": "vertical", "vertical": "fleet-tooling", "area": "xtask", "model": "opus", "effort": "high", "interval": "30m" },
+    { "name": "v-runtime", "role": "vertical", "vertical": "runtime", "area": "runtime", "model": "opus", "effort": "high", "interval": "30m" },
+    { "name": "v-syntax", "role": "vertical", "vertical": "syntax", "area": "cadenza-syntax", "model": "opus", "effort": "high", "interval": "30m" }
   ]
 }
