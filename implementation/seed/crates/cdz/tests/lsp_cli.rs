@@ -59,8 +59,9 @@ fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
 }
 
 /// Drive a full `cdz lsp` session over the given program text and return every message the server
-/// emitted. Sends initialize → initialized → didOpen → the four requests below → shutdown → exit, then
-/// closes stdin and reads stdout to EOF (a clean server exit).
+/// emitted. Sends initialize → initialized → didOpen → the six feature requests below (hover,
+/// definition, completion, documentSymbol, references, semanticTokens) → shutdown → exit, then closes
+/// stdin and reads stdout to EOF (a clean server exit).
 fn drive_session(program: &str) -> Vec<serde_json::Value> {
     let exe = env!("CARGO_BIN_EXE_cdz");
     let mut child = Command::new(exe)
@@ -84,6 +85,10 @@ fn drive_session(program: &str) -> Vec<serde_json::Value> {
         serde_json::json!({"jsonrpc":"2.0","id":4,"method":"textDocument/completion","params":{"textDocument":{"uri":uri},"position":{"line":1,"character":11}}}),
         // the document outline.
         serde_json::json!({"jsonrpc":"2.0","id":5,"method":"textDocument/documentSymbol","params":{"textDocument":{"uri":uri}}}),
+        // find-references on the `helper` call in main (line 1, char 11).
+        serde_json::json!({"jsonrpc":"2.0","id":6,"method":"textDocument/references","params":{"textDocument":{"uri":uri},"position":{"line":1,"character":11},"context":{"includeDeclaration":false}}}),
+        // semantic tokens for the whole document.
+        serde_json::json!({"jsonrpc":"2.0","id":7,"method":"textDocument/semanticTokens/full","params":{"textDocument":{"uri":uri}}}),
         serde_json::json!({"jsonrpc":"2.0","id":99,"method":"shutdown","params":null}),
         serde_json::json!({"jsonrpc":"2.0","method":"exit","params":null}),
     ];
@@ -219,6 +224,37 @@ fn lsp_session_handshake_diagnostics_and_every_capability() {
     assert!(
         names.contains(&"main"),
         "outline should list `main`: {names:?}"
+    );
+
+    // 7. REFERENCES — find-references on the `helper` call in main returns at least that use (line 1).
+    let refs = response(&msgs, 6).expect("a references response");
+    let ref_lines: Vec<i64> = refs
+        .pointer("/result")
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|loc| loc.pointer("/range/start/line").and_then(|l| l.as_i64()))
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(
+        ref_lines.contains(&1),
+        "references should include the `helper` use on line 1: {ref_lines:?}"
+    );
+
+    // 8. SEMANTIC TOKENS — a non-empty delta-encoded token stream (length a multiple of 5, the LSP
+    //    5-tuple per token). Any regression that stops emitting tokens or breaks the encoding fails here.
+    let toks = response(&msgs, 7).expect("a semanticTokens response");
+    let data = toks
+        .pointer("/result/data")
+        .and_then(|v| v.as_array())
+        .expect("a semanticTokens data array");
+    assert!(!data.is_empty(), "semantic tokens should be non-empty");
+    assert_eq!(
+        data.len() % 5,
+        0,
+        "semantic-token data must be a multiple of 5 (the LSP per-token 5-tuple): {}",
+        data.len()
     );
 }
 
