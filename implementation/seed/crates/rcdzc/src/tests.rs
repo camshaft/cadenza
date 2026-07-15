@@ -1043,6 +1043,64 @@ fn a_common_constructor_hoists_out_of_both_if_arms_building_once() {
     );
 }
 
+/// The common-OPERATOR hoist (the arith sibling of the constructor hoist): `(if c (+ a 1) (+ b 1))`
+/// applies the checked add + its overflow guard ONCE over the SELECTED operand — `(+ (if c a b) 1)` —
+/// instead of duplicating the add+guard in both `if`/`else` arms. Structurally, exactly ONE `i64.add`
+/// reaches the module (the differing operand becomes a branchless `select`). Behaviorally it must be
+/// operand SELECTION, not eager evaluation of both: the trap fires iff the TAKEN arm's add overflows, so
+/// (a) values round-trip in both directions, (b) c=true with a=Int64.max TRAPS (the taken `(+ a 1)`
+/// overflows), and (c) c=false with the SAME a=Int64.max does NOT trap (the untaken arm's overflow is
+/// never evaluated — `(if c a b)` selects b) — a hoist that eagerly added both operands would wrongly
+/// trap here.
+#[test]
+fn a_common_operator_hoists_out_of_both_if_arms_computing_once() {
+    use crate::testkit::parse;
+    let src = "(module m \
+                 (def (main (: c Bool) (: a Int64) (: b Int64)) (if c (+ a 1) (+ b 1))) \
+                 (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    // Exactly one checked add survives (the differing operand is a `select`, not a second add).
+    let adds = count_opcode(&bytes, |op| matches!(op, wasmparser::Operator::I64Add));
+    assert_eq!(
+        adds, 1,
+        "the common-operator hoist applies the add once over the selected operand, got {adds} adds"
+    );
+    use wasmtime::component::Val;
+    // Value parity, both directions.
+    assert_eq!(
+        run_returns_with::<i64>(&bytes, "main", &[Val::Bool(true), Val::S64(5), Val::S64(9)]),
+        6,
+        "c=true → (+ a 1) = 6"
+    );
+    assert_eq!(
+        run_returns_with::<i64>(
+            &bytes,
+            "main",
+            &[Val::Bool(false), Val::S64(5), Val::S64(9)]
+        ),
+        10,
+        "c=false → (+ b 1) = 10"
+    );
+    // Trap parity: the TAKEN arm's overflow traps; the UNTAKEN arm's does not (operand selection, not
+    // eager evaluation of both). a = Int64.max.
+    assert!(
+        call_traps(
+            &bytes,
+            "main",
+            &[Val::Bool(true), Val::S64(i64::MAX), Val::S64(9)]
+        ),
+        "c=true with a=Int64.max: the taken (+ a 1) overflows → must trap"
+    );
+    assert!(
+        !call_traps(
+            &bytes,
+            "main",
+            &[Val::Bool(false), Val::S64(i64::MAX), Val::S64(9)]
+        ),
+        "c=false with a=Int64.max: the untaken arm's overflow must NOT be evaluated (selects b) → no trap"
+    );
+}
+
 /// The common-constructor hoist also fires for a RECORD: `(if c (record (a x) (b 1)) (record (a y) (b
 /// 1)))` builds the record ONCE and pushes the DIFFERING field `a` into a branchless `(if c x y)` select
 /// while the SHARED field `b` (the constant `1`) is emitted once — instead of duplicating the whole
@@ -25325,6 +25383,35 @@ mod match_engine {
     }
 
     #[test]
+    fn a_map_literal_with_a_runtime_key_is_not_const_folded_against_a_query() {
+        // A `(map …)` literal folds to a `Core::MapNew`, but it can carry a RUNTIME key (a call/param
+        // result that did not fold). A map operation that FOLDS against a `MapNew` by comparing keys with
+        // `const_compound_eq` (which reports a runtime key ABSENT — its compile-time equality is unknown)
+        // silently answers WRONG for a query equal to the runtime key. This is the map twin of the
+        // `Set.contains`/`Set.remove` runtime-element fold miscompile. `(add 2 3)` is a recursive call = 5
+        // at run time but non-foldable, so the map literal `(map ((add 2 3) 42))` carries a runtime key.
+        // `Map.lookup` never folded against the `MapNew` — it always compares keys by value at run time —
+        // so the lookup of the literal 5 must find 42 (a wrong `const_compound_eq` fold here would return
+        // None → -1). The map-MATCH twin now routes such a map to the runtime matcher (declines soundly
+        // rather than mis-folding); this pins the `Map.lookup` path that must simply stay correct.
+        let Some(v) = run_heap_value(
+            "(module m \
+               (def (add (: x Int64) (: n Int64)) (if (< n 1) x (add (+ x 1) (- n 1)))) \
+               (def (main) (match (Map.lookup (map ((add 2 3) 42)) 5) ((Some v) v) ((None) (- 0 1)))) \
+               (export main))",
+            vec![],
+        ) else {
+            eprintln!("runtime wasm not found; skipping runtime-key map-lookup run");
+            return;
+        };
+        assert_eq!(
+            v, "42",
+            "Map.lookup of a map literal whose key is a runtime value (add 2 3 = 5) must find 42 by value \
+             — never a const-fold that reports the runtime key absent"
+        );
+    }
+
+    #[test]
     fn a_map_pattern_key_of_the_wrong_type_is_a_type_error() {
         // A `(map ("x" v))` pattern on a `(Map Int64 Int64)` writes a String key where an Int64 is
         // required. Before, `const_compound_eq` of a String vs an Int returned `None` (not equal), so the
@@ -29438,20 +29525,40 @@ mod match_engine {
             Some("CDZ0201"),
             "splicing a non-list is CDZ0201 (the ast-splice-lift operand check, not a miscompile)"
         );
-        // An active unquote of a NON-INTEGER LITERAL (`,2.0`, `,"s"`, `,true`) cannot lift — the only
-        // value-carrying `Ast` variant this increment builds is `Ast.Int`. It DECLINES honestly (a Todo:
-        // "quasiquote produces an AST value (not yet built)"), NOT the leaky CDZ0201 "variant
-        // constructor's payload has declared type Int64, but Float64 was applied" the naive `(Ast.Int
-        // 2.0)` wrap produced — whose coercion fix would have silently rewritten the author's `2.0`→`2`.
-        // The reifier bails so no misleading coded reject + no value-corrupting fix is emitted.
-        for lit in ["2.0", "\"s\"", "true"] {
-            let src = format!("(module m (def (main) (quasiquote (unquote {lit}))) (export main))");
-            let d = reject_full(&src);
+        // An active unquote of a BOOL or STRING literal now LIFTS to the matching `Ast` leaf (`Ast.Bool`/
+        // `Ast.Str`) — those value forms are realized. `` `(f ,true) `` and `` `(f ,"x") `` build the same
+        // node quote of that literal produces, so they compile clean and equal the quoted form.
+        assert!(
+            reject_code(
+                "(module m (def (main) \
+                   (= (quasiquote (f (unquote true))) (quote (f true)))) \
+                 (export main))"
+            )
+            .is_none(),
+            "an active unquote of a boolean literal lifts to Ast.Bool (equals the quoted form)"
+        );
+        assert!(
+            reject_code(
+                "(module m (def (main) \
+                   (= (quasiquote (f (unquote \"x\"))) (quote (f \"x\")))) \
+                 (export main))"
+            )
+            .is_none(),
+            "an active unquote of a string literal lifts to Ast.Str (equals the quoted form)"
+        );
+        // A literal the `Ast` sum has no value variant for yet (a FLOAT — no `Ast.Float`) still cannot
+        // lift. It DECLINES honestly (a Todo: "quasiquote produces an AST value (not yet built)"), NOT the
+        // leaky CDZ0201 "variant constructor's payload has declared type Int64, but Float64 was applied"
+        // the naive `(Ast.Int 2.0)` wrap produced — whose coercion fix would have silently rewritten the
+        // author's `2.0`→`2`. The reifier bails so no misleading coded reject + no value-corrupting fix.
+        {
+            let src = "(module m (def (main) (quasiquote (unquote 2.0))) (export main))";
+            let d = reject_full(src);
             assert!(
                 d.as_ref().is_none_or(|d| {
                     d.code.is_none() && !d.message.contains("variant constructor's payload")
                 }),
-                "an active unquote of a non-int literal declines honestly, not the leaky Ast.Int \
+                "an active unquote of a float literal declines honestly, not the leaky Ast.Int \
                  payload error: {d:?}"
             );
         }

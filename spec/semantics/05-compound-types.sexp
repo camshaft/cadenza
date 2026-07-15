@@ -8044,3 +8044,51 @@
             (export main)))
   (call   main (: 0 Int64))
   (output (: 7 Int64)))
+
+; --- A `(map …)` scrutinee with a RUNTIME key must NOT const-fold the match arm selection ---------------
+; A `(map …)` literal folds to a constant `Core::MapNew`, and a map MATCH over a constant map selects the
+; arm at compile time by testing key presence with `const_compound_eq`. But a `(map …)` can carry a
+; RUNTIME key (a call/param result that did not fold — `(map ((f x) 42))`): comparing a runtime key to a
+; pattern's literal key at compile time is unknown (`const_compound_eq` → `None` = absent), so the const
+; path took the CATCH-ALL for a key that IS present at run time — a silent WRONG VALUE. This is the
+; map-match twin of the `Set.contains`/`Set.remove` runtime-element fold miscompile (both fold a
+; collection literal against a constant probe, missing a runtime element). The fix routes a `MapNew` with
+; any non-constant key/value to the RUNTIME map matcher (a `Map.lookup` chain, comparing keys by value at
+; run time); only an all-constant `MapNew` keeps the fold. The runtime matcher over a `MapNew`-with-runtime
+; -key scrutinee is not yet fully realized, so this DECLINES (todo) — a SOUND decline, not the old wrong
+; answer. The `Map.lookup` companion (which never folded) already runs correctly. Reverting the fix flips
+; the first case Todo→Fail (the miscompile returns), so it guards the correctness boundary either way.
+
+(case "a Map.lookup over a map literal with a runtime key finds it by value"
+  (doc    "`(Map.lookup (map ((add 2 3) 42)) 5)` — the map literal's KEY `(add 2 3)` is a recursive call
+           (non-foldable) evaluating to 5 at run time; looking up the literal 5 must find 42. `Map.lookup`
+           never folded against the map literal, so it always compared keys by value at run time — this
+           pins the safe path stays correct (and contrasts with the map-MATCH fold that did misfire).
+           Expected: 42.")
+  (input  (do
+            (def (add (: x Int64) (: n Int64)) (if (< n 1) x (add (+ x 1) (- n 1))))
+            (def (main)
+              (match (Map.lookup (map ((add 2 3) 42)) 5)
+                ((Some v) v)
+                ((None) (- 0 1))))
+            (export main)))
+  (output (: 42 Int64)))
+
+(case "a map match over a map literal with a runtime key selects by value, not a const fold"
+  (doc    "`(match (map ((add 2 3) 42)) ((map (5 v) .. rest) v) (_ -1))` — the map literal's KEY `(add 2 3)`
+           is a runtime call = 5, and the arm matches key 5, so it must bind v=42 → 42. The const map-match
+           fold tested key presence with `const_compound_eq`, which reports the runtime key ABSENT, so it
+           WRONGLY took the catch-all → -1 (a silent miscompile). The fix routes a runtime-key `MapNew` to
+           the runtime map matcher (key comparison by value). That matcher does not yet handle a
+           `MapNew`-with-runtime-key scrutinee threaded through the presence chain, so this currently
+           DECLINES (todo) — a sound decline replacing the wrong answer; it flips to a pass when the runtime
+           matcher gains that capability. Reverting the fold guard reintroduces the miscompile (Todo→Fail).
+           Expected: 42.")
+  (input  (do
+            (def (add (: x Int64) (: n Int64)) (if (< n 1) x (add (+ x 1) (- n 1))))
+            (def (main)
+              (match (map ((add 2 3) 42))
+                ((map (5 v) .. rest) v)
+                (_ (- 0 1))))
+            (export main)))
+  (output (: 42 Int64)))

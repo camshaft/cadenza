@@ -114,6 +114,18 @@ Before you send a `merge-request`, all of these must hold in your worktree:
 4. Do NOT edit `cdz-runtime`'s `//` comments or `wit/runtime.wit` casually — they are inside the
    frozen `REQUIRED_RUNTIME_HASH`; a change there means `cargo xtask build` + `codegen --check`.
 
+## Shared memory — write your own; do NOT reorganize or minimize it (that's the librarian's job)
+
+The shared memory (`/local/home/bythewc/claude-memory/`) is the fleet's brain. You WRITE your own
+learnings/landings there (a new note, your vertical's log) — that's expected and good. But do NOT
+spend a tick PRUNING, COMPACTING, MINIMIZING, or RE-ORGANIZING memory — not `MEMORY.md`, not the
+`index-*` sub-indexes, not other agents' notes. There is a dedicated **`librarian`** agent that owns
+memory hygiene (shrinking the entry point, categorizing, pruning stale entries, keeping the wikilink
+graph intact). Agents that try to tidy memory themselves get STUCK on it (it's a rabbit hole, and it
+races the librarian + other writers) — it is NOT your job. Add what you learned, link it with
+`[[slug]]`, keep your own note tight, and move on to your actual work. If a memory file is wrong or
+sprawling, leave it for the librarian (or `note` the librarian) — don't fix it yourself.
+
 ## Standing down
 
 When your role's work is done (`merged` received for the last unit, or your stop condition hit),

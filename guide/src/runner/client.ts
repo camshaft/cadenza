@@ -5,12 +5,32 @@
 /// timeout; on timeout we `terminate()` the (now-dead) worker, report "timed out", and drop the
 /// reference so the NEXT run spins up a fresh worker. A completed run reuses the same worker.
 
-import { renderValue, renderSyntax, renderSyntaxDisplay, type Surface } from "../compiler/client.ts";
+import { renderValue, renderSyntax, renderSyntaxDisplay, runtimeHash, type Surface } from "../compiler/client.ts";
 import runtimeUrl from "../wasm/runtime.wasm?url";
+import { hexDigest, explainIfStaleRuntime } from "./runtimeHashGuard.ts";
 import type { RunJob, RunResult } from "./runWorker.ts";
 
 /** How long a single run may take before we assume a runaway loop and kill the worker. */
 const RUN_TIMEOUT_MS = 5000;
+
+/// Whether the bundled `runtime.wasm` is the one THIS compiler emits imports against — checked once.
+/// A MISMATCH (stale deployment) corrupts memory via the bare `cadenza:runtime/heap` import; see
+/// `runtimeHashGuard.ts` for the full why. `null` = not yet determined / couldn't check.
+let runtimeMatchesCompiler: boolean | null = null;
+async function checkRuntimeHash(bytes: Uint8Array): Promise<void> {
+  if (runtimeMatchesCompiler !== null) return; // check once
+  try {
+    // Copy into a fresh ArrayBuffer — `bytes` may be a view over a larger/SharedArrayBuffer that
+    // SubtleCrypto.digest rejects; the copy is a plain ArrayBuffer of exactly the runtime bytes.
+    const digest = await crypto.subtle.digest("SHA-256", bytes.slice().buffer);
+    const required = await runtimeHash();
+    runtimeMatchesCompiler = hexDigest(digest) === required;
+  } catch {
+    // If we can't compute or fetch the hash (no SubtleCrypto, compiler error), don't block the run —
+    // leave the verdict unknown so we never MISReport a good run as stale.
+    runtimeMatchesCompiler = null;
+  }
+}
 
 export type RunOutcome =
   | { kind: "value"; text: string }
@@ -59,6 +79,10 @@ export async function run(
   busy = true;
   try {
     const runtime = await loadRuntime();
+    // Verify (once) that the bundled runtime matches the compiler — so a stale-deployment mismatch is
+    // reported clearly below rather than as an inscrutable memory trap. A compound-returning program
+    // needs the runtime; a scalar program (runtime == null) never touches the heap, so skip the check.
+    if (runtime) await checkRuntimeHash(runtime);
     worker ??= freshWorker();
     const w = worker;
 
@@ -95,9 +119,9 @@ export async function run(
           text: await renderValueInSurface(await renderValue(raw.bytes), surface, display),
         };
       case "trap":
-        return { kind: "trap", message: raw.message };
+        return { kind: "trap", message: explainIfStaleRuntime(raw.message, runtimeMatchesCompiler) };
       default:
-        return { kind: "error", message: raw.message };
+        return { kind: "error", message: explainIfStaleRuntime(raw.message, runtimeMatchesCompiler) };
     }
   } finally {
     busy = false;

@@ -812,3 +812,26 @@
               (export main)))
   (call   main (: 0 Int64))
   (output (: 3 Int64)))
+
+(case "a runtime signed little-endian segment round-trips a negative value"
+  (doc    "The three orthogonal axes combined over a RUNTIME value: SIGNED (two's complement) + LITTLE-ENDIAN
+           (byte reversal) + the width-typed contract. `(i16 n le)` takes a runtime `Int16` n = -2 = 0xFFFE;
+           little-endian lays it LSB-first as bytes [0xFE, 0xFF], and matching `(i16 m le)` reassembles the
+           two's-complement value back to -2. Pins that sign-extension and endianness compose correctly over
+           a runtime construct→match round-trip (a constant `(i16 -1)`/`le u16` cover each axis singly; this
+           is the runtime intersection with a NEGATIVE multi-byte value).")
+  (input  (do (def (main (: n Int16)) (match (bin (i16 n le)) ((bin (i16 m le)) m) (_ 0))) (export main)))
+  (call   main (: -2 Int16))
+  (output (: -2 Int64)))
+
+(case "a runtime signed little-endian segment lays the low byte first"
+  (doc    "The byte-order half of the signed-le round-trip: `(bin (i16 n le))` with a runtime `Int16` n = -2
+           = 0xFFFE emits the LEAST-significant byte first, so byte 0 = 0xFE = 254 (not 0xFF). Reads it back
+           with `Bytes.at`. Pins that `le` reverses a SIGNED segment's bytes the same way it does an unsigned
+           one — the two's-complement bit pattern is laid low-byte-first, so a reader that ignored `le` on a
+           signed segment (emitting big-endian 0xFF) would differ here.")
+  (input  (do (def (main (: n Int16))
+                (match (Bytes.at (bin (i16 n le)) 0) ((Some b) b) ((None _) -1)))
+              (export main)))
+  (call   main (: -2 Int16))
+  (output (: 254 Int64)))

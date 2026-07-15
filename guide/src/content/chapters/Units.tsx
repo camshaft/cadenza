@@ -64,20 +64,20 @@ export default function Units() {
         first, then the quantity. Two kilometers <em>in meters</em>:
       </P>
       <Runnable
-        source={`(Qty.value
-  (Unit.in (Unit.of #"meter")
-           (Qty.of 2.0 (Unit.of #"kilometer"))))`}
+        source={`(Unit.in (Unit.of #"meter")
+         (Qty.of 2.0 (Unit.of #"kilometer")))`}
       />
       <P>
-        Toggle to the ML surface and that conversion reads as a plain postfix — <C>2.0 kilometer as
-        meter</C>. That <C>as</C> <em>is</em> the conversion: take a quantity, name the unit you want it
-        in, and Cadenza scales it exactly. It runs both ways across a scale — two hundred fifty
-        milliseconds in seconds is a quarter of a second:
+        The result is the bare number <C>2000</C>. Converting <em>into</em> a unit is the deliberate exit
+        from the quantity world — you asked "how many meters?" and get the plain number of meters, ready
+        for ordinary arithmetic; there's no <C>Qty.value</C> to strip because <C>Unit.in</C> already hands
+        back the number. Toggle to the ML surface and it reads as a plain postfix — <C>2.0 kilometer as
+        meter</C>. It runs both ways across a scale — two hundred fifty milliseconds in seconds is a
+        quarter of a second (<C>0.25</C>):
       </P>
       <Runnable
-        source={`(Qty.value
-  (Unit.in (Unit.of #"second")
-           (Qty.of 250.0 (Unit.of #"millisecond"))))`}
+        source={`(Unit.in (Unit.of #"second")
+         (Qty.of 250.0 (Unit.of #"millisecond")))`}
       />
 
       <H2>Different dimensions do not mix</H2>
@@ -148,9 +148,8 @@ export default function Units() {
         (<C>mebibyte</C> is 2²⁰). One mebibyte is exactly 1&nbsp;048&nbsp;576 bytes, not a million:
       </P>
       <Runnable
-        source={`(Qty.value
-  (Unit.in (Unit.of #"byte")
-           (Qty.of 1.0 (Unit.of #"mebibyte"))))`}
+        source={`(Unit.in (Unit.of #"byte")
+         (Qty.of 1.0 (Unit.of #"mebibyte")))`}
       />
       <P>
         That's the distinction a units layer is <em>for</em> — the kind that quietly turns a 1&nbsp;MiB
@@ -173,8 +172,7 @@ export default function Units() {
       <Runnable
         source={`(Unit.define #"furlong" (Unit.of #"foot") 660 1)
 (def (main)
-  (Qty.value
-    (Unit.in (Unit.of #"meter") (Qty.of 1.0 (Unit.of #"furlong")))))`}
+  (Unit.in (Unit.of #"meter") (Qty.of 1.0 (Unit.of #"furlong"))))`}
       />
       <P>
         The new name joins the same family, so it carries a dimension and obeys every rule you've seen —
@@ -184,8 +182,7 @@ export default function Units() {
       <Runnable
         source={`(Unit.define #"nautical-mile" (Unit.of #"meter") 1852 1)
 (def (main)
-  (Qty.value
-    (Unit.in (Unit.of #"meter") (Qty.of 2.0 (Unit.of #"nautical-mile")))))`}
+  (Unit.in (Unit.of #"meter") (Qty.of 2.0 (Unit.of #"nautical-mile"))))`}
       />
       <P>
         A unit's name has to mean exactly one conversion. Redefining <C>foot</C> as 2 meters — a value it
@@ -221,12 +218,10 @@ export default function Units() {
             then the quantity — the answer is <C>3000</C>.
           </>
         }
-        starter={`(Qty.value
-  (Unit.in (Unit.of #"meter")
-           (Qty.of 3.0 (Unit.of #"?"))))`}
-        solution={`(Qty.value
-  (Unit.in (Unit.of #"meter")
-           (Qty.of 3.0 (Unit.of #"kilometer"))))`}
+        starter={`(Unit.in (Unit.of #"meter")
+         (Qty.of 3.0 (Unit.of #"?")))`}
+        solution={`(Unit.in (Unit.of #"meter")
+         (Qty.of 3.0 (Unit.of #"kilometer")))`}
         expected="3000"
         hint={
           <>
@@ -288,12 +283,10 @@ export default function Units() {
         }
         starter={`(Unit.define #"span" (Unit.of #"meter") ? 1)
 (def (main)
-  (Qty.value
-    (Unit.in (Unit.of #"meter") (Qty.of 4.0 (Unit.of #"span")))))`}
+  (Unit.in (Unit.of #"meter") (Qty.of 4.0 (Unit.of #"span"))))`}
         solution={`(Unit.define #"span" (Unit.of #"meter") 3 1)
 (def (main)
-  (Qty.value
-    (Unit.in (Unit.of #"meter") (Qty.of 4.0 (Unit.of #"span")))))`}
+  (Unit.in (Unit.of #"meter") (Qty.of 4.0 (Unit.of #"span"))))`}
         expected="12"
         hint={
           <>

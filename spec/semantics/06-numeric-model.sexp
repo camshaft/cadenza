@@ -1208,6 +1208,50 @@
   (call   main (: 5 Int64))
   (output (: 1 Int64)))
 
+; ── An ANNIHILATOR algebraic identity (x*0, x&0 → 0) must not DISCARD a trapping runtime operand ──────
+; These are the annihilator companions of the tautology-comparison cases above, aimed at the algebraic
+; SIMPLIFICATION the compiler applies at the Core (backend-independent) tier: `x * 0` and `x & 0` fold to
+; the constant 0. Unlike a KEEPING identity (`x + 0 = x`, which returns the operand so its traps still
+; fire), an annihilator DISCARDS the other operand — so it may be applied ONLY when that operand cannot
+; trap. `(* (/ 10 z) 0)` and `(& (/ 10 z) 0)` with z = 0 each carry a div-by-zero in the discarded
+; operand: the fold to 0 MUST NOT drop it — the trap is a defined outcome (core-semantics.md §Partial
+; Operations Have A Defined Outcome), observed because the operand is EVALUATED before being annihilated.
+; A runtime divisor `z` forces the trap to run time (a constant `(/ 10 0)` folds to a compile-time
+; CDZ0304); the fold is a Core rewrite in `lower`, so BOTH backends must preserve the trap identically.
+; The trap-FREE companion pins that a total operand IS annihilated to 0 — the optimization is not
+; over-suppressed. (An operand the compiler PROVES traps and would-discard earns the non-error CDZ0305,
+; but here the trap is a RUNTIME value the compiler cannot prove, so the operand is kept and evaluated.)
+
+(case "the multiply-by-zero annihilator does not discard a trapping runtime operand"
+  (doc    "`(* (/ 10 z) 0)` with z = 0: `x * 0` folds to the constant 0, but the discarded operand
+           `(/ 10 z)` divides by zero and MUST trap — the annihilator may drop the operand's VALUE, not
+           its evaluation. A runtime divisor keeps the div out of the constant fold, so the emitted code
+           must evaluate `(/ 10 z)` (and trap) before annihilating. The `x * 0` companion of the
+           tautology-comparison trap-preservation cases above; the trap-free case below pins the fold
+           still fires when the operand is total.")
+  (input  (do (def (main (: z Int64)) (* (/ 10 z) 0)) (export main)))
+  (call   main (: 0 Int64))
+  (trap   "divide by zero"))
+
+(case "the bitwise-AND-with-zero annihilator does not discard a trapping runtime operand"
+  (doc    "The bitwise companion: `(& (/ 10 z) 0)` with z = 0 folds to 0 (AND with all-zero bits), but the
+           discarded operand `(/ 10 z)` divides by zero and MUST trap. Pins that the `& 0` annihilator,
+           like `* 0`, preserves the discarded operand's evaluation — the mask op preserving the trap that
+           the tautology case above only mentions in passing, pinned directly here.")
+  (input  (do (def (main (: z Int64)) (& (/ 10 z) 0)) (export main)))
+  (call   main (: 0 Int64))
+  (trap   "divide by zero"))
+
+(case "an annihilator identity folds to zero when its operand is trap-free"
+  (doc    "The control: `(* z 0)` over a bare runtime parameter `z` folds to the constant 0 — the operand
+           is a plain parameter that cannot trap, so the annihilator applies and no runtime multiply is
+           emitted. With z = 7 the result is 0 (not 7). Pins that trap-preservation does not
+           over-conservatively suppress the annihilator on a total operand — the dual of the trapping
+           cases above.")
+  (input  (do (def (main (: z Int64)) (* z 0)) (export main)))
+  (call   main (: 7 Int64))
+  (output (: 0 Int64)))
+
 (case "modulo gives the remainder"
   (doc    "The compiler needs modulo for LEB128 encoding: extract 7-bit groups from an integer.")
   (input  (% 130 128))

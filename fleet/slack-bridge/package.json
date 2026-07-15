@@ -1,0 +1,23 @@
+{
+  "name": "cadenza-slack-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Fleet dev tooling: drive the Cadenza fleet concierge from Slack (Socket Mode) — messages flow through the fleet inbox protocol.",
+  "license": "MIT",
+  "author": "cadenza",
+  "type": "commonjs",
+  "main": "bridge.js",
+  "bin": {
+    "cadenza-slack-bridge": "bridge.js"
+  },
+  "scripts": {
+    "start": "node bridge.js",
+    "test": "node smoke.test.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@slack/bolt": "^3.19.0"
+  }
+}

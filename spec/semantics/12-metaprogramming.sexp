@@ -106,6 +106,43 @@
   (input  `(+ ,(+ 1 1) 10))
   (output (: (Ast.List (list (Ast.Name "+") (Ast.Int 2) (Ast.Int 10))) Ast)))
 
+; --- An active unquote lifts its operand by the operand's VALUE KIND ------------------------------
+; metaprogramming.md #Quasiquote Constructs AST With Selective Evaluation: an active `,<expr>` evaluates
+; <expr> and INSERTS ITS RESULT into the AST being constructed. The inserted node is the `Ast.*` leaf
+; that VALUE denotes — an integer becomes `Ast.Int`, a boolean `Ast.Bool`, a string `Ast.Str` — the same
+; leaf `quote` of that literal produces (so `` `(f ,true) `` embeds the SAME `(Ast.Bool true)` node as
+; `(quote (f true))`). Now that the `Ast` sum carries the boolean and string forms, an active unquote of
+; a boolean/string literal lifts to the matching leaf rather than declining. (A RUNTIME operand — a name
+; or a computed expression — still lifts as `Ast.Int` this increment: its type is not known at reify
+; time, so a non-Int runtime operand declines rather than miscompiling; the inferred-type lift of a
+; runtime operand is a later increment.)
+
+(case "an active unquote of a boolean literal lifts to an Ast.Bool node"
+  (doc    "`` `(f ,true) `` embeds the boolean literal `true` as the `Ast.Bool` leaf its value denotes —
+           the same node `(quote (f true))` builds — so it equals `(Ast.List (list (Ast.Name \"f\")
+           (Ast.Bool true)))` (metaprogramming.md #Quasiquote Constructs AST With Selective Evaluation:
+           the unquote inserts its result). The boolean companion of the integer embed case above.")
+  (input  (= (quasiquote (f (unquote true)))
+             (Ast.List (list (Ast.Name "f") (Ast.Bool true)))))
+  (output (: true Bool)))
+
+(case "an active unquote of a string literal lifts to an Ast.Str node"
+  (doc    "`` `(f ,\"x\") `` embeds the string literal `\"x\"` as the `Ast.Str` leaf — the same node
+           `(quote (f \"x\"))` builds — so it equals `(Ast.List (list (Ast.Name \"f\") (Ast.Str \"x\")))`.
+           The string companion; pins that the active-unquote lift dispatches on the operand's value kind
+           (a string literal → `Ast.Str`, not the `Ast.Int` the integer/runtime path uses).")
+  (input  (= (quasiquote (f (unquote "x")))
+             (Ast.List (list (Ast.Name "f") (Ast.Str "x")))))
+  (output (: true Bool)))
+
+(case "an active-unquoted boolean literal equals the quoted form"
+  (doc    "The unquote-vs-quote agreement for the boolean form: `` `(f ,true) `` and `(quote (f true))`
+           build the SAME `Ast` value (both `(Ast.List (list (Ast.Name \"f\") (Ast.Bool true)))`), so they
+           are structurally equal (core-semantics.md #Equality Is Structural). An active unquote of a
+           literal produces the same node quote of that literal does.")
+  (input  (= (quasiquote (f (unquote true))) (quote (f true))))
+  (output (: true Bool)))
+
 ; An unquote MUST EVALUATE its expression (metaprogramming.md #Quasiquote Constructs AST With Selective
 ; Evaluation: ",<expr> … MUST evaluate <expr> normally and insert its result"). If that expression cannot
 ; be evaluated because it references an UNBOUND name, that is the ordinary unbound-name error
@@ -776,3 +813,38 @@
             (export main)))
   (call   main (: 0 Int64))
   (output (: 5 Int64)))
+
+(case "a quoted form's head reifies as a Name while its string argument is a Str"
+  (doc    "`(quote (f \"s\"))` — ONE form carrying both String-payload leaf variants: the head `f` is an
+           identifier reference (Ast.Name) and the argument a string literal (Ast.Str), same payload
+           TYPE, different variants. The nested element match takes the Name arm for the head (→ 2) and
+           a Str head-pattern does not fire (→ not 1). Pins the reifier keys the variant on the
+           SYNTACTIC role, not the payload type — a quote that tags every string-payload leaf uniformly
+           collapses call-heads and literals, and eval would then look up string literals as names.")
+  (input  (do
+            (def (main (: d Int64))
+              (match (quote (f "s"))
+                ((Ast.List (list (Ast.Str _) .. _)) 1)
+                ((Ast.List (list (Ast.Name _) .. _)) 2)
+                (_ 0)))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 2 Int64)))
+
+(case "three leaf variants in one quoted form each dispatch their own tag"
+  (doc    "`(quote (\"s\" 5 true))` reifies a list whose three elements are DISTINCT leaf variants —
+           Ast.Str, Ast.Int, Ast.Bool — bound by one list pattern and classified by a shared `kind`
+           match: 1·100 + 2·10 + 3 = 123. The all-variants integration pin: each leaf realization was
+           landed separately (Int/Name first, then Bool, then Str), and this case fails if ANY leaf's
+           tag collides with another's inside a compound reification (a mis-tagged element shifts one
+           digit of the answer, naming the culprit).")
+  (input  (do
+            (def (kind (: a Ast))
+              (match a ((Ast.Str _) 1) ((Ast.Int _) 2) ((Ast.Bool _) 3) (_ 9)))
+            (def (main (: d Int64))
+              (match (quote ("s" 5 true))
+                ((Ast.List (list a b c)) (+ (+ (* 100 (kind a)) (* 10 (kind b))) (kind c)))
+                (_ -1)))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 123 Int64)))

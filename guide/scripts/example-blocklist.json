@@ -1,0 +1,12 @@
+{
+  "_doc": "Examples that DON'T currently run, classified + routed per the operator's policy (2026-07-15). An entry here is a KNOWN failure the guide itself cannot fix on its own — so check-examples reports it as 'known-blocked' (loud, tracked) instead of hard-failing the gate, and KEEPS IT OUT of the shipped guide until it's green. Each entry: `match` (a substring, OR an array of substrings ALL of which must appear, identifying the example(s) uniquely), `file` (chapter path), `reason`, `owner` (who fixes it: a fleet agent / queue issue), `kind` ('compiler' = a filed compiler/runtime bug → corpus-bugfix; 'content' = the example is written wrong → v-guide). RE-RUN LOOP: the harness re-checks every blocked example each run; if one now PASSES, it prints 'BLOCKLIST ENTRY CAN BE REMOVED' so the entry is deleted and the example ships. Nothing is permanently abandoned; nothing broken ships.",
+  "blocked": [
+    {
+      "file": "src/content/chapters/Units.tsx",
+      "match": ["Qty.value", "Unit.in"],
+      "reason": "Unit.in / Unit.of conversions now UNWRAP to a bare Float64 (the qty-unwrap design change, PR #386 / v-quantity vertical), so wrapping them in `Qty.value` (which expects a Qty) declines 'function return type has no machine representation'. The example is written the OLD way (pre-unwrap).",
+      "owner": "v-guide",
+      "kind": "content"
+    }
+  ]
+}

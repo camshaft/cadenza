@@ -1,0 +1,127 @@
+#!/usr/bin/env node
+// Cadenza fleet ↔ Slack bridge, in **Socket Mode**.
+//
+// Lets the operator talk to the concierge (and the rest of the fleet) from Slack instead of the tmux
+// window. It runs a Slack app that dials OUT over a WebSocket (Socket Mode) — NO public HTTPS endpoint, no
+// tunnel, no request-signature handling; Slack authenticates the connection with an app-level token.
+//
+// Two directions, both over the ordinary fleet inbox protocol (the same atomic JSON files
+// `cargo xtask fleet send` writes — see inbox.js):
+//   Slack → fleet:  a DM to the bot, or a message in the configured bridge channel, is parsed
+//                   (`@agent`/`!kind` prefixes, else a `note` to the concierge) and DELIVERED into the
+//                   target agent's inbox. The concierge drains it on its next tick exactly as if it came
+//                   from a terminal.
+//   fleet → Slack:  the bridge has its OWN fleet identity (SLACK_BRIDGE_AGENT, default `slack-bridge`).
+//                   Any agent that wants to reach the operator does `fleet send --to slack-bridge …`;
+//                   this daemon polls its inbox and posts each message to the bridge channel, then moves
+//                   it to processed/. So the concierge answers an operator by sending the bridge a
+//                   message — it lands in Slack.
+//
+// Config via environment variables:
+//   SLACK_BOT_TOKEN     — REQUIRED. Bot User OAuth Token, `xoxb-…` (OAuth & Permissions).
+//   SLACK_APP_TOKEN     — REQUIRED. App-Level Token with `connections:write`, `xapp-…` (Basic
+//                         Information → App-Level Tokens). This is what enables Socket Mode.
+//   SLACK_BRIDGE_CHANNEL— REQUIRED for fleet→Slack. Channel ID (e.g. `C0123ABCD`) the bridge posts agent
+//                         messages into and listens in. DMs to the bot always work regardless.
+//   FLEET_DIR           — the fleet state dir holding `inbox/` (default: `<repo>/.claude/fleet`, resolved
+//                         relative to this file).
+//   FLEET_DEFAULT_TO    — default recipient when the operator gives no `@agent` (default: `concierge`).
+//   SLACK_BRIDGE_AGENT  — this bridge's own fleet agent name / inbox (default: `slack-bridge`).
+//   POLL_MS             — how often to poll the bridge inbox for fleet→Slack messages (default: 2000).
+
+"use strict";
+
+const path = require("node:path");
+const { App } = require("@slack/bolt");
+const { deliver, drain, markProcessed } = require("./inbox.js");
+const { parseOperatorMessage, renderFleetMessage, helpText } = require("./format.js");
+
+const BOT_TOKEN = process.env.SLACK_BOT_TOKEN || "";
+const APP_TOKEN = process.env.SLACK_APP_TOKEN || "";
+const BRIDGE_CHANNEL = process.env.SLACK_BRIDGE_CHANNEL || "";
+const DEFAULT_TO = process.env.FLEET_DEFAULT_TO || "concierge";
+const BRIDGE_AGENT = process.env.SLACK_BRIDGE_AGENT || "slack-bridge";
+const POLL_MS = Number(process.env.POLL_MS || 2000);
+// Default FLEET_DIR: this file's tracked home is <repo>/fleet/slack-bridge/bridge.js, and the runtime
+// fleet state (inboxes) lives at <repo>/.claude/fleet — so run from the main checkout, or set FLEET_DIR.
+const FLEET_DIR = process.env.FLEET_DIR || path.resolve(__dirname, "..", "..", ".claude", "fleet");
+
+function main() {
+  const missing = [];
+  if (!BOT_TOKEN) missing.push("SLACK_BOT_TOKEN (xoxb-…)");
+  if (!APP_TOKEN) missing.push("SLACK_APP_TOKEN (xapp-…, with connections:write)");
+  if (missing.length) {
+    console.error("Missing required env: " + missing.join(", ") + ".\nSee ./README.md for setup.");
+    process.exit(1);
+  }
+
+  const app = new App({ token: BOT_TOKEN, appToken: APP_TOKEN, socketMode: true });
+
+  // ── Slack → fleet ────────────────────────────────────────────────────────────────────────────
+  // Handle a plain message: a DM to the bot, or a message in the bridge channel. We ignore the bot's
+  // own posts and messages elsewhere. `help`/empty prints usage; anything else is delivered to the fleet.
+  app.message(async ({ message, say }) => {
+    // Only react to ordinary user messages (no subtypes like edits/joins), and only in a DM (im) or the
+    // configured bridge channel.
+    if (message.subtype || message.bot_id) return;
+    const isDM = message.channel_type === "im";
+    const inBridgeChannel = BRIDGE_CHANNEL && message.channel === BRIDGE_CHANNEL;
+    if (!isDM && !inBridgeChannel) return;
+
+    const text = (message.text || "").trim();
+    if (!text || text.toLowerCase() === "help") {
+      await say(helpText(DEFAULT_TO));
+      return;
+    }
+
+    const intent = parseOperatorMessage(text, DEFAULT_TO);
+    try {
+      deliver(FLEET_DIR, intent.to, {
+        from: BRIDGE_AGENT,
+        kind: intent.kind,
+        subject: intent.subject,
+        body: intent.body,
+      });
+      await say(`:incoming_envelope: → *${intent.to}* _(${intent.kind})_`);
+    } catch (e) {
+      console.error("deliver failed:", e);
+      await say(`:warning: couldn't deliver to *${intent.to}*: ${e.message}`);
+    }
+  });
+
+  // ── fleet → Slack ────────────────────────────────────────────────────────────────────────────
+  // Poll the bridge's own inbox; post each message to the bridge channel, then archive it. Sequential
+  // per tick so ordering is preserved and a post failure leaves the file for a retry (not processed).
+  async function pumpInbox() {
+    if (!BRIDGE_CHANNEL) return; // nowhere to post; DMs are inbound-only
+    const pending = drain(FLEET_DIR, BRIDGE_AGENT);
+    for (const { file, msg } of pending) {
+      try {
+        await app.client.chat.postMessage({ channel: BRIDGE_CHANNEL, text: renderFleetMessage(msg) });
+        markProcessed(file);
+      } catch (e) {
+        console.error("post to Slack failed (will retry):", e);
+        break; // preserve order; retry this + the rest next poll
+      }
+    }
+  }
+
+  (async () => {
+    await app.start();
+    console.log(
+      `Cadenza fleet↔Slack bridge running (Socket Mode). agent=${BRIDGE_AGENT} default→${DEFAULT_TO} ` +
+        `fleetDir=${FLEET_DIR}` + (BRIDGE_CHANNEL ? ` channel=${BRIDGE_CHANNEL}` : " (no channel; DM-only inbound)"),
+    );
+    const timer = setInterval(() => {
+      pumpInbox().catch((e) => console.error("pumpInbox error:", e));
+    }, POLL_MS);
+    timer.unref?.();
+  })().catch((e) => {
+    console.error("failed to start:", e);
+    process.exit(1);
+  });
+}
+
+if (require.main === module) main();
+
+module.exports = { main };
