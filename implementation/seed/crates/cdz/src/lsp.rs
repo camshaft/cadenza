@@ -50,22 +50,14 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Sync + Send>> {
     // stray `println!` would corrupt the stream). Diagnostic logging, if any, goes to stderr.
     let (connection, io_threads) = Connection::stdio();
 
-    // The initialize handshake: advertise the capabilities this server supports, then serve until exit.
-    let server_capabilities = serde_json::to_value(capabilities())?;
-    let init_params = connection.initialize(server_capabilities)?;
+    // The initialize handshake, done in two steps so the response carries the FULL `InitializeResult` —
+    // NOT just the capabilities. The convenience `Connection::initialize(caps)` replies with only the
+    // capabilities value, so a client never learns the server's name/version; `initialize_start` +
+    // `initialize_finish` let us send `serverInfo` alongside the capabilities (some clients surface the
+    // server name/version in their UI and logs, which is how an editor confirms it is talking to `cdz`).
+    let (init_id, init_params) = connection.initialize_start()?;
     let _init: InitializeParams = serde_json::from_value(init_params)?;
-
-    // Announce our name/version in the InitializeResult too — some clients surface it. `initialize`
-    // already replied with the capabilities value; this is informational and folded into the same reply
-    // by `lsp_server`, so we only need to have supplied the capabilities above. (Kept for clarity of
-    // what the server reports; `InitializeResult` is constructed to document the shape.)
-    let _ = InitializeResult {
-        capabilities: capabilities(),
-        server_info: Some(ServerInfo {
-            name: "cdz-lsp".to_string(),
-            version: Some(env!("CARGO_PKG_VERSION").to_string()),
-        }),
-    };
+    connection.initialize_finish(init_id, serde_json::to_value(initialize_result())?)?;
 
     // Serve until the client shuts the connection down. `serve` takes the connection BY VALUE and drops
     // it on return — this is load-bearing: `io_threads.join()` waits for the writer thread, which only
@@ -103,6 +95,20 @@ fn capabilities() -> ServerCapabilities {
             },
         )),
         ..Default::default()
+    }
+}
+
+/// The full `InitializeResult` the server replies to `initialize` with — its `capabilities` PLUS its
+/// `serverInfo` (name/version). Sent via `initialize_finish` (NOT the convenience `Connection::
+/// initialize`, which would drop everything but the capabilities), so a client learns which server and
+/// version it is talking to.
+fn initialize_result() -> InitializeResult {
+    InitializeResult {
+        capabilities: capabilities(),
+        server_info: Some(ServerInfo {
+            name: "cdz-lsp".to_string(),
+            version: Some(env!("CARGO_PKG_VERSION").to_string()),
+        }),
     }
 }
 
@@ -1104,6 +1110,27 @@ mod tests {
         assert_eq!(d.severity, Some(DiagnosticSeverity::WARNING));
         assert_eq!(d.code, None);
         assert_eq!(d.message, "something is unused");
+    }
+
+    #[test]
+    fn initialize_result_carries_server_info_and_capabilities() {
+        // The initialize response must include BOTH the capabilities AND serverInfo (name/version) — a
+        // regression guard for the bug where the InitializeResult was built then discarded so only the
+        // capabilities reached the client (PR #391). We assert on the SERIALIZED JSON, which is exactly
+        // what `initialize_finish` sends over the wire.
+        let value = serde_json::to_value(initialize_result()).expect("serializes");
+        let info = value
+            .get("serverInfo")
+            .expect("the initialize result must carry serverInfo");
+        assert_eq!(info.get("name").and_then(|n| n.as_str()), Some("cdz-lsp"));
+        assert!(
+            info.get("version").and_then(|v| v.as_str()).is_some(),
+            "serverInfo must carry a version"
+        );
+        assert!(
+            value.get("capabilities").is_some(),
+            "the initialize result must still carry capabilities"
+        );
     }
 
     /// A throwaway document URI for the position-based analyses.
