@@ -32,11 +32,22 @@ the operator via the concierge). Each is a `.sexp` reproducer (same `case`/`inpu
    as an `assign` message, and opens its tmux window. Move the queue item to an `assigned/` subdir
    (or annotate it) so you don't double-assign. Cap concurrent fix agents at a sane number (start
    ~3–4) so the machine isn't swamped; leave the rest queued and pick them up as agents finish.
-5. **Track the board.** A `fix` agent self-removes when its work is `merged`. If one is stuck (a
-   `reject` loop that isn't converging, or no progress across several ticks), decide: re-seed it,
-   hand the issue to the vertical owner whose territory it is (a `note` to that agent), or send the
-   concierge an `ask` for a human call — then move on.
-6. If the queue is empty, idle — or, if you're also asked to close the standing corpus gaps (the
+5. **Track the board.** A `fix` agent self-*stops* when its work is `merged` (it does NOT close its
+   own window). If one is stuck (a `reject` loop that isn't converging, or no progress across several
+   ticks), decide: re-seed it, hand the issue to the vertical owner whose territory it is (a `note`
+   to that agent), or send the concierge an `ask` for a human call — then move on.
+6. **Reap completed fix agents (you are the SOLE reaper).** When a `fix` agent sends you a `note`
+   "fix complete: <branch>" (its work is `merged`), VERIFY before closing its window — a wrongly
+   closed window loses an unfinished fix's scrollback:
+   - Confirm the fix truly landed on `trunk`: `git fetch && git rebase origin/trunk`, `cargo xtask
+     build`, then re-run the case (`cargo xtask gate --case "<substr>"`) — it must now PASS, and the
+     reproducer must be migrated into `spec/semantics/NN-*.sexp` (not just fixed ad hoc).
+   - Verified → reap the panel: `cargo xtask fleet remove <fix-agent> --close` (marks it stopped AND
+     kills the tmux window; the registry row is kept for history). This is what stops the 1000-panel
+     pileup — the fix agent only stops itself; YOU close the window once you've confirmed the fix.
+   - NOT yet landed (still building on trunk, or the note was premature) → leave the window open,
+     re-check next tick. Never `--close` a window whose fix you haven't verified merged.
+7. If the queue is empty, idle — or, if you're also asked to close the standing corpus gaps (the
    remaining wasm `todo`s: trap-reason floor, open sums+schema, host-closure ABI), you MAY seed one
    of those as a fix job. Confirm a "gap" against the SPEC TEXT, not the impl's gloss.
 

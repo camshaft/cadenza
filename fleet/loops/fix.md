@@ -31,9 +31,13 @@ seed case is in your inbox as the `assign` message (and its file is referenced b
 7. **Request merge:** `cargo xtask fleet send --to pr-sync --kind merge-request --subject "<branch>"
    --ref $(git rev-parse HEAD) --body "<gate summary: test count, fail-set diff = additive>"`. Then
    idle until you get a reply.
-8. On **`merged`**: your job is done — `note` the PM, then `cargo xtask fleet remove <you>` (your
-   tmux window stays open for scrollback). On **`reject`**: read the body, fix the conflict/failure,
-   re-gate, resend. Never resend red.
+8. On **`merged`**: your job is done. Send the PM a `note` (`cargo xtask fleet send --to
+   corpus-bugfix --kind note --subject "fix complete: <branch>" --ref <merged-sha> --body "issue
+   <ref> merged at <sha>; case migrated to spec/semantics/<file>"`), then `cargo xtask fleet remove
+   <you>` — **stop only; do NOT `--close` your own window.** The `corpus-bugfix` PM is the sole
+   reaper: it verifies your fix truly landed on `trunk` and then closes your window for you (so a
+   premature self-close can't lose an unfinished fix's scrollback). On **`reject`**: read the body,
+   fix the conflict/failure, re-gate, resend. Never resend red.
 
 ## Stop conditions
 - `merged` received → self-remove. This is your success exit.
