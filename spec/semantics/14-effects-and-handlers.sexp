@@ -2773,6 +2773,22 @@
             (def (main) (handle E 0 ((e (n) s (resume n s))) (E.e 1))) (export main)))
   (error  CDZ0201))
 
+(case "a bind directive with a malformed peer interface name is rejected"
+  (doc    "A `(bind Effect \"iface\")` INTERFACE STRING is a component-boundary name — it is emitted
+           VERBATIM as the extern name the peer-instance import binds under, so it must be a valid
+           component-model interface name `namespace:package/interface` in kebab-case (lowercase package),
+           the same shape the runtime heap import and every provider export use. `\"Math/API\"` is not: an
+           uppercase package segment. Without a compile-time check the string would `kebab_extern_name`-
+           mangle to the INVALID extern name `math/-a-p-i` and produce a component wasmtime rejects at LOAD
+           with NO diagnostic — a silent invalid-component miscompile. Rejected at compile time (CDZ0201)
+           naming the offending string, the peer-binding analogue of the other bind rejects. A bare package
+           name with no `/interface` projection (`cadenza:math`) is malformed the same way.")
+  (input  (do
+            (effect Math (op add (-> Int64 Int64 Int64)))
+            (bind Math "Math/API")
+            (def (main (: x Int64)) (host (Math) (Math.add x x))) (export main)))
+  (error  CDZ0201))
+
 (case "a handle whose head names a value rather than an effect is rejected"
   (doc    "A `handle`'s HEAD names the effect the handler discharges, and its arms ARE that effect's
            operations (capabilities-and-effects.md #A Handler Arm Names An Operation Its Effect Declares).

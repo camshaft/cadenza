@@ -695,6 +695,16 @@ pub const MALFORMED_BIND_MESSAGE: &str = "a `(bind …)` binds an EFFECT to a pe
 /// (a def, a type, an unbound name) to a peer is named rather than silently ignored.
 pub const BIND_NOT_AN_EFFECT_MESSAGE: &str = "a `(bind …)` names a declared EFFECT — this name is not an \
      effect, so there is nothing to route to a peer";
+
+/// A `(bind E "…")` (or `--component-name`) interface string that is not a valid component-model
+/// interface name. Without this reject the string is emitted verbatim as a component import/export
+/// extern name, so a non-conforming one (`"Math/API"`) produces a component `wasmtime` rejects at LOAD
+/// with NO compiler diagnostic — a silent invalid-component miscompile. Reported at the string, with the
+/// required shape spelled out so the fix is mechanical.
+pub const MALFORMED_INTERFACE_NAME_MESSAGE: &str = "a peer interface name must be \
+     `namespace:package/interface` in kebab-case (lowercase package, e.g. `cadenza:math/api`, with an \
+     optional `@version`) — this string is not a valid component interface name, so the emitted \
+     component would fail to load";
 /// A stable SUBSTRING unique to the coded CDZ0201 resume-value/result-type mismatch (`a handler resumes
 /// with a value of type X but the operation's result type is Y`). An ill-typed resume ALSO makes the
 /// handler unfoldable, so `lower` emits the uncoded [`HANDLER_NOT_REDUCIBLE_DECLINE`] alongside — a

@@ -118,6 +118,22 @@ pub fn compile(inputs: &[Artifact], targets: &[Target]) -> CompileOutput {
         .iter()
         .find(|a| a.kind == link::KIND_COMPONENT_NAME)
         .map(|a| String::from_utf8_lossy(&a.bytes).into_owned());
+    // The `--component-name` a PROVIDER publishes its interface under is a component-boundary name,
+    // emitted verbatim as the exported interface-instance's extern name. A non-conforming value would
+    // produce a component `wasmtime` rejects at LOAD with no diagnostic (the provider twin of the
+    // `(bind …)` interface-name miscompile). Validate the compile-request value here — no AST node to
+    // anchor, so a coded decline naming the offending string.
+    if let Some(name) = &db.component_name
+        && !crate::backend::wasm::is_valid_interface_name(name)
+    {
+        return fail(vec![Reject::coded(
+            crate::diag::Code::Malformed,
+            format!(
+                "the `--component-name` `{name}` is not a valid component interface name — {}",
+                crate::diag::MALFORMED_INTERFACE_NAME_MESSAGE
+            ),
+        )]);
+    }
     // A compile-request `effect-bind` artifact OVERRIDES the program's in-source `(bind …)` defaults (U3):
     // newline-separated `Effect=iface` REBINDS an effect to a peer; `Effect=` (empty) UNBINDS it (so it
     // escapes to the host, or a test handles it in-program). Request wins over the source default; an
@@ -133,8 +149,23 @@ pub fn compile(inputs: &[Artifact], targets: &[Target]) -> CompileOutput {
                     db.effect_bindings.remove(effect.trim()); // UNBIND (empty value)
                 }
                 Some((effect, iface)) => {
+                    // A compile-request REBIND target is the same component-boundary interface name as a
+                    // source `(bind …)`; validate it so a bad `--bind` value is a clear reject, not a
+                    // silent invalid-component miscompile.
+                    let iface = iface.trim();
+                    if !crate::backend::wasm::is_valid_interface_name(iface) {
+                        return fail(vec![Reject::coded(
+                            crate::diag::Code::Malformed,
+                            format!(
+                                "the compile-request rebind of `{}` to `{iface}` is not a valid \
+                                 component interface name — {}",
+                                effect.trim(),
+                                crate::diag::MALFORMED_INTERFACE_NAME_MESSAGE
+                            ),
+                        )]);
+                    }
                     db.effect_bindings
-                        .insert(effect.trim().to_string(), iface.trim().to_string()); // REBIND
+                        .insert(effect.trim().to_string(), iface.to_string()); // REBIND
                 }
                 None => {} // a bare token with no `=` is ignored (malformed)
             }
@@ -2139,6 +2170,23 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
             let anchor = btail.first().copied().unwrap_or(form);
             faults.push(
                 Reject::coded(Code::Malformed, crate::diag::MALFORMED_BIND_MESSAGE).at(anchor),
+            );
+            continue;
+        }
+        // Well-shaped: the INTERFACE STRING is a component-boundary name — it is emitted verbatim as the
+        // extern name a peer instance import binds under. A non-conforming string (`"Math/API"`) would
+        // `kebab_extern_name`-mangle to an invalid extern name and produce a component `wasmtime` rejects
+        // at LOAD with no compiler diagnostic (an invalid-component miscompile). Validate it here so a bad
+        // interface name is a clear compile-time reject naming the offending string, not a silent failure.
+        let iface_occ = btail[1];
+        let iface = db.ast.as_str(iface_occ).unwrap().to_string();
+        if !crate::backend::wasm::is_valid_interface_name(&iface) {
+            faults.push(
+                Reject::coded(
+                    Code::Malformed,
+                    crate::diag::MALFORMED_INTERFACE_NAME_MESSAGE,
+                )
+                .at(iface_occ),
             );
             continue;
         }

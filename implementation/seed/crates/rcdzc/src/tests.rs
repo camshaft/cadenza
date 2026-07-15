@@ -60408,6 +60408,43 @@ mod cross_component_oracle {
             Some("Logger"),
             "the bind typo carries a rename fix"
         );
+        // (g) a `(bind E "…")` whose INTERFACE STRING is not a valid component interface name is CDZ0201.
+        // The string is emitted verbatim as a peer-instance import extern name; a non-conforming one
+        // (`"Math/API"` — uppercase, would `kebab_extern_name`-mangle to the INVALID `math/-a-p-i`)
+        // produces a component wasmtime rejects at LOAD with no diagnostic — a silent invalid-component
+        // miscompile. It is now a clear compile-time reject naming the offending string.
+        let bad_iface = "(do (effect Math (op add (-> Int64 Int64 Int64))) (bind Math \"Math/API\") \
+                         (def (main (: x Int64)) (host (Math) (Math.add x x))) (export main))";
+        let d8 = crate::diagnostics(&mut crate::db::Db::load(parse(bad_iface)));
+        assert!(
+            d8.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
+                && d.message.contains("valid component interface name")),
+            "a (bind …) with a malformed interface name is CDZ0201, not a silent invalid-component \
+             miscompile: {:?}",
+            d8.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        // A bare package name with NO projection (`cadenza:math`) is also malformed (an instance import
+        // needs the `/iface` projection).
+        let no_proj = "(do (effect M (op a (-> Int64 Int64))) (bind M \"cadenza:math\") \
+                       (def (main) 0) (export main))";
+        let d9 = crate::diagnostics(&mut crate::db::Db::load(parse(no_proj)));
+        assert!(
+            d9.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
+                && d.message.contains("valid component interface name")),
+            "a (bind …) to a projection-less package name is CDZ0201: {:?}",
+            d9.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        // NO REGRESSION: a well-formed VERSIONED interface name (`@0.0.0`) is CLEAN — the version suffix
+        // the runtime heap import itself carries is a legal interface name.
+        let versioned = "(do (effect M (op a (-> Int64 Int64))) (bind M \"cadenza:math/api@0.0.0\") \
+             (def (main) (handle M 0 ((a (n) s (resume n s))) (M.a 1))) (export main))";
+        let d10 = crate::diagnostics(&mut crate::db::Db::load(parse(versioned)));
+        assert!(
+            !d10.iter()
+                .any(|d| d.message.contains("valid component interface name")),
+            "a well-formed versioned interface name must not be flagged: {:?}",
+            d10.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
     }
     // ------------------------------------------------------------------------------------------------
     // X4b-3 — the BACKEND EMIT: a SOURCE consumer `(extern …)` + `(neg x)` compiles to a valid component
