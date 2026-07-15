@@ -371,6 +371,9 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
             }
             collect_host_imports(db, tail, out);
         }
+        // A boundary block / break — descend into the body / break value to reach any host op inside.
+        Core::Block { body, .. } => collect_host_imports(db, body, out),
+        Core::Break { value } => collect_host_imports(db, value, out),
         Core::Arith { lhs, rhs, .. }
         | Core::Compare { lhs, rhs, .. }
         | Core::ValueEq { lhs, rhs }

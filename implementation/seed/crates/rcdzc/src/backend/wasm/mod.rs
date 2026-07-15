@@ -1110,6 +1110,9 @@ fn collect_host_arg_strings_at(db: &mut Db, id: crate::ast::StructId, out: &mut 
             }
             collect_host_arg_strings(db, tail, out);
         }
+        // A boundary block / break — descend into the body / break value for any host-arg string inside.
+        Core::Block { body, .. } => collect_host_arg_strings(db, body, out),
+        Core::Break { value } => collect_host_arg_strings(db, value, out),
         Core::Arith { lhs, rhs, .. }
         | Core::Compare { lhs, rhs, .. }
         | Core::ValueEq { lhs, rhs }

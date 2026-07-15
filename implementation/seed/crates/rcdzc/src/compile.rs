@@ -3361,6 +3361,9 @@ fn collect_reached_poisons_at(db: &mut Db, id: StructId, out: &mut Vec<Reject>) 
             }
             collect_reached_poisons(db, tail, out);
         }
+        // A boundary block / break — the body / break value is reached, so descend for any poison inside.
+        Core::Block { body, .. } => collect_reached_poisons(db, body, out),
+        Core::Break { value } => collect_reached_poisons(db, value, out),
         // A match: the scrutinee is unconditionally evaluated (descend), but each arm BODY is guarded
         // (only the matching arm runs) — so a provable trap inside an arm is NOT a build failure, the
         // same reachability rule as an `if`'s branches. Do not descend into the arm bodies.

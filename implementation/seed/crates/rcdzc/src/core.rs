@@ -927,6 +927,24 @@ pub enum Core {
         stmts: Vec<StructId>,
         tail: StructId,
     },
+    /// A BOUNDARY BLOCK — the target of a non-local `Break` (the `?`/try-operator's enclosing boundary,
+    /// `DESIGN-try-operator-rcdzc.md` §3.3). Evaluate `body`; its NORMAL fallthrough value is the block's
+    /// value, and a `Break` reached inside supplies the block's value on the abortive path. Both are
+    /// `result_ty`-typed, so the block is well-typed regardless of which path fires. This is the E4
+    /// abortive within-function shape with `init` unused: no state, no continuation object — a `block`/`br`
+    /// pair the backend lowers to. `result_ty` is the boundary type `T_B` (the enclosing fallible
+    /// function's `Result`/`Option` result). BRICK 1: the node + its exhaustive-match arms; the desugar
+    /// (BRICK 2) and the `block`/`br` emit (BRICK 3) follow — until then the backend DECLINES it.
+    Block {
+        result_ty: crate::ty::Ty,
+        body: StructId,
+    },
+    /// A non-local BREAK to the nearest enclosing `Block` — the `?`/try short-circuit (`e?`'s `None`/`Err`
+    /// arm, `DESIGN-try-operator-rcdzc.md` §3.2). `value` becomes the enclosing `Block`'s value (typed
+    /// `T_B`, e.g. `Option.None` / `Result.Err(r)`); everything after the break in the block body is
+    /// abandoned. The target is resolved LEXICALLY at desugar time (the innermost enclosing boundary — the
+    /// under-frame rule handlers use), so this is a plain block-label reference, not a runtime search.
+    Break { value: StructId },
     /// A produced "no" carried into the core.
     Poison(Reject),
 }

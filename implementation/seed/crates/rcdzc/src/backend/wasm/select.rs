@@ -516,6 +516,9 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
             stmts.iter().any(|&s| binding_escapes(db, s, binder, false))
                 || binding_escapes(db, tail, binder, false)
         }
+        // A boundary block / break — the binding escapes if it escapes the body / break value.
+        Core::Block { body, .. } => binding_escapes(db, body, binder, false),
+        Core::Break { value } => binding_escapes(db, value, binder, false),
         // Control flow: the binding escapes if it escapes any reachable sub-position.
         Core::If { cond, then_, else_ } => {
             binding_escapes(db, cond, binder, false)
@@ -786,6 +789,9 @@ pub fn core_child_ids(db: &mut Db, id: StructId) -> Vec<StructId> {
             cs.extend(stmts);
             cs.push(tail);
         }
+        // A boundary block's child is its body; a break's child is its value.
+        Core::Block { body, .. } => cs.push(body),
+        Core::Break { value } => cs.push(value),
         Core::Let { bindings, body } => {
             cs.extend(bindings.iter().map(|(_, v)| *v));
             cs.push(body);
@@ -1126,6 +1132,12 @@ fn mark_binder_dups_inner(
             cs.push((tail, false));
             seq(db, &cs, live_after, sites)
         }
+        // A boundary block's body / a break's value is a single sequential value position (the body's
+        // value is the block's; the break value flows out as the block's value on the abortive path).
+        Core::Block { body, .. } => {
+            mark_binder_dups(db, body, binder, consuming, live_after, sites)
+        }
+        Core::Break { value } => mark_binder_dups(db, value, binder, consuming, live_after, sites),
         // A `let`: the initializers are sequential-before the body (a `let*` later init may name an earlier
         // one). The body's position is the enclosing `consuming` (the let's value flows to where the let is
         // used). NOTE the INNER binder shadows nothing here — we track ONE outer `binder`; an inner binding
@@ -2096,6 +2108,9 @@ fn collect_used_ops_into(
             }
             collect_used_ops_into(db, tail, out);
         }
+        // A boundary block / break — descend into the body / break value to reach any op inside.
+        Core::Block { body, .. } => collect_used_ops_into(db, body, out),
+        Core::Break { value } => collect_used_ops_into(db, value, out),
         Core::Record { fields } => {
             // A runtime record builds on the heap exactly as a tuple — `arr-alloc` + per-field
             // `box-*`/`arr-set` (the same ops `emit`'s `Core::Record` arm lays down), so the used-set
@@ -7830,6 +7845,13 @@ fn emit(
             }
             emit(db, tail, slots, base, high, scratch_ty, layout, out)
         }
+        // The `?`/try boundary block + break are the `block`/`br` emit (BRICK 3): a `Core::Block` emits a
+        // wasm `block` whose result type is `T_B`'s core repr, with each contained `Core::Break` emitting a
+        // `br` to that block's label. BRICK 1 lays down the node + its non-emit arms; until BRICK 3 fills
+        // the `block`/`br` bytes, emitting one is a clean decline (never wrong code).
+        Core::Block { .. } | Core::Break { .. } => Err(Reject::decline(
+            "the `?`/try boundary block/break does not emit yet (block/br lowering is the next brick)",
+        )),
         // A poison that reached selection is an unconditionally-reached fault; the poison collector
         // surfaces it before emission, so reaching here is a decline rather than emitted code.
         Core::Poison(reject) => Err(reject),

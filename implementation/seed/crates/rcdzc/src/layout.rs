@@ -807,6 +807,10 @@ fn collect_closure_codes_at(db: &mut Db, id: StructId, out: &mut std::collection
             }
             collect_closure_codes(db, tail, out);
         }
+        // A boundary block / break — descend into the body / break value (a `?` operand may capture a
+        // closure). BRICK 1: the tree-walk arm; the desugar + emit follow.
+        Core::Block { body, .. } => collect_closure_codes(db, body, out),
+        Core::Break { value } => collect_closure_codes(db, value, out),
         Core::Match { scrutinee, arms } => {
             collect_closure_codes(db, scrutinee, out);
             for arm in arms {
@@ -1124,6 +1128,9 @@ fn collect_call_callees_at(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
             }
             collect_call_callees(db, tail, out);
         }
+        // A boundary block / break — descend into the body / break value to reach any call inside.
+        crate::core::Core::Block { body, .. } => collect_call_callees(db, body, out),
+        crate::core::Core::Break { value } => collect_call_callees(db, value, out),
         // Leaves and references have no sub-calls (a `Captured` read is a heap read of the env cell).
         crate::core::Core::ConstInt(_)
         | crate::core::Core::ConstRational(_, _)
