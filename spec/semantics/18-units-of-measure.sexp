@@ -909,3 +909,52 @@
   (input  (do (def (a) 5.0) (def (main) (a)) (export main)))
   (call   main)
   (output (: 5.0 Float64)))
+
+; --- Unwrap edges: runtime magnitude, the truncation promise, identity, and re-entry ---------------
+; The Q3 unwrap cases above pin the headline (a bare number exits the units world) over CONSTANT
+; magnitudes and exact ratios. These pin the edges: a runtime magnitude through the scale multiply,
+; the truncating non-dividing ratio the exact-Int case's doc PROMISES but never grades, the identity
+; conversion (scale 1 — a rewrite that special-cases same-unit must still unwrap), and re-entering
+; the units world by wrapping an unwrapped number.
+
+(case "a runtime magnitude unwraps through a unit conversion"
+  (doc    "`(Unit.in inch (Qty.of n foot))` with n a boundary PARAMETER: the constant cases fold at
+           compile time; this exercises the EMITTED scale multiply (×12) followed by the unwrap on a
+           genuinely runtime magnitude. n = 2 → the bare Int64 24. Pins that the unwrap semantics and
+           the runtime conversion path agree with the folded one (const-vs-runtime discipline).")
+  (input  (do
+            (def (main (: n Int64))
+              (Unit.in (Unit.of #"inch") (Qty.of n (Unit.of #"foot"))))
+            (export main)))
+  (call   main (: 2 Int64))
+  (output (: 24 Int64)))
+
+(case "a non-dividing conversion ratio truncates on an Int magnitude"
+  (doc    "`(Unit.in kilometer (Qty.of 2500 meter))` — 2500/1000 does not divide, and the magnitude
+           type is Int64, so the conversion TRUNCATES toward zero → the bare 2. The exact-Int case's
+           doc promises this ('a non-dividing ratio truncates — opting into integer math'); this
+           GRADES it. An Int magnitude means integer division semantics (the same `/` the numeric
+           model pins), not a silent promotion to Float or Rational and not a trap: choosing Int64 as
+           the magnitude type is the opt-in.")
+  (input  (Unit.in (Unit.of #"kilometer") (Qty.of 2500 (Unit.of #"meter"))))
+  (output (: 2 Int64)))
+
+(case "an identity conversion unwraps the magnitude unchanged"
+  (doc    "`(Unit.in meter (Qty.of 5 meter))` — source and target are the SAME unit, scale ratio 1:
+           the conversion is the identity on the magnitude and the unwrap yields the bare 5. Pins the
+           degenerate ratio (an emit that skips the multiply entirely must still UNWRAP — returning
+           the quantity unchanged would leak a `(Qty Int64 meter)` where a bare Int64 is promised).")
+  (input  (Unit.in (Unit.of #"meter") (Qty.of 5 (Unit.of #"meter"))))
+  (output (: 5 Int64)))
+
+(case "wrapping an unwrapped number re-enters the units world at the new unit"
+  (doc    "The unwrap-then-rewrap round trip: `(Unit.in meter (Qty.of 3 kilometer))` exits with the
+           bare 3000; `(Qty.of 3000 foot)` re-enters as three thousand FEET (the bare number carries
+           no memory of having been meters — re-attachment is purely nominal); `(Unit.in foot …)` of
+           that quantity unwraps 3000 unchanged (identity conversion). Pins that unwrap genuinely
+           erases the unit: the re-entered quantity answers to its NEW unit only, with no residual
+           meter scale applied anywhere in the chain.")
+  (input  (Unit.in (Unit.of #"foot")
+            (Qty.of (Unit.in (Unit.of #"meter") (Qty.of 3 (Unit.of #"kilometer")))
+                    (Unit.of #"foot"))))
+  (output (: 3000 Int64)))

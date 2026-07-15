@@ -999,6 +999,7 @@ pass	a nested-let chain that reuses each binding folds to one value
 pass	a nominal record compared to a plain record of the same shape is a type error
 pass	a non-byte-aligned bit-field width takes its exact arbitrary-width unsigned type
 pass	a non-constructor type applied to arguments in type position is rejected
+pass	a non-dividing conversion ratio truncates on an Int magnitude
 pass	a non-empty scrutinee does not match an empty bin pattern
 pass	a non-exhaustive guarded match is rejected even when a constant scrutinee folds its guard true
 pass	a non-final unquote-splice in a quote pattern is ill-formed
@@ -1293,6 +1294,7 @@ pass	a runtime less-than-or-equal is signed at the integer extremes
 pass	a runtime list consumed by push in one operand is unchanged when read in a later operand
 pass	a runtime list of lists escapes with its nested element type
 pass	a runtime list parameter consumed by push in a self-recursive call's sibling operand is unchanged
+pass	a runtime magnitude unwraps through a unit conversion
 pass	a runtime map shared across two recursive-call operands is not mutated by an insert in one
 pass	a runtime mixed-unit sum emits the scale conversion (Int)
 pass	a runtime modulo of the minimum integer by -1 is zero on every backend
@@ -1761,6 +1763,7 @@ pass	an export with two tuple parameters returns a list from both
 pass	an exported closure with a narrow-arg wide-result mismatched body is rejected, not miscompiled
 pass	an exported closure with an annotation-mismatched body is rejected, not emitted invalid
 pass	an expression tree built at run time is evaluated by matching its node variants
+pass	an identity conversion unwraps the magnitude unchanged
 pass	an if choosing between two nullary enum variants selects branchlessly on the discriminant
 pass	an if on Type.eq selects a branch at compile time
 pass	an if over different-length list arms keeps each branch's own list
@@ -2620,6 +2623,7 @@ pass	updating an absent record field is rejected
 pass	when two abortive performs sit on one spine the FIRST (leftmost) abort wins
 pass	wrapping addition of in-range operands is ordinary addition
 pass	wrapping addition wraps modulo two to the sixty-fourth on overflow
+pass	wrapping an unwrapped number re-enters the units world at the new unit
 pass	wrapping arithmetic algebraic identities hold at the range boundaries
 pass	wrapping arithmetic over runtime operands wraps at run time
 pass	wrapping arithmetic uses the named wrapping form of the operator
