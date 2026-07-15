@@ -887,3 +887,27 @@
               (def (wval (: s W)) (match s (((. W Atom) li) li) (((. W Zero) _) 0)))
               (def (main (: pos Int64)) (wval (loop b"\x05\x07" 1 pos ((. W Atom) 0)))) (export main)))
   (call   main (: 0 Int64)) (output (: 5 Int64)))
+
+; --- A Bytes ROPE nested in a compound MAP KEY is canonicalized (the Bytes face of nested-rope compaction) --
+; A `Bytes.concat` builds a ROPE (a concat node whose raw is a header, not the content) — the same
+; rope representation a `String.concat` builds (a String IS a Bytes leaf). The construction-site
+; String/Bytes-leaf compaction canonicalizes a Bytes rope nested in a compound too (the
+; `elem_needs_rope_compaction` gate covers `Ty::Bytes`), so a compound MAP KEY whose Bytes element is a
+; rope hashes into the same CHAMP slot as its flat-twin key. Pins the Bytes face of the nested-rope
+; canonicalization (the String faces live in 13-strings). `rep b n` appends the byte 120 (`x`) `n` times.
+(case "a compound map key whose Bytes element is a rope is found by its flat twin"
+  (doc    "`(Map.insert Map.empty (tuple (rep (Bytes.of (list 104 105)) 3) 1) 42)` keys the map by a TUPLE
+           whose Bytes element is a runtime ROPE (three `Bytes.concat`s → bytes [104,105,120,120,120]);
+           `(Map.lookup … (tuple (Bytes.of (list 104 105 120 120 120)) 1))` looks up with the flat-twin
+           tuple. Equal keys → 42. Before the construction-site compaction the tuple key would hash with its
+           nested Bytes rope leaf uncompacted, landing in a different slot → None (-1). The Bytes twin of the
+           nested-String map-key case (13-strings). Expected: 42.")
+  (input  (do
+            (def (rep (: b Bytes) (: n Int64))
+              (if (< n 1) b (rep (Bytes.concat b (Bytes.of (list 120))) (- n 1))))
+            (def (main)
+              (match (Map.lookup (Map.insert Map.empty (tuple (rep (Bytes.of (list 104 105)) 3) 1) 42) (tuple (Bytes.of (list 104 105 120 120 120)) 1))
+                ((Some v) v)
+                ((None) (- 0 1))))
+            (export main)))
+  (output (: 42 Int64)))

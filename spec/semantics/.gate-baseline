@@ -438,6 +438,7 @@ pass	a composed call over a record-transforming function with an arithmetic fiel
 pass	a compound element projected from a let-bound runtime tuple is matched
 pass	a compound if condition is a type error, not an unbound name
 pass	a compound map key containing a rope is found by its flat-twin key
+pass	a compound map key whose Bytes element is a rope is found by its flat twin
 pass	a compound map key whose LIST element is a rope is found by its flat-twin key
 pass	a conditional evaluates only the selected branch
 pass	a conditional inside a function with a constant condition and mismatched branches is a type error
