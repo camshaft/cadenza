@@ -4,8 +4,9 @@
 /// normalized outcome. The two components layer their own UI (a value pane vs. a graded check) on top.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { compile, renderSyntax } from "../compiler/client.ts";
+import { compile, renderSyntax, exportTypes } from "../compiler/client.ts";
 import { run as runComponent, type RunOutcome } from "../runner/client.ts";
+import { formatScalarByType, resultTypeOf } from "../runner/scalarFormat.ts";
 import { useSyntax, type Surface } from "../syntax/SyntaxContext.tsx";
 import type { Diag } from "../compiler/client.ts";
 import { applyFix as applyFixToText } from "../playground/applyFix.ts";
@@ -120,8 +121,19 @@ export function useCadenzaEditor(
     if (!out.component) return { kind: "declined", diags: out.diagnostics, wrapPrefixBytes };
     const result: RunOutcome = await runComponent(out.component, shownSurface.current);
     switch (result.kind) {
-      case "value":
-        return { kind: "value", text: result.text };
+      case "value": {
+        // A scalar Float that jco lowered to a whole JS number lost its `.0` (String(5) === "5"); the
+        // static export type restores it. Safe for compounds too: their rendered text isn't a bare
+        // integer, and their export type isn't Float*, so `formatScalarByType` leaves them unchanged.
+        // Best-effort — if the type lookup fails, show the value as-is.
+        let text = result.text;
+        try {
+          text = formatScalarByType(result.text, resultTypeOf(await exportTypes(program, shownSurface.current)));
+        } catch {
+          /* keep result.text */
+        }
+        return { kind: "value", text };
+      }
       case "trap":
         return { kind: "trap", message: result.message };
       case "timeout":

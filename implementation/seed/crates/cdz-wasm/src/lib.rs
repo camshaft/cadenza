@@ -733,6 +733,40 @@ pub fn references_at(text: &str, from: &str, byte_offset: u32) -> Result<Vec<u32
     Ok(out)
 }
 
+/// The exported names of a program paired with their solved types, as `name<TAB>type` lines (one per
+/// export; empty when the program has no exports or doesn't parse).
+///
+/// The browser RUN path calls a scalar export and stringifies the JS return value, but jco lowers a
+/// whole-number `Float64`/`Float32` to a JS integer-valued `number` — so `String(5)` drops the `.0` and
+/// a float prints indistinguishably from an `Int64`. The value type alone can't disambiguate (sized
+/// ints and `Qty.value` are `number` too), only the STATIC result type can. This exposes that type (via
+/// the existing `Exports` sidecar query — the same one `cdz`'s module-interface read uses) so the runner
+/// can format a `Float*`-typed scalar with a forced decimal and leave `Int*`/`Qty`/`Bool` alone. The
+/// node-id column the query also emits is dropped here — the run path only needs name→type.
+#[wasm_bindgen]
+pub fn export_types(text: &str, from: &str) -> Result<String, JsError> {
+    let from = parse_format(from)?;
+    // Parse to AST bytes (spans unused — this is a whole-program query, not a cursor query). A buffer
+    // that won't parse simply has no known exports → empty string.
+    let ast_bytes = match parse_spanned(text, from) {
+        Ok((bytes, _spans)) => bytes,
+        Err(_) => return Ok(String::new()),
+    };
+    let text_out = run_query_text(&ast_bytes, &rcdzc::Query::Exports)?;
+    // `Exports` yields `name<TAB>type<TAB>def-name-node-id` per line; keep just `name<TAB>type`.
+    let mut out = String::new();
+    for line in text_out.lines() {
+        let mut cols = line.split('\t');
+        if let (Some(name), Some(ty)) = (cols.next(), cols.next()) {
+            out.push_str(name);
+            out.push('\t');
+            out.push_str(ty);
+            out.push('\n');
+        }
+    }
+    Ok(out)
+}
+
 /// Re-render one program from one surface to another — the guide's global syntax toggle.
 ///
 /// Because every surface is a lossless projection of the same binary AST, converting `text` from

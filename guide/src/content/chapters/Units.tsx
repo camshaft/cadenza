@@ -225,7 +225,7 @@ export default function Units() {
          (Qty.of 3.0 (Unit.of #"?")))`}
         solution={`(Unit.in (Unit.of #"meter")
          (Qty.of 3.0 (Unit.of #"kilometer")))`}
-        expected="3000"
+        expected="3000.0"
         hint={
           <>
             A kilometer is a named unit of length — <C>(Unit.of #"kilometer")</C>. One kilometer is a
@@ -267,7 +267,7 @@ export default function Units() {
         }
         starter={`(Qty.value (Qty.pow (Qty.of 2.0 (Unit.of #"meter")) ?))`}
         solution={`(Qty.value (Qty.pow (Qty.of 2.0 (Unit.of #"meter")) 3))`}
-        expected="8"
+        expected="8.0"
         hint={
           <>
             The second argument to <C>Qty.pow</C> is the exponent. A cube is the third power, so it's{" "}
@@ -290,7 +290,7 @@ export default function Units() {
         solution={`(Unit.define #"span" (Unit.of #"meter") 3 1)
 (def (main)
   (Unit.in (Unit.of #"meter") (Qty.of 4.0 (Unit.of #"span"))))`}
-        expected="12"
+        expected="12.0"
         hint={
           <>
             The ratio is numerator then denominator — a span is <C>3 / 1</C> meters. Then <C>4.0</C> spans
