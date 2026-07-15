@@ -342,9 +342,11 @@ pub enum FleetCmd {
     },
     /// Self-heal the fleet, in two passes. RE-ARM: any ACTIVE agent whose `/loop` has stalled — each
     /// agent stamps a heartbeat touch-file (`.claude/fleet/heartbeat/<agent>`) at the top of every
-    /// tick; if that file is older than `--stale-mult` × the agent's interval, its loop is presumed
-    /// dead and this nudges the window back to life (`tmux send-keys "/loop <interval>" Enter` — the
-    /// same recovery an operator does by hand). Skips: agents with no live tmux window, agents mid-tick
+    /// tick; if that file is older than `min(--stale-mult × interval, --stale-cap)`, its loop is
+    /// presumed dead and this nudges the window back to life (`tmux send-keys "/loop <interval>" Enter`
+    /// — the same recovery an operator does by hand). The `--stale-cap` bound is what keeps a
+    /// long-interval agent (e.g. 30m) from getting an hour-long dead window. Skips: agents with no live
+    /// tmux window, agents mid-tick
     /// ("esc to interrupt" — real work in flight), and agents re-armed within `--grace-secs`
     /// (anti-thrash). REAP: any genuinely-DONE agent (registry status=stopped AND a stop-file present)
     /// whose tmux window is still live gets that window killed — role-agnostic, so it catches design/
@@ -360,6 +362,13 @@ pub enum FleetCmd {
         /// Presume a loop stalled once its heartbeat is older than this multiple of its interval.
         #[arg(long, default_value_t = 2)]
         stale_mult: u32,
+        /// Hard CAP (seconds) on the stale window, regardless of interval × mult. The interval is how
+        /// often a HEALTHY agent wants to tick; the stale window is how long we tolerate SILENCE before
+        /// presuming death — they must not scale together unboundedly, or a 30m agent gets a 60min
+        /// dead window (2×30m) and sits stalled for an hour. A heartbeat is stamped at the TOP of every
+        /// tick, so >~10min of silence means stalled no matter the interval. Default 600s (10 min).
+        #[arg(long, default_value_t = 600)]
+        stale_cap: u64,
         /// Grace window (seconds), used two ways: don't re-arm an agent re-armed this recently (gives
         /// the nudge time to land), and don't reap a window whose agent stopped this recently (keeps
         /// its final scrollback glanceable for one cycle).
@@ -418,8 +427,9 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
         FleetCmd::Watchdog {
             dry_run,
             stale_mult,
+            stale_cap,
             grace_secs,
-        } => watchdog(&fleet, dry_run, stale_mult, grace_secs),
+        } => watchdog(&fleet, dry_run, stale_mult, stale_cap, grace_secs),
     }
 }
 
@@ -782,7 +792,7 @@ fn describe(fleet: &Fleet, name: &str) {
 
 /// Self-heal a stalled fleet: re-arm any active agent whose `/loop` heartbeat has gone stale. See the
 /// `Watchdog` doc comment for the full contract. One pass, then return; a cron drives the cadence.
-fn watchdog(fleet: &Fleet, dry_run: bool, stale_mult: u32, grace_secs: u64) {
+fn watchdog(fleet: &Fleet, dry_run: bool, stale_mult: u32, stale_cap: u64, grace_secs: u64) {
     if !in_tmux() {
         eprintln!(
             "fleet watchdog: not inside a tmux session (no $TMUX) — nothing to re-arm. Run it from\n\
@@ -814,7 +824,9 @@ fn watchdog(fleet: &Fleet, dry_run: bool, stale_mult: u32, grace_secs: u64) {
         // give the first tick its full stale window before judging it, rather than nuking a booting agent.
         let hb_age = heartbeat_age_secs(fleet, &a.name, now);
         let interval = parse_interval_secs(&a.interval);
-        let stale_after = interval.saturating_mul(stale_mult as u64);
+        // CAP the stale window: no agent should sit dead longer than `stale_cap` regardless of its
+        // interval. Without the cap, a 30m agent gets a 60min window (2×30m) and stalls for an hour.
+        let stale_after = interval.saturating_mul(stale_mult as u64).min(stale_cap);
         let Some(age) = hb_age else {
             continue; // never stamped yet — a booting agent; leave it for the next pass.
         };
