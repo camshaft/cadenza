@@ -475,6 +475,7 @@ pass	a consumer applies the handed-back closure to an internal constant
 pass	a consumer returns a different type than the closure it applies
 pass	a consumer takes the handed-back closure as its SECOND parameter
 pass	a consuming op inside a hoisted list element respects a still-live binding
+pass	a consuming op on a still-live binding inside one match arm's payload keeps its retain
 pass	a correctly-annotated function parameter is accepted
 pass	a cross-type variant pattern whose payload width differs is rejected, not miscompiled
 pass	a ctor-in-tuple-slot match is expressible by binding the tuple then re-matching
@@ -619,6 +620,7 @@ pass	a guard over a variant pattern gates on the payload
 pass	a guard reads a binding from the enclosing scope, not only its pattern's
 pass	a guard sees the names its pattern binds and arms are tried in order
 pass	a guard-elided masked add computes inline over runtime operands
+pass	a guarded arm among same-constructor match arms keeps first-match-wins
 pass	a guarded arm is selected when its guard holds
 pass	a guarded list-match arm body reads its element binder
 pass	a guarded list-match arm whose guard fails falls through to the catch-all
@@ -1468,8 +1470,11 @@ pass	a trapping element in the taken arm of a same-length list if still traps
 pass	a trapping element in the untaken arm of a same-arity tuple if does not trap
 pass	a trapping element in the untaken arm of a same-length list if does not trap
 pass	a trapping field in the untaken arm of a same-shape record if does not trap
+pass	a trapping payload in a non-taken arm of a same-constructor match does not trap
 pass	a trapping payload in the TAKEN arm of a same-constructor if still traps
+pass	a trapping payload in the taken arm of a same-constructor match still traps
 pass	a trapping payload in the untaken arm of a same-constructor if does not trap
+pass	a trapping scrutinee of a same-constructor match traps before any arm
 pass	a truncating conversion keeps the low bits rather than trapping
 pass	a truncating conversion of a negative value uses two's complement
 pass	a truncating conversion to an unusual width keeps that width's low bits
@@ -1657,6 +1662,7 @@ pass	an effect that declares an operation name twice is rejected
 pass	an effect-built NESTED-compound value escapes the handle and a nested projection reads through it
 pass	an effect-built heap list bound in a let is USED TWICE and retained across both uses
 pass	an effectful condition of a same-constructor if is performed exactly once
+pass	an effectful match scrutinee is performed exactly once across a two-position sink
 pass	an element is projected from a runtime-constructed tuple
 pass	an element is projected from a tuple returned by a function
 pass	an element is projected from a tuple returned by a nullary function
@@ -2253,6 +2259,8 @@ pass	runtime float inequality compares by canonical byte form
 pass	runtime structural equality over a GENERIC RECURSIVE sum walks the whole tree
 pass	runtime structural equality over a payload-carrying sum agrees on both backends
 pass	runtime tuple concatenation preserves element order across the seam
+pass	same-key-set record match arms share an equal field and sink the differing one
+pass	same-length list match arms share an equal element and sink the differing one
 pass	scalar length counts Unicode scalar values, not bytes
 pass	scalar length of a supplementary-plane character is one scalar value
 pass	scaling a quantity by a dimensionless quantity keeps its dimension

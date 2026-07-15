@@ -2991,3 +2991,135 @@
   (output (: 3 Int64))
   (call   main (: 0 Int64))
   (output (: 1 Int64)))
+
+; --- The common-constructor sink across MATCH arms (the multi-arm hoist analogue) -----------------
+; `(match k (0 (K …p₀)) (1 (K …p₁)) (_ (K …p_d)))` with every unguarded arm building the SAME
+; constructor is rewritten to build K ONCE, each differing field position becoming its own per-position
+; match over the same scrutinee (a `core_equiv` position is shared directly). The rewrite SPLITS one
+; match into several — so the scrutinee must still be evaluated exactly once (sharpest under an
+; effectful scrutinee: the split matches must all probe ONE performed value), untaken-arm traps must
+; stay behind their probes, a guarded arm must keep first-match-wins, and a Perceus dup site inside one
+; arm's field must survive the split. These pin each obligation at the shapes the sink covers.
+
+(case "an effectful match scrutinee is performed exactly once across a two-position sink"
+  (doc    "`(match (Ctr.tick) (0 (tuple 1 2)) (1 (tuple 3 4)) (_ (tuple 5 6)))` — every arm builds a
+           2-tuple and BOTH positions differ, so the sink emits one tuple whose two elements each match
+           over the scrutinee. The counter arm `(tick (_) s (resume s (+ s 1)))` returns the count and
+           threads +1: the first perform returns 0 → both position-matches must probe THAT value → t =
+           (1, 2); the trailing `(Ctr.tick)` returns 1 (state advanced exactly once). 100·1 + 10·2 + 1 =
+           121. A sink that RE-EVALUATES the scrutinee per position performs tick twice: position 0
+           probes 0 → 1, position 1 probes 1 → 4, trailing tick returns 2 → 142. Pins that the split
+           matches share ONE scrutinee evaluation.")
+  (input  (do
+            (effect Ctr (op tick (-> Unit Int64)))
+            (def (main)
+              (handle Ctr 0 ((tick (_) s (resume s (+ s 1))))
+                (let ((t (match (Ctr.tick unit) (0 (tuple 1 2)) (1 (tuple 3 4)) (_ (tuple 5 6)))))
+                  (+ (+ (* 100 (. t 0)) (* 10 (. t 1))) (Ctr.tick unit)))))
+            (export main)))
+  (call   main)
+  (output (: 121 Int64)))
+
+(case "a trapping payload in a non-taken arm of a same-constructor match does not trap"
+  (doc    "`(match k (0 (Some (/ 100 k))) (1 (Some 20)) (_ (Some 30)))` at k = 1: every arm builds
+           `Some`, the sink's target; the taken arm yields 20 and arm 0's payload `(/ 100 0)` — which
+           WOULD trap for this k had it been evaluated — stays behind its probe. Pins that sinking the
+           payload into a per-position match keeps each alternative guarded by its arm's probe, the
+           match analogue of the if-hoist untaken-arm pins above.")
+  (input  (do
+            (def (main (: k Int64))
+              (match (match k (0 (Option.Some (/ 100 k))) (1 (Option.Some 20)) (_ (Option.Some 30)))
+                ((Option.Some v) v)
+                (_ -1)))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 20 Int64)))
+
+(case "a trapping payload in the taken arm of a same-constructor match still traps"
+  (doc    "The complement at k = 0: the taken arm's payload `(/ 100 0)` IS evaluated and must trap —
+           no over-guarding. With the non-taken case this pins the sunk payload evaluates exactly when
+           its arm is selected.")
+  (input  (do
+            (def (main (: k Int64))
+              (match (match k (0 (Option.Some (/ 100 k))) (1 (Option.Some 20)) (_ (Option.Some 30)))
+                ((Option.Some v) v)
+                (_ -1)))
+            (export main)))
+  (call   main (: 0 Int64))
+  (trap   "divide by zero"))
+
+(case "a guarded arm among same-constructor match arms keeps first-match-wins"
+  (doc    "`(match k ((guard x (> x 3)) (Some 50)) (1 (Some 20)) (_ (Some 30)))` — a GUARDED first arm
+           makes the arm's coverage conditional, so the sink must decline (or preserve order exactly):
+           k = 5 → the guard passes → 50; k = 1 → the guard fails, fall through to the literal arm → 20.
+           A sink that reordered probes or dropped the guard's runtime condition breaks one of the two
+           calls. The guard-interaction pin for the multi-arm sink.")
+  (input  (do
+            (def (main (: k Int64))
+              (match (match k ((guard x (> x 3)) (Option.Some 50)) (1 (Option.Some 20)) (_ (Option.Some 30)))
+                ((Option.Some v) v)
+                (_ -1)))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 50 Int64))
+  (call   main (: 1 Int64))
+  (output (: 20 Int64)))
+
+(case "same-length list match arms share an equal element and sink the differing one"
+  (doc    "`(match k (0 (list 10 7)) (1 (list 20 7)) (_ (list 30 7)))` — element 1 is `core_equiv`
+           across ALL arms (shared directly), element 0 differs (sunk into a per-position match). k = 1
+           → (20, 7) → 27; k = 9 → the default (30, 7) → 37. The list-shape pin for the multi-arm sink,
+           including the default arm's participation in the per-position match.")
+  (input  (do
+            (def (main (: k Int64))
+              (let ((t (match k (0 (list 10 7)) (1 (list 20 7)) (_ (list 30 7)))))
+                (+ (Option.expect (List.at t 0) "v") (Option.expect (List.at t 1) "v"))))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 27 Int64))
+  (call   main (: 9 Int64))
+  (output (: 37 Int64)))
+
+(case "same-key-set record match arms share an equal field and sink the differing one"
+  (doc    "`(match k (0 (record (a 10) (b 9))) (1 (record (a 20) (b 9))) (_ (record (a 30) (b 9))))` —
+           field `b` is equal across arms, field `a` differs. k = 2 → the default {a:30, b:9} → 39;
+           k = 0 → {a:10, b:9} → 19. The record-shape (keyed alignment) pin for the multi-arm sink.")
+  (input  (do
+            (def (main (: k Int64))
+              (let ((r (match k (0 (record (a 10) (b 9))) (1 (record (a 20) (b 9))) (_ (record (a 30) (b 9))))))
+                (+ (. r a) (. r b))))
+            (export main)))
+  (call   main (: 2 Int64))
+  (output (: 39 Int64))
+  (call   main (: 0 Int64))
+  (output (: 19 Int64)))
+
+(case "a consuming op on a still-live binding inside one match arm's payload keeps its retain"
+  (doc    "The Perceus interaction for the match sink: `xs = [7]` is multi-use — arm 1's payload
+           consumes it (`(List.len (List.push xs 9))`) and `xs` is read again after the match. k = 1 →
+           the consuming payload is selected: push path-copies (its dup site must survive the payload
+           being sunk into a per-position match) → Some 2, then `(List.len xs)` = 1 → 3; k = 0 → the
+           constant arm → 0 + 1 = 1. Pins that moving an arm payload into a sunk position match
+           preserves the consume-under-probe the retain analysis placed.")
+  (input  (do
+            (def (main (: k Int64))
+              (let ((xs (List.push (list) 7)))
+                (let ((o (match k (1 (Option.Some (List.len (List.push xs 9)))) (_ (Option.Some 0)))))
+                  (+ (Option.expect o "v") (List.len xs)))))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 3 Int64))
+  (call   main (: 0 Int64))
+  (output (: 1 Int64)))
+
+(case "a trapping scrutinee of a same-constructor match traps before any arm"
+  (doc    "`(match (/ 100 d) (0 (tuple 1 2)) (_ (tuple 3 4)))` at d = 0: the SCRUTINEE traps, so no arm
+           is reached. The sink multiplies the scrutinee's syntactic occurrences (one per differing
+           position) — this pins the trap still fires (and, with the effectful-once case above, fires
+           exactly once): the split matches must probe a single bound evaluation, never re-run it.")
+  (input  (do
+            (def (main (: d Int64))
+              (. (match (/ 100 d) (0 (tuple 1 2)) (_ (tuple 3 4))) 0))
+            (export main)))
+  (call   main (: 0 Int64))
+  (trap   "divide by zero"))
