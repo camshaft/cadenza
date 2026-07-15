@@ -838,14 +838,27 @@ fn compute(db: &mut Db, id: StructId) -> Core {
             Core::Poison(r) => Core::Poison(r),
             _ => Core::Not { operand },
         },
-        // `(try e)` — the fallible short-circuit operator (`DESIGN-try-operator-rcdzc.md`). The DESUGAR to
-        // a synthesized boundary `Mir::Block` + a `match … | short => Mir::Break` is the next slice (T1);
-        // until then it DECLINES (a Todo, never a miscompile — self-hosting-and-bootstrap.md §An
-        // Unsupported Construct Is Declined). The operand is still walked so its own core faults surface.
+        // `(try e)` — the fallible short-circuit operator (`DESIGN-try-operator-rcdzc.md` §3.2). BRICK 2,
+        // the CONSTANT-SUCCESS fold: when the operand folds to a compile-time-CONSTANT success variant
+        // (`Some x` / `Ok x`), `?` unwraps it — the whole `(try e)` IS the payload, no boundary break fires
+        // (the happy path never short-circuits). This turns a constant-`Some`/`Ok` `?` into the payload
+        // exactly as `List.at` folds a constant in-range read. A constant FAILURE (`None`/`Err`) or a
+        // RUNTIME operand still needs the boundary `Core::Block` + `Core::Break` (BRICK 3), so it DECLINES
+        // here — never a miscompile (self-hosting-and-bootstrap.md §An Unsupported Construct Is Declined).
+        // The operand is walked either way so its own core faults surface.
         Resolved::Try { operand } => match core_of(db, operand) {
             Core::Poison(r) => Core::Poison(r),
+            // A constant success variant: `(try (Some x))` / `(try (Ok x))` folds to the payload. The
+            // success disc is read off the operand's solved Option/Result type by variant NAME
+            // (`option_discs`/`result_discs`), never assumed positionally.
+            Core::SumNew { disc, payloads }
+                if success_disc_of(db, operand) == Some(disc) && payloads.len() == 1 =>
+            {
+                core_of(db, payloads[0])
+            }
             _ => Core::Poison(Reject::decline(
-                "the `?`/`try` operator does not lower yet (boundary desugar pending)",
+                "the `?`/`try` operator lowers only a constant success operand yet (the boundary \
+                 break for a failure / runtime operand is the next brick)",
             )),
         },
         // A match over a scalar scrutinee — FOLD when the scrutinee is a constant (select the arm whose
@@ -16341,6 +16354,17 @@ fn result_discs(db: &mut Db, id: StructId) -> Option<(u32, u32)> {
         }
     }
     Some((ok_disc?, err_disc?))
+}
+
+/// The SUCCESS-variant discriminant of a fallible value `id` — `Some`'s disc for an `Option`, `Ok`'s for a
+/// `Result` (read off `id`'s solved sum type by variant NAME, never assumed positionally). `None` if `id`
+/// is neither. This is what the `?`/try desugar unwraps: `(try e)` on a success value yields the payload;
+/// the fallible variant (`None`/`Err`) is the short-circuit (the boundary break — BRICK 3). Used to fold a
+/// CONSTANT success operand (`Core::SumNew` at this disc) to its payload.
+fn success_disc_of(db: &mut Db, id: StructId) -> Option<u32> {
+    option_discs(db, id)
+        .map(|(some, _)| some)
+        .or_else(|| result_discs(db, id).map(|(ok, _)| ok))
 }
 
 /// Lower `(List.at list index)` — the fallible indexed read. FOLD when the `list` operand is a

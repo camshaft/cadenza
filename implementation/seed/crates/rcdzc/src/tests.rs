@@ -50204,16 +50204,32 @@ mod stage1 {
     }
 
     #[test]
-    fn a_well_formed_try_under_a_matching_boundary_declines_until_t1() {
-        // A `?` whose operand kind MATCHES the enclosing function's fallible result type is well-formed at
-        // the type level (no CDZ0230, no CDZ0203). It does NOT lower yet — the boundary `Mir::Block` +
-        // `Mir::Break` desugar is T1 — so it DECLINES, a Todo (self-hosting-and-bootstrap.md §An
-        // Unsupported Construct Is Declined), never a miscompile. The body's tail `(Some …)` makes the
-        // boundary `Option`, matching the `?`'s Option operand. FLIPS to an executing-value test in T1.
-        let msg = expect_decline("(let ((x (try (Int64.checked-add 20 22)))) (Some x))");
+    fn a_constant_success_try_folds_to_the_payload() {
+        // BRICK 2 (the CONSTANT-SUCCESS fold, DESIGN-try-operator-rcdzc.md §3.2): a `?` on a compile-time
+        // `Some x` / `Ok x` unwraps to the payload — no boundary break fires on the happy path, so it
+        // needs no `Core::Block`/`Break` (that is the failure/runtime path, BRICK 3). `(Int64.checked-add
+        // 20 22)` folds to `(Some 42)`, so `(try …)` folds to `42`; the body's tail `(Some x)` makes the
+        // boundary `Option`, matching. It COMPILES (a value, not a decline) — the corpus case "`?` on the
+        // success variant unwraps the payload" runs it to `(Some 84)` against the real heap.
+        let src =
+            "(module m (def (main) (let ((x (try (Int64.checked-add 20 22)))) (Some x))) (export main))";
         assert!(
-            msg.contains("try") || msg.contains('?') || msg.contains("boundary"),
-            "a well-formed `(try …)` under a matching boundary declines pending the desugar: {msg}"
+            compile_component(&crate::codec::encode(&parse(src))).is_ok(),
+            "a constant-`Some` `?` under a matching Option boundary folds to the payload, not declines"
+        );
+    }
+
+    #[test]
+    fn a_constant_failure_try_declines_until_the_boundary_break() {
+        // The companion: a constant FAILURE operand (`None`/`Err`) must SHORT-CIRCUIT the boundary — it
+        // needs the `Core::Block` + `Core::Break` desugar (BRICK 3), so it DECLINES cleanly for now (a
+        // Todo, never a miscompile). `(Int64.checked-add Int64.max 1)` overflows → `None`; the `?` would
+        // break `main` to `None`. Pins that BRICK 2's fold is SUCCESS-ONLY — a failure does not silently
+        // fold (which would drop the short-circuit and miscompile).
+        let msg = expect_decline("(let ((x (try (Int64.checked-add Int64.max 1)))) (Some x))");
+        assert!(
+            msg.contains("try") || msg.contains('?') || msg.contains("break") || msg.contains("brick"),
+            "a constant-failure `?` declines pending the boundary break (BRICK 3): {msg}"
         );
     }
 }
