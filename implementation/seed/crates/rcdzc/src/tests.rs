@@ -21108,7 +21108,7 @@ mod match_engine {
             assert_eq!(d.code.as_deref(), Some("CDZ0203"), "{name}: {}", d.message);
             assert!(
                 d.message
-                    .contains("`(bin …)` pattern decodes a Bytes value")
+                    .contains("`(bin …)` pattern matches a Bytes value")
                     && d.message.contains(name),
                 "{name}: names the bin-vs-scrutinee mismatch: {}",
                 d.message
@@ -21122,6 +21122,50 @@ mod match_engine {
             .is_none(),
             "a bin pattern over Bytes is valid"
         );
+    }
+
+    #[test]
+    fn a_structural_pattern_over_a_mismatched_scrutinee_kind_is_a_type_error() {
+        // The generalization of the bin check: a `(list …)` / `(map …)` / `(tuple …)` pattern matches a
+        // value of a SPECIFIC kind (List/Map/Tuple), so over a definite scrutinee of a DIFFERENT kind it is
+        // a type error. These were silently accepted at `check` and gave the misleading generic "not a
+        // scalar literal or `_`" / "not an element pattern" decline at compile. Now a clean CDZ0203 names
+        // both the pattern kind and the real scrutinee type.
+        for (pat, ty, val, expects) in [
+            ("(list a b)", "Int64", "n", "a List value"),
+            ("(list a b)", "String", "s", "a List value"),
+            ("(map (1 v))", "Int64", "n", "a Map value"),
+            ("(tuple a b)", "Int64", "n", "a Tuple value"),
+            ("(tuple a b)", "(Map Int64 Int64)", "mm", "a Tuple value"),
+            ("(list a b)", "(Map Int64 Int64)", "mm", "a List value"),
+        ] {
+            let d = reject_full(&format!(
+                "(module m (def (f (: {val} {ty})) (match {val} ({pat} 0) (_ 0))) (export f))"
+            ))
+            .unwrap_or_else(|| panic!("{pat} over {ty} must reject"));
+            assert_eq!(
+                d.code.as_deref(),
+                Some("CDZ0203"),
+                "{pat}/{ty}: {}",
+                d.message
+            );
+            assert!(
+                d.message.contains(expects) && d.message.contains(ty),
+                "{pat}/{ty}: names the pattern kind + scrutinee type: {}",
+                d.message
+            );
+        }
+        // NO false reject: each structural pattern over its MATCHING scrutinee kind is well-formed.
+        for src in [
+            "(module m (def (f (: xs (List Int64))) (match xs ((list a b) a) (_ 0))) (export f))",
+            "(module m (def (f (: mm (Map Int64 Int64))) (match mm ((map (1 v)) v) (_ 0))) (export f))",
+            "(module m (def (f (: t (Tuple Int64 Int64))) (match t ((tuple a b) (+ a b)))) (export f))",
+        ] {
+            assert!(
+                reject_code(src).is_none(),
+                "a structural pattern over its matching scrutinee kind is valid: {src}"
+            );
+        }
     }
 
     #[test]
