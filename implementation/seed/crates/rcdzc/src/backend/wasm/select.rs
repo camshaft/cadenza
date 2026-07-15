@@ -2065,10 +2065,13 @@ fn collect_used_ops_into(
             collect_used_ops_into(db, operand, out);
         }
         // `String.from-bytes` on a runtime Bytes: `str-from-bytes` (→ the String handle, or NULL when the
-        // buffer is invalid UTF-8), then build `Some(handle)` / `None` (`sum-new`, `arr-alloc` for None's
-        // unit). The returned handle is already OWNED (str-from-bytes consumes the buffer and transfers it
-        // out), so it is used DIRECTLY as the `Some` payload — no `dup`. The None branch has no handle to
-        // drop (the runtime consumed the buffer on failure).
+        // buffer is invalid UTF-8), then build `Some(handle)` / `None` via `sum-new`. The returned handle is
+        // already OWNED (str-from-bytes consumes the buffer and transfers it out), so it is used DIRECTLY as
+        // the `Some` payload — no `dup`. The None branch's unit payload is the inline `IMM_UNIT` CONSTANT
+        // (matching the emit, exactly as `Map.lookup`/`Bytes.at` build their None), NOT an `arr-alloc(0)`
+        // call — so `arr-alloc` must NOT be imported here (the emit never calls it; importing it declares a
+        // DEAD runtime op for a program using only str-from-bytes + sum-new). The None branch has no handle
+        // to drop (the runtime consumed the buffer on failure).
         Core::StrFromBytes { bytes, .. } => {
             // `str-from-bytes` decodes the buffer to a String handle or NULL; the emit then builds
             // `Some(handle)` / `None` via `sum-new`. The `None` payload is the INLINE-unit constant
