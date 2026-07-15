@@ -31313,6 +31313,91 @@ mod match_engine {
     }
 
     #[test]
+    fn a_unit_element_in_a_heap_compound_compiles_to_valid_wasm_and_runs() {
+        // REGRESSION (Copilot PR #402): a `Ty::Unit` element in a HEAP-STORED compound — a multi-payload
+        // sum variant, a tuple, a record — produced INVALID wasm. `box_op`/`get_op` returned `Ok(None)`
+        // for a Unit exactly as for a nested-compound handle, so the Unit element (whose value emits
+        // NOTHING) pushed no handle → the following `arr-set`/`sum-new` underflowed the stack, failing wasm
+        // validation. A Unit now occupies its slot with the inline-unit sentinel (`emit_heap_store_tail`)
+        // and a Unit projection drops it (`emit_heap_read_tail`). Each case both VALIDATES (component
+        // instantiates against the runtime) and RUNS to its value. These import the value heap, so they run
+        // through the composed runtime (`find_runtime_wasm` + `cdz_run::run`), not the empty-linker path.
+        let cases = [
+            // A sum variant `(A Int64 Unit)`: construct with a Unit 2nd payload, match out the Int64 → 5.
+            // This is the seed reproducer — before the fix its Unit payload underflowed `sum-new`.
+            (
+                "(module m \
+                   (type T (A Int64 Unit) (B)) \
+                   (def (get (: t T)) (match t (((. T A) n _) n) (((. T B)) 0))) \
+                   (def (main) (get ((. T A) 5 unit))) (export main))",
+                "5",
+            ),
+            // A Unit BETWEEN two Int64s in a tuple, projecting the element AFTER it — the Unit slot must
+            // keep the positional layout so slot 2 is still the third element → 7.
+            (
+                "(module m (def (main) (. (tuple 5 unit 7) 2)) (export main))",
+                "7",
+            ),
+            // A Unit RECORD field beside an Int64 field, the Int64 read → 5 (a record IS a positional array).
+            (
+                "(module m (def (main) (. (record (a 5) (u unit)) a)) (export main))",
+                "5",
+            ),
+            // The READ side: bind the Unit payload of a multi-payload sum (its projection drops the
+            // sentinel), materialize it via a `let`, and return the Int64 → 8.
+            (
+                "(module m \
+                   (type T (A Int64 Unit)) \
+                   (def (get (: t T)) (match t (((. T A) n u) (let ((x u)) n)))) \
+                   (def (main) (get ((. T A) 8 unit))) (export main))",
+                "8",
+            ),
+            // The owned-reclaim projection path: project the Unit slot of a FRESH function-returned tuple —
+            // the read drops the sentinel AND reclaims the owned aggregate without derailing on the Unit → 11.
+            (
+                "(module m \
+                   (def (mk) (tuple 5 unit)) \
+                   (def (main) (let ((u (. (mk) 1))) 11)) (export main))",
+                "11",
+            ),
+        ];
+        let runtime = super::find_runtime_wasm();
+        for (src, want) in cases {
+            // The whole point of the regression: this MUST produce a valid component (before the fix a
+            // Unit element failed wasm validation, so `compile_component` itself surfaced the invalid
+            // module downstream). A case that imports the value heap (the sum constructions) runs through
+            // the composed runtime; a case that folds its Unit compound to a constant runs on the empty
+            // linker. Drive by whether the runtime is actually imported.
+            let bytes = compile_component(&crate::codec::encode(&parse(src)))
+                .expect("a Unit-in-heap compound must compile to a valid component");
+            if cdz_run::required_runtime(&bytes).expect("valid").is_none() {
+                // A constant-folded compound (`(. (tuple 5 unit 7) 2)`): no heap import, empty linker runs it.
+                assert_eq!(
+                    run_returns::<i64>(&bytes, "main"),
+                    want.parse::<i64>().unwrap(),
+                    "folded: {src}"
+                );
+                continue;
+            }
+            let Some(runtime) = runtime.clone() else {
+                eprintln!("runtime wasm not found; skipping composed Unit-in-heap run");
+                continue;
+            };
+            let opts = cdz_run::RunOpts {
+                export: Some("main".to_string()),
+                args: Vec::new(),
+                runtime: Some(runtime),
+                runtime_cache_dir: None,
+                host_responses: Vec::new(),
+            };
+            match cdz_run::run(&bytes, &opts).expect("run") {
+                cdz_run::Outcome::Value(s) => assert_eq!(s, want, "case: {src}"),
+                cdz_run::Outcome::Trap(t) => panic!("Unit-in-heap compound trapped: {t} — {src}"),
+            }
+        }
+    }
+
+    #[test]
     fn a_map_pattern_nested_in_a_tuple_binds_its_value_binder() {
         // 05-compound-types "a map pattern nested in a tuple binds its value binder". A `(map (k v) …)`
         // key-directed pattern NESTED inside a tuple pattern binds its value at the map's sub-path of the

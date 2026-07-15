@@ -201,6 +201,11 @@ pub enum Lir {
     Select,
     /// `unreachable` — an unconditional trap.
     Unreachable,
+    /// `drop` — pop and discard the top stack value. Used where a value was produced for its side of the
+    /// stack but is not consumed: a UNIT heap slot stores the inline-unit sentinel `IMM_UNIT`, so reading
+    /// such a slot (`arr-get`/`sum-payload`) yields that handle, which must be dropped because a `Unit`
+    /// projection leaves NO machine value (`valtype_of(Unit) = None`).
+    Drop,
     /// `if (empty) unreachable end` — trap when the i32 condition on the stack is nonzero, leaving
     /// nothing. The overflow guard's trip: it pushes a boolean "did overflow", then this traps if set.
     /// (One fused instruction so the guard is a flat run with no dangling block.)

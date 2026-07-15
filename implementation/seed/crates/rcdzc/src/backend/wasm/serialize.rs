@@ -265,6 +265,7 @@ fn instr(i: &Lir, import_index: &std::collections::HashMap<&str, u32>, out: &mut
         Lir::End => out.push(op::END),
         Lir::Select => out.push(op::SELECT),
         Lir::Unreachable => out.push(op::UNREACHABLE),
+        Lir::Drop => out.push(op::DROP),
         // `if (empty) unreachable end` — trap when the i32 condition is nonzero, leaving nothing.
         Lir::IfUnreachableEnd => {
             out.push(op::IF);

@@ -5766,6 +5766,65 @@
   (call   main)
   (output (: (A (tuple)) V)))
 
+; --- A UNIT element in a HEAP-STORED compound occupies its slot with the inline-unit sentinel ----------
+; A `Unit` has no machine slot (`valtype_of(Unit) = None`), so the VALUE emits nothing — but a heap slot
+; (a multi-payload sum variant, a tuple/record element, a collection key/value/element, a closure capture)
+; still needs SOME handle to keep its positional index aligned, so it holds `IMM_UNIT` (the same inline-unit
+; sentinel a nullary/Unit-payload sum uses). Constructing such a compound MUST push the sentinel where the
+; Unit sits (else the following `arr-set`/`sum-new`/insert underflows the stack → an INVALID module), and
+; PROJECTING a Unit field MUST drop the sentinel the read yields (a `Unit` projection leaves no machine
+; value → else a stray handle defies the surrounding stack type). Before the fix `box_op`/`get_op` returned
+; the same `Ok(None)` for a Unit AND a nested-compound, so a Unit element pushed/left nothing and the whole
+; component FAILED wasm validation (Copilot PR #402, "failed to compile: function[8]").
+
+(case "a Unit element in a multi-payload sum variant compiles to valid wasm"
+  (doc    "A sum variant `(A Int64 Unit)` with a Unit as its 2nd payload; constructing `((. T A) 5 unit)`
+           and matching out the Int64 must compile + run to 5. The Unit payload occupies its tuple slot
+           with the inline-unit sentinel so the per-payload `arr-set` sees a handle; before the fix it
+           pushed NOTHING → stack underflow at sum-new → INVALID wasm.")
+  (input (do
+    (type T (A Int64 Unit) (B))
+    (def (get (: t T)) (match t (((. T A) n _) n) (((. T B)) 0)))
+    (def (main) (get ((. T A) 5 unit)))
+    (export main)))
+  (output (: 5 Int64)))
+
+(case "a Unit element between two Int64s in a tuple, a later element read"
+  (doc    "`(tuple 5 unit 7)` stores a Unit in slot 1 (the inline-unit sentinel) between two Int64s, then
+           projects slot 2 = 7. Pins that a Unit tuple element keeps the positional layout intact (slot 2
+           is still the third element); a Unit that pushed nothing would have shifted the arr-set indices.")
+  (input (do (def (main) (. (tuple 5 unit 7) 2)) (export main)))
+  (output (: 7 Int64)))
+
+(case "a Unit record field beside an Int64 field, the Int64 read"
+  (doc    "A record `(record (a 5) (u unit))` with a Unit-typed field; projecting the `a` field yields 5.
+           A record IS a positional heap array at run time, so its Unit field takes the sentinel-slot
+           treatment tuples do.")
+  (input (do (def (main) (. (record (a 5) (u unit)) a)) (export main)))
+  (output (: 5 Int64)))
+
+(case "a Unit projected out of a multi-payload sum and bound to a name"
+  (doc    "The READ side: `(match t (((. T A) n u) …))` binds the Unit payload `u`, whose projection must
+           DROP the inline-unit sentinel (a Unit binder holds no machine value) rather than leave a stray
+           handle. The `let ((x u))` forces the binder to be materialized; the result is the Int64 `n` = 8.")
+  (input (do
+    (type T (A Int64 Unit))
+    (def (get (: t T)) (match t (((. T A) n u) (let ((x u)) n))))
+    (def (main) (get ((. T A) 8 unit)))
+    (export main)))
+  (output (: 8 Int64)))
+
+(case "a Unit projected from a function-returned tuple (owned-reclaim path)"
+  (doc    "The reclamation twin: `(. (mk) 1)` projects the Unit slot of a FRESH owned tuple `(mk)` returns.
+           The projection drops the sentinel AND reclaims the owned aggregate — a Unit element must not
+           derail the owned-temporary drop path (it is not a live-compound child, so it skips the retain).
+           Result is the enclosing `let` body, 11.")
+  (input (do
+    (def (mk) (tuple 5 unit))
+    (def (main) (let ((u (. (mk) 1))) 11))
+    (export main)))
+  (output (: 11 Int64)))
+
 (case "a two-payload sum escapes its second variant with a bare name"
   (doc    "A sum whose variants are both payload-carrying — `(type E (A Int64) (B Int64))` — escaping its
            SECOND variant `(E.B 7)` renders `(: (B 7) E)`: the bare name of the matched variant (the
