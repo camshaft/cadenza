@@ -381,7 +381,8 @@ pub enum FleetCmd {
     /// reply (in the sender's inbox + `processed/`) whose `in_reply_to` names that request file, and
     /// reports any ORPHAN (archived, no reply). Requests archived before the `in_reply_to` field
     /// existed, or resolved by a hand-`send` instead of `fleet ack`, are reported as UNVERIFIABLE
-    /// (not counted as orphans). Exits non-zero if any orphan is found. Run it from any worktree.
+    /// (not counted as orphans). Report-only by default (exit 0); pass `--strict` to exit non-zero
+    /// when any orphan is found. Run it from any worktree.
     Audit {
         /// Show every checked request, not just the orphans/unverifiable summary.
         #[arg(long)]
@@ -989,6 +990,17 @@ fn audit(fleet: &Fleet, verbose: bool, strict: bool) {
         }
     }
 
+    // Precompute the set of ACTIVE agent names ONCE (registry.json is parsed a single time here, not
+    // per-request — the processed/ history can be hundreds of files). An orphan only matters if its
+    // sender is still active and thus stuck waiting.
+    let active: std::collections::HashSet<String> = fleet
+        .load()
+        .agents
+        .into_iter()
+        .filter(|a| a.status == "active")
+        .map(|a| a.name)
+        .collect();
+
     // Every merge-request archived in pr-sync/processed is a resolution we expect a reply for.
     let processed = fleet.inbox("pr-sync").join("processed");
     let mut orphans: Vec<(String, String)> = Vec::new(); // (filename, sender)
@@ -1023,12 +1035,7 @@ fn audit(fleet: &Fleet, verbose: bool, strict: bool) {
             // before `in_reply_to` existed / via a hand-`send`. We can't prove a reply for the latter,
             // so classify conservatively: only flag as ORPHAN when the sender is a STILL-ACTIVE agent
             // that would be stuck waiting (a stale one-shot fix agent's pre-audit request is noise).
-            let sender_active = fleet
-                .load()
-                .agents
-                .iter()
-                .any(|a| a.name == mr.from && a.status == "active");
-            if sender_active {
+            if active.contains(&mr.from) {
                 orphans.push((fname.clone(), mr.from.clone()));
             } else {
                 unverifiable += 1;
