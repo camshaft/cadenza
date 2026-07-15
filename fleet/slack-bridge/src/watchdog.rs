@@ -10,25 +10,28 @@
 //! both unit-tested with no async and no process spawning. The transport bin owns the actual `Command`
 //! spawn + the real clock — a thin wrapper around [`WatchdogSpec::command`] fired when [`due`] says so.
 //!
-//! Exact invocation/cadence are being confirmed with v-fleet-tooling (owns the watchdog tool); the
-//! defaults below encode the operator's stated baseline (`--stale-mult 1`, every ~4 min).
+//! Invocation/cadence confirmed with v-fleet-tooling (owns the watchdog tool): fire `cargo xtask fleet
+//! watchdog` (NO `--stale-mult` override — inherit the tool's `2 / 600s cap / 120s grace` defaults) every
+//! ~4 min. See [`WatchdogSpec`] for why the override is `None`.
 
 use std::time::Duration;
 
-/// The operator's baseline cadence: run the watchdog every ~4 minutes.
+/// How often the daemon fires the watchdog: every ~4 minutes.
 pub const DEFAULT_INTERVAL: Duration = Duration::from_secs(240);
-/// The operator's baseline `--stale-mult` for the out-of-band runner (more aggressive than a session-cron
-/// default of 2, since this is the last line of defense against a fully-stalled fleet).
-pub const DEFAULT_STALE_MULT: u32 = 1;
 
 /// A fully-specified watchdog invocation. Kept as data (program + args) so it's trivially unit-testable and
 /// the transport just feeds it to `std::process::Command`. This is `cargo xtask fleet watchdog …` — we
 /// shell out rather than call fleet.rs in-process so the watchdog tool stays the single source of truth
-/// (its logic, guards, and cadence live in one place that v-fleet-tooling owns).
+/// (its logic, guards, and thresholds live in one place that v-fleet-tooling owns).
+///
+/// `stale_mult` is `None` by DEFAULT: v-fleet-tooling (the tool owner) advised the continuous out-of-band
+/// runner should use the tool's OWN defaults (`--stale-mult 2 --stale-cap 600 --grace-secs 120`) — NOT
+/// `--stale-mult 1`, which over-eagerly re-arms a 10m agent after one missed interval; the `--stale-cap`
+/// (600s) already bounds dead-time. So `None` passes no override and inherits those defaults.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WatchdogSpec {
-    /// `--stale-mult`: presume a loop stalled once its heartbeat is older than this × its interval.
-    pub stale_mult: u32,
+    /// `--stale-mult` override, or `None` to inherit the tool's default (the recommended setting).
+    pub stale_mult: Option<u32>,
     /// How often the daemon fires the watchdog.
     pub interval: Duration,
 }
@@ -36,26 +39,23 @@ pub struct WatchdogSpec {
 impl Default for WatchdogSpec {
     fn default() -> Self {
         WatchdogSpec {
-            stale_mult: DEFAULT_STALE_MULT,
+            stale_mult: None,
             interval: DEFAULT_INTERVAL,
         }
     }
 }
 
 impl WatchdogSpec {
-    /// The program + argv to spawn: `cargo xtask fleet watchdog --stale-mult <n>`. Returned as
-    /// `(program, args)` so the caller builds a `Command` (and can set the cwd to the repo root). Pure.
+    /// The program + argv to spawn: `cargo xtask fleet watchdog [--stale-mult <n>]`. With `stale_mult =
+    /// None` (the default) it's just `cargo xtask fleet watchdog`, inheriting the tool's own thresholds.
+    /// Returned as `(program, args)` so the caller builds a `Command` (and sets the cwd to the repo root).
     pub fn command(&self) -> (&'static str, Vec<String>) {
-        (
-            "cargo",
-            vec![
-                "xtask".into(),
-                "fleet".into(),
-                "watchdog".into(),
-                "--stale-mult".into(),
-                self.stale_mult.to_string(),
-            ],
-        )
+        let mut args = vec!["xtask".to_string(), "fleet".into(), "watchdog".into()];
+        if let Some(mult) = self.stale_mult {
+            args.push("--stale-mult".into());
+            args.push(mult.to_string());
+        }
+        ("cargo", args)
     }
 }
 
@@ -72,27 +72,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_spec_matches_operator_baseline() {
+    fn default_inherits_tool_thresholds() {
+        // v-fleet-tooling's guidance: no --stale-mult override for the continuous runner.
         let s = WatchdogSpec::default();
-        assert_eq!(s.stale_mult, 1);
+        assert_eq!(s.stale_mult, None);
         assert_eq!(s.interval, Duration::from_secs(240));
     }
 
     #[test]
-    fn command_is_cargo_xtask_fleet_watchdog() {
+    fn default_command_passes_no_threshold_overrides() {
         let (prog, args) = WatchdogSpec::default().command();
         assert_eq!(prog, "cargo");
-        assert_eq!(args, ["xtask", "fleet", "watchdog", "--stale-mult", "1"]);
+        assert_eq!(
+            args,
+            ["xtask", "fleet", "watchdog"],
+            "no --stale-mult → inherit tool defaults"
+        );
     }
 
     #[test]
-    fn command_reflects_a_custom_stale_mult() {
+    fn command_reflects_an_explicit_stale_mult_override() {
         let (_prog, args) = WatchdogSpec {
-            stale_mult: 3,
+            stale_mult: Some(3),
             ..Default::default()
         }
         .command();
-        assert_eq!(args.last().unwrap(), "3");
+        assert_eq!(args, ["xtask", "fleet", "watchdog", "--stale-mult", "3"]);
     }
 
     #[test]
