@@ -389,6 +389,21 @@
             (def (main) (name-of (Known unit))) (export main)))
   (output (: "known" String)))
 
+(case "an open sum's open-tail arm dispatches a variant the specific arms do not name"
+  (doc    "Witnesses type-system.md #A Sum Type May Be Open, With A Mandatory Open-Tail Arm (the open-tail
+           arm handles the unnamed variants as data): the open-tail `_` arm is not just an
+           exhaustiveness formality — it actually DISPATCHES. A `Vocab` value that is NOT the specific
+           `Known` arm falls through to `_`, so `(name-of (Unknown unit))` yields \"other\". This pins the
+           dispatch/fold path through the open tail, the runnable companion to the exhaustiveness verdict.")
+  (input  (do
+            (type Vocab (Known Unit) (Unknown Unit) .. r)
+            (def (name-of (: e Vocab))
+              (match e
+                ((Known _) "known")
+                (_         "other")))
+            (def (main) (name-of (Unknown unit))) (export main)))
+  (output (: "other" String)))
+
 (case "a match on an open sum omitting the open-tail arm is rejected"
   (doc    "Witnesses type-system.md #A Sum Type May Be Open (a match that omits the open-tail arm is a
            compile-time rejection): because an open sum's variant set is not closed, a match covering

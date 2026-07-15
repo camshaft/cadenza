@@ -2725,6 +2725,7 @@ todo	a closure-typed closure ARG on the DIRECT-CALL path is declined — host wo
 todo	a map match over a map literal with a runtime key selects by value, not a const fold
 todo	a producer capturing a host-supplied COMPOUND parameter is declined — host→guest decode
 todo	an open sum payload that does not match its schema yields a typed failure, not a trap
+pass	an open sum's open-tail arm dispatches a variant the specific arms do not name
 todo	an open sum's payload decodes against a schema to a typed result
 todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
