@@ -1489,6 +1489,27 @@
             (export main)))
   (output (: 3 Int64)))
 
+(case "a map consumed by Map.insert in one operand is unchanged for a later read of the same binding"
+  (doc    "The single-function `let`-bound twin of the recursive-sibling map case above (and the direct
+           companion of the shared-`let` List.push and Set.insert persistence cases): `m = build 0 3` =
+           {0:0, 1:1, 2:2}, a genuine runtime map (no const-fold), read TWICE — the left operand inserts a
+           NEW key 99 and measures (`Map.len` → 4), the right reads the ORIGINAL `m` size (→ 3), so
+           4 + 3 = 7. If the persistent CHAMP insert FBIP-mutated the shared `m` in place (its retain
+           missing on a multi-use `let`-binding), the second read would see the 4-key map → 8.
+           Order-sensitive (reading `m` first → 7 regardless), the tell of an in-place mutation. Pins that a
+           persistent Map.insert leaves a shared `let`-bound operand unchanged within one function — the Map
+           completion of the List/Set persistence triple.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: acc (Map Int64 Int64)))
+              (if (< i n) (build (+ i 1) n (Map.insert acc i i)) acc))
+            (def (main (: n Int64))
+              (let ((m (build 0 n (map))))
+                (+ (Map.len (Map.insert m 99 99)) (Map.len m))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 7 Int64))
+  (call   main (: 1 Int64)) (output (: 3 Int64))
+  (call   main (: 5 Int64)) (output (: 11 Int64)))
+
 ; The mutual-recursion companion of the still-live-binding family above: the IDIOMATIC homoiconic-AST
 ; walker shape — a `fc` (per-node) / `fl` (per-child-list) mutual pair over a recursive `Ast` sum. Here
 ; `fc` matches a `List` node binding its child list `elems`, reads the head OUT OF `elems` directly
