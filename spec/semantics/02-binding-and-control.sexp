@@ -3782,3 +3782,78 @@
             (export main)))
   (call   main (: 1 Int64) (: 0 Int64) (: 1 Int64) (: 2 Int64))
   (trap   "divide by zero"))
+
+; --- The build-once hoists COMPOSE through synthesized differing positions -------------------------
+; ee5637e2f re-applies the common-ctor/common-arith hoists to the `(if c pᵢ qᵢ)` they synthesize, so
+; a nested-if of a common constructor inside a hoisted position collapses recursively (one build at
+; each level). The recursion multiplies the guard obligations — these pin them at depth 2, promoted
+; from passing breaker probes (the landing carries unit tests only).
+
+(case "a three-way nested common constructor selects by both conditions"
+  (doc    "`(if c1 (tuple (Some a) 1) (if c2 (tuple (Some b) 1) (tuple (Some a) 1)))` — the outer
+           tuple hoists once; its differing field is itself an if-of-`Some` that hoists again (one
+           tuple + one sum-new emitted, was three). All three selection paths verified: c1 → a (15),
+           ¬c1∧c2 → b (17), ¬c1∧¬c2 → a (15). A composition that mispaired the inner arms flips 15/17
+           on one path.")
+  (input  (do
+            (def (main (: c1 Int64) (: c2 Int64) (: a Int64) (: b Int64))
+              (let ((t (if (> c1 0) (tuple (Option.Some a) 1)
+                           (if (> c2 0) (tuple (Option.Some b) 1) (tuple (Option.Some a) 1)))))
+                (+ (match (. t 0) ((Option.Some p) p) (_ -1)) (* 10 (. t 1)))))
+            (export main)))
+  (call   main (: 1 Int64) (: 0 Int64) (: 5 Int64) (: 7 Int64))
+  (output (: 15 Int64))
+  (call   main (: 0 Int64) (: 1 Int64) (: 5 Int64) (: 7 Int64))
+  (output (: 17 Int64))
+  (call   main (: 0 Int64) (: 0 Int64) (: 5 Int64) (: 7 Int64))
+  (output (: 15 Int64)))
+
+(case "a trapping payload in the deep untaken arm of composed hoists does not trap"
+  (doc    "c1 = 1 takes the OUTER arm, so the inner if — including its c2-arm payload `(/ 100 0)` —
+           is never reached: 15, no trap. The recursive re-hoist synthesizes per-position selections
+           two levels deep; each level's payloads must stay behind BOTH conditions (a composed select
+           that evaluated the inner alternatives speculatively traps a program that must return 15).")
+  (input  (do
+            (def (main (: c1 Int64) (: c2 Int64) (: a Int64) (: d Int64))
+              (let ((t (if (> c1 0) (tuple (Option.Some a) 1)
+                           (if (> c2 0) (tuple (Option.Some (/ 100 d)) 1) (tuple (Option.Some a) 1)))))
+                (+ (match (. t 0) ((Option.Some p) p) (_ -1)) (* 10 (. t 1)))))
+            (export main)))
+  (call   main (: 1 Int64) (: 1 Int64) (: 5 Int64) (: 0 Int64))
+  (output (: 15 Int64)))
+
+(case "an untaken inner condition's trap does not fire under composed hoists"
+  (doc    "The inner if's own CONDITION traps (`(+ x 1)` at Int64.max): with c1 = 1 the outer arm is
+           taken and the inner condition is never evaluated → 15; with c1 = 0 the inner condition IS
+           evaluated → 'integer overflow'. Pins that composing the hoists keeps the inner condition
+           guarded by the outer selection (a composition that pre-evaluated the inner cond to feed
+           both synthesized positions traps the c1 = 1 call).")
+  (input  (do
+            (def (main (: c1 Int64) (: x Int64) (: a Int64) (: b Int64))
+              (let ((t (if (> c1 0) (tuple (Option.Some a) 1)
+                           (if (< (+ x 1) 5) (tuple (Option.Some b) 1) (tuple (Option.Some a) 1)))))
+                (+ (match (. t 0) ((Option.Some p) p) (_ -1)) (* 10 (. t 1)))))
+            (export main)))
+  (call   main (: 1 Int64) (: 9223372036854775807 Int64) (: 5 Int64) (: 7 Int64))
+  (output (: 15 Int64))
+  (call   main (: 0 Int64) (: 9223372036854775807 Int64) (: 5 Int64) (: 7 Int64))
+  (trap   "integer overflow"))
+
+(case "a consuming op in the deep differing payload keeps its retain under composed hoists"
+  (doc    "The Perceus face at composition depth: `xs` is multi-use, consumed inside the DIFFERING
+           payload of the hoisted tuple's hoisted `Some` (two synthesized selections deep) and read
+           after the whole if. c1 = 1 → the consuming path: push path-copies → Some 2, len xs = 1 →
+           3; c1 = 0 → 0 + 1 = 1. Pins the dup site surviving BOTH re-hoist moves (each re-hoist
+           relocates the payload expression into a fresh synthesized if).")
+  (input  (do
+            (def (main (: c1 Int64) (: d Int64))
+              (let ((xs (List.push (list) d)))
+                (let ((t (if (> c1 0)
+                             (tuple (Option.Some (List.len (List.push xs 9))) 1)
+                             (tuple (Option.Some 0) 1))))
+                  (+ (match (. t 0) ((Option.Some p) p) (_ -1)) (List.len xs)))))
+            (export main)))
+  (call   main (: 1 Int64) (: 7 Int64))
+  (output (: 3 Int64))
+  (call   main (: 0 Int64) (: 7 Int64))
+  (output (: 1 Int64)))
