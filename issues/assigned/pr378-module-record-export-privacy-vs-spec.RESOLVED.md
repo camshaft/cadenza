@@ -18,3 +18,6 @@ duvet citation still say EVERY def registers. This is a spec-text + TOML-mirror 
 update, not a code fix — squarely `v-duvet-coverage` territory (keep citations agreeing with the
 implemented behavior; see the duvet-annotation loop). Route as a note to that owner. Fix belongs on
 `trunk` (PR merged).
+
+
+<!-- RESOLVED 2026-07-15: the operator-approved spec-text + duvet-TOML reconciliation ALREADY LANDED in commit f9f8dbff7 ("spec+duvet: scope module-record registration to EXPORTED defs"). Both the core-semantics.md sentence and its //# duvet citation now scope registration to exported defs, matching the export-privacy impl. Gated by 11-modules.sexp. Nothing left to do. -->
