@@ -219,6 +219,17 @@ pub enum FleetCmd {
         /// The agent to describe.
         name: String,
     },
+    /// Mirror the live gitignored work queue (`.claude/fleet/queue/`) into the TRACKED `issues/`
+    /// archive at the repo root, so these hard-won reproducers are preserved in git history rather
+    /// than living only in agent-local state. Copies every queue file into `issues/`, removes tracked
+    /// files no longer in the queue (git history still holds them), and — unless `--no-commit` —
+    /// commits the change. pr-sync runs this periodically; the commit flows onto `trunk` like any
+    /// other. Run from a worktree that can commit (e.g. pr-sync's).
+    Archive {
+        /// Mirror into `issues/` but do not commit (leave the change staged for inspection).
+        #[arg(long)]
+        no_commit: bool,
+    },
 }
 
 /// A message as delivered into an inbox. Serialized one-per-file so delivery is a single atomic
@@ -264,6 +275,7 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
         } => send(&fleet, &to, &kind, &subject, &r#ref, &body, from),
         FleetCmd::Heartbeat { name } => heartbeat(&fleet, &name),
         FleetCmd::Describe { name } => describe(&fleet, &name),
+        FleetCmd::Archive { no_commit } => archive(&fleet, no_commit),
     }
 }
 
@@ -541,6 +553,108 @@ fn describe(fleet: &Fleet, name: &str) {
     println!("VERTICAL={}", q(&a.vertical));
     println!("AREA={}", q(&a.area));
     println!("DISALLOW_ASK={}", if a.disallow_ask { 1 } else { 0 });
+}
+
+// ── archive ────────────────────────────────────────────────────────────────────────────────────
+
+/// Mirror the live gitignored work queue into the TRACKED `issues/` archive so the reproducers are
+/// preserved in git history, not just agent-local state. The archive is written into the CURRENT
+/// worktree (whoever runs this — pr-sync, on `trunk`), which is where the commit lands. The queue
+/// itself is read from the hub's `.claude/fleet/queue` (shared). Mirror semantics: copy every queue
+/// entry into `issues/`, delete tracked `issues/` files no longer present in the queue (git history
+/// still holds them), then commit unless `--no-commit`.
+fn archive(fleet: &Fleet, no_commit: bool) {
+    let queue = fleet.root.join("queue");
+    // The archive lives in the CURRENT worktree (cwd), not the hub — the hub is bare (no working
+    // tree). pr-sync runs this from its trunk checkout, so the commit is on trunk.
+    let cwd = std::env::current_dir().expect("cwd");
+    let archive = cwd.join("issues");
+    std::fs::create_dir_all(&archive).expect("create issues/ archive dir");
+
+    // Snapshot current queue entry names (recursively, relative to queue/) so we can both copy them
+    // in and detect archive files that should be removed.
+    let mut queue_rel: Vec<PathBuf> = Vec::new();
+    collect_rel(&queue, &queue, &mut queue_rel);
+    let queue_set: std::collections::HashSet<PathBuf> = queue_rel.iter().cloned().collect();
+
+    // Copy every queue file into issues/, preserving subdirectory structure.
+    let mut copied = 0usize;
+    for rel in &queue_rel {
+        let src = queue.join(rel);
+        let dst = archive.join(rel);
+        if let Some(parent) = dst.parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
+        if std::fs::copy(&src, &dst).is_ok() {
+            copied += 1;
+        }
+    }
+
+    // Remove archive files that are no longer in the queue (resolved-and-migrated, or renamed). Git
+    // history preserves them, so this keeps `issues/` a faithful mirror of live state.
+    let mut archive_rel: Vec<PathBuf> = Vec::new();
+    collect_rel(&archive, &archive, &mut archive_rel);
+    let mut removed = 0usize;
+    for rel in &archive_rel {
+        if !queue_set.contains(rel) && std::fs::remove_file(archive.join(rel)).is_ok() {
+            removed += 1;
+        }
+    }
+
+    println!(
+        "fleet archive: mirrored {copied} queue item(s) into issues/ ({removed} stale removed)"
+    );
+
+    if no_commit {
+        println!("  --no-commit: change left in the working tree, not committed.");
+        return;
+    }
+    // Stage just issues/ and commit if there's anything to commit. Run git in the cwd worktree.
+    let run_git = |args: &[&str]| {
+        Command::new("git")
+            .current_dir(&cwd)
+            .args(args)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    };
+    run_git(&["add", "issues"]);
+    // Anything staged? `git diff --cached --quiet` exits non-zero if there are staged changes.
+    let has_staged = !Command::new("git")
+        .current_dir(&cwd)
+        .args(["diff", "--cached", "--quiet", "--", "issues"])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(true);
+    if !has_staged {
+        println!("  nothing changed — issues/ already up to date.");
+        return;
+    }
+    if run_git(&[
+        "commit",
+        "-m",
+        "issues: mirror the fleet work queue into the tracked archive",
+    ]) {
+        println!("  committed the archive update.");
+    } else {
+        eprintln!("  ! git commit failed — the change is staged; commit it by hand.");
+    }
+}
+
+/// Recursively collect file paths under `dir`, as paths RELATIVE to `base`. Skips nothing except
+/// directories themselves (files only). Used to mirror the queue ↔ archive.
+fn collect_rel(dir: &Path, base: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for e in rd.filter_map(Result::ok) {
+        let path = e.path();
+        if path.is_dir() {
+            collect_rel(&path, base, out);
+        } else if let Ok(rel) = path.strip_prefix(base) {
+            out.push(rel.to_path_buf());
+        }
+    }
 }
 
 // ── worktree / inbox / tmux helpers ───────────────────────────────────────────────────────────
