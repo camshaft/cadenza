@@ -51341,6 +51341,24 @@ mod stage1 {
     }
 
     #[test]
+    fn a_try_in_a_called_helper_finds_its_boundary_not_a_false_cdz0230() {
+        // REGRESSION: a `?` in a CALLED (inlined, non-exported) helper. `(def (f) (let ((x (try (Some
+        // 7)))) (Some (+ x 3))))` is called by `main` (only `main` exported), so `f` is INLINED. `f`'s
+        // result type IS `Option`, so the `?` is well-formed — but the boundary walk fell off the inlined
+        // COPY's re-parented tree and FALSELY raised CDZ0230. Now the walk is inconclusive on a re-parented
+        // copy (raises nothing); the genuine non-fallible reject still fires from the original body. So this
+        // COMPILES (a value, not a reject).
+        let src = "(module m \
+            (def (f) (let ((x (try (Some 7)))) (Some (+ x 3)))) \
+            (def (main) (f)) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_ok(),
+            "a `?` in a called (inlined) helper whose result type is Option must compile, not \
+             falsely reject CDZ0230"
+        );
+    }
+
+    #[test]
     fn a_result_try_under_an_option_boundary_is_a_type_mismatch() {
         // A `Result`-valued `?` under an `Option` boundary cannot short-circuit — the kinds disagree, and
         // there is no coercion (§5). The body's tail `(Some …)` makes the enclosing function's result

@@ -8994,18 +8994,22 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
             } else {
                 // The operand is (or may be) fallible — check the enclosing boundary admits it.
                 match enclosing_boundary_ty(db, id) {
+                    // The boundary walk fell off the tree WITHOUT reaching an enclosing function body.
+                    // In the ordinary (non-inlined) `type_errors` pass the walk ALWAYS reaches the def
+                    // body (its `def_index_by_body` is `Some`), so a genuinely-non-fallible boundary is
+                    // caught via the `Some(bt)` arm below, not here. This `None` is reached only when a
+                    // β-reduction/inline COPY re-parented the `?`'s ancestors so the chain no longer leads
+                    // to a `def_by_body`-registered root (the copy machinery re-anchors a synthesized
+                    // subtree, and the boundary body of the copy is not itself an indexed def body) — the
+                    // same copy-reparenting hazard as `guarded-literal-list-false-cdz0101-copy-ordering`.
+                    // Treating it as a fault raised a FALSE CDZ0230 on a well-formed `?` in a CALLED
+                    // (inlined, non-exported) helper (`(def (f) (let ((x (try (Some 7)))) (Some (+ x 3))))`
+                    // called from `main`) — the boundary IS `Option`, but the inlined copy's walk fell off.
+                    // So `None` is INCONCLUSIVE (like an unsolved boundary): raise nothing. The genuine
+                    // "no fallible boundary" reject still fires from the original body's walk (parents
+                    // intact) via `Some(bt)`.
                     None => {
-                        trace!(target: "rcdzc::infer", node = id.0, "fault: `?` has no enclosing function boundary (CDZ0230)");
-                        out.push(
-                            Reject::coded(
-                                Code::TryNoBoundary,
-                                "`?` has no fallible boundary — it is not inside a function whose \
-                                 result type is `Result`/`Option`. Annotate the enclosing function's \
-                                 return type as `(Result _ e)` / `(Option _)`."
-                                    .to_string(),
-                            )
-                            .at(id),
-                        );
+                        trace!(target: "rcdzc::infer", node = id.0, "`?` boundary walk inconclusive (inlined-copy reparent) — no fault");
                     }
                     Some(bt) => {
                         let boundary_fallible = fallible_shape(db, &bt);

@@ -151,3 +151,17 @@
            fails the build); the fold now requires earlier inits to be trap-free too.")
   (input  (do (def (main) (let ((a (/ 1 0)) (x (try (None unit)))) (Some (+ a x)))) (export main)))
   (error  CDZ0304))
+
+(case "a `?` in a CALLED (inlined, non-exported) helper finds its boundary"
+  (doc    "Regression pin: `(def (f) (let ((x (try (Some 7)))) (Some (+ x 3))))` is CALLED by `main` (only
+           `main` is exported), so `f` is INLINED at the call site. `f`'s result type IS `Option`, so the
+           `?` is well-formed — but a bug made the boundary walk (`enclosing_boundary_ty`) fall off the
+           inlined COPY's re-parented tree and FALSELY reject CDZ0230 (`no fallible boundary`). The boundary
+           walk is now INCONCLUSIVE when it falls off a re-parented copy (raises nothing); the genuine
+           non-fallible-boundary reject still fires from the original body's walk. `f` = `(Some 10)`, so
+           `main` = `(Some 10)`. Pins that a `?` in a called helper compiles, not spuriously rejects.")
+  (input  (do
+            (def (f) (let ((x (try (Some 7)))) (Some (+ x 3))))
+            (def (main) (f))
+            (export main)))
+  (output (: (Some 10) (Option Int64))))
