@@ -1328,6 +1328,27 @@
   (call   main (: 3 Int64))
   (output (: 9 Int64)))
 
+; A CURRIED-SYNTAX application of a multi-payload VARIANT CONSTRUCTOR — the constructor analogue of the
+; curried-closure case above. `(T.Mk (Int64 Int64))` is a two-payload ctor; `((T.Mk n) 2)` applies it to
+; `n` then `2` (the curried spelling of `(T.Mk n 2)`). The nested application spine flattens so the
+; constructor reaches FULL arity in one construction and builds the `T` value, which the surrounding
+; `match` then destructures — `(T.Mk a b) → (+ a b)`. With a runtime `n` the construction is not folded.
+; Pins that a curried constructor application reaches full arity and constructs, identical to the flat
+; `(T.Mk n 2)` — the multi-payload ctor twin of the curried runtime-closure flattening.
+
+(case "a curried-syntax application of a multi-payload constructor reaches full arity and constructs"
+  (doc    "`((T.Mk n) 2)` — the two-payload constructor `T.Mk` applied to `n` then `2`, the curried spelling
+           of `(T.Mk n 2)`. The application spine flattens so the ctor reaches full arity in one
+           construction, building `(T.Mk n 2)`, which the `match` destructures to `(+ n 2)`. With runtime
+           `n` nothing folds: n=5 → 7, n=40 → 42. Pins the curried constructor-application spine (the
+           multi-payload ctor analogue of the curried runtime-closure case above).")
+  (input  (do
+            (type T (Mk Int64 Int64))
+            (def (main (: n Int64)) (match ((T.Mk n) 2) ((T.Mk a b) (+ a b))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 7 Int64))
+  (call   main (: 40 Int64)) (output (: 42 Int64)))
+
 ; A PARTIAL APPLICATION that escapes short of full arity, then runs as a runtime closure. Here `g` is
 ; `main`'s statically-known two-parameter lambda, so `(g n)` — applied to ONE arg — PARTIALLY APPLIES at
 ; compile time (`core-semantics.md` §Functions Are Single-Arity: applying a curried function to fewer args

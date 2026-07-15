@@ -532,6 +532,7 @@ pass	a cross-type variant pattern whose payload width differs is rejected, not m
 pass	a ctor-in-tuple-slot match is expressible by binding the tuple then re-matching
 pass	a curried function can be partially applied
 pass	a curried function-type annotation checks its inner result type against the argument
+pass	a curried-syntax application of a multi-payload constructor reaches full arity and constructs
 pass	a curried-syntax application of a runtime closure flattens to one full-arity indirect call
 pass	a cycle of module imports is rejected
 pass	a decimal integer literal
