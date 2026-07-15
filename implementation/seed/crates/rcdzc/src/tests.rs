@@ -31821,6 +31821,38 @@ mod match_engine {
     }
 
     #[test]
+    fn a_bigint_or_rational_inner_quantity_comparison_folds_to_the_exact_compare() {
+        // Companion to the bigint-quantity arithmetic fix: a `(Qty BigInt/Rational u)` COMPARISON must
+        // route to the exact bigint/rational compare, not decline as a "compound value needs a heap walk".
+        // `bigint_operand`/`rational_operand` (read by `lower_comparison`) now peel `Ty::Qty` to the inner.
+        // A CONSTANT comparison folds to a `Bool` with no runtime, so `run_returns::<i64>` (via the `if`)
+        // works on the minimal linker. `(< (Qty (BigInt 5) m) (Qty (BigInt 100) m))` = true → 1.
+        let big = "(do (def (main) (if (< ((. Qty of) ((. BigInt of) 5) ((. Unit base) #\"meter\")) \
+                   ((. Qty of) ((. BigInt of) 100) ((. Unit base) #\"meter\"))) 1 0)) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(big)))
+                    .expect("a (Qty BigInt) comparison compiles (no compound-walk decline)"),
+                "main",
+            ),
+            1,
+            "5 meter < 100 meter (BigInt inner) folds to true"
+        );
+        // `(< (Qty (Rational 1/40) m) (Qty (Rational 127/5000) m))` = true (25 mm < 1 inch) → 1.
+        let rat = "(do (def (main) (if (< ((. Qty of) ((. Rational of) 1 40) ((. Unit base) #\"meter\")) \
+                   ((. Qty of) ((. Rational of) 127 5000) ((. Unit base) #\"meter\"))) 1 0)) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(rat)))
+                    .expect("a (Qty Rational) comparison compiles"),
+                "main",
+            ),
+            1,
+            "1/40 meter < 127/5000 meter (Rational inner) folds to true"
+        );
+    }
+
+    #[test]
     fn a_bare_number_where_a_quantity_is_expected_offers_the_qty_of_wrap() {
         // The ARGUMENT/binder twin of the dimensional-mismatch `Qty.of` wrap: a bare `Int64` passed to a
         // `(Qty …)` PARAMETER, or bound to a `(Qty …)`-annotated let-binder, gets the `(Qty.of <n> <unit>)`

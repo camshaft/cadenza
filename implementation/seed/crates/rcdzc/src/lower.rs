@@ -12488,8 +12488,28 @@ fn lower_rational_cmp(db: &mut Db, op: Prim, lhs: StructId, rhs: StructId) -> Co
 /// `*`/`/`/comparison to the exact rational fold. (A `Rational`/other mix never reaches lowering —
 /// `check_application` rejected it CDZ0301 — so if ONE operand is a Rational the other is too.)
 fn rational_operand(db: &mut Db, args: &[StructId]) -> bool {
-    args.iter()
-        .any(|&a| matches!(crate::infer::type_of(db, a), crate::ty::Ty::Rational))
+    // A bare `Rational` OR a quantity over a Rational magnitude — a `(Qty Rational u)` erases to its
+    // inner Rational core, so a comparison of two such quantities folds through the same rational path
+    // (they are same-dimension same-reference-unit under the model, a same-unit compare of the erased
+    // rationals). Peel `Ty::Qty` to its inner; without this a `(< (Qty Rational) (Qty Rational))` fell to
+    // the scalar compare and DECLINED ("compound needs a heap walk").
+    args.iter().any(|&a| {
+        matches!(
+            peel_qty_inner_ty(crate::infer::type_of(db, a)),
+            crate::ty::Ty::Rational
+        )
+    })
+}
+
+/// The inner numeric type of a `(Qty T u)`, or the type itself when not a quantity — so a quantity's
+/// magnitude arithmetic/comparison routes by its ERASED inner numeric (a quantity erases to its inner
+/// value's core). Shared by `rational_operand`/`bigint_operand` so a `(Qty Rational/BigInt u)` takes the
+/// exact rational/bigint path rather than the fixnum scalar path.
+fn peel_qty_inner_ty(ty: crate::ty::Ty) -> crate::ty::Ty {
+    match ty {
+        crate::ty::Ty::Qty { inner, .. } => *inner,
+        other => other,
+    }
 }
 
 /// True iff either operand of a binary op has solved type `Ty::BigInt` — the signal to route `+`/`-`/
@@ -12497,8 +12517,17 @@ fn rational_operand(db: &mut Db, args: &[StructId]) -> bool {
 /// never reaches lowering — `check_application` rejected it CDZ0301 — so if ONE operand is a BigInt the
 /// other is too.)
 fn bigint_operand(db: &mut Db, args: &[StructId]) -> bool {
-    args.iter()
-        .any(|&a| matches!(crate::infer::type_of(db, a), crate::ty::Ty::BigInt))
+    // A bare `BigInt` OR a quantity over a BigInt magnitude (`(Qty BigInt u)` erases to its inner BigInt
+    // handle) — peel `Ty::Qty` so a `(< (Qty BigInt) (Qty BigInt))` routes to the bigint comparison
+    // (`bigint-cmp`) rather than declining as a compound scalar compare. The arithmetic `+`/`-`/`*`/`/`
+    // over a BigInt-inner quantity is dispatched separately (`quantity_inner_is_bigint`); this covers the
+    // COMPARISON path, which reads `bigint_operand` in `lower_comparison`.
+    args.iter().any(|&a| {
+        matches!(
+            peel_qty_inner_ty(crate::infer::type_of(db, a)),
+            crate::ty::Ty::BigInt
+        )
+    })
 }
 
 /// True iff either operand of a binary op has solved type `Ty::Float` — the signal to remap `+`/`-`/`*`/

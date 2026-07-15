@@ -224,6 +224,28 @@
   (call   main (: 5 Int64)) (output (: 105 BigInt))
   (call   main (: 1000000000000 Int64)) (output (: 1000000000100 BigInt)))
 
+(case "a quantity over a BigInt magnitude compares by its exact value"
+  (doc    "A `(Qty BigInt meter)` COMPARISON routes to the exact bigint compare (`bigint-cmp`) on the
+           erased inner handles, exactly as a bare `BigInt` `<` does — `(< (Qty.of (BigInt.of n) meter)
+           (Qty.of (BigInt.of 100) meter))`: n=5 → true (1), n=200 → false (0). Pins the comparison
+           companion of the bigint-quantity arithmetic fix: `bigint_operand` (read by `lower_comparison`)
+           now peels `Ty::Qty` to see the BigInt inner, so a quantity comparison no longer declines
+           ('comparison of a compound value needs a heap walk').")
+  (input  (do (def (main (: n Int64))
+                (if (< (Qty.of (BigInt.of n) (Unit.base #"meter"))
+                       (Qty.of (BigInt.of 100) (Unit.base #"meter"))) 1 0)) (export main)))
+  (call   main (: 5 Int64)) (output (: 1 Int64))
+  (call   main (: 200 Int64)) (output (: 0 Int64)))
+
+(case "a quantity over a Rational magnitude compares by its exact value"
+  (doc    "The Rational companion: `(< (Qty (Rational 1/40) meter) (Qty (Rational 127/5000) meter))` — 25
+           mm vs 1 inch expressed as exact reference-meter rationals — compares exactly (1/40 = 125/5000 <
+           127/5000) → true. `rational_operand` peels `Ty::Qty` so a rational-quantity comparison folds
+           through the exact cross-multiply path rather than declining as a compound compare.")
+  (input  (< (Qty.of (Rational.of 1 40) (Unit.base #"meter"))
+             (Qty.of (Rational.of 127 5000) (Unit.base #"meter"))))
+  (output (: true Bool)))
+
 (case "a runtime-magnitude same-unit difference subtracts the erased magnitudes"
   (doc    "The subtraction companion: `(- (Qty.of n meter) (Qty.of 5 meter))` emits the erased `n - 5` as a
            plain integer subtract (the checked Int64 subtract of the numeric core), 20-5 = 15. Pins that `-`

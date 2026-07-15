@@ -1170,7 +1170,9 @@ pass	a pure let-bound lambda and a performing one are both applied in the handle
 pass	a qualified construct and a bare match name the same colliding variant
 pass	a quantity built from an extracted unit is dimensionally checked
 pass	a quantity is constructed from a numeric value and a unit
+pass	a quantity over a BigInt magnitude compares by its exact value
 pass	a quantity over a BigInt magnitude runs unbounded arithmetic on the erased handles
+pass	a quantity over a Rational magnitude compares by its exact value
 pass	a quantity over an exact rational magnitude divides exactly and derives its dimension
 pass	a quantity raised to the zeroth power is a dimensionless one
 pass	a quantity's erased value is the identical numeric value the bare literal has
