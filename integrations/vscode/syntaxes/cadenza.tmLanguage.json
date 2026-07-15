@@ -1,0 +1,69 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Cadenza",
+  "scopeName": "source.cadenza",
+  "comment": "Baseline lexical highlighting for Cadenza (both the ML and s-expression surfaces). The `cdz lsp` server refines this at load time with SEMANTIC tokens (colour by what a name MEANS, from the compiler's resolved column); this TextMate grammar is the lexical fallback the editor paints before/without the server. Keyword set mirrors guide/src/editor/cadenzaLanguage.ts.",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#literals" },
+    { "include": "#numbers" },
+    { "include": "#keywords" },
+    { "include": "#constructors" },
+    { "include": "#operators" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.double-slash.cadenza",
+          "match": "//.*$"
+        },
+        {
+          "name": "comment.line.semicolon.cadenza",
+          "match": ";.*$"
+        }
+      ]
+    },
+    "strings": {
+      "name": "string.quoted.double.cadenza",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [
+        {
+          "name": "constant.character.escape.cadenza",
+          "match": "\\\\."
+        }
+      ]
+    },
+    "literals": {
+      "patterns": [
+        {
+          "name": "constant.language.cadenza",
+          "match": "\\b(true|false|unit)\\b"
+        },
+        {
+          "name": "constant.other.symbol.cadenza",
+          "match": "#\"[^\"]*\"|#\\\\.|#[A-Za-z_][A-Za-z0-9_-]*"
+        }
+      ]
+    },
+    "numbers": {
+      "name": "constant.numeric.cadenza",
+      "match": "\\b(0[xXbBoO][0-9a-fA-F_]+|\\d[\\d_]*(\\.[\\d_]+)?([eE][+-]?\\d+)?)\\b"
+    },
+    "keywords": {
+      "name": "keyword.control.cadenza",
+      "match": "\\b(fn|def|let|in|if|then|else|match|with|module|export|import|from|effect|handle|host|op|type|do|guard|lambda|record|tuple|list|map|set|quote|quasiquote)\\b"
+    },
+    "constructors": {
+      "comment": "A Capitalized identifier — a type or a variant constructor. Semantic tokens distinguish the two; lexically we colour both as a type name.",
+      "name": "entity.name.type.cadenza",
+      "match": "\\b[A-Z][A-Za-z0-9_]*\\b"
+    },
+    "operators": {
+      "name": "keyword.operator.cadenza",
+      "match": "(\\|>|->|=>|::|[-+*/%<>=!&|^~@.])"
+    }
+  }
+}

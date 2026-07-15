@@ -1,0 +1,65 @@
+{
+  "name": "cadenza-lsp",
+  "displayName": "Cadenza",
+  "description": "Cadenza language support — diagnostics, hover, semantic highlighting, go-to-definition, and find-references, all served by `cdz lsp` (the compiler itself).",
+  "version": "0.1.0",
+  "publisher": "cadenza",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onLanguage:cadenza"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "cadenza",
+        "aliases": [
+          "Cadenza",
+          "cadenza"
+        ],
+        "extensions": [
+          ".cdz",
+          ".ml",
+          ".sexp",
+          ".sexpr"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "cadenza",
+        "scopeName": "source.cadenza",
+        "path": "./syntaxes/cadenza.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "title": "Cadenza",
+      "properties": {
+        "cadenza.server.path": {
+          "type": "string",
+          "default": "",
+          "description": "Absolute path to the `cdz` binary that runs the LSP server (`cdz lsp`). When empty, the extension reads the path written by `cargo xtask install-lsp` (a `.cdz-server-path` file beside the extension), then falls back to `cdz` on PATH."
+        },
+        "cadenza.trace.server": {
+          "type": "string",
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
+          "default": "off",
+          "description": "Trace the JSON-RPC traffic between VS Code and the `cdz lsp` server (for debugging the extension)."
+        }
+      }
+    }
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  }
+}

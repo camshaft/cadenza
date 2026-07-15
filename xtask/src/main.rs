@@ -189,6 +189,16 @@ enum Cmd {
         #[arg(long)]
         store: Option<PathBuf>,
     },
+    /// Build the `cdz` LSP server and install the Cadenza VS Code extension into the local editor, in
+    /// one command: builds `cdz` (release), installs the extension's npm deps, bakes the built binary's
+    /// path into the extension, and symlinks `integrations/vscode` into every VS Code extensions dir
+    /// found (`~/.vscode`, `~/.vscode-server`, forks). Reload the editor window afterward and open a
+    /// `.cdz` file. Re-run after rebuilding `cdz`. No `code`/`vsce` CLI needed — the symlink IS the install.
+    InstallLsp {
+        /// Remove the extension symlinks (leaves the built binary + npm deps in place).
+        #[arg(long)]
+        uninstall: bool,
+    },
     /// Orchestrate the autonomous-agent fleet: bring agents up as named tmux windows, tear them
     /// down, inspect the board, add/remove agents, and route inbox messages. The durable manifest is
     /// `.claude/fleet/registry.json`; see `.claude/fleet/AGENTS-fleet.md` for the agent contract.
@@ -240,6 +250,7 @@ fn main() {
         Cmd::DuvetCheck { save } => duvet_check::run(&paths, save),
         Cmd::Miri { filter } => miri(&paths, &filter),
         Cmd::GuideWasm { store } => guide_wasm(&paths, store),
+        Cmd::InstallLsp { uninstall } => install_lsp::run(&paths, uninstall),
         Cmd::Fleet { cmd } => fleet::run(&paths, cmd),
     }
 }
@@ -284,6 +295,7 @@ mod bench;
 mod codegen;
 mod duvet_check;
 mod fleet;
+mod install_lsp;
 
 /// The workspace directory anchors, resolved once from this crate's manifest location. xtask lives
 /// at `<repo>/xtask`, so the repo root is the manifest's parent and the seed workspace is the fixed
