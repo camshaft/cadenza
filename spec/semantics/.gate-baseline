@@ -934,6 +934,7 @@ pass	a mutual AST walker re-extracts a node's payload in a sibling operand while
 pass	a mutual walk where BOTH partners perform threads one shared counter across the cycle
 pass	a mutually tail-recursive even/odd over a large runtime count iterates in constant stack
 pass	a mutually-recursive AST walker reads a node's child list without corrupting a sibling head-read
+pass	a mutually-recursive check/check-if returning a Result compiles and runs (if-cond is a call)
 pass	a mutually-recursive decoder returns a heap value and cursor and its heap slot is dispatched
 pass	a mutually-recursive fresh-id walk assigns a fresh id at each node and sums them
 pass	a mutually-recursive generic group is instantiated per type
@@ -2596,6 +2597,7 @@ pass	the value-yielding remove of an absent key leaves the map unchanged
 pass	the value-yielding remove reports None when the key is absent
 pass	the value-yielding remove reports the dropped value at a runtime key
 pass	the value-yielding remove reports the value it dropped
+pass	the well-typed branch of the mutual check returns the Ok result
 pass	the widening carries a full-width magnitude through BigInt
 pass	the width-indexed and aliased annotations of one value do not conflict
 pass	the width-indexed and aliased float annotations of one value do not conflict

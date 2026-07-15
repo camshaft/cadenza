@@ -1322,6 +1322,18 @@ pub struct Db {
     pub(crate) solving_schemes: crate::fxhash::FxHashSet<usize>,
     pub(crate) seed_transitive: crate::fxhash::FxHashSet<usize>,
 
+    /// The ROOT of the body currently being β-reduced / structurally COPIED (`eval::beta_reduce`),
+    /// or `None` outside a reduction. Used by the capture-share exception: a pinned match-arm/pattern
+    /// binder is SHARED (its `SumPayload` resolution preserved) only when its scrutinee is EXTERNAL to
+    /// the body being copied — a genuine capture from an enclosing scope. If the scrutinee lies WITHIN
+    /// this root, the scrutinee is itself being copied (a fresh occurrence), so the binder must be COPIED
+    /// too, to re-resolve against the copied scrutinee — otherwise the shared binder reads the ORIGINAL,
+    /// now-orphaned scrutinee (whose own param references have no slot in the copied function → the
+    /// "parameter reference has no local slot" backend decline). Set/cleared around the outermost
+    /// `beta_reduce` in `apply_lambda` / `copy_structural_pub`; a nested `beta_reduce` (a recursive copy
+    /// of a sub-node) keeps the outer root, so `is_within` still tests membership in the whole copied body.
+    pub(crate) reduction_root: Option<crate::ast::StructId>,
+
     /// CALL-SITE index for `infer::call_site_arg_types`: `callee def index → the argument-occurrence lists
     /// of every application (in ANY def body) whose head resolves to that callee`. Call-site inference
     /// (seed an open param from a caller's argument) needs "every call of `def`"; computing it by scanning
@@ -2083,6 +2095,7 @@ impl Db {
             solving_params: crate::fxhash::FxHashSet::default(),
             solving_schemes: crate::fxhash::FxHashSet::default(),
             seed_transitive: crate::fxhash::FxHashSet::default(),
+            reduction_root: None,
             call_sites_by_callee: None,
             resolved: Column::new(),
             types: Column::new(),

@@ -1963,6 +1963,79 @@
             (def (main) (even 7)) (export main)))
   (output (: false Bool)))
 
+; --- A mutually-recursive pair returning a heap SUM, with a helper's `if`-condition being a CALL ---
+; The parity pair above is Int64/Bool-only and tail-recursive (a shared loop). This pins the HEAP-SUM,
+; NON-tail mutual shape a real type-checker takes: `check` factors the `If` typing rule into a helper
+; `check-if`, and each returns a `(Result Ty TErr)`. Two joint bugs used to sink it:
+;   (A) INFERENCE — `check`/`check-if` never build an `Err(...)` on the recursive spine, so the error
+;       slot stays a free var `(Result Ty ?err)`. Re-wrapping `(Result.Err et)` in a match arm read `et`
+;       via the `Err` ctor scheme instantiated FROM ZERO, colliding with the scrutinee's free `?err = ?0`,
+;       so `et` solved to the FIRST type arg `Ty` and the arm typed `(Result Ty Ty)` → a spurious CDZ0203
+;       "if branches differ". (Fixed by seeding the ctor instantiation past the scrutinee's vars.)
+;   (B) BACKEND — monomorphizing the generic helper `check-if` copied its body, but a pinned match-arm
+;       binder (`ct`) whose SCRUTINEE `(check c)` lies WITHIN the copied body was SHARED rather than copied,
+;       so it read the original, now-orphaned scrutinee whose param `c` had no slot in the copy → "parameter
+;       reference has no local slot". (Fixed by copying such a binder when its scrutinee is within the copy.)
+; `main` runs `check(If(Num 1, Num 2))`: `check(Num 1)` = `Ok(TInt)`, `is-bool(TInt)` = false, so `check-if`
+; yields `Err(CondNotBool)` and `main` takes the `Err` arm → 0. Also exercises bug (C) below: `TErr` is a
+; SINGLE nullary variant (erased to a `Ty::Nominal { inner: Unit }`), so `Result.Err`'s payload is Unit —
+; a Unit-typed sum payload built + re-wrapped inside a recursive function.
+(case "a mutually-recursive check/check-if returning a Result compiles and runs (if-cond is a call)"
+  (doc    "`check` ↔ `check-if` mutually recurse and each returns `(Result Ty TErr)`. `check-if` gates a
+           nested recursive `(check t)` on `(if (is-bool ct) …)` — a CALL condition on the match-bound
+           payload `ct` — and re-wraps `(Result.Err et)`. This is the shape that jointly hit a fresh-var
+           inference collision (spurious CDZ0203), a monomorphization slot bug ('parameter reference has no
+           local slot'), and a Unit-payload construction gap. `check(If(Num 1, Num 2))`: the condition
+           `Num 1` types `TInt`, `is-bool(TInt)` is false, so the result is `Err(CondNotBool)` → main → 0.")
+  (input  (do
+            (type Ty TInt TBool)
+            (type TErr CondNotBool)
+            (type Exp (Num Int64) (If Exp Exp))
+            (def (is-bool (: t Ty)) (match t ((TBool) true) ((TInt) false)))
+            (def (check (: e Exp))
+              (match e
+                ((Exp.Num _) (Result.Ok TInt))
+                ((Exp.If c t) (check-if c t))))
+            (def (check-if (: c Exp) (: t Exp))
+              (match (check c)
+                ((Result.Ok ct)
+                  (if (is-bool ct)
+                    (match (check t)
+                      ((Result.Ok tt) (Result.Ok tt))
+                      ((Result.Err et) (Result.Err et)))
+                    (Result.Err CondNotBool)))
+                ((Result.Err ec) (Result.Err ec))))
+            (def (main) (match (check (Exp.If (Exp.Num 1) (Exp.Num 2))) ((Result.Ok _) 1) ((Result.Err _) 0)))
+            (export main)))
+  (output (: 0 Int64)))
+
+(case "the well-typed branch of the mutual check returns the Ok result"
+  (doc    "The companion outcome of the check/check-if pair on a well-typed input. `check(Num 5)` =
+           `Ok(TInt)` directly (no `If`, so no condition check), so `main` takes the `Ok` arm → 1. Confirms
+           the mutual Result-returning shape carries BOTH the `Ok`-spine value and (above) the `Err`-spine
+           value across the run boundary, not a fixed answer.")
+  (input  (do
+            (type Ty TInt TBool)
+            (type TErr CondNotBool)
+            (type Exp (Num Int64) (If Exp Exp))
+            (def (is-bool (: t Ty)) (match t ((TBool) true) ((TInt) false)))
+            (def (check (: e Exp))
+              (match e
+                ((Exp.Num _) (Result.Ok TInt))
+                ((Exp.If c t) (check-if c t))))
+            (def (check-if (: c Exp) (: t Exp))
+              (match (check c)
+                ((Result.Ok ct)
+                  (if (is-bool ct)
+                    (match (check t)
+                      ((Result.Ok tt) (Result.Ok tt))
+                      ((Result.Err et) (Result.Err et)))
+                    (Result.Err CondNotBool)))
+                ((Result.Err ec) (Result.Err ec))))
+            (def (main) (match (check (Exp.Num 5)) ((Result.Ok _) 1) ((Result.Err _) 0)))
+            (export main)))
+  (output (: 1 Int64)))
+
 ; --- A TAIL call runs in constant stack ---------------------------------------------------------
 ; A recursive call in TAIL position (the function's result is exactly that call) must reuse the
 ; caller's stack frame rather than pushing a new one — otherwise a tail-recursive loop over a RUNTIME
