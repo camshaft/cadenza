@@ -596,7 +596,7 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                     } else if let Core::Tuple { elems } = core_of(db, operand) {
                         // The RESOLVED fold (`reduce_to_tuple_elems`) sees through a `(tuple …)` literal
                         // but NOT an operand whose tuple is produced by a tuple OPERATION — `Tuple.split-at`
-                        // / `Tuple.pop`, which `lower_tuple_split_at`/`lower_tuple_pop` FOLD to a constant
+                        // / `Tuple.remove`, which `lower_tuple_split_at`/`lower_tuple_pop` FOLD to a constant
                         // `Core::Tuple` but which resolve as a `Prim` application, not a `Resolved::Tuple`.
                         // Fold the projection through that constant tuple's CORE, exactly as the literal
                         // path does: `(. (Tuple.split-at (tuple 10 20) 0) 1)` → element 1 = the suffix tuple
@@ -1474,7 +1474,7 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 Some(Prim::RecordPop) if args.len() == 2 => {
                     lower_record_pop(db, id, args[0], args[1])
                 }
-                // `Tuple.cat a b` — concatenate two constant `Core::Tuple`s (elements of `a` then `b`).
+                // `Tuple.concat a b` — concatenate two constant `Core::Tuple`s (elements of `a` then `b`).
                 Some(Prim::TupleCat) if args.len() == 2 => {
                     lower_tuple_cat(db, id, args[0], args[1])
                 }
@@ -1482,7 +1482,7 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 Some(Prim::TupleSplitAt) if args.len() == 2 => {
                     lower_tuple_split_at(db, id, args[0], args[1])
                 }
-                // `Tuple.pop t` — `(tuple (. t 0) <rest>)`.
+                // `Tuple.remove t` — `(tuple (. t 0) <rest>)`.
                 Some(Prim::TuplePop) if args.len() == 1 => lower_tuple_pop(db, id, args[0]),
                 // `vec-len`). One operand: the list.
                 Some(Prim::ListLen) if args.len() == 1 => {
@@ -17799,7 +17799,7 @@ fn lower_record_pop(db: &mut Db, id: StructId, record: StructId, name: StructId)
     }
 }
 
-/// Lower `(Tuple.cat a b)` — concatenate two constant `Core::Tuple`s: the elements of `a` in order
+/// Lower `(Tuple.concat a b)` — concatenate two constant `Core::Tuple`s: the elements of `a` in order
 /// followed by `b`'s (each element carrying its source occurrence). A poison operand propagates; a
 /// non-constant/non-tuple operand declines (the runtime op is a later increment).
 fn lower_tuple_cat(db: &mut Db, id: StructId, a: StructId, b: StructId) -> Core {
@@ -17808,7 +17808,7 @@ fn lower_tuple_cat(db: &mut Db, id: StructId, a: StructId, b: StructId) -> Core 
         (Core::Tuple { elems: ea }, Core::Tuple { elems: eb }) => {
             let mut elems = ea;
             elems.extend(eb);
-            trace!(target: "rcdzc::fold", node = id.0, n = elems.len(), "Tuple.cat folds two constant tuples");
+            trace!(target: "rcdzc::fold", node = id.0, n = elems.len(), "Tuple.concat folds two constant tuples");
             Core::Tuple { elems }
         }
         _ => Core::Poison(Reject::decline(
@@ -17864,7 +17864,7 @@ fn lower_tuple_split_at(db: &mut Db, id: StructId, tuple: StructId, pos: StructI
     }
 }
 
-/// Lower `(Tuple.pop t)` — element 0 off: `(tuple (. t 0) <rest>)`, the rest a synthesized tuple of the
+/// Lower `(Tuple.remove t)` — element 0 off: `(tuple (. t 0) <rest>)`, the rest a synthesized tuple of the
 /// remaining elements (`(Tuple.split-at t 1)` with the singleton prefix unwrapped). A poison / non-
 /// constant / empty tuple operand propagates/declines.
 fn lower_tuple_pop(db: &mut Db, id: StructId, tuple: StructId) -> Core {
@@ -17880,7 +17880,7 @@ fn lower_tuple_pop(db: &mut Db, id: StructId, tuple: StructId) -> Core {
         return Core::Poison(Reject::decline("Tuple.remove of an empty tuple"));
     };
     let rest_tuple = synth_tuple(db, rest.to_vec());
-    trace!(target: "rcdzc::fold", node = id.0, "Tuple.pop folds to a (element0, rest) tuple");
+    trace!(target: "rcdzc::fold", node = id.0, "Tuple.remove folds to a (element0, rest) tuple");
     Core::Tuple {
         elems: vec![first, rest_tuple],
     }

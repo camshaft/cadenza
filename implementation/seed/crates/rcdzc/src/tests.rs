@@ -38588,10 +38588,10 @@ mod stage1 {
                 "the canonical collection-op name must resolve + compile: {src}"
             );
         }
-        // …and a value EXECUTES under the new name: `(Tuple.remove (tuple 7 8 9))` drops the last element
-        // (leaving `(7 8)`), so reading element 0 folds to the constant `7` the component returns — no
-        // runtime store needed (the positional reshape is compile-time known). Exercises the renamed
-        // `Tuple.remove` end-to-end through wasmtime.
+        // …and a value EXECUTES under the new name: `(Tuple.remove (tuple 7 8 9))` pops element 0 (the
+        // head), returning the pair `(tuple 7 (tuple 8 9))` — so reading element 0 of the result folds to
+        // the head `7` the component returns (no runtime store needed — the positional reshape is
+        // compile-time known). Exercises the renamed `Tuple.remove` end-to-end through wasmtime.
         let bytes = compile_component(&crate::codec::encode(&parse(
             "(module m (def (main) (. (Tuple.remove (tuple 7 8 9)) 0)) (export main))",
         )))
@@ -38599,7 +38599,7 @@ mod stage1 {
         assert_eq!(
             run_returns::<i64>(&bytes, "main"),
             7,
-            "Tuple.remove drops the last element, so element 0 of the result stays 7"
+            "Tuple.remove pops element 0, returning (tuple head rest); element 0 of the result is the head 7"
         );
     }
 

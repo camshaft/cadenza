@@ -3458,7 +3458,7 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
     //= spec/capabilities/type-system.md#a-tuple-is-reshaped-positionally-by-an-explicit-operation-yielding-a-new-value
     //# The arity of a tuple positional operation's result MUST be determined statically from the operands' arities, so that the emitted component carries a concrete tuple shape and the operation introduces no runtime-length tuple.
     //
-    // `Tuple.cat a b` — the concatenation of two tuples' element types (`type-system.md` §Two Tuples Are
+    // `Tuple.concat a b` — the concatenation of two tuples' element types (`type-system.md` §Two Tuples Are
     // Concatenated Into One Of Their Combined Length). Result arity = the sum; each element keeps its
     // source position's type. A non-tuple operand → the generic path (Any).
     //= spec/capabilities/type-system.md#two-tuples-are-concatenated-into-one-of-their-combined-length
@@ -3489,7 +3489,7 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
         let suffix = tuple_or_unit(&elems[k..]);
         return Ty::Tuple(std::rc::Rc::from([prefix, suffix]));
     }
-    // `Tuple.pop t` — element 0 off: `(tuple (. t 0) <rest>)`. Result `(Tuple <e0> (Tuple <rest…>))`. A
+    // `Tuple.remove t` — element 0 off: `(tuple (. t 0) <rest>)`. Result `(Tuple <e0> (Tuple <rest…>))`. A
     // non-tuple or empty-tuple operand falls through (Any); the arity-≥1 requirement is `check_application`'s.
     if crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::TuplePop)
         && args.len() == 1
@@ -6211,7 +6211,7 @@ fn check_application(
     // a typed value; a result shape is row-/arity-polymorphic), so SKIP the generic scheme-unify (it would
     // fault the operand). The per-op faults (CDZ0212 absent / CDZ0211 shared / CDZ0201 split-out-of-arity)
     // + operand descent are done in `collect_node`'s Apply arm; nothing to add here beyond stopping the
-    // generic path. Matches any arity (`Tuple.pop`/1, the rest/2).
+    // generic path. Matches any arity (`Tuple.remove`/1, the rest/2).
     if matches!(
         crate::eval::meta_apply_of(db, head),
         Some(
@@ -10119,7 +10119,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
             } else if let Some(tup_op) = tuple_row_op_name(crate::eval::meta_apply_of(db, head))
                 && !args.is_empty()
                 && {
-                    // A tuple row op over a DEFINITE NON-TUPLE operand — `(Tuple.pop n)` for `n : Int64` —
+                    // A tuple row op over a DEFINITE NON-TUPLE operand — `(Tuple.remove n)` for `n : Int64` —
                     // is a kind error, the tuple twin of the record-row-op check. It was check-INVISIBLE
                     // and compiled to a MISLEADING "Tuple.<op> over a runtime tuple is not yet built" (the
                     // operand is not a tuple at all). `cat` checks BOTH operands; `split-at`/`pop` check
@@ -10190,7 +10190,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 crate::eval::meta_apply_of(db, head),
                 Some(crate::resolved::Prim::TupleCat | crate::resolved::Prim::TuplePop)
             ) {
-                // `Tuple.cat a b` / `Tuple.pop t` — both operands (cat) / the sole operand (pop) are
+                // `Tuple.concat a b` / `Tuple.remove t` — both operands (concat) / the sole operand (remove) are
                 // ordinary tuple expressions; descend each. No positional literal to guard (cat has none;
                 // pop's arity-≥1 requirement — an empty tuple is `unit`, not a tuple — surfaces as the
                 // generic non-tuple fault). No per-op reject here.
