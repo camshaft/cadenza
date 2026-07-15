@@ -1064,11 +1064,18 @@ impl<'a> Parser<'a> {
                 _ => break,
             }
             // Guard the layer JUST folded (checked AFTER building it, so a run that stops at the limit
-            // still yields a well-formed node). Only the layers THIS loop adds count — the enclosing
-            // recursion depth was already bounded at `expr` entry, so re-adding `self.depth` here would
-            // double-count and reject a legitimate deep bracket nest whose postfix run is short.
+            // still yields a well-formed node). Bound the TOTAL arena depth `self.depth + spine`: the
+            // enclosing recursion depth (`self.depth`, one frame per bracket/keyword nesting level) and
+            // the postfix layers this loop folds BOTH deepen the same produced tree, and a recursive
+            // consumer (printer/`canon`) walks their SUM. A deeply-parenthesized expression WITH a long
+            // postfix chain (`(((x)))….a.a.a…`) builds an arena of depth `self.depth + spine`; a
+            // spine-only check let that reach ~2× MAX_NESTING_DEPTH — reintroducing the stack-overflow
+            // DoS the guard exists to prevent (PR #383). NOT a double-count: `self.depth` is real tree
+            // depth, and the infix guard in `expr` bounds `self.depth + spine` the same way. A nest at
+            // the recursion limit plus one postfix layer is legitimately past the bound, so rejecting it
+            // is correct; a combined depth under the limit still parses (no over-rejection).
             spine += 1;
-            if !self.depth_exceeded && spine >= crate::sexpr::MAX_NESTING_DEPTH {
+            if !self.depth_exceeded && self.depth + spine >= crate::sexpr::MAX_NESTING_DEPTH {
                 self.error("expression nests too deeply to parse");
                 self.depth_exceeded = true;
                 return node;
@@ -2469,6 +2476,41 @@ mod tests {
             back.structurally_eq(&ps.arenas),
             "a deep-but-legal flat chain must survive the binary round-trip"
         );
+    }
+
+    #[test]
+    fn combined_recursion_plus_postfix_depth_is_bounded() {
+        // PR #383 DoS: bracket-nesting recursion (`self.depth`, one frame per level) and a postfix spine
+        // (`.a.a…`) BOTH deepen the same produced arena, and a recursive consumer (printer/`canon`)
+        // walks their SUM. The postfix guard must bound `self.depth + spine`, so a deeply-parenthesized
+        // expression WITH a long postfix chain — combined arena depth ~2× MAX_NESTING_DEPTH — is
+        // diagnosed, not left to overflow a small (e.g. the guide's ~1MB wasm) stack. A spine-only
+        // check missed this. Run on a big stack so the recursion descent reaches the guard.
+        run_deep(|| {
+            let each = crate::sexpr::MAX_NESTING_DEPTH as usize; // parens AND postfix each ~= the limit
+            let inner = format!("x{}", ".a".repeat(each));
+            let src = format!("{}{}{}", "(".repeat(each), inner, ")".repeat(each));
+            let p = read_ml(&src);
+            assert!(
+                !p.ok()
+                    && p.errors
+                        .iter()
+                        .any(|e| e.message.contains("nests too deeply")),
+                "combined nest+postfix (~2× limit) must be diagnosed, not a crash; ok={} errs={:?}",
+                p.ok(),
+                p.errors
+            );
+            // A combined depth comfortably UNDER the limit still parses (no over-rejection).
+            let q = (crate::sexpr::MAX_NESTING_DEPTH as usize) / 3;
+            let ok_inner = format!("x{}", ".a".repeat(q));
+            let ok_src = format!("{}{}{}", "(".repeat(q), ok_inner, ")".repeat(q));
+            let ok = read_ml(&ok_src);
+            assert!(
+                ok.ok(),
+                "a combined depth under the limit must parse: {:?}",
+                ok.errors
+            );
+        });
     }
 
     /// Run `f` on a thread with a stack large enough to reach the parser's depth guard (the same
