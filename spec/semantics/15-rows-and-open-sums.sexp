@@ -549,3 +549,26 @@
                 ((Ok n) n)
                 ((Err _) -1))) (export main)))
   (output (: -1 Int64)))
+
+(case "two open-sum values of the same declared variant compare equal by structure"
+  (doc    "Witnesses type-system.md #A Sum Type May Be Open composed with #Equality Is Structural: an
+           open sum is an ordinary tagged value, so two values of the same declared variant carrying
+           equal payloads compare equal structurally — open-ness is a compile-time typing property, not a
+           runtime representation change. `(= (A 5) (A 5))` is true → 1.")
+  (input  (do
+            (type V (A Int64) (B Int64) .. r)
+            (def (main) (if (= (A 5) (A 5)) 1 0)) (export main)))
+  (output (: 1 Int64)))
+
+(case "an open sum with zero named variants is matchable by only a wildcard"
+  (doc    "Witnesses type-system.md #A Sum Type May Be Open, With A Mandatory Open-Tail Arm at the
+           degenerate edge: an open sum that names NO variants (`(type Opaque .. r)` — the whole value
+           set is the open tail) is matched by a lone `_` arm, which is both mandatory and sufficient.
+           The scrutinee is produced by a diverging `(trap …)` (there is no way to construct a named
+           variant), so the match's `_` arm yields 42 only along a reachable path; it pins that a
+           no-named-variant open sum still type-checks + its `_` cover is exhaustive.")
+  (input  (do
+            (type Opaque .. r)
+            (def (rd (: o Opaque)) (match o (_ 42)))
+            (def (main) (rd (trap "never"))) (export main)))
+  (output (: 42 Int64)))
