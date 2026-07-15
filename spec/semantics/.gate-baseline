@@ -909,6 +909,7 @@ pass	a narrow-width parameter plus a bare literal computes at the parameter widt
 pass	a narrow-width parameter plus a bare literal computes inside a helper function
 pass	a narrow-width two-parameter recursion compiles to valid wasm and computes
 pass	a narrow-width wrapping-mul constant folds by wrapping, not by rejecting
+pass	a narrower-typed runtime value is not silently widened into a wider segment
 pass	a nearer handler on the call chain shadows an outer one
 pass	a negative constant BigInt crosses the boundary with its sign
 pass	a negative constant argument to an unsigned parameter is rejected, not laundered
@@ -1769,6 +1770,7 @@ pass	an unsigned LEB128 encoder emits a single byte below the continuation thres
 pass	an unsigned LEB128 encoder emits the known-answer multibyte encoding
 pass	an unsigned pattern segment reads the same byte as a non-negative integer
 pass	an unsigned right shift fills with zeros, not the sign bit
+pass	an unsigned runtime value is not accepted by a signed segment of the same width
 pass	an unsigned segment reads the same sign-bit-only byte as 128
 pass	an unsigned-byte entrypoint takes and returns a u8 at the boundary
 pass	an unused let-init that does not reduce to a value is eliminated, so it does not diverge

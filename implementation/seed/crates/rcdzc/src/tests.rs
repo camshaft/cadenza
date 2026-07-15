@@ -21442,10 +21442,31 @@ mod match_engine {
             msg_0203("(module m (def (main (: n Int64)) (Bytes.len (bin (u16 n)))) (export main))")
                 .contains("UInt16"),
         );
-        // A DIFFERENT-signedness type is also a mismatch: an `Int8` into an UNSIGNED `u8` segment.
+        // A DIFFERENT-signedness type is also a mismatch: an `Int8` into an UNSIGNED `u8` segment. The
+        // required type is EXACT in BOTH axes (width AND sign), not merely "an integer that fits".
         assert!(
             msg_0203("(module m (def (main (: n Int8)) (Bytes.len (bin (u8 n)))) (export main))")
                 .contains("UInt8"),
+        );
+        // The width match is EXACT — a NARROWER value is NOT silently widened into a wider segment: a
+        // `UInt8` into a `u16` segment is a mismatch (the segment wants `UInt16`), even though every `UInt8`
+        // value trivially fits 16 bits. This pins that the contract is a TYPE match, not a value-range fit —
+        // widening is as explicit as narrowing (`UInt16.of`), never implicit.
+        assert!(
+            msg_0203("(module m (def (main (: n UInt8)) (Bytes.len (bin (u16 n)))) (export main))")
+                .contains("UInt16"),
+        );
+        // A WIDER value into a NARROWER segment is likewise a type error (a `UInt16` into `u8`), the
+        // companion of the `Int64`-into-`u8` case above.
+        assert!(
+            msg_0203("(module m (def (main (: n UInt16)) (Bytes.len (bin (u8 n)))) (export main))")
+                .contains("UInt8"),
+        );
+        // Signedness is strict on the SIGNED side too: a wider SIGNED `Int16` into a signed `i8` segment is
+        // a mismatch (wants `Int8`), naming the signed width type.
+        assert!(
+            msg_0203("(module m (def (main (: n Int16)) (Bytes.len (bin (i8 n)))) (export main))")
+                .contains("Int8"),
         );
         // A raw `Int64` into a `bits` field → CDZ0203 naming `(UInt k)` (here a 4-bit field, byte-closed by a
         // trailing constant `(bits 5 4)`).
