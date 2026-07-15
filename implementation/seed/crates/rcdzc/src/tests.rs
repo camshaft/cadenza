@@ -5097,6 +5097,53 @@ fn a_multishot_continuation_reaching_an_outer_handler_effect_declines_not_double
     );
 }
 
+/// The CONDITIONAL-path companion of the outer-handler test above: a multi-shot arm whose re-run
+/// continuation reaches an outer-handler effect through an `if` BRANCH (not a strict operand) must also
+/// decline. `(if (< (Amb.flip) 5) (Ctr.tick) 99)` — re-running the continuation per `Amb.flip` resume would
+/// re-issue the outer `Ctr.tick` in the taken branch, advancing the outer state more than once. Exercises a
+/// DIFFERENT fold path (the `if`/branch threading) than the strict-operand shape, so it is a distinct
+/// regression guard on the host-composition invariant — the multi-shot fold is miscompile-prone here.
+#[test]
+fn a_multishot_continuation_reaching_an_outer_effect_via_an_if_branch_declines() {
+    use crate::testkit::parse;
+    let src = "(do (effect Amb (op flip (-> Unit Int64))) (effect Ctr (op tick (-> Unit Int64))) \
+               (def (main) \
+                 (handle Ctr 0 ((tick (u) c (resume c (+ c 1)))) \
+                   (handle Amb 0 ((flip (u) s (+ (resume 1 s) (resume 2 s)))) \
+                     (if (< (Amb.flip) 5) (Ctr.tick) 99)))) (export main))";
+    let err = compile_component(&crate::codec::encode(&parse(src))).expect_err(
+        "a multi-shot continuation reaching an outer effect via an if branch must decline",
+    );
+    assert!(
+        !err.message.contains("#eff") && !err.message.contains("$s"),
+        "the decline must not leak an internal state-param name, got: {}",
+        err.message
+    );
+}
+
+/// The DO-SEQUENCE companion: a multi-shot arm whose continuation spans a HOST call inside a `(do …)` must
+/// decline. `(do (Log.emit (Amb.flip)) 7)` under a multi-shot `flip` arm — re-running the continuation per
+/// resume would emit the delegated `Log.emit` host call more than once, violating the host-composition
+/// invariant (§4.4: a re-run/reified continuation must not span a boundary call — a re-deriving host cannot
+/// reconstruct run-local state). Exercises the `Core::Seq`/do path, distinct from the strict-operand host
+/// test, so a separate guard against a doubled host call.
+#[test]
+fn a_multishot_continuation_spanning_a_host_call_in_a_do_declines() {
+    use crate::testkit::parse;
+    let src = "(do (effect Amb (op flip (-> Unit Int64))) (effect Log (op emit (-> Int64 Unit))) \
+               (def (main) \
+                 (host (Log) \
+                   (handle Amb 0 ((flip (u) s (+ (resume 1 s) (resume 2 s)))) \
+                     (do (Log.emit (Amb.flip)) 7)))) (export main))";
+    let err = compile_component(&crate::codec::encode(&parse(src)))
+        .expect_err("a multi-shot continuation spanning a host call in a do must decline");
+    assert!(
+        !err.message.contains("#eff") && !err.message.contains("$s"),
+        "the decline must not leak an internal state-param name, got: {}",
+        err.message
+    );
+}
+
 /// A handler arm that RETURNS its continuation as an escaping value (`k` reified and applied OUTSIDE the
 /// handle) must be REFUSED, never run to a value. `(flip (u) s (fn (x) (resume x s)))` yields the resume
 /// as a lambda; the handle value is that lambda, applied as `(k 5)` after the handle closes. This is the
