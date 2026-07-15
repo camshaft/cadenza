@@ -2366,6 +2366,7 @@ pass	tuple elements are accessed by index
 pass	tuple elements are evaluated left to right
 pass	tuples are deconstructed by pattern matching
 pass	two BigInt accumulators co-threaded through recursion compute a fibonacci
+pass	two LEXICALLY-NESTED handlers of the same effect partition the performs by region
 pass	two MUTUALLY-recursive functions dispatching on a recursive sum compute its parity
 pass	two MUTUALLY-recursive sum types fold across their boundary
 pass	two adjacent modules declared inside a function body compose

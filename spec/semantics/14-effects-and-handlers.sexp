@@ -2007,6 +2007,24 @@
   (output (: 10 Int64))
   (host-calls))
 
+(case "two LEXICALLY-NESTED handlers of the same effect partition the performs by region"
+  (doc    "The lexical-nesting companion of the call-chain shadow above: two handlers of the SAME effect `E`
+           nest in ONE expression, and TWO performs are partitioned by which handler's region they sit in. `(+
+           (handle E 5 … (E.get)) (E.get))`: the FIRST `(E.get)` is inside the inner `handle E 5`, so it
+           resolves to the inner seed 5; the SECOND `(E.get)` is OUTSIDE the inner handle (a sibling operand
+           of the `+`), so it escapes the inner region and reaches the OUTER `handle E 100`, resolving to 100.
+           Both arms resume with the state unchanged (`(get (u) s (resume s s))`), so `(+ 5 100)` = 105. Pins
+           that lexical handler nesting of the same effect partitions performs by REGION — the inner handle
+           discharges only the performs textually within its body, and a perform outside it reaches the next
+           enclosing handler (distinct from the call-chain case, where the whole callee runs under the nearer
+           handler). Both backends agree.")
+  (input  (do
+            (effect E (op get (-> Unit Int64)))
+            (def (main)
+              (handle E 100 ((get (u) s (resume s s)))
+                (+ (handle E 5 ((get (u) s (resume s s))) (E.get)) (E.get)))) (export main)))
+  (output (: 105 Int64)))
+
 (case "the same function called under two handlers is discharged by each in turn"
   (doc    "Witnesses capabilities-and-effects.md #Handler Resolution Is Dynamic In Extent And Statically
            Determined (the monomorphization property): a single function `ask` = `(+ (Get.get) 1)` is
