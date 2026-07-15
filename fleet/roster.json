@@ -28,6 +28,7 @@
     { "name": "v-guide-infra", "role": "vertical", "vertical": "guide-infra", "area": "guide", "model": "opus", "effort": "high", "interval": "30m" },
     { "name": "v-peer-linking", "role": "vertical", "vertical": "peer-linking", "area": "rcdzc", "model": "opus", "effort": "high", "interval": "30m" },
     { "name": "v-cdz-tooling", "role": "vertical", "vertical": "cdz-tooling", "area": "cdz", "model": "opus", "effort": "high", "interval": "30m" },
-    { "name": "v-lsp", "role": "vertical", "vertical": "lsp", "area": "cdz", "model": "opus", "effort": "high", "interval": "30m" }
+    { "name": "v-lsp", "role": "vertical", "vertical": "lsp", "area": "cdz", "model": "opus", "effort": "high", "interval": "30m" },
+    { "name": "v-property-testing", "role": "vertical", "vertical": "property-testing", "area": "rcdzc", "model": "opus", "effort": "high", "interval": "30m" }
   ]
 }

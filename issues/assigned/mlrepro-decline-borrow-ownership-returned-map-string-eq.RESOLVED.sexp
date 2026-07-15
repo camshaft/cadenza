@@ -22,3 +22,5 @@
       (((. Option Some) s) s)
       (((. Option None) _) "?")))
   (@ test (def (t) (if (= (f (Map.insert (map) "y" "z") "y") "z") unit (trap "expected z")))))
+
+;; RESOLVED 2026-07-15 (trunk@c8bb44a96): value-eq operand ownership by arm-join + compact all String operands. Fixed by fix-smoke.

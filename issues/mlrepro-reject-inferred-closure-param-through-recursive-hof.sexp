@@ -1,13 +1,4 @@
-;; PARTIALLY RESOLVED (2026-07-15): the SINGLE-parameter case now infers, compiles, and runs — the
-;; "no machine representation" DECLINE is gone. Fix: `lambda_param_ty_from_context` (infer.rs) now
-;; rejects a free-`Var` context domain (a fully-generic HOF param `g : (-> _ Int64)` is a HOLE, not a
-;; concrete arrow), so the closure grounds from its OWN body instead of the unsolvable context var.
-;; Pinned by corpus 09-functions "an unannotated closure is inferred through an unannotated recursive
-;; HOF parameter" + rcdzc test `an_unannotated_closure_infers_through_an_unannotated_recursive_hof_param`.
-;; The MULTI-parameter case below still fails at a SEPARATE `Unit`-domain scheme round-trip (a compile-
-;; only CDZ0203) — tracked in mlrepro-reject-multiparam-closure-through-recursive-hof-unit-domain.sexp.
-;;
-;; ORIGINAL GAP (2026-07-14, seed rcdzc — HM inference): an UNANNOTATED closure passed to a SELF-RECURSIVE
+;; GAP (2026-07-14, seed rcdzc — HM inference): an UNANNOTATED closure passed to a SELF-RECURSIVE
 ;; higher-order function whose function parameter is ALSO unannotated fails to infer the closure's
 ;; parameter types — they are left as unsolved type variables and the emit rejects them:
 ;;   "a closure's parameter type has no machine representation"
