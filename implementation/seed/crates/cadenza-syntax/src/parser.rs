@@ -546,6 +546,9 @@ impl<'a> Parser<'a> {
         self.depth += 1;
         let mut left = self.prefix();
         left = self.postfix(left, start);
+        // The number of left-associative layers this loop has folded onto `left`. Added to `self.depth`
+        // (the recursion depth) it is the arena-tree depth built so far, which the guard below bounds.
+        let mut spine: u32 = 0;
         loop {
             // `expr as UNIT` — the unit-conversion operator, handled here rather than via `infix_op`
             // because its right operand is a UNIT denotation (a bare name reads as `(Unit.of #"name")`,
@@ -590,6 +593,20 @@ impl<'a> Parser<'a> {
             let right = self.expr(right_min);
             let span = start.merge(self.prev_span());
             left = self.list(vec![head, left, right], span);
+            // DEPTH GUARD for the LEFT SPINE. A left-associative run (`a + b + c + …`) is parsed by
+            // this LOOP, not by recursion, so `self.depth` does not grow with it — but each iteration
+            // deepens the produced arena on its LEFT (`(op (op a b) c)`), so a long flat run yields an
+            // arbitrarily deep TREE that a recursive CONSUMER (the s-expr printer, `canon`) then walks
+            // to a stack overflow (SIGABRT), even though the PARSE never recursed. Count each folded
+            // layer against the same limit so a pathologically long chain produces one clean
+            // "nests too deeply" diagnostic instead of a downstream crash. `depth_exceeded` poisons the
+            // parse (⇒ `at_end`), so the loop's next `infix_op`/`at_keyword` check stops it.
+            spine += 1;
+            if !self.depth_exceeded && self.depth + spine >= crate::sexpr::MAX_NESTING_DEPTH {
+                self.error("expression nests too deeply to parse");
+                self.depth_exceeded = true;
+                break;
+            }
         }
         // Sequencing `;` is the LOOSEST operator (looser than every infix op above), so it is folded
         // here AFTER the Pratt loop rather than through it: a `;`-run collapses to a single flat
@@ -970,6 +987,12 @@ impl<'a> Parser<'a> {
 
     /// Postfix chain: `.member` and `(args…)` application, tightest, left-nested.
     fn postfix(&mut self, mut node: StructId, start: Span) -> StructId {
+        // Layers folded by this loop, guarded like the infix left spine. A postfix run (`x.a.b.c…`,
+        // `f(1)(2)(3)…`) is iterative, so `self.depth` does not grow with it — but each iteration wraps
+        // `node` one deeper (`(. (. x a) b)`, `((f 1) 2)`), building an arbitrarily deep TREE a recursive
+        // consumer (printer/`canon`) would walk to a stack overflow. Count each layer against the shared
+        // limit (see the twin guard in `expr`) so a pathological chain gets a clean diagnostic, not a crash.
+        let mut spine: u32 = 0;
         loop {
             match self.kind() {
                 Kind::Dot if self.dot_is_member() => {
@@ -1018,6 +1041,16 @@ impl<'a> Parser<'a> {
                     node = self.list(items, span);
                 }
                 _ => break,
+            }
+            // Guard the layer JUST folded (checked AFTER building it, so a run that stops at the limit
+            // still yields a well-formed node). Only the layers THIS loop adds count — the enclosing
+            // recursion depth was already bounded at `expr` entry, so re-adding `self.depth` here would
+            // double-count and reject a legitimate deep bracket nest whose postfix run is short.
+            spine += 1;
+            if !self.depth_exceeded && spine >= crate::sexpr::MAX_NESTING_DEPTH {
+                self.error("expression nests too deeply to parse");
+                self.depth_exceeded = true;
+                return node;
             }
         }
         node
@@ -2320,6 +2353,50 @@ mod tests {
                 ps.errors
             );
         });
+    }
+
+    #[test]
+    fn deep_flat_chains_are_diagnosed_not_crashed() {
+        // A FLAT chain — left-associative infix (`1+1+1…`), a postfix member run (`x.a.a…`), or a
+        // call chain (`f(1)(1)…`) — is parsed by a LOOP, not recursion, so the parser's per-`expr`
+        // depth counter never grows with it. But each iteration deepens the produced ARENA on one
+        // side, so an unbounded run built an arbitrarily deep TREE that a recursive CONSUMER (the
+        // s-expr printer, `canon`, the compiler's own walk) then overflowed the stack on (SIGABRT) —
+        // even though the PARSE itself never recursed and succeeded. The `expr`/`postfix` loop guards
+        // now bound the folded spine against the same `MAX_NESTING_DEPTH`, so a pathological chain is a
+        // clean parse diagnostic. This test needs NO large stack: the guard fires while building the
+        // tree, before any deep walk. (Regression for the flat-chain stack-overflow class.)
+        let over = (crate::sexpr::MAX_NESTING_DEPTH as usize) + 50;
+        let cases = [
+            format!("1{}", "+1".repeat(over)),    // left-assoc infix spine
+            format!("1{}", " |> f".repeat(over)), // pipeline spine (also infix)
+            format!("x{}", ".a".repeat(over)),    // postfix member chain
+            format!("f{}", "(1)".repeat(over)),   // postfix call chain
+        ];
+        for src in cases {
+            let p = read_ml(&src);
+            assert!(
+                !p.ok()
+                    && p.errors
+                        .iter()
+                        .any(|e| e.message.contains("nests too deeply")),
+                "a deep flat chain must be a clean depth-limit error, not a crash; got ok={} errs={:?}",
+                p.ok(),
+                p.errors
+            );
+            // The produced arena is well-formed and its recursive printer walk must not crash — the
+            // guard capped the tree depth, so printing it is safe on an ordinary stack.
+            let _ = crate::printer::print(&p.arenas, 80);
+        }
+        // A flat chain WELL under the limit parses cleanly (no over-rejection) and round-trips.
+        let ok_n = (crate::sexpr::MAX_NESTING_DEPTH as usize) / 2;
+        let shallow = format!("1{}", "+1".repeat(ok_n));
+        let ps = read_ml(&shallow);
+        assert!(
+            ps.ok(),
+            "a flat chain under the limit must parse: {:?}",
+            ps.errors
+        );
     }
 
     /// Run `f` on a thread with a stack large enough to reach the parser's depth guard (the same

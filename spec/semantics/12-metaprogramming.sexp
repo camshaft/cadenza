@@ -654,3 +654,48 @@
             (`(f ,@init ,last) last)
             (other             other)))
   (error  CDZ0221))
+
+; --- eval drives CONTROL FLOW reified from quoted source (the Ast.Bool integration faces) ---------
+; The Ast.Bool cases above pin the leaf (quote/match/eval/encode/print of a bare boolean); these pin
+; the boolean leaf DOING ITS JOB inside evaluated control flow — an `if` whose condition arrives
+; through the AST, both as a quoted literal and as a quoted comparison the evaluator must first
+; reduce. A leaf realization that round-trips standalone but mis-tags inside a List ast (or an eval
+; that reads the payload byte incorrectly) picks the wrong branch here.
+
+(case "eval of a quoted conditional takes the branch its boolean literal selects"
+  (doc    "`(eval (quote (if false 10 20)))` = 20: the quoted `if` reifies as a List ast whose condition
+           element is an `Ast.Bool false` leaf; eval reconstructs the conditional and the false condition
+           selects the else branch. Pins the Bool leaf composing INSIDE an evaluated compound — the
+           branch-selection companion of the standalone `eval (quote true)` case above (an eval that
+           mis-read the payload byte, or a quote that mis-tagged the leaf inside a List ast, answers 10).")
+  (input  (do
+            (def (main (: d Int64))
+              (eval (quote (if false 10 20))))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 20 Int64)))
+
+(case "eval of a quoted conditional reduces its comparison condition first"
+  (doc    "`(eval (quote (if (= 1 1) 7 8)))` = 7: the quoted condition is not a Bool LEAF but a
+           comparison FORM the evaluator must reduce to a boolean before branching — the produced
+           boolean exists only inside eval (no Ast.Bool node in the input tree; `(= 1 1)` reifies as a
+           List ast). Pins that eval's boolean values and its branch dispatch agree end-to-end, not only
+           when the boolean was quoted literally.")
+  (input  (do
+            (def (main (: d Int64))
+              (eval (quote (if (= 1 1) 7 8))))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 7 Int64)))
+
+(case "a constructed Ast.Bool leaf drives an evaluated conditional"
+  (doc    "`(if (eval (Ast.Bool true)) 5 6)` = 5: the Bool leaf is CONSTRUCTED (not quoted), evaluated
+           to its payload, and the resulting runtime boolean drives an ORDINARY (non-reified) `if`.
+           Closes the loop the constructor case above opens: a hand-built leaf's eval result is a
+           first-class Bool usable in real control flow, not merely printable/encodable.")
+  (input  (do
+            (def (main (: d Int64))
+              (if (eval (Ast.Bool true)) 5 6))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 5 Int64)))

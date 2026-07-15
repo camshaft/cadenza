@@ -3123,3 +3123,46 @@
             (export main)))
   (call   main (: 0 Int64))
   (trap   "divide by zero"))
+
+; Two additions completing the multi-arm sink's shape coverage above: the TUPLE shared-plus-differing
+; case (the sum/list/record cases pin the same-arm alignment, but the tuple shape's shared/differing
+; split was uncovered), and a bare sum-PAYLOAD dispatch across three arms (the pure `Some`-payload
+; direction — the sink builds one `Some` around a per-payload match).
+
+(case "same-arity tuple match arms share an equal element and sink the differing one"
+  (doc    "The tuple companion of the list/record shared-and-differing cases: `(match k (0 (tuple x 5))
+           (1 (tuple y 5)) (_ (tuple 99 5)))` — element 1 is `core_equiv` across ALL arms (shared
+           directly, no per-position match), element 0 differs (sunk into a match on k). Read as
+           element0 + element1: k=0 → x+5, k=1 → y+5, any other → 99+5. Pins the tuple shape's aligned
+           per-position rewrite — the differing slot dispatches in every arm direction (incl. the
+           default) and the shared slot is untouched.")
+  (input  (do
+            (def (main (: k Int64) (: x Int64) (: y Int64))
+              (let ((t (match k (0 (tuple x 5)) (1 (tuple y 5)) (_ (tuple 99 5)))))
+                (+ (. t 0) (. t 1))))
+            (export main)))
+  (call   main (: 0 Int64) (: 3 Int64) (: 8 Int64))
+  (output (: 8 Int64))
+  (call   main (: 1 Int64) (: 3 Int64) (: 8 Int64))
+  (output (: 13 Int64))
+  (call   main (: 5 Int64) (: 3 Int64) (: 8 Int64))
+  (output (: 104 Int64)))
+
+(case "a match building one Some per arm sinks to a single Some around a payload match"
+  (doc    "The bare sum-payload dispatch: `(match k (0 (Some 10)) (1 (Some 20)) (_ (Some 30)))` — every
+           arm builds `Some`, so the sink builds ONE `Some` around a per-payload match on k, rather than
+           a `sum-new` per arm. Observed through an outer match, the payload must be the matched arm's in
+           every direction: k=0→10, k=1→20, any other→30 (the default). The value-parity pin for the
+           sum-payload face of the multi-arm sink, complementing the trap/effect/Perceus cases above.")
+  (input  (do
+            (def (main (: k Int64))
+              (match (match k (0 (Option.Some 10)) (1 (Option.Some 20)) (_ (Option.Some 30)))
+                ((Option.Some v) v)
+                (_ -1)))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 10 Int64))
+  (call   main (: 1 Int64))
+  (output (: 20 Int64))
+  (call   main (: 9 Int64))
+  (output (: 30 Int64)))

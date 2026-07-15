@@ -38,9 +38,10 @@ export default function WhatsNext() {
       <P>
         And you've seen what makes Cadenza its own language:{" "}
         <Ch to="/effects">effects &amp; handlers</Ch>, where a handler decides what a performed operation
-        means; <Ch to="/modules">modules</Ch> that are just records of their exports; and{" "}
+        means; <Ch to="/modules">modules</Ch> that are just records of their exports;{" "}
         <Ch to="/units">units of measure</Ch> that catch a dimensional mistake at compile time and then
-        vanish before the program runs.
+        vanish before the program runs; and <Ch to="/metaprogramming">metaprogramming</Ch> where a program
+        is an ordinary AST value you can quote, take apart, build, and eval.
       </P>
       <P>
         More importantly, you've seen the ideas underneath — the{" "}

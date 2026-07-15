@@ -16014,13 +16014,15 @@ mod match_engine {
             "the arg-unify site also names it: {}",
             op.message
         );
-        // The operator-arg LEAD is the polished arg-site phrasing, NOT the raw internal-clash unify wording
-        // ("type mismatch: Int64 and (-> …) must be the same type here, but differ") — it reads as an
-        // argument-type mismatch, like the annotation / member-op / effect-op sibling messages.
+        // The operator-arg LEAD is the polished "function value" phrasing, NOT the raw internal-clash unify
+        // wording ("type mismatch: Int64 and (-> …) must be the same type here, but differ"). A bare
+        // arithmetic/comparison operator with a function-valued operand is caught up front by the
+        // function-operand kind-boundary check (a function has no arithmetic/order), which names it a
+        // function and appends the same "apply N more" hint — it reads as a real cause, not an internal clash.
         assert!(
-            op.message.contains(
-                "this argument is a function value, but a value of type Int64 is expected here"
-            ) && !op.message.contains("must be the same type here"),
+            op.message
+                .contains("this operation is not defined on a function value")
+                && !op.message.contains("must be the same type here"),
             "the operator-arg lead is polished, not the raw unify clash: {}",
             op.message
         );
@@ -16057,6 +16059,69 @@ mod match_engine {
             !hof.message.contains("hasn't been fully applied"),
             "no fn hint when the expected type is itself a function: {}",
             hof.message
+        );
+    }
+
+    #[test]
+    fn a_function_valued_operator_operand_names_the_function_not_the_raw_unify() {
+        // A bare arithmetic/comparison operator with a FUNCTION-VALUED operand — a partially-applied prelude
+        // op whose fully-applied result is NOT the other operand's type — used to leak the raw scheme-unify
+        // "type mismatch: Int64 and (-> Int64 (-> Int64 (Option String))) must be the same type here, but
+        // differ" (an internal-clash read that buries the real cause). `String.slice` is `(-> String (->
+        // Int64 (-> Int64 (Option String))))`, so `(String.slice s)` is a two-argument-short function; `(+
+        // (String.slice s) 1)` puts it where a number is wanted. A function has no arithmetic/order, so this
+        // is a genuine kind boundary — now named CDZ0203 "this operation is not defined on a function value".
+        // The full application would yield `(Option String)`, not `Int64`, so NO "apply it" hint (honest —
+        // calling it would not produce a number); the base message stands alone.
+        for src in [
+            "(module m (def (f (: s String)) (+ (String.slice s) 1)) (export f))",
+            "(module m (def (f (: s String)) (+ 1 (String.slice s))) (export f))",
+            "(module m (def (f (: s String)) (if (< (String.slice s) 1) 1 2)) (export f))",
+        ] {
+            let d = reject_full(src).expect("a function-valued operator operand rejects");
+            assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
+            assert!(
+                d.message
+                    .contains("this operation is not defined on a function value")
+                    && !d.message.contains("must be the same type here"),
+                "names the function operand, not the raw unify clash: {}",
+                d.message
+            );
+            assert!(
+                !d.message.contains("hasn't been fully applied"),
+                "no 'apply it' hint when the applied result would not match the other operand: {}",
+                d.message
+            );
+        }
+        // When the function fully applied WOULD yield the other operand's type — `(+ (h 1) 2)` for a 2-ary
+        // `h : Int64 -> Int64 -> Int64` — the same message appends the actionable "apply it to N more"
+        // hint (the forgotten-call story), so both the anonymous kind-boundary cause AND the fix are named.
+        let call = reject_full(
+            "(module m (def (h (: a Int64) (: b Int64)) (+ a b)) (def (g) (+ (h 1) 2)) (export g))",
+        )
+        .expect("a partial user-fn operand rejects");
+        assert!(
+            call.message
+                .contains("this operation is not defined on a function value")
+                && call
+                    .message
+                    .contains("apply it to 1 more argument to get an Int64"),
+            "names the function AND the forgotten-call fix: {}",
+            call.message
+        );
+        // NO regression: well-typed arithmetic and a genuine numeric mix are untouched by the fn-operand arm.
+        assert!(
+            reject_full("(module m (def (f (: a Int64) (: b Int64)) (+ a b)) (export f))")
+                .is_none(),
+            "well-typed arithmetic on two Int64s still compiles"
+        );
+        let mix = reject_full("(module m (def (f (: a Int64)) (+ a 2.0)) (export f))")
+            .expect("an int/float mix still rejects");
+        assert_eq!(
+            mix.code.as_deref(),
+            Some("CDZ0301"),
+            "a numeric mix keeps its CDZ0301, not the fn-operand message: {}",
+            mix.message
         );
     }
 
@@ -44250,6 +44315,61 @@ mod stage1 {
              `binder_in` calls, not O(arms²) (the desugar's O(depth)-nested `if`/`match` chain needs \
              scope-skip coverage — `extend_scope_skip_pass_through`): arms 200→400 grew binder_in calls \
              {ratio:.1}× (n200={n200}, n400={n400}); linear is ~2×, the deep-walk was ~4×"
+        );
+    }
+
+    #[test]
+    fn a_wide_runtime_string_match_resolves_synth_names_in_bounded_time() {
+        // REGRESSION (perf): the runtime-STRING-match desugar (`lower.rs`, the `Ty::String` scrutinee arm)
+        // folds N string-literal arms into an O(N)-DEEP nested `(if (= s "k0") b0 (if (= s "k1") b1 …))`
+        // value-eq if-chain via `db.push_list`. Like the runtime-map-match chain (`bf5a1a1c`), those synth
+        // nodes are NOT in the load-time scope-skip index, so resolving a prelude name (`=`) — or any pass
+        // (`check_unknown_units`/`collect_faults`) that resolves an inner synth node — walked O(depth)
+        // enclosing `if` forms to conclude "not lexically bound" → O(arms²) `binder_in` calls (profiled:
+        // check N=400/800/1600/3200 = 14/32/91/315ms, ~3×/dbl, 89% under `resolve_name`→`binder_in`→
+        // `as_form`). FIX: call `Db::extend_scope_skip_pass_through(else_node)` on the synthesized chain
+        // before resolving it (the arm bodies/guards are reused load-time occurrences that keep their own
+        // final skip; the `if`/`=` spine is all non-binding, so the pass-through is sound + O(1)).
+        //
+        // The NOISE-FREE signal is the total `binder_in` call count (a pure function of the program). A
+        // match with N string-literal arms must resolve its synth names in O(N) `binder_in` calls, not
+        // O(N²). Correctness (the dispatch picks the right arm) is pinned by the run-value tests out of band.
+        fn wide_str_match_src(arms: usize) -> String {
+            let arm_forms: String = (0..arms)
+                .map(|i| format!("(\"k{i}\" {i})"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            format!(
+                "(module m (def (f (: s String)) (match s {arm_forms} (_ -1))) \
+                   (def (main) (f \"k0\")) (export main))"
+            )
+        }
+        // A small instance compiles clean (a valid runtime-string match).
+        let diags = crate::diagnostics(&mut crate::db::Db::load(parse(&wide_str_match_src(4))));
+        assert!(
+            diags
+                .iter()
+                .all(|d| d.severity != crate::abi::Severity::Error),
+            "a wide runtime-string match compiles with no error diagnostics: {diags:?}"
+        );
+        fn binder_in_calls(src: &str) -> u64 {
+            crate::host::run_with_compiler_stack(|| {
+                crate::db::BINDER_IN_CALLS.with(|c| c.set(0));
+                let _ = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+                crate::db::BINDER_IN_CALLS.with(|c| c.get())
+            })
+        }
+        // Arms 200→400 is a 2× width; linear `binder_in` growth ⇒ ~2×, the O(N²) walk was ~4×. Guard the
+        // denominator and require < 3× (between the regimes, with margin for constant terms).
+        let n200 = binder_in_calls(&wide_str_match_src(200));
+        let n400 = binder_in_calls(&wide_str_match_src(400));
+        let ratio = n400 as f64 / (n200.max(1)) as f64;
+        assert!(
+            n200 > 0 && ratio < 3.0,
+            "a wide runtime-string match must resolve its synthesized value-eq if-chain names in O(arms) \
+             `binder_in` calls, not O(arms²) (the desugar's O(depth)-nested `if` chain needs scope-skip \
+             coverage — `extend_scope_skip_pass_through`): arms 200→400 grew binder_in calls {ratio:.1}× \
+             (n200={n200}, n400={n400}); linear is ~2×, the deep-walk was ~4×"
         );
     }
 
