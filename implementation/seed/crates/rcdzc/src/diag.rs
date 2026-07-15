@@ -33,6 +33,8 @@
 /// branches on the `CDZ####` to know which requirement was violated and act on it programmatically.
 //= constitution.md#xi-diagnostics-are-machine-actionable
 //# Every diagnostic the compiler emits MUST name the rule or requirement it enforces so that an agent can act on it programmatically.
+//= spec/capabilities/diagnostics.md#every-diagnostic-attributes-a-rule
+//# Every diagnostic the compiler emits MUST name the rule or requirement it enforces so that an agent can trace the diagnostic to its cause.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Code {
     /// A LEXICAL well-formedness defect the READER detected but cannot itself report through the
