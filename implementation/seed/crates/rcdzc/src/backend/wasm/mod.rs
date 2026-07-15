@@ -2314,6 +2314,15 @@ fn fixed_shape_result_compound_arg(
 /// genuine aliased-width scalar (a NESTED compound or a variable-length collection field would need
 /// recursive rebuild / runtime decode — out of this increment). A RECORD's fields are taken in the
 /// canonical SORTED-key order (the value-heap cell's field order), matching how `Core::Record` lays them.
+///
+/// The boundary aggregate's layout is a function of the DECLARED TYPE `ty` alone — the per-field bytes and
+/// their order come from the type's fields (a tuple's positional elements, a record's sorted-key values),
+/// never from the order the compiler discovered or emitted them, so it is deterministic and fixed by the
+/// type:
+//= spec/contracts/component-abi.md#aggregate-layout-is-determined-by-type
+//# The byte layout of an aggregate value that crosses the boundary MUST be determined solely by its declared type.
+//= spec/contracts/component-abi.md#aggregate-layout-is-determined-by-type
+//# The byte layout of an aggregate value that crosses the boundary MUST NOT depend on the order in which the compiler discovered or emitted its fields.
 fn fixed_shape_scalar_tuple_arg(
     ty: &crate::ty::Ty,
 ) -> Option<(
