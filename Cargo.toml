@@ -30,6 +30,12 @@ exclude = [
     "implementation/seed/crates/cdz-runtime",
     "implementation/seed/crates/cdz-wasm",
     "implementation/seed/crates/cdz-smith",
+    # `cdz-cad` (the native CAD mesh driver, GH #400) is excluded because its mesh backend links
+    # `manifold-csg`, whose `-sys` crate builds the C++ manifold3d library via cmake — a heavy C++/cmake
+    # build the seed's `cargo build --workspace` and the corpus gate must never pay. It is a leaf crate
+    # (nothing in the seed depends on it), built + tested on demand by a dedicated CI job. It builds
+    # standalone (`cargo build`/`cargo test` from its own dir), with its own `[workspace]` table.
+    "implementation/seed/crates/cdz-cad",
 ]
 
 [profile.dev]

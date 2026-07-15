@@ -173,6 +173,28 @@ jobs:
       - name: Run the compiler-ml @test suite
         run: ./target/release/cdz test implementation/compiler-ml
 
+  cdz-cad:
+    # The NATIVE CAD mesh driver crate (implementation/seed/crates/cdz-cad, GH #400 increment G2). It is
+    # EXCLUDED from the seed workspace (its own `[workspace]`) because its mesh backend links `manifold-csg`,
+    # whose `-sys` crate builds the C++ manifold3d via cmake — a build the seed's `--workspace` jobs must
+    # never pay. So the `test`/`clippy`/`fmt` jobs above don't cover it; gate it here on its own. This first
+    # sub-slice is the pure-Rust `Solid` s-expr PARSER (no manifold dep yet), so the job is light; when the
+    # meshing sub-slice adds `manifold-csg`, this job gains the C++/cmake build (cmake + a C++ compiler are
+    # on the standard ubuntu runner). No wasm toolchain or runtime store needed — pure native crate.
+    name: cdz-cad native driver
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: cdz-cad
+      - name: Test + lint the cdz-cad crate (standalone workspace)
+        working-directory: implementation/seed/crates/cdz-cad
+        run: |
+          cargo test
+          cargo clippy --all-targets -- -D warnings
+          cargo fmt --check
+
   roundtrip:
     # Every corpus program must round-trip through the syntax surfaces — guards cadenza-syntax
     # independently of the compiler. No runtime needed.
