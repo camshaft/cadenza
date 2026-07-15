@@ -87,9 +87,17 @@
 
 (case "eval on malformed AST traps"
   (doc    "Witnesses metaprogramming.md #Eval Is Optional: eval on malformed AST traps. An Ast.List
-           with no elements is malformed (no operator), so eval traps.")
+           with no elements is malformed (no operator), so eval traps. The eval desugar reconstructs
+           the source an `Ast.*` construction denotes; an empty `Ast.List` has no operator to
+           reconstruct, so `eval_ast::reconstruct` rewrites it to an explicit `(trap \"malformed AST\")`
+           — a diverging halt, not a value. The trap's canonical KIND is `unreachable`, the SAME on
+           every backend: an explicit `trap` lowers to wasm's `unreachable` instruction and to a Rust
+           `panic!` whose reason classifies as `unreachable` (a message-less halt — the trap_kind grader
+           classifies the actual reason, and `Core::Trap` carries no string through either backend, so
+           the observable kind is `unreachable`, matching the explicit-`trap` lowering pinned by the
+           runtime expect-on-absent case in 02-binding-and-control.sexp).")
   (input  (eval (Ast.List (list))))
-  (trap   "malformed AST"))
+  (trap   "unreachable"))
 
 (case "quasiquote constructs AST with selective evaluation"
   (doc    "Witnesses metaprogramming.md #Quasiquote Constructs AST With Selective Evaluation:
