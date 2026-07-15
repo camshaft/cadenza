@@ -297,6 +297,14 @@ pub enum FleetCmd {
     },
     /// Deliver a message into another agent's inbox as one atomic JSON file. The whole fleet
     /// coordinates through this — see the message-kind table in AGENTS-fleet.md.
+    ///
+    /// After delivering, this WAKES the recipient: it nudges the recipient's tmux window into an
+    /// immediate tick (`tmux send-keys "continue" Enter`) so a message is reacted to within seconds
+    /// instead of waiting for the next scheduled `/loop`. Delivery == wake. The nudge is skipped for
+    /// a stopped recipient, one with no live window, one already working (mid-tick — the message will
+    /// be drained when it finishes), and — to protect a human — the interactive `concierge`/`design`
+    /// windows. `/loop` remains the safety heartbeat, so a missed nudge is still eventually picked up.
+    /// Pass `--no-wake` to deliver silently (e.g. seeding many messages in a batch).
     Send {
         /// Recipient agent name.
         #[arg(long)]
@@ -317,6 +325,10 @@ pub enum FleetCmd {
         /// Sender name (defaults to `$FLEET_AGENT` if the caller is itself an agent, else `unknown`).
         #[arg(long)]
         from: Option<String>,
+        /// Deliver without nudging the recipient's window awake (it will pick the message up on its
+        /// next scheduled `/loop` tick). Use when seeding a batch of messages.
+        #[arg(long)]
+        no_wake: bool,
     },
     /// Stamp an agent's `lastTick` — the presence heartbeat the loop calls at the top of every tick.
     Heartbeat {
@@ -420,7 +432,8 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
             r#ref,
             body,
             from,
-        } => send(&fleet, &to, &kind, &subject, &r#ref, &body, from),
+            no_wake,
+        } => send(&fleet, &to, &kind, &subject, &r#ref, &body, from, no_wake),
         FleetCmd::Heartbeat { name } => heartbeat(&fleet, &name),
         FleetCmd::Describe { name } => describe(&fleet, &name),
         FleetCmd::Archive { no_commit } => archive(&fleet, no_commit),
@@ -732,6 +745,7 @@ fn send(
     r#ref: &str,
     body: &str,
     from: Option<String>,
+    no_wake: bool,
 ) {
     let from = from
         .or_else(|| std::env::var("FLEET_AGENT").ok())
@@ -751,6 +765,89 @@ fn send(
         },
     );
     println!("fleet send: {from} → {to} [{kind}] {subject}");
+
+    // Wake the recipient so it reacts to this message NOW rather than at its next scheduled tick.
+    // Delivery == wake. `/loop` stays the safety net for any nudge that doesn't land.
+    if !no_wake {
+        match wake_window(fleet, to) {
+            WakeOutcome::Woke => println!("  ↑ nudged '{to}' awake (immediate tick)"),
+            WakeOutcome::Skipped(why) => println!("  (not woken: {why} — picks it up next /loop)"),
+        }
+    }
+}
+
+/// Why a delivery did or didn't wake the recipient.
+enum WakeOutcome {
+    /// The recipient's window was nudged into an immediate tick.
+    Woke,
+    /// Not nudged; the reason (recipient will still drain the inbox on its next scheduled tick).
+    Skipped(&'static str),
+}
+
+/// Nudge a message recipient's tmux window into an immediate tick, subject to the wake guards:
+///   * not in a tmux session → nothing to nudge;
+///   * a stopped recipient (stop-file present) MUST stay down;
+///   * the interactive `concierge`/`design` windows are left alone — a human may be typing, and a
+///     nudge would clobber their input (they poll their inbox on their own cadence);
+///   * no live tmux window by that name → nothing to nudge (a not-yet-launched or reaped agent);
+///   * a window already mid-tick ("esc to interrupt") does NOT need a nudge — it will drain the
+///     freshly-delivered message when the current tick finishes, and a keystroke mid-turn is noise.
+///
+/// A recipient absent from the registry is still nudged if it has a live window (matches `send`'s
+/// "deliver even if not yet registered" behavior); only an explicit `stopped` status suppresses it.
+fn wake_window(fleet: &Fleet, to: &str) -> WakeOutcome {
+    if !in_tmux() {
+        return WakeOutcome::Skipped("not in a tmux session");
+    }
+    if fleet.stopfile(to).exists() {
+        return WakeOutcome::Skipped("recipient is stopped");
+    }
+    // Interactive roles talk to the human directly; never inject keystrokes into their window.
+    let reg = fleet.load();
+    if let Some(a) = reg.agents.iter().find(|a| a.name == to) {
+        if a.status == "stopped" {
+            return WakeOutcome::Skipped("recipient is stopped");
+        }
+        if matches!(a.role.as_str(), "concierge" | "design") {
+            return WakeOutcome::Skipped("interactive role — left for the human");
+        }
+    }
+    let session = tmux_current_session();
+    if !tmux_windows(&session).iter().any(|w| w == to) {
+        return WakeOutcome::Skipped("no live window");
+    }
+    if window_is_working(&session, to) {
+        return WakeOutcome::Skipped("already mid-tick");
+    }
+    // Nudge an idle loop to run its tick now. We type the word `continue` + Enter rather than
+    // re-invoking `/loop` (which would schedule a DUPLICATE recurring cron each time): the idle
+    // agent's context still holds its role, so a bare "continue" prompt makes it run one tick, and
+    // the existing `/loop` schedule keeps driving the cadence.
+    if nudge_tick(&session, to) {
+        WakeOutcome::Woke
+    } else {
+        WakeOutcome::Skipped("send-keys failed")
+    }
+}
+
+/// Type a one-shot tick prompt into an idle agent's pane (`continue` + Enter). Unlike
+/// [`rearm_window`], this does NOT re-invoke `/loop`, so it never stacks duplicate cron schedules —
+/// it just makes an already-scheduled, currently-idle agent run its next tick immediately.
+fn nudge_tick(session: &str, agent: &str) -> bool {
+    let target = format!("{session}:{agent}");
+    let sent = Command::new("tmux")
+        .args(["send-keys", "-t", &target, "-l", "continue"])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !sent {
+        return false;
+    }
+    Command::new("tmux")
+        .args(["send-keys", "-t", &target, "Enter"])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 fn heartbeat(fleet: &Fleet, name: &str) {
