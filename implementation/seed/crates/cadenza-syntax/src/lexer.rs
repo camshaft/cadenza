@@ -254,12 +254,17 @@ impl<'a> Lexer<'a> {
     /// `/` — a `//` line comment, `///` doc comment, `/.` float division, or the division operator.
     fn slash(&mut self, a: Char) -> Token {
         if self.peek() == Some('/') {
-            self.bump(); // second '/'
+            // The `//` (and `///`) prefix chars are consumed here, so the comment span must extend from
+            // `a` through the LAST prefix `/` (`span_while`'s `end` starts at its `start` arg, which
+            // would omit these already-bumped chars when the comment body is empty — e.g. `//` at EOF or
+            // immediately before a `\n`, which left byte-2 of the `//` uncovered: a span gap).
+            let mut last = self.bump().unwrap(); // second '/'
             let doc = self.peek() == Some('/');
             if doc {
-                self.bump(); // third '/'
+                last = self.bump().unwrap(); // third '/'
             }
-            let span = self.span_while(a, |c| c != '\n');
+            let body = self.span_while(last, |c| c != '\n');
+            let span = a.span.merge(body);
             let kind = if doc {
                 Kind::DocComment
             } else {
@@ -574,6 +579,31 @@ mod tests {
     }
 
     #[test]
+    fn comment_span_covers_all_slashes_when_body_is_empty() {
+        // Regression: an EMPTY `//`/`///` comment (at EOF or immediately before `\n`) must span every
+        // prefix `/`, not just the first. `span_while` started its end at the first `/`, so with no
+        // body char to extend it, the second/third `/` were left UNCOVERED — a gap in the span table
+        // (which must be total: concatenated spans == source). Found by the arbitrary-input sweep.
+        for src in ["//", "///", "//\n", "///\n", "a//", "b///\nc"] {
+            let cov: String = Lexer::new(src)
+                .map(|t| src[t.span.start..t.span.end].to_string())
+                .collect();
+            assert_eq!(cov, src, "spans must cover the whole source for {src:?}");
+        }
+        // The `//` still lexes as ONE line comment (trivia), `///` as one doc comment — the fix is
+        // span-only, not a retokenization.
+        assert_eq!(kinds("//"), Vec::<Kind>::new()); // pure trivia, filtered
+        assert_eq!(
+            Lexer::new("//").map(|t| t.kind).collect::<Vec<_>>(),
+            vec![Kind::LineComment]
+        );
+        assert_eq!(
+            Lexer::new("///").map(|t| t.kind).collect::<Vec<_>>(),
+            vec![Kind::DocComment]
+        );
+    }
+
+    #[test]
     fn words_are_ident_not_keywords() {
         assert_eq!(
             kinds("let if match true false and or else"),
@@ -877,9 +907,127 @@ mod tests {
 
     #[test]
     fn never_panics_on_arbitrary_input() {
-        // A cheap stand-in for the fuzz test: drive the lexer over odd byte sequences.
+        // Hand-picked odd inputs (a quick smoke; the systematic sweep is below).
         for s in ["", "\0", "🎉", "\\", "```", "0x", "1e", "..", "@~$"] {
             let _ = Lexer::new(s).count();
+        }
+    }
+
+    /// A tiny deterministic PRNG (SplitMix64) — reproducible fuzz without a dependency, matching the
+    /// codec's house style (the crate stays "plain"; see `Cargo.toml`).
+    struct SplitMix64(u64);
+    impl SplitMix64 {
+        fn next(&mut self) -> u64 {
+            self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+            z ^ (z >> 31)
+        }
+    }
+
+    /// Drive the lexer over `src`, asserting the tokenizer's structural invariants hold on ANY input —
+    /// the lexer must NEVER PANIC (it returns tokens, some `Kind::Error`, never crashes), and every
+    /// token span must be a VALID slice of the source: in-bounds, on UTF-8 char boundaries, and the
+    /// concatenation of all spans (trivia included) reproduces the source exactly (the span table's
+    /// load-bearing totality invariant, `spans_cover_source_exactly` generalized to arbitrary input).
+    /// Also feeds each token's text through the literal classification/unescape path a parser would
+    /// call, so a panic there (bad number/escape/char) is caught too.
+    fn assert_lex_invariants(src: &str) {
+        let mut rebuilt = String::new();
+        let mut prev_end = 0usize;
+        for t in Lexer::new(src) {
+            let (s, e) = (t.span.start, t.span.end);
+            assert!(
+                s <= e && e <= src.len(),
+                "span {s}..{e} out of bounds for {src:?}"
+            );
+            assert!(
+                src.is_char_boundary(s) && src.is_char_boundary(e),
+                "span {s}..{e} not on a char boundary for {src:?}"
+            );
+            assert_eq!(
+                s, prev_end,
+                "spans must be contiguous (gap/overlap) for {src:?}"
+            );
+            prev_end = e;
+            let text = &src[s..e];
+            rebuilt.push_str(text);
+            // Exercise the classification path a parser takes for this token kind — none may panic.
+            match t.kind {
+                Kind::Int | Kind::Float => {
+                    let _ = crate::literal::classify_word(text);
+                }
+                Kind::Str => {
+                    let _ = crate::literal::unescape_string_token(text);
+                }
+                Kind::ByteStr => {
+                    let _ = crate::literal::unescape_byte_string_token(text);
+                }
+                Kind::SymLit => {
+                    let _ = crate::literal::unescape_sym_token(text);
+                }
+                Kind::CharLit => {
+                    let _ = crate::literal::char_leaf(text);
+                }
+                Kind::BacktickName => {
+                    let _ = crate::literal::unescape_backtick_name(text);
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(
+            prev_end,
+            src.len(),
+            "spans must cover to end of source for {src:?}"
+        );
+        assert_eq!(
+            rebuilt, src,
+            "concatenated spans must reproduce the source for {src:?}"
+        );
+    }
+
+    #[test]
+    fn lexer_invariants_hold_on_arbitrary_input() {
+        // (a) Exhaustive over EVERY single byte 0..=255 that is valid UTF-8 on its own, plus a
+        // representative multi-byte scalar from each UTF-8 length class — unicode in any position.
+        for b in 0u8..=255 {
+            let s = (b as char).to_string(); // a `char` is always a valid scalar; covers 0..=255
+            assert_lex_invariants(&s);
+        }
+        for c in [
+            'é', 'λ', '中', '🎉', '\u{200d}', '\u{feff}', '\u{0}', '\u{7f}',
+        ] {
+            assert_lex_invariants(&c.to_string());
+            assert_lex_invariants(&format!("a{c}b"));
+            assert_lex_invariants(&format!("\"{c}\""));
+            assert_lex_invariants(&format!("#\"{c}\""));
+        }
+        // (b) Random strings drawn from an alphabet that stresses every lexer branch — the sigils that
+        // start multi-char tokens, quote/escape/comment openers, digits + numeric affixes, and unicode.
+        let alphabet: Vec<char> = "0123456789abcxEeNR._+-*/<>=|&^%@#!:;,()[]{}`\"\\\n \tλ中🎉"
+            .chars()
+            .collect();
+        let mut rng = SplitMix64(0xbadc0de_dead_beef);
+        for len in 0..=24usize {
+            for _ in 0..200 {
+                let s: String = (0..len)
+                    .map(|_| alphabet[(rng.next() as usize) % alphabet.len()])
+                    .collect();
+                assert_lex_invariants(&s);
+                // The full lex→parse pipeline must also never panic (the parser is the lexer's only
+                // consumer; a diagnostic, never a crash, on arbitrary input).
+                let _ = crate::parser::read_ml(&s);
+            }
+        }
+        // (c) Deliberately truncated/odd literal openers — the classic panic bait (unterminated string,
+        // a lone backslash escape at EOF, an incomplete numeric affix, a bare `#`/backtick).
+        for s in [
+            "\"", "\"\\", "\"\\x", "b\"", "b\"\\", "#\"", "#\"\\", "`", "``", "0x", "0b", "1e",
+            "1e+", "1.", ".1", "1_", "0xZZ", "1N", "0.5R", "'", "'\\", "\\", "//", "/*",
+        ] {
+            assert_lex_invariants(s);
+            let _ = crate::parser::read_ml(s);
         }
     }
 }
