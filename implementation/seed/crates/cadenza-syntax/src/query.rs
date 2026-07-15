@@ -1,6 +1,6 @@
 //! Structural query & rewrite over the AST — the codemod substrate.
 //!
-//! This is Rung 2 of `implementation/DESIGN-query-engine.md`: a *built-in* set of structural
+//! This is Rung 2 of `implementation/design/DESIGN-query-engine.md`: a *built-in* set of structural
 //! transforms over the AST, run by a Rust driver, projecting output through the existing surfaces.
 //! It stands in for the eventual self-hosted sidecar (Rung 3), whose combinator library
 //! (`select`/`rewrite`/quasiquote patterns) this deliberately anticipates — a pattern here reads in

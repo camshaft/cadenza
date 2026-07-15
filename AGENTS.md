@@ -100,60 +100,77 @@ duvet extract -f markdown -o /tmp/ex ./spec/contracts/<name>.md
 duvet report
 ```
 
-## Never edit in the main worktree — always work in an isolated worktree
+## The hub is BARE — you cannot edit it; always work in your own worktree
 
-Every change you make MUST happen in its own git worktree under `.claude/worktrees/`, never
-in the main checkout. The main worktree is a shared, contended resource: multiple agents and
-recurring `/loop` crons run against this repository at once, so an in-place edit there races
-their work, and a stray `git add -A` can commit a sibling's half-finished changes. Isolating
-each unit of work in its own worktree is the rule, not a preference.
+The hub repository is **bare**: it has no working tree, so there is no central checkout to edit
+and no shared files to clobber. Every change MUST happen in a git worktree under
+`.claude/worktrees/`. This is enforced structurally, not by convention — there is nothing at the
+hub path to `git add`, and the pre-commit hook refuses a direct commit onto the integration branch
+from anywhere but the integrator's own worktree.
 
 The workflow for any change:
 
-1. **Create a fresh worktree off the tip of `spec`** — the branch you land on — not the default
-   base (which branches from `origin/<default>`, typically many commits behind):
+1. **Create a fresh worktree off the tip of `trunk`** — the local integration branch:
 
    ```sh
-   git worktree add -b <topic> .claude/worktrees/<topic> refs/heads/spec
+   git worktree add -b <topic> .claude/worktrees/<topic> refs/heads/trunk
    ```
 
    Give it a name unique to your task; do not reuse an existing named worktree, since a
-   concurrent agent may be mid-edit inside it.
+   concurrent agent may be mid-edit inside it. (If you are a fleet agent, `cargo xtask fleet add`
+   does this for you.)
 
-2. **Make your change there, alone.** Never touch files in the main checkout. If you must read
-   a shared worktree, `git status --short` first and treat any file you did not create as
-   foreign — commit only your own files by path, never `git add -A`.
+2. **Make your change there, alone.** All worktrees share the hub's one object store, so a commit
+   you make is visible fleet-wide immediately — but the files are yours. If you must read another
+   worktree, `git status --short` first and treat any file you did not create as foreign — commit
+   only your own files by path, never `git add -A`.
 
-3. **Run the gate from the worktree.** From inside it, `cargo xtask gate` (and `cargo xtask
-   check` for the full health signal) — the seed toolchain builds and runs against your
-   isolated tree, so a sibling's mid-edit cannot corrupt your result. Do not promote a change
-   whose gate you have not seen pass.
+3. **Run the gate from the worktree.** From inside it, `cargo xtask gate` (and `cargo xtask check`
+   for the full health signal) — the seed toolchain builds and runs against your isolated tree, so
+   a sibling's mid-edit cannot corrupt your result. Do not request integration for a change whose
+   gate you have not seen pass.
 
-4. **Land on `spec` by fast-forward.** `spec` moves fast, so `git merge --ff-only` may fail if
-   it advanced past your base; `git rebase refs/heads/spec` inside the worktree reconciles the
-   disjoint files, then the merge fast-forwards. Merging updates the `spec` ref without editing
-   files in the main worktree.
+4. **Integrate through the single writer.** `trunk` is advanced by ONE agent only — `pr-sync`.
+   You never write `trunk` yourself (no `update-ref` CAS, no fast-forward race). Commit in your
+   worktree, then send the integrator a merge request:
 
-5. **Remove the worktree when the work is merged** (`git worktree remove`), so the shared
-   `.claude/worktrees/` directory does not accumulate stale trees.
+   ```sh
+   cargo xtask fleet send --to pr-sync --kind merge-request \
+       --subject "<your-branch>" --ref "$(git rev-parse HEAD)" --body "<gate summary>"
+   ```
 
-`spec` is the LOCAL integration branch only — it does not exist on the remote. All the steps
-above stay local; nothing here pushes.
+   `pr-sync` merges your commit into `trunk`, re-gates, and replies `merged` or `reject`. Because
+   one agent serializes every merge, there are no dropped commits and no phantom-stale hub.
 
-## Publishing to the remote — local `spec` maps to `origin/main` via a PR
+5. **Remove the worktree when the work is merged** (`git worktree remove`), so `.claude/worktrees/`
+   does not accumulate stale trees. (A fleet agent calls `cargo xtask fleet remove <self>`.)
 
-The remote default branch is **`main`** (protected: a ruleset requires the `checks / …` CI jobs
-to pass, so it cannot be pushed to directly). Local `spec` is what everything integrates onto;
-it is mapped onto `origin/main` at push time through a pull request:
+`trunk` is the LOCAL integration branch only — it does not exist on the remote.
+
+## Publishing to the remote — `pr-sync` maps `trunk` onto `origin/main` via a PR
+
+The remote default branch is **`main`** (protected: a ruleset requires the `checks / …` CI jobs to
+pass, so it cannot be pushed to directly). Local `trunk` is what everything integrates onto, and
+the `pr-sync` agent maps it onto `origin/main` through a pull request as part of its cycle:
 
 ```sh
-git push origin spec:staging-<topic>          # push the local tip to a staging branch
+git push origin trunk:staging-<topic>         # push the integrated tip to a staging branch
 gh pr create --base main --head staging-<topic> --fill
 ```
 
-CI runs on the PR; it merges into `main` once the required checks are green. Do NOT rename the
-local branch or try to push `spec` straight to `main` — the mapping is only at publish time, and
-the direct push is refused by the ruleset. (Prior generations live on the remote `old` branch.)
+CI runs on the PR; it merges into `main` once the required checks are green. Do NOT try to push
+`trunk` straight to `main` — the mapping is only at publish time, and the direct push is refused by
+the ruleset. (Prior generations live on the remote `old` branch.)
+
+## The autonomous-agent fleet
+
+Day-to-day work is driven by a fleet of looping agents managed by `cargo xtask fleet`
+(`up`/`down`/`status`/`add`/`remove`/`send`/`archive`), each a tmux window running one role from
+`.claude/fleet/loops/`. The durable manifest is `.claude/fleet/registry.json`; the agent contract
+(inbox protocol, the single-writer integration model, the run-unattended rule) is
+`.claude/fleet/AGENTS-fleet.md`. Agents coordinate through a file-based inbox, never by editing a
+shared checkout, and only the `concierge` agent talks to the operator. `cargo xtask fleet up`
+reconstitutes the whole fleet from the manifest after a reboot.
 
 ## The build loop
 

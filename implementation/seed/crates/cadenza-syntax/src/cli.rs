@@ -21,7 +21,7 @@
 //! `-`), input is read from stdin (then `--from` is required). Output goes to stdout.
 //!
 //! `query`/`rewrite`/`diff`/`lint`/`clones` are the structural-editing codemod tool — Rung 2 of
-//! `implementation/DESIGN-query-engine.md` (a built-in transform set run by a Rust driver), which
+//! `implementation/design/DESIGN-query-engine.md` (a built-in transform set run by a Rust driver), which
 //! stands in for the eventual self-hosted sidecar (Rung 3; see the `query` module). A PATTERN/TEMPLATE
 //! is s-expression text with `,x` (bind one node) and `,@xs` (bind a run of siblings) metavariables —
 //! the same shape as the code it matches. A `rewrite` re-parses its result and rejects it if it does
