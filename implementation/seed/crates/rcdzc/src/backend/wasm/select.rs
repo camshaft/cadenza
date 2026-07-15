@@ -2490,6 +2490,16 @@ pub fn select_function_of(
                 &mut code,
             )?;
             code.push(Lir::LocalSet(slot));
+            // Raise the body floor past ANY transient scratch the invariant's `emit` touched, not just the
+            // persistent slot. A non-trivial hoisted invariant can spend its own scratch above `body_base`
+            // (a checked `(+ n 1)` tees the sum into a guard slot to compare against `n` for overflow), and
+            // that slot is recorded in `scratch_ty` at the invariant's width (i64). If the body then reused
+            // it — a `match` scrutinee dispatch reuses the next free slot for the i32 bool discriminant —
+            // the one wasm local would be declared at two widths and the module fails to validate
+            // (`type mismatch: expected i32, found i64`). Mirrors the `let`-initializer floor at the `Let`
+            // arm below. Only the persistent hoist slot must survive the loop; the guard scratch is dead
+            // after the `local.set`, but its recorded TYPE forbids a width-changing reuse, so we skip past it.
+            body_base = body_base.max(high);
             slot_of.insert(node, slot);
             // VALUE-NUMBER the hoist: point every OTHER body occurrence that is `core_eq` to this one (and
             // itself loop-invariant, so its value is identical every iteration) at the SAME slot. Without

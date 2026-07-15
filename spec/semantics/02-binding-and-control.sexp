@@ -237,6 +237,21 @@
   (call   main (: 3 Int64))
   (output (: 36 Int64)))
 
+(case "a loop-invariant subexpression in a MATCH scrutinee is hoisted to valid wasm"
+  (doc    "`(match (< i (+ n 1)) (true (loop (+ i 1) n)) (false i))` — a tail-recursive counted loop whose
+           MATCH scrutinee `(< i (+ n 1))` contains the loop-invariant `(+ n 1)` (`n` threads unchanged).
+           The match scrutinee is an ALWAYS-EVALUATED (dominating-frontier) position, so LICM hoists `(+ n
+           1)` into a pre-loop slot. REGRESSION guard (9bccb36a): the hoisted checked-add's transient
+           overflow-guard slot was left inside the body's reusable scratch range, so the loop body reused it
+           for the i32 bool discriminant while the hoist recorded it at i64 — the one wasm local was declared
+           at two widths and the module failed validation (`func 1 … type mismatch: expected i32, found
+           i64`), rejecting the component at load. The if-condition twin `(if (< i (+ n 1)) …)` was fine;
+           only the match-scrutinee position mis-wired. `loop 0 4` counts i:0→5 while `i < n+1 (=5)` and
+           returns 5. Fix: raise the body scratch floor past ALL scratch the invariant's emit touched, not
+           just the persistent value slot.")
+  (input  (do (def (loop (: i Int64) (: n Int64)) (match (< i (+ n 1)) (true (loop (+ i 1) n)) (false i))) (def (main) (loop 0 4)) (export main)))
+  (output (: 5 Int64)))
+
 ; A lexical binding wins in APPLICATION-HEAD position too, not only value position — even when its
 ; name coincides with a built-in constructor form like `list`/`tuple`/`record`/`map`. core-semantics.md
 ; #Binding Is Lexical: "A name MUST resolve to the nearest enclosing binding of that name." A `let`
