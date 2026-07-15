@@ -1177,4 +1177,133 @@ mod tests {
             assert!(spans.get(id).is_some(), "node {id:?} has a span");
         }
     }
+
+    /// A tiny deterministic PRNG (SplitMix64) — reproducible generation without a dependency (mirrors
+    /// the unit-test PRNGs in `codec.rs`/`lexer.rs`).
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+            z ^ (z >> 31)
+        }
+        fn below(&mut self, n: usize) -> usize {
+            (self.next() % n as u64) as usize
+        }
+    }
+
+    /// Generate a random VALID Cedar policy from the language grammar: an optional `@id("…")` annotation,
+    /// a `permit`/`forbid` effect, the three scope constraints (each a variant — bare, `==`, `in`, `is`,
+    /// or an action set), and 0..=2 `when`/`unless` condition clauses. Every piece is a form Cedar's
+    /// parser accepts, so the generated text always parses; the sweep asserts arena-idempotence over the
+    /// COMBINATIONS (the fixed tests exercise each variant once, not their products).
+    fn gen_cedar(rng: &mut Rng) -> String {
+        let mut s = String::new();
+        // optional annotation
+        if rng.below(3) == 0 {
+            s.push_str(&format!("@id(\"p{}\")\n", rng.below(1000)));
+        }
+        s.push_str(if rng.below(2) == 0 {
+            "permit"
+        } else {
+            "forbid"
+        });
+        s.push_str(" (");
+        // principal scope
+        s.push_str(
+            match rng.below(4) {
+                0 => "principal".to_string(),
+                1 => format!("principal == User::\"u{}\"", rng.below(100)),
+                2 => format!("principal in Group::\"g{}\"", rng.below(100)),
+                _ => "principal is User".to_string(),
+            }
+            .as_str(),
+        );
+        s.push_str(", ");
+        // action scope
+        s.push_str(
+            match rng.below(3) {
+                0 => "action".to_string(),
+                1 => format!("action == Action::\"a{}\"", rng.below(100)),
+                _ => "action in [Action::\"read\", Action::\"write\"]".to_string(),
+            }
+            .as_str(),
+        );
+        s.push_str(", ");
+        // resource scope
+        s.push_str(
+            match rng.below(3) {
+                0 => "resource".to_string(),
+                1 => format!("resource == File::\"f{}\"", rng.below(100)),
+                _ => format!("resource in Folder::\"d{}\"", rng.below(100)),
+            }
+            .as_str(),
+        );
+        s.push(')');
+        // 0..=2 condition clauses
+        for _ in 0..rng.below(3) {
+            let kw = if rng.below(2) == 0 { "when" } else { "unless" };
+            let cond = match rng.below(4) {
+                0 => format!("context.n == {}", rng.below(100)),
+                1 => format!("principal.age > {}", rng.below(100)),
+                2 => "resource.public".to_string(),
+                _ => format!("context.role == \"r{}\"", rng.below(10)),
+            };
+            s.push_str(&format!(" {kw} {{ {cond} }}"));
+        }
+        s.push(';');
+        s
+    }
+
+    #[test]
+    fn cedar_surface_is_idempotent_over_generated_policies() {
+        // The surface contract (arena-idempotence: read(print(read(src))) == read(src)) swept over random
+        // valid Cedar, complementing the hand-picked cases. The generator explores scope-variant +
+        // condition-clause + annotation COMBINATIONS the fixed tests (one variant each) don't, so a
+        // printer/parser asymmetry no hand-written case hits is caught. Fixed seeds → reproducible.
+        let seeds: [u64; 3] = [
+            0x0bad_c0de_dead_beef,
+            0x5eed_1234_5678_9abc,
+            0xfeed_face_cafe_babe,
+        ];
+        let mut total = 0usize;
+        for &seed in &seeds {
+            let mut rng = Rng(seed);
+            for _ in 0..600 {
+                assert_idempotent(&gen_cedar(&mut rng));
+                total += 1;
+            }
+        }
+        assert!(total >= 1500, "swept a meaningful space, got {total}");
+    }
+
+    #[test]
+    fn cedar_read_never_panics_on_arbitrary_input() {
+        // `read` operates on UNTRUSTED policy text; it must return a diagnostic, never panic. Sweep
+        // random Cedar-ish strings (keywords + structural chars) plus truncated fragments.
+        let alphabet: Vec<char> = "permitforbidactionresource(){}[];,=<>.\"@?: \n"
+            .chars()
+            .collect();
+        let mut rng = Rng(0x1357_9bdf_2468_ace0);
+        for len in 0..=40usize {
+            for _ in 0..50 {
+                let s: String = (0..len)
+                    .map(|_| alphabet[rng.below(alphabet.len())])
+                    .collect();
+                let _ = read(&s); // must not panic (Ok or Err, never crash)
+            }
+        }
+        for s in [
+            "permit",
+            "permit (",
+            "permit (principal",
+            "forbid (principal, action,",
+            "@",
+            "when {",
+        ] {
+            let _ = read(s);
+        }
+    }
 }
