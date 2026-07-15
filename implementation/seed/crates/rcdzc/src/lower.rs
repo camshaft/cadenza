@@ -2796,10 +2796,38 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
     {
         return lower_match_sum(db, scrutinee, arms);
     }
+    // A `(bin …)` pattern decodes a BYTES value, so it is only well-formed over a Bytes scrutinee. A bin
+    // pattern over a DEFINITE non-Bytes scrutinee (`(match n ((bin …) …))` for `n : Int64`, a String, a
+    // List) is a type error — you cannot binary-decode a non-Bytes value. It was neither type-checked (the
+    // Bytes bin branch below is gated on a Bytes scrutinee, so a non-Bytes one fell through) nor cleanly
+    // rejected: it reached the scalar path and declined with the misleading generic "a match pattern that
+    // is not a scalar literal or `_` is not yet supported". Name the real fault (CDZ0203), the bin twin of
+    // the map-key / list-element pattern-type checks. An `Any`/`Var` scrutinee (unsolved) is not a definite
+    // mismatch — skip it (a runtime Bytes still flows in). Anchored at the offending `(bin …)` arm pattern.
+    let scrut_ty = crate::infer::type_of(db, scrutinee);
+    if !matches!(
+        scrut_ty,
+        crate::ty::Ty::Bytes | crate::ty::Ty::Any | crate::ty::Ty::Var(_)
+    ) && let Some(&(bin_pat, _)) = arms
+        .iter()
+        .find(|&&(pat, _)| db.ast.head_name(pat) == Some("bin"))
+    {
+        return Core::Poison(
+            Reject::coded(
+                Code::TypeMismatch,
+                format!(
+                    "a `(bin …)` pattern decodes a Bytes value, but this scrutinee is {} — binary \
+                     matching applies only to Bytes",
+                    scrut_ty.render_name()
+                ),
+            )
+            .at(bin_pat),
+        );
+    }
     // A BYTES scrutinee whose arms use `(bin …)` binary patterns → the binary matcher (BN3, const
     // scrutinee). A scalar-only match over Bytes (only bare-binder/`_` arms) is NOT here — it has no
     // `(bin …)` arm, so it falls through to the scalar path (a whole-value binder / wildcard).
-    if matches!(crate::infer::type_of(db, scrutinee), crate::ty::Ty::Bytes)
+    if matches!(scrut_ty, crate::ty::Ty::Bytes)
         && arms
             .iter()
             .any(|&(pat, _)| db.ast.head_name(pat) == Some("bin"))

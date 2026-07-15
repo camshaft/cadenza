@@ -141,6 +141,11 @@ fn is_extern_heap_type(ty: &Ty) -> bool {
 /// the one import that is NOT a host capability and never appears in this manifest.)
 //= spec/capabilities/capabilities-and-effects.md#the-value-heap-runtime-is-the-one-import-that-is-not-a-capability
 //# An import of the value-heap runtime interface MUST NOT be a host capability and MUST NOT appear in the manifest, so that reaching the runtime is an internal linkage the compiler controls rather than an effect that escapes to the host, and capability-safety stays auditable as "every import other than the one well-known runtime interface is a capability the manifest enumerates."
+// The host-interface-binding contract states the same exclusion for THIS projection: the runtime interface
+// is not counted among host-function imports, so a component whose only import is that runtime interface
+// still has an empty manifest (this walk emits an import only for a reached host op, never the runtime).
+//= spec/contracts/host-interface-binding.md#the-manifest-is-a-projection-of-the-escaping-effect-row
+//# The single, well-known value-heap runtime interface the compiler emits programs against MUST NOT be counted among a component's host-function imports for the purpose of this projection, so that a component whose only import is that runtime interface still has an empty manifest and every other import remains a host function the manifest enumerates (capabilities-and-effects.md §The Value-Heap Runtime Is The One Import That Is Not A Capability).
 //= spec/capabilities/capabilities-and-effects.md#undeclared-capability-is-a-compile-time-error
 //# The compiler MUST determine a program's required capabilities from the operations its entrypoints actually reach and delegate, rather than from a separately-asserted list that could understate them.
 //= spec/contracts/host-interface-binding.md#imports-mirror-the-manifest-exactly

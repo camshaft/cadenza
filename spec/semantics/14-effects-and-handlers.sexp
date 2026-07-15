@@ -1208,6 +1208,26 @@
                   (match (Map.lookup m 20) ((Some v) v) (None 99))))) (export main)))
   (output (: 1 Int64)))
 
+(case "a SUM constructor payload that is a compound built from performs threads and destructures"
+  (doc    "The composition of the sum-constructor payload path with the compound-constructor element
+           threading: the payload of `Some` is a TUPLE built from two performs — `(Some (\"tuple\"
+           (Fresh.next) (Fresh.next)))` — using the STRING-HEADED tuple ctor the ML surface emits. The tuple
+           threads its two performs (reads 0 then 1), the sum ctor wraps the threaded `(0, 1)`, and the
+           enclosing match destructures it: `(Some p)` → `(+ (. p 0) (. p 1))` = `0 + 1` = 1. Pins that a
+           compound built from performs composes INSIDE a sum constructor payload (a scalar sum payload
+           `W.Mk(Fresh.next())` already worked; this is the compound-payload companion) — the fold threads
+           the nested compound-ctor element positions and the sum ctor is a transparent wrapper over the
+           threaded value. The shape a real pass builds when it returns `Some((id, node))` from an effectful
+           walk. Both backends agree.")
+  (input  (do
+            (effect Fresh (op next (-> Int64)))
+            (def (main)
+              (handle Fresh 0 ((next () s (resume s (+ s 1))))
+                (match (Some ("tuple" (Fresh.next) (Fresh.next)))
+                  ((Some p) (+ (. p 0) (. p 1)))
+                  (None 99)))) (export main)))
+  (output (: 1 Int64)))
+
 (case "a performed operation composes as a RECORD field value that is then projected"
   (doc    "The record-constructor companion of the tuple/projection case: a perform in a RECORD FIELD VALUE
            is a strict, unconditional position, so it composes and the surrounding projection is a pure

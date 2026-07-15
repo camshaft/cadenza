@@ -2,6 +2,13 @@
 pass	Ast.decode converts bytes to an AST sum type value
 pass	Ast.decode decodes bytes that arrive as a function argument
 pass	Ast.encode and Ast.decode round-trip
+pass	COMPOUND SUM PAYLOAD: (Option (Record (x Int64) (y Int64))) — a RECORD payload
+pass	COMPOUND SUM PAYLOAD: (Option (Tuple Int64 (Tuple Int64 Int64))) — a NESTED tuple payload
+pass	COMPOUND SUM PAYLOAD: (Option (Tuple Int64 Int64)) arg, drive None
+pass	COMPOUND SUM PAYLOAD: (Option (Tuple Int64 Int64)) arg, drive Some
+pass	COMPOUND SUM PAYLOAD: an Option-tuple closure beside a scalar closure (distinct-sig)
+pass	COMPOUND SUM PAYLOAD: mixed-width tuple payload (Int32, Int64, Bool)
+pass	COMPOUND SUM PAYLOAD: two same-sig Option-tuple closures share one call (multi-export)
 pass	DIFF-WIDTH RESULT: (Result Int32 Int64) — the NARROW side is Ok, negative
 pass	DIFF-WIDTH RESULT: (Result Int64 Int32) arg, drive Err with a NEGATIVE narrow payload
 pass	DIFF-WIDTH RESULT: (Result Int64 Int32) arg, drive Ok with a big s64
@@ -216,6 +223,7 @@ pass	a Result carrying a Result is matched by a nested pattern to its inner valu
 pass	a Result pipeline short-circuits on the first Err
 pass	a SOLE RECORD closure ARG crosses the direct-call boundary
 pass	a STRING-result effect op resumes with a string that folds through a concat
+pass	a SUM constructor payload that is a compound built from performs threads and destructures
 pass	a SUM is threaded as a handler's folded state across operations
 pass	a Sign match missing two of three variants is non-exhaustive
 pass	a Some carrying a bare None type-checks under a whole-expression annotation
@@ -259,6 +267,10 @@ pass	a beyond-i64 constant BigInt is an operand of a runtime bigint op
 pass	a bin arm whose fixed-width segment overruns the input falls through
 pass	a bin pattern binds an integer read from a fixed-width segment
 pass	a bin pattern must consume the whole scrutinee or it does not match
+pass	a bin pattern over a List scrutinee is a type error
+pass	a bin pattern over a String scrutinee is a type error
+pass	a bin pattern over a runtime non-Bytes scrutinee is a type error
+pass	a bin pattern over an Int64 scrutinee is a type error
 pass	a binary form whose bit-fields do not close a byte is ill-formed
 pass	a binary integer literal
 pass	a binary literal with digit separators
@@ -510,6 +522,7 @@ pass	a factory RETURNS a closure capturing the def's SCALAR parameter
 pass	a factory RETURNS a closure that captures a let-bound inner closure
 pass	a failing guard falls through to a later arm
 pass	a false variant guard shields its arm's trapping body
+pass	a far-miss segment kind keeps the plain unrecognized message
 pass	a field is projected from a record chosen across a call boundary by a runtime conditional
 pass	a field is projected from a record returned across a call boundary
 pass	a field is projected from a record returned by a function
@@ -531,6 +544,7 @@ pass	a fixed-shape Tuple ARG with a SUM (Option) RESULT crosses the direct-call 
 pass	a fixed-shape Tuple ARG with a Tuple RESULT crosses the direct-call boundary
 pass	a fixed-shape scalar RECORD closure ARG crosses the DIRECT-CALL boundary
 pass	a fixed-shape scalar Tuple closure ARG crosses the DIRECT-CALL boundary (host supplies the tuple)
+pass	a fixed-width integer segment of a non-byte-aligned width is rejected
 pass	a fixpoint loop that threads a growing list accumulator returns that list
 pass	a fixpoint that re-seeds a fresh list each round via a helper returns a list
 pass	a flat string map key is found by a runtime rope twin
@@ -797,6 +811,8 @@ pass	a match whose only variant arm is guarded is non-exhaustive
 pass	a match-arm binder shadowing a parameter binds the scrutinee, not the argument
 pass	a match-of-closures on a runtime-selected variant is applied per arm
 pass	a member access with no field operand is rejected, not a crash
+pass	a misspelled segment kind is rejected with a rename suggestion
+pass	a misspelled utf8 segment kind is rejected
 pass	a module declaration binds its name in the enclosing scope
 pass	a module function calls a sibling export by name
 pass	a module function is recursive
@@ -2340,6 +2356,7 @@ pass	two effects each declaring a same-named operation do not collide
 pass	two empty byte sequences are equal
 pass	two empty strings are equal
 pass	two equal chars compare equal
+pass	two expects of one bound optional share its resident handle
 pass	two exports normalizing to the same kebab extern name are rejected
 pass	two fallible reads of one Bytes parameter share its resident handle slot
 pass	two fallible reads of one collection parameter share its resident handle slot
