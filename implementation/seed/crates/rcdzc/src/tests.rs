@@ -9518,6 +9518,69 @@ mod runtime_ops {
     }
 
     #[test]
+    fn a_wide_literal_match_builds_its_decision_tree_in_bounded_time() {
+        // REGRESSION (perf): `lower::build_tree`'s lit-test arm compiles a wide literal match
+        // (`(match t ((tuple 0 a) …) ((tuple 1 a) …) … (_ -1))`) as an N-DEEP chain of `LitTest` nodes.
+        // Each level built the MATCHED-branch sub-matrix as `matched_rows = [this row, with its first
+        // lit-test consumed] ++ rows[1..]`, cloning the whole O(N) remaining-rows tail. But when the
+        // matched row is now an UNCONDITIONAL LEAF (no further tests, no guard — the common single-lit-test
+        // arm), `build_tree` returns `Leaf` on that first row and never reads the appended tail, so those
+        // clones were pure waste → O(N²) over the N levels (profile: `build_tree`/`build_lit_test` ~92%
+        // inclusive, `Vec::clone` ~33% + heavy malloc; N=400/800/1600/3200 = 33/93/342/1295ms, ~3.8×/dbl).
+        // FIX: skip the tail append when the matched row is a leaf; only a fall-through-capable matched row
+        // (a further lit-test — e.g. `(tuple 0 0)` before `(tuple 0 a)` — or a guard) needs the tail.
+        //
+        // The NOISE-FREE signal is `BUILD_TREE_LITTEST_ROWS_CLONED` — the `MatchRow`s cloned into the
+        // matched sub-matrix, a pure function of the program. For N single-lit-test leaf arms it must stay
+        // O(N) (zero, in fact — every matched row is a leaf), NOT O(N²). Correctness (the dispatch selects
+        // the right arm, and a multi-lit-test arm's fall-through still reaches the same-prefix binding arm)
+        // is pinned by the run-value + fall-through match tests.
+        fn wide_tuple_lit_match_src(n: usize) -> String {
+            // `(def (f (: t (Tuple Int64 Int64))) (match t ((tuple 0 a) 0) … ((tuple {n-1} a) {n-1}) (_ -1)))`
+            // — N arms each testing the FIRST element against a distinct literal, binding the second. Every
+            // arm is a single-lit-test unconditional leaf (the case the wasted-tail-clone bit).
+            let mut arms = String::new();
+            for i in 0..n {
+                arms.push_str(&format!("((tuple {i} a) {i}) "));
+            }
+            format!(
+                "(module m (def (f (: t (Tuple Int64 Int64))) (match t {arms}(_ -1))) \
+                 (def (main) (f (tuple 1 5))) (export main))"
+            )
+        }
+        // A small instance compiles with no error diagnostics (a valid wide literal match).
+        let diags = crate::diagnostics(&mut crate::db::Db::load(parse(&wide_tuple_lit_match_src(
+            4,
+        ))));
+        assert!(
+            diags
+                .iter()
+                .all(|d| d.severity != crate::abi::Severity::Error),
+            "a wide literal match compiles with no error diagnostics: {diags:?}"
+        );
+        fn rows_cloned(src: &str) -> u64 {
+            crate::host::run_with_compiler_stack(|| {
+                crate::db::BUILD_TREE_LITTEST_ROWS_CLONED.with(|c| c.set(0));
+                let _ = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+                crate::db::BUILD_TREE_LITTEST_ROWS_CLONED.with(|c| c.get())
+            })
+        }
+        // Width 200→400 is a 2× match; O(N) tail clones ⇒ ≤ ~2×, the O(N²) per-level tail append was ~4×.
+        // For a pure leaf-arm match the count is 0 either doubling (no matched row is a fall-through), so
+        // guard the ratio only when the base is non-zero — else assert the absolute count stays bounded
+        // (well under the O(N²) figure a revert produces: N=400 would clone ~400² / 2 ≈ 80k rows).
+        let n200 = rows_cloned(&wide_tuple_lit_match_src(200));
+        let n400 = rows_cloned(&wide_tuple_lit_match_src(400));
+        assert!(
+            n400 < 4 * 400,
+            "a wide literal match must build its decision tree without cloning the O(N) remaining-rows \
+             tail at each leaf level (`build_tree`'s lit-test arm must skip the append when the matched \
+             row is an unconditional leaf): width-400 cloned {n400} rows (n200={n200}); O(N) is ≤ ~N, the \
+             per-level tail append was ~N²/2 (~80000 at N=400)"
+        );
+    }
+
+    #[test]
     fn a_deep_nested_let_chain_collects_binding_uses_in_bounded_time() {
         // REGRESSION (perf): `lower::lower_let` collects each binding's use facts by walking its whole `let`
         // REGION (all inits + body) in one pass (fix-44, which fused a WIDE let's per-binding walks). But a

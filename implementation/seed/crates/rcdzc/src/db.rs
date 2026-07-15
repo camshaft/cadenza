@@ -51,6 +51,16 @@ thread_local! {
     pub(crate) static COLLECT_REDUCED_CALLABLES_VISITS: std::cell::Cell<u64> =
         const { std::cell::Cell::new(0) };
 
+    /// Test-only: total `MatchRow`s CLONED into the matched-branch sub-matrix by `lower::build_tree`'s
+    /// lit-test arm since the last reset. A wide literal match (`(match t ((tuple 0 a) …) ((tuple 1 a) …)
+    /// …)`) emits an N-deep lit-test chain; each level built `matched_rows = [row] ++ rows[1..]`, cloning
+    /// the whole O(N) tail — but when the matched row is an unconditional LEAF the recursion stops at it
+    /// and never reads the tail, so those clones were pure waste → O(N²). Skipping the append for a leaf
+    /// matched row makes the total rows cloned O(N). Noise-free regression signal (a wall-clock ratio is
+    /// diluted by the rest of `check`) — see `a_wide_literal_match_builds_its_decision_tree_in_bounded_time`.
+    pub(crate) static BUILD_TREE_LITTEST_ROWS_CLONED: std::cell::Cell<u64> =
+        const { std::cell::Cell::new(0) };
+
     /// Test-only: total node-visits by `effects::check_no_home_walk` (the CDZ0401 no-home check) since the
     /// last reset. Following a callee body had NO dedup, so a helper called from N sites re-walked its
     /// O(N)-body once per site = O(N²); the `(callee, handled-set)` follow-dedup makes it O(N). The

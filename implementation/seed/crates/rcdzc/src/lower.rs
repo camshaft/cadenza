@@ -7048,8 +7048,22 @@ fn build_tree(
             // The row with this first literal test consumed (its other tests / guard / body remain).
             let mut matched_row = row.clone();
             matched_row.lit_tests.remove(0);
+            // If the matched row is now an UNCONDITIONAL LEAF (no remaining tests, no guard — its
+            // constraints were already empty to reach this arm), then in the MATCHED branch control stops
+            // at it and the remaining rows `rows[1..]` are unreachable there. Appending them would clone
+            // O(rows) `MatchRow`s that `build_tree` never reads (it returns `Leaf` on the first row) — at
+            // each of the N lit-test levels of a wide literal match (`(match t ((tuple 0 a) …)…)`) that is
+            // an O(N) wasted clone per level = O(N²). Skip the append in that (common single-lit-test)
+            // case; only a fall-through-capable matched row (a further test / a guard) needs the tail.
+            let matched_row_is_leaf =
+                matched_row.lit_tests.is_empty() && matched_row.guard.is_none();
             let mut matched_rows = vec![matched_row];
-            matched_rows.extend_from_slice(&rows[1..]);
+            if !matched_row_is_leaf {
+                matched_rows.extend_from_slice(&rows[1..]);
+                #[cfg(test)]
+                crate::db::BUILD_TREE_LITTEST_ROWS_CLONED
+                    .with(|c| c.set(c.get() + (rows.len() - 1) as u64));
+            }
             // FOLD against a constant sub-value.
             if let Some(c) = const_at_path(db, scrutinee, &lit_path) {
                 let hit = match (&probe, &c) {
