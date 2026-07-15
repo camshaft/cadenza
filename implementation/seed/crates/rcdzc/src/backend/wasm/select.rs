@@ -2070,9 +2070,13 @@ fn collect_used_ops_into(
         // out), so it is used DIRECTLY as the `Some` payload — no `dup`. The None branch has no handle to
         // drop (the runtime consumed the buffer on failure).
         Core::StrFromBytes { bytes, .. } => {
+            // `str-from-bytes` decodes the buffer to a String handle or NULL; the emit then builds
+            // `Some(handle)` / `None` via `sum-new`. The `None` payload is the INLINE-unit constant
+            // (`IMM_UNIT`), not an allocated cell — so `sum-new` is the only heap op, no `arr-alloc`.
+            // (An earlier version over-declared `OP_ARR_ALLOC` "for None's unit"; None uses no alloc, so
+            // importing it forced an unnecessary runtime import — PR #404 Copilot review.)
             out.insert(OP_STR_FROM_BYTES);
             out.insert(OP_SUM_NEW);
-            out.insert(OP_ARR_ALLOC);
             collect_used_ops_into(db, bytes, out);
         }
         Core::If { cond, then_, else_ } => {
@@ -14005,6 +14009,36 @@ mod tests {
             1,
             "the repeated keyed lookup shares one map-lookup (CSE), got: {:?}",
             f.code
+        );
+    }
+
+    #[test]
+    fn str_from_bytes_does_not_over_declare_arr_alloc() {
+        // `String.from-bytes` emits `str-from-bytes` (decode → handle-or-NULL) then builds `Some(handle)` /
+        // `None` via `sum-new`; the `None` payload is the INLINE-unit constant (`IMM_UNIT`), so no
+        // `arr-alloc` is ever called. The used-ops collector must therefore NOT import `arr-alloc` for a
+        // body whose only heap op is `str-from-bytes` (an earlier version over-declared it "for None's
+        // unit", forcing an unnecessary runtime import — PR #404 Copilot review). The bytes come from a
+        // PARAMETER so no construction op contributes other imports.
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: b Bytes)) (String.from-bytes b)) (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let (_params, body) = function_of(&mut db, "f");
+        let mut ops: std::collections::BTreeSet<&'static str> = std::collections::BTreeSet::new();
+        collect_used_ops(&mut db, body, &mut ops);
+        assert!(
+            ops.contains(OP_STR_FROM_BYTES),
+            "str-from-bytes must be imported, got: {ops:?}"
+        );
+        assert!(
+            ops.contains(OP_SUM_NEW),
+            "sum-new (Some/None build) must be imported, got: {ops:?}"
+        );
+        assert!(
+            !ops.contains(OP_ARR_ALLOC),
+            "arr-alloc must NOT be imported — None uses the inline-unit constant, not an allocation; \
+             got: {ops:?}"
         );
     }
 
