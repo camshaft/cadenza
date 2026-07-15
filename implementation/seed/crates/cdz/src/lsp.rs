@@ -15,10 +15,11 @@
 //! Capabilities implemented so far: the `initialize`/`shutdown` handshake, full-document sync
 //! (`didOpen`/`didChange`/`didClose`), `textDocument/publishDiagnostics` (← the `Diagnostics` query),
 //! `textDocument/hover` (← the `TypeAt` query), `textDocument/semanticTokens/full` (← the `Highlight`
-//! query), `textDocument/definition` (← `ResolveOf`), `textDocument/references` (← `UsesOf`), and
-//! `textDocument/completion` (← `ScopeAt` + `Symbols`). Code actions (← the `Diagnostics` fix columns)
-//! are the next increment — each a read of a column the query engine already exposes, wired to its LSP
-//! request.
+//! query), `textDocument/definition` (← `ResolveOf`), `textDocument/references` (← `UsesOf`),
+//! `textDocument/completion` (← `ScopeAt` + `Symbols`), `textDocument/documentSymbol` (the outline, ←
+//! `Symbols`), and `textDocument/codeAction` (quick-fixes ← the `Diagnostics` fix columns, applied via
+//! the shared `crate::fix::fix_edits` so they match `cdz fix`). Each capability is a read of a column
+//! the query engine already exposes, wired to its LSP request.
 
 use std::collections::HashMap;
 
@@ -31,10 +32,11 @@ use lsp_types::notification::{
     PublishDiagnostics,
 };
 use lsp_types::request::{
-    Completion, DocumentSymbolRequest, GotoDefinition, HoverRequest, References, Request as _,
-    SemanticTokensFullRequest, Shutdown,
+    CodeActionRequest, Completion, DocumentSymbolRequest, GotoDefinition, HoverRequest, References,
+    Request as _, SemanticTokensFullRequest, Shutdown,
 };
 use lsp_types::{
+    CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionParams, CodeActionResponse,
     CompletionItem, CompletionItemKind, CompletionOptions, CompletionParams, CompletionResponse,
     Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
     DidOpenTextDocumentParams, DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams,
@@ -43,7 +45,8 @@ use lsp_types::{
     Range, ReferenceParams, SemanticToken, SemanticTokenType, SemanticTokens,
     SemanticTokensFullOptions, SemanticTokensLegend, SemanticTokensOptions, SemanticTokensParams,
     SemanticTokensResult, SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo,
-    SymbolKind, TextDocumentSyncCapability, TextDocumentSyncKind, Uri, WorkDoneProgressOptions,
+    SymbolKind, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri,
+    WorkDoneProgressOptions, WorkspaceEdit,
 };
 
 /// Run the stdio LSP server to completion: perform the initialize handshake, then loop over incoming
@@ -99,6 +102,9 @@ fn capabilities() -> ServerCapabilities {
         // Ctrl-Space. We return the full candidate set (locals + top-level symbols) and let the client
         // filter by the typed prefix (the standard "server offers, client filters" model).
         completion_provider: Some(CompletionOptions::default()),
+        // Quick-fixes from the diagnostic fix columns — all 4 kinds (replace/wrap/insert/delete) via the
+        // shared `crate::fix::fix_edits`, so a `cdz lsp` quick-fix applies IDENTICALLY to `cdz fix`.
+        code_action_provider: Some(lsp_types::CodeActionProviderCapability::Simple(true)),
         semantic_tokens_provider: Some(SemanticTokensServerCapabilities::SemanticTokensOptions(
             SemanticTokensOptions {
                 work_done_progress_options: WorkDoneProgressOptions::default(),
@@ -265,6 +271,11 @@ impl Server {
                 let result = self.document_symbol(&params);
                 self.send_response(Response::new_ok(id, result))
             }
+            CodeActionRequest::METHOD => {
+                let (id, params) = cast_request::<CodeActionRequest>(req)?;
+                let result = self.code_action(&params);
+                self.send_response(Response::new_ok(id, result))
+            }
             _ => {
                 let resp = Response::new_err(
                     req.id.clone(),
@@ -350,6 +361,17 @@ impl Server {
         let doc = self.docs.get(&pos.text_document.uri)?;
         let items = completions_at(&doc.text, doc.is_ml, pos.position);
         Some(CompletionResponse::Array(items))
+    }
+
+    /// Answer a `textDocument/codeAction`: quick-fixes for the diagnostics OVERLAPPING the request range,
+    /// built from the `Diagnostics` query's structured fix columns via the SHARED `crate::fix::fix_edits`
+    /// (all four kinds — replace/wrap/insert/delete — so a `cdz lsp` quick-fix applies IDENTICALLY to
+    /// `cdz fix`). `None` when the document is not open; an empty list when no fix applies in range —
+    /// total.
+    fn code_action(&self, params: &CodeActionParams) -> Option<CodeActionResponse> {
+        let uri = &params.text_document.uri;
+        let doc = self.docs.get(uri)?;
+        Some(code_actions_at(&doc.text, doc.is_ml, uri, params.range))
     }
 
     /// Dispatch a client NOTIFICATION — the document-sync lifecycle. Each open/change recomputes and
@@ -1039,6 +1061,158 @@ fn symbol_kind_to_document_kind(kind: &str) -> SymbolKind {
     }
 }
 
+// ── the analysis: diagnostics-in-range → quick-fix code actions, via `crate::fix::fix_edits` ─────────
+
+/// Compute the quick-fix code actions available in `range` — one per diagnostic (whose fault overlaps
+/// the request range) that carries a structured fix. Runs the `Diagnostics` query (the SAME read that
+/// produces the squiggles), reads each fault's fix columns (`fix-kind`, `fix-node`, `fix-repl`,
+/// `fix-verified`), and turns the fix into a `WorkspaceEdit` via `crate::fix::fix_edits` — the SHARED
+/// builder `cdz fix`/`cdz check --json` use, so a `cdz lsp` quick-fix produces byte-IDENTICAL edits and
+/// covers all four kinds (replace/wrap/insert/delete). A verified fix is marked `isPreferred`. TOTAL: an
+/// un-analyzable buffer, or a fix that fails to build, yields no action for that fault — never a panic.
+#[allow(clippy::mutable_key_type)] // `WorkspaceEdit.changes` is the LSP-mandated `HashMap<Uri, _>`.
+fn code_actions_at(text: &str, is_ml: bool, uri: &Uri, range: Range) -> Vec<CodeActionOrCommand> {
+    let Ok((arenas, spans, _errors)) = parse_surface(text, is_ml) else {
+        return Vec::new();
+    };
+    let Some(diag_text) = run_query_text(
+        &arenas,
+        rcdzc::sidecar::Query::Diagnostics,
+        rcdzc::sidecar::KIND_DIAGNOSTICS,
+    ) else {
+        return Vec::new();
+    };
+
+    // The fix engine works on the homoiconic `Tree` + an origin index (built ONCE, reused per fault).
+    let tree = cadenza_syntax::query::Tree::of(&arenas);
+    let origins = crate::fix::OriginPaths::of(&tree);
+    let surface = if is_ml {
+        cadenza_syntax::convert::Format::Ml
+    } else {
+        cadenza_syntax::convert::Format::Sexpr
+    };
+
+    let mut actions = Vec::new();
+    for line in diag_text.lines() {
+        // `severity  code  node  fix-kind  fix-node  fix-repl  fix-verified  message` (8 columns).
+        let mut cols = line.splitn(8, '\t');
+        let (severity, code, node, fix_kind, fix_node, fix_repl, fix_verified, message) = match (
+            cols.next(),
+            cols.next(),
+            cols.next(),
+            cols.next(),
+            cols.next(),
+            cols.next(),
+            cols.next(),
+            cols.next(),
+        ) {
+            (Some(s), Some(c), Some(n), Some(fk), Some(fnode), Some(fr), Some(fv), Some(m)) => {
+                (s, c, n, fk, fnode, fr, fv, m)
+            }
+            _ => continue,
+        };
+        // No fix, or the `<error>`-placeholder cascade → no action.
+        if fix_kind == "-" || message.contains("`<error>`") {
+            continue;
+        }
+        // The FAULT's own node range — used to filter to diagnostics overlapping the request range, so we
+        // only offer a fix for a squiggle at/around the cursor (the client passes the cursor/selection).
+        let Some(fault_range) = node
+            .parse::<u32>()
+            .ok()
+            .and_then(|id| spans.get(cadenza_syntax::StructId(id)))
+            .map(|s| byte_range_to_range(text, s.start, s.end))
+        else {
+            continue;
+        };
+        if !ranges_overlap(fault_range, range) {
+            continue;
+        }
+        // Build the fix's primitive byte edits via the SHARED engine, then map each to an LSP TextEdit.
+        let Ok(fix_target) = fix_node.parse::<u32>() else {
+            continue;
+        };
+        let Some(edits) = crate::fix::fix_edits(
+            text,
+            &tree,
+            &origins,
+            &spans,
+            fix_kind,
+            cadenza_syntax::StructId(fix_target),
+            fix_repl,
+            surface,
+        ) else {
+            continue;
+        };
+        if edits.is_empty() {
+            continue;
+        }
+        let text_edits: Vec<TextEdit> = edits
+            .iter()
+            .map(|e| TextEdit {
+                range: byte_range_to_range(text, e.start, e.end),
+                new_text: e.text.clone(),
+            })
+            .collect();
+
+        let mut changes = HashMap::new();
+        changes.insert(uri.clone(), text_edits);
+        actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+            title: code_action_title(fix_kind, fix_repl, message),
+            kind: Some(CodeActionKind::QUICKFIX),
+            diagnostics: Some(vec![Diagnostic {
+                range: fault_range,
+                severity: Some(match severity {
+                    "error" => DiagnosticSeverity::ERROR,
+                    "warning" => DiagnosticSeverity::WARNING,
+                    _ => DiagnosticSeverity::INFORMATION,
+                }),
+                code: (code != "-").then(|| lsp_types::NumberOrString::String(code.to_string())),
+                source: Some("cdz".to_string()),
+                message: message.to_string(),
+                ..Default::default()
+            }]),
+            edit: Some(WorkspaceEdit {
+                changes: Some(changes),
+                ..Default::default()
+            }),
+            // A VERIFIED fix (re-checked to clear its diagnostic without introducing new errors) is the
+            // preferred one, so the editor's default quick-fix applies the trustworthy edit.
+            is_preferred: Some(fix_verified == "verified"),
+            ..Default::default()
+        }));
+    }
+    actions
+}
+
+/// A human-readable code-action title. Prefers the concrete edit (`Replace with `_x``), else glosses the
+/// fix kind, else falls back to the first clause of the diagnostic message.
+fn code_action_title(fix_kind: &str, fix_repl: &str, message: &str) -> String {
+    match fix_kind {
+        "replace" if !fix_repl.is_empty() && fix_repl != "-" => {
+            format!("Replace with `{fix_repl}`")
+        }
+        "wrap" if !fix_repl.is_empty() && fix_repl != "-" => format!("Wrap in `{fix_repl}`"),
+        "insert" if !fix_repl.is_empty() && fix_repl != "-" => format!("Insert `{fix_repl}`"),
+        "delete" => "Remove this element".to_string(),
+        _ => {
+            let short = message.split(['(', ':']).next().unwrap_or(message).trim();
+            format!("Fix: {short}")
+        }
+    }
+}
+
+/// Whether two LSP ranges overlap (share at least a point) — the test for "this diagnostic is in the
+/// code-action request range". Inclusive at the boundary so a zero-width cursor at a fault's edge counts.
+fn ranges_overlap(a: Range, b: Range) -> bool {
+    !(position_lt(a.end, b.start) || position_lt(b.end, a.start))
+}
+
+/// Strict less-than on LSP positions (line then character).
+fn position_lt(p: Position, q: Position) -> bool {
+    (p.line, p.character) < (q.line, q.character)
+}
+
 // ── the analysis: source text → LSP semantic tokens, via the `Highlight` query ──────────────────────
 
 /// Compute the LSP semantic tokens for `text` — colour-by-meaning, backed by the `Highlight` query
@@ -1596,5 +1770,86 @@ mod tests {
         // A buffer that does not parse yields a defined (possibly empty) outline, never a panic.
         let _ = document_symbols_for("def (f x = (", true);
         let _ = document_symbols_for("", true);
+    }
+
+    /// The single code action's (title, edits), or panic.
+    fn only_action(actions: &[CodeActionOrCommand]) -> (String, Vec<TextEdit>) {
+        assert_eq!(
+            actions.len(),
+            1,
+            "expected exactly one action, got {actions:?}"
+        );
+        let CodeActionOrCommand::CodeAction(a) = &actions[0] else {
+            panic!("expected a CodeAction");
+        };
+        let edits = a
+            .edit
+            .as_ref()
+            .and_then(|w| w.changes.as_ref())
+            .and_then(|c| c.values().next())
+            .cloned()
+            .expect("a workspace edit with changes");
+        (a.title.clone(), edits)
+    }
+
+    #[test]
+    fn code_action_offers_a_replace_quickfix_for_an_unused_param() {
+        // `def f(x) = 5` — the unused param `x` (CDZ0306) has a REPLACE fix to `_x`. A code-action over
+        // the param's range offers exactly that quick-fix as a single TextEdit.
+        let text = "def f(x: Int64) -> Int64 = 5";
+        let at = Range::new(Position::new(0, 6), Position::new(0, 7)); // on `x`
+        let (title, edits) = only_action(&code_actions_at(text, true, &test_uri(), at));
+        assert!(
+            title.contains("_x"),
+            "title should name the replacement, got {title:?}"
+        );
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].new_text, "_x");
+        assert_eq!(lc(edits[0].range.start), (0, 6));
+    }
+
+    #[test]
+    fn code_action_offers_a_wrap_quickfix_via_the_shared_fix_engine() {
+        // A newtype-vs-inner comparison (CDZ0202) has a WRAP fix — the kind only the shared
+        // `crate::fix::fix_edits` can build (multi-edit tree surgery). This is the coverage the span-only
+        // version could NOT provide. The wrap inserts a `(match …` prefix + `((Mk n) n))` suffix.
+        let text = "(module m (type UserId (Mk Int64)) (def (f (: u UserId)) (= u 5)) (export f))";
+        let whole = Range::new(Position::new(0, 0), Position::new(0, 78));
+        let (title, edits) = only_action(&code_actions_at(text, false, &test_uri(), whole));
+        assert!(title.contains("Wrap"), "a wrap fix, got {title:?}");
+        assert_eq!(edits.len(), 2, "wrap = a prefix + suffix edit: {edits:?}");
+        let texts: Vec<&str> = edits.iter().map(|e| e.new_text.as_str()).collect();
+        assert!(
+            texts.iter().any(|t| t.contains("match"))
+                && texts.iter().any(|t| t.contains("((Mk n) n)")),
+            "the wrap fix unwraps via a match: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn code_action_filters_to_diagnostics_in_range_and_is_total() {
+        // A request far from any fixable fault offers nothing; a clean/malformed program is total.
+        let text = "def f(x: Int64) -> Int64 = 5";
+        let far = Range::new(Position::new(0, 27), Position::new(0, 28)); // on the `5`
+        assert!(code_actions_at(text, true, &test_uri(), far).is_empty());
+        let whole = Range::new(Position::new(0, 0), Position::new(0, 40));
+        assert!(
+            code_actions_at(
+                "def double(x: Int64) -> Int64 = x + x",
+                true,
+                &test_uri(),
+                whole
+            )
+            .is_empty()
+        );
+        let _ = code_actions_at("def (f x = (", true, &test_uri(), whole); // total, no panic
+    }
+
+    #[test]
+    fn ranges_overlap_is_correct() {
+        let r = |l0, c0, l1, c1| Range::new(Position::new(l0, c0), Position::new(l1, c1));
+        assert!(ranges_overlap(r(0, 0, 0, 5), r(0, 3, 0, 8)), "partial");
+        assert!(ranges_overlap(r(0, 0, 0, 5), r(0, 5, 0, 5)), "touching");
+        assert!(!ranges_overlap(r(0, 0, 0, 5), r(0, 6, 0, 8)), "disjoint");
     }
 }
