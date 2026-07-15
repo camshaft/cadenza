@@ -761,17 +761,28 @@ are the sharp edges.
   `src/iter.cdz` uses a reified encoding instead. SUGGESTED FIX: give `Unit` a zero-info slot at the
   boxed-closure boundary (elide the param, or lower to a never-read placeholder i32).
 
-- **OPEN (seed `rcdzc` — inference GAP, blocks a generic iterator): a composed generic pull-iterator
-  leaves its element type undetermined.** `repros/decline-generic-iterator-composed-transformers.cdz`.
-  `collect(map(filter(from-list(xs), p), f))` over a polymorphic `Iter(a)` → CDZ0201 "a generic type
-  argument is undetermined" at the recursive consumer / composed call. BISECTED — the gap is the
-  COMPOSITION through `next`-recursion, not any single piece: generic `collect` through `next` works;
-  `collect(map(…))` (one closure-carrying combinator) works and runs; `collect(filter(…))` alone
-  reproduces (its arm calls `next` recursively in the `else`); the monomorphic-`Int64` version of ALL
-  of it works (what `src/iter.cdz` ships). The element type is fully pinned by the source list, so
-  there is no genuine ambiguity — inference just doesn't propagate it through the composed
-  `next`-recursion. This is the blocker to "iterators work for ANY type"; the `Int64` iterator is a
-  spike until it lands.
+- **OPEN (seed `rcdzc` — MONOMORPHIZATION gap, THE blocker to a generic iterator): a composed
+  recursive-generic call declines when specialized at ≥2 element types.**
+  `repros/decline-recursive-generic-producer-drops-element-tie.cdz`. `collect(from-list(xs))` (a
+  recursive-generic producer feeding a recursive-generic consumer) → CDZ0201 "a generic type argument
+  is undetermined" — but ONLY with TWO OR MORE distinct element instantiations in one program. SHARP
+  bisection (2026-07-15, superseding the earlier "composed transformers" framing):
+  - a SINGLE instantiation compiles AND RUNS (verified: `collect(from-list([1,2,3]))` → `[1,2,3]`;
+    `collect(from-list(["a","bb","ccc"]))` → runs). So a generic iterator works for any ONE element
+    type per program; the SECOND concurrent instantiation is what the monomorphizer can't resolve.
+  - CHECK vs COMPILE split: `cdz check` PASSES (inference accepts it); the decline is at LOWERING
+    (`type_specialize`, lower.rs ~8478). The two stages disagree.
+  - ROOT (typing): a recursive-generic PRODUCER's `def_scheme` disconnects its result element from its
+    argument element — `from-list : (-> _ (Iter _))` with two independent vars, verified via
+    `cdz type` — instead of `∀a. List(a) -> Iter(a)`. The self-call's result element isn't unified with
+    the consed element during the connected solve (`apply_type` freshens the self-call arg's vars,
+    severing the tie — the same severing `apply_scheme_to_args` already guards against for generic
+    schemes but the general `apply_type` ctor path does not).
+  - BROADER than user sums: the built-in `List` has it too (`dup-all(copy(xs))` at two instantiations
+    declines identically). A general recursive-generic monomorphization gap for composed calls, not
+    iterator-specific. This is THE blocker to "iterators work for ANY type"; `src/iter.cdz` ships a
+    monomorphic-`Int64` spike until it lands (a seed-inference-agent fix — gate-critical, not a
+    loop-tick edit).
 
 - **OPEN (seed `rcdzc` — surface/diagnostic GAP): a user-generic type var in an annotation is
   rejected.** `repros/reject-user-generic-type-var-in-annotation.cdz`. `def next(it: Iter(a)) = …` →
