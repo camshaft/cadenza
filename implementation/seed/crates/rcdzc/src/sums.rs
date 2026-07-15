@@ -120,6 +120,7 @@ pub fn prelude_decls(ast: &mut Arenas) -> Vec<TypeDecl> {
     let ast_decl = {
         let int_pay = push_atom(ast, Leaf::Name("Int64".to_string()));
         let bool_pay = push_atom(ast, Leaf::Name("Bool".to_string()));
+        let str_pay = push_atom(ast, Leaf::Name("String".to_string()));
         let name_pay = push_atom(ast, Leaf::Name("String".to_string()));
         // `(List Ast)` — the recursive list-of-Ast payload for the `List` variant.
         let list_head = push_atom(ast, Leaf::Name("List".to_string()));
@@ -127,16 +128,18 @@ pub fn prelude_decls(ast: &mut Arenas) -> Vec<TypeDecl> {
         let list_ast = push_list(ast, vec![list_head, ast_ref]);
         // The `Ast` sum's variants follow the spec's enumeration order (`type-system.md` §The Abstract
         // Syntax Tree Is An Ordinary Sum Type: "an integer, a float, a string, a boolean, a name, and a
-        // list of child nodes"). Realized so far: `Int` (Int64), `Bool` (Bool), `Name` (String), `List`
-        // ((List Ast)). `Float`/`Str` remain to be added (each needs its leaf's canonical byte/text
-        // handling); discriminants are read BY NAME everywhere (`ast_variant_discs`), never positionally,
-        // so this order is display-only and adding a variant never mis-tags an existing one.
+        // list of child nodes"). Realized so far: `Int` (Int64), `Bool` (Bool), `Str` (String — a string
+        // LITERAL, distinct from `Name` which carries an identifier), `Name` (String), `List` ((List
+        // Ast)). `Float` remains to be added (blocked on canonical-byte float equality). Discriminants
+        // are read BY NAME everywhere (`ast_variant_discs`), never positionally, so this order is
+        // display-only and adding a variant never mis-tags an existing one.
         type_form_payloads(
             ast,
             "Ast",
             &[
                 ("Int", &[int_pay]),
                 ("Bool", &[bool_pay]),
+                ("Str", &[str_pay]),
                 ("Name", &[name_pay]),
                 ("List", &[list_ast]),
             ],

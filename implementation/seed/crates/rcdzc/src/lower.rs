@@ -2056,6 +2056,8 @@ fn lower_ast_splice_lift(db: &mut Db, id: StructId, elems: &[StructId]) -> Optio
 //   Name s   →  0x01, then `len(s)` as 4 bytes LE, then the `len` UTF-8 bytes
 //   List es  →  0x02, then `count` as 4 bytes LE, then each element encoded in order
 //   Bool b   →  0x03, then one byte (0 = false, 1 = true)
+//   Str  s   →  0x04, then `len(s)` as 4 bytes LE, then the `len` UTF-8 bytes (same shape as Name — a
+//              string LITERAL, distinguished from a Name by its tag, not its payload layout)
 // The encoding is a pure function of the tree (equal trees → identical bytes) and is self-delimiting
 // (every node carries its own length), so `decode` consumes the WHOLE input or reports an error. Each
 // tag byte is a stable constant (adding a variant appends a NEW tag; existing tags never shift), so a
@@ -2064,6 +2066,7 @@ const AST_TAG_INT: u8 = 0x00;
 const AST_TAG_NAME: u8 = 0x01;
 const AST_TAG_LIST: u8 = 0x02;
 const AST_TAG_BOOL: u8 = 0x03;
+const AST_TAG_STR: u8 = 0x04;
 
 /// Lower `(Ast.encode t)` — FOLD a compile-time-visible `Ast` value to a `Core::BytesOf` of its
 /// canonical bytes; a runtime `Ast` (no visible `Core::SumNew`) declines. A poison operand propagates.
@@ -2131,6 +2134,17 @@ fn print_ast_value(db: &mut Db, node: StructId, disc: &AstDiscs, out: &mut Strin
         };
         out.push_str(if b { "true" } else { "false" });
         Some(())
+    } else if d == disc.str && payloads.len() == 1 {
+        // A string LITERAL renders `"…"` with the closed escape set (`\n \t \r \\ \"`) — the same
+        // canonical spelling the reader parses back, so `read(print v) == v`. DISTINCT from `Ast.Name`,
+        // which renders the bare identifier (a Name is not a quoted string).
+        let Core::ConstStr(s) = core_of(db, payloads[0]) else {
+            return None;
+        };
+        out.push('"');
+        push_escaped_str(out, &s);
+        out.push('"');
+        Some(())
     } else if d == disc.name && payloads.len() == 1 {
         let Core::ConstStr(s) = core_of(db, payloads[0]) else {
             return None;
@@ -2152,6 +2166,23 @@ fn print_ast_value(db: &mut Db, node: StructId, disc: &AstDiscs, out: &mut Strin
         Some(())
     } else {
         None
+    }
+}
+
+/// Escape a string's contents for a `"…"` literal into `out` — the closed escape set (`\n \t \r \\ \"`),
+/// matching `cadenza_syntax::literal::escape_string` (kept in sync — the rcdzc lib is dependency-free, so
+/// it cannot call that crate). The exact inverse of `SexprReader::read_string`'s unescape, so a printed
+/// `Ast.Str` reads back to the same string.
+fn push_escaped_str(out: &mut String, s: &str) {
+    for c in s.chars() {
+        match c {
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            '\r' => out.push_str("\\r"),
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            _ => out.push(c),
+        }
     }
 }
 
@@ -2193,6 +2224,7 @@ fn lower_read(db: &mut Db, str_val: StructId) -> Core {
 enum SNode {
     Int(i64),
     Bool(bool),
+    Str(String),
     Name(String),
     List(Vec<SNode>),
 }
@@ -2217,6 +2249,13 @@ fn reify_read_ast(db: &mut Db, node: &SNode, disc: &AstDiscs) -> Core {
             let payload = synth_core(db, Core::ConstBool(*b), crate::ty::Ty::Bool);
             Core::SumNew {
                 disc: disc.bool,
+                payloads: vec![payload],
+            }
+        }
+        SNode::Str(s) => {
+            let payload = synth_core(db, Core::ConstStr(s.clone()), crate::ty::Ty::String);
+            Core::SumNew {
+                disc: disc.str,
                 payloads: vec![payload],
             }
         }
@@ -2248,11 +2287,13 @@ fn reify_read_ast(db: &mut Db, node: &SNode, disc: &AstDiscs) -> Core {
     }
 }
 
-/// A minimal recursive s-expression reader for the `Ast`-value subset — integers, bare atoms (names), and
-/// parenthesized lists. Self-contained (the rcdzc lib carries no general reader): whitespace-separated
-/// tokens, `(`/`)` nesting, a leading-`-`/digit token that fully parses as `i64` is an `Int`, any other
-/// bare token is a `Name`. A token the subset cannot represent (a string/float literal) surfaces as a
-/// `Name` of its raw spelling — harmless, since only `print`'s own output is ever round-tripped here.
+/// A minimal recursive s-expression reader for the `Ast`-value subset — integers, booleans, string
+/// literals, bare atoms (names), and parenthesized lists. Self-contained (the rcdzc lib carries no
+/// general reader): whitespace-separated tokens, `(`/`)` nesting, a `"…"` token (closed escape set
+/// `\n \t \r \\ \"`) is a `Str`, `true`/`false` are `Bool`, a leading-`-`/digit token that fully parses
+/// as `i64` is an `Int`, any other bare token is a `Name`. A token the subset cannot represent (a float
+/// literal) surfaces as a `Name` of its raw spelling — harmless, since only `print`'s own output is ever
+/// round-tripped here.
 struct SexprReader<'a> {
     bytes: &'a [u8],
     pos: usize,
@@ -2298,6 +2339,11 @@ impl<'a> SexprReader<'a> {
         if self.bytes[self.pos] == b')' {
             return None; // a stray close-paren
         }
+        // A `"…"` string literal (the `print_ast_value` spelling of an `Ast.Str`) — unescape the closed
+        // set. `None` on an unterminated string or a bad escape (the read declines, never mis-parses).
+        if self.bytes[self.pos] == b'"' {
+            return self.read_string().map(SNode::Str);
+        }
         // A bare token: run to the next whitespace or paren.
         let start = self.pos;
         while self.pos < self.bytes.len() {
@@ -2323,13 +2369,52 @@ impl<'a> SexprReader<'a> {
             },
         }
     }
+
+    /// Parse a `"…"` string literal from the current position (which must be the opening `"`), unescaping
+    /// the closed set (`\n \t \r \\ \"`) — the exact inverse of `push_escaped_str`. Returns the decoded
+    /// string, or `None` on an unterminated literal or an unrecognized escape (the read declines). Operates
+    /// over the raw bytes; a decoded byte run is validated as UTF-8 at the end. `print` never emits a
+    /// non-UTF-8 `Ast.Str` (its payload is a Rust `String`), so this only rejects genuinely malformed input.
+    fn read_string(&mut self) -> Option<String> {
+        debug_assert_eq!(self.bytes.get(self.pos), Some(&b'"'));
+        self.pos += 1; // consume opening '"'
+        let mut out: Vec<u8> = Vec::new();
+        while self.pos < self.bytes.len() {
+            let b = self.bytes[self.pos];
+            match b {
+                b'"' => {
+                    self.pos += 1; // consume closing '"'
+                    return String::from_utf8(out).ok();
+                }
+                b'\\' => {
+                    // An escape: the next byte selects the char. An unknown escape / a trailing `\` fails.
+                    self.pos += 1;
+                    match self.bytes.get(self.pos)? {
+                        b'n' => out.push(b'\n'),
+                        b't' => out.push(b'\t'),
+                        b'r' => out.push(b'\r'),
+                        b'\\' => out.push(b'\\'),
+                        b'"' => out.push(b'"'),
+                        _ => return None, // unrecognized escape — decline
+                    }
+                    self.pos += 1;
+                }
+                _ => {
+                    out.push(b);
+                    self.pos += 1;
+                }
+            }
+        }
+        None // unterminated string
+    }
 }
 
-/// The Int/Name/List discriminants of the built-in `Ast` sum (read by name so a reordering does not
-/// silently mis-tag). `None` if the sum or a variant is missing.
+/// The Int/Bool/Str/Name/List discriminants of the built-in `Ast` sum (read by name so a reordering
+/// does not silently mis-tag). `None` if the sum or a variant is missing.
 struct AstDiscs {
     int: u32,
     bool: u32,
+    str: u32,
     name: u32,
     list: u32,
     ty: crate::ty::Ty,
@@ -2342,6 +2427,7 @@ fn ast_variant_discs(db: &mut Db) -> Option<AstDiscs> {
     Some(AstDiscs {
         int: variant_disc_by_name(db, &ty, "Int")?,
         bool: variant_disc_by_name(db, &ty, "Bool")?,
+        str: variant_disc_by_name(db, &ty, "Str")?,
         name: variant_disc_by_name(db, &ty, "Name")?,
         list: variant_disc_by_name(db, &ty, "List")?,
         ty,
@@ -2369,6 +2455,17 @@ fn encode_ast_value(db: &mut Db, node: StructId, disc: &AstDiscs, out: &mut Vec<
         };
         out.push(AST_TAG_BOOL);
         out.push(u8::from(b));
+        Some(())
+    } else if d == disc.str && payloads.len() == 1 {
+        // A string literal: same length-prefixed UTF-8 layout as Name, under its own tag (so decode
+        // rebuilds an `Ast.Str`, not an `Ast.Name`).
+        let Core::ConstStr(s) = core_of(db, payloads[0]) else {
+            return None;
+        };
+        let sb = s.as_bytes();
+        out.push(AST_TAG_STR);
+        out.extend_from_slice(&(u32::try_from(sb.len()).ok()?).to_le_bytes());
+        out.extend_from_slice(sb);
         Some(())
     } else if d == disc.name && payloads.len() == 1 {
         let Core::ConstStr(s) = core_of(db, payloads[0]) else {
@@ -2520,6 +2617,24 @@ fn decode_ast_value(db: &mut Db, raw: &[u8], disc: &AstDiscs) -> Option<(StructI
                 disc.ty.clone(),
             );
             Some((node, 1 + 1))
+        }
+        AST_TAG_STR => {
+            // Same length-prefixed UTF-8 layout as Name, rebuilding an `Ast.Str` (a string literal, not
+            // an identifier). Non-UTF-8 payload bytes are not a canonical encoding → `None`.
+            let len_field = rest.get(..4)?;
+            let len = u32::from_le_bytes(len_field.try_into().ok()?) as usize;
+            let sbytes = rest.get(4..4 + len)?;
+            let s = std::str::from_utf8(sbytes).ok()?.to_string();
+            let payload = synth_core(db, Core::ConstStr(s), crate::ty::Ty::String);
+            let node = synth_core(
+                db,
+                Core::SumNew {
+                    disc: disc.str,
+                    payloads: vec![payload],
+                },
+                disc.ty.clone(),
+            );
+            Some((node, 1 + 4 + len))
         }
         AST_TAG_NAME => {
             let len_field = rest.get(..4)?;
@@ -9012,7 +9127,28 @@ fn type_specialize(db: &mut Db, callee: usize, args: &[StructId]) -> Option<(usi
             subtree_fingerprint(db, a, &mut fp);
             kinds.push(ArgKind::ConstArg(a, fp));
         } else {
-            let t = crate::infer::type_of(db, a);
+            let mut t = crate::infer::type_of(db, a);
+            // A BARE CLOSURE argument types `(-> Any … R)` — its unannotated params contribute `Any`
+            // (`type_of`'s Lambda arm), so the specialized copy would annotate this parameter with a type
+            // carrying nested `Any`, which `encode_ty` renders as `Unit` — a spurious `(-> Unit … Int64)`
+            // that then conflicts CDZ0203 when the copy applies the closure. The closure's OWN body DOES
+            // determine its params (`(fn (x a) (+ a x))` → both Int64), the same solve `lower_lambda_value`
+            // runs; run it HERE so the specialized annotation is concrete. Only fires when the arg is a
+            // lambda AND its type still has an `Any` hole (a fully-annotated / already-solved closure is
+            // untouched — byte-identical). If a hole SURVIVES the solve (a genuinely unconstrained param),
+            // DECLINE rather than annotate an unrepresentable `Unit` — a coded decline beats a miscompiled
+            // annotation. A NON-lambda arg keeps the prior behavior (its nested `Any`, if any, is untouched).
+            if t.has_any()
+                && let (Some(lam_params), Some(lam_body)) = (
+                    crate::eval::lambda_params_of(db, a),
+                    crate::eval::lambda_body(db, a),
+                )
+            {
+                match crate::infer::solved_lambda_arrow(db, &lam_params, lam_body) {
+                    Some(solved) if !solved.has_any() => t = solved,
+                    _ => return None,
+                }
+            }
             if matches!(t, crate::ty::Ty::Any) || t.has_free_var() {
                 return None;
             }

@@ -1138,6 +1138,33 @@
   (call   main (: 0 Int64)) (output (: 45 Int64))
   (call   main (: 100 Int64)) (output (: 145 Int64)))
 
+; The MULTI-PARAMETER twin: the idiomatic two-argument left fold. The closure `(fn (x a) (+ a x))` and the
+; recursive HOF's `f` are BOTH unannotated. `fold-list` is generic in `f`, so the call MONOMORPHIZES — the
+; specialized copy re-annotates `f` with the argument's type. A bare closure types `(-> Any (-> Any Int64))`
+; bottom-up, and a nested `Any` in a type-value encodes as `Unit`, so the copy would get `f : (-> Unit (->
+; Unit Int64))` and its `(f h acc)` conflict CDZ0203 (it `check`ed clean but declined at emit). The closure's
+; OWN body determines its params (`(+ a x)` → both Int64); solving them before the specialized annotation is
+; built gives the concrete `(-> Int64 (-> Int64 Int64))`. `fold-list f acc xs = acc folded with f over xs`;
+; BOUNDARY `acc = n` so nothing folds — `n + 5 + 7 + 30 = n + 42`.
+
+(case "an unannotated two-argument closure is inferred through a generic recursive HOF"
+  (doc    "The two-argument left-fold callback `(fn (x a) (+ a x))` and the HOF param `f` are both
+           unannotated; `fold-list` is generic in `f` so the call monomorphizes. The specialized copy must
+           re-annotate `f` with the closure's CONCRETE type — solved from its body (`(+ a x)` → `(-> Int64
+           (-> Int64 Int64))`), not the bottom-up `(-> Any (-> Any Int64))` whose `Any` holes encode as
+           `Unit` and mistype the copy. With a runtime `acc = n` the fold runs via call_indirect,
+           `n + 5 + 7 + 30 = n + 42`. Pins the idiomatic fully-inferred two-arg `foldl`; previously it
+           `check`ed clean but declined CDZ0203 at emit with `f : (-> Unit (-> Unit Int64))`.")
+  (input  (do
+            (def (fold-list f acc xs)
+              (match xs
+                ((list) acc)
+                ((list h .. t) (fold-list f (f h acc) t))))
+            (def (main (: n Int64)) (fold-list (fn (x a) (+ a x)) n (list 5 7 30)))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 42 Int64))
+  (call   main (: 100 Int64)) (output (: 142 Int64)))
+
 ; A MULTI-PARAMETER runtime closure, applied at FULL arity. `core-semantics.md` §Functions Are
 ; Single-Arity says a multi-param `(fn (a b) …)` is curried sugar; when the whole function is applied to
 ; all its arguments at once through a recursive HOF, it lifts to one `(env, a, b) → result` function and

@@ -81,6 +81,14 @@ A unit conversion whose operands are compile-time constants MUST be computed at 
 
 The dimension a quantity carries MUST be erased whether or not a scale conversion is emitted, so that the type-level dimensional information never survives into the component even when the scale arithmetic does.
 
+### An Explicit Conversion Unwraps To A Bare Number
+
+An explicit conversion of a quantity into a chosen unit — the `as`/`in` operation — MUST yield the dimensionless number counting how many of the chosen unit the quantity is, with the quantity wrapper removed, so that a conversion is the deliberate exit from the dimensional layer rather than a re-expression that stays dimensioned.
+
+The result of an explicit conversion MUST be an ordinary number of the quantity's underlying numeric type, subject to ordinary numeric rules and no longer dimension-checked, so that once a program has asked "how many of this unit is it?" it holds the answer as a plain number and may combine it freely.
+
+The chosen unit MUST share the quantity's dimension, so that a conversion across dimensions — a length into a duration — remains an error rather than silently producing a number.
+
 ## Optionality
 
 ### This Capability Is Optional

@@ -324,6 +324,7 @@ pass	a build-time delegated effect whose result a returned closure captures does
 pass	a built map renders its entries in canonical key order
 pass	a built-in Ast constructor applied to a wrong-type payload is a type error
 pass	a built-in Ast.Bool constructor applied to a wrong-type payload is a type error
+pass	a built-in Ast.Str constructor applied to a wrong-type payload is a type error
 pass	a built-in Option is unwrapped by a helper that binds its payload
 pass	a built-in Option tuple payload consumed INLINE in the Some arm projects
 pass	a built-in Result whose two type arguments DIFFER is matched on both variants
@@ -835,6 +836,7 @@ pass	a match arm reading two elements of a boxed payload tuple shares the sum-pa
 pass	a match arm's DESTRUCTURED payload is the argument to a perform in that arm's body
 pass	a match binder over a narrow scrutinee returns the bound value
 pass	a match binds an Ast.Bool payload
+pass	a match binds an Ast.Str payload
 pass	a match building one Some per arm sinks to a single Some around a payload match
 pass	a match not covering the scrutinee is a compile-time rejection
 pass	a match on a BigInt with a single catch-all binder binds and uses it
@@ -967,6 +969,7 @@ pass	a nested constructor pattern dispatches a RUNTIME two-sum value
 pass	a nested constructor payload that misses the inner variant falls through to the outer sibling
 pass	a nested constructor value dispatches on both tags in a match
 pass	a nested element kind mismatch in equality is a type error
+pass	a nested element pattern dispatches on a NON-variant-0 list payload
 pass	a nested if on the same condition collapses the inner test to the known branch
 pass	a nested lambda captures+applies a closure-typed def PARAMETER (inline lambda argument)
 pass	a nested list element composes over a runtime list of lists
@@ -1095,9 +1098,12 @@ pass	a quote-built and constructor-built AST of the same tree encode to identica
 pass	a quote-pattern match with no catch-all is non-exhaustive
 pass	a quoted boolean equals the same node built by the Ast.Bool constructor
 pass	a quoted compound form containing a boolean reifies with an Ast.Bool element
+pass	a quoted compound form containing a string reifies with an Ast.Str element
 pass	a quoted compound form equals the same AST built by the Ast.List constructor
 pass	a quoted integer equals the same node built by the Ast.Int constructor
 pass	a quoted name equals the same node built by the Ast.Name constructor
+pass	a quoted string equals the same node built by the Ast.Str constructor
+pass	a quoted string is distinct from the same text quoted as a name
 pass	a radix literal carries the R (Rational) suffix
 pass	a radix literal with a bad digit is a malformed literal, not an unbound name
 pass	a radix literal with an empty body is a malformed literal, not an unbound name
@@ -1143,6 +1149,7 @@ pass	a recursive def with a match base case computes over its argument
 pass	a recursive do-local function nested in an inlined helper recurses
 pass	a recursive do-local function survives two inlinings of its helper
 pass	a recursive effectful walk BUILDS a list as its return value, one fresh element per step
+pass	a recursive effectful walk accumulates into a STRING-state handler
 pass	a recursive effectful walk under a state-threading handler compiles without leaking an internal name
 pass	a recursive emitter dispatches on a sum's variants to build bytes per node
 pass	a recursive fold infers a callback applied to the RECURSIVE-CALL RESULT
@@ -1628,6 +1635,8 @@ pass	an R-suffixed decimal literal is its exact fraction
 pass	an R-suffixed integer literal is that integer over one
 pass	an R-suffixed literal composes with exact rational arithmetic
 pass	an SI decimal prefix scales a unit by a power of ten
+pass	an abort abandons a pending borrowed map lookup and the map survives
+pass	an abort abandons a pending consuming op and the shared binding survives
 pass	an abortive handler abandons a host call in the path it discards
 pass	an abortive handler arm never resumes, so its value becomes the handle's value
 pass	an abortive perform deep in a call chain unwinds every intervening frame to the top handler
@@ -1789,6 +1798,7 @@ pass	an unannotated generic branching sum fold infers its parameter's instantiat
 pass	an unannotated generic recursive tree consumer whose result is independent of the payload infers
 pass	an unannotated generic sum ACCUMULATOR infers its parameter from the values folded into it
 pass	an unannotated program with a valid typing type-checks and runs
+pass	an unannotated two-argument closure is inferred through a generic recursive HOF
 pass	an unbound name as a parameter's annotation type is rejected
 pass	an unbound name in a map key is a scope error, not a coerced string
 pass	an unbound name in a resume's state position is rejected
@@ -1819,6 +1829,8 @@ pass	an unsigned-byte entrypoint takes and returns a u8 at the boundary
 pass	an unused let-init that does not reduce to a value is eliminated, so it does not diverge
 pass	an unusual in-range width is a first-class type
 pass	an unusual-width value that overflows its computed range is rejected at compile time
+pass	an unwrapped conversion result is a bare number under ordinary numeric rules
+pass	an unwrapped length adds to an unwrapped time with no dimension error
 pass	and evaluates the right operand when the left is true
 pass	and performs the right operand's effect when the left is true
 pass	and short-circuit does not perform the right operand's effect
@@ -2002,6 +2014,7 @@ pass	encoding a decoded string round-trips to the same bytes
 pass	encoding and decoding a constructor-built AST round-trips to an equal value
 pass	encoding and decoding a constructor-built compound AST round-trips
 pass	encoding and decoding an Ast.Bool round-trips to an equal value
+pass	encoding and decoding an Ast.Str round-trips to an equal value
 pass	equality across incompatible dimensions is a compile-time error
 pass	equality across types is rejected regardless of operand order
 pass	equality applied to one operand is rejected, not a crash
@@ -2017,6 +2030,7 @@ pass	eval of a quasiquote splicing a compile-time-known value
 pass	eval of a quoted boolean executes it to the boolean value
 pass	eval of a quoted conditional reduces its comparison condition first
 pass	eval of a quoted conditional takes the branch its boolean literal selects
+pass	eval of a quoted string executes it to the string value
 pass	every not-a-number value is equal to every not-a-number value
 pass	exact rational arithmetic is exact and normalized
 pass	exact rational division is total and exact for a nonzero divisor
@@ -2043,6 +2057,7 @@ pass	greater-than of an integer and a float is rejected
 pass	greater-than-or-equal
 pass	greater-than-or-equal of an integer and a float is rejected
 pass	heap string elements of a hoisted list if select by branch
+pass	heap-valued handler state above an inner abort keeps threading
 pass	hexadecimal, binary, and decimal spellings of one value are equal
 pass	host calls are observed in the order they were made
 pass	identical negative zeros nested in a tuple compare equal
@@ -2201,6 +2216,7 @@ pass	popping a tuple with a runtime element separates the head from the rest
 pass	popping a tuple yields element zero and the remaining tuple
 pass	popping an absent field is rejected
 pass	print of an Ast.Bool renders the bare word and read inverts it
+pass	print of an Ast.Str renders a quoted literal with escapes and read inverts it
 pass	projecting a field is independent of the order fields are written
 pass	projecting a field of a non-compound argument is rejected at the call site
 pass	projecting a record onto an absent field is rejected

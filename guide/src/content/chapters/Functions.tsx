@@ -97,6 +97,34 @@ export default function Functions() {
         things that can surprise you.
       </Why>
 
+      <H2>Inline functions, inferred</H2>
+      <P>
+        The everyday use of a higher-order function is to pass a small function <em>inline</em> — the
+        familiar map-and-combine over a list. Here <C>map-sum</C> applies <C>f</C> to each element and
+        adds the results; the <C>f</C> we hand it is an anonymous <C>(fn (x) …)</C> written right at the
+        call. Neither the lambda's parameter nor <C>map-sum</C>'s <C>f</C> carries a type annotation —
+        inference works both out from how <C>f</C> is used and in from the lambda's body:
+      </P>
+      <Runnable
+        source={`(def (map-sum f acc xs)
+  (match xs
+    ((list) acc)
+    ((list h .. t) (map-sum f (+ acc (f h)) t))))
+(def (main)
+  (map-sum (fn (x) (+ x 1)) 0 (list 5 7 30)))`}
+      />
+      <P>
+        Each element is incremented and the results summed: <C>6 + 8 + 31 = 45</C>. You write the lambda
+        with no type ceremony and the compiler figures out the types from how the argument is used —
+        the idiomatic style for one-argument callbacks.
+      </P>
+      <P>
+        There's one edge to know: a <em>multi-argument</em> callback — a two-argument fold like{" "}
+        <C>(fn (x a) (+ a x))</C> — still needs a type annotation for now, on either the lambda's
+        parameters or the higher-order function's <C>f</C>. The single-argument shape above is the one
+        that infers cleanly today.
+      </P>
+
       <H2>Your turn</H2>
       <Exercise
         id="functions:1"

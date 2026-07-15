@@ -1290,6 +1290,53 @@ fn a_common_constructor_sinks_out_of_all_match_arms() {
     );
 }
 
+/// A repeated bounds-checked indexed read `(Option.expect (List.at xs i))` is shared by CSE (one
+/// `vec-get` — pinned at the Lir level in `select.rs`); this is the RUNTIME companion, proving the
+/// SHARED read is refcount-correct on the value heap. `List.at` BORROWS the list, so sharing the read
+/// must leave `xs` fully live: the program reads element 2 TWICE (shared) AND `List.len xs` after — if
+/// the shared `vec-get` mishandled the borrow (a premature drop of `xs` or a double-consume of the boxed
+/// element), the later length read would see a freed/corrupted list. Built at run time via a push loop
+/// so it genuinely imports the runtime (a constant list would fold away). xs = [4,3,2,1,0] → element 2
+/// is 2; 2 + 2 + len(5) = 9.
+#[test]
+fn a_cse_shared_indexed_read_is_refcount_correct_and_leaves_the_list_live() {
+    use crate::testkit::parse;
+    let src = "(module m \
+                 (def (build (: n Int64) (: acc (List Int64))) \
+                   (if (< n 0) acc (build (- n 1) (List.push acc n)))) \
+                 (def (f (: xs (List Int64)) (: k Int64)) \
+                   (if (< k 0) (f xs (+ k 1)) \
+                     (+ (+ (Option.expect (List.at xs 2) \"v\") (Option.expect (List.at xs 2) \"v\")) \
+                        (List.len xs)))) \
+                 (def (main (: n Int64)) (f (build n (list)) 0)) \
+                 (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    assert!(
+        cdz_run::required_runtime(&bytes).expect("valid").is_some(),
+        "a runtime list must build on the value heap (import the runtime)"
+    );
+    let Some(runtime) = find_runtime_wasm() else {
+        eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
+        return;
+    };
+    let opts = cdz_run::RunOpts {
+        export: Some("main".to_string()),
+        args: vec!["4".to_string()],
+        runtime: Some(runtime),
+        runtime_cache_dir: None,
+        host_responses: Vec::new(),
+    };
+    match cdz_run::run(&bytes, &opts).expect("run") {
+        cdz_run::Outcome::Value(s) => assert_eq!(
+            s, "9",
+            "shared element-2 read (2+2) plus a still-live len (5) = 9"
+        ),
+        cdz_run::Outcome::Trap(t) => {
+            panic!("CSE-shared indexed read trapped (refcount miscompile?): {t}")
+        }
+    }
+}
+
 /// A RUNTIME string's `byte-len` and `concat` run on the value-heap byte leaf. A String value IS a flat
 /// UTF-8 byte leaf (an i32 heap handle — the same rep `str-new` would give), so `String.concat` is
 /// `bytes-concat` over the two handles and `String.byte-len` is `bytes-len` over the joined leaf
@@ -12938,6 +12985,65 @@ mod match_engine {
     }
 
     #[test]
+    fn a_nested_element_pattern_dispatches_on_a_non_variant0_list_payload() {
+        // REGRESSION (miscompile-node-payload-consumed-by-mutual-recursion): a sum whose payload is a LIST,
+        // in a NON-variant-0 slot (`List` is the LAST variant of `Ast`), matched by a NESTED list-element
+        // pattern `(Ast.List (list (Ast.Name n) .. _))`. To dispatch, the matcher walks `node → sum-payload
+        // (List Ast) → Elem(0)` and reads the element's discriminant. The disc-walk (`push_discriminant`)
+        // resolved the `Payload` step's type via VARIANT 0 (`Int`, whose payload is `Int64`, NOT a list), so
+        // it emitted `arr-get` on the RRB `vec` — reading GARBAGE → the element's disc came back wrong → the
+        // arm mis-dispatched and `head-of` returned `None` (0) though the head IS a `Name` (a SILENT wrong
+        // value, `cdz check` clean). The fix records the ENTERED variant's payload type as the enclosing
+        // switch descends, so the `Payload` step resolves to the ACTUAL `List Ast` and `Elem(0)` reads with
+        // `vec-get`. Scrutinee is genuinely RUNTIME (threaded through a recursive `idast` so it never folds).
+        //   head-of over a runtime `List [Name "a", Int 5]` → Some → 100; over a non-List → 0.
+        let src = "(module m \
+             (type Ast (Int Int64) (Str String) (Bool Bool) (Name String) (List (List Ast))) \
+             (def (head-of (: node Ast)) \
+               (match node ((Ast.List (list (Ast.Name n) .. rest)) 100) (_ 0))) \
+             (def (idast (: k Int64) (: node Ast)) (if (<= k 0) node (idast (- k 1) node))) \
+             (def (main) (head-of (idast 3 (Ast.List (list (Ast.Name \"a\") (Ast.Int 5)))))) \
+             (export main))";
+        let Some(v) = run_heap_value(src, vec![]) else {
+            eprintln!("runtime wasm not found; skipping non-variant0 list-payload dispatch run");
+            return;
+        };
+        assert_eq!(
+            v, "100",
+            "a nested element pattern on a non-variant-0 list payload must dispatch correctly (was 0 — \
+             the disc-walk read the list element with arr-get on an RRB vec, garbage discriminant)"
+        );
+        // The DUAL check: a scrutinee whose head is NOT a Name falls through to `_` → 0 (dispatch is
+        // genuinely reading the element disc, not always taking the first arm).
+        let src_int_head = "(module m \
+             (type Ast (Int Int64) (Str String) (Bool Bool) (Name String) (List (List Ast))) \
+             (def (head-of (: node Ast)) \
+               (match node ((Ast.List (list (Ast.Name n) .. rest)) 100) (_ 0))) \
+             (def (idast (: k Int64) (: node Ast)) (if (<= k 0) node (idast (- k 1) node))) \
+             (def (main) (head-of (idast 3 (Ast.List (list (Ast.Int 9) (Ast.Int 5)))))) \
+             (export main))";
+        assert_eq!(
+            run_heap_value(src_int_head, vec![]).unwrap(),
+            "0",
+            "a List whose head element is Int (not Name) falls through to the wildcard arm"
+        );
+        // A BINDER read from the same non-variant-0 list-payload element (not just a disc dispatch): bind
+        // `k` from `(Ast.List (list (Ast.Int k) .. _))` and read it — the read walk must also pick vec-get.
+        let src_bind = "(module m \
+             (type Ast (Int Int64) (Str String) (Bool Bool) (Name String) (List (List Ast))) \
+             (def (first-int (: node Ast)) \
+               (match node ((Ast.List (list (Ast.Int k) .. rest)) k) (_ -1))) \
+             (def (idast (: j Int64) (: node Ast)) (if (<= j 0) node (idast (- j 1) node))) \
+             (def (main) (first-int (idast 3 (Ast.List (list (Ast.Int 42) (Ast.Int 5)))))) \
+             (export main))";
+        assert_eq!(
+            run_heap_value(src_bind, vec![]).unwrap(),
+            "42",
+            "a binder read off a non-variant-0 list payload element reads the right value"
+        );
+    }
+
+    #[test]
     fn a_multi_payload_pair_binds_both_fields() {
         // The simplest multi-payload shape: a two-field record-like variant, built from a runtime param
         // and matched to a scalar (no escape). `(Pair.Mk n (+ n 1))` matched `((Pair.Mk a b) (+ a b))` =
@@ -22011,6 +22117,30 @@ mod match_engine {
             )
             .contains("UInt4"),
         );
+        // The SUGGESTED CONVERSION must name a spelling that actually RESOLVES (PR #377 review). An ALIASED
+        // width ({8,16,32,64}) has a bound module carrying BOTH `wrap` and `of` — `UInt8.wrap`/`UInt8.of`.
+        let aliased_msg =
+            msg_0203("(module m (def (main (: n Int64)) (Bytes.len (bin (u8 n)))) (export main))");
+        assert!(
+            aliased_msg.contains("UInt8.wrap to truncate")
+                && aliased_msg.contains("UInt8.of to check"),
+            "an aliased width suggests both the bound-name wrap + of: {aliased_msg}"
+        );
+        // A NON-aliased width (`(UInt 4)`, a bit-field's own type) has NO bound name — `UInt4.wrap` would be
+        // an UNBOUND identifier — so the suggestion is the type-constructor member form `(. (UInt 4) wrap)`,
+        // and ONLY `wrap` (the on-demand `(UInt k)` module has no `of`). Never the unbound `UInt4.wrap` nor a
+        // `(. (UInt 4) of)` that does not resolve.
+        let bits_msg = msg_0203(
+            "(module m (def (main (: n Int64)) (Bytes.len (bin (bits n 4) (bits 5 4)))) (export main))",
+        );
+        assert!(
+            bits_msg.contains("(. (UInt 4) wrap) to truncate"),
+            "a non-aliased width suggests the resolvable member-form wrap: {bits_msg}"
+        );
+        assert!(
+            !bits_msg.contains("UInt4.wrap") && !bits_msg.contains("(. (UInt 4) of)"),
+            "a non-aliased width suggests neither the unbound `UInt4.wrap` nor a non-existent `of`: {bits_msg}"
+        );
         // NO false positive: the width-matching typed value, a narrowed value, a bare literal (grounds to the
         // width), and a bin PATTERN binder (types as the decoded value) all stay CLEAN. Crucially a decoded
         // field RE-ENCODES into its own-width segment with no explicit narrow — a `(u16 m)` binder feeds a
@@ -28919,11 +29049,27 @@ mod match_engine {
             Some("CDZ0201"),
             "Ast.Bool applied to a non-Bool payload is a type error"
         );
-        // A quote whose body mentions a leaf the `Ast` sum can't carry yet (a String literal — no
-        // `Ast.Str` variant this increment; Int/Bool/Name/List are realized) is NOT reified: it DECLINES
-        // (a Todo), never a miscompile.
+        // A STRING literal reifies to `(Ast.Str "…")` — a string is a syntactic form, DISTINCT from a
+        // name. `(quote "foo")` is `(Ast.Str "foo")`, not `(Ast.Name "foo")`, so they compare unequal.
+        assert!(
+            reject_code(
+                "(module m (def (main) (= (quote \"hi\") (Ast.Str \"hi\"))) (export main))"
+            )
+            .is_none(),
+            "a quoted string equals the same Ast.Str node"
+        );
+        assert!(
+            reject_code(
+                "(module m (def (main) (= (quote \"foo\") (Ast.Name \"foo\"))) (export main))"
+            )
+            .is_none(),
+            "a quoted string vs a quoted name is well-typed (both Ast) — the runtime value is false"
+        );
+        // A quote whose body mentions a leaf the `Ast` sum can't carry yet (a FLOAT literal — no
+        // `Ast.Float` variant; Int/Bool/Str/Name/List are realized) is NOT reified: it DECLINES (a Todo),
+        // never a miscompile.
         assert_eq!(
-            reject_code("(module m (def (main) (quote \"hi\")) (export main))"),
+            reject_code("(module m (def (main) (quote 1.5)) (export main))"),
             None,
             "an un-reifiable quote body declines cleanly (no artifact, no coded rejection)"
         );
@@ -28967,6 +29113,59 @@ mod match_engine {
                 "main"
             ),
             "print/read round-trips an Ast.Bool (bare word true/false)"
+        );
+    }
+
+    #[test]
+    fn an_ast_str_folds_through_reify_eval_and_round_trips_with_escapes() {
+        use crate::testkit::parse;
+        // The `Ast.Str` leaf variant end-to-end (type-system.md §The Abstract Syntax Tree Is An Ordinary
+        // Sum Type — a string is one of the syntactic forms, DISTINCT from a name). `(eval (quote "abcd"))`
+        // reconstructs the string literal and folds to the string (byte-len 4); encode/decode round-trips;
+        // print/read round-trips WITH the closed escape set (an embedded quote + newline).
+        let eval_str =
+            "(module m (def (main) (String.byte-len (eval (quote \"abcd\")))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(eval_str))).expect("compile"),
+                "main"
+            ),
+            4,
+            "(eval (quote \"abcd\")) executes the reconstructed string literal (byte-len 4)"
+        );
+        // encode → decode round-trips an `Ast.Str` (bijection over the whole tree, Ast.decode total).
+        let round_trip = "(module m (def (main) \
+            (match (Ast.decode (Ast.encode (Ast.Str \"hi\"))) \
+              ((Ok a) (= a (Ast.Str \"hi\"))) \
+              ((Err _) false))) \
+            (export main))";
+        assert!(
+            run_returns::<bool>(
+                &compile_component(&crate::codec::encode(&parse(round_trip))).expect("compile"),
+                "main"
+            ),
+            "encode/decode round-trips an Ast.Str to an equal value"
+        );
+        // print renders a `"…"` literal escaping the closed set; read inverts it — `read(print v) == v`
+        // over a payload with an embedded quote AND newline, so this exercises the escape path.
+        let print_read = "(module m (def (main) \
+            (= (read (print (Ast.Str \"a\\\"b\\nc\"))) (Ast.Str \"a\\\"b\\nc\"))) \
+            (export main))";
+        assert!(
+            run_returns::<bool>(
+                &compile_component(&crate::codec::encode(&parse(print_read))).expect("compile"),
+                "main"
+            ),
+            "print/read round-trips an Ast.Str with escapes (embedded quote + newline)"
+        );
+        // `Ast.Str` is DISTINCT from `Ast.Name`: `(quote "foo")` (a string) != `(quote foo)` (a name).
+        let distinct = "(module m (def (main) (= (quote \"foo\") (quote foo))) (export main))";
+        assert!(
+            !run_returns::<bool>(
+                &compile_component(&crate::codec::encode(&parse(distinct))).expect("compile"),
+                "main"
+            ),
+            "a quoted string and a quoted name are different Ast values (false)"
         );
     }
 
@@ -30390,6 +30589,28 @@ mod match_engine {
     }
 
     #[test]
+    fn unit_in_unwraps_to_a_bare_number_usable_in_ordinary_arithmetic() {
+        // Q3 (DESIGN-quantity-reference-normalized-unwrap.md §1b): `Unit.in`/`as` UNWRAPS — its result is
+        // a BARE dimensionless number of the quantity's inner type, NOT a `(Qty T u)`, so it is subject to
+        // ordinary numeric rules and no longer dimension-checked. `(+ (Unit.in meter (Qty.of 2 kilometer))
+        // 5)` converts 2 km to 2000 m, unwraps to the bare Int64 2000, then adds 5 as plain integer
+        // arithmetic → 2005. If `Unit.in` still returned a `(Qty Int64 meter)`, the `+ 5` (a bare number)
+        // would be a CDZ0501 dimension mismatch (quantity + bare number) and this would not compile — so
+        // the fact it compiles + runs to 2005 pins the unwrap. NO `Qty.value` wrapper is needed.
+        let src = "(do (def (main) \
+                   (+ ((. Unit in) ((. Unit of) #\"meter\") ((. Qty of) 2 ((. Unit of) #\"kilometer\"))) 5)) \
+                   (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("an unwrapped Unit.in result adds to a bare number and runs"),
+                "main"
+            ),
+            2005
+        );
+    }
+
+    #[test]
     fn a_prefixed_unit_auto_converts_to_the_reference_over_int() {
         // F2-1: `1 KiB + 1 kB` over Int64 — two units of the `information` dimension at DIFFERENT scales
         // (kibi = 1024, kilo = 1000) — each converts to the reference `byte` and sums to 2024 (NOT 2000:
@@ -30457,12 +30678,12 @@ mod match_engine {
         // group dimension `mbps` names, so a computed rate and an `mbps` quantity MIX and convert:
         // (250000 byte / 1 s) + 1 mbps = 250000 + 125000 = 375000 byte/s (1 mbps = 10^6 bit / 8 = 125000
         // byte/s). The "name what bytes-over-time means as its own convertible family" case, over Float,
-        // NO bignum. Compiles + RUNS.
-        let src = "(do (def (main) ((. Qty value) \
+        // NO bignum. `Unit.in` UNWRAPS to the bare byte/s count (Q3) — no `Qty.value` needed. Compiles + RUNS.
+        let src = "(do (def (main) \
                    ((. Unit in) ((. Unit of) #\"byte-per-second\") \
                      (+ (/ ((. Qty of) 250000.0 ((. Unit of) #\"byte\")) \
                            ((. Qty of) 1.0 ((. Unit of) #\"second\"))) \
-                        ((. Qty of) 1.0 ((. Unit of) #\"mbps\")))))) \
+                        ((. Qty of) 1.0 ((. Unit of) #\"mbps\"))))) \
                    (export main))";
         assert_eq!(
             run_returns::<f64>(
@@ -30495,11 +30716,11 @@ mod match_engine {
     fn a_program_declares_and_converts_its_own_family_unit() {
         // F2-6: `(Unit.define #"furlong" (Unit.of #"foot") 660 1)` declares a user family unit = 660 feet;
         // `(Unit.of #"furlong")` then resolves it and converts: 1 furlong = 660 * 381/1250 = 201.168 m.
-        // The user family-declaration surface, RUNS.
+        // The user family-declaration surface, RUNS. `Unit.in` UNWRAPS to the bare meter count (Q3).
         let src = "(do \
                    ((. Unit define) #\"furlong\" ((. Unit of) #\"foot\") 660 1) \
-                   (def (main) ((. Qty value) ((. Unit in) ((. Unit of) #\"meter\") \
-                     ((. Qty of) 1.0 ((. Unit of) #\"furlong\"))))) \
+                   (def (main) ((. Unit in) ((. Unit of) #\"meter\") \
+                     ((. Qty of) 1.0 ((. Unit of) #\"furlong\")))) \
                    (export main))";
         assert_eq!(
             run_returns::<f64>(
@@ -30553,10 +30774,11 @@ mod match_engine {
     #[test]
     fn unit_in_converts_a_quantity_to_a_chosen_unit_exactly_over_int() {
         // F2-3: `(Unit.in kilometer (Qty.of 2000 meter))` explicitly converts 2000 m to km: 2000/1000 =
-        // 2 km, exact integer arithmetic (the source→target scale ratio divides). Unit.in pins the RESULT
-        // unit; the magnitude is `value * (source.scale / target.scale)` in the inner T. Compiles + RUNS.
-        let src = "(do (def (main) ((. Qty value) \
-                   ((. Unit in) ((. Unit of) #\"kilometer\") ((. Qty of) 2000 ((. Unit of) #\"meter\"))))) \
+        // 2 km, exact integer arithmetic (the source→target scale ratio divides). `Unit.in` UNWRAPS (Q3):
+        // it yields the bare km count (2 : Int64), not a `(Qty Int64 km)`; the magnitude is
+        // `value * (source.scale / target.scale)` in the inner T. No `Qty.value` needed. Compiles + RUNS.
+        let src = "(do (def (main) \
+                   ((. Unit in) ((. Unit of) #\"kilometer\") ((. Qty of) 2000 ((. Unit of) #\"meter\")))) \
                    (export main))";
         assert_eq!(
             run_returns::<i64>(
@@ -43263,6 +43485,33 @@ mod stage1 {
     }
 
     #[test]
+    fn a_recursive_effectful_walk_accumulates_into_a_string_state_handler() {
+        // The ROPE-STRING analogue of the list-state walk above (the v-runtime rope seam): a recursive
+        // effectful walk whose handler state is a heap STRING accumulated with `String.concat` across
+        // performs, read back at the base and measured. `walk` performs `(Log.emit "x")` at each descent
+        // and reads the accumulator with `(Log.dump)` at the base; the handler seeds `""` and threads
+        // `(String.concat s m)`, so `(walk 3)` builds `"xxx"`, whose byte length is 3. This crosses the
+        // effect MECHANISM into the runtime ROPE path (where v-runtime's construction-site canonicalization
+        // lives), so it pins that a String-valued handler STATE threads through the fold + composes under a
+        // heap string op — the String-STATE companion of the list-state case (the corpus has a String
+        // RESULT case, "a STRING-result effect op resumes with a string that folds through a concat", but
+        // NOT a String threaded as recursive handler state). Guards against a rope-canonicalization change
+        // silently regressing a String-state effect accumulator.
+        let src = "(do (effect Log (op emit (-> String Unit)) (op dump (-> Unit String))) \
+                   (def (walk (: n Int64)) (if (= n 0) (Log.dump) (do (Log.emit \"x\") (walk (- n 1))))) \
+                   (def (main) (handle Log \"\" \
+                     ((emit (m) s (resume unit (String.concat s m))) (dump (u) s (resume s s))) \
+                     (String.byte-len (walk 3)))) (export main))";
+        // The state lives on the value heap (rope String), so the in-process linker can't run it — assert
+        // it COMPILES to a well-formed component; a store run yields byte length 3 (verified by hand via
+        // cdz-run). Mirrors the list-state test's compile-only assertion.
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_ok(),
+            "recursive effectful string-state walk must compile"
+        );
+    }
+
+    #[test]
     fn resuming_with_a_wrong_type_value_is_cdz0201() {
         // E1c-2: the value a handler resumes with is returned to the perform site, so it must have the
         // operation's declared RESULT type (`capabilities-and-effects.md` §Performing An Operation Is
@@ -47279,6 +47528,33 @@ mod stage1 {
         };
         assert_eq!(r, "45"); // 0 + (5+1)+(7+1)+(30+1) = 45
         assert_eq!(run_closure(src, 100).unwrap(), "145"); // 100 + 45
+    }
+
+    #[test]
+    fn an_unannotated_multiparam_closure_infers_through_a_generic_recursive_hof() {
+        // INFERENCE regression (issue mlrepro-reject-multiparam-closure-through-recursive-hof-unit-domain):
+        // the MULTI-parameter twin of the case above — an unannotated `(fn (x a) (+ a x))` (the idiomatic
+        // left-fold callback) passed to a generic recursive HOF `fold-list`. `check` PASSED but `compile`
+        // rejected CDZ0203 with the closure typed `(-> Unit (-> Unit Int64))`. Root: `fold-list` is GENERIC
+        // in `f` (scheme `(-> _ (-> _ _))`), so the call MONOMORPHIZES via `type_specialize`, which
+        // re-annotates the specialized copy's `f` with the ARG's type — `type_of(closure)` = `(-> Any (->
+        // Any Int64))`, whose nested `Any` holes `encode_ty` renders as `Unit`, so the copy got `f : (->
+        // Unit (-> Unit Int64))` and its `(f h acc)` conflicted. Fix: `type_specialize` now SOLVES a bare
+        // closure arg's params (`solved_lambda_arrow`, the same body-solve `lower_lambda_value` runs) before
+        // annotating, so the copy gets the concrete `(-> Int64 (-> Int64 Int64))`. `fold-list f acc xs = acc
+        // (+ f over xs)`, BOUNDARY `acc = n` so nothing folds: `n + 5 + 7 + 30 = n + 42`.
+        let src = "(module m \
+            (def (fold-list f acc xs) \
+              (match xs \
+                ((list) acc) \
+                ((list h .. t) (fold-list f (f h acc) t)))) \
+            (def (main (: n Int64)) (fold-list (fn (x a) (+ a x)) n (list 5 7 30))) (export main))";
+        let Some(r) = run_closure(src, 0) else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
+            return;
+        };
+        assert_eq!(r, "42"); // 0 + 5 + 7 + 30 = 42
+        assert_eq!(run_closure(src, 100).unwrap(), "142"); // 100 + 42
     }
 
     #[test]

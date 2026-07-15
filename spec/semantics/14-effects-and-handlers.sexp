@@ -1681,6 +1681,32 @@
               (handle Diag (list) ((emit (v) s (resume unit (List.push s v))) (collect (u) s (resume s s))) (List.len (walk 3)))) (export main)))
   (output (: 3 Int64)))
 
+(case "a recursive effectful walk accumulates into a STRING-state handler"
+  (doc    "The rope-STRING analogue of the list-state accumulator above: the handler's threaded state is a
+           heap STRING built with `String.concat` across a recursive descent, exercising the value-heap
+           runtime's rope path (canonicalized at each construction site) rather than a list. `Log` declares
+           `emit : String -> Unit` (append a piece) and `dump : Unit -> String` (read the accumulator);
+           the handler seeds `\"\"` and each `(Log.emit \"x\")` resumes `unit` and threads `(String.concat
+           s m)`, so a recursive `walk` performing three emits builds `\"xxx\"`, whose byte length is 3.
+           `String.byte-len` makes `main` a runtime-scalar so the whole program stays on the scalar path.
+           Pins that a handler's threaded state may be a heap STRING carried through the recursive-effectful
+           specialization — the String-STATE companion of the list-state accumulator and the String-RESULT
+           resume-value case, guarding the effect-mechanism × rope-runtime seam. (wasm: the rust target
+           declines — it lacks the value-heap/String emission the component-model backend has, the same
+           backend-parity gap as the list-state and String-result cases, not an effects-fold limitation.)")
+  (input  (do
+            (effect Log (op emit (-> String Unit))
+                        (op dump (-> Unit String)))
+            (def (walk (: n Int64))
+              (if (= n 0)
+                  (Log.dump)
+                  (do (Log.emit "x") (walk (- n 1)))))
+            (def (main)
+              (handle Log ""
+                ((emit (m) s (resume unit (String.concat s m))) (dump (u) s (resume s s)))
+                (String.byte-len (walk 3)))) (export main)))
+  (output (: 3 Int64)))
+
 (case "a recursive effectful walk BUILDS a list as its return value, one fresh element per step"
   (doc    "The list is the recursion's RETURN VALUE (not handler state, unlike the accumulator case above):
            a recursive `build` reads a fresh index and CONSES it onto the list the rest of the walk returns.
@@ -3007,3 +3033,66 @@
             (export main)))
   (call   main)
   (output (: 121 Int64)))
+
+; --- An abort abandons frames holding LIVE HEAP operands (the Perceus face of the abortive class) --
+; The abortive cases above pin CONTROL (which value wins, what unwinds); these pin MEMORY: a pending
+; frame abandoned by an abort may hold heap operands — a consuming op's result, a borrowed lookup —
+; whose owners are still live OUTSIDE the handle. The abandoned operands must be reclaimed exactly
+; once and the owners left intact: an unwind that double-frees (or skips a retain) corrupts the
+; owner's later read; one that leaks is invisible here but the owner-read pins the correctness half.
+
+(case "an abort abandons a pending consuming op and the shared binding survives"
+  (doc    "`(+ (List.len (List.push xs 9)) (Bail.bail 3))` under `handle Bail` — the LEFT operand has
+           already run when the abort fires: `(List.push xs 9)` consumed the still-live `xs` (retain →
+           path-copy) and its result sits in the abandoned frame. The abort discards the pending `+`
+           and yields 3; the outer `(List.len xs)` then reads the ORIGINAL `xs` → 1, so 3 + 1 = 4. A
+           lowering that unwinds without dropping the abandoned push-result leaks it (unobservable
+           here), but one that double-drops — or that skipped the retain because the consume 'would be
+           abandoned' — corrupts `xs` and misses 4. Pins the retain-then-abandon interaction.")
+  (input  (do
+            (effect Bail (op bail (-> Int64 Int64)))
+            (def (main (: d Int64))
+              (let ((xs (List.push (list) d)))
+                (+ (handle Bail 0 ((bail (n) s n))
+                     (+ (List.len (List.push xs 9)) (Bail.bail 3)))
+                   (List.len xs))))
+            (export main)))
+  (call   main (: 7 Int64))
+  (output (: 4 Int64)))
+
+(case "heap-valued handler state above an inner abort keeps threading"
+  (doc    "Nested handles where the OUTER handler's state is a HEAP value (a list accumulator) and the
+           INNER handle aborts: `(+ (handle Bail … (Bail.bail 10)) (Acc.add 5))` under `handle Acc
+           (list) ((add (n) s (resume (List.len s) (List.push s n))))`. The inner abort yields 10 and
+           unwinds ONLY its own handle — the outer Acc handler's list state must survive the unwind
+           untouched, so the subsequent `(Acc.add 5)` reads len [] = 0 and 10 + 0 = 10. An unwind that
+           reclaimed the outer handler's state cell (or reset its threading) corrupts the later perform.
+           The heap-state companion of the scalar three-nested-handlers abort case above.")
+  (input  (do
+            (effect Bail (op bail (-> Int64 Int64)))
+            (effect Acc (op add (-> Int64 Int64)))
+            (def (main (: d Int64))
+              (handle Acc (list) ((add (n) s (resume (List.len s) (List.push s n))))
+                (+ (handle Bail 0 ((bail (n) s2 n)) (Bail.bail 10))
+                   (Acc.add 5))))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 10 Int64)))
+
+(case "an abort abandons a pending borrowed map lookup and the map survives"
+  (doc    "The borrowed-operand face: `(+ (Option.expect (Map.lookup m \"k\") \"v\") (Bail.bail 20))` —
+           the lookup's extracted value (from the still-live `m`) is pending in the abandoned frame when
+           the abort fires. The handle yields 20; the outer `(Map.size m)` must still see the intact map
+           → 1, so 21. An unwind that dropped the abandoned lookup result as if OWNED would free the
+           value `m` still holds — the abort-path twin of the borrowed-key ownership discipline the
+           lookup/contains emits observe on the normal path.")
+  (input  (do
+            (effect Bail (op bail (-> Int64 Int64)))
+            (def (main (: d Int64))
+              (let ((m (Map.insert Map.empty "k" 1)))
+                (+ (handle Bail 0 ((bail (n) s n))
+                     (+ (Option.expect (Map.lookup m "k") "v") (Bail.bail 20)))
+                   (Map.size m))))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 21 Int64)))
