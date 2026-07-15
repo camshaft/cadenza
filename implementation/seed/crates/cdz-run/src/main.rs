@@ -215,6 +215,11 @@ fn real_main(cli: &Cli) -> anyhow::Result<ExitCode> {
 //# A host MUST resolve a program's runtime import by reading the required runtime content address the component records and locating the runtime component of that content address in a content-addressed store, rather than by assuming a single ambient runtime, so that programs pinned to different runtime versions coexist and each resolves the exact runtime it was emitted against.
 //= spec/contracts/component-abi.md#the-host-resolves-the-runtime-by-content-address
 //# A host that cannot locate a runtime of the content address a component requires MUST refuse to run the component rather than substitute a different runtime, so that a mismatched runtime is a detected error rather than a silent change in observable behavior.
+// Resolving by the component's pinned hash (and verifying the store entry hashes back to it, below) is
+// also how a run is bound to the exact runtime the program was emitted against — the reproducible-
+// derivation guarantee that execution is deterministic in the (program, runtime content address) pair:
+//= spec/contracts/reproducible-derivation.md#derivation-is-a-function-of-source-and-toolchain
+//# A program that is run or resumed against the value-heap runtime MUST be run against the runtime whose content address is the one pinned for that program, so that execution is deterministic in the pair (program, runtime content address) and a runtime built from different bytes is a distinct, explicitly-identified execution environment rather than a silent substitution.
 fn resolve_runtime(cli: &Cli, req: &cdz_run::RuntimeReq) -> anyhow::Result<Vec<u8>> {
     if let Some(path) = &cli.runtime {
         return std::fs::read(path)
