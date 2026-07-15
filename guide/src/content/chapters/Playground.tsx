@@ -115,10 +115,11 @@ export default function Playground() {
       <P>
         Everything here runs the real compiler in your browser — but the same compiler ships as a single
         command-line tool, <C>cdz</C>, for working on your own machine. One binary carries the whole loop:
-        <C>cdz compile</C> lowers a program to a WebAssembly component, <C>cdz run</C> executes a compiled
-        one, <C>cdz check</C> reports diagnostics without building, <C>cdz test</C> runs a module's tests,
-        and <C>cdz fmt</C> reprints source in canonical form. There's even a <C>cdz calc</C> — the same
-        exact-arithmetic calculator you met above, at your terminal.
+        <C>cdz compile</C> lowers a single program to a WebAssembly component and <C>cdz build</C> compiles a
+        whole project (a <C>Project.cdz</C> manifest naming the entry and its modules) into one component;{" "}
+        <C>cdz run</C> executes a compiled one, <C>cdz check</C> reports diagnostics without building, and{" "}
+        <C>cdz test</C> runs a module's tests while <C>cdz fmt</C> reprints source in canonical form. There's
+        even a <C>cdz calc</C> — the same exact-arithmetic calculator you met above, at your terminal.
       </P>
       <P>
         And your editor can speak to that compiler directly. <C>cdz lsp</C> is a Language Server, so any
