@@ -48,6 +48,40 @@ export default function Numbers() {
         <C>2</C>, because <C>17 = 5 × 3 + 2</C>. The two together recover the original.
       </P>
       <Runnable source={`(% 17 5)`} />
+      <P>
+        "Truncates toward zero" matters once a negative is involved: <C>-17 / 5</C> is <C>-3</C>, not{" "}
+        <C>-4</C> — the fraction is dropped, moving the result <em>toward</em> zero rather than down. The
+        remainder follows so the identity still holds (<C>-17 = 5 × -3 + -2</C>), so <C>-17 % 5</C> is{" "}
+        <C>-2</C> — the remainder takes the sign of the dividend.
+      </P>
+      <Runnable source={`(/ -17 5)`} />
+
+      <H2>Handling an overflow instead of halting</H2>
+      <P>
+        A bare <C>*</C> that overflows <em>declines</em> — the whole program stops. Sometimes you'd rather
+        <em>handle</em> the possibility: the checked operations do the same arithmetic but hand back an{" "}
+        <C>Option</C> — <C>(Some v)</C> when it fits, <C>(None unit)</C> when it would overflow — so you
+        decide what happens. Here <C>Int64.checked-mul</C> of two small numbers succeeds:
+      </P>
+      <Runnable
+        source={`(match (Int64.checked-mul 6 7)
+  ((Some v) v)
+  ((None _) -1))`}
+      />
+      <P>
+        And the overflow that made the bare <C>*</C> decline instead returns <C>None</C> here, so the{" "}
+        <C>None</C> arm runs and the program keeps going — <C>-1</C> stands in for "didn't fit":
+      </P>
+      <Runnable
+        source={`(match (Int64.checked-mul 9223372036854775807 2)
+  ((Some v) v)
+  ((None _) -1))`}
+      />
+      <P>
+        Same discipline, your choice of response: let it halt (the bare operator) or fold the failure into
+        a value you handle (the checked operator). The <C>Option</C> shape is the subject of{" "}
+        <strong>Errors &amp; absence</strong>.
+      </P>
 
       <H2>Types don't mix by accident</H2>
       <P>
