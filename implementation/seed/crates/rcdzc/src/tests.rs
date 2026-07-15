@@ -31732,6 +31732,37 @@ mod match_engine {
     }
 
     #[test]
+    fn a_bigint_inner_quantity_runs_bigint_arithmetic_not_the_fixnum_path() {
+        // MISCOMPILE FIX: a `(Qty BigInt meter)` `+`/`-`/`*`/`/` must run the runtime bigint ops on the
+        // erased inner HANDLES, not the default fixnum integer path. The `+` dispatch and the
+        // constant-materialize / borrow-ownership sites keyed on `Ty::BigInt` MISSED a `(Qty BigInt u)`
+        // (whose solved type is `Ty::Qty { inner: BigInt }`, not `Ty::BigInt`), so a BigInt-inner quantity
+        // add fell to the fixnum path and emitted an i64 where the i32 BigInt handle was expected → INVALID
+        // wasm (cdz check passed, wasm-tools rejected). Now dispatch + materialize peel the quantity. Here
+        // a RUNTIME BigInt quantity + a CONSTANT BigInt quantity (the mixed const/runtime shape that hit
+        // the materialize gap): main(5) = 5 + 100 = 105, recovered via Qty.value.
+        // A NULLARY BigInt-inner-quantity add (both a runtime-narrowed and a constant BigInt operand, the
+        // mixed shape that hit the materialize gap) — Qty.value crosses the result to the host. Uses the
+        // FULL runtime (bigint-add lives there); skips if the runtime store is absent (the corpus gate
+        // covers the parameterized form e2e regardless).
+        let src = "(do \
+                   (def (rt) ((. Int64 of) ((. BigInt of) 5))) \
+                   (def (main) \
+                     ((. Qty value) (+ ((. Qty of) ((. BigInt of) (rt)) ((. Unit base) #\"meter\")) \
+                                       ((. Qty of) ((. BigInt of) 100) ((. Unit base) #\"meter\"))))) \
+                   (export main))";
+        let Some(rendered) = run_heap_value_escape(src) else {
+            return; // no runtime store — the corpus gate is the e2e witness
+        };
+        // Before the fix this module was INVALID wasm (i32/i64 mismatch); a successful run rendering the
+        // BigInt sum 105 witnesses that a (Qty BigInt meter) add runs the bigint op, not the fixnum path.
+        assert!(
+            rendered.contains("105"),
+            "a (Qty BigInt meter) add must run the bigint op (5 + 100 = 105): {rendered}"
+        );
+    }
+
+    #[test]
     fn a_bare_number_where_a_quantity_is_expected_offers_the_qty_of_wrap() {
         // The ARGUMENT/binder twin of the dimensional-mismatch `Qty.of` wrap: a bare `Int64` passed to a
         // `(Qty …)` PARAMETER, or bound to a `(Qty …)`-annotated let-binder, gets the `(Qty.of <n> <unit>)`

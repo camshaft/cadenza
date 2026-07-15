@@ -208,6 +208,22 @@
   (call   main (: 3 Int64)) (output (: 8 Int64))
   (call   main (: 100 Int64)) (output (: 105 Int64)))
 
+(case "a quantity over a BigInt magnitude runs unbounded arithmetic on the erased handles"
+  (doc    "A `(Qty BigInt meter)` — a quantity whose inner numeric is the UNBOUNDED BigInt — runs bigint
+           arithmetic on the erased inner handles, exactly as a bare `BigInt` `+` does. `(+ (Qty.of
+           (BigInt.of n) meter) (Qty.of (BigInt.of 100) meter))`, `Qty.value` recovering the sum: n=5 →
+           105, and a MASSIVE constant (10^12) → 1000000000005 (beyond Int64, the point of BigInt). Pins
+           the fix for a MISCOMPILE: a BigInt inner is a heap HANDLE (i32), but the quantity `+` dispatch
+           and the constant-materialize/ownership sites keyed on `Ty::BigInt` MISSED a `(Qty BigInt u)`
+           (its type is `Ty::Qty { inner: BigInt }`), so it fell to the fixnum integer path and emitted an
+           i64 where an i32 handle was expected → invalid wasm. The dispatch + materialize now peel the
+           quantity to see the BigInt inner.")
+  (input  (do (def (main (: n Int64))
+                (Qty.value (+ (Qty.of (BigInt.of n) (Unit.base #"meter"))
+                              (Qty.of (BigInt.of 100) (Unit.base #"meter"))))) (export main)))
+  (call   main (: 5 Int64)) (output (: 105 BigInt))
+  (call   main (: 1000000000000 Int64)) (output (: 1000000000100 BigInt)))
+
 (case "a runtime-magnitude same-unit difference subtracts the erased magnitudes"
   (doc    "The subtraction companion: `(- (Qty.of n meter) (Qty.of 5 meter))` emits the erased `n - 5` as a
            plain integer subtract (the checked Int64 subtract of the numeric core), 20-5 = 15. Pins that `-`

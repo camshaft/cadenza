@@ -2322,7 +2322,7 @@ fn collect_used_ops_into(
         // an i64-fitting value, or `bytes-alloc`/`bytes-set`/`bigint-of-bytes` for a beyond-i64 one — declare
         // whichever it needs here to match `emit_const_bigint_leaf`. (A whole-export constant BigInt takes
         // the baked-bytes path and never reaches `emit`, but an unused import would be harmless if it did.)
-        Core::ConstInt(_) if matches!(type_of(db, id), Ty::BigInt) => {
+        Core::ConstInt(_) if is_bigint_valued(db, id) => {
             insert_const_bigint_materialize_ops(db, id, out);
         }
         // A constant Rational used as an in-body runtime value MATERIALIZES via `bigint-of-i64` (×2 the
@@ -5009,9 +5009,11 @@ fn emit(
             // fits i64 — a beyond-i64 constant BigInt is not yet built and declines earlier). A CONSTANT
             // BigInt that is a whole nullary EXPORT takes the baked-bytes `constant_value_form` path and
             // never reaches here; this is only the in-body runtime-value use.
-            if matches!(type_of(db, id), Ty::BigInt) {
+            if is_bigint_valued(db, id) {
                 // Materialize the constant as a heap leaf: fits-i64 via `bigint-of-i64`, beyond-i64 via
                 // `bigint-of-bytes` on its baked canonical sign-magnitude bytes (`emit_const_bigint_leaf`).
+                // `is_bigint_valued` also fires for a BigInt-inner quantity (`(Qty.of (BigInt.of k) u)`) —
+                // it erases to this ConstInt and equally needs the handle, not a raw `i64.const`.
                 emit_const_bigint_leaf(&v, out);
                 return Ok(());
             }
@@ -8471,6 +8473,17 @@ fn elem_needs_rope_compaction(db: &mut Db, id: StructId) -> bool {
     matches!(peel(&type_of(db, id)), Ty::String | Ty::Symbol | Ty::Bytes)
 }
 
+/// Whether `id`'s solved type is BigInt-VALUED — a bare `Ty::BigInt` OR a quantity over a BigInt
+/// magnitude (`Ty::Qty { inner: BigInt }`). A `(Qty BigInt u)` erases to its inner BigInt handle, so
+/// every place that materializes / classifies a constant BigInt as a heap handle (the `Core::ConstInt`
+/// emit choke-point, the const-materialize-ops inserters, the borrow-ownership classifier) must treat a
+/// BigInt-inner quantity the same — else a `(Qty.of (BigInt.of k) u)` constant emits as a raw `i64.const`
+/// where an i32 handle is expected (invalid wasm). One helper so the peel is consistent across all sites.
+fn is_bigint_valued(db: &mut Db, id: StructId) -> bool {
+    matches!(type_of(db, id), Ty::BigInt)
+        || matches!(type_of(db, id), Ty::Qty { inner, .. } if matches!(*inner, Ty::BigInt))
+}
+
 fn heap_operand_ownership(db: &mut Db, id: StructId) -> Result<HandleOwnership, Reject> {
     match core_of(db, id) {
         // Constructors and calls produce a fresh owned reference (ownership transfers out). A map
@@ -8518,7 +8531,12 @@ fn heap_operand_ownership(db: &mut Db, id: StructId) -> Result<HandleOwnership, 
         // arm routes a BigInt-typed constant through `bigint-of-i64`), exactly like `ConstStr` above — so
         // as a borrowing-op operand it is Owned and the emit drops it. This is what lets `Int64.of (if c
         // (BigInt.of 1) (BigInt.of 2))` narrow a BigInt-valued `if` whose branches are constant BigInts.
-        Core::ConstInt(_) if matches!(type_of(db, id), Ty::BigInt) => Ok(HandleOwnership::Owned),
+        // A constant BigInt (bare OR a BigInt-inner quantity — `is_bigint_valued` peels the `Qty`)
+        // materializes to a FRESH owned handle at emit (the `Core::ConstInt` arm routes it through
+        // `bigint-of-i64`), exactly like `ConstStr` — so as a borrowing bigint-op operand it is Owned and
+        // the emit drops it. Covers `(+ (Qty.of (BigInt.of v) m) (Qty.of (BigInt.of 100) m))` (runtime +
+        // constant BigInt quantity) and `Int64.of (if c (BigInt.of 1) (BigInt.of 2))`.
+        Core::ConstInt(_) if is_bigint_valued(db, id) => Ok(HandleOwnership::Owned),
         // A CONSTANT Rational likewise materializes to a FRESH owned handle at `emit` (`bigint-of-i64` ×2
         // + `rational-of`), so as a borrowing-op operand it is Owned.
         Core::ConstRational(_, _) => Ok(HandleOwnership::Owned),
@@ -8636,7 +8654,7 @@ fn insert_const_bigint_materialize_ops(
     out: &mut std::collections::BTreeSet<&'static str>,
 ) {
     if let Core::ConstInt(v) = core_of(db, operand)
-        && matches!(type_of(db, operand), Ty::BigInt)
+        && is_bigint_valued(db, operand)
     {
         if v.to_i64().is_some() {
             out.insert(OP_BIGINT_OF_I64);
@@ -8703,7 +8721,7 @@ fn emit_bigint_operand(
     out: &mut Emit,
 ) -> Result<HandleOwnership, Reject> {
     if let Core::ConstInt(v) = core_of(db, operand)
-        && matches!(type_of(db, operand), Ty::BigInt)
+        && is_bigint_valued(db, operand)
     {
         // A constant BigInt operand has no heap leaf of its own — materialize one (fits-i64 via
         // `bigint-of-i64`, beyond-i64 via `bigint-of-bytes` on its baked sign-magnitude bytes). A FRESH

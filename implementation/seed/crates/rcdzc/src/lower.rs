@@ -1315,6 +1315,19 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                     trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: quantity rational arithmetic (inner Rational)");
                     lower_rational_arith(db, prim, args[0], args[1])
                 }
+                // A quantity over a BIGINT magnitude combined with `+`/`-`/`*`/`/` runs the UNBOUNDED
+                // bigint arithmetic on the erased inner handles — the bigint analogue of the Float/Rational
+                // inner arms. A BigInt inner is a heap HANDLE (i32), so it MUST route to `lower_bigint_arith`
+                // (the runtime `bigint-*` ops / constant fold); the default integer path would treat the
+                // handle as an i64 fixnum → an i32/i64 miscompile (invalid wasm). Checked before the
+                // `bigint_operand` arm below because that reads the operand's type as `Ty::BigInt`, which a
+                // `(Qty BigInt u)` is NOT (its type is `Ty::Qty { inner: BigInt }`).
+                Some(prim @ (Prim::Add | Prim::Sub | Prim::Mul | Prim::Div))
+                    if quantity_inner_is_bigint(db, id, &args) =>
+                {
+                    trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: quantity bigint arithmetic (inner BigInt)");
+                    lower_bigint_arith(db, prim, args[0], args[1])
+                }
                 // A `+`/`-`/`*`/`/` over BIGINT operands — the unbounded arithmetic. A constant pair folds
                 // exactly via `num-bigint` (the value never overflows — the point of the type); a runtime
                 // operand emits the runtime `bigint-add`/`-sub`/`-mul`/`-div` (B3b). Checked before the
@@ -11742,6 +11755,22 @@ fn quantity_inner_is_rational(db: &mut Db, id: StructId, args: &[StructId]) -> b
     }
     args.first()
         .map(|&a| is_qty_rat(&crate::infer::type_of(db, a)))
+        .unwrap_or(false)
+}
+
+/// Whether this `+`/`-`/`*`/`/` is over a quantity with a BIGINT inner magnitude — a `(Qty BigInt u)`.
+/// A BigInt inner is a heap HANDLE (i32), not a fixnum, so its arithmetic must route to the runtime
+/// `bigint-*` ops (`lower_bigint_arith`), exactly as a bare-BigInt `+` does — NOT the default integer
+/// path (which treats the operand as an i64 fixnum → an i32/i64 miscompile). The plain `bigint_operand`
+/// check misses this because a quantity's solved type is `Ty::Qty { inner: BigInt }`, not `Ty::BigInt`;
+/// this peels the quantity to see the inner, mirroring `quantity_inner_is_rational`.
+fn quantity_inner_is_bigint(db: &mut Db, id: StructId, args: &[StructId]) -> bool {
+    let is_qty_big = |t: &crate::ty::Ty| matches!(t, crate::ty::Ty::Qty { inner, .. } if matches!(**inner, crate::ty::Ty::BigInt));
+    if is_qty_big(&crate::infer::type_of(db, id)) {
+        return true;
+    }
+    args.first()
+        .map(|&a| is_qty_big(&crate::infer::type_of(db, a)))
         .unwrap_or(false)
 }
 
