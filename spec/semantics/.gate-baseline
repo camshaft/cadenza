@@ -919,6 +919,7 @@ pass	a mutually-recursive decoder returns a heap value and cursor and its heap s
 pass	a mutually-recursive fresh-id walk assigns a fresh id at each node and sums them
 pass	a mutually-recursive generic group is instantiated per type
 pass	a mutually-recursive group performs in its entry def while its partner only dispatches
+pass	a mutually-recursive group performs in one branch and recurses in the OTHER
 pass	a mutually-recursive group performs through a shared non-recursive helper
 pass	a mutually-recursive group threads two nested handlers' states at once
 pass	a mutually-recursive group with the perform in a DIFFERENT branch from the mutual call folds

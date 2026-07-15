@@ -2203,6 +2203,30 @@
               (handle Ctr 7 ((tick (u) s (resume s (- s 1)))) (ev 4))) (export main)))
   (output (: 13 Int64)))
 
+(case "a mutually-recursive group performs in one branch and recurses in the OTHER"
+  (doc    "The SPLIT-BRANCH mutual-recursion shape: unlike the case above (where the perform `(Ctr.tick)`
+           and the mutual call `(ev …)` sit in the SAME strict expression `(+ (Ctr.tick) (ev …))`), here
+           the perform is in a cycle def's BASE-CASE branch and the mutual call is in its RECURSIVE branch —
+           `(def (ev n) (if (= n 0) (Fresh.next) (od (- n 1))))` with `(od n) = (if (= n 0) 0 (ev (- n 1)))`.
+           Detecting that `ev` reaches `Fresh` still requires following the recursive partner, and the two
+           specializations' knot must tie even though each def's perform and mutual call are in DIFFERENT
+           branches (the branch-distributed state threading + cross-def memo knot). Seeded 0, `next` resumes
+           `s + 1`: `(ev 2)` chains `ev2→od1→ev0`, and `ev0` hits its BASE branch `(Fresh.next)` which
+           resumes the seed `0 + 1` = 1 — so the result is 1, a NON-ZERO value that witnesses the perform
+           in the separate base-case branch actually fired (an odd start `(ev 3)`→`ev3→od2→ev1→od0` = 0
+           never reaches it). This is the fresh-name / gensym shape an effectful AST-walking compiler pass
+           needs (`relabel(node)` ↔ `relabel-list(children)`, the counter threaded as a `Fresh` effect
+           rather than an explicit parameter). Pins that the mutual specialization ties the knot across the
+           separate-branch case, not only the same-branch one. (This shape was previously a clean decline
+           pending the fold work; it now specializes correctly.)")
+  (input  (do
+            (effect Fresh (op next (-> Int64)))
+            (def (ev (: n Int64)) (if (= n 0) (Fresh.next) (od (- n 1))))
+            (def (od (: n Int64)) (if (= n 0) 0 (ev (- n 1))))
+            (def (main)
+              (handle Fresh 0 ((next () s (resume (+ s 1) s))) (ev 2))) (export main)))
+  (output (: 1 Int64)))
+
 (case "a mutually-recursive group performs through a shared non-recursive helper"
   (doc    "Composes the two cross-function triggers: a mutually-recursive group (`ev`/`od`) where the
            effect is performed inside a NON-recursive helper `h` that `od` calls, rather than syntactically
