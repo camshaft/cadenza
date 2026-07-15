@@ -1061,4 +1061,137 @@ mod tests {
             .any(|id| doc.head_name(id) == Some("code-block"));
         assert!(has_codeblock);
     }
+
+    /// A tiny deterministic PRNG (SplitMix64) — reproducible generation without a dependency (mirrors
+    /// the unit-test PRNGs in `codec.rs`/`lexer.rs`).
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+            z ^ (z >> 31)
+        }
+        fn below(&mut self, n: usize) -> usize {
+            (self.next() % n as u64) as usize
+        }
+    }
+
+    /// Generate a random CommonMark document from a grammar of blocks — headings, paragraphs (with
+    /// inline emph/strong/code/strike), bullet + ordered lists, blockquotes, fenced code, GFM tables,
+    /// thematic breaks — separated by blank lines. CommonMark is NOT injective (it normalizes marker
+    /// styles, whitespace, …), so the contract is arena-IDEMPOTENCE, not byte-exactness: the generator
+    /// need not emit already-canonical markdown, only well-formed blocks the reader accepts.
+    fn gen_md(rng: &mut Rng) -> String {
+        let words = ["alpha", "beta", "gamma", "text", "a word", "more"];
+        let word = |rng: &mut Rng| words[rng.below(words.len())].to_string();
+        // A line of inline content mixing plain text and the inline styles.
+        let inline = |rng: &mut Rng| -> String {
+            let mut s = String::new();
+            for i in 0..(1 + rng.below(4)) {
+                if i > 0 {
+                    s.push(' ');
+                }
+                match rng.below(6) {
+                    0 => s.push_str(&format!("*{}*", word(rng))),
+                    1 => s.push_str(&format!("**{}**", word(rng))),
+                    2 => s.push_str(&format!("`{}`", word(rng))),
+                    3 => s.push_str(&format!("~~{}~~", word(rng))),
+                    _ => s.push_str(&word(rng)),
+                }
+            }
+            s
+        };
+        let mut out = String::new();
+        // Track the previous block kind: CommonMark MERGES two adjacent same-marker lists across a
+        // blank line (and normalizes loose/tight), which is a legitimate non-injectivity — the printer
+        // emits no separator to keep them distinct, so `read(print(read))` differs from `read` for that
+        // shape. That's a known markdown-surface round-trip GAP (filed as a backlog note), not what this
+        // idempotence sweep tests — so the generator never emits a list directly after a list.
+        let mut prev_was_list = false;
+        for _ in 0..(1 + rng.below(6)) {
+            let mut choice = rng.below(8);
+            if prev_was_list && (choice == 2 || choice == 3) {
+                choice = 1; // demote a list-after-list to a paragraph (avoid the adjacent-list merge)
+            }
+            prev_was_list = choice == 2 || choice == 3;
+            match choice {
+                0 => out.push_str(&format!(
+                    "{} {}\n",
+                    "#".repeat(1 + rng.below(6)),
+                    inline(rng)
+                )),
+                1 => out.push_str(&format!("{}\n", inline(rng))), // paragraph
+                2 => {
+                    // bullet list
+                    for _ in 0..(1 + rng.below(3)) {
+                        out.push_str(&format!("- {}\n", inline(rng)));
+                    }
+                }
+                3 => {
+                    // ordered list
+                    for i in 0..(1 + rng.below(3)) {
+                        out.push_str(&format!("{}. {}\n", i + 1, inline(rng)));
+                    }
+                }
+                4 => out.push_str(&format!("> {}\n", inline(rng))), // blockquote
+                5 => out.push_str(&format!("```\n{}\n{}\n```\n", word(rng), word(rng))), // fenced code
+                6 => {
+                    // GFM table (2 columns, 1..=2 body rows)
+                    out.push_str("| A | B |\n| --- | --- |\n");
+                    for _ in 0..(1 + rng.below(2)) {
+                        out.push_str(&format!("| {} | {} |\n", word(rng), word(rng)));
+                    }
+                }
+                _ => out.push_str("---\n"), // thematic break
+            }
+            out.push('\n'); // blank line between blocks
+        }
+        out
+    }
+
+    #[test]
+    fn markdown_surface_is_idempotent_over_generated_documents() {
+        // The surface contract (arena-idempotence: read(print(read(md))) == read(md)) swept over random
+        // CommonMark, complementing the hand-picked cases. A generator explores block + inline-style
+        // COMBINATIONS and nestings the fixed tests don't, so a printer/parser asymmetry no hand-written
+        // case hits is caught. Fixed seeds → reproducible; a failure prints source + reprint.
+        let seeds: [u64; 3] = [
+            0x0bad_c0de_dead_beef,
+            0x5eed_1234_5678_9abc,
+            0xfeed_face_cafe_babe,
+        ];
+        let mut total = 0usize;
+        for &seed in &seeds {
+            let mut rng = Rng(seed);
+            for _ in 0..800 {
+                assert_idempotent(&gen_md(&mut rng));
+                total += 1;
+            }
+        }
+        assert!(total >= 2000, "swept a meaningful space, got {total}");
+    }
+
+    #[test]
+    fn markdown_read_never_panics_on_arbitrary_input() {
+        // `read` is INFALLIBLE (CommonMark always parses to SOME document) — so the property is that it
+        // never PANICS internally on arbitrary bytes. Sweep random markdown-ish strings (structural
+        // chars + text + unicode) plus odd fragments; each must produce a document without crashing.
+        let alphabet: Vec<char> = "#*_`~->|[]()!\n \t.0123456789abcλ".chars().collect();
+        let mut rng = Rng(0x9abc_5678_1234_5eed);
+        for len in 0..=40usize {
+            for _ in 0..60 {
+                let s: String = (0..len)
+                    .map(|_| alphabet[rng.below(alphabet.len())])
+                    .collect();
+                let _ = read(&s); // infallible, but must not panic
+            }
+        }
+        for s in [
+            "#", "```", "> ", "- [", "| a |", "![", "[x](", "~~~", "\t\t",
+        ] {
+            let _ = read(s);
+        }
+    }
 }
