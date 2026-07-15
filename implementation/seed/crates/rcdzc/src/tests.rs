@@ -62812,6 +62812,53 @@ mod cross_component_oracle {
     }
 
     // ------------------------------------------------------------------------------------------------
+    // PL5 — a peer whose op ARITY disagrees with the consumer's binding is rejected at COMPOSE TIME with
+    // an actionable error, not an opaque runtime trap. `run_with_peers` forwards each peer func via a raw
+    // dynamic closure (no linker subtype check), so a mismatch (consumer imports `add : (Int64,Int64) ->
+    // Int64`, peer exports `add : (Int64) -> Int64`) would otherwise trap deep in the callee with a bare
+    // wasm backtrace. The compose-time check (`check_peer_iface_signatures`) catches it, naming the
+    // interface, op, and both arities. Guards the composition edge of the peer-linking surface.
+    // ------------------------------------------------------------------------------------------------
+    #[test]
+    fn a_peer_op_arity_mismatch_is_rejected_at_compose_time_not_a_trap() {
+        use crate::testkit::parse;
+        // PROVIDER: exports `add` taking ONE argument.
+        let provider = compile_provider(
+            "(do (def (add (: x Int64)) (+ x 1)) (export add))",
+            "cadenza:math/api",
+        );
+        // CONSUMER: binds `Math.add` as taking TWO arguments — an arity mismatch with the peer.
+        let src = "(do \
+            (effect Math (op add (-> Int64 Int64 Int64))) \
+            (bind Math \"cadenza:math/api\") \
+            (def (main (: x Int64)) (host (Math) (Math.add x x))) \
+            (export main))";
+        let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .unwrap_or_else(|d| panic!("consumer compiles: {} [{:?}]", d.message, d.code));
+        let peers = vec![cdz_run::Peer {
+            bytes: provider,
+            interface: "cadenza:math/api".to_string(),
+        }];
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec!["5".to_string()],
+            runtime: super::find_runtime_wasm(),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        let err = cdz_run::run_with_peers(&consumer, &peers, &opts)
+            .expect_err("an arity-mismatched peer must be REJECTED, not run to a trap");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("signature mismatch")
+                && msg.contains("add")
+                && msg.contains("2 argument(s)")
+                && msg.contains("1 argument(s)"),
+            "the compose error must name the op + both arities, not be an opaque trap: {msg}"
+        );
+    }
+
+    // ------------------------------------------------------------------------------------------------
     // U9 — a consumer binds TWO DISTINCT PEER INTERFACES. The multi-interface extern envelope: each bound
     // interface becomes its own imported component instance, and each op aliases out of ITS instance; the
     // one `"peer"` core instance exports every op flat by name (so op names are globally unique). Consumer
