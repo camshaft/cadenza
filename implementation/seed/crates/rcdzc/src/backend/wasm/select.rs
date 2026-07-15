@@ -1953,6 +1953,10 @@ fn collect_used_ops_into(
         // `Map.size` = `map-size` (→ u32, extended to i64) — reads the map operand.
         Core::MapSize { map } => {
             out.insert(OP_MAP_SIZE);
+            // RECLAMATION: a `map-size` over an OWNED-temporary map drops it after the borrow (mirror emit).
+            if matches!(heap_operand_ownership(db, map), Ok(HandleOwnership::Owned)) {
+                out.insert(OP_DROP);
+            }
             collect_used_ops_into(db, map, out);
         }
         // A set construction is `set-empty` then a `set-insert` per element (each boxed by its type).
@@ -2029,6 +2033,10 @@ fn collect_used_ops_into(
         // `Set.len` = `set-size` (→ u32, extended to i64) — reads the set operand.
         Core::SetLen { set } => {
             out.insert(OP_SET_SIZE);
+            // RECLAMATION: a `set-size` over an OWNED-temporary set drops it after the borrow (mirror emit).
+            if matches!(heap_operand_ownership(db, set), Ok(HandleOwnership::Owned)) {
+                out.insert(OP_DROP);
+            }
             collect_used_ops_into(db, set, out);
         }
         // A set-algebra op = the matching runtime op (consumes both operand sets).
@@ -5987,6 +5995,25 @@ fn emit(
         // `Map.size(m)` — emit the map handle, `map-size` (→ u32, an i32 slot), then extend to i64 (a
         // count is non-negative), since `Map.size : Int64`. Mirrors `List.len`/`Bytes.len`.
         Core::MapSize { map } => {
+            // RECLAMATION (same as `Core::ListLen`/`Core::BytesLen`): `map-size` BORROWS the map and returns
+            // a scalar count, so an OWNED-TEMPORARY operand (`Map.len (build …)`) must be dropped after the
+            // borrow or it leaks a heap cell. A BORROWED param/local is left to its owner (Owned only on a
+            // proven-fresh producer, else Borrowed — leak-safe).
+            let reclaim = matches!(heap_operand_ownership(db, map), Ok(HandleOwnership::Owned));
+            if reclaim {
+                let map_slot = base;
+                if map_slot + 1 > *high {
+                    *high = map_slot + 1;
+                }
+                scratch_ty.insert(map_slot, ValType::I32);
+                emit(db, map, slots, base + 1, high, scratch_ty, layout, out)?; // [map]
+                out.push(Lir::LocalTee(map_slot)); // [map], map_slot = the owned map
+                out.push(Lir::CallImport(OP_MAP_SIZE)); // → [size:i32] (borrows the map)
+                out.push(Lir::LocalGet(map_slot)); // [size, map]
+                out.push(Lir::CallImport(OP_DROP)); // → [size] (reclaim the owned temporary)
+                out.push(Lir::I64ExtendI32U); // → [size:i64] — Map.size : Int64
+                return Ok(());
+            }
             emit(db, map, slots, base, high, scratch_ty, layout, out)?; // [map]
             out.push(Lir::CallImport(OP_MAP_SIZE)); // → [size:i32]
             out.push(Lir::I64ExtendI32U); // → [size:i64] — Map.size : Int64
@@ -6056,6 +6083,24 @@ fn emit(
         }
         // `Set.len(s)` — emit the set handle, `set-size` (→ u32), extend to i64 (`Set.len : Int64`).
         Core::SetLen { set } => {
+            // RECLAMATION (same as `Core::MapSize`/`Core::ListLen`): `set-size` BORROWS the set, so an
+            // OWNED-TEMPORARY operand must be dropped after the borrow or it leaks a heap cell. A borrowed
+            // param/local is left to its owner.
+            let reclaim = matches!(heap_operand_ownership(db, set), Ok(HandleOwnership::Owned));
+            if reclaim {
+                let set_slot = base;
+                if set_slot + 1 > *high {
+                    *high = set_slot + 1;
+                }
+                scratch_ty.insert(set_slot, ValType::I32);
+                emit(db, set, slots, base + 1, high, scratch_ty, layout, out)?; // [set]
+                out.push(Lir::LocalTee(set_slot)); // [set], set_slot = the owned set
+                out.push(Lir::CallImport(OP_SET_SIZE)); // → [size:i32] (borrows the set)
+                out.push(Lir::LocalGet(set_slot)); // [size, set]
+                out.push(Lir::CallImport(OP_DROP)); // → [size] (reclaim the owned temporary)
+                out.push(Lir::I64ExtendI32U); // → [size:i64]
+                return Ok(());
+            }
             emit(db, set, slots, base, high, scratch_ty, layout, out)?; // [set]
             out.push(Lir::CallImport(OP_SET_SIZE)); // → [size:i32]
             out.push(Lir::I64ExtendI32U); // → [size:i64]

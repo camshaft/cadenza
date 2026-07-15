@@ -24223,6 +24223,51 @@ mod match_engine {
     }
 
     #[test]
+    fn map_len_and_set_len_over_an_owned_temporary_reclaim_it_but_a_borrowed_collection_is_kept() {
+        // The Map/Set siblings of the List.len owned-temporary reclaim: `map-size`/`set-size` BORROW the
+        // collection + return a scalar count, so an OWNED-TEMPORARY (`Map.len (build …)`) must be dropped
+        // after the borrow or it leaks a heap cell (same class as List.len/Bytes.len, fixed prior).
+        let map_owned = "(module m \
+               (def (build i n m) (if (< i n) (build (+ i 1) n ((. Map insert) m i i)) m)) \
+               (def (main) ((. Map len) (build 0 3 (map)))) (export main))";
+        assert!(
+            component_imports_op(&component(map_owned), "drop"),
+            "Map.len over an owned-temporary map must import `drop` (reclaim — leak fix)"
+        );
+        if let Some(out) = run_on_heap(map_owned) {
+            assert_eq!(
+                out, "3",
+                "Map.len value unchanged by the reclaim (leak-only)"
+            );
+        }
+        let set_owned = "(module m \
+               (def (build i n s) (if (< i n) (build (+ i 1) n ((. Set insert) s i)) s)) \
+               (def (main) ((. Set len) (build 0 3 ((. Set of) (list))))) (export main))";
+        assert!(
+            component_imports_op(&component(set_owned), "drop"),
+            "Set.len over an owned-temporary set must import `drop` (reclaim — leak fix)"
+        );
+        if let Some(out) = run_on_heap(set_owned) {
+            assert_eq!(
+                out, "3",
+                "Set.len value unchanged by the reclaim (leak-only)"
+            );
+        }
+        // A BORROWED map — bound and read TWICE (len + a later insert) — must NOT be freed by the len
+        // (would double-free before the later use). Value: len m (3) + len(insert) (4) = 7.
+        let map_borrowed = "(module m \
+               (def (build i n m) (if (< i n) (build (+ i 1) n ((. Map insert) m i i)) m)) \
+               (def (main) (let ((m (build 0 3 (map)))) \
+                             (+ ((. Map len) m) ((. Map len) ((. Map insert) m 99 99))))) (export main))";
+        if let Some(out) = run_on_heap(map_borrowed) {
+            assert_eq!(
+                out, "7",
+                "a borrowed map read by Map.len must not be freed early (owner reclaims)"
+            );
+        }
+    }
+
+    #[test]
     fn a_projected_list_consumed_then_reprojected_is_retained_not_mutated() {
         // The PROJECTION face of the still-live-binding retain (repeated-proj-of-let-consumed-then-read): the
         // shared value is a nested-compound PROJECTION `(. t 0)` of a `let`-bound tuple, not the binding
