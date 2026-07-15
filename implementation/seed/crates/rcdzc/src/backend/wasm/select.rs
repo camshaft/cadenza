@@ -1760,11 +1760,12 @@ fn collect_used_ops_into(
         // BOXED (the handle `vec-get` returns feeds `sum-new` directly; a downstream match unboxes it),
         // so no `box-*`/`get-*` here — mirrors the `emit` arm's op choices exactly.
         Core::ListAt { list, index, .. } => {
+            // Some(elem) via `vec-get` (dup'd) + `sum-new`; None from the inline-unit constant
+            // (`IMM_UNIT`), NOT an allocation — so no `arr-alloc` (see the emit arm; PR #404 class).
             out.insert(OP_VEC_LEN);
             out.insert(OP_VEC_GET);
             out.insert(OP_DUP);
             out.insert(OP_SUM_NEW);
-            out.insert(OP_ARR_ALLOC);
             collect_used_ops_into(db, list, out);
             collect_used_ops_into(db, index, out);
         }
@@ -1823,11 +1824,12 @@ fn collect_used_ops_into(
         Core::MapLookup {
             map, key, key_ty, ..
         } => {
+            // Some(value) via `map-lookup` (dup'd) + `sum-new`; None from the inline-unit constant
+            // (`IMM_UNIT`), NOT an allocation — so no `arr-alloc` (see the emit arm; PR #404 class).
             out.insert(OP_MAP_LOOKUP);
             out.insert(OP_DUP);
             out.insert(OP_DROP);
             out.insert(OP_SUM_NEW);
-            out.insert(OP_ARR_ALLOC);
             if let Ok(Some(op)) = box_op_ty(db, &key_ty) {
                 out.insert(op);
             }
@@ -1944,11 +1946,12 @@ fn collect_used_ops_into(
         // then `box-int` the byte into the `Some` payload (`sum-new`), or `arr-alloc(0)` for `None`'s
         // unit payload. No `dup` — `bytes-get` returns a value, not a borrowed handle. Mirrors `emit`.
         Core::BytesAt { bytes, index, .. } => {
+            // Some(byte) via `bytes-get` (box-int) + `sum-new`; None from the inline-unit constant
+            // (`IMM_UNIT`), NOT an allocation — so no `arr-alloc` (see the emit arm; PR #404 class).
             out.insert(OP_BYTES_LEN);
             out.insert(OP_BYTES_GET);
             out.insert(OP_BOX_INT);
             out.insert(OP_SUM_NEW);
-            out.insert(OP_ARR_ALLOC);
             collect_used_ops_into(db, bytes, out);
             collect_used_ops_into(db, index, out);
         }
@@ -1966,7 +1969,8 @@ fn collect_used_ops_into(
             out.insert(OP_DROP);
             out.insert(OP_DUP);
             out.insert(OP_SUM_NEW);
-            out.insert(OP_ARR_ALLOC);
+            // None is the inline-unit constant (`IMM_UNIT`), NOT an allocation — no `arr-alloc` (the
+            // comment above was wrong; the emit builds None from IMM_UNIT; PR #404 class).
             collect_used_ops_into(db, string, out);
             collect_used_ops_into(db, index, out);
         }
@@ -2055,7 +2059,8 @@ fn collect_used_ops_into(
             out.insert(OP_BYTES_SLICE);
             out.insert(OP_DROP); // the None branch drops the un-consumed bytes reference
             out.insert(OP_SUM_NEW);
-            out.insert(OP_ARR_ALLOC);
+            // None is the inline-unit constant (`IMM_UNIT`), NOT an allocation — no `arr-alloc` (see the
+            // emit arm; PR #404 class).
             collect_used_ops_into(db, bytes, out);
             collect_used_ops_into(db, start, out);
             collect_used_ops_into(db, len, out);
@@ -14061,6 +14066,56 @@ mod tests {
             "arr-alloc must NOT be imported — None uses the inline-unit constant, not an allocation; \
              got: {ops:?}"
         );
+    }
+
+    #[test]
+    fn fallible_read_ops_do_not_over_declare_arr_alloc() {
+        // Every fallible read that returns `(Option T)` — `List.at`, `Map.lookup`, `Bytes.at`,
+        // `String.at`, `Bytes.slice` (the family sharing `String.from-bytes`'s shape) — builds its `None`
+        // from the inline-unit constant (`IMM_UNIT`), NOT an allocation, so NONE of them calls
+        // `arr-alloc` (verified against each emit arm). The used-ops collector must not import `arr-alloc`
+        // for a body whose only heap op is one of these reads over PARAMETERS (no construction op
+        // contributes other imports). This pins the whole family against the PR #404 over-declaration
+        // class (an over-imported op forces an unnecessary component import).
+        let cases: &[(&str, &str)] = &[
+            (
+                "(def (f (: xs (List Int64)) (: i Int64)) (List.at xs i))",
+                "List.at",
+            ),
+            (
+                "(def (f (: m (Map Int64 Int64)) (: k Int64)) (Map.lookup m k))",
+                "Map.lookup",
+            ),
+            (
+                "(def (f (: b Bytes) (: i Int64)) (Bytes.at b i))",
+                "Bytes.at",
+            ),
+            (
+                "(def (f (: s String) (: i Int64)) (String.at s i))",
+                "String.at",
+            ),
+            (
+                "(def (f (: b Bytes) (: s Int64) (: l Int64)) (Bytes.slice b s l))",
+                "Bytes.slice",
+            ),
+        ];
+        for (def, label) in cases {
+            let src = format!("(module m {def} (def (main) 0) (export main))");
+            let mut db = Db::load(crate::testkit::parse(&src));
+            let (_params, body) = function_of(&mut db, "f");
+            let mut ops: std::collections::BTreeSet<&'static str> =
+                std::collections::BTreeSet::new();
+            collect_used_ops(&mut db, body, &mut ops);
+            assert!(
+                ops.contains(OP_SUM_NEW),
+                "{label}: sum-new (Some/None build) must be imported, got: {ops:?}"
+            );
+            assert!(
+                !ops.contains(OP_ARR_ALLOC),
+                "{label}: arr-alloc must NOT be imported — None uses the inline-unit constant, not an \
+                 allocation; got: {ops:?}"
+            );
+        }
     }
 
     #[test]

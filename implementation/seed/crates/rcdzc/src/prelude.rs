@@ -299,6 +299,44 @@ pub fn install(ast: &mut Arenas) -> BTreeMap<String, StructId> {
         names.insert("read".to_string(), list_op_record(ast, "read", read_lambda));
     }
 
+    // SCHEMA-TYPED PAYLOAD DECODE (type-system.md §An Open Sum's Payload May Be Schema-Typed;
+    // value-interchange.md §Decode Inverts Serialize And Refuses Otherwise). Three prelude names realize
+    // the OS2 const-fold surface — decode an open sum variant's payload against a schema to a typed
+    // `Result`, a mismatch yielding an `Err` rather than a trap (§214):
+    //  - `Int64-schema : (Schema Int64)` — the compile-time schema WITNESS for `Int64` (a bare value, a
+    //    monomorphic op-record whose `(meta t)` is the concrete `(Schema Int64)` and whose `(meta apply)`
+    //    is `SchemaOf`; it is used as a value, never applied). One per decodable width; only `Int64` is
+    //    realized this increment (the corpus's target). `Schema` is a generic prelude sum (`sums.rs`),
+    //    so `(Schema Int64)` reduces to `Ty::Sum{Schema,[Int64]}` and carries the target type `decode`
+    //    recovers.
+    //  - `payload-of : ∀v. v → v` — extract a variant's payload as a schema-checkable value. Typed as
+    //    identity (the value flows into `decode`'s free 2nd parameter); the FOLD does the real extraction
+    //    (a constant `SumNew`'s single payload core). Opaque: its only sanctioned consumer is `decode`.
+    //  - `decode : ∀t p. (Schema t) → p → (Result t DecodeError)` — decode the payload against the schema.
+    //    The schema fixes `t` (the target); the payload is a free `p` (whatever `payload-of` handed). The
+    //    FOLD compares the payload's constant type to `t`: agree → `(Ok payload)`, mismatch →
+    //    `(Err (DecodeError unit))`, NEVER a trap. The result type `(Result t DecodeError)` recovers `t`
+    //    from the schema, so `(decode Int64-schema …)` types as `(Result Int64 DecodeError)`.
+    //= spec/capabilities/type-system.md#an-open-sums-payload-may-be-schema-typed
+    //# An open sum's payload MUST be decodable against a schema resolved at run time to a typed result, and a payload that does not match its schema MUST yield a typed failure result rather than a trap.
+    {
+        let int64_schema_lambda = schema_witness_type(ast, "Int64");
+        names.insert(
+            "Int64-schema".to_string(),
+            list_op_record(ast, "schema-of", int64_schema_lambda),
+        );
+        let payload_of_lambda = payload_of_type_lambda(ast);
+        names.insert(
+            "payload-of".to_string(),
+            list_op_record(ast, "payload-of", payload_of_lambda),
+        );
+        let decode_lambda = schema_decode_type_lambda(ast);
+        names.insert(
+            "decode".to_string(),
+            list_op_record(ast, "schema-decode", decode_lambda),
+        );
+    }
+
     // Floating-point arithmetic reuses the ONE `+`/`-`/`*`/`/` operator above — there is no distinct
     // float operator. A `Float`-typed operand routes the `Add`/`Sub`/`Mul`/`Div` prim to the machine
     // float op by the SOLVED operand type (`infer::apply_type` types it `Float`; `lower` remaps to
@@ -1875,6 +1913,60 @@ fn trap_type_lambda(ast: &mut Arenas) -> StructId {
     let a = push_atom(ast, Leaf::Name("a".to_string()));
     let body = arrow_type(ast, string_ty, a); // (-> String a)
     list_type_lambda(ast, body)
+}
+
+/// The `(meta t)` of a `«T»-schema` witness — the monomorphic scheme `(fn () (Schema T))`, so
+/// `Int64-schema` is a bare VALUE of type `(Schema Int64)` (not a function). The `(fn () …)` wrapper
+/// makes `scheme_of` read a monomorphic scheme rather than collapsing `(Schema Int64)` to a type-value.
+/// `(Schema T)` reduces to `Ty::Sum{Schema,[T]}` via the generic `Schema` prelude sum, carrying the
+/// target type `T` that `decode` recovers to build its `(Result T DecodeError)` result.
+fn schema_witness_type(ast: &mut Arenas, target: &str) -> StructId {
+    let schema = push_atom(ast, Leaf::Name("Schema".to_string()));
+    let t = push_atom(ast, Leaf::Name(target.to_string()));
+    let body = push_list(ast, vec![schema, t]); // (Schema T)
+    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
+    let params = push_list(ast, vec![]); // monomorphic — a bare value, not applied
+    push_list(ast, vec![fn_head, params, body])
+}
+
+/// The type-lambda `(fn (a) (-> a a))` for `payload-of` — `∀v. v → v`. Typed as identity: the extracted
+/// payload flows into `decode`'s free payload parameter, so its static type need only pass through. The
+/// FOLD (`lower_payload_of`) does the real work — reading a constant variant's single payload core. The
+/// value is opaque (its only sanctioned consumer is `decode`), so no more precise typing is needed for
+/// the const-fold path (OQ-3).
+fn payload_of_type_lambda(ast: &mut Arenas) -> StructId {
+    let a_in = push_atom(ast, Leaf::Name("a".to_string()));
+    let a_out = push_atom(ast, Leaf::Name("a".to_string()));
+    let body = arrow_type(ast, a_in, a_out); // (-> a a)
+    list_type_lambda(ast, body)
+}
+
+/// The type-lambda `(fn (t p) (-> (Schema t) (-> p (Result t DecodeError))))` for `decode` —
+/// `∀t p. (Schema t) → p → (Result t DecodeError)`. The schema fixes the target `t`; the payload is a
+/// free `p` (whatever `payload-of` returned). The result `(Result t DecodeError)` recovers `t` from the
+/// schema, so `(decode Int64-schema …)` types `(Result Int64 DecodeError)` — the recorded oracle. The
+/// FOLD (`lower_schema_decode`) picks the `Ok`/`Err` arm by comparing the payload's constant type to `t`.
+fn schema_decode_type_lambda(ast: &mut Arenas) -> StructId {
+    let result_t_err = {
+        let result = push_atom(ast, Leaf::Name("Result".to_string()));
+        let t = push_atom(ast, Leaf::Name("t".to_string()));
+        let derr = push_atom(ast, Leaf::Name("DecodeError".to_string()));
+        push_list(ast, vec![result, t, derr]) // (Result t DecodeError)
+    };
+    let p = push_atom(ast, Leaf::Name("p".to_string()));
+    let inner = arrow_type(ast, p, result_t_err); // (-> p (Result t DecodeError))
+    let schema_t = {
+        let schema = push_atom(ast, Leaf::Name("Schema".to_string()));
+        let t = push_atom(ast, Leaf::Name("t".to_string()));
+        push_list(ast, vec![schema, t]) // (Schema t)
+    };
+    let body = arrow_type(ast, schema_t, inner); // (-> (Schema t) (-> p (Result t DecodeError)))
+    // `(fn (t p) …)` — two quantified parameters.
+    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
+    let t_param = push_atom(ast, Leaf::Name("t".to_string()));
+    let p_param = push_atom(ast, Leaf::Name("p".to_string()));
+    let params = push_list(ast, vec![t_param, p_param]);
+    push_list(ast, vec![fn_head, params, body])
 }
 
 /// Build the MONOMORPHIC operator scheme `(fn () (-> FROM TO))` — a zero-parameter type-lambda over the

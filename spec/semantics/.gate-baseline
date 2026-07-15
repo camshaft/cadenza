@@ -97,6 +97,7 @@ pass	MULTI-EXPORT: two two-Tuple-arg closures with a LIST result share one `call
 pass	MULTI-EXPORT: two two-Tuple-arg closures with a fixed COMPOUND result
 pass	Map.to-list enumerates the entries as a List of (key value) tuples in canonical KEY order
 pass	Map.to-list length is the map's entry count
+pass	Map.to-list over a RUNTIME-built map enumerates entries in canonical key order (first key is min)
 pass	N-suffixed literals compose under BigInt arithmetic
 pass	OR-saturation to a full-width mask on an unsigned runtime value
 pass	OR-then-mask absorption does not discard a trapping runtime operand
@@ -115,6 +116,8 @@ pass	Set.remove does not fold a set whose element is a runtime scalar
 pass	Set.remove of a rope-element set built via Set.of lowers the cardinality
 pass	Set.to-list enumerates the elements as a List in canonical (sorted) order
 pass	Set.to-list length is the set's cardinality (deduped)
+pass	Set.to-list over a RUNTIME-built set yields canonical order (first element is the minimum)
+pass	Set.to-list over a runtime set sums its distinct elements
 pass	String.from-bytes accepts a two-byte sequence split across a concat seam
 pass	String.from-bytes decodes a RUNTIME byte sequence built by a recursive appender
 pass	String.from-bytes decodes a multibyte RUNTIME Bytes ROPE, flattening before validation
@@ -148,6 +151,7 @@ pass	Unit.in converts a quantity to a chosen smaller unit exactly (Int)
 pass	Unit.in to a unit of a different dimension is a compile-time error
 pass	XOR cancellation returns the original runtime value (constant key)
 pass	XOR cancellation returns the original value even when the key is a runtime value
+pass	`?` on the failure variant short-circuits the boundary (Option, None path)
 pass	`?` on the success variant unwraps the payload (Option, happy path)
 pass	`try` takes exactly one operand — a two-operand form is malformed
 pass	`try` takes exactly one operand — a zero-operand form is malformed
@@ -163,6 +167,8 @@ pass	a BigInt factorial accumulator computes 25! exactly
 pass	a BigInt is usable as a map key, matched by its arbitrary-precision value
 pass	a BigInt is usable as a set element, deduplicated by its arbitrary-precision value
 pass	a BigInt operation does not silently promote a fixed-width operand
+pass	a BigInt-inner quantity grows past Int64.max without trapping
+pass	a BigInt-inner quantity scales by a bare BigInt on the bigint path
 pass	a Bool argument to a parameter used in integer addition is rejected
 pass	a Bool generator derived from the seed is reproducible (same seed, same Bool)
 pass	a Bool match with its arms in either order is exhaustive
@@ -253,6 +259,7 @@ pass	a Rational accumulator threaded through recursion sums exactly
 pass	a Rational is usable as a map key, matched by its exact value
 pass	a Rational set deduplicates by exact value regardless of how each was written
 pass	a Rational-annotated literal composes with exact rational arithmetic
+pass	a Rational-inner quantity addition stays exact through the quantity wrapper
 pass	a Rational-payload sum value escapes across the boundary in its canonical form
 pass	a Result built by an if with the Err branch first type-checks
 pass	a Result carrying a Result is matched by a nested pattern to its inner value
@@ -525,6 +532,7 @@ pass	a cross-type variant pattern whose payload width differs is rejected, not m
 pass	a ctor-in-tuple-slot match is expressible by binding the tuple then re-matching
 pass	a curried function can be partially applied
 pass	a curried function-type annotation checks its inner result type against the argument
+pass	a curried-syntax application of a multi-payload constructor reaches full arity and constructs
 pass	a curried-syntax application of a runtime closure flattens to one full-arity indirect call
 pass	a cycle of module imports is rejected
 pass	a decimal integer literal
@@ -1167,6 +1175,7 @@ pass	a projection chain through a record inside a tuple retains the consumed chi
 pass	a projection chain through a tuple inside a record retains the consumed child
 pass	a pure lambda passed as an argument to a performing callee folds
 pass	a pure let-bound lambda and a performing one are both applied in the handle body
+pass	a pure shared subexpression computes the same value however the backend optimizes it
 pass	a qualified construct and a bare match name the same colliding variant
 pass	a quantity built from an extracted unit is dimensionally checked
 pass	a quantity is constructed from a numeric value and a unit
@@ -1477,6 +1486,8 @@ pass	a scalar element is projected DIRECTLY from a named function's runtime tupl
 pass	a scalar element is projected directly from a function's runtime tuple result
 pass	a scalar element is projected from a let-bound runtime tuple
 pass	a scalar-payload sum looked up from a map, returned via a ctor, is matched in the caller
+pass	a schema decode's Err result is handled as data on its own branch
+pass	a schema decode's Ok result is matched to recover the decoded payload
 pass	a scientific-notation float literal denotes the scaled value
 pass	a scientific-notation literal annotated Rational scales the numerator
 pass	a scrutinee of two to the sixty-fourth-adjacent magnitude misses a zero-based jump table
@@ -1579,6 +1590,7 @@ pass	a symbol converts back to its content string
 pass	a symbol is constructed from a string
 pass	a symbol's identity is its content, not how the content was derived
 pass	a tag-length-value record round-trips through construct then match
+pass	a tagged template whose tag is unbound is a scope error
 pass	a tail list fold reads its scrutinee handle from its own parameter slot
 pass	a tail loop threading a projected boxed-sum accumulator and a projected cursor decodes correctly
 pass	a tail loop threads a boxed-sum accumulator and a cursor projected from one builder tuple
@@ -2414,6 +2426,7 @@ pass	quasiquote nests with inner unquote evaluated
 pass	quasiquotes unquoting a runtime variable and a literal build equal ASTs
 pass	quote produces an AST value without evaluating
 pass	quote-vs-constructor AST equality holds regardless of operand order
+pass	raising a BigInt-magnitude quantity to a power runs the unbounded multiply
 pass	raising a quantity to a compile-time power composes the unit and the magnitude
 pass	reaching an effect neither handled nor delegated is rejected at compile time
 pass	reading a byte from a sequence built with a RUNTIME element widens it to the Option payload
@@ -2636,6 +2649,8 @@ pass	the reader literal reads to Symbol.of
 pass	the remainder takes the sign of the dividend for a negative dividend
 pass	the remainder takes the sign of the dividend for a negative divisor
 pass	the rest binder carries the unmatched runtime-keyed remainder
+pass	the retired Tuple.cat name is rejected with the Tuple.concat rename fix-it (CDZ0603)
+pass	the retired Tuple.pop name is rejected with the Tuple.remove rename fix-it (CDZ0603)
 pass	the round trip tracks the produced closure's captured value
 pass	the runtime-if list takes its else branch and measures that length
 pass	the runtime-list version of a tail fold compiles and folds correctly
@@ -2801,11 +2816,15 @@ pass	wrapping-add wraps a boundary-crossing runtime Int64 at the max boundary
 pass	wrapping-mul on a runtime UInt8 wraps modulo 256
 pass	wrapping-mul wraps a boundary-crossing runtime Int64
 todo	SUM ARG + LIST RESULT declines cleanly (Option arg, List result)
-pass	`?` on the failure variant short-circuits the boundary (Option, None path)
 todo	a closure returning Unit is declined — Unit has no machine representation
 todo	a closure-typed closure ARG on the DIRECT-CALL path is declined — host would supply the closure
 todo	a producer capturing a host-supplied COMPOUND parameter is declined — host→guest decode
+todo	a tagged template expands via its binding-dispatched tag function
+todo	a tagged template weaves a hole into its expansion
+todo	a tagged template's spliced result folds through the ordinary path
 todo	an open sum payload that does not match its schema yields a typed failure, not a trap
 todo	an open sum's payload decodes against a schema to a typed result
+pass	an open sum payload that does not match its schema yields a typed failure, not a trap
+pass	an open sum's payload decodes against a schema to a typed result
 todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional

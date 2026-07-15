@@ -237,6 +237,28 @@
   (call   main (: 3 Int64))
   (output (: 36 Int64)))
 
+; ── A PURE straight-line SHARED SUBEXPRESSION preserves its value however it is optimized ────────────
+; `(+ (* x x) (* x x))` computes the SAME pure subexpression `(* x x)` twice over a runtime `x`. The wasm
+; backend's dominator CSE value-numbers it into one slot computed once (backend-independent in RESULT: the
+; VALUE must not change); the RUST backend emits the expression as written and lets `rustc` do the CSE
+; downstream. Either way the observed value is identical — this is why the pure-CSE optimization is NOT a
+; separate Core pass the rust backend re-implements (rustc covers the rust path), distinct from the
+; EFFECTFUL-CSE soundness pins in 14-effects (where a shared node must NOT be reused). x=5 → 25+25 = 50,
+; x=-4 → 16+16 = 32. A value-parity pin: the shared subexpression computes the same result on both backends.
+
+(case "a pure shared subexpression computes the same value however the backend optimizes it"
+  (doc    "`(+ (* x x) (* x x))` over a runtime `x` shares the pure subexpression `(* x x)`. Whether the
+           backend value-numbers it into one computed slot (wasm dominator CSE) or emits it twice and lets
+           the downstream compiler fold it (rust → rustc), the observed VALUE is unchanged: x=5 → 50, x=-4
+           → 32. Pins that a pure CSE candidate preserves its value on both backends — the pure companion
+           of the effectful-CSE must-NOT-share soundness pins (14-effects-and-handlers), and the reason a
+           pure-CSE is left to each backend's own optimizer rather than lifted to a Core pass.")
+  (input  (do (def (main (: x Int64)) (+ (* x x) (* x x))) (export main)))
+  (call   main (: 5 Int64))
+  (output (: 50 Int64))
+  (call   main (: -4 Int64))
+  (output (: 32 Int64)))
+
 (case "a loop-invariant subexpression in a MATCH scrutinee is hoisted to valid wasm"
   (doc    "`(match (< i (+ n 1)) (true (loop (+ i 1) n)) (false i))` — a tail-recursive counted loop whose
            MATCH scrutinee `(< i (+ n 1))` contains the loop-invariant `(+ n 1)` (`n` threads unchanged).

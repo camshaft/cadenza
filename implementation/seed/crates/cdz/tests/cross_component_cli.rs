@@ -272,3 +272,74 @@ fn cdz_run_peer_a_nullary_op_crosses_and_its_arity_is_checked() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn cdz_run_peer_rejects_a_malformed_peer_argument_clearly() {
+    // The `--peer interface=path` ARG PARSING edge cases (cdz-run::cli). A missing `=`, an empty path
+    // (`iface=`), or an empty interface (`=path`) must each name the real problem — not fall through to
+    // a confusing blank-filename "No such file" (the empty-path case did before) or an opaque later
+    // failure. A valid consumer component is needed to reach the peer-arg parse.
+    let dir = temp_dir("peer-argparse");
+    let cons = dir.join("cons.sexp");
+    std::fs::write(
+        &cons,
+        "(do (effect Math (op add (-> Int64 Int64))) (bind Math \"cadenza:math/api\") \
+         (def (main (: x Int64)) (host (Math) (Math.add x))) (export main))",
+    )
+    .unwrap();
+    let wasm = dir.join("cons.wasm");
+    let (ok, _o, err) = run(&[
+        "compile",
+        cons.to_str().unwrap(),
+        "-o",
+        wasm.to_str().unwrap(),
+    ]);
+    assert!(ok, "consumer compile failed: {err}");
+    let w = wasm.to_str().unwrap();
+    // (a) no `=` → names the expected shape.
+    let (ok, _o, err) = run(&[
+        "run",
+        w,
+        "--peer",
+        "cadenza:math/api",
+        "--call",
+        "main",
+        "--arg",
+        "5",
+    ]);
+    assert!(
+        !ok && err.contains("expects `interface=path`"),
+        "no-`=` peer arg: {err}"
+    );
+    // (b) empty PATH → names the empty path (not a blank-filename read error).
+    let (ok, _o, err) = run(&[
+        "run",
+        w,
+        "--peer",
+        "cadenza:math/api=",
+        "--call",
+        "main",
+        "--arg",
+        "5",
+    ]);
+    assert!(
+        !ok && err.contains("empty path"),
+        "empty-path peer arg must name the empty path, not a blank-filename read error: {err}"
+    );
+    // (c) empty INTERFACE → names the empty interface.
+    let (ok, _o, err) = run(&[
+        "run",
+        w,
+        "--peer",
+        "=/tmp/x.wasm",
+        "--call",
+        "main",
+        "--arg",
+        "5",
+    ]);
+    assert!(
+        !ok && err.contains("empty interface name"),
+        "empty-interface peer arg must name it: {err}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

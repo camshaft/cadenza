@@ -1991,6 +1991,24 @@
   (input  (do (def (main) (Map.size (Map.insert (Map.empty) 1 10))) (export main)))
   (error CDZ0603))
 
+(case "the retired Tuple.cat name is rejected with the Tuple.concat rename fix-it (CDZ0603)"
+  (doc    "The Tuple leg of the naming cutover: `Tuple.cat` was renamed to `Tuple.concat` (join two → one,
+           matching List/Bytes/String's `concat`). The retired `cat` no longer resolves and gets the
+           targeted CDZ0603 naming `Tuple.concat` + a VERIFIED fix-it, not the generic 'no member'. Pins
+           CDZ0603 for the Tuple.cat leg specifically — the corpus previously pinned only Map.size, so a
+           future change could have broken the diagnostic for Tuple without any graded case catching it.")
+  (input  (do (def (main) (. (Tuple.cat (tuple 1 2) (tuple 3 4)) 0)) (export main)))
+  (error CDZ0603))
+
+(case "the retired Tuple.pop name is rejected with the Tuple.remove rename fix-it (CDZ0603)"
+  (doc    "The third leg of the cutover: `Tuple.pop` was renamed to `Tuple.remove` (Set/Map already used
+           `remove`; `pop` was a misnomer since it returns the smaller structure, not the removed element).
+           The retired `pop` no longer resolves and gets CDZ0603 naming `Tuple.remove` + a VERIFIED fix-it.
+           Completes the graded-corpus coverage of CDZ0603 across all three retired names (Map.size /
+           Tuple.cat / Tuple.pop), so a regression on any one leg is caught by the shared gate.")
+  (input  (do (def (main) (. (Tuple.pop (tuple 1 2 3)) 0)) (export main)))
+  (error CDZ0603))
+
 (case "a record whose field is a runtime tuple nests across the boundary"
   (doc    "`(record (x n) (y (tuple n 1)))` with n=5 produces `(record (x 5) (y (tuple 5 1)))` — a
            record field that is itself a runtime compound. Pins that the type-directed renderer
@@ -8693,3 +8711,25 @@
               (List.len (Map.to-list (Map.insert (Map.insert (Map.insert Map.empty 1 10) 2 20) 1 99))))
             (export main)))
   (output (: 2 Int64)))
+
+; The Map.to-list cases above enumerate a fixed inline `Map.insert` chain. A map built AT RUN TIME by a
+; recursive insert loop over a boundary parameter — and enumerated in canonical KEY order — pins the
+; runtime map-to-list op (index 84) over a parametric-size CHAMP: the entries arrive in descending key
+; order but enumerate ascending, so the FIRST entry's key is the minimum, and the list length is the
+; entry count. The map→list-of-pairs→fold idiom a self-hosted pass uses to iterate a keyed table.
+(case "Map.to-list over a RUNTIME-built map enumerates entries in canonical key order (first key is min)"
+  (doc    "`ins n` inserts key `n` → value `n*10` for n=n..1 into a map built by a recursive `Map.insert`
+           loop (keys arrive descending n,n-1,…,1). `Map.to-list` enumerates the entries in canonical
+           ASCENDING key order, so entry 0's key is the minimum, 1. `ins 4` builds {1→10,2→20,3→30,4→40};
+           the first enumerated entry's key is 1 and its value 10 — read here as key+value = 11. Pins the
+           runtime map-to-list sorts by canonical key over a genuinely runtime-built CHAMP, entries as
+           2-tuples. n=4 → 11.")
+  (input  (do
+            (def (ins (: n Int64) (: m (Map Int64 Int64)))
+              (if (< n 1) m (ins (- n 1) (Map.insert m n (* n 10)))))
+            (def (main (: n Int64))
+              (match (List.at (Map.to-list (ins n Map.empty)) 0)
+                ((Some p) (match p ((tuple k v) (+ k v))))
+                ((None u) (- 0 1))))
+            (export main)))
+  (call   main (: 4 Int64)) (output (: 11 Int64)))

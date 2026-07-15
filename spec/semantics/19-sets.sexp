@@ -564,3 +564,36 @@
   (input  (do
             (def (main) (List.len (Set.to-list (Set.of (list 3 1 2 1 3))))) (export main)))
   (output (: 3 Int64)))
+
+; The Set.to-list cases above enumerate a CONSTANT `Set.of` literal. A set built AT RUN TIME by a
+; recursive `Set.insert` loop over a boundary parameter is a genuine runtime CHAMP the `set-to-list`
+; runtime op (index 83) walks live — its canonical (sorted) order emerges from the cursor walk + the
+; canonical-scalar sort, NOT from a folded pre-sorted literal. These pin the runtime enumeration op end
+; to end: the order is canonical regardless of insertion order, and the enumerated list is consumed by
+; a List.at/List.len fold (the idiom a self-hosted pass uses to iterate a set's members deterministically).
+(case "Set.to-list over a RUNTIME-built set yields canonical order (first element is the minimum)"
+  (doc    "`ins n` inserts `20-n` for n=n..1 into a set built by a recursive `Set.insert` loop — so the
+           elements arrive in DESCENDING order (19,18,…) but the set is unordered. `Set.to-list` enumerates
+           them in canonical (ascending) order, so element 0 is the minimum. `ins 5` inserts {15,16,17,18,19};
+           the first enumerated element is 15. Pins that the runtime set-to-list op sorts by canonical value,
+           not insertion order, over a genuinely runtime-built CHAMP (not a folded constant `Set.of`).")
+  (input  (do
+            (def (ins (: n Int64) (: s (Set Int64)))
+              (if (< n 1) s (ins (- n 1) (Set.insert s (- 20 n)))))
+            (def (main (: n Int64)) (Option.expect (List.at (Set.to-list (ins n (Set.of (list)))) 0) "empty"))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 15 Int64)))
+
+(case "Set.to-list over a runtime set sums its distinct elements"
+  (doc    "`ins n` inserts `(n*7) % 5` for n=n..1 — a runtime set whose elements cycle through {0,1,2,3,4}
+           with many collisions (dedup). `Set.to-list` enumerates the distinct elements; a List.at fold sums
+           them. `ins 10` deduplicates to {0,1,2,3,4}, sum 10. Pins that the runtime enumeration yields each
+           DISTINCT element exactly once and the resulting list is fold-consumable (the set→list→fold idiom).")
+  (input  (do
+            (def (ins (: n Int64) (: s (Set Int64)))
+              (if (< n 1) s (ins (- n 1) (Set.insert s (% (* n 7) 5)))))
+            (def (sumlist (: l (List Int64)) (: i Int64) (: a Int64))
+              (if (= i (List.len l)) a (sumlist l (+ i 1) (+ a (Option.expect (List.at l i) "oob")))))
+            (def (main (: n Int64)) (sumlist (Set.to-list (ins n (Set.of (list)))) 0 0))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 10 Int64)))

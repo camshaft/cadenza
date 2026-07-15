@@ -503,6 +503,7 @@
            decoded against a schema resolved at run time, yielding a typed Ok result on a match. A
            successful decode of an Int64 payload yields (Ok 7).")
   (input  (do
+            (type Reading (Measured Int64) (Labeled String) .. r)
             (def (main)
               (decode Int64-schema (payload-of (Measured 7)))) (export main)))
   (output (: (Ok 7) (Result Int64 DecodeError))))
@@ -511,8 +512,40 @@
   (doc    "Witnesses type-system.md #An Open Sum's Payload May Be Schema-Typed (a mismatch yields a typed
            failure result rather than a trap): decoding a String payload against an Int64 schema yields
            an Err, so a fold over an open vocabulary handles a malformed payload as data rather than
-           halting.")
+           halting. The error is `DecodeError`'s `TypeMismatch` kind — a decode failure names its KIND
+           (DecodeError is a multi-variant sum `(TypeMismatch | Eof)`, not a payload-carrying newtype),
+           so the `Err` renders `(TypeMismatch unit)` (a nullary variant crosses the boundary as `(Name
+           unit)`, like `(Pos unit)` for `Sign.Pos`). Never a trap.")
   (input  (do
+            (type Reading (Measured Int64) (Labeled String) .. r)
             (def (main)
               (decode Int64-schema (payload-of (Labeled "x")))) (export main)))
-  (output (: (Err (DecodeError unit)) (Result Int64 DecodeError))))
+  (output (: (Err (TypeMismatch unit)) (Result Int64 DecodeError))))
+
+(case "a schema decode's Ok result is matched to recover the decoded payload"
+  (doc    "Witnesses type-system.md #An Open Sum's Payload May Be Schema-Typed composed with #A Match Is
+           Exhaustive Against The Sum Type's Variant Set: `decode`'s result is a REAL `(Result Int64
+           DecodeError)`, matchable like any Result — not merely a rendered value. Matching the successful
+           decode `(decode Int64-schema (payload-of (Measured 9)))` on `(Ok n)` recovers the decoded
+           payload `n` = 9. Pins that the decode result flows into ordinary sum matching.")
+  (input  (do
+            (type Reading (Measured Int64) (Labeled String) .. r)
+            (def (main)
+              (match (decode Int64-schema (payload-of (Measured 9)))
+                ((Ok n) n)
+                ((Err _) -1))) (export main)))
+  (output (: 9 Int64)))
+
+(case "a schema decode's Err result is handled as data on its own branch"
+  (doc    "Witnesses type-system.md #An Open Sum's Payload May Be Schema-Typed (a mismatch is a typed
+           failure result, handled as data rather than a trap): the mismatched decode `(decode
+           Int64-schema (payload-of (Labeled \"z\")))` yields an `Err`, and matching it takes the `(Err _)`
+           branch → -1. Pins that a schema mismatch is a matchable `Err` a fold over an open vocabulary
+           handles as data — the whole point of returning a Result rather than trapping.")
+  (input  (do
+            (type Reading (Measured Int64) (Labeled String) .. r)
+            (def (main)
+              (match (decode Int64-schema (payload-of (Labeled "z")))
+                ((Ok n) n)
+                ((Err _) -1))) (export main)))
+  (output (: -1 Int64)))

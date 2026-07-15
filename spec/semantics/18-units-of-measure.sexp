@@ -412,6 +412,17 @@
   (input  (Qty.pow (Qty.of 3.0 (Unit.base #"meter")) 2))
   (output (: (Qty.of 9.0 (Unit.^ (Unit.base #"meter") 2)) (Qty Float64 (Unit.^ (Unit.base #"meter") 2)))))
 
+(case "raising a BigInt-magnitude quantity to a power runs the unbounded multiply"
+  (doc    "`(Qty.pow (Qty.of (BigInt.of n) meter) 2)` over a BigInt inner: `Qty.pow` lowers to a repeated
+           multiply of the erased magnitude (`value·value`), which for a BigInt runs the runtime `bigint-*`
+           op on the heap handle — NOT the fixnum path. `Qty.value` recovers the squared magnitude: n=5 →
+           25. Pins that `Qty.pow`'s repeated-multiply reaches the bigint arithmetic through the quantity
+           (the `Qty.pow` companion of the bigint-inner-quantity arithmetic fix), staying valid + exact.")
+  (input  (do (def (main (: n Int64))
+                (Qty.value (Qty.pow (Qty.of (BigInt.of n) (Unit.base #"meter")) 2))) (export main)))
+  (call   main (: 5 Int64)) (output (: 25 BigInt))
+  (call   main (: 1000000 Int64)) (output (: 1000000000000 BigInt)))
+
 (case "the power form derives the same dimension as repeated multiplication"
   (doc    "`(= (Qty.pow (Qty.of 2.0 meter) 2) (* (Qty.of 2.0 meter) (Qty.of 2.0 meter)))` is true: raising
            to the 2nd power and multiplying twice derive the SAME dimension (meter²) AND the same value
@@ -1110,3 +1121,44 @@
            ACCEPT this add.")
   (input  (+ (* (Qty.of 2 (Unit.of #"meter")) (Qty.of 3 (Unit.of #"meter"))) (Qty.of 1 (Unit.of #"meter"))))
   (error  CDZ0501))
+
+; --- BigInt-inner quantity dispatch: the neighbor sites -------------------------------------------
+; 36ed35673 routes a `(Qty BigInt u)`'s +,-,*,/ to the bigint path (a BigInt inner is a heap HANDLE;
+; the fixnum path emitted an i64 where the i32 handle was expected — invalid wasm). Each dispatch
+; site is a separate predicate, so each neighbor is a separately-missable face. These pin two that
+; work today (bare-BigInt scaling, unbounded growth) and the exactness control.
+
+(case "a BigInt-inner quantity scales by a bare BigInt on the bigint path"
+  (doc    "`(* (Qty.of (BigInt.of 5) meter) (BigInt.of 3))` — a BigInt-inner quantity times a BARE
+           BigInt: the bare-scaling arm must route to the bigint multiply exactly as the qty+qty add
+           does (the fix's case). `Qty.value` reads back 15 : BigInt. A bare-scaling arm keyed on the
+           fixnum default emits the i64/i32 mismatch on the handle operand.")
+  (input  (do
+            (def (main (: v Int64))
+              (Qty.value (* (Qty.of (BigInt.of v) (Unit.of #"meter")) (BigInt.of 3))))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 15 BigInt)))
+
+(case "a BigInt-inner quantity grows past Int64.max without trapping"
+  (doc    "`(* (Qty.of (BigInt.of Int64.max) meter) (BigInt.of 2))` = 18446744073709551614 : BigInt —
+           the whole point of a BigInt magnitude: the product exceeds every fixnum and must GROW, not
+           trap. A dispatch that reached the checked fixnum multiply would trap 'integer overflow'
+           here; the bigint path is unbounded (numeric-model.md #An Arbitrary-Precision Integer Has
+           Unbounded Range, composed through the quantity wrapper).")
+  (input  (do
+            (def (main (: v Int64))
+              (Qty.value (* (Qty.of (BigInt.of 9223372036854775807) (Unit.of #"meter"))
+                            (BigInt.of 2))))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 18446744073709551614 BigInt)))
+
+(case "a Rational-inner quantity addition stays exact through the quantity wrapper"
+  (doc    "`(+ (Qty.of 1/3 meter) (Qty.of 1/6 meter))` → `Qty.value` reads back 1/2 : Rational — the
+           pre-existing `quantity_inner_is_rational` predicate's happy path, pinned as the control
+           beside the new bigint arm: each inner-type predicate routes to ITS arithmetic (exact
+           rational here), and adding the bigint arm must not have perturbed the rational dispatch.")
+  (input  (Qty.value (+ (Qty.of (Rational.of 1 3) (Unit.of #"meter"))
+                        (Qty.of (Rational.of 1 6) (Unit.of #"meter")))))
+  (output (: 1/2 Rational)))

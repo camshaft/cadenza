@@ -102,6 +102,38 @@ export default function Errors() {
       />
       <P>That's <C>Int64</C>'s largest value times 2 — it can't fit, so you get the <C>None</C> arm.</P>
 
+      <H2>Chaining fallible steps: the <C>?</C> operator</H2>
+      <P>
+        Match on one <C>Option</C> and you write two arms. Chain several — add two checked results, each of
+        which might overflow — and the nested matches pile up, burying the happy path. The <C>?</C> operator
+        (written <C>(try …)</C>) collapses that: on a <C>Some</C> it unwraps the value and carries on; on a{" "}
+        <C>None</C> it <em>short-circuits</em>, making the whole function's result that <C>None</C>. Here two
+        checked-adds both succeed, so <C>x</C> and <C>y</C> unwrap and the function returns <C>(Some 84)</C>:
+      </P>
+      <Runnable
+        source={`(def (main)
+  (let ((x (try (Int64.checked-add 20 22))))
+    (let ((y (try (Int64.checked-add 40 2))))
+      (Some (+ x y)))))`}
+      />
+      <P>
+        No match arms, no nesting — just the happy path, top to bottom. And when a step <em>does</em> fail,
+        the short-circuit takes over: make the first add overflow and its <C>None</C> becomes the function's
+        answer immediately — the second <C>try</C> and the body never run:
+      </P>
+      <Runnable
+        source={`(def (main)
+  (let ((x (try (Int64.checked-add Int64.max 1))))
+    (let ((y (try (Int64.checked-add 40 2))))
+      (Some (+ x y)))))`}
+      />
+      <P>
+        The overflowing add is <C>None</C>, so <C>main</C> is <C>(None unit)</C>. The enclosing function must
+        itself return the matching kind (an <C>Option</C> here, or a <C>Result</C>) — <C>?</C> needs a
+        fallible boundary to short-circuit <em>to</em>, and it doesn't convert between <C>Option</C> and{" "}
+        <C>Result</C>: the kinds have to line up.
+      </P>
+
       <H2>Matching on the value inside</H2>
       <P>
         A pattern can look <em>inside</em> a variant, not just name it. Here the first arm only fires for

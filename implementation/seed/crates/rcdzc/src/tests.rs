@@ -36145,6 +36145,43 @@ mod diagnostics {
     }
 
     #[test]
+    fn schema_decode_folds_to_a_typed_result_never_a_trap() {
+        // OS2 — schema-typed payload decode. `(decode «T»-schema (payload-of (Ctor v)))` folds to a
+        // typed `(Result T DecodeError)`: a payload whose type AGREES with the schema target → `(Ok v)`;
+        // a MISMATCH → `(Err TypeMismatch)`, NEVER a trap (§214). Both compile CLEAN (no reject) and
+        // NEVER emit a trap-poison — the mismatch is data, not a halt.
+
+        // (a) MATCH: an Int64 payload decoded against `Int64-schema` → the program compiles clean and
+        // types `(Result Int64 DecodeError)` (verified by the corpus value case; here: no fault).
+        let ok = all_errors(
+            "(module m (type Reading (Measured Int64) (Labeled String) .. r) \
+             (def (main) (decode Int64-schema (payload-of (Measured 7)))) (export main))",
+        );
+        assert!(
+            ok.is_empty(),
+            "a matching schema decode compiles clean: {ok:?}"
+        );
+
+        // (b) MISMATCH: a String payload against `Int64-schema` — compiles clean AND does NOT trap (the
+        // failure is a typed `Err`, not an `unreachable`). A CDZ0304 (provable trap) here would be the
+        // §214 violation the design forbids.
+        let mismatch = all_errors(
+            "(module m (type Reading (Measured Int64) (Labeled String) .. r) \
+             (def (main) (decode Int64-schema (payload-of (Labeled \"x\")))) (export main))",
+        );
+        assert!(
+            mismatch.is_empty(),
+            "a mismatched schema decode compiles clean (a typed Err, never a trap): {mismatch:?}"
+        );
+        assert!(
+            !mismatch
+                .iter()
+                .any(|d| d.code.as_deref() == Some("CDZ0304")),
+            "a schema mismatch must NOT be a provable trap (§214): {mismatch:?}"
+        );
+    }
+
+    #[test]
     fn a_single_variant_open_sum_is_not_erased_to_an_irrefutable_newtype() {
         // OS1 soundness edge — a CLOSED single-variant sum `(type Box (Wrap Int64))` erases to a newtype
         // whose sole constructor pattern `(Wrap n)` is IRREFUTABLE (no `_` needed). But the SAME sum
@@ -50087,6 +50124,25 @@ mod stage1 {
               (if (= n 0) 0 (+ ((g n) 1) (ap g (- n 1))))) \
             (def (main (: n Int64)) (ap (fn ((: a Int64) (: b Int64)) (* a b)) n)) (export main))";
         assert_eq!(run_closure(src2, 4).unwrap(), "10"); // 4+3+2+1
+    }
+
+    #[test]
+    fn a_curried_multi_payload_constructor_application_reaches_full_arity() {
+        // The CONSTRUCTOR analogue of the curried-closure flattening above: `((T.Mk n) 2)` applies the
+        // two-payload variant ctor `T.Mk` to `n` then `2` (the curried spelling of `(T.Mk n 2)`). The
+        // application spine flattens so the ctor reaches FULL arity in one construction, building `(T.Mk n
+        // 2)`, which the `match` destructures to `(+ n 2)`. With runtime `n` nothing folds. Pins the curried
+        // constructor-application spine. (Contrast: a PARTIAL ctor application EXPORTED — `(def (main)
+        // (T.Mk 1))` — currently fails to lift with a leaky internal error; see issue
+        // mlrepro-partial-ctor-application-export-leaky-internal-error. This case is the FULL-arity path,
+        // which works.)
+        use wasmtime::component::Val;
+        let src = "(module m \
+            (type T (Mk Int64 Int64)) \
+            (def (main (: n Int64)) (match ((T.Mk n) 2) ((T.Mk a b) (+ a b)))) (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        assert_eq!(run_returns_with::<i64>(&bytes, "main", &[Val::S64(5)]), 7); // 5 + 2
+        assert_eq!(run_returns_with::<i64>(&bytes, "main", &[Val::S64(40)]), 42); // 40 + 2
     }
 
     #[test]

@@ -93,6 +93,18 @@ A macro MUST be dispatched by resolving the binding at the head of a form to a m
 
 The reader MUST NOT be extensible by a program: syntax MUST grow at the abstract-syntax-tree level through macros rather than through reader macros, so that the text-to-canonical-representation reader stays outside the compiler's trusted path.
 
+### A Tagged Template Is A Binding-Dispatched Compile-Time Macro Over Literal Chunks And Holes
+
+A tagged template — an identifier written immediately before a string literal, with no intervening whitespace, such as `tag"…text…{expr}…"` — MUST lex to a single canonical abstract-syntax-tree node carrying the tag name, the literal string chunks between the interpolation holes, and the holes, so that an embedded foreign syntax is captured as ordinary program data.
+
+The reader MUST NOT run any program code or learn any grammar when lexing a tagged template: it MUST only split the string body into literal chunks and `{…}` holes, so that the reader stays outside the compiler's trusted path exactly as it does for every other form.
+
+Each interpolation hole `{expr}` MUST be parsed as an ordinary expression of the language and MUST appear in the node as such, and the count of literal chunks MUST be exactly one greater than the count of holes, so that the chunks and holes reconstruct the original text in order.
+
+The tag MUST be dispatched by binding, not by spelling: the compiler MUST resolve the tag name to a binding and require it to be a compile-time function from a list of the chunk strings and a list of the hole expressions to an abstract syntax tree, so that a program adds an embedded domain-specific syntax by defining or importing such a function rather than by extending the reader.
+
+The compiler MUST evaluate that function on the one-tier compile-time evaluation mechanism, applied to the chunks and holes, and MUST splice its resulting abstract syntax tree in the tagged template's position, expanding to a fixpoint before type checking, so that a tagged template is meaning-equivalent to the hand-written program its tag function produces and is type-checked as ordinary code.
+
 ### A Typed Quote Carries The Type Of The Expression It Builds
 
 A quote used to build an expression MUST carry the type of the expression it constructs, so that a macro that produces an ill-typed expression is rejected at the macro rather than downstream at the macro's expansion site.

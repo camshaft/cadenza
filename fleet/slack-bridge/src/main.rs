@@ -61,7 +61,17 @@ async fn main() {
         tokio::spawn(runner::watchdog_loop(repo_root))
     };
 
-    match cfg.tokens() {
+    // WATCHDOG_ONLY forces the dormant (watchdog-runs, no Socket Mode) path even when tokens ARE present.
+    // Used to run JUST the reliability-backbone watchdog as a second process WITHOUT opening a competing
+    // Socket Mode connection to the same Slack app (which would load-balance events away from the primary
+    // bridge). The watchdog was spawned above and keeps running regardless.
+    let watchdog_only = std::env::var("WATCHDOG_ONLY").is_ok_and(|v| v != "0" && !v.is_empty());
+    let tokens = if watchdog_only { None } else { cfg.tokens() };
+    if watchdog_only {
+        tracing::info!("WATCHDOG_ONLY set — running the watchdog only, NOT opening Socket Mode");
+    }
+
+    match tokens {
         Some(tokens) => {
             tracing::info!("slack tokens present — starting Socket Mode + the outbound mirror");
             // The outbound mirror/relay poll loop.
@@ -73,15 +83,18 @@ async fn main() {
             outbound.abort();
         }
         None => {
-            tracing::warn!(
-                "no Slack tokens (set SLACK_BOT_TOKEN + SLACK_APP_TOKEN, or {}); \
-                 running WATCHDOG-ONLY until they're provided",
-                ThreadMap::path(&cfg.fleet_dir)
-                    .parent()
-                    .map(|p| p.join("slack.toml").display().to_string())
-                    .unwrap_or_default()
-            );
-            // Dormant: keep the process alive so the watchdog keeps running; a restart picks up tokens.
+            if !watchdog_only {
+                tracing::warn!(
+                    "no Slack tokens (set SLACK_BOT_TOKEN + SLACK_APP_TOKEN, or {}); \
+                     running WATCHDOG-ONLY until they're provided",
+                    ThreadMap::path(&cfg.fleet_dir)
+                        .parent()
+                        .map(|p| p.join("slack.toml").display().to_string())
+                        .unwrap_or_default()
+                );
+            }
+            // Dormant: keep the process alive so the watchdog keeps running (a restart picks up tokens, or
+            // it's an intentional WATCHDOG_ONLY run).
             loop {
                 tokio::time::sleep(Duration::from_secs(3600)).await;
             }
