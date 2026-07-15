@@ -151,6 +151,7 @@ pass	Unit.in converts a quantity to a chosen smaller unit exactly (Int)
 pass	Unit.in to a unit of a different dimension is a compile-time error
 pass	XOR cancellation returns the original runtime value (constant key)
 pass	XOR cancellation returns the original value even when the key is a runtime value
+pass	`?` on the failure variant short-circuits the boundary (Option, None path)
 pass	`?` on the success variant unwraps the payload (Option, happy path)
 pass	`try` takes exactly one operand — a two-operand form is malformed
 pass	`try` takes exactly one operand — a zero-operand form is malformed
@@ -1173,6 +1174,7 @@ pass	a projection chain through a record inside a tuple retains the consumed chi
 pass	a projection chain through a tuple inside a record retains the consumed child
 pass	a pure lambda passed as an argument to a performing callee folds
 pass	a pure let-bound lambda and a performing one are both applied in the handle body
+pass	a pure shared subexpression computes the same value however the backend optimizes it
 pass	a qualified construct and a bare match name the same colliding variant
 pass	a quantity built from an extracted unit is dimensionally checked
 pass	a quantity is constructed from a numeric value and a unit
@@ -2810,7 +2812,6 @@ pass	wrapping-add wraps a boundary-crossing runtime Int64 at the max boundary
 pass	wrapping-mul on a runtime UInt8 wraps modulo 256
 pass	wrapping-mul wraps a boundary-crossing runtime Int64
 todo	SUM ARG + LIST RESULT declines cleanly (Option arg, List result)
-pass	`?` on the failure variant short-circuits the boundary (Option, None path)
 todo	a closure returning Unit is declined — Unit has no machine representation
 todo	a closure-typed closure ARG on the DIRECT-CALL path is declined — host would supply the closure
 todo	a producer capturing a host-supplied COMPOUND parameter is declined — host→guest decode
