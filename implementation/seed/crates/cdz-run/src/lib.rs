@@ -634,90 +634,114 @@ fn iface_func_sigs(engine: &Engine, item: &ComponentItem) -> Option<Vec<IfaceFun
     }
 }
 
-/// Validate that each peer's EXPORTED interface func matches the SIGNATURE of the CONSUMER's like-named
-/// IMPORT — the op is PRESENT, and both its arity (param/result count) and its position-by-position
-/// component types agree. A raw-closure forward (`bind_peer_ifaces_into`) does no subtype check, so a
-/// mismatch (a MISSING op, a differing arity, OR a differing type — e.g. consumer `neg : s64->s64` vs
-/// peer `neg : f64->f64`) would surface only as an opaque error: a missing op as wasmtime's
-/// instance-level "a matching implementation was not found in the linker" (never naming the op), an
-/// arity/type mismatch as a runtime trap. Catching all three here yields an actionable compose-time
-/// error naming the interface, op, and the disagreement. (Only interfaces the consumer actually imports
-/// are checked, so an EXTRA peer op the consumer doesn't bind is not an error.)
+/// Validate that a PROVIDER component's EXPORTED interface func matches the SIGNATURE the IMPORTER
+/// declares for the interface `iface` — the op is PRESENT, and both its arity (param/result count) and
+/// its position-by-position component types agree. `who` labels the importer in the error (`the
+/// consumer` / `peer \`cadenza:mid/api\``). A raw-closure forward (`bind_peer_ifaces_into`) does no
+/// subtype check, so a mismatch (a MISSING op, a differing arity, OR a differing type) would surface
+/// only as an opaque error: a missing op as wasmtime's instance-level "a matching implementation was
+/// not found in the linker" (never naming the op), an arity/type mismatch as a runtime trap. Returns
+/// `Ok` when the importer does not import `iface` at all (nothing to check).
+fn check_one_iface_binding(
+    engine: &Engine,
+    importer_type: &wasmtime::component::types::Component,
+    provider: &Component,
+    iface: &str,
+    who: &str,
+) -> Result<()> {
+    // The importer's declared signature for this interface (if it imports it at all).
+    let Some(want_iface) = importer_type
+        .imports(engine)
+        .find(|(n, _)| *n == iface)
+        .and_then(|(_, item)| iface_func_sigs(engine, &item))
+    else {
+        return Ok(());
+    };
+    let got_iface: Vec<IfaceFuncSig> = provider
+        .component_type()
+        .exports(engine)
+        .find(|(n, _)| *n == iface)
+        .and_then(|(_, item)| iface_func_sigs(engine, &item))
+        .unwrap_or_default();
+    for (fname, want_params, want_results) in &want_iface {
+        let Some((_, got_params, got_results)) = got_iface.iter().find(|(n, _, _)| n == fname)
+        else {
+            let offered: Vec<&str> = got_iface.iter().map(|(n, _, _)| n.as_str()).collect();
+            return Err(anyhow!(
+                "peer `{iface}` does not export op `{fname}`, which {who} binds — the peer's \
+                 interface offers {} — the peer must export every op the binding names",
+                if offered.is_empty() {
+                    "no ops".to_string()
+                } else {
+                    format!("[{}]", offered.join(", "))
+                },
+            ));
+        };
+        // Arity first (the count disagreement is the clearest message), then position-by-position types
+        // (matching arity but a differing type, e.g. s64 vs f64, is the subtler face).
+        if got_params.len() != want_params.len() || got_results.len() != want_results.len() {
+            return Err(anyhow!(
+                "peer `{iface}` op `{fname}` signature mismatch: {who} imports it taking {} \
+                 argument(s) and returning {} result(s), but the peer exports it taking {} \
+                 argument(s) and returning {} result(s) — the peer's interface must match the binding",
+                want_params.len(),
+                want_results.len(),
+                got_params.len(),
+                got_results.len(),
+            ));
+        }
+        let param_mismatch = want_params
+            .iter()
+            .zip(got_params.iter())
+            .position(|(w, g)| w != g)
+            .map(|i| ("argument", i, &want_params[i], &got_params[i]));
+        let result_mismatch = want_results
+            .iter()
+            .zip(got_results.iter())
+            .position(|(w, g)| w != g)
+            .map(|i| ("result", i, &want_results[i], &got_results[i]));
+        if let Some((role, idx, want, got)) = param_mismatch.or(result_mismatch) {
+            return Err(anyhow!(
+                "peer `{iface}` op `{fname}` type mismatch at {role} {idx}: {who} imports it with \
+                 type `{want:?}` there, but the peer exports it with type `{got:?}` — the peer's \
+                 interface must match the binding"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Validate every consumer↔peer AND peer↔peer interface binding at compose time (see
+/// [`check_one_iface_binding`] for the per-binding check + why the raw-closure forward needs it). Two
+/// layers: the CONSUMER's imports against each peer that provides them, AND — for a MULTI-HOP chain
+/// (U11: A→B→C, where a middle peer B imports an earlier peer A) — each peer's imports against the
+/// EARLIER peers (dependency order, exactly how `run_with_peers` binds them). Without the second layer
+/// a mismatch in a chain peer's binding (B's binding of A) traps opaquely instead of naming the op.
 fn check_peer_iface_signatures(
     engine: &Engine,
     consumer: &Component,
     peers: &[Peer],
     peer_components: &[Component],
 ) -> Result<()> {
+    // Layer 1: the top consumer against each peer that provides an interface it imports.
     let ctype = consumer.component_type();
     for (peer, peer_component) in peers.iter().zip(peer_components.iter()) {
-        // The consumer's imported interface of this name (if any). A peer whose interface the consumer
-        // does not import is bound for a LATER peer (a chain), not the consumer — skip it here.
-        let Some(consumer_iface) = ctype
-            .imports(engine)
-            .find(|(n, _)| *n == peer.interface)
-            .and_then(|(_, item)| iface_func_sigs(engine, &item))
-        else {
-            continue;
-        };
-        let peer_iface: Vec<IfaceFuncSig> = peer_component
-            .component_type()
-            .exports(engine)
-            .find(|(n, _)| *n == peer.interface)
-            .and_then(|(_, item)| iface_func_sigs(engine, &item))
-            .unwrap_or_default();
-        for (fname, want_params, want_results) in &consumer_iface {
-            let Some((_, got_params, got_results)) = peer_iface.iter().find(|(n, _, _)| n == fname)
-            else {
-                // The consumer imports an op the peer's interface does NOT export. wasmtime otherwise
-                // fails to satisfy the consumer's whole interface import with an opaque instance-level
-                // error ("a matching implementation was not found in the linker") that never names the
-                // missing op. Report it here naming the op + what the peer DOES offer.
-                let offered: Vec<&str> = peer_iface.iter().map(|(n, _, _)| n.as_str()).collect();
-                return Err(anyhow!(
-                    "peer `{}` does not export op `{fname}`, which the consumer binds — the peer's \
-                     interface offers {} — the peer must export every op the consumer's binding names",
-                    peer.interface,
-                    if offered.is_empty() {
-                        "no ops".to_string()
-                    } else {
-                        format!("[{}]", offered.join(", "))
-                    },
-                ));
-            };
-            // Arity first (the count disagreement is the clearest message), then position-by-position
-            // types (matching arity but a differing type, e.g. s64 vs f64, is the subtler face).
-            if got_params.len() != want_params.len() || got_results.len() != want_results.len() {
-                return Err(anyhow!(
-                    "peer `{}` op `{fname}` signature mismatch: the consumer imports it taking \
-                     {} argument(s) and returning {} result(s), but the peer exports it taking {} \
-                     argument(s) and returning {} result(s) — the peer's interface must match the \
-                     consumer's binding",
-                    peer.interface,
-                    want_params.len(),
-                    want_results.len(),
-                    got_params.len(),
-                    got_results.len(),
-                ));
-            }
-            let param_mismatch = want_params
-                .iter()
-                .zip(got_params.iter())
-                .position(|(w, g)| w != g)
-                .map(|i| ("argument", i, &want_params[i], &got_params[i]));
-            let result_mismatch = want_results
-                .iter()
-                .zip(got_results.iter())
-                .position(|(w, g)| w != g)
-                .map(|i| ("result", i, &want_results[i], &got_results[i]));
-            if let Some((role, idx, want, got)) = param_mismatch.or(result_mismatch) {
-                return Err(anyhow!(
-                    "peer `{}` op `{fname}` type mismatch at {role} {idx}: the consumer imports it \
-                     with type `{want:?}` there, but the peer exports it with type `{got:?}` — the \
-                     peer's interface must match the consumer's binding",
-                    peer.interface
-                ));
-            }
+        check_one_iface_binding(
+            engine,
+            &ctype,
+            peer_component,
+            &peer.interface,
+            "the consumer",
+        )?;
+    }
+    // Layer 2: each peer against every EARLIER peer (the chain — a middle component imports an earlier
+    // peer's interface). `run_with_peers` binds earlier peers into a later peer's linker in dependency
+    // order, so a peer at index `i` can import any peer at `j < i`.
+    for (i, (peer, peer_component)) in peers.iter().zip(peer_components.iter()).enumerate() {
+        let ptype = peer_component.component_type();
+        let who = format!("peer `{}`", peer.interface);
+        for (earlier, earlier_component) in peers[..i].iter().zip(peer_components[..i].iter()) {
+            check_one_iface_binding(engine, &ptype, earlier_component, &earlier.interface, &who)?;
         }
     }
     Ok(())
