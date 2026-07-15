@@ -7894,3 +7894,87 @@
             (def (main) (head-of (idast 3 (Ast.List (list (Ast.Name "a") (Ast.Int 5))))))
             (export main)))
   (output (: 100 Int64)))
+
+; --- Non-variant-0 payload TYPE resolution: the remaining slot/shape faces -------------------------
+; 134dee198 fixed the wasm discriminant walk resolving a Payload step's type via variant 0 (the
+; entered variant's payload type is now recorded as the walk descends) and pinned the last-variant
+; list-payload face. These pin the neighboring faces the same walk must get right: a MIDDLE-variant
+; slot, payload-IN-payload recursion, a late-variant TUPLE payload, and mixed payload widths across
+; the variant set (the misresolution read variant 0's Int64 layout for whatever slot it was in — any
+; of these shapes regresses if the recorded type is dropped or keyed to the wrong path).
+
+(case "a nested element pattern dispatches on a MIDDLE-variant list payload"
+  (doc    "`(type T (I Int64) (L (List T)) (S String))` — the list payload sits at variant 1, between
+           two scalar-payload variants (the landed case pins the LAST slot; a walk that special-cased
+           'last' or re-derived from the root still misreads a middle slot). `(head-kind (T.L [S \"x\"]))`
+           dispatches the nested `(T.S _)` element pattern → 7. A variant-0 fallback reads the element
+           discriminant through Int64 layout → garbage dispatch.")
+  (input  (do
+            (type T (I Int64) (L (List T)) (S String))
+            (def (head-kind (: t T))
+              (match t
+                ((T.L (list (T.S _) .. _)) 7)
+                (_ 0)))
+            (def (main (: d Int64))
+              (head-kind (T.L (List.push (list) (T.S "x")))))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 7 Int64)))
+
+(case "a payload-in-payload nested list pattern dispatches through two recorded types"
+  (doc    "Two levels of non-variant-0 payload: `(T.L [T.L [T.S \"x\"]])` matched by
+           `((T.L (list (T.L (list (T.S _) .. _)) .. _)) …)` — the walk enters variant L, reads element
+           0, enters variant L AGAIN one level down, reads ITS element 0, and dispatches on S. The
+           entered-variant type must be recorded at EACH Payload step of the path (a single-level
+           record that resets at the inner descent re-derives via variant 0 there). The outer probe
+           (110) and the single-level control (10) sum to 120.")
+  (input  (do
+            (type T (I Int64) (S String) (L (List T)))
+            (def (probe (: t T))
+              (match t
+                ((T.L (list (T.L (list (T.S _) .. _)) .. _)) 110)
+                ((T.L (list (T.S _) .. _)) 10)
+                (_ 0)))
+            (def (main (: d Int64))
+              (+ (probe (T.L (List.push (list) (T.L (List.push (list) (T.S "x"))))))
+                 (probe (T.L (List.push (list) (T.S "y"))))))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 120 Int64)))
+
+(case "a tuple payload at a late variant projects both fields by its own layout"
+  (doc    "`(type T (I Int64) (F Int64) (S String) (P (Tuple String Int64)))` — a TUPLE payload at
+           variant 3, whose layout (heap handle + i64) differs from variant 0's scalar Int64. Binding
+           `p` and projecting both fields must use the ENTERED variant's payload type: byte-len \"ab\"
+           + 5 = 7. A variant-0 resolution projects the tuple through Int64 layout (reads the handle as
+           the value, or mis-sizes the second field).")
+  (input  (do
+            (type T (I Int64) (F Int64) (S String) (P (Tuple String Int64)))
+            (def (main (: d Int64))
+              (match (T.P (tuple "ab" 5))
+                ((T.P p) (+ (String.byte-len (. p 0)) (. p 1)))
+                (_ 0)))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 7 Int64)))
+
+(case "mixed payload widths across the variant set dispatch and read correctly"
+  (doc    "`(type T (I Int64) (F Float64) (S String) (L (List T)))` — four variants, four DISTINCT
+           payload layouts (i64, f64, heap string, heap list). One function matches both a nested
+           list-element pattern (variant 3, → 1) and a string payload read (variant 2, byte-len \"ab\"
+           → 2), so the same match walk resolves two different non-variant-0 payload types in one
+           decision tree: 1 + 2 = 3. Pins that the recorded types are per-path, not a single latched
+           value.")
+  (input  (do
+            (type T (I Int64) (F Float64) (S String) (L (List T)))
+            (def (kind (: t T))
+              (match t
+                ((T.L (list (T.S _) .. _)) 1)
+                ((T.S s) (String.byte-len s))
+                (_ 0)))
+            (def (main (: d Int64))
+              (+ (kind (T.L (List.push (list) (T.S "x"))))
+                 (kind (T.S "ab"))))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 3 Int64)))

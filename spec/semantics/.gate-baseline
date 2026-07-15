@@ -973,6 +973,7 @@ pass	a nested constructor pattern dispatches a RUNTIME two-sum value
 pass	a nested constructor payload that misses the inner variant falls through to the outer sibling
 pass	a nested constructor value dispatches on both tags in a match
 pass	a nested element kind mismatch in equality is a type error
+pass	a nested element pattern dispatches on a MIDDLE-variant list payload
 pass	a nested element pattern dispatches on a NON-variant-0 list payload
 pass	a nested if on the same condition collapses the inner test to the known branch
 pass	a nested lambda captures+applies a closure-typed def PARAMETER (inline lambda argument)
@@ -1053,6 +1054,7 @@ pass	a partially-applied function escapes as a value and runs through a recursiv
 pass	a pattern binds a name scoped to its branch
 pass	a pattern that binds the same name across nested sub-patterns is rejected
 pass	a pattern that binds the same name twice is rejected
+pass	a payload-in-payload nested list pattern dispatches through two recorded types
 pass	a peephole rewrite rule reads in the shape of the code it rewrites
 pass	a perform SHORT-CIRCUITED out of an or's right operand is NOT executed (empty host-calls)
 pass	a perform composes as the SOURCE of a pipeline
@@ -1528,6 +1530,7 @@ pass	a tuple pattern against a sum scrutinee is a type error
 pass	a tuple pattern of the wrong arity is a type error
 pass	a tuple pattern over a map scrutinee is a type error
 pass	a tuple pattern over a non-tuple scrutinee is a type error
+pass	a tuple payload at a late variant projects both fields by its own layout
 pass	a tuple payload consumed INLINE in the sum arm projects and re-matches
 pass	a tuple payload extracted through a helper return must not be rejected as a type error
 pass	a tuple payload returned through a helper from a built-in Option must not trap
@@ -2147,6 +2150,7 @@ pass	merging two empty records is the empty record
 pass	merging two records with disjoint fields unions their fields
 pass	merging with the empty record on the left is the identity
 pass	merging with the empty record on the right is the identity
+pass	mixed payload widths across the variant set dispatch and read correctly
 pass	mixed: two closure exports alongside a plain export — driving the plain export
 pass	mixing a prefixed unit across DIFFERENT dimensions is still a compile-time error
 pass	mixing nullary and unary constructors in one match
