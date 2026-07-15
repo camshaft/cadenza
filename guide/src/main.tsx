@@ -4,6 +4,7 @@ import { createBrowserRouter, Outlet, RouterProvider, ScrollRestoration } from "
 import { Layout } from "./components/Layout.tsx";
 import HomePage from "./components/HomePage.tsx";
 import { RouteError } from "./components/RouteError.tsx";
+import { UpdateToast } from "./components/UpdateToast.tsx";
 import { SyntaxProvider } from "./syntax/SyntaxContext.tsx";
 import { ProgressProvider } from "./progress/ProgressContext.tsx";
 import "./index.css";
@@ -21,6 +22,9 @@ function RootLayout() {
     <>
       <ScrollRestoration getKey={(location) => location.pathname} />
       <Outlet />
+      {/* Proactive stale-deploy detection: polls version.json, prompts a refresh when a newer bundle
+          ships while this tab is open. Sits at the root so it's present on every route. */}
+      <UpdateToast />
     </>
   );
 }

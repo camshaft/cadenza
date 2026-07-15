@@ -2,8 +2,16 @@ import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { fileURLToPath } from "node:url";
-import { copyFileSync, existsSync } from "node:fs";
+import { copyFileSync, existsSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
+
+// A per-BUILD id, stamped once at config time. Injected into the bundle (so the running app knows the
+// version it was built from) AND written to `dist/version.json` (which the app polls). When a new
+// deploy publishes a different id, a still-open tab sees version.json change and prompts a refresh —
+// proactive detection of a stale bundle, complementing the reactive chunk-404 recovery (RouteError).
+// A timestamp is enough: it is monotonic across builds and needs no git. (Config runs in Node, where
+// Date.now() is available — unlike a workflow script.)
+const BUILD_ID = String(Date.now());
 
 // GitHub Pages has no server-side SPA rewrite: a deep link like `/cadenza/basics` 404s. Pages serves
 // `404.html` for any unknown path, so copying the built `index.html` to `404.html` makes every deep
@@ -20,6 +28,22 @@ function spaFallback(): Plugin {
       const index = resolve(out, "index.html");
       if (!existsSync(index)) return;
       copyFileSync(index, resolve(out, "404.html"));
+    },
+  };
+}
+
+// Write `dist/version.json` = `{ "version": <BUILD_ID> }`. The running app polls this (on focus / route
+// change) and, when it differs from the id baked into the bundle, prompts a refresh — so a reader on an
+// old tab learns a new version shipped before they hit a 404. Emitted at build only (dev serves the
+// same value through the `define` below; the poll fetch simply 404s in dev, which the client ignores).
+function emitVersion(): Plugin {
+  return {
+    name: "emit-version-json",
+    apply: "build",
+    closeBundle() {
+      const out = resolve(fileURLToPath(new URL("./dist", import.meta.url)));
+      if (!existsSync(out)) return;
+      writeFileSync(resolve(out, "version.json"), JSON.stringify({ version: BUILD_ID }) + "\n");
     },
   };
 }
@@ -44,7 +68,11 @@ const base = process.env.VITE_BASE ?? "/";
 
 export default defineConfig({
   base,
-  plugins: [react(), tailwindcss(), spaFallback()],
+  // Bake the build id into the bundle so the running app can compare itself to the polled version.json.
+  define: {
+    __BUILD_ID__: JSON.stringify(BUILD_ID),
+  },
+  plugins: [react(), tailwindcss(), spaFallback(), emitVersion()],
   resolve: {
     alias: {
       "oxc-minify": stub,
