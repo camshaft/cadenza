@@ -1526,6 +1526,11 @@ fn collect_used_ops_into(
                 if let Ok(Some(op)) = box_op(db, *elem) {
                     out.insert(op);
                 }
+                // A rope-capable String/Bytes element is `bytes-compact`ed on construction (the emit
+                // arm's nested-rope canonicalization), so import it.
+                if elem_needs_rope_compaction(db, *elem) {
+                    out.insert(OP_BYTES_COMPACT);
+                }
                 collect_used_ops_into(db, *elem, out);
             }
         }
@@ -1559,6 +1564,9 @@ fn collect_used_ops_into(
             for elem in &elems {
                 if let Ok(Some(op)) = box_op(db, *elem) {
                     out.insert(op);
+                }
+                if elem_needs_rope_compaction(db, *elem) {
+                    out.insert(OP_BYTES_COMPACT);
                 }
                 collect_used_ops_into(db, *elem, out);
             }
@@ -2018,6 +2026,9 @@ fn collect_used_ops_into(
                 if let Ok(Some(op)) = box_op(db, *value) {
                     out.insert(op);
                 }
+                if elem_needs_rope_compaction(db, *value) {
+                    out.insert(OP_BYTES_COMPACT);
+                }
                 collect_used_ops_into(db, *value, out);
             }
         }
@@ -2041,6 +2052,9 @@ fn collect_used_ops_into(
                     if let Ok(Some(op)) = box_op(db, payloads[0]) {
                         out.insert(op);
                     }
+                    if elem_needs_rope_compaction(db, payloads[0]) {
+                        out.insert(OP_BYTES_COMPACT);
+                    }
                     collect_used_ops_into(db, payloads[0], out);
                 }
                 _ => {
@@ -2049,6 +2063,9 @@ fn collect_used_ops_into(
                     for p in &payloads {
                         if let Ok(Some(op)) = box_op(db, *p) {
                             out.insert(op);
+                        }
+                        if elem_needs_rope_compaction(db, *p) {
+                            out.insert(OP_BYTES_COMPACT);
                         }
                         collect_used_ops_into(db, *p, out);
                     }
@@ -4784,6 +4801,11 @@ fn emit(
                     emit_box_i32_to_i64_extend(db, value, out);
                     out.push(Lir::CallImport(op)); // [arr, i, handle]
                 }
+                // Canonicalize a rope-capable String/Bytes field to a flat leaf on construction (see the
+                // `Core::Tuple` arm) — a record IS a tuple at run time, so the same nested-rope face.
+                if elem_needs_rope_compaction(db, value) {
+                    out.push(Lir::CallImport(OP_BYTES_COMPACT)); // [arr, i, flat-leaf]
+                }
                 out.push(Lir::CallImport(OP_ARR_SET)); // → [arr]
             }
             Ok(()) // leaves [arr] — the record handle
@@ -4814,6 +4836,13 @@ fn emit(
                     emit_box_i32_to_i64_extend(db, elem, out);
                     out.push(Lir::CallImport(op)); // [arr, i, handle]
                 }
+                // CANONICALIZE a rope-capable String/Bytes element to a flat leaf on construction (the
+                // nested-leaf twin of the `op_box_float` normalize-on-construct + the top-level `=`
+                // compaction), so the tagless `champ_eq`/`champ_hash` walk compares a nested string by
+                // content, not rope-physical bytes. rc-neutral (see `elem_needs_rope_compaction`).
+                if elem_needs_rope_compaction(db, elem) {
+                    out.push(Lir::CallImport(OP_BYTES_COMPACT)); // [arr, i, flat-leaf]
+                }
                 out.push(Lir::CallImport(OP_ARR_SET)); // → [arr]
             }
             Ok(()) // leaves [arr] — the tuple handle
@@ -4838,6 +4867,12 @@ fn emit(
                 if let Some(op) = box_op(db, elem)? {
                     emit_box_i32_to_i64_extend(db, elem, out);
                     out.push(Lir::CallImport(op)); // [arr, i, handle]
+                }
+                // Canonicalize a rope-capable String/Bytes element to a flat leaf on construction (see
+                // the `Core::Tuple` arm) — a list element nested in a value-eq'd/keyed compound is the
+                // same nested-rope face.
+                if elem_needs_rope_compaction(db, elem) {
+                    out.push(Lir::CallImport(OP_BYTES_COMPACT)); // [arr, i, flat-leaf]
                 }
                 out.push(Lir::CallImport(OP_ARR_SET)); // → [arr]
             }
@@ -5230,6 +5265,12 @@ fn emit(
                         emit_box_i32_to_i64_extend(db, p, out);
                         out.push(Lir::CallImport(op)); // [disc, payload-handle]
                     }
+                    // Canonicalize a rope-capable String/Bytes payload to a flat leaf on construction
+                    // (see the `Core::Tuple` arm) — a rope in a sum payload (e.g. `(Some (concat …))`)
+                    // is the sum-payload face of the nested-rope value-eq/key miss.
+                    if elem_needs_rope_compaction(db, p) {
+                        out.push(Lir::CallImport(OP_BYTES_COMPACT)); // [disc, flat-leaf]
+                    }
                 }
                 n => {
                     // Multiple payloads: build a tuple `arr` and box each into its position.
@@ -5241,6 +5282,10 @@ fn emit(
                         if let Some(op) = box_op(db, p)? {
                             emit_box_i32_to_i64_extend(db, p, out);
                             out.push(Lir::CallImport(op)); // [disc, arr, i, handle]
+                        }
+                        // Canonicalize a rope-capable payload element on construction (see above).
+                        if elem_needs_rope_compaction(db, p) {
+                            out.push(Lir::CallImport(OP_BYTES_COMPACT)); // [disc, arr, i, flat-leaf]
                         }
                         out.push(Lir::CallImport(OP_ARR_SET)); // [disc, arr]
                     }
@@ -7869,6 +7914,30 @@ fn key_handle_is_owned_temporary(db: &mut Db, key: StructId, key_ty: &Ty) -> Res
     // An unboxed, uncompacted key is used as-is: drop it only if the operand is a fresh owned handle (a
     // constructor / call / const compound); a borrowed param/local/projection is left to its owner.
     Ok(heap_operand_ownership(db, key)? == HandleOwnership::Owned)
+}
+
+/// Whether a compound ELEMENT (tuple/record/list element, sum payload) is a rope-capable byte value — a
+/// `String`/`Symbol` (a `String.concat` rope) or a `Bytes` (a `Bytes.concat`/`.slice` rope), peeling
+/// nominals. Such a leaf STORED INSIDE a compound must be CANONICALIZED with `bytes-compact` at the
+/// construction site, exactly as `op_box_float` canonicalizes a NaN when a float leaf is boxed: the value
+/// heap is TAGLESS, so `champ_eq`/`champ_hash`'s structural walk compares a nested leaf by its PHYSICAL
+/// raw bytes and cannot know a child is a rope (vs a compound), so a rope leaf nested in a tuple/record/
+/// sum/map-key compares UNEQUAL to its flat twin (and a compound map key containing one lands in a
+/// different CHAMP slot). Compacting on construction means no compound ever holds a rope, so the walk's
+/// physical compare is exact — the nested-leaf twin of the `Core::ValueEq`/key-path top-level compaction.
+/// `bytes-compact` is REFCOUNT-NEUTRAL (it flattens the node IN PLACE and returns the same handle, a
+/// no-op on an already-flat leaf) and `bytes_flatten` is content-preserving hence safe even on a SHARED
+/// node, so it is sound for an element of ANY ownership (an owned `String.concat` result, or a BORROWED
+/// String param the caller could have passed as a rope — the case a naive owned-only compile-time fix
+/// would miss).
+fn elem_needs_rope_compaction(db: &mut Db, id: StructId) -> bool {
+    fn peel(ty: &Ty) -> &Ty {
+        match ty {
+            Ty::Nominal { inner, .. } => peel(inner),
+            other => other,
+        }
+    }
+    matches!(peel(&type_of(db, id)), Ty::String | Ty::Symbol | Ty::Bytes)
 }
 
 fn heap_operand_ownership(db: &mut Db, id: StructId) -> Result<HandleOwnership, Reject> {

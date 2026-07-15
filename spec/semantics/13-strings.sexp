@@ -1144,3 +1144,109 @@
                     ((. T Leaf) 0))))
             (export main)))
   (call   main (: 0 Int64)) (output (: 2 Int64)))
+
+; --- A rope String NESTED IN A COMPOUND compares/keys by CONTENT (v-runtime) ----------------------
+; The top-level `=`/map-key compaction (above) canonicalizes a rope String when the string IS the
+; operand/key. But the value heap is TAGLESS: `champ_eq`/`champ_hash`'s structural walk compares a
+; nested leaf by its PHYSICAL raw bytes and cannot tell a rope-of-bytes child from a compound child, so
+; a rope String NESTED in a tuple/record/sum-payload/map-key compared UNEQUAL to its flat twin of equal
+; content (a silent wrong value; valid wasm, no diagnostic) — and a compound map key containing an
+; assembled string could not be looked up by its literal twin (silent None). The fix canonicalizes a
+; String/Bytes leaf with `bytes-compact` AT EACH COMPOUND CONSTRUCTION SITE — the nested-leaf twin of
+; `box-float`'s NaN normalize-on-construct — so no compound ever holds a rope and the tagless walk's
+; physical compare is exact. `rep s n` builds a rope by `n` concats (rope, content "hi"+n×"x"); one
+; concat suffices. Controls pin that a FLAT nested runtime string, identically-built ropes both sides,
+; and folded constants were never affected — it is the ROPE-in-a-compound face exactly.
+(case "a one-concat rope nested in a tuple equals its flat twin"
+  (doc    "`(= (tuple (rep \"hi\" 1) 1) (tuple \"hix\" 1))` — the left tuple's string element is a runtime
+           ROPE (one `String.concat`, content \"hix\"), the right's is the flat literal \"hix\". Structural
+           equality compares component-wise and string equality is by content, so the tuples are equal → 1.
+           Before the construction-site compaction the walk compared the nested rope leaf physically (rope
+           header bytes ≠ flat bytes) → 0. MINIMAL: one concat. Expected: 1.")
+  (input  (do
+            (def (rep (: s String) (: n Int64))
+              (if (< n 1) s (rep (String.concat s "x") (- n 1))))
+            (def (main) (if (= (tuple (rep "hi" 1) 1) (tuple "hix" 1)) 1 0))
+            (export main)))
+  (output (: 1 Int64)))
+
+(case "a rope in an Option payload equals its flat-twin payload"
+  (doc    "`(= (Option.Some (rep \"hi\" 3)) (Option.Some \"hixxx\"))` — tags match (both Some), payloads are
+           content-equal strings (rope vs flat \"hixxx\") → true → 1. The sum-payload face of the nested-rope
+           miss; the float twin (`(= (Some Float64.nan) (Some Float64.nan))`) already passed because a NaN is
+           canonicalized when its leaf is boxed — a String leaf needs the same treatment. Expected: 1.")
+  (input  (do
+            (def (rep (: s String) (: n Int64))
+              (if (< n 1) s (rep (String.concat s "x") (- n 1))))
+            (def (main) (if (= (Option.Some (rep "hi" 3)) (Option.Some "hixxx")) 1 0))
+            (export main)))
+  (output (: 1 Int64)))
+
+(case "a rope in a record field equals its flat-twin field"
+  (doc    "`(= (record (f (rep \"hi\" 3)) (g 1)) (record (f \"hixxx\") (g 1)))` — same field set, field `g`
+           equal, field `f` content-equal strings (rope vs flat) → true → 1. A record IS a tuple at run
+           time, so the same nested-rope face as the tuple case, keyed by field. Expected: 1.")
+  (input  (do
+            (def (rep (: s String) (: n Int64))
+              (if (< n 1) s (rep (String.concat s "x") (- n 1))))
+            (def (main) (if (= (record (f (rep "hi" 3)) (g 1)) (record (f "hixxx") (g 1))) 1 0))
+            (export main)))
+  (output (: 1 Int64)))
+
+(case "a compound map key containing a rope is found by its flat-twin key"
+  (doc    "`(Map.insert Map.empty (tuple (rep \"hi\" 3) 1) 42)` keys the map by a TUPLE whose string element
+           is a runtime rope (content \"hixxx\"); `(Map.lookup … (tuple \"hixxx\" 1))` looks up with the
+           flat-twin tuple. Equal keys → must find 42. Before the construction-site compaction the tuple key
+           was CHAMP-hashed with its nested rope leaf uncompacted, landing in a different slot than the
+           flat-twin query key → None (→ -1). The idiomatic \"key a map by (name, arity) where name was
+           assembled by concat\". Expected: 42.")
+  (input  (do
+            (def (rep (: s String) (: n Int64))
+              (if (< n 1) s (rep (String.concat s "x") (- n 1))))
+            (def (main)
+              (match (Map.lookup (Map.insert Map.empty (tuple (rep "hi" 3) 1) 42) (tuple "hixxx" 1))
+                ((Some v) v)
+                ((None) (- 0 1))))
+            (export main)))
+  (output (: 42 Int64)))
+
+(case "a compound map key whose LIST element is a rope is found by its flat-twin key"
+  (doc    "`(Map.insert Map.empty (list (rep \"hi\" 3)) 42)` keys the map by a single-element LIST whose
+           element is a runtime rope (content \"hixxx\"); `(Map.lookup … (list \"hixxx\"))` looks up with the
+           flat-twin list. A list element is stored on the value heap exactly like a tuple element, so the
+           nested-rope face reaches a list too; construction-site compaction canonicalizes the element leaf,
+           so the key hashes into the same CHAMP slot as its flat twin → 42 (before the fix: None → -1). (A
+           direct `=` on two lists is a separate, not-yet-built compare; the map-KEY path exercises the
+           list-element compaction here.) Expected: 42.")
+  (input  (do
+            (def (rep (: s String) (: n Int64))
+              (if (< n 1) s (rep (String.concat s "x") (- n 1))))
+            (def (main)
+              (match (Map.lookup (Map.insert Map.empty (list (rep "hi" 3)) 42) (list "hixxx"))
+                ((Some v) v)
+                ((None) (- 0 1))))
+            (export main)))
+  (output (: 42 Int64)))
+
+(case "a FLAT runtime string nested in a tuple is unaffected (control)"
+  (doc    "`(= (tuple (rep \"hi\" 0) 1) (tuple \"hi\" 1))` — `rep \"hi\" 0` returns the source string with NO
+           concat, so the nested element is a FLAT runtime leaf, not a rope. It compared equal to its flat
+           twin before AND after the fix — isolating the bug to the ROPE case, not runtime-ness. Expected: 1.")
+  (input  (do
+            (def (rep (: s String) (: n Int64))
+              (if (< n 1) s (rep (String.concat s "x") (- n 1))))
+            (def (main) (if (= (tuple (rep "hi" 0) 1) (tuple "hi" 1)) 1 0))
+            (export main)))
+  (output (: 1 Int64)))
+
+(case "identically-built ropes on both sides of a nested compare are equal (control)"
+  (doc    "`(= (tuple (rep \"hi\" 3) 1) (tuple (rep \"hi\" 3) 1))` — both nested elements are ropes built the
+           SAME way, so their physical shapes matched and this compared equal even BEFORE the fix (the
+           physical compare happened to agree). Pins that the fix does not disturb the already-equal case.
+           Expected: 1.")
+  (input  (do
+            (def (rep (: s String) (: n Int64))
+              (if (< n 1) s (rep (String.concat s "x") (- n 1))))
+            (def (main) (if (= (tuple (rep "hi" 3) 1) (tuple (rep "hi" 3) 1)) 1 0))
+            (export main)))
+  (output (: 1 Int64)))
