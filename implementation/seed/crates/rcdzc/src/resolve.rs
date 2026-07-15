@@ -4831,14 +4831,13 @@ mod tests {
         let head = (0..db.ast.structure.len() as u32)
             .map(StructId)
             .filter(|&id| db.ast.as_name(id) == Some("Temp"))
-            .filter(|&id| {
+            .find(|&id| {
                 // A member-access head: its parent is a `(. Temp …)` form with `Temp` at child index 1.
                 db.parent_of(id)
                     .and_then(|p| db.ast.as_form(p, "."))
                     .and_then(|t| t.first().copied())
                     == Some(id)
             })
-            .next()
             .expect("a `(. Temp …)` head");
         assert_eq!(
             resolved_of(&mut db, head),
