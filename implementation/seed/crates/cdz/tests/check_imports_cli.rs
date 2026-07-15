@@ -312,6 +312,37 @@ fn a_recovered_error_placeholder_does_not_cascade_into_an_unbound_name() {
 }
 
 #[test]
+fn a_recovered_error_placeholder_is_suppressed_in_any_downstream_code_not_just_unbound() {
+    // A failed production leaves the `<error>` placeholder wherever it was parsing, so it surfaces in
+    // DIFFERENT downstream checks by position — not only `unbound name` (CDZ0101). A garbled PARAMETER
+    // list (`(d: <Int64 meter>)`, an unsupported quantity-type surface) recovers several `<error>` binders,
+    // which the linearity check then reports as "parameter `<error>` is bound more than once" (CDZ0102) —
+    // plus misleading `<error>2` / `_<error>` fixes on the synthetic token. The suppression keys on the
+    // `<error>` reference in ANY code, so every placeholder-cascade line (and its bogus fix) is dropped,
+    // leaving only the real parse errors. The check still FAILS (the parse error).
+    let dir = pkg_dir("ml-garbled-params");
+    let bad = write(
+        &dir,
+        "bad.cdz",
+        "def f (d: <Int64 meter>) = d\ndef main() = f 1\n",
+    );
+    let (ok, stdout, stderr) = run(&["check", &bad]);
+    assert!(!ok, "a garbled parameter list must fail the check");
+    assert!(
+        !stdout.contains("`<error>`"),
+        "no placeholder-referencing diagnostic (CDZ0102 or otherwise) survives: {stdout}"
+    );
+    assert!(
+        !stdout.contains("<error>2") && !stdout.contains("_<error>"),
+        "the misleading fixes on the synthetic placeholder are gone too: {stdout}"
+    );
+    assert!(
+        stderr.contains("expected"),
+        "the real parse error is still surfaced: {stderr}"
+    );
+}
+
+#[test]
 fn a_fix_the_patch_engine_cannot_build_shows_no_help_line_and_no_json_fix() {
     // The text `help:` line and the JSON `fix` object must AGREE on whether a diagnostic has an
     // APPLICABLE fix — both are gated on the SAME built structural patch. The concrete trigger: a

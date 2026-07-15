@@ -1066,6 +1066,25 @@
                 (. (P.pair) 1))) (export main)))
   (output (: 6 Int64)))
 
+(case "a TUPLE-result perform's projected field feeds a SECOND perform's argument, threading state across both"
+  (doc    "The chained-compound-result shape: a perform returning a TUPLE has one of its fields projected
+           and fed as the ARGUMENT to a SECOND perform, with the handler state threading across BOTH. Two
+           ops on one effect: `St.pair : Unit -> (Tuple Int64 Int64)` resumes `(tuple s (+ s 1))` and
+           advances the state by 10; `St.add : Int64 -> Int64` resumes `(+ n s)` (state held). Seeded 5:
+           `(St.pair)` yields `(5, 6)` and threads state → 15; `(. (St.pair) 1)` projects 6; then `(St.add
+           6)` reads n = 6 and the ADVANCED state s = 15, resuming `6 + 15` = 21. Pins that a COMPOUND
+           perform result flows through a projection into a later perform's argument AND the state threads
+           inner-to-outer across the two performs (the pair's +10 advance is visible to the add) — the
+           compound-result companion of the nested/argument-position scalar sequencing cases, and the shape a
+           pass takes when one effectful step returns a bundle a later step consumes. Both backends agree.")
+  (input  (do
+            (effect St (op pair (-> Unit (Tuple Int64 Int64))) (op add (-> Int64 Int64)))
+            (def (main)
+              (handle St 5 ((pair (u) s (resume (tuple s (+ s 1)) (+ s 10)))
+                            (add (n) s (resume (+ n s) s)))
+                (St.add (. (St.pair) 1)))) (export main)))
+  (output (: 21 Int64)))
+
 (case "a handler whose STATE is a sum destructures it in the arm"
   (doc    "The handler's threaded STATE is a SUM (`Option Int64`), and the arm DESTRUCTURES it with a `match`
            to decide the resume value — the state-as-sum analogue of the scalar-countdown handlers. Seeded

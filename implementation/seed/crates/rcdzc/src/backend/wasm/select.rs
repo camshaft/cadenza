@@ -6336,7 +6336,17 @@ fn emit(
                 Prim::Mul if mul_pow2_shift(db, lhs, rhs, m).is_some() => {
                     let (val, k) = mul_pow2_shift(db, lhs, rhs, m).unwrap();
                     emit_mul_pow2_as_shift(
-                        db, m, val, k, slots, base, high, scratch_ty, layout, out,
+                        db,
+                        m,
+                        val,
+                        k,
+                        slots,
+                        base,
+                        high,
+                        scratch_ty,
+                        layout,
+                        out,
+                        ResultDest::Stack,
                     )
                 }
                 Prim::Add | Prim::Sub | Prim::Mul => emit_checked_arith(
@@ -9909,8 +9919,21 @@ fn emit_operand_into(
         if matches!(op, Prim::Mul)
             && let Some((val, k)) = mul_pow2_shift(db, lhs, rhs, m)
         {
-            emit_mul_pow2_as_shift(db, m, val, k, slots, base, high, scratch_ty, layout, out)?;
-            out.push(Lir::LocalSet(slot));
+            // Write the shift result DIRECTLY into the operand slot (its own `$r == slot`) — no separate
+            // `emit + local.set slot` copy, mirroring the nested checked `+`/`-`/`*` path below.
+            emit_mul_pow2_as_shift(
+                db,
+                m,
+                val,
+                k,
+                slots,
+                base,
+                high,
+                scratch_ty,
+                layout,
+                out,
+                ResultDest::Slot(slot),
+            )?;
             return Ok(());
         }
         return emit_checked_arith_to(
@@ -10473,6 +10496,7 @@ fn emit_mul_pow2_as_shift(
     scratch_ty: &mut HashMap<u32, ValType>,
     layout: &Layout,
     out: &mut Emit,
+    dest: ResultDest,
 ) -> Result<(), Reject> {
     let ot = IntTy::fixed(m.signed, m.width);
     let mut next_scratch = base;
@@ -10495,8 +10519,19 @@ fn emit_mul_pow2_as_shift(
             OperandSrc::Slot(s)
         }
     };
-    let sr = claim(high);
-    scratch_ty.insert(sr, m.slot());
+    // `$r` (result slot): the caller-requested destination when this shift is an OPERAND of an enclosing
+    // op (`Slot(d)`) — so this shift's `local.set` IS the store the enclosing op wanted, no `local.get $r ;
+    // local.set d` copy and no extra `$r` scratch — else a fresh scratch slot. `d` is one of the enclosing
+    // op's operand slots, claimed BELOW this op's `base`, so this op's own operand scratch never collides
+    // with it. The round-trip guard re-reads `$r`, which is fine at either a scratch slot or `d`.
+    let sr = match dest {
+        ResultDest::Slot(d) => d,
+        ResultDest::Stack => {
+            let s = claim(high);
+            scratch_ty.insert(s, m.slot());
+            s
+        }
+    };
     let operand_base = next_scratch;
     if sa_src.is_none()
         && let OperandSrc::Slot(sa_slot) = sa
@@ -10518,23 +10553,35 @@ fn emit_mul_pow2_as_shift(
     sa.push(out);
     out.push(m.konst(k as i64));
     out.push(m.shl());
-    out.push(Lir::LocalSet(sr));
     // GUARD ELISION: when interval analysis proves `val << k` (= `val * 2^k`) stays in the type, both the
     // round-trip overflow check AND the narrow range-check are dead — the machine `shl` already produced
-    // the exact result. `(* (& x 15) 2)` = `(& x 15) << 1` ∈ [0,30] fits Int64.
-    if !crate::lower::shl_provably_in_range(db, val, k) {
-        // Overflow round-trip: `($r >> k)` must recover `$a`, else the shift dropped bits out of the slot.
-        // The inverse shift matches signedness so the round-trip is exact (arithmetic for signed).
-        out.push(Lir::LocalGet(sr));
-        out.push(m.konst(k as i64));
-        out.push(m.shr());
-        sa.push(out);
-        out.push(m.ne());
-        out.push(Lir::IfIntegerOverflowEnd);
-        // Range-check: a narrow `<<` result may fit the slot but exceed the N-bit type.
-        emit_range_check(m, sr, ReachableBounds::Both, out);
+    // the exact result. `(* (& x 15) 2)` = `(& x 15) << 1` ∈ [0,30] fits Int64. With NO guard reading `$r`,
+    // the `local.set $r` exists only to place the result: for `Stack` leave it on the stack (emit nothing);
+    // for `Slot(d)` the single `local.set d` IS the store — mirrors `emit_checked_arith_to`'s elision.
+    if crate::lower::shl_provably_in_range(db, val, k) {
+        match dest {
+            ResultDest::Stack => {}
+            ResultDest::Slot(d) => out.push(Lir::LocalSet(d)),
+        }
+        return Ok(());
     }
+    // A guard follows and re-reads `$r` — store the machine result there first.
+    out.push(Lir::LocalSet(sr));
+    // Overflow round-trip: `($r >> k)` must recover `$a`, else the shift dropped bits out of the slot.
+    // The inverse shift matches signedness so the round-trip is exact (arithmetic for signed).
     out.push(Lir::LocalGet(sr));
+    out.push(m.konst(k as i64));
+    out.push(m.shr());
+    sa.push(out);
+    out.push(m.ne());
+    out.push(Lir::IfIntegerOverflowEnd);
+    // Range-check: a narrow `<<` result may fit the slot but exceed the N-bit type.
+    emit_range_check(m, sr, ReachableBounds::Both, out);
+    // Leave the result where the caller wants it: on the stack (`Stack`) or already in `$r == d` (`Slot`).
+    match dest {
+        ResultDest::Stack => out.push(Lir::LocalGet(sr)),
+        ResultDest::Slot(_) => {}
+    }
     Ok(())
 }
 
@@ -13180,6 +13227,48 @@ mod tests {
         let (params, body) = function_of(&mut db, "f");
         let f = select_function(&mut db, body, &params, &layout).expect("select");
         assert_eq!(f.declared, vec![ValType::I64; 2]);
+    }
+
+    #[test]
+    fn a_nested_strength_reduced_multiply_writes_the_operand_slot_directly() {
+        // (def (f (: a Int64)) (+ (* a 2) 1)) — `(* a 2)` strength-reduces to `a << 1` and is the LHS
+        // operand of the enclosing `+`. Instead of computing the shift into its OWN $r and copying that
+        // into the add's $a (`local.get $r_inner ; local.tee $a`, plus a dead $r_inner slot), the shift is
+        // emitted with `ResultDest::Slot($a)` so its `local.set` IS the store into the add's operand slot —
+        // exactly like the nested checked `+`/`-`/`*` path. The add's RHS is the inline constant `1` (no
+        // scratch). So the shift's own $r is the add's $a slot, and only that slot + the add's $r are
+        // declared: 2 locals, down from 3 before the dest-threading (the eliminated copy freed a local).
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: a Int64)) (+ (* a 2) 1)) (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
+        assert_eq!(
+            f.declared,
+            vec![ValType::I64; 2],
+            "the nested shift writes the add's operand slot directly — no extra $r_inner copy slot; got {:?}",
+            f.code
+        );
+        // The shift is present (strength reduction fired) and there is NO `i64.mul`.
+        assert!(
+            f.code.contains(&Lir::I64Shl) && !f.code.iter().any(|i| matches!(i, Lir::I64Mul)),
+            "the `* 2` is a shift, not a mul; got {:?}",
+            f.code
+        );
+        // No `local.get N ; local.tee M` handoff copy between the shift's result and the add's operand —
+        // the shift writes the operand slot directly, so its result is consumed in place. (A `local.get`
+        // immediately followed by `local.tee` was the copy the dest-threading removes.)
+        let copy = f
+            .code
+            .windows(2)
+            .any(|w| matches!(w, [Lir::LocalGet(_), Lir::LocalTee(_)]));
+        assert!(
+            !copy,
+            "no get-then-tee handoff of the shift result into the add operand slot; got {:?}",
+            f.code
+        );
     }
 
     // ── value-heap H2d: Perceus — a kept heap binding constructs then DROPS ───────────────────────

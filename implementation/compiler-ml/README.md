@@ -61,7 +61,7 @@ non-colliding names from a sibling.
 ## Structure (mirrors the rcdzc stages)
 
 Source modules live under `src/`; `Project.cdz`, `README.md`, `TESTING.md`, and `repros/` sit at the
-top. Current `src/` modules (each with same-file `@test`s — 327 tests total across 35 modules):
+top. Current `src/` modules (each with same-file `@test`s — 339 tests total across 36 modules):
 
 - `src/ast.cdz` — the AST datatype + pure traversals (`node-count`, `head-name`; the `ast.rs`
   analogue). One recursive sum; a node contains its children (no arena — the language has real
@@ -250,6 +250,15 @@ top. Current `src/` modules (each with same-file `@test`s — 327 tests total ac
   the end-to-end proof of the fix. 10 `@test`s. ⚠ INLINES `String.at`'s match in each loop arm rather than
   a `char-at` helper — a String-returning helper whose result is `==`-compared IN A LOOP declines (finding
   below).
+- `src/parse-checked.cdz` — a FALLIBLE recursive-descent parser: the same arithmetic grammar as `parse`
+  (which is total), but returning `Result(Expr, ParseError)` so a malformed token stream yields a
+  DIAGNOSTIC (what + at which token index) instead of a silently-wrong tree — what a real front end does.
+  Reuses `Tok`/`Expr` (cross-file from `parse`). Stresses `Result` threaded through MUTUAL recursion
+  (`pexpr ↔ pterm ↔ pfactor` each return `Result(Tuple(Expr, Int64), ParseError)`, short-circuiting to the
+  first `Err`). Reports `ExpectedFactor`/`ExpectedRParen` with position; tests cover empty / leading-op /
+  missing-`)` / trailing-token / dangling-op errors AND agreement with the total parser on valid input. 12
+  `@test`s. Confirmed WORKING. (⚠ hit the dotted-nullary-arm finding below: `Tok.TRP` in the `'(' expr ')'`
+  arm declined; bare `TRP` fixes it.)
 - `src/encode.cdz` — the INVERSE of `decode`: serialize an `Ast` to a flat byte buffer at RUN TIME
   (`Ast → Bytes`, via `Bytes.of`/`Bytes.concat` + `UInt8.wrap` over recursively-assembled fragments) —
   runtime byte CONSTRUCTION, the complement to `decode`'s reading. Its `@test`s prove the full ROUND-TRIP
@@ -472,20 +481,20 @@ still needs that seed fix; the STRUCTURE-and-scalars decode proves the arena→t
   backtick-escaped name resolve to the user binding at call position. Low-severity (rename works); the
   misleading diagnostic is the cost.
 
-- **OPEN (seed `rcdzc` — RESOLVER, both surfaces; RE-DIAGNOSED iter 25): a NULLARY variant DOTTED pattern
-  (`Ty.TInt`) in a NESTED match resolves as member ACCESS.**
-  `repros/reject-nullary-variant-pattern-in-nested-match.cdz`. `(match x | Ty.TInt => (match x | Ty.TInt
-  => …))` → CDZ0201 "member access requires a record". NOT ML-reader-only (my iter-24 note was wrong —
-  that test used a differently-wrapped sexpr): the ML reader emits `(. Ty TInt)` for a nullary pattern in
-  BOTH the outer and inner arms (identical arena shape), and the S-EXPR surface fails IDENTICALLY. The
-  resolver accepts the bare `(. Ty TInt)` as a nullary-ctor pattern at the OUTERMOST match arm but treats
-  it as a `Resolved::Member` expression in a NESTED match's arm (likely the inner match's scrutinee type
-  not resolving to `Sum` at that point → the scalar-match path lowers the arm pattern as an expr). The
-  correctly-WRAPPED nullary pattern `((. Ty TInt))` (a zero-arg ctor application) works nested + outer on
-  both surfaces, as does the non-nullary `Ty.TInt(_)`. Two fixes possible: the ML reader wraps a nullary
-  ctor pattern, OR the resolver treats a bare `(. T Ctor)` in ANY arm-pattern slot as a nullary ctor.
-  WORKAROUND (used by `src/apply-ty.cdz`): a top-level `tag`-helper maps each nullary variant to a scalar,
-  so nullary comparison is `tag(x) == tag(y)` and no nested nullary match is needed.
+- **OPEN (seed `rcdzc` — RESOLVER; ⚠ NARROWED iter 45, a sibling fixed the simpler nestings): a DOTTED
+  nullary-variant arm pattern (`T.LP`) whose ARM BODY nests a match on the SAME sum type mis-resolves as
+  member ACCESS.** `repros/reject-dotted-nullary-arm-with-nested-sametype-match.cdz` (+ the older
+  `reject-nullary-variant-pattern-in-nested-match.cdz`). A sibling FIXED the plain iter-24/25 nestings — a
+  lone nested nullary arm, an intermediate irrefutable arm, a mixed/scalar-scrutinee nest all `cdz check`
+  CLEAN now. RESIDUAL (iter 45): `match tok { T.Num(v) => …  | T.LP => (match tok2 { T.Num(m)=>m | _=>… })
+  | _=>… }` → CDZ0201 "member access requires a record — did you mean `LP`?" on the `T.LP` arm. SHARP: the
+  arm pattern is a DOTTED nullary (`T.LP`) — the BARE name `LP` is CLEAN (the workaround); its BODY nests a
+  match on a value of the SAME sum type `T` — a plain-expr body / a scalar-scrutinee nest / an all-wildcard
+  inner match are CLEAN; and the outer arm is NULLARY — a payload arm `T.Num(v)` is CLEAN. So the resolver,
+  when an arm body opens a same-type sum match, retroactively reads a sibling dotted-nullary arm as `(. T
+  LP)` member access. WORKAROUND: write nullary variant patterns with the BARE name (no `T.` prefix) —
+  `src/parse-checked.cdz` uses bare `TLP`/`TRP`/`End`. (`src/apply-ty.cdz` still uses the `tag`-helper for
+  its own case.)
 
 - **OPEN (seed `rcdzc` — MISSING op, spec-backed): a `Map`/`Set` cannot be ENUMERATED.**
   `repros/missing-map-set-enumeration.sexp`. `Map` has `empty`/`insert`/`lookup`/`remove`/`size`/`swap`/

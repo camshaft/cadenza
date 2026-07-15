@@ -2796,32 +2796,51 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
     {
         return lower_match_sum(db, scrutinee, arms);
     }
-    // A `(bin …)` pattern decodes a BYTES value, so it is only well-formed over a Bytes scrutinee. A bin
-    // pattern over a DEFINITE non-Bytes scrutinee (`(match n ((bin …) …))` for `n : Int64`, a String, a
-    // List) is a type error — you cannot binary-decode a non-Bytes value. It was neither type-checked (the
-    // Bytes bin branch below is gated on a Bytes scrutinee, so a non-Bytes one fell through) nor cleanly
-    // rejected: it reached the scalar path and declined with the misleading generic "a match pattern that
-    // is not a scalar literal or `_` is not yet supported". Name the real fault (CDZ0203), the bin twin of
-    // the map-key / list-element pattern-type checks. An `Any`/`Var` scrutinee (unsolved) is not a definite
-    // mismatch — skip it (a runtime Bytes still flows in). Anchored at the offending `(bin …)` arm pattern.
+    // A STRUCTURAL pattern head — `(bin …)` / `(list …)` / `(map …)` / `(tuple …)` — decodes a value of a
+    // SPECIFIC kind (Bytes / List / Map / Tuple respectively), so it is well-formed only over a scrutinee of
+    // that kind. Over a DEFINITE scrutinee of a DIFFERENT kind — a `(bin …)` on an Int64, a `(list …)` on a
+    // String, a `(map …)` on a List — it is a type error, but it was neither type-checked (each kind's
+    // lowering branch below is gated on the matching scrutinee type, so a mismatched one falls through) nor
+    // cleanly rejected (it reached the scalar/list path and declined with the misleading generic "a match
+    // pattern that is not a scalar literal or `_` is not yet supported"). Name the real fault (CDZ0203), the
+    // structural twin of the map-key / list-element pattern-type checks. (A Sum/Tuple/Record SCRUTINEE has
+    // already returned to `lower_match_sum` above, which type-checks a `(list …)`/`(map …)` pattern against
+    // it — so this only sees a SCALAR / Bytes / List / Map / Set scrutinee here, where the well-formed
+    // pattern kind is determined by the scrutinee type below.) `Any`/`Var` (unsolved) is not a definite
+    // mismatch — skip it (a runtime value of the right kind still flows in). Anchored at the offending arm.
     let scrut_ty = crate::infer::type_of(db, scrutinee);
-    if !matches!(
-        scrut_ty,
-        crate::ty::Ty::Bytes | crate::ty::Ty::Any | crate::ty::Ty::Var(_)
-    ) && let Some(&(bin_pat, _)) = arms
-        .iter()
-        .find(|&&(pat, _)| db.ast.head_name(pat) == Some("bin"))
+    let scrutinee_kind_word = |t: &crate::ty::Ty| match t {
+        crate::ty::Ty::Bytes => Some("bin"),
+        crate::ty::Ty::List(_) => Some("list"),
+        crate::ty::Ty::Map(..) => Some("map"),
+        crate::ty::Ty::Tuple(_) => Some("tuple"),
+        _ => None,
+    };
+    if !matches!(scrut_ty, crate::ty::Ty::Any | crate::ty::Ty::Var(_))
+        && let Some(&(bad_pat, _)) = arms.iter().find(|&&(pat, _)| {
+            matches!(
+                db.ast.head_name(pat),
+                Some("bin" | "list" | "map" | "tuple")
+            ) && db.ast.head_name(pat) != scrutinee_kind_word(&scrut_ty)
+        })
     {
+        let pat_head = db.ast.head_name(bad_pat).unwrap_or("");
+        let expects = match pat_head {
+            "bin" => "a Bytes value (binary matching)",
+            "list" => "a List value",
+            "map" => "a Map value",
+            "tuple" => "a Tuple value",
+            _ => "a value of a matching kind",
+        };
         return Core::Poison(
             Reject::coded(
                 Code::TypeMismatch,
                 format!(
-                    "a `(bin …)` pattern decodes a Bytes value, but this scrutinee is {} — binary \
-                     matching applies only to Bytes",
+                    "a `({pat_head} …)` pattern matches {expects}, but this scrutinee is {}",
                     scrut_ty.render_name()
                 ),
             )
-            .at(bin_pat),
+            .at(bad_pat),
         );
     }
     // A BYTES scrutinee whose arms use `(bin …)` binary patterns → the binary matcher (BN3, const

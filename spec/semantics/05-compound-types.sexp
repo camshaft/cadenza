@@ -308,6 +308,53 @@
                (def (main) (. (mk) 2)) (export main)))
   (error     CDZ0201))
 
+; --- A structural PATTERN applies only to a scrutinee of its own kind ------------------------
+; A `(list …)` / `(map …)` / `(tuple …)` pattern matches a value of a SPECIFIC kind (List / Map /
+; Tuple), so over a definite scrutinee of a DIFFERENT kind it is a type error (CDZ0203, 'a `(list …)`
+; pattern matches a List value, but this scrutinee is Int64'), the match-position analogue of the
+; projection-on-the-wrong-kind cases above (`(. 5 x)`, `(. 5 0)`) and the generalization of the bin
+; pattern's Bytes-only scrutinee check (16-binary-matching) to every structural pattern head. Caught at
+; the offending arm, not silently accepted (which left it to a misleading generic 'pattern not yet
+; supported' decline). An unsolved (`Any`/`Var`) scrutinee is skipped; a matching-kind scrutinee is
+; unaffected (a `(list …)` over a List still destructures normally).
+
+(case "a list pattern over a non-list scrutinee is a type error"
+  (doc    "`(match 5 ((list x .. r) x) (_ 0))` matches a `(list …)` pattern against the Int64 `5`. A list
+           pattern matches a List value, and an Int64 is not a List, so it is rejected (CDZ0203, naming the
+           scrutinee's kind). The match-position analogue of `(. 5 0)` (positional access on a non-tuple);
+           pins the list pattern's scrutinee-kind check on a scalar.")
+  (input  (do (def (main) (match 5 ((list x .. r) x) (_ 0))) (export main)))
+  (error  CDZ0203))
+
+(case "a list pattern over a map scrutinee is a type error"
+  (doc    "`(match m ((list x .. r) x) (_ 0))` over a `Map` — a Map is not a List (distinct collection
+           kinds), so the list pattern is rejected (CDZ0203, 'this scrutinee is (Map Int64 Int64)'). Pins
+           that the scrutinee-kind check distinguishes two COLLECTION kinds, not only collection-vs-scalar.")
+  (input  (do (def (main) (match (Map.insert Map.empty 1 2) ((list x .. r) x) (_ 0))) (export main)))
+  (error  CDZ0203))
+
+(case "a map pattern over a non-map scrutinee is a type error"
+  (doc    "`(match 5 ((map (1 v)) v) (_ 0))` — a `(map …)` pattern matches a Map value, and the Int64 `5`
+           is not a Map, rejected CDZ0203. Pins the map pattern head's scrutinee-kind check, the map twin
+           of the list case.")
+  (input  (do (def (main) (match 5 ((map (1 v)) v) (_ 0))) (export main)))
+  (error  CDZ0203))
+
+(case "a tuple pattern over a non-tuple scrutinee is a type error"
+  (doc    "`(match 5 ((tuple a b) a) (_ 0))` — a `(tuple …)` pattern matches a Tuple value, and the Int64
+           `5` is not a Tuple, rejected CDZ0203. The pattern-position companion of `(. 5 0)` (positional
+           ACCESS on a non-tuple); pins the tuple pattern head's scrutinee-kind check.")
+  (input  (do (def (main) (match 5 ((tuple a b) a) (_ 0))) (export main)))
+  (error  CDZ0203))
+
+(case "a tuple pattern over a map scrutinee is a type error"
+  (doc    "`(match m ((tuple a b) a) (_ 0))` over a `Map` — a Map is not a Tuple, rejected CDZ0203 ('this
+           scrutinee is (Map Int64 Int64)'). With the list-over-map case, pins that a structural pattern
+           head is checked against the scrutinee's kind across every collection/compound kind, not just
+           against a scalar.")
+  (input  (do (def (main) (match (Map.insert Map.empty 1 2) ((tuple a b) a) (_ 0))) (export main)))
+  (error  CDZ0203))
+
 ; Projecting a tuple that arrives as a FUNCTION PARAMETER (a runtime tuple whose shape is not the
 ; inline literal at the projection site) must either compute the projection or DECLINE — never emit an
 ; invalid component. `(def (fst t) (. t 0))` applied to `(tuple 7 8)` is well-typed and its value is
