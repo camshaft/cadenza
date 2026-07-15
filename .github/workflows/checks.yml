@@ -146,3 +146,45 @@ jobs:
         with:
           cache-key: bench
       - run: cargo xtask bench
+
+  guide-examples:
+    # PRE-MERGE gate for the guide's runnable content. pages.yml runs the SAME checks but only
+    # `on: push:[main]` — i.e. AFTER merge, where a broken example surfaces as a red Pages deploy
+    # that can never block. This job mirrors pages.yml's build (minus the deploy) so a PR that
+    # ships an example which doesn't compile/run — or breaks the guide build — CANNOT merge. Keep it
+    # in lockstep with pages.yml's "Build site" step; if that gains a check, add it here too.
+    #
+    # aarch64 for the same runtime-hash reason as `gate`/`codegen`/pages.yml: the guide bundles the
+    # value-heap runtime whose content hash the compiler pins, reproducible per-arch only.
+    name: guide examples
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-rust
+        with:
+          wasm-tools: "true"
+          cache-key: guide-examples
+      - name: Install wasm-pack
+        run: cargo binstall -y --force wasm-pack
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: guide/package-lock.json
+      # Build the runtime store + stage the browser compiler wasm the examples run against
+      # (same two steps pages.yml runs before its site build).
+      - name: Build value-heap runtime
+        run: cargo xtask build
+      - name: Build & stage guide wasm
+        run: cargo xtask guide-wasm
+      # Verify every example compiles + every graded exercise runs, the calculator checks pass, and
+      # the site builds — the exact gate pages.yml applies, but here it BLOCKS the merge.
+      - name: Check guide examples + build site
+        working-directory: guide
+        env:
+          VITE_BASE: /${{ github.event.repository.name }}/
+        run: |
+          npm ci
+          npm run check:examples
+          npm run check:calculator
+          npm run build
