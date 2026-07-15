@@ -2933,6 +2933,66 @@ fn a_borrowed_runtime_string_rope_compares_equal_and_leaves_no_live_objects() {
     );
 }
 
+/// A rope String NESTED IN A COMPOUND compares EQUAL to its flat twin — the nested-leaf face of the
+/// rope-eq miscompile. The value heap is TAGLESS, so `champ_eq`'s structural walk compares a nested leaf
+/// by its PHYSICAL raw bytes and cannot know a child is a rope (vs a compound); without a fix a rope
+/// String in a tuple/record/sum/map-key compared UNEQUAL to its flat twin. The fix compacts a String/
+/// Bytes leaf with `bytes-compact` AT THE COMPOUND CONSTRUCTION SITE (the nested-leaf twin of `box-float`
+/// canonicalizing a NaN when its leaf is boxed), so no compound ever holds a rope. Three shapes here:
+///   (a) VALUE — `(= (tuple (rep "hi" 3) 1) (tuple "hixxx" 1))`: the left tuple's element is a rope of
+///       content "hixxx", so `=` is true → 1 (was 0 — the nested rope compared physically).
+///   (b) MAP-KEY — a tuple key whose string element is a rope must hash into the SAME CHAMP slot as its
+///       flat-twin query key → `Map.lookup` finds 42 (was None → -1).
+///   (c) LEAK — the construction-site compact consumes the rope and stores a flat leaf, so the tuples the
+///       borrowing `value-eq` / the lookup drops net to 0 live cells.
+/// `#[ignore]` — needs the debug-counters store (`cargo xtask build`).
+#[test]
+#[ignore]
+fn a_rope_nested_in_a_compound_compares_equal_and_keys_and_leaves_no_live_objects() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
+        eprintln!("[nested-rope] debug-counters runtime not in the store; skipping balance probe");
+        return;
+    };
+    // (a) + (b): a rope element in a tuple compared by value, and a rope element in a tuple MAP KEY looked
+    // up by its flat twin. `rep "hi" 3` builds an OWNED rope whose content is "hixxx".
+    let value_src = "(module m \
+                 (def (rep (: s String) (: n Int64)) \
+                    (if (< n 1) s (rep (String.concat s \"x\") (- n 1)))) \
+                 (def (main) (if (= (tuple (rep \"hi\" 3) 1) (tuple \"hixxx\" 1)) 1 0)) (export main))";
+    let value_prog = compile_component(&crate::codec::encode(&parse(value_src))).expect("compile");
+    let mut rt = ComposedRuntime::new(&value_prog, &runtime_bytes);
+    assert_eq!(
+        rt.call("main", &[]),
+        Val::S64(1),
+        "a rope String nested in a tuple must compare EQUAL to its flat twin (was 0 — the tagless \
+         champ_eq walk compared the nested rope leaf physically before the construction-site compact)"
+    );
+    assert_eq!(
+        rt.live_objects(),
+        0,
+        "nested-rope-eq leak: the construction-site compact consumes each rope and stores a flat leaf, so \
+         the two tuples the borrowing value-eq drops must net to 0 live cells"
+    );
+
+    let key_src = "(module m \
+                 (def (rep (: s String) (: n Int64)) \
+                    (if (< n 1) s (rep (String.concat s \"x\") (- n 1)))) \
+                 (def (main) \
+                    (match (Map.lookup (Map.insert Map.empty (tuple (rep \"hi\" 3) 1) 42) (tuple \"hixxx\" 1)) \
+                      ((Some v) v) ((None) (- 0 1)))) (export main))";
+    let key_prog = compile_component(&crate::codec::encode(&parse(key_src))).expect("compile");
+    let mut rt = ComposedRuntime::new(&key_prog, &runtime_bytes);
+    assert_eq!(
+        rt.call("main", &[]),
+        Val::S64(42),
+        "a compound map key whose string element is a rope must be found by its flat-twin key (was None \
+         → -1 — the tuple key hashed with its nested rope leaf uncompacted, landing in a different slot)"
+    );
+}
+
 /// The char-by-char lexer idiom: a recursive scan reading each Unicode scalar with `String.at` at a
 /// RUNTIME index and comparing its content — `(= (String.at s i) "a")`. `String.at` returns
 /// `Some(bytes-slice(str, pos, len))`, a ROPE slice (an offset INTO the source), so before the fix its
@@ -21796,7 +21856,10 @@ mod match_engine {
             .contains("UInt4"),
         );
         // NO false positive: the width-matching typed value, a narrowed value, a bare literal (grounds to the
-        // width), and a bin PATTERN binder (types as the decoded value) all stay CLEAN.
+        // width), and a bin PATTERN binder (types as the decoded value) all stay CLEAN. Crucially a decoded
+        // field RE-ENCODES into its own-width segment with no explicit narrow — a `(u16 m)` binder feeds a
+        // `(u16 m)` construction directly (the decode/encode round-trip a transcoder is built from), because
+        // the binder types as the segment's width, exactly what the re-encoding segment requires.
         for ok in [
             "(module m (def (main (: n UInt8)) (Bytes.len (bin (u8 n)))) (export main))",
             "(module m (def (main (: n UInt16)) (Bytes.len (bin (u16 n)))) (export main))",
@@ -21804,6 +21867,9 @@ mod match_engine {
             "(module m (def (main (: n Int64)) (Bytes.len (bin (u8 (UInt8.wrap n))))) (export main))",
             "(module m (def (main) (Bytes.len (bin (u8 5)))) (export main))",
             "(module m (def (g (: b Bytes)) (match b ((bin (u8 x)) x) (_ 0))) (export g))",
+            // decode→re-encode round-trip: a decoded (u16 m) binder feeds a (u16 m) construction, no narrow.
+            "(module m (def (g (: b Bytes)) (match b ((bin (u16 m)) (bin (u16 m))) (_ (bin)))) (export g))",
+            "(module m (def (g (: b Bytes)) (match b ((bin (u8 x)) (bin (u8 x))) (_ (bin)))) (export g))",
         ] {
             assert!(
                 !crate::diagnostics(&mut crate::db::Db::load(crate::testkit::parse(ok)))
@@ -46975,6 +47041,33 @@ mod stage1 {
         assert_eq!(r, "100"); // x=2 satisfies the predicate
         assert_eq!(run_closure(src, 1).unwrap(), "100"); // x=1 satisfies at the last step
         assert_eq!(run_closure(src, 5).unwrap(), "0"); // none of 3,2,1 equal 5
+    }
+
+    #[test]
+    fn an_unannotated_closure_infers_through_an_unannotated_recursive_hof_param() {
+        // INFERENCE regression (issue mlrepro-reject-inferred-closure-param-through-recursive-hof): an
+        // UNANNOTATED closure passed to a SELF-RECURSIVE higher-order function whose function parameter
+        // is ALSO unannotated must infer the closure's parameter type from the closure's OWN body — it
+        // was wrongly DECLINED "a closure's parameter type has no machine representation". Root: the
+        // closure's storage context is a fully-generic HOF param `g : (-> _ Int64)`, whose domain is an
+        // unsolved `Var` (a HOLE, not `Any`); `lambda_param_ty_from_context` returned that hole, which
+        // preempted `lower_lambda_value`'s body-solve (`solve_lambda_param_ty`) with an unsolvable var.
+        // The fix rejects a free-`Var` context domain (like `Any`), so the closure body's own numeric use
+        // (`(+ x 1)` → Int64) pins its param. `mapsum g acc xs = acc + Σ g(xᵢ)`, with a BOUNDARY `acc = n`
+        // so nothing folds (a real `call_indirect` over the runtime closure): `n + Σ (xᵢ+1)` over 5,7,30
+        // = `n + 6 + 8 + 31 = n + 45`.
+        let src = "(module m \
+            (def (mapsum f acc xs) \
+              (match xs \
+                ((list) acc) \
+                ((list h .. t) (mapsum f (+ acc (f h)) t)))) \
+            (def (main (: n Int64)) (mapsum (fn (x) (+ x 1)) n (list 5 7 30))) (export main))";
+        let Some(r) = run_closure(src, 0) else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
+            return;
+        };
+        assert_eq!(r, "45"); // 0 + (5+1)+(7+1)+(30+1) = 45
+        assert_eq!(run_closure(src, 100).unwrap(), "145"); // 100 + 45
     }
 
     #[test]

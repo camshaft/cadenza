@@ -744,3 +744,20 @@
               (export main)))
   (call   main (: 3 Int64))
   (output (: 42 Int64)))
+
+(case "a decoded field re-encodes into the same-width segment without an explicit narrow"
+  (doc    "The decode/encode dual is SYMMETRIC: a `(u16 m)` PATTERN binder decodes a field, and that same
+           binder feeds a `(u16 m)` CONSTRUCTION directly — no `UInt16.wrap`/`UInt16.of` needed. The binder
+           types as the segment's own width (`UInt16`), which is exactly what the re-encoding segment
+           requires, so a parse-then-rebuild round-trip type-checks with no conversion. Here `main` decodes a
+           runtime `(bin (u16 n))`, re-encodes the bound field, and reads byte 0 back — 258 = 0x0102 big-
+           endian, byte 0 = 1. Pins that the width-typed construction contract does NOT break the natural
+           decode→re-encode round-trip a binary transcoder is built from (a decoded field is already the
+           right type for its own segment).")
+  (input  (do (def (main (: n UInt16))
+                (match (bin (u16 n))
+                  ((bin (u16 m)) (match (Bytes.at (bin (u16 m)) 0) ((Some b) b) ((None _) -1)))
+                  (_ -9)))
+              (export main)))
+  (call   main (: 258 UInt16))
+  (output (: 1 Int64)))

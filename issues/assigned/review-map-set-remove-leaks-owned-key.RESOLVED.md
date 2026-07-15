@@ -70,3 +70,6 @@ witnesses. All three should net to 0 live cells once the emit drops the owned ke
 Static: confirmed the runtime borrows (docstrings + `champ_remove_fbip` drops only stored columns), the
 emit issues no key drop, and `op_box_int`/`ConstStr`/`key_needs_compaction` all produce an owned heap
 handle at the emit. Consistent with the ownership model the sibling `05e37221` fix codified.
+
+
+<!-- RESOLVED 2026-07-15 (trunk@c8bb44a96 / 5300f2e6f): drop-when-owned gate mirrored to Map/Set.remove emits + OP_DROP registered; 2 live-objects balance tests. -->

@@ -170,6 +170,7 @@ pass	a CBOR skip walks past a whole nested item to the next offset
 pass	a CONSTANT recursive sum compares equal to a differently-built RUNTIME one
 pass	a Char-payload sum value escapes across the boundary in its canonical form
 pass	a DOUBLY-nested Tuple ARG (three levels deep) crosses the direct-call boundary
+pass	a FLAT runtime string nested in a tuple is unaffected (control)
 pass	a FLOAT-field Tuple closure ARG flattens + rebuilds (box-float imported)
 pass	a FLOAT-result effect op threads a float state and its resume folds under a float-dispatched operator
 pass	a Float64 closure captures a Float64 build-time host effect result
@@ -423,6 +424,8 @@ pass	a component's manifest is the union of two entrypoints' distinct rows
 pass	a composed call over a record-transforming function with an arithmetic field compiles
 pass	a compound element projected from a let-bound runtime tuple is matched
 pass	a compound if condition is a type error, not an unbound name
+pass	a compound map key containing a rope is found by its flat-twin key
+pass	a compound map key whose LIST element is a rope is found by its flat-twin key
 pass	a conditional evaluates only the selected branch
 pass	a conditional inside a function with a constant condition and mismatched branches is a type error
 pass	a conditional on a negated runtime condition selects the correct branch and shields the other
@@ -492,6 +495,7 @@ pass	a decimal literal annotated Rational grounds to its exact fraction
 pass	a decimal literal annotated Rational is exact for a value no float rounds cleanly
 pass	a decimal token trailing letters is a malformed literal, not an unbound name
 pass	a declaration in a do block shadows an outer binding
+pass	a decoded field re-encodes into the same-width segment without an explicit narrow
 pass	a deep balanced tree is built and folded to a scalar, consuming both children
 pass	a deep chain of runtime-list let-bindings compiles and returns the final length
 pass	a deeper nested call chain still folds in linear time near the inliner limit
@@ -789,6 +793,7 @@ pass	a magic header and a length-prefixed chunk parse together
 pass	a many-arm match consumed in non-tail position yields into the enclosing expression
 pass	a many-arm match let-bound then consumed yields into the enclosing expression
 pass	a many-arm scalar match in tail position selects each arm by a runtime scrutinee
+pass	a many-arm string match consumed by concat beside a recursive call keeps both operands
 pass	a map KEYED by a user sum looks up by the variant
 pass	a map built at run time escapes to the host as its value form
 pass	a map can be a key, compared by its value
@@ -851,6 +856,7 @@ pass	a match-of-closures on a runtime-selected variant is applied per arm
 pass	a member access with no field operand is rejected, not a crash
 pass	a misspelled segment kind is rejected with a rename suggestion
 pass	a misspelled utf8 segment kind is rejected
+pass	a mixed-ownership inlined-match operand leaves the source map intact across repeated compares
 pass	a module declaration binds its name in the enclosing scope
 pass	a module function calls a sibling export by name
 pass	a module function is recursive
@@ -1000,6 +1006,7 @@ pass	a nullary variant applied to a non-unit payload is a type error
 pass	a nullary variant applied to a non-unit payload rejects even when constructed via application
 pass	a nullary variant applied to unit constructs correctly through the application path
 pass	a nullary variant list element dispatches by its discriminant
+pass	a one-concat rope nested in a tuple equals its flat twin
 pass	a one-element tuple pattern against a two-tuple is a type error
 pass	a one-shot handler arm folds a body with TWO performs by re-reducing the continuation
 pass	a one-shot two-hole body folds across a let binding
@@ -1187,6 +1194,8 @@ pass	a returned runtime string with a multi-byte scalar renders the scalar verba
 pass	a returned runtime string with a non-printable scalar renders it verbatim, not a u-escape
 pass	a right shift by a floating-point count does not silently promote
 pass	a right shift by the bit width or more traps rather than masking
+pass	a rope in a record field equals its flat-twin field
+pass	a rope in an Option payload equals its flat-twin payload
 pass	a round-trip alongside a parameterized plain export applies its argument
 pass	a round-trip alongside a plain export — the plain export runs
 pass	a round-trip alongside a plain export — the round-trip still works
@@ -1628,6 +1637,7 @@ pass	an all-constant Set.of still folds membership with a constant query (contro
 pass	an all-nullary enum dispatches its runtime-selected variant and escapes
 pass	an all-nullary enum nested in a tuple carries its discriminant through the heap
 pass	an all-nullary enum reached through a tuple element inside a boxed sum survives the heap round-trip
+pass	an all-owned-arms match operand compares correctly through the ownership join
 pass	an all-wildcard tuple arm is a catch-all that shadows a later refining arm
 pass	an annotated destructuring let binder
 pass	an annotated escaped None renders its canonical nullary-variant form (the control)
@@ -1759,6 +1769,7 @@ pass	an un-projected tuple element is not evaluated, so its trap does not occur
 pass	an un-read record field is not evaluated, so its trap does not occur
 pass	an unannotated closure in a Some payload is typed from the Option's element arrow
 pass	an unannotated closure in a user variant payload is typed from the declared arrow
+pass	an unannotated closure is inferred through an unannotated recursive HOF parameter
 pass	an unannotated closure parameter is grounded from its body and applied at runtime
 pass	an unannotated closure typed Int8 from context computes an in-range constant
 pass	an unannotated closure typed Int8 from context overflows a constant like an explicit Int8 param
@@ -2021,6 +2032,7 @@ pass	heap string elements of a hoisted list if select by branch
 pass	hexadecimal, binary, and decimal spellings of one value are equal
 pass	host calls are observed in the order they were made
 pass	identical negative zeros nested in a tuple compare equal
+pass	identically-built ropes on both sides of a nested compare are equal (control)
 pass	importing a name a module does not export is rejected
 pass	indexing a byte sequence out of bounds yields None
 pass	indexing a byte sequence returns Some of the byte at that position

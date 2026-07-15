@@ -1109,6 +1109,35 @@
   (call   main (: 3 Int64))
   (output (: 12 Int64)))
 
+; The same UNANNOTATED closure, but now the recursive HOF's FUNCTION PARAMETER is ALSO unannotated — the
+; case above declares `(: g (-> Int64 Int64))`, whose concrete arrow fed the closure's param type. Here
+; `mapsum`'s `f` has no annotation, so its solved type is a fully-generic arrow `(-> _ Int64)` — the
+; closure's storage context is a HOLE, not a concrete arrow. The closure must therefore be grounded from
+; its OWN body alone: `(fn (x) (+ x 1))` uses `x` as an integer operand → `x : Int64`. A generation that
+; let the generic HOF param's unsolved-var domain preempt that body-solve DECLINED "a closure's parameter
+; type has no machine representation"; the closure's own use must win. `mapsum f acc xs = acc + Σ f(xᵢ)`,
+; with a BOUNDARY `acc = n` so nothing folds (a real `call_indirect` over the lifted closure): over 5,7,30
+; the result is `n + (5+1)+(7+1)+(30+1) = n + 45`.
+
+(case "an unannotated closure is inferred through an unannotated recursive HOF parameter"
+  (doc    "Both the closure `(fn (x) (+ x 1))` AND the recursive HOF's function parameter `f` are
+           unannotated, so `f`'s solved type is a generic `(-> _ Int64)` — the closure's context arrow is
+           an unsolved hole. The closure's parameter is grounded from its own body's `(+ x 1)` (`x :
+           Int64`) rather than from that hole. `mapsum f acc xs = acc + Σ f(xᵢ)`; with a runtime `acc = n`
+           the fold runs via call_indirect over the lifted closure, `n + (5+1)+(7+1)+(30+1) = n + 45`.
+           Pins that a bare closure passed to a bare recursive HOF param infers from its body, not the
+           generic context — the idiomatic fully-inferred `fold`, previously declined 'no machine
+           representation'.")
+  (input  (do
+            (def (mapsum f acc xs)
+              (match xs
+                ((list) acc)
+                ((list h .. t) (mapsum f (+ acc (f h)) t))))
+            (def (main (: n Int64)) (mapsum (fn (x) (+ x 1)) n (list 5 7 30)))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 45 Int64))
+  (call   main (: 100 Int64)) (output (: 145 Int64)))
+
 ; A MULTI-PARAMETER runtime closure, applied at FULL arity. `core-semantics.md` §Functions Are
 ; Single-Arity says a multi-param `(fn (a b) …)` is curried sugar; when the whole function is applied to
 ; all its arguments at once through a recursive HOF, it lifts to one `(env, a, b) → result` function and
