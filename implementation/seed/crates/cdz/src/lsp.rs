@@ -483,6 +483,50 @@ fn uri_is_ml(uri: &Uri) -> bool {
     }
 }
 
+/// The local filesystem path of a `file://` document URI, or `None` for a non-`file` scheme (an
+/// untitled/in-memory buffer, a remote URI). `lsp-types` 0.97's `Uri` carries no `to_file_path`, so we
+/// parse the `file://[host]/path` form ourselves and percent-decode the path. This is the URI→path
+/// bridge the workspace `(import …)` closure needs (an imported sibling is resolved relative to the
+/// entry file's directory). A `file://` with a non-empty host (a UNC share) is not handled — returns the
+/// path portion as-is, which is correct for the common `file:///abs/path` (empty host) case.
+// Not yet wired into a request path — it's the URI→path bridge the pending workspace-closure increment
+// (see the vertical log) consumes. Kept + tested now so that increment builds on a proven helper.
+#[allow(dead_code)]
+fn uri_to_path(uri: &Uri) -> Option<std::path::PathBuf> {
+    let s = uri.as_str();
+    let rest = s.strip_prefix("file://")?;
+    // `file:///abs` → rest = `/abs` (empty host); `file://host/abs` → rest = `host/abs`. Take from the
+    // first `/` so a host is dropped and an absolute path is preserved.
+    let path_part = match rest.find('/') {
+        Some(i) => &rest[i..],
+        None => rest, // no slash — treat the whole remainder as the path (unusual)
+    };
+    Some(std::path::PathBuf::from(percent_decode(path_part)))
+}
+
+/// Percent-decode a URI path component (`%20` → space, `%2F` → `/`, …). Minimal, dependency-free — just
+/// what a `file://` path needs. A malformed `%`-escape (not two hex digits) is left verbatim.
+#[allow(dead_code)] // used by `uri_to_path` (both consumed by the pending workspace-closure increment).
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hi = (bytes[i + 1] as char).to_digit(16);
+            let lo = (bytes[i + 2] as char).to_digit(16);
+            if let (Some(h), Some(l)) = (hi, lo) {
+                out.push((h * 16 + l) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 /// Extract a typed request's `(id, params)`, mapping an extraction failure into the boxed error type.
 /// The caller has already matched the method by name, so a `MethodMismatch` cannot occur; a
 /// `JsonError` is a malformed params payload.
@@ -1851,5 +1895,41 @@ mod tests {
         assert!(ranges_overlap(r(0, 0, 0, 5), r(0, 3, 0, 8)), "partial");
         assert!(ranges_overlap(r(0, 0, 0, 5), r(0, 5, 0, 5)), "touching");
         assert!(!ranges_overlap(r(0, 0, 0, 5), r(0, 6, 0, 8)), "disjoint");
+    }
+
+    fn uri(s: &str) -> Uri {
+        use std::str::FromStr;
+        Uri::from_str(s).unwrap()
+    }
+
+    #[test]
+    fn uri_to_path_handles_file_uris() {
+        // The common `file:///abs/path` (empty host) → the absolute path.
+        assert_eq!(
+            uri_to_path(&uri("file:///home/u/prog.cdz")),
+            Some(std::path::PathBuf::from("/home/u/prog.cdz"))
+        );
+        // A percent-encoded space in the path is decoded.
+        assert_eq!(
+            uri_to_path(&uri("file:///home/u/my%20prog.cdz")),
+            Some(std::path::PathBuf::from("/home/u/my prog.cdz"))
+        );
+    }
+
+    #[test]
+    fn uri_to_path_is_none_for_a_non_file_scheme() {
+        // A non-`file` URI (untitled/in-memory buffer, remote) has no local path.
+        assert_eq!(uri_to_path(&uri("untitled:Untitled-1")), None);
+        assert_eq!(uri_to_path(&uri("http://example.com/x.cdz")), None);
+    }
+
+    #[test]
+    fn percent_decode_handles_escapes_and_leaves_malformed_verbatim() {
+        assert_eq!(percent_decode("a%20b"), "a b");
+        assert_eq!(percent_decode("a%2Fb"), "a/b");
+        assert_eq!(percent_decode("plain"), "plain");
+        // A malformed escape (`%` not followed by two hex digits) is left as-is.
+        assert_eq!(percent_decode("50%"), "50%");
+        assert_eq!(percent_decode("%zz"), "%zz");
     }
 }
