@@ -877,6 +877,7 @@ pass	a multi-argument closure returning a COMPOUND round-trips — flat arrow sp
 pass	a multi-argument closure round-trips through a consumer
 pass	a multi-argument closure round-trips through a consumer — FLAT arrow spelling
 pass	a multi-argument closure with COMPOUND args round-trips — flat arrow spelling
+pass	a multi-byte runtime bit-field takes the matching wide unsigned type
 pass	a multi-export compound-result shared call is a repeatable (borrow<t>) callback
 pass	a multi-export set of parameterized capturing closures is driven per export
 pass	a multi-export shared call is a repeatable (borrow<t>) callback
@@ -982,6 +983,7 @@ pass	a nested tuple-pattern parameter destructures a runtime tuple
 pass	a nested unquote pattern matches a sub-AST by shape
 pass	a nested-let chain that reuses each binding folds to one value
 pass	a nominal record compared to a plain record of the same shape is a type error
+pass	a non-byte-aligned bit-field width takes its exact arbitrary-width unsigned type
 pass	a non-constructor type applied to arguments in type position is rejected
 pass	a non-empty scrutinee does not match an empty bin pattern
 pass	a non-exhaustive guarded match is rejected even when a constant scrutinee folds its guard true
@@ -1583,6 +1585,7 @@ pass	a wildcard in a nested pattern position ignores that element
 pass	a wildcard-exported variant whose name shadows a prelude type is constructible in an importer
 pass	a wrong-arity tuple binding pattern is a shape error
 pass	a wrong-arity tuple pattern nested under a constructor pattern is a type error
+pass	a wrong-width value in a multi-byte bit-field is a compile-time type error
 pass	a zero-arm match on an empty-sum scrutinee is exhaustive
 pass	a zero-arm match on an inhabited sum is non-exhaustive
 pass	a zero-bit integer width is rejected

@@ -761,3 +761,35 @@
               (export main)))
   (call   main (: 258 UInt16))
   (output (: 1 Int64)))
+
+(case "a multi-byte runtime bit-field takes the matching wide unsigned type"
+  (doc    "A `(bits v k)` field with `k` wider than a byte requires `v : (UInt k)` — the width type follows
+           the field width, not a fixed byte. `(bin (bits n 16))` closes exactly two bytes from a runtime
+           `(UInt 16)`; n=258 = 0x0102 big-endian, so byte 0 = 1. Pins that the width-typed contract extends
+           to MULTI-BYTE bit-fields (the arbitrary-width `(UInt k)` requirement), not just sub-byte ones.")
+  (input  (do (def (main (: n UInt16))
+                (match (Bytes.at (bin (bits n 16)) 0) ((Some b) b) ((None _) -1)))
+              (export main)))
+  (call   main (: 258 UInt16))
+  (output (: 1 Int64)))
+
+(case "a wrong-width value in a multi-byte bit-field is a compile-time type error"
+  (doc    "The width match is exact for multi-byte bit-fields too: a runtime `Int64` fed to a 16-bit field is
+           a COMPILE-TIME type error (CDZ0203, the field wants `UInt16`), the multi-byte companion of the
+           sub-byte `bits` case. Pins that a wide bit-field is not a loophole around the width-typed rule.")
+  (input  (do (def (main (: n Int64)) (Bytes.len (bin (bits n 16)))) (export main)))
+  (error  CDZ0203))
+
+(case "a non-byte-aligned bit-field width takes its exact arbitrary-width unsigned type"
+  (doc    "The `(UInt k)` requirement holds for a NON-power-of-two, non-byte-aligned width too: a 12-bit
+           field takes a `(UInt 12)`, closed to a whole byte by a trailing 4-bit constant (12+4 = 16 = two
+           bytes, CDZ0220 byte-aligned). The caller narrows a runtime `Int64` with `(UInt 12).wrap`
+           (truncating to the low 12 bits) — the arbitrary-width analogue of the `(UInt 4).wrap` nibble
+           idiom. n=0x123 packs 0x123 into the high 12 bits then a zero nibble → bytes 0x12 0x30; byte 0 =
+           0x12 = 18. Pins that an arbitrary bit width has a matching arbitrary-width unsigned type, and that
+           `(UInt k).wrap` narrows to it, not a rounding to the nearest byte type.")
+  (input  (do (def (main (: n Int64))
+                (match (Bytes.at (bin (bits ((UInt 12).wrap n) 12) (bits 0 4)) 0) ((Some b) b) ((None _) -1)))
+              (export main)))
+  (call   main (: 291 Int64))
+  (output (: 18 Int64)))
