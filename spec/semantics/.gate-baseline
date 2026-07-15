@@ -295,6 +295,7 @@ pass	a bare equality keyword is rejected, not a crash
 pass	a bare literal exceeding the default-integer pragma's narrow type is rejected
 pass	a bare literal that overflows the annotated width does not fit it
 pass	a bare nullary constructor is the nullary sum value
+pass	a bare number on the left scales the quantity and keeps its dimension
 pass	a bare prelude-colliding variant name matches as the local variant
 pass	a bare type-name-colliding variant name constructs as the local variant
 pass	a bare user constructor is passed as a first-class function to a higher-order function
@@ -1508,6 +1509,7 @@ pass	a sparse three-arm match's terminal pair dispatches branchlessly — the mi
 pass	a specific constructor export exposes one variant and keeps the rest private
 pass	a spliced boolean drives an evaluated conditional through the lifted leaf
 pass	a spliced string participates in an evaluated equality
+pass	a squared quantity does not add to a linear quantity
 pass	a stateful handler threads its counter across a function boundary
 pass	a straight-line tuple built from callee params is projected in the caller
 pass	a strength-reduced multiply nested as an operand computes in place
@@ -2123,6 +2125,7 @@ pass	distinct-signature capturing producers
 pass	distinct-signature closures alongside a plain export — the Int64->Bool closure runs
 pass	distinct-signature closures alongside a plain export — the Int64->Int64 closure runs
 pass	distinct-signature closures alongside a plain export — the plain export runs
+pass	dividing a quantity by a bare number keeps its dimension
 pass	dividing quantities divides their dimensions
 pass	division by zero traps
 pass	division of an integer and a float does not silently promote
@@ -2557,6 +2560,7 @@ pass	the length of a grown list is its element count
 pass	the length of a list looked up from a map by a runtime key
 pass	the length of a runtime byte sequence is its byte count
 pass	the length of a slice is the slice's byte count
+pass	the magnitude of a bare-scaled quantity reads back
 pass	the manifest is DERIVED from what entrypoints delegate, not from effect declarations
 pass	the maximum Int64 in hexadecimal reads as an integer
 pass	the maximum Int64 literal reads as an integer
