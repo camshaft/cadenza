@@ -999,6 +999,7 @@ pass	a nested tuple-arity mismatch in equality is a type error
 pass	a nested tuple-pattern parameter destructures a runtime tuple
 pass	a nested unquote pattern matches a sub-AST by shape
 pass	a nested-let chain that reuses each binding folds to one value
+pass	a neutral and-true keeps both the trap and the value of its left operand
 pass	a nominal record compared to a plain record of the same shape is a type error
 pass	a non-byte-aligned bit-field width takes its exact arbitrary-width unsigned type
 pass	a non-constructor type applied to arguments in type position is rejected
@@ -1672,6 +1673,10 @@ pass	an abortive perform in the tail of an if branch inside a let body abandons 
 pass	an abortive perform under THREE nested handlers abandons the two resumptive frames above it
 pass	an abortive perform under a non-tail conditional abandons the enclosing computation
 pass	an absolute-value branch traps on the minimum integer it cannot represent
+pass	an absorbed conjunction composes as a live disjunction's operand
+pass	an absorbing and-false discards a trap-free left operand's value
+pass	an absorbing and-false keeps its trapping left operand
+pass	an absorbing or-true keeps an effectful left operand's perform
 pass	an abstract type is used through the module's exported constructor and accessor
 pass	an abstract type's constructor is not reachable outside its module
 pass	an absurd runtime width is rejected, not silently ignored
@@ -2044,6 +2049,7 @@ pass	dividing quantities divides their dimensions
 pass	division by zero traps
 pass	division of an integer and a float does not silently promote
 pass	division of the minimum integer by -1 overflows and traps
+pass	double negation of a runtime boolean is the identity
 pass	dropping an absent field from a record is rejected
 pass	dropping fields from a record leaves the remaining fields
 pass	each definition in a module registers a reachable export field
@@ -2530,6 +2536,7 @@ pass	the wrapping additive and multiplicative identities preserve a boundary ope
 pass	three distinct closure signatures cross as three resource types
 pass	three distinct closure signatures cross as three resource types
 pass	three leaf variants in one quoted form each dispatch their own tag
+pass	triple negation of a runtime boolean is a single negation
 pass	true is greater than false
 pass	true is not less than false
 pass	tuple access on a non-tuple is a type error
