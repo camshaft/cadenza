@@ -281,9 +281,19 @@ pub enum FleetCmd {
     },
     /// Mark an agent `stopped`, drop its stop-file (the loop exits cleanly on its next tick), but keep
     /// the tmux window open for scrollback. A finished per-issue `fix` agent calls this on itself.
+    ///
+    /// With `--close`, ALSO kill the tmux window (`tmux kill-window`) after marking it stopped —
+    /// reaping the panel so the session doesn't pile up hundreds of dead windows. The registry row is
+    /// kept (status `stopped`) either way, so history/archive survive; only the window goes away.
+    /// A fix agent NEVER `--close`s itself: the `corpus-bugfix` PM is the sole reaper — it verifies the
+    /// fix truly landed on `trunk`, THEN `remove <fix-agent> --close`, so a wrongly-closed window can't
+    /// lose an unfinished fix's scrollback.
     Remove {
         /// The agent to remove.
         name: String,
+        /// Also kill the tmux window (reap the panel). Default keeps it open for scrollback.
+        #[arg(long)]
+        close: bool,
     },
     /// Deliver a message into another agent's inbox as one atomic JSON file. The whole fleet
     /// coordinates through this — see the message-kind table in AGENTS-fleet.md.
@@ -367,7 +377,7 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
         } => add(
             &fleet, name, role, vertical, area, interval, model, effort, seed,
         ),
-        FleetCmd::Remove { name } => remove(&fleet, &name),
+        FleetCmd::Remove { name, close } => remove(&fleet, &name, close),
         FleetCmd::Send {
             to,
             kind,
@@ -631,7 +641,7 @@ fn add(
     }
 }
 
-fn remove(fleet: &Fleet, name: &str) {
+fn remove(fleet: &Fleet, name: &str, close: bool) {
     let mut reg = fleet.load();
     let Some(a) = reg.agents.iter_mut().find(|a| a.name == name) else {
         eprintln!("fleet remove: no agent named '{name}'");
@@ -641,10 +651,32 @@ fn remove(fleet: &Fleet, name: &str) {
     std::fs::create_dir_all(fleet.root.join("stop")).expect("create stop dir");
     std::fs::write(fleet.stopfile(name), "removed by `fleet remove`\n").ok();
     fleet.save(&reg);
-    println!(
-        "fleet remove: '{name}' marked stopped (stop-file dropped; its loop exits next tick).\n\
-         Its tmux window is left OPEN for scrollback."
-    );
+    if close {
+        // Reap the tmux window too (the PM does this after verifying a fix landed). The registry row
+        // stays `stopped` — only the panel goes away, so history/archive survive. If we're not in a
+        // tmux session (or the window is already gone) this is a harmless no-op.
+        let killed = if in_tmux() {
+            kill_window(&tmux_current_session(), name)
+        } else {
+            false
+        };
+        if killed {
+            println!(
+                "fleet remove --close: '{name}' marked stopped AND its tmux window killed (panel \
+                 reaped; registry row kept)."
+            );
+        } else {
+            println!(
+                "fleet remove --close: '{name}' marked stopped; no live tmux window to kill (already \
+                 closed, or not in a tmux session). Registry row kept."
+            );
+        }
+    } else {
+        println!(
+            "fleet remove: '{name}' marked stopped (stop-file dropped; its loop exits next tick).\n\
+             Its tmux window is left OPEN for scrollback."
+        );
+    }
 }
 
 // ── send / heartbeat / describe ─────────────────────────────────────────────────────────────────
@@ -1002,6 +1034,22 @@ fn ensure_window(fleet: &Fleet, session: &str, a: &Agent) {
         Ok(_) => eprintln!("  ! tmux new-window failed for '{}'", a.name),
         Err(e) => eprintln!("  ! could not run tmux new-window: {e}"),
     }
+}
+
+/// Kill the tmux window named `agent` in `session` (reaping a dead agent's panel). Returns whether a
+/// window was actually killed — `false` if it didn't exist (already closed) or tmux errored, so the
+/// caller can report accurately. Targets `session:agent` by NAME, so it never hits the wrong window.
+fn kill_window(session: &str, agent: &str) -> bool {
+    // Only kill a window that actually exists — `kill-window` on a missing target errors noisily.
+    if !tmux_windows(session).iter().any(|w| w == agent) {
+        return false;
+    }
+    let target = format!("{session}:{agent}");
+    Command::new("tmux")
+        .args(["kill-window", "-t", &target])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 fn shell_quote(s: &str) -> String {

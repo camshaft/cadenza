@@ -781,6 +781,13 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                         else_,
                     }
                 }
+                // COMMON-CONSTRUCTOR HOIST: both arms build the same `SumNew`/`Tuple` (same disc + arity),
+                // so build it ONCE and push each differing payload into its own `(if c pᵢ qᵢ)` — one heap
+                // build emitted instead of two duplicated ones. See `hoist_common_ctor` for soundness.
+                _ if let Some(core) = hoist_common_ctor(db, cond, then_, else_) => {
+                    trace!(target: "rcdzc::lower", node = id.0, "(if c (K …p) (K …q)) → (K …(if c pᵢ qᵢ)) — common-constructor hoist");
+                    core
+                }
                 _ => Core::If { cond, then_, else_ },
             }
         }
@@ -13357,6 +13364,85 @@ fn core_equiv(db: &mut Db, a: StructId, b: StructId) -> bool {
         ) => ix == iy && core_equiv(db, px, py),
         _ => false,
     }
+}
+
+/// Hoist a COMMON CONSTRUCTOR out of both `if` arms: when both branches build the SAME constructor —
+/// the same `SumNew` discriminant + payload arity, or a same-arity `Tuple` — the heap build is
+/// DUPLICATED across the two branches, differing only in the payload/element occurrences. Build the
+/// constructor ONCE and push each DIFFERING position down into its own `(if c pᵢ qᵢ)`; a position that
+/// is `core_equiv` across the arms is shared directly. `(if c (Some a) (Some b))` → `(Some (if c a b))`
+/// and `(if c (tuple a k) (tuple b k))` → `(tuple (if c a b) k)` — ONE alloc + one set of field stores
+/// emitted instead of two duplicated build sequences (a module-size win; the runtime alloc count is
+/// already one either way since an `if` takes exactly one arm).
+///
+/// SOUND: exactly one branch's payloads ever MATERIALIZE either way — a differing position stays under
+/// an `if`, so the untaken arm's payload is never evaluated or consumed and the Perceus consume-once
+/// discipline is unchanged (a heap payload is dup'd/dropped by the inner `if` exactly as the original
+/// arm's build did). A SHARED (identical) position is a PURE scalar — `core_equiv` matches only
+/// const/param/local/arith/compare/convert/proj — so evaluating it once unconditionally reproduces the
+/// always-taken arm's single evaluation (including any arith trap, which the taken arm also incurred).
+/// `cond` is evaluated ONCE PER DIFFERING position: exactly one differing position is one evaluation,
+/// matching the original `if`, so that case is unconditionally sound; zero or ≥2 differing positions
+/// change the count, so require a TRAP-FREE `cond` (it re-reads identically with no effect or trap to
+/// drop or duplicate). Returns `None` (keep the `if`) when the arms are not the same constructor,
+/// disagree in shape, or the cond-eval guard fails. A poison arm has a non-constructor core, so it
+/// never matches and the `if`'s existing poison handling stands.
+fn hoist_common_ctor(
+    db: &mut Db,
+    cond: StructId,
+    then_: StructId,
+    else_: StructId,
+) -> Option<Core> {
+    enum Shape {
+        Sum(u32),
+        Tuple,
+    }
+    let (shape, tp, ep): (Shape, Vec<StructId>, Vec<StructId>) =
+        match (core_of(db, then_), core_of(db, else_)) {
+            (
+                Core::SumNew {
+                    disc: dt,
+                    payloads: pt,
+                },
+                Core::SumNew {
+                    disc: de,
+                    payloads: pe,
+                },
+            ) if dt == de && pt.len() == pe.len() => (Shape::Sum(dt), pt, pe),
+            (Core::Tuple { elems: et }, Core::Tuple { elems: ee }) if et.len() == ee.len() => {
+                (Shape::Tuple, et, ee)
+            }
+            _ => return None,
+        };
+    // Nothing to build (a nullary sum variant / empty tuple — no payloads) offers no win and would drop
+    // `cond` entirely; leave it to the enum-disc / identical-branch folds.
+    if tp.is_empty() {
+        return None;
+    }
+    let pairs: Vec<(StructId, StructId)> = tp.iter().copied().zip(ep.iter().copied()).collect();
+    let mut diff = 0usize;
+    for &(a, b) in &pairs {
+        if !core_equiv(db, a, b) {
+            diff += 1;
+        }
+    }
+    // `cond` is evaluated once per differing position; only ONE differing position matches the original's
+    // single evaluation. Any other count must not duplicate/drop a cond trap or effect.
+    if diff != 1 && !is_trap_free(db, cond) {
+        return None;
+    }
+    let mut payloads: Vec<StructId> = Vec::with_capacity(pairs.len());
+    for &(a, b) in &pairs {
+        payloads.push(if core_equiv(db, a, b) {
+            a
+        } else {
+            synth_if(db, cond, a, b)
+        });
+    }
+    Some(match shape {
+        Shape::Sum(disc) => Core::SumNew { disc, payloads },
+        Shape::Tuple => Core::Tuple { elems: payloads },
+    })
 }
 
 /// The "not-yet-computed on a runtime string" DECLINE for a string operation whose `arg` did not fold

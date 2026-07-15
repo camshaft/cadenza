@@ -5493,11 +5493,18 @@ fn emit(
                 // Compact BEFORE the tee so elem_slot holds the owned flat leaf the later drop reclaims.
                 out.push(Lir::CallImport(OP_BYTES_COMPACT)); // rope element → canonical flat leaf
             }
+            // OWNERSHIP GATE (mirrors `MapLookup`): `set-contains` BORROWS the element, so drop it AFTER
+            // only when it is an OWNED TEMPORARY (a boxed scalar, a compacted rope, or a fresh owned
+            // compound). A BORROWED String/compound element — a param / kept-local / a live sum-payload or
+            // element projection — is used as-is; dropping it would free a reference its owner still holds.
+            let elem_owned = key_handle_is_owned_temporary(db, elem, &elem_ty)?;
             out.push(Lir::LocalTee(elem_slot)); // [set, elem], elem_slot = elem (for the later drop)
             out.push(Lir::CallImport(OP_SET_CONTAINS)); // [bool] (borrows set + elem)
-            // Drop the boxed element temporary now that the borrow-contains is done.
-            out.push(Lir::LocalGet(elem_slot));
-            out.push(Lir::CallImport(OP_DROP));
+            if elem_owned {
+                // Drop the owned element temporary now that the borrow-contains is done.
+                out.push(Lir::LocalGet(elem_slot));
+                out.push(Lir::CallImport(OP_DROP));
+            }
             Ok(()) // leaves [bool]
         }
         // A set-algebra op — emit both operand set handles, then the matching runtime op (consumes both,
@@ -5543,12 +5550,23 @@ fn emit(
                 // Compact BEFORE the tee so key_slot holds the owned flat leaf the later drop reclaims.
                 out.push(Lir::CallImport(OP_BYTES_COMPACT)); // rope key → canonical flat leaf
             }
+            // OWNERSHIP GATE: `map-lookup` BORROWS the key (never consumes it), so we drop it AFTER only
+            // when it is an OWNED TEMPORARY (a boxed scalar, a compacted rope, or a fresh owned compound).
+            // A BORROWED String/compound key — a param / kept-local / a `sum-payload`/`arr-get` projection
+            // of a still-live value — is used as-is; dropping it would free a reference its owner still
+            // holds (a use-after-free). This is the two-live-matched-String-payloads miscompile: a
+            // tree-walker looking up a node's OWN key AND its child's key (both live sum-payload String
+            // projections) had the second borrowed key freed, flipping its comparison (a silent wrong
+            // count). See `key_handle_is_owned_temporary`.
+            let key_owned = key_handle_is_owned_temporary(db, key, &key_ty)?;
             out.push(Lir::LocalTee(key_slot)); // [map, key], key_slot = key (for the later drop)
             out.push(Lir::CallImport(OP_MAP_LOOKUP)); // [value-or-null] (borrows map + key)
             out.push(Lir::LocalSet(val_slot)); // val_slot = value-or-null, stack empty
-            // Drop the boxed key temporary now that the borrow-lookup is done (map-lookup borrows it).
-            out.push(Lir::LocalGet(key_slot));
-            out.push(Lir::CallImport(OP_DROP));
+            if key_owned {
+                // Drop the owned key temporary now that the borrow-lookup is done (map-lookup borrows it).
+                out.push(Lir::LocalGet(key_slot));
+                out.push(Lir::CallImport(OP_DROP));
+            }
             // present = (value != NULL).
             out.push(Lir::LocalGet(val_slot));
             out.push(Lir::ConstI32(NULL_HANDLE));
@@ -7781,6 +7799,31 @@ fn operand_is_string(db: &mut Db, id: StructId) -> bool {
 fn key_needs_compaction(db: &mut Db, key: StructId) -> bool {
     operand_is_string(db, key)
         && matches!(heap_operand_ownership(db, key), Ok(HandleOwnership::Owned))
+}
+
+/// Whether the key/element handle left on the stack after `emit` (+ optional box, + optional compact) is
+/// an OWNED TEMPORARY the frame must `drop` after a BORROWING key op (`map-lookup`/`set-contains`, which
+/// read the key without consuming it) — vs a BORROW of a live owner it must NOT drop. Owned iff the key
+/// was BOXED (a scalar → a fresh `box-*` leaf), or COMPACTED (an owned rope → a fresh flat leaf), or the
+/// key OPERAND itself is a fresh owned handle (a constructor / call / const compound). A BORROWED
+/// String/compound key — a parameter, a kept `let`-local, or a `sum-payload`/`arr-get` projection of a
+/// still-live value — is used AS-IS (no box, no compact), so dropping it frees a reference its owner still
+/// holds: a use-after-free MISCOMPILE. This is exactly the two-live-matched-String-payloads shape (a
+/// tree-walker looking up a node's OWN key and its CHILD's key, both `String` sum-payload projections of
+/// live nodes) — the second borrowed key was freed under its owner, flipping the comparison and dropping a
+/// per-node decision (a silent wrong count). Declines (via `heap_operand_ownership`) a key whose ownership
+/// cannot be proved — reject-don't-miscompile, never a double-free. Mirrors the `Core::ValueEq` ownership
+/// gate, the sibling String-payload family (`731dbf09`).
+fn key_handle_is_owned_temporary(db: &mut Db, key: StructId, key_ty: &Ty) -> Result<bool, Reject> {
+    if box_op_for(db, key, key_ty)?.is_some() {
+        return Ok(true); // a scalar key → a fresh `box-*` leaf the op borrows, then we drop
+    }
+    if key_needs_compaction(db, key) {
+        return Ok(true); // an owned rope key → a fresh compacted flat leaf we drop
+    }
+    // An unboxed, uncompacted key is used as-is: drop it only if the operand is a fresh owned handle (a
+    // constructor / call / const compound); a borrowed param/local/projection is left to its owner.
+    Ok(heap_operand_ownership(db, key)? == HandleOwnership::Owned)
 }
 
 fn heap_operand_ownership(db: &mut Db, id: StructId) -> Result<HandleOwnership, Reject> {
@@ -14062,6 +14105,93 @@ mod tests {
         assert!(
             !f.code.contains(&Lir::CallImport("drop")),
             "a scalar binding owns no heap cell and must not be dropped"
+        );
+    }
+
+    // ── value-heap: Map.lookup / Set.contains BORROW the key — a BORROWED String key is NOT dropped ──
+
+    #[test]
+    fn a_borrowed_string_map_lookup_key_is_not_dropped() {
+        // A `Map.lookup` whose KEY is a BORROWED String — here a `String` PARAMETER the caller owns —
+        // must NOT be dropped after the borrowing lookup: `map-lookup` reads the key without consuming it,
+        // and dropping the param's reference would free a value the caller still holds (a use-after-free).
+        // This is the ownership face of the two-live-matched-String-payloads MISCOMPILE: a tree-walker
+        // looking up a node's OWN key AND its child's key (both live sum-payload String projections) had
+        // the second borrowed key freed under its owner, flipping its comparison and dropping a per-node
+        // decision (a silent wrong count). No `box`/`bytes-compact` runs for a String key (it is already a
+        // handle, and a borrowed String is a flat leaf), so the un-owned key must be left to its owner.
+        let ast = crate::testkit::parse(
+            "(module m (def (pv (: op String)) \
+               (match (Map.lookup (Map.insert (map) \"a\" 1) op) \
+                 (((. Option Some) p) p) (((. Option None) _) 0))) \
+               (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "pv");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
+        assert!(
+            !f.code.contains(&Lir::CallImport("drop")),
+            "a borrowed String lookup key (a param the caller owns) must not be dropped — \
+             dropping it frees a value still live in the caller; got: {:?}",
+            f.code
+        );
+        // The map built INSIDE the function IS a fresh owned value — but it is consumed by `map-lookup`
+        // (which borrows), so this body drops nothing at all. The only drop in a real program is on an
+        // OWNED key (a constant/rope), covered by `an_owned_string_map_lookup_key_is_dropped`.
+        assert!(
+            f.code.contains(&Lir::CallImport("map-lookup")),
+            "the lookup must still emit"
+        );
+    }
+
+    #[test]
+    fn an_owned_string_map_lookup_key_is_dropped() {
+        // The complement: a `Map.lookup` whose KEY is an OWNED temporary — a CONSTANT String literal,
+        // which materializes a FRESH owned byte-leaf handle — MUST be dropped after the borrowing lookup,
+        // or the leaf leaks. So exactly one `drop` (the owned key) is emitted. This pins that the ownership
+        // gate did not over-correct into leaking every key.
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: d Int64)) \
+               (match (Map.lookup (Map.insert (map) \"a\" 1) \"a\") \
+                 (((. Option Some) p) p) (((. Option None) _) 0))) \
+               (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
+        assert!(
+            f.code.contains(&Lir::CallImport("drop")),
+            "an owned constant-String lookup key must be dropped after the borrowing lookup, or it \
+             leaks; got: {:?}",
+            f.code
+        );
+    }
+
+    #[test]
+    fn a_borrowed_string_set_contains_element_is_not_dropped() {
+        // The `Set.contains` twin of `a_borrowed_string_map_lookup_key_is_not_dropped`: `set-contains`
+        // BORROWS its element, so a BORROWED String element (a `String` param the caller owns) must NOT be
+        // dropped after the membership probe — dropping it would free the caller's value.
+        let ast = crate::testkit::parse(
+            "(module m (def (has (: e String)) \
+               (Set.contains (Set.of (list \"a\" \"b\")) e)) \
+               (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "has");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
+        assert!(
+            !f.code.contains(&Lir::CallImport("drop")),
+            "a borrowed String set-contains element (a param the caller owns) must not be dropped; \
+             got: {:?}",
+            f.code
+        );
+        assert!(
+            f.code.contains(&Lir::CallImport("set-contains")),
+            "the membership probe must still emit"
         );
     }
 }

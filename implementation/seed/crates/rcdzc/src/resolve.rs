@@ -656,6 +656,21 @@ fn resolve_name(db: &Db, id: StructId, name: &str) -> Resolved {
         trace!(target: "rcdzc::resolve", node = id.0, %name, bound_to = value.0, "name → effect decl");
         return Resolved::Ref { value };
     }
+    // 3b′. A TOP-LEVEL `(module NAME …)` declaration — a sibling of the top-level defs, `(do (module m …)
+    // (def (main) …) (export main))`. It binds `m` PROGRAM-WIDE, resolved EXACTLY like a top-level
+    // def/type/effect (a `Ref` to its synthesized export record), so a reference from any top-level def's
+    // body resolves and `(. m field)` is ordinary member access. A do-LOCAL module (nested in a def body's
+    // `(do …)`) is lexically scoped and already bound by step 1's scope walk (`do_local_binds`); this step
+    // consults ONLY top-level modules (`top_level_module_by_name`), so a local module is not leaked
+    // program-wide. Placed after defs/types/effects — a same-named binder/def/type/effect shadows a module
+    // name — and before the prelude, matching the other declaration steps (`prelude-and-resolution.md`
+    // §Name Resolution Is One Ordered Lookup; nothing is privileged by name).
+    //= spec/capabilities/core-semantics.md#a-module-binds-its-name-in-its-enclosing-scope
+    //# Evaluating a module MUST bind the module's declared name in the enclosing scope to the record of the module's exports, so that a module is named by its declaration without a separate binding form.
+    if let Some(value) = db.top_level_module_by_name(name) {
+        trace!(target: "rcdzc::resolve", node = id.0, %name, bound_to = value.0, "name → top-level module decl");
+        return Resolved::Ref { value };
+    }
     // 3c. A BARE VARIANT CONSTRUCTOR of a user `(type …)` declaration — `NLit`/`NNil` for `(type Node
     // (NLit Int64) NNil)`, the same ctor field a qualified `(. Node NLit)` projects. A nullary variant
     // may be used bare as a VALUE (`NNil`) and a payload variant bare-applied (`(NLit 5)`); both bind to
@@ -4785,5 +4800,73 @@ mod tests {
             }
             other => panic!("expected If, got {other:?}"),
         }
+    }
+
+    /// The `StructId` of the first bare-name occurrence spelled `name` in `db` — for driving a name
+    /// resolution assertion.
+    fn name_node(db: &Db, name: &str) -> StructId {
+        (0..db.ast.structure.len() as u32)
+            .map(StructId)
+            .find(|&id| db.ast.as_name(id) == Some(name))
+            .unwrap_or_else(|| panic!("a `{name}` node"))
+    }
+
+    #[test]
+    fn a_top_level_module_name_resolves_from_a_top_level_def_body() {
+        // The reported bug: a `(module Temp …)` that is a top-level `(do …)` element — a sibling of the
+        // top-level defs — binds `Temp` program-wide, so `main`'s body `(. Temp c-to-f)` must resolve
+        // `Temp` to the module's synth record. Before the fix this was CDZ0101 `unbound name Temp`: the
+        // scope walk stops at the root `do` (which binds nothing) and no `resolve_name` step consulted the
+        // module set. `Temp` (the member-access head) must now resolve to a `Ref` to the synth record.
+        let ast = parse(
+            "(do (module Temp (def (c-to-f c) (+ (/ (* c 9) 5) 32)) (export c-to-f)) \
+             (def (main) ((. Temp c-to-f) 100)) (export main))",
+        );
+        let mut db = Db::load(ast);
+        // The `Temp` occurrence heading `(. Temp c-to-f)` is the LAST `Temp` node (the module decl's head
+        // is the first); assert the member-access head resolves to the module's synth record.
+        let synth = db
+            .top_level_module_by_name("Temp")
+            .expect("Temp registered as a top-level module");
+        let head = (0..db.ast.structure.len() as u32)
+            .map(StructId)
+            .filter(|&id| db.ast.as_name(id) == Some("Temp"))
+            .find(|&id| {
+                // A member-access head: its parent is a `(. Temp …)` form with `Temp` at child index 1.
+                db.parent_of(id)
+                    .and_then(|p| db.ast.as_form(p, "."))
+                    .and_then(|t| t.first().copied())
+                    == Some(id)
+            })
+            .expect("a `(. Temp …)` head");
+        assert_eq!(
+            resolved_of(&mut db, head),
+            Resolved::Ref { value: synth },
+            "the member-access head `Temp` must resolve to the module's synth record"
+        );
+    }
+
+    #[test]
+    fn a_do_local_module_is_not_leaked_program_wide() {
+        // A do-LOCAL module (nested inside a def body's `(do …)`) is lexically scoped — it must NOT be
+        // surfaced by `top_level_module_by_name`, which consults only top-level (root-child) modules. A
+        // reference to `m` from OUTSIDE its enclosing `do` would then be unbound (its own body resolves it
+        // via the lexical scope walk, tested by the corpus). This pins that the top-level step does not
+        // leak a nested module.
+        let ast = parse(
+            "(do (def (main) (do (module m (def (answer) 42)) ((. m answer) unit))) (export main))",
+        );
+        let db = Db::load(ast);
+        assert_eq!(
+            db.top_level_module_by_name("m"),
+            None,
+            "a do-local module must not resolve as a top-level module"
+        );
+        // Sanity: the do-local module IS registered (just not as a top-level one).
+        let _ = name_node(&db, "m");
+        assert!(
+            db.modules.iter().any(|md| md.name == "m"),
+            "the do-local module is still registered in db.modules"
+        );
     }
 }

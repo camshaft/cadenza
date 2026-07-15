@@ -1061,3 +1061,45 @@
             (def (main) (cnt "banana" 0 0))
             (export main)))
   (output (: 3 Int64)))
+
+; --- Two matched String KEYS live at once across a recursion: a borrowed lookup key is not freed --------
+; `Map.lookup`/`Set.contains` BORROW their key — the runtime reads it without consuming it (`champ_hash`/
+; `champ_eq` over its bytes). A String key read out of a live sum-payload (a `Node`'s `String` field, bound
+; by a match arm) is a BORROW the enclosing tree still owns — so the lookup emit must NOT drop it. It used
+; to drop the key UNCONDITIONALLY (correct only for the OWNED-temporary key a constant/rope produces),
+; freeing the borrowed key under its owner. With TWO such keys live at one node — a tree-walker consulting a
+; node's OWN key AND its child's key, both String sum-payload projections looked up in a `Map String Int64`
+; — the second lookup freed a key the first still needed, corrupting a comparison and dropping a per-node
+; decision: a SILENT WRONG COUNT (valid wasm, `cdz check` clean, no diagnostic). The trigger needs the two
+; keys live SIMULTANEOUSLY across a recursion ≥3 deep; the IDENTICAL tree with Int64 keys (no heap key, no
+; borrow) computes correctly, pinning the tree/recursion logic. Same ownership root as the runtime-String
+; content-equality and String.at families above; the fix gates the key drop on OWNED-vs-BORROWED (a boxed
+; scalar / compacted rope / fresh owned compound is dropped, a borrowed param/local/projection is not).
+(case "a recursive walk consulting a node's own and its child's String key computes correctly"
+  (doc    "A binary tree whose `Node`s carry a `String` operator key; `pc` counts nodes whose left child
+           binds LOOSER — `(< (top l) (pv op))`, comparing the LEFT CHILD's key precedence `(top l)` to the
+           node's OWN key precedence `(pv op)` (both looked up in a `Map String Int64`). On the nested tree
+           `c{ b{ a{L,L}, L }, L }` the count is 2 (c: top(b)=2 < 3 → 1; b: top(a)=1 < 2 → 1; a: 99 < 1 →
+           0). It used to return 1 — with TWO matched `String` sum-payloads (the node's own key and its
+           child's) live at once across a recursion ≥3 deep, the second borrowed lookup key was freed under
+           its owner and its comparison flipped (a silent wrong value; the wasm validates). The IDENTICAL
+           tree with Int64 keys returns 2 (pinning the oracle and that the tree/recursion logic is right).
+           `Map.lookup` BORROWS its key, so a key read out of a still-live node is left to its owner, not
+           dropped — the pretty-printer precedence-parenthesization idiom over a runtime expression tree.")
+  (input  (do
+            (type T (Leaf Int64) (Node String T T))
+            (def (pv (: op String))
+              (match (Map.lookup (Map.insert (Map.insert (Map.insert (map) "a" 1) "b" 2) "c" 3) op)
+                (((. Option Some) p) p)
+                (((. Option None) _) 0)))
+            (def (top (: t T)) (match t (((. T Leaf) _) 99) (((. T Node) op _ _) (pv op))))
+            (def (pc (: t T))
+              (match t
+                (((. T Leaf) _) 0)
+                (((. T Node) op l r) (+ (if (< (top l) (pv op)) 1 0) (+ (pc l) (pc r))))))
+            (def (main (: d Int64))
+              (pc ((. T Node) "c"
+                    ((. T Node) "b" ((. T Node) "a" ((. T Leaf) 0) ((. T Leaf) 0)) ((. T Leaf) 0))
+                    ((. T Leaf) 0))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 2 Int64)))
