@@ -88,12 +88,27 @@ def paren-count-no-parens-needed() =
   else
     trap("higher child no parens")
 
-// NOTE: a DEPTH-3+ `paren-count` (e.g. `((1 + 2) * 3) ^ 4`, correct answer 2) currently MISCOMPILES to
-// 1 — a SEED bug, not a logic error here: `needs-parens` reads BOTH the parent operator's precedence
-// (`prec-of op`) AND the child operator's (`expr-prec child` → `prec-of child-op`), so two matched
-// `String` sum-payloads are live at once, and past a 3-deep recursion one read gets a stale value (see
-// `mlrepro-miscompile-two-live-string-payloads-across-recursion.sexp` (queue) — the identical tree with an Int64
-// key counts correctly). The depth-<=2 `paren-count` tests above pass; the deep case is withheld until
-// the two-live-string-payloads miscompile is fixed.
+// The DEEP `paren-count` cases below were WITHHELD while the two-live-string-payloads miscompile was open
+// (`needs-parens` reads BOTH the parent operator's precedence `prec-of op` AND the child's `expr-prec
+// child` → two matched `String` sum-payloads live at once, and past a 3-deep recursion one read got a
+// stale value). That miscompile is now FIXED (queue item
+// `mlrepro-miscompile-two-live-string-payloads-across-recursion` is RESOLVED), so the deep cases run
+// correctly and are pinned here.
+
+@test
+def paren-count-depth-three() =
+  // ((1 + 2) * 3) ^ 4 : (1+2) under * needs parens (1); ((1+2)*3) under ^ needs parens (1) → 2.
+  // This returned 1 under the old two-live-string-payloads miscompile; now 2.
+  let e = Expr.Bin("^", Expr.Bin("*", Expr.Bin("+", Expr.Num(1), Expr.Num(2)), Expr.Num(3)), Expr.Num(4)) in
+  if paren-count(e) == 2 then unit else trap("((1+2)*3)^4 has 2 parens")
+
+@test
+def paren-count-depth-three-two-parenthesized-children() =
+  // ((1 + 2) * (3 + 4)) ^ 5 : both (1+2) and (3+4) need parens under * (2); the * subtree under ^ needs
+  // parens (1) → 3. Two live String payloads at each level, three levels deep.
+  let e = Expr.Bin("^",
+    Expr.Bin("*", Expr.Bin("+", Expr.Num(1), Expr.Num(2)), Expr.Bin("+", Expr.Num(3), Expr.Num(4))),
+    Expr.Num(5)) in
+  if paren-count(e) == 3 then unit else trap("((1+2)*(3+4))^5 has 3 parens")
 
 export { prec-of, needs-parens, paren-count }
