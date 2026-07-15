@@ -14,3 +14,5 @@ Second docstring-accuracy point on the SAME `assert_canonical_fixed_point` helpe
 `v-syntax` (see queue/pr377-codec-assert-canonical-docstring-returns-bool-not-count.md, comment
 3589313820). This one adds that the helper PANICS on a canonical-fixed-point violation, which the
 "returns true iff accepted" contract omits. Fold into the same v-syntax docstring fix. Fix on `trunk`.
+
+<!-- RESOLVED 2026-07-15: fixed on trunk in fb141f13 (v-syntax depth-cap slice, merged @06dadcb7). Docstring now states the real bool contract + panic-on-violation. -->

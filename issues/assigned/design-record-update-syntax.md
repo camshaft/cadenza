@@ -1,22 +1,33 @@
-# Vertical-ready: ML-surface record-update syntax `{ r with x = 1 }`
+# Vertical-ready: record field-update surface — 3-operand `Record.with r #field v`
 
 **Design doc:** `implementation/design/DESIGN-record-update-syntax.md` (landed on trunk via pr-sync).
-**Subsystem:** `cadenza-syntax` (the ML reader/printer — front-end only; NO rcdzc/runtime change).
-**Scope:** front-end sugar over the already-shipped `Record.with` row op. Zero IR nodes, zero new
-diagnostic codes (absent field = existing `CDZ0212`, inherited from `Record.with`).
+**Operator DECISION (2026-07-15)** — direction chosen, do NOT re-explore. SUPERSEDES the earlier
+brace-sugar (`{ r with x = 1 }`) cut of this same doc.
 
-**First increment — RU1 (Reader):** in `cadenza-syntax::parser::record_literal` (`parser.rs:1965`),
-add a top-of-literal fork: speculatively parse a leading expression; if it stopped at the `with`
-keyword, parse a `,`-separated `name = value` field list and desugar to a left-nested
-`(Record.with (Record.with r (f1 v1)) (f2 v2))` chain; otherwise rewind to the existing `name = e`
-field loop. `with` is already a contextual keyword that stops an expression (`token.rs::Keyword::With`,
-`parser.rs:298/:320`), so the form is LL-unambiguous with the existing literal + shorthand.
+**What changes:** `Record.with` and `Record.extend` go from a grouped `(field value)` pair second
+operand to THREE positional operands — `record, #field, value` — on BOTH surfaces:
+- s-expr: `(Record.with (record (item 1) (price 2)) #price 9)`  [was `… (price 9)`]
+- ML:     `Record.with({ item = 1, price = 2 }, #price, 9)`      [was `…, price(9)` — looked like a call]
 
-**Then RU2 (Printer round-trip)** and **RU3 (corpus + spec witness)** — see the design doc §3.
+`#field` is a STATIC symbol literal the compiler resolves (row-ops design preserved — NOT a runtime
+symbol). The OLD 2-operand form is migrated + rejected (canonical-form discipline), not a 2nd spelling.
+Only `with`/`extend` change; `project`/`without` (label list), `merge`, `pop`, `Tuple.*` unaffected.
 
-**Gate:** `cargo test -p cadenza-syntax` (reader/printer/negative units) + `assert_canonical_fixed_point`
-round-trip + `cargo xtask gate` (`(needs rows)` ML cases: positive update evals, `{ r with z=1 }` absent
-→ `(error CDZ0212)`) + `cargo xtask check`. No `cargo xtask build` (runtime untouched).
+**Subsystem:** spans `rcdzc` (special-form arity + `#symbol` label read at resolve.rs:4046 + reject old
+form) AND `cadenza-syntax` (printer emits new shape; parser likely unchanged — `#name` sugar + N-arg
+call already exist) AND a corpus/guide migration. RW1+RW2+RW3 must land ATOMICALLY (one merge-request)
+— the moment rcdzc rejects the old form, corpus + guide must already be migrated or the gate reds.
 
-**Suggested owner:** a `vertical` agent, area=`cadenza-syntax` (could fold into the existing
-`v-syntax` vertical, which already owns the ML front-end round-trip harness).
+**Increments (see doc §2):**
+- RW1 — rcdzc: `with`/`extend` accept `args.len()==3` with `#symbol` field operand (lower.rs:1401,
+  infer.rs:3342, resolve.rs:4046); reject old 2-operand form (arity error, OQ-1 default).
+- RW2 — cadenza-syntax: printer renders `Record.with(r, #f, v)`; round-trip fixed-point holds.
+- RW3 — migrate corpus (`spec/semantics/15-rows-and-open-sums.sexp` ~lines 155/164/172/181/190) + guide
+  (`guide/src/content/chapters/RecordsTuples.tsx` ~6 uses) + the decision/learning docs.
+
+**Gate:** `cargo test -p rcdzc --lib` (fold + wasmtime run + old-form reject) + `cargo test -p
+cadenza-syntax` (round-trip) + `cargo xtask gate` (migrated `(needs rows)` cases + old-form negative)
++ `cargo xtask check`. No `cargo xtask build` (runtime untouched).
+
+**Suggested owner:** `v-syntax` leads (owns both surface spellings + round-trip harness), coordinating a
+small rcdzc change (RW1). Guide migration folds into the same unit or the guide owner.
