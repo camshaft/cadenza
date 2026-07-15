@@ -7736,3 +7736,22 @@
   (input  (do (def (main (: a Int64) (: p (Tuple (Tuple Int64 Int64) Int64))) (list a (. (. p 0) 0) (. p 1))) (export main)))
   (call   main (: 9 Int64) (: (tuple (tuple 5 6) 7) (Tuple (Tuple Int64 Int64) Int64)))
   (output (: (list 9 5 7) (List Int64))))
+
+(case "a composed call over a record-transforming function with an arithmetic field compiles"
+  (doc    "`(f (f (record (a 0) (b 5))))` where `f : (Record (a Int64) (b Int64)) -> (Record …)`
+           increments field `a` via `(+ (. r a) 1)` and copies `b`. `f` applied twice gives {a:2, b:5},
+           so `.a` = 2. The record is BOTH the inner call's result and the outer call's argument. Each
+           field of a `Core::Record` is materialized into the value-heap array; a checked-arith field
+           initializer stashes its i64 result behind an overflow guard in a scratch slot. Emitting every
+           field at a FIXED base let field `a`'s i64 arith scratch reuse a slot the outer
+           record-assembler had already typed i32, declaring one wasm local at two widths — the emitted
+           module FAILED wasm validation (`expected i64, found i32`) and the component was rejected at
+           load. Needs all three: a ≥2-field record, a checked-arith field init, and a composed/nested
+           call. The fix advances each field's scratch base past the running high-water (the disjoint-slot
+           discipline tuples/lists already use). Expected: 2.")
+  (input  (do
+            (def (f (: r (Record (a Int64) (b Int64))))
+              (record (a (+ (. r a) 1)) (b (. r b))))
+            (def (main) (. (f (f (record (a 0) (b 5)))) a))
+            (export main)))
+  (output (: 2 Int64)))
