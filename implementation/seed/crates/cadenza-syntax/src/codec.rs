@@ -673,9 +673,13 @@ mod tests {
     /// and re-encoding reproduces them. This is the bijection guarantee (ast-encoding.md §The Encoding
     /// Is A Bijection) checked on the canonical form. We do NOT compare against the accepted arena
     /// itself: `decode` is LENIENT (it accepts non-canonical layouts — forward references, unreferenced
-    /// "dead" leaves), while `encode` canonicalizes, so the raw arena need not be reproduced. Returns
-    /// `true` iff `bytes` was accepted (decoded), so a caller can count acceptances and guard against a
-    /// vacuous (never-accepts) sweep.
+    /// "dead" leaves), while `encode` canonicalizes, so the raw arena need not be reproduced.
+    ///
+    /// Return / panic contract: returns `true` iff `bytes` was accepted (decoded) and `false` if
+    /// `decode` refused it, so a caller can count acceptances and guard against a vacuous
+    /// (never-accepts) sweep. If an accepted input VIOLATES the canonical fixed point, the helper
+    /// PANICS (the `assert_eq!` below) — a bug in the codec, which is what the fuzz callers are probing
+    /// for; a `false` never signals a fixed-point failure, only a (legitimate) refusal.
     fn assert_canonical_fixed_point(bytes: &[u8]) -> bool {
         let Some(back) = decode(bytes) else {
             return false;

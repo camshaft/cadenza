@@ -1171,6 +1171,57 @@ fn a_common_constructor_hoist_covers_same_length_lists() {
     assert_eq!(run(false, "10", "20"), "20", "c=false → element 0 = b");
 }
 
+/// A trapping `cond` must NOT hoist through a common constructor when a SHARED (non-differing) payload
+/// BEFORE the differing position can itself trap: the original `if` evaluates `cond` FIRST, but the
+/// hoisted form builds the shared payload OUTSIDE the per-position `if`, so it would evaluate before
+/// `cond` and PREEMPT its trap. `(if (< (+ i64::MAX e) 5) (tuple (/ 10 d) 1) (tuple (/ 10 d) 2))` —
+/// element 0 is the shared `(/ 10 d)` (a `/` by a runtime divisor, possibly-trapping), element 1 is
+/// the sole differing position. `cond` is a checked `+` overflow, so the original always traps
+/// 'integer overflow' first — at d=0 the hoisted form would instead trap 'integer divide by zero'
+/// (the WRONG trap). Asserting the trap REASON (not merely THAT it traps) pins the ordering.
+#[test]
+fn a_trapping_shared_payload_before_the_diff_does_not_preempt_a_trapping_cond() {
+    use crate::testkit::parse;
+    // A `tuple` payload lives on the value heap, so the run needs the runtime component linked.
+    let src = "(module m \
+                 (def (main (: d Int64) (: e Int64)) \
+                   (if (< (+ 9223372036854775807 e) 5) \
+                       (tuple (/ 10 d) 1) \
+                       (tuple (/ 10 d) 2))) \
+                 (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    let Some(runtime) = find_runtime_wasm() else {
+        eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
+        return;
+    };
+    // At d=0 the shared `(/ 10 d)` divides by zero and `cond` overflows. Cond-first semantics demand the
+    // OVERFLOW is observed; a hoist that moved `(/ 10 d)` ahead of `cond` would surface div-by-zero.
+    let opts = cdz_run::RunOpts {
+        export: Some("main".to_string()),
+        args: vec!["0".to_string(), "1".to_string()],
+        runtime: Some(runtime),
+        runtime_cache_dir: None,
+        host_responses: Vec::new(),
+    };
+    match cdz_run::run(&bytes, &opts).expect("run") {
+        cdz_run::Outcome::Value(v) => {
+            panic!("expected a trap (cond overflows), ran → {v}")
+        }
+        cdz_run::Outcome::Trap(t) => {
+            assert!(
+                t.contains("integer overflow"),
+                "cond (a checked-+ overflow) is evaluated FIRST, so the observed trap must be \
+                 'integer overflow', not the preceding shared payload's div-by-zero; got: {t}"
+            );
+            assert!(
+                !t.contains("divide by zero"),
+                "the trapping shared payload `(/ 10 d)` before the differing position must not \
+                 preempt the trapping cond's overflow; got the WRONG trap: {t}"
+            );
+        }
+    }
+}
+
 /// The common-constructor sink also fires for a MATCH whose every (unguarded) arm builds the same
 /// constructor: `(match k (0 (Some 10)) (1 (Some 20)) (_ (Some 30)))` builds `Some` ONCE and sinks the
 /// payload into a per-position `match` (a scalar decision tree), instead of DUPLICATING the `sum-new`
@@ -50525,7 +50576,8 @@ mod sidecar_driven {
     use crate::compile::compile;
     use crate::sidecar::{
         self, KIND_DIAGNOSTICS, KIND_DOC, KIND_EXPORTS, KIND_HIGHLIGHT, KIND_INSTANTIATIONS,
-        KIND_RESOLVE, KIND_SCOPE, KIND_TYPE_AT, KIND_TYPE_INFO, KIND_USES, Query, Request,
+        KIND_RESOLVE, KIND_SCOPE, KIND_SYMBOLS, KIND_TYPE_AT, KIND_TYPE_INFO, KIND_USES, Query,
+        Request,
     };
     use crate::testkit::parse;
 
@@ -51266,6 +51318,107 @@ mod sidecar_driven {
         let out = compile(&inputs(src, &[Request::Query(Query::Exports)]), &[]);
         assert!(!out.has_error());
         assert_eq!(artifact_text(&out, KIND_EXPORTS).as_deref(), Some(""));
+    }
+
+    /// The `Symbols` outline as `(name, kind)` rows, in the artifact's emit order.
+    fn symbol_rows(src: &str) -> Vec<(String, String)> {
+        let out = compile(&inputs(src, &[Request::Query(Query::Symbols)]), &[]);
+        assert!(!out.has_error(), "{:?}", out.diagnostics);
+        artifact_text(&out, KIND_SYMBOLS)
+            .expect("a symbols artifact")
+            .lines()
+            .map(|l| {
+                let mut c = l.split('\t');
+                (c.next().unwrap().to_string(), c.next().unwrap().to_string())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_symbols_query_outlines_every_top_level_declaration_by_kind() {
+        // The document outline: every declaration classified — a nullary def is a `value`, a def with
+        // params a `function`, plus `type`/`effect`. Columns grouped (defs, then types, then effects).
+        let src = "(do (type Color Red Green Blue) \
+                   (effect Log (op emit (-> Int64 Unit))) \
+                   (def answer 42) (def (double x) (+ x x)) (export double answer))";
+        let rows = symbol_rows(src);
+        assert_eq!(
+            rows,
+            vec![
+                ("answer".to_string(), "value".to_string()),
+                ("double".to_string(), "function".to_string()),
+                ("Color".to_string(), "type".to_string()),
+                ("Log".to_string(), "effect".to_string()),
+            ],
+            "rows: {rows:?}"
+        );
+    }
+
+    #[test]
+    fn a_symbols_query_lists_private_declarations_not_just_exports() {
+        // The superset property vs `Exports`: a def that is NOT exported still appears in the outline.
+        let src = "(do (def (public-fn x) x) (def (private-fn y) y) (export public-fn))";
+        let rows = symbol_rows(src);
+        let names: Vec<&str> = rows.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(names.contains(&"public-fn"), "rows: {rows:?}");
+        assert!(
+            names.contains(&"private-fn"),
+            "an outline lists the UNEXPORTED def too — rows: {rows:?}"
+        );
+    }
+
+    #[test]
+    fn a_symbols_query_omits_prelude_types_and_module_internals() {
+        // A prelude sum (`Option`/`Result`/…) is injected into `type_decls` with no source span — it is
+        // NOT the user's declaration, so it must not appear. A module's member def is INTERNAL (a
+        // synthesized callable), so it is omitted too — only the `module` itself is a top-level symbol.
+        let src = "(do (module geo (def (area r) (* r r)) (export area)) \
+                   (def (main) (geo.area 3)) (export main))";
+        let rows = symbol_rows(src);
+        let names: Vec<&str> = rows.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(names.contains(&"main"), "rows: {rows:?}");
+        assert!(
+            names.contains(&"geo") && rows.iter().any(|(n, k)| n == "geo" && k == "module"),
+            "the module is a symbol — rows: {rows:?}"
+        );
+        assert!(
+            !names.contains(&"Option") && !names.contains(&"Result"),
+            "prelude types must not leak into the outline — rows: {rows:?}"
+        );
+        assert!(
+            !names.contains(&"area"),
+            "a module-member callable is internal, not a top-level symbol — rows: {rows:?}"
+        );
+    }
+
+    #[test]
+    fn a_symbols_query_on_a_declarationless_program_is_empty() {
+        // Total: a program with no top-level declarations yields the empty outline, never an error.
+        let src = "42";
+        let out = compile(&inputs(src, &[Request::Query(Query::Symbols)]), &[]);
+        assert!(!out.has_error(), "{:?}", out.diagnostics);
+        assert_eq!(artifact_text(&out, KIND_SYMBOLS).as_deref(), Some(""));
+    }
+
+    #[test]
+    fn a_symbols_query_carries_a_jumpable_name_node() {
+        // The node id on each line is the declaration's NAME occurrence (a user node), so a consumer can
+        // resolve it to a source range and jump — the go-to affordance the outline rides on.
+        let src = "(do (type Color Red Green Blue) (def (f x) x) (export f))";
+        let out = compile(&inputs(src, &[Request::Query(Query::Symbols)]), &[]);
+        assert!(!out.has_error(), "{:?}", out.diagnostics);
+        let text = artifact_text(&out, KIND_SYMBOLS).expect("a symbols artifact");
+        for line in text.lines() {
+            let node: u32 = line
+                .rsplit('\t')
+                .next()
+                .unwrap()
+                .parse()
+                .expect("a node id");
+            // Every reported node id is a real user node (mappable to a span), never a `-` sentinel.
+            assert_ne!(line.rsplit('\t').next().unwrap(), "-", "line: {line}");
+            let _ = node;
+        }
     }
 
     #[test]
@@ -60407,6 +60560,43 @@ mod cross_component_oracle {
             bind_err.fix.as_ref().map(|f| f.replacement.as_str()),
             Some("Logger"),
             "the bind typo carries a rename fix"
+        );
+        // (g) a `(bind E "…")` whose INTERFACE STRING is not a valid component interface name is CDZ0201.
+        // The string is emitted verbatim as a peer-instance import extern name; a non-conforming one
+        // (`"Math/API"` — uppercase, would `kebab_extern_name`-mangle to the INVALID `math/-a-p-i`)
+        // produces a component wasmtime rejects at LOAD with no diagnostic — a silent invalid-component
+        // miscompile. It is now a clear compile-time reject naming the offending string.
+        let bad_iface = "(do (effect Math (op add (-> Int64 Int64 Int64))) (bind Math \"Math/API\") \
+                         (def (main (: x Int64)) (host (Math) (Math.add x x))) (export main))";
+        let d8 = crate::diagnostics(&mut crate::db::Db::load(parse(bad_iface)));
+        assert!(
+            d8.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
+                && d.message.contains("valid component interface name")),
+            "a (bind …) with a malformed interface name is CDZ0201, not a silent invalid-component \
+             miscompile: {:?}",
+            d8.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        // A bare package name with NO projection (`cadenza:math`) is also malformed (an instance import
+        // needs the `/iface` projection).
+        let no_proj = "(do (effect M (op a (-> Int64 Int64))) (bind M \"cadenza:math\") \
+                       (def (main) 0) (export main))";
+        let d9 = crate::diagnostics(&mut crate::db::Db::load(parse(no_proj)));
+        assert!(
+            d9.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
+                && d.message.contains("valid component interface name")),
+            "a (bind …) to a projection-less package name is CDZ0201: {:?}",
+            d9.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        // NO REGRESSION: a well-formed VERSIONED interface name (`@0.0.0`) is CLEAN — the version suffix
+        // the runtime heap import itself carries is a legal interface name.
+        let versioned = "(do (effect M (op a (-> Int64 Int64))) (bind M \"cadenza:math/api@0.0.0\") \
+             (def (main) (handle M 0 ((a (n) s (resume n s))) (M.a 1))) (export main))";
+        let d10 = crate::diagnostics(&mut crate::db::Db::load(parse(versioned)));
+        assert!(
+            !d10.iter()
+                .any(|d| d.message.contains("valid component interface name")),
+            "a well-formed versioned interface name must not be flagged: {:?}",
+            d10.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
     }
     // ------------------------------------------------------------------------------------------------

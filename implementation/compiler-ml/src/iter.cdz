@@ -491,7 +491,7 @@ def range-inclusive-empty-when-lo-gt-hi() =
 def range-step-by-two() =
   // 0, 2, 4, 6, 8 — step 2 over [0, 10)   (NB: the test name avoids a numeric kebab segment like
   // `-2`; a segment starting with a digit is not a valid WIT label and silently breaks the whole
-  // test component — see repros/decline-test-name-numeric-kebab-segment.cdz)
+  // test component — see the `mlrepro-decline-test-name-numeric-kebab-segment` queue item)
   if int-list-eq(collect-list(range-step(0, 10, 2)), [0, 2, 4, 6, 8]) then
     unit
   else

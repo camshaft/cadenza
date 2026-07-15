@@ -81,6 +81,67 @@ pub(crate) fn kebab_extern_name(name: &str) -> String {
     out
 }
 
+/// Whether `word` is a single valid component-model KEBAB word — a `-`-separated run of
+/// same-case-led alphanumeric words (`a`, `a-b`, `foo2`, `HTTP`), non-empty and not ending in `-`.
+/// Mirrors `cadenza_syntax::extern_name::is_kebab_word` (which itself mirrors `wasmparser`'s `KebabStr`
+/// state machine) — kept as an in-crate COPY because the pure lib core takes `cadenza-syntax` only as a
+/// DEV dependency (the "copy, don't depend" discipline `kebab_extern_name` above follows). A word this
+/// accepts loads under wasmtime; one it rejects does not.
+fn is_kebab_word(word: &str) -> bool {
+    let mut lower = false;
+    let mut upper = false;
+    for c in word.chars() {
+        match c {
+            'a'..='z' if !lower && !upper => lower = true,
+            'A'..='Z' if !lower && !upper => upper = true,
+            'a'..='z' if lower => {}
+            'A'..='Z' if upper => {}
+            '0'..='9' if lower || upper => {}
+            '-' if lower || upper => {
+                lower = false;
+                upper = false;
+            }
+            _ => return false,
+        }
+    }
+    !word.is_empty() && !word.ends_with('-')
+}
+
+/// Whether `name` is a valid component-model INTERFACE name — the string a peer binding
+/// (`(bind E "ns:pkg/iface")`) imports a peer instance under, or a provider's `--component-name`
+/// publishes its interface instance under. Grammar (component-model `pkgpath` with a required
+/// projection, matching what `wasmtime` accepts at load): ≥2 `:`-separated LOWERCASE-kebab package
+/// segments (`ns:pkg`), then a required `/`-separated projection of ≥1 kebab segments (`iface`),
+/// then an OPTIONAL non-empty `@<version>` suffix.
+///
+/// This is the guard that turns a silent INVALID-COMPONENT miscompile into a compile error: an
+/// author's `"Math/API"` (or any non-conforming string) would otherwise `kebab_extern_name`-mangle to
+/// `math/-a-p-i` (not a valid extern name) and emit a component `wasmtime` rejects at LOAD with no
+/// compiler diagnostic. Mirrors `cadenza_syntax::extern_name::is_valid_interface_name`.
+pub(crate) fn is_valid_interface_name(name: &str) -> bool {
+    let path = match name.split_once('@') {
+        Some((p, version)) => {
+            if version.is_empty() {
+                return false;
+            }
+            p
+        }
+        None => name,
+    };
+    let Some((pkg, projection)) = path.split_once('/') else {
+        return false;
+    };
+    let pkg_segments: Vec<&str> = pkg.split(':').collect();
+    if pkg_segments.len() < 2
+        || !pkg_segments
+            .iter()
+            .all(|s| is_kebab_word(s) && !s.chars().any(|c| c.is_ascii_uppercase()))
+    {
+        return false;
+    }
+    projection.split('/').all(is_kebab_word)
+}
+
 /// If two DISTINCT source export names normalize to the SAME kebab extern name, return a reject naming
 /// the collision (else `None`). Two exports that share a normalized extern name cannot both cross the
 /// component boundary — the component would carry a duplicate export name (invalid) or silently drop one

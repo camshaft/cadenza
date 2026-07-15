@@ -2577,6 +2577,27 @@ pub mod textedit {
         }
     }
 
+    /// The single byte edit that DELETES the node occupying source span `[start, end)` from its parent
+    /// list — the same edit `diff_edits`' `Align::Del` arm emits (`widen_deletion` + an empty-text edit),
+    /// computed DIRECTLY from the known deleted span instead of via the LCS `align` of the whole parent's
+    /// children. A delete fix already knows exactly WHICH child vanishes (its target), so the alignment
+    /// DP is pure waste — and for a WIDE parent (a `do` block or match with N children) that DP is O(N²)
+    /// `tree_eq` cells PER fix, so N such fixes on one file were O(N³) (a `do` of N discarded statements:
+    /// N=100/200/400 = 33/207/1639ms, ~7×/dbl). This helper makes a delete fix's edit O(1) — no parent
+    /// diff, no alignment. Byte-identical to the alignment path (same `widen_deletion`, same empty text).
+    /// Returns `None` if the span is degenerate (`start > end`).
+    pub fn delete_edit(src: &str, start: usize, end: usize, surface: Format) -> Option<Edit> {
+        if start > end || end > src.len() {
+            return None;
+        }
+        let (ws, we) = widen_deletion(src, start, end, surface);
+        Some(Edit {
+            start: ws,
+            end: we,
+            text: String::new(),
+        })
+    }
+
     /// Apply non-overlapping `edits` to `src`, producing the edited string. Edits are sorted by start
     /// offset; an insertion (`start == end`) at the same offset keeps input order. Overlapping edits
     /// (which the tree alignment never produces — each edit covers a distinct node's span) are applied
@@ -3551,6 +3572,74 @@ mod tests {
         );
         assert_eq!(r.count, 1);
         assert_eq!(r.tree.to_sexpr(), "(case a b c d)");
+    }
+
+    #[test]
+    fn delete_edit_matches_the_align_path_and_skips_the_wide_parent_diff() {
+        // REGRESSION (perf): a DELETE fix's byte-edit was computed by diffing the target's whole PARENT
+        // list (`localized_change` → `edits_preserving` → `align`), whose LCS alignment DP calls `tree_eq`
+        // over O(children²) cells. For a WIDE parent (a `do` block / match with N children) that is O(N²)
+        // per fix, so N delete fixes on one file (each discarded `do` statement is a CDZ0307 delete) were
+        // O(N³) (`cdz` timing: a `do` of N discarded statements N=100/200/400 = 33/207/1639ms). The
+        // `textedit::delete_edit` fast path emits the edit DIRECTLY from the known deleted span, in O(1) —
+        // no parent diff, no alignment. This test pins that it is BYTE-IDENTICAL to the align path.
+        //
+        // Build a wide `(do c0 c1 … c{n-1})`, delete a MIDDLE child, and compare: (a) `delete_edit(src,
+        // child_span)` vs (b) the full align path `edits_preserving(src, parent, parent_without_child)`.
+        // The two edit lists must be identical for EVERY position — so the fast path never drifts from the
+        // alignment it replaces.
+        use crate::convert::Format;
+        fn parent_without_child(parent: &Tree, drop_ix: usize) -> Tree {
+            let Tree::List(items, o) = parent else {
+                panic!("parent is a list")
+            };
+            let kept: Vec<Tree> = items
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| *i != drop_ix)
+                .map(|(_, t)| t.clone())
+                .collect();
+            Tree::List(kept, *o)
+        }
+        // Read WITH spans (the s-expr corpus surface) so both paths see the same span table.
+        let n = 12usize;
+        let mut src = String::from("(do");
+        for i in 0..n {
+            src.push_str(&format!(" (s {i})"));
+        }
+        src.push(')');
+        let (arena, spans) = sexpr::read_spanned(&src).expect("spanned parse");
+        let tree = Tree::of(&arena);
+        let span_of = |t: &Tree| -> Option<(usize, usize)> {
+            t.origin()
+                .and_then(|id| spans.get(id))
+                .map(|s| (s.start, s.end))
+        };
+        // The parent is the `(do …)` list; its children are the head `do` + n statements. Delete a MIDDLE
+        // statement (child index 6 of the do-list = statement 5).
+        let Tree::List(children, _) = &tree else {
+            panic!("root is the do list")
+        };
+        let drop_ix = 6usize;
+        let child = &children[drop_ix];
+        let (cs, ce) = span_of(child).expect("child has a span");
+        // (a) the fast path.
+        let fast = textedit::delete_edit(&src, cs, ce, Format::Sexpr).expect("delete edit");
+        // (b) the align path over the parent pair.
+        let without = parent_without_child(&tree, drop_ix);
+        let slow = textedit::edits_preserving(&src, &tree, &without, &span_of, Format::Sexpr);
+        assert_eq!(
+            slow.len(),
+            1,
+            "deleting one child yields exactly one edit via the align path"
+        );
+        assert_eq!(
+            vec![fast],
+            slow,
+            "the delete fast path must produce the byte-identical edit the align path does (same \
+             widened span, empty text) — a drift here means `cdz fix`/`check --json` would apply a \
+             different edit than the alignment intended"
+        );
     }
 
     #[test]

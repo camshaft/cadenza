@@ -13592,11 +13592,16 @@ fn core_equiv(db: &mut Db, a: StructId, b: StructId) -> bool {
 /// const/param/local/arith/compare/convert/proj — so evaluating it once unconditionally reproduces the
 /// always-taken arm's single evaluation (including any arith trap, which the taken arm also incurred).
 /// `cond` is evaluated ONCE PER DIFFERING position: exactly one differing position is one evaluation,
-/// matching the original `if`, so that case is unconditionally sound; zero or ≥2 differing positions
-/// change the count, so require a TRAP-FREE `cond` (it re-reads identically with no effect or trap to
-/// drop or duplicate). Returns `None` (keep the `if`) when the arms are not the same constructor,
-/// disagree in shape/key-set, or the cond-eval guard fails. A poison arm has a non-constructor core, so
-/// it never matches and the `if`'s existing poison handling stands.
+/// matching the original `if`, so that COUNT case is sound; zero or ≥2 differing positions change the
+/// count, so require a TRAP-FREE `cond` (it re-reads identically with no effect or trap to drop or
+/// duplicate). But a trapping `cond` needs an ORDER check too: the original `if` evaluates `cond`
+/// FIRST — before any payload — whereas a SHARED payload BEFORE the differing position is built OUTSIDE
+/// the per-position `if` and so evaluates BEFORE `cond`. Since `core_equiv` admits trapping arith (a
+/// `/` by a runtime divisor), a preceding shared payload that can trap would PREEMPT `cond`'s trap and
+/// the hoist would observe the WRONG trap; so a trapping `cond` additionally requires every shared
+/// payload preceding the differing position to be trap-free. Returns `None` (keep the `if`) when the
+/// arms are not the same constructor, disagree in shape/key-set, or either cond guard fails. A poison
+/// arm has a non-constructor core, so it never matches and the `if`'s existing poison handling stands.
 fn hoist_common_ctor(
     db: &mut Db,
     cond: StructId,
@@ -13658,15 +13663,32 @@ fn hoist_common_ctor(
         return None;
     }
     let mut diff = 0usize;
-    for &(a, b) in &pairs {
+    let mut first_diff: Option<usize> = None;
+    for (i, &(a, b)) in pairs.iter().enumerate() {
         if !core_equiv(db, a, b) {
             diff += 1;
+            first_diff.get_or_insert(i);
         }
     }
-    // `cond` is evaluated once per differing position; only ONE differing position matches the original's
-    // single evaluation. Any other count must not duplicate/drop a cond trap or effect.
-    if diff != 1 && !is_trap_free(db, cond) {
-        return None;
+    // A trapping `cond` needs both a count check AND an ORDER check before it may hoist.
+    if !is_trap_free(db, cond) {
+        // COUNT: `cond` is evaluated once per differing position; only ONE differing position matches
+        // the original's single evaluation. Any other count would duplicate/drop a cond trap or effect.
+        if diff != 1 {
+            return None;
+        }
+        // ORDER: the original `if` evaluates `cond` FIRST — before ANY payload. But in the hoisted form
+        // a SHARED (non-differing) payload BEFORE the differing position is built OUTSIDE the per-position
+        // `if`, so it evaluates BEFORE `cond`. `core_equiv` admits trapping arith (a `/` by a runtime
+        // divisor), so a preceding shared payload that traps would PREEMPT `cond`'s own trap — the hoist
+        // would observe the WRONG trap. Only hoist a trapping cond when every shared payload preceding
+        // the differing position is itself trap-free (then the first observable trap is still `cond`'s).
+        let diff_idx = first_diff.expect("diff == 1 guarantees a differing position");
+        for &(a, _) in &pairs[..diff_idx] {
+            if !is_trap_free(db, a) {
+                return None;
+            }
+        }
     }
     let mut vals: Vec<StructId> = Vec::with_capacity(pairs.len());
     for &(a, b) in &pairs {

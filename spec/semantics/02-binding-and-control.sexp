@@ -2899,6 +2899,25 @@
   (call   main (: 0 Int64))
   (trap   "divide by zero"))
 
+(case "a trapping shared payload before the differing position must not preempt a trapping cond"
+  (doc    "`(if (< (+ i64::MAX e) 5) (tuple (/ 10 d) 1) (tuple (/ 10 d) 2))` — element 0 is the SHARED
+           `(/ 10 d)`, element 1 is the sole DIFFERING position. The original `if` evaluates the cond
+           FIRST; a checked `+` overflow means the program must trap 'integer overflow' at every d. The
+           common-constructor hoist builds the shared element OUTSIDE the per-position `if`, so it would
+           evaluate `(/ 10 d)` BEFORE the cond — at d = 0 that div-by-zero would preempt the cond's
+           overflow (the WRONG trap). The hoist declines a possibly-trapping cond unless every shared
+           payload before the differing position is trap-free, keeping the cond's trap observed first.
+           This pins the ORDER obligation the diff-count guard alone did not cover (Copilot review on PR
+           #375, r3589185980).")
+  (input  (do
+            (def (main (: d Int64) (: e Int64))
+              (if (< (+ 9223372036854775807 e) 5)
+                  (tuple (/ 10 d) 1)
+                  (tuple (/ 10 d) 2)))
+            (export main)))
+  (call   main (: 0 Int64) (: 1 Int64))
+  (trap   "integer overflow"))
+
 ; --- The list face of the common-constructor hoist (same-length ListNew arms) ---------------------
 ; The hoist's list extension: `(if c (list …p) (list …q))` with SAME-length arms builds one list with
 ; per-element selections. Same guard obligations as the sum/tuple/record pins above, plus two faces
@@ -3166,3 +3185,25 @@
   (output (: 20 Int64))
   (call   main (: 9 Int64))
   (output (: 30 Int64)))
+
+(case "a literal arm wins over a later guard arm that also matches"
+  (doc    "Literal arms INTERLEAVED with a guard arm: `(match k (0 0) (1 10) (2 20) (3 30) (5 50)
+           ((guard x (> x 3)) 99) (_ -1))`. k = 5 satisfies BOTH the literal `5` arm and the later
+           guard `(> x 3)` — first-match-wins selects the literal → 50; k = 4 misses every literal and
+           takes the guard → 99; k = 2 hits its literal before the guard is reached → 20. The guarded
+           twin-arm case above pins guard-vs-guard order; this pins LITERAL-vs-guard order under the
+           guarded-scalar if-chain desugar — a lowering that partitions literals into a jump table and
+           appends guards (or vice versa) without preserving source order answers 99 for k = 5.")
+  (input  (do
+            (def (main (: k Int64))
+              (match k
+                (0 0) (1 10) (2 20) (3 30) (5 50)
+                ((guard x (> x 3)) 99)
+                (_ -1)))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 50 Int64))
+  (call   main (: 4 Int64))
+  (output (: 99 Int64))
+  (call   main (: 2 Int64))
+  (output (: 20 Int64)))
