@@ -166,3 +166,94 @@
               (def (main (: a Int64) (: b Int64)) (= (first-wins a b) (first-wins b a)))
               (export main)))
   (call   main (: 3 Int64) (: 7 Int64)) (output (: false Bool)))
+
+; --- §Permutation Invariance Is A Property, over a CRDT-style SET MERGE ------------------------------
+; The permutation-invariance cases above reduce a list to a SCALAR (sum) before comparing, because the
+; seed's runtime `=` over two heap LISTS is not yet realized. A `Set` sidesteps that entirely: a set's
+; equality is ORDER-INDEPENDENT by construction (19-sets.sexp §order-independent equality), so a set
+; merge is the natural first-class witness of a commutative-convergence property — exactly the
+; CRDT-style grow-only-set merge the fold-order-independence learning names
+; (learnings/2026-07-04-fold-order-independence-is-a-verified-property). These check the DEFINING
+; convergence laws — commutativity, idempotence, associativity — over inputs the GENERATOR produced at
+; run time, so the set built from a generated stream is compared, not a constant that would fold. A
+; grow-only set whose merge is `Set.union` converges regardless of the order/duplication with which
+; elements arrive — the property a property-testing run exercises before any proof effort.
+
+(case "a set built from generated values is equal regardless of insertion order (order-independent equality on generated inputs)"
+  (doc    "Witnesses §Permutation Invariance Is A Property directly on a set: a set drawn from a runtime
+           seed in one order equals the SAME elements inserted in a PERMUTED order —
+           `(= (Set.of [a b c]) (Set.of [c a b]))` = true. Unlike the list-sum case this needs no scalar
+           reduction: set equality is order-independent by construction, so the set IS the
+           permutation-invariant value. The elements are drawn from a runtime seed (nothing folds).")
+  (input  (do (def (next (: s Int64)) (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
+              (def (main (: seed Int64))
+                (let ((a (next seed)))
+                  (let ((b (next a)))
+                    (let ((c (next b)))
+                      (= (Set.of (list a b c)) (Set.of (list c a b)))))))
+              (export main)))
+  (call   main (: 12345 Int64)) (output (: true Bool))
+  (call   main (: 777 Int64)) (output (: true Bool)))
+
+(case "set union is commutative on generated inputs (a grow-only-set CRDT merge converges)"
+  (doc    "The convergence law a grow-only-set CRDT relies on: `A ∪ B = B ∪ A`, so two replicas that
+           merge each other's states in EITHER order reach the same set. Checked on two sets drawn from a
+           generated stream — `(= (union (Set.of [a b]) (Set.of [c d])) (union (Set.of [c d]) (Set.of
+           [a b])))` = true. This is the property-testing rung of discharging order-independence for a set
+           merge (learnings/2026-07-04-fold-order-independence), exercised on generated inputs.")
+  (input  (do (def (next (: s Int64)) (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
+              (def (main (: seed Int64))
+                (let ((a (next seed)))
+                  (let ((b (next a)))
+                    (let ((c (next b)))
+                      (let ((d (next c)))
+                        (= (Set.union (Set.of (list a b)) (Set.of (list c d)))
+                           (Set.union (Set.of (list c d)) (Set.of (list a b)))))))))
+              (export main)))
+  (call   main (: 777 Int64)) (output (: true Bool)))
+
+(case "set union is idempotent on generated inputs (re-delivering a set changes nothing)"
+  (doc    "The other CRDT-merge law: `A ∪ A = A`, so at-least-once / duplicate delivery of the same state
+           does not change the merged set — `(= (union s s) s)` = true for a set drawn from a generated
+           seed. Commutativity + idempotence (+ associativity below) are exactly the convergence
+           properties order-independence requires, checked by generated inputs.")
+  (input  (do (def (next (: s Int64)) (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
+              (def (main (: seed Int64))
+                (let ((a (next seed)))
+                  (let ((b (next a)))
+                    (let ((s1 (Set.of (list a b))))
+                      (= (Set.union s1 s1) s1)))))
+              (export main)))
+  (call   main (: 42 Int64)) (output (: true Bool)))
+
+(case "set union is associative on generated inputs (the order merges are grouped does not matter)"
+  (doc    "The third convergence law: `(A ∪ B) ∪ C = A ∪ (B ∪ C)`, so replicas that combine partial
+           merges in different groupings still converge. Checked on three singleton sets drawn from a
+           generated seed. Together with commutativity and idempotence this is the full commutative-
+           monoid-with-idempotence structure a grow-only set has — the property a CRDT convergence check
+           exercises over generated event sets.")
+  (input  (do (def (next (: s Int64)) (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
+              (def (main (: seed Int64))
+                (let ((a (next seed)))
+                  (let ((b (next a)))
+                    (let ((c (next b)))
+                      (let ((sa (Set.of (list a))))
+                        (let ((sb (Set.of (list b))))
+                          (let ((sc (Set.of (list c))))
+                            (= (Set.union (Set.union sa sb) sc)
+                               (Set.union sa (Set.union sb sc))))))))))
+              (export main)))
+  (call   main (: 314159 Int64)) (output (: true Bool)))
+
+(case "the generated-set convergence property has discriminating power — two different generated sets are NOT equal"
+  (doc    "The counterpoint keeping the set-convergence cases honest: distinct generated values build
+           DISTINCT sets, so `(= (Set.of [a]) (Set.of [b]))` = false when `a ≠ b`. Pins that set equality
+           is real content equality — a degenerate `=` that called everything equal would make the
+           convergence cases vacuously pass, and this case would catch it.")
+  (input  (do (def (next (: s Int64)) (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
+              (def (main (: seed Int64))
+                (let ((a (next seed)))
+                  (let ((b (next a)))
+                    (= (Set.of (list a)) (Set.of (list b))))))
+              (export main)))
+  (call   main (: 5 Int64)) (output (: false Bool)))

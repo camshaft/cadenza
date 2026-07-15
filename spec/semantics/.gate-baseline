@@ -1398,6 +1398,7 @@ pass	a sequencing block yields the value of its last form
 pass	a set accumulator is queried for membership after building
 pass	a set as a map value: runtime membership tested through the lookup
 pass	a set built at run time escapes to the host as its value form
+pass	a set built from generated values is equal regardless of insertion order (order-independent equality on generated inputs)
 pass	a set chosen by a runtime if is membership-tested with valid wasm
 pass	a set collapses a duplicate element
 pass	a set is constructed from a list of its elements
@@ -2335,6 +2336,9 @@ pass	scalar length counts Unicode scalar values, not bytes
 pass	scalar length of a supplementary-plane character is one scalar value
 pass	scaling a quantity by a dimensionless quantity keeps its dimension
 pass	set equality is independent of the order elements are written
+pass	set union is associative on generated inputs (the order merges are grouped does not matter)
+pass	set union is commutative on generated inputs (a grow-only-set CRDT merge converges)
+pass	set union is idempotent on generated inputs (re-delivering a set changes nothing)
 pass	shrinking reports the minimal failing input
 pass	signed 8-bit addition that overflows its width is rejected at compile time
 pass	size after a runtime-key insert reflects replace-vs-add
@@ -2412,6 +2416,7 @@ pass	the entrypoint returns its runtime argument unchanged
 pass	the entrypoint returns its runtime boolean argument
 pass	the entrypoint sums its two runtime arguments
 pass	the exponent marker is case-insensitive
+pass	the generated-set convergence property has discriminating power — two different generated sets are NOT equal
 pass	the generator is a deterministic function of its seed (same seed, same value) — folds
 pass	the generator reproduces its stream from a runtime seed (same seed, same value) — runs
 pass	the greater-than operator on chars follows scalar order
