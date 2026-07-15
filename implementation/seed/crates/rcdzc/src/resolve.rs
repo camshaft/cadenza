@@ -2650,6 +2650,17 @@ fn find_binder_in_pattern(
         return false; // a nullary variant pattern binds nothing; a lone head has no payload.
     }
     let head = app[0];
+    // When `pattern` ITSELF is a `(. Sum V)` member form, its `app[0]` is the bare `.` ATOM and the
+    // remaining children are `Sum` and `V` — the qualified nullary-variant CONSTRUCTOR, NOT a ctor with
+    // payload binders `Sum`/`V`. Treating the `.` atom as a variant head (below) would spuriously register
+    // `Sum` and `V` as payload binders, poisoning scope: a later IDENTICAL nested `(. Sum V)` pattern then
+    // sees `Sum`/`V` as SHADOWED names and resolves them INERT (`Resolved::Unit`), so its member operand no
+    // longer reduces to the type record and the nested nullary-variant pattern fails as "member access
+    // requires a record". A whole `(. Sum V)` pattern binds NOTHING (a nullary ctor) — bail out. (The other
+    // walkers, e.g. `lower::pattern_constraints`, already special-case a `.`-atom head this same way.)
+    if db.ast.as_name(head) == Some(".") {
+        return false;
+    }
     // The head is the variant CONSTRUCTOR — a `(. Sum V)` member OR a bare variant NAME. But the
     // compound-VALUE constructor names (`list`/`tuple`/`record`/`map`) are NOT variant heads: a `(list a
     // b)` / `(tuple a b)` pattern is a COLLECTION/tuple destructure, handled by its own binder case — so

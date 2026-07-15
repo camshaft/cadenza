@@ -1645,6 +1645,54 @@
             (export main)))
   (output (: 1 Int64)))
 
+(case "a nullary-variant dotted pattern matches inside a match nested directly in an arm body"
+  (doc    "A qualified nullary-variant pattern `(. Ty TInt)` in a match whose scrutinee is ITSELF matched
+           by an OUTER match's arm — `(match x ((. Ty TBool) …) ((. Ty TInt) (match x …)))` — must
+           resolve as a nullary-variant PATTERN, exactly as it does at the outer match. A resolver bug
+           mis-parsed the whole `(. Ty TInt)` member form as a variant ctor whose PAYLOAD binders were
+           `Ty` and `TInt`, poisoning scope; the identical nested `(. Ty TInt)` pattern then saw `Ty`/`TInt`
+           as SHADOWED names, resolved them inert, and its member operand no longer reduced to the type
+           record — the nested arm faulted as CDZ0201 `member access requires a record` while the outer
+           arm compiled. Pins that a nullary-variant dotted pattern is position-independent: the same
+           `(. Ty V)` shape binds nothing and dispatches on the discriminant in a nested arm exactly as at
+           top level. `x` is `TInt`, so the outer `TInt` arm runs the inner match, whose `TInt` arm → 9.")
+  (input  (do
+            (type Ty (TInt) (TBool))
+            (def (g (: x Ty))
+              (match x
+                ((. Ty TBool) 0)
+                ((. Ty TInt) (match x ((. Ty TBool) 8) ((. Ty TInt) 9)))))
+            (def (main) (g (Ty.TInt)))
+            (export main)))
+  (output (: 9 Int64)))
+
+(case "a dotted nullary arm whose body nests a same-type sum match dispatches correctly"
+  (doc    "The organic form of the nested-nullary resolver bug (hit building a `'(' Num ')'` grammar rule):
+           a DOTTED nullary-variant arm `(. T LP)` whose body opens a match on ANOTHER value of the SAME
+           sum `T` — `(match tok … ((. T LP) (match tok2 ((. T Num v) …) …)) …)`. The resolver mis-read the
+           sibling dotted nullary arm `(. T LP)` as a `(. T LP)` member-ACCESS expression (CDZ0201) once an
+           arm body opened a same-type match — the same `find_binder_in_pattern` mis-parse as the case
+           above, in the shape a tokenizer/parser actually writes. Pins the whole-form fix over a
+           multi-variant sum with a payload variant + several nullary variants, matching on list elements.
+           `paren-num [LP, Num 7, RP] 0` walks LP → nests on the next token Num 7 → nests on RP → 7 + 1000
+           = 1007. The dotted form now behaves exactly as the bare-name workaround did.")
+  (input  (do
+            (type T (Num Int64) (LP) (RP) (End))
+            (def (tok (: xs (List T)) (: i Int64))
+              (match (List.at xs i) ((Option.Some t) t) ((Option.None _) (T.End))))
+            (def (paren-num (: xs (List T)) (: i Int64))
+              (match (tok xs i)
+                ((T.Num v) v)
+                ((. T LP) (match (tok xs (+ i 1))
+                            ((T.Num m) (match (tok xs (+ i 2))
+                                         ((. T RP) (+ m 1000))
+                                         (_ (- 0 5))))
+                            (_ (- 0 6))))
+                (_ (- 0 1))))
+            (def (main) (paren-num (list (T.LP) (T.Num 7) (T.RP)) 0))
+            (export main)))
+  (output (: 1007 Int64)))
+
 (case "a runtime list of lists escapes with its nested element type"
   (doc    "A runtime-built `(List (List Int64))` — a list whose ELEMENTS are themselves lists — crosses
            the host boundary. The value-encode walker already recurses over the nested-list element
