@@ -250,6 +250,7 @@ pass	a Result built by an if with the Err branch first type-checks
 pass	a Result carrying a Result is matched by a nested pattern to its inner value
 pass	a Result pipeline short-circuits on the first Err
 pass	a Result-valued `?` under an Option boundary is a type error
+pass	a SINGLE-variant open sum still requires an open-tail arm
 pass	a SOLE RECORD closure ARG crosses the direct-call boundary
 pass	a STRING-result effect op resumes with a string that folds through a concat
 pass	a SUM constructor payload that is a compound built from performs threads and destructures
@@ -1029,6 +1030,7 @@ pass	a nested match missing an inner variant under a DISC-≥1 variant is non-ex
 pass	a nested match on a runtime scrutinee
 pass	a nested module's function export is applied through the projection chain
 pass	a nested option value annotated with the wrong inner payload type is rejected
+pass	a nested pattern under an open sum's named variant still requires the outer open-tail arm
 pass	a nested runtime tuple built behind a recursive call escapes to the host
 pass	a nested runtime tuple is returned as a result
 pass	a nested sum match missing an inner variant is non-exhaustive
@@ -1493,6 +1495,7 @@ pass	a signed-byte entrypoint returns its runtime argument
 pass	a single-form body admits a sequence by holding a do block
 pass	a single-variant NEWTYPE escapes with its tag ERASED, only the type header naming it
 pass	a single-variant newtype over a COMPOUND escapes the bare compound under its type header
+pass	a single-variant open sum with an open-tail arm dispatches its named variant
 pass	a single-variant-sum binding pattern destructures a multi-payload constructor positionally
 pass	a single-variant-sum binding pattern nests inside another
 pass	a slice spanning a concatenation sees the logical bytes
@@ -1884,6 +1887,7 @@ pass	an internally ill-typed unselected match arm body is a type error
 pass	an intra-program handler interposes on a delegated effect, counts it, and forwards to the boundary
 pass	an octal-prefixed token is a malformed literal, not an unbound name
 pass	an offered ordering is total and deterministic
+pass	an open sum's open-tail arm dispatches a NAMED-but-uncovered variant, not only unnamed ones
 pass	an open sum's open-tail arm dispatches a variant the specific arms do not name
 pass	an operation on mismatched types is rejected at compile time
 pass	an operation with a RECORD parameter binds the compound and the arm reads its fields

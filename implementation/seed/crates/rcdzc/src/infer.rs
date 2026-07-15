@@ -5379,6 +5379,16 @@ fn qty_coercion_fix(expected: &Ty, actual: &Ty, arg: StructId) -> Option<Fix> {
 pub(crate) fn newtype_underlying(db: &mut Db, decl: StructId) -> Option<Ty> {
     let (payload_count, payloads, params) = {
         let td = db.type_decl_by_occ(decl)?;
+        // An OPEN sum (`(type T (Wrap Int64) .. r)`) is NEVER a newtype, even with a single NAMED variant:
+        // the row variable stands for variants not named, so a value's discriminant is NOT statically the
+        // sole variant — the sole constructor pattern does NOT cover it, and a match needs an open-tail
+        // `_` arm (`type-system.md §206`). Erasing it to a `Ty::Nominal` would make the sole-ctor pattern
+        // irrefutable (no discriminant to test), silently skipping the exhaustiveness check that requires
+        // the `_`. Keep it a boxed `Ty::Sum` so `lower::build_tree`'s open-sum arm runs. (A CLOSED
+        // single-variant sum erases as before — the default.)
+        if td.open_tail.is_some() {
+            return None;
+        }
         // (1) exactly one variant. GENERICS are now IN scope — a generic newtype's template carries its
         // params as `Ty::Var(i)` (positional), substituted per-instantiation at `decode_ty`.
         if td.variants.len() != 1 {

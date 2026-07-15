@@ -35638,6 +35638,55 @@ mod diagnostics {
     }
 
     #[test]
+    fn a_single_variant_open_sum_is_not_erased_to_an_irrefutable_newtype() {
+        // OS1 soundness edge — a CLOSED single-variant sum `(type Box (Wrap Int64))` erases to a newtype
+        // whose sole constructor pattern `(Wrap n)` is IRREFUTABLE (no `_` needed). But the SAME sum
+        // declared OPEN `(type Box (Wrap Int64) .. r)` is NOT a newtype: the row variable means a value's
+        // discriminant is not statically `Wrap`, so `(Wrap n)` does NOT cover it and a `_` arm is
+        // required (`type-system.md §206`). Without suppressing the erasure, the open sum wrongly compiled
+        // (the newtype pattern was irrefutable → the exhaustiveness check never ran).
+
+        // (a) The OPEN single-variant sum, sole-ctor arm only, NO `_` → non-exhaustive (CDZ0210).
+        let open_missing = all_errors(
+            "(module m (type Box (Wrap Int64) .. r) \
+             (def (unwrap (: b Box)) (match b ((Wrap n) n))) \
+             (def (main) (unwrap (Wrap 42))) (export main))",
+        );
+        assert!(
+            open_missing
+                .iter()
+                .any(|d| d.code.as_deref() == Some("CDZ0210")),
+            "an open single-variant sum without a `_` arm is non-exhaustive: {open_missing:?}"
+        );
+
+        // (b) The CLOSED single-variant sum (no `.. r`) with the SAME sole-ctor arm is exhaustive — its
+        // newtype erasure makes the ctor irrefutable, no `_` required. Isolates open-ness as the cause.
+        let closed_ok = all_errors(
+            "(module m (type Box (Wrap Int64)) \
+             (def (unwrap (: b Box)) (match b ((Wrap n) n))) \
+             (def (main) (unwrap (Wrap 42))) (export main))",
+        );
+        assert!(
+            !closed_ok
+                .iter()
+                .any(|d| d.code.as_deref() == Some("CDZ0210")),
+            "a CLOSED single-variant sum's sole-ctor pattern is irrefutable (no `_` needed): {closed_ok:?}"
+        );
+
+        // (c) The OPEN single-variant sum WITH the `_` arm compiles clean AND still reads the named
+        // variant's payload (the erasure suppression must not break the `Wrap` payload binder).
+        let open_ok = all_errors(
+            "(module m (type Box (Wrap Int64) .. r) \
+             (def (unwrap (: b Box)) (match b ((Wrap n) n) (_ 0))) \
+             (def (main) (unwrap (Wrap 42))) (export main))",
+        );
+        assert!(
+            open_ok.is_empty(),
+            "an open single-variant sum with a `_` arm compiles clean: {open_ok:?}"
+        );
+    }
+
+    #[test]
     fn a_duplicate_or_shadowed_list_length_arm_is_redundant() {
         // LIST-match redundancy — the list-length analogue of the variant/literal duplicate & shadowing
         // checks. A list arm covers a length (exact `(list a)` = len 1, or a `≥ k` ray `(list a .. r)`); a
