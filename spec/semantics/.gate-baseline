@@ -467,6 +467,7 @@ pass	a consumer applies the handed-back closure inside a larger expression
 pass	a consumer applies the handed-back closure to an internal constant
 pass	a consumer returns a different type than the closure it applies
 pass	a consumer takes the handed-back closure as its SECOND parameter
+pass	a consuming op inside a hoisted list element respects a still-live binding
 pass	a correctly-annotated function parameter is accepted
 pass	a cross-type variant pattern whose payload width differs is rejected, not miscompiled
 pass	a ctor-in-tuple-slot match is expressible by binding the tuple then re-matching
@@ -1357,6 +1358,7 @@ pass	a set threaded as a recursive accumulator dedups during accumulation
 pass	a set type whose element position holds a value is rejected
 pass	a set with elements of two different types is a type error
 pass	a shadowed-constructor application types at the binding's return type
+pass	a shared and a differing element hoist across same-length list arms
 pass	a short-circuit connective threads a branch perform to the continuation
 pass	a shorter string that is a prefix of a longer one compares Less
 pass	a signed i8 segment encodes as two's complement
@@ -1450,7 +1452,9 @@ pass	a transformation maps a syntax tree to a syntax tree and preserves meaning
 pass	a transformation observably rewrites the tree, not just its value
 pass	a transformation over the built-in Ast composes across a function call
 pass	a trapping condition of a same-constructor if traps before either arm
+pass	a trapping element in the taken arm of a same-length list if still traps
 pass	a trapping element in the untaken arm of a same-arity tuple if does not trap
+pass	a trapping element in the untaken arm of a same-length list if does not trap
 pass	a trapping field in the untaken arm of a same-shape record if does not trap
 pass	a trapping payload in the TAKEN arm of a same-constructor if still traps
 pass	a trapping payload in the untaken arm of a same-constructor if does not trap
@@ -1685,6 +1689,7 @@ pass	an exported closure with an annotation-mismatched body is rejected, not emi
 pass	an expression tree built at run time is evaluated by matching its node variants
 pass	an if choosing between two nullary enum variants selects branchlessly on the discriminant
 pass	an if on Type.eq selects a branch at compile time
+pass	an if over different-length list arms keeps each branch's own list
 pass	an if over two trap-free bitwise arms selects branchlessly — else arm
 pass	an if over two trap-free bitwise arms selects branchlessly — then arm
 pass	an if whose untaken arm would trap keeps the branch (no select of checked arith)
@@ -1986,6 +1991,7 @@ pass	greater-than comparison
 pass	greater-than of an integer and a float is rejected
 pass	greater-than-or-equal
 pass	greater-than-or-equal of an integer and a float is rejected
+pass	heap string elements of a hoisted list if select by branch
 pass	hexadecimal, binary, and decimal spellings of one value are equal
 pass	host calls are observed in the order they were made
 pass	identical negative zeros nested in a tuple compare equal

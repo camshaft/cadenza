@@ -2839,3 +2839,96 @@
             (export main)))
   (call   main (: 0 Int64))
   (trap   "divide by zero"))
+
+; --- The list face of the common-constructor hoist (same-length ListNew arms) ---------------------
+; The hoist's list extension: `(if c (list …p) (list …q))` with SAME-length arms builds one list with
+; per-element selections. Same guard obligations as the sum/tuple/record pins above, plus two faces
+; the other shapes don't have: a LENGTH mismatch must decline the hoist (length is part of a list's
+; value), and the vec-push element chain must respect Perceus retains inside a hoisted element.
+
+(case "a trapping element in the untaken arm of a same-length list if does not trap"
+  (doc    "`(if (> d 0) (list (/ 100 d) 1) (list 7 2))` at d = 0: both arms build a 2-list (the hoist's
+           target), the else arm is taken → element 0 is 7; the then-element `(/ 100 0)` stays behind the
+           condition. The list-shape guard pin, completing the sum/tuple/record set above.")
+  (input  (do
+            (def (main (: d Int64))
+              (Option.expect (List.at (if (> d 0) (list (/ 100 d) 1) (list 7 2)) 0) "v"))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 7 Int64)))
+
+(case "a trapping element in the taken arm of a same-length list if still traps"
+  (doc    "The complement: `(if (= d 0) (list (/ 100 d) 1) (list 7 2))` at d = 0 takes the THEN arm, so
+           its element `(/ 100 0)` IS evaluated and must trap. With the untaken-arm case this pins the
+           per-element selections are guarded by exactly the condition.")
+  (input  (do
+            (def (main (: d Int64))
+              (Option.expect (List.at (if (= d 0) (list (/ 100 d) 1) (list 7 2)) 0) "v"))
+            (export main)))
+  (call   main (: 0 Int64))
+  (trap   "divide by zero"))
+
+(case "an if over different-length list arms keeps each branch's own list"
+  (doc    "`(if (> d 0) (list 1 2 3) (list 9))` — the arms build lists of DIFFERENT lengths (3 vs 1), so
+           the hoist must DECLINE (a list's length is part of its value; there is no per-element
+           alignment) and keep the `if`: d = 0 → the 1-list (len 1), d = 1 → the 3-list (len 3). A hoist
+           that force-aligned the shorter arm (padding or truncating) would corrupt one branch's value.
+           The decline pin for the list hoist's same-length guard.")
+  (input  (do
+            (def (main (: d Int64))
+              (List.len (if (> d 0) (list 1 2 3) (list 9))))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 1 Int64))
+  (call   main (: 1 Int64))
+  (output (: 3 Int64)))
+
+(case "a shared and a differing element hoist across same-length list arms"
+  (doc    "`(if (> d 0) (list x 5) (list y 5))` — element 1 is IDENTICAL across the arms (shared
+           directly, no select), element 0 differs (selected by the condition). d = 1 → (x, 5) = 3 + 5 =
+           8; d = 0 → (y, 5) = 9 + 5 = 14. Pins the aligned per-position rewrite: the differing slot
+           genuinely selects (both branch directions verified) and the shared slot is not disturbed.")
+  (input  (do
+            (def (main (: d Int64) (: x Int64) (: y Int64))
+              (let ((t (if (> d 0) (list x 5) (list y 5))))
+                (+ (Option.expect (List.at t 0) "v") (Option.expect (List.at t 1) "v"))))
+            (export main)))
+  (call   main (: 1 Int64) (: 3 Int64) (: 9 Int64))
+  (output (: 8 Int64))
+  (call   main (: 0 Int64) (: 3 Int64) (: 9 Int64))
+  (output (: 14 Int64)))
+
+(case "heap string elements of a hoisted list if select by branch"
+  (doc    "`(if (> d 0) (list (rep \"a\" d)) (list \"bb\"))` — singleton lists whose element is a HEAP
+           value (a runtime String rope vs a flat literal). d = 0 → \"bb\" (byte-len 2); d = 3 →
+           \"axxx\" (byte-len 4). The per-element select carries a heap HANDLE, not a scalar — pins the
+           hoist is sound when the selected element is a reference-counted value (the select must move
+           exactly one arm's handle into the list; duplicating or dropping either corrupts refcounts).")
+  (input  (do
+            (def (rep (: s String) (: n Int64))
+              (if (< n 1) s (rep (String.concat s "x") (- n 1))))
+            (def (main (: d Int64))
+              (String.byte-len (Option.expect (List.at (if (> d 0) (list (rep "a" d)) (list "bb")) 0) "v")))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 2 Int64))
+  (call   main (: 3 Int64))
+  (output (: 4 Int64)))
+
+(case "a consuming op inside a hoisted list element respects a still-live binding"
+  (doc    "The Perceus interaction: `xs = [7]` is a multi-use binding; ONE hoisted element consumes it
+           (`(List.len (List.push xs 9))`) while `xs` is read again after the `if`. d = 1 → the consuming
+           element is selected: push path-copies (retain), so element 0 = 2 and `(List.len xs)` = 1 → 3;
+           d = 0 → the constant arm: 0 + 1 = 1. Pins that moving the consuming expression from an if arm
+           into a hoisted per-element selection preserves its dup site (the retain analysis must see the
+           consume-under-condition the same either way).")
+  (input  (do
+            (def (main (: d Int64))
+              (let ((xs (List.push (list) 7)))
+                (let ((t (if (> d 0) (list (List.len (List.push xs 9)) 0) (list 0 0))))
+                  (+ (Option.expect (List.at t 0) "v") (List.len xs)))))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 3 Int64))
+  (call   main (: 0 Int64))
+  (output (: 1 Int64)))
