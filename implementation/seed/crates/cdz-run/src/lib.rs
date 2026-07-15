@@ -609,20 +609,23 @@ fn instantiate_runtime(
 /// `(interface, [(fname, Func)])` — the funcs pulled off an earlier-instantiated peer instance. Shared by
 /// each peer's linker (dependency order) and the consumer's linker. A `func_new` closure calls the peer
 /// func then its `post_return`, exactly as the inline single-pass binding did.
-/// The (param-count, result-count) of every func an interface INSTANCE type exports, by func name.
-/// Reads a `ComponentInstance` item's exports (the funcs an interface offers). Used to compare a
-/// consumer's IMPORTED interface against a peer's EXPORTED interface at compose time.
-fn iface_func_arities(
-    engine: &Engine,
-    item: &ComponentItem,
-) -> Option<Vec<(String, usize, usize)>> {
+/// One interface func's signature: its name, its param types (in order), and its result types.
+type IfaceFuncSig = (String, Vec<Type>, Vec<Type>);
+
+/// The full SIGNATURE (param types, result types) of every func an interface INSTANCE type exports, by
+/// func name. Reads a `ComponentInstance` item's exports (the funcs an interface offers). Used to
+/// compare a consumer's IMPORTED interface against a peer's EXPORTED interface at compose time — both
+/// the arity (param/result count) AND the position-by-position component types must agree.
+fn iface_func_sigs(engine: &Engine, item: &ComponentItem) -> Option<Vec<IfaceFuncSig>> {
     match item {
         ComponentItem::ComponentInstance(inst) => Some(
             inst.exports(engine)
                 .filter_map(|(fname, i)| match i {
-                    ComponentItem::ComponentFunc(f) => {
-                        Some((fname.to_string(), f.params().len(), f.results().len()))
-                    }
+                    ComponentItem::ComponentFunc(f) => Some((
+                        fname.to_string(),
+                        f.params().map(|(_, t)| t).collect(),
+                        f.results().collect(),
+                    )),
                     _ => None,
                 })
                 .collect(),
@@ -631,12 +634,14 @@ fn iface_func_arities(
     }
 }
 
-/// Validate that each peer's EXPORTED interface func matches the arity of the CONSUMER's like-named
-/// IMPORT. A raw-closure forward (`bind_peer_ifaces_into`) does no subtype check, so a param/result
-/// count mismatch would trap opaquely at call time; catching it here yields an actionable compose-time
-/// error naming the interface, op, and both arities. (An op the consumer imports that the peer does not
-/// export is already caught downstream — `peer missing <fname>` — so we only check funcs present on the
-/// peer; and only interfaces the consumer actually imports, so an extra peer op is not an error.)
+/// Validate that each peer's EXPORTED interface func matches the SIGNATURE of the CONSUMER's like-named
+/// IMPORT — both arity (param/result count) and the position-by-position component types. A raw-closure
+/// forward (`bind_peer_ifaces_into`) does no subtype check, so a mismatch (a differing arity OR a
+/// differing type, e.g. consumer `neg : s64->s64` vs peer `neg : f64->f64`) would trap opaquely at call
+/// time; catching it here yields an actionable compose-time error naming the interface, op, and the
+/// disagreement. (An op the consumer imports that the peer does not export is already caught downstream —
+/// `peer missing <fname>` — so we only check funcs present on the peer; and only interfaces the consumer
+/// actually imports, so an extra peer op is not an error.)
 fn check_peer_iface_signatures(
     engine: &Engine,
     consumer: &Component,
@@ -650,27 +655,51 @@ fn check_peer_iface_signatures(
         let Some(consumer_iface) = ctype
             .imports(engine)
             .find(|(n, _)| *n == peer.interface)
-            .and_then(|(_, item)| iface_func_arities(engine, &item))
+            .and_then(|(_, item)| iface_func_sigs(engine, &item))
         else {
             continue;
         };
-        let peer_iface: Vec<(String, usize, usize)> = peer_component
+        let peer_iface: Vec<IfaceFuncSig> = peer_component
             .component_type()
             .exports(engine)
             .find(|(n, _)| *n == peer.interface)
-            .and_then(|(_, item)| iface_func_arities(engine, &item))
+            .and_then(|(_, item)| iface_func_sigs(engine, &item))
             .unwrap_or_default();
         for (fname, want_params, want_results) in &consumer_iface {
-            if let Some((_, got_params, got_results)) =
-                peer_iface.iter().find(|(n, _, _)| n == fname)
-                && (got_params != want_params || got_results != want_results)
-            {
+            let Some((_, got_params, got_results)) = peer_iface.iter().find(|(n, _, _)| n == fname)
+            else {
+                continue;
+            };
+            // Arity first (the count disagreement is the clearest message), then position-by-position
+            // types (matching arity but a differing type, e.g. s64 vs f64, is the subtler face).
+            if got_params.len() != want_params.len() || got_results.len() != want_results.len() {
                 return Err(anyhow!(
                     "peer `{}` op `{fname}` signature mismatch: the consumer imports it taking \
-                     {want_params} argument(s) and returning {want_results} result(s), but the \
-                     peer exports it taking {got_params} argument(s) and returning \
-                     {got_results} result(s) — the peer's interface must match the consumer's \
-                     binding",
+                     {} argument(s) and returning {} result(s), but the peer exports it taking {} \
+                     argument(s) and returning {} result(s) — the peer's interface must match the \
+                     consumer's binding",
+                    peer.interface,
+                    want_params.len(),
+                    want_results.len(),
+                    got_params.len(),
+                    got_results.len(),
+                ));
+            }
+            let param_mismatch = want_params
+                .iter()
+                .zip(got_params.iter())
+                .position(|(w, g)| w != g)
+                .map(|i| ("argument", i, &want_params[i], &got_params[i]));
+            let result_mismatch = want_results
+                .iter()
+                .zip(got_results.iter())
+                .position(|(w, g)| w != g)
+                .map(|i| ("result", i, &want_results[i], &got_results[i]));
+            if let Some((role, idx, want, got)) = param_mismatch.or(result_mismatch) {
+                return Err(anyhow!(
+                    "peer `{}` op `{fname}` type mismatch at {role} {idx}: the consumer imports it \
+                     with type `{want:?}` there, but the peer exports it with type `{got:?}` — the \
+                     peer's interface must match the consumer's binding",
                     peer.interface
                 ));
             }

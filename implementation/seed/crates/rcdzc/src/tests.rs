@@ -63058,6 +63058,52 @@ mod cross_component_oracle {
     }
 
     // ------------------------------------------------------------------------------------------------
+    // PL6 — the TYPE face of the peer signature check: a peer op whose arity MATCHES but whose param/
+    // result TYPE disagrees with the consumer's binding (consumer `neg : Int64->Int64`, peer `neg :
+    // Float64->Float64`) is rejected at compose time naming the position + both types, not left to trap
+    // opaquely. Extends PL5 (arity) to the subtler same-arity/different-type mismatch.
+    // ------------------------------------------------------------------------------------------------
+    #[test]
+    fn a_peer_op_type_mismatch_is_rejected_at_compose_time() {
+        use crate::testkit::parse;
+        // PROVIDER: `neg` over Float64 (its boundary type is f64).
+        let provider = compile_provider(
+            "(do (def (neg (: x Float64)) (+ x x)) (export neg))",
+            "cadenza:m/api",
+        );
+        // CONSUMER: binds `M.neg` over Int64 (boundary s64) — SAME arity (1→1), DIFFERENT type.
+        let src = "(do \
+            (effect M (op neg (-> Int64 Int64))) \
+            (bind M \"cadenza:m/api\") \
+            (def (main (: x Int64)) (host (M) (M.neg x))) \
+            (export main))";
+        let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .unwrap_or_else(|d| panic!("consumer compiles: {} [{:?}]", d.message, d.code));
+        let peers = vec![cdz_run::Peer {
+            bytes: provider,
+            interface: "cadenza:m/api".to_string(),
+        }];
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec!["5".to_string()],
+            runtime: super::find_runtime_wasm(),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        let err = cdz_run::run_with_peers(&consumer, &peers, &opts)
+            .expect_err("a type-mismatched peer (arity ok) must be REJECTED, not run to a trap");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("type mismatch")
+                && msg.contains("neg")
+                && msg.contains("argument 0")
+                && msg.contains("S64")
+                && msg.contains("Float64"),
+            "the compose error must name the op, position, and both types: {msg}"
+        );
+    }
+
+    // ------------------------------------------------------------------------------------------------
     // U9 — a consumer binds TWO DISTINCT PEER INTERFACES. The multi-interface extern envelope: each bound
     // interface becomes its own imported component instance, and each op aliases out of ITS instance; the
     // one `"peer"` core instance exports every op flat by name (so op names are globally unique). Consumer
