@@ -6826,6 +6826,49 @@ fn classify_binding_ctor(
             )
             .at(pat));
         }
+        // A TYPED PARAMETER MISSING ITS COLON — `(a Float64)` written where `(: a Float64)` was meant.
+        // The author reached for the annotated-binder form (§Annotations Constrain) but juxtaposed the
+        // binder and its type instead of heading them with `:`, so it reaches here as a two-element list
+        // whose head `a` is not a constructor → the generic "not a tuple/record/constructor" message is
+        // misleading (and, if the body uses `a`, spawns a consequent "unbound name `a`"). Recognize the
+        // shape — a two-element list `(<name> <Type>)` whose SECOND child resolves as a type
+        // (`typeval_of`) and whose FIRST is a plain binder name — and name the real repair. The rewrite
+        // `(<name> <Type>)` → `(: <name> <Type>)` is a deterministic rule (not a guess), so when both
+        // parts are simple name atoms the fix is VERIFIED and carries the exact replacement spelling.
+        let two_children = match db.ast.get(pat) {
+            crate::ast::Struct::List(items) => match items.as_slice() {
+                [first, second] => Some((*first, *second)),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some((first, second)) = two_children
+            && db.ast.as_name(first).is_some_and(|n| n != "_")
+            && crate::eval::variant_owner_decl(db, first).is_none()
+            && crate::eval::typeval_of(db, second).is_some()
+        {
+            let name = db.ast.as_name(first).unwrap().to_string();
+            let base = Reject::coded(
+                Code::Malformed,
+                format!(
+                    "a typed parameter is written `(: <name> <Type>)`, with a leading `:` — the binder \
+                     `{name}` is juxtaposed with its type, so it reads as a constructor pattern, not an \
+                     annotated binder; add the `:` to annotate it"
+                ),
+            )
+            .at(pat);
+            // A compound type (`(List Int64)`) has no single name atom to splice, so carry the fix only
+            // when the type is a bare name — the common `(a Float64)` case — where the replacement is a
+            // literal `(: <name> <Type>)`; otherwise the message alone routes the repair.
+            return Err(match db.ast.as_name(second) {
+                Some(ty_name) => base.with_fix(Fix::replace_verified(
+                    pat,
+                    format!("(: {name} {ty_name})"),
+                    "add the leading `:`",
+                )),
+                None => base,
+            });
+        }
         // Not a constructor — a shape error (a head that is neither tuple/record/list nor a ctor). But a
         // BARE NAME head that is a plausible TYPO of a variant of the matched (element) SUM type — e.g.
         // `(list (Ad) .. r)` on `(List Op)` for `(type Op (Add) …)` — read as "not a constructor" here

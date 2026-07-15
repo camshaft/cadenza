@@ -46583,6 +46583,70 @@ mod stage1 {
     }
 
     #[test]
+    fn a_typed_parameter_missing_its_colon_names_the_annotated_binder_shape() {
+        // A typed parameter is `(: <name> <Type>)` (an annotated binder). Writing `(a Float64)` — the
+        // binder juxtaposed with its type, no leading `:` — reaches `check_binding_pattern` as a
+        // two-element list whose head `a` is not a constructor, previously giving the misleading generic
+        // "a binding pattern head is not a tuple, record, or constructor". It now recognizes the shape
+        // (second child resolves as a type) and names the real repair — add the `:` — with a VERIFIED
+        // fix carrying the exact `(: a Float64)` replacement.
+        let d = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def (f (a Float64)) 0))",
+        )))
+        .into_iter()
+        .find(|d| d.message.contains("typed parameter"))
+        .expect("a colon-less typed param reports the annotated-binder shape");
+        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+        assert!(
+            d.message.contains("`(: <name> <Type>)`")
+                && d.message.contains("leading `:`")
+                && d.message.contains("binder `a`"),
+            "names the missing-colon repair: {}",
+            d.message
+        );
+        let fix = d.fix.as_ref().expect("carries a verified add-`:` fix");
+        assert!(fix.verified, "the colon rewrite is a rule, not a guess");
+        assert_eq!(
+            fix.replacement, "(: a Float64)",
+            "the exact repair spelling"
+        );
+
+        // A COMPOUND type (`(List Int64)`) has no single name atom to splice — the message still fires
+        // (routing the repair) but carries NO fix.
+        let dc = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def (f (xs (List Int64))) 0))",
+        )))
+        .into_iter()
+        .find(|d| d.message.contains("typed parameter"))
+        .expect("a compound-typed colon-less param still names the shape");
+        assert!(
+            dc.fix.is_none(),
+            "no fix when the type is compound (no single spelling): {:?}",
+            dc.fix
+        );
+
+        // NO false positive: a genuine two-BINDER pattern `(a b)` whose second child is NOT a type keeps
+        // the generic shape message (it is a real malformed pattern, not a missing-colon annotation).
+        assert!(
+            crate::diagnostics(&mut crate::db::Db::load(parse(
+                "(module m (def (f (a b)) 0))"
+            )))
+            .iter()
+            .any(|d| d.message.contains("is not a tuple, record, or constructor")),
+            "a non-type second child is not hijacked as a missing-colon annotation"
+        );
+
+        // NO false change: the properly-colon'd `(: a Float64)` param compiles clean.
+        assert!(
+            crate::compile::compile_component(&crate::codec::encode(&parse(
+                "(module m (def (f (: a Float64)) a) (def (main) (f 1.0)) (export main))"
+            )))
+            .is_ok(),
+            "a correctly annotated typed param is valid"
+        );
+    }
+
+    #[test]
     fn a_recursive_dictionary_consumer_inlines_and_erases_the_dictionary() {
         // 09-functions "a recursive consumer of a dictionary record inlines and erases the dictionary":
         // ad-hoc polymorphism as a record of functions passed as an argument. `fold-n` marks its dict
