@@ -65,3 +65,8 @@
 ;; returns 1 (both backends), same root as the 0-use let; composes with the if-hoist/match-sink shapes.
 ;; Whatever the strict-let spec ruling decides MUST cover projection-discard too. (Face, not a new filing.)
 ;; STATUS: fix agent STOOD DOWN pending the §283-vs-operator-ruling reconciliation (escalated to concierge).
+
+;; RESOLVED 2026-07-15 (NOT-a-bug, operator-confirmed): current DCE elision is spec-CONFORMANT per
+;; core-semantics.md §283 (observation-based traps; a never-referenced let binding trap MAY be elided).
+;; The earlier "strict=miscompile" relay was WITHDRAWN. NO lower.rs change. 1c0204658 pins are correct.
+;; Only §285 SHOULD-emit warning remains → routed to v-diagnostics.

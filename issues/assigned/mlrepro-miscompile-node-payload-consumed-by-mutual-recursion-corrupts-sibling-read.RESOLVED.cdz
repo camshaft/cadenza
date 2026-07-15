@@ -77,3 +77,7 @@ def fl(elems: List(Ast)) = match elems with
 def run() = fc(Ast.List([Ast.Name("a"), Ast.Int(5)]))
 
 export { run }
+
+/// RESOLVED 2026-07-15 (trunk@3ed3f15a6): FIXED — returns 101 (was 1). Perceus RETAIN now emitted for a
+/// SumPayload binder consumed while its scrutinee is live (extends still-live-binding retain to payload
+/// aliases). Gate-pinned in 05-compound-types.sexp. The last open face of the still-live-binding family.

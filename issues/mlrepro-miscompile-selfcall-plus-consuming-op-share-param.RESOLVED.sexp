@@ -41,3 +41,5 @@
       (+ (List.len (List.push xs 9)) (f 0 xs))))
   (def (main (: d Int64)) (f 1 (List.push (list) 7)))
   (export main))
+
+;; RESOLVED 2026-07-15 (trunk@1f3b3c348): file self-annotated ✅ FIXED (still-live-binding family closed).

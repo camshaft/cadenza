@@ -34,3 +34,5 @@
   (def (nc (: n Ast)) (match n (((. Ast Int) _) 1) (((. Ast List) _) 9)))
   (def (main) (nc (Option.expect (List.at (read-leaves b"\x00\x01\x05" 0 1 (list)) 0) "at")))
   (export main))
+
+;; RESOLVED 2026-07-15 (trunk@1f3b3c348): file self-annotated ✅ FIXED (still-live-binding family closed).
