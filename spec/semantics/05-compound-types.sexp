@@ -8399,3 +8399,29 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 10 Int64))
   (call   main (: 0 Int64)) (output (: 0 Int64)))
+
+; --- A List built past 32 elements crosses the persistent-vector leaf→trie boundary correctly (v-runtime) --
+; The runtime List is a persistent (RRB) vector: ≤32 elements pack into ONE dense leaf, and past 32 it
+; becomes a real radix trie (`vec-of-arr`/`vec-push` build it, `vec-get`/`vec-len` read it). A bug in the
+; leaf→trie transition (a wrong shift, a mis-indexed subtree) would corrupt reads only ABOVE the boundary,
+; which a small-list test cannot catch. This pins a build-then-scan across the boundary: `build n` pushes
+; 1..n into a list via recursive `List.push`, `sum` reads every element by index with `List.at`. The sum of
+; 1..n is n(n+1)/2, checked at n=10 (single leaf), n=32 (exactly full leaf), n=33 (first trie split), and
+; n=100 (multi-level). The recursion defeats const-folding, so this exercises the real runtime vec ops.
+(case "a runtime List built past 32 elements reads correctly by index across the RRB leaf-to-trie boundary"
+  (doc    "`build n` pushes 1..n into a `List Int64` (recursive `List.push`); `sum` reads each element by
+           index (`List.at`) and totals them. The sum of 1..n is n(n+1)/2. Checked at n=10 (≤32, one dense
+           leaf), n=32 (a full leaf), n=33 (the first leaf→trie split), and n=100 (a multi-level trie): 55,
+           528, 561, 5050. Pins that the persistent-vector read/build is correct across the 32-element
+           boundary — a leaf-only assumption would corrupt reads above 32.")
+  (input  (do
+            (def (build (: n Int64) (: acc (List Int64)))
+              (if (= n 0) acc (build (- n 1) (List.push acc n))))
+            (def (sum (: l (List Int64)) (: i Int64) (: a Int64))
+              (if (= i (List.len l)) a (sum l (+ i 1) (+ a (Option.expect (List.at l i) "oob")))))
+            (def (main (: n Int64)) (sum (build n (list)) 0 0))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 55 Int64))
+  (call   main (: 32 Int64)) (output (: 528 Int64))
+  (call   main (: 33 Int64)) (output (: 561 Int64))
+  (call   main (: 100 Int64)) (output (: 5050 Int64)))
