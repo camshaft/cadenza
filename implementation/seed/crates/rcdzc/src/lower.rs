@@ -14024,6 +14024,7 @@ fn hoist_common_ctor(
 /// operator (and its overflow guard, for checked arith) is DUPLICATED across the two branches:
 ///   `(if c (+ a 1) (+ b 1))`  → `(+ (if c a b) 1)`          — one checked add + one guard, not two
 ///   `(if c (* a k) (* b k))`  → `(* (if c a b) k)`
+///   `(if c (< a k) (< b k))`  → `(< (if c a b) k)`          — one compare, not two (Compare is total)
 ///   `(if c (wrap a) (wrap b))`→ `(wrap (if c a b))`         — a unary `Convert`
 /// Each DIFFERING operand position is pushed into its own `(if c pᵢ qᵢ)`; a `core_equiv` position is
 /// shared directly, so the operator applies to exactly the operand tuple the taken arm would have used.
@@ -14046,6 +14047,7 @@ fn hoist_common_arith(
 ) -> Option<Core> {
     enum Head {
         Arith(Prim),
+        Compare(Prim),
         Convert(Prim),
     }
     let (head, pairs): (Head, Vec<(StructId, StructId)>) =
@@ -14062,6 +14064,24 @@ fn hoist_common_arith(
                     rhs: re,
                 },
             ) if ot == oe => (Head::Arith(ot), vec![(lt, le), (rt, re)]),
+            // A COMPARISON is total (never traps, no guard), so the hoist is unconditionally value-safe:
+            // `(if c (< a k) (< b k))` → `(< (if c a b) k)` computes the same boolean (the comparison of
+            // the SELECTED operand against `k`) with ONE compare instead of two. Operands are paired
+            // POSITIONALLY (`==` on the `Prim` requires the same operator, so no `<`-vs-`>` mixup); the
+            // `Eq`-commutativity `core_equiv` allows is irrelevant here since each position selects its own
+            // actual operand.
+            (
+                Core::Compare {
+                    op: ot,
+                    lhs: lt,
+                    rhs: rt,
+                },
+                Core::Compare {
+                    op: oe,
+                    lhs: le,
+                    rhs: re,
+                },
+            ) if ot == oe => (Head::Compare(ot), vec![(lt, le), (rt, re)]),
             (
                 Core::Convert {
                     op: ot,
@@ -14100,6 +14120,11 @@ fn hoist_common_arith(
     }
     Some(match head {
         Head::Arith(op) => Core::Arith {
+            op,
+            lhs: operands[0],
+            rhs: operands[1],
+        },
+        Head::Compare(op) => Core::Compare {
             op,
             lhs: operands[0],
             rhs: operands[1],

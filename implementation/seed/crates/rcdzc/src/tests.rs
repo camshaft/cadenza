@@ -1101,6 +1101,50 @@ fn a_common_operator_hoists_out_of_both_if_arms_computing_once() {
     );
 }
 
+/// The common-operator hoist also covers a COMPARISON: `(if c (< a k) (< b k))` → `(< (if c a b) k)` —
+/// one compare over the selected operand, not two. A comparison is TOTAL (no trap, no guard), so the
+/// hoist is unconditionally value-safe; the win is a single `i64.lt_s` (the differing operand becomes a
+/// branchless select) instead of two compares feeding a select. Value parity in every direction: the
+/// hoisted compare returns the same boolean the taken arm's compare would.
+#[test]
+fn a_common_comparison_hoists_out_of_both_if_arms() {
+    use crate::testkit::parse;
+    let src = "(module m \
+                 (def (main (: c Bool) (: a Int64) (: b Int64) (: k Int64)) \
+                   (if (if c (< a k) (< b k)) 1 0)) \
+                 (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    // Exactly one signed-less-than survives (the differing operand is a select, not a second compare).
+    let lts = count_opcode(&bytes, |op| matches!(op, wasmparser::Operator::I64LtS));
+    assert_eq!(
+        lts, 1,
+        "the common-comparison hoist compares once over the selected operand, got {lts} compares"
+    );
+    use wasmtime::component::Val;
+    let run = |c: bool, a: i64, b: i64, k: i64| -> i64 {
+        run_returns_with::<i64>(
+            &bytes,
+            "main",
+            &[Val::Bool(c), Val::S64(a), Val::S64(b), Val::S64(k)],
+        )
+    };
+    assert_eq!(
+        run(true, 3, 9, 5),
+        1,
+        "c=true → (< a k) = (< 3 5) = true → 1"
+    );
+    assert_eq!(
+        run(false, 3, 9, 5),
+        0,
+        "c=false → (< b k) = (< 9 5) = false → 0"
+    );
+    assert_eq!(
+        run(true, 9, 3, 5),
+        0,
+        "c=true → (< a k) = (< 9 5) = false → 0"
+    );
+}
+
 /// The common-constructor hoist also fires for a RECORD: `(if c (record (a x) (b 1)) (record (a y) (b
 /// 1)))` builds the record ONCE and pushes the DIFFERING field `a` into a branchless `(if c x y)` select
 /// while the SHARED field `b` (the constant `1`) is emitted once — instead of duplicating the whole
