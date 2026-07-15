@@ -480,6 +480,7 @@ pass	a conjunction guards a let over a runtime value inside a conditional
 pass	a consistent annotation type-checks against the inferred type
 pass	a const collection recursively folded is rejected, not compiled to an infinite loop
 pass	a const parameter rejects an argument that depends on runtime data
+pass	a const-key entry is found beside a distinct runtime-keyed entry
 pass	a constant BigInt crosses the host boundary as its value form
 pass	a constant BigInt operand of a runtime BigInt op materializes as a heap value
 pass	a constant argument out of a narrow parameter's range is rejected, not laundered
@@ -1077,6 +1078,7 @@ pass	a one-element tuple pattern against a two-tuple is a type error
 pass	a one-shot handler arm folds a body with TWO performs by re-reducing the continuation
 pass	a one-shot two-hole body folds across a let binding
 pass	a one-shot two-hole body folds with the leading perform in an if condition
+pass	a param-keyed map literal selects its literal-pattern arm by value in both directions
 pass	a param-shadowing let with a param-referencing initializer folds at a constant argument
 pass	a parameter annotation contradicting its use is rejected
 pass	a parameter carries a type annotation in the signature
@@ -1418,6 +1420,7 @@ pass	a runtime unsigned-byte multiplication traps exactly past its width maximum
 pass	a runtime unsigned-byte subtraction traps below zero
 pass	a runtime value is constructed into a fixed-width segment and its length read
 pass	a runtime value narrowed to the segment width constructs without trapping
+pass	a runtime value under a const key binds through the map pattern
 pass	a runtime wider integer is truncated into a byte by wrap
 pass	a runtime wrapper sum whose payload is a variant is matched by a nested constructor pattern
 pass	a runtime-branched tuple returned from a callee is projected in the caller
@@ -2589,6 +2592,7 @@ pass	the program manifest is the union of its entrypoints' delegations
 pass	the reader literal reads to Symbol.of
 pass	the remainder takes the sign of the dividend for a negative dividend
 pass	the remainder takes the sign of the dividend for a negative divisor
+pass	the rest binder carries the unmatched runtime-keyed remainder
 pass	the round trip tracks the produced closure's captured value
 pass	the runtime-if list takes its else branch and measures that length
 pass	the runtime-list version of a tail fold compiles and folds correctly
@@ -2678,6 +2682,7 @@ pass	two module functions are mutually recursive
 pass	two narrow record fields are projected and added
 pass	two narrow tuple elements are projected and added
 pass	two narrow tuple elements are projected and compared
+pass	two pattern keys match with one satisfied by the runtime-keyed entry
 pass	two performs as the two ARGUMENTS of a pure USER function thread the state left-to-right
 pass	two performs bound by nested lets thread the handler state in order
 pass	two performs of a MULTI-parameter op each combine both args with the state advancing between them

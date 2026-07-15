@@ -8534,3 +8534,85 @@
             (export main)))
   (call   main (: 7 Int64))
   (output (: 3 Int64)))
+
+; --- Map-match runtime-key selection: the composition faces --------------------------------------
+; fc56e62a7 realized value-selection for a map-literal scrutinee carrying a runtime key (the landed
+; case pins one recursive-call key + one pattern key). These pin the compositions: a PARAM key both
+; directions, a const-key entry found beside a distinct runtime key, a runtime VALUE under a const
+; key, multiple pattern keys with one satisfied by the runtime entry, and the rest binder carrying
+; the unmatched runtime-keyed remainder.
+
+(case "a param-keyed map literal selects its literal-pattern arm by value in both directions"
+  (doc    "`(match (map (k 42)) ((map (5 v) .. rest) v) (_ -1))` with k a PARAMETER: k = 5 → the
+           entry's key equals the pattern key at run time → v = 42; k = 9 → no key 5 → the catch-all
+           → -1. The param-key companion of the landed recursive-call-key case, pinning BOTH
+           directions (present and absent) of the value selection.")
+  (input  (do
+            (def (main (: k Int64))
+              (match (map (k 42))
+                ((map (5 v) .. rest) v)
+                (_ -1)))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 42 Int64))
+  (call   main (: 9 Int64))
+  (output (: -1 Int64)))
+
+(case "a const-key entry is found beside a distinct runtime-keyed entry"
+  (doc    "`(map (k 1) (5 42))` at k = 7 — the literal carries BOTH a runtime-keyed and a const-keyed
+           entry; the pattern asks for the CONST key 5, which is present regardless of k. The matcher
+           must find it among mixed-foldability entries → 42. A matcher that bailed to the catch-all
+           whenever ANY entry's key is runtime (rather than comparing per-entry) answers -1.")
+  (input  (do
+            (def (main (: k Int64))
+              (match (map (k 1) (5 42))
+                ((map (5 v) .. rest) v)
+                (_ -1)))
+            (export main)))
+  (call   main (: 7 Int64))
+  (output (: 42 Int64)))
+
+(case "a runtime value under a const key binds through the map pattern"
+  (doc    "`(map (5 (+ k 1)))` — the KEY is constant, the VALUE is runtime: the pattern's key test
+           can fold but the bound v must carry the runtime value → k = 9 → 10. The value-side
+           complement of the runtime-key cases (a fold that captured the value expression's
+           compile-time placeholder instead of its runtime result binds garbage).")
+  (input  (do
+            (def (main (: k Int64))
+              (match (map (5 (+ k 1)))
+                ((map (5 v) .. rest) v)
+                (_ -1)))
+            (export main)))
+  (call   main (: 9 Int64))
+  (output (: 10 Int64)))
+
+(case "two pattern keys match with one satisfied by the runtime-keyed entry"
+  (doc    "`(map (k 1) (7 2))` matched by `((map (5 a) (7 b) .. rest) …)`: pattern key 7 is satisfied
+           by the const entry; pattern key 5 only by the RUNTIME entry when k = 5 → a = 1, b = 2 →
+           12; k = 9 → key 5 absent → -1. Pins multi-key patterns mixing fold-able and runtime
+           satisfaction in one arm.")
+  (input  (do
+            (def (main (: k Int64))
+              (match (map (k 1) (7 2))
+                ((map (5 a) (7 b) .. rest) (+ (* a 10) b))
+                (_ -1)))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 12 Int64))
+  (call   main (: 9 Int64))
+  (output (: -1 Int64)))
+
+(case "the rest binder carries the unmatched runtime-keyed remainder"
+  (doc    "`(map (k 42) (7 9))` at k = 5 matched by `((map (5 v) .. rest) (+ v (Map.len rest)))`: the
+           pattern consumes the (runtime-keyed) entry 5 and `rest` receives the remainder {7: 9} →
+           len 1 → 43. Pins the rest binder's content when the CONSUMED entry was the runtime-keyed
+           one (an implementation that removed by compile-time key identity would leave both entries
+           in rest → 44).")
+  (input  (do
+            (def (main (: k Int64))
+              (match (map (k 42) (7 9))
+                ((map (5 v) .. rest) (+ v (Map.len rest)))
+                (_ -1)))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 43 Int64)))
