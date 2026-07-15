@@ -50,6 +50,47 @@
             (export main)))
   (output (: 1 Int64)))
 
+(case "a runtime string rope compared through a borrowed operand"
+  (doc    "The BORROWED-operand remainder of the rope-eq fix. The earlier fix compacted only an OWNED
+           String operand (a fresh `String.concat` result); a genuine rope reaching `=` through a
+           BORROWED operand — a `Map.lookup`-stored value, a `SumPayload`-extracted payload, or a
+           runtime-rope param — was compared by its UNFLATTENED header bytes and silently returned the
+           WRONG answer. Here `rep \"hi\" 3` = \"hixxx\" (a runtime rope) is stored as a map value, looked
+           up, and compared as the BORROWED `Some` payload `s` INSIDE the arm (`(= s \"hixxx\")`). Because
+           `bytes-compact` is refcount-NEUTRAL (it flattens the node IN PLACE and returns the same handle,
+           unobservable even when shared), the compiler now compacts EVERY String operand — owned OR
+           borrowed — and drops only the owned ones, so the borrowed rope payload compares by content.
+           Expected: the arm fires and returns 1 (was 0 — a champ_eq physical-byte miss).")
+  (input  (do
+            (def (rep (: s String) (: n Int64))
+              (if (< n 1) s (rep (String.concat s "x") (- n 1))))
+            (def (f (: mp (Map String String)) (: k String))
+              (match (Map.lookup mp k)
+                ((Some s) (if (= s "hixxx") 1 0))
+                ((None) (- 0 1))))
+            (def (main) (f (Map.insert (Map.empty) "y" (rep "hi" 3)) "y"))
+            (export main)))
+  (output (: 1 Int64)))
+
+(case "a string equality on an inlined match operand"
+  (doc    "A `String ==` whose operand is an INLINED function returning a `match` — `(= (f …) \"z\")` where
+           `f` returns `(match (Map.lookup m k) ((Some s) s) ((None) \"?\"))`, β-reduced into the `=`
+           operand (the default for a non-recursive call). The two arms DISAGREE on ownership: the `Some`
+           arm returns a BORROWED payload (`s`, a `sum-payload` read off the owned Option), the `None` arm
+           returns an OWNED constant (\"?\"). The value-eq operand-ownership analysis had no `match` arm and
+           fell through to a DECLINE (`borrowing op operand has an ownership this backend cannot yet
+           prove`), blocking any program that compares a returned map/variant payload once the wrapper
+           inlines — the shape a compiler-in-Cadenza substitution pass hits. It now classifies a match
+           operand by the JOIN of its arm bodies (owned iff every arm is owned, else borrowed — the
+           leak-safe value), so the mixed join here is borrowed: no drop follows, and the leak matches the
+           standalone-function path. The lookup finds \"z\", so `= \"z\"` is true → 1.")
+  (input  (do
+            (def (f (: m (Map String String)) (: k String))
+              (match (Map.lookup m k) ((Some s) s) ((None) "?")))
+            (def (main) (if (= (f (Map.insert (Map.empty) "y" "z") "y") "z") 1 0))
+            (export main)))
+  (output (: 1 Int64)))
+
 (case "a runtime string rope map key is found by its flat twin"
   (doc    "The MAP-KEY companion of the rope-eq cases above: a map keyed by a runtime String ROPE
            `(rep \"hi\" 3)` = \"hixxx\" looked up with the flat literal \"hixxx\" MUST find 42. The map-key

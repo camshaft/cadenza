@@ -6897,28 +6897,30 @@ fn emit(
             // `value-eq` is `champ_eq` — a PHYSICAL-byte compare (the map-key contract). A runtime String
             // operand can be a ROPE (a `String.concat` lowers to `bytes-concat`), whose bytes differ from a
             // flat leaf of IDENTICAL content — so comparing a rope directly would return the WRONG answer.
-            // CANONICALIZE a String operand with `bytes-compact` (a content-equal flat leaf; a no-op-shaped
-            // pass on an already-flat string) before the compare, so a rope and its flat twin compare equal.
-            // The compacted handle is a fresh OWNED temporary (dropped after the borrowing compare). A
-            // non-String operand (a tuple/sum/map compound handle) is NOT compacted — it is passed as-is (a
+            // CANONICALIZE EVERY String operand with `bytes-compact` (a content-equal flat leaf; a no-op-
+            // shaped pass on an already-flat string) before the compare, so a rope and its flat twin compare
+            // equal — whether the operand is OWNED (a fresh `String.concat` result) or BORROWED (a param /
+            // a `Map.lookup`/`SumPayload`-extracted rope value, `(= s "…")` where `s` is a variant/map
+            // payload). `bytes-compact` FLATTENS its argument IN PLACE and returns the SAME handle with an
+            // UNCHANGED refcount when it was already owned-consuming — but critically, the runtime op is
+            // refcount-NEUTRAL (`op_bytes_compact` = `bytes_flatten(buf); buf`): it mutates the node into a
+            // leaf (content-preserving, UNOBSERVABLE even on a shared value per the memory model's #Sharing
+            // Is Not Observable) and hands the SAME handle back. So compacting a BORROWED operand neither
+            // consumes it nor mints a new handle — the borrow stays the owner's and is NOT dropped here; an
+            // OWNED operand's handle is likewise threaded through and dropped after the borrowing compare.
+            // A non-String operand (a tuple/sum/map compound handle) is NOT compacted — it is passed as-is (a
             // String NESTED inside such a compound is a separate, rarer case `ty_heap_walkable` still admits;
-            // only a DIRECT String operand is canonicalized here). `bytes-compact` consumes its input, so an
-            // owned operand's handle is consumed by the compact (no separate drop); a borrowed operand
-            // (a `LocalRef`) the compact reads without owning — but `bytes-compact` DOES consume, so we must
-            // pass it an owned copy: for a borrowed String we skip the compact-consume by treating the
-            // compacted result as the owned handle to drop. Since the fix targets the common DIRECT
-            // string `=`, both operands are emitted then compacted, and the compacted result is always Owned.
+            // only a DIRECT String operand is canonicalized here).
             let lo = heap_operand_ownership(db, lhs)?;
             let ro = heap_operand_ownership(db, rhs)?;
-            // Compact only an OWNED String operand: `bytes-compact` CONSUMES its input, so a BORROWED
-            // String (a `let`-binding / a sum/tuple projection like `h` in `(match n ((NPrim (tuple h ..))
-            // (= h "+")))` — owned by the enclosing structure) must NOT be consumed here, or the borrow is
-            // freed under its owner → a runtime trap. A borrowed String reaching `=` is a FLAT leaf in
-            // practice (a literal stored in a structure; `String.concat` yields an OWNED rope result, which
-            // IS compacted), so leaving a borrow un-compacted compares correctly. The rope miscompile this
-            // fixes is a fresh OWNED concat result (`(= (rep …) "…")`), exactly the reported shape.
-            let lhs_str = operand_is_string(db, lhs) && lo == HandleOwnership::Owned;
-            let rhs_str = operand_is_string(db, rhs) && ro == HandleOwnership::Owned;
+            // Compact ANY String operand — owned OR borrowed. Since `bytes-compact` is refcount-neutral (it
+            // flattens in place, returning the same handle), it is safe on a borrow: the flatten is
+            // unobservable, and no drop follows a borrowed operand. This closes the rope miscompile for the
+            // WHOLE class — previously only an OWNED String was compacted, so a genuine rope reaching `=`
+            // through a BORROWED operand (a `Map.lookup`/`SumPayload` payload, or a runtime-rope param)
+            // compared by its unflattened header bytes and silently returned the wrong answer.
+            let lhs_str = operand_is_string(db, lhs);
+            let rhs_str = operand_is_string(db, rhs);
             // Two i32 scratch slots for the operand handles, above the running high-water (they must not
             // clash with an operand emit's own transient scratch — a `Call` arg's i64 guard slot).
             let slot_l = *high;
@@ -6928,13 +6930,11 @@ fn emit(
             scratch_ty.insert(slot_r, ValType::I32);
             let op_base = *high;
             emit(db, lhs, slots, op_base, high, scratch_ty, layout, out)?;
-            // A borrowed String operand must be COPIED before `bytes-compact` consumes it (else the borrow —
-            // a `let`-binding / param the caller still owns — would be freed). `bytes-compact` already
-            // produces independent storage, but it CONSUMES its input; on a borrow we have no handle to
-            // consume, so compact copies-and-canonicalizes and the RESULT is the owned temporary we drop.
-            // (On an owned operand the compact consumes the owned handle directly — net one owned result.)
+            // `bytes-compact` flattens the operand IN PLACE and returns the SAME handle (refcount-neutral),
+            // so it is applied uniformly to an owned OR a borrowed String — the borrow is not consumed and
+            // the returned handle carries the operand's original ownership through to the drop decision.
             if lhs_str {
-                out.push(Lir::CallImport(OP_BYTES_COMPACT)); // rope/flat → canonical flat leaf (owned)
+                out.push(Lir::CallImport(OP_BYTES_COMPACT)); // rope/flat → canonical flat leaf (in place)
             }
             out.push(Lir::LocalTee(slot_l));
             emit(db, rhs, slots, op_base, high, scratch_ty, layout, out)?;
@@ -6943,13 +6943,16 @@ fn emit(
             }
             out.push(Lir::LocalTee(slot_r));
             out.push(Lir::CallImport(OP_VALUE_EQ)); // pops both handles (borrowed) → [bool]
-            // Drop each operand handle the compare borrowed but we own: a compacted String is ALWAYS a fresh
-            // owned leaf (drop it); a non-compacted operand is dropped only if it was Owned to begin with.
-            if lhs_str || lo == HandleOwnership::Owned {
+            // Drop each operand handle the compare borrowed but we OWN. Ownership is unchanged by the
+            // compaction (`bytes-compact` returns the same handle), so drop iff the operand was OWNED to
+            // begin with — an OWNED temporary (a constructor / call / concat result) leaks otherwise; a
+            // BORROWED operand (param / kept-local / payload read) is left to its owner (dropping it would
+            // be a double-free), whether or not it was compacted in place.
+            if lo == HandleOwnership::Owned {
                 out.push(Lir::LocalGet(slot_l));
                 out.push(Lir::CallImport(OP_DROP));
             }
-            if rhs_str || ro == HandleOwnership::Owned {
+            if ro == HandleOwnership::Owned {
                 out.push(Lir::LocalGet(slot_r));
                 out.push(Lir::CallImport(OP_DROP));
             }
@@ -7890,19 +7893,87 @@ fn heap_operand_ownership(db: &mut Db, id: StructId) -> Result<HandleOwnership, 
         Core::SumPayload { .. } | Core::SumExpect { .. } | Core::Proj { .. } => {
             Ok(HandleOwnership::Borrowed)
         }
-        // Control flow: each result branch must agree on ownership (so the single post-compare drop is
-        // correct on every path). `if` — both arms; `let` — its body. A disagreement declines.
-        Core::If { then_, else_, .. } => {
-            let t = heap_operand_ownership(db, then_)?;
-            let e = heap_operand_ownership(db, else_)?;
-            (t == e)
-                .then_some(t)
-                .ok_or_else(|| Reject::decline("borrowing op operand's branches disagree on ownership"))
-        }
+        // Control flow: the operand's value is produced on one of several paths, so its ownership is the
+        // JOIN of the reachable results — OWNED only when EVERY path provably yields a fresh owned
+        // temporary (so the single post-compare drop is correct on all paths), else BORROWED. Classifying
+        // BORROWED is always leak-safe: the emit then does NOT drop the operand, so a path that actually
+        // produced an owned temporary merely LEAKS it (the conservative bias `binding_escapes` states — a
+        // false "borrowed" only leaks) rather than risk freeing a borrowed path's still-live value under
+        // its owner (a double-free). This mirrors the standalone-function path exactly: a body returning a
+        // borrowed match payload leaves the value un-dropped and leaks the scrutinee it borrows from.
+        //
+        // `if` joins both arms; `let` forwards its body; a `match` (scalar / sum / list) joins its arm
+        // bodies (`join_arm_ownership` / `sum_cont_ownership`). A bare-`Leaf`-rooted sum match folds to its
+        // body in `lower` and never reaches here as a `MatchSum`.
+        Core::If { then_, else_, .. } => Ok(join_arm_ownership(db, [then_, else_])),
         Core::Let { body, .. } => heap_operand_ownership(db, body),
+        Core::Match { arms, .. } => {
+            Ok(join_arm_ownership(db, arms.iter().map(|a| a.body)))
+        }
+        Core::MatchList { arms, .. } => {
+            Ok(join_arm_ownership(db, arms.iter().map(|a| a.body)))
+        }
+        Core::MatchSum { root, .. } => Ok(sum_cont_ownership(db, &root)),
         _ => Err(Reject::decline(
             "borrowing op operand has an ownership this backend cannot yet prove",
         )),
+    }
+}
+
+/// The JOIN of several result positions' ownership for a borrowing-op operand (see
+/// [`heap_operand_ownership`]): [`HandleOwnership::Owned`] iff EVERY body is provably `Owned`, otherwise
+/// [`HandleOwnership::Borrowed`]. A body whose ownership cannot be proven counts as `Borrowed` — the
+/// leak-safe join value, so an unhandled arm shape never declines the whole match (it just leaves the
+/// operand un-dropped, a leak, never a double-free). Empty (a match with no arms cannot reach a value)
+/// is `Borrowed` — the safe default.
+fn join_arm_ownership(db: &mut Db, bodies: impl IntoIterator<Item = StructId>) -> HandleOwnership {
+    for body in bodies {
+        if !matches!(heap_operand_ownership(db, body), Ok(HandleOwnership::Owned)) {
+            return HandleOwnership::Borrowed;
+        }
+    }
+    HandleOwnership::Owned
+}
+
+/// Ownership of a sum-match CONTINUATION as a borrowing-op operand — the join over every LEAF body the
+/// decision tree can reach (mirrors `cont_child_ids`): a `Guarded` arm joins its body with the
+/// fall-through `els`, a `LitTest` joins its `then_`/`els`, a `Switch` joins all its arms'
+/// continuations. `Owned` iff every reachable leaf is provably `Owned`, else `Borrowed` (leak-safe).
+fn sum_cont_ownership(db: &mut Db, cont: &crate::core::SumCont) -> HandleOwnership {
+    match cont {
+        crate::core::SumCont::Leaf(body) => {
+            if matches!(
+                heap_operand_ownership(db, *body),
+                Ok(HandleOwnership::Owned)
+            ) {
+                HandleOwnership::Owned
+            } else {
+                HandleOwnership::Borrowed
+            }
+        }
+        crate::core::SumCont::Guarded { body, els, .. } => {
+            match (
+                heap_operand_ownership(db, *body),
+                sum_cont_ownership(db, els),
+            ) {
+                (Ok(HandleOwnership::Owned), HandleOwnership::Owned) => HandleOwnership::Owned,
+                _ => HandleOwnership::Borrowed,
+            }
+        }
+        crate::core::SumCont::LitTest { then_, els, .. } => {
+            match (sum_cont_ownership(db, then_), sum_cont_ownership(db, els)) {
+                (HandleOwnership::Owned, HandleOwnership::Owned) => HandleOwnership::Owned,
+                _ => HandleOwnership::Borrowed,
+            }
+        }
+        crate::core::SumCont::Switch { arms, .. } => {
+            for a in arms.iter() {
+                if sum_cont_ownership(db, &a.cont) == HandleOwnership::Borrowed {
+                    return HandleOwnership::Borrowed;
+                }
+            }
+            HandleOwnership::Owned
+        }
     }
 }
 

@@ -1278,6 +1278,7 @@ pass	a runtime string equality selects a branch by comparing a parameter to a li
 pass	a runtime string is indexed by scalar and the extracted scalar is returned
 pass	a runtime string is sliced by scalar offsets
 pass	a runtime string returned across the run boundary renders as its quoted text
+pass	a runtime string rope compared through a borrowed operand
 pass	a runtime string rope compares equal to its flat twin
 pass	a runtime string rope inserted into a set is a member
 pass	a runtime string rope map key is found by its flat twin
@@ -1397,6 +1398,7 @@ pass	a strict greater-than of equal operands is false
 pass	a strict less-than of equal operands is false
 pass	a string carried as a sum-variant payload is bound and measured at run time
 pass	a string compared to a symbol is a type error
+pass	a string equality on an inlined match operand
 pass	a string literal
 pass	a string literal is normalized to the canonical text form
 pass	a string passed to a function as a runtime argument is measured by its byte length

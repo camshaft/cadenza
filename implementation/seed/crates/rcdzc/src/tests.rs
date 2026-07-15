@@ -2871,6 +2871,68 @@ fn a_runtime_string_rope_compares_equal_and_leaves_no_live_objects() {
     );
 }
 
+/// A BORROWED runtime string ROPE compared with `=` must ALSO be canonicalized. The earlier rope-eq fix
+/// compacted only an OWNED String operand (a fresh `String.concat` result); a rope reaching `=` through a
+/// BORROWED operand — a `Map.lookup`-stored value, a `SumPayload`-extracted payload, or a runtime-rope
+/// param — was compared by its UNFLATTENED header bytes and silently returned the WRONG answer (the rope
+/// remainder the seed's "RELATED" note flags). `bytes-compact` is refcount-NEUTRAL (`op_bytes_compact` =
+/// `bytes_flatten(buf); buf` — flatten IN PLACE, same handle back, unobservable even when shared), so the
+/// emit now compacts EVERY String operand and drops only the OWNED ones. Here a rope built by `rep` is
+/// stored as a map VALUE, looked up, and compared inside the match arm (`s` = a borrowed payload): its
+/// content is "hixxx", so `=` is true → 1 (was 0 — a champ_eq physical-byte miss on the un-compacted rope).
+/// `#[ignore]` — needs the debug-counters store (`cargo xtask build`).
+#[test]
+#[ignore]
+fn a_borrowed_runtime_string_rope_compares_equal_and_leaves_no_live_objects() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
+        eprintln!(
+            "[borrowed-rope-eq] debug-counters runtime not in the store; skipping balance probe"
+        );
+        return;
+    };
+    // `rep` builds an OWNED rope "hixxx" (three `String.concat`s), stored as a map value. `f` looks it up
+    // and compares the BORROWED `Some` payload `s` against the flat literal "hixxx" INSIDE the arm — so
+    // the `=` operand `s` is a borrowed rope, the case the OWNED-only compaction missed.
+    let rope_src = "(module m \
+                 (def (rep (: s String) (: n Int64)) \
+                    (if (< n 1) s (rep (String.concat s \"x\") (- n 1)))) \
+                 (def (f (: mp (Map String String)) (: k String)) \
+                    (match (Map.lookup mp k) ((Some s) (if (= s \"hixxx\") 1 0)) ((None) (- 0 1)))) \
+                 (def (main) (f (Map.insert (Map.empty) \"y\" (rep \"hi\" 3)) \"y\")) (export main))";
+    let rope = compile_component(&crate::codec::encode(&parse(rope_src))).expect("compile");
+    let mut rt = ComposedRuntime::new(&rope, &runtime_bytes);
+    assert_eq!(
+        rt.call("main", &[]),
+        Val::S64(1),
+        "a BORROWED runtime string rope (a map-looked-up payload) must compare EQUAL to its flat twin \
+         (was 0 — a champ_eq physical-byte miss before the emit compacts a borrowed String operand too)"
+    );
+    let rope_live = rt.live_objects();
+
+    // The byte-identical FLAT-value baseline (no rope, so no compaction needed): the map value is the flat
+    // literal "hixxx". Both programs build the SAME map + value-box shape that the scalar-returning `main`
+    // does not yet reclaim (a pre-existing map-temporary matter, orthogonal to this fix). Comparing
+    // rope-vs-flat cancels that shared baseline, so it fails IFF compacting the borrowed operand leaks.
+    let flat_src = "(module m \
+                 (def (f (: mp (Map String String)) (: k String)) \
+                    (match (Map.lookup mp k) ((Some s) (if (= s \"hixxx\") 1 0)) ((None) (- 0 1)))) \
+                 (def (main) (f (Map.insert (Map.empty) \"y\" \"hixxx\") \"y\")) (export main))";
+    let flat = compile_component(&crate::codec::encode(&parse(flat_src))).expect("compile");
+    let mut rt_flat = ComposedRuntime::new(&flat, &runtime_bytes);
+    assert_eq!(rt_flat.call("main", &[]), Val::S64(1));
+    let flat_live = rt_flat.live_objects();
+
+    assert_eq!(
+        rope_live, flat_live,
+        "borrowed-rope-eq leak: the rope-value program leaves {rope_live} live cells vs the flat-value \
+         baseline's {flat_live} — compacting a BORROWED operand is refcount-neutral (in-place flatten, \
+         same handle, no drop follows the borrow), so any difference is a compaction leak"
+    );
+}
+
 /// The char-by-char lexer idiom: a recursive scan reading each Unicode scalar with `String.at` at a
 /// RUNTIME index and comparing its content — `(= (String.at s i) "a")`. `String.at` returns
 /// `Some(bytes-slice(str, pos, len))`, a ROPE slice (an offset INTO the source), so before the fix its
@@ -36440,6 +36502,30 @@ mod stage1 {
             compile_component(&crate::codec::encode(&parse(src))).is_ok(),
             "a value-eq comparing a sum-payload string to a constant compiles (payload=Borrowed, \
              const string=Owned)"
+        );
+    }
+
+    #[test]
+    fn a_value_eq_on_an_inlined_match_operand_compiles() {
+        // A `String ==` whose operand is an INLINED function returning a `match` — `(= (f …) "z")` where
+        // `f` returns `(match (Map.lookup m k) ((Some s) s) ((None) "?"))`, inlined into the `=` operand.
+        // The two arms DISAGREE on ownership: the `Some` arm returns a BORROWED payload (`s` = a
+        // `SumPayload` read off the owned Option), the `None` arm returns an OWNED const (`"?"`). The
+        // `value-eq` operand-ownership analysis had no `MatchSum` arm and fell through to the generic
+        // decline "borrowing op operand has an ownership this backend cannot yet prove" — blocking any
+        // program that compares a returned map/variant payload once the wrapper inlines (the shape a
+        // compiler-in-Cadenza substitution pass hits). It must now classify a match operand by the JOIN of
+        // its arm bodies — BORROWED here (a mixed join, the leak-safe value), so no drop follows and the
+        // operand is left to its owner (the standalone-function path leaks the scrutinee the same way).
+        let src = "(module m \
+                     (def (f (: m (Map String String)) (: k String)) \
+                        (match (Map.lookup m k) ((Some s) s) ((None) \"?\"))) \
+                     (def (main) (if (= (f (Map.insert (Map.empty) \"y\" \"z\") \"y\") \"z\") 1 0)) \
+                     (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_ok(),
+            "a value-eq on an inlined match operand compiles (match operand classified by its arm join, \
+             mixed → Borrowed)"
         );
     }
 
