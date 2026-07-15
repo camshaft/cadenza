@@ -832,6 +832,7 @@ pass	a match arm reading two elements of a boxed payload tuple shares the sum-pa
 pass	a match arm's DESTRUCTURED payload is the argument to a perform in that arm's body
 pass	a match binder over a narrow scrutinee returns the bound value
 pass	a match binds an Ast.Bool payload
+pass	a match building one Some per arm sinks to a single Some around a payload match
 pass	a match not covering the scrutinee is a compile-time rejection
 pass	a match on a BigInt with a single catch-all binder binds and uses it
 pass	a match on a computed runtime value dispatches on the result
@@ -2278,6 +2279,7 @@ pass	runtime float inequality compares by canonical byte form
 pass	runtime structural equality over a GENERIC RECURSIVE sum walks the whole tree
 pass	runtime structural equality over a payload-carrying sum agrees on both backends
 pass	runtime tuple concatenation preserves element order across the seam
+pass	same-arity tuple match arms share an equal element and sink the differing one
 pass	same-key-set record match arms share an equal field and sink the differing one
 pass	same-length list match arms share an equal element and sink the differing one
 pass	scalar length counts Unicode scalar values, not bytes
