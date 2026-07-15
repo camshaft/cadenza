@@ -31,12 +31,16 @@ pub(crate) fn run(paths: &Paths, uninstall: bool) {
         std::process::exit(1);
     }
 
-    let targets = editor_extension_dirs();
-
     if uninstall {
-        uninstall_links(&targets);
+        // UNINSTALL must be non-destructive: only clean dirs that ALREADY exist — never create one.
+        // (Install passes `create_missing = true` so a fresh Remote-SSH `extensions/` gets made; here
+        // that would create the very dir we are meant to only clean.)
+        uninstall_links(&editor_extension_dirs(false));
         return;
     }
+
+    // INSTALL: create a missing `extensions/` under an installed editor root so the symlink has a home.
+    let targets = editor_extension_dirs(true);
 
     // 1. Build the `cdz` binary (release) — the LSP server host.
     let cdz = build_cdz(paths);
@@ -80,8 +84,13 @@ fn build_cdz(paths: &Paths) -> PathBuf {
         fail(&format!("building cdz: {e}"));
     }
     // The seed workspace's target dir. `cargo build` from `<repo>/implementation/seed` writes to
-    // `<repo>/target` (the workspace root's target), so resolve there.
-    let bin = paths.repo.join("target/release/cdz");
+    // `<repo>/target` (the workspace root's target), so resolve there. Append the platform's executable
+    // suffix (`.exe` on Windows, empty elsewhere) — Cargo emits `cdz.exe` on Windows, so a hard-coded
+    // `cdz` would fail the post-build check despite a successful build.
+    let bin = paths
+        .repo
+        .join("target/release")
+        .join(format!("cdz{}", std::env::consts::EXE_SUFFIX));
     if !bin.is_file() {
         fail(&format!(
             "cdz built but not found at {} — is the binary named `cdz`?",
@@ -111,14 +120,16 @@ fn npm_install(ext_src: &Path) {
     println!("  ✓ npm deps installed");
 }
 
-/// Every local editor extensions directory to install into. An editor keeps user extensions under
-/// `<home>/<editor-root>/extensions`; we install into a root's `extensions/` when EITHER that dir
-/// already exists OR the editor ROOT exists (e.g. a Remote-SSH `~/.vscode-server` whose `extensions/`
-/// has not been created yet — VS Code reads from there, so we create it). Covers VS Code (`~/.vscode`),
-/// Remote-SSH server (`~/.vscode-server`), OSS builds (`~/.vscode-oss`), and the common forks
-/// (`~/.cursor(-server)`, `~/.windsurf(-server)`). Skips a root that does not exist at all, so we never
-/// invent an editor the user does not have.
-fn editor_extension_dirs() -> Vec<PathBuf> {
+/// Every local editor extensions directory to act on. An editor keeps user extensions under
+/// `<home>/<editor-root>/extensions`; a root's `extensions/` is included when that dir already exists.
+/// When `create_missing` (the INSTALL path) an editor ROOT that exists but lacks `extensions/` (e.g. a
+/// fresh Remote-SSH `~/.vscode-server` — VS Code reads from there) has the dir CREATED so the symlink
+/// has a home. When NOT `create_missing` (the UNINSTALL path) we never create — uninstall only cleans
+/// dirs that already exist, so it can never conjure the very dir it is meant to remove from. Covers VS
+/// Code (`~/.vscode`), Remote-SSH server (`~/.vscode-server`), OSS builds (`~/.vscode-oss`), and the
+/// common forks (`~/.cursor(-server)`, `~/.windsurf(-server)`). A root that does not exist at all is
+/// always skipped, so we never invent an editor the user does not have.
+fn editor_extension_dirs(create_missing: bool) -> Vec<PathBuf> {
     let Some(home) = home_dir() else {
         return Vec::new();
     };
@@ -136,9 +147,9 @@ fn editor_extension_dirs() -> Vec<PathBuf> {
         let ext = root_path.join("extensions");
         if ext.is_dir() {
             dirs.push(ext);
-        } else if root_path.is_dir() {
+        } else if create_missing && root_path.is_dir() {
             // The editor is installed but has no extensions dir yet (a fresh Remote-SSH server) — create
-            // the dir VS Code reads from so the symlink has a home.
+            // the dir VS Code reads from so the symlink has a home. INSTALL only (never on uninstall).
             if std::fs::create_dir_all(&ext).is_ok() {
                 dirs.push(ext);
             }
