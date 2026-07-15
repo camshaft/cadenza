@@ -3879,11 +3879,15 @@ fn emit_tail(
                 return r;
             }
             if !matches!(result, Ty::Unit)
-                && !is_heap_type(&result)
+                && (!is_heap_type(&result) || ty_is_enum_disc(db, &result))
                 && valtype_of(&result).is_some()
                 && is_select_arm(db, then_)
                 && is_select_arm(db, else_)
             {
+                // An ENUM-DISC result is admitted alongside a scalar: its runtime rep IS an i32
+                // discriminant (`valtype_of` = i32), and each enum-disc `select` arm emits just that
+                // constant — no allocation, no drop — so `select` between two discriminants is as sound as
+                // between two scalars (`(if c (Dir.North) (Dir.South))` = `(if c 0 1)` on the disc).
                 // Each arm is emitted UNDER its branch-refinement frame (see the non-tail `Core::If` arm's
                 // select block for the full rationale) — a `select` arm computes the same value the `if`
                 // arm would, so a refinement that simplifies the arm (elides a redundant mask under a
@@ -6395,11 +6399,14 @@ fn emit(
                 return r;
             }
             if !matches!(result, Ty::Unit)
-                && !is_heap_type(&result)
+                && (!is_heap_type(&result) || ty_is_enum_disc(db, &result))
                 && valtype_of(&result).is_some()
                 && is_select_arm(db, then_)
                 && is_select_arm(db, else_)
             {
+                // An ENUM-DISC result is admitted alongside a scalar (see the tail `Core::If` arm): its
+                // runtime rep is an i32 discriminant and each enum-disc arm emits just that constant (no
+                // allocation, no drop), so a `select` between two discriminants is sound.
                 // Each arm is emitted UNDER its branch-refinement frame, exactly as the structured `if`
                 // below — a `select` arm computes the same value the `if` arm would, so a refinement that
                 // simplifies the arm (elides a redundant mask `(& x 255)` under `x∈[0,255]`, folds a
@@ -9861,6 +9868,16 @@ fn select_arm_convertible(db: &mut Db, id: StructId) -> bool {
             && select_arm_convertible(db, then_)
             && select_arm_convertible(db, else_);
     }
+    // An ENUM-DISCRIMINANT sum constructor (`(Dir.North)`, a nullary variant of an all-nullary sum) emits
+    // as JUST its discriminant constant (`i32.const disc` — see the `SumNew` emit's `node_is_enum_disc`
+    // fast path): no `sum-new` box, no allocation, no drop. So it is trap-free, allocation-free, and
+    // effect-free — a valid `select` arm. `is_trap_free` conservatively rejects every `SumNew` (heap
+    // constructs are possibly-trapping in general), so admit the enum-disc case explicitly here. This lets
+    // `(if c (Dir.North) (Dir.South))` — an `if` over two immediate discriminants — go branchless, just
+    // like the scalar `(if c 0 1)` it compiles down to.
+    if matches!(core_of(db, id), Core::SumNew { .. }) && node_is_enum_disc(db, id) {
+        return true;
+    }
     crate::lower::is_trap_free(db, id)
 }
 
@@ -11772,6 +11789,34 @@ mod tests {
                 Lir::LocalGet(0),
                 Lir::Select,
             ]
+        );
+    }
+
+    #[test]
+    fn an_if_between_two_enum_disc_variants_selects_branchlessly() {
+        // `(if c (Dir.North) (Dir.South))` — the result type `Dir` is an ENUM-DISC sum (all variants
+        // nullary), so its runtime rep is a plain i32 DISCRIMINANT and each variant emits as just its
+        // discriminant constant (no `sum-new`, no allocation, no drop). So this is `(if c 0 1)` on the
+        // disc, and it selects BRANCHLESSLY — `i32.const 0 ; i32.const 1 ; local.get 0 ; select` — even
+        // though the result is nominally a "heap type" (the `is_heap_type` gate is relaxed for enum-disc).
+        let ast = crate::testkit::parse(
+            "(module m (type Dir (North) (South) (East) (West)) \
+               (def (f (: c Bool)) (if c (Dir.North) (Dir.South))) (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
+        assert_eq!(
+            f.code,
+            vec![
+                Lir::ConstI32(0), // Dir.North's discriminant
+                Lir::ConstI32(1), // Dir.South's discriminant
+                Lir::LocalGet(0), // the condition c
+                Lir::Select,
+            ],
+            "an if between two enum-disc variants is a branchless select on the discriminant; got {:?}",
+            f.code
         );
     }
 
