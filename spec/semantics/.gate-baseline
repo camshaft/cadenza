@@ -1440,6 +1440,11 @@ pass	a trailing digit separator is a malformed literal, not the digits with it d
 pass	a transformation maps a syntax tree to a syntax tree and preserves meaning
 pass	a transformation observably rewrites the tree, not just its value
 pass	a transformation over the built-in Ast composes across a function call
+pass	a trapping condition of a same-constructor if traps before either arm
+pass	a trapping element in the untaken arm of a same-arity tuple if does not trap
+pass	a trapping field in the untaken arm of a same-shape record if does not trap
+pass	a trapping payload in the TAKEN arm of a same-constructor if still traps
+pass	a trapping payload in the untaken arm of a same-constructor if does not trap
 pass	a truncating conversion keeps the low bits rather than trapping
 pass	a truncating conversion of a negative value uses two's complement
 pass	a truncating conversion to an unusual width keeps that width's low bits
@@ -1625,6 +1630,7 @@ pass	an effect result drives the bound of a PURE recursive helper called in the 
 pass	an effect that declares an operation name twice is rejected
 pass	an effect-built NESTED-compound value escapes the handle and a nested projection reads through it
 pass	an effect-built heap list bound in a let is USED TWICE and retained across both uses
+pass	an effectful condition of a same-constructor if is performed exactly once
 pass	an element is projected from a runtime-constructed tuple
 pass	an element is projected from a tuple returned by a function
 pass	an element is projected from a tuple returned by a nullary function

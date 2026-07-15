@@ -2970,3 +2970,24 @@
                   (_ 200))))
             (export main)))
   (output (: 100 Int64)))
+
+(case "an effectful condition of a same-constructor if is performed exactly once"
+  (doc    "The evaluate-ONCE pin for the common-constructor if-arm hoist, observable through handler
+           state: `(if (< (Ctr.tick) 1) (tuple 1 2) (tuple 3 4))` — both arms build a same-arity tuple,
+           so the hoist rewrites to per-element selections over ONE condition value. The counter arm
+           `(tick (_) s (resume s (+ s 1)))` returns the current count and threads +1. First perform
+           returns 0 → the condition is TRUE → t = (1, 2); the trailing `(Ctr.tick)` then returns 1 (the
+           state advanced exactly once by the condition). So 100·1 + 10·2 + 1 = 121. A hoist that
+           DUPLICATED the condition per payload slot would perform tick twice (returns 0 then 1 — the
+           two element selections disagree, t = (1, 4), and the trailing tick returns 2 → 142); one that
+           re-evaluated it once more for the second element still skews the trailing read. Pins that the
+           rewrite binds the condition to ONE evaluation whose value feeds every payload selection.")
+  (input  (do
+            (effect Ctr (op tick (-> Unit Int64)))
+            (def (main)
+              (handle Ctr 0 ((tick (_) s (resume s (+ s 1))))
+                (let ((t (if (< (Ctr.tick unit) 1) (tuple 1 2) (tuple 3 4))))
+                  (+ (+ (* 100 (. t 0)) (* 10 (. t 1))) (Ctr.tick unit)))))
+            (export main)))
+  (call   main)
+  (output (: 121 Int64)))
