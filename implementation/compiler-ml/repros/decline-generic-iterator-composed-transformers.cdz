@@ -1,0 +1,82 @@
+/// EXPECTED TO WORK — currently REJECTED. (iterators stress test, 2026-07-14)
+///
+/// A GENERIC (any-element-type) pull-iterator with COMPOSED transformers: `collect(map(filter(...)))`.
+/// This is why `src/iter.cdz` is monomorphic over `Int64` — the moment the element type is left
+/// polymorphic AND two closure-carrying combinators are composed, inference leaves the element type
+/// argument undetermined.
+///
+/// ACTUAL: rejected at the recursive `collect(rest)` (and at the composed call site) with
+///   CDZ0201: an argument to a `const` parameter must be compile-time-known …, or a generic type
+///            argument is undetermined
+///
+/// WHAT WORKS (bisected — the gap is the COMPOSITION, not any single piece):
+///   - Generic `collect` through `next` over a cons-cell iterator — works (returns List(a) for any a).
+///   - Generic `collect(map(from-list(xs), f))` — a SINGLE closure-carrying combinator — works and runs
+///     (verified: `[1,2,3]` mapped `*2` collects `[2,4,6]`).
+///   - Generic `collect` over an iterator that HAS a `FilterI` variant (with a recursive `next` in its
+///     `else`) — works on its own.
+///   - The monomorphic-`Int64` version of ALL of this — works (that is what `src/iter.cdz` ships, 18
+///     tests green).
+///
+/// WHAT FAILS: composing TWO closure-carrying combinators over a polymorphic element —
+/// `collect(map(filter(from-list(xs), p), f))` — the element type `a` is no longer determined at the
+/// recursive consumer call. (The element type is fully pinned by the literal list at the source, so
+/// there is no genuine ambiguity — inference is just not propagating it through the composed
+/// `next`-recursion.)
+///
+/// DESIRED: propagate the element type argument through a chain of generic transformer applications
+/// and the recursive `next`/consumer calls, so a fully generic iterator (`Iter(a)`) with composed
+/// `map`/`filter` type-checks — the requirement that iterators work for ANY element type, not just
+/// `Int64`.
+///
+/// NOTE the state-threading shape: `next : Iter(a) -> Option((a, Iter(a)))` returns the element paired
+/// with the REST ITERATOR (the iterator's next state), which is the correct shape — the second value
+/// is the continuation, not the element. The generic-inference gap is orthogonal to that shape.
+
+type Iter =
+  | Nil
+  | Cons(Tuple(a, Iter(a)))
+  | MapI(Tuple((a -> a), Iter(a)))
+  | FilterI(Tuple((a -> Bool), Iter(a)))
+
+def next(it) = match it with
+  | Iter.Nil(_) => Option.None(unit)
+  | Iter.Cons(p) => (match p with | (a, rest) => Option.Some((a, rest)))
+  | Iter.MapI(mf) => (match mf with | (f, src) => (match next(src) with
+    | Option.None(_) => Option.None(unit)
+    | Option.Some(r) => (match r with | (v, rest) => Option.Some((f(v), Iter.MapI((f, rest)))))))
+  | Iter.FilterI(pf) => (match pf with | (p, src) => (match next(src) with
+    | Option.None(_) => Option.None(unit)
+    | Option.Some(r) => (match r with | (v, rest) =>
+        if p(v) then Option.Some((v, Iter.FilterI((p, rest)))) else next(Iter.FilterI((p, rest))))))
+
+def from-list(xs) = match xs with
+  | [] => Iter.Nil(unit)
+  | [h, .. t] => Iter.Cons((h, from-list(t)))
+
+def map(it, f) = Iter.MapI((f, it))
+def filter(it, p) = Iter.FilterI((p, it))
+
+def collect(it) = match next(it) with
+  | Option.None(_) => []
+  | Option.Some(r) => (match r with | (a, rest) => List.concat([a], collect(rest)))
+
+def ieq(a, b) = match a with
+  | [] => (match b with | [] => true | _ => false)
+  | [x, .. xs] => (match b with | [] => false | [y, .. ys] => if x == y then ieq(xs, ys) else false)
+
+/// The composed pipeline over a polymorphic element — REJECTED (element type undetermined).
+@test
+def compose-map-filter() =
+  if ieq(collect(map(filter(from-list([1, 2, 3, 4]), fn(x) => x % 2 == 0), fn(x) => x * 10)), [20, 40]) then
+    unit
+  else
+    trap("evens *10")
+
+/// The any-element-type requirement: the same combinators over strings.
+@test
+def string-elements() = match collect(from-list(["a", "bb", "ccc"])) with
+  | ["a", "bb", "ccc"] => unit
+  | _ => trap("string iterator")
+
+export { Iter.* }

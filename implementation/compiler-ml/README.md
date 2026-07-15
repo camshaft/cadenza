@@ -257,6 +257,19 @@ top. Current `src/` modules (each with same-file `@test`s — 327 tests total ac
   exactly (node count + Int-leaf sum survive; verified on flat, deeply-nested, and empty trees). 10
   `@test`s. So the port now runs a real `bytes → Ast → bytes` pipeline (Name/Str content still a
   placeholder pending runtime `String.from-bytes`).
+- `src/iter.cdz` — a LAZY, PULL-DRIVEN ITERATOR realizing the `iterators-as-lazy-pull-computations`
+  proposal. `next : it -> Option((elem, rest))` — total (`None` at exhaustion), pure (the second value
+  is the REST iterator, i.e. the next state — so an iterator is re-steppable/shareable, no "consumed
+  iterator" hazard). Producers (`empty`/`from-list`/`range`), lazy transformers
+  (`map`/`filter`/`take`/`drop`/`take-while` — build a wrapping step, force nothing), and consumers
+  (`fold`/`count`/`sum`/`collect-list`/`find`/`any`/`all` — drive the pull). ENCODING = reified
+  (defunctionalized): a sum of step-shapes `next` interprets, NOT a stored `Unit -> …` thunk (that
+  DECLINES — see the Unit-thunk finding below), so each stored closure is over the element type, never
+  `Unit`. Laziness is real and tested (`take 3` of a million-element `range` pulls exactly 3). 18
+  `@test`s. **Monomorphic over `Int64` — a SPIKE:** the generic `Iter(a)` is blocked by two inference
+  gaps (`repros/decline-generic-iterator-composed-transformers.cdz`,
+  `repros/reject-user-generic-type-var-in-annotation.cdz`); the any-element-type version is the real
+  goal, gated on those.
 
 A `resolve` pass (lexical scope-check accumulating unbound-variable diagnostics — a `Set String` scope
 threaded down, a `List String` of faults threaded through, `Let` binding + shadowing) is written and
@@ -715,3 +728,37 @@ are the sharp edges.
   IS an Ast, that should splice the node. Blocks the canonical AST-building macro (embed a computed
   subtree). Confirmed WORKING otherwise: quote structural `=`, walking a quoted form via own `Ast`
   match, quoted Ast escaping to host, `unquote-splice` of a list, `(unquote <plain-value>)`.
+
+- **OPEN (seed `rcdzc` — GAP, blocks the ideal lazy thunk): a `Unit`-parameter closure BOXED into a
+  heap sum DECLINES.** `repros/decline-unit-param-closure-boxed-in-sum.cdz`. Storing a `fn(u) => …`
+  (`Unit -> T`) in a sum variant and pulling it back out to call → `error: a closure's parameter type
+  has no machine representation`. **Root-caused:** `backend/wasm/lir.rs valtype_of` returns `None` for
+  `Ty::Unit` (zero-width), and `lower.rs` (~8044) requires every boxed-closure parameter to have a
+  valtype. DISCRIMINATORS: the same `Unit`-param closure called DIRECTLY or passed as a plain ARG works
+  (returns 42); an `Int64`-param closure boxed in the same sum works; a `Unit`-RETURNING boxed closure
+  works — only `Unit` in PARAMETER position at the closure/resource boundary is rejected. This is why
+  the iterators proposal's ideal thunk (`Iter(a) = Susp(Unit -> Option (a, Iter(a)))`) can't be written;
+  `src/iter.cdz` uses a reified encoding instead. SUGGESTED FIX: give `Unit` a zero-info slot at the
+  boxed-closure boundary (elide the param, or lower to a never-read placeholder i32).
+
+- **OPEN (seed `rcdzc` — inference GAP, blocks a generic iterator): a composed generic pull-iterator
+  leaves its element type undetermined.** `repros/decline-generic-iterator-composed-transformers.cdz`.
+  `collect(map(filter(from-list(xs), p), f))` over a polymorphic `Iter(a)` → CDZ0201 "a generic type
+  argument is undetermined" at the recursive consumer / composed call. BISECTED — the gap is the
+  COMPOSITION through `next`-recursion, not any single piece: generic `collect` through `next` works;
+  `collect(map(…))` (one closure-carrying combinator) works and runs; `collect(filter(…))` alone
+  reproduces (its arm calls `next` recursively in the `else`); the monomorphic-`Int64` version of ALL
+  of it works (what `src/iter.cdz` ships). The element type is fully pinned by the source list, so
+  there is no genuine ambiguity — inference just doesn't propagate it through the composed
+  `next`-recursion. This is the blocker to "iterators work for ANY type"; the `Int64` iterator is a
+  spike until it lands.
+
+- **OPEN (seed `rcdzc` — surface/diagnostic GAP): a user-generic type var in an annotation is
+  rejected.** `repros/reject-user-generic-type-var-in-annotation.cdz`. `def next(it: Iter(a)) = …` →
+  CDZ0203 + CDZ0101 "unbound name `a`" — a lowercase type var in an annotation on a USER generic type
+  is not treated as an implicit type parameter (though it IS in a `type` DECLARATION's payloads).
+  WORKAROUND (what the working code uses): leave the params UNANNOTATED — inference derives the
+  polymorphism (`def next(it) = …` compiles and monomorphizes). Low-severity (a signature-surface gap,
+  not a blocker): the natural documenting signature can't be written, and the diagnostic points nowhere
+  useful. DESIRED: accept a lowercase name in a user-generic annotation as an implicit ∀-bound var (the
+  same rule `db.rs:453` already applies in declarations), or hint the working spellings.
