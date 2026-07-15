@@ -71,5 +71,22 @@ export default defineConfig({
   },
   build: {
     target: "es2022",
+    rollupOptions: {
+      output: {
+        // Split the big, rarely-changing vendor libraries into their own chunks. Without this they're
+        // hoisted into the single entry chunk (~748 kB), which (a) bloats first paint and (b) busts the
+        // WHOLE bundle's cache on any app change. Isolating them means a chapter/prose edit re-hashes
+        // only the small app chunk while readers keep the cached CodeMirror/React across deploys.
+        //   - codemirror: the editor stack (@codemirror/*, @uiw/react-codemirror, @lezer/*) — pulled in
+        //     eagerly by every <Runnable>; the single largest slice of the entry chunk.
+        //   - react-vendor: react + react-dom + react-router, the framework core.
+        manualChunks(id) {
+          if (/node_modules\/(@codemirror|@uiw|@lezer)\//.test(id)) return "codemirror";
+          if (/node_modules\/(react|react-dom|react-router|react-router-dom|scheduler)\//.test(id))
+            return "react-vendor";
+          return undefined;
+        },
+      },
+    },
   },
 });
