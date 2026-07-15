@@ -1991,6 +1991,24 @@
   (input  (do (def (main) (Map.size (Map.insert (Map.empty) 1 10))) (export main)))
   (error CDZ0603))
 
+(case "the retired Tuple.cat name is rejected with the Tuple.concat rename fix-it (CDZ0603)"
+  (doc    "The Tuple leg of the naming cutover: `Tuple.cat` was renamed to `Tuple.concat` (join two → one,
+           matching List/Bytes/String's `concat`). The retired `cat` no longer resolves and gets the
+           targeted CDZ0603 naming `Tuple.concat` + a VERIFIED fix-it, not the generic 'no member'. Pins
+           CDZ0603 for the Tuple.cat leg specifically — the corpus previously pinned only Map.size, so a
+           future change could have broken the diagnostic for Tuple without any graded case catching it.")
+  (input  (do (def (main) (. (Tuple.cat (tuple 1 2) (tuple 3 4)) 0)) (export main)))
+  (error CDZ0603))
+
+(case "the retired Tuple.pop name is rejected with the Tuple.remove rename fix-it (CDZ0603)"
+  (doc    "The third leg of the cutover: `Tuple.pop` was renamed to `Tuple.remove` (Set/Map already used
+           `remove`; `pop` was a misnomer since it returns the smaller structure, not the removed element).
+           The retired `pop` no longer resolves and gets CDZ0603 naming `Tuple.remove` + a VERIFIED fix-it.
+           Completes the graded-corpus coverage of CDZ0603 across all three retired names (Map.size /
+           Tuple.cat / Tuple.pop), so a regression on any one leg is caught by the shared gate.")
+  (input  (do (def (main) (. (Tuple.pop (tuple 1 2 3)) 0)) (export main)))
+  (error CDZ0603))
+
 (case "a record whose field is a runtime tuple nests across the boundary"
   (doc    "`(record (x n) (y (tuple n 1)))` with n=5 produces `(record (x 5) (y (tuple 5 1)))` — a
            record field that is itself a runtime compound. Pins that the type-directed renderer
