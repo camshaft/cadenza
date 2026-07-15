@@ -3302,3 +3302,91 @@
   (input  (do (def (main (: x Int64)) (do (+ x 1) x)) (export main)))
   (call   main (: 9223372036854775807 Int64))
   (output (: 9223372036854775807 Int64)))
+
+; --- The common-OPERATOR if-arm hoist preserves trap and order semantics ---------------------------
+; ba26196c9 hoists a common operator out of both if arms — `(if c (+ a 1) (+ b 1))` → `(+ (if c a b)
+; 1)` — one checked op + one guard instead of two. Unlike the constructor hoist (payloads stay
+; guarded), the OP itself moves BELOW the select, so its trap now fires after the selection: sound
+; exactly when the trap depends only on the SELECTED operands. These pin that equivalence at the
+; faces where it could break: overflow at one arm's operand, divisor selection, cond-vs-op trap
+; order, effectful-cond evaluation count, and the mixed-operator decline.
+
+(case "the taken arm's checked add still overflows under the operator hoist"
+  (doc    "`(if (> c 0) (+ a 1) (+ b 1))` with the TAKEN arm's operand at Int64.max: the hoisted
+           single add receives the selected a = max and must trap 'integer overflow' exactly as the
+           un-hoisted taken arm would. Pins the hoist keeps the guard on the shared op.")
+  (input  (do
+            (def (main (: c Int64) (: a Int64) (: b Int64))
+              (if (> c 0) (+ a 1) (+ b 1)))
+            (export main)))
+  (call   main (: 1 Int64) (: 9223372036854775807 Int64) (: 5 Int64))
+  (trap   "integer overflow"))
+
+(case "an untaken arm's overflowing operand does not trap under the operator hoist"
+  (doc    "The complement: b = Int64.max in the UNTAKEN arm while the taken arm computes 1 + 1 = 2.
+           The hoisted add sees only the SELECTED operand (a = 1), so no trap — the operand selection
+           is what makes moving the op below the select value-preserving. A rewrite that evaluated
+           both adds before selecting (op-first) would trap a program that must return 2.")
+  (input  (do
+            (def (main (: c Int64) (: a Int64) (: b Int64))
+              (if (> c 0) (+ a 1) (+ b 1)))
+            (export main)))
+  (call   main (: 1 Int64) (: 1 Int64) (: 9223372036854775807 Int64))
+  (output (: 2 Int64)))
+
+(case "a hoisted division traps by the selected divisor only"
+  (doc    "`(if (> c 0) (/ 100 a) (/ 100 b))` → the hoisted `(/ 100 (if c a b))`: with c false and
+           a = 0, the selected divisor is b = 5 → 20 (the zero divisor sits in the untaken arm and
+           must not trap); with c true the selected divisor IS the zero → 'divide by zero'. Both
+           directions in one case pin that the division's partiality follows the SELECTION.")
+  (input  (do
+            (def (main (: c Int64) (: a Int64) (: b Int64))
+              (if (> c 0) (/ 100 a) (/ 100 b)))
+            (export main)))
+  (call   main (: 0 Int64) (: 0 Int64) (: 5 Int64))
+  (output (: 20 Int64))
+  (call   main (: 1 Int64) (: 0 Int64) (: 5 Int64))
+  (trap   "divide by zero"))
+
+(case "a trapping condition preempts the hoisted operator's trap"
+  (doc    "`(if (< (+ x 1) 5) (/ 100 d) (/ 100 d))` at x = Int64.max, d = 0 — BOTH the condition and
+           the (fully shared) hoisted op trap for these inputs. Source order evaluates the condition
+           first → 'integer overflow', never 'divide by zero'. The operator-hoist twin of the
+           constructor hoist's shared-payload-vs-cond order pin: with every operand position equal,
+           the hoist degenerates to `(/ 100 d)` guarded only by the cond's evaluation — which must
+           still happen first.")
+  (input  (do
+            (def (main (: x Int64) (: d Int64))
+              (if (< (+ x 1) 5) (/ 100 d) (/ 100 d)))
+            (export main)))
+  (call   main (: 9223372036854775807 Int64) (: 0 Int64))
+  (trap   "integer overflow"))
+
+(case "an effectful condition is performed exactly once under the operator hoist"
+  (doc    "`(if (< (Ctr.tick) 1) (+ v 10) (+ v 20))` under a counter handler: the first perform
+           returns 0 → the +10 arm → 15; the trailing `(Ctr.tick)` returns 1 (the state advanced
+           exactly once) → 16. A hoist that re-evaluated the condition for the operand select AND the
+           (degenerate) operator selection would skew the trailing read. The evaluate-once pin for
+           the operator hoist, mirroring the constructor-hoist and match-sink counterparts.")
+  (input  (do
+            (effect Ctr (op tick (-> Unit Int64)))
+            (def (main (: v Int64))
+              (handle Ctr 0 ((tick (_) s (resume s (+ s 1))))
+                (+ (if (< (Ctr.tick unit) 1) (+ v 10) (+ v 20)) (Ctr.tick unit))))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 16 Int64)))
+
+(case "mixed operators across the if arms keep their own arms"
+  (doc    "`(if (> c 0) (+ a 1) (- a 1))` — DIFFERENT operators, so the hoist must decline (there is
+           no common op to lift; only the operand happens to agree): c false → 5 - 1 = 4, c true →
+           5 + 1 = 6. A hoist keyed on operand agreement rather than operator identity would merge
+           the arms into one op and get one direction wrong. The decline pin for the operator hoist.")
+  (input  (do
+            (def (main (: c Int64) (: a Int64))
+              (if (> c 0) (+ a 1) (- a 1)))
+            (export main)))
+  (call   main (: 0 Int64) (: 5 Int64))
+  (output (: 4 Int64))
+  (call   main (: 1 Int64) (: 5 Int64))
+  (output (: 6 Int64)))

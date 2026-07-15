@@ -687,6 +687,7 @@ pass	a higher-order function applies a callback that matches its own sum argumen
 pass	a higher-order left fold applies its combiner, not a fixed operator
 pass	a higher-order left fold over a built-in list with an annotated callback
 pass	a higher-order left fold over a built-in list with an annotated fn parameter
+pass	a hoisted division traps by the selected divisor only
 pass	a hoisted trapping invariant loop-bound still traps when it overflows, even at zero iterations
 pass	a homogeneous nested Option distinguishes its outer and inner None
 pass	a host call's response is an ordinary value that feeds a LATER host call
@@ -1513,6 +1514,7 @@ pass	a transformation maps a syntax tree to a syntax tree and preserves meaning
 pass	a transformation observably rewrites the tree, not just its value
 pass	a transformation over the built-in Ast composes across a function call
 pass	a trapping condition of a same-constructor if traps before either arm
+pass	a trapping condition preempts the hoisted operator's trap
 pass	a trapping element in the taken arm of a same-length list if still traps
 pass	a trapping element in the untaken arm of a same-arity tuple if does not trap
 pass	a trapping element in the untaken arm of a same-length list if does not trap
@@ -1720,6 +1722,7 @@ pass	an effect result drives the bound of a PURE recursive helper called in the 
 pass	an effect that declares an operation name twice is rejected
 pass	an effect-built NESTED-compound value escapes the handle and a nested projection reads through it
 pass	an effect-built heap list bound in a let is USED TWICE and retained across both uses
+pass	an effectful condition is performed exactly once under the operator hoist
 pass	an effectful condition of a same-constructor if is performed exactly once
 pass	an effectful match scrutinee is performed exactly once across a two-position sink
 pass	an element is projected from a runtime-constructed tuple
@@ -1857,6 +1860,7 @@ pass	an unsigned right shift fills with zeros, not the sign bit
 pass	an unsigned runtime value is not accepted by a signed segment of the same width
 pass	an unsigned segment reads the same sign-bit-only byte as 128
 pass	an unsigned-byte entrypoint takes and returns a u8 at the boundary
+pass	an untaken arm's overflowing operand does not trap under the operator hoist
 pass	an unused let binding whose init would overflow is elided, so its trap does not occur
 pass	an unused let-init that does not reduce to a value is eliminated, so it does not diverge
 pass	an unusual in-range width is a first-class type
@@ -2172,6 +2176,7 @@ pass	merging two empty records is the empty record
 pass	merging two records with disjoint fields unions their fields
 pass	merging with the empty record on the left is the identity
 pass	merging with the empty record on the right is the identity
+pass	mixed operators across the if arms keep their own arms
 pass	mixed payload widths across the variant set dispatch and read correctly
 pass	mixed: two closure exports alongside a plain export — driving the plain export
 pass	mixing a prefixed unit across DIFFERENT dimensions is still a compile-time error
@@ -2495,6 +2500,7 @@ pass	the scalar length of a runtime multi-byte string counts scalars, not bytes
 pass	the second distinct-signature closure export returns its own type
 pass	the shrinking search terminates via its fuel bound rather than searching unboundedly
 pass	the slice overflow guard holds on a chained slice-of-a-slice
+pass	the taken arm's checked add still overflows under the operator hoist
 pass	the three-way comparison is deconstructed by an exhaustive match
 pass	the three-way comparison orders Bool with false below true
 pass	the three-way comparison orders Float64 by numeric value — Equal
