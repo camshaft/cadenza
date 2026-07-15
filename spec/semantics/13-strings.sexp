@@ -1410,3 +1410,53 @@
                 ((None) (- 0 1))))
             (export main)))
   (output (: 42 Int64)))
+
+; --- Runtime String.from-bytes: the UTF-8 validation-boundary edges --------------------------------
+; The runtime decode cases above pin a valid appender rope, an all-invalid buffer (0xFF), and a
+; flattened multibyte rope. These pin the VALIDATION BOUNDARY precisely — the malformed classes the
+; strict validator must reject even though every byte is individually plausible, and the well-formed
+; two-byte sequence it must accept, over Bytes whose elements arrive as runtime UInt8 wraps.
+
+(case "String.from-bytes rejects a lone continuation byte"
+  (doc    "A single byte 0x80 — a CONTINUATION byte with no lead — is not well-formed UTF-8, so the
+           total decode yields None → -1. Distinct from the 0xFF invalid-LEAD case above: 0x80 is a
+           byte that IS valid inside a multibyte sequence, just not at the start — a validator that
+           only rejected never-valid bytes (0xFE/0xFF) accepts it.")
+  (input  (do
+            (def (main (: a Int64))
+              (match (String.from-bytes (Bytes.of (list (UInt8.wrap a))))
+                ((Some s) (String.byte-len s))
+                ((None _) -1)))
+            (export main)))
+  (call   main (: 128 Int64))
+  (output (: -1 Int64)))
+
+(case "String.from-bytes rejects an overlong encoding"
+  (doc    "`[0xC0 0x80]` — the OVERLONG encoding of NUL (a 2-byte form of a value that must be 1
+           byte). Each byte is structurally plausible (a 2-byte lead followed by a continuation), so
+           a validator that only checked lead/continuation SHAPE accepts it; strict UTF-8
+           (`std::str::from_utf8` semantics, which the runtime op pins itself to) rejects overlongs →
+           None → -1. The classic smuggling vector for security filters — worth its own pin.")
+  (input  (do
+            (def (main (: a Int64))
+              (match (String.from-bytes (Bytes.of (list (UInt8.wrap a) (UInt8.wrap 128))))
+                ((Some s) (String.byte-len s))
+                ((None _) -1)))
+            (export main)))
+  (call   main (: 192 Int64))
+  (output (: -1 Int64)))
+
+(case "String.from-bytes accepts a two-byte sequence split across a concat seam"
+  (doc    "The lead byte 0xC3 and its continuation 0xA9 (é) arrive in SEPARATE ropes joined by
+           `Bytes.concat` — the multibyte sequence exists only in the FLATTENED buffer. The decode
+           accepts it (byte-len 2), pinning that validation runs over the flattened bytes, not
+           per-leaf (a per-leaf validator sees a dangling lead in one leaf and a lone continuation in
+           the other and wrongly rejects a well-formed string).")
+  (input  (do
+            (def (main (: a Int64))
+              (match (String.from-bytes (Bytes.concat (Bytes.of (list (UInt8.wrap a))) (Bytes.of (list (UInt8.wrap 169)))))
+                ((Some s) (String.byte-len s))
+                ((None _) -1)))
+            (export main)))
+  (call   main (: 195 Int64))
+  (output (: 2 Int64)))
