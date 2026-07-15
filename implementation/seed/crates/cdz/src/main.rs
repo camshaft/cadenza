@@ -106,6 +106,14 @@ enum Cmd {
     /// the `cdz-calc` bin so a single `cdz` on the PATH also gives the calculator.
     Calc(cdz_calc::cli::CalcArgs),
 
+    // ── project build ───────────────────────────────────────────────────────────────────────────
+    /// Build a PROJECT from its `Project.cdz` manifest (the `cargo build` analogue): compile the
+    /// manifest's `entry` file (plus its `modules`) into one wasm component, with NO per-run flags —
+    /// the manifest tells `cdz` what to compile. `cdz build` with no argument searches up for the
+    /// nearest `Project.cdz` (like `cargo build` finding `Cargo.toml`); `cdz build <dir>` or `cdz build
+    /// path/to/Project.cdz` builds that project. For a single loose file, use `cdz compile <file>`.
+    Build(BuildArgs),
+
     // ── unit testing ─────────────────────────────────────────────────────────────────────────────
     /// Compile a SEPARATE test component from a FILE's `@test`-marked NULLARY definitions and run each,
     /// reporting pass/fail. Each `@test def` crosses the boundary as a nullary entry the runner invokes;
@@ -196,6 +204,7 @@ fn main() -> ExitCode {
         Cmd::Corpus(a) => cdz_corpus::cli::run(&a, PROG),
         // `cdz calc` — mounted from the `cdz-calc` lib; the same code the standalone `cdz-calc` bin runs.
         Cmd::Calc(a) => cdz_calc::cli::run(&a, PROG),
+        Cmd::Build(a) => run_build(&a),
         Cmd::Test(a) => run_test(&a),
         // The span-mapped semantic queries live here (they need both libraries in one process).
         Cmd::Type(a) => run_type(&a),
@@ -387,6 +396,121 @@ fn run_compile(args: compiler_cli::CompileArgs) -> ExitCode {
     // Thread the requested `--opt-level` (default `O1`) through to the compile — `cdz compile
     // --opt-level O2 foo.cdz` selects the release pass tier, same as the artifacts-in `rcdzc` path.
     compiler_cli::run_prepared(inputs, &targets, args.out_path(), args.opt_level(), PROG)
+}
+
+/// Compile a set of SOURCE-file `specs` (already directory-expanded) into a wasm component, with the
+/// package `entry` named and output written to `out` — the in-process source-compile core `cdz build`
+/// drives (a manifest-resolved package) and the shared spine `run_compile` uses for a source input.
+/// Each spec is parsed keeping spans (so a diagnostic locates as `path:line:col`), the `entry` becomes a
+/// `KIND_ENTRY` artifact, and the default `wasm` target + default opt-level apply. Returns the process
+/// exit code.
+fn compile_source_specs(specs: &[String], entry: Option<&str>, out: Option<PathBuf>) -> ExitCode {
+    let mut inputs: Vec<rcdzc::Artifact> = Vec::new();
+    for spec in specs {
+        let (source, arenas, spantable) = match load_program_spanned(spec) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("{PROG}: {e}");
+                return ExitCode::FAILURE;
+            }
+        };
+        let name = program_name(spec);
+        inputs.push(rcdzc::Artifact::new(
+            rcdzc::Artifact::KIND_AST,
+            name.clone(),
+            cadenza_syntax::codec::encode(&arenas),
+        ));
+        let span_data = span_data_of(spec, &source, &spantable);
+        inputs.push(rcdzc::Artifact::new(
+            rcdzc::spans::KIND_SPANS,
+            name,
+            rcdzc::spans::encode(&span_data),
+        ));
+    }
+    if let Some(entry) = entry {
+        inputs.push(compiler_cli::entry_artifact(entry));
+    }
+    // Default target (`wasm`) + default opt-level — `run_prepared` applies the `[Wasm]` default when the
+    // target list is empty, matching a bare `cdz compile`.
+    compiler_cli::run_prepared(inputs, &[], out, rcdzc::OptLevel::default(), PROG)
+}
+
+/// `cdz build [DIR]` — the manifest-driven compile (the `cargo build` analogue). Resolves the project's
+/// `Project.cdz` (the `DIR` arg naming the manifest or a directory holding one; OMITTED → search up from
+/// the cwd, like `cdz test`), then compiles the manifest's `entry` file together with its `modules` into
+/// one wasm component — so a project builds with NO per-run flags, its manifest telling `cdz` what to
+/// compile. The `entry`/`modules` may be globs, expanded (path-sorted, `exclude`-filtered) relative to
+/// the manifest dir — the same resolution `cdz test` gives `tests`. `entry` is required (there is no
+/// component without a boundary file); `modules` are the libraries it may `(import …)`.
+fn run_build(args: &BuildArgs) -> ExitCode {
+    // Resolve the manifest, mirroring `cdz test`'s cases: an explicit `Project.cdz`, a directory holding
+    // one, or (no arg) an upward search from the cwd.
+    let target: String = match &args.dir {
+        Some(d) => d.clone(),
+        None => match find_manifest_upward() {
+            Some(p) => p.to_string_lossy().into_owned(),
+            None => {
+                eprintln!(
+                    "{PROG}: no `{MANIFEST_NAME}` found in the current directory or any ancestor \
+                     (name a project dir/manifest, or add a `{MANIFEST_NAME}`)"
+                );
+                return ExitCode::FAILURE;
+            }
+        },
+    };
+    let path = std::path::Path::new(&target);
+    let is_manifest_arg = path.file_name().and_then(|n| n.to_str()) == Some(MANIFEST_NAME);
+    let dir = if is_manifest_arg {
+        match path.parent() {
+            Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
+            _ => std::path::Path::new(".").to_path_buf(),
+        }
+    } else if path.is_dir() {
+        path.to_path_buf()
+    } else {
+        eprintln!(
+            "{PROG}: `{target}` is not a `{MANIFEST_NAME}` or a directory holding one \
+             (`cdz build` builds a project; use `cdz compile <file>` for a single file)"
+        );
+        return ExitCode::FAILURE;
+    };
+    let (mpath, m) = match load_manifest(&dir) {
+        Ok(Some(v)) => v,
+        Ok(None) => {
+            eprintln!("{PROG}: no `{MANIFEST_NAME}` in {}", dir.display());
+            return ExitCode::FAILURE;
+        }
+        Err(e) => {
+            eprintln!("{PROG}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    // `entry` names the component boundary file — required to build (no entry, no component).
+    let Some(entry_spec) = m.entry.clone() else {
+        eprintln!(
+            "{PROG}: {}: the manifest declares no `entry` (add `def entry = \"<file>\"` naming the \
+             component's boundary file)",
+            mpath.display()
+        );
+        return ExitCode::FAILURE;
+    };
+    // Collect the entry + modules, glob-expanded (path-sorted, exclude-filtered) relative to the dir —
+    // the same resolution `cdz test` uses for `tests`. The entry's file STEM is the `--entry` name.
+    let mut specs = expand_manifest_globs(&dir, std::slice::from_ref(&entry_spec), &m.exclude);
+    if specs.is_empty() {
+        eprintln!(
+            "{PROG}: {}: `entry` (`{entry_spec}`) matched no file",
+            mpath.display()
+        );
+        return ExitCode::FAILURE;
+    }
+    specs.extend(expand_manifest_globs(&dir, &m.modules, &m.exclude));
+    // Dedup (a module glob may also match the entry) while preserving order.
+    let mut seen = std::collections::HashSet::new();
+    specs.retain(|s| seen.insert(s.clone()));
+    // The package entry NAME is the entry file's stem (`app.cdz` → `app`) — matches `program_name`.
+    let entry_name = program_name(&entry_spec);
+    compile_source_specs(&specs, Some(&entry_name), args.out.clone())
 }
 
 // ── cdz test ─────────────────────────────────────────────────────────────────────────────────────
@@ -1309,6 +1433,20 @@ fn read_artifact_spec(spec: &str) -> Result<rcdzc::Artifact, String> {
         std::fs::read(&path).map_err(|e| format!("cannot read {path}: {e}"))?
     };
     Ok(rcdzc::Artifact::new(kind, name, bytes))
+}
+
+// ── project build ─────────────────────────────────────────────────────────────────────────────────
+
+#[derive(clap::Args)]
+struct BuildArgs {
+    /// The project to build: a `Project.cdz` manifest, or a DIRECTORY holding one. OMITTED → search up
+    /// from the current directory for the nearest `Project.cdz` (like `cargo build` finding
+    /// `Cargo.toml`). The manifest's `entry` (+ `modules`) are compiled together into one component.
+    dir: Option<String>,
+    /// Where to write the built component. A directory holding `<entry>.wasm`; or, when this is not an
+    /// existing directory, the exact output file path. Defaults to the current directory.
+    #[arg(long, short)]
+    out: Option<PathBuf>,
 }
 
 // ── unit testing ───────────────────────────────────────────────────────────────────────────────────
