@@ -1620,7 +1620,10 @@ pass	a symbol's identity is its content, not how the content was derived
 pass	a tag-length-value record round-trips through construct then match
 pass	a tagged template expands via its binding-dispatched tag function
 pass	a tagged template weaves a hole into its expansion
+pass	a tagged template whose tag is not a function is rejected
 pass	a tagged template whose tag is unbound is a scope error
+pass	a tagged template whose tag returns a non-Ast is a type error at the spliced site
+pass	a tagged template's hole is threaded to the tag function and read
 pass	a tagged template's spliced result folds through the ordinary path
 pass	a tail list fold reads its scrutinee handle from its own parameter slot
 pass	a tail loop threading a projected boxed-sum accumulator and a projected cursor decodes correctly
