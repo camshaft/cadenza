@@ -2,7 +2,7 @@
 
 `cdz-smith` generates Cadenza programs, feeds each through the real `rcdzc` compile path, and files
 any program that makes the compiler **crash** (panic) or **hang** (timeout) as a runnable reproducer
-for triage. It links the compiler as a library, so a rebuild against the latest `spec` is all it
+for triage. It links the compiler as a library, so a rebuild against the latest `trunk` is all it
 takes to fuzz the newest compiler — no separate compiler build to manage.
 
 ```
@@ -10,7 +10,7 @@ seed bytes ──generate──▶ s-expr program ──parse+encode──▶ bi
                                                                                                     │
                                                                           Crash / Timeout ──────────┘
                                                                                   │
-                                                                          shrink + dedup by site ──▶ spec/semantics/failures/
+                                                                          shrink + dedup by site ──▶ .claude/fleet/queue/
 ```
 
 ## Why a panic/timeout is a real bug
@@ -37,7 +37,7 @@ A decline or a coded rejection is expected output and is never filed.
 | `src/driver.rs` | the PRNG-fallback loop + the hang watchdog |
 | `src/bin/cdz-smith.rs` | the CLI (`fuzz` / `once` / `gen` / `verify` / `triage-artifacts`) |
 | `tests/fuzz.rs` | the `bolero` property target — the coverage-guided engine's entry point |
-| `fuzz-cycle.sh` | one cron cycle: sync spec → libFuzzer campaign → triage artifacts → findings |
+| `fuzz-cycle.sh` | one fleet tick: fuzz `trunk` in place → libFuzzer campaign → triage artifacts → queue |
 
 cdz-smith is its **own workspace** (excluded from the seed workspace) so its `bolero` dependency
 chain resolves independently and so `cargo bolero` can build it in isolation. Run cargo commands
@@ -79,7 +79,7 @@ rustup run nightly cargo bolero test cdz_smith_never_panics \
     --corpus-dir /path/to/corpus --crashes-dir ./target/smith-crashes \
     -E-fork=1 -E-ignore_timeouts=1 -E-ignore_crashes=1 -E-ignore_ooms=1
 # then turn the artifacts into findings:
-cargo run -- triage-artifacts ./target/smith-crashes --findings <repo>/spec/semantics/failures
+cargo run -- triage-artifacts ./target/smith-crashes --findings <repo>/.claude/fleet/queue
 
 # PRNG fallback batch (no nightly needed).
 cargo run --release -- fuzz --iterations 50000
@@ -96,16 +96,16 @@ Each distinct crash **site** (normalized `file:line`, path-stable across checkou
 template is one bucket: a `<sig>.smith.sexp` reproducer and a `<sig>.smith.md` note (category,
 compiler commit, hit count, message + backtrace, a `verify` command). Re-hits bump the note's
 counter and keep the smaller reproducer, so thousands of hits of one bug stay one file. The
-`spec/semantics/failures/` queue is watched by the semantics-failures monitoring loop, which triages
-and fixes; on resolution a note is renamed `.RESOLVED.md` / `.REJECTED.md` like the hand-written ones.
+`.claude/fleet/queue/` queue is drained by the `corpus-bugfix` PM, which routes each finding to a
+`fix` agent; on resolution a note is renamed `.RESOLVED.md` / `.REJECTED.md` like the hand-written ones.
 
 ## Continuous operation
 
-`fuzz-cycle.sh` is one cron cycle: it syncs a dedicated worktree to the latest `spec`, runs a
-wall-clock-bounded **coverage-guided campaign** against a persistent corpus (falling back to the PRNG
-driver when nightly/cargo-bolero are absent), then triages the artifacts into
-`spec/semantics/failures/`. Point a 10-minute cron at it and the compiler is fuzzed continuously
-against HEAD, always picking up new compiler builds, with coverage progress carried across cycles.
+`fuzz-cycle.sh` is one fleet tick: it fuzzes the invoking worktree (already rebased onto `trunk` by
+the `fuzzer` agent) with a wall-clock-bounded **coverage-guided campaign** against a persistent
+corpus (falling back to the PRNG driver when nightly/cargo-bolero are absent), then triages the
+artifacts into `.claude/fleet/queue/`. The `fuzzer` fleet agent runs it every tick, so the compiler
+is fuzzed continuously against `trunk`, always picking up new builds, coverage carried across ticks.
 
 ## Roadmap
 
