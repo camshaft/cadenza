@@ -44,6 +44,9 @@ const PROG: &str = "cdz";
 #[derive(Parser)]
 #[command(
     name = "cdz",
+    // A real toolchain reports its version — `cdz --version`/`-V` prints the crate version, so a bug
+    // report or a script can pin which build it is talking to. (Pulled from `CARGO_PKG_VERSION`.)
+    version,
     about = "The Cadenza toolchain: convert, query, compile, and inspect a program — one tool.",
     long_about = "cdz unifies the front-end (convert + structural codemod) and the compiler \
                   (compile/emit + semantic queries) over one program. `type` and `uses` are \
