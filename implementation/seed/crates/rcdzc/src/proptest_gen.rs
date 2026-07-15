@@ -118,6 +118,20 @@ struct TestPlan {
     def_name: String,
     /// The synthesized wrapper's name (`"<def_name>-gen"`).
     wrapper_name: String,
+    /// The list's ELEMENT kind — decides the `<gen:ELEM>` expression each list slot is built from.
+    elem: ElemKind,
+}
+
+/// The element type of a `(List ELEM)` a G1/G2 wrapper can generate, and the shape of its `<gen:ELEM>`
+/// expression built from a `Test.gen` int. An INTEGER element uses the raw int directly; a BOOL element
+/// reads its low bit (`= gen 0`). Richer elements (nested `List`, tuple/record/sum, `Float`/`Char`) are
+/// later increments — `plan_for_item` returns `None` for them, so the def declines as before.
+#[derive(Clone, Copy)]
+enum ElemKind {
+    /// An integer type (`Int8`…`UInt64`): the element IS `((. Test gen))` (the int at the element width).
+    Int,
+    /// `Bool`: the element is `(= ((. Test gen)) 0)` (the gen int's low-bit-ish parity → a boolean).
+    Bool,
 }
 
 /// Recognize `(@ test (def (NAME (: PARAM (List ELEM))) BODY))` with ELEM an integer type; return its
@@ -146,13 +160,11 @@ fn plan_for_item(ast: &Arenas, item_idx: usize, item: StructId) -> Option<TestPl
     }
     let ann_param = ast.as_form(params[0], ":")?; // `(: name TYPE)`
     let &ty = ann_param.get(1)?;
-    // TYPE must be `(List ELEM)` with ELEM a known integer type name.
+    // TYPE must be `(List ELEM)` with ELEM a type this pass can generate (an integer or `Bool`).
     let list_tail = ast.as_form(ty, "List")?;
     let &elem = list_tail.first()?;
     let elem_name = ast.as_name(elem)?;
-    if !is_int_type_name(elem_name) {
-        return None; // non-integer element — a later increment (recurse `<gen:ELEM>`)
-    }
+    let elem = elem_kind(elem_name)?; // non-generatable element (nested list, float, …) → decline as before
     Some(TestPlan {
         item_idx,
         inner_def: inner,
@@ -162,17 +174,21 @@ fn plan_for_item(ast: &Arenas, item_idx: usize, item: StructId) -> Option<TestPl
         // `cdz test` reports, so the name stays readable (`p` → `p-gen`).
         wrapper_name: format!("{def_name}-gen"),
         def_name,
+        elem,
     })
 }
 
-/// The integer type names whose element a bare `Test.gen : Unit -> Int64` builds directly (the value is
-/// used at the element's width via the ordinary numeric typing). G1 covers the signed/unsigned fixed
-/// widths; a non-integer element type recurses in a later increment.
-fn is_int_type_name(name: &str) -> bool {
-    matches!(
-        name,
-        "Int8" | "Int16" | "Int32" | "Int64" | "UInt8" | "UInt16" | "UInt32" | "UInt64"
-    )
+/// Classify a `(List ELEM)` element type name into the [`ElemKind`] whose `<gen:ELEM>` this pass builds,
+/// or `None` if it is not (yet) generatable (a nested `List`, `Float`, `Char`, tuple/record/sum — later
+/// increments). An integer type of any admitted width, or `Bool`.
+fn elem_kind(name: &str) -> Option<ElemKind> {
+    match name {
+        "Int8" | "Int16" | "Int32" | "Int64" | "UInt8" | "UInt16" | "UInt32" | "UInt64" => {
+            Some(ElemKind::Int)
+        }
+        "Bool" => Some(ElemKind::Bool),
+        _ => None,
+    }
 }
 
 /// Whether the program already declares an effect named `Test` carrying a `gen` operation — so the pass
@@ -227,22 +243,15 @@ fn build_wrapper(ast: &mut Arenas, plan: &TestPlan) -> StructId {
         let callee = name(ast, &plan.def_name);
         push_list(ast, vec![callee, list_expr])
     };
-    // Wrap the call in nested `let`s binding each `xk = ((. Test gen))`, innermost first so the final
-    // `let` body is `call`.
+    // Wrap the call in nested `let`s binding each `xk = <gen:ELEM>`, innermost first so the final `let`
+    // body is `call`.
     let mut body = call;
     for nm in elem_names.iter().rev() {
-        // `(. Test gen)` then its nullary application `((. Test gen))`.
-        let member = {
-            let dot = name(ast, ".");
-            let test = name(ast, "Test");
-            let gen_nm = name(ast, "gen");
-            push_list(ast, vec![dot, test, gen_nm])
-        };
-        let gen_call = push_list(ast, vec![member]);
-        // `(xk gen_call)` binding, in a single-binding list `((xk gen_call))`.
+        let gen_expr = build_elem_gen(ast, plan.elem);
+        // `(xk gen_expr)` binding, in a single-binding list `((xk gen_expr))`.
         let binder = {
             let x = name(ast, nm);
-            push_list(ast, vec![x, gen_call])
+            push_list(ast, vec![x, gen_expr])
         };
         let binds = push_list(ast, vec![binder]);
         let let_head = name(ast, "let");
@@ -268,6 +277,37 @@ fn build_wrapper(ast: &mut Arenas, plan: &TestPlan) -> StructId {
     let at = name(ast, "@");
     let test_ann = name(ast, "test");
     push_list(ast, vec![at, test_ann, def])
+}
+
+/// Build one `<gen:ELEM>` expression — the value a single list slot is generated from, per the element
+/// kind. Both build on the same `((. Test gen))` nullary call (a `Test.gen` performance); an integer
+/// element uses it directly, a `Bool` element reads it as `(= ((. Test gen)) 0)`. A richer element type
+/// (nested list, tuple/record/sum, float/char) would recurse here in a later increment.
+fn build_elem_gen(ast: &mut Arenas, elem: ElemKind) -> StructId {
+    // `((. Test gen))` — the nullary application of the member access `Test.gen`.
+    let gen_call = {
+        let dot = name(ast, ".");
+        let test = name(ast, "Test");
+        let gen_nm = name(ast, "gen");
+        let member = push_list(ast, vec![dot, test, gen_nm]);
+        push_list(ast, vec![member])
+    };
+    match elem {
+        ElemKind::Int => gen_call,
+        // `(= gen_call 0)` — the gen int as a boolean (whether it equals zero). Any total int→Bool map
+        // works; equality-with-zero is the simplest and covers both values across the generated ints.
+        ElemKind::Bool => {
+            let eq = name(ast, "=");
+            let zero = push_atom(
+                ast,
+                Leaf::Int {
+                    value: crate::ast::IntValue::zero(),
+                    radix: crate::ast::Radix::Dec,
+                },
+            );
+            push_list(ast, vec![eq, gen_call, zero])
+        }
+    }
 }
 
 #[cfg(test)]
@@ -314,6 +354,46 @@ mod tests {
         assert!(
             test_names.iter().any(|n| n == "p") && !test_names.iter().any(|n| n == "p-gen"),
             "a scalar-param test is left as-is (no wrapper): {test_names:?}"
+        );
+    }
+
+    /// G2: a `(List Bool)` element is also generatable (the wrapper builds each element as `= gen 0`), so
+    /// a `@test` over `List Bool` gains a wrapper just like `List Int`.
+    #[test]
+    fn synthesizes_a_generator_wrapper_for_a_list_bool_test() {
+        let ast = crate::testkit::parse(
+            "(do (@ test (def (q (: bs (List Bool))) (List.len bs))) (def (other) 1))",
+        );
+        let db = Db::load(ast);
+        let test_names: Vec<String> = db
+            .test_defs()
+            .into_iter()
+            .map(|i| db.defs[i].name.clone())
+            .collect();
+        assert!(
+            test_names.iter().any(|n| n == "q-gen") && !test_names.iter().any(|n| n == "q"),
+            "a List Bool test gains a generator wrapper: {test_names:?}"
+        );
+    }
+
+    /// A `@test` over a `(List <non-generatable>)` (e.g. a nested `(List (List Int64))`) is left alone —
+    /// it declines at the boundary as before, rather than synthesizing a wrapper it cannot build yet.
+    #[test]
+    fn leaves_a_nongeneratable_element_alone() {
+        let ast = crate::testkit::parse(
+            "(do (@ test (def (r (: xs (List (List Int64)))) (List.len xs))) (def (other) 1))",
+        );
+        let db = Db::load(ast);
+        let test_names: Vec<String> = db
+            .test_defs()
+            .into_iter()
+            .map(|i| db.defs[i].name.clone())
+            .collect();
+        // No wrapper synthesized; the original `r` is still the (compound-param) test — it will decline
+        // at the boundary downstream, which is the correct "not yet" behavior for a nested-list element.
+        assert!(
+            !test_names.iter().any(|n| n == "r-gen"),
+            "a non-generatable element gets no wrapper: {test_names:?}"
         );
     }
 }
