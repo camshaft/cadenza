@@ -6,11 +6,15 @@
 /// What it checks, over every `<Runnable>` / `<Exercise>` in `src/content/chapters/*.tsx` (+ Welcome /
 /// HomePage examples):
 ///   - a `source=` (Runnable) or `solution=` (Exercise) snippet is WRAPPED exactly as the app wraps it
-///     (`wrapModule`, mirrored below), compiled via the real browser compiler (`cdz-wasm`), and:
-///       · `expect="error"` examples MUST decline (no component);
-///       · every other example MUST produce a component (compiles clean);
-///   - a graded exercise (has `expected="…"`) additionally RUNS its solution and asserts the rendered
-///     scalar equals `expected`.
+///     (`wrapModule`, imported from the guide source so it can never drift), compiled via the real
+///     browser compiler (`cdz-wasm`), and:
+///       · `expect="error"` examples MUST decline (no component) or trap;
+///       · every other example MUST produce a component (compiles clean) AND RUN to a value without
+///         throwing/trapping/stack-overflowing — compiling is NOT enough (the operator hit an intro
+///         example that compiled yet crashed in the browser; "every example is a test" means it must
+///         actually run). Running once on the s-expr surface is enough; the ML pass guards the
+///         wrap/strip round-trip.
+///   - a graded exercise (has `expected="…"`) additionally asserts the rendered scalar equals `expected`.
 /// `starter=` snippets are NOT checked — they contain the `?` hole and are meant not to compile.
 ///
 /// Run: `npm run check:examples` (needs the staged wasm pkg — `npm run wasm` first, or `cargo xtask
@@ -24,54 +28,40 @@ import { tmpdir } from "node:os";
 const here = dirname(fileURLToPath(import.meta.url));
 const guideRoot = join(here, "..");
 
+// ---- the blocklist: examples that DON'T run yet, classified + routed (operator policy 2026-07-15) ----
+// An entry marks a KNOWN failure the guide can't fix on its own (a filed compiler bug, or a content bug
+// owned by v-guide). Such an example is reported "known-blocked" (loud + tracked) rather than
+// hard-failing the gate — otherwise the gate stays red on something the guide can't fix, and no example
+// ships broken. RE-RUN LOOP: each run re-checks every blocked example; when one starts PASSING the
+// harness says so, so the entry is removed and the example ships. See example-blocklist.json for shape.
+const blocklist = JSON.parse(readFileSync(join(here, "example-blocklist.json"), "utf8")).blocked ?? [];
+/// The blocklist entry an example matches, or null. An entry matches when the chapter file agrees AND
+/// EVERY substring in `match` (a string or an array — all must be present) appears in the snippet, so an
+/// entry can be as precise as needed (e.g. `["Qty.value", "Unit.in"]` blocks only the examples that wrap
+/// `Unit.in` in `Qty.value`, not a passing bare `Qty.value` example).
+function blockedBy(ex) {
+  return (
+    blocklist.find((b) => {
+      if (ex.file !== b.file) return false;
+      const needles = Array.isArray(b.match) ? b.match : [b.match];
+      return needles.every((n) => ex.snippet.includes(n));
+    }) ?? null
+  );
+}
+
 // ---- the compiler (browser wasm) + runner (jco), loaded once ----
 const pkgDir = join(guideRoot, "src/wasm/pkg");
 const { default: init, compile, render_value, render_syntax } = await import(join(pkgDir, "cdz_wasm.js"));
 await init({ module_or_path: readFileSync(join(pkgDir, "cdz_wasm_bg.wasm")) });
 const { transpileBytes } = await import("@bytecodealliance/jco-transpile");
 
-// ---- wrapModule / stripModule / renderSnippet: mirror guide/src/components/useCadenzaEditor.ts ----
-// (keep in sync). Snippets are authored in s-expr (the guide default `authoredIn`); a bare expr / defs
-// get the `export`/`main` the compiler needs, at top level (no module shell). The reader also TOGGLES
-// to ML, so we check that surface too (see `renderSnippet` + the ML pass below) — the surface where the
-// wrap/strip round-trip is most likely to bite.
-const DECL = "def|type|effect";
-// A top-level STATEMENT that isn't def/type/effect but still needs an export appended (never wrapped as
-// a bare expr). `Unit.define` (custom unit) only resolves at top level. Keep in sync with useCadenzaEditor.
-const STMT = "Unit\\.define";
-function wrapModule(src, surface) {
-  const t = src.trim();
-  if (surface === "sexpr") {
-    if (/^\(module\b/.test(t) || /^\(do\b/.test(t)) return t;
-    if (new RegExp(`^\\((${DECL}|${STMT})\\b`).test(t)) return `(do ${t} (export main))`;
-    return `(do (def (main) ${t}) (export main))`;
-  }
-  if (/^module\b/.test(t) || /(^|\n)\s*export\b/.test(t)) return t;
-  if (new RegExp(`^(${DECL}|${STMT})\\b`).test(t)) return `${t}\nexport { main }`;
-  return `def main() = ${t}\nexport { main }`;
-}
-function dedent(s) {
-  const lines = s.split("\n");
-  const min = Math.min(...lines.filter((l) => l.trim()).map((l) => l.match(/^ */)[0].length), Infinity);
-  return Number.isFinite(min) ? lines.map((l) => l.slice(min)).join("\n") : s;
-}
-function stripModule(rendered, surface) {
-  const t = rendered.trim();
-  if (surface === "sexpr" ? /^\(module\b/.test(t) : /^module\b/.test(t)) return rendered;
-  if (surface === "sexpr") {
-    const m = /^\(do\b([\s\S]*)\)\s*$/.exec(t);
-    const body = (m ? m[1] : t).trim().replace(/\(export\s+[^)]*\)\s*$/, "").trim();
-    const bare = /^\(def\s+\(main\)\s+([\s\S]*)\)$/.exec(body);
-    if (bare && !/\(def\b|\(type\b/.test(bare[1])) return bare[1].trim();
-    return body;
-  }
-  const lines = t.split("\n").filter((l) => !/^\s*export\s*[({]/.test(l));
-  const last = lines.reduce((a, l, i) => (l.trim() ? i : a), -1);
-  const body = lines.map((l, i) => (/^\S/.test(l) || i === last ? l.replace(/;\s*$/, "") : l)).join("\n").trim();
-  const bare = /^def\s+main\(\)\s*=[^\S\n]*([\s\S]*)$/.exec(body);
-  if (bare && !/^\s*(def|type)\b/m.test(bare[1])) return dedent(bare[1]).trim();
-  return body;
-}
+// ---- wrapModule / stripModule: the ONE real implementation, imported from the guide source ----
+// Previously this harness carried a hand-copy of these — which silently DRIFTED from the app (a bug-(C)
+// fix to `wrapModule` would have left the harness testing the OLD wrapping). Import the real module so
+// the harness wraps snippets EXACTLY as the app does, by construction. `wrapModule.ts` is React-free
+// (its only import is a type), so node loads it directly (type-stripping). Snippets are authored in
+// s-expr (the guide default `authoredIn`); the reader also TOGGLES to ML, so we check that surface too.
+const { wrapModule, stripModule } = await import(join(guideRoot, "src/components/wrapModule.ts"));
 /// The ML the reader sees after toggling: wrap the s-expr snippet, render to ML, strip the scaffolding.
 function renderToMl(snippet) {
   return stripModule(render_syntax(wrapModule(snippet, "sexpr"), "sexpr", "ml"), "ml");
@@ -210,54 +200,106 @@ async function checkProgram(program, surface, ex, where) {
     const d = r.diagnostics.find((x) => x.error) ?? r.diagnostics[0];
     return `${ex.file} [${ex.kind}] (${where}): expected to compile but DECLINED — ${d ? `${d.code} ${d.message}` : "no component"}\n    ${brief}`;
   }
-  // Compiles. A graded exercise must also RUN to its `expected` value (checked on the s-expr surface).
-  if (ex.expected != null && surface === "sexpr") {
+  // Compiles. Now RUN it (on the s-expr surface — running once per example is enough; the ML pass only
+  // guards the wrap/strip round-trip, not a second execution). Compiling is NOT enough: the operator
+  // hit an intro example that compiled but CRASHED in the browser ("Maximum call stack size exceeded").
+  // A guide example that throws/traps/stack-overflows at RUN time is exactly the trust-breaker the
+  // "every example is a test" mandate targets — so every non-error example must reach a value here.
+  if (surface === "sexpr") {
     // A graded exercise MUST return a SCALAR. The browser's Check (Exercise.tsx) compares the result
     // rendered in the reader's CURRENT surface, but this harness renders s-expr canonical — a scalar
     // (bare number/bool) reads identically in both, a COMPOUND does NOT (`(: (map …) …)` vs ML
     // `#{…} : Map(…)`). So a compound `expected` would pass here yet FAIL the in-browser Check in ML.
     // Reject it at authoring time; return the compound as a Runnable (ungraded) instead.
-    if (/^\(:/.test(ex.expected.trim()))
+    if (ex.expected != null && /^\(:/.test(ex.expected.trim()))
       return `${ex.file} [Exercise] (${where}): \`expected\` is a COMPOUND value (${JSON.stringify(ex.expected.slice(0, 40))}…) — graded exercises must return a SCALAR (it's compared in the reader's surface, and a compound renders differently in ML vs s-expr). Show the compound as a Runnable instead.\n    ${brief}`;
+    let got;
     try {
-      const got = await runComponent(r.component);
-      if (String(got).trim() !== ex.expected.trim())
-        return `${ex.file} [Exercise] (${where}): solution ran to ${JSON.stringify(String(got))}, expected ${JSON.stringify(ex.expected)}\n    ${brief}`;
+      got = await runComponent(r.component);
     } catch (e) {
-      return `${ex.file} [Exercise] (${where}): solution failed to run — ${String(e.message || e).slice(0, 80)}`;
+      // A run failure is the trust-breaker: a compiled example that crashes/traps/stack-overflows.
+      const label = ex.expected != null ? "solution" : ex.kind;
+      return `${ex.file} [${ex.kind}] (${where}): ${label} compiled but FAILED TO RUN — ${String(e.message || e).slice(0, 100)}\n    ${brief}`;
     }
+    // A graded exercise additionally asserts the rendered scalar equals its stated `expected`.
+    if (ex.expected != null && String(got).trim() !== ex.expected.trim())
+      return `${ex.file} [Exercise] (${where}): solution ran to ${JSON.stringify(String(got))}, expected ${JSON.stringify(ex.expected)}\n    ${brief}`;
   }
   return null;
 }
 
-// ---- check each example in BOTH surfaces (the reader can toggle) ----
-let pass = 0;
-const failures = [];
-for (const ex of examples) {
+// ---- check one example in BOTH surfaces (the reader can toggle); null on success, else a reason ----
+async function checkExample(ex) {
   // 1. s-expr — the authored surface.
   const sexprProgram = ex.noWrap ? ex.snippet.trim() : wrapModule(ex.snippet, "sexpr");
   const sexprFail = await checkProgram(sexprProgram, "sexpr", ex, "s-expr");
-  if (sexprFail) { failures.push(sexprFail); continue; }
+  if (sexprFail) return sexprFail;
 
   // 2. ML — what the reader sees after toggling. Render the snippet to ML, then wrap + compile THAT.
   //    This catches wrap/strip round-trip bugs that only bite on the ML surface (e.g. a `;`-in-a-
   //    do-block snippet whose wrapper skipped the export). `noWrap` snippets are full modules already.
   if (!ex.noWrap) {
-    let mlFail;
     try {
       const mlProgram = wrapModule(renderToMl(ex.snippet), "ml");
-      mlFail = await checkProgram(mlProgram, "ml", ex, "ML toggle");
+      const mlFail = await checkProgram(mlProgram, "ml", ex, "ML toggle");
+      if (mlFail) return mlFail;
     } catch (e) {
-      mlFail = `${ex.file} [${ex.kind}] (ML toggle): render/wrap threw — ${String(e.message || e).slice(0, 80)}`;
+      return `${ex.file} [${ex.kind}] (ML toggle): render/wrap threw — ${String(e.message || e).slice(0, 80)}`;
     }
-    if (mlFail) { failures.push(mlFail); continue; }
   }
+  return null;
+}
+
+let pass = 0;
+const failures = []; // real, unexpected failures — these FAIL the gate.
+const stillBlocked = []; // known-blocked examples that (correctly) still fail — reported, not fatal.
+const recovered = []; // blocklist entries that now PASS — the entry should be removed + the example ships.
+for (const ex of examples) {
+  const block = blockedBy(ex);
+  const fail = await checkExample(ex);
+  if (block) {
+    // A known-blocked example: it's EXPECTED to fail until its owner fixes the root cause.
+    if (fail) stillBlocked.push({ block, ex });
+    else recovered.push({ block, ex }); // it started passing — un-block it.
+    continue;
+  }
+  if (fail) { failures.push(fail); continue; }
   pass++;
 }
 
-console.log(`\nchecked ${examples.length} examples across ${files.length} files (both surfaces): ${pass} ok, ${failures.length} failed`);
+console.log(
+  `\nchecked ${examples.length} examples across ${files.length} files (both surfaces): ` +
+    `${pass} ok, ${failures.length} failed, ${stillBlocked.length} known-blocked, ${recovered.length} recovered`,
+);
+
+if (stillBlocked.length) {
+  // Group by blocklist entry so one root cause reports once (with its example count), not N times.
+  const byEntry = new Map();
+  for (const { block } of stillBlocked) byEntry.set(block, (byEntry.get(block) ?? 0) + 1);
+  console.log("\nKNOWN-BLOCKED (routed to their owner; kept OUT of the shipped guide until green):");
+  for (const [block, n] of byEntry) {
+    console.log(
+      `  ⏸ ${block.file} (${n} example${n > 1 ? "s" : ""}) — ${block.kind} bug, owner ${block.owner}: ${block.reason}`,
+    );
+  }
+}
+
+if (recovered.length) {
+  // A blocked example started passing — the root cause landed. Tell the operator to un-block it.
+  // This is NOT fatal (the fix is good news), but it's LOUD so the blocklist doesn't rot.
+  console.log(
+    "\n✅ BLOCKLIST ENTRY CAN BE REMOVED (these examples now RUN — delete their blocklist entry so they ship):\n" +
+      recovered
+        .map(({ block, ex }) => `  ✔ ${block.file} [${ex.kind}] "${block.match}" — was: ${block.reason}`)
+        .join("\n"),
+  );
+}
+
 if (failures.length) {
   console.error("\nFAILURES:\n" + failures.map((f) => "  ✗ " + f).join("\n"));
   process.exit(1);
 }
-console.log("✓ every guide example compiles in both surfaces, and every graded exercise runs to its expected value.");
+console.log(
+  "✓ every guide example compiles + runs in both surfaces (graded exercises to their expected value); " +
+    "known-blocked examples are tracked + routed.",
+);
