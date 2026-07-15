@@ -65,7 +65,10 @@ pub enum Verdict {
         detail: String,
         component_len: usize,
     },
-    /// A panic escaped the compile path. **A bug.**
+    /// A panic escaped the compile path. **A bug.** The crash may come from EITHER emit backend: the
+    /// primary WebAssembly-component path, or the Rust-source backend (`compile` with `Target::Rust`).
+    /// A Rust-backend-only panic has its message prefixed `[rust-backend]` so it dedups + triages
+    /// distinctly from the same-site wasm crash.
     Crash(CrashInfo),
 }
 
@@ -157,7 +160,39 @@ fn payload_string(payload: &(dyn Any + Send)) -> String {
     }
 }
 
+/// Read the panic this run captured out of the slot into a [`CrashInfo`]. Call ONLY after a
+/// `catch_unwind` returned `Err` (the slot was cleared before the guarded call, so a present value
+/// is THIS run's panic). `prefix`, when non-empty, is prepended to the message so a crash unique to
+/// one emit backend dedups + triages distinctly from a same-site crash on the other.
+fn capture_crash(prefix: &str) -> CrashInfo {
+    let cap = slot().lock().unwrap().take().unwrap_or(Captured {
+        site: None,
+        message: "<panic with no captured info>".to_string(),
+        backtrace: String::new(),
+    });
+    let message = if prefix.is_empty() {
+        cap.message
+    } else {
+        format!("{prefix} {}", cap.message)
+    };
+    CrashInfo {
+        site: cap.site,
+        message,
+        backtrace: cap.backtrace,
+    }
+}
+
 /// Compile one program source in-process, catching any panic. This is the crash oracle.
+///
+/// TWO emit backends are driven per program. The primary WebAssembly-component path
+/// ([`rcdzc::compile_component`]) yields the reported verdict — Compiled / InvalidWasm / Declined /
+/// Crash. Then, whenever the wasm path did NOT itself crash, the **Rust-source backend** is driven
+/// too (`compile` with [`rcdzc::Target::Rust`]) purely as a second crash oracle: a panic there is a
+/// bug the wasm path can't reach (the backends share the front-end but diverge below the emit seam,
+/// so `backend/rust/*` is fuzzed nowhere else). A Rust-backend DECLINE is expected output and is
+/// ignored here — we only escalate a Rust-backend PANIC, and only if the wasm path was otherwise
+/// clean, so the wasm verdict (the richer one, with the InvalidWasm miscompile oracle) always wins a
+/// tie.
 pub fn compile_catching(source: &str) -> Verdict {
     install_panic_hook();
 
@@ -175,7 +210,7 @@ pub fn compile_catching(source: &str) -> Verdict {
 
     let result = panic::catch_unwind(AssertUnwindSafe(|| rcdzc::compile_component(&bytes)));
 
-    match result {
+    let wasm_verdict = match result {
         Ok(Ok(component)) => match validate_component(&component) {
             Ok(()) => Verdict::Compiled {
                 component_len: component.len(),
@@ -190,18 +225,45 @@ pub fn compile_catching(source: &str) -> Verdict {
             code: diag.code.clone(),
             message: diag.message.clone(),
         },
-        Err(_) => {
-            let cap = slot().lock().unwrap().take().unwrap_or(Captured {
-                site: None,
-                message: "<panic with no captured info>".to_string(),
-                backtrace: String::new(),
-            });
-            Verdict::Crash(CrashInfo {
-                site: cap.site,
-                message: cap.message,
-                backtrace: cap.backtrace,
-            })
-        }
+        Err(_) => Verdict::Crash(capture_crash("")),
+    };
+
+    // The wasm path already crashed — that's the finding; don't also drive the Rust backend (it
+    // would likely hit the same front-end fault and just add noise). Otherwise, fuzz the Rust
+    // backend as a second crash oracle.
+    if matches!(wasm_verdict, Verdict::Crash(_)) {
+        return wasm_verdict;
+    }
+    if let Some(crash) = compile_rust_catching(&bytes) {
+        return Verdict::Crash(crash);
+    }
+    wasm_verdict
+}
+
+/// Drive the **Rust-source backend** for one program, catching a panic. Returns `Some(crash)` iff a
+/// panic escaped (a bug); `None` for any non-panic outcome (a clean emit OR an expected decline —
+/// both are fine, we're only mining the Rust backend for CRASHES here). See [`compile_catching`].
+fn compile_rust_catching(bytes: &[u8]) -> Option<CrashInfo> {
+    // Clear the slot again so we read the Rust-backend panic, not the (already consumed) wasm one.
+    *slot().lock().unwrap() = None;
+
+    let result = panic::catch_unwind(AssertUnwindSafe(|| {
+        rcdzc::host::run_with_compiler_stack(|| {
+            rcdzc::compile(
+                &[rcdzc::abi::Artifact::new(
+                    rcdzc::abi::Artifact::KIND_AST,
+                    "main",
+                    bytes.to_vec(),
+                )],
+                &[rcdzc::Target::Rust],
+            )
+        })
+    }));
+
+    match result {
+        // A produced artifact OR a decline (diagnostics, no artifact) — both are non-findings.
+        Ok(_) => None,
+        Err(_) => Some(capture_crash("[rust-backend]")),
     }
 }
 
@@ -214,8 +276,19 @@ pub fn compile_program(program: &Program) -> Verdict {
 mod tests {
     use super::*;
 
+    /// Serialize tests that touch the process-global panic-capture [`slot`]. In PRODUCTION the slot
+    /// is safe unsynchronized — a fuzzing process drives one compile at a time (libFuzzer forks a
+    /// child per input; the PRNG driver is single-threaded). Only the test harness runs these in
+    /// parallel threads, where one test's slot-clear could wipe another's captured panic between its
+    /// `catch_unwind` and its read. This guard makes the slot-touching tests mutually exclusive.
+    fn slot_guard() -> std::sync::MutexGuard<'static, ()> {
+        static GUARD: Mutex<()> = Mutex::new(());
+        GUARD.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     #[test]
     fn a_trivial_program_compiles() {
+        let _g = slot_guard();
         let v = compile_catching("(do (def (main) 42) (export main))");
         match v {
             Verdict::Compiled { .. } => {}
@@ -227,6 +300,7 @@ mod tests {
     fn a_real_compile_produces_validating_wasm() {
         // A genuinely-compiling program must reach Compiled (validation passed) — i.e. the compiler
         // emits well-formed wasm, so validation does NOT spuriously flag good output.
+        let _g = slot_guard();
         let v = compile_catching("(do (def (main) (+ 1 2)) (export main))");
         assert!(
             matches!(v, Verdict::Compiled { .. }),
@@ -244,6 +318,7 @@ mod tests {
     #[test]
     fn an_ill_typed_program_declines_not_crashes() {
         // Adding an Int to a String is a type error → a Diagnostic, never a panic.
+        let _g = slot_guard();
         let v = compile_catching(r#"(do (def (main) (+ 1 "x")) (export main))"#);
         assert!(
             matches!(v, Verdict::Declined { .. }),
@@ -252,7 +327,42 @@ mod tests {
     }
 
     #[test]
+    fn the_rust_backend_pass_does_not_spuriously_escalate_a_clean_program() {
+        // A program that compiles cleanly to wasm must ALSO drive the Rust backend without a panic,
+        // so the added second oracle keeps the verdict Compiled (it neither crashes nor is filed on
+        // a Rust-backend decline).
+        let _g = slot_guard();
+        let v = compile_catching("(do (def (main) (+ 1 2)) (export main))");
+        assert!(
+            matches!(v, Verdict::Compiled { .. }),
+            "the Rust-backend pass must not turn a clean program into {v:?}"
+        );
+    }
+
+    #[test]
+    fn a_rust_backend_crash_message_is_prefixed_and_dedups_apart() {
+        // The `[rust-backend]` prefix is what makes a Rust-backend-only panic dedup + triage
+        // distinctly from a same-site wasm crash; validate the prefixing directly (we can't force
+        // rcdzc to panic in only one backend on demand).
+        let _g = slot_guard();
+        install_panic_hook();
+        *slot().lock().unwrap() = None;
+        let r = panic::catch_unwind(AssertUnwindSafe(|| {
+            rcdzc::run_with_compiler_stack(|| panic!("synthetic rust-backend crash"))
+        }));
+        assert!(r.is_err());
+        let crash = capture_crash("[rust-backend]");
+        assert!(
+            crash.message.starts_with("[rust-backend] "),
+            "message should carry the backend tag: {}",
+            crash.message
+        );
+        assert!(crash.message.contains("synthetic rust-backend crash"));
+    }
+
+    #[test]
     fn unparseable_source_is_a_parse_error_not_a_crash() {
+        let _g = slot_guard();
         let v = compile_catching("(do (def (main) ");
         assert!(matches!(v, Verdict::ParseError(_)), "got {v:?}");
     }
@@ -262,6 +372,7 @@ mod tests {
     /// on demand, so we validate the hook+catch_unwind plumbing directly here.)
     #[test]
     fn panic_capture_records_a_site() {
+        let _g = slot_guard();
         install_panic_hook();
         *slot().lock().unwrap() = None;
         let r = panic::catch_unwind(AssertUnwindSafe(|| {

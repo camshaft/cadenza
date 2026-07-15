@@ -793,3 +793,22 @@
               (export main)))
   (call   main (: 291 Int64))
   (output (: 18 Int64)))
+
+(case "a decoded length field re-encodes a length-prefixed frame end to end"
+  (doc    "The full length-prefixed-frame TRANSCODER round-trip under the width-typed rule: a `(bin (u8 n)
+           (bytes body n) (bytes rest))` pattern decodes a `u8` length `n`, binds exactly `n` body bytes
+           (the dependent size), and the tail; then it RE-ENCODES `(bin (u8 n) (bytes body))` — the SAME
+           decoded `n` serves as both the `(bytes body n)` dependent SIZE and the `(u8 n)` re-encode value,
+           with NO explicit narrow (the decoded field already types as the header's `UInt8`). Built at run
+           time from a `(list 2 10 20 99)` scrutinee (length 2, body [10 20], rest [99]); the re-encoded
+           frame is `[2, 10, 20]` and its length is 3. Pins that a decoded length round-trips through both a
+           dependent-size bind and a same-width re-encode — the core move a binary reframer/transcoder is
+           built from — without breaking under the width-typed contract.")
+  (input  (do (def (reframe (: b Bytes))
+                (match b
+                  ((bin (u8 n) (bytes body n) (bytes rest)) (bin (u8 n) (bytes body)))
+                  (_ (bin))))
+              (def (main (: k Int64)) (Bytes.len (reframe (Bytes.of (list 2 10 20 99)))))
+              (export main)))
+  (call   main (: 0 Int64))
+  (output (: 3 Int64)))

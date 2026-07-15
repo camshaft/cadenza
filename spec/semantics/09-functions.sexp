@@ -250,6 +250,35 @@
             (export main)))
   (output (: 10 Int64)))
 
+; Two variants of ONE sum each box a closure of a DIFFERENT function type — a BINARY `(-> Int64 Int64
+; Int64)` (`Bin`) and a UNARY `(-> Int64 Int64)` (`Un`). `run` matches the sum and, in EACH arm, applies
+; that arm's boxed closure (`(f 2 3)` in `Bin`, `(g 9)` in `Un`) — so both arms carry a runtime
+; `call_indirect`. But `main` constructs ONLY the `Bin` variant, so the only closure the program ever
+; LIFTS is the binary one; no unary `(-> Int64 Int64)` closure value is ever built. A runtime closure
+; value arises ONLY from a lambda lift, so the `Un` arm's `call_indirect` — dispatching a unary closure
+; the program can never construct — is PROVABLY DEAD (its scrutinee can never be a `Un`). The backend
+; must still EMIT that dead arm (selection is total over the match), which it does as an inert
+; `unreachable`; a lowering that instead DEMANDED a matching lifted function type for the dead arm
+; declined the whole program "a runtime closure application has no matching function type", even though
+; the reachable `Bin` path is well-formed. Pins that coexisting boxed closures of DISTINCT function types
+; in one sum compile as long as each APPLIED-and-reachable one is lifted — the unbuilt sibling's dispatch
+; is dead, not a compile blocker (the shape lazy-iterator libraries hit when `scan` and `flat-map`
+; combinators share one `Iter` sum).
+
+(case "boxed closures of two fn types in one sum: the unbuilt variant's dispatch is dead"
+  (doc    "`(type Box (Bin (-> Int64 Int64 Int64)) (Un (-> Int64 Int64)))` — one sum boxing a BINARY and a
+           UNARY closure. `run` applies the boxed closure in EACH arm, but `main` builds only `Bin`, so no
+           unary closure is ever lifted and the `Un` arm's `call_indirect` is provably dead. `(Bin (fn (a
+           x) (+ a x)))` run → `f 2 3` = 5. A backend that required a matching lifted function type for the
+           dead `Un` arm declined the program; emitting the dead arm as `unreachable` lets the live `Bin`
+           path compile and run.")
+  (input  (do
+            (type Box (Bin (-> Int64 Int64 Int64)) (Un (-> Int64 Int64)))
+            (def (run b) (match b ((Box.Bin f) (f 2 3)) ((Box.Un g) (g 9))))
+            (def (main) (run (Box.Bin (fn ((: a Int64) (: x Int64)) (+ a x)))))
+            (export main)))
+  (output (: 5 Int64)))
+
 ; --- An UNANNOTATED closure typed from its STORAGE CONTEXT's declared arrow -----------------------
 ; The payload-closure cases above ANNOTATE the lambda's parameter (`(fn ((: n Int64)) …)`). But when a
 ; closure is stored in a position whose type is DECLARED — a variant constructor's payload
@@ -3553,3 +3582,47 @@
             (export main)))
   (call   main (: 2 Int64) (: 3 Int64))
   (output (: 240 Int64)))
+
+; --- A closure applied through a variant whose closure type is NEVER BUILT still gets its call type ------
+; A runtime closure application lowers to a `call_indirect` through the funcref table, which needs a
+; TYPE-SECTION functype of the closure's `(env, args…) -> result` shape. The functypes come from the lifted
+; lambda bodies + defined functions — so an applied closure whose LIFTED BODY is never built (no
+; `Core::Closure` of that type is ever constructed) had NO functype to reference and DECLINED "a runtime
+; closure application has no matching function type". This happens when one sum boxes TWO distinctly-typed
+; closures (a `Unary (Int64->Int64)` and a `Binary (Int64->Int64->Int64)`), a match applies BOTH arms'
+; closures, but only ONE variant is constructed: the other arm's `call_indirect` is statically emitted yet
+; its closure type is dynamically dead. The fix registers an extra functype for each reachable
+; closure-application shape no lifted lambda supplies. (The two arms differ in ARITY here, so the shapes are
+; genuinely distinct; this is the minimized form of iterator `scan` + `flat-map` coexisting.)
+
+(case "a closure applied through an unbuilt sibling variant compiles and runs"
+  (doc    "`T` boxes a `Unary (Int64->Int64)` and a `Binary (Int64->Int64->Int64)`; `apply-it` matches both
+           and applies each arm's closure (`(f x)` / `(g x y)`). `main` builds only the `Unary` variant, so
+           the `Binary` arm's `(g x y)` is statically emitted but its `(env,i64,i64)->i64` closure type is
+           never constructed — no lifted lambda has that shape. It used to DECLINE 'a runtime closure
+           application has no matching function type'; the fix registers the missing call functype so the
+           `call_indirect` resolves. `main` runs the `Unary` arm: `(fn (n) (* n 2))` at 5 → 10.")
+  (input  (do
+            (type T (Unary (-> Int64 Int64)) (Binary (-> Int64 (-> Int64 Int64))))
+            (def (apply-it (: t T) (: x Int64) (: y Int64))
+              (match t
+                ((Unary f) (f x))
+                ((Binary g) (g x y))))
+            (def (main) (apply-it (T.Unary (fn ((: n Int64)) (* n 2))) 5 9))
+            (export main)))
+  (output (: 10 Int64)))
+
+(case "the built variant is the multi-arg one, the unbuilt arm still gets its call type"
+  (doc    "The symmetric direction: `main` builds the `Binary` variant, so the `Unary` arm's `(f x)` —
+           an `(env,i64)->i64` closure type — is the statically-emitted-but-never-built application whose
+           functype must be registered. Runs the `Binary` arm: `(fn (a b) (+ a b))` at 5,9 → 14. Confirms
+           the fix covers a missing call functype regardless of which sibling variant is constructed.")
+  (input  (do
+            (type T (Unary (-> Int64 Int64)) (Binary (-> Int64 (-> Int64 Int64))))
+            (def (apply-it (: t T) (: x Int64) (: y Int64))
+              (match t
+                ((Unary f) (f x))
+                ((Binary g) (g x y))))
+            (def (main) (apply-it (T.Binary (fn ((: a Int64) (: b Int64)) (+ a b))) 5 9))
+            (export main)))
+  (output (: 14 Int64)))

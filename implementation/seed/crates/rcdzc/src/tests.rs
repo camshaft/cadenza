@@ -47308,6 +47308,41 @@ mod stage1 {
     }
 
     #[test]
+    fn two_distinctly_typed_boxed_closures_in_one_sum_only_one_built() {
+        // ONE sum boxes closures of TWO DISTINCT function types — a BINARY `(-> Int64 Int64 Int64)` in
+        // `Bin` and a UNARY `(-> Int64 Int64)` in `Un`. `run` matches the sum and APPLIES the boxed
+        // closure in EACH arm (`(f 2 3)` / `(g 9)`), so both arms carry a runtime `call_indirect`. But
+        // `main` constructs ONLY `Bin`, so the sole lifted lambda is the binary one; no unary closure
+        // value is ever built. A runtime closure value arises ONLY from a lift, so the `Un` arm's
+        // dispatch — over a unary closure the program can never construct — is PROVABLY DEAD. The backend
+        // must still EMIT that dead arm (selection is total over the match); it does so as an inert
+        // `unreachable`. The BUG: `closure_type_index` demanded a matching lifted function type for the
+        // dead `Un` arm and, finding none, declined the WHOLE program ("a runtime closure application has
+        // no matching function type") — even though the reachable `Bin` path is well-formed. This is the
+        // shape lazy-iterator libraries hit when a `scan` (binary accumulator) and a `flat-map`
+        // (element→sub-iterator) combinator share one `Iter` sum: each is fine alone, but coexisting
+        // declined. `run (Bin (fn (a x) (+ a x)))` → `f 2 3` = 5.
+        let src = "(module m \
+            (type Box (Bin (-> Int64 Int64 Int64)) (Un (-> Int64 Int64))) \
+            (def (run (: b Box)) (match b ((Box.Bin f) (f 2 3)) ((Box.Un g) (g 9)))) \
+            (def (main) (run (Box.Bin (fn ((: a Int64) (: x Int64)) (+ a x))))) (export main))";
+        let Some(r) = run_closure_nullary(src) else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
+            return;
+        };
+        assert_eq!(r, "5"); // f 2 3 = 2 + 3
+        // The MIRROR: build only `Un` and apply it — `run (Un (fn (x) (* x 3)))` → `g 9` = 27. Now the
+        // BINARY arm is the dead one, dispatched over a closure the program never lifts; it too emits an
+        // `unreachable` and the live `Un` path runs. Pins the deadness test is symmetric in WHICH variant
+        // is built (it keys off the operand's type, not a fixed arm), so either sibling can be the dead one.
+        let src_un = "(module m \
+            (type Box (Bin (-> Int64 Int64 Int64)) (Un (-> Int64 Int64))) \
+            (def (run (: b Box)) (match b ((Box.Bin f) (f 2 3)) ((Box.Un g) (g 9)))) \
+            (def (main) (run (Box.Un (fn ((: x Int64)) (* x 3))))) (export main))";
+        assert_eq!(run_closure_nullary(src_un).unwrap(), "27"); // g 9 = 9 * 3
+    }
+
+    #[test]
     fn a_capturing_closure_crosses_a_recursive_boundary() {
         // A CAPTURING closure: `(fn (x) (+ x k))` closes over the free variable `k` from `main`'s scope.
         // It is a genuine runtime closure with an ENVIRONMENT — a heap cell holding the code pointer AND
@@ -47811,6 +47846,60 @@ mod stage1 {
                 cdz_run::Outcome::Value(s) => assert_eq!(s, want, "{label}"),
                 cdz_run::Outcome::Trap(t) => {
                     panic!("closure-in-sum-payload trapped ({label}): {t}")
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_closure_applied_through_an_unbuilt_sibling_variant_gets_its_call_type() {
+        // A sum boxes TWO distinctly-typed closures — `Unary (Int64->Int64)` and `Binary
+        // (Int64->Int64->Int64)`. `apply-it` matches BOTH arms and applies each arm's closure (`(f x)` /
+        // `(g x y)`), so BOTH `call_indirect`s are statically emitted. But `main` constructs only ONE
+        // variant, so the OTHER arm's closure type is never built — no lifted lambda of its `(env, args…)
+        // ->ret` shape exists, and the `call_indirect` had NO type-section functype to reference,
+        // DECLINING "a runtime closure application has no matching function type". The fix registers an
+        // extra functype for each reachable closure-application shape no lifted lambda supplies
+        // (`Layout::closure_call_types`). This is the minimized iterator `scan`+`flat-map` coexistence
+        // (a sum with a binary-accumulator closure AND an element→sub-iterator closure). Both directions
+        // must compile+run: build Unary (runs the `(f x)` arm → 10) and build Binary (runs `(g x y)` → 14).
+        use crate::testkit::parse;
+        let cases = [
+            (
+                "build Unary; Binary arm's (g x y) is the unbuilt call type",
+                "(module m (type T (Unary (-> Int64 Int64)) (Binary (-> Int64 (-> Int64 Int64)))) \
+                   (def (apply-it (: t T) (: x Int64) (: y Int64)) \
+                     (match t ((Unary f) (f x)) ((Binary g) (g x y)))) \
+                   (def (main) (apply-it (T.Unary (fn ((: n Int64)) (* n 2))) 5 9)) (export main))",
+                "10",
+            ),
+            (
+                "build Binary; Unary arm's (f x) is the unbuilt call type",
+                "(module m (type T (Unary (-> Int64 Int64)) (Binary (-> Int64 (-> Int64 Int64)))) \
+                   (def (apply-it (: t T) (: x Int64) (: y Int64)) \
+                     (match t ((Unary f) (f x)) ((Binary g) (g x y)))) \
+                   (def (main) (apply-it (T.Binary (fn ((: a Int64) (: b Int64)) (+ a b))) 5 9)) (export main))",
+                "14",
+            ),
+        ];
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
+            return;
+        };
+        for (label, src, want) in cases {
+            let bytes = compile_component(&crate::codec::encode(&parse(src)))
+                .unwrap_or_else(|e| panic!("compile unbuilt-sibling-closure ({label}): {e:?}"));
+            let opts = cdz_run::RunOpts {
+                export: Some("main".to_string()),
+                args: vec![],
+                runtime: Some(runtime.clone()),
+                runtime_cache_dir: None,
+                host_responses: Vec::new(),
+            };
+            match cdz_run::run(&bytes, &opts).unwrap_or_else(|e| panic!("run ({label}): {e:?}")) {
+                cdz_run::Outcome::Value(s) => assert_eq!(s, want, "{label}"),
+                cdz_run::Outcome::Trap(t) => {
+                    panic!("unbuilt-sibling-closure trapped ({label}): {t}")
                 }
             }
         }

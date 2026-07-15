@@ -410,6 +410,30 @@ fn functype(f: &SelectedFunc) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
+/// The core functype `0x60 <params-vec> <results-vec>` of an EXTRA closure-application signature
+/// (`Layout::closure_call_types`) — its param valtypes are ALREADY the full `(env:i32, args…)` list, and
+/// its result is a solved type (unit → zero results). The same wire shape `functype` emits, but taking a
+/// pre-computed param-valtype list + result type rather than a `SelectedFunc` (there is no function body —
+/// this functype exists only so a `call_indirect` to a never-built closure type has a type-section index).
+fn closure_call_functype(
+    param_vts: &[crate::backend::wasm::lir::ValType],
+    ret: &Ty,
+) -> Result<Vec<u8>, String> {
+    let mut out = vec![wasm_abi::CORE_FUNCTYPE_FORM];
+    let param_bytes: Vec<u8> = param_vts.iter().map(|vt| vt.byte()).collect();
+    out.extend_from_slice(&wasm_vec(param_bytes.len(), &param_bytes));
+    match valtype_of(ret) {
+        Some(vt) => out.extend_from_slice(&wasm_vec(1, &[vt.byte()])),
+        None if matches!(ret, Ty::Unit) => out.extend_from_slice(&wasm_vec(0, &[])),
+        None => {
+            return Err(
+                "closure application result type has no machine representation".to_string(),
+            );
+        }
+    }
+    Ok(out)
+}
+
 /// One defined function's emitted CODE byte range, paired with the source occurrence it derives from —
 /// the D1b line-table primitive (`DESIGN-debug-info-rcdzc.md` §2.1b). `code_start`/`code_end` are byte
 /// offsets of the function's `code_entry` (its `<size><locals><instrs>end` bytes) RELATIVE TO THE START
@@ -605,9 +629,19 @@ fn core_module_impl(
     for f in funcs {
         type_items.extend_from_slice(&functype(f)?);
     }
+    // EXTRA closure-application functypes (see `Layout::closure_call_types`): a `call_indirect` applying a
+    // closure whose shape NO lifted lambda supplies (a dynamically-dead but statically-emitted variant
+    // application) references one of these. Laid AFTER every defined-function functype, so their type
+    // indices are `import_count + n + i` — exactly what `Layout::closure_call_type_index` returns
+    // (`n == order.len() + lifted.len()`). Empty for a program whose applied closures all have a lifted
+    // body (then this loop adds nothing and the type section is byte-identical to before).
+    let extra = layout.closure_call_types.len();
+    for (param_vts, ret) in &layout.closure_call_types {
+        type_items.extend_from_slice(&closure_call_functype(param_vts, ret)?);
+    }
     let type_sec = section(
         wasm_abi::CORE_SEC_TYPE,
-        &wasm_vec(import_count + n, &type_items),
+        &wasm_vec(import_count + n + extra, &type_items),
     );
 
     // Import section (id 2) — HOST func imports first (from module `"host"`, indices `0..h`), then one

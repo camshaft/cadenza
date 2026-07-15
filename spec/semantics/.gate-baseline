@@ -358,6 +358,7 @@ pass	a checked conversion of a negative CONSTANT into an unsigned type is reject
 pass	a checked integer conversion of an out-of-range CONSTANT is rejected at compile time
 pass	a checked integer conversion that fits succeeds
 pass	a checked result is consumed by matching its Option at run time
+pass	a closure applied through an unbuilt sibling variant compiles and runs
 pass	a closure argument is another closure's result
 pass	a closure captures a boolean and reads it back inside its lifted body through a recursive HOF
 pass	a closure captures a capturing closure and calls it through a recursive HOF
@@ -500,6 +501,7 @@ pass	a decimal literal annotated Rational is exact for a value no float rounds c
 pass	a decimal token trailing letters is a malformed literal, not an unbound name
 pass	a declaration in a do block shadows an outer binding
 pass	a decoded field re-encodes into the same-width segment without an explicit narrow
+pass	a decoded length field re-encodes a length-prefixed frame end to end
 pass	a deep balanced tree is built and folded to a scalar, consuming both children
 pass	a deep chain of runtime-list let-bindings compiles and returns the final length
 pass	a deeper nested call chain still folds in linear time near the inliner limit
@@ -635,6 +637,7 @@ pass	a guarded list-match arm body reads its element binder
 pass	a guarded list-match arm whose guard fails falls through to the catch-all
 pass	a guarded match over a runtime scrutinee whose guard fails takes the wildcard
 pass	a guarded match over a runtime scrutinee with constant arms computes correctly
+pass	a guarded out-of-bounds indexed read is not hoisted by the sharing
 pass	a guarded variant arm falls through when the guard fails
 pass	a guarded wildcard arm falls through to a tail-recursive call
 pass	a handle body reads an enclosing function parameter
@@ -898,6 +901,7 @@ pass	a multi-segment bin concatenates mixed-width signed and unsigned segments i
 pass	a multi-variant constructor nested in a tuple let-binder is refutable and rejected
 pass	a multi-variant-sum binding pattern is refutable and rejected
 pass	a multi-way string-head dispatch resolves an operator name to its operation
+pass	a mutual AST walker re-extracts a node's payload in a sibling operand while a mutual call consumes it
 pass	a mutual walk where BOTH partners perform threads one shared counter across the cycle
 pass	a mutually tail-recursive even/odd over a large runtime count iterates in constant stack
 pass	a mutually-recursive AST walker reads a node's child list without corrupting a sibling head-read
@@ -970,6 +974,7 @@ pass	a nested constructor pattern dispatches a RUNTIME two-sum value
 pass	a nested constructor payload that misses the inner variant falls through to the outer sibling
 pass	a nested constructor value dispatches on both tags in a match
 pass	a nested element kind mismatch in equality is a type error
+pass	a nested element pattern dispatches on a MIDDLE-variant list payload
 pass	a nested element pattern dispatches on a NON-variant-0 list payload
 pass	a nested if on the same condition collapses the inner test to the known branch
 pass	a nested lambda captures+applies a closure-typed def PARAMETER (inline lambda argument)
@@ -1050,6 +1055,7 @@ pass	a partially-applied function escapes as a value and runs through a recursiv
 pass	a pattern binds a name scoped to its branch
 pass	a pattern that binds the same name across nested sub-patterns is rejected
 pass	a pattern that binds the same name twice is rejected
+pass	a payload-in-payload nested list pattern dispatches through two recorded types
 pass	a peephole rewrite rule reads in the shape of the code it rewrites
 pass	a perform SHORT-CIRCUITED out of an or's right operand is NOT executed (empty host-calls)
 pass	a perform composes as the SOURCE of a pipeline
@@ -1525,6 +1531,7 @@ pass	a tuple pattern against a sum scrutinee is a type error
 pass	a tuple pattern of the wrong arity is a type error
 pass	a tuple pattern over a map scrutinee is a type error
 pass	a tuple pattern over a non-tuple scrutinee is a type error
+pass	a tuple payload at a late variant projects both fields by its own layout
 pass	a tuple payload consumed INLINE in the sum arm projects and re-matches
 pass	a tuple payload extracted through a helper return must not be rejected as a type error
 pass	a tuple payload returned through a helper from a built-in Option must not trap
@@ -1759,6 +1766,8 @@ pass	an imported name resolves to a sibling file's exported definition
 pass	an in-bounds slice yields Some of the bytes at that range
 pass	an in-program handler OVERRIDES an effect's peer binding (the test-mock, no peer call)
 pass	an in-range constant argument to a narrow parameter computes at the parameter width
+pass	an indexed read is not shared across a shadowing rebinding
+pass	an indexed read of an updated list is not shared with the original's
 pass	an inline-never definition is emitted once and called
 pass	an inline-never definition with a const dictionary still monomorphizes the dictionary
 pass	an inlined multi-use checked-arith argument is shared and computed directly into its slot
@@ -1867,6 +1876,7 @@ pass	bitwise XOR of an integer and a float does not silently promote
 pass	bitwise XOR toggles bits
 pass	bitwise XOR with negative one is the bitwise complement
 pass	bitwise XOR with zero is the operand (identity)
+pass	boxed closures of two fn types in one sum: the unbuilt variant's dispatch is dead
 pass	branches performing DIFFERENT counts each thread their own post-state to the continuation
 pass	byte length agrees with the length of the encoded bytes
 pass	byte length counts the normalized form, not the source spelling
@@ -2068,6 +2078,7 @@ pass	host calls are observed in the order they were made
 pass	identical negative zeros nested in a tuple compare equal
 pass	identically-built ropes on both sides of a nested compare are equal (control)
 pass	importing a name a module does not export is rejected
+pass	indexed reads at different indices of one list are not shared
 pass	indexing a byte sequence out of bounds yields None
 pass	indexing a byte sequence returns Some of the byte at that position
 pass	indexing a byte sequence with a negative index yields None
@@ -2143,6 +2154,7 @@ pass	merging two empty records is the empty record
 pass	merging two records with disjoint fields unions their fields
 pass	merging with the empty record on the left is the identity
 pass	merging with the empty record on the right is the identity
+pass	mixed payload widths across the variant set dispatch and read correctly
 pass	mixed: two closure exports alongside a plain export — driving the plain export
 pass	mixing a prefixed unit across DIFFERENT dimensions is still a compile-time error
 pass	mixing nullary and unary constructors in one match
@@ -2375,6 +2387,7 @@ pass	the arithmetic operator rejects a float-first mixed operand pair
 pass	the boolean less-than operator agrees with compare over Bool
 pass	the boolean less-than operator agrees with the three-way comparison
 pass	the boolean literals
+pass	the built variant is the multi-arg one, the unbuilt arm still gets its call type
 pass	the built-in Ast is transformed as an ordinary value
 pass	the built-in list is folded by an element-with-rest pattern
 pass	the byte length of a run-time multibyte string exceeds its scalar length

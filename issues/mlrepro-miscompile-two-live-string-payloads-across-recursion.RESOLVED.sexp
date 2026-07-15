@@ -42,3 +42,5 @@
           ((. T Node) "b" ((. T Node) "a" ((. T Leaf) 0) ((. T Leaf) 0)) ((. T Leaf) 0))
           ((. T Leaf) 0))))
   (export main))
+
+;; RESOLVED 2026-07-15 (trunk@fb54b1c1f): verified FIXED (ran/cdz test — correct value / all tests pass). ML-port tracking artifact; the still-live-binding/borrow-ownership family is closed on trunk.

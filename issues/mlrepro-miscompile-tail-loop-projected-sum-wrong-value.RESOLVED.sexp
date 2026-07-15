@@ -44,3 +44,5 @@
   (def (wval (: s W)) (match s (((. W Atom) li) li) (((. W Zero) _) 0)))
   (def (main (: pos Int64)) (wval (loop b"\x05\x07" 1 pos ((. W Atom) 0))))
   (export main))
+
+;; RESOLVED 2026-07-15 (trunk@1f3b3c348): file self-annotated ✅ FIXED (still-live-binding family closed).

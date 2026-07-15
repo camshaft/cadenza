@@ -32,3 +32,5 @@
   (def (go (: n Int64)) (if (< n 3) (d n) (String.concat (go (/ n 3)) (d (% n 3)))))
   (def (main) (String.byte-len (go 4)))
   (export main))
+
+;; RESOLVED 2026-07-15 (trunk@1f3b3c348): file self-annotated ✅ FIXED (still-live-binding family closed).

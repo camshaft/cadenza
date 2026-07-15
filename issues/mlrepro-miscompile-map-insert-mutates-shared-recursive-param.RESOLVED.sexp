@@ -49,3 +49,5 @@
   (def (main (: d Int64))
     (ev ((. E Add) ((. E Bind) ((. E Var))) ((. E Var))) (Map.insert (map) "x" 1)))
   (export main))
+
+;; RESOLVED 2026-07-15 (trunk@1f3b3c348): file self-annotated ✅ FIXED (still-live-binding family closed).

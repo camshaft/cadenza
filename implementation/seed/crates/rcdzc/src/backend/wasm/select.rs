@@ -683,8 +683,9 @@ fn collect_retain_candidate_binders(db: &mut Db, id: StructId, out: &mut Vec<Str
 }
 
 /// Every immediate child NODE id of a Core node (all sub-expression occurrences, regardless of position).
-/// Used by `collect_heap_let_binders` to find nested `let`s; positions do not matter here.
-fn core_child_ids(db: &mut Db, id: StructId) -> Vec<StructId> {
+/// Used by `collect_heap_let_binders` to find nested `let`s; positions do not matter here. Also drives
+/// `layout::collect_closure_call_sigs` (the extra closure-application functype collection) — hence `pub`.
+pub fn core_child_ids(db: &mut Db, id: StructId) -> Vec<StructId> {
     let mut cs: Vec<StructId> = Vec::new();
     match core_of(db, id) {
         Core::ListLen { operand }
@@ -4521,15 +4522,102 @@ fn closure_type_index(
     }
     let rv = valtype_of(&result_ty)?;
     // Find a lifted lambda with the same param valtypes (in order) + result valtype.
-    let slot = layout.lifted.iter().position(|l| {
+    if let Some(slot) = layout.lifted.iter().position(|l| {
         l.params.len() == arg_vts.len()
             && l.params
                 .iter()
                 .zip(&arg_vts)
                 .all(|((_, pt), av)| valtype_of(pt) == Some(*av))
             && valtype_of(&l.ret_ty) == Some(rv)
-    })?;
-    Some(layout.lifted_type_index(slot, layout.import_base))
+    }) {
+        return Some(layout.lifted_type_index(slot, layout.import_base));
+    }
+    // No lifted lambda supplies this shape — the applied closure is of a type NO `Core::Closure` in this
+    // program builds (a statically-reachable but dynamically-dead `match` arm applying a variant's boxed
+    // closure). `layout.closure_call_types` registered an EXTRA functype of the needed `(env:i32, args…)
+    // ->result` shape; find it and use its type-section index. The lifted lambda's functype prepends an
+    // i32 env, so the extra functype's params are `[i32, arg_vts…]` — match on that full param list.
+    let want_params: Vec<crate::backend::wasm::lir::ValType> =
+        core::iter::once(crate::backend::wasm::lir::ValType::I32)
+            .chain(arg_vts.iter().copied())
+            .collect();
+    let i = layout
+        .closure_call_types
+        .iter()
+        .position(|(pvts, ret)| *pvts == want_params && valtype_of(ret) == Some(rv))?;
+    Some(layout.closure_call_type_index(i, layout.import_base))
+}
+
+/// The MACHINE signature of a closure whose TYPE is `ty` — every curried parameter's valtype (in order)
+/// and the final non-function result's valtype, peeling ALL arrows. `None` iff `ty` is not a function
+/// type or any parameter/result has no machine representation. This is the type-level companion of a
+/// lifted lambda's own signature ([`lifted_full_machine_sig`]): a runtime closure VALUE's machine shape
+/// is exactly its lift's, so two closures share this signature iff one lift could produce a value of the
+/// other's type. Used to decide whether a `Core::CallClosure` whose application arity finds no matching
+/// lift is PROVABLY DEAD (no lift inhabits the operand's type) or merely UNSUPPORTED (a lift does, but
+/// the application shape — a curried nested-unary lift applied at flattened higher arity — is one the
+/// backend cannot lower).
+fn ty_full_machine_sig(
+    ty: &Ty,
+) -> Option<(
+    Vec<crate::backend::wasm::lir::ValType>,
+    crate::backend::wasm::lir::ValType,
+)> {
+    let mut params = Vec::new();
+    let mut cur = ty.clone();
+    while let Ty::Fn(p, r) = cur {
+        params.push(valtype_of(&p)?);
+        cur = *r;
+    }
+    if params.is_empty() {
+        return None; // not a function type — no closure value lives here.
+    }
+    let rv = valtype_of(&cur)?;
+    Some((params, rv))
+}
+
+/// A lifted lambda's FULL curried machine signature — every parameter's valtype (in order) THEN, if its
+/// result is itself a function (a nested-unary lift `(fn a (fn x …))` returns a closure), that result's
+/// parameters, ending at the first non-function result's valtype. So a 2-param sugar lift `(fn (a x) …)`
+/// and a nested-unary `(fn a (fn x …))` of the same type both flatten to the identical `([i64,i64], i64)`
+/// — a closure value's machine shape does not record HOW it was curried. Compared against a closure
+/// operand's [`ty_full_machine_sig`] to test whether a lift can produce a value of the operand's type.
+fn lifted_full_machine_sig(
+    lift: &crate::lower::LiftedLambda,
+) -> Option<(
+    Vec<crate::backend::wasm::lir::ValType>,
+    crate::backend::wasm::lir::ValType,
+)> {
+    let mut params: Vec<crate::backend::wasm::lir::ValType> = lift
+        .params
+        .iter()
+        .map(|(_, t)| valtype_of(t))
+        .collect::<Option<_>>()?;
+    match ty_full_machine_sig(&lift.ret_ty) {
+        // The result is itself a function — extend with its curried params and take its final result.
+        Some((rest, rv)) => {
+            params.extend(rest);
+            Some((params, rv))
+        }
+        // The result is a plain value — its valtype is the signature's result.
+        None => Some((params, valtype_of(&lift.ret_ty)?)),
+    }
+}
+
+/// Whether NO lifted lambda in `layout` could produce a runtime closure value of type `operand_ty` — the
+/// operand's full curried machine signature matches no lift's. When true, a `Core::CallClosure` on an
+/// operand of this type is PROVABLY DEAD: a closure value arises only from a lift, so an operand no lift
+/// can inhabit holds no callable value and the application can never execute. Requires `operand_ty` to be
+/// a representable function type (else `None` → not provably dead, so the caller declines rather than
+/// silently emitting an `unreachable` for a shape it merely cannot represent).
+fn closure_operand_is_dead(operand_ty: &Ty, layout: &Layout) -> bool {
+    let Some(want) = ty_full_machine_sig(operand_ty) else {
+        return false;
+    };
+    !layout
+        .lifted
+        .iter()
+        .any(|l| lifted_full_machine_sig(l) == Some(want.clone()))
 }
 
 /// Whether the value at node `id` has an ENUM-DISCRIMINANT type — a C-style enum represented directly as
@@ -7464,9 +7552,37 @@ fn emit(
         // must be materialized into a local so it is read TWICE (once passed as env, once for the code
         // slot) without recomputation.
         Core::CallClosure { closure, args } => {
-            let type_index = closure_type_index(db, closure, &args, layout).ok_or_else(|| {
-                Reject::decline("a runtime closure application has no matching function type")
-            })?;
+            let type_index = match closure_type_index(db, closure, &args, layout) {
+                Some(ti) => ti,
+                None => {
+                    // No lifted lambda has this application's machine signature. Distinguish a PROVABLY
+                    // DEAD site from a merely UNSUPPORTED one by the CLOSURE OPERAND'S TYPE, not the
+                    // application's arity: a runtime closure value arises ONLY from a lambda lift, so if
+                    // NO lift can produce a value of the operand's full-curried type
+                    // (`closure_operand_is_dead`), the operand holds no callable value and this
+                    // application can NEVER execute — emit `unreachable` (validates by wasm's
+                    // stack-polymorphic typing, traps only if somehow reached, which the type system
+                    // forbids). This is the "two distinctly-typed boxed closures in ONE sum, only one
+                    // ever built" shape: an iterator sum with both a binary `scan` accumulator and an
+                    // element→sub-iterator `flat-map` closure — each `next` arm statically applies its
+                    // boxed closure, but a program constructing only the `scan` variant never lifts the
+                    // `flat-map` machine shape, so its arm's `call_indirect` is dead.
+                    //
+                    // When a lift DOES inhabit the operand's type but no lift matches the APPLICATION's
+                    // arity (a curried multi-param closure lifted as nested unaries, applied at flattened
+                    // higher arity — `(f 2 3)` over `(fn a (fn x …))`), the site is LIVE and must NOT be
+                    // stubbed with `unreachable`; it declines as an unsupported application shape, exactly
+                    // as before. A non-function / non-representable operand type also declines here.
+                    let operand_ty = type_of(db, closure);
+                    if closure_operand_is_dead(&operand_ty, layout) {
+                        out.push(Lir::Unreachable);
+                        return Ok(());
+                    }
+                    return Err(Reject::decline(
+                        "a runtime closure application has no matching function type",
+                    ));
+                }
+            };
             // Materialize the closure cell into a scratch local (read twice: env arg + code slot).
             let cell_slot = base.max(*high);
             *high = (*high).max(cell_slot + 1);

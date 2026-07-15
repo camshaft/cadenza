@@ -163,3 +163,5 @@ def sc-deep-nested-frees() =
   if free-vars(e) == 3 then unit else trap("c + outer-+ + inner-+ = 3 free")
 
 export { free-vars, is-closed }
+
+/// RESOLVED 2026-07-15 (trunk@fb54b1c1f): verified FIXED (ran/cdz test — correct value / all tests pass). ML-port tracking artifact; the still-live-binding/borrow-ownership family is closed on trunk.

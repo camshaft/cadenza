@@ -185,3 +185,5 @@ def infer-con-in(env: Map(String, Ty), e: Expr) -> String = match infer(env, e, 
     | Ty.Arrow(_, _) => "arrow")
 
 export { infer }
+
+/// RESOLVED 2026-07-15 (trunk@fb54b1c1f): verified FIXED (ran/cdz test — correct value / all tests pass). ML-port tracking artifact; the still-live-binding/borrow-ownership family is closed on trunk.

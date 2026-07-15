@@ -1446,11 +1446,11 @@
 ; folds the child `fc`s (`Name` → 1, `Int` → 0) and the sibling head-read (Some "a" → 100) is independent,
 ; so `fc (List [Name "a", Int 5])` = 100 + 1 = 101. Pins the correct mutual `fc↔fl` tree walk — a
 ; scope-checker / resolver / free-var pass written the natural way over the canonical AST. (The DISTINCT
-; failing shape — reading the head by re-extracting `node`'s payload, `head-of node`, in a sibling operand
-; WHILE `fl(elems)` consumes the shared payload alias — is a backend Perceus limit tracked outside the
-; corpus: a `SumPayload` binder consumed by a mutual-recursive call while its scrutinee is still read needs
-; a `dup` the retain analysis does not yet place for payload aliases. This case pins the reading-from-elems
-; idiom that AVOIDS it, so a refcount change in the payload-read path cannot silently break the walker.)
+; shape — reading the head by re-extracting `node`'s payload, `head-of node`, in a sibling operand WHILE
+; `fl(elems)` consumes the shared payload alias — was a backend Perceus miscompile, now FIXED and pinned in
+; the very next case: the retain analysis `dup`s a `SumPayload` binder consumed while its scrutinee is still
+; live, extending the still-live-binding retain from `LocalRef`/`Param` to payload aliases. This case pins
+; the reading-from-elems idiom; the next pins the re-extract-from-node idiom — both must stay green.)
 
 (case "a mutually-recursive AST walker reads a node's child list without corrupting a sibling head-read"
   (doc    "The idiomatic homoiconic-AST walk: `fc` (node) and `fl` (child list) mutually recurse over a
@@ -1469,6 +1469,46 @@
                 (((. Ast Name) _) 1)
                 (((. Ast List) elems)
                   (+ (match (head-e elems) ((Some _) 100) ((None _) 0)) (fl elems)))
+                (_ 0)))
+            (def (fl (: elems (List Ast)))
+              (match elems ((list) 0) ((list h .. r) (+ (fc h) (fl r)))))
+            (def (main) (fc ((. Ast List) ("list" ((. Ast Name) "a") ((. Ast Int) 5)))))
+            (export main)))
+  (output (: 101 Int64)))
+
+; The DISTINCT sibling of the case above, now FIXED: reading the head by RE-EXTRACTING the node's payload
+; (`head-of node`) in a sibling operand WHILE `fl(elems)` consumes the shared payload alias. `elems` is the
+; SAME heap array `node`'s `List` payload holds (a borrowed `sum-payload` alias, no rc++), so passing it to
+; the consuming mutual call `fl` used to free the array that the sibling `head-of node` re-reads — the walk
+; returned 1 (head read `None`) instead of 101. The backend now emits a Perceus RETAIN (`dup`) for a
+; `SumPayload` binder consumed while its scrutinee is still live in the arm (extending the still-live-binding
+; retain from `LocalRef`/`Param` to payload aliases), so both paths to the child array stay valid and the
+; walk returns 101. This is the LAST face of the still-live-binding family and the shape a scope-checker
+; that dispatches on a node's head WHILE recursing its children takes — pinning it green locks the fix so a
+; future refcount change cannot re-introduce the shared-payload free.
+
+(case "a mutual AST walker re-extracts a node's payload in a sibling operand while a mutual call consumes it"
+  (doc    "The now-fixed sibling of the read-from-elems case above: `fc`'s `List` arm reads the head by
+           RE-EXTRACTING `node`'s payload — `head-of node` matches `node` again and pulls the child list —
+           in one operand, WHILE the other operand passes the arm-bound `elems` (the SAME payload array) to
+           `fl`, which recurses back into `fc` and consumes it. Because `elems` is a borrowed `sum-payload`
+           alias of `node`'s payload, the consuming mutual call used to free the shared array and the
+           sibling `head-of node` read `None` → the walk returned 1. The backend now `dup`s a `SumPayload`
+           binder consumed while its scrutinee stays live, so `head-of node` = Some \"a\" → 100 and
+           `fl [Name \"a\", Int 5]` = 1, giving `fc (List [Name \"a\", Int 5])` = 101. Pins the fix for the
+           payload-alias face of the still-live-binding family — the natural head-dispatch-while-recursing
+           resolver shape over the canonical AST.")
+  (input  (do
+            (type Ast (Int Int64) (Str String) (Bool Bool) (Name String) (List (List Ast)))
+            (def (head-of (: node Ast))
+              (match node
+                (((. Ast List) (list ((. Ast Name) n) .. _)) (Some n))
+                (_ (None unit))))
+            (def (fc (: node Ast))
+              (match node
+                (((. Ast Name) _) 1)
+                (((. Ast List) elems)
+                  (+ (match (head-of node) ((Some _) 100) ((None _) 0)) (fl elems)))
                 (_ 0)))
             (def (fl (: elems (List Ast)))
               (match elems ((list) 0) ((list h .. r) (+ (fc h) (fl r)))))
@@ -7854,3 +7894,153 @@
             (def (main) (head-of (idast 3 (Ast.List (list (Ast.Name "a") (Ast.Int 5))))))
             (export main)))
   (output (: 100 Int64)))
+
+; --- Non-variant-0 payload TYPE resolution: the remaining slot/shape faces -------------------------
+; 134dee198 fixed the wasm discriminant walk resolving a Payload step's type via variant 0 (the
+; entered variant's payload type is now recorded as the walk descends) and pinned the last-variant
+; list-payload face. These pin the neighboring faces the same walk must get right: a MIDDLE-variant
+; slot, payload-IN-payload recursion, a late-variant TUPLE payload, and mixed payload widths across
+; the variant set (the misresolution read variant 0's Int64 layout for whatever slot it was in — any
+; of these shapes regresses if the recorded type is dropped or keyed to the wrong path).
+
+(case "a nested element pattern dispatches on a MIDDLE-variant list payload"
+  (doc    "`(type T (I Int64) (L (List T)) (S String))` — the list payload sits at variant 1, between
+           two scalar-payload variants (the landed case pins the LAST slot; a walk that special-cased
+           'last' or re-derived from the root still misreads a middle slot). `(head-kind (T.L [S \"x\"]))`
+           dispatches the nested `(T.S _)` element pattern → 7. A variant-0 fallback reads the element
+           discriminant through Int64 layout → garbage dispatch.")
+  (input  (do
+            (type T (I Int64) (L (List T)) (S String))
+            (def (head-kind (: t T))
+              (match t
+                ((T.L (list (T.S _) .. _)) 7)
+                (_ 0)))
+            (def (main (: d Int64))
+              (head-kind (T.L (List.push (list) (T.S "x")))))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 7 Int64)))
+
+(case "a payload-in-payload nested list pattern dispatches through two recorded types"
+  (doc    "Two levels of non-variant-0 payload: `(T.L [T.L [T.S \"x\"]])` matched by
+           `((T.L (list (T.L (list (T.S _) .. _)) .. _)) …)` — the walk enters variant L, reads element
+           0, enters variant L AGAIN one level down, reads ITS element 0, and dispatches on S. The
+           entered-variant type must be recorded at EACH Payload step of the path (a single-level
+           record that resets at the inner descent re-derives via variant 0 there). The outer probe
+           (110) and the single-level control (10) sum to 120.")
+  (input  (do
+            (type T (I Int64) (S String) (L (List T)))
+            (def (probe (: t T))
+              (match t
+                ((T.L (list (T.L (list (T.S _) .. _)) .. _)) 110)
+                ((T.L (list (T.S _) .. _)) 10)
+                (_ 0)))
+            (def (main (: d Int64))
+              (+ (probe (T.L (List.push (list) (T.L (List.push (list) (T.S "x"))))))
+                 (probe (T.L (List.push (list) (T.S "y"))))))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 120 Int64)))
+
+(case "a tuple payload at a late variant projects both fields by its own layout"
+  (doc    "`(type T (I Int64) (F Int64) (S String) (P (Tuple String Int64)))` — a TUPLE payload at
+           variant 3, whose layout (heap handle + i64) differs from variant 0's scalar Int64. Binding
+           `p` and projecting both fields must use the ENTERED variant's payload type: byte-len \"ab\"
+           + 5 = 7. A variant-0 resolution projects the tuple through Int64 layout (reads the handle as
+           the value, or mis-sizes the second field).")
+  (input  (do
+            (type T (I Int64) (F Int64) (S String) (P (Tuple String Int64)))
+            (def (main (: d Int64))
+              (match (T.P (tuple "ab" 5))
+                ((T.P p) (+ (String.byte-len (. p 0)) (. p 1)))
+                (_ 0)))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 7 Int64)))
+
+(case "mixed payload widths across the variant set dispatch and read correctly"
+  (doc    "`(type T (I Int64) (F Float64) (S String) (L (List T)))` — four variants, four DISTINCT
+           payload layouts (i64, f64, heap string, heap list). One function matches both a nested
+           list-element pattern (variant 3, → 1) and a string payload read (variant 2, byte-len \"ab\"
+           → 2), so the same match walk resolves two different non-variant-0 payload types in one
+           decision tree: 1 + 2 = 3. Pins that the recorded types are per-path, not a single latched
+           value.")
+  (input  (do
+            (type T (I Int64) (F Float64) (S String) (L (List T)))
+            (def (kind (: t T))
+              (match t
+                ((T.L (list (T.S _) .. _)) 1)
+                ((T.S s) (String.byte-len s))
+                (_ 0)))
+            (def (main (: d Int64))
+              (+ (kind (T.L (List.push (list) (T.S "x"))))
+                 (kind (T.S "ab"))))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 3 Int64)))
+
+; --- CSE of a repeated bounds-checked indexed read must key on VALUE identity ---------------------
+; fd1207657 CSE-shares a repeated `(Option.expect (List.at xs i) …)` (one vec-get). The sharing is
+; sound only for the SAME list value and SAME index along one straight line — these pin the
+; must-NOT-share discriminators (each returns a wrong doubled/stale value if over-shared) and the
+; guard boundary (a shared read must not hoist above the branch that guards it).
+
+(case "indexed reads at different indices of one list are not shared"
+  (doc    "`(+ (expect (List.at xs i)) (expect (List.at xs j)))` with i = 0, j = 1 over xs = [7, 8] —
+           two reads differing ONLY in the index parameter → 7 + 8 = 15. A CSE keyed on the
+           collection operand alone (ignoring the index) returns 14 or 16. The index-discrimination
+           pin for the shared indexed read.")
+  (input  (do
+            (def (main (: i Int64) (: j Int64))
+              (let ((xs (List.push (List.push (list) 7) 8)))
+                (+ (Option.expect (List.at xs i) "a") (Option.expect (List.at xs j) "b"))))
+            (export main)))
+  (call   main (: 0 Int64) (: 1 Int64))
+  (output (: 15 Int64)))
+
+(case "an indexed read is not shared across a shadowing rebinding"
+  (doc    "The first read targets the outer `xs` = [7]; a nested let SHADOWS `xs` with `(List.push xs
+           9)` and reads index 1 → 9, so 7 + 9 = 16. The two `(List.at xs …)` expressions are
+           syntactically similar but name DIFFERENT bindings — a CSE keyed on the spelled name (rather
+           than the resolved binding) shares the first read's list and misses the pushed element. The
+           binding-identity pin.")
+  (input  (do
+            (def (main (: d Int64))
+              (let ((xs (List.push (list) d)))
+                (+ (Option.expect (List.at xs 0) "a")
+                   (let ((xs (List.push xs 9)))
+                     (Option.expect (List.at xs 1) "b")))))
+            (export main)))
+  (call   main (: 7 Int64))
+  (output (: 16 Int64)))
+
+(case "an indexed read of an updated list is not shared with the original's"
+  (doc    "`(expect (List.at xs 0))` = 7 and `(expect (List.at (List.update xs 0 99) 0))` = 99 — the
+           same index, but the second read targets a DIFFERENT list value (the persistent update's
+           result): 7 + 99 = 106. A CSE that treated `List.at` as pure over the ORIGINAL operand
+           spelling (not the updated value) returns 14; one that shared backward returns 198. The
+           value-identity pin, composing the persistence guarantee with the read sharing.")
+  (input  (do
+            (def (main (: d Int64))
+              (let ((xs (List.push (list) d)))
+                (+ (Option.expect (List.at xs 0) "a")
+                   (Option.expect (List.at (List.update xs 0 99) 0) "b"))))
+            (export main)))
+  (call   main (: 7 Int64))
+  (output (: 106 Int64)))
+
+(case "a guarded out-of-bounds indexed read is not hoisted by the sharing"
+  (doc    "`(if (> k 1) (expect (List.at xs k)) 0)` + an UNguarded in-bounds read at index 0, over
+           xs = [7, 8] with k = 0: the guard is false, so the k-indexed read (out of bounds for k > 1
+           inputs, and here never demanded) stays unevaluated → 0 + 7 = 7. A CSE/hoist that evaluates
+           the guarded read speculatively (to share the bounds-check machinery with the unguarded one)
+           traps 'zero'-side programs that must return 7. The trap-freedom boundary of the read
+           sharing, the indexed-read analogue of the LICM zero-iteration pin.")
+  (input  (do
+            (def (main (: k Int64))
+              (let ((xs (List.push (List.push (list) 7) 8)))
+                (+ (if (> k 1) (Option.expect (List.at xs k) "big") 0)
+                   (Option.expect (List.at xs 0) "zero"))))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 7 Int64)))
