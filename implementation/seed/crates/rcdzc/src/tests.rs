@@ -37427,6 +37427,48 @@ mod stage1 {
     }
 
     #[test]
+    fn an_annotated_let_binder_structural_mismatch_names_the_delta() {
+        // A `(: <pat> <Type>)` let binder whose annotation and bound value are the same structured kind but
+        // differ — two records of a different field set, two tuples of a different arity — named two whole
+        // types the reader had to diff ("a binder annotated (Record (x Int64)) is bound to a value of type
+        // (Record (y Int64))"). It now appends the structural DELTA (the shared `structural_delta_hint`),
+        // the SAME minimal-conflict hint the value-annotation / argument / peer-join sites carry.
+        let msg = |body: &str| -> String {
+            let src = format!("(module m (def (main) {body}) (export main))");
+            crate::diagnostics(&mut crate::db::Db::load(parse(&src)))
+                .into_iter()
+                .find(|d| d.code.as_deref() == Some("CDZ0203"))
+                .unwrap_or_else(|| panic!("expected CDZ0203 for {body}"))
+                .message
+        };
+        // A record FIELD-SET difference.
+        let rec = msg("(let (((: r (Record (x Int64))) (record (y 2)))) r)");
+        assert!(
+            rec.contains("a binder annotated") && rec.contains("missing field `x`"),
+            "the record field-set delta is named on the binder: {rec}"
+        );
+        // A record FIELD-TYPE difference (same field set).
+        let field_ty = msg("(let (((: r (Record (x Int64))) (record (x true)))) r)");
+        assert!(
+            field_ty.contains("field `x` should be Int64, but this one is Bool"),
+            "the field-type delta is named: {field_ty}"
+        );
+        // A tuple ARITY difference.
+        let tup = msg("(let (((: t (Tuple Int64 Int64)) (tuple 1 2 3))) t)");
+        assert!(
+            tup.contains("expected a tuple with 2 elements, but this one has 3"),
+            "the tuple arity delta is named: {tup}"
+        );
+        // NO false positive: a scalar mismatch (Bool vs Int64) has no structural delta — the bare message.
+        let scalar = msg("(let (((: x Bool) 5)) x)");
+        assert!(
+            scalar.contains("a binder annotated Bool is bound to a value of type Int64")
+                && !scalar.contains(" — "),
+            "a scalar binder mismatch keeps the bare message (no delta tail): {scalar}"
+        );
+    }
+
+    #[test]
     fn a_def_parameter_may_be_a_tuple_pattern() {
         // core-semantics.md §A Binding Position Accepts An Irrefutable Pattern: a `def` parameter MAY be a
         // tuple pattern naming the pair's parts, keeping ARITY ONE. `binding_params::lower` rewrites

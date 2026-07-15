@@ -4791,7 +4791,7 @@ fn fn_signature_delta_hint(expected: &Ty, actual: &Ty) -> Option<String> {
 /// most of their structure.
 //= spec/capabilities/type-system.md#a-type-rejection-reports-the-minimal-conflict-at-both-sites
 //# A rejection for a failed unification MUST report the minimal unsatisfiable set of constraints rather than the first constraint that failed, so that the diagnostic names the actual conflict and not an arbitrary casualty of it.
-fn structural_delta_hint(first: &Ty, other: &Ty) -> Option<String> {
+pub(crate) fn structural_delta_hint(first: &Ty, other: &Ty) -> Option<String> {
     record_field_diff_hint(first, other)
         .or_else(|| tuple_arity_mismatch_hint(first, other))
         .or_else(|| collection_element_mismatch_hint(first, other))

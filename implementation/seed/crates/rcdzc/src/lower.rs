@@ -5772,10 +5772,19 @@ pub(crate) fn check_binding_pattern(
         if let Some(annot_ty) = crate::eval::typeval_of(db, ty_expr)
             && !value_ty.agrees_with(&annot_ty)
         {
+            // Append the structural DELTA (which field/element/axis differs) when the annotation and the
+            // bound value are the same structured kind — two records of a different field set, two tuples
+            // of a different arity, etc. Without it, `(: r (Record (x Int64)))` bound to `(record (y 2))`
+            // rendered two whole record types the reader must diff; the delta names the minimal conflict
+            // ("missing field `x`; no such field `y`"), the SAME hint the value-annotation / argument /
+            // peer-join sites carry (`structural_delta_hint`, shared). The annotation is the expected type
+            // (first), the value the actual (other).
+            let delta =
+                crate::infer::structural_delta_hint(&annot_ty, value_ty).unwrap_or_default();
             return Err(Reject::coded(
                 Code::TypeMismatch,
                 format!(
-                    "a binder annotated {} is bound to a value of type {}",
+                    "a binder annotated {} is bound to a value of type {}{delta}",
                     annot_ty.render_name(),
                     value_ty.render_name()
                 ),
