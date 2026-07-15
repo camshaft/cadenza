@@ -438,3 +438,83 @@
             (def (main (: q Int64)) (if (Set.contains (build 5 (Set.of (list))) q) 1 0)) (export main)))
   (call   main (: 3 Int64)) (output (: 1 Int64))
   (call   main (: 9 Int64)) (output (: 0 Int64)))
+
+; --- Set.contains / Set.remove / Set.insert must NOT fold against a set holding a RUNTIME element -------
+; `Set.of (list …)` folds a CONSTANT list to a canonical constant `Core::SetOf`, and `Set.contains`/
+; `Set.remove`/`Set.insert` fold against such a constant set by comparing elements at COMPILE TIME
+; (`const_compound_eq`). But a `Set.of` can carry a NON-CONSTANT element (a call/param result that did not
+; fold — `(Set.of (list (add 2 3)))`). Comparing a runtime element to a constant query at compile time is
+; `None` (unknown), so folding such a set SILENTLY MISCOMPILED: `Set.contains` answered `false` for a query
+; that equals the runtime element at run time; `Set.remove` RETAINED a runtime element equal to the query
+; (cardinality stayed high); `Set.insert` could add a duplicate of a runtime element. The fix declines the
+; fold unless the ENTIRE set is a compile-time constant (`is_const_value`), running the real champ op
+; otherwise — the same all-constant guard the set-algebra fold already applied. These pin all three ops
+; over a set built from a genuinely non-foldable (recursive-call) element, at scalar AND rope element types.
+
+(case "Set.contains does not fold a set whose element is a runtime scalar"
+  (doc    "`(Set.contains (Set.of (list (add 2 3))) 5)` — the set's sole element `(add 2 3)` is a recursive
+           call (non-foldable), evaluating to 5 at run time; membership of the literal 5 must be true → 1.
+           Before the fix the `Set.contains` fold saw a `Core::SetOf` shape + a constant query and compared
+           only the CONSTANT elements (none), folding to `false` → 0 though the runtime element IS 5. The
+           fold now declines (a non-constant element) and the runtime `set-contains` answers correctly.")
+  (input  (do
+            (def (add (: x Int64) (: n Int64)) (if (< n 1) x (add (+ x 1) (- n 1))))
+            (def (main) (if (Set.contains (Set.of (list (add 2 3))) 5) 1 0)) (export main)))
+  (output (: 1 Int64)))
+
+(case "Set.remove does not fold a set whose element is a runtime scalar"
+  (doc    "`(Set.len (Set.remove (Set.of (list (add 2 3))) 5))` — removing the literal 5 from a set whose sole
+           element `(add 2 3)`=5 (runtime) must drop it → cardinality 0. Before the fix the fold RETAINED the
+           runtime element (its compile-time equality to 5 is unknown, so `retain` kept it) → 1. The fold now
+           declines and the runtime `set-remove` removes the matching element.")
+  (input  (do
+            (def (add (: x Int64) (: n Int64)) (if (< n 1) x (add (+ x 1) (- n 1))))
+            (def (main) (Set.len (Set.remove (Set.of (list (add 2 3))) 5))) (export main)))
+  (output (: 0 Int64)))
+
+(case "Set.insert does not fold a duplicate against a runtime element"
+  (doc    "`(Set.len (Set.insert (Set.of (list (add 2 3))) 5))` — inserting 5 into a set whose sole element
+           `(add 2 3)`=5 (runtime) is a duplicate, so the cardinality stays 1. Before the fix the fold could
+           not see the runtime element equalled 5 (its const probe missed it) and would ADD 5 as a second
+           element → 2. The fold now declines and the runtime `set-insert` dedups against the canonical
+           champ set.")
+  (input  (do
+            (def (add (: x Int64) (: n Int64)) (if (< n 1) x (add (+ x 1) (- n 1))))
+            (def (main) (Set.len (Set.insert (Set.of (list (add 2 3))) 5))) (export main)))
+  (output (: 1 Int64)))
+
+(case "Set.contains finds a runtime STRING-rope element built via Set.of"
+  (doc    "`(Set.contains (Set.of (list (rep \"hi\" 3))) \"hixxx\")` — the set's element is a runtime String
+           ROPE (`rep` concatenates \"x\" three times → \"hixxx\"), membership-tested with the flat literal
+           \"hixxx\" → 1. This is the reported adversarial finding: the `Set.contains` fold (mis)fired on a
+           runtime-element `SetOf` and answered 0. The fold now declines and the runtime `set-contains`
+           canonicalizes both the stored rope (compacted at Set.of construction) and the flat query, so they
+           match. Expected: 1.")
+  (input  (do
+            (def (rep (: s String) (: n Int64))
+              (if (< n 1) s (rep (String.concat s "x") (- n 1))))
+            (def (main) (if (Set.contains (Set.of (list (rep "hi" 3))) "hixxx") 1 0)) (export main)))
+  (output (: 1 Int64)))
+
+(case "Set.remove of a rope-element set built via Set.of lowers the cardinality"
+  (doc    "`(Set.len (Set.remove (Set.of (list (rep \"hi\" 3))) \"hixxx\"))` — removing the flat literal
+           \"hixxx\" from a set whose sole element is the equal runtime rope must drop it → 0. The
+           stronger rope twin of the finding (it hits Set.remove too, not just Set.contains). Before the fix
+           the fold retained the rope → 1. Expected: 0.")
+  (input  (do
+            (def (rep (: s String) (: n Int64))
+              (if (< n 1) s (rep (String.concat s "x") (- n 1))))
+            (def (main) (Set.len (Set.remove (Set.of (list (rep "hi" 3))) "hixxx"))) (export main)))
+  (output (: 0 Int64)))
+
+(case "an all-constant Set.of still folds membership with a constant query (control)"
+  (doc    "`(Set.contains (Set.of (list 1 2 3)) 2)` — every element AND the query are compile-time constants,
+           so the `Set.contains` fold is SOUND and still fires (→ 1); the absent constant query 9 folds to 0.
+           Pins that the runtime-element guard did NOT disable the valuable all-constant fold. Two exports
+           (a present and an absent constant query) so both fold branches are witnessed. Expected: 1, 0.")
+  (input  (do
+            (def (has2) (if (Set.contains (Set.of (list 1 2 3)) 2) 1 0))
+            (def (has9) (if (Set.contains (Set.of (list 1 2 3)) 9) 1 0))
+            (export has2) (export has9)))
+  (call   has2) (output (: 1 Int64))
+  (call   has9) (output (: 0 Int64)))

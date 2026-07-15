@@ -15584,7 +15584,15 @@ fn lower_set_contains(db: &mut Db, set: StructId, elem: StructId) -> Core {
     if let Core::Poison(r) = core_of(db, elem) {
         return Core::Poison(r);
     }
+    // FOLD only when the ENTIRE set is constant (`is_const_value` — every `SetOf` element is const),
+    // not merely a `Core::SetOf` shape. A `SetOf` can carry a RUNTIME element (a call/param result that
+    // did not fold — `(Set.of (list (f x)))`), and `set_has_const_elem` compares the query only against
+    // the CONSTANT elements (`const_compound_eq(runtime, const)` is `None`), so folding such a set would
+    // wrongly answer `false` for a query that equals the runtime element at run time (a silent
+    // miscompile — `(Set.contains (Set.of (list (add 2 3))) 5)` folded to `false` though `add 2 3 = 5`).
+    // A set with any non-constant element must run the real champ membership test (`Core::SetContains`).
     if let Core::SetOf { elems, .. } = core_of(db, set)
+        && is_const_value(db, set)
         && is_const_value(db, elem)
     {
         let present = set_has_const_elem(db, &elems, elem);
@@ -15617,7 +15625,15 @@ fn lower_set_insert_remove(
         return Core::Poison(r);
     }
     let is_insert = prim == Prim::SetInsert;
+    // FOLD only when the ENTIRE set is constant (see `lower_set_contains`): a `SetOf` carrying a RUNTIME
+    // element cannot be folded against, because `const_compound_eq(runtime, const)` is `None`. Folding
+    // then MISCOMPILES both ops: a `remove` would RETAIN a runtime element that equals the query (it is
+    // not `Some(true)`-equal to the const), so `(Set.len (Set.remove (Set.of (list (rep …))) <twin>))`
+    // stayed 1 instead of 0; an `insert` of an element equal to a runtime element would wrongly add a
+    // duplicate (the const probe misses the runtime twin), inflating the cardinality. A set with any
+    // non-constant element must run the real champ op (`Core::SetInsert`/`SetRemove`).
     if let Core::SetOf { elems, elem_ty } = core_of(db, set)
+        && is_const_value(db, set)
         && is_const_value(db, elem)
     {
         let mut out: Vec<StructId> = elems.to_vec();

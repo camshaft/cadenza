@@ -103,6 +103,11 @@ pass	Qty.unit recovers the unit of a quantity whose magnitude is a runtime value
 pass	Qty.value recovers the underlying numeric value, discarding the unit
 pass	Result propagates errors without trapping
 pass	Result type for fallible operations
+pass	Set.contains does not fold a set whose element is a runtime scalar
+pass	Set.contains finds a runtime STRING-rope element built via Set.of
+pass	Set.insert does not fold a duplicate against a runtime element
+pass	Set.remove does not fold a set whose element is a runtime scalar
+pass	Set.remove of a rope-element set built via Set.of lowers the cardinality
 pass	String.scalar-len of a string selected by a runtime if
 pass	String.scalar-len of a string selected by a runtime match
 pass	THREE Tuple args cross the direct-call boundary
@@ -1605,6 +1610,7 @@ pass	an abstract type is used through the module's exported constructor and acce
 pass	an abstract type's constructor is not reachable outside its module
 pass	an absurd runtime width is rejected, not silently ignored
 pass	an agreeing redeclaration compares the normalized ratio, not the literal numerator and denominator
+pass	an all-constant Set.of still folds membership with a constant query (control)
 pass	an all-nullary enum dispatches its runtime-selected variant and escapes
 pass	an all-nullary enum nested in a tuple carries its discriminant through the heap
 pass	an all-nullary enum reached through a tuple element inside a boxed sum survives the heap round-trip
