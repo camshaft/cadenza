@@ -42,9 +42,9 @@ def node-count(e: Ex) = match e with
 
 /// Accumulate the hash of every subterm (this node and all descendants) into `seen`.
 /// Bottom-up in ONE traversal: returns `(hash of e, seen ∪ {every subterm hash})`. Each node's hash is
-/// computed once from its CHILDREN's already-computed hashes (`mix(tag, hl, hr)`), never by re-traversing
-/// the subtree — so the whole analysis is O(n), not O(n²). (A prior version called `hash(e)` at every
-/// node, and `hash` re-walks the subtree → quadratic; Copilot PR #441.)
+/// computed once from its CHILDREN's already-computed hashes (`mix(mix(tag, hl), hr)` — `mix` is binary),
+/// never by re-traversing the subtree — so the whole analysis is O(n), not O(n²). (A prior version called
+/// `hash(e)` at every node, and `hash` re-walks the subtree → quadratic; Copilot PR #441.)
 def collect(e: Ex, seen: Set(Int64)) = match e with
   | Ex.Num(m) => (let h = mix(1, m) in (h, Set.insert(seen, h)))
   | Ex.Var(id) => (let h = mix(2, id) in (h, Set.insert(seen, h)))
