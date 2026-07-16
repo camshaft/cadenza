@@ -202,7 +202,7 @@ enum Cmd {
     /// Turns "here is the fix" into "fixed it": the capstone of `cdz check`'s structured suggestions.
     Fix(FixArgs),
     /// Go-to-definition: the defining occurrence of the name at a source BYTE OFFSET in FILE, as
-    /// `file:line:col`.
+    /// `file:line:col` (`--json` emits it as a structured `{file,line,col}` object for an editor).
     Def(DefArgs),
     /// The bindings visible at a source BYTE OFFSET in FILE — "variable scope tracking". Each visible
     /// binding as `file:line:col: name : type` (innermost first; `--json` emits one structured object per
@@ -2896,6 +2896,12 @@ struct DefArgs {
     file: String,
     /// The source BYTE OFFSET of the reference to jump from (0-based, UTF-8 bytes).
     offset: usize,
+    /// Emit the definition location as a machine-readable JSON object (`{file, line, col}`) instead of the
+    /// human `file:line:col` text — the shape an editor consumes for a go-to-definition jump without
+    /// re-parsing the text (the `cdz symbols --json`/`cdz check --json` convention). No output when there
+    /// is no navigable definition (a non-reference / a built-in) — that still exits non-zero with a note.
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(clap::Args)]
@@ -4066,7 +4072,16 @@ fn run_def(args: &DefArgs) -> ExitCode {
     match spans.get(cadenza_syntax::StructId(target)) {
         Some(span) => {
             let (line, col) = cadenza_syntax::query::driver::line_col(&source, span.start);
-            println!("{}:{line}:{col}", args.file);
+            if args.json {
+                use cadenza_syntax::query::json;
+                let mut obj = json::Object::new();
+                obj.string("file", &args.file);
+                obj.raw("line", &line.to_string());
+                obj.raw("col", &col.to_string());
+                println!("{}", obj.finish());
+            } else {
+                println!("{}:{line}:{col}", args.file);
+            }
             ExitCode::SUCCESS
         }
         // The definition has no source span (a prelude/built-in binding) — nothing to jump to.

@@ -2253,6 +2253,33 @@ fn def_jumps_from_a_reference_to_its_definition() {
 }
 
 #[test]
+fn def_json_emits_a_structured_location_object() {
+    // `--json` emits the go-to-definition target as a single machine-readable {file,line,col} object — the
+    // shape an editor consumes to jump without re-parsing the `file:line:col` text. PARSE it (serde_json is
+    // in-crate) so a malformed object is caught, not substring-matched.
+    let dir = scratch_dir("def_json");
+    let f = dir.join("prog.sexp");
+    let src = "(module m (def (helper) 1) (def (main) helper) (export main))\n";
+    std::fs::write(&f, src).unwrap();
+    let ref_off = src.rfind("helper").unwrap();
+    let (ok, stdout, err) = run(
+        &["def", f.to_str().unwrap(), &ref_off.to_string(), "--json"],
+        "",
+    );
+    assert!(ok, "go-to-def --json succeeds on a reference: {err}");
+    let rows: Vec<&str> = stdout.lines().filter(|l| !l.trim().is_empty()).collect();
+    assert_eq!(rows.len(), 1, "one location object: {stdout}");
+    let v: serde_json::Value = serde_json::from_str(rows[0])
+        .unwrap_or_else(|e| panic!("row is valid JSON ({e}): {}", rows[0]));
+    assert!(v["file"].is_string(), "`file` is a string: {stdout}");
+    assert!(
+        v["line"].is_number() && v["col"].is_number(),
+        "`line`/`col` are numbers: {stdout}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn def_on_a_non_reference_reports_no_definition() {
     let dir = scratch_dir("def_lit");
     let f = dir.join("prog.sexp");
