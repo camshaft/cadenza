@@ -2337,6 +2337,17 @@
   (input  (do (def (main) (. (Tuple.pop (tuple 1 2 3)) 0)) (export main)))
   (error CDZ0603))
 
+(case "an unknown member name is rejected with a did-you-mean (CDZ0201)"
+  (doc    "The GENERIC unknown-member reject the CDZ0603 rename cases above refer to: a member name that was
+           NEVER a member (a plain typo, not one of the fixed retired names) gets CDZ0201 naming the module
+           and offering the closest existing members — `(List.length …)` gives 'the `List` module has no
+           member `length` — closest matches: `len`, `at`, `concat`'. `length` is a natural slip for `len`,
+           so the did-you-mean points straight at the fix. Pins the ordinary unknown-member diagnostic
+           (distinct from the targeted CDZ0603 retired-name path): the reader is told WHICH module and the
+           nearest real members, not a bare 'unbound'. The program's outcome is the rejection.")
+  (input  (do (def (main) (List.length (list 1 2))) (export main)))
+  (error CDZ0201))
+
 (case "a record whose field is a runtime tuple nests across the boundary"
   (doc    "`(record (x n) (y (tuple n 1)))` with n=5 produces `(record (x 5) (y (tuple 5 1)))` — a
            record field that is itself a runtime compound. Pins that the type-directed renderer
