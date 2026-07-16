@@ -4,9 +4,9 @@
 //! `symbols` is a semantic query only the unified `cdz` binary can answer (compiler classification +
 //! the front-end span table in one process). The sidecar's classification logic is unit-tested in
 //! rcdzc; what is pinned HERE is the CLI-RENDERING layer only `cdz` does: emitting each declaration as
-//! `file:line:col: KIND NAME`, listing EVERY declaration (private ones included — the superset of
-//! `cdz exports`), and the empty-module contract. It had ZERO dedicated integration coverage before
-//! this. Drives the built binary over a temp `.sexp` file.
+//! `file:line:col: KIND NAME` (or, under `--json`, one structured object per declaration for an
+//! editor/tool), listing EVERY declaration (private ones included — the superset of `cdz exports`), and
+//! the empty-module contract. Drives the built binary over a temp `.sexp` file.
 
 use std::process::Command;
 
@@ -86,6 +86,47 @@ fn symbols_is_the_superset_of_exports_including_private_declarations() {
     assert!(
         sym.contains("main") && exp.contains("main"),
         "the exported `main` appears in both"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn symbols_json_emits_one_structured_object_per_declaration() {
+    // `--json` emits one machine-readable object per declaration (the `documentSymbol` payload an editor
+    // consumes without re-parsing the `file:line:col: kind name` text). Each object has file/line/col/
+    // kind/name, and the JSON rows correspond 1:1 with the human rows (both computed from the same
+    // resolved declaration set, so they can't drift). Assert the object SHAPE + row parity, not the exact
+    // line/col numbers (those are surface-layout details).
+    let (dir, file) = temp_src("json", PROG);
+    let (ok, out, err) = run(&["symbols", &file, "--json"]);
+    assert!(ok, "cdz symbols --json should succeed: {err}");
+    let rows: Vec<&str> = out.lines().filter(|l| !l.trim().is_empty()).collect();
+    // One object per declaration (pi, inc, main) — same count as the human form.
+    let (_hok, human, _he) = run(&["symbols", &file]);
+    let human_rows = human.lines().filter(|l| !l.trim().is_empty()).count();
+    assert_eq!(
+        rows.len(),
+        human_rows,
+        "one JSON row per human row (parity): {out}"
+    );
+    // Every row is a well-formed object carrying the documented keys.
+    for row in &rows {
+        assert!(
+            row.trim_start().starts_with('{') && row.trim_end().ends_with('}'),
+            "each row is a JSON object: {row}"
+        );
+        for key in ["\"file\"", "\"line\"", "\"col\"", "\"kind\"", "\"name\""] {
+            assert!(row.contains(key), "row has {key}: {row}");
+        }
+    }
+    // The classified declarations are present with their kinds (the same facts as the human form).
+    assert!(
+        out.contains("\"kind\":\"value\"") && out.contains("\"name\":\"pi\""),
+        "the value `pi` is emitted as a structured object: {out}"
+    );
+    assert!(
+        out.contains("\"kind\":\"function\"") && out.contains("\"name\":\"inc\""),
+        "the private function `inc` is emitted (superset, private included): {out}"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }

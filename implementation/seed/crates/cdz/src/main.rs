@@ -210,9 +210,10 @@ enum Cmd {
     /// `file:line:col: name : type`.
     Exports(ExportsArgs),
     /// The document OUTLINE of FILE: every top-level declaration (value/function/type/effect/module)
-    /// classified by kind, as `file:line:col: kind name` — the LSP `documentSymbol` analogue. The
-    /// superset companion of `cdz exports` (which lists only the exported subset): `symbols` lists EVERY
-    /// declaration, private ones included, so an editor can render a symbol tree / breadcrumb.
+    /// classified by kind, as `file:line:col: kind name` — the LSP `documentSymbol` analogue (`--json`
+    /// emits one structured object per declaration for an editor/tool). The superset companion of `cdz
+    /// exports` (which lists only the exported subset): `symbols` lists EVERY declaration, private ones
+    /// included, so an editor can render a symbol tree / breadcrumb.
     Symbols(SymbolsArgs),
     /// SEMANTIC SYNTAX HIGHLIGHTING for FILE: every token CLASSIFIED by the role it plays (type vs
     /// constructor vs local vs call vs unbound), as `file:line:col: kind` — the LSP `semanticTokens`
@@ -2905,6 +2906,12 @@ struct ExportsArgs {
 struct SymbolsArgs {
     /// The program file (`.cdz`/`.ml` → ml, `.sexp`/`.sexpr` → sexpr).
     file: String,
+    /// Emit each declaration as a machine-readable JSON object (one per line) instead of the human
+    /// `file:line:col: kind name` text — the shape an editor / tool consumes to build a symbol tree
+    /// without re-parsing the text layout. Each object has `file`, `line`, `col`, `kind`, `name` (the
+    /// `cdz check --json`/`cdz metadata` machine-readable convention). The `documentSymbol` payload.
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(clap::Args)]
@@ -4157,7 +4164,9 @@ fn run_symbols(args: &SymbolsArgs) -> ExitCode {
         return ExitCode::SUCCESS;
     }
     // Each line is `name<TAB>kind<TAB>name-node-id`. One line-start index (binary-searched line:col) so a
-    // wide declaration list stays linear (the same swap `exports`/`highlight` carry).
+    // wide declaration list stays linear (the same swap `exports`/`highlight` carry). Both output shapes —
+    // the human `file:line:col: kind name` and the `--json` object — are computed from the SAME resolved
+    // `(name, kind, line, col)` so they can't drift.
     let index = cadenza_syntax::query::driver::LineIndex::new(&source);
     for line in text.lines() {
         let mut cols = line.splitn(3, '\t');
@@ -4165,18 +4174,31 @@ fn run_symbols(args: &SymbolsArgs) -> ExitCode {
             (Some(n), Some(k), Some(d)) => (n, k, d),
             _ => continue,
         };
-        let loc = match node
+        // Resolve the name-node id to a `line:col` (or `None` if the span table has no entry — then the
+        // human form prints just the file and the JSON omits line/col).
+        let line_col = node
             .parse::<u32>()
             .ok()
             .and_then(|d| spans.get(cadenza_syntax::StructId(d)))
-        {
-            Some(span) => {
-                let (l, c) = index.line_col(&source, span.start);
-                format!("{}:{l}:{c}", args.file)
+            .map(|span| index.line_col(&source, span.start));
+        if args.json {
+            use cadenza_syntax::query::json;
+            let mut obj = json::Object::new();
+            obj.string("file", &args.file);
+            if let Some((l, c)) = line_col {
+                obj.raw("line", &l.to_string());
+                obj.raw("col", &c.to_string());
             }
-            None => args.file.clone(),
-        };
-        println!("{loc}: {kind} {name}");
+            obj.string("kind", kind);
+            obj.string("name", name);
+            println!("{}", obj.finish());
+        } else {
+            let loc = match line_col {
+                Some((l, c)) => format!("{}:{l}:{c}", args.file),
+                None => args.file.clone(),
+            };
+            println!("{loc}: {kind} {name}");
+        }
     }
     ExitCode::SUCCESS
 }
