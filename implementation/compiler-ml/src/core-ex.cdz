@@ -86,6 +86,7 @@ def var(v: Int64) = Ex.Var(v)
 def add(l: Ex, r: Ex) = Ex.Bin(op-add(), l, r)
 def sub(l: Ex, r: Ex) = Ex.Bin(op-sub(), l, r)
 def mul(l: Ex, r: Ex) = Ex.Bin(op-mul(), l, r)
+def div(l: Ex, r: Ex) = Ex.Bin(op-div(), l, r)
 
 @test
 def cx-atom-size-one() =
@@ -109,7 +110,8 @@ def cx-op-codes-distinct() =
   // the four op codes are distinct and match the parser's (+ 43, - 45, * 42, / 47).
   if op-of(add(num(0), num(0))) == 43 then
     (if op-of(sub(num(0), num(0))) == 45 then
-      (if op-of(mul(num(0), num(0))) == 42 then unit else trap("mul 42")) else trap("sub 45")) else trap("add 43")
+      (if op-of(mul(num(0), num(0))) == 42 then
+        (if op-of(div(num(0), num(0))) == 47 then unit else trap("div 47")) else trap("mul 42")) else trap("sub 45")) else trap("add 43")
 
 @test
 def cx-max-id-seeds-fresh() =
@@ -145,4 +147,4 @@ def cx-atom-var-and-num-only() =
   // only Num and Var are atoms; Bin/Let/Lam/App are not.
   if is-atom(var(3)) then (if is-atom(Ex.Lam(0, num(1))) then trap("Lam is not an atom") else (if is-atom(Ex.App(num(1), num(2))) then trap("App is not an atom") else unit)) else trap("Var is an atom")
 
-export { Ex.*, op-of, op-add, op-sub, op-mul, op-div, size, depth, max-id, is-atom, op-count, num, var, add, sub, mul }
+export { Ex.*, op-of, op-add, op-sub, op-mul, op-div, size, depth, max-id, is-atom, op-count, num, var, add, sub, mul, div }
