@@ -1566,6 +1566,7 @@ pass	a runtime-selected closure survives as a value threaded through a recursive
 pass	a runtime-selected function chosen directly at the application head is applied
 pass	a same-dimension quantity annotation whose inner numeric type differs is still an error
 pass	a same-type sum match is accepted and binds the payload (the control)
+pass	a same-unit quantity join flows and its magnitude reads back
 pass	a scalar BETWEEN two Tuple args with a LIST result
 pass	a scalar element is projected DIRECTLY from a named function's runtime tuple result
 pass	a scalar element is projected directly from a function's runtime tuple result
@@ -1997,6 +1998,7 @@ pass	an explicit annotation overrides the default-fraction pragma
 pass	an explicit annotation overrides the default-integer pragma
 pass	an explicit conversion makes the operation well-typed
 pass	an explicit conversion off the truncating-display quantity is still exact (5 foot in inches = 60)
+pass	an explicit conversion repairs a mixed-unit join
 pass	an explicit float-width conversion makes a mixed-width operation well-typed
 pass	an export and a like-named metadata key do not collide
 pass	an export mixing a scalar and a nested-tuple parameter returns a list from both

@@ -1445,3 +1445,39 @@
   (input  (Qty.value (+ (Qty.of (UInt8.of 1) (Unit.prefix kilo (Unit.base #"meter")))
                         (Qty.of (UInt8.of 50) (Unit.base #"meter")))))
   (error  CDZ0304))
+
+; --- Quantity joins: the same-unit flow and the explicit-conversion repair --------------------------
+; 806e45ba9 fixed the mixed-unit join DIAGNOSTIC (a scale clash, not a shadowed declaration). These
+; pin the join semantics around it, promoted from passing breaker probes: a same-unit join is ONE
+; type and flows; the repair for a mixed join is the explicit conversion (no silent unification).
+
+(case "a same-unit quantity join flows and its magnitude reads back"
+  (doc    "`(if (> b 0) (Qty.of 1 kilometer) (Qty.of 5 kilometer))` — BOTH branches are `(Qty Int64
+           kilometer)`, one type, so the join flows; `Qty.value` reads the selected magnitude (1).
+           The positive control beside the mixed-unit rejection: unit identity, not mere dimension
+           agreement, is what joins (the conversion of a JOINED quantity is a separate, currently
+           declining capability — this pins the join itself).")
+  (input  (do
+            (def (main (: b Int64))
+              (Qty.value (if (> b 0) (Qty.of 1 (Unit.of #"kilometer")) (Qty.of 5 (Unit.of #"kilometer")))))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 1 Int64)))
+
+(case "an explicit conversion repairs a mixed-unit join"
+  (doc    "The REPAIR the scale-clash diagnostic names: convert one branch explicitly so both are
+           meters — `(if b (Qty.of 1000 meter) (Qty.of (Unit.in meter (Qty.of 1 kilometer)) meter))`
+           — and the join flows; both directions unwrap to 1000. Pins the no-silent-conversion rule's
+           constructive half: the program states the scale change, and the two spellings of one
+           kilometer agree exactly.")
+  (input  (do
+            (def (main (: b Int64))
+              (Unit.in (Unit.of #"meter")
+                (if (> b 0)
+                    (Qty.of 1000 (Unit.of #"meter"))
+                    (Qty.of (Unit.in (Unit.of #"meter") (Qty.of 1 (Unit.of #"kilometer"))) (Unit.of #"meter")))))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 1000 Int64))
+  (call   main (: 0 Int64))
+  (output (: 1000 Int64)))
