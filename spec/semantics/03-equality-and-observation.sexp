@@ -61,6 +61,40 @@
   (call   main (: 1.5 Float64) (: 2.5 Float64))
   (output (: true Bool)))
 
+; The same boolean-coercion also composes over a float ORDERING compare (`<`) — DISTINCT from the float
+; `=` above. Float ordering is the IEEE PARTIAL order: a NaN operand makes `(< a b)` FALSE (unordered),
+; so the inner Bool is not classically-complete. The `= true` coercion returns that Bool unchanged; the
+; `= false` coercion NEGATES it — and negating an UNORDERED-false yields TRUE, the adversarial case. A
+; fold that reused an equality-style canonical-bit path for the negation, or assumed the ordering compare
+; partitions the space (so `¬(a<b)` ⟺ `a>=b`), would MISCOMPILE the NaN pair (where BOTH `a<b` and `a>=b`
+; are false, yet `= false` must still flip the false to true). These pin the coercion over a float
+; ORDERING operand (the earlier float cases used `=`; the Int cases used a total order), both backends.
+
+(case "the true-literal coercion of a float ordering compare returns the compare, NaN stays false"
+  (doc    "`(= (< a b) true)` over Float64 params returns the ordering Bool unchanged: (1.0,2.0) → `1<2`
+           true → true; the unordered (nan,1.0) → `nan<1` FALSE → false. Pins `(= bexpr true)` = bexpr
+           composing over a float PARTIAL-order compare (not the total-order Int or the float `=` above),
+           both backends.")
+  (input  (do (def (main (: a Float64) (: b Float64)) (= (< a b) true)) (export main)))
+  (call   main (: 1.0 Float64) (: 2.0 Float64))
+  (output (: true Bool))
+  (call   main (: nan Float64) (: 1.0 Float64))
+  (output (: false Bool)))
+
+(case "the false-literal coercion negates a float ordering compare, turning an unordered pair true"
+  (doc    "The dual and the adversarial case: `(= (< a b) false)` = `¬(< a b)`. Finite ordered (1.0,2.0):
+           `1<2` true, `= false` → false. The UNORDERED (nan,1.0): `nan<1` is FALSE, `= false` → TRUE —
+           negating an unordered-false. Reversed finite (2.0,1.0): `2<1` false, `= false` → true. Pins that
+           the negation acts on the Bool VALUE, not on an assumed `¬(a<b) ⟺ a>=b` (which fails for NaN,
+           where both are false); both backends.")
+  (input  (do (def (main (: a Float64) (: b Float64)) (= (< a b) false)) (export main)))
+  (call   main (: 1.0 Float64) (: 2.0 Float64))
+  (output (: false Bool))
+  (call   main (: nan Float64) (: 1.0 Float64))
+  (output (: true Bool))
+  (call   main (: 2.0 Float64) (: 1.0 Float64))
+  (output (: true Bool)))
+
 (case "negative zero is not equal to positive zero"
   (doc    "Witnesses core-semantics.md #Floating-Point Equality Follows The Canonical Byte Form:
            -0.0 and 0.0 have distinct canonical byte forms, so they are not equal.")
@@ -126,6 +160,51 @@
   (input  (do (type B (Wrap Float64))
               (def (eq (: x Float64) (: y Float64)) (= (B.Wrap x) (B.Wrap y)))
               (def (main) (eq 1.25 1.25)) (export main)))
+  (call   main)
+  (output (: true Bool)))
+
+; --- COMPOUND value-equality over a runtime BIGINT / RATIONAL leaf ------------------------------------
+; The numeric-tower siblings of the Float-leaf cases. A runtime BigInt is a CANONICAL sign-magnitude byte
+; leaf (runtime `box_bigint`, the sole producer), and a runtime Rational is a NORMALIZED 2-BigInt-handle
+; node (lowest terms, sign on the numerator — 06-numeric-model "one canonical byte form"). Both are
+; canonical BY CONSTRUCTION, so `ty_heap_walkable` admits them and `champ_eq` compares a BigInt leaf by its
+; bytes / descends a Rational's two canonical children — exactly the property that made the Float admission
+; sound. Before this, a whole-compound `=` over a BigInt/Rational leaf declined "comparison of a compound
+; value needs a heap walk" (forcing componentwise comparison — the CAD Rational-redirect blocker). A DIRECT
+; scalar BigInt/Rational `=` already worked; this is the NESTED-leaf face.
+
+(case "compound equality over a runtime BigInt leaf compares by the canonical bytes"
+  (doc    "`(= (tuple (BigInt.of a) 1) (tuple (BigInt.of b) 1))` over runtime BigInts — the BigInt leaf is
+           compared by its canonical sign-magnitude bytes through the value-eq walk. a=b=7 → true; a=7,b=8
+           → false. Pins the runtime BigInt compound-`=` face (was a decline).")
+  (input  (do (def (eq (: a Int64) (: b Int64)) (= (tuple (BigInt.of a) 1) (tuple (BigInt.of b) 1)))
+              (def (main) (eq 7 7)) (export main)))
+  (call   main)
+  (output (: true Bool)))
+
+(case "compound equality over a runtime BigInt leaf distinguishes different values"
+  (doc    "The negative companion: different BigInts in the tuple → false (a=7, b=8). Confirms the BigInt
+           compound walk is genuinely structural, not always-true.")
+  (input  (do (def (eq (: a Int64) (: b Int64)) (= (tuple (BigInt.of a) 1) (tuple (BigInt.of b) 1)))
+              (def (main) (eq 7 8)) (export main)))
+  (call   main)
+  (output (: false Bool)))
+
+(case "compound equality over a runtime Rational leaf compares by the normalized form"
+  (doc    "`(= (tuple (Rational.of a 2) 1) (tuple (Rational.of b 2) 1))` — the Rational leaf (a normalized
+           2-BigInt-handle node) is compared by `champ_eq` descending its canonical children. a=b=3 → true;
+           a=3,b=5 → false. Pins the runtime Rational compound-`=` face.")
+  (input  (do (def (eq (: a Int64) (: b Int64)) (= (tuple (Rational.of a 2) 1) (tuple (Rational.of b 2) 1)))
+              (def (main) (eq 3 3)) (export main)))
+  (call   main)
+  (output (: true Bool)))
+
+(case "compound equality over a Rational leaf respects normalization (1/2 = 2/4)"
+  (doc    "The normalization face: `(Rational.of 1 2)` and `(Rational.of 2 4)` both normalize to the lowest-
+           terms `1/2` — the SAME canonical node — so a compound holding one equals a compound holding the
+           other → true. Confirms the Rational leaf's canonical form (gcd-reduced) is what `champ_eq` walks,
+           not the as-written numerator/denominator.")
+  (input  (do (def (main) (= (tuple (Rational.of 1 2) 1) (tuple (Rational.of 2 4) 1))) (export main)))
   (call   main)
   (output (: true Bool)))
 
@@ -1304,3 +1383,29 @@
               (= (tuple 5 (= (% s 2) 0)) (tuple 5 (= (% s 3) 0))))
             (export main)))
   (call   main (: 4 Int64)) (output (: false Bool)))
+
+(case "the float ordering-versus-equality split on the zero pair"
+  (doc    "`(= -0.0 0.0)` is FALSE (distinct canonical byte forms) while `(<= -0.0 0.0)` is TRUE
+           (IEEE order-equal) — both on ONE pair in one body → 0 + 1 = 1. The landed ordering cases
+           pin each side separately; this pins the SPLIT itself side by side, the sharpest
+           two-relations-one-pair discriminator (a lowering that reused the equality path for `<=`'s
+           equal-case answers 11; one that reused ordering for `=` answers 10).")
+  (input  (do
+            (def (main (: d Int64))
+              (+ (if (= -0.0 0.0) 10 0) (if (<= -0.0 0.0) 1 0)))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 1 Int64)))
+
+(case "infinities order beyond every finite value"
+  (doc    "`(/ 1.0 0.0)` = +∞ exceeds 1.0; `(/ -1.0 0.0)` = -∞ is below -1000000.0 → 10 + 1 = 11.
+           Float division by zero is total (the never-traps rule) and the resulting infinities take
+           their IEEE places in the runtime order — the infinity face of the partial-order landing
+           (its pins cover finite values and NaN).")
+  (input  (do
+            (def (main (: x Float64))
+              (+ (if (< 1.0 (/ 1.0 x)) 10 0)
+                 (if (< (/ -1.0 x) -1000000.0) 1 0)))
+            (export main)))
+  (call   main (: 0.0 Float64))
+  (output (: 11 Int64)))

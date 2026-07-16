@@ -69,8 +69,8 @@ def partition(body: List(Stmt), defset: Set(Int64), hoisted: List(Stmt), kept: L
   | [] => (hoisted, kept)
   | [s, .. rest] =>
     if is-invariant(defset, s)
-    then partition(rest, defset, List.concat(hoisted, [s]), kept)
-    else partition(rest, defset, hoisted, List.concat(kept, [s]))
+    then partition(rest, defset, List.push(hoisted, s), kept)
+    else partition(rest, defset, hoisted, List.push(kept, s))
 
 /// Iterate `hoist` to a fixpoint: after moving the first round of invariants out, the REMAINING body has a
 /// smaller def set, so statements that read a now-hoisted var become invariant. Repeat until a pass hoists

@@ -38,6 +38,22 @@ def plate(w: Rational, d: Rational, t: Rational, r: Rational) =
 def tube(len: Rational, ro: Rational, ri-inner: Rational) =
   Solidr.Differencer(cyl(len, ro), cyl(len, ri-inner))
 
+/// An L-bracket: a base plate `w × d × t` UNIONED with an upright wall `w × t × h` that stands along the
+/// base's back edge, with a mounting hole (radius `hole-r`) through the base. Write
+/// `l-bracket (mm 50) (mm 40) (mm 30) (inch (1/8)) (mm 3)` — metric arms, an IMPERIAL thickness (1/8 inch =
+/// 127/40 mm), all exact. This is the multi-operation showcase: `Unionr` joins the two plates, `Differencer`
+/// cuts the hole, `Translater` positions both — the whole print-ready part is one exact model. The base sits
+/// centred at the origin (spans z ∈ [-t/2, t/2]); the wall rises from the base's back edge to +z, so the
+/// union's bounding box is exactly `w × d × h` regardless of the (thin) wall thickness.
+def l-bracket(w: Rational, d: Rational, h: Rational, t: Rational, hole-r: Rational) =
+  let base = box(w, d, t) in
+  // the upright wall: a thin slab, moved to the base's back edge (+y) and up (+z) so it stands on the base.
+  let wall = move(ri(0), (d - t) / ri(2), (h - t) / ri(2), box(w, t, h)) in
+  let bracket = Solidr.Unionr(base, wall) in
+  // a mounting hole through the base thickness, near the front-centre of the base.
+  let hole = move(ri(0), ri(0) - (d / ri(4)), ri(0), cyl(t, hole-r)) in
+  Solidr.Differencer(bracket, hole)
+
 /// ============================ @test suite (R3 exact+units models) ============================
 
 @test
@@ -76,4 +92,18 @@ def foot-dimensioned-box-is-exact() =
   match bounding-box(c) with | Aabbr.Boxr(_, hi) =>
     if v3r-x(hi) == Rational.of(762, 5) then unit else trap("1-foot cube half-extent = 762/5 mm (full 1524/5)")
 
-export { box, cyl, move, plate, tube }
+@test
+def l-bracket-box-is-its-envelope-in-mm() =
+  // a 50×40×30 mm L-bracket (1/8-inch wall, 3mm hole) → outer envelope exactly (50, 40, 30) mm: the base
+  // gives w×d, the upright wall raises z to the full h, and the hole (a Difference) never grows the box.
+  let b = l-bracket(mm(ri(50)), mm(ri(40)), mm(ri(30)), inch(Rational.of(1, 8)), mm(ri(3))) in
+  if v3r-eq(aabbr-size(bounding-box(b)), v3r(ri(50), ri(40), ri(30))) then unit
+  else trap("L-bracket envelope is 50×40×30 mm exactly (union of base+wall, hole doesn't grow it)")
+
+@test
+def l-bracket-wall-thickness-is-exact-imperial() =
+  // the showcase: the wall is 1/8 inch = 127/40 mm (= 3.175), carried EXACTLY alongside the metric arms.
+  if inch(Rational.of(1, 8)) == Rational.of(127, 40) then unit
+  else trap("1/8 inch wall = 127/40 mm exactly, mixed with the metric 50×40×30 bracket")
+
+export { box, cyl, move, plate, tube, l-bracket }

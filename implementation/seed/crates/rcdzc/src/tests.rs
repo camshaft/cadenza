@@ -3536,6 +3536,41 @@ fn compound_equality_over_a_runtime_float_leaf_follows_the_canonical_byte_form()
     }
 }
 
+/// COMPOUND EQUALITY over a runtime BIGINT / RATIONAL leaf — the numeric-tower siblings of the Float-leaf
+/// admission. A runtime BigInt is a canonical sign-magnitude byte leaf (`box_bigint`); a Rational is a
+/// NORMALIZED 2-BigInt-handle node, so `champ_eq` descends its canonical children. `ty_heap_walkable` now
+/// admits both (was a decline forcing componentwise compare — the CAD Rational-redirect blocker). The
+/// sharpest check is Rational normalization: `1/2` and `2/4` reduce to the SAME node, so tuples holding
+/// them compare EQUAL → 1. (The equal/different faces are graded in 03-equality-and-observation.)
+#[test]
+fn compound_equality_over_a_runtime_rational_leaf_respects_normalization() {
+    use crate::testkit::parse;
+    let src = "(module m \
+                 (def (main) (if (= (tuple (Rational.of 1 2) 1) (tuple (Rational.of 2 4) 1)) 1 0)) \
+                 (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect(
+        "compound Rational equality must compile (ty_heap_walkable admits a Rational leaf), not decline",
+    );
+    let Some(runtime) = find_runtime_wasm() else {
+        eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
+        return;
+    };
+    let opts = cdz_run::RunOpts {
+        export: Some("main".to_string()),
+        args: vec![],
+        runtime: Some(runtime),
+        runtime_cache_dir: None,
+        host_responses: Vec::new(),
+    };
+    match cdz_run::run(&bytes, &opts).expect("run") {
+        cdz_run::Outcome::Value(s) => assert_eq!(
+            s, "1",
+            "1/2 and 2/4 normalize to the same canonical Rational node, so the tuples compare equal"
+        ),
+        cdz_run::Outcome::Trap(t) => panic!("compound Rational equality trapped: {t}"),
+    }
+}
+
 /// RUNTIME STRUCTURAL EQUALITY leak balance: a `=` on two RUNTIME sum values (`value-eq`) leaves NO
 /// live heap cells. Both operands are OWNED temporaries — `(build 3)` allocates a cons-list each side —
 /// and `value-eq` only BORROWS them, so the emit must `drop` each after the compare (else two whole
@@ -20040,6 +20075,51 @@ mod match_engine {
     }
 
     #[test]
+    fn an_empty_let_binding_list_names_the_binds_nothing_case_not_a_malformed_binding() {
+        // `(let () <body>)` — an EMPTY binding list — is distinct from a MALFORMED one `(let ((a 1 2)) …)`:
+        // there is no binding to be "malformed", the `let` just binds nothing. The message now says so
+        // ("binds nothing — an empty `()` binding list has no effect; write the body directly") instead of
+        // the misleading "each must be `(<name> <init>)`" (which implies a broken binding that isn't there).
+        let msg = |src: &str| -> String {
+            crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.code.as_deref() == Some("CDZ0201"))
+                .unwrap_or_else(|| panic!("expected CDZ0201 for {src}"))
+                .message
+        };
+        let empty = msg("(module m (def (f) (let () 5)) (export f))");
+        assert!(
+            empty.contains("binds nothing") && empty.contains("empty `()`"),
+            "an empty binding list names the binds-nothing case: {empty}"
+        );
+        // A GENUINELY MALFORMED binding list keeps the "malformed" message (a broken `(<name> <init>)`).
+        for malformed in [
+            "(module m (def (f) (let ((a 1 2)) a)) (export f))", // 3-element binding
+            "(module m (def (f) (let (a) a)) (export f))",       // a bare-name non-pair binding
+        ] {
+            let m = msg(malformed);
+            assert!(
+                m.contains("bindings are malformed") && !m.contains("binds nothing"),
+                "a malformed binding keeps the malformed message: {malformed} -> {m}"
+            );
+        }
+        // NO regression: the degenerate `(let)` (no bindings AND no body) keeps its own message; a valid
+        // one-binding let compiles clean.
+        assert!(
+            msg("(module m (def (f) (let)) (export f))").contains("no bindings and no body"),
+            "the degenerate (let) keeps its no-bindings-and-no-body message"
+        );
+        assert!(
+            crate::diagnostics(&mut crate::db::Db::load(parse(
+                "(module m (def (f) (let ((a 1)) a)) (export f))"
+            )))
+            .iter()
+            .all(|d| d.severity != crate::abi::Severity::Error),
+            "a valid one-binding let is clean"
+        );
+    }
+
+    #[test]
     fn a_member_access_with_the_wrong_operand_count_offers_a_delete_fix_and_names_the_form() {
         // Member access `(. operand key)` is a fixed-arity form (want 2), so it routes through the SHARED
         // `fixed_arity_reject` the other fixed-arity forms use — bringing it to fix-parity with the family
@@ -20536,21 +20616,21 @@ mod match_engine {
     #[test]
     fn record_extend_with_pop_are_derived_row_ops_with_presence_checks() {
         // 15-rows extend/with/pop — the DERIVED row ops (rewrites of merge/without). `Record.extend r
-        // (z v)` ADDS an absent field (present → CDZ0211); `Record.with r (z v)` REPLACES a present field
+        // #z v` ADDS an absent field (present → CDZ0211); `Record.with r #z v` REPLACES a present field
         // (absent → CDZ0212), retyping to the new value's type; `Record.pop r z` yields `(value,
-        // remaining-record)` (absent → CDZ0212). Each second operand is a `(name value)` pair (extend/with)
-        // or a bare name (pop), NOT a label list.
+        // remaining-record)` (absent → CDZ0212). extend/with take a `#z` field LABEL and a value operand
+        // (DESIGN-record-update-syntax.md, 3-operand); pop takes a bare name.
         // extend adds an ABSENT field (well-formed); a PRESENT field is CDZ0211.
         assert_eq!(
             reject_code(
-                "(module m (def (main) (Record.extend (record (a 1)) (b 2))) (export main))"
+                "(module m (def (main) (Record.extend (record (a 1)) #\"b\" 2)) (export main))"
             ),
             None,
             "extend of an absent field is well-formed"
         );
         assert_eq!(
             reject_code(
-                "(module m (def (main) (Record.extend (record (a 1)) (a 2))) (export main))"
+                "(module m (def (main) (Record.extend (record (a 1)) #\"a\" 2)) (export main))"
             )
             .as_deref(),
             Some("CDZ0211"),
@@ -20559,14 +20639,16 @@ mod match_engine {
         // with replaces a PRESENT field (well-formed, may retype); an ABSENT field is CDZ0212.
         assert_eq!(
             reject_code(
-                "(module m (def (main) (Record.with (record (a 1) (b 2)) (b true))) (export main))"
+                "(module m (def (main) (Record.with (record (a 1) (b 2)) #\"b\" true)) (export main))"
             ),
             None,
             "with of a present field (even retyping) is well-formed"
         );
         assert_eq!(
-            reject_code("(module m (def (main) (Record.with (record (a 1)) (z 5))) (export main))")
-                .as_deref(),
+            reject_code(
+                "(module m (def (main) (Record.with (record (a 1)) #\"z\" 5)) (export main))"
+            )
+            .as_deref(),
             Some("CDZ0212"),
             "with of an absent field is CDZ0212 (use extend)"
         );
@@ -20596,7 +20678,7 @@ mod match_engine {
             dp.message
         );
         let dw = reject_full(
-            "(module m (def (main) (Record.with (record (alpha 1) (beta 2)) (alpa 9))) (export main))",
+            "(module m (def (main) (Record.with (record (alpha 1) (beta 2)) #\"alpa\" 9)) (export main))",
         )
         .expect("with of an absent field is CDZ0212");
         assert!(
@@ -20642,7 +20724,7 @@ mod match_engine {
 
         // extend a PRESENT field → CDZ0211 + a VERIFIED swap `extend`→`with`.
         let de = reject_full(
-            "(module m (def (main) (Record.extend (record (a 1)) (a 2))) (export main))",
+            "(module m (def (main) (Record.extend (record (a 1)) #\"a\" 2)) (export main))",
         )
         .expect("extend of a present field is CDZ0211");
         assert_eq!(de.code.as_deref(), Some("CDZ0211"), "got: {}", de.message);
@@ -20660,7 +20742,7 @@ mod match_engine {
 
         // with an ABSENT field that is NOT a near typo → CDZ0212 + a VERIFIED swap `with`→`extend`.
         let dw = reject_full(
-            "(module m (def (main) (Record.with (record (alpha 1)) (zzzzz 5))) (export main))",
+            "(module m (def (main) (Record.with (record (alpha 1)) #\"zzzzz\" 5)) (export main))",
         )
         .expect("with of an absent field is CDZ0212");
         assert_eq!(dw.code.as_deref(), Some("CDZ0212"), "got: {}", dw.message);
@@ -20677,7 +20759,7 @@ mod match_engine {
 
         // A NEAR-miss field still prefers the label typo-fix (the likelier intent), NOT the op swap.
         let dn = reject_full(
-            "(module m (def (main) (Record.with (record (alpha 1)) (alpXa 5))) (export main))",
+            "(module m (def (main) (Record.with (record (alpha 1)) #\"alpXa\" 5)) (export main))",
         )
         .expect("with of a near-miss field is CDZ0212");
         let fn_ = dn
@@ -45022,6 +45104,46 @@ mod stage1 {
     }
 
     #[test]
+    fn an_agent_loop_shape_runs_model_ask_then_tool_dispatch_over_turns() {
+        // The native agent HARNESS (v-agent-harness) loop SPINE, pinned as a single-shot tail-resumptive
+        // program that runs today with NO ABI dependency — the control structure Inc-2 builds on
+        // (`DESIGN-agent-harness.md`). A recursive `loop` drives N turns; each turn performs `Model.ask`
+        // (the model call — here a MOCK handler standing in for the Bedrock peer, which the free
+        // nearer-handler-wins override lets us swap for the real peer later, v-effects §A-Handler-May-
+        // Interpose), then DISPATCHES a tool by value: an `= 0` equality check on the model's answer routes
+        // to `Tools.stop` (return the accumulator) vs `Tools.step` (accumulate + recurse). Both effects are
+        // handled IN-PROGRAM via NESTED handlers; the Tools handler threads the running total as its state.
+        // main runs 3 turns: turn i performs ask(i)→i (mock), i≠0 so step accumulates i and recurses; at
+        // i=0, ask→0, stop returns the accumulator = 3+2+1 = 6. A regression in nested-handler dispatch,
+        // single-shot resume, handler-state threading, or value-dispatch would break the harness's whole
+        // loop. Each Tools arm resumes its own argument `a` (both `step` and `stop` hand back the value they
+        // were called with); `step` also threads `a` as the running state. Nullary `main` (the turn count is
+        // the literal `3`) matches the sibling handler tests' no-arg `run_returns`; verified e2e via
+        // `cdz`/`cdz-run` that the parameterized form main(3)=6, main(5)=15.
+        let src = "(do \
+            (effect Model (op ask (-> Int64 Int64))) \
+            (effect Tools (op step (-> Int64 Int64)) (op stop (-> Int64 Int64))) \
+            (def (loop (: i Int64) (: acc Int64)) \
+                (if (= (Model.ask i) 0) \
+                    (Tools.stop acc) \
+                    (loop (- i 1) (Tools.step (+ acc i))))) \
+            (def (main) \
+                (handle Model 0 ((ask (q) s (resume q s))) \
+                    (handle Tools 0 ((step (a) s (resume a a)) (stop (a) s (resume a a))) \
+                        (loop 3 0)))) \
+            (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("the agent-loop shape compiles and runs"),
+                "main"
+            ),
+            6,
+            "3 turns accumulate 3+2+1; the i=0 turn's `= 0` dispatch routes to stop → 6"
+        );
+    }
+
+    #[test]
     fn two_same_named_effects_are_distinct_not_conflated() {
         // Two top-level effects declared with the SAME name `Log` but DIFFERENT operations. A bare `Log`
         // reference resolves FIRST-declared (op `emit`), so a handler arm naming the OTHER's op `record`
@@ -66709,28 +66831,28 @@ mod cross_component_oracle {
             "a closure-typed op on a NON-peer-bound effect must NOT be flagged: {:?}",
             d13.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
-        // (i) a peer-bound op with a STRING ARGUMENT is CDZ0201 — an inbound rope to a peer lowers as a
-        // component `string` the peer envelope cannot satisfy (no `mem`), which emitted an INVALID
-        // component ("missing module instantiation argument named `mem`") — a silent invalid-component
-        // miscompile. Now a clean compile-time decline (report-don't-miscompile).
+        // (i) a peer-bound op with a STRING ARGUMENT is now EMITTED, not declined — an inbound rope crosses
+        // to a peer as a runtime HANDLE (like any compound), so declaring one must NOT raise the old
+        // "String or Bytes ARGUMENT" decline. (Was a CDZ0201 decline while the inbound-rope-handle emit was
+        // unwired; now `collect_used_ops`/`collect_host_arg_strings` are peer-aware and the handle crosses.
+        // The e2e crossing is pinned by `a_string_argument_crosses_to_a_peer_*`.)
         let str_arg = "(do (effect S (op blen (-> String Int64))) (bind S \"cadenza:str/api\") \
                        (def (main) 0) (export main))";
         let d14 = crate::diagnostics(&mut crate::db::Db::load(parse(str_arg)));
         assert!(
-            d14.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
-                && d.message
-                    .contains("cannot yet take a String or Bytes ARGUMENT")),
-            "a peer-bound op with a String ARGUMENT is CDZ0201, not a silent invalid component: {:?}",
+            !d14.iter()
+                .any(|d| d.message.contains("String or Bytes ARGUMENT")),
+            "a peer-bound op with a String ARGUMENT must no longer be declined (it crosses as a handle): {:?}",
             d14.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
-        // A Bytes argument is caught the same way.
+        // A Bytes argument is likewise emittable now (the same rope-handle path).
         let bytes_arg = "(do (effect S (op f (-> Bytes Int64))) (bind S \"cadenza:str/api\") \
                          (def (main) 0) (export main))";
         let d15 = crate::diagnostics(&mut crate::db::Db::load(parse(bytes_arg)));
         assert!(
-            d15.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
-                && d.message.contains("String or Bytes ARGUMENT")),
-            "a peer-bound op with a Bytes ARGUMENT is CDZ0201: {:?}",
+            !d15.iter()
+                .any(|d| d.message.contains("String or Bytes ARGUMENT")),
+            "a peer-bound op with a Bytes ARGUMENT must no longer be declined: {:?}",
             d15.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
         // NO FALSE POSITIVE: a String/Bytes RESULT (not an argument) crosses fine — the peer builds the
@@ -68615,6 +68737,216 @@ mod cross_component_oracle {
                 "two compound arguments each cross as their own handle in one peer call"
             ),
             cdz_run::Outcome::Trap(t) => panic!("two-compound-argument run trapped: {t}"),
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // PL28 — a STRING ARGUMENT crosses to a peer as a runtime HANDLE (the Bedrock-as-peer critical path).
+    // U16/PL17 pin a COMPOUND arg crossing as a handle; a String is the same shape — a rope leaf on the
+    // shared value heap, handed in as its u32 handle (NOT marshaled as a component `string`). The provider
+    // takes a `String` arg and returns its `byte-len` (an Int64 result, so NO result-escape is involved —
+    // this isolates the ARGUMENT direction). main = S.blen("hello") = 5. Before this cell the consumer was
+    // rejected (PL24, STRING_ARG_ACROSS_PEER) because the arg's rope-build ops were not collected into the
+    // runtime-import set, so the emitted consumer took the runtime-FREE extern envelope and called an
+    // unimported `bytes-alloc` → an invalid component. The fix teaches `collect_used_ops` that a PEER
+    // String/Bytes arg builds a rope (unlike a HOST String arg, marshaled as (ptr,len)).
+    // ------------------------------------------------------------------------------------------------
+    #[test]
+    fn a_string_argument_crosses_to_a_peer_as_a_runtime_handle() {
+        use crate::backend::wasm::runtime_abi::{REQUIRED_RUNTIME_HASH, RUNTIME_IFACE};
+        use crate::testkit::parse;
+        let import_name = format!("{RUNTIME_IFACE}@0.0.0+{REQUIRED_RUNTIME_HASH}");
+        // PROVIDER (source): `blen : String -> Int64` reads the crossed String's byte length.
+        let provider = compile_provider(
+            "(do (def (blen (: s String)) (String.byte-len s)) (export blen))",
+            "cadenza:strs/api",
+        );
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&provider)
+                .expect("the string-arg provider validates");
+        }
+        // CONSUMER (source): passes a String LITERAL into the peer op. The literal builds a rope handle on
+        // the shared runtime and the handle crosses — so the consumer imports the value-heap runtime.
+        let src = "(do \
+            (effect S (op blen (-> String Int64))) \
+            (bind S \"cadenza:strs/api\") \
+            (def (main) (host (S) (S.blen \"hello\"))) \
+            (export main))";
+        let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .unwrap_or_else(|d| {
+                panic!("string-arg consumer compiles: {} [{:?}]", d.message, d.code)
+            });
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&consumer)
+                .expect("string-arg consumer validates");
+        }
+        assert!(
+            String::from_utf8_lossy(&consumer).contains(&import_name),
+            "a String-arg peer consumer imports the value-heap runtime (it builds the rope handle)"
+        );
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("[PL28] runtime wasm not found; skipping");
+            return;
+        };
+        let peers = vec![cdz_run::Peer {
+            bytes: provider,
+            interface: "cadenza:strs/api".to_string(),
+        }];
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: Vec::new(),
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run_with_peers(&consumer, &peers, &opts)
+            .expect("a string argument crosses to a peer")
+        {
+            // The consumer built the rope "hello" and passed its handle to the peer; the peer read its
+            // byte length → 5. A STRING ARGUMENT crossed the boundary as a shared handle (inbound).
+            cdz_run::Outcome::Value(s) => assert_eq!(
+                s, "5",
+                "a string argument crosses to a peer as a shared handle and is read there"
+            ),
+            cdz_run::Outcome::Trap(t) => panic!("string-argument run trapped: {t}"),
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // PL29 — a NON-CONSTANT String argument crosses to a peer. PL28 pins a String LITERAL (a `Core::ConstStr`
+    // built into a rope at the call site); this pins that a String value produced at RUNTIME — here a
+    // `String.concat` — ALSO crosses as its handle. The concat result is already a value-heap rope handle,
+    // so the peer arg emit hands it straight over (no data-segment marshaling). main = S.blen("ab"++"cde") =
+    // byte-len("abcde") = 5. This confirms the decline can drop entirely (not just for constants).
+    // ------------------------------------------------------------------------------------------------
+    #[test]
+    fn a_non_constant_string_argument_crosses_to_a_peer() {
+        use crate::testkit::parse;
+        let provider = compile_provider(
+            "(do (def (blen (: s String)) (String.byte-len s)) (export blen))",
+            "cadenza:strs2/api",
+        );
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&provider)
+                .expect("the non-const string-arg provider validates");
+        }
+        // The arg is a RUNTIME `String.concat`, not a literal — a value-heap rope handle produced in-body.
+        let src = "(do \
+            (effect S (op blen (-> String Int64))) \
+            (bind S \"cadenza:strs2/api\") \
+            (def (main) (host (S) (S.blen (String.concat \"ab\" \"cde\")))) \
+            (export main))";
+        let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .unwrap_or_else(|d| {
+                panic!(
+                    "non-const string-arg consumer compiles: {} [{:?}]",
+                    d.message, d.code
+                )
+            });
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&consumer)
+                .expect("non-const string-arg consumer validates");
+        }
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("[PL29] runtime wasm not found; skipping");
+            return;
+        };
+        let peers = vec![cdz_run::Peer {
+            bytes: provider,
+            interface: "cadenza:strs2/api".to_string(),
+        }];
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: Vec::new(),
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run_with_peers(&consumer, &peers, &opts)
+            .expect("a non-constant string argument crosses to a peer")
+        {
+            cdz_run::Outcome::Value(s) => assert_eq!(
+                s, "5",
+                "a runtime-produced String argument crosses to a peer as its handle"
+            ),
+            cdz_run::Outcome::Trap(t) => panic!("non-const string-argument run trapped: {t}"),
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // PL30 — a MIXED String + scalar argument list crosses to a peer in ONE op (the Bedrock `converse`
+    // shape: a prompt String + a scalar like `max-tokens`). PL28/PL29 pin a lone String arg; u2 pins
+    // scalar args; this pins that the two DISTINCT arg-emit paths INTERLEAVE correctly in a single call —
+    // the String lowers to a rope HANDLE (an i32 handle on the stack) while the Int64 lowers DIRECTLY (an
+    // i64), pushed in declaration order, and the peer reads both. A regression that mis-orders the mixed
+    // push (e.g. treating the String slot as a scalar, or vice versa) would misalign the peer's params;
+    // this is the exact call shape a `(-> String Int64 …)` model op takes. Provider `blen-plus : (String,
+    // Int64) -> Int64` = byte-len(s) + n. main = S.blen-plus("hello", 7) = 5 + 7 = 12.
+    // ------------------------------------------------------------------------------------------------
+    #[test]
+    fn a_mixed_string_and_scalar_argument_cross_to_a_peer_in_one_op() {
+        use crate::backend::wasm::runtime_abi::{REQUIRED_RUNTIME_HASH, RUNTIME_IFACE};
+        use crate::testkit::parse;
+        let import_name = format!("{RUNTIME_IFACE}@0.0.0+{REQUIRED_RUNTIME_HASH}");
+        // PROVIDER: reads a String arg (byte-len) AND a scalar arg, summing them — so BOTH crossed + were
+        // read. The String is a rope handle; the Int64 is a direct scalar.
+        let provider = compile_provider(
+            "(do (def (blen-plus (: s String) (: n Int64)) (+ (String.byte-len s) n)) (export blen-plus))",
+            "cadenza:mix/api",
+        );
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&provider)
+                .expect("the mixed-arg provider validates");
+        }
+        // CONSUMER: passes a String LITERAL and a scalar in ONE call — the two arg-emit paths interleave.
+        let src = "(do \
+            (effect S (op blen-plus (-> String Int64 Int64))) \
+            (bind S \"cadenza:mix/api\") \
+            (def (main) (host (S) (S.blen-plus \"hello\" 7))) \
+            (export main))";
+        let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .unwrap_or_else(|d| {
+                panic!("mixed-arg consumer compiles: {} [{:?}]", d.message, d.code)
+            });
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&consumer)
+                .expect("mixed-arg consumer validates");
+        }
+        assert!(
+            String::from_utf8_lossy(&consumer).contains(&import_name),
+            "a mixed String+scalar peer consumer imports the value-heap runtime (it builds the rope handle)"
+        );
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("[PL30] runtime wasm not found; skipping");
+            return;
+        };
+        let peers = vec![cdz_run::Peer {
+            bytes: provider,
+            interface: "cadenza:mix/api".to_string(),
+        }];
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: Vec::new(),
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run_with_peers(&consumer, &peers, &opts)
+            .expect("a mixed string+scalar argument list crosses to a peer")
+        {
+            // byte-len("hello") + 7 = 5 + 7 = 12. The String crossed as a handle, the Int64 as a scalar,
+            // in one call, in declaration order — the `(-> String Int64 …)` model-op call shape.
+            cdz_run::Outcome::Value(s) => assert_eq!(
+                s, "12",
+                "a mixed String+scalar argument list crosses to a peer, each in its own ABI lane"
+            ),
+            cdz_run::Outcome::Trap(t) => panic!("mixed-argument run trapped: {t}"),
         }
     }
 

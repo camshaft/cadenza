@@ -1076,10 +1076,19 @@ fn collect_host_arg_strings(db: &mut Db, id: crate::ast::StructId, out: &mut Vec
 fn collect_host_arg_strings_at(db: &mut Db, id: crate::ast::StructId, out: &mut Vec<String>) {
     use crate::core::Core;
     match crate::lower::core_of(db, id) {
-        Core::HostCall { args, .. } => {
-            for a in &args {
-                if let Core::ConstStr(s) = crate::lower::core_of(db, *a) {
-                    out.push(s);
+        Core::HostCall { args, effect, .. } => {
+            // Only a HOST call marshals a constant `string` arg through the data segment (`(ptr,len)`); a
+            // PEER call (a peer-BOUND effect) crosses a String/Bytes arg as a runtime rope HANDLE built on
+            // the value heap (see the peer `Core::HostCall` emit + `collect_used_ops`), so its constant
+            // strings must NOT be laid in the data segment — doing so would trip the spurious `mem` import
+            // (`needs_memory = !host_strings.is_empty()`) that the runtime-only peer envelope never supplies,
+            // yielding an invalid consumer component.
+            let peer_bound = db.effect_bindings.contains_key(&effect);
+            if !peer_bound {
+                for a in &args {
+                    if let Core::ConstStr(s) = crate::lower::core_of(db, *a) {
+                        out.push(s);
+                    }
                 }
             }
             for a in args {

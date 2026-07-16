@@ -1741,6 +1741,31 @@
             (export main)))
   (output (: 101 Int64)))
 
+(case "a self-recursive AST walker consumes a node's child list while the node is threaded unchanged"
+  (doc    "The CONSUMING-payload face of the AST-walker family (the loop-carried twin of the mutual-recursion
+           cases above): a single self-recursive `go` threads an `Ast` node UNCHANGED and, each iteration,
+           matches its `ANode` child list `elems` (a `sum-payload` BORROW of the node's payload, no rc++) and
+           CONSUMES it with `List.push` — a mutating op. Because the node is re-passed to the self-call, the
+           projected list has rc>1, so the push MUST path-copy, not FBIP-mutate in place; else the shared
+           child list grows and the next iteration reads a longer list (drift). `go` runs 4 iterations, each
+           reading `List.len (List.push elems (ALit 9))` = 3 (base list has 2 elements), so total = 12. This
+           is the shape the compiler-in-ML port's AST rewriters take (thread the tree, rebuild a node's
+           children) and the payload-alias twin of the loop-carried-heap-param retain — pinning it green locks
+           the SumPayload-consumed-while-scrutinee-live `dup` so a future rc change cannot regress the walker.")
+  (input  (do
+            (type Ast (ALit Int64) (ANode (List Ast)))
+            (def (mb (: i Int64) (: n Int64) (: acc (List Ast)))
+              (if (< i n) (mb (+ i 1) n (List.push acc (ALit i))) acc))
+            (def (go (: a Ast) (: n Int64) (: acc Int64))
+              (if (= n 0) acc
+                  (go a (- n 1)
+                      (+ acc (match a
+                               ((ALit x) x)
+                               ((ANode elems) (List.len (List.push elems (ALit 9)))))))))
+            (def (main) (go (ANode (mb 0 2 (list))) 4 0))
+            (export main)))
+  (output (: 12 Int64)))
+
 ; A capture-free BETA-REDUCTION over a nameless (de Bruijn) term — the evaluator core of a self-hosted
 ; λ-calculus front end (the compiler-ml port's beta/normalize passes). A `Tm` is `Ix index` / `Lam body`
 ; / `App f x` (nameless: a binder carries no name; a bound variable is its de Bruijn index). `shift` raises

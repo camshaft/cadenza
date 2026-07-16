@@ -4478,10 +4478,23 @@ fn resolve_let(db: &Db, id: StructId) -> Resolved {
     };
     let pairs = binding_pairs(db, bindings_occ);
     if pairs.is_empty() {
-        return Resolved::Poison(Reject::coded(
-            Code::Malformed,
-            format!("this let's bindings are malformed — each must be `(<name> <init>)`. {SHAPE}"),
-        ));
+        // Distinguish an EMPTY binding list `(let () <body>)` from a MALFORMED one `(let ((a 1 2)) …)`.
+        // Both leave `pairs` empty, but the former has no binding to be "malformed" — its real issue is
+        // that it binds nothing, so the `let` is pointless (the body can be written directly). Name THAT
+        // instead of the misleading "each must be `(<name> <init>)`" (which implies a broken binding that
+        // isn't there). A `bindings_occ` that is an empty List is the `()` case; anything else (a non-list,
+        // or a list whose children are all non-`(<name> <init>)`) is genuinely malformed.
+        let is_empty_list =
+            matches!(db.ast.get(bindings_occ), Struct::List(items) if items.is_empty());
+        let message = if is_empty_list {
+            format!(
+                "this let binds nothing — an empty `()` binding list has no effect; write the body \
+                 directly, or add a `(<name> <init>)` binding. {SHAPE}"
+            )
+        } else {
+            format!("this let's bindings are malformed — each must be `(<name> <init>)`. {SHAPE}")
+        };
+        return Resolved::Poison(Reject::coded(Code::Malformed, message));
     }
     // TOO MANY operands — `(let (binds) body extra)`. A let is exactly `(let ((<name> <init>)…) <body>)`
     // with ONE body; a surplus operand after the body was SILENTLY IGNORED (the resolver read only
@@ -4554,6 +4567,14 @@ pub(crate) fn record_op_pair(db: &Db, node: StructId) -> Option<(Symbol, StructI
 pub(crate) fn read_key(db: &Db, node: StructId) -> Option<Symbol> {
     if let Some(n) = db.ast.as_name(node) {
         return Some(Symbol::plain(n));
+    }
+    // A `#symbol` LITERAL (`#field` / `#"field"`, a `Leaf::Sym`) read as a plain field LABEL — the
+    // 3-operand row-op field selector (`Record.with r #field v`). The name is taken at RESOLVE time as a
+    // static label (NOT demanded as a `Ty::Symbol` value that flows through inference), exactly like the
+    // bare-name and `(meta …)` cases: `#field` is where the label comes FROM, not a change to whether it
+    // is static (DESIGN-record-update-syntax.md — the row-op field name stays a compile-time label).
+    if let Some(s) = db.ast.as_sym(node) {
+        return Some(Symbol::plain(s));
     }
     // `(meta NAME)` → the symbol `NAME` in the `meta` namespace.
     if let Some(tail) = db.ast.as_form(node, "meta")

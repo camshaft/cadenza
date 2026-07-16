@@ -398,6 +398,7 @@ pass	a float width from runtime data is rejected, like an integer width
 pass	a float width outside the admitted set is rejected
 pass	a floating-point literal
 pass	a four-level nested-constructor pattern with a generic user sum in the middle matches
+pass	a fresh-id supply threads state across two sibling recursive calls in one arm
 pass	a function applied to an argument
 pass	a function binding the same parameter name twice is rejected
 pass	a function bound to a name and then applied
@@ -892,8 +893,9 @@ pass	a pattern that binds the same name across nested sub-patterns is rejected
 pass	a pattern that binds the same name twice is rejected
 pass	a payload-in-payload nested list pattern dispatches through two recorded types
 pass	a peephole rewrite rule reads in the shape of the code it rewrites
-pass	a peer-bound operation cannot take a String argument
 pass	a peer-bound operation cannot take or return a closure
+pass	a peer-bound operation takes a String argument (it crosses as a runtime handle)
+pass	a perform BETWEEN two sibling recursive calls threads the intervening state
 pass	a perform SHORT-CIRCUITED out of an or's right operand is NOT executed (empty host-calls)
 pass	a perform composes as the SOURCE of a pipeline
 pass	a perform in a match-arm guard is discharged by the enclosing handle
@@ -2187,6 +2189,8 @@ pass	set union is commutative on generated inputs (a grow-only-set CRDT merge co
 pass	set union is idempotent on generated inputs (re-delivering a set changes nothing)
 pass	shift-by-zero is a no-op on a runtime operand for both directions
 pass	shrinking reports the minimal failing input
+pass	sibling recursive calls sequenced through let bindings thread state
+pass	sibling-recursive effect threading is left-to-right (order-observing)
 pass	signed 8-bit addition that overflows its width is rejected at compile time
 pass	size after a runtime-key insert reflects replace-vs-add
 pass	size after a runtime-key remove reflects whether the key was present
@@ -2274,6 +2278,7 @@ pass	the entrypoint sums its two runtime arguments
 pass	the expander rewrites a directly-written node even when chunks != holes+1 (no re-check)
 pass	the expander threads the hole list to the tag even with zero chunks and zero holes
 pass	the exponent marker is case-insensitive
+pass	the false-literal coercion negates a float ordering compare, turning an unordered pair true
 pass	the first failing `?` short-circuits; a later `?` never runs
 pass	the generated-set convergence property has discriminating power — two different generated sets are NOT equal
 pass	the generator is a deterministic function of its seed (same seed, same value) — folds
@@ -2346,6 +2351,7 @@ pass	the three-way comparison orders chars by scalar value — Equal
 pass	the three-way comparison orders chars by scalar value — Greater
 pass	the three-way comparison orders chars by scalar value — Less
 pass	the three-way comparison orders strings lexicographically
+pass	the true-literal coercion of a float ordering compare returns the compare, NaN stays false
 pass	the two variants of Result compare unequal
 pass	the underlying numeric type obeys the numeric core — no silent promotion under a unit
 pass	the union contains the elements of either set
@@ -2613,6 +2619,7 @@ todo	a CAPTURING closure taking an Option Int64 ARG crosses the direct-call boun
 todo	a CAPTURING closure taking an Option Int64 ARG — None takes the captured value
 todo	a DOUBLY-nested Tuple ARG (three levels deep) crosses the direct-call boundary
 todo	a FLOAT-field Tuple closure ARG flattens + rebuilds (box-float imported)
+todo	a Float KEY inserted into an empty (runtime) map boxes with box-float, not box-int
 todo	a Float element inserted into an empty (runtime) set boxes with box-float, not box-int
 todo	a Float64 closure captures a Float64 build-time host effect result
 todo	a GENERIC user sum crosses a module boundary at a concrete instantiation
@@ -2675,6 +2682,7 @@ todo	a boxed nested-unary curried closure applies without trapping
 todo	a boxed runtime closure taking Unit (a lazy thunk) is forced without declining
 todo	a branching recursive tree fold infers its unannotated callback across both arms
 todo	a build-time delegated effect whose result a returned closure captures does not escape
+todo	a built-in comparison on an abstract theorem value outside the kernel is rejected
 todo	a built-in comparison on an abstract type's value is rejected outside its module
 todo	a camelCase round-trip resolves through kebab boundary-name normalization
 todo	a camelCase same-signature multi-export normalizes each make-<name>
@@ -2810,6 +2818,7 @@ todo	a multi-byte runtime bit-field takes the matching wide unsigned type
 todo	a multi-export compound-result shared call is a repeatable (borrow<t>) callback
 todo	a multi-export set of parameterized capturing closures is driven per export
 todo	a multi-export shared call is a repeatable (borrow<t>) callback
+todo	a multi-variant abstract proof type's constructor match outside the kernel is a withheld-constructor rejection
 todo	a mutual AST walker re-extracts a node's payload in a sibling operand while a mutual call consumes it
 todo	a mutually-recursive AST walker reads a node's child list without corrupting a sibling head-read
 todo	a mutually-recursive decoder returns a heap value and cursor and its heap slot is dispatched
@@ -2848,6 +2857,7 @@ todo	a rational is normalized to lowest terms on construction
 todo	a rational with numerator and denominator both negative normalizes to positive
 todo	a rational's sign is normalized onto the numerator
 todo	a rational-magnitude quantity erases to its exact rational value
+todo	a re-declared same-name theorem type in another module is a distinct type a kernel value does not satisfy
 todo	a record-returning closure alongside a parameterized plain export — the closure
 todo	a record-returning closure alongside a parameterized plain export — the plain
 todo	a recursive HOF infers a callback whose RESULT is a sum matched in the body
@@ -2939,6 +2949,8 @@ todo	an R-suffixed integer literal is that integer over one
 todo	an R-suffixed literal composes with exact rational arithmetic
 todo	an SI decimal prefix scales a unit by a power of ten
 todo	an abortive handler abandons a host call in the path it discards
+todo	an abstract theorem is obtained only through the kernel's exported inference rule and accessor
+todo	an abstract theorem type cannot be forged by constructing its rule constructor outside the kernel
 todo	an abstract type is used through the module's exported constructor and accessor
 todo	an abstract type's constructor is not reachable outside its module
 todo	an arbitrary-precision integer multiplication does not overflow
@@ -3025,7 +3037,11 @@ todo	distinct-signature closures alongside a plain export — the plain export r
 todo	dividing quantities divides their dimensions
 todo	equality over a compound mixing a float and a Bytes leaf walks both
 todo	eval does not forge a private constructor NESTED in a compound
+todo	eval of a partially-exported type's EXPORTED constructor works
+todo	eval of a partially-exported type's WITHHELD constructor is rejected
 todo	eval of a quoted private constructor is withheld exactly as a direct reference — no forge
+todo	eval of a quoted proof-variant match cannot destructure an abstract proof outside the kernel
+todo	eval of a quoted theorem constructor cannot forge an abstract theorem outside the kernel
 todo	eval of an exported smart constructor still works — the forge fix does not over-reject
 todo	exact rational arithmetic is exact and normalized
 todo	exact rational division is total and exact for a nonzero divisor

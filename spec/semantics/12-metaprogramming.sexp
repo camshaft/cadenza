@@ -148,6 +148,37 @@
             (_                0)))
   (output (: 3 Int64)))
 
+; A NESTED match on the recursive `Ast` sum — `Ast.List` inside `Ast.List` — over a CONSTANT `quote` reads
+; the deep leaf at the RIGHT depth. `Ast` is a recursive sum (`Ast.List` holds `(List Ast)`), and a quoted
+; literal is a compile-time-constant scrutinee, so this is exactly the "recursive-sum nested match with a
+; statically-known outer discriminant" shape — the canonical AST-tree-walk. It was a latent MISCOMPILE (the
+; known-disc fold dropped the outer switch, so a nested read landed at the wrong depth) fixed at the emit
+; layer (v-patterns `ce182df365`); pinned HERE over `Ast` (the tree type this vertical's macros walk) so a
+; regression is caught from the metaprogramming angle, not only the generic-sum one.
+
+(case "a nested Ast.List match over a constant quote reads the deep leaf at the right depth"
+  (doc    "`(match (quote (f (g 7))) ((Ast.List (list _ (Ast.List (list _ (Ast.Int n))))) n) (_ -1))` = 7 —
+           the outer `Ast.List` is a constant (from `quote`), and the pattern reaches TWO levels down to bind
+           the `Ast.Int 7` inside the inner `Ast.List`. Pins that a nested match on the recursive `Ast` sum
+           with a known outer discriminant reads the inner payload at the correct depth (a walk that dropped
+           the outer switch would read the wrong level — the miscompile v-patterns fixed). The AST-walk shape
+           every macro that inspects nested structure relies on.")
+  (input  (match (quote (f (g 7)))
+            ((Ast.List (list _ (Ast.List (list _ (Ast.Int n))))) n)
+            (_                                                    -1)))
+  (output (: 7 Int64)))
+
+(case "a nested Ast.List match falls through when the inner leaf variant differs"
+  (doc    "The discriminator companion: the SAME nested shape but the inner pattern expects an `Ast.Str`
+           where the tree holds an `Ast.Int` — `(match (quote (f (g 7))) ((… (Ast.Str s))) 1) (_ 0))` = 0.
+           Pins that the nested recursive-sum match is variant-SELECTIVE at depth (it does not spuriously
+           fire on a depth-correct but variant-wrong inner leaf) — the negative face guarding the known-disc
+           fold.")
+  (input  (match (quote (f (g 7)))
+            ((Ast.List (list _ (Ast.List (list _ (Ast.Str s))))) 1)
+            (_                                                    0)))
+  (output (: 0 Int64)))
+
 (case "eval on malformed AST traps"
   (doc    "Witnesses metaprogramming.md #Eval Is Optional: eval on malformed AST traps. An Ast.List
            with no elements is malformed (no operator), so eval traps. The eval desugar reconstructs
@@ -1526,6 +1557,23 @@
             ((Ast.List (list (Ast.Name h) .. _)) (String.byte-len h))
             (_                                    -1)))
   (output (: 2 Int64)))
+
+; The CONSTRUCTION side of the eval-of-a-control-form cases: quoting a binder-introducing form (`let`) is
+; head-agnostic like any compound — it reifies to an `Ast.List` whose head is `(Ast.Name "let")` and whose
+; binding group + body are ordinary reified sub-trees — and it round-trips through the byte codec. Pairs with
+; `(eval (quote (let …)))` → 10 (the eval side): `quote` builds the control-form AST as inert data, `eval`
+; reconstructs and runs it. A reifier that special-cased `let` (or dropped its binding group) would flip this.
+
+(case "quote of a let reifies as an Ast.List with a let head and round-trips"
+  (doc    "`(quote (let ((x 1)) x))` reifies to an `Ast.List` headed `(Ast.Name \"let\")` (byte-len 3) — the
+           binder-introducing form is inert data, its head a bare name like any other — and encode/decode
+           round-trips it to an equal AST. The construction companion of the `eval (quote (let …))` fold:
+           `quote` builds a control-form AST without interpreting it, and the codec preserves it whole.")
+  (input  (match (Ast.decode (Ast.encode (quote (let ((x 1)) x))))
+            ((Ok (Ast.List (list (Ast.Name h) .. _))) (String.byte-len h))
+            ((Ok _)  -2)
+            ((Err _) -1)))
+  (output (: 3 Int64)))
 
 (case "three leaf variants in one quoted form each dispatch their own tag"
   (doc    "`(quote (\"s\" 5 true))` reifies a list whose three elements are DISTINCT leaf variants —

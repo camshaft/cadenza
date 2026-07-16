@@ -202,4 +202,50 @@ mod tests {
         let t = SpanTable::new(FileId(0));
         assert_eq!(t.node_at_offset(0), None);
     }
+
+    #[test]
+    fn node_at_offset_breaks_an_equal_length_tie_by_lowest_id() {
+        // Two spans of IDENTICAL length both containing the offset — e.g. a `(comment "x" form)` wrapper
+        // and its sole child often carry the same source extent. The `s.len() < b.len()` test is STRICT,
+        // so a later equal-length span does NOT displace an earlier one: the LOWEST structure id wins.
+        // Pin this so a hover on such a coincident span is deterministic (and matches the wrapper-first
+        // id order the reader produces).
+        let mut t = SpanTable::new(FileId(0));
+        t.push(Span::new(0, 5)); // id 0
+        t.push(Span::new(0, 5)); // id 1 — same extent as id 0
+        t.push(Span::new(0, 5)); // id 2 — same again
+        assert_eq!(
+            t.node_at_offset(2),
+            Some(StructId(0)),
+            "an equal-length tie resolves to the lowest structure id (first encountered)"
+        );
+        // A strictly-smaller span still wins over the equal-length run.
+        t.push(Span::new(1, 3)); // id 3 — smaller, contains 2
+        assert_eq!(t.node_at_offset(2), Some(StructId(3)));
+    }
+
+    #[test]
+    fn remap_then_resolve_round_trips_a_cursor_through_canonicalization() {
+        // End-to-end pairing with `canon::canonicalize_with_map` (the id_map producer): a span table
+        // built by the NON-canonical ML reader, remapped through the canonical id_map, must resolve a
+        // cursor to the SAME source node under the canonical ids — the ids `codec::encode` (and hence the
+        // compiler) uses. This is the `ml-parser-node-order` fix exercised through the whole chain.
+        let parsed = crate::parser::read_ml("def add(a, b) = a + b");
+        let (canon, id_map) = crate::canon::canonicalize_with_map(&parsed.arenas);
+        let remapped = parsed.spans.remap(&id_map, canon.structure.len());
+        // The body `a` is at byte 16 (`… = a + b`). Resolving that offset in the REMAPPED table yields a
+        // canonical id whose node is the `a` atom — proving remap re-keyed the span to the canonical id.
+        let body_a = "def add(a, b) = a + b".rfind('a').unwrap(); // byte 16
+        let id = remapped
+            .node_at_offset(body_a)
+            .expect("a canonical node contains the body `a` offset");
+        assert_eq!(
+            canon.as_name(id),
+            Some("a"),
+            "the cursor at the body `a` resolves to an `a` atom in the canonical arena"
+        );
+        // The remapped table is sized to the canonical arena (1:1), and preserves the file id.
+        assert_eq!(remapped.len(), canon.structure.len());
+        assert_eq!(remapped.file(), parsed.spans.file());
+    }
 }

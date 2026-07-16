@@ -2932,21 +2932,27 @@
             (def (main) 0) (export main)))
   (error  CDZ0201))
 
-(case "a peer-bound operation cannot take a String argument"
-  (doc    "A String/Bytes RESULT from a peer crosses fine (the peer builds the rope handle and returns
-           it), but an inbound String/Bytes ARGUMENT is not yet emittable: it lowers as a component
-           `string` (a canonical `lower` needing a `mem` option) rather than a runtime handle, and the
-           peer envelope supplies no `mem` — so emitting the consumer produced an INVALID component
-           (`missing module instantiation argument named mem`) with NO diagnostic, a silent
-           invalid-component miscompile. Reject it at the binding (CDZ0201) — a String/Bytes in a PARAMETER
-           position of a peer-bound op — until the inbound-rope-handle emit is wired (report-don't-
-           miscompile). Only parameters are checked, so a String/Bytes RESULT is not flagged; a compound
-           (tuple/record) argument, which crosses as a handle, is likewise unaffected.")
+(case "a peer-bound operation takes a String argument (it crosses as a runtime handle)"
+  (doc    "A String/Bytes ARGUMENT to a peer-bound op crosses the boundary as a runtime rope HANDLE, just
+           like a compound (tuple/record) argument — both peers share one value-heap runtime, so the arg is
+           an opaque u32 handle into it, never a marshaled component `string`. (This once DECLINED CDZ0201:
+           the arg lowered as a component `string` needing a `mem` canonical option the runtime-only peer
+           envelope never supplied, producing an invalid consumer component; the inbound-rope-handle emit is
+           now wired — `collect_used_ops`/`collect_host_arg_strings` are peer-aware, so a peer String arg
+           builds a rope while a HOST String arg still marshals as `(ptr,len)`.) This case pins that
+           DECLARING and PERFORMING such an op now COMPILES + runs: an in-program handler overrides the peer
+           binding (the free test-mock) and answers `blen(s) = 100` regardless of `s`, so `(S.blen \"hi\")`
+           = 100 — proving the String-arg op type-checks and its argument flows without a live peer. The e2e
+           crossing to a real peer (byte-len read there) is pinned by the `a_string_argument_crosses_to_a_
+           peer_*` backend tests. Only the ARGUMENT direction changed; a String/Bytes RESULT already worked.")
   (input  (do
             (effect S (op blen (-> String Int64)))
             (bind S "cadenza:str/api")
-            (def (main) 0) (export main)))
-  (error  CDZ0201))
+            (def (main)
+              (handle S 0 ((blen (s) k (resume 100 k)))
+                (S.blen "hi"))) (export main)))
+  (output (: 100 Int64))
+  (host-calls))
 
 (case "a handle whose head names a value rather than an effect is rejected"
   (doc    "A `handle`'s HEAD names the effect the handler discharges, and its arms ARE that effect's
@@ -3312,3 +3318,47 @@
                 (relabel (Node (Leaf) (Leaf)))))
             (export main)))
   (output (: -1 Int64)))
+
+(case "a sibling-recursive walk threads a HEAP list accumulator across the siblings"
+  (doc    "The ssa/collect face of the multi-value-return walk: each leaf draws a fresh id into a
+           singleton list and a Node CONCATENATES its two sibling walks' lists — `collect(Node l r) =
+           List.concat (collect l) (collect r)`. The out-state a self-call advances is threaded to its
+           sibling, and the VALUE carried back through the tuple return is now a HEAP value (a List), not
+           a scalar — so this pins that the multi-value return threads a heap-allocated result across the
+           siblings correctly (a `.0` projection off the runtime tuple, not just an Int64). A 3-leaf tree
+           draws ids 0,1,2 into a length-3 list. Regression guard for the real SSA-linearizer shape,
+           where the accumulated instruction list is the threaded heap value.")
+  (input  (do
+            (effect Fresh (op next (-> Unit Int64)))
+            (type Tree (Leaf) (Node Tree Tree))
+            (def (collect (: t Tree))
+              (match t
+                ((Leaf) ((. List push) (list) (Fresh.next)))
+                ((Node l r) ((. List concat) (collect l) (collect r)))))
+            (def (main)
+              (handle Fresh 0 ((next (u) s (resume s (+ s 1))))
+                ((. List len) (collect (Node (Node (Leaf) (Leaf)) (Leaf))))))
+            (export main)))
+  (output (: 3 Int64)))
+
+(case "a post-order effectful walk draws each node's id AFTER both children (SSA reg-alloc shape)"
+  (doc    "The exact SSA register-allocation shape: a node's own id is drawn AFTER lowering both children
+           — `lower(Bin l r) = let a = lower l in let b = lower r in Fresh.next()`, so the parent register
+           number follows its subtrees'. The two sibling self-calls (`lower l`, `lower r`) each advance
+           the id supply, then the node itself draws the NEXT id — the multi-value return must thread the
+           counter through BOTH children and leave the parent's draw last. `Bin (Lit) (Bin (Lit) (Lit))`
+           over a 0-based counter: left Lit=0, right subtree (Lit=1, Lit=2, its Bin=3), root Bin=4 → the
+           root's result register is 4. Pins the natural post-order gensym the compiler-ml SSA linearizer
+           writes (its hand-threaded counter can become this effectful walk once repro-1 landed).")
+  (input  (do
+            (effect Fresh (op next (-> Unit Int64)))
+            (type Expr (Lit Int64) (Bin Expr Expr))
+            (def (lower (: e Expr))
+              (match e
+                ((Lit v) (Fresh.next))
+                ((Bin l r) (let ((a (lower l))) (let ((b (lower r))) (Fresh.next))))))
+            (def (main)
+              (handle Fresh 0 ((next (u) s (resume s (+ s 1))))
+                (lower (Bin (Lit 1) (Bin (Lit 2) (Lit 3))))))
+            (export main)))
+  (output (: 4 Int64)))

@@ -1489,12 +1489,13 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 Some(Prim::RecordMerge) if args.len() == 2 => {
                     lower_record_merge(db, id, args[0], args[1])
                 }
-                // `Record.extend r (z v)` / `Record.with r (z v)` — both INSERT field `z ↦ v` into a
-                // constant `Core::Record` (extend adds an absent field, with replaces a present one; the
-                // presence/absence CDZ0211/0212 is `infer`'s, so the fold is the same insert). The `(z v)`
-                // pair's value occurrence carries into the field.
-                Some(Prim::RecordExtend | Prim::RecordWith) if args.len() == 2 => {
-                    lower_record_insert(db, id, args[0], args[1])
+                // `Record.extend r #z v` / `Record.with r #z v` (3-operand, DESIGN-record-update-syntax.md)
+                // — both INSERT field `z ↦ v` into a constant `Core::Record` (extend adds an absent field,
+                // with replaces a present one; the presence/absence CDZ0211/0212 is `infer`'s, so the fold
+                // is the same insert). The field LABEL is the `#symbol` 2nd operand (`read_label`); the
+                // value `v` is the 3rd operand (its value occurrence carries into the field).
+                Some(Prim::RecordExtend | Prim::RecordWith) if args.len() == 3 => {
+                    lower_record_insert(db, id, args[0], args[1], args[2])
                 }
                 // `Record.pop r z` — `(tuple (. r z) (r without z))`: the popped field's value paired with
                 // the remaining record. Folds a constant `Core::Record` to a `Core::Tuple`.
@@ -17644,17 +17645,23 @@ fn ty_heap_walkable(db: &mut Db, ty: &crate::ty::Ty, seen: &mut Vec<StructId>) -
         // is the SAME rarer case the String story leaves (`key_needs_compaction` compacts a direct key, not
         // a rope buried inside a compound key); it is vanishingly rare and shared with String, not a new gap.
         Ty::Bytes => true,
+        // A BIGINT leaf is CANONICAL by construction: the runtime `box_bigint` serializes to the canonical
+        // sign-magnitude bytes (`to_sign_magnitude_bytes`, byte-identical inline-or-heap), the SOLE producer,
+        // so a runtime BigInt in a compound has one byte form and `champ_eq`'s physical byte-walk compares it
+        // EXACTLY. A RATIONAL is a NORMALIZED 2-BigInt-handle node (lowest terms, sign on the numerator —
+        // runtime `box_rational_normalized`, 06-numeric-model "one canonical byte form"), so `champ_eq`
+        // descends its two canonical BigInt children and compares by value. Both admissions mirror the Float
+        // one (`04f206e90`/`e6017d04b`): canonical-by-construction → the raw walk is sound. This unblocks a
+        // whole-compound `=` over a Rational/BigInt leaf (a `V3r(Rational,Rational,Rational)`, a
+        // BigInt-keyed/valued map) — was a decline forcing componentwise comparison (the CAD Rational
+        // redirect's blocker). A DIRECT scalar BigInt/Rational `=` already folds/compares; this is the
+        // NESTED-leaf face.
+        Ty::BigInt | Ty::Rational => true,
         // A collection / char / function / type-value / unresolved leaf is NOT walkable here (its canonical
         // form needs machinery this increment does not emit, or it is not a runtime value that reaches a
         // compound equality — `Ty::Type`/`Ty::Any`/`Ty::Fn` never cross `=`). A `Char` has no runtime
-        // machine rep yet (its equality folds at compile time). A `BigInt` will be canonical-byte-form-
-        // walkable once its runtime leaf exists (B3) — B0 adds the type only and constructs none, so it
-        // declines here for now (a constant `BigInt` `=` folds in the compiler at B1; a runtime `BigInt` `=`
-        // is wired with the runtime limb library). A `Rational` likewise: a constant `Rational` `=` folds in
-        // the compiler (B4-1), a runtime rational compound walk is a later B4 slice — declines here for now.
-        Ty::List(_) | Ty::Char | Ty::BigInt | Ty::Rational | Ty::Fn(_, _) | Ty::Type | Ty::Any => {
-            false
-        }
+        // machine rep yet (its equality folds at compile time).
+        Ty::List(_) | Ty::Char | Ty::Fn(_, _) | Ty::Type | Ty::Any => false,
     }
 }
 
@@ -19055,7 +19062,13 @@ fn lower_record_merge(db: &mut Db, id: StructId, a: StructId, b: StructId) -> Co
 /// CDZ0211/0212 is `infer`'s, so the fold is one insert for both). The `(z v)` pair's value occurrence
 /// carries into the new field. A poison operand propagates; a non-constant/non-record operand, or a
 /// malformed pair, declines/rejects.
-fn lower_record_insert(db: &mut Db, id: StructId, record: StructId, pair: StructId) -> Core {
+fn lower_record_insert(
+    db: &mut Db,
+    id: StructId,
+    record: StructId,
+    label_node: StructId,
+    value: StructId,
+) -> Core {
     let Core::Record { fields } = core_of(db, record) else {
         return match core_of(db, record) {
             Core::Poison(r) => Core::Poison(r),
@@ -19064,10 +19077,10 @@ fn lower_record_insert(db: &mut Db, id: StructId, record: StructId, pair: Struct
             )),
         };
     };
-    let Some((label, value)) = crate::resolve::record_op_pair(db, pair) else {
+    let Some(label) = crate::resolve::read_label(db, label_node) else {
         return Core::Poison(Reject::coded(
             Code::Malformed,
-            "the second operand is a `(name value)` field pair, e.g. `(z 5)`",
+            "the second operand is a `#field` label, e.g. `#z`",
         ));
     };
     let mut out: std::collections::BTreeMap<_, _> =

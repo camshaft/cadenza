@@ -3827,16 +3827,24 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
     //# A program MUST be able to derive a record that adds a field absent from an operand record, and a combination that adds a field the operand already contains MUST be rejected at compile time with the machine-readable code for a field that is already present, so that adding a field never silently overwrites an existing one.
     //= spec/capabilities/type-system.md#a-field-is-added-to-or-replaced-in-a-record-by-a-derived-operation
     //# A program MUST be able to derive a record that replaces a field present in an operand record with a new value of a possibly different type, so that updating a field is an explicit operation distinct from adding one and the replacement's type is whatever the new value holds.
+    // THREE-operand form (DESIGN-record-update-syntax.md): `(Record.with r #z v)` /
+    // `(Record.extend r #z v)` — a record, a `#symbol` field LABEL (`read_key` reads the label statically,
+    // NOT as a `Ty::Symbol` value — the row-op field name stays compile-time), and the VALUE `v` (an
+    // ordinary expression, its type is `typeof(v)`). Result = the record with field `z` inserted/replaced.
+    //= spec/capabilities/type-system.md#a-field-is-added-to-or-replaced-in-a-record-by-a-derived-operation
+    //# A program MUST be able to derive a record that adds a field absent from an operand record, and a combination that adds a field the operand already contains MUST be rejected at compile time with the machine-readable code for a field that is already present, so that adding a field never silently overwrites an existing one.
+    //= spec/capabilities/type-system.md#a-field-is-added-to-or-replaced-in-a-record-by-a-derived-operation
+    //# A program MUST be able to derive a record that replaces a field present in an operand record with a new value of a possibly different type, so that updating a field is an explicit operation distinct from adding one and the replacement's type is whatever the new value holds.
     if matches!(
         crate::eval::meta_apply_of(db, head),
         Some(crate::resolved::Prim::RecordExtend | crate::resolved::Prim::RecordWith)
-    ) && args.len() == 2
+    ) && args.len() == 3
         && let Ty::Record(fields) = type_of(db, args[0])
-        && let Some((label, value)) = crate::resolve::record_op_pair(db, args[1])
+        && let Some(label) = crate::resolve::read_label(db, args[1])
     {
         let mut out: std::collections::BTreeMap<_, _> =
             fields.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-        out.insert(label, type_of(db, value));
+        out.insert(label, type_of(db, args[2]));
         return Ty::Record(std::rc::Rc::new(out));
     }
     // `Record.pop r z` — yields `(tuple (. r z) (r without z))`: the field's value paired with the record
@@ -10664,23 +10672,23 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
             } else if matches!(
                 crate::eval::meta_apply_of(db, head),
                 Some(crate::resolved::Prim::RecordExtend | crate::resolved::Prim::RecordWith)
-            ) && args.len() == 2
+            ) && args.len() == 3
             {
-                // `Record.extend r (z v)` / `Record.with r (z v)` — the FIRST operand `r` is a record
-                // expression (descend it); the SECOND is a `(z v)` pair whose NAME is a label and whose
-                // VALUE is an ordinary expression (descend the value, NOT the whole pair — descending it
-                // would resolve `z` as applied to `v`). `extend` REQUIRES `z` ABSENT (a present field →
+                // `Record.extend r #z v` / `Record.with r #z v` (3-operand, DESIGN-record-update-syntax.md)
+                // — the FIRST operand `r` is a record expression (descend it); the SECOND is a `#z` field
+                // LABEL (`read_label`, static — NOT descended as an expression); the THIRD is the VALUE `v`,
+                // an ordinary expression (descend it). `extend` REQUIRES `z` ABSENT (a present field →
                 // CDZ0211, never a silent overwrite); `with` REQUIRES `z` PRESENT (an absent field →
-                // CDZ0212, stays distinct from `extend`). A malformed pair is CDZ0201.
+                // CDZ0212, stays distinct from `extend`). A malformed label is CDZ0201.
                 let is_extend = crate::eval::meta_apply_of(db, head)
                     == Some(crate::resolved::Prim::RecordExtend);
                 collect(db, args[0], out);
                 match (
                     type_of(db, args[0]),
-                    crate::resolve::record_op_pair(db, args[1]),
+                    crate::resolve::read_label(db, args[1]),
                 ) {
-                    (Ty::Record(fields), Some((label, value))) => {
-                        collect(db, value, out);
+                    (Ty::Record(fields), Some(label)) => {
+                        collect(db, args[2], out);
                         let present = fields.contains_key(&label);
                         // The operation-KEY occurrence of the `(. Record extend|with)` head — the node an
                         // OPERATOR-SWAP fix rewrites (`extend`→`with` or `with`→`extend`). The message
@@ -10734,11 +10742,8 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                             // `extend` (ADD it), so swap the op `with`→`extend`. Prefer the label typo-fix
                             // when a near field exists (the likelier intent — a present-looking field name);
                             // else offer the operator swap (VERIFIED — an absent field is exactly `extend`'s
-                            // precondition). The `(z v)` pair's FIRST child is the label node `z`.
-                            let label_node = match db.ast.get(args[1]) {
-                                crate::ast::Struct::List(items) => items.first().copied(),
-                                _ => None,
-                            };
+                            // precondition). The `#z` label operand is `args[1]` itself.
+                            let label_node = Some(args[1]);
                             match (&near, label_node, op_key_occ) {
                                 (Some(near), Some(label_node), _) => {
                                     reject = reject.with_fix(crate::diag::Fix::replace_heuristic(
@@ -10760,9 +10765,37 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                     }
                     (_, None) => out.push(Reject::coded(
                         Code::Malformed,
-                        "the second operand is a `(name value)` field pair, e.g. `(z 5)`",
+                        "the second operand is a `#field` label, e.g. `#z`",
                     )),
                     _ => {}
+                }
+            } else if matches!(
+                crate::eval::meta_apply_of(db, head),
+                Some(crate::resolved::Prim::RecordExtend | crate::resolved::Prim::RecordWith)
+            ) && args.len() == 2
+                && crate::resolve::record_op_pair(db, args[1]).is_some()
+            {
+                // The OLD two-operand pair form `Record.with r (z v)` — MIGRATED to the 3-operand
+                // `Record.with r #z v` (DESIGN-record-update-syntax.md). Rejected with a migration route so
+                // the fix is mechanical: split the `(z v)` pair into a `#z` label and a bare value.
+                let op = if crate::eval::meta_apply_of(db, head)
+                    == Some(crate::resolved::Prim::RecordExtend)
+                {
+                    "Record.extend"
+                } else {
+                    "Record.with"
+                };
+                if let Some((label, _)) = crate::resolve::record_op_pair(db, args[1]) {
+                    out.push(
+                        Reject::coded(
+                            Code::Malformed,
+                            format!(
+                                "`{op}` now takes three operands `r #{} v` — replace the `(name value)` pair with a `#field` label and a value",
+                                label.name
+                            ),
+                        )
+                        .at(args[1]),
+                    );
                 }
             } else if matches!(
                 crate::eval::meta_apply_of(db, head),
