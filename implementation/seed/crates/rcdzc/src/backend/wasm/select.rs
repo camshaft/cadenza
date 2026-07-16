@@ -68,12 +68,19 @@ pub struct Emit {
     /// SHARED SUM-PAYLOAD-PREFIX slots (a per-arm-body CSE). A match arm reading MULTIPLE elements of one
     /// payload tuple — `(Node (tuple l r))` → `l`/`r` each a `SumPayload{s, [Payload, Elem(i)]}` — would
     /// re-walk the `sum-payload(s)` prefix per element. Before emitting such an arm body, the shared
-    /// prefix is computed ONCE into a slot and recorded here keyed by `(scrutinee-id, prefix step count)`;
+    /// prefix is computed ONCE into a slot and recorded here keyed by `(scrutinee-id, the prefix STEPS)`;
     /// the `Core::SumPayload` emit then reads the slot + walks only the SUFFIX. Populated ONLY at an arm-
     /// body top (a save/restore fences it to that arm), and ONLY for a prefix whose shared extensions are
     /// all BORROWING `Elem` reads — sound because `op_sum-payload` is TOTAL (never traps) and BORROWING (no
     /// refcount change), so computing it once when the arm is entered matches per-element re-walks exactly.
-    payload_prefix_slots: HashMap<(StructId, usize), u32>,
+    ///
+    /// 🩸 The key carries the FULL prefix STEPS, NOT just its length: a TUPLE-OF-TWO-SUMS match
+    /// (`match (a, b) with (TArrow(a1,a2), TArrow(b1,b2)) => …`) produces TWO distinct prefixes of the SAME
+    /// length off the SAME tuple scrutinee — `[Elem(0), Payload]` (a's payload) and `[Elem(1), Payload]`
+    /// (b's payload). A length-only key `(scrutinee, 2)` COLLIDED them, so the second overwrote the first and
+    /// the emit fast-path read `b`'s payload from `a`'s slot — a SILENT MISCOMPILE (`unify(a2,b2)` reading
+    /// `unify(a2,a2)`). The steps discriminate the two, so each gets its own slot.
+    payload_prefix_slots: HashMap<(StructId, Vec<crate::core::PathStep>), u32>,
     /// Perceus RETAIN sites (`collect_dup_sites`): the `Core::LocalRef`/`Core::Param` OCCURRENCE ids whose
     /// reference is consumed while the binding has a later live use — a `dup` is emitted after the
     /// `LocalGet` at each so the consumer gets its own reference and the later use reads the original.
@@ -3531,7 +3538,7 @@ fn materialize_payload_prefixes(
     slots: &HashMap<StructId, u32>,
     layout: &Layout,
     out: &mut Emit,
-) -> Result<Vec<(StructId, usize)>, Reject> {
+) -> Result<Vec<(StructId, Vec<crate::core::PathStep>)>, Reject> {
     let mut prefixes = collect_sum_payload_prefixes(db, body);
     if prefixes.is_empty() {
         return Ok(Vec::new());
@@ -3551,10 +3558,11 @@ fn materialize_payload_prefixes(
         // `RestFrom` is a sole step, never followed → never in a prefix), and every `Elem` here is an
         // `arr-get` (a payload tuple, not a list — a list element would be a lone `Elem` off a list
         // scrutinee, not under a `Payload`).
-        let start = (0..prefix.len())
-            .rev()
-            .find(|&k| out.payload_prefix_slots.contains_key(&(scrutinee, k)))
-            .map(|k| (k, out.payload_prefix_slots[&(scrutinee, k)]));
+        let start = (0..prefix.len()).rev().find_map(|k| {
+            out.payload_prefix_slots
+                .get(&(scrutinee, prefix[..k].to_vec()))
+                .map(|&s| (k, s))
+        });
         let from = if let Some((k, s)) = start {
             out.push(Lir::LocalGet(s)); // [handle] — the shorter shared prefix
             k
@@ -3588,8 +3596,8 @@ fn materialize_payload_prefixes(
             }
         }
         out.push(Lir::LocalSet(slot));
-        let key = (scrutinee, prefix.len());
-        out.payload_prefix_slots.insert(key, slot);
+        let key = (scrutinee, prefix.clone());
+        out.payload_prefix_slots.insert(key.clone(), slot);
         keys.push(key);
     }
     let _ = base;
@@ -6973,10 +6981,11 @@ fn emit(
             // payload handle (`cur = Ty::Any`). Take the LONGEST matching slotted prefix. Only prefixes
             // whose shared extensions are borrowing `Elem` reads are ever recorded (see the collector), so
             // the slot holds a borrowed handle this suffix walk only reads.
-            let prefix_hit = (0..path.len())
-                .rev()
-                .find(|&k| out.payload_prefix_slots.contains_key(&(scrutinee, k)))
-                .map(|k| (k, out.payload_prefix_slots[&(scrutinee, k)]));
+            let prefix_hit = (0..path.len()).rev().find_map(|k| {
+                out.payload_prefix_slots
+                    .get(&(scrutinee, path[..k].to_vec()))
+                    .map(|&s| (k, s))
+            });
             // A step's array read depends on the CURRENT sub-value's kind: a tuple/record/sum-payload is a
             // flat `arr` (`arr-get`), but a `List` is an RRB `vec` (`vec-get`), and a list REST binder
             // slices the tail with `vec-split`. Track the sub-value type as the walk descends.

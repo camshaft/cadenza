@@ -2154,6 +2154,27 @@
             ((None _)     -1)))
   (output (: 5 Int64)))
 
+(case "a tuple-of-two-sums match reads each sum's payload from its own slot (HM-unify shape)"
+  (doc    "The HM-UNIFICATION dispatch shape: `match (a, b) with (TArrow(a1,a2), TArrow(b1,b2)) => unify(a2,
+           b2)`. A self-recursive call on payload binders extracted from a TUPLE OF TWO SUMS read BOTH `a2`
+           and `b2` from the SAME payload (a's), so `unify(a2,b2)` silently became `unify(a2,a2)`. Here
+           `unify((Int→Bool),(Int→Int))` recurses on the 2nd components `unify(Bool,Int)` which MUST be 0
+           (Bool≠Int); the bug returned 1. ROOT: the shared-sum-payload-prefix CSE keyed its slot on
+           `(scrutinee, prefix LENGTH)`, and a tuple-of-two-sums match produces TWO prefixes of the same
+           length off the same tuple — `[Elem(0),Payload]` (a) and `[Elem(1),Payload]` (b) — which COLLIDED,
+           so b's payload read from a's slot. The fix keys on the full prefix STEPS. Expected: 0.")
+  (input  (do
+            (type Ty (TInt) (TBool) (TArrow Ty Ty))
+            (def (unify (: a Ty) (: b Ty))
+              (match (tuple a b)
+                ((tuple (Ty.TInt) (Ty.TInt))               1)
+                ((tuple (Ty.TBool) (Ty.TBool))             1)
+                ((tuple (Ty.TArrow a1 a2) (Ty.TArrow b1 b2)) (unify a2 b2))
+                ((tuple _ _)                               0)))
+            (def (main) (unify (Ty.TArrow (Ty.TInt) (Ty.TBool)) (Ty.TArrow (Ty.TInt) (Ty.TInt))))
+            (export main)))
+  (output (: 0 Int64)))
+
 ; --- A variant payload may be ANY monomorphic leaf type, including Char and Symbol -----------------
 ; core-semantics.md #Sum Types Are Structural Types: a variant's payload type is any type. The leaf
 ; scalars `Char` and `Symbol` are types exactly as `Bytes`/`String`/`Bool` are, so a variant may carry

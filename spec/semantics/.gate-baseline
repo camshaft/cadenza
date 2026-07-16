@@ -1720,6 +1720,7 @@ pass	a tuple payload extracted through a helper return must not be rejected as a
 pass	a tuple payload returned through a helper from a built-in Option must not trap
 pass	a tuple with a runtime element is returned as a program result
 pass	a tuple with every element computed at run time is returned as a result
+pass	a tuple-of-two-sums match reads each sum's payload from its own slot (HM-unify shape)
 pass	a tuple-parameter export returns a BigInt computed from its fields
 pass	a tuple-parameter export returns a list computed from its fields
 pass	a tuple-pattern parameter binds the halves of its pair argument
