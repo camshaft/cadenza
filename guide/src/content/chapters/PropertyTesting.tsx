@@ -117,9 +117,9 @@ export default function PropertyTesting() {
         combination instead of sampling, so a pass is a <em>proof</em> over that domain, not just evidence:
       </P>
       <Note>
-        <C>{`@exhaustive def or_commutes(a: Bool, b: Bool) = if (a || b) == (b || a) then unit else trap("no")`}</C>
+        <C>{`@exhaustive def eq_symmetric(a: Bool, b: Bool) = if (a == b) == (b == a) then unit else trap("no")`}</C>
         <br />
-        <C>cdz test</C> reports: <C>PASS or_commutes (exhaustive, 4 cases)</C> — all four <C>Bool</C> pairs.
+        <C>cdz test</C> reports: <C>PASS eq_symmetric (exhaustive, 4 cases)</C> — all four <C>Bool</C> pairs.
       </Note>
       <P>
         And <C>@tag("…")</C> labels a test so you can run a subset — <C>cdz test --tag slow</C> runs only
