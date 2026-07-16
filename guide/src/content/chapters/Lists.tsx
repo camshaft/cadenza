@@ -125,6 +125,11 @@ export default function Lists() {
         a list of <C>Int64</C>.
       </P>
 
+      <P>
+        A list holds every element at once. Sometimes you want the elements without ever building the
+        whole sequence — even an endless one. That's an <em>iterator</em>, next.
+      </P>
+
       <H2>Your turn</H2>
       <Exercise
         id="lists:1"

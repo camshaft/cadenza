@@ -144,6 +144,11 @@ export default function Iterators() {
         "already consumed" trap: laziness without the usual footguns.
       </Why>
 
+      <P>
+        Lists and iterators both keep things in <em>order</em>. When the question is instead membership,
+        or a key-to-value association, you reach for a different collection — <em>maps &amp; sets</em>, next.
+      </P>
+
       <H2>Your turn</H2>
       <Exercise
         id="iterators:1"

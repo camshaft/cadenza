@@ -131,6 +131,11 @@ export default function BinaryMatching() {
         layout can't silently corrupt a value, because a value that wouldn't fit never compiles.
       </Why>
 
+      <P>
+        Bytes and binary layouts are about raw data. The last of the core value types is the opposite — a
+        value that's purely a <em>name</em>, compared by identity: <em>symbols</em>, next.
+      </P>
+
       <H2>Your turn</H2>
       <Exercise
         id="binary-matching:1"
