@@ -895,6 +895,40 @@
   (input  (if true (if true 5 (/ 1 0)) 9))
   (output (: 5 Int64)))
 
+; The shield cases above use CONSTANT-selected branches with PROVABLE traps (folded/shielded at compile
+; time). The RUNTIME face: a branch selected by a runtime `Bool`, whose body divides by a RUNTIME divisor
+; (not statically provable, so a runtime trap not CDZ0304). The trap fires ONLY when that branch is
+; actually taken AND the divisor is zero — the branch-body companion of the runtime-div-in-the-CONDITION
+; case (`(if (> (/ 10 z) 0) …)`) elsewhere in this file. Pins that #Conditionals Evaluate One Branch holds
+; at run time: the untaken branch's potential trap does not fire.
+
+(case "a runtime-selected branch with a runtime-divisor div-by-zero traps only when taken"
+  (doc    "`(if b (/ 10 z) 42)` with runtime `b`/`z`: the trapping expression `(/ 10 z)` has a RUNTIME divisor
+           (not a provable ÷0, so not CDZ0304 — a runtime trap). Called with `b = true, z = 0` the trapping
+           branch is selected and z = 0, so it traps 'divide by zero'. Pins that a runtime-selected branch
+           evaluates its body — the branch-body companion of the runtime-div-in-the-condition trap case.")
+  (input  (do (def (main (: b Bool) (: z Int64)) (if b (/ 10 z) 42)) (export main)))
+  (call   main (: true Bool) (: 0 Int64))
+  (trap   "divide by zero"))
+
+(case "the untaken branch's runtime div-by-zero does not fire"
+  (doc    "The one-branch guarantee at run time: the SAME `(if b (/ 10 z) 42)` with `b = false, z = 0` takes
+           the ELSE branch, so `(/ 10 z)` — which would trap at z = 0 — is NOT evaluated, and the result is
+           42. Pins that #Conditionals Evaluate One Branch shields a RUNTIME trap in the unselected branch,
+           the runtime companion of the constant-shield cases above (which fold the trap away at compile
+           time; here the shielding is a run-time branch choice).")
+  (input  (do (def (main (: b Bool) (: z Int64)) (if b (/ 10 z) 42)) (export main)))
+  (call   main (: false Bool) (: 0 Int64))
+  (output (: 42 Int64)))
+
+(case "a runtime-selected trapping branch with a non-zero divisor computes normally"
+  (doc    "The no-trap control: `(if b (/ 10 z) 42)` with `b = true, z = 2` selects the division branch and
+           z is non-zero, so `10 / 2` = 5. Rules out a spurious trap on the taken branch when the divisor is
+           valid — the trap in the taken-branch case is the z = 0 divisor, not the branch selection itself.")
+  (input  (do (def (main (: b Bool) (: z Int64)) (if b (/ 10 z) 42)) (export main)))
+  (call   main (: true Bool) (: 2 Int64))
+  (output (: 5 Int64)))
+
 (case "a conditional's condition may itself be a conditional"
   (doc    "`(if (if true false true) 1 2)`: the condition is an `if` that evaluates to `false`, so the
            outer conditional selects its else-branch, yielding 2. Pins that the condition position
