@@ -1842,6 +1842,27 @@
   (call   main (: 4611686018427387904 Int64)) (output (: -9223372036854775808 Int64))
   (call   main (: 3 Int64)) (output (: 6 Int64)))
 
+(case "wrapping-sub wraps a boundary-crossing runtime Int64 at the min boundary"
+  (doc    "The runtime companion for the newly-added `wrapping-sub` (the const-fold cases above never
+           cross the boundary with a runtime operand): `(Int64.wrapping-sub x 1)` with `x` a boundary
+           parameter emits the raw `i64.sub` (wasm's sub wraps, no underflow guard). Called with Int64.min
+           it wraps to Int64.max; called with 5 it is the ordinary 4. Pins wrapping SUBTRACTION on a
+           genuinely runtime operand — the underflow at the min boundary wraps rather than trapping,
+           distinct from `checked-sub` (which yields None / traps via expect), on both backends.")
+  (input  (do (def (main (: x Int64)) (Int64.wrapping-sub x 1)) (export main)))
+  (call   main (: -9223372036854775808 Int64)) (output (: 9223372036854775807 Int64))
+  (call   main (: 5 Int64)) (output (: 4 Int64)))
+
+(case "wrapping-sub of a runtime value from itself is zero at every input"
+  (doc    "`(Int64.wrapping-sub x x)` = 0 for any runtime `x` — subtraction of equals is zero and never
+           underflows, so wrapping and checked agree here. Confirmed at Int64.min (where a naive
+           two-step compute could mis-handle the boundary) and 7. The self-operand companion for
+           wrapping-sub, both backends (mirrors the checked `(- x x)` self-operand pin, but on the raw
+           wrapping op which emits no guard).")
+  (input  (do (def (main (: x Int64)) (Int64.wrapping-sub x x)) (export main)))
+  (call   main (: -9223372036854775808 Int64)) (output (: 0 Int64))
+  (call   main (: 7 Int64)) (output (: 0 Int64)))
+
 (case "wrapping-add on a runtime UInt8 wraps modulo 256"
   (doc    "`(UInt8.wrapping-add x 1)` on a runtime UInt8: 255 + 1 wraps to 0 (mod 256), 10 + 1 = 11. The
            wraparound modulus is the TYPE's width (2^8), not 2^64 — a narrow wrap that reused the i64 op
