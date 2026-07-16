@@ -97,3 +97,34 @@ test("a dropdown option containing a comma splits correctly (quote-aware arg spl
   const w = parseWidgets('m : String = dropdown("a, b", "c")').widgets[0] as Extract<Widget, { control: "dropdown" }>;
   assert.deepEqual(w.options, ["a, b", "c"]);
 });
+
+// ── PR #474 hardening: reject invalid Cadenza widget names; escape-aware arg lexing ──
+
+test("invalid Cadenza widget names are rejected (PR #474): `.`, doubled `-`, trailing `-`", () => {
+  // A widget name flows into `def <name>` via bindingFor, so it must be a valid Cadenza binding ident.
+  for (const bad of ["a.b", "a--b", "rate-", "-rate", "x.y.z"]) {
+    const { widgets, errors } = parseWidgets(`${bad} : Int64 = slider(0, 10)`);
+    assert.equal(widgets.length, 0, `expected ${bad} rejected`);
+    assert.equal(errors.length, 1);
+    assert.match(errors[0].message, /not a valid widget name/);
+  }
+});
+
+test("valid kebab widget names are still accepted", () => {
+  for (const ok of ["rate", "rate-adjusted", "x", "_priv", "a-b-c", "p2"]) {
+    const { widgets, errors } = parseWidgets(`${ok} : Int64 = slider(0, 10)`);
+    assert.deepEqual(errors, [], `expected ${ok} accepted`);
+    assert.equal(widgets[0].name, ok);
+  }
+});
+
+test("escaped quotes inside a dropdown option split + unescape correctly (PR #474)", () => {
+  const w = parseWidgets('m : String = dropdown("a \\"q\\" opt", "b")').widgets[0] as Extract<Widget, { control: "dropdown" }>;
+  // Two options, not four; the first has its inner quotes unescaped.
+  assert.deepEqual(w.options, ['a "q" opt', "b"]);
+});
+
+test("a text default containing escaped quotes + a backslash round-trips (PR #474)", () => {
+  const w = parseWidgets('t : String = text(default: "a \\"q\\" and \\\\ slash")').widgets[0] as Extract<Widget, { control: "text" }>;
+  assert.equal(w.default, 'a "q" and \\ slash');
+});
