@@ -197,6 +197,47 @@
             (def (main) (f (Mk (Symbol.of (String.concat "su" "b"))))) (export main)))
   (output (: 0 Int64)))
 
+; The landed symbol-literal cases pin the first-arm match, the wildcard miss, and a nested-payload match.
+; These pin the neighbors: hitting the SECOND arm (arms are tried by CONTENT, so a symbol-literal match is
+; order-independent across disjoint literals), the equivalence to the `if (= s lit)` CHAIN the doc names as
+; the sibling dispatch, and a symbol-literal pattern over a MULTI-BYTE symbol (content-match, not a byte or
+; ASCII assumption). All build the scrutinee via `Symbol.of` over a runtime rope so it is not a constant fold.
+
+(case "a symbol-literal match reaches the second arm by content"
+  (doc    "`classify` matches a Symbol against `(#\"add\" 1) (#\"sub\" 2) (_ 0)`; called with a runtime
+           `#\"sub\"` it takes the SECOND arm → 2. Pins that symbol-literal arms are tried by content across
+           the whole arm list (order-independent for disjoint literals), not just the first — the miss-past-
+           the-first-arm companion of the landed first-arm-match case.")
+  (input  (do
+            (def (classify (: s Symbol)) (match s (#"add" 1) (#"sub" 2) (_ 0)))
+            (def (main) (classify (Symbol.of (String.concat "su" "b"))))
+            (export main)))
+  (output (: 2 Int64)))
+
+(case "a symbol-literal match agrees with the equivalent if-(= s lit) chain"
+  (doc    "The symbol-literal `match` is the sibling of an `if (= s lit)` dispatch chain (the landed doc's
+           framing): over the same runtime `#\"sub\"`, `(match s (#\"add\" 1) (#\"sub\" 2) (_ 0))` and
+           `(if (= s #\"add\") 1 (if (= s #\"sub\") 2 0))` both give 2, so their difference is 0. Pins that
+           the symbol-literal match desugars to the same content-eq dispatch as the explicit chain — a
+           regression that changed the arm-selection order or the eq test would make them disagree.")
+  (input  (do
+            (def (via-match (: s Symbol)) (match s (#"add" 1) (#"sub" 2) (_ 0)))
+            (def (via-chain (: s Symbol)) (if (= s #"add") 1 (if (= s #"sub") 2 0)))
+            (def (main) (let ((s (Symbol.of (String.concat "su" "b")))) (- (via-match s) (via-chain s))))
+            (export main)))
+  (output (: 0 Int64)))
+
+(case "a symbol-literal pattern over a multi-byte symbol matches by content"
+  (doc    "`(match s (#\"café\" 1) (_ 0))` with a runtime `#\"café\"` (é = 2 UTF-8 bytes) takes the literal
+           arm → 1. Pins that the symbol-literal content test compares the full UTF-8 byte content, not an
+           ASCII or byte-length assumption — a multi-byte symbol matches its multi-byte literal exactly, the
+           symbol-pattern companion of the multi-byte `Symbol.of` equality.")
+  (input  (do
+            (def (classify (: s Symbol)) (match s (#"café" 1) (_ 0)))
+            (def (main) (classify (Symbol.of "café")))
+            (export main)))
+  (output (: 1 Int64)))
+
 ; ============================================================================================
 ; Symbol-keyed membership — the symbol-table dispatch the form exists for
 ; ============================================================================================
