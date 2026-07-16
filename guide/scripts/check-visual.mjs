@@ -174,7 +174,11 @@ try {
           await page.goto(`${base}/`, { waitUntil: "domcontentloaded", timeout: 30000 });
           await page.evaluate((s) => localStorage.setItem("cadenza.syntax", s), route.surface);
         }
-        await page.goto(`${base}${route.path}`, { waitUntil: "networkidle", timeout: 30000 });
+        // `domcontentloaded`, NOT `networkidle`: the heavy routes (playground/cad/notebook) run the compile
+        // + run workers and poll version.json, so the network is never idle — `networkidle` flakily times
+        // out even though the page is interactive. The `waitForSelector` + each route's `interact` polling
+        // below are the real readiness gate, so waiting for the DOM is sufficient and not flaky.
+        await page.goto(`${base}${route.path}`, { waitUntil: "domcontentloaded", timeout: 30000 });
         await page.waitForSelector(route.waitFor, { timeout: 30000 });
         if (route.interact) await route.interact(page);
 

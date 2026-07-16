@@ -70,3 +70,5 @@
   (input (do (def (main (: n UInt8)) (match n (0 100) (x x))) (export main)))
   (call main (: 0 UInt8))
   (output (: 100 Int64)))
+
+; ✅ RESOLVED 2026-07-16 — VERIFIED BY CONTENT on trunk 6c1e89f65: rust gate 4 pass / 0 fail (was 2/2). v-rust-backend fix (f59b6bfd7-era, re-parented) grounds every sum-decision-tree Leaf body to the match result width (threads result_it through emit_sum_match/switch/cont) → narrow UInt8 sum-payload arm widens to unified Int64, no E0308. 6 graded cases in 05-compound-types.sexp across narrow widths (UInt8 hit+miss/Int8/Int16/Int32 + Int64 control), rust+async pass. This was the rust twin of the wasm narrow-payload family. CLOSED.

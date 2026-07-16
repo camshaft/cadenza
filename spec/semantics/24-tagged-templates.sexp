@@ -160,6 +160,33 @@
             (export main)))
   (output (: 3 Int64)))
 
+; The full JSX-lexer precursor: a tag that RECURSIVELY SCANS its CHUNK TEXT byte-by-byte — the exact shape
+; a recursive-descent parser tag consumes its input (mirroring implementation/compiler-ml/src/lex.cdz, which
+; scans char-codes). `count-b` recurses over `String.to-bytes` of the chunk via `Bytes.at`/`Bytes.len`,
+; counting a target byte; `scan` wraps the count in `(Ast.Int …)`. The compile-time evaluator must reduce a
+; recursion DRIVEN BY THE CHUNK CONTENT (not a bare counter) and fold to a constant `Ast`. This is the last
+; capability a real DSL parser tag needs before the full parser: recurse + read the chunk + build an Ast.
+
+(case "a recursive tag scans its chunk text byte-by-byte and folds to a constant Ast"
+  (doc    "`scan`'s tag calls `count-b`, which RECURSES over the chunk's bytes (`Bytes.at`/`Bytes.len` on
+           `String.to-bytes` of the chunk) counting the byte `98` ('b'). For chunk \"abbcbb\" that is 4, so
+           the tag folds to `(Ast.Int 4)`, read here as 4. Pins the JSX-lexer shape: a tag whose recursion
+           is DRIVEN BY THE CHUNK CONTENT (a scan/lex loop, not a bare counter) const-folds to an `Ast` —
+           the input-consumption capability a recursive-descent parser tag needs, mirroring lex.cdz's
+           char-code scan. The module carries a real byte-scan (1132 bytes) folded to the constant.")
+  (input  (do
+            (def (count-b (: bytes Bytes) (: i Int64) (: acc Int64))
+              (match (Bytes.at bytes i)
+                ((Option.Some c) (count-b bytes (+ i 1) (if (= c 98) (+ acc 1) acc)))
+                ((Option.None _) acc)))
+            (def (first-chunk chunks) (match chunks ((list c) c) ((list c .. r) c) (_ "")))
+            (def (scan chunks holes) (Ast.Int (count-b (String.to-bytes (first-chunk chunks)) 0 0)))
+            (def (main) (match (tagged-template scan (chunks "abbcbb") (holes))
+                          ((Ast.Int n) n)
+                          (_           0)))
+            (export main)))
+  (output (: 4 Int64)))
+
 ; --- The tag's TYPE is enforced (dispatch by binding requires the right shape) ---------------------
 ; metaprogramming.md: the tag "MUST … require it to be a compile-time function from a list of the chunk
 ; strings and a list of the hole expressions to an abstract syntax tree." A tag bound to a NON-FUNCTION

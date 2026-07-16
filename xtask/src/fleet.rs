@@ -3417,11 +3417,15 @@ fn inbox_list(fleet: &Fleet, name: &str) {
     }
     // Summary: the actionable/informational split so an agent knows at a glance whether idling is a
     // real drain-stall (has ⚑ work) or just un-archived FYI mail (only ·). Mirrors the drain-stall
-    // signal exactly (see `message_kind_is_actionable`), reinforcing the drain discipline.
+    // signal exactly (see `message_kind_is_actionable`), reinforcing the drain discipline. The legend
+    // is DERIVED from `INFORMATIONAL_KINDS` (the same source `message_kind_is_actionable` uses), so the
+    // human text can't drift from the classifier — actionable is honestly "everything else" (the
+    // classifier is a deny-list, so there is no fixed actionable enum to spell out).
     let informational = names.len().saturating_sub(actionable);
     println!(
-        "  ── {actionable} actionable (⚑ assign/reject/ask/issue/request/answer), \
-         {informational} informational (· note/merged/backlog/status/reply)"
+        "  ── {actionable} actionable (⚑ = anything not below), \
+         {informational} informational (· {})",
+        INFORMATIONAL_KINDS.join("/")
     );
     if actionable == 0 {
         println!(
@@ -3469,8 +3473,15 @@ fn inbox_depth(fleet: &Fleet, name: &str) -> String {
 /// Unknown/malformed kinds default to ACTIONABLE (fail-safe: better a spurious flag than a silent miss
 /// of real work).
 fn message_kind_is_actionable(kind: &str) -> bool {
-    !matches!(kind, "note" | "merged" | "backlog" | "status" | "reply")
+    !INFORMATIONAL_KINDS.contains(&kind)
 }
+
+/// The message kinds that are INFORMATIONAL (read-and-archive; not a drain-stall). This is the SINGLE
+/// source of truth: `message_kind_is_actionable` is "not in this list", and the `fleet inbox` summary
+/// derives its human text from it — so the classifier and the CLI legend can never drift (the nit
+/// Copilot flagged on PR #506: a hard-coded example list in the summary can go stale vs the classifier).
+/// A kind added here becomes informational everywhere at once; everything else is actionable.
+const INFORMATIONAL_KINDS: &[&str] = &["note", "merged", "backlog", "status", "reply"];
 
 /// The message `kind` of a bus filename `<seq>-<pid>-<kind>.json`, or `None` if it doesn't match that
 /// pattern (see `deliver`: `format!("{:012}-{}-{}.json", seq, pid, kind)`). The `kind` itself may
@@ -4674,13 +4685,19 @@ mod tests {
         ] {
             assert!(message_kind_is_actionable(k), "{k} should be actionable");
         }
-        // Informational — read-and-archive, no work.
-        for k in ["note", "merged", "backlog", "status", "reply"] {
+        // Informational — read-and-archive, no work. Iterate the const so this stays tied to the
+        // single source of truth the CLI legend also derives from (can't drift — the PR#506 fix).
+        for k in INFORMATIONAL_KINDS {
             assert!(
                 !message_kind_is_actionable(k),
                 "{k} should be informational"
             );
         }
+        // The const is exactly the informational set (pins its membership so a stray add is caught).
+        assert_eq!(
+            INFORMATIONAL_KINDS,
+            &["note", "merged", "backlog", "status", "reply"]
+        );
         // Unknown kind → fail-safe to ACTIONABLE (never silently swallow real work).
         assert!(message_kind_is_actionable("some-new-kind"));
     }

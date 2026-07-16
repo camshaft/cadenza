@@ -3997,6 +3997,17 @@
   (input  (let ((x 0.0)) (- x)))
   (output (: -0.0 Float64)))
 
+(case "float double negation round-trips signed zero — -(-0.0) is +0.0, not -0.0"
+  (doc    "Each unary `(- …)` flips a float's sign bit (the case above pins `(- 0.0)` = -0.0). Two of them
+           compose back: `(- (- 0.0))` flips 0.0 → -0.0 → +0.0. So `-(-x)` = x holds for float INCLUDING
+           signed zero. Pins that a `-(-x) → x` simplification round-trips the sign correctly — a fold that
+           dropped ONE of the two flips (leaving -0.0), or that emitted the `0.0 - x` form for negation
+           (which does NOT flip +0.0's sign), would leave -0.0 and be caught here (distinct from +0.0 by the
+           canonical byte form). `(- (- 0.0))` = 0.0, both backends. The double-negation companion of the
+           single float-negation case above.")
+  (input  (let ((x 0.0)) (- (- x))))
+  (output (: 0.0 Float64)))
+
 (case "unary negation of a nonzero float"
   (doc    "`(- x)` with x = 5.0 negates to -5.0 — the ordinary (nonzero) float-negation case.")
   (input  (let ((x 5.0)) (- x)))

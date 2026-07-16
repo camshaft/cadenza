@@ -48,3 +48,5 @@
   (output (: true Bool)))
 
 ; SUBSUMED 2026-07-16 by the consolidated family issue: queue/adv-rust-nonscalar-entry-arg-driver-marshalling-family.sexp (rust driver cannot marshal ANY non-scalar entry arg — String/BigInt/Rational/Bytes — ONE root: driver writes raw Cadenza literal text into Rust source instead of the library construction form). Verified family gates wasm 1p/4todo vs rust 1p/4fail on trunk b29b7c89a. Track/promote via the FAMILY reproducer; this individual repro resolves under the same v-rust-backend fix. (Not renaming .RESOLVED yet — still reproduces; retire when the family fix lands.)
+
+; ✅ RESOLVED 2026-07-16 (subsumed) — fixed under the family one-root fix 5a9a86c96 (rust_call_arg marshals ALL non-scalar entry args). Family reproducer gates 8/8 rust on trunk 6c1e89f65. This individual repro is covered by the family graded cases (09-functions/13-strings). CLOSED.

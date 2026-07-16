@@ -391,6 +391,45 @@
             (_ false)))
   (output (: true Bool)))
 
+; The dependent-size cases above cover bind-exactly, remainder, zero, chained, and a clear overrun. These
+; pin the size-arithmetic BOUNDARIES a naive `remaining >= n` check can slip on: a size EXACTLY equal to the
+; remaining bytes (the last-fits boundary), a size ONE PAST it (off-by-one overrun), and — the soundness
+; one — a SIGNED size segment whose value reads NEGATIVE (0xFF over i8 = -1), which must fall through rather
+; than read backwards or underflow the remaining-bytes subtraction / wrap the count to a huge unsigned slice.
+
+(case "a dependent-size segment binding exactly the remaining bytes leaves an empty rest"
+  (doc    "The last-fits boundary: `(bin (u8 n) (bytes body n))` against `(Bytes.of (list 3 10 20 30))` reads
+           n = 3, and exactly 3 bytes remain, so `body` binds all of `(list 10 20 30)` and the pattern
+           consumes the whole scrutinee → matches. Pins that size == remaining is a MATCH (not an overrun) —
+           the boundary a strict `remaining > n` check would wrongly reject; it must be `remaining >= n`.")
+  (input  (match (Bytes.of (list 3 10 20 30))
+            ((bin (u8 n) (bytes body n)) (= body (Bytes.of (list 10 20 30))))
+            (_ false)))
+  (output (: true Bool)))
+
+(case "a dependent size one past the remaining bytes overruns and falls through"
+  (doc    "The off-by-one overrun: the SAME pattern against `(Bytes.of (list 4 10 20 30))` reads n = 4, but
+           only 3 bytes remain — one short — so `(bytes body 4)` overruns and the arm does NOT match, falling
+           to the wildcard → false. The strict complement of the exact-fit case: size = remaining + 1 is the
+           first overrun. Pins the bounds check is exact at the one-byte margin.")
+  (input  (match (Bytes.of (list 4 10 20 30))
+            ((bin (u8 n) (bytes body n)) true)
+            (_ false)))
+  (output (: false Bool)))
+
+(case "a signed dependent size that reads negative falls through, not a backward read"
+  (doc    "The soundness case: a SIGNED size segment `(i8 n)` reading the byte 0xFF = 255 interprets it as
+           the two's-complement -1. A negative byte count has no valid read — `(bytes body n)` with n = -1
+           must FALL THROUGH (→ false), NOT read backwards, wrap the count to a huge unsigned slice length,
+           or underflow the `remaining - n` subtraction. `(Bytes.of (list 255 10 20))` matched with `(bin
+           (i8 n) (bytes body n))` → false. Pins a negative dependent size is rejected at the bounds check,
+           the signed companion of the overrun case — a naive unsigned cast of the count would read 255
+           bytes (overrun) or a wrap could pass a huge count to a slice.")
+  (input  (match (Bytes.of (list 255 10 20))
+            ((bin (i8 n) (bytes body n)) true)
+            (_ false)))
+  (output (: false Bool)))
+
 (case "constructing a sized bytes segment whose value length differs from the size is rejected"
   (doc    "`(bin (bytes (Bytes.of (list 1 2 3)) 2))` splices a three-byte value into a segment declared to
            be two bytes wide; the declared size and the value's length disagree, so there is no defined
