@@ -3460,6 +3460,8 @@ todo	a tuple-returning closure alongside a plain export — the plain
 todo	a two-argument closure exported to the host is called with both arguments
 todo	a two-parameter closure is applied at full arity through a recursive HOF
 todo	an 8-bit-integer closure crosses the host boundary
+todo	an @param of a Bool type generates a Bool-typed accessor
+todo	an @param of a Float64 type generates a Float64-typed accessor
 todo	an @param site generates a Param accessor a host delegation reads at run time
 todo	an INFINITY-axiom theorem is unforgeable — its Thm cannot be fabricated outside the kernel
 todo	an UNCONSTRAINED add is NOT dischargeable: with no precondition bound, the no-overflow obligation cannot be closed (the check must stay)
@@ -3639,6 +3641,8 @@ todo	three closures with a SHARED signature cross as two resource types
 todo	three distinct closure signatures cross as three resource types
 todo	three same-variant literal arms fall through in order
 todo	tuple elements are evaluated left to right
+todo	two @param sites generate two accessors under one Param effect
+todo	two definitions imported under the same name are rejected
 todo	two exports normalizing to the same kebab extern name are rejected
 todo	two host calls consume their responses in order
 todo	two host responses combine in call order through a non-commutative operator

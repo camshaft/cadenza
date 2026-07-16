@@ -46,3 +46,48 @@
   (call   main)
   (host-responses (respond Param.base (: 41 Int64)))
   (output (: 42 Int64)))
+
+; The scan+generate is TYPE-AGNOSTIC across the scalar leaves: the accessor's result type is whatever the
+; @param annotation declares (`(op name (-> Unit <Type>))`), so a Float64/Bool/… param generates a
+; correctly-typed accessor with no per-type code. These pin the non-Int scalar leaves + the multi-param
+; case (two @param sites → two accessor ops under ONE generated `Param` effect).
+
+(case "an @param of a Float64 type generates a Float64-typed accessor"
+  (doc    "The type-agnostic generate: `@param(widget: slider) ratio : Float64` makes the sidecar generate
+           `(op ratio (-> Unit Float64))`, so the host value crosses as a Float64. With a host response of
+           2.5, `main` returns 2.5. Pins that the accessor's result type follows the annotation for a
+           non-Int scalar (Float64), not just Int64.")
+  (input  (do
+            (: (@ (param (: widget slider)) ratio) Float64)
+            (def (main) (host (Param) (Param.ratio)))
+            (export main)))
+  (call   main)
+  (host-responses (respond Param.ratio (: 2.5 Float64)))
+  (output (: 2.5 Float64)))
+
+(case "an @param of a Bool type generates a Bool-typed accessor"
+  (doc    "The Bool leaf: `@param(widget: toggle) mirror : Bool` generates `(op mirror (-> Unit Bool))`, so
+           the host supplies a Bool. With a host response of true, `main` returns true. Pins the Bool arm
+           of the type-agnostic accessor generation.")
+  (input  (do
+            (: (@ (param (: widget toggle)) mirror) Bool)
+            (def (main) (host (Param) (Param.mirror)))
+            (export main)))
+  (call   main)
+  (host-responses (respond Param.mirror (: true Bool)))
+  (output (: true Bool)))
+
+(case "two @param sites generate two accessors under one Param effect"
+  (doc    "The MULTI-param case: two `@param` sites (`w`, `h`) generate one `Param` effect with TWO
+           accessor ops (`(op w …) (op h …)`), each host-bound independently. `(+ (Param.w) (Param.h))`
+           with host responses 3 and 4 is 7. Pins that the sidecar collects ALL sites into a single
+           generated effect (one effect, one op per param), not one effect per site.")
+  (input  (do
+            (: (@ (param (: widget slider)) w) Int64)
+            (: (@ (param (: widget slider)) h) Int64)
+            (def (main) (host (Param) (+ (Param.w) (Param.h))))
+            (export main)))
+  (call   main)
+  (host-responses (respond Param.w (: 3 Int64))
+                  (respond Param.h (: 4 Int64)))
+  (output (: 7 Int64)))
