@@ -9999,3 +9999,29 @@
               (def (f (: o (Option C))) (match o ((Some (A)) 1) ((None) 0)))
               (export f)))
   (error  CDZ0210))
+
+(case "a MULTI-PAYLOAD variant with a nested same-sum variant reads the right payload depth (known outer disc)"
+  (doc    "The MULTI-PAYLOAD analogue of the recursive-sum nested-match miscompile (the single-payload
+           `(W (I 7))` case is pinned above). `(type T (I Int64) (P T Int64))`, `(match t ((P (I x) y) …))`
+           on the constant `(P (I 5) 100)`: `P`'s payload is a tuple `(T, Int64)`, so `x` reads at
+           `[Payload, Elem(0), Payload]` (P's tuple, element 0 = the inner `T`, then `I`'s payload) and `y`
+           at `[Payload, Elem(1)]` → 5 + 100 = 105. With the outer `P` disc statically known (a constant
+           SumNew), the `const_disc_at` emit-layer fix must resolve `Elem(0)`'s entered inner variant (`I`)
+           so the deep `Payload` is not erased. Guards the multi-payload path of the recursive-sum fix —
+           a tree walk over a sum whose payload is `(child, metadata)` is exactly this shape.")
+  (input  (do (type T (I Int64) (P T Int64))
+              (def (f (: t T)) (match t ((P (I x) y) (+ x y)) (_ 0)))
+              (def (main) (f (P (I 5) 100)))
+              (export main)))
+  (output (: 105 Int64)))
+
+(case "a multi-payload nested same-sum match falls through when the nested variant differs"
+  (doc    "The non-match dual: `(P (P (I 1) 2) 100)` matched against `((P (I x) y) …)` — element 0 of P's
+           payload is a `P`, not an `I` — falls through to the wildcard → 0. Confirms the inner `Elem(0)`
+           discriminant test genuinely runs (reads I vs P at `[Payload, Elem(0)]`) even with the outer P
+           disc folded. Paired with the positive case, pins the multi-payload deep-path dispatch.")
+  (input  (do (type T (I Int64) (P T Int64))
+              (def (f (: t T)) (match t ((P (I x) y) (+ x y)) (_ 0)))
+              (def (main) (f (P (P (I 1) 2) 100)))
+              (export main)))
+  (output (: 0 Int64)))
