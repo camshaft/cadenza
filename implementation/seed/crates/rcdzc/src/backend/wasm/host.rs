@@ -170,6 +170,14 @@ fn is_extern_heap_type(ty: &Ty) -> bool {
 //# The compiler MUST NOT emit an import that the program's declared capabilities do not enumerate.
 //= spec/contracts/host-interface-binding.md#imports-mirror-the-manifest-exactly
 //# The compiler MUST NOT emit an import for a host operation the manifest does not enumerate.
+// This projection realizes the entrypoint→boundary delegation: an effect an enclosing handler discharges
+// is folded away before it reaches a `Core::HostCall`, so it never enters this set (never the manifest);
+// an effect an entrypoint delegates is reached as a `Core::HostCall` and emitted as an imported host
+// function — the host is that effect's terminal discharger.
+//= spec/capabilities/capabilities-and-effects.md#host-binding-is-a-routing-decision-made-at-the-entrypoint
+//# An entrypoint MUST be able to delegate a set of effects to the host boundary, fixing that within the delegated computation those effects are discharged at the component boundary by an imported-function call the host resolves, so that the host is the *terminal* handler of a delegated effect and delegation is the boundary counterpart of an in-program handler.
+//= spec/capabilities/capabilities-and-effects.md#host-binding-is-a-routing-decision-made-at-the-entrypoint
+//# An effect an enclosing handler discharges MUST NOT appear in the manifest, and an effect an entrypoint delegates to the host MUST be enumerated in the program's manifest and reached there as a call to an imported host function, so that whether a given performance escapes is determined by the handlers dynamically enclosing it and the delegation enclosing it, and a delegated effect always has exactly one terminal discharger — the host.
 //= spec/contracts/host-interface-binding.md#imports-mirror-the-manifest-exactly
 //# The compiler MUST NOT emit a manifest entry for which no corresponding import is generated.
 //= spec/contracts/host-interface-binding.md#the-manifest-is-a-projection-of-the-escaping-effect-row
