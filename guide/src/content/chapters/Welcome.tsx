@@ -93,6 +93,12 @@ export default function Welcome() {
         in the source and recompile, never by patching the binary. This is also why the same source
         always derives the same bytes: derivation is a pure function of the source and the toolchain.
       </Why>
+
+      <P>
+        Those last boxes are a preview: nearly every choice in Cadenza traces back to a handful of ideas.
+        The next chapter, <em>Why Cadenza is the way it is</em>, lays them out — you don't need them to write
+        code, but they make everything that follows feel inevitable.
+      </P>
     </article>
   );
 }
