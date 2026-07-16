@@ -3052,6 +3052,38 @@
   (call   main (: false Bool) (: false Bool) (: 10 Int64) (: 20 Int64) (: 30 Int64))
   (output (: 30 Int64)))
 
+; The hoist COMPOSES through the differing position it SYNTHESIZES: when the hoist pushes a differing
+; field into a fresh `(if c pᵢ qᵢ)` and that field is ITSELF a common constructor across the arms, the
+; synthesized `if` is re-run through the hoist so the nested constructor is hoisted too (arbitrary depth).
+; `(if c1 (tuple (Some a) 1) (if c2 (tuple (Some b) 1) (tuple (Some a) 1)))` hoists the outer tuple ONCE,
+; and its differing field-0 — a nested-if of `Some` — hoists to one `Some` (one tuple + one sum-new, not
+; three of each). Value parity in every arm direction pins the deep composition and its Perceus (only the
+; selected payload materializes). This pins the compose-through-synthesized-position case (a unit test
+; covers it; this gives the whole fleet's gate the same protection).
+
+(case "a common constructor composes through a hoisted tuple field to build once"
+  (doc    "`(if c1 (tuple (Some a) 1) (if c2 (tuple (Some b) 1) (tuple (Some a) 1)))` — the hoist builds
+           the outer tuple once and, because its differing field-0 is itself a nested-if of `Some`, that
+           field hoists to a single `Some` too (arbitrary-depth composition). Read as element-0's payload
+           plus the shared element-1 (=1): c1 → a+1, else-c2 → b+1, else-else → a+1. Kept opaque via a
+           recursive helper so the tuple/Some are genuine runtime heap values.")
+  (input  (do
+            (def (mk (: c1 Bool) (: c2 Bool) (: a Int64) (: b Int64) (: n Int64))
+              (if (< n 0) (mk c1 c2 a b (+ n 1))
+                (if c1 (tuple (Option.Some a) 1)
+                  (if c2 (tuple (Option.Some b) 1) (tuple (Option.Some a) 1)))))
+            (def (main (: c1 Bool) (: c2 Bool) (: a Int64) (: b Int64))
+              (match (. (mk c1 c2 a b 0) 0)
+                ((Option.Some v) (+ v (. (mk c1 c2 a b 0) 1)))
+                (_ -1)))
+            (export main)))
+  (call   main (: true Bool) (: false Bool) (: 10 Int64) (: 20 Int64))
+  (output (: 11 Int64))
+  (call   main (: false Bool) (: true Bool) (: 10 Int64) (: 20 Int64))
+  (output (: 21 Int64))
+  (call   main (: false Bool) (: false Bool) (: 10 Int64) (: 20 Int64))
+  (output (: 11 Int64)))
+
 ; --- The list face of the common-constructor hoist (same-length ListNew arms) ---------------------
 ; The hoist's list extension: `(if c (list …p) (list …q))` with SAME-length arms builds one list with
 ; per-element selections. Same guard obligations as the sum/tuple/record pins above, plus two faces

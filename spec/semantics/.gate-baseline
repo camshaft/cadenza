@@ -482,6 +482,7 @@ pass	a closure whose CALL returns an Option crosses as the value form
 pass	a closure whose body applies a nested lambda in place runs through a recursive HOF
 pass	a closure whose body calls a top-level helper function
 pass	a collection-carrying recursion whose base arm does a fallible indexed read compiles
+pass	a common constructor composes through a hoisted tuple field to build once
 pass	a comparison's trapping shared bound fires under a trap-free condition
 pass	a comparison-predicate function returns its boolean result
 pass	a compile-time type branch reads a runtime parameter's static type
