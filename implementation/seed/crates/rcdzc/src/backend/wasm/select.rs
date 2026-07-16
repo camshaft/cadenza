@@ -2305,13 +2305,13 @@ fn collect_used_ops_into(
             collect_used_ops_into(db, rhs, out);
         }
         // Runtime structural equality imports `value-eq` (the compare) AND `drop` (to reclaim an owned
-        // temporary operand after the borrowing compare — see the `Core::ValueEq` emit). A STRING operand is
-        // canonicalized with `bytes-compact` before the compare (a rope vs its flat twin — see the emit), so
-        // import `bytes-compact` when either operand is a String.
+        // temporary operand after the borrowing compare — see the `Core::ValueEq` emit). A STRING/BYTES
+        // operand is canonicalized with `bytes-compact` before the compare (a rope vs its flat twin — see
+        // the emit), so import `bytes-compact` when either operand is a String or Bytes.
         Core::ValueEq { lhs, rhs } => {
             out.insert(OP_VALUE_EQ);
             out.insert(OP_DROP);
-            if operand_is_string(db, lhs) || operand_is_string(db, rhs) {
+            if operand_is_string_or_bytes(db, lhs) || operand_is_string_or_bytes(db, rhs) {
                 out.insert(OP_BYTES_COMPACT);
             }
             collect_used_ops_into(db, lhs, out);
@@ -7884,33 +7884,35 @@ fn emit(
         // (an `if`/`match`/`let` that may return a borrowed sub-value) DECLINES — reject, never a leak or
         // a double-free.
         Core::ValueEq { lhs, rhs } => {
-            // `value-eq` is `champ_eq` — a PHYSICAL-byte compare (the map-key contract). A runtime String
-            // operand can be a ROPE (a `String.concat` lowers to `bytes-concat`), whose bytes differ from a
-            // flat leaf of IDENTICAL content — so comparing a rope directly would return the WRONG answer.
-            // CANONICALIZE EVERY String operand with `bytes-compact` (a content-equal flat leaf; a no-op-
-            // shaped pass on an already-flat string) before the compare, so a rope and its flat twin compare
-            // equal — whether the operand is OWNED (a fresh `String.concat` result) or BORROWED (a param /
-            // a `Map.lookup`/`SumPayload`-extracted rope value, `(= s "…")` where `s` is a variant/map
-            // payload). `bytes-compact` FLATTENS its argument IN PLACE and returns the SAME handle with an
-            // UNCHANGED refcount when it was already owned-consuming — but critically, the runtime op is
-            // refcount-NEUTRAL (`op_bytes_compact` = `bytes_flatten(buf); buf`): it mutates the node into a
-            // leaf (content-preserving, UNOBSERVABLE even on a shared value per the memory model's #Sharing
-            // Is Not Observable) and hands the SAME handle back. So compacting a BORROWED operand neither
-            // consumes it nor mints a new handle — the borrow stays the owner's and is NOT dropped here; an
-            // OWNED operand's handle is likewise threaded through and dropped after the borrowing compare.
-            // A non-String operand (a tuple/sum/map compound handle) is NOT compacted — it is passed as-is (a
-            // String NESTED inside such a compound is a separate, rarer case `ty_heap_walkable` still admits;
-            // only a DIRECT String operand is canonicalized here).
+            // `value-eq` is `champ_eq` — a PHYSICAL-byte compare (the map-key contract). A runtime String OR
+            // Bytes operand can be a ROPE (a `String.concat`/`Bytes.concat`/`.slice` lowers to a rope node),
+            // whose bytes differ from a flat leaf of IDENTICAL content — so comparing a rope directly would
+            // return the WRONG answer. CANONICALIZE EVERY String/Bytes operand with `bytes-compact` (a
+            // content-equal flat leaf; a no-op-shaped pass on an already-flat value) before the compare, so a
+            // rope and its flat twin compare equal — whether the operand is OWNED (a fresh `String.concat`/
+            // `Bytes.concat`/`String.to-bytes` result) or BORROWED (a param / a `Map.lookup`/`SumPayload`-
+            // extracted rope value, `(= s "…")` where `s` is a variant/map payload). `bytes-compact` FLATTENS
+            // its argument IN PLACE and returns the SAME handle with an UNCHANGED refcount when it was already
+            // owned-consuming — but critically, the runtime op is refcount-NEUTRAL (`op_bytes_compact` =
+            // `bytes_flatten(buf); buf`): it mutates the node into a leaf (content-preserving, UNOBSERVABLE
+            // even on a shared value per the memory model's #Sharing Is Not Observable) and hands the SAME
+            // handle back. So compacting a BORROWED operand neither consumes it nor mints a new handle — the
+            // borrow stays the owner's and is NOT dropped here; an OWNED operand's handle is likewise threaded
+            // through and dropped after the borrowing compare. A non-text operand (a tuple/sum/map compound
+            // handle) is NOT compacted — it is passed as-is (a String/Bytes NESTED inside a compound rides the
+            // construction-site element compaction; only a DIRECT String/Bytes operand is canonicalized here,
+            // which is why `compound_eq_heap_walkable` admits a DIRECT Bytes but `ty_heap_walkable` still
+            // declines a nested one).
             let lo = heap_operand_ownership(db, lhs)?;
             let ro = heap_operand_ownership(db, rhs)?;
-            // Compact ANY String operand — owned OR borrowed. Since `bytes-compact` is refcount-neutral (it
-            // flattens in place, returning the same handle), it is safe on a borrow: the flatten is
+            // Compact ANY String/Bytes operand — owned OR borrowed. Since `bytes-compact` is refcount-neutral
+            // (it flattens in place, returning the same handle), it is safe on a borrow: the flatten is
             // unobservable, and no drop follows a borrowed operand. This closes the rope miscompile for the
             // WHOLE class — previously only an OWNED String was compacted, so a genuine rope reaching `=`
             // through a BORROWED operand (a `Map.lookup`/`SumPayload` payload, or a runtime-rope param)
             // compared by its unflattened header bytes and silently returned the wrong answer.
-            let lhs_str = operand_is_string(db, lhs);
-            let rhs_str = operand_is_string(db, rhs);
+            let lhs_str = operand_is_string_or_bytes(db, lhs);
+            let rhs_str = operand_is_string_or_bytes(db, rhs);
             // Two i32 scratch slots for the operand handles, above the running high-water (they must not
             // clash with an operand emit's own transient scratch — a `Call` arg's i64 guard slot).
             let slot_l = *high;
@@ -8826,6 +8828,24 @@ fn operand_is_string(db: &mut Db, id: StructId) -> bool {
     matches!(peel(&type_of(db, id)), Ty::String | Ty::Symbol)
 }
 
+/// Whether a DIRECT `Core::ValueEq` operand is a rope-capable text/byte value that must be `bytes-compact`ed
+/// before the physical `champ_eq` compare — a `String`/`Symbol` (per [`operand_is_string`]) OR a `Bytes`.
+/// A runtime `Bytes` can be a `bytes-concat`/`.slice` ROPE (physical bytes ≠ a flat leaf of equal content),
+/// exactly like a `String.concat` rope, so a direct Bytes operand of `=` is canonicalized the same way (the
+/// runtime `bytes-compact` is refcount-neutral, so it is safe on an owned OR a borrowed operand). Used ONLY
+/// on the direct `value-eq` operand path — NOT for a Map/Set KEY (`key_needs_compaction` stays String/Symbol
+/// only, so `ty_heap_walkable` still declines a NESTED Bytes leaf / a `Set Bytes` whose key path is not yet
+/// Bytes-compacting; a direct Bytes operand is admitted in `compound_eq_heap_walkable`).
+fn operand_is_string_or_bytes(db: &mut Db, id: StructId) -> bool {
+    fn peel(ty: &Ty) -> &Ty {
+        match ty {
+            Ty::Nominal { inner, .. } => peel(inner),
+            other => other,
+        }
+    }
+    matches!(peel(&type_of(db, id)), Ty::String | Ty::Symbol | Ty::Bytes)
+}
+
 /// Whether a Map/Set KEY operand needs `bytes-compact` before the CHAMP `champ_hash`/`champ_eq` — an
 /// OWNED runtime String (a `String.concat` rope, whose physical bytes differ from a flat twin's of equal
 /// content, so it would hash into a different slot and never match its flat twin). This is the KEY-path
@@ -8919,6 +8939,17 @@ fn heap_operand_ownership(db: &mut Db, id: StructId) -> Result<HandleOwnership, 
         // string against a constant-string literal.
         | Core::ConstStr(_)
         | Core::BytesOf { .. }
+        // A runtime Bytes/String PRODUCER returns a FRESH owned handle: `bytes-concat`/`bytes-slice`/
+        // `bytes-compact` each consume their operand(s) and hand back a new sequence; `str-from-bytes`
+        // transfers the validated buffer out as a String; `str-to-bytes` (= `bytes-compact`) flattens the
+        // string's byte-rope out as a fresh Bytes leaf. So such a value as a DIRECT `value-eq` operand is
+        // owned and the emit drops it after the borrowing compare — the `(= (String.to-bytes s) b"…")` shape
+        // the compiler-in-Cadenza codec's byte round-trip compares.
+        | Core::BytesConcat { .. }
+        | Core::BytesSlice { .. }
+        | Core::BytesCompact { .. }
+        | Core::StrFromBytes { .. }
+        | Core::StrToBytes { .. }
         // A set construction/update/algebra (`set-empty`+inserts, `set-insert`, `set-remove`, union/
         // intersection/difference) returns a fresh owned set handle — the `value-eq` emit drops it.
         | Core::SetOf { .. }

@@ -1,0 +1,44 @@
+/// MISCOMPILE — 2026-07-16, seed rcdzc (both backends via the shared lower.rs fold), found by v-wasm-opt
+/// while investigating PR #409 (pr409-try-fastpath-guard-misses-trapping-earlier-init.md).
+///
+/// A constant-failure `?` short-circuit DROPS a trapping earlier let-init when that init is in an
+/// ENCLOSING (outer) let rather than the SAME let as the `?`. This VIOLATES the rule already pinned in
+/// spec/semantics/23-try-operator.sexp:146 ("a trapping earlier let-init is NOT dropped by a constant-
+/// failure `?` short-circuit") — that pin covers the SAME-let face; the nested-let face is unguarded.
+///
+///   SAME-let (correctly CDZ0304, pinned):
+///     (let ((a (/ 1 0)) (x (try (None unit)))) (Some (+ a x)))       -> CDZ0304 (a's ÷0 observed, fires)
+///   NESTED-let (WRONG — only a CDZ0305 warning, build SUCCEEDS, folds to None):
+///     (let ((a (/ 1 0))) (let ((x (try (None unit)))) (Some (+ a x)))) -> yields (None unit), trap DROPPED
+///
+/// `a` is on the UNCONDITIONAL strict spine BEFORE the `?` cut point in BOTH shapes (the outer let's init
+/// is evaluated before the inner let's `try`), and `a` IS referenced by the body `(Some (+ a x))`, so per
+/// core-semantics.md §283/§285 its trap is OBSERVED and MUST fire (CDZ0304 for the compile-provable ÷0).
+///
+/// CONTROL (isolates the trigger to the try-fold): the SAME nested shape with a NON-try inner binding
+///     (let ((a (/ 1 0))) (let ((x 5)) (Some (+ a x))))               -> CDZ0304 (correct)
+/// So the inner `(try (None unit))` folding to a Core::Break is what severs `a`'s observation: the outer
+/// let's body becomes the Break (which does not reference `a`), so `should_keep_binding` misclassifies the
+/// still-observed `a` as dead and drops it (with a spurious CDZ0305 "value never used").
+///
+/// ROOT (lower.rs): the BRICK-3a fast-path guard at lower_let (~line 3172) checks that earlier bindings IN
+/// THE SAME let node (`bindings[..i]`) are host-call-free AND trap-free before folding the `?` to its
+/// Break value — but it does NOT account for the bindings of an ENCLOSING let, which are also earlier on
+/// the spine. When the inner `?` folds to Break and returns `core_of(value)`, the outer let then runs its
+/// ordinary DCE (`should_keep_binding`) over a body that is now the Break, and drops the outer `a`.
+///
+/// TERRITORY: try-operator BRICK-3 fold + DCE/trap-freedom (v-try-operator, coordinating with v-wasm-opt's
+/// DCE/is_trap_free surface). Runtime version (parameter divisor) also reproduces:
+///     (def (main (: z Int64)) (let ((a (/ 1 z))) (let ((x (try (None unit)))) (Some (+ a x)))))
+///   at z=0 returns (None unit) instead of trapping ÷0.
+///
+/// REJECT-OR-TRAP, don't drop: either fold the Break AND sequence the outer trapping init before it
+/// (BRICK 3b), or DECLINE the nested fast-path (as the same-let guard does when an earlier init can trap).
+/// A promoted pin belongs in 23-try-operator.sexp next to the :146 same-let pin (nested-let CDZ0304 +
+/// runtime-trap face).
+type Nothing = | N
+def main() =
+  let a = (/ 1 0) in
+  let x = (try (None)) in
+  (Some (+ a x))
+export { main }

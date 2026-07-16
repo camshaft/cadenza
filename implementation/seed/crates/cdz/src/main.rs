@@ -125,6 +125,14 @@ enum Cmd {
     /// s-expression surface instead of ML.
     New(NewArgs),
 
+    // ── project init (adopt an existing directory) ──────────────────────────────────────────────
+    /// Scaffold a project INTO an existing directory (the `cargo init` analogue): write a `Project.cdz`
+    /// manifest + a minimal buildable entry into the directory (default: the current one), WITHOUT
+    /// creating a new subdirectory. Complements `cdz new <name>` — use `init` to adopt a directory you're
+    /// already in (`cdz init` then `cdz build`). Refuses only if a `Project.cdz` already exists (never
+    /// overwrites a manifest); other files are left untouched. `--sexpr` scaffolds the s-expr surface.
+    Init(InitArgs),
+
     // ── shell completions ───────────────────────────────────────────────────────────────────────
     /// Print a shell COMPLETION script for `cdz` to stdout — `cdz completions <shell>` for bash, zsh,
     /// fish, elvish, or powershell. Generated from the actual command tree, so it always matches the
@@ -224,6 +232,7 @@ fn main() -> ExitCode {
         Cmd::Calc(a) => cdz_calc::cli::run(&a, PROG),
         Cmd::Build(a) => run_build(&a),
         Cmd::New(a) => run_new(&a),
+        Cmd::Init(a) => run_init(&a),
         Cmd::Completions(a) => run_completions(&a),
         Cmd::Test(a) => run_test(&a),
         // The span-mapped semantic queries live here (they need both libraries in one process).
@@ -652,6 +661,16 @@ struct NewArgs {
     sexpr: bool,
 }
 
+#[derive(clap::Args)]
+struct InitArgs {
+    /// The existing directory to initialize as a project (default: the current directory). A missing
+    /// named directory is created; unlike `cdz new`, an existing non-empty directory is ADOPTED.
+    dir: Option<String>,
+    /// Scaffold the s-expression surface (`.sexp`) instead of the default ML (`.cdz`).
+    #[arg(long)]
+    sexpr: bool,
+}
+
 /// `cdz new <name>` — scaffold a new project (the `cargo new` analogue): a `<name>/` directory with a
 /// `Project.cdz` manifest naming the entry, and a minimal BUILDABLE entry file, so `cd <name> && cdz
 /// build` works immediately. Refuses to overwrite a non-empty directory (never clobbers existing work).
@@ -690,12 +709,62 @@ fn run_new(args: &NewArgs) -> ExitCode {
         eprintln!("{PROG}: creating {}: {e}", dir.display());
         return ExitCode::FAILURE;
     }
-    // The project name = the directory's final component (so `cdz new path/to/app` names it `app`).
+    scaffold_project(dir, args.sexpr, true)
+}
+
+/// `cdz init [dir]` — scaffold a project INTO an EXISTING directory (the `cargo init` analogue): write a
+/// `Project.cdz` + a minimal buildable entry into `dir` (default: the current directory), WITHOUT creating
+/// a new subdirectory. Complements `cdz new <name>` (which makes a fresh `<name>/`). Refuses only when the
+/// directory ALREADY holds a `Project.cdz` (never overwrite an existing manifest); other files are fine —
+/// `cdz init` adopts an existing directory. `--sexpr` scaffolds the s-expression surface.
+fn run_init(args: &InitArgs) -> ExitCode {
+    let dir = std::path::Path::new(args.dir.as_deref().unwrap_or("."));
+    // A FILE where the directory should be can't hold a project.
+    if dir.is_file() {
+        eprintln!(
+            "{PROG}: `{}` is a file, not a directory — `cdz init` scaffolds into a directory",
+            dir.display()
+        );
+        return ExitCode::FAILURE;
+    }
+    // Unlike `cdz new`, `init` ADOPTS an existing (even non-empty) directory — the only refusal is an
+    // existing `Project.cdz`, which we must never overwrite (it would clobber the user's manifest).
+    if dir.join(MANIFEST_NAME).is_file() {
+        eprintln!(
+            "{PROG}: `{}` already exists — this directory is already a project",
+            dir.join(MANIFEST_NAME).display()
+        );
+        return ExitCode::FAILURE;
+    }
+    // Create the directory if it's a named-but-missing target (e.g. `cdz init sub/dir`); the common
+    // `cdz init` (current dir) already exists, so this is a no-op there.
+    if let Err(e) = std::fs::create_dir_all(dir) {
+        eprintln!("{PROG}: creating {}: {e}", dir.display());
+        return ExitCode::FAILURE;
+    }
+    scaffold_project(dir, args.sexpr, false)
+}
+
+/// Write a `Project.cdz` manifest + a minimal buildable entry into `dir` (assumed to exist). Shared by
+/// `cdz new` (fresh dir) and `cdz init` (existing dir). `sexpr` picks the surface; `created` selects the
+/// success wording ("created project" for `new`, "initialized project" for `init`). The project name is
+/// the directory's final component. Never overwrites: callers guard the pre-conditions (an empty/new dir
+/// for `new`, no existing manifest for `init`).
+fn scaffold_project(dir: &std::path::Path, sexpr: bool, created: bool) -> ExitCode {
+    // The project name = the directory's final component (so `cdz new path/to/app` names it `app`). A
+    // relative `.` (the `cdz init` default) has no final component — fall back to the canonicalized dir's
+    // name, else a generic default, so the manifest always gets a real name.
     let proj_name = dir
         .file_name()
         .and_then(|n| n.to_str())
-        .unwrap_or(&args.name);
-    let (ext, entry_src) = if args.sexpr {
+        .map(|s| s.to_string())
+        .or_else(|| {
+            std::fs::canonicalize(dir)
+                .ok()
+                .and_then(|c| c.file_name().and_then(|n| n.to_str()).map(String::from))
+        })
+        .unwrap_or_else(|| "app".to_string());
+    let (ext, entry_src) = if sexpr {
         ("sexp", "(do (def (main) 0) (export main))\n".to_string())
     } else {
         (
@@ -710,7 +779,7 @@ fn run_new(args: &NewArgs) -> ExitCode {
     // for uniformity. Uses the canonical `cadenza_syntax` escaper so the manifest re-parses exactly.
     let manifest_src = format!(
         "def name = \"{}\"\ndef entry = \"{}\"\n",
-        cadenza_syntax::literal::escape_string(proj_name),
+        cadenza_syntax::literal::escape_string(&proj_name),
         cadenza_syntax::literal::escape_string(&entry_file),
     );
     // Write the manifest + entry. A write failure (permissions, a race) is a clean tool error.
@@ -723,8 +792,9 @@ fn run_new(args: &NewArgs) -> ExitCode {
             return ExitCode::FAILURE;
         }
     }
+    let verb = if created { "created" } else { "initialized" };
     println!(
-        "created project `{proj_name}` in {} ({MANIFEST_NAME} + {entry_file})\n  next: cd {} && cdz build",
+        "{verb} project `{proj_name}` in {} ({MANIFEST_NAME} + {entry_file})\n  next: cd {} && cdz build",
         dir.display(),
         dir.display()
     );

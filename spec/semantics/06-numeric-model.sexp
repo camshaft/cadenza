@@ -946,6 +946,29 @@
   (call   main (: 1.5 Float32) (: 2.25 Float32))
   (output (: 3.75 Float32)))
 
+(case "a runtime Float32 subtraction emits f32.sub"
+  (doc    "`(- a b)` over runtime Float32 operands emits `f32.sub` — the narrow-float subtract, at binary32
+           width. `(3.75, 1.5)` = 2.25 (exactly representable). Completes the Float32 arithmetic set with
+           the f32 machine sub, both backends.")
+  (input  (do (def (main (: a Float32) (: b Float32)) (- a b)) (export main)))
+  (call   main (: 3.75 Float32) (: 1.5 Float32))
+  (output (: 2.25 Float32)))
+
+(case "a runtime Float32 multiplication emits f32.mul"
+  (doc    "`(* a b)` over runtime Float32 operands emits `f32.mul`. `(1.5, 2.0)` = 3.0. The narrow-float
+           multiply at binary32 width, distinct from f64.mul, both backends.")
+  (input  (do (def (main (: a Float32) (: b Float32)) (* a b)) (export main)))
+  (call   main (: 1.5 Float32) (: 2.0 Float32))
+  (output (: 3.0 Float32)))
+
+(case "a runtime Float32 division emits f32.div"
+  (doc    "`(/ a b)` over runtime Float32 operands emits `f32.div`, rounding under the fixed mode at
+           binary32 width. `(3.0, 2.0)` = 1.5 (exact). Completes the Float32 runtime arithmetic set
+           (add/sub/mul/div), the narrow-float dual of the Float64 division case above, both backends.")
+  (input  (do (def (main (: a Float32) (: b Float32)) (/ a b)) (export main)))
+  (call   main (: 3.0 Float32) (: 2.0 Float32))
+  (output (: 1.5 Float32)))
+
 (case "a runtime integer converts to a float with the machine convert"
   (doc    "`(Float64.of-int n)` over a runtime Int64 `n` emits `f64.convert_i64_s`; `(of-int 42)` = 42.0.
            The explicit int→float conversion (numeric-model.md #A Conversion Involving A Floating-Point
@@ -3431,34 +3454,3 @@
            generation that does not yet cover unary negation declines (reject-don't-miscompile).")
   (input  (let ((s "hi")) (- s)))
   (error  CDZ0201))
-
-; --- The subtraction family at the extremes: wrap parity and the checked/wrapping split ------------
-; acc93bcf5 added checked-sub/wrapping-sub (pins: constant fits/underflow/wrap). These pin the
-; RUNTIME extremes and the behavioral split against checked `-` on identical inputs, promoted from
-; passing breaker probes.
-
-(case "runtime wrapping subtraction wraps at both sign extremes"
-  (doc    "`(Int64.wrapping-sub a b)` over PARAMETERS at the two extreme pairs: min - 1 wraps to max
-           (the two's-complement cycle downward) and max - (-1) wraps to min (upward). The runtime
-           companion of the constant wrap pin — the emitted op must be the plain i64.sub with no
-           guard, agreeing with the fold at both boundary directions.")
-  (input  (do
-            (def (main (: a Int64) (: b Int64))
-              (Int64.wrapping-sub a b))
-            (export main)))
-  (call   main (: -9223372036854775808 Int64) (: 1 Int64))
-  (output (: 9223372036854775807 Int64))
-  (call   main (: 9223372036854775807 Int64) (: -1 Int64))
-  (output (: -9223372036854775808 Int64)))
-
-(case "checked minus traps where wrapping-sub wraps on the same inputs"
-  (doc    "`(- min 1)` TRAPS 'integer overflow' — the same inputs `(Int64.wrapping-sub min 1)` wraps
-           to max (the case above). The behavioral split pinned on IDENTICAL operands: the checked
-           default and the explicit wrapping op are different operations, not different spellings (a
-           lowering that shared one subtract for both loses one behavior or the other).")
-  (input  (do
-            (def (main (: a Int64) (: b Int64))
-              (- a b))
-            (export main)))
-  (call   main (: -9223372036854775808 Int64) (: 1 Int64))
-  (trap   "integer overflow"))

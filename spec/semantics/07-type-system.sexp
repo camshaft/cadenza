@@ -169,6 +169,43 @@
   (input  (do (def (main) (match (None) ((Some x) x) ((None) 42))) (export main)))
   (output (: 42 Int64)))
 
+; The COLLECTION analogue of the bare-`None` escape above — with a DIFFERENT grounding. An empty `(list)`
+; escaping to the host has type `(List Any)`: an empty collection has no element to constrain, so its
+; element type GROUNDS to `Ty::Any` rather than staying a free variable like `None`'s `(Option ?0)`. It is
+; the SAME undetermined-serialization fault (a value crosses the boundary with an element type no use
+; fixed), so it MUST reject identically (CDZ0203, annotate). Before, the escape check tested only for a
+; free `Var`, so the `Any`-grounded empty list SLIPPED PAST `cdz check` (exit 0) and hit an uncoded emit
+; decline that misdescribed it as a runtime-collection-walker limitation — a check≡emit gap this closes by
+; treating an `Any` element/payload as undetermined exactly as a free `Var` is. The ambiguity is
+; escape-only: a CONSUMED empty list (`List.len (list)` → a scalar) and an ANNOTATED / determined-element
+; list cross fine (their controls follow).
+
+(case "an empty list escaping to the host is rejected as undetermined, like a bare None"
+  (doc    "`(def (main) (list)) (export main)` returns an empty list of type `(List Any)` — the element
+           type is undetermined (no element constrains it, so it grounds to `Any`, the collection analogue
+           of bare `None`'s free-variable payload). The escaped value has no defined serialization and is
+           rejected (CDZ0203, annotate — e.g. `(: (list) (List Int64))`). Pins that the undetermined-escape
+           reject catches the `Any` grounding, not only a free `Var`; a `Set.of (list)` is the same fault.")
+  (input  (do (def (main) (list)) (export main)))
+  (error  CDZ0203))
+
+(case "an annotated empty list escapes fine (the undetermined-empty-list control)"
+  (doc    "The control pinning the reject above is ONLY the undetermined element type: annotating the empty
+           list to `(List Int64)` fully determines it, and it escapes as the program result. Same shape (a
+           single nullary export returning a list) as the rejected case — the annotation resolves the
+           element. Pins the escape path works once the element type is known, mirroring the annotated-None
+           control.")
+  (input  (do (def (main) (: (list) (List Int64))) (export main)))
+  (output (: (list) (List Int64))))
+
+(case "a consumed empty list type-checks without annotation (ambiguity is escape-only)"
+  (doc    "`(List.len (list))` consumes an empty list to a scalar `Int64` (0): the result that escapes is a
+           determined scalar, not the undetermined `(List Any)`, so no annotation is needed. Pins that the
+           undetermined-`Any` rejection is specific to an unannotated ESCAPE of the collection itself — a
+           consumed empty list is fine — the collection analogue of the consumed-bare-None case.")
+  (input  (do (def (main) (List.len (list))) (export main)))
+  (output (: 0 Int64)))
+
 ; The annotation-contradiction check must hold for a COMPOUND value too, not only a scalar. A tuple /
 ; sum / record / list is not a scalar type, so annotating one with a scalar type (Int64, Bool, …)
 ; contradicts the value's type and MUST be rejected (CDZ0203, type-system.md #Annotations Constrain,

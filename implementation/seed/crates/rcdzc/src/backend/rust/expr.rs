@@ -1101,6 +1101,70 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                 "({l}).{method}(&({r})).cloned().collect::<std::collections::BTreeSet<_>>()"
             ))
         }
+        // BYTES construction `(Bytes.of (list …))` → a `Vec<u8>`, each element an Int64 in 0..=255 with a
+        // RUNTIME RANGE CHECK: an element `< 0` or `> 255` TRAPS (matching the wasm `bytes-set` range-check
+        // + the constant fold's CDZ0304). The check runs before the `as u8` truncation so an out-of-range
+        // value halts rather than silently wrapping.
+        Core::BytesOf { elems } => {
+            let mut lines = String::new();
+            for e in &elems {
+                let ee = emit(db, *e, env, ctx)?;
+                lines.push_str(&format!(
+                    "{{ let __e = {ee}; if __e < 0 || __e > 255 {{ panic!(\"byte value out of range\") }} __b.push(__e as u8); }} "
+                ));
+            }
+            Ok(format!(
+                "{{ let mut __b: Vec<u8> = Vec::new(); {lines}__b }}"
+            ))
+        }
+        // `Bytes.len` → the byte count as `Int64`.
+        Core::BytesLen { operand } => {
+            let v = emit(db, operand, env, ctx)?;
+            Ok(format!("(({v}).len() as i64)"))
+        }
+        // `Bytes.at` → the fallible byte read → native `Option`: a byte is a raw `u8` value zero-extended
+        // to the `Int64` `Some` payload (unlike `List.at`, no clone — a `u8` is Copy).
+        Core::BytesAt { bytes, index, .. } => {
+            let v = emit(db, bytes, env, ctx)?;
+            let i = emit(db, index, env, ctx)?;
+            Ok(format!(
+                "{{ let __v = {v}; let __i = ({i}) as usize; \
+                 if __i < __v.len() {{ Some(__v[__i] as i64) }} else {{ None }} }}"
+            ))
+        }
+        // `Bytes.concat` / `String.concat` → the two sequences joined (persistent → consume `lhs` into a
+        // `mut` local, append `rhs`). A String is a UTF-8 `Bytes` leaf, so `String.concat` LOWERS to this
+        // same node — but the emitted Rust differs by result type: a `String` appends with `push_str`
+        // (`String::extend(String)` needs `IntoIterator`, which `String` is not — E0277), a `Vec<u8>`
+        // appends with `extend`. Dispatch on the node's solved type.
+        Core::BytesConcat { lhs, rhs } => {
+            let a = emit(db, lhs, env, ctx)?;
+            let b = emit(db, rhs, env, ctx)?;
+            if matches!(type_of(db, id).strip_nominal(), Ty::String) {
+                Ok(format!("{{ let mut __b = {a}; __b.push_str(&({b})); __b }}"))
+            } else {
+                Ok(format!("{{ let mut __b = {a}; __b.extend({b}); __b }}"))
+            }
+        }
+        // `Bytes.slice` → the fallible sub-range read → native `Option`. Guard `start >= 0 && len >= 0`
+        // on the RAW i64 values BEFORE the `usize` cast (a negative would wrap to a huge `usize`), then
+        // `start + len <= bytes-len`; in range → `Some(v[start..start+len].to_vec())`, else `None`.
+        Core::BytesSlice {
+            bytes, start, len, ..
+        } => {
+            let v = emit(db, bytes, env, ctx)?;
+            let s = emit(db, start, env, ctx)?;
+            let l = emit(db, len, env, ctx)?;
+            Ok(format!(
+                "{{ let __v = {v}; let __start = {s}; let __len = {l}; \
+                 if __start >= 0 && __len >= 0 && (__start as usize) + (__len as usize) <= __v.len() \
+                 {{ Some(__v[(__start as usize)..(__start as usize) + (__len as usize)].to_vec()) }} else {{ None }} }}"
+            ))
+        }
+        // `Bytes.compact` → a content-equal sequence with independent storage. A `Vec<u8>` is already flat
+        // and owned, so on the native rep this is a NO-OP: return the operand (the rope-flatten the wasm
+        // runtime does has no analogue for a `Vec`).
+        Core::BytesCompact { operand } => emit(db, operand, env, ctx),
         // A SUM VALUE CONSTRUCTION → the Rust enum variant `<Enum>::<Variant>(payloads…)`. The enum +
         // variant names come from the node's solved `Ty::Sum` declaration at the disc's index (the
         // discriminant IS the variant's declaration-order position). A nullary variant is the bare
@@ -1256,13 +1320,7 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         Core::Trap => Ok("panic!(\"unreachable\")".to_string()),
         Core::ConstChar(_)
         | Core::ConstFloatNan
-        | Core::BytesOf { .. }
-        | Core::BytesLen { .. }
-        | Core::BytesAt { .. }
         | Core::StrAt { .. }
-        | Core::BytesConcat { .. }
-        | Core::BytesSlice { .. }
-        | Core::BytesCompact { .. }
         | Core::StrFromBytes { .. }
         | Core::StrToBytes { .. }
         // Runtime BigInt (a heap leaf + the runtime `bigint-*` ops) has no native Rust rendering yet —
@@ -1833,7 +1891,7 @@ fn ty_is_non_copy(ty: &Ty) -> bool {
     match ty {
         // `Vec<T>`/`BTreeMap<K,V>`/`BTreeSet<T>`/`String` are heap-owned values — non-Copy (move-only), so a
         // binding of one read in more than one position clones (the clone-on-read discipline).
-        Ty::List(_) | Ty::Map(_, _) | Ty::Set(_) | Ty::String => true,
+        Ty::List(_) | Ty::Map(_, _) | Ty::Set(_) | Ty::String | Ty::Bytes => true,
         // A compound is non-Copy iff any component is (a tuple/record of scalars stays Copy).
         Ty::Tuple(elems) => elems.iter().any(ty_is_non_copy),
         Ty::Record(fields) => fields.values().any(ty_is_non_copy),

@@ -3430,6 +3430,50 @@ fn a_runtime_string_rope_compares_equal_and_leaves_no_live_objects() {
     );
 }
 
+/// A RUNTIME BYTES ROPE compared with `=` is canonicalized (`bytes-compact`) before `value-eq` — the byte
+/// twin of the String-rope case above. A `Bytes.concat` produces a ROPE whose physical bytes differ from a
+/// flat leaf of identical content, so a direct Bytes operand of `=` is compacted first (the fix that made
+/// `compound_eq_heap_walkable` admit a DIRECT Bytes). Two shapes in one:
+///   (a) VALUE — the rope's content is `[104,105,120]` ("hix" bytes), so `(= rope flat)` is true → 1.
+///   (b) LEAK — the owned rope operand + its compacted flat leaf net to 0 live cells (the flat `Bytes.of`
+///       literal side is compacted+dropped too; nothing survives the scalar-returning `main`).
+/// A NESTED Bytes (inside a tuple/sum) or a `Set Bytes` key still DECLINES (the key path is not yet
+/// Bytes-compacting) — only the DIRECT operand is wired, verified by the corpus decline probes.
+/// `#[ignore]` — needs the debug-counters store (`cargo xtask build`).
+#[test]
+#[ignore]
+fn a_runtime_bytes_rope_compares_equal_and_leaves_no_live_objects() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
+        eprintln!(
+            "[bytes-rope-eq] debug-counters runtime not in the store; skipping balance probe"
+        );
+        return;
+    };
+    // `rep` appends the byte 120 ('x') once via `Bytes.concat` → an OWNED rope whose content is [104,105,120].
+    let src = "(module m \
+                 (def (rep (: b Bytes) (: n Int64)) \
+                    (if (< n 1) b (rep (Bytes.concat b (Bytes.of (list 120))) (- n 1)))) \
+                 (def (main) (if (= (rep (Bytes.of (list 104 105)) 1) (Bytes.of (list 104 105 120))) 1 0)) \
+                 (export main))";
+    let program = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    let mut rt = ComposedRuntime::new(&program, &runtime_bytes);
+    assert_eq!(
+        rt.call("main", &[]),
+        Val::S64(1),
+        "a runtime bytes rope must compare EQUAL to its flat twin (the direct-Bytes value-eq compaction — \
+         a champ_eq physical-byte miscompile without it)"
+    );
+    assert_eq!(
+        rt.live_objects(),
+        0,
+        "bytes-rope-eq leak: the owned rope operand + its compacted flat leaf must net to 0 live cells \
+         after the borrowing value-eq (the compact consumes the rope; the emit drops the compacted result)"
+    );
+}
+
 /// A BORROWED runtime string ROPE compared with `=` must ALSO be canonicalized. The earlier rope-eq fix
 /// compacted only an OWNED String operand (a fresh `String.concat` result); a rope reaching `=` through a
 /// BORROWED operand — a `Map.lookup`-stored value, a `SumPayload`-extracted payload, or a runtime-rope
@@ -24583,12 +24627,12 @@ mod match_engine {
     }
 
     #[test]
-    fn list_at_and_bytes_at_over_an_owned_temporary_reclaim_the_collection_but_keep_a_borrowed_one()
-    {
-        // The READ-op face of the owned-temporary reclaim: `List.at`/`Bytes.at` BORROW the collection
-        // (vec-len/vec-get, bytes-len/bytes-get) and the read element is COPIED/dup'd into the `Some`, so an
-        // OWNED-TEMPORARY collection (`List.at (build …) i`) must be dropped after the borrows or it leaks.
-        // A BORROWED param/kept-local collection read alongside a later use must NOT be freed early.
+    fn list_at_over_an_owned_temporary_reclaims_it_but_keeps_a_borrowed_one() {
+        // The READ-op face of the owned-temporary reclaim: `List.at` BORROWS the list (vec-len/vec-get) and
+        // the read element is dup'd into the `Some`, so an OWNED-TEMPORARY list (`List.at (build …) i`) must
+        // be dropped after the borrows or it leaks. A BORROWED param/kept-local list read alongside a later
+        // use must NOT be freed early. (The Bytes.at twin lives in
+        // `bytes_at_over_an_owned_temporary_reclaims_it_but_keeps_a_borrowed_one`.)
         let list_owned = "(module m \
                (def (build i n acc) (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc)) \
                (def (main) ((. Option expect) ((. List at) (build 0 3 (list)) 1) \"v\")) (export main))";
@@ -24611,6 +24655,40 @@ mod match_engine {
             assert_eq!(
                 out, "4",
                 "a borrowed list read by List.at must not be freed early (at=1 + len=3)"
+            );
+        }
+    }
+
+    #[test]
+    fn bytes_at_over_an_owned_temporary_reclaims_it_but_keeps_a_borrowed_one() {
+        // The Bytes.at twin of `list_at_and_bytes_at_…` (PR #427 Copilot: that test's name/doc claim both
+        // List.at AND Bytes.at, but its body only exercised List.at). Bytes.at BORROWS the bytes
+        // (bytes-len + bytes-get) and the read byte is a COPIED i32 value, so an OWNED-TEMPORARY bytes must
+        // be dropped after the borrows or it leaks. A constant `Bytes.of`/`b"…"` folds away at compile time
+        // (no runtime handle), so build the owned bytes at RUN TIME with a recursive `Bytes.concat` loop —
+        // its result is a `Call`, the Owned classifier's fresh-handle case, exactly like List's `build`.
+        let bytes_owned = "(module m \
+               (def (build i n acc) (if (< i n) (build (+ i 1) n ((. Bytes concat) acc b\"\\x0a\")) acc)) \
+               (def (main) ((. Option expect) ((. Bytes at) (build 0 3 b\"\") 1) \"v\")) (export main))";
+        assert!(
+            component_imports_op(&component(bytes_owned), "drop"),
+            "Bytes.at over an owned-temporary bytes must import `drop` (reclaim — leak fix)"
+        );
+        if let Some(out) = run_on_heap(bytes_owned) {
+            assert_eq!(
+                out, "10",
+                "Bytes.at value unchanged by the reclaim (0x0a = 10)"
+            );
+        }
+        // A BORROWED bytes — read by Bytes.at AND Bytes.len — must not be freed by the at (else double-free).
+        let bytes_borrowed = "(module m \
+               (def (build i n acc) (if (< i n) (build (+ i 1) n ((. Bytes concat) acc b\"\\x0a\")) acc)) \
+               (def (main) (let ((bs (build 0 3 b\"\"))) \
+                             (+ ((. Option expect) ((. Bytes at) bs 1) \"v\") ((. Bytes len) bs)))) (export main))";
+        if let Some(out) = run_on_heap(bytes_borrowed) {
+            assert_eq!(
+                out, "13",
+                "a borrowed bytes read by Bytes.at must not be freed early (at=10 + len=3)"
             );
         }
     }
@@ -33225,6 +33303,45 @@ mod match_engine {
     }
 
     #[test]
+    fn remainder_on_a_quantity_declines_cleanly_not_a_leaked_scheme_mismatch() {
+        // `%` (remainder) on a quantity operand is not defined (the units surface has no `%` rule). It must
+        // DECLINE with a clear message, NOT leak the operator's `∀a.(Int a)→…` scheme as a confusing
+        // "type mismatch: Int64 and (Qty Int64 meter)" (the Int64 is the scheme's — an internal detail the
+        // author never wrote). Whether a same-dimension remainder should be supported is a design call
+        // held for the operator; the clean decline is today's shipped behavior.
+        let diag = reject_full(
+            "(module m (def (main) ((. Qty value) \
+             (% ((. Qty of) 7 ((. Unit base) #\"meter\")) ((. Qty of) 3 ((. Unit base) #\"meter\"))))) \
+             (export main))",
+        )
+        .expect("remainder on a quantity is rejected");
+        assert!(
+            diag.message
+                .contains("remainder (%) is not defined on quantities"),
+            "the message must name the real cause (% not defined on quantities): {}",
+            diag.message
+        );
+        assert!(
+            !diag.message.contains("must be the same type here"),
+            "the leaky scheme-unify mismatch must NOT surface for % on a quantity: {}",
+            diag.message
+        );
+        // The repair the message suggests works: take the remainder of the recovered numeric values.
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(
+                    "(do (def (main) (% ((. Qty value) ((. Qty of) 7 ((. Unit base) #\"meter\"))) \
+                     ((. Qty value) ((. Qty of) 3 ((. Unit base) #\"meter\"))))) (export main))"
+                )))
+                .expect("the Qty.value-first repair compiles"),
+                "main"
+            ),
+            1,
+            "(% (Qty.value 7m) (Qty.value 3m)) = 1 — the suggested repair"
+        );
+    }
+
+    #[test]
     fn annotating_a_quantity_at_a_same_dimension_different_unit_is_accepted_keeping_its_scale() {
         // A quantity annotation checks the DIMENSION, not the unit's scale (a unit is construction sugar
         // for a magnitude at the reference — DESIGN §Interaction With Annotations). So `(: (Qty.of 1 km)
@@ -34797,6 +34914,55 @@ mod diagnostics {
             few_map.fix.is_none(),
             "a too-few map entry has no surplus to delete: {:?}",
             few_map.fix
+        );
+    }
+
+    #[test]
+    fn a_wrong_arity_type_annotation_names_the_operand_count_at_every_arity() {
+        // A type annotation is `(: <expression> <type>)` — exactly two operands. A malformed arity (`(: 5)`,
+        // `(: 5 Int64 foo)`, `(:)`) now names the actual count instead of the flat "takes an expression and
+        // a type". 🪤 REGRESSION GUARD: the message must NOT contain the substring "takes exactly" — that is
+        // `diag::EMIT_OPERAND_ARITY_MARKER`, and `dedup_faults` DROPS a `Code::Malformed` fault matching it
+        // (+ "operand") as a redundant emit-path operator-arity decline. An earlier wording ("takes exactly 2
+        // operands") collided with that filter and was SILENTLY DROPPED for the 0- and 3-operand cases (the
+        // 1-operand case slipped through by fault ordering) — so this test asserts EVERY arity surfaces.
+        let find = |src: &str| {
+            crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.message.contains("a type annotation is written"))
+                .unwrap_or_else(|| panic!("the annotation-arity fault must surface for {src}"))
+        };
+        for (src, count) in [
+            ("(module m (def x (: 5)) (export x))", "1 part is"),
+            (
+                "(module m (def x (: 5 Int64 foo)) (export x))",
+                "3 parts are",
+            ),
+            ("(module m (def x (:)) (export x))", "0 parts are"),
+        ] {
+            let d = find(src);
+            assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+            assert!(
+                d.message.contains("(: <expression> <type>)") && d.message.contains(count),
+                "names the canonical form + the operand count `{count}`: {}",
+                d.message
+            );
+            // The regression that motivated this test: the message must never contain the marker that
+            // makes `dedup_faults` drop it.
+            assert!(
+                !d.message.contains("takes exactly"),
+                "the message must avoid the EMIT_OPERAND_ARITY_MARKER collision: {}",
+                d.message
+            );
+        }
+        // NO false change: a well-formed 2-operand annotation is transparent (no fault).
+        assert!(
+            crate::diagnostics(&mut crate::db::Db::load(parse(
+                "(module m (def x (: 5 Int64)) (export x))"
+            )))
+            .iter()
+            .all(|d| d.severity != crate::abi::Severity::Error),
+            "a well-formed `(: 5 Int64)` annotation is clean"
         );
     }
 
@@ -67236,6 +67402,62 @@ mod cross_component_oracle {
                 assert_eq!(s, "6", "Map.lookup of a key in the crossed map")
             }
             cdz_run::Outcome::Trap(t) => panic!("map-lookup run trapped: {t}"),
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // PL25 — a peer op returning a BIGINT (a bignum handle, distinct from the CHAMP collections) crosses
+    // + the consumer compares it. BigInt/Rational are `is_extern_heap_type` (cross as u32 handles like a
+    // compound), but no cross-component test exercised a bignum result. The consumer compares the peer's
+    // BigInt to a locally-built `BigInt.of(x)` → equal → 1, reducing to a scalar (no resource escape).
+    // Confirms the bignum handle crosses + value-equality holds across the boundary. main(42)=1.
+    // ------------------------------------------------------------------------------------------------
+    #[test]
+    fn a_peer_op_returning_a_bigint_crosses_and_compares_equal() {
+        use crate::testkit::parse;
+        // PROVIDER: big(x) = BigInt.of(x) — widens the fixed-width int to a bignum handle.
+        let provider = compile_provider(
+            "(do (def (big (: x Int64)) (BigInt.of x)) (export big))",
+            "cadenza:big/api",
+        );
+        // CONSUMER: compares the crossed BigInt to a local BigInt.of(x); equal → 1 (scalar result).
+        let src = "(do \
+            (effect B (op big (-> Int64 BigInt))) \
+            (bind B \"cadenza:big/api\") \
+            (def (main (: x Int64)) (host (B) (if (= (B.big x) (BigInt.of x)) 1 0))) \
+            (export main))";
+        let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .unwrap_or_else(|d| {
+                panic!(
+                    "bigint-result consumer compiles: {} [{:?}]",
+                    d.message, d.code
+                )
+            });
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("[PL25] runtime wasm not found; skipping");
+            return;
+        };
+        let peers = vec![cdz_run::Peer {
+            bytes: provider,
+            interface: "cadenza:big/api".to_string(),
+        }];
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec!["42".to_string()],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run_with_peers(&consumer, &peers, &opts)
+            .expect("a peer op returning a bigint crosses")
+        {
+            // big(42) = BigInt.of(42); the consumer's local BigInt.of(42) compares EQUAL → 1. The bignum
+            // handle crossed the boundary and value-equality holds over the shared runtime.
+            cdz_run::Outcome::Value(s) => assert_eq!(
+                s, "1",
+                "a peer-returned BigInt crosses as a handle; value-equality holds across the boundary"
+            ),
+            cdz_run::Outcome::Trap(t) => panic!("bigint-result run trapped: {t}"),
         }
     }
 

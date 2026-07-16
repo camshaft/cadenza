@@ -1152,6 +1152,48 @@ impl Ty {
         }
     }
 
+    /// Whether this type carries an UNDETERMINED component that makes it unfit to serialize at the host
+    /// boundary — a free type variable ([`has_free_var`]) OR a [`Ty::Any`]. An unconstrained escaping value
+    /// leaves its type variable a `Var` in SOME shapes (a bare `(None)` → `(Option _)`), but an empty
+    /// collection GROUNDS its element to `Ty::Any` instead (`(list)` → `(List Any)`) — the SAME
+    /// undetermined-type fault, differently spelled. `has_free_var` sees only the `Var` form, so an
+    /// `Any`-element escape (`(def (main) (list))`) slipped past the `cdz check` undetermined-escape reject
+    /// and hit an uncoded emit decline (a check≡emit gap). This predicate unifies both so the coded CDZ0203
+    /// "annotate it" fires for either grounding. Used ONLY behind [`crate::backend::wasm::
+    /// crosses_as_resource_escape`], which admits only compound/heap shapes — so a bare top-level `Ty::Any`
+    /// (a diverging body that never crosses as a resource) is not reached here, and every `Any` this sees is
+    /// a nested element/payload/field the boundary walker cannot render. Structurally mirrors `has_free_var`.
+    pub fn has_undetermined_escape_component(&self) -> bool {
+        match self {
+            Ty::Var(_) | Ty::Any => true,
+            Ty::Fn(p, r) => {
+                p.has_undetermined_escape_component() || r.has_undetermined_escape_component()
+            }
+            Ty::Tuple(elems) => elems.iter().any(|t| t.has_undetermined_escape_component()),
+            Ty::List(elem) | Ty::Set(elem) => elem.has_undetermined_escape_component(),
+            Ty::Map(k, v) => {
+                k.has_undetermined_escape_component() || v.has_undetermined_escape_component()
+            }
+            Ty::Record(fields) => fields
+                .values()
+                .any(|t| t.has_undetermined_escape_component()),
+            Ty::Sum { args, .. } => args.iter().any(|t| t.has_undetermined_escape_component()),
+            Ty::Qty { inner, .. } => inner.has_undetermined_escape_component(),
+            Ty::Nominal { args, .. } => args.iter().any(|t| t.has_undetermined_escape_component()),
+            Ty::Int(_)
+            | Ty::Bool
+            | Ty::Unit
+            | Ty::Type
+            | Ty::Bytes
+            | Ty::String
+            | Ty::Char
+            | Ty::Symbol
+            | Ty::BigInt
+            | Ty::Rational
+            | Ty::Float(_) => false,
+        }
+    }
+
     /// Collect the distinct free type-variable numbers ([`Ty::Var`]) this type mentions, into `out` (in
     /// first-seen order, deduplicated). Used to GENERALIZE a recursive-generic def's signature into a
     /// [`Scheme`]'s `ty_vars` (recursive-generic monomorphization) — a parameter the body only threads is

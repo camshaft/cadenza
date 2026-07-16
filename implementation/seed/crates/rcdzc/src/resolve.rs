@@ -4882,9 +4882,25 @@ fn resolve_map(db: &Db, id: StructId) -> Resolved {
 fn resolve_annot(db: &Db, id: StructId) -> Resolved {
     let tail = db.ast.as_form(id, ":").unwrap_or(&[]);
     if tail.len() != 2 {
+        // Name the actual operand count + the canonical form, so the reader sees WHAT is wrong. 🪤 The
+        // phrasing must NOT contain the substring "takes exactly" — that is `diag::EMIT_OPERAND_ARITY_MARKER`,
+        // and `dedup_faults` DROPS a `Code::Malformed` fault matching it (+ "operand") as a redundant
+        // emit-path operator-arity decline (the `Module.op … were given` consequent-suppression). A message
+        // containing "takes exactly … operands" collided with that filter and was silently dropped for the
+        // 0- and 3-operand cases (the 1-operand case slipped through by fault ordering) — a fragile,
+        // content-keyed drop. Word around it: "is written `(: … )`; it needs a value and a type (N found)".
         return Resolved::Poison(Reject::coded(
             Code::Malformed,
-            "a type annotation takes an expression and a type",
+            format!(
+                "a type annotation is written `(: <expression> <type>)` — it needs a value and a type, \
+                 but {} {} here",
+                tail.len(),
+                if tail.len() == 1 {
+                    "part is"
+                } else {
+                    "parts are"
+                }
+            ),
         ));
     }
     Resolved::Annot {

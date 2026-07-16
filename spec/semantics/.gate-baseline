@@ -555,6 +555,7 @@ pass	a constructor selected at RUNTIME is a first-class value that is then appli
 pass	a constructor whose payload is a constructor keeps the outer variant tag
 pass	a constructor with an all-irrefutable payload shadows a later refining arm of the same variant
 pass	a consumed bare None type-checks without annotation (ambiguity is escape-only)
+pass	a consumed empty list type-checks without annotation (ambiguity is escape-only)
 pass	a consumer applies TWO handed-back closures
 pass	a consumer applies the handed-back closure inside a larger expression
 pass	a consumer applies the handed-back closure to an internal constant
@@ -886,6 +887,7 @@ pass	a list-carrying recursion whose base arm does a fallible indexed read compi
 pass	a list-concatenating helper threads lists through a call
 pass	a list-payload split missing the empty arm is non-exhaustive
 pass	a list-payload split missing the non-empty arm is non-exhaustive
+pass	a list-scrutinee match arm whose head is an unbound name is rejected in a recursive body (CDZ0101)
 pass	a literal arm wins over a later guard arm that also matches
 pass	a literal in a let binder is refutable and rejected
 pass	a literal inside a NESTED constructor pattern refines the match
@@ -1068,12 +1070,14 @@ pass	a narrow-width wrapping-mul constant folds by wrapping, not by rejecting
 pass	a narrower-typed runtime value is not silently widened into a wider segment
 pass	a nearer handler on the call chain shadows an outer one
 pass	a negated zero equality composes with the negation fold
+pass	a negative and its positive twin encode to distinct bytes
 pass	a negative constant BigInt crosses the boundary with its sign
 pass	a negative constant argument to an unsigned parameter is rejected, not laundered
 pass	a negative decimal literal annotated Rational normalizes its sign onto the numerator
 pass	a negative exponent scales the mantissa down
 pass	a negative hexadecimal literal negates its value
 pass	a negative integer literal pattern matches a runtime scrutinee
+pass	a negative integer nested in a compound round-trips by byte identity
 pass	a negative integer width is rejected
 pass	a negative power is the reciprocal, deriving an inverse unit
 pass	a negative power over a BigInt magnitude truncates the reciprocal exactly
@@ -1357,7 +1361,6 @@ pass	a recursive sum consumer whose arguments are recursive sum producers compil
 pass	a recursive sum recurses THROUGH a record-typed payload
 pass	a recursive sum type works with pattern matching
 pass	a recursive unifier distinguishes arrow components through the payload slots
-pass	a list-scrutinee match arm whose head is an unbound name is rejected in a recursive body (CDZ0101)
 pass	a recursive user sum built in a lib is folded by the entry over the imported type
 pass	a recursive user sum type is built at run time and renders its variant names
 pass	a recursive walk consulting a node's own and its child's String key computes correctly
@@ -1377,6 +1380,7 @@ pass	a referenced let binding whose init overflows IS observed, so its trap occu
 pass	a reflected quantity type rejects a value of a different dimension
 pass	a refutable constructor pattern in a let binder is rejected
 pass	a refutable map value sub-pattern dispatches by the value's constructor
+pass	a reified (sum-of-step-shapes) lazy pull-iterator compiles, runs, and is lazy
 pass	a repeated condition inside a branch propagates the known truth value
 pass	a repeated let binding shadows the earlier one for what follows
 pass	a repeated runtime checked-multiply is computed once and still traps on overflow
@@ -1416,6 +1420,9 @@ pass	a runtime BigInt operation does not silently promote a fixed-width operand
 pass	a runtime BigInt ordering compares by the arbitrary-precision value
 pass	a runtime BigInt remainder takes the dividend's sign
 pass	a runtime Float32 addition emits the f32 machine add
+pass	a runtime Float32 division emits f32.div
+pass	a runtime Float32 multiplication emits f32.mul
+pass	a runtime Float32 subtraction emits f32.sub
 pass	a runtime List built past 32 elements reads correctly by index across the RRB leaf-to-trie boundary
 pass	a runtime MIXED-SCALE BigInt comparison converts to the reference before comparing
 pass	a runtime MIXED-SCALE BigInt-magnitude sum converts to the reference in unbounded arithmetic
@@ -1927,6 +1934,7 @@ pass	an all-owned-arms match operand compares correctly through the ownership jo
 pass	an all-wildcard tuple arm is a catch-all that shadows a later refining arm
 pass	an annihilator identity folds to zero when its operand is trap-free
 pass	an annotated destructuring let binder
+pass	an annotated empty list escapes fine (the undetermined-empty-list control)
 pass	an annotated escaped None renders its canonical nullary-variant form (the control)
 pass	an annotated let binder constrains the value's type
 pass	an annotated let binder range-checks its narrow-width bound value
@@ -1974,6 +1982,7 @@ pass	an element pattern matches a list by its length and elements
 pass	an element read across a concatenation boundary is the right value
 pass	an empty binary form is the empty byte sequence
 pass	an empty byte-string literal is the empty byte sequence
+pass	an empty list escaping to the host is rejected as undetermined, like a bare None
 pass	an empty map is unequal to a non-empty map, not a type error
 pass	an empty quote is rejected, not a crash
 pass	an empty scrutinee matches an empty bin pattern
@@ -2173,7 +2182,6 @@ pass	chained guards of the same variant are tried in order
 pass	char to-int and from-int round-trip through the scalar value
 pass	checked addition yields None on overflow instead of trapping
 pass	checked addition yields Some of the sum when it fits
-pass	checked minus traps where wrapping-sub wraps on the same inputs
 pass	checked multiplication reports overflow as None
 pass	checked multiplication yields Some when it fits
 pass	checked subtraction yields None on underflow instead of trapping
@@ -2601,6 +2609,7 @@ pass	redeclaring a user-declared unit with the same conversion is admissible
 pass	rejection sampling draws until the refinement holds — an only-even generator produces an even value
 pass	rejection sampling into a narrow range refinement produces only in-range values
 pass	rejection sampling terminates on fuel exhaustion when the refinement is unsatisfiable
+pass	remainder (%) on a quantity declines cleanly (not a leaked scheme mismatch)
 pass	removing a key drops its association and the size
 pass	removing a runtime element drops it or is a no-op if absent
 pass	removing a runtime element lowers the cardinality only when present
@@ -2655,13 +2664,13 @@ pass	round-trip: an UNANNOTATED inner closure with a List param via the context 
 pass	runtime BigInt addition runs on the arbitrary-precision runtime
 pass	runtime BigInt equality holds for values reached by different arithmetic
 pass	runtime BigInt remainder runs on the arbitrary-precision runtime
+pass	runtime Bytes value-equality distinguishes different content
 pass	runtime Rational arithmetic adds two parameter-built fractions exactly
 pass	runtime float equality compares by canonical byte form
 pass	runtime float inequality compares by canonical byte form
 pass	runtime structural equality over a GENERIC RECURSIVE sum walks the whole tree
 pass	runtime structural equality over a payload-carrying sum agrees on both backends
 pass	runtime tuple concatenation preserves element order across the seam
-pass	runtime wrapping subtraction wraps at both sign extremes
 pass	same-arity tuple match arms share an equal element and sink the differing one
 pass	same-key-set record match arms share an equal field and sink the differing one
 pass	same-length list match arms share an equal element and sink the differing one
@@ -2727,6 +2736,7 @@ pass	symbols interned from different strings are unequal
 pass	textually-identical performs are DISTINCT state-advancing reads, not a common subexpression
 pass	the AST is a sum type deconstructible by pattern matching
 pass	the Bool generator covers both values across seeds (it is not a constant)
+pass	the Int codec round-trips i64::MIN — the two's-complement boundary
 pass	the LEB128 byte composition runs on a runtime operand
 pass	the additive-zero identity preserves a boundary-crossing runtime operand
 pass	the arithmetic operator rejects a float-first mixed operand pair
@@ -2814,6 +2824,7 @@ pass	the rest binder carries the unmatched runtime-keyed remainder
 pass	the retired Tuple.cat name is rejected with the Tuple.concat rename fix-it (CDZ0603)
 pass	the retired Tuple.pop name is rejected with the Tuple.remove rename fix-it (CDZ0603)
 pass	the round trip tracks the produced closure's captured value
+pass	the runtime UTF-8 encoding of a string equals its exact byte literal
 pass	the runtime-if list takes its else branch and measures that length
 pass	the runtime-list version of a tail fold compiles and folds correctly
 pass	the same declared effect is handled in-program by one entrypoint and delegated by another
@@ -2913,6 +2924,7 @@ pass	two performs of a MULTI-parameter op each combine both args with the state 
 pass	two rationals denoting the same number are equal regardless of how they were written
 pass	two recursion-built linked lists compare equal by a deep heap walk
 pass	two recursion-built linked lists of different lengths compare unequal by a heap walk
+pass	two runtime Bytes values of equal content compare equal (rope vs flat)
 pass	two runtime Ok values of a multi-parameter sum compare equal by a heap walk
 pass	two runtime maps built in different insertion orders compare equal by content
 pass	two runtime maps with the same keys but a different value are unequal

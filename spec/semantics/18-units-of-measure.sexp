@@ -638,6 +638,28 @@
   (output (: 1000 Int64)))
 
 ; ============================================================================================
+; Remainder (%) is not defined on quantities — a clean decline, not a leaked scheme mismatch
+; ============================================================================================
+; The units surface enumerates `+`/`-`/`*`/`/`/comparison; `%` (remainder) has no dimensional rule.
+; A `%` on a quantity operand DECLINES with a clear message rather than leaking the operator's internal
+; `∀a. (Int a) → …` scheme as a confusing "type mismatch: Int64 and (Qty Int64 meter)" (the Int64 is the
+; scheme's, never written by the author). Whether a same-dimension remainder (`7m % 3m = 1m`) should be
+; a quantity operation is a language-design call held for the operator; until then the clean decline is
+; the correct behavior — recover the numeric value with `Qty.value` first if the remainder is wanted.
+
+(case "remainder (%) on a quantity declines cleanly (not a leaked scheme mismatch)"
+  (doc    "`(% (Qty.of 7 meter) (Qty.of 3 meter))` — remainder on quantity operands — is DECLINED: the
+           units surface has no `%` rule (it enumerates +/-/*/`/`/comparison). The decline carries a clear
+           message ('remainder (%) is not defined on quantities … recover the numeric value with
+           `Qty.value` first'), NOT the confusing generic scheme mismatch 'type mismatch: Int64 and
+           (Qty Int64 meter)' the fall-through to scheme-unify used to leak (the Int64 is the operator's
+           `∀a.(Int a)→…` scheme, an internal detail). Whether a same-dimension remainder should be a
+           quantity operation is a design call held for the operator; the clean decline is today's
+           behavior. The repair is `(% (Qty.value q) (Qty.value r))` — take the remainder of the numbers.")
+  (input  (Qty.value (% (Qty.of 7 (Unit.base #"meter")) (Qty.of 3 (Unit.base #"meter")))))
+  (declines))
+
+; ============================================================================================
 ; Dimensional equality is by canonical form, not syntax — differently-written equal dimensions
 ; ============================================================================================
 ; Two units are the same dimension exactly when their canonical exponent maps agree; the written form

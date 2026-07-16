@@ -17163,6 +17163,18 @@ fn const_key_order(db: &mut Db, a: StructId, b: StructId) -> Option<std::cmp::Or
 /// declaration occurrences visited, tracked in `seen`.
 fn compound_eq_heap_walkable(db: &mut Db, id: StructId) -> bool {
     let ty = crate::infer::type_of(db, id);
+    // A DIRECT `Bytes` operand is walkable even though a NESTED `Bytes` leaf is not (`ty_heap_walkable`'s
+    // `Ty::Bytes => false`). The distinction is canonicalization: a runtime `Bytes` can be a `bytes-concat`
+    // ROPE (physical bytes ≠ a flat leaf of equal content), so a raw `champ_eq` walk would misread it — but
+    // the `Core::ValueEq` EMIT compacts every DIRECT String/Bytes operand with `bytes-compact` before the
+    // compare (exactly as it does for a direct String, which is admitted the same way). A NESTED Bytes has
+    // no such per-operand compaction: it rides the construction-site element compaction for tuple/list/
+    // record/sum elements (`elem_needs_rope_compaction` DOES include Bytes) — but a `Set Bytes`/`Map Bytes`
+    // KEY does NOT (`key_needs_compaction` is String/Symbol only), so a blanket walkable-Bytes would admit a
+    // rope-keyed CHAMP miscompile. Scope to the DIRECT operand until the key path also compacts Bytes.
+    if matches!(ty, crate::ty::Ty::Bytes) {
+        return true;
+    }
     ty_heap_walkable(db, &ty, &mut Vec::new())
 }
 
@@ -17725,8 +17737,12 @@ fn lower_set_insert_remove(
     elem: StructId,
 ) -> Core {
     use crate::resolved::Prim;
-    if let Core::Poison(r) = core_of(db, set) {
-        return Core::Poison(r);
+    // Bind the set operand's core ONCE — `core_of` is a non-trivial (memoized) lowering pass, so the Poison
+    // check and the constant-`SetOf` fold below reuse the one result rather than re-cloning it (the sibling
+    // of the Copilot PR #415 fix already applied to `lower_set_to_list`).
+    let set_core = core_of(db, set);
+    if let Core::Poison(r) = &set_core {
+        return Core::Poison(r.clone());
     }
     if let Core::Poison(r) = core_of(db, elem) {
         return Core::Poison(r);
@@ -17739,7 +17755,7 @@ fn lower_set_insert_remove(
     // stayed 1 instead of 0; an `insert` of an element equal to a runtime element would wrongly add a
     // duplicate (the const probe misses the runtime twin), inflating the cardinality. A set with any
     // non-constant element must run the real champ op (`Core::SetInsert`/`SetRemove`).
-    if let Core::SetOf { elems, elem_ty } = core_of(db, set)
+    if let Core::SetOf { elems, elem_ty } = &set_core
         && is_const_value(db, set)
         && is_const_value(db, elem)
     {
@@ -17754,7 +17770,7 @@ fn lower_set_insert_remove(
         trace!(target: "rcdzc::fold", elems = out.len(), insert = is_insert, "Set.insert/remove folds onto a constant set");
         return Core::SetOf {
             elems: out,
-            elem_ty,
+            elem_ty: elem_ty.clone(),
         };
     }
     let Some(elem_ty) = set_elem_type(db, set) else {
@@ -17780,11 +17796,15 @@ fn lower_set_algebra(
 ) -> Core {
     use crate::core::SetAlgebraOp;
     use crate::resolved::Prim;
-    if let Core::Poison(r) = core_of(db, lhs) {
-        return Core::Poison(r);
+    // Bind each operand's core ONCE — the Poison check and the two-constant-`SetOf` fold below reuse the one
+    // result rather than re-cloning it (the sibling of the Copilot PR #415 fix on `lower_set_to_list`).
+    let lhs_core = core_of(db, lhs);
+    if let Core::Poison(r) = &lhs_core {
+        return Core::Poison(r.clone());
     }
-    if let Core::Poison(r) = core_of(db, rhs) {
-        return Core::Poison(r);
+    let rhs_core = core_of(db, rhs);
+    if let Core::Poison(r) = &rhs_core {
+        return Core::Poison(r.clone());
     }
     let op = match prim {
         Prim::SetUnion => SetAlgebraOp::Union,
@@ -17800,7 +17820,7 @@ fn lower_set_algebra(
     // operates on two canonical CHAMP handles correctly (the same protection the equality fold and the
     // `MapNew` folds apply to their runtime elements/keys).
     if let (Core::SetOf { elems: a, elem_ty }, Core::SetOf { elems: b, .. }) =
-        (core_of(db, lhs), core_of(db, rhs))
+        (&lhs_core, &rhs_core)
         && a.iter()
             .chain(b.iter())
             .all(|&e| const_compound_eq(db, e, e) == Some(true))
@@ -17809,7 +17829,7 @@ fn lower_set_algebra(
             // union: a's elements, then b's elements not already present.
             SetAlgebraOp::Union => {
                 let mut out = a.to_vec();
-                for &e in &b {
+                for &e in b {
                     if !set_has_const_elem(db, &out, e) {
                         out.push(e);
                     }
@@ -17820,19 +17840,19 @@ fn lower_set_algebra(
             SetAlgebraOp::Intersection => a
                 .iter()
                 .copied()
-                .filter(|&e| set_has_const_elem(db, &b, e))
+                .filter(|&e| set_has_const_elem(db, b, e))
                 .collect(),
             // difference: a's elements NOT in b.
             SetAlgebraOp::Difference => a
                 .iter()
                 .copied()
-                .filter(|&e| !set_has_const_elem(db, &b, e))
+                .filter(|&e| !set_has_const_elem(db, b, e))
                 .collect(),
         };
         trace!(target: "rcdzc::fold", ?op, elems = out.len(), "set-algebra folds two constant sets");
         return Core::SetOf {
             elems: out,
-            elem_ty,
+            elem_ty: elem_ty.clone(),
         };
     }
     Core::SetAlgebra { op, lhs, rhs }
