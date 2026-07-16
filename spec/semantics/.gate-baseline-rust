@@ -3254,6 +3254,10 @@ todo	a mutual AST walker re-extracts a node's payload in a sibling operand while
 todo	a mutually-recursive AST walker reads a node's child list without corrupting a sibling head-read
 todo	a mutually-recursive decoder returns a heap value and cursor and its heap slot is dispatched
 todo	a naive (non-renaming) substitution captures a free variable — the bug capture-avoidance prevents
+todo	a narrow-width newtype boxed as a list element matches by its literal payload
+todo	a narrow-width newtype boxed as a sum payload matches by its literal payload
+todo	a narrow-width newtype boxed as a tuple element falls through on a non-matching payload
+todo	a narrow-width newtype boxed as a tuple element matches by its literal payload
 todo	a nested conjunction accumulates all three operand hypotheses
 todo	a nested element pattern dispatches on a NON-variant-0 list payload
 todo	a nested tuple list element is bound over a runtime list and folded across the rest

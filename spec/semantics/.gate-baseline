@@ -1222,6 +1222,10 @@ pass	a narrow-body arithmetic on an in-range constant arg overflows the paramete
 pass	a narrow-width Int quantity add that fits the inner width runs normally
 pass	a narrow-width Int quantity add that overflows the inner width traps at compile time
 pass	a narrow-width accumulator that never changes threads through the recursion
+pass	a narrow-width newtype boxed as a list element matches by its literal payload
+pass	a narrow-width newtype boxed as a sum payload matches by its literal payload
+pass	a narrow-width newtype boxed as a tuple element falls through on a non-matching payload
+pass	a narrow-width newtype boxed as a tuple element matches by its literal payload
 pass	a narrow-width parameter compared to a bare literal computes at the parameter width
 pass	a narrow-width parameter plus a bare literal computes at the parameter width
 pass	a narrow-width parameter plus a bare literal computes inside a helper function
