@@ -7018,14 +7018,31 @@ fn check_application(
                 || different_compound_kinds);
         if cross_kind {
             trace!(target: "rcdzc::infer", head = head.0, "fault: operands of distinct kinds — not comparable/operable across the boundary (CDZ0201)");
-            out.push(Reject::coded(
-                Code::Malformed,
+            // An `Ast` operand in an ARITHMETIC/comparison position is a distinctive category error, not a
+            // generic cross-type clash: `Ast` is COMPILE-TIME METADATA (a quoted / reified syntax tree),
+            // never a runtime number. The generic "a Ast and an Int64 are different types" reads as an
+            // ordinary user type mismatch and hides the real situation. Most often this arises from `eval`
+            // of a template with a runtime SPLICE — `(eval (quasiquote (+ (unquote (quote …)) 1)))`: the
+            // spliced `(quote …)` reconstructs to an `Ast` value the surrounding `+` cannot consume (eval
+            // reconstructs source statically and cannot see through a runtime-spliced Ast subtree). Name
+            // that — the message the breaker probe asked for (corpus-bugfix issue). A NON-`Ast` cross-kind
+            // pair keeps the generic boundary message.
+            let ast_operand = a.render_name() == "Ast" || b.render_name() == "Ast";
+            let message = if ast_operand {
+                "an `Ast` value is compile-time metadata (a quoted or reified syntax tree), not a runtime \
+                 value, so this operation is not defined on it — this often arises from `eval` of a \
+                 template with a runtime splice (the spliced `(quote …)`/`Ast.*` reconstructs to an `Ast` \
+                 the surrounding expression cannot consume): evaluate the spliced expression directly, or \
+                 bind the template and match on it rather than computing with it"
+                    .to_string()
+            } else {
                 format!(
                     "{} and {} are different types (this operation is not defined across that kind boundary)",
                     a.render_with_article(),
                     b.render_with_article()
-                ),
-            ));
+                )
+            };
+            out.push(Reject::coded(Code::Malformed, message));
             for &arg in args {
                 collect(db, arg, out);
             }

@@ -31947,6 +31947,44 @@ mod match_engine {
     }
 
     #[test]
+    fn an_ast_operand_in_arithmetic_names_the_compile_time_metadata_misuse() {
+        // An `Ast` value used in an ARITHMETIC/comparison position — `(eval (quasiquote (+ (unquote (quote
+        // …)) 1)))` (the spliced `(quote …)` reconstructs to an `Ast` the surrounding `+` can't consume),
+        // or a bare `(+ (quote x) 1)` — used to draw the GENERIC "a Ast and an Int64 are different types",
+        // reading as an ordinary user type error. It now names the real category: `Ast` is compile-time
+        // metadata, not a runtime value (corpus-bugfix breaker issue). CDZ0201.
+        let msg = |src: &str| -> String {
+            crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.code.as_deref() == Some("CDZ0201"))
+                .unwrap_or_else(|| panic!("expected CDZ0201 for {src}"))
+                .message
+        };
+        for src in [
+            // the breaker probe: eval of a template with a runtime `(quote …)` splice
+            "(module m (def (main) (eval (quasiquote (+ (unquote (quote (* 2 3))) 1)))) (export main))",
+            // a bare Ast literal in arithmetic
+            "(module m (def (main) (+ (quote x) 1)) (export main))",
+        ] {
+            let m = msg(src);
+            assert!(
+                m.contains("`Ast` value is compile-time metadata")
+                    && m.contains("runtime splice")
+                    && !m.contains("a Ast and"),
+                "an Ast arith operand names the compile-time-metadata misuse (not the generic clash): {m}"
+            );
+        }
+        // NO false change: a NON-Ast cross-kind clash keeps the generic boundary message (with the correct
+        // article), NOT the Ast-specific one.
+        let generic = msg("(module m (def (main) (< 1 \"x\")) (export main))");
+        assert!(
+            generic.contains("an Int64 and a String are different types")
+                && !generic.contains("compile-time metadata"),
+            "a non-Ast cross-kind clash keeps the generic message: {generic}"
+        );
+    }
+
+    #[test]
     fn an_active_unquote_of_a_runtime_operand_lifts_by_inferred_type() {
         use crate::testkit::parse;
         // The runtime active-unquote lift (`quote::reify_active` → `(ast-lift e)` → `lower_ast_lift`,
@@ -36355,6 +36393,10 @@ mod diagnostics {
         assert_eq!(Ty::Float(FloatTy::f64()).render_with_article(), "a Float64");
         assert_eq!(Ty::Bool.render_with_article(), "a Bool");
         assert_eq!(Ty::String.render_with_article(), "a String");
+        // Other VOWEL-initial names also take `an` (was the bug: only `Int…` did, so `Ast`/`Any`/`Option`
+        // wrongly read "a Ast"). `Bytes`/`Char` stay `a`; `Unit`/`UInt…` keep `a` (the "yoo" exception).
+        assert_eq!(Ty::Bytes.render_with_article(), "a Bytes");
+        assert_eq!(Ty::Unit.render_with_article(), "a Unit");
 
         // The cross-kind operator clash message uses it — `(< 1 "x")` reads "an Int64 and a String …",
         // NOT the old ungrammatical "a Int64 and a String …".
