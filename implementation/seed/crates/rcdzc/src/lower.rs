@@ -5990,6 +5990,21 @@ fn desugar_runtime_map_match(
             _ => pat,
         };
         let Some((entries, _rest)) = crate::resolve::map_pattern_of(db, inner) else {
+            // A `(map …)` form whose `..` rest is MALFORMED (`..` not followed by exactly one binder):
+            // name the REST-SHAPE fault clearly (CDZ0201), the MAP twin of the list rest-shape message
+            // (`lower_match_list` "a list rest pattern is `(list p… .. rest)` — exactly one binder after
+            // `..`"). Without this, the generic "not a `(map …)` pattern" fired — or, worse, the arm's
+            // binders leaked UNBOUND (v-diagnostics note); the resolver now keeps those binders inert
+            // (`map_form_is_malformed_rest`), so THIS coded reject is the sole, actionable diagnostic.
+            if crate::resolve::map_form_is_malformed_rest(db, inner) {
+                return Some(Core::Poison(
+                    Reject::coded(
+                        Code::Malformed,
+                        "a map rest pattern is `(map (k v) … .. rest)` — exactly one binder after `..`",
+                    )
+                    .at(inner),
+                ));
+            }
             // A non-`(map …)`, non-binder arm — the COMMON way to reach here is a ctor-shaped head over a
             // MAP scrutinee (`((Zorp x) …)` unbound, `((. Map Foo) …)` non-member): a map has no user
             // constructors. When that head resolves to a CODED poison (CDZ0101 unbound / CDZ0201
@@ -6223,6 +6238,17 @@ fn lower_match_map(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId
             _ => pat,
         };
         let Some((pat_entries, _rest)) = crate::resolve::map_pattern_of(db, map_inner) else {
+            // A `(map …)` form with a MALFORMED `..` rest — the clear rest-shape CDZ0201 (the const-map
+            // twin of the runtime-map path above; the MAP twin of the list rest-shape message).
+            if crate::resolve::map_form_is_malformed_rest(db, map_inner) {
+                return Core::Poison(
+                    Reject::coded(
+                        Code::Malformed,
+                        "a map rest pattern is `(map (k v) … .. rest)` — exactly one binder after `..`",
+                    )
+                    .at(map_inner),
+                );
+            }
             // A ctor-shaped head over a (constant) MAP scrutinee — propagate the head's CODED poison
             // (CDZ0101 unbound / CDZ0201 non-member) so `cdz check` surfaces it via `match_pattern_fault`,
             // the const-map twin of the runtime-map path above (both the MAP analogue of the list

@@ -37662,6 +37662,55 @@ mod diagnostics {
         );
     }
 
+    /// A MAP match pattern with a MALFORMED `..` rest (a `..` not followed by exactly one binder) reports
+    /// the clear rest-shape CDZ0201 — the map twin of the list's "a list rest pattern is `(list p… .. rest)`
+    /// — exactly one binder after `..`" — NOT a misleading "unbound name" for a value/rest binder. Before,
+    /// `map_pattern_of` collapsed a malformed `..` to `None`, so the arm's binders failed the inert-binder
+    /// classifier and the body reference resolved UNBOUND (masking the real fault, v-diagnostics note). Now
+    /// the resolver keeps those binders inert (`map_form_is_malformed_rest`) and both the map matcher and a
+    /// body-reference (resolve Case Mmr, co-anchored at the pattern) surface the SAME coded rest-shape
+    /// message, deduped to ONE diagnostic. Sibling of the record-pattern fix.
+    #[test]
+    fn a_map_match_pattern_with_a_malformed_rest_names_the_shape_not_an_unbound_binder() {
+        // `..` non-final (a further entry after the rest binder). Body references the value binder `v`.
+        let non_final = "(module m (def (f (: mp (Map Int64 Int64))) \
+                         (match mp ((map (1 v) .. rest (2 w)) v) (_ 0))) (export f))";
+        let all = diags_of(non_final);
+        assert!(
+            all.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
+                && d.message.contains("map rest pattern is")
+                && d.message.contains("exactly one binder after")),
+            "the malformed map rest reports the clear rest-shape CDZ0201: {all:?}"
+        );
+        assert!(
+            all.iter().all(|d| d.code.as_deref() != Some("CDZ0101")),
+            "no misleading 'unbound name' for the value/rest binder: {all:?}"
+        );
+        // Two `..` markers — same clear message, no unbound leak.
+        let two_dots = "(module m (def (f (: mp (Map Int64 Int64))) \
+                        (match mp ((map (1 v) .. r1 .. r2) v) (_ 0))) (export f))";
+        let all = diags_of(two_dots);
+        assert!(
+            all.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
+                && d.message.contains("map rest pattern is")),
+            "two `..` markers report the rest-shape CDZ0201: {all:?}"
+        );
+        assert!(
+            all.iter().all(|d| d.code.as_deref() != Some("CDZ0101")),
+            "no unbound-name leak for the two-`..` case: {all:?}"
+        );
+        // NO false alarm: a WELL-FORMED map rest pattern (`.. rest` final, one binder) checks clean.
+        let ok = "(module m (def (f (: mp (Map Int64 Int64))) \
+                  (match mp ((map (1 v) .. rest) v) (_ 0))) (export f))";
+        assert!(
+            diags_of(ok)
+                .iter()
+                .all(|d| d.severity != crate::abi::Severity::Error),
+            "a well-formed map rest pattern still checks clean: {:?}",
+            diags_of(ok)
+        );
+    }
+
     /// A malformed match PATTERN's CDZ0201 anchors at the OFFENDING PATTERN node (`(tuple a b c)`,
     /// `(list … .. …)`), not the enclosing `(match …)`. The pattern-shape rejects in `pattern_constraints`
     /// / `lower_match_list` carry the faulting `pat` node explicitly (`.at(pat)`); without it,

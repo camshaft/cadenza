@@ -1376,6 +1376,7 @@ pass	a recursive sum consumer whose arguments are recursive sum producers compil
 pass	a recursive sum recurses THROUGH a record-typed payload
 pass	a recursive sum type works with pattern matching
 pass	a recursive unifier distinguishes arrow components through the payload slots
+pass	a map match pattern with a malformed rest names the shape, not an unbound binder (CDZ0201)
 pass	a recursive user sum built in a lib is folded by the entry over the imported type
 pass	a recursive user sum type is built at run time and renders its variant names
 pass	a recursive walk consulting a node's own and its child's String key computes correctly
