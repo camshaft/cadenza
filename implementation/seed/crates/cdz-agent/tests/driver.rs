@@ -235,3 +235,64 @@ fn the_driver_tolerates_a_bodyless_message_and_ignores_non_json() {
         "only the ONE .json message is processed; the .txt is ignored: {stdout}"
     );
 }
+
+#[test]
+fn the_driver_acks_processed_messages_with_the_ack_flag() {
+    // With --ack, a driven message is MOVED into <inbox>/processed/ so a re-run doesn't re-process it
+    // (an at-most-once drain, the fleet's ack convention). Without --ack the inbox is left untouched
+    // (a read-only dry run, covered by the other tests). Pins: after --ack the message is in processed/
+    // and gone from the inbox, and a second --ack run sees an empty inbox.
+    let Some(fixture) = consumer_and_runtime_or_skip("tests/fixtures/inbox-model-consumer.wasm")
+    else {
+        eprintln!("[cdz-agent driver] runtime absent; skipping");
+        return;
+    };
+    let dir = std::env::temp_dir().join(format!("cdz-agent-ack-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    std::fs::write(
+        dir.join("001-msg.json"),
+        r#"{"from":"t","to":"a","kind":"note","subject":"s","body":"hi"}"#,
+    )
+    .unwrap();
+
+    let run = |acked: bool| {
+        let mut args = vec![
+            "--consumer".to_string(),
+            fixture.to_str().unwrap().to_string(),
+            "--inbox".to_string(),
+            dir.to_str().unwrap().to_string(),
+        ];
+        if acked {
+            args.push("--ack".to_string());
+        }
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_cdz-agent"))
+            .args(&args)
+            .output()
+            .expect("spawn");
+        (
+            out.status.success(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+        )
+    };
+
+    // First run WITH --ack: processes 1, moves it to processed/.
+    let (ok, stdout) = run(true);
+    assert!(ok, "ack run must exit 0: {stdout}");
+    assert!(
+        stdout.contains("processed 1 message(s)"),
+        "one message driven: {stdout}"
+    );
+    assert!(
+        dir.join("processed/001-msg.json").is_file() && !dir.join("001-msg.json").exists(),
+        "the message is MOVED to processed/ (acked), gone from the inbox"
+    );
+    // Second run: the inbox is now empty (the message was acked — not re-processed).
+    let (ok2, stdout2) = run(true);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(ok2, "second run exits 0: {stdout2}");
+    assert!(
+        stdout2.contains("is empty"),
+        "after ack, a re-run finds the inbox empty — at-most-once drain: {stdout2}"
+    );
+}

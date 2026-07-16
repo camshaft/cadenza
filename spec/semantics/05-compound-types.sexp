@@ -3595,6 +3595,76 @@
             (def (main) (first-lit (list (E.Lit 5)))) (export main)))
   (output (: 5 Int64)))
 
+; --- A literal-PAYLOAD refinement arm on a SINGLE-VARIANT (newtype) sum --------------------------------
+; A single-variant sum `(type W (Wrap Int64))` is a NEWTYPE: it ERASES to its inner type, so its runtime
+; value IS the bare payload (a raw scalar for a scalar payload — no heap box). A `match` combining a
+; literal-payload arm `(W.Wrap 0)` with a binding arm `(W.Wrap x)` must read the payload the SAME way in
+; both arms — directly, since it is already the raw scalar — not through a boxed-sum heap unwrap. The
+; wasm emit previously read the literal arm's payload with the boxed-sum accessor (`get-int`), which over
+; an erased newtype's raw payload was a type-inconsistent read: an Int64 payload emitted an invalid
+; component (a decline-don't-miscompile violation), and a Bool payload SILENTLY took the wrong arm (a
+; valid module returning the wildcard result — worse). The fix reads the leaf directly when the payload is
+; an unboxed scalar (erased newtype), matching how the binding arm reads it. Multi-variant sums (a real
+; box) and bare non-sum scalars were always correct — the controls below pin the bug to the single-variant
+; erased case. Both symptom classes (Int64 invalid-component, Bool silent-wrong-value) share this one root.
+
+(case "a single-variant newtype literal-payload arm falls through to the binding arm on a miss"
+  (doc    "`(match (W.Wrap n) ((W.Wrap 0) 100) ((W.Wrap x) x))` with n=5: the erased newtype's payload 5
+           misses the `(W.Wrap 0)` literal arm and binds via `(W.Wrap x)` → 5. The wasm emit previously
+           read the literal arm's payload with the boxed-sum `get-int` unwrap over the raw i64 → an INVALID
+           component (`func failed to validate: expected i32, found i64`); reading the erased scalar payload
+           directly (as the binding arm does) makes both arms compile.")
+  (input  (do (type W (Wrap Int64))
+              (def (main (: n Int64)) (match (W.Wrap n) ((W.Wrap 0) 100) ((W.Wrap x) x)))
+              (export main)))
+  (call   main (: 5 Int64))
+  (output (: 5 Int64)))
+
+(case "a single-variant newtype literal-payload arm is selected when the payload matches"
+  (doc    "The literal-hit companion: n=0 matches `(W.Wrap 0)` → 100. Together with the miss case it pins
+           that BOTH arms of a single-variant literal refinement compile — the whole match emitted an
+           invalid component before the erased-payload read, not just one arm.")
+  (input  (do (type W (Wrap Int64))
+              (def (main (: n Int64)) (match (W.Wrap n) ((W.Wrap 0) 100) ((W.Wrap x) x)))
+              (export main)))
+  (call   main (: 0 Int64))
+  (output (: 100 Int64)))
+
+(case "the same literal-payload refinement on a MULTI-variant sum works (the boxed control)"
+  (doc    "The control that was always correct: the SAME literal-payload refinement on a MULTI-variant sum
+           `(A Int64) (B Int64)` — a REAL box — compiles and runs. `(match (W.A n) ((W.A 0) 100) ((W.A x) x)
+           ((W.B y) y))` with n=5 → 5. Pins the bug to the SINGLE-variant erased case; the multi-variant
+           emit reads the boxed payload with `get-int` at the right width.")
+  (input  (do (type W (A Int64) (B Int64))
+              (def (main (: n Int64)) (match (W.A n) ((W.A 0) 100) ((W.A x) x) ((W.B y) y)))
+              (export main)))
+  (call   main (: 5 Int64))
+  (output (: 5 Int64)))
+
+(case "a single-variant newtype BOOL literal-payload arm is reached, not silently dead"
+  (doc    "The Bool payload took the SILENT-WRONG-VALUE face of the same single-variant root: `(match
+           (W.Wrap b) ((W.Wrap true) 1) ((W.Wrap _) 0))` with b=true must select the `(W.Wrap true)` arm →
+           1. Before the erased-payload read it emitted a VALID module that read the raw i32 payload through
+           the boxed `get-bool` and the `(W.Wrap true)` arm was silently DEAD → the wildcard's 0 (a wrong
+           answer, no crash to catch it). Pins the true-arm is reached — the Bool witness the Int64
+           invalid-component symptom would not have caught.")
+  (input  (do (type W (Wrap Bool))
+              (def (main (: b Bool)) (match (W.Wrap b) ((W.Wrap true) 1) ((W.Wrap _) 0)))
+              (export main)))
+  (call   main (: true Bool))
+  (output (: 1 Int64)))
+
+(case "a single-variant newtype BOOL literal-payload arm falls through on false"
+  (doc    "The false companion: `(match (W.Wrap false) ((W.Wrap true) 1) ((W.Wrap _) 0))` → 0 via the
+           wildcard. Alone this MASKS the bug (0 is also the wildcard result the dead-arm case wrongly
+           returned) — it is the true-arm case above that witnesses the fix; this pins the miss stays
+           correct (the literal arm genuinely discriminates, not a blanket match).")
+  (input  (do (type W (Wrap Bool))
+              (def (main (: b Bool)) (match (W.Wrap b) ((W.Wrap true) 1) ((W.Wrap _) 0)))
+              (export main)))
+  (call   main (: false Bool))
+  (output (: 0 Int64)))
+
 (case "a recursive resolver transforms one runtime sum tree into another, then consumes it"
   (doc    "The compiler's reader→pipeline JOIN shape: a recursive function that transforms a runtime-built
            value of ONE sum type into a value of a DIFFERENT sum type, whose result is then consumed. A

@@ -1257,6 +1257,26 @@
             (export main)))
   (output (: 100 Int64)))
 
+(case "Type.of grounds a function stored inside a SUM VARIANT payload"
+  (doc    "The sum-payload sibling of the compound-element case: a function wrapped in a variant payload
+           `(Some f)` reflects its domain body-solved too, not just tuple/list/record elements. `f x = x + 1`
+           is `(-> Int64 Int64)` and `g b = if b 0 1` is `(-> Bool Int64)`, so `(Some f)` reflects `(Option
+           (-> Int64 Int64))` and `(Some g)` reflects `(Option (-> Bool Int64))` — distinct → `Type.eq`
+           false; but `(Some f)` vs `(Some f2)` (both `(-> Int64 Int64)`) is true. `0 + 100 = 100`. Guards
+           the sum-payload facet: the payload flows into the sum's type argument via the ctor scheme, which
+           unified the fn's UNANNOTATED-domain `(-> Any Int64)`, so two different-domain wrapped functions
+           reflected the SAME `(Option (-> Any Int64))` and `Type.eq` returned a wrong `true`. Reflection now
+           re-runs the ctor scheme with the payload's grounded type. The codomain through the payload was
+           already solved — only the domain leaked.")
+  (input  (do
+            (def (f x) (+ x 1))
+            (def (f2 z) (+ z 9))
+            (def (g b) (if b 0 1))
+            (def (main) (+ (if (Type.eq (Type.of (Some f)) (Type.of (Some g))) 1 0)
+                           (if (Type.eq (Type.of (Some f)) (Type.of (Some f2))) 100 0)))
+            (export main)))
+  (output (: 100 Int64)))
+
 (case "an if on Type.eq selects a branch at compile time"
   (doc    "The headline of compile-time reflection: `(if (Type.eq (Type.of 5) Int64) 100 200)` folds the
            condition to the constant `true`, so the whole `if` is `100`. A program BRANCHES on types at

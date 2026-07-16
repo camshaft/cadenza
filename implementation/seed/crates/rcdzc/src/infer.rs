@@ -2152,8 +2152,47 @@ pub fn reflected_ty(db: &mut Db, id: StructId) -> Ty {
                 }
                 Ty::Map(Box::new(key_ty), Box::new(val_ty))
             }
-            // A non-compound application (a call, a sum ctor, an operator) has no fn element to ground —
-            // its result reflects exactly as `type_of` types it.
+            // A SUM-VARIANT CONSTRUCTOR applied to a payload — `(Some f)`, `(Box.Wrap f)`. The payload
+            // becomes a TYPE ARGUMENT of the resulting `Ty::Sum{args}` via the ctor's scheme (`Some :
+            // ∀a. a → Option a`), but `apply_type` unifies `a` with the payload's BOTTOM-UP `type_of`, so a
+            // fn payload's unannotated domain leaks in as `Any` (`Option (-> Any Int64)`) — the sum sibling
+            // of the tuple/list/record element leak. `(Some f)` and `(Some g)` (different fn domains) then
+            // reflect the SAME `Option (-> Any Int64)` and `Type.eq` returns a wrong `true`. Re-run the
+            // ctor's scheme unification with each payload's GROUNDED `reflected_ty` (mirroring `apply_type`'s
+            // instantiate+unify loop, but body-solving a fn payload's domain) so the sum's type argument is
+            // the real payload type. A nullary variant (no payload / no scheme) or any non-fn payload
+            // reflects exactly as `type_of` (the grounded type equals the bottom-up one). Guarded to a
+            // genuine variant ctor head via `variant_disc_of`; everything else (a call, an operator) keeps
+            // the plain `type_of`.
+            _ if crate::eval::variant_disc_of(db, head).is_some() => {
+                let mut fresh = crate::unify::Fresh::new();
+                match crate::eval::scheme_of(db, head, &mut fresh) {
+                    Some(scheme) => {
+                        let mut cur = crate::unify::instantiate(&scheme, &mut fresh);
+                        let mut subst = Subst::new();
+                        for &arg in args.iter() {
+                            match subst.apply(&cur) {
+                                Ty::Fn(param, result) => {
+                                    // GROUND the payload (a fn payload's domain body-solves) then freshen
+                                    // past the ctor's instantiation counter — the same occurs-check dodge
+                                    // `apply_type` applies to a bare-nullary payload sharing from-0 vars.
+                                    let arg_ty = reflected_ty(db, arg);
+                                    let at = freshen_arg(db, &arg_ty, &mut fresh);
+                                    let _ = crate::unify::unify(&mut subst, &param, &at);
+                                    cur = *result;
+                                }
+                                // Over-applied / non-arrow tail — fall back to the bottom-up type (a fault
+                                // is reported elsewhere; reflection stays total).
+                                _ => return type_of(db, id),
+                            }
+                        }
+                        subst.apply(&cur)
+                    }
+                    None => type_of(db, id),
+                }
+            }
+            // A non-compound application (a call, an operator) has no fn element to ground — its result
+            // reflects exactly as `type_of` types it.
             _ => type_of(db, id),
         },
         // The SYMBOL-headed compound value nodes (`Resolved::Tuple`/`List`/`Record`/`Map`) — the same
@@ -7493,6 +7532,72 @@ fn check_application(
     // would report `unify::mismatch` = CDZ0203; catch the text/scalar clash FIRST for the right code. Only
     // fires when EXACTLY one side is text and the other is a definite scalar — String-vs-String (a valid
     // comparison), text-vs-compound, and two scalars all fall through to the generic path unchanged.
+    // A BITWISE / SHIFT operator (`& | ^ << >>`) on a NON-INTEGER operand — `(& true false)`, `(<< c 1)`,
+    // `(| "a" "b")`. These carry the `∀a. (Int a) → (Int a) → (Int a)` scheme, so a non-Int operand makes
+    // the generic scheme-unify ground the type var to `Int64` and report the opaque "type mismatch: Int64
+    // and Bool must be the same type here" — an internal-clash read that hides the real fault (a bitwise op
+    // needs integers). This block is NOT in the comparison/arith list below (those share numeric coercion
+    // hints a bitwise op has no analogue for), so it would otherwise leak the phantom clash. Name it: a
+    // bitwise/shift op is integer-only. For a BOOL operand, add the likely-intent hint — `and`/`or` are the
+    // boolean connectives (a `&`/`|` on Bools is the C/Python habit). Fires only on a DEFINITE non-Int
+    // operand (a `Var`/`Any`/`Int` never a false reject); a shift's COUNT is also `(Int a)` so a non-Int
+    // count is caught too. CDZ0203 (an operand-type fault), like the arith cross-kind messages.
+    if args.len() == 2 {
+        let bitwise = matches!(
+            crate::eval::meta_apply_of(db, head),
+            Some(
+                crate::resolved::Prim::BitAnd
+                    | crate::resolved::Prim::BitOr
+                    | crate::resolved::Prim::BitXor
+                    | crate::resolved::Prim::Shl
+                    | crate::resolved::Prim::Shr
+            )
+        );
+        if bitwise {
+            // Skip any NUMERIC or open operand: a bitwise op is Int-only, but a FLOAT/Rational/BigInt
+            // operand is a NUMERIC mismatch the generic scheme-unify already reports as the specific
+            // CDZ0301 "no implicit conversion between numeric types" (pinned: `(& 2 2.0)` cites the
+            // Float64↔Int mismatch, NOT this message). Fire ONLY on a DEFINITE NON-NUMERIC operand
+            // (Bool/Char/String/compound); a `Var`/`Any` is unsolved (never a false reject).
+            let is_numeric_or_open = |t: &Ty| {
+                matches!(
+                    t,
+                    Ty::Int(_) | Ty::Float(_) | Ty::Rational | Ty::BigInt | Ty::Any | Ty::Var(_)
+                )
+            };
+            let (a, b) = (type_of(db, args[0]), type_of(db, args[1]));
+            let bad = if !is_numeric_or_open(&a) {
+                Some((args[0], a))
+            } else if !is_numeric_or_open(&b) {
+                Some((args[1], b))
+            } else {
+                None
+            };
+            if let Some((bad_arg, bad_ty)) = bad {
+                let hint = if bad_ty == Ty::Bool {
+                    " — for boolean logic use `and`/`or`, not the bitwise operators"
+                } else {
+                    ""
+                };
+                trace!(target: "rcdzc::infer", head = head.0, ty = %bad_ty.render_name(), "fault: bitwise/shift op on a non-integer operand (CDZ0203)");
+                out.push(
+                    Reject::coded(
+                        Code::TypeMismatch,
+                        format!(
+                            "a bitwise/shift operator needs integer operands, but a value of type {} \
+                             was given{hint}",
+                            bad_ty.render_name()
+                        ),
+                    )
+                    .at(bad_arg),
+                );
+                for &arg in args {
+                    collect(db, arg, out);
+                }
+                return;
+            }
+        }
+    }
     if args.len() == 2
         && matches!(
             crate::eval::meta_apply_of(db, head),

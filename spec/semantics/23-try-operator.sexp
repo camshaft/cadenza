@@ -57,6 +57,17 @@
   (input  (do (def (main) (try (Ok 1))) (export main)))
   (error  CDZ0230))
 
+(case "a `?` mid-body under a provably non-fallible boundary is rejected"
+  (doc    "`(def (main) (+ 1 (try (Some 2))))` — the `?` unwraps to `Int64` and is added to `1`, so main's
+           result type is `Int64` (a definite non-fallible type inferred from the body, not merely an
+           un-annotated top). Distinct from the `?`-IS-the-whole-body CDZ0230 case above: here the `?` sits
+           in a SUBEXPRESSION and the boundary is provably a plain `Int64`, yet the boundary rule is the same
+           — a `?` needs a fallible enclosing result to short-circuit to, and there is none, so CDZ0230.
+           Pins that `enclosing_boundary_ty` walks to the function result regardless of the `?`'s syntactic
+           position in the body (DESIGN-try-operator-rcdzc.md §4/§6).")
+  (input  (do (def (main) (+ 1 (try (Some 2)))) (export main)))
+  (error  CDZ0230))
+
 (case "a Result-valued `?` under an Option boundary is a type error"
   (doc    "`(def (main) (let ((x (try (Ok 1)))) (Some x)))` — the body's tail `(Some x)` makes main's
            result type `Option`, but the `?`'s operand `(Ok 1)` is a `Result`. A `Result`-`?` cannot

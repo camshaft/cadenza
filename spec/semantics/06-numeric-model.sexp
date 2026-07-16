@@ -1606,6 +1606,72 @@
   (call   main (: -9223372036854775808 Int64) (: -1 Int64))
   (trap   "overflow"))
 
+; The MIN/-1 overflow trap is a per-WIDTH property — every SIGNED width overflows at its OWN minimum
+; divided by -1 (the quotient +2^(N-1) is one past that width's max), so a narrow signed type must trap
+; at its narrow minimum, not only Int64.min. These pin Int32/Int16/Int8 at their minima ÷ -1, a narrow
+; normal-division control (MIN/-2 is in range), and the two properties the trap-KIND split must preserve:
+; an UNSIGNED division has NO MIN/-1 overflow (no `-1` operand and no MIN/-1 case), so it must never
+; spuriously trap and must still trap divide-by-zero AS divide-by-zero; and a SIGNED divide-by-zero must
+; still classify as divide-by-zero, NOT overflow — the kind distinction the two-guard emit exists to keep.
+
+(case "a runtime Int32 division of the minimum by -1 overflows and traps"
+  (doc    "The narrow-width companion of the Int64 runtime MIN/-1 case: `(/ a b)` over Int32 with a =
+           Int32.min (-2147483648), b = -1 forms +2^31, one past Int32.max, so it overflows and traps —
+           at the Int32 minimum, not Int64's. Pins the overflow guard resolves `<T>::MIN` per width.")
+  (input  (do (def (main (: a Int32) (: b Int32)) (/ a b)) (export main)))
+  (call   main (: -2147483648 Int32) (: -1 Int32))
+  (trap   "overflow"))
+
+(case "a runtime Int16 division of the minimum by -1 overflows and traps"
+  (doc    "The Int16 narrow-width MIN/-1 overflow: a = Int16.min (-32768), b = -1 → +2^15, one past
+           Int16.max, traps. Pins the per-width overflow guard at the 16-bit minimum.")
+  (input  (do (def (main (: a Int16) (: b Int16)) (/ a b)) (export main)))
+  (call   main (: -32768 Int16) (: -1 Int16))
+  (trap   "overflow"))
+
+(case "a runtime Int8 division of the minimum by -1 overflows and traps"
+  (doc    "The narrowest signed MIN/-1 overflow: a = Int8.min (-128), b = -1 → +128, one past Int8.max
+           (127), traps. Completes the Int8/16/32/64 narrow-width overflow ladder — a guard that hard-coded
+           Int64.min would miss every narrow width.")
+  (input  (do (def (main (: a Int8) (: b Int8)) (/ a b)) (export main)))
+  (call   main (: -128 Int8) (: -1 Int8))
+  (trap   "overflow"))
+
+(case "a runtime Int32 division of the minimum by -2 is a normal division"
+  (doc    "The narrow normal-division control: only MIN ÷ -1 overflows; `(/ Int32.min -2)` = 1073741824
+           is in range and must NOT trap. Pins the per-width overflow guard fires only at the -1 divisor,
+           the narrow companion of the Int64 MIN/-2 pin — a guard that triggered on any negative divisor
+           would wrongly trap this.")
+  (input  (do (def (main (: a Int32) (: b Int32)) (/ a b)) (export main)))
+  (call   main (: -2147483648 Int32) (: -2 Int32))
+  (output (: 1073741824 Int32)))
+
+(case "a runtime unsigned division at the maximum by 1 does not trap"
+  (doc    "An UNSIGNED type has no MIN/-1 overflow (no negative divisor, no signed minimum), so its `/`
+           emits ONLY the zero guard — `(/ UInt64.max 1)` = UInt64.max must run normally, never spuriously
+           overflow-trapping. Pins the overflow guard is gated on signedness (it must not appear for an
+           unsigned type).")
+  (input  (do (def (main (: a UInt64) (: b UInt64)) (/ a b)) (export main)))
+  (call   main (: 18446744073709551615 UInt64) (: 1 UInt64))
+  (output (: 18446744073709551615 UInt64)))
+
+(case "a runtime unsigned division by zero traps as divide-by-zero"
+  (doc    "The unsigned zero guard still fires: `(/ a b)` over UInt64 with b = 0 traps as divide-by-zero.
+           Pins that dropping the overflow guard for unsigned types does NOT drop the zero guard — the
+           unsigned path keeps its one guard.")
+  (input  (do (def (main (: a UInt64) (: b UInt64)) (/ a b)) (export main)))
+  (call   main (: 100 UInt64) (: 0 UInt64))
+  (trap   "divide by zero"))
+
+(case "a runtime signed division by zero traps as divide-by-zero, not overflow"
+  (doc    "The trap-KIND the two-guard emit exists to preserve: a SIGNED `(/ 5 0)` must classify as
+           divide-by-zero, NOT overflow — the two conditions carry kind-specific messages (`r == 0` →
+           divide-by-zero; `MIN,-1` → overflow), and the divide-by-zero case must not be misread as
+           overflow after the refactor. The kind-distinction companion of the MIN/-1 overflow case.")
+  (input  (do (def (main (: a Int64) (: b Int64)) (/ a b)) (export main)))
+  (call   main (: 5 Int64) (: 0 Int64))
+  (trap   "divide by zero"))
+
 (case "division of the minimum integer by -1 overflows and traps"
   (doc    "`(/ -9223372036854775808 -1)` = +2^63, which is out of the Int64 range. The compiler can
            prove this overflow via constant folding and rejects at compile time (CDZ0304) rather than
@@ -2213,6 +2279,22 @@
             (def (a0 (: x UInt8)) (UInt8.wrapping-add x 0))
             (def (m1 (: x UInt8)) (UInt8.wrapping-mul x 1))
             (def (main (: x UInt8)) (if (and (= (a0 x) x) (= (m1 x) x)) 1 0))
+            (export main)))
+  (call   main (: 200 UInt8)) (output (: 1 Int64)))
+
+(case "the bitwise self-identities hold on a runtime narrow UInt8 (x & x = x, x | x = x, x ^ x = 0)"
+  (doc    "The bitwise self-identities hold at narrow width too, for a runtime UInt8: `(& x x)` = `x` and
+           `(| x x)` = `x` (AND/OR of a value with itself is the value), while `(^ x x)` = 0 (XOR cancels its
+           own bits). Checked at `x = 200` (high bit set): `(= (& x x) x)`, `(= (| x x) x)`, and `(= (^ x x)
+           (UInt8.wrap 0))` all hold → 1. The UInt8 companion of the Int64 bitwise self-identities — an
+           identity fold must return the operand (or the zero of the SAME width), not a width-re-derived
+           value; the XOR result is compared to a UInt8 zero (not widened) so the compare stays at width.
+           Both backends.")
+  (input  (do
+            (def (aa (: x UInt8)) (& x x))
+            (def (oo (: x UInt8)) (| x x))
+            (def (xx (: x UInt8)) (^ x x))
+            (def (main (: x UInt8)) (if (and (and (= (aa x) x) (= (oo x) x)) (= (xx x) (UInt8.wrap 0))) 1 0))
             (export main)))
   (call   main (: 200 UInt8)) (output (: 1 Int64)))
 

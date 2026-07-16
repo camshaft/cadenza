@@ -10996,6 +10996,18 @@ fn emit_sum_cont(
             // length), and a boxed-list `Elem` used `arr-get` on a vec handle (garbage element).
             emit(db, scrutinee, slots, base, high, scratch_ty, layout, out)?; // [handle]
             let mut cur = type_of(db, scrutinee);
+            // Whether the value now on the stack is a HEAP HANDLE (needs `get-int`/`get-bool` to read the
+            // scalar leaf out of the box) or a RAW SCALAR already (read directly). It starts a handle unless
+            // the scrutinee is itself an unboxed scalar — an ERASED single-variant newtype over a scalar,
+            // `(type W (Wrap Int64))`, whose value IS a bare i64 (no box). Each heap-child accessor below
+            // (`sum-payload`/`arr-get`/`vec-get`) produces a child HANDLE (→ true); an erased `Payload`
+            // no-op leaves the representation unchanged. WITHOUT this, a literal-payload test on an erased
+            // scalar newtype (`(match (W.Wrap n) ((W.Wrap 0) …) ((W.Wrap x) …))`) emitted `get-int` on the
+            // raw i64 — an i32-handle unbox over an i64 value → an INVALID component (`func failed to
+            // validate: expected i32, found i64`), a decline-don't-miscompile violation. The binding arm
+            // reads the same payload raw (bare `local.get`), so this aligns the literal arm with it.
+            let mut holds_handle =
+                !matches!(cur.strip_nominal(), Ty::Int(_) | Ty::Bool | Ty::Float(_));
             let mut lit_prefix: Vec<crate::core::PathStep> = Vec::with_capacity(path.len());
             for step in path {
                 lit_prefix.push(*step);
@@ -11008,6 +11020,7 @@ fn emit_sum_cont(
                             // by a nested element pattern reads the wrong accessor without it.
                             Ty::Sum { .. } => {
                                 out.push(Lir::CallImport(OP_SUM_PAYLOAD));
+                                holds_handle = true; // sum-payload yields the child HANDLE
                                 cur = payload_step_ty_of(
                                     db,
                                     Some(scrutinee),
@@ -11017,12 +11030,15 @@ fn emit_sum_cont(
                                 );
                             }
                             // An ERASED nominal newtype: the box is gone, so the `Payload` step is a static
-                            // unwrap — NO `sum-payload` op, `cur` becomes the inner type.
+                            // unwrap — NO `sum-payload` op, `cur` becomes the inner type. The stack value is
+                            // UNCHANGED (still whatever the scrutinee was — a raw scalar for a scalar
+                            // newtype), so `holds_handle` is left as-is.
                             inner => cur = inner.clone(),
                         }
                     }
                     crate::core::PathStep::Elem(i) => {
                         out.push(Lir::ConstI32(*i as i32));
+                        holds_handle = true; // arr-get/vec-get yield the child HANDLE
                         if matches!(cur.strip_nominal(), Ty::List(_)) {
                             out.push(Lir::CallImport(OP_VEC_GET));
                             cur = match cur.strip_nominal() {
@@ -11045,7 +11061,11 @@ fn emit_sum_cont(
             // the sum-payload twin of the scalar-probe eqz special case.
             match probe {
                 crate::core::Probe::Int(v) => {
-                    out.push(Lir::CallImport(OP_GET_INT)); // [i64]
+                    // Read the scalar out of the box (`get-int` → normalized i64) ONLY when the leaf is a
+                    // heap handle; an ERASED scalar newtype left a raw i64 on the stack (no box to unbox).
+                    if holds_handle {
+                        out.push(Lir::CallImport(OP_GET_INT)); // [i64]
+                    }
                     if v.to_i64_bits() == 0 {
                         out.push(Lir::I64Eqz); // [bool]
                     } else {
@@ -11054,7 +11074,11 @@ fn emit_sum_cont(
                     }
                 }
                 crate::core::Probe::Bool(b) => {
-                    out.push(Lir::CallImport(OP_GET_BOOL)); // [i32]
+                    // Same erased-newtype gate: a boxed Bool payload unboxes with `get-bool`, an erased
+                    // Bool newtype is already a raw i32 0/1 on the stack.
+                    if holds_handle {
+                        out.push(Lir::CallImport(OP_GET_BOOL)); // [i32]
+                    }
                     out.push(Lir::ConstI32(if *b { 1 } else { 0 }));
                     out.push(Lir::I32Eq); // [bool]
                 }

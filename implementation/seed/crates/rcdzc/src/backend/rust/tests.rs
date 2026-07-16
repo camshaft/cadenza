@@ -647,6 +647,43 @@ fn float_set_key_wrapper_is_width_specific_and_the_reserved_name_never_collides(
 }
 
 #[test]
+fn float_key_wrapper_decl_injects_for_a_typed_empty_collection_and_reserved_name_is_escaped() {
+    // Copilot PR#490 found two RESIDUAL gaps in the width-specific float-key wrapper:
+    //  (1) the decl was injected only on the `::new(` constructor marker, but a context-typed EMPTY
+    //      collection annotates the wrapper type with NO constructor → `cannot find type __CdzF64`.
+    //  (2) the `__`-prefix did NOT actually reserve the name — the lexer allows a `_`-start and
+    //      `sanitize_ident` passed `__` through, so a user `sum __CdzF64` still collided (E0428).
+
+    // (1) A context-typed EMPTY float-keyed Map annotates `BTreeMap<__CdzF64, _>` with no `__CdzF64::new(`.
+    // The decl must STILL be injected (gate on the `<__CdzF64` type-param occurrence, not just `::new(`).
+    let empty = compile_rust(
+        "(module m (def (e) (: (Map.empty) (Map Float64 Int64))) \
+           (def (main (: d Int64)) (Map.len (e))) (export main))",
+    );
+    assert!(
+        empty.contains("BTreeMap<__CdzF64,") && empty.contains("struct __CdzF64(u64)"),
+        "a typed empty float Map annotates __CdzF64 AND injects its decl (no `cannot find type`):\n{empty}"
+    );
+
+    // (2) A user sum literally named `__CdzF64` (a legal Cadenza ident — `_`-start is allowed) is ESCAPED
+    // by `sanitize_ident` to `cdz_user___CdzF64`, so it can NEVER collide with the backend-reserved wrapper.
+    let user = compile_rust(
+        "(module m (type __CdzF64 (A) (B)) \
+           (def (main (: d Int64)) (match (__CdzF64.A) ((A) 1) ((B) 2))) (export main))",
+    );
+    assert!(
+        user.contains("enum cdz_user___CdzF64") && !user.contains("struct __CdzF64(u64)"),
+        "a user `__CdzF64` sum is escaped to cdz_user___CdzF64 with no injected wrapper struct (no E0428):\n{user}"
+    );
+    // A user def named `__pay` (another backend-reserved local) is likewise escaped, not captured.
+    let userfn = compile_rust("(module m (def (__pay (: n Int64)) (+ n 1)) (export __pay))");
+    assert!(
+        userfn.contains("cdz_user___pay") && userfn.contains("pub fn cdz_user___pay"),
+        "a user `__pay` def is escaped away from the reserved local namespace:\n{userfn}"
+    );
+}
+
+#[test]
 fn rustc_roundtrip_map_and_set_compute_and_enumerate_in_order() {
     // Map: build `{1:10, 2:20, 3:30}` at runtime, sum its size + a lookup. 3 keys + lookup(2)=20 = 23.
     let mp = compile_rust(

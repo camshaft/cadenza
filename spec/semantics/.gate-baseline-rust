@@ -81,6 +81,7 @@ pass	Type.eq of a type-valued parameter against itself is always true
 pass	Type.eq on a constructed generic sum compares the full instantiated type
 pass	Type.eq on a type-valued parameter against a COMPOUND type is structural
 pass	Type.of carries a quantity's unit into a same-type annotation
+pass	Type.of grounds a function stored inside a SUM VARIANT payload
 pass	Type.of grounds a function stored inside a compound value's element
 pass	Type.of on a bare nullary variant reflects its element as UNDETERMINED
 pass	Type.of reflects a RETURNED function's body-solved domain, at every currying level
@@ -1268,6 +1269,10 @@ pass	a runtime Float32 equality compares by the canonical byte form
 pass	a runtime Float32 multiplication emits f32.mul
 pass	a runtime Float32 subtraction emits f32.sub
 pass	a runtime Float64 equality compares by the canonical byte form
+pass	a runtime Int16 division of the minimum by -1 overflows and traps
+pass	a runtime Int32 division of the minimum by -1 overflows and traps
+pass	a runtime Int32 division of the minimum by -2 is a normal division
+pass	a runtime Int8 division of the minimum by -1 overflows and traps
 pass	a runtime List built past 32 elements reads correctly by index across the RRB leaf-to-trie boundary
 pass	a runtime MIXED-SCALE BigInt comparison converts to the reference before comparing
 pass	a runtime MIXED-SCALE BigInt-magnitude sum converts to the reference in unbounded arithmetic
@@ -1354,6 +1359,7 @@ pass	a runtime scrutinee selects a non-first literal arm
 pass	a runtime set shared across two recursive-call operands is not mutated by an insert in one
 pass	a runtime set-difference result escapes to the host as its value form
 pass	a runtime set-union result escapes to the host as its value form
+pass	a runtime signed division by zero traps as divide-by-zero, not overflow
 pass	a runtime square multiply traps exactly past the Int64 square-root boundary
 pass	a runtime string bound from a sum payload compares equal to a string parameter
 pass	a runtime string compared against a literal folds against the literal side
@@ -1392,6 +1398,8 @@ pass	a runtime truncation into a signed byte sign-extends
 pass	a runtime truncation to an unsigned byte keeps the low bits, total on negatives
 pass	a runtime tuple built behind a recursive call escapes to the host
 pass	a runtime tuple with a boolean element is returned as a result
+pass	a runtime unsigned division at the maximum by 1 does not trap
+pass	a runtime unsigned division by zero traps as divide-by-zero
 pass	a runtime unsigned-byte addition traps exactly past its width maximum
 pass	a runtime unsigned-byte addition traps on overflow of its width
 pass	a runtime unsigned-byte multiplication traps exactly past its width maximum
@@ -2594,6 +2602,7 @@ pass	the Int64 total order holds at its extremes
 pass	the LEB128 byte composition runs on a runtime operand
 pass	the additive-zero identity preserves a boundary-crossing runtime operand
 pass	the arithmetic operator rejects a float-first mixed operand pair
+pass	the bitwise self-identities hold on a runtime narrow UInt8 (x & x = x, x | x = x, x ^ x = 0)
 pass	the bitwise-AND-with-zero annihilator does not discard a trapping runtime operand
 pass	the boolean less-than operator agrees with compare over Bool
 pass	the boolean less-than operator agrees with the three-way comparison
@@ -2834,6 +2843,7 @@ pass	unquote outside quasiquote is a syntax error
 pass	unquote with more than one operand inside a quasiquote is malformed
 pass	unquote-splicing a list of Ast values splices by identity
 pass	unquote-splicing a list of nested lists declines — no scalar leaf to lift into
+pass	unquote-splicing a list with a RUNTIME Ast element splices it by identity at runtime
 pass	unquote-splicing lifts a boolean list to Ast.Bool leaves
 pass	unquote-splicing lifts a float list to Ast.Float leaves
 pass	unquote-splicing lifts a string list to Ast.Str leaves

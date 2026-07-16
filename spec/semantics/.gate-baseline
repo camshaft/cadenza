@@ -186,6 +186,7 @@ pass	Type.eq of a type-valued parameter against itself is always true
 pass	Type.eq on a constructed generic sum compares the full instantiated type
 pass	Type.eq on a type-valued parameter against a COMPOUND type is structural
 pass	Type.of carries a quantity's unit into a same-type annotation
+pass	Type.of grounds a function stored inside a SUM VARIANT payload
 pass	Type.of grounds a function stored inside a compound value's element
 pass	Type.of on a bare nullary variant reflects its element as UNDETERMINED
 pass	Type.of reflects a RETURNED function's body-solved domain, at every currying level
@@ -380,6 +381,7 @@ pass	a Unit record field beside an Int64 field, the Int64 read
 pass	a `?` in a CALLED (inlined, non-exported) helper finds its boundary
 pass	a `?` inside a match-arm resolves against the enclosing function boundary
 pass	a `?` inside an if-branch resolves against the enclosing function boundary
+pass	a `?` mid-body under a provably non-fallible boundary is rejected
 pass	a `?` on a String operand is a type error
 pass	a `?` on a non-fallible operand is a type error
 pass	a `?` on an ill-typed operand reports the operand's error, not a `?`-shape cascade
@@ -1605,6 +1607,10 @@ pass	a runtime Float32 equality compares by the canonical byte form
 pass	a runtime Float32 multiplication emits f32.mul
 pass	a runtime Float32 subtraction emits f32.sub
 pass	a runtime Float64 equality compares by the canonical byte form
+pass	a runtime Int16 division of the minimum by -1 overflows and traps
+pass	a runtime Int32 division of the minimum by -1 overflows and traps
+pass	a runtime Int32 division of the minimum by -2 is a normal division
+pass	a runtime Int8 division of the minimum by -1 overflows and traps
 pass	a runtime List built past 32 elements reads correctly by index across the RRB leaf-to-trie boundary
 pass	a runtime MIXED-SCALE BigInt comparison converts to the reference before comparing
 pass	a runtime MIXED-SCALE BigInt-magnitude sum converts to the reference in unbounded arithmetic
@@ -1703,6 +1709,7 @@ pass	a runtime scrutinee selects a non-first literal arm
 pass	a runtime set shared across two recursive-call operands is not mutated by an insert in one
 pass	a runtime set-difference result escapes to the host as its value form
 pass	a runtime set-union result escapes to the host as its value form
+pass	a runtime signed division by zero traps as divide-by-zero, not overflow
 pass	a runtime signed little-endian segment lays the low byte first
 pass	a runtime signed little-endian segment round-trips a negative value
 pass	a runtime square multiply traps exactly past the Int64 square-root boundary
@@ -1745,6 +1752,8 @@ pass	a runtime truncation into a signed byte sign-extends
 pass	a runtime truncation to an unsigned byte keeps the low bits, total on negatives
 pass	a runtime tuple built behind a recursive call escapes to the host
 pass	a runtime tuple with a boolean element is returned as a result
+pass	a runtime unsigned division at the maximum by 1 does not trap
+pass	a runtime unsigned division by zero traps as divide-by-zero
 pass	a runtime unsigned-byte addition traps exactly past its width maximum
 pass	a runtime unsigned-byte addition traps on overflow of its width
 pass	a runtime unsigned-byte multiplication traps exactly past its width maximum
@@ -1862,6 +1871,10 @@ pass	a single-scalar String.slice equals the String.at of the same index (the tw
 pass	a single-variant NEWTYPE escapes with its tag ERASED, only the type header naming it
 pass	a single-variant abstract theorem's constructor match outside the kernel is a withheld-constructor rejection (CDZ0214)
 pass	a single-variant abstract type's constructor match outside its module is rejected CDZ0214 (withheld-ctor)
+pass	a single-variant newtype BOOL literal-payload arm falls through on false
+pass	a single-variant newtype BOOL literal-payload arm is reached, not silently dead
+pass	a single-variant newtype literal-payload arm falls through to the binding arm on a miss
+pass	a single-variant newtype literal-payload arm is selected when the payload matches
 pass	a single-variant newtype over a COMPOUND escapes the bare compound under its type header
 pass	a single-variant open sum with an open-tail arm dispatches its named variant
 pass	a single-variant-sum binding pattern destructures a multi-payload constructor positionally
@@ -3141,6 +3154,7 @@ pass	the LEB128 byte composition runs on a runtime operand
 pass	the SELECT (choice) axiom is minted via new_axiom as a hypothesis-free theorem
 pass	the additive-zero identity preserves a boundary-crossing runtime operand
 pass	the arithmetic operator rejects a float-first mixed operand pair
+pass	the bitwise self-identities hold on a runtime narrow UInt8 (x & x = x, x | x = x, x ^ x = 0)
 pass	the bitwise-AND-with-zero annihilator does not discard a trapping runtime operand
 pass	the boolean less-than operator agrees with compare over Bool
 pass	the boolean less-than operator agrees with the three-way comparison
@@ -3263,6 +3277,7 @@ pass	the runtime-list version of a tail fold compiles and folds correctly
 pass	the same conditional delegation makes no host call when the branch is not taken
 pass	the same declared effect is handled in-program by one entrypoint and delegated by another
 pass	the same function called under two handlers is discharged by each in turn
+pass	the same literal-payload refinement on a MULTI-variant sum works (the boxed control)
 pass	the same mixed-scale comparison is EXACT over Rational (keeps the fractional scale)
 pass	the same nullary variant constrained to different concrete types reflects different types
 pass	the same program with a different response gives a different deterministic result
@@ -3423,6 +3438,7 @@ pass	unquote outside quasiquote is a syntax error
 pass	unquote with more than one operand inside a quasiquote is malformed
 pass	unquote-splicing a list of Ast values splices by identity
 pass	unquote-splicing a list of nested lists declines — no scalar leaf to lift into
+pass	unquote-splicing a list with a RUNTIME Ast element splices it by identity at runtime
 pass	unquote-splicing lifts a boolean list to Ast.Bool leaves
 pass	unquote-splicing lifts a float list to Ast.Float leaves
 pass	unquote-splicing lifts a string list to Ast.Str leaves

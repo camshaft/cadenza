@@ -10,10 +10,13 @@
 //!
 //! Usage:
 //!   cdz-agent --consumer <loop.wasm> --inbox <dir> [--policy <cedar-file>] [--model <id>] [--limit N]
+//!            [--ack]
 //!
-//! This is a MINIMAL driver: it processes each message once and prints the loop's outcome. A durable
-//! reply-then-ack against the inbox (moving processed messages, sending replies) is a follow-on; the
-//! point here is the end-to-end path — real messages → the pure-Cadenza authorized loop → a model — runs.
+//! `--ack` moves each driven message into `<inbox>/processed/` (the fleet's ack convention) so a re-run
+//! doesn't re-process it — turning repeated runs into a durable, at-most-once drain. Without it the
+//! driver is read-only (prints outcomes, leaves the inbox untouched — useful for a dry run). Writing a
+//! REPLY back to a sender is a further follow-on; the end-to-end path (real message → the pure-Cadenza
+//! authorized loop → a model, driven once) runs.
 
 use anyhow::{anyhow, Result};
 use std::path::{Path, PathBuf};
@@ -33,6 +36,7 @@ struct Args {
     #[cfg_attr(not(feature = "bedrock"), allow(dead_code))]
     model: Option<String>,
     limit: usize,
+    ack: bool,
 }
 
 fn parse_args() -> Result<Args> {
@@ -41,6 +45,7 @@ fn parse_args() -> Result<Args> {
     let mut policy = None;
     let mut model = None;
     let mut limit = usize::MAX;
+    let mut ack = false;
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -53,6 +58,7 @@ fn parse_args() -> Result<Args> {
                     .parse()
                     .map_err(|e| anyhow!("--limit not a number: {e}"))?
             }
+            "--ack" => ack = true,
             other => {
                 return Err(anyhow!(
                     "unknown arg `{other}` (see the usage in the module docs)"
@@ -66,6 +72,7 @@ fn parse_args() -> Result<Args> {
         policy,
         model,
         limit,
+        ack,
     })
 }
 
@@ -110,10 +117,27 @@ fn run() -> Result<()> {
         return Ok(());
     }
 
+    // With --ack, a driven message is MOVED into `<inbox>/processed/` so a re-run doesn't re-process it
+    // (the fleet's own ack convention). Create the dir once, up front, if acking.
+    let processed_dir = args.inbox.join("processed");
+    if args.ack {
+        std::fs::create_dir_all(&processed_dir)
+            .map_err(|e| anyhow!("mkdir {}: {e}", processed_dir.display()))?;
+    }
+
     let mut processed = 0usize;
     for (name, body) in msgs.into_iter().take(args.limit) {
         let outcome = drive_one(&consumer, &runtime, &policies, &body, args.model.clone())?;
         println!("cdz-agent: {name} -> {outcome}");
+        // ACK: move the message into processed/ so it is driven exactly once across runs. A rename
+        // failure is surfaced (not swallowed) — a message that "processed" but wasn't acked would be
+        // re-driven, which the operator should see rather than have silently happen.
+        if args.ack {
+            let from = args.inbox.join(&name);
+            let to = processed_dir.join(&name);
+            std::fs::rename(&from, &to)
+                .map_err(|e| anyhow!("ack (move) {} -> {}: {e}", from.display(), to.display()))?;
+        }
         processed += 1;
     }
     println!("cdz-agent: processed {processed} message(s)");

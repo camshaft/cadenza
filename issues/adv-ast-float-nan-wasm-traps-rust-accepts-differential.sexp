@@ -1,0 +1,58 @@
+; BREAKER FINDING — DIFFERENTIAL MISCOMPILE (wasm vs rust disagree on an accepted program): wrapping a NaN
+; Float64 into an `Ast.Float` reification node TRAPS on wasm but returns a VALUE on rust. The two backends
+; must agree on any program the type-checker accepts; here they observably diverge.
+;
+; OBSERVED (fresh build, trunk 8f074f465 + my pending numeric MR; Ast.Float is the metaprogramming reify node):
+;   (Ast.Float Float64.nan)                    wasm: TRAP "resource escape: encode bytes are not a valid
+;                                                     canonical value form"
+;                                              rust: VALUE (Ast.Float NaN)
+;   (Ast.Float (- x Float64.nan))  [runtime x] wasm: same TRAP     rust: VALUE (Ast.Float NaN)   (v3 — not
+;                                                     a const-fold artifact; a runtime-produced NaN diverges too)
+;
+; A NaN is a LEGAL Float64 value on BOTH backends — returning it bare round-trips identically:
+;   (def (main) Float64.nan)                     wasm: NaN   rust: NaN   (agree — NaN is a valid value)
+;   (def (main (: x Float64)) (- x Float64.nan)) wasm: NaN   rust: NaN   (agree)
+; So the divergence is SPECIFIC to embedding that legal NaN into an `Ast.Float` node: wasm rejects the
+; non-canonical NaN bit-pattern at the host canonical-value encode boundary and TRAPS; rust's reify accepts it.
+;
+; SIBLING PATHS for a non-canonical float-in-AST all DECLINE at compile time (reject-don't-miscompile), which
+; is the consistent contract this one path violates:
+;   ,@(list Float64.nan)  (splice-lift, a1f78c9a3 neighbor)  -> DECLINES  (both)
+;   (Ast.Float (/ 1.0 0.0))  (+inf)                          -> DECLINES  (both)
+; So the target is almost certainly: `(Ast.Float <non-canonical-float>)` should DECLINE (or trap) UNIFORMLY,
+; not trap-on-one-backend / value-on-the-other. The bug is the wasm-vs-rust DISAGREEMENT regardless of which
+; uniform outcome is chosen — an accepted program must behave the same on both backends.
+;
+; RECOMPUTE NOTES (ruled out false alarms): `(= Float64.nan Float64.nan)` = true is CORRECT here — Cadenza's
+; float `=` is a canonical-byte compare (06-numeric-model.sexp:1003 "true only for a NaN under the canonical
+; byte form"), NOT IEEE `==`; that is not the bug. The bug is strictly the Ast.Float reification divergence.
+;
+; The cases below assert the RUST behavior (returns the node) as a PLACEHOLDER so the differential is visible;
+; the PM/concierge should rule whether the target is decline-uniformly or accept-uniformly, then this flips to
+; the ruled outcome. What is NOT in question: the two backends must not disagree.
+
+(case "adv ast-float-nan: (Ast.Float Float64.nan) must behave the SAME on both backends (differential)"
+  (doc "Wrapping a NaN Float64 into an `Ast.Float` reify node: wasm TRAPS (resource escape — encode bytes
+        are not a valid canonical value form), rust returns the VALUE (Ast.Float NaN). A NaN is a legal
+        Float64 (returning it bare agrees on both backends), so this is a backend DISAGREEMENT on an accepted
+        program — a differential miscompile. Sibling non-canonical-float-in-AST paths (,@(list NaN) splice,
+        (Ast.Float +inf)) DECLINE uniformly, so the likely target is a uniform decline here too. Asserting the
+        rust value as a placeholder; the point is the two backends must agree.")
+  (input (do (def (main) (Ast.Float Float64.nan)) (export main)))
+  (output (: (Ast.Float NaN) Ast)))
+
+(case "adv ast-float-nan: a RUNTIME-produced NaN into Ast.Float also diverges (not a const-fold artifact)"
+  (doc "The runtime companion: `(Ast.Float (- x Float64.nan))` with x=1.0 forces a NaN off the const-fold
+        path, then wraps it — wasm TRAPS, rust returns (Ast.Float NaN). Pins the divergence is in the reify
+        emit, not the constant folder; both the const and runtime NaN take the same split.")
+  (input (do (def (main (: x Float64)) (Ast.Float (- x Float64.nan))) (export main)))
+  (call main (: 1.0 Float64))
+  (output (: (Ast.Float NaN) Ast)))
+
+(case "adv ast-float-nan CONTROL: a bare NaN value round-trips identically on both backends"
+  (doc "The control proving NaN itself is a legal value on both backends — the divergence is SPECIFIC to
+        Ast.Float reification, not to NaN as a value. `(- x Float64.nan)` with x=1.0 returns NaN on wasm AND
+        rust. Pins that the bug is the reify boundary, not float handling generally.")
+  (input (do (def (main (: x Float64)) (- x Float64.nan)) (export main)))
+  (call main (: 1.0 Float64))
+  (output (: NaN Float64)))
