@@ -9930,3 +9930,18 @@
   (output (: 1 Int64))
   (call   main (: 0 Int64))
   (output (: 3 Int64)))
+
+(case "a general recursive-sum recursion (Nil|Cons count) reads the right payload through the fold"
+  (doc    "GENERAL recursive-sum recursion — the Nil|Cons list-fold shape nearly every recursive-AST / tree
+           walk uses. `(type L (N) (C Int64 L))`, `cnt` recurses on the `C` tail: `cnt [1,2,3] = 3`. Pins
+           that a match on a recursive sum reads the right payload/rest through the self-recursive fold —
+           the general companion of the nested-known-disc miscompile cases above. Added after a high-sev
+           false-alarm scare (a stale build reported this regressed by the recursive-sum nested-match fix;
+           a fresh trunk build + the full compiler-ml suite 896/0 showed it was never regressed) — pinning
+           it graded so a REAL regression of general recursion could never hide behind a stale-build report
+           again. v-iterators' repro; the concierge asked for it pinned alongside the original.")
+  (input  (do (type L (N Unit) (C Int64 L))
+              (def (cnt (: it L)) (match it ((L.N _) 0) ((L.C h r) (+ 1 (cnt r)))))
+              (def (main) (cnt (L.C 1 (L.C 2 (L.C 3 (L.N unit))))))
+              (export main)))
+  (output (: 3 Int64)))
