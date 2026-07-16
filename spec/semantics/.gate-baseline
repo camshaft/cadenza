@@ -542,6 +542,7 @@ pass	a conditional's condition may itself be a conditional
 pass	a conditionally-selected nullary variant is returned as a runtime sum result
 pass	a conditionally-selected variant is returned as a runtime sum result
 pass	a conjunction guards a let over a runtime value inside a conditional
+pass	a conjunction of two float compares preserves NaN-false through the connective fold
 pass	a consistent annotation type-checks against the inferred type
 pass	a const collection recursively folded is rejected, not compiled to an infinite loop
 pass	a const parameter rejects an argument that depends on runtime data
@@ -649,6 +650,7 @@ pass	a do-sequence of unit-returning performs runs each for effect, then yields 
 pass	a dotted nullary arm whose body nests a same-type sum match dispatches correctly
 pass	a double same-dimension annotation preserves the original scale
 pass	a double-negated condition unwinds to the original selection
+pass	a double-negated float compare unwinds to the compare, preserving NaN-false
 pass	a doubly-nested strength-reduced multiply chains shift into shift
 pass	a doubly-nested tuple map key containing a rope is found by its flat twin
 pass	a duplicate NESTED-CONSTRUCTOR arm is dead code but the program still runs
@@ -2124,6 +2126,7 @@ pass	an if returning false/true folds to the negation of a runtime condition
 pass	an if returning true/false folds to the runtime condition itself
 pass	an if whose untaken arm would trap keeps the branch (no select of checked arith)
 pass	an if with a narrow branch and a bare-literal branch computes at the narrow width
+pass	an if with identical branches folds even when the condition is a NaN-false float compare
 pass	an if with identical branches folds to the branch when the condition is trap-free
 pass	an if with identical branches still evaluates a TRAPPING condition
 pass	an if-operand arithmetic op with deferred-width branches is Int64, and its wide result is correct
