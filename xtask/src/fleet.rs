@@ -884,20 +884,30 @@ fn status(fleet: &Fleet) {
     if let Some(n) = trunk_clobber_count(&fleet.repo, 40)
         && n > 0
     {
-        let ahead = trunk_om.map(|(a, _)| a).unwrap_or(1);
-        if ahead == 0 {
-            println!(
+        // Only trunk being DEMONSTRABLY ahead (Some(ahead > 0)) proves the reset self-recovered and
+        // downgrades to the quiet note. `None` (couldn't compare — origin/main unresolved) must NOT be
+        // read as "ahead" (PR #463): that would suppress the warning on the very state we can't verify.
+        // So warn LOUDLY unless we can prove trunk is ahead: Some(0) = regression in effect;
+        // None = can't tell, still surface it.
+        match trunk_om {
+            Some((ahead, _)) if ahead > 0 => println!(
+                "  · trunk: {n} `reset: moving to origin/main` in the recent reflog, but trunk is ahead \
+                 again (self-recovered — pr-sync's in-place publish re-parent; prefer the scratch-worktree \
+                 form so the ref never regresses)."
+            ),
+            Some(_) => println!(
                 "  ⚠ trunk REGRESSED: {n} `reset: moving to origin/main` in the last 40 reflog entries \
                  AND trunk is not ahead of origin/main — a backward reset is currently IN EFFECT. This \
                  is pr-sync's publish re-parent resetting the trunk ref in-place; it should re-parent \
                  in a SCRATCH worktree (pr-sync.md step 3) so trunk only moves forward."
-            );
-        } else {
-            println!(
-                "  · trunk: {n} `reset: moving to origin/main` in the recent reflog, but trunk is ahead \
-                 again (self-recovered — pr-sync's in-place publish re-parent; prefer the scratch-worktree \
-                 form so the ref never regresses)."
-            );
+            ),
+            None => println!(
+                "  ⚠ trunk: {n} `reset: moving to origin/main` in the last 40 reflog entries, and \
+                 trunk-vs-origin/main could NOT be compared (origin/main unresolved) — can't confirm \
+                 it self-recovered. Check `git rev-list --left-right --count origin/main...trunk`; if \
+                 trunk is behind, it's a live regression (pr-sync's in-place publish re-parent — should \
+                 use the scratch-worktree form, pr-sync.md step 3)."
+            ),
         }
     }
 }
