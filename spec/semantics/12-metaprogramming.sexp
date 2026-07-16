@@ -1226,6 +1226,24 @@
   (input  (let ((xs (list (Ast.Int 7) (Ast.Int 8)))) `(f ,@xs)))
   (output (: (Ast.List (list (Ast.Name "f") (Ast.Int 7) (Ast.Int 8))) Ast)))
 
+(case "unquote-splicing a list with a RUNTIME Ast element splices it by identity at runtime"
+  (doc    "The identity splice arm works at RUNTIME, not only for constants: a fixed-length list whose
+           element is a runtime-built `Ast` node (`(Ast.Int n)` with n a boundary parameter) splices
+           each element as-is. `(main n) = `(f ,@(list (Ast.Int n) (Ast.Int 8)))` then reads back child
+           1's Int payload — with n=5 the spliced node is `(Ast.Int 5)`, so the payload is 5. Exercises
+           the runtime path (the module carries a real value-heap build, not a folded constant), pinning
+           that the `(List Ast)` identity does not require compile-time-constant elements.")
+  (input  (do
+            (def (main (: n Int64))
+              (match (quasiquote (f (unquote-splicing (list (Ast.Int n) (Ast.Int 8)))))
+                ((Ast.List ys) (match (List.at ys 1)
+                                 ((Option.Some (Ast.Int v)) v)
+                                 (_ 0)))
+                (_ 0)))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 5 Int64)))
+
 (case "unquote-splicing a list of nested lists declines — no scalar leaf to lift into"
   (doc    "The splice-lift wraps a scalar element in its matching `Ast` leaf (or splices an `Ast` element
            by identity); a NESTED-list element is neither a scalar nor an `Ast`, so the splice declines

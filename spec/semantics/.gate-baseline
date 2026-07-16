@@ -3429,6 +3429,7 @@ pass	unquote outside quasiquote is a syntax error
 pass	unquote with more than one operand inside a quasiquote is malformed
 pass	unquote-splicing a list of Ast values splices by identity
 pass	unquote-splicing a list of nested lists declines — no scalar leaf to lift into
+pass	unquote-splicing a list with a RUNTIME Ast element splices it by identity at runtime
 pass	unquote-splicing lifts a boolean list to Ast.Bool leaves
 pass	unquote-splicing lifts a float list to Ast.Float leaves
 pass	unquote-splicing lifts a string list to Ast.Str leaves
