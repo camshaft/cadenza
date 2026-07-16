@@ -262,6 +262,10 @@ jobs:
           # splice, offset conversion, share round-trip, calculator classify, chapter-registry sync)
           # fails the merge here before the slower jco example run.
           npm run test:unit
+          # Lint the guide PROSE for invented @annotations (the run-every-example harness only validates
+          # <Runnable> code; a fake API named in prose — like the property-testing @property that once
+          # shipped — would otherwise slip). Fast text scan, no wasm.
+          npm run check:prose
           npm run check:examples
           npm run check:calculator
           npm run build
