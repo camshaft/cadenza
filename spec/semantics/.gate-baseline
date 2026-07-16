@@ -3299,6 +3299,7 @@ pass	the widening carries a full-width magnitude through BigInt
 pass	the width-indexed and aliased annotations of one value do not conflict
 pass	the width-indexed and aliased float annotations of one value do not conflict
 pass	the wrapping additive and multiplicative identities preserve a boundary operand exactly
+pass	the wrapping identities preserve a runtime narrow UInt8 exactly (add 0, mul 1)
 pass	the λ-extended kernel Thm stays unforgeable — Thm.Seq with an Abs term outside is CDZ0214
 pass	the ∀-extended kernel Thm stays unforgeable — Thm.Seq of a bogus universal outside is CDZ0214
 pass	three closures with a SHARED signature cross as two resource types

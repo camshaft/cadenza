@@ -2201,6 +2201,21 @@
   (call   main (: -128 Int8)) (output (: 127 Int8))
   (call   main (: 5 Int8)) (output (: 4 Int8)))
 
+(case "the wrapping identities preserve a runtime narrow UInt8 exactly (add 0, mul 1)"
+  (doc    "The KEEPING identities hold at narrow width too: `(UInt8.wrapping-add x 0)` and
+           `(UInt8.wrapping-mul x 1)` both RETURN the operand `x` unchanged, for a runtime UInt8. Checked at
+           `x = 200` (a value with the high bit set, where a fold that re-derived the result by masking or
+           sign-handling could corrupt it): `(= (wrapping-add x 0) x)` AND `(= (wrapping-mul x 1) x)` both
+           hold → 1. Pins the additive/multiplicative no-op identities preserve a runtime narrow operand
+           exactly (the UInt8 companion of the Int64 keeping-identities `x + 0`/`x << 0` above) — an
+           identity fold must return the operand, not a width-re-derived value, both backends.")
+  (input  (do
+            (def (a0 (: x UInt8)) (UInt8.wrapping-add x 0))
+            (def (m1 (: x UInt8)) (UInt8.wrapping-mul x 1))
+            (def (main (: x UInt8)) (if (and (= (a0 x) x) (= (m1 x) x)) 1 0))
+            (export main)))
+  (call   main (: 200 UInt8)) (output (: 1 Int64)))
+
 ; The runtime narrow-wrap cases above wrap modulo the TYPE's width. Their CONSTANT-fold twins must give the
 ; IDENTICAL result — a wrapping op has a defined modular outcome regardless of whether its operands are
 ; constant. A narrow-width const-fold that reused the trapping/checked width-fit gate would REJECT CDZ0302

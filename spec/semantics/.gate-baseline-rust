@@ -1528,6 +1528,7 @@ pass	a string literal payload refines a ctor list element
 pass	a string passed to a function as a runtime argument is measured by its byte length
 pass	a string spelled like a keyword round-trips as an Ast.Str, not an Ast.Bool or Ast.Name
 pass	a string-literal pattern in a match selects by string equality, distinguishing Unicode
+pass	a string-literal pattern over a symbol scrutinee is a type error
 pass	a success `?` observes an earlier trapping let-init so the trap is not elided
 pass	a success `?` then a failure `?` short-circuits at the second
 pass	a suffixed BigInt literal annotated as Int64 is a type mismatch
@@ -1562,6 +1563,7 @@ pass	a symbol-literal match agrees with the equivalent if-(= s lit) chain
 pass	a symbol-literal match reaches the second arm by content
 pass	a symbol-literal pattern nested in a variant payload matches by content
 pass	a symbol-literal pattern over a multi-byte symbol matches by content
+pass	a symbol-literal pattern over a string scrutinee is a type error
 pass	a tag-length-value record round-trips through construct then match
 pass	a tagged template expands via its binding-dispatched tag function
 pass	a tagged template nested in another's hole composes — the inner's result reaches the outer tag
@@ -2723,6 +2725,7 @@ pass	the widening carries a full-width magnitude through BigInt
 pass	the width-indexed and aliased annotations of one value do not conflict
 pass	the width-indexed and aliased float annotations of one value do not conflict
 pass	the wrapping additive and multiplicative identities preserve a boundary operand exactly
+pass	the wrapping identities preserve a runtime narrow UInt8 exactly (add 0, mul 1)
 pass	three leaf variants in one quoted form each dispatch their own tag
 pass	three sums in a tuple bind three distinct payloads
 pass	triple negation of a runtime boolean is a single negation
