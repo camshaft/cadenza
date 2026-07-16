@@ -46,15 +46,13 @@ def tag(t: Ty) = match t with
 /// Structural type equality.
 def teq(a: Ty, b: Ty) = tag(a) == tag(b)
 
-/// Type-check `e`, threading `Result` and short-circuiting to the first error.
-///
-/// ⚠ STRUCTURE NOTE: the binary and `if` rules are INLINED into this ONE self-recursive `check` rather
-/// than factored into `check-bin`/`check-if` helpers. Factoring them into a MUTUALLY-recursive helper
-/// whose `if` condition is a CALL (`if teq(ct, TBool) then …`) gating a nested recursive `match check(…)`
-/// declines "parameter reference has no local slot" at emit (a backend slot-allocation bug — `cdz check`
-/// clean, `cdz compile` declines; see `mlrepro-decline-mutual-helper-call-in-if-cond-no-local-slot.cdz` (queue)).
-/// Inlining (self-recursion) sidesteps it. The `if teq(...)` guards here compile because `check` is
-/// self-recursive, not mutually-recursive with the guard's caller.
+/// Type-check `e`, threading `Result` and short-circuiting to the first error. Each rule is factored into
+/// its own MUTUALLY-recursive helper (`check-if`, `check-both`, …) — the ideal form: one arm per rule,
+/// dispatching to a named rule. This shape was WITHHELD (a `check-if` helper whose `if teq(ct, TBool)`
+/// condition gates a nested recursive `match check(…)` used to decline "parameter reference has no local
+/// slot" at emit — a backend slot-allocation bug, `cdz check` clean but `cdz compile` declined). That seed
+/// bug is now RESOLVED (queue: mlrepro-decline-mutual-helper-call-in-if-cond-no-local-slot), so the rules
+/// are factored out and `check` is a clean dispatch.
 def check(e: Exp) = match e with
   | Exp.Num(_) => Result.Ok(TInt)
   | Exp.Boolean(_) => Result.Ok(TBool)
@@ -65,18 +63,26 @@ def check(e: Exp) = match e with
   | Exp.Eq(l, r) => check-bin2(l, r, 2, TBool)
   | Exp.And(l, r) => check-bool2(l, r)
   | Exp.Or(l, r) => check-bool2(l, r)
-  | Exp.Not(x) => (match check(x) with
-    | Result.Ok(tx) => (if teq(tx, TBool) then Result.Ok(TBool) else Result.Err(TypeError.Mismatch(3)))
-    | Result.Err(er) => Result.Err(er))
-  | Exp.If(c, t, f) => (match check(c) with
-    | Result.Ok(ct) => (if teq(ct, TBool) then
-        (match check(t) with
-          | Result.Ok(tt) => (match check(f) with
-            | Result.Ok(tf) => (if teq(tt, tf) then Result.Ok(tt) else Result.Err(TypeError.Mismatch(5)))
-            | Result.Err(ef) => Result.Err(ef))
-          | Result.Err(et) => Result.Err(et))
-      else Result.Err(TypeError.Mismatch(4)))
-    | Result.Err(ec) => Result.Err(ec))
+  | Exp.Not(x) => check-not(x)
+  | Exp.If(c, t, f) => check-if(c, t, f)
+
+/// `Not` rule: operand must be Bool, result Bool (error code 3, logic).
+def check-not(x: Exp) = match check(x) with
+  | Result.Ok(tx) => (if teq(tx, TBool) then Result.Ok(TBool) else Result.Err(TypeError.Mismatch(3)))
+  | Result.Err(er) => Result.Err(er)
+
+/// `If` rule: a Bool condition (else Mismatch(4)) and two branches of the SAME type (else Mismatch(5)),
+/// which becomes the `If`'s type. The mutually-recursive helper whose `if teq(...)` condition gates a
+/// nested `match check(…)` — the shape the slot bug once declined, now compiling.
+def check-if(c: Exp, t: Exp, f: Exp) = match check(c) with
+  | Result.Ok(ct) => (if teq(ct, TBool) then
+      (match check(t) with
+        | Result.Ok(tt) => (match check(f) with
+          | Result.Ok(tf) => (if teq(tt, tf) then Result.Ok(tt) else Result.Err(TypeError.Mismatch(5)))
+          | Result.Err(ef) => Result.Err(ef))
+        | Result.Err(et) => Result.Err(et))
+    else Result.Err(TypeError.Mismatch(4)))
+  | Result.Err(ec) => Result.Err(ec)
 
 /// Both operands must have `want`; result `res`, error `code`. Compares types via `tag` (a top-level
 /// nullary match) rather than a NESTED nullary match — the latter runs correctly but draws spurious
