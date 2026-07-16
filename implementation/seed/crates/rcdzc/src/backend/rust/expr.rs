@@ -776,6 +776,22 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                 Ok(format!("f64::from_bits({}u64)", d.to_f64_bits()))
             }
         }
+        // A constant NaN float (`Float64.nan`/`(. Float64 nan)`) → Rust's `f64::NAN`/`f32::NAN` by width.
+        // A NaN is a valid float value (the render path handles it: `is_nan()` → the `NaN` text form), so
+        // this is the NaN sibling of the `ConstFloat` bit-emit above. Rust's `NAN` is a QUIET NaN with the
+        // canonical bit pattern, matching the runtime's canonical-byte NaN — so a `(= nan nan)` canonical
+        // bit-compare agrees across backends. (Width from the node's solved type, like `ConstFloat`.)
+        Core::ConstFloatNan => {
+            let width = match type_of(db, id) {
+                Ty::Float(ft) => ft.ground_width(),
+                _ => crate::ty::DEFAULT_FLOAT_WIDTH,
+            };
+            Ok(if width == 32 {
+                "f32::NAN".to_string()
+            } else {
+                "f64::NAN".to_string()
+            })
+        }
         // A runtime `.wrap` conversion → an `as` cast to the target Rust type. Rust's `as` between
         // integers keeps the low bits and reinterprets at the target sign — bit-identical to
         // `IntValue::wrap_to`, and total (never panics), as `.wrap` requires.
@@ -1376,7 +1392,6 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         // arithmetic explicit trap, whose canonical kind IS `unreachable`.)
         Core::Trap => Ok("panic!(\"unreachable\")".to_string()),
         Core::ConstChar(_)
-        | Core::ConstFloatNan
         // Runtime BigInt (a heap leaf + the runtime `bigint-*` ops) has no native Rust rendering yet —
         // the rust backend would need a Rust bignum runtime. Declines cleanly (a constant BigInt folds
         // and reaches this backend as a `Core::ConstInt`, which emits fine).

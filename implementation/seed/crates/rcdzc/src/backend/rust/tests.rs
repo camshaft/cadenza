@@ -2332,3 +2332,30 @@ fn rustc_roundtrip_float_arithmetic_and_of_int() {
         assert_eq!(out, "1.5");
     }
 }
+
+#[test]
+fn rustc_roundtrip_const_float_nan_emits_and_compares_by_canonical_bits() {
+    // A constant NaN float (`Float64.nan`/`(. Float64 nan)`) → `f64::NAN` (was declined). The emit is the
+    // NaN sibling of the ConstFloat bit-emit.
+    let nan = compile_rust(
+        "(module m (def (f (: n Int64)) (if (= n 0) (Float64.nan) (f (+ n -1)))) (def (mk) (f 1)) (export mk))",
+    );
+    assert!(nan.contains("f64::NAN"), "Float64.nan → f64::NAN:\n{nan}");
+    // e2e: the NaN result renders as the canonical `NaN` text (the driver's Float render handles is_nan()).
+    let driver = "fn main(){ let r = prog::mk(); if r.is_nan() { println!(\"NaN\"); } else { println!(\"{}\", r); } }";
+    if let Some(out) = rustc_run_driver(&nan, driver) {
+        assert_eq!(out, "NaN", "a constant NaN float result renders NaN");
+    }
+    // NaN equality by CANONICAL BYTE FORM: `n = x/x` (NaN when x=0), then `(= n Float64.nan)` — the
+    // canonical-bits compare makes NaN == NaN true (unlike IEEE `==`). c>0 selects the nan-compare arm → 1.
+    let eq = compile_rust(
+        "(module m (def (chk (: c Int64) (: x Float64)) \
+           (let ((n (/ x x))) (if (if (> c 0) (= n (. Float64 nan)) (= n 2.0)) 1 0))) (export chk))",
+    );
+    if let Some(out) = rustc_run(&eq, "chk(1, 0.0)") {
+        assert_eq!(
+            out, "1",
+            "NaN == nan under the canonical byte form (0/0 = NaN)"
+        );
+    }
+}
