@@ -35,6 +35,13 @@ const TRUNK: &str = "trunk";
 /// 100% is unrecoverable (even `/compact` can't submit).
 const CTX_SATURATION_THRESHOLD: u8 = 85;
 
+/// Short recheck window (seconds) for a drain-nudge that DIDN'T stick: if the SAME flagged message is
+/// still unconsumed this long after we auto-nudged, re-nudge (and flag loudly) rather than waiting out
+/// the full `--drain-nudge-grace` anti-churn window. Two ticks of a typical vertical (30m interval is
+/// the outlier; most re-arm on a few-minute cadence) — long enough for the agent to act on the nudge,
+/// short enough that a nudge that landed-but-didn't-act doesn't sit ~8min like v-metaprogramming did.
+const DRAIN_NUDGE_STUCK_GRACE: u64 = 180;
+
 /// One agent's durable row in the manifest. The registry is the source of truth that survives a
 /// reboot; `fleet up` reconstitutes every `Active` agent's worktree + tmux window from these rows.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1967,24 +1974,45 @@ fn watchdog(
             );
             // OPT-IN auto-nudge (`--nudge-drain-stalls`): send the canonical drain instruction to the
             // idle pane so it re-reads its charter + adopts the resolver, self-healing — instead of the
-            // concierge hand-arming each one. Hard-guarded (see `should_nudge_drain_stall`): skips a
-            // context-saturated pane (needs a restart, not a nudge) and rate-limits per agent.
-            let nudged_recently =
-                drain_nudge_age_secs(fleet, &a.name, now).is_some_and(|s| s < drain_nudge_grace);
-            if should_nudge_drain_stall(
+            // concierge hand-arming each one. Hard-guarded (see `decide_drain_nudge`): skips a
+            // context-saturated pane (needs a restart, not a nudge) and rate-limits per agent — with a
+            // SHORT re-nudge window when the SAME message persists (our prior nudge didn't stick).
+            let flagged_id = oldest_inbox_message(fleet, &a.name);
+            let last = last_drain_nudge(fleet, &a.name, now);
+            let action = decide_drain_nudge(
                 nudge_drain_stalls,
                 drain_stall,
                 ctx_pct,
                 CTX_SATURATION_THRESHOLD,
-                nudged_recently,
-            ) {
+                flagged_id.as_deref(),
+                last.as_ref().map(|(id, age)| (id.as_str(), *age)),
+                drain_nudge_grace,
+                DRAIN_NUDGE_STUCK_GRACE,
+            );
+            if action == DrainNudge::Stuck {
+                // A prior auto-nudge didn't stick (same message still unconsumed). Surface it loudly so
+                // the concierge can hand-arm immediately instead of waiting out the full grace.
+                eprintln!(
+                    "  ⚠ '{}' STILL has message '{}' unconsumed after an auto-nudge — the nudge didn't \
+                     STICK. Re-nudging; if it persists again, hand-arm the '{}' pane.",
+                    a.name,
+                    flagged_id.as_deref().unwrap_or("?"),
+                    a.name
+                );
+            }
+            if matches!(action, DrainNudge::Fresh | DrainNudge::Stuck) {
                 if dry_run {
                     println!("  DRY-RUN would auto-nudge '{}' to drain its inbox", a.name);
                 } else if nudge_drain_stall(&session, &a.name) {
-                    stamp_drain_nudge(fleet, &a.name);
+                    stamp_drain_nudge(fleet, &a.name, flagged_id.as_deref().unwrap_or(""));
                     println!(
-                        "  + auto-nudged '{}' to drain its inbox (--nudge-drain-stalls)",
-                        a.name
+                        "  + auto-nudged '{}' to drain its inbox (--nudge-drain-stalls){}",
+                        a.name,
+                        if action == DrainNudge::Stuck {
+                            " [re-nudge: prior didn't stick]"
+                        } else {
+                            ""
+                        }
                     );
                 } else {
                     eprintln!("  ! failed to send drain-nudge keys to '{}'", a.name);
@@ -2297,18 +2325,45 @@ fn stamp_rearm(fleet: &Fleet, name: &str) {
     std::fs::write(dir.join(name), "rearm\n").ok();
 }
 
-/// Age in seconds since we last auto-nudged this agent's drain-stall (mtime of
-/// `.claude/fleet/drain-nudge/<name>`), or `None` if never. Rate-limits the opt-in auto-nudge so a
-/// truly-wedged agent isn't spammed keystrokes every sweep.
-fn drain_nudge_age_secs(fleet: &Fleet, name: &str, now: u64) -> Option<u64> {
-    file_mtime_unix(&fleet.root.join("drain-nudge").join(name)).map(|m| now.saturating_sub(m))
+/// The last auto drain-nudge we sent this agent, as `(flagged-message-id, age-in-secs)`, or `None`
+/// if never nudged. The marker file `.claude/fleet/drain-nudge/<name>` records the id of the OLDEST
+/// unconsumed message at nudge time in its body (mtime = when we nudged). Recording the id lets the
+/// watchdog tell a NEW message churning each tick (the agent IS draining — a different id — healthy,
+/// don't re-nudge) from the SAME message still unconsumed after our nudge (the nudge didn't stick —
+/// re-nudge on a shorter cooldown + flag loudly). An empty id (legacy marker written before ids were
+/// tracked) reads as `""`, which never equals a real filename, so it degrades to the churn path.
+fn last_drain_nudge(fleet: &Fleet, name: &str, now: u64) -> Option<(String, u64)> {
+    let path = fleet.root.join("drain-nudge").join(name);
+    let age = file_mtime_unix(&path).map(|m| now.saturating_sub(m))?;
+    let id = std::fs::read_to_string(&path)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+    Some((id, age))
 }
 
-/// Touch `.claude/fleet/drain-nudge/<name>` to record an auto drain-nudge (for the rate-limit).
-fn stamp_drain_nudge(fleet: &Fleet, name: &str) {
+/// Record an auto drain-nudge: write the flagged message-id to `.claude/fleet/drain-nudge/<name>`
+/// (its mtime is the nudge time). The id is the oldest unconsumed message we saw — a later sweep
+/// compares against it to detect a nudge that didn't stick (same id) vs healthy churn (new id).
+fn stamp_drain_nudge(fleet: &Fleet, name: &str, flagged_id: &str) {
     let dir = fleet.root.join("drain-nudge");
     std::fs::create_dir_all(&dir).ok();
-    std::fs::write(dir.join(name), "drain-nudge\n").ok();
+    std::fs::write(dir.join(name), format!("{flagged_id}\n")).ok();
+}
+
+/// The oldest (by durable delivery seq) unconsumed message filename in this agent's hub inbox, or
+/// `None` if empty. Used as the drain-stall "flagged message id": if the same one persists after a
+/// nudge, the nudge didn't stick; a different one means the agent drained the old one (healthy churn).
+fn oldest_inbox_message(fleet: &Fleet, name: &str) -> Option<String> {
+    let mut names: Vec<String> = std::fs::read_dir(fleet.inbox(name))
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|f| f.ends_with(".json"))
+        .collect();
+    sort_inbox_filenames(&mut names);
+    names.into_iter().next()
 }
 
 /// Age in seconds since the watchdog FIRST saw this (never-heartbeated) agent with a live window
@@ -2389,7 +2444,23 @@ fn is_probable_drain_stall(role: &str, inbox_depth: usize, pane_idle: bool) -> b
     inbox_depth > 0 && pane_idle
 }
 
-/// Whether the watchdog should AUTO-NUDGE a probable drain-stall (only under the opt-in
+/// What the watchdog should do about a probable drain-stall this sweep. Distinguishes a first/fresh
+/// nudge from a re-nudge whose PRIOR nudge didn't stick (same message still unconsumed) — the latter
+/// gets a shorter cooldown AND a louder "auto-nudge failed" line so the concierge can hand-arm it
+/// immediately instead of waiting out the full anti-spam grace.
+#[derive(Debug, PartialEq, Eq)]
+enum DrainNudge {
+    /// Don't nudge (opt-in off, not a stall, saturated, or still within a cooldown).
+    Skip,
+    /// Nudge normally — first nudge, or the flagged message changed (the agent drained the old one;
+    /// this is a fresh/different stall, rate-limited by the full anti-churn grace).
+    Fresh,
+    /// Re-nudge because the SAME message is still unconsumed past the short recheck window — our prior
+    /// nudge didn't land. The caller should also emit a louder "nudge didn't stick" signal.
+    Stuck,
+}
+
+/// Decide the AUTO-NUDGE action for a probable drain-stall (only under the opt-in
 /// `--nudge-drain-stalls`). Pure so the guard combination is unit-tested — auto-sending keystrokes to
 /// panes is the highest-risk watchdog action, so every guard is explicit here:
 ///   * `nudge_enabled` — the opt-in flag (default OFF; report-only unless the operator sets it).
@@ -2397,22 +2468,57 @@ fn is_probable_drain_stall(role: &str, inbox_depth: usize, pane_idle: bool) -> b
 ///   * NOT context-saturated — a `>=` saturation-threshold pane needs a RESTART, not a nudge (a nudge
 ///     can't help a session that can't submit); those are report-only, never nudged. `ctx_pct` None
 ///     (no marker) is treated as NOT saturated (safe to nudge).
-///   * NOT rate-limited — `nudged_recently` (a per-agent marker within N ticks) suppresses re-nudging
-///     so a truly-wedged agent isn't spammed keystrokes every sweep.
+///
+/// The two-cooldown logic (the concierge's refinement — v-metaprogramming sat ~8min because a nudge
+/// that didn't stick was suppressed by the single 15-min grace): compare the currently-flagged message
+/// id against the one we last nudged for.
+///   * SAME id → our nudge didn't stick. Suppress only within the SHORT `stuck_grace` (give it a tick
+///     or two to act), then re-nudge (`Stuck`) rather than waiting out the full grace.
+///   * DIFFERENT id (or never nudged) → the agent drained what we last nudged; this is a fresh stall
+///     (or possibly healthy churn — a new message that drains next tick). Rate-limit by the FULL
+///     `churn_grace` so a churning inbox isn't nudged every sweep, then `Fresh`.
 ///
 /// The pane-idle + role-exempt conditions are already folded into `is_drain_stall`.
-fn should_nudge_drain_stall(
+#[allow(clippy::too_many_arguments)]
+fn decide_drain_nudge(
     nudge_enabled: bool,
     is_drain_stall: bool,
     ctx_pct: Option<u8>,
     saturation_threshold: u8,
-    nudged_recently: bool,
-) -> bool {
-    if !nudge_enabled || !is_drain_stall || nudged_recently {
-        return false;
+    flagged_id: Option<&str>,
+    last_nudge: Option<(&str, u64)>,
+    churn_grace: u64,
+    stuck_grace: u64,
+) -> DrainNudge {
+    if !nudge_enabled || !is_drain_stall {
+        return DrainNudge::Skip;
     }
     // A saturated pane can't act on a nudge — leave it for a restart (report-only).
-    !matches!(ctx_pct, Some(p) if p >= saturation_threshold)
+    if matches!(ctx_pct, Some(p) if p >= saturation_threshold) {
+        return DrainNudge::Skip;
+    }
+    match last_nudge {
+        // Never nudged this agent → fresh nudge.
+        None => DrainNudge::Fresh,
+        Some((prev_id, age)) => {
+            let same_message = flagged_id.is_some_and(|id| id == prev_id) && !prev_id.is_empty();
+            if same_message {
+                // Prior nudge didn't stick. Suppress only briefly, then re-nudge loudly.
+                if age < stuck_grace {
+                    DrainNudge::Skip
+                } else {
+                    DrainNudge::Stuck
+                }
+            } else {
+                // Different (or unknown) message — healthy churn / fresh stall. Full anti-spam grace.
+                if age < churn_grace {
+                    DrainNudge::Skip
+                } else {
+                    DrainNudge::Fresh
+                }
+            }
+        }
+    }
 }
 
 /// Capture an agent's visible tmux pane text (no scrollback), or `None` if tmux errors / the window is
@@ -4374,21 +4480,79 @@ mod tests {
     }
 
     #[test]
-    fn should_nudge_drain_stall_is_hard_guarded() {
-        // Happy path: enabled + is-a-stall + not saturated + not recently nudged → nudge.
-        assert!(should_nudge_drain_stall(true, true, None, 95, false));
-        assert!(should_nudge_drain_stall(true, true, Some(40), 95, false));
+    fn decide_drain_nudge_is_hard_guarded() {
+        // churn_grace = 900, stuck_grace = 180 (representative of the real constants).
+        let (cg, sg) = (900u64, 180u64);
+        // Happy path: enabled + is-a-stall + not saturated + never nudged → fresh nudge.
+        assert_eq!(
+            decide_drain_nudge(true, true, None, 95, Some("m1"), None, cg, sg),
+            DrainNudge::Fresh
+        );
+        assert_eq!(
+            decide_drain_nudge(true, true, Some(40), 95, Some("m1"), None, cg, sg),
+            DrainNudge::Fresh
+        );
         // Opt-in OFF (default) → never nudge, whatever else holds (report-only).
-        assert!(!should_nudge_drain_stall(false, true, None, 95, false));
+        assert_eq!(
+            decide_drain_nudge(false, true, None, 95, Some("m1"), None, cg, sg),
+            DrainNudge::Skip
+        );
         // Not actually a drain-stall → nothing to nudge.
-        assert!(!should_nudge_drain_stall(true, false, None, 95, false));
+        assert_eq!(
+            decide_drain_nudge(true, false, None, 95, Some("m1"), None, cg, sg),
+            DrainNudge::Skip
+        );
         // Context-saturated (>= threshold) → needs a RESTART, not a nudge; skip.
-        assert!(!should_nudge_drain_stall(true, true, Some(95), 95, false));
-        assert!(!should_nudge_drain_stall(true, true, Some(100), 95, false));
+        assert_eq!(
+            decide_drain_nudge(true, true, Some(95), 95, Some("m1"), None, cg, sg),
+            DrainNudge::Skip
+        );
+        assert_eq!(
+            decide_drain_nudge(true, true, Some(100), 95, Some("m1"), None, cg, sg),
+            DrainNudge::Skip
+        );
         // Just below the saturation threshold → still nudge-able.
-        assert!(should_nudge_drain_stall(true, true, Some(94), 95, false));
-        // Rate-limited (nudged recently) → suppress, don't spam.
-        assert!(!should_nudge_drain_stall(true, true, None, 95, true));
+        assert_eq!(
+            decide_drain_nudge(true, true, Some(94), 95, Some("m1"), None, cg, sg),
+            DrainNudge::Fresh
+        );
+    }
+
+    #[test]
+    fn decide_drain_nudge_distinguishes_stuck_from_churn() {
+        let (cg, sg) = (900u64, 180u64);
+        // SAME message still unconsumed, recently nudged (within stuck_grace) → suppress briefly.
+        assert_eq!(
+            decide_drain_nudge(true, true, None, 95, Some("m1"), Some(("m1", 60)), cg, sg),
+            DrainNudge::Skip
+        );
+        // SAME message, past the SHORT stuck window (but well within the full churn grace) → the nudge
+        // didn't stick → re-nudge NOW (this is the v-metaprogramming fix: don't wait out 900s).
+        assert_eq!(
+            decide_drain_nudge(true, true, None, 95, Some("m1"), Some(("m1", 200)), cg, sg),
+            DrainNudge::Stuck
+        );
+        // DIFFERENT message (agent drained the old one, a new one arrived) within churn grace → healthy
+        // churn, DON'T re-nudge (the full anti-spam window applies to a fresh id).
+        assert_eq!(
+            decide_drain_nudge(true, true, None, 95, Some("m2"), Some(("m1", 60)), cg, sg),
+            DrainNudge::Skip
+        );
+        // DIFFERENT message past the churn grace → a genuinely fresh stall → nudge.
+        assert_eq!(
+            decide_drain_nudge(true, true, None, 95, Some("m2"), Some(("m1", 950)), cg, sg),
+            DrainNudge::Fresh
+        );
+        // Legacy marker with an EMPTY recorded id never matches a real filename → treated as churn, not
+        // stuck (degrades safely: full grace, no premature "didn't stick" re-nudge).
+        assert_eq!(
+            decide_drain_nudge(true, true, None, 95, Some("m1"), Some(("", 200)), cg, sg),
+            DrainNudge::Skip
+        );
+        assert_eq!(
+            decide_drain_nudge(true, true, None, 95, Some("m1"), Some(("", 950)), cg, sg),
+            DrainNudge::Fresh
+        );
     }
 
     #[test]
