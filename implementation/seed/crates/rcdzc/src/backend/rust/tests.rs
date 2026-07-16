@@ -3199,3 +3199,73 @@ fn rustc_roundtrip_value_eq_over_bytes_string_and_compounds() {
         assert_eq!(out, "1", "equal chars compare equal");
     }
 }
+
+#[test]
+fn rustc_roundtrip_single_variant_newtype_literal_payload_arm_at_narrow_widths() {
+    // A single-variant newtype matched with a LITERAL-payload arm (`(match (W.Wrap n) ((W.Wrap 0) 100)
+    // ((W.Wrap x) x))`, `W = (Wrap UInt8)`). The newtype tag ERASES (`(W.Wrap n)` → `n`), so `lower`
+    // collapses the switch to a `LitTest` whose probe path `[Payload]` reads the inner value. Before, the
+    // Rust backend did NOT erase the LitTest path (only the switch path was erased) → `emit_sum_payload`
+    // found no bind and declined "sum payload has no bound match arm"; wasm compiled it. The backend now
+    // erases the LitTest path (twin of `erase_nominal_switch_path`) so the empty path reads the scrutinee
+    // value directly, AND `strip_nominal`s the width lookup so the literal compares at the payload's TRUE
+    // width (`== 0u8`, not a hard-coded `i64` → E0308 over the u8 subject). Pins EVERY narrow width flips.
+    for (w, ty, hit, miss) in [
+        ("UInt8", "u8", "0u8", "5"),
+        ("Int32", "i32", "0i32", "5"),
+        ("Int8", "i8", "0i8", "5"),
+        ("Int16", "i16", "0i16", "5"),
+        ("Int64", "i64", "0i64", "5"), // the wide control (always compiled)
+    ] {
+        // The export is `run`, not `main` — `rustc_run` appends its own `fn main`, so an exported `main`
+        // would E0428-collide (the harness's standing rule).
+        let rs = compile_rust(&format!(
+            "(module m (type W (Wrap {w})) \
+               (def (run (: n {w})) (match (W.Wrap n) ((W.Wrap 0) 100) ((W.Wrap x) x))) (export run))"
+        ));
+        assert!(
+            rs.contains(&format!("== {hit}")),
+            "{w}: literal-0 compares at the payload width {hit}, not i64:\n{rs}"
+        );
+        assert!(
+            rs.contains(&format!("n: {ty}")),
+            "{w}: the erased newtype param stays its inner width {ty}:\n{rs}"
+        );
+        // n=0 → 100 (hit), n=5 → 5 (falls through to the binding arm).
+        if let Some(out) = rustc_run(&rs, "run(0)") {
+            assert_eq!(out, "100", "{w}: literal arm hit");
+        }
+        if let Some(out) = rustc_run(&rs, &format!("run({miss})")) {
+            assert_eq!(out, "5", "{w}: falls through to the binding arm");
+        }
+    }
+
+    // A LIST-ELEMENT literal-payload probe (`(list (W.Wrap 5) .. r)`) still DECLINES: a narrow list element
+    // is stored WIDENED to its i64 cell, so a width-keyed literal compare against `(xs)[0]` (i64) would
+    // mismatch (E0308) — reconciling that is the ListNew narrow-element-width slice. Sound todo, not a
+    // miscompile. The declining LitTest scrutinee is a `SumPayload` reading the list element.
+    let list_elem = try_compile_rust(
+        "(module m (type W (Wrap UInt8)) \
+           (def (main) (let ((xs (list (W.Wrap 5) (W.Wrap 7)))) \
+             (match xs ((list (W.Wrap 5) .. r) (List.len xs)) (_ 0)))) (export main))",
+    );
+    assert!(
+        list_elem.is_err(),
+        "a narrow-newtype literal LIST element still declines (i64 cell vs narrow literal):\n{list_elem:?}"
+    );
+
+    // A TUPLE element preserves its width (tuples are not widened), so a narrow-newtype tuple-element
+    // literal probe compiles: `(match (tuple (W.Wrap n) 9) ((tuple (W.Wrap 0) b) 100) (_ 5))`.
+    let tup = compile_rust(
+        "(module m (type W (Wrap UInt8)) \
+           (def (run (: n UInt8)) (match (tuple (W.Wrap n) 9) ((tuple (W.Wrap 0) b) 100) (_ 5))) \
+           (export run))",
+    );
+    assert!(
+        tup.contains("== 0u8"),
+        "a tuple-element narrow-newtype literal compares at u8:\n{tup}"
+    );
+    if let Some(out) = rustc_run(&tup, "run(0)") {
+        assert_eq!(out, "100", "tuple-element literal arm hit");
+    }
+}
