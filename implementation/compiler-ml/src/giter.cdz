@@ -1,0 +1,148 @@
+/// giter.cdz — a GENERIC (`∀a`) lazy pull-iterator, the element-polymorphic companion to the
+/// monomorphic-Int64 `iter.cdz`. This module exists because the recursive-generic PRODUCER element tie
+/// (a `List(a) -> GIter(a)` producer whose result element must tie to its argument) was the long-standing
+/// inference gap that pinned `iter.cdz` to `Int64`; that gap is now RESOLVED upstream (rcdzc "tie a
+/// recursive-generic producer's result element to its argument — Part C, rigid param vars"), verified here
+/// by a producer composed with a consumer at TWO distinct element types in one program (Int64 AND String —
+/// see `from-list-composes-at-two-element-types` / `collect-instantiates-at-two-types`).
+///
+/// ENCODING — a recursive CONS-CELL sum (`Nil | Cons(a, GIter(a))`), NOT the reified sum-of-step-shapes
+/// `iter.cdz` uses. The two encodings differ on purpose:
+///   - `iter.cdz` (mono-Int64) reifies each transformer as a step-shape variant that STORES A CLOSURE over
+///     the element (`MapI((Int64 -> Int64), Iter)`, …). That is what lets it be lazy without a thunk.
+///   - `giter.cdz` (generic) uses the cons-cell recursion because THAT is the shape the Part C tie
+///     unblocks: the producer `from-list` recurses through `Cons`, threading the element `h : a` into
+///     `Cons(h, from-list(t))`, so the result element ties to the argument element and the whole thing
+///     monomorphizes independently per element type. A `FromList(List(a))` wrapper (no self-recursion in
+///     the producer) does NOT tie the element and still declines CDZ0201 — verified — so the cons-cell
+///     form is the correct generic encoding today.
+/// `next` is still the pull interface (`GIter(a) -> Option((a, GIter(a)))`), total (never traps) and pure
+/// (re-stepping yields the same element); the cons-cell IS the reified rest, so `next` just projects it.
+///
+/// SCOPE (slice 1). This first generic slice lands the ELEMENT-CARRYING producers (`from-list`,
+/// `singleton`) + `next` + the closure-free generic consumers (`count`, `collect`). Transformers that store
+/// a closure over the element (`map`/`filter`) are a FOLLOW-UP slice. Element-CHANGING
+/// `map : GIter(a) -> (a -> b) -> GIter(b)` is deferred: the second type variable `b` cannot be written in
+/// an annotation (the ML surface has no `∀`-binder in a type annotation —
+/// `mlrepro-reject-user-generic-type-var-in-annotation`), so it needs an unannotated spelling that infers
+/// `b` or an explicit `Type` parameter; scoped as follow-up.
+///
+/// TWO KNOWN GAPS this slice deliberately steers around (both filed, both NOT Part C):
+///   - NULLARY generic producer (`empty : Unit -> GIter(a)`): its element is never tied to anything, so a
+///     use that does not constrain `a` (e.g. `count(empty())`) declines CDZ0201 — and, worse, an
+///     unconstrained `from-list([])` COMPILES but MISCOMPILES at run time. See
+///     `mlrepro-nullary-generic-producer-element-undetermined.cdz` (queue). So this module offers NO
+///     `empty`/`is-empty` yet; a real caller fixes the element in context (`chain(empty(), from-list([1]))`)
+///     — that sound usage lands with `chain` in a follow-up once the nullary gap is addressed.
+///   - MUTUALLY-recursive generic producer GROUP still declines (no shared substitution across the group —
+///     v-inference's stated caveat). Every producer/consumer here is SELF-recursive, the shape Part C
+///     fixed. Do not add a mutually-recursive generic producer pair without re-checking with v-inference.
+
+/// The generic pull-iterator as a recursive cons cell.
+///   - `Nil`         — exhausted (the empty iterator).
+///   - `Cons(h, rest)` — yield `h : a`, then continue with `rest : GIter(a)`.
+type GIter =
+  | Nil
+  | Cons(a, GIter(a))
+
+/// PRODUCERS ------------------------------------------------------------------------------------------
+
+/// `from-list(xs)` — the base generic producer: an iterator over the elements of `xs : List(a)`, in order.
+/// SELF-RECURSIVE through `Cons`, so the result element ties to the argument element (the Part C tie) — it
+/// composes at more than one element type in a single program (the capability this module demonstrates).
+def from-list(xs) = match xs with
+  | [] => GIter.Nil(unit)
+  | [h, .. t] => GIter.Cons(h, from-list(t))
+
+/// `singleton(x)` — an iterator yielding exactly `x`, then exhausted. The element is carried by `x`, so
+/// `a` is always determined (unlike a nullary `empty()` — see the header's KNOWN GAPS).
+def singleton(x) = GIter.Cons(x, GIter.Nil(unit))
+
+/// THE PULL INTERFACE ---------------------------------------------------------------------------------
+
+/// Step once: yield `Option((element, rest))` — `None` at exhaustion, never a trap. Total and pure; a
+/// re-step of the same `GIter(a)` yields the same element (the cons cell is immutable). The element is `a`;
+/// the rest is a `GIter(a)`, so a consumer drives the pull by threading `rest`. (The cons cell already IS
+/// the reified rest, so `next` just projects the head and tail.)
+def next(it) = match it with
+  | GIter.Nil(_) => Option.None(unit)
+  | GIter.Cons(h, rest) => Option.Some((h, rest))
+
+/// CONSUMERS (closure-free — the shape Part C directly unblocks) ---------------------------------------
+
+/// `count(it)` — the number of elements the iterator yields. Self-recursive generic consumer: drives the
+/// pull to exhaustion, adding one per element. Generic in the element type (it inspects only the shape).
+def count(it) = match it with
+  | GIter.Nil(_) => 0
+  | GIter.Cons(_, rest) => 1 + count(rest)
+
+/// `collect(it)` — materialize the remaining elements as a `List(a)`, in pull order. The generic inverse of
+/// `from-list` (`collect(from-list(xs)) == xs`). Self-recursive; ties the produced list's element to the
+/// iterator's element.
+def collect(it) = match it with
+  | GIter.Nil(_) => []
+  | GIter.Cons(h, rest) => List.concat([h], collect(rest))
+
+/// TESTS ----------------------------------------------------------------------------------------------
+
+/// Local monomorphic list-equalities (one per element type) — kept monomorphic so the tests exercise the
+/// GENERIC producer/consumer composition, not a generic comparison (a generic recursive equality is its own
+/// tie question, out of scope for this slice).
+def int-list-eq(xs, ys) = match xs with
+  | [] => (match ys with | [] => true | _ => false)
+  | [x, .. xr] => (match ys with
+    | [] => false
+    | [y, .. yr] => if x == y then int-list-eq(xr, yr) else false)
+
+def str-list-eq(xs, ys) = match xs with
+  | [] => (match ys with | [] => true | _ => false)
+  | [x, .. xr] => (match ys with
+    | [] => false
+    | [y, .. yr] => if x == y then str-list-eq(xr, yr) else false)
+
+/// THE headline test: a recursive-generic PRODUCER composed with a generic CONSUMER at TWO distinct
+/// element types in ONE program. This exact shape declined with CDZ0201 before the Part C fix.
+@test
+def from-list-composes-at-two-element-types() =
+  if count(from-list([1, 2, 3])) + count(from-list(["a", "bb"])) == 5
+  then unit else trap("generic producer must compose at Int64 AND String in one program")
+
+@test
+def collect-is-inverse-of-from-list-ints() =
+  if int-list-eq(collect(from-list([10, 20, 30])), [10, 20, 30])
+  then unit else trap("collect . from-list == id (Int64)")
+
+@test
+def collect-is-inverse-of-from-list-strings() =
+  if str-list-eq(collect(from-list(["x", "y"])), ["x", "y"])
+  then unit else trap("collect . from-list == id (String)")
+
+/// Pins that the SAME generic consumer (`collect`) instantiates at two element types in one program — the
+/// consumer companion of the producer-tie headline (both stress per-element-type monomorphization).
+@test
+def collect-instantiates-at-two-types() =
+  if int-list-eq(collect(from-list([1, 2])), [1, 2])
+  then (if str-list-eq(collect(from-list(["a"])), ["a"])
+        then unit else trap("generic consumer at String"))
+  else trap("generic consumer at Int64")
+
+@test
+def singleton-yields-one() =
+  if count(singleton("only")) == 1 then unit else trap("singleton count")
+
+/// An empty SOURCE whose element is fixed by the OTHER branch of the comparison — `from-list([1])` in the
+/// first arm pins `a = Int64`, so `collect(from-list([]))` here is unambiguous (not the nullary gap).
+@test
+def empty-int-source-collects-empty() =
+  if int-list-eq(collect(from-list([1])), [1])
+  then (if count(from-list([2, 3])) == 2 then unit else trap("nonempty count"))
+  else trap("collect singleton int")
+
+@test
+def next-yields-head-then-rest() =
+  match next(from-list([42, 43])) with
+  | Option.None(_) => trap("next of non-empty must be Some")
+  | Option.Some(p) => (match p with | (h, rest) =>
+    if h == 42 then (if count(rest) == 1 then unit else trap("rest length")) else trap("head value"))
+
+export { GIter.* }

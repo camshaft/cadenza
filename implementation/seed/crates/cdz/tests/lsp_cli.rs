@@ -150,6 +150,8 @@ fn lsp_session_handshake_diagnostics_and_every_capability() {
         "completionProvider",
         "documentSymbolProvider",
         "semanticTokensProvider",
+        "codeActionProvider",
+        "codeLensProvider",
     ] {
         assert!(
             caps.get(cap).is_some(),
@@ -434,6 +436,43 @@ fn lsp_untitled_buffer_with_imports_degrades_to_single_buffer_not_a_package_load
             .and_then(|m| m.as_str())
             .is_some_and(|m| m.contains("helper") || m.contains("import"))),
         "an untitled buffer's unfollowed import should surface a single-buffer diagnostic: {opened:?}"
+    );
+}
+
+#[test]
+fn lsp_code_lens_lists_a_specialized_generics_instances() {
+    // End-to-end: textDocument/codeLens over a program with a recursive generic (`loopn`, specialized at
+    // Int64 and String) returns one lens whose title names both monomorphizations — the Instantiations
+    // query surfaced as an editor CodeLens (a fact no other tool shows).
+    let uri = "file:///t.sexp";
+    let program = "(do (def (loopn (: n Int64) x) (if (= n 0) x (loopn (- n 1) x))) \
+                   (def (main (: a Int64)) (+ (loopn 3 a) (String.scalar-len (loopn 2 \"hi\")))))";
+    let msgs = drive_messages(&[
+        serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{},"processId":null,"rootUri":null}}),
+        serde_json::json!({"jsonrpc":"2.0","method":"initialized","params":{}}),
+        serde_json::json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":uri,"languageId":"cadenza","version":1,"text":program}}}),
+        serde_json::json!({"jsonrpc":"2.0","id":10,"method":"textDocument/codeLens","params":{"textDocument":{"uri":uri}}}),
+        serde_json::json!({"jsonrpc":"2.0","id":99,"method":"shutdown","params":null}),
+        serde_json::json!({"jsonrpc":"2.0","method":"exit","params":null}),
+    ]);
+    let resp = response(&msgs, 10).expect("a codeLens response");
+    let lenses = resp
+        .pointer("/result")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(
+        lenses.len(),
+        1,
+        "one lens (on the specialized `loopn`): {lenses:?}"
+    );
+    let title = lenses[0]
+        .pointer("/command/title")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    assert!(
+        title.contains("x: Int64") && title.contains("x: String"),
+        "the lens title should name both monomorphizations, got {title:?}"
     );
 }
 

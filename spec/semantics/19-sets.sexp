@@ -658,3 +658,27 @@
             (export main)))
   (call   main (: 2.5 Float64))
   (output (: 1 Int64)))
+
+(case "a Float VALUE inserted into an empty (runtime) map boxes with box-float, not box-int"
+  (doc    "The Map-VALUE twin of the empty-set float box case above: `Map.insert Map.empty 1 x` with a
+           runtime `x : Float64` into an empty map (undetermined value type) — the value box op must come
+           from `x`'s node type (`box-float`), imported to match the emit; before the collector used
+           `box_op_for` for the value it grounded the `Var` value type to `box-int` → un-imported
+           `box-float` → invalid wasm. One entry → `Map.len` = 1.")
+  (input  (do
+            (def (main (: d Float64))
+              (Map.len (Map.insert (Map.empty) 1 d)))
+            (export main)))
+  (call   main (: 2.5 Float64))
+  (output (: 1 Int64)))
+
+(case "a Float KEY inserted into an empty (runtime) map boxes with box-float, not box-int"
+  (doc    "The Map-KEY twin: `Map.insert Map.empty x 1` with a runtime `x : Float64` key into an empty map
+           (undetermined key type) — the key box op comes from `x`'s node type (`box-float`), imported to
+           match the emit (the same node-aware `box_op_for` collector fix). One entry → `Map.len` = 1.")
+  (input  (do
+            (def (main (: d Float64))
+              (Map.len (Map.insert (Map.empty) d 1)))
+            (export main)))
+  (call   main (: 3.5 Float64))
+  (output (: 1 Int64)))

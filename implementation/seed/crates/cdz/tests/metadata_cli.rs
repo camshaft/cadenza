@@ -169,6 +169,38 @@ fn metadata_a_named_manifest_that_does_not_exist_errors() {
 }
 
 #[test]
+fn metadata_artifacts_is_empty_before_build_and_lists_outputs_after() {
+    // The `artifacts` field reports the build OUTPUTS present in the manifest dir (the same set `cdz clean`
+    // removes) — so a tool can tell whether a project is built without running a build. Empty before a
+    // build; after `cdz build`, it lists the produced `.wasm` + `link-map.txt`.
+    let dir = std::env::temp_dir().join(format!("cdz-metadata-artifacts-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("Project.cdz"), "def entry = \"app.cdz\"\n").unwrap();
+    std::fs::write(
+        dir.join("app.cdz"),
+        "def go() -> Int64 = 0\nexport { go }\n",
+    )
+    .unwrap();
+    // Before building: no artifacts.
+    let (ok, out, err) = run_in(&dir, &["metadata", "."]);
+    assert!(ok, "metadata failed: {err}");
+    let arts = json_array(&out, "artifacts").expect("artifacts present");
+    assert_eq!(arts, "[]", "an un-built project has no artifacts: {arts}");
+    // After building: the component + link-map appear.
+    let (bok, _bo, be) = run_in(&dir, &["build"]);
+    assert!(bok, "build failed: {be}");
+    let (ok2, out2, err2) = run_in(&dir, &["metadata", "."]);
+    assert!(ok2, "metadata after build failed: {err2}");
+    let arts2 = json_array(&out2, "artifacts").expect("artifacts present");
+    assert!(
+        arts2.contains(".wasm") && arts2.contains("link-map.txt"),
+        "artifacts lists the build outputs after a build: {arts2}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn metadata_reports_the_sexpr_surface_for_an_s_expression_entry() {
     // A `.sexp` entry reports the `sexpr` surface — so a consumer picks the s-expression parser.
     let dir = std::env::temp_dir().join(format!("cdz-metadata-sexpr-{}", std::process::id()));

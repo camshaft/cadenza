@@ -3987,3 +3987,64 @@
             (export main)))
   (call   main (: 0 Int64))
   (output (: 7 Int64)))
+
+; --- The recursive-generic element tie: value-flow and composition faces ----------------------------
+; 7793d4841 (Part C) ties a recursive-generic producer's result element to its argument's (the
+; from-list/icount pin counts at two types). These pin the tie carrying VALUES, promoted from
+; passing breaker probes: the produced element must be USABLE at each concrete type, survive
+; producer self-composition, and tie a sum payload — each a face where a loose var would either
+; reject at the second type or mistype the element.
+
+(case "a recursive-generic producer's element is usable at each instantiation"
+  (doc    "`wrap` recursively rebuilds its list; ONE program instantiates it at Int64 and String and
+           READS an element from each: `(List.at (wrap (list 7 8)) 0)` → 7 and `(String.byte-len
+           (List.at (wrap (list \"ab\")) 0))` → 2 → 9. Beyond the landed counting pin: the element
+           value flows at its concrete type through the tied result var (a severed var would type the
+           element Any and reject the byte-len — or worse, mistype it).")
+  (input  (do
+            (def (wrap xs)
+              (match xs
+                ((list) (list))
+                ((list h .. t) (List.concat (List.push (list) h) (wrap t)))))
+            (def (main (: d Int64))
+              (+ (Option.expect (List.at (wrap (list 7 8)) 0) "i")
+                 (String.byte-len (Option.expect (List.at (wrap (list "ab")) 0) "s"))))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 9 Int64)))
+
+(case "the element tie survives producer self-composition"
+  (doc    "`(wrap (wrap xs))` — the producer feeds ITSELF, so the inner instantiation's result
+           element must tie through to the outer's argument, at two types in one program: 7 + 3 = 10.
+           The composition face (an inner tie that grounds too early mono-locks the outer; one that
+           stays loose severs at the seam — the exact failure that kept the iterator library
+           mono-Int64).")
+  (input  (do
+            (def (wrap xs)
+              (match xs
+                ((list) (list))
+                ((list h .. t) (List.concat (List.push (list) h) (wrap t)))))
+            (def (main (: d Int64))
+              (+ (Option.expect (List.at (wrap (wrap (list 7))) 0) "i")
+                 (String.byte-len (Option.expect (List.at (wrap (wrap (list "abc"))) 0) "s"))))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 10 Int64)))
+
+(case "an Option-producing recursive generic ties its payload to the list element"
+  (doc    "`last : List a → Option a` (recursive, the base arm builds None, the singleton arm wraps
+           the element): at Int64 the payload is 2, at String its byte-len is 2 → 4. The sum-payload
+           face of the tie — the produced OPTION's payload var must be the argument's element var
+           through both the recursive arm and the constructor arm (a per-arm freshen severs one).")
+  (input  (do
+            (def (last xs)
+              (match xs
+                ((list) (None unit))
+                ((list h) (Some h))
+                ((list h .. t) (last t))))
+            (def (main (: d Int64))
+              (+ (match (last (list 1 2)) ((Some v) v) ((None _) -1))
+                 (match (last (list "a" "bc")) ((Some s) (String.byte-len s)) ((None _) -1))))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 4 Int64)))

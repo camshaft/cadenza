@@ -2128,8 +2128,34 @@ fn ensure_inbox(fleet: &Fleet, name: &str) {
     std::fs::create_dir_all(inbox.join("processed")).ok();
 }
 
+/// A DURABLE, hub-global delivery sequence for message filenames — monotonic ACROSS processes.
+///
+/// The message-bus filename is `<seq>-<pid>-<kind>.json` and the drain reads oldest-first by filename
+/// sort, so the leading field must increase with send order. `Message::seq` (from `next_seq`) can't do
+/// that: it's process-local and each `fleet send` is a one-shot process, so every message would be
+/// `000000000001-…` and the inbox would sort by PID (only accidentally monotonic, and it recycles).
+/// So the FILENAME uses this counter instead: read `<root>/.delivery-seq`, increment, write back.
+/// Best-effort atomic (temp+rename); a concurrent-send race can at worst hand two messages the same
+/// number — the `pid` field then breaks the tie and they sort adjacently, never lost/corrupted. The
+/// stored `Message::seq` is left as-is (metadata only; reply pairing keys on the filename, not seq).
+fn next_delivery_seq(fleet: &Fleet) -> u64 {
+    let path = fleet.root.join(".delivery-seq");
+    let cur = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .unwrap_or(0);
+    let next = cur.saturating_add(1);
+    // temp+rename so a concurrent reader never sees a torn write.
+    let tmp = fleet.root.join(".delivery-seq.tmp");
+    if std::fs::write(&tmp, format!("{next}\n")).is_ok() {
+        let _ = std::fs::rename(&tmp, &path);
+    }
+    next
+}
+
 /// Deliver a message: write it to a temp file then rename into the recipient's inbox, so a reader
-/// never observes a partial file. The filename sorts in send order (`<seq>-<pid>-<kind>.json`).
+/// never observes a partial file. The filename sorts in send order via a durable delivery sequence
+/// (`<delivery-seq>-<pid>-<kind>.json`) — see `next_delivery_seq`.
 fn deliver(fleet: &Fleet, msg: &Message) {
     // Rescue a reply addressed to `unknown`: pr-sync (and others) write the recipient into the SUBJECT
     // as `<kind>: fleet/<agent>` even when the incoming `to`/`from` was `unknown` (the send-side
@@ -2161,7 +2187,14 @@ fn deliver(fleet: &Fleet, msg: &Message) {
     }
     let inbox = fleet.inbox(&to);
     std::fs::create_dir_all(&inbox).expect("create recipient inbox");
-    let fname = format!("{:012}-{}-{}.json", msg.seq, std::process::id(), msg.kind);
+    // Durable hub-global sequence (NOT msg.seq, which is process-local → always 1 for a one-shot send)
+    // so the filename actually sorts in delivery order for the oldest-first drain. See next_delivery_seq.
+    let fname = format!(
+        "{:012}-{}-{}.json",
+        next_delivery_seq(fleet),
+        std::process::id(),
+        msg.kind
+    );
     let json = serde_json::to_string_pretty(msg).expect("serialize message");
     let tmp = inbox.join(format!(".{fname}.tmp"));
     std::fs::write(&tmp, json).expect("write message tmp");
@@ -3087,5 +3120,40 @@ mod tests {
         assert!(parse_left_right_count("").is_none());
         assert!(parse_left_right_count("5").is_none()); // only one count
         assert!(parse_left_right_count("x\ty").is_none()); // non-numeric
+    }
+
+    #[test]
+    fn next_delivery_seq_is_monotonic_and_durable() {
+        // The message filename sorts oldest-first by this sequence, so it MUST increase across calls
+        // (and across processes — that's why it's a file, not the process-local Message::seq). Here we
+        // verify the durable-counter mechanics within one process using a fresh state dir.
+        let root = std::env::temp_dir().join(format!("cdz-delivery-seq-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let fleet = Fleet {
+            root: root.clone(),
+            worktrees: PathBuf::from("/hub/.claude/worktrees"),
+            repo: PathBuf::from("/hub"),
+            src: PathBuf::from("/wt/fleet"),
+        };
+
+        // First call starts at 1 (no file yet), then strictly increments and PERSISTS across calls.
+        assert_eq!(next_delivery_seq(&fleet), 1);
+        assert_eq!(next_delivery_seq(&fleet), 2);
+        assert_eq!(next_delivery_seq(&fleet), 3);
+        // The value is durable: a fresh Fleet over the same root continues from the stored counter (a
+        // NEW process — a separate `fleet send` — must not restart at 1, unlike the old Message::seq).
+        let fleet2 = Fleet {
+            root: root.clone(),
+            worktrees: PathBuf::from("/hub/.claude/worktrees"),
+            repo: PathBuf::from("/hub"),
+            src: PathBuf::from("/wt/fleet"),
+        };
+        assert_eq!(next_delivery_seq(&fleet2), 4);
+        // A corrupt/garbage counter file recovers to 1 (never panics, never a bogus huge number).
+        std::fs::write(root.join(".delivery-seq"), "not-a-number").unwrap();
+        assert_eq!(next_delivery_seq(&fleet), 1);
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

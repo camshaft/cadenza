@@ -1,13 +1,15 @@
 # DESIGN: Machine-checked verification — an LCF-style kernel baked into Cadenza
 
-Status: **Increment 0 — design (nothing coded yet).** Vertical `v-verification`, subsystem `rcdzc`.
-Operator directive (2026-07-16, verbatim intent): *"We need to get a vertical thinking about
-machine-checked verification. I really like the idea of baking something like HOL-Light into the
-language."*
+Status: **Increment 0 — design.** All four design forks CONFIRMED by the concierge (§6). Vertical
+`v-verification`, subsystem `rcdzc`. Operator directive (2026-07-16, verbatim intent): *"We need to get
+a vertical thinking about machine-checked verification. I really like the idea of baking something like
+HOL-Light into the language."*
 
 This doc answers the four core design questions from the charter, commits to an Increment-0 shape,
-and — most importantly — settles the **soundness-boundary** question the whole feature rests on. It
-routes the genuine forks to the concierge (→ operator) at the end.
+and — most importantly — settles the **soundness-boundary** question the whole feature rests on. **Key
+result: the audit surfaced a reproduced, kernel-breaking `eval` forge hole (§3.4) — unforgeability is
+PROVISIONAL until v-metaprogramming's fix lands.** The four design forks were confirmed by the concierge
+(§6).
 
 ---
 
@@ -17,21 +19,25 @@ routes the genuine forks to the concierge (→ operator) at the end.
 feature. A module `hol` declares an **abstract** type `Thm` (a theorem) and `Term`/`Hty` (HOL terms
 and types), exporting the type *handles* but **keeping the constructors private**. The only exported
 functions that *return* a `Thm` are the primitive inference rules (`refl`, `trans`, `mk_comb`, `abs`,
-`beta`, `assume`, `eq_mp`, `deduct_antisym`, plus `inst`/`inst_type` and the three HOL axioms). Because
-Cadenza already enforces that **no code outside a module can construct or match an abstract type's
-variants** (`CDZ0214`) and **cannot even compare or strip one** (`CDZ0202`), a `Thm` is *unforgeable*
-by exactly the LCF discipline HOL-Light relies on: everything above the kernel is untrusted code that
-can only obtain a `Thm` by calling a kernel rule.
+`beta`, `assume`, `eq_mp`, `deduct_antisym`, plus `inst`/`inst_type` and the three HOL axioms). The
+LCF design relies on Cadenza enforcing that **no code outside a module can construct or match an
+abstract type's variants** (`CDZ0214`) and **cannot compare or strip one** (`CDZ0202`) — so that
+everything above the kernel is untrusted code that can only obtain a `Thm` by calling a kernel rule.
 
 **The key finding of this doc: Cadenza's opaque-type feature — already landed on `spec` and shipping —
-is a ready-made LCF trust boundary.** The abstract-data-type work
+is *almost* a ready-made LCF trust boundary, but a reproduced `eval` forge hole (§3.4) breaks it today.**
+The abstract-data-type work
 ([DESIGN-opaque-types-abstract-constructor-rcdzc.md](DESIGN-opaque-types-abstract-constructor-rcdzc.md),
 COMPLETE) was built for "a non-empty list / a validated email / a positive Money" — but an *unforgeable
-theorem* is the same mechanism at maximum stakes. The kernel needs **zero compiler change** for its
-trust story; it is a library exercise plus a rigorous audit of the forge-holes (§3). That makes (a) the
-right Increment 0 by a wide margin: it delivers the trust foundation everything else needs, it is a
-flagship stress test of the opaque-type soundness guarantee (a real language-design win either way),
-and it is buildable incrementally with the normal corpus/rcdzc/check gate.
+theorem* is the same mechanism at maximum stakes, and running it at that stakes-level immediately
+surfaced a soundness gap: `(eval (quote (Thm.Mk …)))` currently forges an abstract value, bypassing
+`CDZ0214` (v-metaprogramming found it; I reproduced it on trunk — §3.4). So the kernel needs **one
+compiler fix** (the eval-reconstruction path must re-apply the visibility gate) before its trust story
+holds; the rest is a library exercise plus the forge-hole audit (§3). This is the vertical working as
+designed — a real stress test surfaced a real language gap (REPORT/FIX, per the port ethos). (a) remains
+the right Increment 0 by a wide margin: it delivers the trust foundation everything else needs, it is a
+flagship stress test of the opaque-type soundness guarantee, and it is buildable incrementally with the
+normal corpus/rcdzc/check gate — the eval fix is now the first thing on that path.
 
 Candidate (b) — verifying Cadenza *programs* — and (c) — a reflective proofs-as-`Ast` tie — are real,
 larger, and **sequenced after** (a). See §5.
@@ -119,9 +125,17 @@ under real use.
 
 This is make-or-break. If *any* path lets code outside the `hol` module fabricate a `Thm`, the kernel
 is worthless. I audited every hole named in the charter against the **live spec** + the source (not
-memory). Verdict: **the boundary is currently strong enough for an intra-package kernel**, subject to
-ONE load-bearing deployment constraint (§3.0) and two documented caveats to pin adversarially with the
-breaker. Findings, each with its spec/source citation:
+memory). Verdict: **the boundary is ALMOST there, but one path — `eval` — is currently a
+KERNEL-BREAKING FORGE HOLE (§3.4) and MUST be fixed before the kernel can claim unforgeability.** The
+other vectors are closed, subject to ONE load-bearing deployment constraint (§3.0). Findings, each with
+its spec/source citation:
+
+> **🚨 STATUS (2026-07-16): Increment 1 (and any unforgeability claim) is BLOCKED on the eval forge hole
+> in §3.4.** v-metaprogramming found it and I reproduced it against trunk (and found it is *worse* than
+> reported — see §3.4). The fix straddles the eval-reconstruction path and the link-time visibility gate;
+> v-metaprogramming owns the seam (concierge-assigned) and has escalated. The kernel design proceeds, but
+> the trust story is not sound until this lands. This is exactly the REPORT/FIX language-gap the vertical
+> exists to surface.
 
 ### 3.0 THE LOAD-BEARING CONSTRAINT — the kernel MUST be a separate linked module ‼️
 
@@ -186,20 +200,52 @@ their own `(type Thm (Mk …))` gets a *different* `Thm` that the `hol`-typed ch
 accept. **Pin:** a corpus case — a second module re-declaring `Thm` and trying to pass its value where
 `hol.Thm` is expected → type error, not acceptance.
 
-### 3.4 The metaprogramming / reflection forge-hole — CLOSED ✅ (this was the scariest one)
+### 3.4 The metaprogramming / reflection forge-hole — 🚨 OPEN, KERNEL-BREAKING (corrected 2026-07-16)
 
-Could `eval`/`quote` fabricate a `Thm` by *quoting* a `(Thm.Mk …)` form and evaluating it outside
-`hol`? **No** — and the reason is decisive: `eval` **re-resolves its reconstructed source in the eval's
-enclosing scope** (`spec/semantics/12-metaprogramming.sexp`, the eval-desugar cases: an unquote/eval
-form "resolv[es] in the eval's enclosing scope"; an unbound name in a spliced form is the *ordinary*
-unbound-name rejection **CDZ0101**, not silently quoted). Therefore `(eval (quote (Thm.Mk …)))`
-evaluated in a module that did not import `Thm.Mk` hits the *same* resolve-time visibility gate as
-hand-written code — it is `CDZ0214`/`CDZ0101`, never a forged value. Quote produces inert data; it is
-`eval` that would run it, and `eval` gets no privileged scope. **This is why (c) can be sugar but never
-a trust path:** reflection routes through the same name-resolution boundary as source. **Pins (with the
-breaker):** (i) `(eval (quote (Thm.Mk <forged sequent>)))` outside `hol` → `CDZ0214`/`CDZ0101`;
-(ii) a `hol"…"` tagged-template (if built) can only *call exported kernel rules*, and a template that
-emits a `Thm.Mk` splice is rejected the same way.
+**This was the scariest vector, and it is currently a real hole.** My initial audit reasoned that `eval`
+re-resolves in the enclosing scope and therefore a quoted private constructor would hit the same
+visibility gate as source (→ `CDZ0214`). **That reasoning is WRONG for a module-private constructor.**
+v-metaprogramming found the counterexample and I **reproduced it against trunk** (`cargo xtask gate` on a
+two-module probe; verdicts below are actual, not hypothesized):
+
+| Probe (entry imports abstract `Color` + smart-ctor `mk`, NOT the variant ctors) | Actual result |
+|---|---|
+| DIRECT `(Color.Green)` | `rejected [CDZ0214]` ✅ (the gate works for source) |
+| `(eval (quote (Color.Green)))` | **`value (: (Green unit) Color)`** 🚨 FORGED |
+| `(eval (quasiquote (Color.Green)))` | **forged** 🚨 (per v-metaprogramming) |
+| `(eval (quote (match (mk) ((Color.Green) 99) …)))` | **`value 99`** 🚨 — eval also DESTRUCTURES a private ctor by matching it |
+| `(rank (eval (quote (Color.Red))))` | **`value 1`** 🚨 — the forged value flows freely where the abstract type is expected |
+| `(eval (quote (mk)))` [public] | `value 2` ✅ (eval of a *public* name is sound) |
+
+So the bypass is **comprehensive**, not just construction: `eval` reaches a module-private constructor
+for **both construction and matching**, and the forged value is accepted anywhere the abstract type is
+expected. `(eval (quote (Thm.Mk …)))` WOULD forge a `Thm`, and `(eval (quote (match th ((Thm.Mk s) s))))`
+would let untrusted code *read the sequent out of* a real `Thm` — a double break (mint + inspect).
+
+**Mechanism (v-metaprogramming's diagnosis, consistent with my repro):** `quote (Color.Green)` reifies
+to a `.`-projection AST node; `eval_ast::reconstruct` splices it back for ordinary folding, and that
+reconstruction path re-resolves the projection **without re-applying the link-time `AbstractCtor`
+(CDZ0214) visibility gate** that the direct surface path applies (`resolve.rs` `withheld_ctor_reject`,
+gated on `is_linked_package`). Eval effectively gets *privileged* visibility — the opposite of the spec
+intent that eval re-resolves as ordinary code.
+
+**Ownership + fix direction:** the seam straddles the eval-reconstruction path (v-metaprogramming) and
+the resolver/link visibility gate. The fix: an eval-reconstructed constructor reference MUST be
+re-resolved under the SAME cross-file visibility as hand-written code — eval gets no privileged scope.
+v-metaprogramming owns the seam (concierge-assigned), filed the repro
+(`.claude/fleet/queue/adv-eval-forges-abstract-type-private-constructor.sexp`), and escalated to the
+concierge. I own the *invariant + gate coverage*: Increment 1's soundness corpus must pin the two eval
+cases as `CDZ0214` (they FAIL today), so the fix is graded and the hole can't silently reopen.
+
+**Consequence for candidate (c):** reflective proofs-as-`Ast` are not just "sugar, not a trust path" —
+until this fix lands, `eval` is an *active* trust hole even for non-reflective kernels, because ANY
+importer can `eval`-forge a `Thm` regardless of how proofs are normally written. **The kernel cannot
+claim unforgeability until §3.4 is fixed.**
+
+**Pins (Increment 1, with the breaker):** (i) `(eval (quote (Thm.Mk …)))` outside `hol` → must be
+`CDZ0214` (FAILs today); (ii) `(eval (quote (match th ((Thm.Mk s) …))))` → must be `CDZ0214`;
+(iii) a `hol"…"` tagged-template that emits a private-ctor splice → rejected (the tagged-template path
+*is* safe today — it hits `CDZ0101` first, per v-metaprogramming — but pin it so it stays safe).
 
 ### 3.5 The `decode` / codec forge-hole — CLOSED ✅ (by totality, and by not exporting a `Thm` decoder)
 
@@ -242,16 +288,21 @@ minted *by the exporting (kernel) component*, which preserves soundness, but it 
 | Construct / match `Thm` outside `hol` | **Closed** | CDZ0214 (shipping, witnessed) |
 | Observe rep via `=`/`compare`; strip into `Thm` | **Closed** | CDZ0202 (compare shipping; strip MUST on-books, vacuous until a strip op lands) |
 | Re-declare own `Thm` and pass it | **Closed** | file-scoped nominal identity (O1, shipping) |
-| `eval`/`quote` reflection forgery | **Closed** | eval re-resolves in scope → CDZ0214/CDZ0101 |
+| `eval`/`quote` reflection forgery | **🚨 OPEN — kernel-breaking** | eval reaches private ctors (construct AND match); reproduced on trunk; fix owned by v-metaprogramming (§3.4) |
 | `decode`/codec cast | **Closed** | decode total→`Err`; no `Thm` decoder exported |
 | Raw-heap / unsafe cast | **Closed** | no such operation exists in the language |
 | Host / cross-component handle | **Caveat** | intra-component-only deployment constraint for Inc 0 |
 
-**Bottom line: the LCF discipline is soundly expressible in Cadenza today.** The trust base is (the
-opaque-type boundary as specified) + (the ~200-line kernel module) + (the intra-component deployment
-constraint). Every closed row above deserves a *standing verification-corpus case* so a future language
-change cannot silently reopen it — that gate coverage IS the vertical's core protective deliverable
-(per the role charter), and is where several early increments go.
+**Bottom line: the LCF discipline is ALMOST soundly expressible in Cadenza — one fix away.** Six of the
+seven forge vectors are closed and the design (opaque `Thm`, intra-component, separate linked module) is
+right. But the `eval` hole (§3.4) is a genuine, reproduced, kernel-breaking soundness bug: today ANY
+importer can `eval`-forge or `eval`-inspect an abstract value, so unforgeability does NOT hold yet. The
+trust base is therefore (the opaque-type boundary as specified, **once the eval gate is fixed**) + (the
+~200-line kernel module) + (the intra-component deployment constraint). This is the vertical working as
+intended — a real stress test surfaced a real language soundness gap, now filed and owned. Every row
+above (closed AND the open eval one) deserves a *standing verification-corpus case* so the fix is graded
+and a future change cannot silently reopen it — that gate coverage IS the vertical's core protective
+deliverable (per the role charter), and Increment 1 lands it.
 
 ---
 
@@ -279,12 +330,19 @@ Do not design ergonomics before the kernel exists; sketch only. Options, cheapes
 - **Increment 0 — THIS DOC.** The design, the (a)-first decision, and the soundness-boundary audit.
   Route the forks (§6). *(This tick.)*
 - **Increment 1 — the trust-boundary gate FIRST (spec-first, before any kernel code).** Add a
-  verification-corpus file (`spec/semantics/NN-verification.sexp` or fold into `11-modules.sexp`/
-  `07-type-system.sexp`) pinning the §3 forge-vectors *specifically for an abstract `Thm`-shaped type*:
-  construct-outside → CDZ0214; compare-outside → CDZ0202; `eval`-a-quoted-private-ctor → CDZ0214/CDZ0101;
-  re-declare-and-pass → type error. These pin the boundary the kernel will rely on, *independent of the
-  kernel*, so the trust base is gate-protected before a line of `Thm` code exists. Coordinate with
-  v-inference / v-metaprogramming / v-runtime (§6 notes).
+  verification-corpus file (`spec/semantics/NN-verification.sexp` — the concierge confirmed a new file)
+  pinning the §3 forge-vectors *specifically for an abstract `Thm`-shaped type*: construct-outside →
+  CDZ0214; compare-outside → CDZ0202; `eval`-a-quoted-private-ctor → CDZ0214; `eval`-a-quoted-private-
+  *match* → CDZ0214; re-declare-and-pass → type error. These pin the boundary the kernel will rely on,
+  *independent of the kernel*, so the trust base is gate-protected before a line of `Thm` code exists.
+  **🚨 SEQUENCING: the two `eval` pins FAIL today** (§3.4 — they expect `CDZ0214` but the compiler
+  currently forges). Per the gate discipline (an expected-reject that actually passes/forges is not
+  landable as green), the `eval` pins **cannot be added as passing cases until v-metaprogramming's fix
+  lands**. So Increment 1 splits: **(1a)** land the CLOSED-vector pins now (construct / match / compare /
+  re-declare — all pass today), and **(1b)** land the `eval` pins the moment the fix is on trunk (I track
+  the queue repro `adv-eval-forges-abstract-type-private-constructor.sexp`; when it flips green I promote
+  both pins into the graded corpus, per the breaker rule). Do NOT paper over by expecting the current
+  (wrong) forge result. Coordinate with v-inference / v-metaprogramming / v-runtime (§7).
 - **Increment 2 — the kernel skeleton.** The `hol` module: `Hty`, `Term`, `Thm` abstract types; term
   well-typedness checker (inside the module); `refl`, `assume`, `beta` (the three "leaf" rules that
   need no prior `Thm`). Export handles + these rules only. rcdzc unit test: a `refl` `Thm` is produced;
@@ -320,36 +378,44 @@ coverage.
 
 ---
 
-## 6. Forks routed to the concierge (→ operator)
+## 6. Forks — ALL CONFIRMED by the concierge (2026-07-16; operator may override on wake)
 
-These are genuine design decisions above my pay grade; I'll `ask` the concierge with these options and
-keep working (kernel design does not block on them):
+I `ask`ed the concierge; all four recommendations were confirmed (as sound engineering defaults —
+craft calls, not product-taste; the operator can redirect #1/#2 on wake and the concierge will relay):
 
-1. **Increment-0 confirmation.** Proposed: (a) LCF-kernel-as-library first, (b)/(c) later. Confirm or
-   redirect. *(My strong recommendation: (a).)*
-2. **HOL fragment scope + fidelity.** Port HOL-Light's `fusion.ml` primitive set 1:1 (max fidelity,
-   max reuse of a 20-year-trusted design), or a trimmed intuitionistic/equational core first? Proposed:
-   1:1 fusion, equational core first, axioms in Increment 4.
-3. **Cross-component proof exchange (§3.7).** Is exchanging a `Thm` across a component boundary ever a
-   goal? If yes it needs the kernel component to mint the resource handle (sound, but new work). Proposed:
-   **no** for now — intra-component-only, documented constraint.
-4. **Where the verification corpus lives.** A new `spec/semantics/NN-verification.sexp`, or fold the
-   `Thm`-specific soundness pins into `11-modules.sexp`/`07-type-system.sexp`? Proposed: a new file
-   (isolates a hot-file collision risk; signals the vertical's territory).
+1. **Increment 0 = (a) LCF-kernel-as-library first, (b)/(c) later.** ✅ CONFIRMED — the trust foundation,
+   and it stress-tests opaque types (doubly so given the eval hole surfaced immediately).
+2. **HOL fragment: port HOL-Light `fusion.ml` primitive set 1:1, equational core first, axioms in
+   Increment 4.** ✅ CONFIRMED — reuse the 20-year-trusted kernel design; don't invent a logic.
+3. **Cross-component `Thm` exchange (§3.7): NO — intra-component-only for now.** ✅ CONFIRMED — keeps the
+   trust boundary tight; the resource-handle minting is real work with no current consumer.
+4. **Verification corpus: a new `spec/semantics/NN-verification.sexp`.** ✅ CONFIRMED — a distinct concern
+   deserves its own corpus file.
 
-## 7. Coordination notes to send (this/next tick)
+## 7. Coordination (status 2026-07-16)
 
-- **v-inference** — the kernel leans on nominal/abstract type identity being unforgeable (§3.3) and on
-  no lowercase-type-var / inference path admitting a structural `Thm`. Confirm no inference edge treats
-  a look-alike structural value as `Thm`.
-- **v-metaprogramming** — confirm the §3.4 reflection analysis (eval re-resolves in enclosing scope,
-  private ctor → CDZ0214/CDZ0101); flag if any eval/quote path could bind a private constructor.
-- **v-runtime** — confirm no raw-heap / unsafe-coerce / debug intrinsic can mint an abstract value
-  (§3.6).
+- **v-metaprogramming** — ⚡ found the §3.4 eval-forge hole and **owns the fix** (concierge-assigned):
+  eval-reconstructed ctor references must re-resolve under the same visibility gate as source. Repro
+  filed (`adv-eval-forges-abstract-type-private-constructor.sexp`). I track it; when it flips green I
+  land the Increment-1b eval pins.
+- **v-inference** — note SENT: confirm no infer/unify edge admits a look-alike structural value as `Thm`
+  (§3.3), and that the sum-nominal path is not subject to the record-path equality leak (§3.2). Awaiting.
+- **v-runtime** — note SENT: confirm no raw-heap / unsafe-coerce / debug intrinsic can mint an abstract
+  value (§3.6). Awaiting.
+- **v-agent-harness** — a concrete DOWNSTREAM CONSUMER: their Cadenza-native self-modifying agent wants
+  each self-modification to carry a *proof* it preserves a stated invariant (e.g. "the new Cedar policy
+  still forbids `tool:delete-prod`"), and proposes a Cadenza-native Cedar evaluator as a provable target
+  (Inc-3/4, no action now). **Open interface question they asked:** what proof surface does the kernel
+  expose — a checkable `Thm` term, or a tactic script over an `Ast`? *Proposed answer (to shape with
+  them later):* a `Thm` value IS the proof term — a self-mod attaches the `Thm` that its post-state
+  satisfies the invariant predicate, and the harness's trusted check is just "does this `Thm`'s
+  conclusion match the required invariant?" (a single kernel-typed comparison, no tactic replay at check
+  time). This is the LCF payoff — checking a proof is trivial and trusted; *finding* it (tactics) is
+  untrusted. Revisit when they reach Inc-3.
 - **v-guide** — once Increment 3 proves a first theorem, this is a flagship "look what Cadenza can do"
   story (like CAD); hand the guide the runnable first-theorem example.
-- **breaker** — from Increment 3 on, standing "try to forge a `Thm`" adversarial cases against every §3
-  vector.
+- **breaker** — from Increment 1 on, standing "try to forge a `Thm`" adversarial cases against every §3
+  vector (the eval vector especially, once fixed).
 
 ---
 

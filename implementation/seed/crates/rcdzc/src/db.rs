@@ -2279,6 +2279,30 @@ impl Db {
         *self.parent.get(id.0 as usize).unwrap_or(&None)
     }
 
+    /// The file index a node resolves its CONSTRUCTOR/TYPE VISIBILITY against — `file_of(at)`, but when
+    /// `at` itself is in NO file (an appended synthesized node — an eval/quote-reconstructed form, a
+    /// tagged-template expansion), walk up `parent_of` to the nearest ANCESTOR that IS in a file. The
+    /// expansion desugars (`eval_ast::desugar_eval`, `tagged_template::expand`) splice their reconstructed
+    /// source under the ORIGINAL call node (`(eval …)`/`(tagged-template …)`), whose `StructId` is in its
+    /// own file's demux range, so the parent chain of a reconstructed constructor reference leads back to
+    /// the CONSUMER file. Resolving its visibility there is the metaprogramming guarantee that expanded AST
+    /// is checked "exactly as if it had been written directly" (`metaprogramming.md` §Expansion Precedes
+    /// And Feeds The Core Guarantees) — so a module-PRIVATE constructor named through `(eval (quote …))`
+    /// from outside its module is withheld (CDZ0214) exactly as a hand-written `(. T Ctor)` is, closing the
+    /// abstract-type forge hole (eval must get NO privileged scope). `None` only if no ancestor has a file
+    /// (a wholly prelude/link-root subtree — indeterminate, caller falls back to the flat table).
+    pub(crate) fn visibility_file_of(&self, at: StructId) -> Option<usize> {
+        let fs = self.file_scope.as_ref()?;
+        let mut cur = Some(at);
+        while let Some(id) = cur {
+            if let Some(file) = fs.file_of(id) {
+                return Some(file);
+            }
+            cur = self.parent_of(id);
+        }
+        None
+    }
+
     /// Graft `node`'s root under `new_parent` (at child position `child_ix`) so a scope walk from a name
     /// INSIDE `node` continues up into `new_parent`'s enclosing scope. Used when a fold synthesizes a
     /// replacement subtree (the effects `reduce_handle` body) that must resolve its FREE variables against
@@ -2791,7 +2815,7 @@ impl Db {
         name: &str,
     ) -> Option<Result<StructId, ()>> {
         let fs = self.file_scope.as_ref()?;
-        let file = fs.file_of(at)?;
+        let file = self.visibility_file_of(at)?;
         Some(fs.visible_types[file].get(name).copied().ok_or(()))
     }
 
@@ -2806,7 +2830,7 @@ impl Db {
         name: &str,
     ) -> Option<Result<StructId, ()>> {
         let fs = self.file_scope.as_ref()?;
-        let file = fs.file_of(at)?;
+        let file = self.visibility_file_of(at)?;
         Some(fs.visible_ctors[file].get(name).copied().ok_or(()))
     }
 
@@ -2822,7 +2846,7 @@ impl Db {
         name: &str,
     ) -> Option<Result<StructId, ()>> {
         let fs = self.file_scope.as_ref()?;
-        let file = fs.file_of(at)?;
+        let file = self.visibility_file_of(at)?;
         Some(
             fs.visible_ctors_qualified[file]
                 .get(name)
@@ -2841,7 +2865,7 @@ impl Db {
         let Some(fs) = self.file_scope.as_ref() else {
             return false;
         };
-        let Some(file) = fs.file_of(at) else {
+        let Some(file) = self.visibility_file_of(at) else {
             return false;
         };
         let Some(td) = self.type_decl_by_occ(decl) else {

@@ -163,9 +163,10 @@ export default function CalculatorPage() {
       // VisualViewport API is unavailable so desktop / older browsers still fill the screen.
       style={{ height: vvHeight != null ? `${vvHeight}px` : "100dvh" }}
     >
-      {/* Header — stacks on mobile (title + actions on one row, description below) so a phone-width
-          screen doesn't crush the actions against a wrapping paragraph or overflow horizontally. */}
-      <div className="mb-3">
+      {/* Header — `shrink-0` so it never steals vertical space from the tape/input (the fixed-height
+          flex column below must keep its `flex-1` room, especially on a short mobile viewport with the
+          keyboard open). Title + actions on one row; the blurb collapses below `sm`. */}
+      <div className="mb-3 shrink-0">
         <div className="flex items-baseline justify-between gap-3">
           <h1 className="text-lg font-bold text-slate-100 sm:text-xl">Cadenza calculator</h1>
           <div className="flex shrink-0 items-center gap-3 text-xs">
@@ -177,9 +178,10 @@ export default function CalculatorPage() {
             </Link>
           </div>
         </div>
-        {/* The descriptive blurb sits on its own full-width line below the title+actions row, so it can
-            wrap freely without crushing the actions. Slightly smaller on mobile. */}
-        <p className="mt-1 text-xs text-slate-500 sm:text-sm">
+        {/* The descriptive blurb is HIDDEN on mobile (`hidden sm:block`) — a 4-line marketing paragraph
+            ate half a phone screen above the actual calculator, squeezing the tape+input into an unusable
+            strip. On sm+ (room to spare) it shows on its own full-width line. */}
+        <p className="mt-1 hidden text-sm text-slate-500 sm:block">
           Exact by default — <code className="text-slate-400">1 / 3</code> is{" "}
           <code className="text-slate-400">1/3</code>, not 0. Fractions, units, and big integers in the
           real language. Assign variables with <code className="text-slate-400">name = expr</code>;

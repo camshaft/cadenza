@@ -45,8 +45,9 @@ export default function WhatsNext() {
         vanish before the program runs; <Ch to="/types-as-values">types as values</Ch> you can reflect,
         compare, and branch on at compile time; <Ch to="/metaprogramming">metaprogramming</Ch> where a
         program is an ordinary AST value you can quote, take apart, build, and eval; and{" "}
-        <Ch to="/property-testing">property-based testing</Ch> as a plain pattern — a generator is a
-        function, a property is a predicate, no testing DSL required.
+        <Ch to="/property-testing">testing</Ch>, where <C>@test</C> marks a function as a test and
+        parameters make it generative — the runner synthesizes the inputs and shrinks any failure, no
+        testing DSL required.
       </P>
       <P>
         More importantly, you've seen the ideas underneath — the{" "}

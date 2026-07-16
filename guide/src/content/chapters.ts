@@ -228,8 +228,8 @@ export const CHAPTERS: Chapter[] = [
   },
   {
     slug: "property-testing",
-    title: "Property-based testing",
-    blurb: "State a property, generate inputs to break it, shrink to the smallest failure — all ordinary code.",
+    title: "Testing & properties",
+    blurb: "@test marks a function as a test; give it parameters and the runner generates inputs and shrinks failures.",
     section: "What makes Cadenza different",
     exercises: 2,
     Component: lazy(() => import("./chapters/PropertyTesting.tsx")),
