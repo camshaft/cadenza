@@ -246,5 +246,44 @@ def intersection-of-two-cubes-is-the-overlap() =
   match bounding-box(Solidr.Intersectionr(a, b)) with | Aabbr.Boxr(lo, hi) =>
     (if v3r-x(lo) == rzero() then (if v3r-x(hi) == one then unit else trap("hi.x = 1")) else trap("lo.x = 0"))
 
+// ---- R9: direct coverage for the exported vector/box helpers that were only exercised transitively --------
+
+@test
+def v3r-min-max-are-componentwise() =
+  let a = v3r(Rational.of(1, 2), Rational.of(5, 1), Rational.of(3, 1)) in
+  let b = v3r(Rational.of(1, 3), Rational.of(7, 1), Rational.of(2, 1)) in
+  // min picks the smaller per axis (1/3, 5, 2), max the larger (1/2, 7, 3) — exact, total order over Rational.
+  if v3r-eq(v3r-min(a, b), v3r(Rational.of(1, 3), Rational.of(5, 1), Rational.of(2, 1))) then
+    (if v3r-eq(v3r-max(a, b), v3r(Rational.of(1, 2), Rational.of(7, 1), Rational.of(3, 1))) then unit
+     else trap("v3r-max componentwise")) else trap("v3r-min componentwise")
+
+@test
+def v3r-mul-is-componentwise-exact() =
+  let a = v3r(Rational.of(1, 2), Rational.of(2, 3), Rational.of(3, 1)) in
+  let b = v3r(Rational.of(4, 1), Rational.of(3, 1), Rational.of(1, 3)) in
+  // 1/2*4 = 2, 2/3*3 = 2, 3*1/3 = 1 — exact, no rounding.
+  if v3r-eq(v3r-mul(a, b), v3r(Rational.of(2, 1), Rational.of(2, 1), Rational.of(1, 1))) then unit
+  else trap("v3r-mul componentwise exact")
+
+@test
+def v3r-accessors-project-each-axis() =
+  // v3r-y / v3r-z had no direct case (only v3r-x did) — pin all three accessors project the right component.
+  let v = v3r(Rational.of(7, 2), Rational.of(9, 4), Rational.of(11, 8)) in
+  if v3r-x(v) == Rational.of(7, 2) then
+    (if v3r-y(v) == Rational.of(9, 4) then
+      (if v3r-z(v) == Rational.of(11, 8) then unit else trap("v3r-z")) else trap("v3r-y")) else trap("v3r-x")
+
+@test
+def aabbr-union-and-intersect-of-explicit-boxes() =
+  // exercise aabbr-union / aabbr-intersect DIRECTLY on explicit boxes (not only via bounding-box's folds):
+  // union of box[(0,0,0),(2,2,2)] and box[(1,1,1),(4,4,4)] = box[(0,0,0),(4,4,4)]; intersect = box[(1,1,1),(2,2,2)].
+  let p = Aabbr.Boxr(v3r(rzero(), rzero(), rzero()), v3r(Rational.of(2, 1), Rational.of(2, 1), Rational.of(2, 1))) in
+  let q = Aabbr.Boxr(v3r(Rational.of(1, 1), Rational.of(1, 1), Rational.of(1, 1)), v3r(Rational.of(4, 1), Rational.of(4, 1), Rational.of(4, 1))) in
+  (match aabbr-union(p, q) with | Aabbr.Boxr(ulo, uhi) =>
+    (match aabbr-intersect(p, q) with | Aabbr.Boxr(ilo, ihi) =>
+      if v3r-eq(ulo, v3r(rzero(), rzero(), rzero())) and v3r-eq(uhi, v3r(Rational.of(4, 1), Rational.of(4, 1), Rational.of(4, 1)))
+         and v3r-eq(ilo, v3r(Rational.of(1, 1), Rational.of(1, 1), Rational.of(1, 1))) and v3r-eq(ihi, v3r(Rational.of(2, 1), Rational.of(2, 1), Rational.of(2, 1)))
+      then unit else trap("union/intersect corners")))
+
 export { Vec3r.*, Solidr.*, Aabbr.*, rmin, rmax, rzero, v3r, v3r-x, v3r-y, v3r-z, v3r-add, v3r-mul, v3r-min,
          v3r-max, v3r-eq, aabbr-union, aabbr-intersect, aabbr-empty, bounding-box, aabbr-size }
