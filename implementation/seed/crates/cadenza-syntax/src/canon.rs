@@ -554,4 +554,49 @@ mod tests {
             "swept a meaningful cross-surface space, got {crossed}"
         );
     }
+
+    #[test]
+    fn canonical_bytes_are_injective_over_structural_equivalence_classes() {
+        // The RESERVE direction of canon, never swept: the whole point of a canonical form is that it can
+        // serve as a CONTENT-ADDRESS / dedup key — so structurally DISTINCT trees must encode to DISTINCT
+        // bytes. The forward direction (equal trees → equal bytes) is covered by `build_order_independent`
+        // and the cross-surface sweep; a SILENT COLLISION here would conflate two different programs behind
+        // one key (miscompile via dedup, cache poisoning). Assert the biconditional:
+        //   codec::encode(canonicalize(a)) == codec::encode(canonicalize(b))  ⟺  a.structurally_eq(b)
+        // Cheap O(n) check: key a map by canonical bytes; the first time bytes appear, stash a
+        // representative; on every later hit assert the new tree is structurally_eq the representative
+        // (bytes collision ⟹ same tree). We seed with a WIDE name/shape alphabet so near-miss trees
+        // (same shape, one differing leaf; same leaves, different shape) actually occur and would expose a
+        // collision if the encoding dropped a distinguishing field.
+        use std::collections::HashMap;
+        let mut rng = Rng(0xca7f_00d5_1dea_beef);
+        let mut by_bytes: HashMap<Vec<u8>, Arenas> = HashMap::new();
+        let mut collisions_checked = 0usize;
+        for _ in 0..6000 {
+            let depth = 1 + rng.below(4);
+            let src = format!("(def (main) {})", gen_prog(&mut rng, depth));
+            let a = sexpr::read(&src).expect("generated s-expr reads");
+            let bytes = codec::encode(&canonicalize(&a));
+            match by_bytes.get(&bytes) {
+                Some(rep) => {
+                    // Same canonical bytes MUST mean the same tree — else the encoding is non-injective.
+                    assert!(
+                        rep.structurally_eq(&a),
+                        "canonical-bytes COLLISION between structurally-distinct trees:\n  {src}"
+                    );
+                    collisions_checked += 1;
+                }
+                None => {
+                    by_bytes.insert(bytes, a);
+                }
+            }
+        }
+        // And the forward direction, restated on the interned representatives: a program re-read fresh
+        // canonicalizes to bytes ALREADY present (so `by_bytes` never double-counts an identical tree).
+        // The sweep necessarily produces repeats given the small alphabet, so we actually exercise hits.
+        assert!(
+            collisions_checked >= 1,
+            "the sweep never produced a repeated canonical form — alphabet too sparse to test injectivity"
+        );
+    }
 }
