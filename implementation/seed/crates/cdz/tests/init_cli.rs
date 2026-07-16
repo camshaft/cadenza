@@ -127,3 +127,44 @@ fn init_sexpr_scaffolds_the_s_expression_surface() {
     assert!(bok, "the s-expr scaffold must build: {be}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn init_writes_a_gitignore_when_absent() {
+    // `cdz init` scaffolds a `.gitignore` covering the build artifacts (like `cdz new`) when the directory
+    // has none.
+    let dir = scratch("gi-new");
+    let (ok, _o, err) = run_in(&dir, &["init"]);
+    assert!(ok, "cdz init failed: {err}");
+    let gi = dir.join(".gitignore");
+    assert!(gi.is_file(), "a .gitignore is written");
+    assert!(
+        std::fs::read_to_string(&gi).unwrap().contains("*.wasm"),
+        "the .gitignore covers build artifacts"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn init_does_not_clobber_an_existing_gitignore() {
+    // `cdz init` ADOPTS a directory — it must NEVER overwrite a `.gitignore` the user maintains (the same
+    // non-destructive spirit as refusing an existing Project.cdz). The original content is preserved.
+    let dir = scratch("gi-keep");
+    let original = "# my rules\nsecret.key\n/build-cache\n";
+    std::fs::write(dir.join(".gitignore"), original).unwrap();
+    let (ok, _o, err) = run_in(&dir, &["init"]);
+    assert!(
+        ok,
+        "cdz init should still succeed with an existing .gitignore: {err}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join(".gitignore")).unwrap(),
+        original,
+        "an existing .gitignore is preserved unchanged"
+    );
+    // The project was still scaffolded.
+    assert!(
+        dir.join("Project.cdz").is_file(),
+        "manifest still scaffolded"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

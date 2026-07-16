@@ -121,3 +121,28 @@ fn new_escapes_the_project_name_in_the_manifest() {
     assert!(bok, "the escaped-name project must still build: {be}");
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn new_scaffolds_a_gitignore_covering_the_build_artifacts() {
+    // `cdz new` writes a `.gitignore` (the `cargo new`→`/target` convention) covering the build OUTPUTS a
+    // build/run produces — the same set `cdz clean` removes — so a fresh project doesn't git-track them.
+    let root = scratch("gitignore");
+    let (ok, _o, err) = run_in(&root, &["new", "app"]);
+    assert!(ok, "cdz new failed: {err}");
+    let gi = root.join("app").join(".gitignore");
+    assert!(gi.is_file(), "a .gitignore is scaffolded");
+    let body = std::fs::read_to_string(&gi).unwrap();
+    for pat in [
+        "*.wasm",
+        "*.rs",
+        "*.dwarf",
+        "link-map.txt",
+        ".cdz-run-*.wasm",
+    ] {
+        assert!(
+            body.contains(pat),
+            "the .gitignore covers `{pat}` (a `cdz clean` artifact): {body}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
