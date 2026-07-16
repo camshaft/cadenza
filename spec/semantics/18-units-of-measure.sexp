@@ -85,6 +85,37 @@
   (input  (Qty.of 3.0 Unit.one))
   (output (: (Qty.of 3.0 Unit.one) (Qty Float64 Unit.one))))
 
+; A MALFORMED unit BUILDER in `Qty.of`'s unit position must be REJECTED at check, not leak to the opaque
+; "function return type has no machine representation" at compile. `check_unit_composition` names the
+; composition faults (a non-unit factor, a non-int exponent); these pin the LEAF-builder faults it also
+; covers — a `Unit.of` named with a non-symbol, and a `Unit.^`/`Unit.*` at the wrong arity — which
+; previously slipped `cdz check` (the operation is CONSUMED as a unit, so the partial-arity check does not
+; fire) and surfaced only as the no-machine-representation compile error. (github-liaison/Copilot PR#506.)
+
+(case "a Unit.of named with a non-symbol value is rejected"
+  (doc    "`(Qty.of 5 (Unit.of 42))` — a unit builder names its unit with a `#\"…\"` SYMBOL, but `42` is an
+           Int64. `unit_of` declines it, so it is not a real unit; the check names the symbol requirement
+           (CDZ0201) rather than letting it leak to `function return type has no machine representation` at
+           compile. A bare-NAME arg `(Unit.of foot)` keeps its richer `#\"foot\"`-fix message; this is the
+           non-name non-symbol case.")
+  (input  (do (def (main) (Qty.of 5 (Unit.of 42))) (export main)))
+  (error  CDZ0201))
+
+(case "a Unit.^ at the wrong arity is rejected"
+  (doc    "`(Qty.of 5 (Unit.^ (Unit.base #\"m\")))` applies `Unit.^` (which raises a unit to an integer
+           power) to ONE operand. `unit_of` declines the under-applied builder, and because the form is
+           CONSUMED as a unit the partial-builtin-arity check does not fire — so it leaked past `cdz check`.
+           The unit-composition check now names the arity (CDZ0201): `Unit.^` takes 2 operands.")
+  (input  (do (def (main) (Qty.of 5 (Unit.^ (Unit.base #"m")))) (export main)))
+  (error  CDZ0201))
+
+(case "a Unit.* at the wrong arity is rejected"
+  (doc    "`(Qty.of 5 (Unit.* (Unit.base #\"m\")))` composes with `Unit.*` (a binary product of two units)
+           given only ONE operand — the arity twin of the `Unit.^` case. Rejected CDZ0201 (`Unit.*` takes 2
+           operands) rather than leaking to the compile-time no-machine-representation error.")
+  (input  (do (def (main) (Qty.of 5 (Unit.* (Unit.base #"m")))) (export main)))
+  (error  CDZ0201))
+
 ; A quantity in a NON-REFERENCE unit DISPLAYS at its dimension's reference unit with the magnitude
 ; SCALED to that reference — the same normalize-to-reference the mixed-unit combine runs, so a single
 ; quantity and a homogeneous combine render identically. This is the fix for the calc relabel bug

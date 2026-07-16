@@ -218,6 +218,9 @@ pass	a Unit payload expected from a still-live sum at a dup-site drops the senti
 pass	a Unit projected from a function-returned tuple (owned-reclaim path)
 pass	a Unit projected out of a multi-payload sum and bound to a name
 pass	a Unit record field beside an Int64 field, the Int64 read
+pass	a Unit.* at the wrong arity is rejected
+pass	a Unit.^ at the wrong arity is rejected
+pass	a Unit.of named with a non-symbol value is rejected
 pass	a `?` in a CALLED (inlined, non-exported) helper finds its boundary
 pass	a `?` inside a match-arm resolves against the enclosing function boundary
 pass	a `?` inside an if-branch resolves against the enclosing function boundary
