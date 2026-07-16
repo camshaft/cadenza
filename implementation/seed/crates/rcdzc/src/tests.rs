@@ -14478,6 +14478,65 @@ mod match_engine {
     }
 
     #[test]
+    fn a_runtime_string_pattern_dispatches_by_content() {
+        // Runtime STRING patterns: `(match s ("ab" 1) ("cd" 2) (_ 0))` over a RUNTIME String value now
+        // emits a `value-eq` content compare (the `Str`-probe LitTest), where before it DECLINED ("a string
+        // pattern over a runtime payload is not yet supported"). The scrutinee is built with `String.concat`
+        // so it is a genuine runtime ROPE (not a constant that folds) — the emit `bytes-compact`s the leaf
+        // to canonical flat form before `value-eq`, so a rope and its flat twin compare equal. Unblocks
+        // matching an `Ast.Name`'s head symbol over a runtime Ast (the quasiquote head-dispatch idiom).
+        assert_eq!(
+            run_heap_value(
+                "(do (def (classify (: s String)) (match s (\"ab\" 1) (\"cd\" 2) (_ 0))) \
+                     (def (main) (classify (String.concat \"a\" \"b\"))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "1",
+            "String.concat \"a\" \"b\" = \"ab\" matches the first arm by CONTENT (rope compacted before value-eq)"
+        );
+        // A different runtime rope selects the second arm — confirms genuine content dispatch, not a
+        // constant fold to arm 1.
+        assert_eq!(
+            run_heap_value(
+                "(do (def (classify (: s String)) (match s (\"ab\" 1) (\"cd\" 2) (_ 0))) \
+                     (def (main) (classify (String.concat \"c\" \"d\"))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "2",
+            "String.concat \"c\" \"d\" = \"cd\" selects the second arm"
+        );
+        // A non-matching rope falls through to the wildcard.
+        assert_eq!(
+            run_heap_value(
+                "(do (def (classify (: s String)) (match s (\"ab\" 1) (\"cd\" 2) (_ 0))) \
+                     (def (main) (classify (String.concat \"x\" \"y\"))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "0",
+            "\"xy\" matches neither literal → the wildcard → 0"
+        );
+        // The QUASIQUOTE head-dispatch this unblocks: an `Ast.Name` head symbol matched over a runtime Ast
+        // (`` `(+ ,x ,y) `` vs `` `(* ,x ,y) ``) — dispatches on the string `"+"`/`"*"` at run time. The
+        // runtime Ast is built via `Ast.List`/`Ast.Name`/`Ast.Int` so it is not a constant.
+        assert_eq!(
+            run_heap_value(
+                "(do (def (op (: a Ast)) (match a \
+                        ((quasiquote (+ (unquote x) (unquote y))) 100) \
+                        ((quasiquote (* (unquote x) (unquote y))) 200) (_ 0))) \
+                     (def (main) (op (Ast.List (list (Ast.Name (String.concat \"+\" \"\")) (Ast.Int 1) (Ast.Int 2))))) \
+                     (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "100",
+            "a quasiquote pattern dispatches on the `+` head symbol of a runtime Ast (content string compare)"
+        );
+    }
+
+    #[test]
     fn a_tail_loop_threading_a_projected_boxed_sum_accumulator_decodes_correctly() {
         // A tuple-projected boxed sum threaded through a self-tail loop must SURVIVE the loop step. `one`
         // returns `(tuple (W.Atom <byte>) (+ pos 1))`; `loop` threads `(. r 0)` (the nested-compound boxed
