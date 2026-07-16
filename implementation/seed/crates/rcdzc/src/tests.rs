@@ -23799,6 +23799,45 @@ mod match_engine {
     }
 
     #[test]
+    fn a_non_string_read_argument_names_the_string_requirement_not_a_phantom_clash() {
+        use crate::testkit::parse;
+        // The `trap` SIBLING: `read : String → Ast` (parses re-readable text back into an `Ast`). A
+        // non-String operand (`(read 5)`, `(read true)`) is a type error, but the generic scheme-unify
+        // grounded the operand parameter to `String` and reported the OPAQUE "type mismatch: String and
+        // Int64 must be the same type here" (unlike `print : Ast → String`, whose distinctive `Ast` operand
+        // the checker names directly). It now names the real fault, exactly as the `trap` arm.
+        for (src, ty) in [
+            ("(module m (def (f) (read 5)) (export f))", "Int64"),
+            ("(module m (def (f) (read true)) (export f))", "Bool"),
+        ] {
+            let d = crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.message.contains("`read`'s argument must be a String"))
+                .unwrap_or_else(|| panic!("a non-String read argument must be named: {src}"));
+            assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
+            assert!(
+                d.message
+                    .contains(&format!("a value of type {ty} was given"))
+                    && !d.message.contains("must be the same type here"),
+                "names the argument-type, not a phantom clash: {}",
+                d.message
+            );
+        }
+        // NO false positive: a String literal and a String-typed param argument are clean.
+        for ok in [
+            "(module m (def (f) (read \"(+ 1 2)\")) (export f))",
+            "(module m (def (f (: s String)) (read s)) (export f))",
+        ] {
+            assert!(
+                !crate::diagnostics(&mut crate::db::Db::load(parse(ok)))
+                    .iter()
+                    .any(|d| d.message.contains("`read`'s argument must be a String")),
+                "a well-formed read is not flagged: {ok}"
+            );
+        }
+    }
+
+    #[test]
     fn a_non_type_argument_in_a_type_constructor_names_the_position() {
         // A type-CONSTRUCTOR form with a well-formed NON-TYPE in a type-argument position — `(List 5)`,
         // `(Tuple Int64 5)`, `(-> Int64 5)`, `(Map 5 Int64)` — read as the flat "requires a type, but found

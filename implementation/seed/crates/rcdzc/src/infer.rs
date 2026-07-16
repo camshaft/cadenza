@@ -6947,6 +6947,35 @@ fn check_application(
         collect(db, args[0], out);
         return;
     }
+    // `(read TEXT)` — the reader primitive `read : String → Ast` (parses re-readable text back into an
+    // `Ast`). Its operand MUST be a String; a non-String operand (`(read 5)`, `(read true)`) is a type
+    // error. The `trap` sibling: the generic scheme-unify grounds the operand parameter to `String` and
+    // reports the OPAQUE "type mismatch: String and Int64 must be the same type here" (the `read` RESULT is
+    // the fixed `Ast`, but the OPERAND-side unify still leaks the phantom `String` clash — unlike `print :
+    // Ast → String`, whose distinctive `Ast` operand type the checker names directly). Name the real fault,
+    // exactly as the `trap` arm above. Definite non-String only (`Var`/`Any` skip); a wrong-arity `(read)`
+    // / `(read a b)` keeps its own decline. Descend the operand, then return (the scheme-unify would only
+    // re-report the phantom clash).
+    if crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::Read) && args.len() == 1
+    {
+        let arg_ty = type_of(db, args[0]);
+        if !matches!(arg_ty, Ty::String | Ty::Any | Ty::Var(_)) {
+            trace!(target: "rcdzc::infer", head = head.0, ty = %arg_ty.render_name(), "fault: read operand is not a String (CDZ0203)");
+            out.push(
+                Reject::coded(
+                    Code::TypeMismatch,
+                    format!(
+                        "`read`'s argument must be a String, but a value of type {} was given — \
+                         `read` parses text back into an `Ast`, e.g. `(read \"(+ 1 2)\")`",
+                        arg_ty.render_name()
+                    ),
+                )
+                .at(args[0]),
+            );
+        }
+        collect(db, args[0], out);
+        return;
+    }
     // `Qty.of <value> <unit>` — the SECOND argument must be a compile-time UNIT expression (`Unit.one`,
     // `(Unit.base #"m")`, `(Unit.of #"m")`, or a `Unit.*`/`Unit./`/`Unit.^` composition), read by
     // `eval::unit_of`. A second arg that is NOT a unit-builder form at all — a plain literal `(Qty.of 5
