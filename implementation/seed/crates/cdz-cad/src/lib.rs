@@ -33,6 +33,7 @@
 use std::fmt;
 
 pub mod mesh;
+pub mod stl;
 pub use mesh::{
     mesh, mesh_with_segments, to_manifold, to_manifold_with_segments, Mesh, DEFAULT_SEGMENTS,
 };
