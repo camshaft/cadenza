@@ -1572,3 +1572,30 @@
             ((Ok a) (= a (quote (f 3))))
             ((Err _) false)))
   (output (: true Bool)))
+
+; --- Ast-valued unquote splicing: the operand-binding faces -----------------------------------------
+; The ast-lift intrinsic splices a COMPUTED Ast subtree into a quasiquote template (the RESOLVED
+; splice gap; its pin covers a param-bound operand matched structurally). These pin the other
+; operand bindings and the identity contract, promoted from passing breaker probes.
+
+(case "a let-bound Ast splices into a template"
+  (doc    "`(let ((sub (quote (* 2 3)))) `(+ ,sub 1))` — the spliced operand is a LET binding (the
+           resolved pin covers a param). The grafted template is a 3-element list. Pins the splice
+           over a local binding (an ast-lift keyed to param slots misses the local).")
+  (input  (do
+            (def (main (: d Int64))
+              (let ((sub (quote (* 2 3))))
+                (match (quasiquote (+ (unquote sub) 1)) ((Ast.List es) (List.len es)) (_ -1))))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 3 Int64)))
+
+(case "a grafted template is structurally equal to the directly-quoted tree"
+  (doc    "`` `(+ ,(quote (* 2 3)) 1) `` = `(quote (+ (* 2 3) 1))` — the identity contract of the
+           splice: inserting an Ast RESULT means grafting the node AS-IS, so the assembled tree is
+           byte-for-byte the tree the plain quote builds (structural equality over the two). A
+           re-wrapping splice (the old Ast.Int(...) coercion) or a copy that perturbs the subtree
+           breaks the equality.")
+  (input  (= (quasiquote (+ (unquote (quote (* 2 3))) 1))
+             (quote (+ (* 2 3) 1))))
+  (output (: true Bool)))
