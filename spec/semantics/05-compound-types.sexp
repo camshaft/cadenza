@@ -874,6 +874,47 @@
             (def (main) (. (dec 4) 0)) (export main)))
   (output (: 40 Int64)))
 
+; The direct fn-return projection cases above call `dec` with a CONSTANT argument (`(dec 4)`), so the
+; whole tuple const-folds. When the callee's argument is a genuine RUNTIME parameter (supplied at main's
+; call boundary), the tuple's CONTENTS are runtime values too — the projection must recover the shape at
+; the site AND read a runtime element, with no fold to lean on. These pin that direct (no-`let`) fn-return
+; projection works on runtime-content tuples: element 0, element 1, and both summed, across two call args.
+
+(case "a scalar element is projected directly from a fn-return tuple with runtime content"
+  (doc    "`(. (dec n) 0)` with `n` a RUNTIME parameter at main's call boundary — the const-arg cases above
+           (`(dec 4)`) fold the whole tuple, but here the tuple's elements `(* n 10)`/`(+ n 1)` are runtime
+           values, so the direct projection must recover the operand shape at the site and read a runtime
+           element with no fold. `(dec 4)` → 40, `(dec 7)` → 70. Pins direct fn-return projection on a
+           runtime-CONTENT tuple, the reader shape distinct from the folded const-arg companion.")
+  (input  (do
+            (def (dec (: n Int64)) (tuple (* n 10) (+ n 1)))
+            (def (main (: n Int64)) (. (dec n) 0)) (export main)))
+  (call   main (: 4 Int64))
+  (output (: 40 Int64))
+  (call   main (: 7 Int64))
+  (output (: 70 Int64)))
+
+(case "both elements of a runtime-content fn-return tuple are projected directly and combined"
+  (doc    "`(+ (. (dec n) 0) (. (dec n) 1))` — both halves of a runtime-content tuple projected DIRECTLY
+           (no intervening `let`) and summed. With n = 4: element 0 = 40, element 1 = 5, sum 45. Pins that
+           two direct projections of the same fn-return runtime tuple each recover the shape independently
+           and read the right element — the `let`-free companion of the `let`-bound both-elements case.")
+  (input  (do
+            (def (dec (: n Int64)) (tuple (* n 10) (+ n 1)))
+            (def (main (: n Int64)) (+ (. (dec n) 0) (. (dec n) 1))) (export main)))
+  (call   main (: 4 Int64))
+  (output (: 45 Int64)))
+
+(case "the second element of a runtime-content fn-return tuple is projected directly"
+  (doc    "`(. (dec n) 1)` — projecting element 1 (not only element 0) directly from a runtime-content
+           fn-return tuple. With n = 4 the tuple is (40, 5), element 1 = 5. Pins that the shape-at-site
+           recovery addresses a non-zero position correctly on the direct path, not only position 0.")
+  (input  (do
+            (def (dec (: n Int64)) (tuple (* n 10) (+ n 1)))
+            (def (main (: n Int64)) (. (dec n) 1)) (export main)))
+  (call   main (: 4 Int64))
+  (output (: 5 Int64)))
+
 ; --- A compound built in an if-branch, returned ACROSS a call, projected in the caller -----------
 ; The distinguishing shape from the conditional-access cases above (which put the `if` INSIDE the
 ; projecting function): here a callee `pick` returns one of two tuples chosen by a runtime `Bool`

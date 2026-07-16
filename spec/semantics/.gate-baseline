@@ -1721,6 +1721,7 @@ pass	a same-type sum match is accepted and binds the payload (the control)
 pass	a same-unit quantity join flows and its magnitude reads back
 pass	a scalar BETWEEN two Tuple args with a LIST result
 pass	a scalar element is projected DIRECTLY from a named function's runtime tuple result
+pass	a scalar element is projected directly from a fn-return tuple with runtime content
 pass	a scalar element is projected directly from a function's runtime tuple result
 pass	a scalar element is projected from a let-bound runtime tuple
 pass	a scalar-payload sum looked up from a map, returned via a ctor, is matched in the caller
@@ -2348,6 +2349,7 @@ pass	bitwise XOR of an integer and a float does not silently promote
 pass	bitwise XOR toggles bits
 pass	bitwise XOR with negative one is the bitwise complement
 pass	bitwise XOR with zero is the operand (identity)
+pass	both elements of a runtime-content fn-return tuple are projected directly and combined
 pass	both sibling args consume the same binding independently
 pass	boxed closures of two fn types in one sum: the unbuilt variant's dispatch is dead
 pass	branches performing DIFFERENT counts each thread their own post-state to the continuation
@@ -3110,6 +3112,7 @@ pass	the same program with a different response gives a different deterministic 
 pass	the same-core-shape sibling dispatches ITS body, not the first
 pass	the scalar length of a runtime multi-byte string counts scalars, not bytes
 pass	the second distinct-signature closure export returns its own type
+pass	the second element of a runtime-content fn-return tuple is projected directly
 pass	the selected operand decides a hoisted comparison
 pass	the selected operand decides a hoisted float equality
 pass	the sequent-shaped kernel Thm is unforgeable — building Thm.Seq outside the kernel is CDZ0214
