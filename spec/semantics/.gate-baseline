@@ -680,6 +680,7 @@ pass	a default-integer pragma naming a non-integer type is rejected
 pass	a default-integer pragma naming an unbound type is rejected as unbound, like an annotation
 pass	a delegated capability is not itself an export field
 pass	a delegated effect performed inside an intra-program handler
+pass	a delegated effect reached only through an if-branch is granted and fires when the branch is taken
 pass	a delegated host effect composes with the value-heap runtime
 pass	a delegation naming an effect that is never reached is rejected as latent authority
 pass	a dense zero-based jump-table match hits a covered arm
@@ -3209,6 +3210,7 @@ pass	the round trip tracks the produced closure's captured value
 pass	the runtime UTF-8 encoding of a string equals its exact byte literal
 pass	the runtime-if list takes its else branch and measures that length
 pass	the runtime-list version of a tail fold compiles and folds correctly
+pass	the same conditional delegation makes no host call when the branch is not taken
 pass	the same declared effect is handled in-program by one entrypoint and delegated by another
 pass	the same function called under two handlers is discharged by each in turn
 pass	the same mixed-scale comparison is EXACT over Rational (keeps the fractional scale)

@@ -71,6 +71,41 @@
   (output (: unit Unit))
   (host-calls (call log.emit (: "x" String))))
 
+; Reachability is a STATIC (call-graph) property: an effect performed only inside an `if`-branch is REACHED
+; (it could run), so the delegation grants it and the program compiles — and then the RUNTIME branch decides
+; whether the host call actually fires. These pin both sides: with the branch taken, the delegated effect
+; runs (one host call); with it not taken, no host call, same terminal unit. (TODO on the rust backend like
+; the other host-delegation cases — a known rust host-boundary gap; the wasm path pins the semantics.)
+
+(case "a delegated effect reached only through an if-branch is granted and fires when the branch is taken"
+  (doc    "The effect `log.emit` is performed ONLY in the then-branch of `(if b … unit)`, so it is REACHABLE
+           from main's body — the static reachability analysis grants it under the `(host (log) …)`
+           delegation and the program compiles. Called with `b = true` the branch is taken, so exactly one
+           host call fires. Pins that a conditionally-reached effect is granted on the STATIC could-it-run,
+           not on whether a particular run reaches it — reachability follows the call graph, not the value.")
+  (input  (do
+            (effect log (op emit (-> String Unit)))
+            (def (main (: b Bool))
+              (host (log) (if b (log.emit "yes") unit)))
+            (export main)))
+  (call   main (: true Bool))
+  (output (: unit Unit))
+  (host-calls (call log.emit (: "yes" String))))
+
+(case "the same conditional delegation makes no host call when the branch is not taken"
+  (doc    "The runtime complement: the identical program called with `b = false` takes the `unit` branch, so
+           `log.emit` — though granted (reachable) at compile time — does NOT fire; main terminates at unit
+           with NO host call. Pins that the static GRANT (the effect is in the manifest because it is
+           reachable) is independent of the runtime OCCURRENCE (whether a given run performs it) — the grant
+           is conservative, the performance is exact.")
+  (input  (do
+            (effect log (op emit (-> String Unit)))
+            (def (main (: b Bool))
+              (host (log) (if b (log.emit "yes") unit)))
+            (export main)))
+  (call   main (: false Bool))
+  (output (: unit Unit)))
+
 (case "reaching an effect neither handled nor delegated is rejected at compile time"
   (doc    "Witnesses capabilities-and-effects.md #An Ungranted Effect Is A Compile-Time Error: main
            performs `log.emit` for an effect no enclosing handler discharges and the entrypoint does not
