@@ -983,6 +983,19 @@
   (input  (do (def (main) (eval (quote 1.5))) (export main)))
   (output (: 1.5 Float64)))
 
+(case "eval of a quoted RECURSIVE call folds through the compile-time evaluator"
+  (doc    "eval reconstructs the quoted form and evaluates it on the one-tier compile-time evaluator, which
+           reduces RECURSION (the depth-guarded fold): `(eval (quote (sum-to 4)))` with `sum-to` a
+           self-recursive `1..n` sum runs to 10. Distinct from the runtime recursive-AST-evaluator cases
+           (which recurse over Ast VALUES at runtime) — this pins that eval's compile-time reduction folds a
+           recursive USER function call to a constant. A terminating recursion folds; the evaluator's depth
+           backstop stops a non-terminating one. Companion of the recursive-tag fold in 24-tagged-templates.")
+  (input  (do
+            (def (sum-to (: n Int64)) (if (= n 0) 0 (+ n (sum-to (- n 1)))))
+            (def (main) (eval (quote (sum-to 4))))
+            (export main)))
+  (output (: 10 Int64)))
+
 (case "encoding and decoding an Ast.Float round-trips to an equal value"
   (doc    "`(Ast.Float 1.5)` encodes (the f64 bit pattern) then decodes to an equal AST (ast-encoding.md
            #The Encoding Is A Bijection), as the Int/Bool/Str/Name/List round-trips do. `Ast.decode` is

@@ -71,3 +71,35 @@
   (input (do (def (main (: n Int64)) (+ n 1)) (export main)))
   (call main (: 41 Int64))
   (output (: 42 Int64)))
+
+; ── BREAKER FOLLOW-UP (2026-07-16): the family is BROADER than the scalar-ish types above — it spans COMPOUND
+; entry args (List, Option/sum, and any type whose Cadenza literal is not valid Rust), with TUPLE an accidental
+; EXCEPTION (Cadenza `(tuple 3 4)` renders as the valid Rust tuple literal `(3, 4)`, so it marshals correctly
+; by coincidence). List/Option/etc. keep the raw Cadenza expression (`(list 1 2 3)`, `(Some 5)`) → invalid Rust.
+; So the fix scope is "ALL non-scalar entry args EXCEPT Tuple", not just the 4 scalar-ish types. wasm declines all.
+
+(case "adv rust-nonscalar-entry List: a List entry argument fails to marshal on rust"
+  (doc "`(def (main (: xs (List Int64))) (List.len xs))` + `(call main (list 1 2 3))` → 3. The rust driver
+        writes the raw `(list 1 2 3)` Cadenza expression into Rust source → `expected … found 1`. wasm
+        declines. A List built INSIDE the program runs on both backends — the arg boundary is the fault.")
+  (input (do (def (main (: xs (List Int64))) (List.len xs)) (export main)))
+  (call main (: (list 1 2 3) (List Int64)))
+  (output (: 3 Int64)))
+
+(case "adv rust-nonscalar-entry Option: an Option (sum) entry argument fails to marshal on rust"
+  (doc "`(def (main (: o (Option Int64))) (match o …))` + `(call main (Some 5))` → 5. The rust driver writes
+        the raw `(Some 5)` Cadenza expression into Rust source → `expected … found 5`. wasm declines. An
+        Option built INSIDE runs on both — same arg-boundary fault, now for a SUM type.")
+  (input (do (def (main (: o (Option Int64))) (match o ((Some n) n) ((None _) -1))) (export main)))
+  (call main (: (Some 5) (Option Int64)))
+  (output (: 5 Int64)))
+
+(case "adv rust-nonscalar-entry CONTROL: a Tuple entry argument marshals on rust by SYNTACTIC COINCIDENCE"
+  (doc "The instructive exception: `(def (main (: p (Tuple Int64 Int64))) (+ (. p 0) (. p 1)))` + `(call main
+        (tuple 3 4))` → 7 works on BOTH backends, because Cadenza `(tuple 3 4)` happens to render as the valid
+        Rust tuple literal `(3, 4)` — the driver's raw-text emit is accidentally valid here. Pins that Tuple's
+        passing is a syntactic coincidence, not correct marshalling — the fix should route ALL non-scalar args
+        (Tuple included, for robustness) through the library construction form, not rely on the coincidence.")
+  (input (do (def (main (: p (Tuple Int64 Int64))) (+ (. p 0) (. p 1))) (export main)))
+  (call main (: (tuple 3 4) (Tuple Int64 Int64)))
+  (output (: 7 Int64)))

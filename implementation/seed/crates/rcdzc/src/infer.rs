@@ -2129,7 +2129,20 @@ pub fn reflection_may_ground(db: &mut Db, id: StructId) -> bool {
         Resolved::Apply { head, .. } => {
             matches!(
                 crate::eval::meta_apply_of(db, head),
-                Some(Prim::TupleNew | Prim::ListNew | Prim::RecordNew | Prim::MapNew)
+                // `MapInsert` is the RUNTIME map builder `(Map.insert m k v)` — `reflected_ty` grounds a fn
+                // domain in its key/value (added alongside the reflection fix), so the annotation check must
+                // route it through the grounded path too, not just the `(map …)` literal (`MapNew`). Without
+                // it, `(: (Map.insert m 1 h) (Map Int64 (-> Bool Int64)))` read the value fn bottom-up as
+                // `(-> Any Int64)` and the `Any` domain absorbed the annotated `Bool` — a pure-domain
+                // contradiction silently ACCEPTED (the check-side twin of the Map reflection leak; Option/
+                // Tuple already rejected the same via their grounded arms).
+                Some(
+                    Prim::TupleNew
+                        | Prim::ListNew
+                        | Prim::RecordNew
+                        | Prim::MapNew
+                        | Prim::MapInsert
+                )
             ) || crate::eval::variant_disc_of(db, head).is_some()
         }
         _ => false,

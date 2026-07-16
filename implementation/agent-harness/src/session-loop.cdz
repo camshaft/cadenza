@@ -86,43 +86,37 @@ def run-unknown(fuel: Int64) =
   in
   run(fuel, "")
 
+// The tests assert the EXACT transcript CONTENT (String `==`), not just its byte-length — a length-only
+// check would pass any same-length string (a mis-routed tool emitting "SSSS" for write, a wrong per-turn
+// token, or a non-"?" unknown marker would all slip through). Copilot PR#502.
 @test
-def label-maps-each-tool-to-its-token() =
-  if String.byte-len(label("search")) == 1 then
-    if String.byte-len(label("mystery")) == 1 then unit else trap("unknown → ?")
+def label-maps-each-tool-to-its-exact-token() =
+  if label("search") == "S" then
+    if label("write") == "W" then
+      if label("mystery") == "?" then unit else trap("unknown → \"?\"")
+    else
+      trap("write → \"W\"")
   else
-    trap("search → S")
+    trap("search → \"S\"")
 
 @test
-def session-builds-a-transcript-of-routed-tokens() =
-  if String.byte-len(run-search(3)) == 3 then
-    unit
-  else
-    trap("3 search turns build a 3-token transcript")
+def session-builds-the-exact-search-transcript() =
+  if run-search(3) == "SSS" then unit else trap("3 search turns build exactly \"SSS\"")
 
 @test
-def session-zero-fuel-is-empty-transcript() =
-  if String.byte-len(run-search(0)) == 0 then
-    unit
-  else
-    trap("zero fuel yields the empty transcript")
+def session-zero-fuel-is-the-empty-transcript() =
+  if run-search(0) == "" then unit else trap("zero fuel yields exactly \"\"")
 
 @test
-def session-records-a-different-tools-token() =
-  if String.byte-len(run-write(4)) == 4 then
-    unit
-  else
-    trap("4 write turns build a 4-token transcript")
+def session-records-the-exact-different-tool-transcript() =
+  if run-write(4) == "WWWW" then unit else trap("4 write turns build exactly \"WWWW\"")
 
 @test
-def session-records-unknown-tool-marker() =
-  if String.byte-len(run-unknown(2)) == 2 then
-    unit
-  else
-    trap("unknown tools still record a marker per turn")
+def session-records-the-exact-unknown-marker() =
+  if run-unknown(2) == "??" then unit else trap("unknown tools record exactly \"??\"")
 
 @test
-def session-stops-on-stop-completion() =
+def session-stops-on-stop-completion-with-empty-transcript() =
   let stopped = handle Model(0) with
       | converse(q, s) => resume("stop", 0)
     in
@@ -131,7 +125,4 @@ def session-stops-on-stop-completion() =
       | done(a, s) => resume(a, 0)
     in
     run(5, "") in
-  if String.byte-len(stopped) == 0 then
-    unit
-  else
-    trap("a \"stop\" completion ends with the empty transcript")
+  if stopped == "" then unit else trap("a \"stop\" completion ends with exactly \"\"")

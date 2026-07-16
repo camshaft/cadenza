@@ -676,6 +676,7 @@ pass	a context-typed empty float32 map grounds the narrow-float wrapper
 pass	a contradictory ARROW annotation on a function value is rejected
 pass	a contradictory arrow annotation on a function INSIDE a compound is rejected
 pass	a contradictory arrow annotation on a function in a SUM payload is rejected
+pass	a contradictory arrow annotation on a function in a runtime Map value is rejected
 pass	a correctly-annotated function parameter is accepted
 pass	a cross-type variant pattern whose payload width differs is rejected, not miscompiled
 pass	a crossing text-literal arm is rejected even beside a same-kind sibling arm
@@ -751,6 +752,7 @@ pass	a dotted nullary arm whose body nests a same-type sum match dispatches corr
 pass	a double same-dimension annotation preserves the original scale
 pass	a double-negated condition unwinds to the original selection
 pass	a double-negated float compare unwinds to the compare, preserving NaN-false
+pass	a double-nominal narrow newtype (newtype of a newtype of UInt8) boxed in a list refines by value
 pass	a doubly-call-returned narrow newtype spills correctly through two calls
 pass	a doubly-nested strength-reduced multiply chains shift into shift
 pass	a doubly-nested tuple map key containing a rope is found by its flat twin
@@ -1217,6 +1219,8 @@ pass	a narrow addition reconciles a constant LEFT operand to the variable's widt
 pass	a narrow comparison reconciles a constant LEFT operand to the variable's width
 pass	a narrow match binder used in arithmetic with the scrutinee
 pass	a narrow multiplication reconciles a constant LEFT operand to the variable's width
+pass	a narrow newtype boxed as a map value stores at the widened cell
+pass	a narrow newtype boxed in a list round-trips two payloads through binder reads
 pass	a narrow value in the else branch opposite a bare literal computes at the narrow width
 pass	a narrow-UInt8-guarded div is not select-ified — the guard shields the trap
 pass	a narrow-body arithmetic on an in-range constant arg overflows the parameter width
@@ -1561,6 +1565,7 @@ pass	a recursive sum built then folded by a NESTED recursive call composes on ev
 pass	a recursive sum consumer whose arguments are recursive sum producers compiles
 pass	a recursive sum recurses THROUGH a record-typed payload
 pass	a recursive sum type works with pattern matching
+pass	a recursive tag function const-folds to a compile-time Ast
 pass	a recursive unifier distinguishes arrow components through the payload slots
 pass	a recursive user sum built in a lib is folded by the entry over the imported type
 pass	a recursive user sum type is built at run time and renders its variant names
@@ -2778,6 +2783,7 @@ pass	eval of a partially-exported type's WITHHELD constructor is rejected
 pass	eval of a quasiquote splicing a compile-time-known value
 pass	eval of a quasiquote splicing a string works through String ops
 pass	eval of a quasiquote-built form with a float unquote folds
+pass	eval of a quoted RECURSIVE call folds through the compile-time evaluator
 pass	eval of a quoted boolean connective short-circuits
 pass	eval of a quoted boolean executes it to the boolean value
 pass	eval of a quoted conditional reduces its comparison condition first
@@ -3565,5 +3571,6 @@ pass	wrapping-sub wraps a boundary-crossing runtime Int64 at the min boundary
 pass	α-equivalence (aconv) recognizes (λx.x) and (λy.y) as the same term up to bound-variable renaming
 pass	α-equivalence handles nesting and distinguishes a bound variable from a same-numbered free variable
 todo	SUM ARG + LIST RESULT declines cleanly (Option arg, List result)
+todo	an exported entry with a String parameter is called with a string argument
 todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional

@@ -112,6 +112,30 @@
             (export main)))
   (output (: 7 Int64)))
 
+; --- A RECURSIVE tag function const-folds (the compile-time evaluator reduces recursion) -----------
+; metaprogramming.md: the tag is "evaluated on the one-tier compile-time evaluator." A tag that calls a
+; RECURSIVE helper (the shape every real DSL parser has — a scan/count loop) must fold to a compile-time
+; constant `Ast`, not be emitted as runtime code. This exercises the compile-time evaluator's recursion
+; reduction (the eval-core depth-guarded fold): `tri` calls `sum-to`, a self-recursive `1..n` sum, and
+; splices `(Ast.Int (sum-to 4))` = `(Ast.Int 10)`. A terminating recursive tag folds; the depth backstop
+; stops a runaway one. This is the precondition a recursive-descent tag parser (e.g. JSX) needs.
+
+(case "a recursive tag function const-folds to a compile-time Ast"
+  (doc    "`tri` returns `(Ast.Int (sum-to 4))` where `sum-to` is a self-RECURSIVE `1..n` sum — the tag's
+           body is not straight-line. The compile-time evaluator reduces the recursion (sum-to 4 = 10) and
+           splices `(Ast.Int 10)`, read here as 10. Pins that a tag calling a recursive helper folds to a
+           constant `Ast` at expansion — the capability a real recursive-descent DSL parser tag depends on
+           — rather than declining or emitting runtime code. A terminating recursion folds; the evaluator's
+           depth backstop stops a non-terminating one (this case terminates).")
+  (input  (do
+            (def (sum-to (: n Int64)) (if (= n 0) 0 (+ n (sum-to (- n 1)))))
+            (def (tri chunks holes) (Ast.Int (sum-to 4)))
+            (def (main) (match (tagged-template tri (chunks "x") (holes))
+                          ((Ast.Int n) n)
+                          (_           0)))
+            (export main)))
+  (output (: 10 Int64)))
+
 ; --- The tag's TYPE is enforced (dispatch by binding requires the right shape) ---------------------
 ; metaprogramming.md: the tag "MUST … require it to be a compile-time function from a list of the chunk
 ; strings and a list of the hole expressions to an abstract syntax tree." A tag bound to a NON-FUNCTION

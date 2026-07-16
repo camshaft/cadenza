@@ -40,3 +40,5 @@
   (input (do (def (main (: s String)) (String.byte-len s)) (export main)))
   (call main (: "abc" String))
   (output (: 3 Int64)))
+
+; SUBSUMED 2026-07-16 by the consolidated family issue: queue/adv-rust-nonscalar-entry-arg-driver-marshalling-family.sexp (rust driver cannot marshal ANY non-scalar entry arg — String/BigInt/Rational/Bytes — ONE root: driver writes raw Cadenza literal text into Rust source instead of the library construction form). Verified family gates wasm 1p/4todo vs rust 1p/4fail on trunk b29b7c89a. Track/promote via the FAMILY reproducer; this individual repro resolves under the same v-rust-backend fix. (Not renaming .RESOLVED yet — still reproduces; retire when the family fix lands.)

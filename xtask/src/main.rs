@@ -1259,6 +1259,16 @@ fn rust_call_arg(val: &str) -> String {
         "-inf" => return "f64::NEG_INFINITY".to_string(),
         _ => {}
     }
+    // A STRING literal (`"abc"`) — the canonical value form of a `String` arg — must cross as an OWNED
+    // `String`, because the emitted export's parameter is `s: String` (owned), NOT `&str`. A bare `"abc"`
+    // Rust literal is a `&'static str`, so passing it directly is a type error (E0308) — the exported-entry
+    // String-arg surface (breaker-found, corpus-bugfix; no corpus case passed a String ENTRY arg before, so
+    // it was untested). Wrap it `"abc".to_string()`. The quoted form is unambiguously a String value (a
+    // Cadenza string renders `"..."`); the inner escapes are already Rust-valid (cdz-run's string form and
+    // Rust's share `\n`/`\t`/`\"`/`\\`), so the literal is emitted verbatim inside the `.to_string()`.
+    if v.starts_with('"') && v.ends_with('"') && v.len() >= 2 {
+        return format!("{v}.to_string()");
+    }
     // A compound is a parenthesized head form; a bare token is a scalar literal → verbatim.
     let inner = match v.strip_prefix('(').and_then(|s| s.strip_suffix(')')) {
         Some(inner) => inner.trim(),

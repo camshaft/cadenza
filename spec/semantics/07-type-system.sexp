@@ -51,6 +51,18 @@
   (input  (do (def (h x) (+ x 1)) (def (main) (: (Some h) (Option (-> Bool Int64)))) (export main)))
   (error  CDZ0203))
 
+(case "a contradictory arrow annotation on a function in a runtime Map value is rejected"
+  (doc    "The runtime-Map-builder sibling of the compound/sum annotation-check cases: `(: (Map.insert
+           Map.empty 1 h) (Map Int64 (-> Bool Int64)))` with `h : Int64 -> Int64` is a contradiction — the
+           map value function's domain is `Int64`, not the annotated `Bool`. Like the sum-payload case, the
+           value fn's domain leaked `Any` through the `Map` type argument (`Map.insert`'s result type comes
+           from the op scheme, read bottom-up), so the `Any` absorbed the annotated `Bool` and the mismatch
+           was silently ACCEPTED — the check-side twin of the Map reflection leak (Option/Tuple already
+           rejected the same). The annotation check now grounds a fn domain in the Map value (and key)
+           position, matching the reflection fix. CDZ0203.")
+  (input  (do (def (h x) (+ x 1)) (def (main) (: (Map.insert Map.empty 1 h) (Map Int64 (-> Bool Int64)))) (export main)))
+  (error  CDZ0203))
+
 ; The TYPE OPERAND of an annotation `(: expr T)` must itself DENOTE A TYPE — validating what stands in
 ; type position is the dual of checking it against the value. A non-type there (an unbound name, an
 ; integer/compound VALUE, an arbitrary expression, a non-constructor type applied to arguments) is
