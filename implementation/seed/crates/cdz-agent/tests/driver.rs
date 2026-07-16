@@ -382,6 +382,78 @@ fn the_driver_replies_to_the_sender_with_the_model_completion() {
 }
 
 #[test]
+fn the_driver_reads_real_pretty_printed_fleet_messages_and_writes_a_readable_reply() {
+    // REGRESSION for Copilot PR#494 — the driver against REAL fleet inboxes:
+    //  (1) `cargo xtask fleet` delivers messages via serde_json::to_string_pretty, so a real message is
+    //      MULTI-LINE with a SPACE after each colon (`"body": "…"`). A compact `"key":"` needle parsed
+    //      body/from EMPTY → the driver sent an empty prompt and --reply-to refused (empty from). Here the
+    //      message is written in the EXACT pretty shape; the reply proves body+from parsed (uppercased
+    //      body reached the model, reply addressed to the sender).
+    //  (2) the reply must itself be a fleet-READABLE message: the fleet `Message` struct has a REQUIRED
+    //      `seq` field, so a reply lacking it fails to deserialize and sits unread. Assert the reply
+    //      carries `seq`.
+    let Some(fixture) =
+        consumer_and_runtime_or_skip("tests/fixtures/inbox-model-return-consumer.wasm")
+    else {
+        eprintln!("[cdz-agent driver] runtime absent; skipping");
+        return;
+    };
+    let dir = std::env::temp_dir().join(format!("cdz-agent-pretty-{}", std::process::id()));
+    let replies = std::env::temp_dir().join(format!("cdz-agent-prettyout-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&replies);
+    std::fs::create_dir_all(&dir).expect("mkdir inbox");
+    // EXACTLY the shape serde_json::to_string_pretty produces (2-space indent, `": "` separators, each
+    // field on its own line) — a real `cargo xtask fleet send` message, not a hand-compacted one.
+    let pretty = "{\n  \"from\": \"v-peer\",\n  \"to\": \"cdz-agent\",\n  \"kind\": \"note\",\n  \"subject\": \"do it\",\n  \"body\": \"do the task\",\n  \"seq\": 1\n}";
+    std::fs::write(dir.join("001-msg.json"), pretty).unwrap();
+
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_cdz-agent"))
+        .args([
+            "--consumer",
+            fixture.to_str().unwrap(),
+            "--inbox",
+            dir.to_str().unwrap(),
+            "--reply-to",
+            replies.to_str().unwrap(),
+        ])
+        .output()
+        .expect("spawn");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert!(
+        out.status.success(),
+        "the driver must exit 0: stdout=<{stdout}> stderr=<{stderr}>"
+    );
+    // `from` parsed from PRETTY json → the reply is addressed to the sender (not refused as empty-from).
+    assert!(
+        stdout.contains("replied to v-peer"),
+        "the sender's `from` parsed from pretty json → the driver replies to it: stdout=<{stdout}> stderr=<{stderr}>"
+    );
+    let reply = std::fs::read_to_string(replies.join("reply-001-msg.json"))
+        .expect("the reply message was written");
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&replies);
+
+    // `body` parsed from PRETTY json → the ACTUAL body ("do the task") reached the model, uppercased to
+    // "DO THE TASK" (a compact-only needle would have parsed body empty → reply body "").
+    assert!(
+        reply.contains(r#""body":"DO THE TASK""#),
+        "the body parsed from pretty json and reached the model: {reply}"
+    );
+    assert!(
+        reply.contains(r#""to":"v-peer""#),
+        "the reply is addressed to the sender parsed from pretty json: {reply}"
+    );
+    // The reply carries the fleet-REQUIRED `seq` field, so `cargo xtask fleet`/slack-bridge can read it.
+    assert!(
+        reply.contains(r#""seq":"#),
+        "the reply carries the fleet-required `seq` field (else it fails to deserialize): {reply}"
+    );
+}
+
+#[test]
 fn the_driver_does_not_reply_when_the_model_was_denied() {
     // A Cedar-DENIED run never calls the model, so there is nothing to answer — no reply is written even
     // with --reply-to. The authz consumer returns byte-len on allow / 0 on deny; drive it with a

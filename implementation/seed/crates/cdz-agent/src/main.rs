@@ -198,8 +198,15 @@ fn write_reply(dir: &Path, source_name: &str, to: &str, answer: &str) -> Result<
     // Assemble the JSON by hand (no serde dep in this leaf binary), escaping every string field so a
     // completion containing quotes/newlines/control chars can't break the message or inject fields.
     // `in_reply_to` carries the source filename verbatim (also escaped, though fleet names are tame).
+    //
+    // `seq` is REQUIRED: the fleet `Message` struct (xtask/src/fleet.rs) has `seq: u64` as a non-Option
+    // field, so serde REJECTS a reply lacking it and the fleet readers (`cargo xtask fleet`, slack-bridge)
+    // leave the reply unread (Copilot PR#494). We emit `seq: 0` — the field is metadata-only in the fleet
+    // format (inbox ORDER comes from the durable delivery-seq in the FILENAME, not this field, which is
+    // process-local and always 1 even for a real `fleet send`), so a fixed 0 deserializes fine and keeps
+    // this reply deterministic (no wall-clock, which the toolchain forbids anyway).
     let json = format!(
-        r#"{{"from":"cdz-agent","to":"{}","kind":"answer","subject":"{}","body":"{}","in_reply_to":"{}"}}"#,
+        r#"{{"from":"cdz-agent","to":"{}","kind":"answer","subject":"{}","body":"{}","in_reply_to":"{}","seq":0}}"#,
         cdz_agent::json_escape(to),
         cdz_agent::json_escape(&subject),
         cdz_agent::json_escape(answer),
@@ -344,11 +351,41 @@ fn read_inbox(dir: &Path) -> Result<Vec<Msg>> {
 }
 
 /// Extract the string value of top-level JSON field `key` from `body` — a minimal reader (no serde):
-/// find `"<key>":"`, then read the quoted value honoring backslash escapes, iterating by CHAR so
-/// multi-byte UTF-8 survives (the same discipline as the Bedrock decoder). Returns None if absent.
+/// find `"<key>"`, skip the `:` and any surrounding whitespace, then read the quoted value honoring
+/// backslash escapes, iterating by CHAR so multi-byte UTF-8 survives (the same discipline as the Bedrock
+/// decoder). Returns None if absent.
+///
+/// Whitespace tolerance is REQUIRED, not cosmetic: `cargo xtask fleet` delivers messages via
+/// `serde_json::to_string_pretty`, so a real inbox message is `"body": "…"` — a SPACE after the colon
+/// (and pretty JSON puts each field on its own line). A fixed `"key":"` needle (no space) matched only
+/// COMPACT JSON, so `body`/`from` parsed empty against real fleet inboxes → the driver sent an empty
+/// prompt and `--reply-to` refused (empty `from`). Copilot PR#494. We now scan for the key, then step
+/// over optional whitespace, the `:`, more optional whitespace, and the opening quote.
 fn json_string_field(body: &str, key: &str) -> Option<String> {
-    let needle = format!("\"{key}\":\"");
-    let start = body.find(&needle)? + needle.len();
+    let key_pat = format!("\"{key}\"");
+    // Advance past the key token, then the `:` separator with optional surrounding whitespace, then the
+    // opening quote. JSON structural whitespace (space/tab/newline/CR), `:` and `"` are all single-byte
+    // ASCII, so this prefix scan works on bytes; the VALUE itself is then read by CHAR below for UTF-8.
+    // A `:`/`"` not found after skipping whitespace means this wasn't a `"key": "…"` string field (e.g.
+    // the key appeared inside another value), so bail rather than mis-read.
+    let bytes = body.as_bytes();
+    let mut i = body.find(&key_pat)? + key_pat.len();
+    let skip_ws = |i: &mut usize| {
+        while *i < bytes.len() && bytes[*i].is_ascii_whitespace() {
+            *i += 1;
+        }
+    };
+    skip_ws(&mut i);
+    if bytes.get(i) != Some(&b':') {
+        return None;
+    }
+    i += 1;
+    skip_ws(&mut i);
+    if bytes.get(i) != Some(&b'"') {
+        return None;
+    }
+    i += 1; // step past the opening quote to the first byte of the value
+    let start = i;
     let mut chars = body[start..].chars();
     let mut out = String::new();
     while let Some(c) = chars.next() {
