@@ -14383,6 +14383,57 @@ mod match_engine {
     }
 
     #[test]
+    fn a_nested_match_on_a_recursive_sum_with_a_known_outer_disc_reads_the_right_payload_depth() {
+        // REGRESSION (silent MISCOMPILE): a match nesting a variant of the SAME recursive sum, when the
+        // scrutinee's OUTER discriminant is STATICALLY KNOWN (a constant/inlined `SumNew`), matched the
+        // WRONG branch. `(type T (I Int64) (W T))`, `(match t ((W (I 7)) 1) (_ 0))` on `t = (W (I 7))` →
+        // returned 0, must be 1. ROOT: the `known_disc` fold (build_tree) drops the outer `W` switch, so the
+        // emit never records W's payload type at `[Payload]`; the inner `(I 7)` lit-test's payload-type walk
+        // then FELL BACK to variant 0 (`I`'s payload `Int64`), so the SECOND `Payload` step (into `I`'s
+        // payload) saw `cur = Int64` (not a Sum) and was ERASED as a nominal no-op — `get-int` read at
+        // `[Payload]`, not `[Payload, Payload]` → garbage. FIX (emit layer): `payload_step_ty_of` recovers
+        // the entered variant from the scrutinee's CONSTANT value (`const_disc_at`) when the fold left
+        // `sum_path_types` unseeded, instead of falling back to variant 0. This is the shape EVERY recursive-
+        // AST / tree walk takes (`(Ast.List (list (Ast.Name …) …))`), latent under any inlined/const scrutinee.
+        assert_eq!(
+            run_heap_value(
+                "(module m (type T (I Int64) (W T)) \
+                   (def (f (: t T)) (match t ((W (I 7)) 1) (_ 0))) \
+                   (def (main) (f (W (I 7)))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "1",
+            "(W (I 7)) matches ((W (I 7)) 1) → 1 — the inner I payload is read at [Payload, Payload], not [Payload]"
+        );
+        // The NON-match dual: `(W (W (I 7)))` — inner is `W`, not `I` — must fall through to `_` → 0. Confirms
+        // the inner disc test genuinely runs (not blindly matched) even with the outer disc folded.
+        assert_eq!(
+            run_heap_value(
+                "(module m (type T (I Int64) (W T)) \
+                   (def (f (: t T)) (match t ((W (I 7)) 1) (_ 0))) \
+                   (def (main) (f (W (W (I 7))))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "0",
+            "(W (W (I 7))) — inner is W, not I — falls through to the wildcard → 0"
+        );
+        // The LITERAL refinement is genuinely tested: `(W (I 8))` (payload 8 ≠ 7) falls through → 0.
+        assert_eq!(
+            run_heap_value(
+                "(module m (type T (I Int64) (W T)) \
+                   (def (f (: t T)) (match t ((W (I 7)) 1) (_ 0))) \
+                   (def (main) (f (W (I 8)))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "0",
+            "(W (I 8)) — inner payload 8 ≠ 7 — falls through to the wildcard → 0 (the [Payload,Payload] leaf is read + compared)"
+        );
+    }
+
+    #[test]
     fn a_tail_loop_threading_a_projected_boxed_sum_accumulator_decodes_correctly() {
         // A tuple-projected boxed sum threaded through a self-tail loop must SURVIVE the loop step. `one`
         // returns `(tuple (W.Atom <byte>) (+ pos 1))`; `loop` threads `(. r 0)` (the nested-compound boxed

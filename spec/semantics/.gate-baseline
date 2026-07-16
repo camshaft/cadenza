@@ -570,6 +570,8 @@ pass	a constructor selected at RUNTIME is a first-class value that is then appli
 pass	a constructor whose payload is a constructor keeps the outer variant tag
 pass	a constructor with an all-irrefutable payload shadows a later refining arm of the same variant
 pass	a consumed and a borrowed read of one loop invariant coexist per iteration
+pass	a nested match on a recursive sum with a KNOWN outer discriminant reads the right payload depth
+pass	a nested match on a recursive sum falls through when the inner variant differs (known outer disc)
 pass	a consumed bare None type-checks without annotation (ambiguity is escape-only)
 pass	a consumed empty list type-checks without annotation (ambiguity is escape-only)
 pass	a consumer applies TWO handed-back closures

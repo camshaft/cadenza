@@ -9840,3 +9840,33 @@
             (export main)))
   (call   main (: 7 Int64))
   (output (: 20 Int64)))
+
+(case "a nested match on a recursive sum with a KNOWN outer discriminant reads the right payload depth"
+  (doc    "MISCOMPILE regression (was Todo→Fail-class silent wrong-value). A match nesting a variant of the
+           SAME recursive sum — `(match t ((W (I 7)) 1) (_ 0))` over `(type T (I Int64) (W T))` — when the
+           scrutinee's OUTER discriminant is STATICALLY KNOWN (here `(W (I 7))` is a constant `SumNew{W}`,
+           the shape any inlined/constant recursive-AST value takes), used to match the WRONG branch. ROOT:
+           the `known_disc` fold drops the outer `W` switch, so the emit never records W's payload type at
+           `[Payload]`; the inner `(I 7)` payload-type walk then fell back to VARIANT 0 (`I`'s `Int64`), the
+           SECOND `Payload` step (into `I`'s payload) saw a non-Sum type and was ERASED, and `get-int` read
+           at `[Payload]` not `[Payload, Payload]` → garbage → `1` was returned as `0`. This is EXACTLY the
+           shape recursive-AST / tree walks take (compiler-ml walks Ast/Core/Mir sums; quasiquote builds
+           nested `Ast.List`/`Ast.Name`; a HOL kernel walks recursive terms), latent under any constant or
+           inlined scrutinee — a generation that skipped it would silently take the wrong match arm.")
+  (input  (do (type T (I Int64) (W T))
+              (def (f (: t T)) (match t ((W (I 7)) 1) (_ 0)))
+              (def (main) (f (W (I 7))))
+              (export main)))
+  (output (: 1 Int64)))
+
+(case "a nested match on a recursive sum falls through when the inner variant differs (known outer disc)"
+  (doc    "The non-match dual of the recursive-sum nested-match miscompile: `(W (W (I 7)))` matched against
+           `((W (I 7)) 1) (_ 0)` — the inner value is `W`, not `I` — must fall through to the wildcard → 0.
+           Confirms the inner discriminant test genuinely runs (not blindly matched) even when the outer
+           disc is folded to a constant. Paired with the positive case, this pins that the inner switch at
+           `[Payload]` and the leaf test at `[Payload, Payload]` are both emitted at the correct depth.")
+  (input  (do (type T (I Int64) (W T))
+              (def (f (: t T)) (match t ((W (I 7)) 1) (_ 0)))
+              (def (main) (f (W (W (I 7)))))
+              (export main)))
+  (output (: 0 Int64)))

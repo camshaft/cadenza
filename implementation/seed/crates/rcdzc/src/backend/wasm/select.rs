@@ -5200,12 +5200,77 @@ fn payload_step_ty(
     prefix: &[crate::core::PathStep],
     recorded: &HashMap<Vec<crate::core::PathStep>, Ty>,
 ) -> Ty {
+    payload_step_ty_of(db, None, cur, prefix, recorded)
+}
+
+/// [`payload_step_ty`] with an optional SCRUTINEE node, so a `Payload` step whose entered variant was NOT
+/// recorded (an enclosing `Switch` was FOLDED AWAY by the `known_disc` optimization — its emit never ran
+/// `record_entered_payload_ty`) can recover the ACTUAL entered variant's payload type from the scrutinee's
+/// CONSTANT value at this path, instead of falling back to VARIANT 0. When a switch is folded, the sub-value
+/// at `prefix[..len-1]` is a compile-time `SumNew{disc}` (that is exactly what `const_at_path`/`known_disc`
+/// proved to fold it), so its discriminant is known — and its payload type is `variant_payload_ty_at(sum,
+/// disc)`, not variant 0's. Falling back to variant 0 read a nested self-recursive-sum payload at the wrong
+/// depth (a `(W (I 7))` over `(type T (I …) (W T))` with a known outer `W` disc: the inner `I` payload was
+/// resolved as `I`'s `Int64` from variant 0, erasing the second `Payload` step → a silent MISCOMPILE). Only
+/// used where the scrutinee node is in scope (the emit walks); the type-only `payload_step_ty` keeps the
+/// variant-0 fallback (its callers already thread `recorded` from an emitted switch, so a miss there is the
+/// genuine root/variant-0 case).
+fn payload_step_ty_of(
+    db: &mut Db,
+    scrutinee: Option<StructId>,
+    cur: &Ty,
+    prefix: &[crate::core::PathStep],
+    recorded: &HashMap<Vec<crate::core::PathStep>, Ty>,
+) -> Ty {
     if let Some(t) = recorded.get(prefix) {
         return t.clone();
     }
     match cur.strip_nominal() {
-        Ty::Sum { .. } => sum_single_payload_ty(db, cur).unwrap_or(Ty::Any),
+        Ty::Sum { .. } => {
+            // Recover the entered variant from the scrutinee's CONSTANT value at the parent path (the box
+            // this `Payload` unwraps). `prefix` ends in `Payload`; its parent is `prefix[..len-1]`.
+            if let Some(s) = scrutinee
+                && let Some(parent) = prefix.split_last().map(|(_, rest)| rest)
+                && let Some(disc) = const_disc_at(db, s, parent)
+                && let Some(pt) = variant_payload_ty_at(db, cur, disc)
+            {
+                return pt;
+            }
+            sum_single_payload_ty(db, cur).unwrap_or(Ty::Any)
+        }
         inner => inner.clone(),
+    }
+}
+
+/// The statically-known discriminant of the sub-value at `path` from `scrutinee`, when that sub-value is a
+/// compile-time `Core::SumNew` (its tag is fixed even if its payload is a runtime value) — the backend twin
+/// of `lower`'s `const_at_path` disc read. Walks `Payload`/`Elem` steps through constant `SumNew`/`Tuple`
+/// cores; `None` at the first runtime step (then the caller keeps the variant-0 fallback, correct because a
+/// runtime disc means an enclosing switch WAS emitted and recorded the type). Used only to repair a
+/// folded-switch `Payload` type (see [`payload_step_ty_of`]).
+fn const_disc_at(db: &mut Db, scrutinee: StructId, path: &[crate::core::PathStep]) -> Option<u32> {
+    let mut cur = scrutinee;
+    for step in path {
+        // Mirror `lower::const_at_path`: an erased nominal `Payload` is a no-op; a boxed `SumNew` payload
+        // unwraps to its single payload; a `Tuple`/`ListNew` `Elem` indexes.
+        if matches!(step, crate::core::PathStep::Payload) && crate::infer::type_is_nominal(db, cur)
+        {
+            continue;
+        }
+        cur = match (step, core_of(db, cur)) {
+            (crate::core::PathStep::Payload, Core::SumNew { payloads, .. })
+                if payloads.len() == 1 =>
+            {
+                payloads[0]
+            }
+            (crate::core::PathStep::Elem(i), Core::Tuple { elems })
+            | (crate::core::PathStep::Elem(i), Core::ListNew { elems }) => *elems.get(*i)?,
+            _ => return None,
+        };
+    }
+    match core_of(db, cur) {
+        Core::SumNew { disc, .. } => Some(disc),
+        _ => None,
     }
 }
 
@@ -5278,7 +5343,7 @@ fn push_discriminant(
         match step {
             crate::core::PathStep::Payload => {
                 out.push(Lir::CallImport(OP_SUM_PAYLOAD));
-                cur = payload_step_ty(db, &cur, &prefix, &out.sum_path_types);
+                cur = payload_step_ty_of(db, Some(scrutinee), &cur, &prefix, &out.sum_path_types);
             }
             crate::core::PathStep::Elem(i) => {
                 out.push(Lir::ConstI32(*i as i32));
@@ -7344,9 +7409,13 @@ fn emit(
                         // x` — where `List` is a NON-variant-0 variant — read with `vec-get`; without the
                         // recorded type, variant 0's payload (`Int64`) mis-picked `arr-get` on the RRB vec.
                         cur = match cur.strip_nominal() {
-                            Ty::Sum { .. } => {
-                                payload_step_ty(db, &cur, &walked_prefix, &out.sum_path_types)
-                            }
+                            Ty::Sum { .. } => payload_step_ty_of(
+                                db,
+                                Some(scrutinee),
+                                &cur,
+                                &walked_prefix,
+                                &out.sum_path_types,
+                            ),
                             // A nominal newtype's `Payload` step is a static unwrap to its inner type.
                             inner => inner.clone(),
                         };
@@ -10635,7 +10704,13 @@ fn emit_sum_cont(
                             // by a nested element pattern reads the wrong accessor without it.
                             Ty::Sum { .. } => {
                                 out.push(Lir::CallImport(OP_SUM_PAYLOAD));
-                                cur = payload_step_ty(db, &cur, &lit_prefix, &out.sum_path_types);
+                                cur = payload_step_ty_of(
+                                    db,
+                                    Some(scrutinee),
+                                    &cur,
+                                    &lit_prefix,
+                                    &out.sum_path_types,
+                                );
                             }
                             // An ERASED nominal newtype: the box is gone, so the `Payload` step is a static
                             // unwrap — NO `sum-payload` op, `cur` becomes the inner type.
