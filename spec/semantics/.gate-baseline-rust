@@ -1892,6 +1892,7 @@ pass	breaker capsubst: the fresh binder clears the body's ids, not only s's
 pass	breaker holsubst: a free occurrence beside a shadow substitutes selectively
 pass	breaker holsubst: a shadowing binder blocks substitution
 pass	breaker holsubst: the naive subst's documented capture hazard
+pass	breaker specsubst: GEN of refl then SPEC substitutes the bound var throughout the body
 pass	byte length agrees with the length of the encoded bytes
 pass	byte length counts the normalized form, not the source spelling
 pass	byte length is the UTF-8 byte count
