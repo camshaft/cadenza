@@ -6,26 +6,27 @@
 //! into a [`Solid`] CSG tree; (2) [`mesh`] walks that tree into a manifold mesh (`manifold-csg`). A CLI
 //! sub-slice (`cdz cad`) wires "run the program → parse → mesh → write 3MF/glTF/STL" together.
 //!
-//! A Cadenza program built on `implementation/cad`'s `Solid` library describes a solid as a recursive
-//! `Solid` value. When such a program's single export crosses the component boundary, cdz-run renders the
-//! compound value to CANONICAL S-EXPRESSION TEXT (the B1 "render-tree-as-data" seam). For example the
-//! program returning `union (cube 2 2 2) (translate (v3 5 0 0) (sphere 1))` crosses as:
+//! A Cadenza program built on `implementation/cad`'s EXACT `Solidr` model describes a solid as a recursive
+//! `Solidr` value with `Rational` coordinates. When such a program's single export crosses the component
+//! boundary, cdz-run renders the compound value to CANONICAL S-EXPRESSION TEXT (the B1 "render-tree-as-data"
+//! seam). For example a plate = cube minus a sphere crosses as:
 //!
 //! ```text
-//! (: (Union (Cube (: (tuple 2.0 2.0 2.0) Vec3)) (Translate (: (tuple 5.0 0.0 0.0) Vec3) (Sphere 1.0))) Solid)
+//! (: (Differencer (Cuber (: (tuple 50/1 30/1 5/1) Vec3r)) (Spherer 127/20)) Solidr)
 //! ```
 //!
-//! This module parses that text into a [`Solid`] tree the mesh backend (a later sub-slice) walks into
-//! `manifold-csg`. The render grammar this parser accepts, read off the live compiler output:
-//!   * the WHOLE value carries an outer type annotation `(: <value> Solid)`; NESTED solids are bare
+//! This module parses that text into a [`Solid`] tree the [`mesh`] backend walks into `manifold-csg`. The
+//! render grammar this parser accepts (R4 — the EXACT model; the legacy Float64 `Solid` form is retired):
+//!   * the WHOLE value carries an outer type annotation `(: <value> Solidr)`; NESTED solids are bare
 //!     `(Ctor …)` (no per-node annotation);
-//!   * each `Vec3` is annotated `(: (tuple x y z) Vec3)`;
-//!   * a sum constructor is `(Ctor arg…)` — `Union`/`Difference`/`Intersection` take two `Solid` args;
-//!     `Translate`/`Rotate`/`Scale` take a `Vec3` then a `Solid`; `Cube` takes a `Vec3`; `Sphere` one float;
-//!     `Cylinder` two floats;
-//!   * a NULLARY constructor renders WITH a `unit` payload — `Empty` is `(Empty unit)`;
-//!   * a float is a decimal with a fractional part (`2.0`, `1.5`, `-0.0`, `NaN`), matching cdz-run's
-//!     `display_float`.
+//!   * each `Vec3r` is annotated `(: (tuple x y z) Vec3r)`;
+//!   * a sum constructor is `(Ctor arg…)` — `Unionr`/`Differencer`/`Intersectionr` take two `Solidr` args;
+//!     `Translater`/`Scaler` take a `Vec3r` then a `Solidr`; `Cuber` takes a `Vec3r` (FULL size);
+//!     `Spherer` one Rational (radius); `Cylinderr` two Rationals (FULL height, radius). There is NO
+//!     `Rotater` (a general rotation has no exact Rational form);
+//!   * a NULLARY constructor renders WITH a `unit` payload — `Emptyr` is `(Emptyr unit)`;
+//!   * a number leaf is a RATIONAL `n/d` (`50/1`, `127/20`), evaluated to `f64` (`n/d`) at the mesh leaf —
+//!     the MODEL stays exact; the geometry kernel works in float. (Bare int / `N.0` accepted defensively.)
 //!
 //! The parser unwraps a `(: v T)` annotation transparently wherever a value is expected, so it also accepts
 //! a fully-annotated form (belt-and-suspenders — it never depends on WHICH positions are annotated).
@@ -241,65 +242,66 @@ impl Parser<'_> {
         result
     }
 
-    /// Parse a bare `(Ctor arg…)` Solid constructor.
+    /// Parse a bare `(Ctor arg…)` Solidr constructor (the EXACT model's variants — R4). The Cadenza model
+    /// is now the exact `Solidr` (Rational coords), so the render form is `Cuber`/`Spherer`/`Cylinderr`/
+    /// `Unionr`/`Differencer`/`Intersectionr`/`Translater`/`Scaler` with `n/d` Rational numbers. There is no
+    /// `Rotater` (a general rotation has no exact Rational form — see exact.cdz). A `Cuber(w,d,h)` /
+    /// `Cylinderr(height, r)` is FULL size (matching solid.cdz's Cube); the mesh backend's centred
+    /// `Manifold::cube`/`cylinder` consume full size directly, so no halving is needed here.
     fn parse_solid_node(&mut self) -> Result<Solid, ParseError> {
         self.expect_open()?;
         let head = self.expect_atom()?;
         let node = match head.as_str() {
-            "Empty" => {
-                let _unit = self.expect_atom()?; // nullary variant renders as `(Empty unit)`
+            "Emptyr" => {
+                let _unit = self.expect_atom()?; // nullary variant renders as `(Emptyr unit)`
                 Solid::Empty
             }
-            "Cube" => Solid::Cube(self.parse_vec3()?),
-            "Sphere" => Solid::Sphere(self.parse_float()?),
-            "Cylinder" => {
-                let h = self.parse_float()?;
-                let r = self.parse_float()?;
+            "Cuber" => Solid::Cube(self.parse_vec3()?),
+            "Spherer" => Solid::Sphere(self.parse_rational()?),
+            "Cylinderr" => {
+                let h = self.parse_rational()?;
+                let r = self.parse_rational()?;
                 Solid::Cylinder(h, r)
             }
-            "Union" => {
+            "Unionr" => {
                 let a = self.parse_solid_value()?;
                 let b = self.parse_solid_value()?;
                 Solid::Union(Box::new(a), Box::new(b))
             }
-            "Difference" => {
+            "Differencer" => {
                 let a = self.parse_solid_value()?;
                 let b = self.parse_solid_value()?;
                 Solid::Difference(Box::new(a), Box::new(b))
             }
-            "Intersection" => {
+            "Intersectionr" => {
                 let a = self.parse_solid_value()?;
                 let b = self.parse_solid_value()?;
                 Solid::Intersection(Box::new(a), Box::new(b))
             }
-            "Translate" => {
+            "Translater" => {
                 let v = self.parse_vec3()?;
                 let s = self.parse_solid_value()?;
                 Solid::Translate(v, Box::new(s))
             }
-            "Rotate" => {
-                let v = self.parse_vec3()?;
-                let s = self.parse_solid_value()?;
-                Solid::Rotate(v, Box::new(s))
-            }
-            "Scale" => {
+            "Scaler" => {
                 let v = self.parse_vec3()?;
                 let s = self.parse_solid_value()?;
                 Solid::Scale(v, Box::new(s))
             }
-            other => return Err(ParseError(format!("unknown Solid constructor `{other}`"))),
+            other => return Err(ParseError(format!("unknown Solidr constructor `{other}`"))),
         };
         self.expect_close()?;
         Ok(node)
     }
 
-    /// Parse a `Vec3` value: a `(: (tuple x y z) Vec3)` annotation OR a bare `(tuple x y z)`.
+    /// Parse a `Vec3r` value: a `(: (tuple x y z) Vec3r)` annotation OR a bare `(tuple x y z)`. Components
+    /// are Rational `n/d`.
     fn parse_vec3(&mut self) -> Result<Vec3, ParseError> {
         if self.is_annotation_ahead() {
             self.expect_open()?; // (
             let _colon = self.expect_atom()?; // :
             let v = self.parse_vec3()?; // inner (tuple …)
-            let _ty = self.expect_atom()?; // Vec3
+            let _ty = self.expect_atom()?; // Vec3r
             self.expect_close()?; // )
             return Ok(v);
         }
@@ -307,24 +309,40 @@ impl Parser<'_> {
         let head = self.expect_atom()?;
         if head != "tuple" {
             return Err(ParseError(format!(
-                "expected a Vec3 `(tuple …)`, found `{head}`"
+                "expected a Vec3r `(tuple …)`, found `{head}`"
             )));
         }
-        let x = self.parse_float()?;
-        let y = self.parse_float()?;
-        let z = self.parse_float()?;
+        let x = self.parse_rational()?;
+        let y = self.parse_rational()?;
+        let z = self.parse_rational()?;
         self.expect_close()?;
         Ok(Vec3::new(x, y, z))
     }
 
-    fn parse_float(&mut self) -> Result<f64, ParseError> {
+    /// Parse a RATIONAL number leaf `n/d` (the exact model renders coordinates as normalized fractions,
+    /// e.g. `50/1`, `127/20`) and evaluate it to the `f64` the mesh kernel uses — division at the leaf
+    /// keeps the MODEL exact while the geometry backend works in float. A bare integer `n` (no `/`) or the
+    /// float forms (`N.0`/`NaN`) are accepted defensively so a mixed/legacy render still parses.
+    fn parse_rational(&mut self) -> Result<f64, ParseError> {
         let a = self.expect_atom()?;
-        // cdz-run renders NaN as `NaN` and integral floats as `N.0`; parse both.
         if a == "NaN" {
             return Ok(f64::NAN);
         }
+        if let Some((num, den)) = a.split_once('/') {
+            let n: f64 = num
+                .parse()
+                .map_err(|_| ParseError(format!("bad rational numerator `{num}` in `{a}`")))?;
+            let d: f64 = den
+                .parse()
+                .map_err(|_| ParseError(format!("bad rational denominator `{den}` in `{a}`")))?;
+            if d == 0.0 {
+                return Err(ParseError(format!("rational `{a}` has a zero denominator")));
+            }
+            return Ok(n / d);
+        }
+        // no `/` — a bare integer or a float (N.0); parse directly.
         a.parse::<f64>()
-            .map_err(|_| ParseError(format!("expected a float, found `{a}`")))
+            .map_err(|_| ParseError(format!("expected a rational `n/d`, found `{a}`")))
     }
 }
 
@@ -332,12 +350,13 @@ impl Parser<'_> {
 mod tests {
     use super::*;
 
-    // The EXACT text cdz-run renders for a Solid (captured from the live compiler), covering every variant.
-    const ALL_VARIANTS: &str = "(: (Intersection (Difference (Union (Cube (: (tuple 2.0 2.0 2.0) Vec3)) (Sphere 1.5)) (Cylinder 3.0 0.5)) (Scale (: (tuple 2.0 2.0 2.0) Vec3) (Rotate (: (tuple 0.0 0.0 90.0) Vec3) (Translate (: (tuple 1.0 0.0 0.0) Vec3) (Empty unit))))) Solid)";
+    // The EXACT text cdz-run renders for a Solidr (captured from the live compiler), covering every variant.
+    // Rational leaves `n/d`; no Rotater (no exact rotation).
+    const ALL_VARIANTS: &str = "(: (Intersectionr (Differencer (Unionr (Cuber (: (tuple 2/1 2/1 2/1) Vec3r)) (Spherer 3/2)) (Cylinderr 3/1 1/2)) (Scaler (: (tuple 2/1 2/1 2/1) Vec3r) (Translater (: (tuple 1/1 0/1 0/1) Vec3r) (Emptyr unit)))) Solidr)";
 
     #[test]
     fn parses_a_single_cube() {
-        let s = parse_solid("(: (Cube (: (tuple 2.0 2.0 2.0) Vec3)) Solid)").unwrap();
+        let s = parse_solid("(: (Cuber (: (tuple 2/1 2/1 2/1) Vec3r)) Solidr)").unwrap();
         assert_eq!(s, Solid::Cube(Vec3::new(2.0, 2.0, 2.0)));
         assert_eq!(s.leaf_count(), 1);
         assert_eq!(s.node_count(), 1);
@@ -346,28 +365,34 @@ mod tests {
     #[test]
     fn parses_a_sphere_and_cylinder() {
         assert_eq!(
-            parse_solid("(: (Sphere 1.5) Solid)").unwrap(),
+            parse_solid("(: (Spherer 3/2) Solidr)").unwrap(),
             Solid::Sphere(1.5)
         );
         assert_eq!(
-            parse_solid("(: (Cylinder 3.0 0.5) Solid)").unwrap(),
+            parse_solid("(: (Cylinderr 3/1 1/2) Solidr)").unwrap(),
             Solid::Cylinder(3.0, 0.5)
         );
     }
 
     #[test]
     fn parses_empty_with_its_unit_payload() {
-        assert_eq!(parse_solid("(: (Empty unit) Solid)").unwrap(), Solid::Empty);
         assert_eq!(
-            parse_solid("(: (Empty unit) Solid)").unwrap().leaf_count(),
+            parse_solid("(: (Emptyr unit) Solidr)").unwrap(),
+            Solid::Empty
+        );
+        assert_eq!(
+            parse_solid("(: (Emptyr unit) Solidr)")
+                .unwrap()
+                .leaf_count(),
             0
         );
     }
 
     #[test]
     fn parses_a_union_of_two_leaves() {
-        let s = parse_solid("(: (Union (Cube (: (tuple 1.0 1.0 1.0) Vec3)) (Sphere 2.0)) Solid)")
-            .unwrap();
+        let s =
+            parse_solid("(: (Unionr (Cuber (: (tuple 1/1 1/1 1/1) Vec3r)) (Spherer 2/1)) Solidr)")
+                .unwrap();
         assert_eq!(
             s,
             Solid::Union(
@@ -381,8 +406,8 @@ mod tests {
 
     #[test]
     fn parses_a_transform_wrapping_a_leaf() {
-        let s =
-            parse_solid("(: (Translate (: (tuple 5.0 0.0 0.0) Vec3) (Sphere 1.0)) Solid)").unwrap();
+        let s = parse_solid("(: (Translater (: (tuple 5/1 0/1 0/1) Vec3r) (Spherer 1/1)) Solidr)")
+            .unwrap();
         assert_eq!(
             s,
             Solid::Translate(Vec3::new(5.0, 0.0, 0.0), Box::new(Solid::Sphere(1.0)))
@@ -394,46 +419,58 @@ mod tests {
     #[test]
     fn parses_every_variant_and_counts_match() {
         let s = parse_solid(ALL_VARIANTS).unwrap();
-        // Cube, Sphere, Cylinder (3 leaves) + Empty (0) = 3 primitive leaves.
+        // Cuber, Spherer, Cylinderr (3 leaves) + Emptyr (0) = 3 primitive leaves.
         assert_eq!(s.leaf_count(), 3);
-        // Intersection, Difference, Union, Cube, Sphere, Cylinder, Scale, Rotate, Translate, Empty = 10.
-        assert_eq!(s.node_count(), 10);
+        // Intersectionr, Differencer, Unionr, Cuber, Spherer, Cylinderr, Scaler, Translater, Emptyr = 9.
+        assert_eq!(s.node_count(), 9);
     }
 
     #[test]
-    fn negative_and_integral_floats_parse() {
-        let s = parse_solid("(: (Translate (: (tuple -1.5 0.0 -0.0) Vec3) (Sphere 2.0)) Solid)")
+    fn a_rational_leaf_evaluates_to_its_exact_quotient() {
+        // 127/20 = 6.35 exactly (the 1/4-inch hole radius in mm) — parse the fraction, not a float.
+        let s = parse_solid("(: (Spherer 127/20) Solidr)").unwrap();
+        assert_eq!(s, Solid::Sphere(6.35));
+    }
+
+    #[test]
+    fn negative_and_integral_rationals_parse() {
+        let s = parse_solid("(: (Translater (: (tuple -3/2 0/1 0/1) Vec3r) (Spherer 2/1)) Solidr)")
             .unwrap();
         match s {
             Solid::Translate(v, _) => {
-                assert_eq!(v.x, -1.5);
+                assert_eq!(v.x, -1.5); // -3/2
                 assert_eq!(v.y, 0.0);
-                assert!(v.z == 0.0); // -0.0 == 0.0
+                assert_eq!(v.z, 0.0);
             }
-            _ => panic!("expected a Translate"),
+            _ => panic!("expected a Translater"),
         }
     }
 
     #[test]
     fn parses_a_bare_unannotated_form_too() {
         // Defensive: nested solids render bare; the parser must accept a bare top-level node as well.
-        let s = parse_solid("(Sphere 3.0)").unwrap();
+        let s = parse_solid("(Spherer 3/1)").unwrap();
         assert_eq!(s, Solid::Sphere(3.0));
     }
 
     #[test]
     fn rejects_an_unknown_constructor() {
-        assert!(parse_solid("(: (Torus 1.0 2.0) Solid)").is_err());
+        assert!(parse_solid("(: (Torusr 1/1 2/1) Solidr)").is_err());
     }
 
     #[test]
     fn rejects_trailing_junk() {
-        assert!(parse_solid("(: (Sphere 1.0) Solid) extra").is_err());
+        assert!(parse_solid("(: (Spherer 1/1) Solidr) extra").is_err());
     }
 
     #[test]
     fn rejects_a_truncated_form() {
-        assert!(parse_solid("(: (Union (Sphere 1.0)").is_err());
+        assert!(parse_solid("(: (Unionr (Spherer 1/1)").is_err());
+    }
+
+    #[test]
+    fn rejects_a_zero_denominator_rational() {
+        assert!(parse_solid("(: (Spherer 1/0) Solidr)").is_err());
     }
 
     #[test]
@@ -441,18 +478,19 @@ mod tests {
         // A driver parses UNTRUSTED rendered text; every malformed shape must be a clean Err, never a panic.
         // (This pins the totality validated by the vertical's robustness probe.)
         for bad in [
-            "",                                               // empty
-            "(",                                              // lone open
-            ")",                                              // lone close
-            "()",                                             // empty list (no ctor head)
-            "(Cube)",                                         // missing payload
-            "(Cube (: (tuple 1.0) Vec3))",                    // Vec3 with too few components
-            "(Cube (: (tuple 1.0 2.0 3.0 4.0) Vec3))",        // Vec3 with too many
-            "(: (Cube (: (tuple a b c) Vec3)) Solid)",        // non-numeric floats
-            "(Sphere 1.0 2.0 3.0)",                           // wrong arity
-            "(Union (Sphere 1.0) (Sphere 2.0) (Sphere 3.0))", // Union with 3 args
-            "not-an-sexpr",                                   // a bare atom
-            "((((((((((",                                     // runaway opens
+            "",                                                   // empty
+            "(",                                                  // lone open
+            ")",                                                  // lone close
+            "()",                                                 // empty list (no ctor head)
+            "(Cuber)",                                            // missing payload
+            "(Cuber (: (tuple 1/1) Vec3r))",                      // Vec3r with too few components
+            "(Cuber (: (tuple 1/1 2/1 3/1 4/1) Vec3r))",          // Vec3r with too many
+            "(: (Cuber (: (tuple a b c) Vec3r)) Solidr)",         // non-numeric leaves
+            "(Spherer 1/1 2/1 3/1)",                              // wrong arity
+            "(Unionr (Spherer 1/1) (Spherer 2/1) (Spherer 3/1))", // Unionr with 3 args
+            "not-an-sexpr",                                       // a bare atom
+            "((((((((((",                                         // runaway opens
+            "(Spherer 1/0)",                                      // zero denominator
         ] {
             assert!(
                 parse_solid(bad).is_err(),
@@ -465,11 +503,11 @@ mod tests {
     fn parser_handles_a_reasonably_deep_chain() {
         // A moderately deep Union chain (100) — well beyond any real CAD model's nesting — parses + counts.
         let depth = 100;
-        let mut s = String::from("(Sphere 1.0)");
+        let mut s = String::from("(Spherer 1/1)");
         for _ in 0..depth {
-            s = format!("(Union (Sphere 1.0) {s})");
+            s = format!("(Unionr (Spherer 1/1) {s})");
         }
-        let parsed = parse_solid(&format!("(: {s} Solid)")).expect("deep chain parses");
+        let parsed = parse_solid(&format!("(: {s} Solidr)")).expect("deep chain parses");
         // depth unions + (depth + 1) spheres = 2*depth + 1 nodes.
         assert_eq!(parsed.node_count(), 2 * depth + 1);
         assert_eq!(parsed.leaf_count(), depth + 1);
@@ -479,11 +517,11 @@ mod tests {
     fn an_adversarially_deep_chain_errs_cleanly_instead_of_overflowing() {
         // Past MAX_DEPTH the parser must return an Err (the depth guard), NOT recurse into a stack overflow.
         // Build a chain well beyond the cap; the parse should stop with the depth-limit error.
-        let mut s = String::from("(Sphere 1.0)");
+        let mut s = String::from("(Spherer 1/1)");
         for _ in 0..(MAX_DEPTH + 50) {
-            s = format!("(Union (Sphere 1.0) {s})");
+            s = format!("(Unionr (Spherer 1/1) {s})");
         }
-        let err = parse_solid(&format!("(: {s} Solid)")).unwrap_err();
+        let err = parse_solid(&format!("(: {s} Solidr)")).unwrap_err();
         assert!(
             err.0.contains("nests deeper than the limit"),
             "expected the depth-limit error, got: {}",
