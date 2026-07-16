@@ -29,6 +29,14 @@ pub mod op {
     pub const F64_NE: u8 = 0x62;
     pub const F32_EQ: u8 = 0x5b;
     pub const F32_NE: u8 = 0x5c;
+    pub const F64_LT: u8 = 0x63;
+    pub const F64_GT: u8 = 0x64;
+    pub const F64_LE: u8 = 0x65;
+    pub const F64_GE: u8 = 0x66;
+    pub const F32_LT: u8 = 0x5d;
+    pub const F32_GT: u8 = 0x5e;
+    pub const F32_LE: u8 = 0x5f;
+    pub const F32_GE: u8 = 0x60;
     pub const F32_DEMOTE_F64: u8 = 0xb6;
     pub const F64_PROMOTE_F32: u8 = 0xbb;
     pub const F64_CONVERT_I64_S: u8 = 0xb9;

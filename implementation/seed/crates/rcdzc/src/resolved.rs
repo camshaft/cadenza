@@ -115,8 +115,19 @@ pub enum Prim {
     /// (`core-semantics.md` §Floating-Point Equality Follows The Canonical Byte Form): `nan == nan` TRUE,
     /// `-0.0 != +0.0`, all NaN equal. Distinct from the integer/bool `Eq` prim because the machine emit is
     /// a NaN-canonicalizing BIT compare, not IEEE `f64.eq`. A constant pair folds in `lower`; a runtime
-    /// operand emits `Core::FloatCompare`. Equality only — float ordering awaits the totalOrder ruling.
+    /// operand emits `Core::FloatCompare`.
     FEq,
+    /// Runtime FLOAT ORDERING `< <= > >= : Float^w → Float^w → Bool` under IEEE PARTIAL order (operator
+    /// ruling 2026-07-16): a NaN operand yields `false` (unordered — NaN is neither less, greater, nor
+    /// equal to anything), and `-0.0` compares EQUAL-under-ordering to `+0.0` (`-0.0 <= +0.0` true, neither
+    /// strictly less). This is RAW IEEE (`f64.lt/le/gt/ge`), NOT the canonical-byte compare `FEq` uses —
+    /// the two relations DISAGREE on NaN + signed zero (bit-equality vs numeric-ordering, inherent to
+    /// float). A constant pair folds in `lower` (NaN → false, not a decline); a runtime operand emits
+    /// `Core::FloatCompare` with the ordering op → the raw IEEE machine compare.
+    FLt,
+    FLe,
+    FGt,
+    FGe,
     /// The TRUNCATING integer conversion `T.wrap : ∀(w,s). Int^s_w → T` — keeps the low `N` bits of the
     /// source's two's-complement value and interprets them at the TARGET width `N` and signedness. The
     /// source is a fully-polymorphic integer (any width/sign, via the operator record's type-lambda); the

@@ -1680,9 +1680,10 @@ fn find_malformed_map_binding_name(db: &Db, pattern: StructId, name: &str) -> Op
         return None;
     };
     for &child in children {
-        // Skip a compound HEAD (`tuple`/`list`/`map`/`record` marker, a `(. Sum V)` variant head) — it is
-        // not a sub-pattern. A recursive descent into every child is safe (a head is a name/`.`-form, so
-        // the recursion bottoms out).
+        // Recurse into EVERY child, INCLUDING the compound HEAD (`tuple`/`list`/`map`/`record` marker, a
+        // `(. Sum V)` variant head). No skip is needed: a head is a name/`.`-form with no map-binding name
+        // to find, so descending into it is safe and the recursion bottoms out. (Fixed a stale comment that
+        // claimed the head was skipped — it never was; PR #443.)
         if let Some(found) = find_malformed_map_binding_name(db, child, name) {
             return Some(found);
         }

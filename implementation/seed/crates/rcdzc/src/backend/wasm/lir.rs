@@ -102,6 +102,18 @@ pub enum Lir {
     F64Ne,
     F32Eq,
     F32Ne,
+    /// Float ORDERING — runtime `< <= > >=` under IEEE PARTIAL order (operator ruling): a NaN operand
+    /// yields false (unordered), and `-0.0` compares equal-under-ordering to `+0.0`. These are the RAW
+    /// IEEE compares, emitted directly for `Core::FloatCompare` with an ordering prim — DISTINCT from the
+    /// canonical-byte EQUALITY path above (the two relations disagree on NaN + signed zero, by design).
+    F64Lt,
+    F64Le,
+    F64Gt,
+    F64Ge,
+    F32Lt,
+    F32Le,
+    F32Gt,
+    F32Ge,
     /// REINTERPRET a float's bits as the same-width integer (`i64.reinterpret_f64` 0xBD /
     /// `i32.reinterpret_f32` 0xBC) — no numeric conversion, just the bit pattern. Used by the
     /// canonical-byte float EQUALITY (`Core::FloatCompare`): after canonicalizing a NaN, the two floats

@@ -15911,6 +15911,10 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::SchemaOf
         | Prim::PayloadOf
         | Prim::FEq
+        | Prim::FLt
+        | Prim::FLe
+        | Prim::FGt
+        | Prim::FGe
         | Prim::SchemaDecode => {
             return Core::Poison(Reject::decline("not an integer binary operation"));
         }
@@ -16112,16 +16116,30 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
     if rational_operand(db, args) {
         return lower_rational_cmp(db, op, args[0], args[1]);
     }
-    // A comparison over FLOAT operands. EQUALITY (`=`) under the canonical byte form is realized: a
-    // constant pair folds in the `ConstFloat`/`ConstFloatNan` arms below (by raw bits — `nan = nan` true,
-    // `-0.0 ≠ 0.0`), and a RUNTIME operand emits `Core::FloatCompare`, whose backend does a
-    // NaN-canonicalizing BIT compare (NOT IEEE `f64.eq`). Float is NOT `is_scalar` (Int/Bool only), so
-    // without this a runtime float `=` fell to the compound-heap-walk decline. Float ORDERING (`<`/`>`)
-    // is a separate ruling (IEEE totalOrder pending) — it still declines below (the const NaN arms decline
-    // ordering, and a runtime float `<` is not routed here), so ONLY `Prim::Eq` takes this path.
+    // A comparison over FLOAT operands. Two DISTINCT relations, both realized:
+    //  • EQUALITY (`=`) under the CANONICAL BYTE FORM — `nan = nan` true, `-0.0 ≠ 0.0` — a
+    //    NaN-canonicalizing BIT compare (NOT IEEE `f64.eq`); the `FEq` float prim.
+    //  • ORDERING (`< <= > >=`) under IEEE PARTIAL order (operator ruling 2026-07-16) — a NaN operand
+    //    yields false, `-0.0 ==ord +0.0` — the RAW IEEE `f64.lt/le/gt/ge`; the `FLt/FLe/FGt/FGe` prims.
+    // The two DISAGREE on NaN + signed zero (bit-equality vs numeric-ordering), by design. A constant pair
+    // folds in the `ConstFloat`/`ConstFloatNan` arms below (equality by raw bits; ordering by IEEE
+    // partial_cmp, NaN → false — NOT a decline). A RUNTIME operand emits `Core::FloatCompare` carrying the
+    // float prim; the backend picks the canonical-bit compare for `FEq` and the raw IEEE op for ordering.
+    // Float is NOT `is_scalar` (Int/Bool only), so without this a runtime float compare fell to the
+    // compound-heap-walk decline.
     //= spec/capabilities/core-semantics.md#floating-point-equality-follows-the-canonical-byte-form
     //# A floating-point value MUST be equal to another floating-point value exactly when their canonical byte forms are identical, so that a negative zero is distinct from a positive zero and all not-a-number values are equal to one another.
-    if matches!(op, Prim::Eq) && float_operand(db, args) {
+    let float_prim = match op {
+        Prim::Eq => Some(Prim::FEq),
+        Prim::Lt => Some(Prim::FLt),
+        Prim::Le => Some(Prim::FLe),
+        Prim::Gt => Some(Prim::FGt),
+        Prim::Ge => Some(Prim::FGe),
+        _ => None,
+    };
+    if let Some(fprim) = float_prim
+        && float_operand(db, args)
+    {
         let lhs = core_of(db, args[0]);
         let rhs = core_of(db, args[1]);
         // A constant pair (including NaN) still folds via the constant arms — defer to them.
@@ -16143,9 +16161,9 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
                 crate::ty::Ty::Float(ft) => ft.ground_width(),
                 _ => crate::ty::DEFAULT_FLOAT_WIDTH,
             };
-            trace!(target: "rcdzc::lower", width, "float equality stays runtime (FloatCompare, canonical-byte bit compare)");
+            trace!(target: "rcdzc::lower", width, ?fprim, "float comparison stays runtime (FloatCompare)");
             return Core::FloatCompare {
-                op: Prim::FEq,
+                op: fprim,
                 lhs: args[0],
                 rhs: args[1],
                 width,
@@ -16202,12 +16220,14 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
             trace!(target: "rcdzc::fold", op = intrinsic_name(op), result = r, "folded constant char comparison");
             Core::ConstBool(r)
         }
-        // NaN under the CANONICAL BYTE FORM: every NaN shares one canonical byte form, so `(= nan nan)`
-        // is TRUE (NOT IEEE `f64.eq`, which says nan≠nan) and `nan` is UNEQUAL to any finite float
-        // (distinct byte forms). Ordering (`<`/`>`) against a NaN is undefined (unordered) — decline, as
-        // the finite-pair path does for a NaN operand. Handled BEFORE the finite `ConstFloat` pair. (A
-        // negative zero is likewise a distinct byte form from positive zero, so `(= -0.0 0.0)` is false —
-        // the `ConstFloat` pair compares the canonical decimal, which carries the sign.)
+        // NaN under the CANONICAL BYTE FORM (EQUALITY) vs IEEE PARTIAL order (ORDERING) — the two DISAGREE:
+        //  • `=`: every NaN shares one canonical byte form, so `(= nan nan)` is TRUE and `nan` is UNEQUAL to
+        //    any finite float (distinct byte forms).
+        //  • `< <= > >=`: a NaN operand is UNORDERED, so the relation yields FALSE (operator ruling —
+        //    IEEE partialOrd; NaN is neither less, greater, nor equal to anything). It EVALUATES to false,
+        //    NOT a decline (a total-order reading would decline, but the operator wants the relational op to
+        //    work). Handled BEFORE the finite `ConstFloat` pair. (Signed zero: `(= -0.0 0.0)` is false — the
+        //    `ConstFloat` pair carries the sign — while `(<= -0.0 0.0)` is true, equal-under-ordering.)
         //= spec/capabilities/core-semantics.md#floating-point-equality-follows-the-canonical-byte-form
         //# A floating-point value MUST be equal to another floating-point value exactly when their canonical byte forms are identical, so that a negative zero is distinct from a positive zero and all not-a-number values are equal to one another.
         (Core::ConstFloatNan, Core::ConstFloatNan) => {
@@ -16215,9 +16235,9 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
                 trace!(target: "rcdzc::fold", "folded nan = nan → true (canonical byte form)");
                 Core::ConstBool(true)
             } else {
-                Core::Poison(Reject::decline(
-                    "an ordering comparison with a NaN operand has no defined result",
-                ))
+                // NaN is unordered → every ordering relation is false.
+                trace!(target: "rcdzc::fold", op = intrinsic_name(op), "folded nan <ordering> nan → false (IEEE unordered)");
+                Core::ConstBool(false)
             }
         }
         (Core::ConstFloatNan, Core::ConstFloat(_)) | (Core::ConstFloat(_), Core::ConstFloatNan) => {
@@ -16225,9 +16245,9 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
                 trace!(target: "rcdzc::fold", "folded nan = finite → false (distinct byte forms)");
                 Core::ConstBool(false)
             } else {
-                Core::Poison(Reject::decline(
-                    "an ordering comparison with a NaN operand has no defined result",
-                ))
+                // A NaN operand makes any ordering relation false (unordered), same as the nan/nan case.
+                trace!(target: "rcdzc::fold", op = intrinsic_name(op), "folded nan <ordering> finite → false (IEEE unordered)");
+                Core::ConstBool(false)
             }
         }
         // Two CONSTANT floats compare by their canonical Float64 value (contracts/deterministic-value-
@@ -16235,8 +16255,9 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
         // share a canonical form, distinct floats have distinct forms). EQUALITY (`=`) is by RAW BITS, so
         // `-0.0 ≠ 0.0` (distinct bit patterns → the canonical form distinguishes them) and a NaN is
         // unequal to itself. `1e19` and `1e20` round to different doubles → unequal. Ordering (`<`/`>`)
-        // uses the IEEE partial order (`f64::partial_cmp`); an unordered pair (NaN) declines rather than
-        // inventing a total order. Only the fold — no float runtime is needed for a Bool result.
+        // uses the IEEE PARTIAL order (`f64::partial_cmp`): an ordered pair folds to the relation's result,
+        // an unordered pair (a NaN — but a bare `nan` constant is `ConstFloatNan`, handled above, so this
+        // arm's operands are finite) folds to false. Only the fold — no float runtime for a Bool result.
         (Core::ConstFloat(a), Core::ConstFloat(b)) => {
             let (ba, bb) = (a.to_f64_bits(), b.to_f64_bits());
             if matches!(op, Prim::Eq) {
@@ -16244,17 +16265,16 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
                 trace!(target: "rcdzc::fold", op = intrinsic_name(op), result = r, "folded constant float equality (by canonical bits)");
                 Core::ConstBool(r)
             } else {
-                match f64::from_bits(ba).partial_cmp(&f64::from_bits(bb)) {
-                    Some(ord) => {
-                        let r = compare_ord(op, ord);
-                        trace!(target: "rcdzc::fold", op = intrinsic_name(op), result = r, "folded constant float comparison");
-                        Core::ConstBool(r)
-                    }
-                    // An unordered pair (a NaN operand) has no defined `<`/`>` result — decline.
-                    None => Core::Poison(Reject::decline(
-                        "an ordering comparison with a NaN operand has no defined result",
-                    )),
-                }
+                // IEEE PARTIAL order (operator ruling): an ordered pair gives the relation; an unordered
+                // pair (a NaN reaching here — e.g. a folded `(/ 0.0 0.0)`) yields false, NOT a decline.
+                // `partial_cmp` also treats `-0.0`/`+0.0` as EQUAL, so `(<= -0.0 0.0)` is true — the
+                // ordering's equal-case, which DISAGREES with the byte-form `=` above (there `-0.0 ≠ 0.0`).
+                let r = match f64::from_bits(ba).partial_cmp(&f64::from_bits(bb)) {
+                    Some(ord) => compare_ord(op, ord),
+                    None => false,
+                };
+                trace!(target: "rcdzc::fold", op = intrinsic_name(op), result = r, "folded constant float ordering (IEEE partial)");
+                Core::ConstBool(r)
             }
         }
         // Two UNIT values — there is exactly ONE unit value, so two units always compare EQUAL. Fold at
@@ -20662,6 +20682,10 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::FMul => "*",
         Prim::FDiv => "/",
         Prim::FEq => "=",
+        Prim::FLt => "<",
+        Prim::FLe => "<=",
+        Prim::FGt => ">",
+        Prim::FGe => ">=",
         Prim::FloatCtor => "Float",
         Prim::FloatOfInt => "of-int",
         Prim::FloatOf => "of",

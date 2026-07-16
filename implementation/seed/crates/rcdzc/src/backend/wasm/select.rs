@@ -8057,11 +8057,26 @@ fn emit(
         // non-canonical NaN across the host boundary, so the canonicalize is load-bearing (it matches
         // `op_box_float`'s runtime canonicalization and the constant fold's `to_f64_bits` basis).
         Core::FloatCompare {
-            lhs, rhs, width, ..
+            op,
+            lhs,
+            rhs,
+            width,
         } => {
-            emit_canon_float_bits(db, lhs, width, slots, base, high, scratch_ty, layout, out)?;
-            emit_canon_float_bits(db, rhs, width, slots, base, high, scratch_ty, layout, out)?;
-            out.push(if width == 32 { Lir::I32Eq } else { Lir::I64Eq });
+            if op == Prim::FEq {
+                // EQUALITY: canonical-byte bit compare (see above).
+                emit_canon_float_bits(db, lhs, width, slots, base, high, scratch_ty, layout, out)?;
+                emit_canon_float_bits(db, rhs, width, slots, base, high, scratch_ty, layout, out)?;
+                out.push(if width == 32 { Lir::I32Eq } else { Lir::I64Eq });
+            } else {
+                // ORDERING (`< <= > >=`): the RAW IEEE float compare (operator ruling — IEEE partialOrd).
+                // `f64.lt`/etc. already give the wanted semantics: a NaN operand → 0 (unordered → false),
+                // and `-0.0`/`+0.0` compare EQUAL (`f64.le -0.0 0.0` = 1). NO canonicalization — that's the
+                // equality path; ordering DISAGREES with it on NaN + signed zero, by design. Emit each float
+                // operand directly (grounded to the op width), then the raw compare op.
+                emit_float_operand(db, lhs, width, slots, base, high, scratch_ty, layout, out)?;
+                emit_float_operand(db, rhs, width, slots, base, high, scratch_ty, layout, out)?;
+                out.push(float_ordering_op(op, width));
+            }
             Ok(())
         }
         // RUNTIME STRUCTURAL EQUALITY on two COMPOUND heap values — a `value-eq` (`champ_eq`) call. The
@@ -13334,6 +13349,25 @@ fn int_ty_of(db: &mut Db, id: StructId) -> IntTy {
 
 /// The wasm machine op for a runtime FLOAT arithmetic prim at a given width — the f64/f32 `add`/`sub`/
 /// `mul`/`div`. `width` is the operands' solved float width (32 → f32, else f64). IEEE, never trapping.
+/// The raw IEEE float-ordering machine op for `Prim::FLt/FLe/FGt/FGe` at the given width. IEEE partialOrd:
+/// a NaN operand → 0 (false), `-0.0`/`+0.0` compare equal. (Not for `FEq` — equality uses the canonical-
+/// byte bit compare, a different relation.)
+fn float_ordering_op(op: Prim, width: u32) -> Lir {
+    let f32 = width == 32;
+    match op {
+        Prim::FLt if f32 => Lir::F32Lt,
+        Prim::FLt => Lir::F64Lt,
+        Prim::FLe if f32 => Lir::F32Le,
+        Prim::FLe => Lir::F64Le,
+        Prim::FGt if f32 => Lir::F32Gt,
+        Prim::FGt => Lir::F64Gt,
+        Prim::FGe if f32 => Lir::F32Ge,
+        Prim::FGe => Lir::F64Ge,
+        // Not a float-ordering prim — `Core::FloatCompare` only carries FEq (handled separately) or these.
+        _ => unreachable!("float_ordering_op called with a non-ordering prim"),
+    }
+}
+
 fn float_arith_op(op: Prim, width: u32) -> Lir {
     let f32 = width == 32;
     match op {

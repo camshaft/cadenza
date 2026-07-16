@@ -235,6 +235,60 @@
   (call   run (: 1.5 Float32) (: 1.5 Float32)) (output (: 1 Int64))
   (call   run (: -0.0 Float32) (: 0.0 Float32)) (output (: 0 Int64)))
 
+; --- Float ORDERING (`< <= > >=`) uses IEEE PARTIAL order, DISTINCT from the canonical-byte equality -----
+; Operator ruling (2026-07-16): float ordering is a PARTIAL order (IEEE partialOrd), NOT total. A NaN
+; operand is UNORDERED — every relational op with a NaN yields FALSE (it EVALUATES to false, does NOT trap
+; or decline). `-0.0` and `+0.0` compare EQUAL-under-ordering (`-0.0 <= +0.0` true, neither strictly less).
+; This DISAGREES with the canonical-byte EQUALITY above on BOTH NaN and signed zero — `==` says nan==nan
+; TRUE / -0.0 != +0.0, ordering says nan<nan FALSE / -0.0 ==ord +0.0. That divergence is inherent to float
+; (bit-equality vs numeric-ordering are different relations); these cases pin BOTH relations explicitly at
+; the divergence points so a lowering can't silently converge them (e.g. by reusing the equality's
+; canonical-bit compare for ordering, which would give the wrong signed-zero + NaN answers). Ordering emits
+; the RAW IEEE `f64.lt/le/gt/ge` (wasm) / native Rust `<`/etc. — both give NaN→false, -0.0 ==ord +0.0.
+;= spec/capabilities/core-semantics.md#floating-point-equality-follows-the-canonical-byte-form
+
+(case "runtime float ordering is a strict/non-strict partial order over finite values"
+  (doc    "`run(a,b) = if (< a b) 1 0` over Float64 boundary params: 1.0 < 2.0 → 1, 2.0 < 1.0 → 0, and the
+           equal case 1.5 < 1.5 → 0 (strict). Pins runtime float `<` is realized (was declining
+           'compound heap walk') and gives the ordinary order over finite operands.")
+  (input  (do (def (run (: a Float64) (: b Float64)) (if (< a b) 1 0)) (export run)))
+  (call   run (: 1.0 Float64) (: 2.0 Float64)) (output (: 1 Int64))
+  (call   run (: 2.0 Float64) (: 1.0 Float64)) (output (: 0 Int64))
+  (call   run (: 1.5 Float64) (: 1.5 Float64)) (output (: 0 Int64)))
+
+(case "a NaN operand makes every runtime float ordering relation false (unordered)"
+  (doc    "IEEE partial order: NaN is unordered, so a relational op with a NaN operand yields FALSE — it
+           EVALUATES (not trap/decline). `run(a,b) = if (< a b) 1 0`: nan < 1.0 → 0, 1.0 < nan → 0, nan <
+           nan → 0. This is the OPPOSITE of what a total-order reading (which declined a NaN ordering)
+           would do, and DISTINCT from equality (`(= nan nan)` is TRUE) — pins the ordering's NaN case.")
+  (input  (do (def (run (: a Float64) (: b Float64)) (if (< a b) 1 0)) (export run)))
+  (call   run (: nan Float64) (: 1.0 Float64)) (output (: 0 Int64))
+  (call   run (: 1.0 Float64) (: nan Float64)) (output (: 0 Int64))
+  (call   run (: nan Float64) (: nan Float64)) (output (: 0 Int64)))
+
+(case "runtime float ordering treats negative and positive zero as equal, unlike equality"
+  (doc    "The signed-zero DIVERGENCE: under ORDERING `-0.0` and `+0.0` are EQUAL — `run(a,b) = if (<= a b)
+           1 0` gives -0.0 <= 0.0 → 1 AND 0.0 <= -0.0 → 1 (neither strictly less, so both `<=` hold). This
+           DISAGREES with EQUALITY, where `(= -0.0 0.0)` is FALSE (distinct canonical byte forms). Pinning
+           both here makes the disagreement intentional: ordering uses IEEE partial (raw `f64.le`, -0.0
+           ==ord +0.0), equality uses the canonical byte form (sign-significant). A `<` between them is
+           false both ways (equal → not strictly less).")
+  (input  (do
+            (def (le (: a Float64) (: b Float64)) (if (<= a b) 1 0))
+            (def (lt (: a Float64) (: b Float64)) (if (< a b) 1 0))
+            (def (run (: a Float64) (: b Float64)) (+ (* 10 (le a b)) (lt a b)))
+            (export run)))
+  (call   run (: -0.0 Float64) (: 0.0 Float64)) (output (: 10 Int64))
+  (call   run (: 0.0 Float64) (: -0.0 Float64)) (output (: 10 Int64)))
+
+(case "a constant float ordering with a NaN operand folds to false, not a decline"
+  (doc    "The CONST-fold companion of the runtime NaN-ordering case: a compile-time `(< Float64.nan 1.0)`
+           now FOLDS to false (NaN unordered → false) rather than DECLINING as it did under the total-order
+           reading. `run() = if (< Float64.nan 1.0) 1 0` → 0. Pins that the ordering ruling applies to the
+           fold path too — the relational op always evaluates.")
+  (input  (do (def (run) (if (< Float64.nan 1.0) 1 0)) (export run)))
+  (output (: 0 Int64)))
+
 ; --- Float equality follows the canonical byte form RECURSIVELY, inside compound values --
 ; #Equality Is Structural: "Two values MUST be equal when they have the same type and their contents
 ; are equal component-wise" — and each float COMPONENT is compared by #Floating-Point Equality Follows
