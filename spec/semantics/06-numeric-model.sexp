@@ -2929,6 +2929,30 @@
             (def (main) (mk 32)) (export main)))
   (error  CDZ0302))
 
+(case "a runtime width NESTED in a compound annotation is rejected"
+  (doc    "`(List (Int n))` with `n` a runtime function parameter — the runtime width is one level down,
+           inside a `List` element type. A width read from runtime data is forbidden wherever it appears
+           (numeric-model.md #An Integer Type Is Indexed By A Compile-Time Width), not only at a top-level
+           `(Int n)` annotation. The runtime-width guard checked only the TOP-LEVEL ctor, so a nested
+           runtime width slipped past `cdz check` (rc=0) AND compiled to wasm — a runtime value determining
+           a type, undetected. The front-end descends the compound annotation and rejects CDZ0302 at the
+           nested `(Int n)`, exactly as a nested ill-formed constant width `(List (Int -8))` is. Companion
+           to the top-level runtime-width cases above, one nesting level deeper.")
+  (input  (do
+            (def (f (: n Int64) (: xs (List (Int n)))) (List.len xs))
+            (def (main) (f 8 (list))) (export main)))
+  (error  CDZ0302))
+
+(case "a runtime FLOAT width nested in a compound annotation is rejected"
+  (doc    "The float companion: `(List (Float n))` with a runtime `n` — a runtime float width nested in a
+           `List` element type. Rejected CDZ0302 at the nested position exactly as the integer case, and as
+           the top-level `(Float n)` is. Pins that the nested-descent runtime-width check covers the float
+           ctor too, not only integer.")
+  (input  (do
+            (def (f (: n Int64) (: xs (List (Float n)))) (List.len xs))
+            (def (main) (f 32 (list))) (export main)))
+  (error  CDZ0302))
+
 ; --- Negation `(- 0 a)` overflows only at the type's MIN -------------------------------------------
 ; Negating a two's-complement integer overflows at exactly ONE input: the type's minimum, whose
 ; magnitude has no positive counterpart in the range (numeric-model.md #Overflow Is Defined — the

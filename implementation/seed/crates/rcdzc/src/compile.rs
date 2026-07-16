@@ -779,6 +779,19 @@ pub(crate) fn validate_type_position(
         out.push(Reject::coded(Code::IntOutOfRange, crate::infer::FLOAT_WIDTH_MESSAGE).at(pos));
         return;
     }
+    // A RUNTIME WIDTH `(Int n)`/`(Float n)` (n a parameter/ref) in a type-declaration payload
+    // (`(type T (Mk (List (Int n))))`) — a runtime value in a type-determining position, forbidden
+    // (numeric-model.md §A … Type Is Indexed By A Compile-Time Width). `reduce_ctor` clamps it to a
+    // sentinel so `typeval_of` would wave it through; reject here, same CDZ0302 the annotation sites give.
+    if crate::eval::is_runtime_width_type(db, pos) {
+        let msg = if crate::eval::is_float_ctor_type(db, pos) {
+            "a floating-point width must be a compile-time admitted width (32 or 64), not runtime data"
+        } else {
+            "an integer width must be a compile-time natural, not runtime data"
+        };
+        out.push(Reject::coded(Code::IntOutOfRange, msg).at(pos));
+        return;
+    }
     if crate::eval::typeval_of(db, pos).is_some() {
         return; // denotes a real type (self/mutual/forward refs + nested generics resolve)
     }

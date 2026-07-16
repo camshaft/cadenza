@@ -1430,6 +1430,7 @@ pass	a runtime BigInt intermediate that overflows Int64 does not trap
 pass	a runtime BigInt operation does not silently promote a fixed-width operand
 pass	a runtime BigInt ordering compares by the arbitrary-precision value
 pass	a runtime BigInt remainder takes the dividend's sign
+pass	a runtime FLOAT width nested in a compound annotation is rejected
 pass	a runtime Float32 addition emits the f32 machine add
 pass	a runtime Float32 division emits f32.div
 pass	a runtime Float32 equality compares by the canonical byte form
@@ -1562,6 +1563,7 @@ pass	a runtime value is constructed into a fixed-width segment and its length re
 pass	a runtime value narrowed to the segment width constructs without trapping
 pass	a runtime value under a const key binds through the map pattern
 pass	a runtime wider integer is truncated into a byte by wrap
+pass	a runtime width NESTED in a compound annotation is rejected
 pass	a runtime wrapper sum whose payload is a variant is matched by a nested constructor pattern
 pass	a runtime-assembled tree round-trips equal to its quoted twin
 pass	a runtime-branched tuple returned from a callee is projected in the caller
