@@ -569,25 +569,27 @@
 ; boundary handling, AND scalar-vs-byte indexing — the reader idiom a self-hosting compiler needs.
 
 (case "a runtime string is sliced by scalar offsets"
-  (doc    "`(String.slice (String.concat s \"\") 1 4)` on `s = \"hello\"` yields Some \"ell\" — scalars
-           1..4. `String.concat s \"\"` produces a genuinely RUNTIME string (a concat result is not a
-           literal the folder sees through), so this exercises the runtime UTF-8 slice walk — not the
-           const-fold — and it must agree with the folded literal cases above. (A bare `(String.slice s …)`
-           where `s` is a nullary `main`'s local literal would CONST-FOLD before the runtime emitter.)")
+  (doc    "`(String.slice \"hello\" a b)` with RUNTIME bounds a=1, b=4 yields Some \"ell\" — scalars 1..4.
+           Passing the slice BOUNDS as `main` parameters defeats const-folding (the folder cannot evaluate a
+           slice whose indices are unknown at compile time), so this exercises the runtime UTF-8 slice walk —
+           not the const-fold — and it must agree with the folded literal cases above. (Runtime BOUNDS, not a
+           runtime string: a `String.concat s \"\"` over a literal `s` β-reduces + folds back to a literal.)")
   (input  (do
-            (def (f s) (Option.expect (String.slice (String.concat s "") 1 4) "in range"))
-            (def (main) (f "hello")) (export main)))
+            (def (main (: a Int64) (: b Int64)) (Option.expect (String.slice "hello" a b) "in range"))
+            (export main)))
+  (call   main (: 1 Int64) (: 4 Int64))
   (output (: "ell" String)))
 
 (case "a runtime string slice addresses scalar values, not bytes"
-  (doc    "`(String.slice (String.concat s \"\") 1 3)` on `s = \"aébc\"` yields Some \"éb\" — scalars 1
-           and 2 (é is one scalar, TWO UTF-8 bytes). `String.concat s \"\"` forces a runtime string, so this
-           hits the runtime slice walk. A slice that indexed by BYTE offset would split é or read the wrong
+  (doc    "`(String.slice \"aébc\" a b)` with RUNTIME bounds a=1, b=3 yields Some \"éb\" — scalars 1 and 2
+           (é is one scalar, TWO UTF-8 bytes). Runtime bounds force the runtime slice walk (the folder can't
+           fold an unknown-index slice). A slice that indexed by BYTE offset would split é or read the wrong
            range; pins that the runtime walk maps scalar offsets to byte offsets, exactly as String.at does
            (13-strings §reading a string's scalar addresses scalar values, not bytes).")
   (input  (do
-            (def (f s) (Option.expect (String.slice (String.concat s "") 1 3) "in range"))
-            (def (main) (f "aébc")) (export main)))
+            (def (main (: a Int64) (: b Int64)) (Option.expect (String.slice "aébc" a b) "in range"))
+            (export main)))
+  (call   main (: 1 Int64) (: 3 Int64))
   (output (: "éb" String)))
 
 (case "a runtime string slice out of range yields None"
