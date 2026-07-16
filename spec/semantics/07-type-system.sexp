@@ -1365,12 +1365,10 @@
 
 (case "Type.of reflects equal for the SAME function stored as a MAP VALUE"
   (doc    "The map-value position (coverage companion to the reflected_ty domain-grounding fixes) — the
-           SAME-function half, which is CORRECT today: `Map.insert(Map.empty, 1, f)` and the same with `f2`
-           (both `(-> Int64 Int64)`) reflect the SAME map type, so `Type.eq` is true. `main` returns 1.
-           NOTE: the DIFFERENT-domain map-value/key case is a KNOWN reflected_ty leak (a fn stored in a `Map`
-           has its domain left `Any`, so distinct-domain map fns wrongly reflect equal); it is routed to
-           v-inference and its graded case is held until the fix lands. This same-fn case is the safe,
-           already-correct companion, pinned now.")
+           SAME-function half: `Map.insert(Map.empty, 1, f)` and the same with `f2` (both `(-> Int64 Int64)`)
+           reflect the SAME map type, so `Type.eq` is true. `main` returns 1. The DIFFERENT-domain
+           map-value/key case (a leak that once left a Map fn's domain `Any`) is now FIXED and pinned by the
+           companion case below; this same-fn case is the already-correct control.")
   (input  (do
             (def (f x) (+ x 1))
             (def (f2 z) (+ z 9))
@@ -1378,6 +1376,26 @@
                                      (Type.of (Map.insert Map.empty 1 f2))) 1 0))
             (export main)))
   (output (: 1 Int64)))
+
+(case "Type.of grounds a function stored as a runtime Map value"
+  (doc    "The runtime-map-builder sibling of the sum-payload / compound-element cases: `(Map.insert
+           Map.empty 1 f)` builds a map whose VALUE is a function. Unlike the `(map (k v) …)` literal (whose
+           element nodes are read directly), a `Map.insert` result type comes from the op scheme, which read
+           the value via bottom-up `type_of` — leaking the fn's domain as `Any` (`(Map Int64 (-> Any
+           Int64))`), so two maps with different-domain value functions reflected the SAME type and `Type.eq`
+           returned a wrong `true`. Reflection now rebuilds the `(Map k v)` from its grounded key + value.
+           `f x = x + 1` (`Int64 -> Int64`) and `g b = if b 0 1` (`Bool -> Int64`) → distinct maps →
+           `Type.eq` false; `f` vs `f2` (both `Int64 -> Int64`) → equal. `0 + 100 = 100`.")
+  (input  (do
+            (def (f x) (+ x 1))
+            (def (f2 z) (+ z 9))
+            (def (g b) (if b 0 1))
+            (def (main) (+ (if (Type.eq (Type.of (Map.insert Map.empty 1 f))
+                                        (Type.of (Map.insert Map.empty 1 g))) 1 0)
+                           (if (Type.eq (Type.of (Map.insert Map.empty 1 f))
+                                        (Type.of (Map.insert Map.empty 1 f2))) 100 0)))
+            (export main)))
+  (output (: 100 Int64)))
 
 (case "an if on Type.eq selects a branch at compile time"
   (doc    "The headline of compile-time reflection: `(if (Type.eq (Type.of 5) Int64) 100 200)` folds the

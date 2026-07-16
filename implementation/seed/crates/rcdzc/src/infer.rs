@@ -2186,6 +2186,28 @@ pub fn reflected_ty(db: &mut Db, id: StructId) -> Ty {
                 }
                 Ty::Map(Box::new(key_ty), Box::new(val_ty))
             }
+            // A RUNTIME MAP BUILDER `(Map.insert m k v)` — unlike the `(map (k v) …)` LITERAL handled by
+            // `MapNew` above, `Map.insert`'s result type comes from `apply_type` (a `Ty::Map(k, v)` from the
+            // op scheme), which reads the inserted value/key via bottom-up `type_of` — so a fn VALUE (or a
+            // fn KEY) leaks its domain as `Any` (`(Map Int64 (-> Any Int64))`), and two maps with different-
+            // domain value-fns reflect the SAME type → `Type.eq` wrong-`true` (the map sibling of the
+            // sum-payload leak; also compounds outward through a `(tuple (Map.insert …) …)` wrapper, which
+            // recurses `reflected_ty` into this node). Rebuild the map type from the GROUNDED parts: recurse
+            // the map operand `m` to its `Ty::Map`, then JOIN this insert's grounded key + value
+            // (`reflected_ty` body-solves a fn arg's domain) — composing across a chain of inserts and
+            // bottoming at `Map.empty`'s `(Map Any Any)`. A non-`Ty::Map` operand (malformed) falls back to
+            // the plain `type_of`.
+            Some(Prim::MapInsert) if args.len() == 3 => {
+                match reflected_ty(db, args[0]) {
+                    Ty::Map(k0, v0) => {
+                        let kt = k0.join(&reflected_ty(db, args[1]));
+                        let vt = v0.join(&reflected_ty(db, args[2]));
+                        Ty::Map(Box::new(kt), Box::new(vt))
+                    }
+                    // The operand did not reflect as a map (malformed / not yet a map) — keep `type_of`.
+                    _ => type_of(db, id),
+                }
+            }
             // A SUM-VARIANT CONSTRUCTOR applied to a payload — `(Some f)`, `(Box.Wrap f)`. The payload
             // becomes a TYPE ARGUMENT of the resulting `Ty::Sum{args}` via the ctor's scheme (`Some :
             // ∀a. a → Option a`), but `apply_type` unifies `a` with the payload's BOTTOM-UP `type_of`, so a
