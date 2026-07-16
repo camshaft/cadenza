@@ -667,6 +667,40 @@ fn an_exhaustive_property_is_driven_over_its_whole_domain() {
         stdout.contains("PASS anchor4"),
         "a compound @exhaustive decline does NOT abort the file — the sibling test still runs: {stdout}"
     );
+
+    // A MULTI-scalar `@exhaustive` enumerates the full Cartesian PRODUCT of its parameters' domains:
+    // `Bool` × `UInt8` = 2 × 256 = 512 cases. Pins that the domain is the product, not a per-parameter
+    // sum, and that a modest multi-scalar signature stays within the enumeration cap.
+    let multi = write(
+        &d,
+        "multi.cdz",
+        "@exhaustive def bp(a: Bool, v: UInt8) = if v == v then unit else trap(\"x\")\n\
+         @test def anchor5() = if 1 == 1 then unit else trap(\"a\")\n",
+    );
+    let (ok, stdout, stderr) = run(&["test", &multi]);
+    assert!(ok, "a multi-scalar @exhaustive passes: {stdout}{stderr}");
+    assert!(
+        stdout.contains("PASS bp (exhaustive, 512 cases)"),
+        "a multi-scalar @exhaustive enumerates the full Bool×UInt8 product (512 cases): {stdout}"
+    );
+
+    // `@exhaustive` composes with `@tag`: a `@tag("fast") @exhaustive` test is selected by `--tag fast`
+    // and runs exhaustively. Pins that the two annotations stack (independent metadata + run mode).
+    let tagged = write(
+        &d,
+        "tagged.cdz",
+        "@tag(\"fast\") @exhaustive def be(a: Bool) = if a then unit else unit\n\
+         @test def slowanchor() = if 1 == 1 then unit else trap(\"a\")\n",
+    );
+    let (ok, stdout, stderr) = run(&["test", &tagged, "--tag", "fast"]);
+    assert!(
+        ok,
+        "a @tag+@exhaustive test passes under --tag: {stdout}{stderr}"
+    );
+    assert!(
+        stdout.contains("PASS be (exhaustive, 2 cases)") && !stdout.contains("slowanchor"),
+        "@exhaustive composes with @tag — --tag fast selects only the exhaustive test: {stdout}"
+    );
 }
 
 /// F1 (compiler-directed collection generators): a `@test` whose parameter is a `(List Int64)` is
