@@ -500,9 +500,13 @@ mod tests {
         }
     }
 
-    // Every `Keyword` variant, independent of the `KEYWORD_SPELLINGS` table. Kept complete by the
-    // `assert_all_keywords_listed` exhaustive match below (a new variant fails to compile there until
-    // added here), so this is a trustworthy source of "all variants" the tests can iterate.
+    // Every `Keyword` variant, independent of the `KEYWORD_SPELLINGS` table — a source of "all variants"
+    // the tests iterate. Its length is tied to the variant count at COMPILE time by the `const` assertion
+    // below (`ALL_KEYWORDS.len() == KEYWORD_COUNT`), so a `Keyword` variant added to the enum forces this
+    // array to grow: the variant makes `keyword_ordinal`'s exhaustive match fail to compile until given
+    // an ordinal (which bumps `KEYWORD_COUNT`), and the assertion then fails until the entry is added
+    // here. (Content — that the entries are the RIGHT, distinct variants — is checked at test time by
+    // `every_keyword_variant_has_a_spelling`.)
     const ALL_KEYWORDS: &[Keyword] = &[
         Keyword::Let,
         Keyword::In,
@@ -523,32 +527,41 @@ mod tests {
         Keyword::As,
     ];
 
-    // A compile-time completeness check for `ALL_KEYWORDS`: this exhaustive match fails to compile if a
-    // `Keyword` variant is added without also being listed in `ALL_KEYWORDS` (the `matches!` naming each
-    // variant forces the update). Never called — its purpose is the exhaustiveness it forces.
-    #[allow(dead_code)]
-    fn assert_all_keywords_listed(kw: Keyword) -> bool {
-        matches!(
-            kw,
-            Keyword::Let
-                | Keyword::In
-                | Keyword::If
-                | Keyword::Then
-                | Keyword::Else
-                | Keyword::Fn
-                | Keyword::Def
-                | Keyword::Type
-                | Keyword::Match
-                | Keyword::With
-                | Keyword::Module
-                | Keyword::Import
-                | Keyword::Export
-                | Keyword::Effect
-                | Keyword::Handle
-                | Keyword::Host
-                | Keyword::As
-        )
+    // The number of `Keyword` variants, defined by an EXHAUSTIVE match: adding a variant to the enum
+    // fails to compile here until it is given a distinct ordinal, and `KEYWORD_COUNT` is one past the
+    // last. This is the compile-time anchor `ALL_KEYWORDS`'s length is checked against.
+    const fn keyword_ordinal(kw: Keyword) -> usize {
+        match kw {
+            Keyword::Let => 0,
+            Keyword::In => 1,
+            Keyword::If => 2,
+            Keyword::Then => 3,
+            Keyword::Else => 4,
+            Keyword::Fn => 5,
+            Keyword::Def => 6,
+            Keyword::Type => 7,
+            Keyword::Match => 8,
+            Keyword::With => 9,
+            Keyword::Module => 10,
+            Keyword::Import => 11,
+            Keyword::Export => 12,
+            Keyword::Effect => 13,
+            Keyword::Handle => 14,
+            Keyword::Host => 15,
+            Keyword::As => 16,
+        }
     }
+    const KEYWORD_COUNT: usize = keyword_ordinal(Keyword::As) + 1;
+
+    // COMPILE-TIME completeness: `ALL_KEYWORDS` must list exactly one entry per variant. A new variant
+    // (once given a `keyword_ordinal`, which raises `KEYWORD_COUNT`) makes this fail to compile until it
+    // is added to `ALL_KEYWORDS`. This is the real tie the old `assert_all_keywords_listed` comment
+    // CLAIMED but did not deliver (its `matches!` forced naming a variant, but never referenced
+    // `ALL_KEYWORDS`, so a variant omitted from the array compiled fine — PR #423 Copilot finding).
+    const _: () = assert!(
+        ALL_KEYWORDS.len() == KEYWORD_COUNT,
+        "ALL_KEYWORDS must list every Keyword variant exactly once"
+    );
 
     #[test]
     fn every_keyword_variant_has_a_spelling() {
@@ -567,11 +580,14 @@ mod tests {
                 "{kw:?} is missing from KEYWORD_SPELLINGS (the table the other tests iterate)"
             );
         }
-        // And the reverse: the table has no stale entry for a spelling that no longer classifies.
+        // The reverse direction: the table has no stale/extra entry. `ALL_KEYWORDS` completeness is
+        // already enforced at COMPILE time (`ALL_KEYWORDS.len() == KEYWORD_COUNT`), so equal lengths here
+        // means `KEYWORD_SPELLINGS` also has exactly one entry per variant (the loop above proved each
+        // variant IS present, and no duplicates exist because the spellings are distinct keywords).
         assert_eq!(
             KEYWORD_SPELLINGS.len(),
             ALL_KEYWORDS.len(),
-            "KEYWORD_SPELLINGS and ALL_KEYWORDS must list the same variants"
+            "KEYWORD_SPELLINGS must have exactly one entry per Keyword variant"
         );
     }
 }
