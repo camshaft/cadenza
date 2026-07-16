@@ -1710,9 +1710,17 @@ fn emit_heap_read_tail(db: &mut Db, id: StructId, unboxed: Option<&'static str>,
 /// True iff the node at `id` is a NARROW integer (an i32-slot integer: width ≤ 32). Such a value must
 /// cross the i64 heap-cell boundary with an explicit slot conversion.
 fn is_narrow_int(db: &mut Db, id: StructId) -> Option<Machine> {
-    match type_of(db, id) {
+    // `strip_nominal`: an ERASED single-variant newtype over a narrow int — `(type W (Wrap UInt8))` — has
+    // the SAME machine rep as its inner narrow int (a raw i32 slot), so it must widen i32→i64 before
+    // `box-int` exactly as a bare narrow int does. WITHOUT the strip, a `(W.Wrap n)` element/payload node
+    // typed `Ty::Nominal(W, Int(u8))` returned None → the widen was skipped → `box-int` got a raw i32 → an
+    // INVALID component (`expected i64, found i32`) when the erased narrow newtype was boxed into a tuple/
+    // sum/list element. A bare `UInt8` (`Ty::Int(u8)`) matched + widened fine; only the newtype-wrapped
+    // narrow int slipped through. (A nominal over a FULL-width Int64 strips to a non-slot32 int → still None,
+    // no extend, correct.)
+    match type_of(db, id).strip_nominal() {
         Ty::Int(it) => {
-            let m = Machine::of(it);
+            let m = Machine::of(*it);
             m.slot32.then_some(m)
         }
         _ => None,

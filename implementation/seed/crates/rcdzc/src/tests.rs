@@ -5756,6 +5756,37 @@ fn an_effectful_helper_reading_a_driver_param_in_a_selfcall_arg_folds() {
     }
 }
 
+/// A handler arm that CAPTURES an enclosing fn param, under a MULTI-ARM nested handler, over a recursive
+/// driver performing BOTH effects (the two-nested-states MERGE path). `converse`'s arm `(resume p 0)` closes
+/// over `run-with`'s param `p` — not the arm's own params/state. Before the fix, the synthesized `run#ctx`
+/// carried the driver's params + the threaded states but NOT `p`, so the spliced free `p` re-resolved against
+/// `run#ctx`'s signature (which lacked it) → a spurious CDZ0101 unbound `p` (a valid program falsely refused;
+/// v-agent-harness dogfood). The fix threads a captured enclosing-fn param as an extra specialized parameter
+/// (after the originals, before the states), passed UNCHANGED at every call. `run-with(3)` seeds `run(3,0)`;
+/// each step adds `converse→p (=3)` and `dispatch→1`: `(0+3+1)+(3+1)+(3+1)` = 12. The single-arm inner handler
+/// case never regressed (it specialized once); the multi-arm case is what surfaced the double-spec + leak.
+#[test]
+fn a_handler_arm_capturing_an_enclosing_fn_param_folds_under_a_multi_arm_nested_handler() {
+    use crate::testkit::parse;
+    let src = "(do \
+        (effect Model (op converse (-> Int64 Int64))) \
+        (effect Tools (op dispatch (-> Int64 Int64)) (op done (-> Int64 Int64))) \
+        (def (run (: fuel Int64) (: acc Int64)) \
+          (if (= fuel 0) acc \
+            (run (- fuel 1) (+ acc (+ (Model.converse fuel) (Tools.dispatch fuel)))))) \
+        (def (run-with (: p Int64)) \
+          (handle Model 0 ((converse (q) s (resume p 0))) \
+            (handle Tools 0 ((dispatch (a) s (resume 1 0)) (done (a) s (resume a 0))) \
+              (run 3 0)))) \
+        (def (main) (run-with 3)) (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect(
+        "a captured enclosing-fn param must thread as an extra spec param, not leak CDZ0101 unbound",
+    );
+    if let Some(v) = run_linked(&bytes, "main") {
+        assert_eq!(v, "12");
+    }
+}
+
 /// The residual sub-case of the effectful-helper-in-a-self-call-arg family: an inlined helper whose perform
 /// sits UNDER A CONDITIONAL (`if`/`match`) — either in a branch (`if c then acc + B.b x else acc`) or in the
 /// condition (`if B.b x == 1 then …`). The deep-fresh-copy fixes fold a helper that performs on its
@@ -15128,6 +15159,59 @@ mod match_engine {
             .unwrap(),
             "100",
             "an erased Int64 newtype literal arm still compares at i64 width (the wide control, unchanged)"
+        );
+    }
+
+    #[test]
+    fn an_erased_narrow_newtype_boxed_into_a_compound_widens_before_box_int() {
+        // A single-variant newtype over a NARROW int — `(type W (Wrap UInt8))` — boxed as a tuple/sum/list
+        // ELEMENT must widen i32→i64 before `box-int` (the heap cell is i64), exactly as a bare narrow int
+        // does. `is_narrow_int` decides the extend but matched `Ty::Int` WITHOUT `strip_nominal`, so an
+        // erased narrow newtype (`Ty::Nominal(W, Int(u8))`) returned None → the extend was skipped → `box-int`
+        // got a raw i32 → an INVALID component (`expected i64, found i32`). This surfaced when such an element
+        // was matched by a literal (the read-back exposed the mis-boxed cell), but the ROOT is construction
+        // (boxing), so it hits any nested position — tuple element, sum payload, list element. breaker-found
+        // as the narrow follow-on to the single-variant list-element literal support (Inc-51).
+        let ok = |src: &str| assert!(reject_code(src).is_none(), "must compile: {src}");
+        // Tuple element, list element, sum payload — each a narrow newtype with a literal-payload match.
+        ok("(module m (type W (Wrap UInt8)) \
+              (def (f (: p (Tuple W Int64))) (match p ((tuple (W.Wrap 0) y) y) (_ -1))) \
+              (def (main (: n UInt8)) (f (tuple (W.Wrap n) 5))) (export main))");
+        ok("(module m (type W (Wrap UInt8)) \
+              (def (f (: n UInt8)) (match (list (W.Wrap n)) ((list (W.Wrap 0) .. r) 100) (_ 0))) \
+              (def (main (: n UInt8)) (f n)) (export main))");
+        ok("(module m (type W (Wrap UInt8)) \
+              (def (f (: x (Option W))) (match x ((Some (W.Wrap 0)) 100) (_ 0))) \
+              (def (main (: n UInt8)) (f (Some (W.Wrap n)))) (export main))");
+        // Int32 (a signed narrow width — the extend is sign-aware) also boxes correctly.
+        ok("(module m (type W (Wrap Int32)) \
+              (def (f (: p (Tuple W Int64))) (match p ((tuple (W.Wrap 0) y) y) (_ -1))) \
+              (def (main (: n Int32)) (f (tuple (W.Wrap n) 5))) (export main))");
+
+        // RUN: the narrow newtype boxed into a tuple then matched by its literal payload hits/misses.
+        let Some(v) = run_heap_value(
+            "(module m (type W (Wrap UInt8)) \
+               (def (classify (: n UInt8)) (match (tuple (W.Wrap n) 5) ((tuple (W.Wrap 0) y) y) (_ -1))) \
+               (def (main (: n UInt8)) (classify n)) (export main))",
+            vec!["0".to_string()],
+        ) else {
+            eprintln!("runtime wasm not found; skipping erased-narrow-newtype-box run");
+            return;
+        };
+        assert_eq!(
+            v, "5",
+            "a UInt8 newtype boxed into a tuple, payload 0, hits the literal arm"
+        );
+        assert_eq!(
+            run_heap_value(
+                "(module m (type W (Wrap UInt8)) \
+                   (def (classify (: n UInt8)) (match (tuple (W.Wrap n) 5) ((tuple (W.Wrap 0) y) y) (_ -1))) \
+                   (def (main (: n UInt8)) (classify n)) (export main))",
+                vec!["9".to_string()],
+            )
+            .unwrap(),
+            "-1",
+            "payload 9 ≠ 0 misses and falls to the wildcard (a genuine value compare on the boxed narrow newtype)"
         );
     }
 

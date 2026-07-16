@@ -7,7 +7,8 @@
 /// PURE (no worker/React) — unit-testable under `node --test`. The route's table component (Inc 2/3)
 /// calls this on the rendered value and maps the result to <thead>/<tbody>.
 
-import { parseSexpr, stripAscription, isAtom, isList, unquoteAtom, type Node } from "./sexpr.ts";
+import { parseSexpr, stripAscription, isAtom, isList, type Node } from "./sexpr.ts";
+import { displayNode } from "./formatValue.ts";
 
 /// A shaped table: column headers + rows of already-stringified cells (display text). For a tuple list
 /// the columns are positional (`col 0`, `col 1`, …); for a record list they're the field names (union
@@ -21,18 +22,11 @@ export interface Table {
 /// fall back to the plain value view rather than showing a broken table).
 export type TableResult = { ok: true; table: Table } | { ok: false; reason: string };
 
-/// Render an atom node's display text: a "quoted string" loses its quotes; everything else (number,
-/// symbol, rational `n/d`) shows verbatim.
-function atomText(n: Node): string {
-  return isAtom(n) ? unquoteAtom(n.atom) : renderCompact(n);
-}
-
-/// A compact one-line render of an arbitrary node, for a cell whose value is itself a compound (a nested
-/// tuple/list/record in a column) — so a table never shows "[object]" or throws on a rich cell.
-function renderCompact(n: Node): string {
-  if (isAtom(n)) return unquoteAtom(n.atom);
-  return "(" + n.list.map(renderCompact).join(" ") + ")";
-}
+/// Render a cell's display text via the SHARED friendly node renderer (formatValue.displayNode): a
+/// "quoted string" loses its quotes; a number/symbol/rational shows bare; a `(quantity 5 meter)` shows
+/// as `5 meter` (matching plain-value cells); any other nested compound shows compactly. One display
+/// path, so a quantity in a table reads the same as a quantity in a value cell.
+const atomText = displayNode;
 
 /// The head symbol of a list node (`(list …)` → "list"), or null for an atom / empty list.
 function head(n: Node): string | null {
@@ -95,8 +89,8 @@ function recordTable(elems: Node[]): TableResult {
       // Each field is `(name value)`. A malformed field is skipped rather than aborting the table.
       if (!isList(f) || f.list.length < 2 || !isAtom(f.list[0])) continue;
       const name = f.list[0].atom;
-      // A field with >1 value node (rare) is rendered as the compact join of its value nodes.
-      const value = f.list.length === 2 ? atomText(f.list[1]) : f.list.slice(1).map(renderCompact).join(" ");
+      // A field with >1 value node (rare) is rendered as the friendly join of its value nodes.
+      const value = f.list.length === 2 ? atomText(f.list[1]) : f.list.slice(1).map(displayNode).join(" ");
       if (!columns.includes(name)) columns.push(name);
       map.set(name, value);
     }

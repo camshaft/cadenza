@@ -1585,6 +1585,24 @@
   (call   main (: 7 Int64))
   (output (: 0 Int64)))
 
+(case "multiply-by-zero is NOT an annihilator for FLOAT — nan * 0.0 is nan, not 0.0"
+  (doc    "The `x * 0` annihilator above folds to the constant 0 for INTEGER `x` (the operand is discarded,
+           value-wise). For FLOAT it MUST NOT: `x * 0.0` is 0.0 only for a FINITE `x` — `nan * 0.0` = nan
+           and `inf * 0.0` = nan (IEEE). So a Core pass that applied the integer `x*0 → 0` annihilator to a
+           float multiply would MISCOMPILE the NaN/inf case (returning 0.0 instead of nan). `mz x = (* x
+           0.0)`, and `run` observes `(= (mz x) 0.0)`: a FINITE x (1.5, via `(if (> c 0) 1.5 …)`) → 0.0, so
+           = 0.0 → 1; a NaN x (`Float64.nan`) → nan, and `nan ≠ 0.0` → 0. Pins that `* 0.0` is NOT folded
+           away for float — the annihilator is integer-only — both backends. (x is chosen by a runtime `if`
+           so neither branch is a constant fold of the whole expression.)")
+  (input  (do
+            (def (mz (: x Float64)) (* x 0.0))
+            (def (run (: c Int64)) (let ((x (if (> c 0) 1.5 Float64.nan))) (if (= (mz x) 0.0) 1 0)))
+            (export run)))
+  (call   run (: 5 Int64))
+  (output (: 1 Int64))
+  (call   run (: -5 Int64))
+  (output (: 0 Int64)))
+
 (case "modulo gives the remainder"
   (doc    "The compiler needs modulo for LEB128 encoding: extract 7-bit groups from an integer.")
   (input  (% 130 128))

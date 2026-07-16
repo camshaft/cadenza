@@ -19,7 +19,9 @@ function head(n: Node): string | null {
 /// Render a value node for human display. Atoms show bare (a rational `5/2`, a number, a symbol; a
 /// "quoted string" loses its quotes). A `(quantity <value> <unit>)` shows as `<value> <unit>`. Any other
 /// compound (list/tuple/record) falls back to the compact canonical render (the shape renderers own those).
-function displayNode(n: Node): string {
+/// Exported so table CELLS render the same friendly form (a quantity in a table shows `5 meter`, not
+/// `(quantity 5 meter)`) — one display path shared with the value/formula renderers.
+export function displayNode(n: Node): string {
   if (isAtom(n)) return unquoteAtom(n.atom);
   if (head(n) === "quantity") {
     // (quantity <value> <unit>) → "<value> <unit>"; be lenient about extra/missing fields.

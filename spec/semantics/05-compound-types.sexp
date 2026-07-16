@@ -3251,6 +3251,58 @@
               (def (main) (f (list (Wrap 7)))) (export main)))
   (output (: 7 Int64)))
 
+; The payload-value refinement above must work for a NARROW-width newtype too. A single-variant newtype over
+; a narrow int `(type W (Wrap UInt8))` is stored on the heap as an i64 cell (`box-int`), so its raw i32
+; payload must be WIDENED i32→i64 before being boxed as a tuple/sum/list element — exactly as a bare narrow
+; int is. The widen decision keys on the value's machine kind, which must see THROUGH the newtype wrapper (an
+; erased newtype IS its inner narrow int at the machine level); missing that skipped the extend and boxed a
+; raw i32 into the i64 cell, emitting an invalid component when the element was read back. These pin a narrow
+; newtype boxed into each compound position (tuple / sum / list) then matched by its literal payload.
+
+(case "a narrow-width newtype boxed as a tuple element matches by its literal payload"
+  (doc    "`(match (tuple (W.Wrap n) 5) ((tuple (W.Wrap 0) y) y) (_ -1))` with `W = (Wrap UInt8)`, n=0 → 5:
+           the narrow newtype `(W.Wrap n)` is boxed into the tuple's heap cell, then the arm reads it back
+           and refines on the payload literal `0`. The narrow payload (an i32) must widen to the i64 heap
+           cell before boxing; without the widen the boxed cell was malformed and the read-back emitted an
+           invalid component. Pins a narrow newtype survives the box/unbox round-trip through a tuple.")
+  (input  (do (type W (Wrap UInt8))
+              (def (f (: n UInt8)) (match (tuple (W.Wrap n) 5) ((tuple (W.Wrap 0) y) y) (_ -1)))
+              (def (main (: n UInt8)) (f n)) (export main)))
+  (call   main (: 0 UInt8))
+  (output (: 5 Int64)))
+
+(case "a narrow-width newtype boxed as a tuple element falls through on a non-matching payload"
+  (doc    "The miss: n=9 ≠ 0, so `(tuple (W.Wrap 0) y)` does not match → -1. Pins the boxed narrow newtype's
+           payload is compared by value (a genuine i32-width test on the widened cell), not a blanket match.")
+  (input  (do (type W (Wrap UInt8))
+              (def (f (: n UInt8)) (match (tuple (W.Wrap n) 5) ((tuple (W.Wrap 0) y) y) (_ -1)))
+              (def (main (: n UInt8)) (f n)) (export main)))
+  (call   main (: 9 UInt8))
+  (output (: -1 Int64)))
+
+(case "a narrow-width newtype boxed as a list element matches by its literal payload"
+  (doc    "The LIST position: `(match (list (W.Wrap n)) ((list (W.Wrap 0) .. r) 100) (_ 0))`, `W = (Wrap
+           UInt8)`, n=0 → 100. The narrow newtype is boxed as a vector element and read back by the
+           list-element literal refinement — the same box-widen requirement as the tuple case, in the
+           position the breaker's reproducer first hit (an invalid component before the widen saw through
+           the newtype).")
+  (input  (do (type W (Wrap UInt8))
+              (def (f (: n UInt8)) (match (list (W.Wrap n)) ((list (W.Wrap 0) .. r) 100) (_ 0)))
+              (def (main (: n UInt8)) (f n)) (export main)))
+  (call   main (: 0 UInt8))
+  (output (: 100 Int64)))
+
+(case "a narrow-width newtype boxed as a sum payload matches by its literal payload"
+  (doc    "The SUM-PAYLOAD position: `(match (Some (W.Wrap n)) ((Some (W.Wrap 0)) 100) (_ 0))`, `W = (Wrap
+           UInt8)`, n=0 → 100. The narrow newtype is boxed as `Some`'s payload; the same box-widen requirement
+           applies. With the Int64 newtype (a full-width i64) this always worked — pins the fix is the NARROW
+           width specifically, across every nested box position.")
+  (input  (do (type W (Wrap UInt8))
+              (def (f (: n UInt8)) (match (Some (W.Wrap n)) ((Some (W.Wrap 0)) 100) (_ 0)))
+              (def (main (: n UInt8)) (f n)) (export main)))
+  (call   main (: 0 UInt8))
+  (output (: 100 Int64)))
+
 ; A list-arm element may also be a MAP key-value pattern — a list of key-value records destructured by key
 ; in one arm. Like a refutable constructor element, a `(map (k v)…)` element is refutable (it matches only a
 ; map containing the named keys) AND binds the values, so it desugars to a fresh binder + a key-presence

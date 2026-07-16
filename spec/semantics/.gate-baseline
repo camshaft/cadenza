@@ -886,6 +886,7 @@ pass	a handle body reads an enclosing function parameter
 pass	a handle whose head names a value rather than an effect is rejected
 pass	a handle's TUPLE value pairing a scalar with a built list escapes and is destructured
 pass	a handler accumulates into a list and a read-out operation reads it back
+pass	a handler arm capturing an enclosing fn param folds under a multi-arm nested handler
 pass	a handler arm consumes its resume value through an effect-free helper call
 pass	a handler arm for an operation the effect does not declare is rejected
 pass	a handler arm forwarding an effect its enclosing scope does not hold is rejected
@@ -1222,6 +1223,10 @@ pass	a narrow-body arithmetic on an in-range constant arg overflows the paramete
 pass	a narrow-width Int quantity add that fits the inner width runs normally
 pass	a narrow-width Int quantity add that overflows the inner width traps at compile time
 pass	a narrow-width accumulator that never changes threads through the recursion
+pass	a narrow-width newtype boxed as a list element matches by its literal payload
+pass	a narrow-width newtype boxed as a sum payload matches by its literal payload
+pass	a narrow-width newtype boxed as a tuple element falls through on a non-matching payload
+pass	a narrow-width newtype boxed as a tuple element matches by its literal payload
 pass	a narrow-width parameter compared to a bare literal computes at the parameter width
 pass	a narrow-width parameter plus a bare literal computes at the parameter width
 pass	a narrow-width parameter plus a bare literal computes inside a helper function
@@ -2306,6 +2311,8 @@ pass	an axiom composes with the inference rules like any other theorem (SYM of E
 pass	an axiom theorem is unforgeable — new_axiom's Thm cannot be fabricated outside the kernel
 pass	an earlier literal arm is chosen over a later name-binding arm for a runtime scrutinee
 pass	an effect discharged by a handler does not escape to the manifest
+pass	an effect in a statically-dead branch is still syntactically reached, so its delegation is not latent
+pass	an effect in a statically-dead branch still requires a grant — ungranted is rejected
 pass	an effect operation declared with no name is rejected
 pass	an effect operation may be named `bind` — the interop directive keyword is not reserved for op names
 pass	an effect operation reached with neither a handler nor a delegation is rejected
@@ -2792,6 +2799,7 @@ pass	eval on malformed AST traps
 pass	every not-a-number value is equal to every not-a-number value
 pass	exact rational arithmetic is exact and normalized
 pass	exact rational division is total and exact for a nonzero divisor
+pass	expansion recurses to a fixpoint through a tag whose body is another tagged template
 pass	expect makes a checked-arithmetic result trap on overflow
 pass	expect on a RUNTIME-absent optional traps with the canonical unreachable kind
 pass	expect traps on the err case of a RUNTIME result
@@ -2943,6 +2951,7 @@ pass	multiplication
 pass	multiplication of an integer and a float does not silently promote
 pass	multiplication of the minimum integer by -1 overflows and traps
 pass	multiplication past the maximum integer overflows and traps
+pass	multiply-by-zero is NOT an annihilator for FLOAT — nan * 0.0 is nan, not 0.0
 pass	multiplying a scaled-unit quantity by the literal one keeps its dimension and displays scaled
 pass	multiplying quantities multiplies their dimensions
 pass	narrowing a BigInt-valued if back to Int64 works over both branches

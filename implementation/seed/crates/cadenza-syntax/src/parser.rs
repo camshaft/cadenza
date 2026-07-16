@@ -3430,6 +3430,22 @@ mod tests {
             n,
             "span table stays total (1:1 with structure) for {src:?}"
         );
+        // Every span is a GEOMETRICALLY VALID slice of the source — ordered, in-bounds, and on UTF-8
+        // char boundaries — even on malformed/recovered input. This is what makes `&src[sp.start..sp.end]`
+        // safe: an LSP hover / diagnostic underline / codemod edit slices the source by a node's span, so
+        // a span past the end or off a char boundary would PANIC on the exact byte a user hovers. Totality
+        // (above) only says a span EXISTS per node; this says it can be safely SLICED. Checked for every
+        // id (spans are a flat vector, so a plain scan covers the whole arena).
+        for i in 0..n as u32 {
+            let sp = p.spans.get(StructId(i)).expect("total span table");
+            assert!(
+                sp.start <= sp.end
+                    && sp.end <= src.len()
+                    && src.is_char_boundary(sp.start)
+                    && src.is_char_boundary(sp.end),
+                "span {sp:?} for node {i} is not a valid slice of {src:?}"
+            );
+        }
         // Every reachable node's children are valid ids — the tree is fully traversable.
         fn walk(a: &Arenas, id: StructId, seen: &mut usize) {
             *seen += 1;
@@ -3447,6 +3463,30 @@ mod tests {
         let mut seen = 0;
         walk(&p.arenas, p.arenas.root, &mut seen);
         p
+    }
+
+    #[test]
+    fn every_ml_span_is_a_valid_source_slice_over_arbitrary_input() {
+        // Names the span-GEOMETRY property `recovered` now enforces, so it is a first-class invariant
+        // (not just an incidental helper check that a refactor could drop): on ANY input — well-formed or
+        // garbage — every node's span is an ordered, in-bounds, char-boundary slice of the source, so
+        // `&src[sp.start..sp.end]` (LSP hover / diagnostic underline / codemod edit) can never panic. The
+        // s-expr surface got this via `every_node_span_slices_back_to_that_node...`; the ML surface parses
+        // a far larger grammar with error recovery + graft/desugar spans, where an off-by-one is likelier.
+        // A dedicated sweep over a sigil-rich alphabet (distinct seed from the recovery sweep) drives the
+        // grammar's structural paths; `recovered` asserts the geometry for each generated program.
+        let alphabet: Vec<char> = "()[]{}|,;=>-+*/<:.@#`\"\\ \tabcdefimntxλ中0123456789\n"
+            .chars()
+            .collect();
+        let mut rng = SplitMix64(0x59a2_0d1c_5111_7a5f);
+        for len in 0..=40usize {
+            for _ in 0..100 {
+                let s: String = (0..len)
+                    .map(|_| alphabet[(rng.next() as usize) % alphabet.len()])
+                    .collect();
+                let _ = recovered(&s); // asserts span geometry (+ totality/traversability) for this input
+            }
+        }
     }
 
     #[test]

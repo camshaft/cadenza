@@ -59,6 +59,12 @@ test("a nested compound cell renders compactly rather than breaking the table", 
   assert.deepEqual(r.table.rows, [["1", "(tuple 2 3)"]]);
 });
 
+test("a quantity cell renders friendly (`5 meter`, not `(quantity 5 meter)`) — shared displayNode", () => {
+  const r = extractTable("(: (list (tuple 1 (quantity 5 meter))) T)");
+  assert.ok(r.ok);
+  assert.deepEqual(r.table.rows, [["1", "5 meter"]]);
+});
+
 test("a non-list value → typed fallback (not a table), never throws", () => {
   const scalar = extractTable("(: 42 Int64)");
   assert.equal(scalar.ok, false);

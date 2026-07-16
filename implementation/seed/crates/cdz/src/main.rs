@@ -188,7 +188,7 @@ enum Cmd {
     // ── watch ───────────────────────────────────────────────────────────────────────────────────
     /// Watch the project's source files and RE-RUN a command on every change (the `cargo watch`
     /// analogue) — the fast edit→feedback loop. `cdz watch` re-runs `cdz check` on save (diagnostics as
-    /// you type, from the shell); `cdz watch --exec test` (or `build`) re-runs that instead. Resolves the
+    /// you type, from the shell); `cdz watch --exec test` (or `build`/`run`) re-runs that instead. Resolves the
     /// same `Project.cdz` as `cdz build`/`test` (searching upward when given no argument) and watches its
     /// declared source set + the manifest. Rapid saves are DEBOUNCED (coalesced) and an in-flight run is
     /// superseded by the next change, so a burst of edits triggers ONE re-run. Ctrl-C exits.
@@ -2167,6 +2167,19 @@ fn run_watch(args: &WatchArgs) -> ExitCode {
                 opt_level: None,
                 target: BuildTargetArg::Wasm,
             }),
+            // `run` in PROJECT mode: `component = the dir` routes through `run_project` (build the entry,
+            // then run it), the same path `cdz run <dir>` takes. `store` threads through for a heap run.
+            WatchCmd::Run => run_project(&cdz_run::cli::RunArgs {
+                component: Some(std::path::PathBuf::from(&dir_str)),
+                call: None,
+                args: Vec::new(),
+                runtime: None,
+                store: store.clone(),
+                host_responses: Vec::new(),
+                peers: Vec::new(),
+                release: false,
+                opt_level: None,
+            }),
         }
     };
 
@@ -2174,6 +2187,7 @@ fn run_watch(args: &WatchArgs) -> ExitCode {
         WatchCmd::Check => "check",
         WatchCmd::Test => "test",
         WatchCmd::Build => "build",
+        WatchCmd::Run => "run",
     };
 
     // Set up the recursive watch on the manifest directory. `notify`'s recommended watcher is the
@@ -2974,6 +2988,8 @@ enum WatchCmd {
     Test,
     /// Re-run `cdz build` (compile the entry to a component).
     Build,
+    /// Re-run `cdz run` (build the entry, then run it and print its value) — a live "run on save" loop.
+    Run,
 }
 
 #[derive(clap::Args)]
