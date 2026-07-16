@@ -218,6 +218,26 @@ mod tests {
     }
 
     #[test]
+    fn buffer_items_drops_exports_from_a_module_shell_too() {
+        // The export-dropping filter runs on a `(module …)` buffer (the hand-written-program path), not
+        // just a `(do …)` wrap — otherwise the buffer's own `(export …)` would leak into the assembled
+        // program alongside the REPL's synthesized sole export. Multiple items + an export interleaved.
+        let buf = parse("(module M (def (f x) x) (export f) (def g 5))");
+        let items = buffer_items(&buf);
+        assert_eq!(items.len(), 2, "two defs kept, the export dropped");
+        assert_eq!(def_name(&buf, items[0]).as_deref(), Some("f"));
+        assert_eq!(def_name(&buf, items[1]).as_deref(), Some("g"));
+    }
+
+    #[test]
+    fn buffer_items_of_an_empty_module_is_no_items() {
+        // A module with only a name and no body items unwraps to nothing (skip past head + name leaves an
+        // empty tail) — no panic on the `skip(2)` of a 2-element list.
+        let buf = parse("(module M)");
+        assert!(buffer_items(&buf).is_empty());
+    }
+
+    #[test]
     fn buffer_items_keeps_a_bare_def_but_not_a_bare_expr() {
         let def_buf = parse("(def (f) 1)");
         assert_eq!(buffer_items(&def_buf).len(), 1, "a bare def is kept");
@@ -324,6 +344,39 @@ mod tests {
         assert!(
             rendered.contains(&format!("(def ({REPL_ENTRY}) (* 6 7))")),
             "entry present with no buffer items: {rendered}"
+        );
+    }
+
+    #[test]
+    fn assemble_over_a_module_buffer_keeps_defs_drops_the_buffers_export() {
+        // The "surfaces never drift" invariant reaches the MODULE-shelled buffer (the hand-written
+        // program path), not just the guide's `(do …)` wrap: the module's defs are kept, its own
+        // `(export …)` is dropped, and only the synthesized entry is exported — same shape as a `do`
+        // buffer assembles to.
+        let buf = parse("(module M (def (dbl x) (* x 2)) (export dbl))");
+        let expr = parse("(dbl 21)");
+        let rendered = crate::query::Tree::of(&assemble_repl_program(&buf, &expr)).to_sexpr();
+        assert!(
+            rendered.contains("(def (dbl x)"),
+            "the module's def is kept: {rendered}"
+        );
+        assert!(
+            rendered.contains(&format!("(def ({REPL_ENTRY}) (dbl 21))")),
+            "entry wraps the expression: {rendered}"
+        );
+        assert!(
+            rendered.contains(&format!("(export {REPL_ENTRY})")),
+            "the synthesized entry is exported: {rendered}"
+        );
+        assert!(
+            !rendered.contains("(export dbl)"),
+            "the buffer module's own export is dropped: {rendered}"
+        );
+        // The `module` shell itself is unwrapped — the assembled program is a flat `(do …)`, not a
+        // nested module.
+        assert!(
+            !rendered.contains("(module M"),
+            "the buffer's module shell is unwrapped, not re-nested: {rendered}"
         );
     }
 }
