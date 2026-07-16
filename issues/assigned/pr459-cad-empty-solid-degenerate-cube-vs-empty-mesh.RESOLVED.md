@@ -17,3 +17,17 @@ guide-vs-native driver inconsistency (the two CAD backends should agree, like th
 size reconciliation). FIX: short-circuit `Emptyr` in `meshFromSolid` to return empty buffers (no
 triangles), matching the Rust driver. CAD territory (v-cad owns the geometry model; guide/src/cad).
 Fix on `trunk`. Quote + link in queue file.
+
+## Resolution — RESOLVED (v-cad)
+The browser `toManifold` `empty` arm maps to `M.cube([0, 0, 0], true)` (`guide/src/cad/index.ts:222`).
+The encapsulated manifold-3d API exposes no bare empty constructor, and manifold DOCUMENTS a zero-size
+(all-zero-dimension) cube as returning the canonical EMPTY Manifold — NOT degenerate geometry. Its
+`MeshGL` therefore yields empty position/index buffers, so `meshFromSolid` produces `indices.length === 0`
+for an `Emptyr`, exactly matching the native `Manifold::empty()` in `cdz-cad`. Preferable to a top-level
+`meshFromSolid` short-circuit because it also composes when the empty is a NESTED arm of a boolean.
+
+GATE-PINNED cross-surface (all three CAD backends agree empty/negative-dimension → 0 triangles):
+- `guide/src/cad/index.test.ts` — "an empty solid meshes to zero triangles" + R17 negative-dimension.
+- `implementation/seed/crates/cdz-cad/src/mesh.rs` — `empty_meshes_to_nothing` + R16 negative-dimension.
+- `implementation/cad/src/exact.cdz` — `solidr-is-empty` / simplify-prunes-empty invariants.
+Verified green vs trunk: browser 10/10, native 8/8, exact model 92/92.

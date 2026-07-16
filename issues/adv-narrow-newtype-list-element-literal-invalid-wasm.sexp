@@ -74,3 +74,5 @@
   (input (do (type W (Wrap UInt8)) (def (main (: n UInt8)) (match (list (W.Wrap n)) ((list (W.Wrap x) .. r) x) (_ 0))) (export main)))
   (call main (: 5 UInt8))
   (output (: 5 Int64)))
+
+; UPDATE 2026-07-16: v-patterns ROOT-CAUSED — broader + different from this reproducer hypothesis. NOT the Inc-51 list-element desugar guard (breaker locus guess WRONG); it is a CONSTRUCTION/box bug: is_narrow_int (select.rs) matched Ty::Int WITHOUT strip_nominal, so an ERASED narrow newtype Ty::Nominal(W,Int u8) skipped the i32->i64 widen before box-int → boxed raw i32 → invalid. CENTRAL fix (strip_nominal in is_narrow_int, the shared widen-before-box-int helper every element/payload/capture site routes through) → fixes tuple/sum/list ALL positions + literal AND binder at the SOURCE = the centralization breaker asked for (answers the 3rd-re-hardcode worry: compare-side a1510c912/spill 6e2aebd13 were per-path, this construction-side is the last surface + central). Fix verified all positions + UInt8/Int32; lands after Inc-52 (same file); v-patterns adding tuple+sum cases too. Verify on land: all nested positions × narrow widths valid.

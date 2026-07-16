@@ -1042,6 +1042,30 @@
   (input  (= (read (print (Ast.Float 3.0))) (Ast.Float 3.0)))
   (output (: true Bool)))
 
+(case "print of a NEGATIVE Ast.Float round-trips through read (sign survives the text path)"
+  (doc    "The existing print/read cases use only positive `1.5`/`3.0`, so they never exercise the SIGN
+           through the TEXT path (distinct from the encode/decode BYTE path pinned above). A printer that
+           dropped or mis-rendered the sign would still pass those but lose a negative float here.
+           `read(print (Ast.Float -1.5)) == (Ast.Float -1.5)` pins that the minus survives print → read.")
+  (input  (= (read (print (Ast.Float -1.5))) (Ast.Float -1.5)))
+  (output (: true Bool)))
+
+(case "print of an exponent-scale Ast.Float round-trips through read"
+  (doc    "A large-magnitude float `1e10` is rendered by `print` (shortest round-tripping form, which may
+           use `e` notation) and `read` parses it back bit-exactly. Pins the exponent/large-magnitude
+           rendering path of the printer, which the small `1.5`/`3.0` cases don't reach.")
+  (input  (= (read (print (Ast.Float 1e10))) (Ast.Float 1e10)))
+  (output (: true Bool)))
+
+(case "print of a negative-zero Ast.Float preserves the sign through read (text-path signed-zero)"
+  (doc    "🔑 The TEXT-path companion of the byte-path signed-zero pin (`negative zero encodes to bytes
+           distinct from positive zero`): `-0.0` and `0.0` are `==` as floats but bit-distinct, and the
+           canonical value form keeps them apart. A printer that rendered `-0.0` as bare `0.0` would pass
+           the byte-codec pin (which never prints) yet silently drop the sign here. `read(print (Ast.Float
+           -0.0)) == (Ast.Float -0.0)` pins that print → read preserves negative zero's identity too.")
+  (input  (= (read (print (Ast.Float -0.0))) (Ast.Float -0.0)))
+  (output (: true Bool)))
+
 ; --- `read` is TOTAL over its input: malformed text DECLINES, never traps or panics ------------------
 ; `read : String → Ast` parses the s-expression subset `print` emits (`lower_read`/`SexprReader`). The
 ; round-trip cases above only feed it WELL-FORMED text (`read(print v)`); none exercises the failure

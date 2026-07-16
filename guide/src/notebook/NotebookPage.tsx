@@ -40,10 +40,22 @@ type CellState = { phase: "idle" } | { phase: "running" } | { phase: "done"; out
 
 export default function NotebookPage() {
   const surface = NOTEBOOK_SURFACE;
-  // The notebook document. Editing the whole doc (an editor pane) is a later slice; for now it's the
-  // starter, and code cells run/recompute against it. `setDoc` is wired when the doc editor lands.
-  const [doc] = useState(STARTER);
-  const cells = useMemo<Cell[]>(() => parseDocument(doc), [doc]);
+  // The notebook document — editable via the "Edit source" pane (§ below). `doc` tracks every keystroke
+  // (so the textarea is responsive); `committedDoc` is a DEBOUNCED copy that actually drives parsing +
+  // re-running, so typing doesn't re-parse + thrash the run worker (and flicker every output to "not run")
+  // on each character. They coincide except during an active edit burst.
+  const [doc, setDoc] = useState(STARTER);
+  const [committedDoc, setCommittedDoc] = useState(STARTER);
+  const [editing, setEditing] = useState(false);
+  const docDebounce = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (docDebounce.current) clearTimeout(docDebounce.current);
+    docDebounce.current = setTimeout(() => setCommittedDoc(doc), 400);
+    return () => {
+      if (docDebounce.current) clearTimeout(docDebounce.current);
+    };
+  }, [doc]);
+  const cells = useMemo<Cell[]>(() => parseDocument(committedDoc), [committedDoc]);
 
   // All widgets declared across every widget cell, and their live values.
   const widgets = useMemo<Widget[]>(
@@ -158,10 +170,30 @@ export default function NotebookPage() {
     <div className="mx-auto min-h-screen max-w-4xl px-4 py-6">
       <div className="mb-4 flex items-baseline justify-between gap-3">
         <h1 className="text-lg font-bold text-slate-100 sm:text-xl">Cadenza Notebook</h1>
-        <Link to="/playground" className="shrink-0 text-xs text-cadenza-400 hover:text-cadenza-300">
-          Playground →
-        </Link>
+        <div className="flex shrink-0 items-center gap-3 text-xs">
+          <button
+            type="button"
+            onClick={() => setEditing((e) => !e)}
+            className="text-cadenza-400 hover:text-cadenza-300"
+            data-testid="edit-toggle"
+          >
+            {editing ? "Hide source" : "Edit source"}
+          </button>
+          <Link to="/playground" className="text-cadenza-400 hover:text-cadenza-300">
+            Playground →
+          </Link>
+        </div>
       </div>
+
+      {editing && (
+        <textarea
+          value={doc}
+          onChange={(e) => setDoc(e.target.value)}
+          spellCheck={false}
+          className="mb-4 h-64 w-full resize-y rounded-lg border border-slate-700 bg-slate-900 p-3 font-mono text-sm text-slate-200"
+          data-testid="doc-editor"
+        />
+      )}
 
       <div className="space-y-2" data-testid="notebook">
         {cells.map((cell, i) =>

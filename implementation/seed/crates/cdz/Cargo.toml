@@ -58,3 +58,8 @@ lsp-server = "0.9"
 lsp-types = "0.97"
 serde = "1"
 serde_json = "1"
+# Cross-platform filesystem watching for `cdz watch` (the cargo-watch analogue): re-run
+# `check`/`test`/`build` when a project source changes. `notify` is the standard FS-watch crate
+# (inotify/FSEvents/kqueue), the same choice cargo-watch makes. DEV-CLI ONLY — it lives on the `cdz`
+# binary, NEVER in the frozen `cdz-runtime` dep set (whose hash determinism a new crate would break).
+notify = "6"

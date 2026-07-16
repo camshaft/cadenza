@@ -4923,9 +4923,14 @@ mod tests {
             // `assert_ne!` cases pinned this (radix, alpha-inequivalence, atom-vs-list); nothing swept the
             // whole space. Generate programs over an alphabet rich in near-misses (same shape/different
             // leaf, same leaves/different shape, distinct radices, string-vs-name), collect EVERY subtree
-            // (via `node_size`-covering pre-order), and check the biconditional pairwise through a
-            // hash-keyed bucket: within a hash bucket every tree must be `tree_eq`; across buckets any two
-            // must NOT be `tree_eq`. O(Σ bucket²) — bounded because buckets stay tiny for distinct trees.
+            // (via `node_size`-covering pre-order), and check the biconditional through TWO indexes, both
+            // near-linear (no O(N²) pairwise scan):
+            //   * no-collision (hash⇒eq): a hash→reps bucket — within a bucket every tree must be
+            //     `tree_eq` (a distinct tree in the same bucket is a collision);
+            //   * no-miss (eq⇒hash): a canonical-source→hash index — two subtrees are `tree_eq` IFF they
+            //     render to the same canonical s-expr (`src_of`), so equal trees landing on DIFFERENT
+            //     hashes is exactly one source string mapping to two hashes. O(N) via a map, replacing the
+            //     old O(Σ bucket²)/all-pairs `tree_eq` cross-bucket scan (PR #500 CI-time nit).
             use super::{SplitMix64, Tree, tree_eq};
             use std::collections::HashMap;
 
@@ -4945,6 +4950,9 @@ mod tests {
             let mut rng = SplitMix64(0x0d1c_a5f0_c0de_5eed);
             // hash → representatives already seen with that hash (owned so they outlive one iteration).
             let mut buckets: HashMap<u64, Vec<Tree>> = HashMap::new();
+            // canonical source → the hash every tree with that source got. A second, DIFFERENT hash for
+            // the same source is the "equal trees hashed differently → missed clone" bug, caught in O(1).
+            let mut by_source: HashMap<String, u64> = HashMap::new();
             let mut pairs_checked = 0usize;
             let mut equal_pairs = 0usize;
             for _ in 0..4000 {
@@ -4969,7 +4977,7 @@ mod tests {
                 for sub in subs {
                     let h = hash_tree(sub);
                     let reps = buckets.entry(h).or_default();
-                    // Same hash MUST mean structurally equal (no collision).
+                    // no-collision (hash⇒eq): same hash MUST mean structurally equal.
                     for rep in reps.iter() {
                         assert!(
                             tree_eq(rep, sub),
@@ -4984,24 +4992,22 @@ mod tests {
                     if reps.iter().all(|rep| !tree_eq(rep, sub)) {
                         reps.push(sub.clone());
                     }
-                }
-            }
-            // Reverse direction: any two DISTINCT-hash representatives must NOT be tree_eq (equal trees
-            // always share a hash, so a cross-bucket tree_eq would be a determinism bug in hash_tree).
-            let all: Vec<(&u64, &Tree)> = buckets
-                .iter()
-                .flat_map(|(h, v)| v.iter().map(move |t| (h, t)))
-                .collect();
-            for i in 0..all.len() {
-                for j in (i + 1)..all.len() {
-                    if all[i].0 != all[j].0 {
-                        assert!(
-                            !tree_eq(all[i].1, all[j].1),
-                            "two structurally-EQUAL subtrees hashed DIFFERENTLY (missed clone):\n  {}\n  {}",
-                            src_of(all[i].1),
-                            src_of(all[j].1)
-                        );
-                        pairs_checked += 1;
+                    // no-miss (eq⇒hash), O(1): a subtree's canonical source pins its hash. If the same
+                    // source ever maps to a DIFFERENT hash, two structurally-equal trees hashed apart —
+                    // find_clones would MISS the clone. (`src_of` is a canonical rendering: tree_eq ⟺
+                    // equal source.)
+                    let src = src_of(sub);
+                    match by_source.get(&src) {
+                        Some(&prev) => {
+                            assert_eq!(
+                                prev, h,
+                                "two structurally-EQUAL subtrees hashed DIFFERENTLY (missed clone): {src}"
+                            );
+                            pairs_checked += 1;
+                        }
+                        None => {
+                            by_source.insert(src, h);
+                        }
                     }
                 }
             }

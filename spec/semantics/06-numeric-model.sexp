@@ -102,7 +102,7 @@
   (input  (& true false))
   (error  CDZ0203))
 
-(case "a shift by a non-numeric count names the integer requirement"
+(case "a shift of a non-numeric operand names the integer requirement"
   (doc    "`(<< \"x\" 1)` shifts a String value — a String is not an integer, so it rejects CDZ0203,
            the same integer-operand requirement as the boolean case, on the shift operators. Pins that
            `<<`/`>>` name the fault on a non-numeric VALUE operand (not only the shift COUNT), distinct
