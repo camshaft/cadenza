@@ -79,3 +79,41 @@ fn doctor_flags_a_store_without_the_required_runtime() {
     );
     let _ = std::fs::remove_dir_all(&empty);
 }
+
+#[test]
+fn doctor_json_emits_a_machine_readable_health_object() {
+    // `--json` emits one JSON object (version/path/cdz_run/runtime_store/ok) — the CI/setup shape. Here the
+    // toolchain is healthy (cdz-run built beside cdz), so `ok` is true and the store status is "ok".
+    let (ok, out, _err) = run(&["doctor", "--json"]);
+    assert!(ok, "healthy toolchain → success: {out}");
+    // Well-formed single-line-ish object with the expected keys.
+    assert!(
+        out.trim_start().starts_with('{'),
+        "emits a JSON object: {out}"
+    );
+    for key in [
+        "\"version\"",
+        "\"cdz_run\"",
+        "\"runtime_store\"",
+        "\"ok\":true",
+    ] {
+        assert!(out.contains(key), "json has {key}: {out}");
+    }
+    assert!(out.contains("\"ok\":true"), "healthy → ok:true: {out}");
+}
+
+#[test]
+fn doctor_json_reports_a_missing_store_as_not_ok() {
+    // `--json` with a missing store: the object reports the store status and `ok:false`, and exits non-zero
+    // — a CI script can parse the verdict AND gate on the exit code.
+    let missing =
+        std::env::temp_dir().join(format!("cdz-doctor-json-nostore-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&missing);
+    let (ok, out, _err) = run(&["doctor", "--json", "--store", missing.to_str().unwrap()]);
+    assert!(!ok, "missing store → non-zero exit: {out}");
+    assert!(out.contains("\"ok\":false"), "json reports ok:false: {out}");
+    assert!(
+        out.contains("\"status\":\"missing\""),
+        "json reports the store status as missing: {out}"
+    );
+}
