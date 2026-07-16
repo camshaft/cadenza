@@ -964,6 +964,19 @@
             (export main)))
   (output (: true Bool)))
 
+(case "eval of an Ast.Float NaN node executes to the NaN value — it does NOT construct an escaping node"
+  (doc    "The eval-vs-construct asymmetry for a non-canonical float: CONSTRUCTING an escaping `(Ast.Float
+           Float64.nan)` value declines (no canonical value form), but `(eval (Ast.Float Float64.nan))`
+           RUNS to the NaN value. `eval_ast::desugar_eval` is a load-time structural rewrite that
+           reconstructs the SOURCE float literal the node denotes and executes it — it never builds an
+           escaping `Ast.Float` SumNew, so the construction guard correctly does not fire; eval yields a
+           bare `Float64` NaN, which is a legal value (a bare NaN crosses fine, `= nan nan` is true by the
+           canonical byte form). Pins that the guard is about the AST-node escape surface, not about NaN as
+           a value — eval executes, it does not reify-and-escape. `(= (eval (Ast.Float Float64.nan))
+           Float64.nan)` is true.")
+  (input  (do (def (main) (= (eval (Ast.Float Float64.nan)) Float64.nan)) (export main)))
+  (output (: true Bool)))
+
 (case "eval of a quoted float executes it to the float value"
   (doc    "eval executes an AST value as code; a float form evaluates to itself, so `(eval (quote 1.5))`
            runs to `1.5` — the float companion of `(eval (quote true))`.")

@@ -2230,6 +2230,7 @@ pass	eval of a quoted match form folds to the selected arm
 pass	eval of a quoted ordering comparison drives the branch
 pass	eval of a quoted string executes it to the string value
 pass	eval of a template splicing a runtime VALUE folds — the working side of the boundary
+pass	eval of an Ast.Float NaN node executes to the NaN value — it does NOT construct an escaping node
 pass	eval on malformed AST traps
 pass	every not-a-number value is equal to every not-a-number value
 pass	exact rational arithmetic is exact and normalized
