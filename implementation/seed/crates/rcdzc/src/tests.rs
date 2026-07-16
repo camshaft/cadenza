@@ -28558,6 +28558,8 @@ mod match_engine {
         for (prog, want) in [
             ("(Int64.checked-add 20 22)", 42),       // fits
             ("(Int64.checked-add Int64.max 1)", -1), // overflows → None
+            ("(Int64.checked-sub 50 8)", 42),        // fits
+            ("(Int64.checked-sub Int64.min 1)", -1), // underflows → None
             ("(Int64.checked-mul 6 7)", 42),         // fits
             ("(Int64.checked-mul Int64.max 2)", -1), // overflows → None
         ] {
@@ -28578,9 +28580,12 @@ mod match_engine {
         // model.md §Overflow Is Defined). A constant pair FOLDS via `wrapping_*`; the result is a bare
         // Int64 (no Option). `MAX + 1` wraps to MIN, `MAX * 2` wraps to -2, in-range equals `+`/`*`.
         let min = i64::MIN; // -9223372036854775808
+        let max = i64::MAX; //  9223372036854775807
         for (prog, want) in [
             ("(Int64.wrapping-add 20 22)", 42),
             ("(Int64.wrapping-add Int64.max 1)", min),
+            ("(Int64.wrapping-sub 50 8)", 42),
+            ("(Int64.wrapping-sub Int64.min 1)", max), // MIN - 1 wraps to MAX
             ("(Int64.wrapping-mul 6 7)", 42),
             ("(Int64.wrapping-mul Int64.max 2)", -2),
         ] {
@@ -28600,6 +28605,15 @@ mod match_engine {
             run_returns::<i64>(&component(src), "main"),
             min,
             "runtime wrapping-add wraps at run time"
+        );
+        // The subtraction runtime companion: `(s a b) = (Int64.wrapping-sub a b)` emits the raw `i64.sub`
+        // (no underflow guard), so `(s Int64.min 1)` wraps to MAX rather than trapping.
+        let src = "(module m (def (s a b) (Int64.wrapping-sub a b)) \
+                    (def (main) (s Int64.min 1)) (export main))";
+        assert_eq!(
+            run_returns::<i64>(&component(src), "main"),
+            max,
+            "runtime wrapping-sub wraps at run time"
         );
     }
 

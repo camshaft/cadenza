@@ -2136,6 +2136,8 @@ pass	checked addition yields None on overflow instead of trapping
 pass	checked addition yields Some of the sum when it fits
 pass	checked multiplication reports overflow as None
 pass	checked multiplication yields Some when it fits
+pass	checked subtraction yields None on underflow instead of trapping
+pass	checked subtraction yields Some of the difference when it fits
 pass	combining a named rate with a length is a dimensional error
 pass	compacting a byte sequence built at run time preserves its bytes
 pass	compacting a slice preserves its bytes
@@ -2926,6 +2928,8 @@ pass	wrapping arithmetic algebraic identities hold at the range boundaries
 pass	wrapping arithmetic over runtime operands wraps at run time
 pass	wrapping arithmetic uses the named wrapping form of the operator
 pass	wrapping multiplication wraps rather than trapping
+pass	wrapping subtraction of in-range operands is ordinary subtraction
+pass	wrapping subtraction wraps modulo two to the sixty-fourth on underflow
 pass	wrapping-add on a runtime Int8 wraps at its signed boundary
 pass	wrapping-add on a runtime UInt8 wraps modulo 256
 pass	wrapping-add wraps a boundary-crossing runtime Int64 at the max boundary

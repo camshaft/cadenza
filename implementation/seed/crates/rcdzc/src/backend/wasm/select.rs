@@ -7908,18 +7908,17 @@ fn emit(
                 Prim::Add | Prim::Sub | Prim::Mul => emit_checked_arith(
                     db, op, m, lhs, rhs, slots, base, high, scratch_ty, layout, out,
                 ),
-                // WRAPPING arithmetic — the RAW machine `add`/`mul`, NO overflow guard (wasm's op already
-                // wraps modulo the slot). At a NARROW width the result is masked to the width by the
-                // ordinary operand/consumer normalization, exactly as a bitwise op's is. `wrapping-sub`
-                // would map to `m.sub()` here, but the corpus only uses add/mul.
-                Prim::WrappingAdd | Prim::WrappingMul => {
+                // WRAPPING arithmetic — the RAW machine `add`/`sub`/`mul`, NO overflow guard (wasm's op
+                // already wraps modulo the slot). At a NARROW width the result is masked to the width by the
+                // ordinary operand/consumer normalization, exactly as a bitwise op's is.
+                Prim::WrappingAdd | Prim::WrappingSub | Prim::WrappingMul => {
                     let ot = IntTy::fixed(m.signed, m.width);
                     emit_operand(db, lhs, ot, slots, base, high, scratch_ty, layout, out)?;
                     emit_operand(db, rhs, ot, slots, base, high, scratch_ty, layout, out)?;
-                    out.push(if matches!(op, Prim::WrappingAdd) {
-                        m.add()
-                    } else {
-                        m.mul()
+                    out.push(match op {
+                        Prim::WrappingAdd => m.add(),
+                        Prim::WrappingSub => m.sub(),
+                        _ => m.mul(),
                     });
                     Ok(())
                 }

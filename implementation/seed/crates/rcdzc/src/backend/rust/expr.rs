@@ -1344,11 +1344,11 @@ fn emit_arith(
         // WRAPPING arithmetic → Rust's own `wrapping_add`/`wrapping_mul` — two's-complement wraparound,
         // never panics (the native mirror of the wasm backend's raw `i64.add`/`i64.mul`). `it` is the
         // aliased width N, so the operands are the N-bit type and the wrap is modulo 2^N.
-        Prim::WrappingAdd | Prim::WrappingMul => {
-            let method = if matches!(op, Prim::WrappingAdd) {
-                "wrapping_add"
-            } else {
-                "wrapping_mul"
+        Prim::WrappingAdd | Prim::WrappingSub | Prim::WrappingMul => {
+            let method = match op {
+                Prim::WrappingAdd => "wrapping_add",
+                Prim::WrappingSub => "wrapping_sub",
+                _ => "wrapping_mul",
             };
             Ok(format!("({l}).{method}({r})"))
         }
