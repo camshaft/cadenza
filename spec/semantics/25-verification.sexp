@@ -304,11 +304,12 @@
           ((Term.Eq x y)   (match b ((Term.Var _) false) ((Term.Comb _ _) false) ((Term.Eq p q) (and (term-eq x p) (term-eq y q)))))))
       (def (refl (: t Term)) (Thm.Seq (list) (Term.Eq t t)))
       (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
+      (def (hyps (: th Thm)) (match th ((Thm.Seq h _) h)))
       (def (mk-comb (: th1 Thm) (: th2 Thm))
         (match (concl th1)
           ((Term.Eq f g)
             (match (concl th2)
-              ((Term.Eq x y) (Option.Some (Thm.Seq (list) (Term.Eq (Term.Comb f x) (Term.Comb g y)))))
+              ((Term.Eq x y) (Option.Some (Thm.Seq (List.concat (hyps th1) (hyps th2)) (Term.Eq (Term.Comb f x) (Term.Comb g y)))))
               (_ (Option.None))))
           (_ (Option.None))))
       (export (. Term *))
@@ -436,18 +437,19 @@
           ((Term.Eq x y)   (match b ((Term.Var _) false) ((Term.Comb _ _) false) ((Term.Eq p q) (and (term-eq x p) (term-eq y q)))))))
       (def (refl (: t Term)) (Thm.Seq (list) (Term.Eq t t)))
       (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
+      (def (hyps (: th Thm)) (match th ((Thm.Seq h _) h)))
       (def (mk-comb (: th1 Thm) (: th2 Thm))
         (match (concl th1)
           ((Term.Eq f g)
             (match (concl th2)
-              ((Term.Eq x y) (Option.Some (Thm.Seq (list) (Term.Eq (Term.Comb f x) (Term.Comb g y)))))
+              ((Term.Eq x y) (Option.Some (Thm.Seq (List.concat (hyps th1) (hyps th2)) (Term.Eq (Term.Comb f x) (Term.Comb g y)))))
               (_ (Option.None))))
           (_ (Option.None))))
       (def (trans (: th1 Thm) (: th2 Thm))
         (match (concl th1)
           ((Term.Eq a b)
             (match (concl th2)
-              ((Term.Eq b2 c) (if (term-eq b b2) (Option.Some (Thm.Seq (list) (Term.Eq a c))) (Option.None)))
+              ((Term.Eq b2 c) (if (term-eq b b2) (Option.Some (Thm.Seq (List.concat (hyps th1) (hyps th2)) (Term.Eq a c))) (Option.None)))
               (_ (Option.None))))
           (_ (Option.None))))
       (export (. Term *))
@@ -1300,7 +1302,7 @@
         (match th ((Thm.Seq g q) (Thm.Seq (remove p g) (Term.Imp p q)))))
       (def (trans (: t1 Thm) (: t2 Thm))
         (match (concl t1)
-          ((Term.Eq a b) (match (concl t2) ((Term.Eq b2 c) (if (term-eq b b2) (Option.Some (Thm.Seq (list) (Term.Eq a c))) (Option.None))) (_ (Option.None))))
+          ((Term.Eq a b) (match (concl t2) ((Term.Eq b2 c) (if (term-eq b b2) (Option.Some (Thm.Seq (List.concat (hyps t1) (hyps t2)) (Term.Eq a c))) (Option.None))) (_ (Option.None))))
           (_ (Option.None))))
       (export (. Term *))
       (export Thm)
@@ -1653,3 +1655,108 @@
                ((Option.None _) -2)))
            (export main)))
   (call main (: 0 Int64)) (output (: 1 Int64)))
+
+; ============================================================================================
+; Increment 11 — SOUNDNESS FIX (breaker-found): the CHAINING rules must UNION their operands'
+; hypotheses. TRANS and MK_COMB were outputting (Thm.Seq (list) …) — an EMPTY hypothesis set —
+; regardless of their operands' hypotheses, so an assumption threaded through them was SILENTLY
+; DISCHARGED (a later DISCH/MP could then "prove" the conclusion with NO premise — an unsound theorem).
+; The fix (this file's TRANS/MK_COMB now do it): a rule that consumes N theorems and produces one must
+; carry the UNION of their hypotheses (HOL: G1 ⊢ a=b and G2 ⊢ b=c yields G1∪G2 ⊢ a=c), exactly as MP /
+; EQ_MP already did via List.concat. Leaf/axiom-schema rules (refl, beta, assume) correctly use
+; (list)/(list p) — they have no operand theorems. These cases thread a real ASSUME through the chaining
+; rules and assert the hypothesis SURVIVES (a hyp-dropping rule flips them to false). This is the exact
+; soundness class the whole vertical exists to protect. (This file's earlier TRANS/MK_COMB uses only ever
+; chained hypothesis-free refl/beta results, so the bug was LATENT — no graded case exposed it until now.)
+; ============================================================================================
+
+(case "TRANS unions its operands' hypotheses — an assumption threaded through TRANS survives (soundness)"
+  (doc    "The breaker-found soundness pin for TRANS. th1 = ASSUME (a=b) : {a=b} ⊢ a=b; th2 = refl(b) :
+           ⊢ b=b. TRANS chains them (b matches) → the result must be {a=b} ⊢ a=b — the hypothesis {a=b}
+           SURVIVES. A TRANS that output (Thm.Seq (list) …) would silently discharge {a=b}, letting a
+           later step 'prove' a=b with no premise (unsound). The case asserts the result's conclusion is
+           a=b AND its single hypothesis is a=b. Pins that TRANS unions operand hypotheses (like MP does).")
+  (module "hol"
+    (do
+      (type Term (Var Int64) (Comb Term Term) (Eq Term Term))
+      (type Thm (Seq (List Term) Term))
+      (def (term-eq (: a Term) (: b Term))
+        (match a
+          ((Term.Var n)    (match b ((Term.Var m) (= n m)) (_ false)))
+          ((Term.Comb x y) (match b ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) (_ false)))
+          ((Term.Eq x y)   (match b ((Term.Eq p q) (and (term-eq x p) (term-eq y q))) (_ false)))))
+      (def (refl (: t Term)) (Thm.Seq (list) (Term.Eq t t)))
+      (def (assume (: p Term)) (Thm.Seq (list p) p))
+      (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
+      (def (hyps (: th Thm)) (match th ((Thm.Seq h _) h)))
+      (def (trans (: th1 Thm) (: th2 Thm))
+        (match (concl th1)
+          ((Term.Eq a b) (match (concl th2) ((Term.Eq b2 c) (if (term-eq b b2) (Option.Some (Thm.Seq (List.concat (hyps th1) (hyps th2)) (Term.Eq a c))) (Option.None))) (_ (Option.None))))
+          (_ (Option.None))))
+      (export (. Term *))
+      (export Thm)
+      (export term-eq)
+      (export refl)
+      (export assume)
+      (export trans)
+      (export concl)
+      (export hyps)))
+  (input  (do
+            (import "hol" (Term Thm term-eq refl assume trans concl hyps))
+            (def (main)
+              (let ((a (Term.Var 1)) (b (Term.Var 2)))
+                (let ((eqab (Term.Eq a b)))
+                  (match (trans (assume eqab) (refl b))
+                    ((Option.Some r)
+                      (and (term-eq (concl r) eqab)
+                           (match (hyps r) ((list h) (term-eq h eqab)) (_ false))))
+                    ((Option.None) false)))))
+            (export main)))
+  (output (: true Bool)))
+
+(case "MK_COMB unions its operands' hypotheses — an assumption threaded through MK_COMB survives (soundness)"
+  (doc    "The soundness pin for MK_COMB (congruence). th1 = ASSUME (f=g) : {f=g} ⊢ f=g; th2 = refl(x) :
+           ⊢ x=x. MK_COMB derives ⊢ (f x)=(g x) — and the hypothesis {f=g} must SURVIVE in the result, or
+           the congruence step would silently discharge the assumption it depended on. The case asserts the
+           conclusion is (f x)=(g x) AND the single hypothesis is f=g. Pins that MK_COMB unions operand
+           hypotheses. (Companion to the TRANS pin — the breaker's audit flagged both chaining rules.)")
+  (module "hol"
+    (do
+      (type Term (Var Int64) (Comb Term Term) (Eq Term Term))
+      (type Thm (Seq (List Term) Term))
+      (def (term-eq (: a Term) (: b Term))
+        (match a
+          ((Term.Var n)    (match b ((Term.Var m) (= n m)) (_ false)))
+          ((Term.Comb x y) (match b ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) (_ false)))
+          ((Term.Eq x y)   (match b ((Term.Eq p q) (and (term-eq x p) (term-eq y q))) (_ false)))))
+      (def (refl (: t Term)) (Thm.Seq (list) (Term.Eq t t)))
+      (def (assume (: p Term)) (Thm.Seq (list p) p))
+      (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
+      (def (hyps (: th Thm)) (match th ((Thm.Seq h _) h)))
+      (def (mk-comb (: th1 Thm) (: th2 Thm))
+        (match (concl th1)
+          ((Term.Eq f g)
+            (match (concl th2)
+              ((Term.Eq x y) (Option.Some (Thm.Seq (List.concat (hyps th1) (hyps th2)) (Term.Eq (Term.Comb f x) (Term.Comb g y)))))
+              (_ (Option.None))))
+          (_ (Option.None))))
+      (export (. Term *))
+      (export Thm)
+      (export term-eq)
+      (export refl)
+      (export assume)
+      (export mk-comb)
+      (export concl)
+      (export hyps)))
+  (input  (do
+            (import "hol" (Term Thm term-eq refl assume mk-comb concl hyps))
+            (def (main)
+              (let ((f (Term.Var 1)) (g (Term.Var 2)) (x (Term.Var 3)))
+                (let ((eqfg (Term.Eq f g)))
+                  (match (mk-comb (assume eqfg) (refl x))
+                    ((Option.Some r)
+                      (and (term-eq (concl r) (Term.Eq (Term.Comb f x) (Term.Comb g x)))
+                           (match (hyps r) ((list h) (term-eq h eqfg)) (_ false))))
+                    ((Option.None) false)))))
+            (export main)))
+  (output (: true Bool)))

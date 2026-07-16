@@ -4162,3 +4162,36 @@
             (export main)))
   (call   main (: 0 Int64))
   (output (: 8 Int64)))
+
+; --- Identity/constant closures through a recursive-generic HOF: the single-type working faces ------
+; The transformer closure-tie fix pins that an IDENTITY closure at TWO element types DECLINES (the
+; result var can't unify across both — residual gap). These pin the faces that DO work at a SINGLE
+; element type, promoted from passing breaker probes — the boundary the decline sits just past.
+
+(case "an identity closure threads through a recursive-generic HOF at one element type"
+  (doc    "`gmap (fn (x) x) [3 4]` → [3 4] (len 2): a pure IDENTITY closure works when the HOF is used
+           at ONE element type — the result var ties from the single call site's element. The
+           two-types version declines (the identity's result can't unify Int and String); this pins
+           that the single-type case is NOT over-rejected by that decline.")
+  (input  (do
+            (def (gmap f xs)
+              (match xs ((list) (list)) ((list h .. t) (List.concat (List.push (list) (f h)) (gmap f t)))))
+            (def (main (: d Int64))
+              (List.len (gmap (fn (x) x) (list 3 4))))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 2 Int64)))
+
+(case "a constant-returning closure threads through a recursive-generic HOF"
+  (doc    "`gmap (fn (x) 9) [1 2]` → [9 9], element 0 = 9: a closure that IGNORES its parameter and
+           returns a constant — its domain ties to the element (Int64) while its codomain is fixed
+           (Int64) independent of the domain. Pins the ignore-param face (distinct from identity: the
+           result does NOT come from the domain, so a different corner of the tie).")
+  (input  (do
+            (def (gmap f xs)
+              (match xs ((list) (list)) ((list h .. t) (List.concat (List.push (list) (f h)) (gmap f t)))))
+            (def (main (: d Int64))
+              (Option.expect (List.at (gmap (fn (x) 9) (list 1 2)) 0) "i"))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 9 Int64)))

@@ -335,6 +335,34 @@
             (export main)))
   (output (: 99 Int64)))
 
+(case "a String match with disjoint literal arms is order-independent (reordering the arms preserves the result)"
+  (doc    "The runtime String match dispatches by a chain of `(= s literal)` tests; when the literal patterns
+           are MUTUALLY DISJOINT, at most one can match, so the arm ORDER is immaterial — a lowering that
+           reordered the probe chain (e.g. for efficiency) must give the same result. `fwd s = (match s
+           (\"add\" 1) (\"sub\" 2) (\"mul\" 3) (_ 9))` and `rev s = (match s (\"mul\" 3) (\"sub\" 2) (\"add\"
+           1) (_ 9))` have the SAME arms in reverse order. On `\"sub\"` (built at runtime): both select 2, so
+           `10*fwd + rev` = 22. Pins arm order-independence for disjoint string literals, both backends.")
+  (input  (do
+            (def (fwd (: s String)) (match s ("add" 1) ("sub" 2) ("mul" 3) (_ 9)))
+            (def (rev (: s String)) (match s ("mul" 3) ("sub" 2) ("add" 1) (_ 9)))
+            (def (main) (+ (* 10 (fwd (if true "sub" "x"))) (rev (if true "sub" "x"))))
+            (export main)))
+  (output (: 22 Int64)))
+
+(case "a String match with a BOUND default arm equals its (= s literal) if-chain with a bound else"
+  (doc    "The default arm need not be a wildcard `_` — it may BIND the scrutinee and use it. `viamatch s =
+           (match s (\"add\" 1) (other (String.byte-len other)))` binds `other` = the whole String in the
+           default arm; its `=`-chain desugaring is `viachain s = (if (= s \"add\") 1 (String.byte-len s))`
+           (the else reuses the scrutinee, not a fresh name). On `\"wxyz\"` (no hit, byte-len 4): match → 4,
+           chain → 4, `100*viamatch + viachain` = 404. Pins match ≡ `=`-chain when the default BINDS and
+           consumes the scrutinee (not only a constant wildcard body), both backends.")
+  (input  (do
+            (def (viamatch (: s String)) (match s ("add" 1) (other (String.byte-len other))))
+            (def (viachain (: s String)) (if (= s "add") 1 (String.byte-len s)))
+            (def (main) (+ (* 100 (viamatch (if false "add" "wxyz"))) (viachain (if false "add" "wxyz"))))
+            (export main)))
+  (output (: 404 Int64)))
+
 ; --- The empty string is an ordinary String value ---------------------------------------
 ; `""` is the zero-length string — a first-class String the compiler needs (an empty error message, an
 ; empty name). Its length is 0 (counted in Unicode scalar values, of which it has none), it is equal

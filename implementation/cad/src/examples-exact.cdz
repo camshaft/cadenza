@@ -123,10 +123,26 @@ def bolt-flange-box-is-its-diameter-by-thickness() =
 
 @test
 def bolt-flange-mixes-metric-body-with-imperial-fasteners() =
-  // the showcase: a metric flange (60mm r, 45mm bolt circle) carries 1/4-inch bolt holes = 127/20 mm EXACTLY,
-  // and the four cardinal hole centres sit at ±45 mm exactly (no trig, no rounding — a real 4-bolt flange).
+  // the showcase: a metric flange (60mm r, 45mm bolt circle) carries 1/4-inch bolt holes = 127/20 mm EXACTLY.
   if inch(Rational.of(1, 4)) == Rational.of(127, 20) then
     (if mm(ri(45)) == ri(45) then unit else trap("bolt circle 45 mm exact")) else trap("1/4in bolt hole = 127/20 mm")
+
+@test
+def bolt-flange-hole-centres-sit-on-the-bolt-circle() =
+  // ACTUALLY verify the cardinal hole placement (not just the unit conversions): an east bolt hole moved to
+  // (+bcr, 0, 0) has its bounding box CENTRED at x = +bcr — i.e. its x-extent is [bcr - hole-r, bcr + hole-r],
+  // so (lo.x + hi.x)/2 = bcr exactly. This is the ±45mm cardinal-position claim, checked on the real geometry.
+  // Exact because the cardinal offset is just +bcr / 0 — no trig.
+  let bcr = mm(ri(45)) in
+  let hole-r = inch(Rational.of(1, 4)) in
+  let east-hole = move(bcr, ri(0), ri(0), cyl(mm(ri(8)), hole-r)) in
+  match bounding-box(east-hole) with | Aabbr.Boxr(lo, hi) =>
+    // centre-x = (lo.x + hi.x)/2 must equal bcr = 45; and the west hole (−bcr) mirrors to −45.
+    (if (v3r-x(lo) + v3r-x(hi)) / ri(2) == ri(45) then
+      (let west-hole = move(ri(0) - bcr, ri(0), ri(0), cyl(mm(ri(8)), hole-r)) in
+        match bounding-box(west-hole) with | Aabbr.Boxr(wlo, whi) =>
+          if (v3r-x(wlo) + v3r-x(whi)) / ri(2) == ri(0) - ri(45) then unit else trap("west hole centre = -45"))
+     else trap("east hole centre = +45 (on the 45mm bolt circle)"))
 
 @test
 def l-bracket-box-is-its-envelope-in-mm() =

@@ -629,7 +629,31 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         // `128u8 as i8`) and an unsigned value at/above the signed max (`UInt64.max` = `…u64`) alike.
         // The constant must FIT its width (checked here, CDZ0302 — a value that does not fit never
         // reaches a well-typed program, but selection re-checks rather than truncate silently).
-        Core::ConstInt(v) => emit_const_int(db, id, &v),
+        Core::ConstInt(v) => {
+            // A CONSTANT BigInt folds to `Core::ConstInt` retyped `Ty::BigInt` upstream. On this backend
+            // it must materialize a `cdz_num::Big` value (NOT a fixed-width int literal), so a BigInt op /
+            // a BigInt-typed export sees a `Big`. In-i64 range → `Big::from_i64`; a beyond-i64 constant →
+            // `Big::from_sign_magnitude_bytes(&[sign, LE-magnitude…])` (the runtime's canonical leaf form,
+            // the same route the wasm backend's `bigint-of-bytes` takes). `IntValue.magnitude` is
+            // BIG-endian, so reverse it for the LE form the parser expects.
+            if matches!(type_of(db, id), Ty::BigInt) {
+                if let Some(n) = v.to_i64() {
+                    Ok(format!("cdz_num::Big::from_i64({n})"))
+                } else {
+                    let sign = if v.negative { 1u8 } else { 0u8 };
+                    let mut bytes = vec![sign];
+                    bytes.extend(v.magnitude.iter().rev().copied()); // BE magnitude → LE
+                    let elems = bytes
+                        .iter()
+                        .map(|b| b.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    Ok(format!("cdz_num::Big::from_sign_magnitude_bytes(&[{elems}])"))
+                }
+            } else {
+                emit_const_int(db, id, &v)
+            }
+        }
         Core::ConstBool(b) => Ok(if b {
             "true".to_string()
         } else {
@@ -1456,13 +1480,88 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         // panic carrying its own op-named reason, not `Core::Trap`, so this literal is only the non-
         // arithmetic explicit trap, whose canonical kind IS `unreachable`.)
         Core::Trap => Ok("panic!(\"unreachable\")".to_string()),
-        // Runtime BigInt (a heap leaf + the runtime `bigint-*` ops) has no native Rust rendering yet —
-        // the rust backend would need a Rust bignum runtime. Declines cleanly (a constant BigInt folds
-        // and reaches this backend as a `Core::ConstInt`, which emits fine).
-        | Core::BigIntOfI64 { .. }
-        | Core::BigIntToI64 { .. }
-        | Core::BigIntBinOp { .. }
-        | Core::BigIntCmp { .. }
+        // Runtime BigInt ops → `cdz_num::Big` value ops (the SAME bignum the wasm runtime uses, shared by
+        // source via the `cdz-num` crate). `Big` methods BORROW their operands and return an owned `Big`.
+        // `BigInt.of x` on a runtime fixed-width int — widen the i64-slot value into a `Big`. (A CONSTANT
+        // source folds to `Core::ConstInt` retyped BigInt upstream and emits via the int path; this is the
+        // runtime widen.)
+        Core::BigIntOfI64 { value } => {
+            let v = emit(db, value, env, ctx)?;
+            Ok(format!("cdz_num::Big::from_i64(({v}) as i64)"))
+        }
+        // `Int64.of b` on a runtime `Big` — the checked narrowing back to i64, which TRAPS out of range at
+        // run time (matching the wasm `bigint-to-i64-checked`). `to_i64_checked` returns `Option<i64>`.
+        Core::BigIntToI64 { operand } => {
+            let b = emit(db, operand, env, ctx)?;
+            Ok(format!(
+                "({b}).to_i64_checked().expect(\"BigInt value out of Int64 range\")"
+            ))
+        }
+        // A runtime BigInt binary op — `+`/`-`/`*`/`/`/`%`. `add`/`sub`/`mul` are total; `div`/`rem` go
+        // through `divmod` (returns `None` on a zero divisor → TRAP, matching the wasm `bigint-div`).
+        Core::BigIntBinOp { op, lhs, rhs } => {
+            // The `Big` methods (`add`/`mul`/…) require BOTH operands to emit as a `cdz_num::Big`. That
+            // holds when each operand node is `Ty::BigInt`-typed. But a QUANTITY over a BigInt magnitude
+            // erases the `Ty::Qty` wrapper to its inner in `lower`, and a CONSTANT magnitude inside that
+            // erased context can reach here typed as a plain `Int` (emitting an `i64` literal, not a
+            // `Big`) — calling `.mul(&Big)` on an `i64` is a type error (E0308/E0599). Until the Qty
+            // emit-side is built (a later increment), DECLINE when an operand isn't `Ty::BigInt`, rather
+            // than emit uncompilable source. (Pure-BigInt programs always type both operands `BigInt`.)
+            if !matches!(type_of(db, lhs), Ty::BigInt) || !matches!(type_of(db, rhs), Ty::BigInt) {
+                return Err(Reject::decline(
+                    "a BigInt op whose operand is not BigInt-typed (Qty-erased magnitude) is not yet \
+                     rendered on the Rust backend",
+                ));
+            }
+            let l = emit(db, lhs, env, ctx)?;
+            let r = emit(db, rhs, env, ctx)?;
+            let expr = match op {
+                crate::core::BigIntOp::Add => format!("({l}).add(&({r}))"),
+                crate::core::BigIntOp::Sub => format!("({l}).sub(&({r}))"),
+                crate::core::BigIntOp::Mul => format!("({l}).mul(&({r}))"),
+                // Truncating quotient / remainder; `divmod` traps (via `expect`) on a zero divisor, the
+                // same runtime trap the wasm `bigint-div`/`-rem` raise.
+                crate::core::BigIntOp::Div => {
+                    format!("({l}).divmod(&({r})).expect(\"BigInt divide by zero\").0")
+                }
+                crate::core::BigIntOp::Rem => {
+                    format!("({l}).divmod(&({r})).expect(\"BigInt remainder by zero\").1")
+                }
+            };
+            Ok(expr)
+        }
+        // A runtime BigInt COMPARISON — three-way `cmp` (`core::cmp::Ordering`) reduced to the operator's
+        // fixed compare, mirroring the wasm lowering (`bigint-cmp` then a fixed compare-with-zero). Result
+        // is a `bool`. `=`/`≠` compare the `Ordering` to `Equal`; the relational ops compare the sign.
+        Core::BigIntCmp { op, lhs, rhs } => {
+            // Both operands must emit as `Big` (see the `BigIntBinOp` note) — a Qty-erased non-BigInt
+            // operand declines rather than emit a `.cmp` on a mismatched type.
+            if !matches!(type_of(db, lhs), Ty::BigInt) || !matches!(type_of(db, rhs), Ty::BigInt) {
+                return Err(Reject::decline(
+                    "a BigInt comparison whose operand is not BigInt-typed (Qty-erased) is not yet \
+                     rendered on the Rust backend",
+                ));
+            }
+            let l = emit(db, lhs, env, ctx)?;
+            let r = emit(db, rhs, env, ctx)?;
+            let cmp = format!("({l}).cmp(&({r}))");
+            // `BigIntCmp` carries one of the relational prims `Lt`/`Gt`/`Le`/`Ge`/`Eq` (there is no `Ne`
+            // Prim — `≠` lowers to `not =` upstream, so it never reaches here). Reduce the three-way
+            // `Ordering` to the operator's bool, mirroring the wasm `bigint-cmp`-then-fixed-compare.
+            let expr = match op {
+                Prim::Eq => format!("({cmp} == core::cmp::Ordering::Equal)"),
+                Prim::Lt => format!("({cmp} == core::cmp::Ordering::Less)"),
+                Prim::Gt => format!("({cmp} == core::cmp::Ordering::Greater)"),
+                Prim::Le => format!("({cmp} != core::cmp::Ordering::Greater)"),
+                Prim::Ge => format!("({cmp} != core::cmp::Ordering::Less)"),
+                _ => {
+                    return Err(Reject::decline(
+                        "unexpected non-relational Prim in a BigInt comparison",
+                    ));
+                }
+            };
+            Ok(expr)
+        }
         // A constant `Rational` (a normalized `IntValue` pair) has no native Rust value rendering yet —
         // the rust backend would need a rational runtime type. Declines cleanly (a Rational-valued program
         // runs on the wasm path; the rust backend is a differential oracle for the scalar surface). The
@@ -2023,8 +2122,9 @@ fn needs_clone_on_read(db: &mut Db, id: StructId) -> bool {
 fn ty_is_non_copy(ty: &Ty) -> bool {
     match ty {
         // `Vec<T>`/`BTreeMap<K,V>`/`BTreeSet<T>`/`String` are heap-owned values — non-Copy (move-only), so a
-        // binding of one read in more than one position clones (the clone-on-read discipline).
-        Ty::List(_) | Ty::Map(_, _) | Ty::Set(_) | Ty::String | Ty::Bytes => true,
+        // binding of one read in more than one position clones (the clone-on-read discipline). `Big`
+        // (`cdz_num::Big`) owns a limb `Vec`, so it is likewise non-Copy → clone-on-read.
+        Ty::List(_) | Ty::Map(_, _) | Ty::Set(_) | Ty::String | Ty::Bytes | Ty::BigInt => true,
         // A compound is non-Copy iff any component is (a tuple/record of scalars stays Copy).
         Ty::Tuple(elems) => elems.iter().any(ty_is_non_copy),
         Ty::Record(fields) => fields.values().any(ty_is_non_copy),

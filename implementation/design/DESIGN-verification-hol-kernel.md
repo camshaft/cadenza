@@ -1,9 +1,14 @@
 # DESIGN: Machine-checked verification — an LCF-style kernel baked into Cadenza
 
-Status: **Increment 0 — design.** All four design forks CONFIRMED by the concierge (§6). Vertical
-`v-verification`, subsystem `rcdzc`. Operator directive (2026-07-16, verbatim intent): *"We need to get
-a vertical thinking about machine-checked verification. I really like the idea of baking something like
-HOL-Light into the language."*
+Status: **Increments 0–8 LANDED; 9 in flight; 10 prototyped (see §5 AS-BUILT).** A working LCF-style HOL
+kernel — as a Cadenza library — is on trunk (`spec/semantics/25-verification.sexp`, 39 gated cases incl.
+promoted breaker probes). It proves real theorems (`⊢ x = x`, `⊢ (λx.x) y = y`, `⊢ p ⇒ p`) across an
+equational core, a sound (capture-avoiding) λ-calculus, α-equivalence, propositional + first-order logic,
+and multi-rule proof composition — all with an UNFORGEABLE `Thm` (construction/match/eval outside the
+module → CDZ0214). All four design forks CONFIRMED by the concierge (§6). Vertical `v-verification`,
+subsystem `rcdzc`. Operator directive (2026-07-16, verbatim intent): *"We need to get a vertical thinking
+about machine-checked verification. I really like the idea of baking something like HOL-Light into the
+language."*
 
 This doc answers the four core design questions from the charter, commits to an Increment-0 shape,
 and — most importantly — settles the **soundness-boundary** question the whole feature rests on. **Key
@@ -332,18 +337,48 @@ Do not design ergonomics before the kernel exists; sketch only. Options, cheapes
   later slice:** the single-variant match diagnostic gap (CDZ0203 vs CDZ0214, queue repro
   `adv-single-variant-abstract-match-wrong-diag-cdz0203-not-cdz0214.sexp`) — pin the single-variant
   match as CDZ0214 when that fix lands.
-- **Increment 2 — the kernel skeleton.** The `hol` module: `Hty`, `Term`, `Thm` abstract types; term
-  well-typedness checker (inside the module); `refl`, `assume`, `beta` (the three "leaf" rules that
-  need no prior `Thm`). Export handles + these rules only. rcdzc unit test: a `refl` `Thm` is produced;
-  a construction of `Thm.Mk` in a second module is CDZ0214.
-- **Increment 3 — the full primitive rule set + first theorems.** `trans`, `mk_comb`, `abs`, `eq_mp`,
-  `deduct_antisym`, `inst`, `inst_type`. Prove `⊢ (λx. x) y = y` and `⊢ p ⇒ p` end-to-end through the
-  real runtime (a wasmtime run, per the gate). Adversarial "try to forge a `Thm`" pins WITH THE BREAKER.
-- **Increment 4 — logical constants + the three axioms** (`new_basic_definition`, ETA/SELECT/INFINITY),
-  kernel-gated. Derived rules (`SYM`, `MP`, `CONJ`, `SPEC`, `GEN`).
-- **Increment 5 — a minimal tactic layer** (goalstack + `THEN`/`REPEAT`), pure library.
-- **Increment 6+ — ergonomics** (`hol"…"` term DSL) and then scope Increment (b) (program verification)
-  as its own design.
+> **AS-BUILT (2026-07-16): the increment sequence evolved from the original plan below.** The kernel was
+> built bottom-up as a growing corpus in `25-verification.sexp` (a `hol` module with `Term` CONCRETE / `Thm`
+> ABSTRACT, exercised end-to-end), each increment gated + landed. What actually shipped:
+> - **Inc 2 — kernel skeleton (LANDED):** `Term` (Var/Comb/Eq) concrete, `Thm` abstract sequent
+>   `(Seq (List Term) Term)`, recursive `term-eq`, leaf rules `refl`/`assume`. Proves `⊢ x = x`; `Thm.Seq`
+>   outside → CDZ0214.
+> - **Inc 3 — equational-core rules (LANDED):** `trans`, `mk_comb`, `eq_mp` (hyps unioned), `deduct_antisym`
+>   (recursive hyp `remove`), + a multi-step composed proof.
+> - **Inc 4 — λ-calculus layer (LANDED):** `Abs` binder, recursive `subst`, `BETA`, `ABS`, and the
+>   first-theorem milestone `⊢ (λx.x) y = y`.
+> - **Inc 5 — capture-avoiding substitution (LANDED):** the soundness fix — `free-in`/`max-id`/`rename` +
+>   α-renaming `subst` so a binder never captures a free variable (a naive-capture control pins the bug it
+>   prevents; the breaker later promoted further shadow/capture probes).
+> - **Inc 6 — α-equivalence `aconv` (LANDED):** the real HOL term equality (equal up to bound-variable
+>   renaming) via a parallel binder-stack walk; the equality the rules *should* match premises with.
+> - **Inc 7 — implication fragment (LANDED):** `Imp` term form + `DISCH` (⇒-intro) + `MP` (modus ponens),
+>   proving the FLAGSHIP LOGICAL THEOREM `⊢ p ⇒ p` (assumption discharged). Genuine logic, not equational.
+> - **Inc 8 — universal quantifier (LANDED):** `Forall` + `GEN` (∀-intro, with the free-variable
+>   side-condition) + `SPEC` (∀-elim via the capture-avoiding subst). First-order logic.
+> - **Inc 9 — composed proofs (LANDED):** the kernel as a real proof engine — a derivation chaining
+>   BETA + TRANS + DISCH across three rule families; a logical composition over a quantified proposition.
+> - **Inc 10 — `aconv` in the premise-matching rules (prototyped, next):** a self-review found the rules
+>   match premises with structural `term-eq` (sound-but-incomplete — reject α-variants); thread `aconv`
+>   through MP/EQ_MP/TRANS for HOL-faithful completeness.
+> - **⇒ modelled as a PRIMITIVE `Imp`/`Forall` term form** with intro/elim rules (the natural-deduction
+>   presentation) rather than HOL-Light's defined-constant ⇒ — both sound; the primitive form is the cleaner
+>   Cadenza slice and still yields the genuine theorems. A HOL-faithful defined-constant layer (below) can
+>   follow.
+> - **NEW LANGUAGE FINDING (good news):** every kernel construct — recursion over a binding sum, substitution
+>   under binders, α-equivalence via binder stacks, hypothesis-list reshaping — compiles and folds on the
+>   Cadenza compiler with **no language gap**. The one soundness hole the vertical surfaced (`eval`-forge,
+>   §3.4) was in the *opaque-type boundary*, not the kernel code, and is fixed.
+>
+> **Remaining (original plan, still valid):**
+- **Increment 10 — thread `aconv` through the premise-matching rules** (prototyped): MP/EQ_MP/TRANS match
+  premises up to α-equivalence (complete + HOL-faithful), not just structural equality.
+- **Logical layer, HOL-faithful (later, larger):** the three HOL axioms (ETA/SELECT/INFINITY) + logical
+  constants `T`/`∧`/`⇒`/`∀` as DEFINED constants via `new_basic_definition`, re-deriving the primitive
+  `Imp`/`Forall` as constants. Max fidelity to `fusion.ml`.
+- **A minimal tactic layer** (goalstack + `THEN`/`REPEAT`), pure library above the kernel.
+- **Ergonomics** (`hol"…"` term DSL via tagged-templates) and then scope Increment (b) (verification of
+  Cadenza *programs*) as its own design.
 
 **Known language gaps the kernel will re-hit (from the spike — REPORT/FIX, don't work around, per the
 port ethos).** The 2026-07-08 spike surfaced four seed gaps, now captured as corpus cases; expect to

@@ -2465,10 +2465,23 @@ fn doc_by_name_reads_a_user_doc_a_builtin_and_a_keyword() {
         stdout.starts_with("Conditional"),
         "if's keyword doc: {stdout}"
     );
-    // Total: an undocumented / unknown name is a defined line, exit 0.
+    // Total, with DISTINCT verdicts: a real-but-undocumented name says "no documentation for", while a
+    // name that refers to NOTHING (a typo) says "no such definition" — so a user can tell the two apart.
+    // `main` is a real def with no docstring:
+    let (ok, stdout, _) = run(&["doc", "main", path], "");
+    assert!(
+        ok,
+        "an undocumented real def still exits 0 (total): {stdout}"
+    );
+    assert_eq!(stdout.trim(), "no documentation for `main`");
+    // `ghost` names nothing → the distinct "no such definition" line (exit-code mapping of THIS variant
+    // to non-zero is the cdz-command layer's half, owned by v-cdz-tooling; the query stays total).
     let (ok, stdout, _) = run(&["doc", "ghost", path], "");
-    assert!(ok, "an unknown name still exits 0 (total): {stdout}");
-    assert_eq!(stdout.trim(), "no documentation for `ghost`");
+    assert!(
+        ok,
+        "the query is total — a defined line either way: {stdout}"
+    );
+    assert_eq!(stdout.trim(), "no such definition `ghost`");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

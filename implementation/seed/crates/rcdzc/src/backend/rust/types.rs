@@ -39,6 +39,13 @@ pub fn rust_type(ty: &Ty) -> Option<String> {
         ),
         Ty::Bool => Some("bool".to_string()),
         Ty::Unit => Some("()".to_string()),
+        // An arbitrary-precision integer maps to `cdz_num::Big` — the SAME bignum the wasm runtime uses,
+        // shared by SOURCE (`cdz-num` `#[path]`-includes the runtime's `bigint.rs`; see that crate). A
+        // `Big` is a value type (`Clone + Eq`, total `cmp`), so it composes as a tuple/record element, a
+        // sum payload, a `Vec`/`BTreeSet`/`BTreeMap` element/key. Non-Copy (owns a limb `Vec`) → the
+        // clone-on-read discipline covers a shared BigInt (`ty_is_non_copy` includes it). The gate links
+        // the `cdz-num` rlib via `--extern cdz_num`.
+        Ty::BigInt => Some("cdz_num::Big".to_string()),
         // A CHAR is a single Unicode scalar value — Rust's native `char` (which IS a Unicode scalar,
         // exactly the Cadenza model). Copy, so no clone-on-read needed. Lets a `Char` cross as a sum
         // payload / tuple element (a `(Tok (Ch Char))` enum) and a `ConstChar` emit as a `'…'` literal.

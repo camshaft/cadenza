@@ -274,3 +274,19 @@
               (match (f) ((Ok v) v) ((Err e) e)))
             (export main)))
   (output (: 7 Int64)))
+
+(case "effect state threads across a successful `?`"
+  (doc    "The straddle: `(let ((a (Ctr.tick)) (x (try (Some 0))) (b (Ctr.tick))) (Some (+ a b)))` — a
+           perform BEFORE the `?` (a = 0), a SUCCESSFUL `?` unwrapping Some 0 (no short-circuit), then
+           a perform AFTER (b = 1) → Some 1, and the trailing tick reads 2 → 3. The complement of the
+           effectful-init-before-a-FAILING-? pin: on the success path the `?` is transparent to the
+           effect spine, so the counter advances 0→1→2 straight through it. A `?` that reset or
+           re-entered the handler on the success path would skew b or the trailing read.")
+  (input  (do
+            (effect Ctr (op tick (-> Unit Int64)))
+            (def (opt) (let ((a (Ctr.tick unit)) (x (try (Option.Some 0))) (b (Ctr.tick unit))) (Option.Some (+ a b))))
+            (def (main)
+              (handle Ctr 0 ((tick (_) s (resume s (+ s 1))))
+                (+ (match (opt) ((Some v) v) ((None _) -1)) (Ctr.tick unit))))
+            (export main)))
+  (output (: 3 Int64)))

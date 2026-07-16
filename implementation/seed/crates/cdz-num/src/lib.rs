@@ -49,3 +49,25 @@ pub mod big;
 // The rust backend emits `cdz_num::Big`, so surface `Big` at the crate root (the submodule is an
 // include-mechanics detail, not part of the API shape the emit targets).
 pub use big::Big;
+
+// `Big` derives `Clone + PartialEq + Eq` in bigint.rs but NOT `Ord` (the runtime never needed a Rust
+// `Ord` — it orders BigInt leaves by canonical bytes in its own CHAMP). The rust backend DOES need it:
+// a `BigInt`-keyed `BTreeSet`/`BTreeMap` requires `Big: Ord`. `Big` already HAS a total three-way
+// `cmp(&self, &Big) -> Ordering` (the signed comparison), so provide the trait impls here — in cdz-num,
+// where `Big` is a LOCAL type (its `#[path]` module is ours), so this is NOT an orphan-rule violation
+// and does NOT touch the frozen bigint.rs source. Consistent with `Eq` (the derived `==` agrees with
+// `cmp == Equal` — same canonical-form value equality). This is why `types::ty_is_ord` treats `BigInt`
+// as orderable.
+impl Ord for Big {
+    fn cmp(&self, other: &Big) -> core::cmp::Ordering {
+        // Delegate to `Big`'s inherent signed three-way compare (defined in bigint.rs). Fully qualified
+        // so it resolves to the INHERENT method, not this trait method (which would recurse).
+        big::Big::cmp(self, other)
+    }
+}
+impl PartialOrd for Big {
+    // Canonical form (clippy::non_canonical_partial_ord_impl): defer to `Ord::cmp`, which holds the logic.
+    fn partial_cmp(&self, other: &Big) -> Option<core::cmp::Ordering> {
+        Some(Ord::cmp(self, other))
+    }
+}

@@ -90,3 +90,8 @@ sha2 = "0.10"
 # dev-dependency so `cargo test` builds its rlib into the target dir, where the Rust-async round-trip
 # tests locate it to pass `rustc --extern cdz_rt=…`. Tests only — never in the compile path.
 cdz-rt = { path = "../cdz-rt" }
+# The bignum an emitted program links against (`cdz_num::Big`) — a dev-dependency so `cargo test` builds
+# its rlib into the target dir, where the BigInt round-trip tests locate it to pass `rustc --extern
+# cdz_num=…` (mirroring `cdz-rt`). Tests only — never in the compile path. `cdz-num` source-shares the
+# runtime's bigint.rs, so this does NOT link the runtime; it's a plain host rlib of `Big`.
+cdz-num = { path = "../cdz-num" }

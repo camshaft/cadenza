@@ -13,6 +13,7 @@ pass	Map.to-list of a runtime-empty but key/value-typed map is the empty list
 pass	Map.to-list of an empty map through an inlined helper is the empty list
 pass	Map.to-list of an undetermined-type empty map literal is the empty list
 pass	Map.to-list over a RUNTIME-built map enumerates entries in canonical key order (first key is min)
+pass	N-suffixed literals compose under BigInt arithmetic
 pass	NaN equality survives the hoisted float compare by canonical byte form
 pass	OR-saturation to a full-width mask on an unsigned runtime value
 pass	OR-then-mask absorption does not discard a trapping runtime operand
@@ -55,6 +56,8 @@ pass	UInt64.max crosses the parameter boundary and back unchanged
 pass	UInt64.max crossing the boundary compares as a large unsigned, not -1
 pass	Unit.in converts a quantity to a chosen larger unit (Float)
 pass	Unit.in converts a quantity to a chosen smaller unit exactly (Int)
+pass	Unit.in over a BigInt quantity truncates a non-dividing ratio
+pass	Unit.in over a BigInt-magnitude quantity converts in unbounded arithmetic and unwraps
 pass	Unit.in to a unit of a different dimension is a compile-time error
 pass	XOR cancellation returns the original runtime value (constant key)
 pass	XOR cancellation returns the original value even when the key is a runtime value
@@ -66,6 +69,7 @@ pass	`try` takes exactly one operand — a two-operand form is malformed
 pass	`try` takes exactly one operand — a zero-operand form is malformed
 pass	a 2-arm match→SELECT with a performed scrutinee and pure arms stays sound
 pass	a BOOL-result effect op threads state across two performs on a boolean connective's operands
+pass	a BigInt factorial accumulator computes 25! exactly
 pass	a BigInt is usable as a map key, matched by its arbitrary-precision value
 pass	a BigInt is usable as a set element, deduplicated by its arbitrary-precision value
 pass	a BigInt operation does not silently promote a fixed-width operand
@@ -108,6 +112,7 @@ pass	a NaN nested in a sum payload compares equal under the canonical byte form
 pass	a NaN nested in a tuple compares equal under the canonical byte form
 pass	a NaN operand makes every runtime float ordering relation false (unordered)
 pass	a PARTIALLY-applied multi-payload constructor is a first-class function value
+pass	a RADIX literal carries the N type suffix
 pass	a RECURSIVE effectful walk accumulates into a list-state handler
 pass	a RESULT-returning effect op is matched on Ok / Err — the fallible-step idiom
 pass	a RUNTIME guarded sum-match arm dispatches through its guard
@@ -125,6 +130,8 @@ pass	a Sign match missing two of three variants is non-exhaustive
 pass	a Some carrying a bare None type-checks under a whole-expression annotation
 pass	a Some carrying an inner-annotated None matches its arm (the control)
 pass	a String compound export under a non-main name crosses to the host
+pass	a String match with a BOUND default arm equals its (= s literal) if-chain with a bound else
+pass	a String match with disjoint literal arms is order-independent (reordering the arms preserves the result)
 pass	a String param threaded through a self-recursive loop and concatenated each step is retained
 pass	a THREE-level nest — Option of Result of a USER sum — matches through all three at runtime
 pass	a THREE-parameter op arm binds all three parameters and the state
@@ -163,6 +170,7 @@ pass	a bare prelude-colliding variant name matches as the local variant
 pass	a bare type-name-colliding variant name constructs as the local variant
 pass	a bare user constructor is passed as a first-class function to a higher-order function
 pass	a bare variant reusing a prelude DATA-constructor name constructs and matches as the local variant
+pass	a beyond-i64 constant BigInt is an operand of a runtime bigint op
 pass	a bin arm whose fixed-width segment overruns the input falls through
 pass	a bin pattern binds an integer read from a fixed-width segment
 pass	a bin pattern must consume the whole scrutinee or it does not match
@@ -173,6 +181,7 @@ pass	a bin pattern over an Int64 scrutinee is a type error
 pass	a binary form whose bit-fields do not close a byte is ill-formed
 pass	a binary integer literal
 pass	a binary literal with digit separators
+pass	a binary-radix literal carries the N suffix and an underscore group
 pass	a bind directive naming a value definition rather than an effect is rejected
 pass	a bind directive to a package name with no interface projection is rejected
 pass	a bind directive with a malformed peer interface name is rejected
@@ -299,6 +308,8 @@ pass	a consistent annotation type-checks against the inferred type
 pass	a const collection recursively folded is rejected, not compiled to an infinite loop
 pass	a const parameter rejects an argument that depends on runtime data
 pass	a const-key entry is found beside a distinct runtime-keyed entry
+pass	a constant BigInt crosses the host boundary as its value form
+pass	a constant BigInt operand of a runtime BigInt op materializes as a heap value
 pass	a constant argument out of a narrow parameter's range is rejected, not laundered
 pass	a constant float ordering with a NaN operand folds to false, not a decline
 pass	a constant integer widens to BigInt and narrows back through Int64 unchanged
@@ -357,6 +368,7 @@ pass	a def-returning-lambda partial application passes through a HOF parameter
 pass	a default-fraction pragma fixes a type but adds no conversion — no-promotion still holds
 pass	a default-fraction pragma naming a non-rational type is rejected
 pass	a default-integer pragma fixes a type but adds no conversion — no-promotion still holds
+pass	a default-integer pragma makes a bare literal take the declared integer type
 pass	a default-integer pragma naming a non-integer type is rejected
 pass	a default-integer pragma naming an unbound type is rejected as unbound, like an annotation
 pass	a delegated capability is not itself an export field
@@ -700,6 +712,7 @@ pass	a match binds an Ast.Float payload
 pass	a match binds an Ast.Str payload
 pass	a match building one Some per arm sinks to a single Some around a payload match
 pass	a match not covering the scrutinee is a compile-time rejection
+pass	a match on a BigInt with a single catch-all binder binds and uses it
 pass	a match on a computed runtime value dispatches on the result
 pass	a match on a record field selects a later literal arm
 pass	a match on a record-field-access scrutinee dispatches on the field value
@@ -799,14 +812,17 @@ pass	a narrower-typed runtime value is not silently widened into a wider segment
 pass	a nearer handler on the call chain shadows an outer one
 pass	a negated zero equality composes with the negation fold
 pass	a negative and its positive twin encode to distinct bytes
+pass	a negative constant BigInt crosses the boundary with its sign
 pass	a negative constant argument to an unsigned parameter is rejected, not laundered
 pass	a negative exponent scales the mantissa down
 pass	a negative hexadecimal literal negates its value
 pass	a negative integer literal pattern matches a runtime scrutinee
 pass	a negative integer nested in a compound round-trips by byte identity
 pass	a negative integer width is rejected
+pass	a negative power over a BigInt magnitude truncates the reciprocal exactly
 pass	a negative power over an integer magnitude truncates the reciprocal
 pass	a negative right-shift count traps rather than masking
+pass	a negative runtime BigInt result crosses the host boundary with its sign
 pass	a negative shift count traps rather than masking
 pass	a negative string index yields None rather than wrapping to a large offset
 pass	a negative unsigned integer width is rejected
@@ -907,11 +923,13 @@ pass	a parameter carries a type annotation in the signature
 pass	a parameter named tuple is applied as the bound function
 pass	a parameterized compound-return export forwards distinct arguments to make
 pass	a parameterized export builds a list of tuples by a runtime-length loop and measures it
+pass	a parameterized export drives an Option-of-runtime-BigInt on both arms
 pass	a parameterized export returns a built-in Option computed from its argument
 pass	a parameterized export returns a list computed from its argument
 pass	a parameterized export returns a list of lists built from its argument
 pass	a parameterized export returns a list of tuples built from its argument
 pass	a parameterized export returns a record computed from its argument
+pass	a parameterized export returns a runtime BigInt computed from its argument
 pass	a parameterized export returns a runtime-selected empty-or-nonempty list
 pass	a parameterized export returns a runtime-selected empty-or-nonempty map
 pass	a parameterized export returns a runtime-selected empty-or-nonempty set
@@ -930,6 +948,8 @@ pass	a pattern that binds the same name across nested sub-patterns is rejected
 pass	a pattern that binds the same name twice is rejected
 pass	a payload-in-payload nested list pattern dispatches through two recorded types
 pass	a peephole rewrite rule reads in the shape of the code it rewrites
+pass	a peer op whose SUM RESULT escapes the entrypoint declines (the recursive-sum resource path)
+pass	a peer op whose compound RESULT escapes the entrypoint declines (resource-escape lacks the peer import)
 pass	a peer-bound operation cannot take or return a closure
 pass	a peer-bound operation takes a String argument (it crosses as a runtime handle)
 pass	a perform BETWEEN two sibling recursive calls threads the intervening state
@@ -1117,7 +1137,14 @@ pass	a run-time-index String.at result compares equal to the same character as a
 pass	a run-time-index scalar read is present in bounds and absent out of bounds
 pass	a runtime BigInt absent from a Set is not found
 pass	a runtime BigInt is found as a Set element by value
+pass	a runtime BigInt accumulator threaded through recursion grows past Int64
+pass	a runtime BigInt comparison sees an intermediate that overflows Int64
+pass	a runtime BigInt divide crosses the host boundary as its truncated quotient
+pass	a runtime BigInt in an Option payload crosses the host boundary
+pass	a runtime BigInt intermediate that overflows Int64 does not trap
 pass	a runtime BigInt operation does not silently promote a fixed-width operand
+pass	a runtime BigInt ordering compares by the arbitrary-precision value
+pass	a runtime BigInt remainder takes the dividend's sign
 pass	a runtime Bytes rope in a SUM payload compares equal to its flat twin
 pass	a runtime Bytes rope in a record field compares equal to its flat twin
 pass	a runtime Bytes rope is found as a Set element by its flat twin
@@ -1132,6 +1159,8 @@ pass	a runtime Float32 multiplication emits f32.mul
 pass	a runtime Float32 subtraction emits f32.sub
 pass	a runtime Float64 equality compares by the canonical byte form
 pass	a runtime List built past 32 elements reads correctly by index across the RRB leaf-to-trie boundary
+pass	a runtime MIXED-SCALE BigInt comparison converts to the reference before comparing
+pass	a runtime MIXED-SCALE BigInt-magnitude sum converts to the reference in unbounded arithmetic
 pass	a runtime NaN equals a runtime NaN under the canonical byte form
 pass	a runtime Option carrying a user sum is matched by a nested constructor pattern
 pass	a runtime Result carrying a String error is matched
@@ -1256,6 +1285,7 @@ pass	a runtime-branched tuple returned from a callee is projected in the caller
 pass	a runtime-built generic user sum escapes with its parametric type frame
 pass	a runtime-built open-sum variant decodes through the schema
 pass	a runtime-built string crosses the boundary as its value form
+pass	a runtime-computed BigInt result crosses the host boundary
 pass	a runtime-element set compares equal to the constant set of the same elements
 pass	a runtime-element set equals itself
 pass	a runtime-element set's equality is independent of written order
@@ -1477,6 +1507,7 @@ pass	a tuple payload returned through a helper from a built-in Option must not t
 pass	a tuple with a runtime element is returned as a program result
 pass	a tuple with every element computed at run time is returned as a result
 pass	a tuple-of-two-sums match reads each sum's payload from its own slot (HM-unify shape)
+pass	a tuple-parameter export returns a BigInt computed from its fields
 pass	a tuple-parameter export returns a list computed from its fields
 pass	a tuple-pattern parameter binds the halves of its pair argument
 pass	a tuple-pattern parameter destructures a runtime-built tuple
@@ -1572,6 +1603,8 @@ pass	an Ast-value-spliced template round-trips through encode and decode
 pass	an IEC binary prefix converts exactly over Int64
 pass	an Int argument to a Bool-annotated parameter is rejected
 pass	an Int argument to a parameter used as a Bool condition is rejected
+pass	an N suffix lets a huge literal need no annotation
+pass	an N-suffixed integer literal is a BigInt
 pass	an Ok and an Err decode compose through one shared handler
 pass	an Ok carrying a bare None type-checks under a whole-expression annotation
 pass	an Option built by an if with the nullary branch first type-checks
@@ -1637,6 +1670,8 @@ pass	an annotation by a reflected type that contradicts the value is rejected
 pass	an annotation that contradicts the value is rejected
 pass	an applied lambda whose body enters a mutually-recursive performing group folds
 pass	an applied lambda whose body performs an ABORTIVE op abandons the enclosing computation
+pass	an arbitrary-precision integer multiplication does not overflow
+pass	an arbitrary-precision literal beyond 64 bits is an exact BigInt
 pass	an argument bound to a used parameter IS observed, so its trap occurs (the anchor)
 pass	an argument bound to an unused parameter is not evaluated, so its trap does not occur
 pass	an arithmetic operator with a single operand is rejected, not a crash
@@ -1696,6 +1731,7 @@ pass	an explicit conversion repairs a mixed-unit join
 pass	an explicit float-width conversion makes a mixed-width operation well-typed
 pass	an export and a like-named metadata key do not collide
 pass	an export mixing a scalar and a nested-tuple parameter returns a list from both
+pass	an export mixing a scalar and a tuple parameter returns a BigInt from both
 pass	an export mixing a scalar and a tuple parameter returns a list from both
 pass	an export whose name is not kebab-case crosses under a normalized extern name
 pass	an export with a nested-tuple parameter returns a list from its leaves
@@ -1916,6 +1952,7 @@ pass	constructing an unsigned segment from a negative value is rejected
 pass	constructor pattern binders capture the payload uniformly
 pass	converting a BigInt back to a fixed width is checked and a compile-provable out-of-range narrowing is rejected
 pass	converting a char to its integer scalar value is total
+pass	converting a fixed-width integer to BigInt is explicit
 pass	converting a float to its own width is the identity
 pass	converting a scalar-valued integer to a char yields Some
 pass	converting a surrogate code point to a char yields None
@@ -2125,6 +2162,7 @@ pass	multiplication
 pass	multiplication of an integer and a float does not silently promote
 pass	multiplication of the minimum integer by -1 overflows and traps
 pass	multiplication past the maximum integer overflows and traps
+pass	narrowing a BigInt-valued if back to Int64 works over both branches
 pass	narrowing a constant BigInt out of the target range is rejected at compile time
 pass	negating a runtime Int64 near the boundary is exact just above the min
 pass	negating a runtime Int64 overflows at Int64.min
@@ -2211,6 +2249,7 @@ pass	quote reifies a grammar-keyword head as an ordinary Ast.Name
 pass	quote-built and constructor-built equal trees encode byte-identically
 pass	quote-vs-constructor AST equality holds regardless of operand order
 pass	quoting an empty compound produces an empty Ast.List
+pass	raising a BigInt-magnitude quantity to a power runs the unbounded multiply
 pass	raising a COMPUTED (derived) quantity to a power squares its magnitude and dimension
 pass	raising a runtime computed quantity to a power squares the runtime magnitude
 pass	reaching an effect neither handled nor delegated is rejected at compile time
@@ -2249,6 +2288,9 @@ pass	resuming with a wrong-type value for a compound result type is a type error
 pass	runtime < on a self operand is false for finite AND NaN (irreflexive, stays false)
 pass	runtime <= on a self operand is true for finite but FALSE for NaN (no reflexivity fold)
 pass	runtime >= and > on a self operand mirror <= and < including the NaN self case
+pass	runtime BigInt addition runs on the arbitrary-precision runtime
+pass	runtime BigInt equality holds for values reached by different arithmetic
+pass	runtime BigInt remainder runs on the arbitrary-precision runtime
 pass	runtime Bytes value-equality distinguishes different content
 pass	runtime float equality compares by canonical byte form
 pass	runtime float inequality compares by canonical byte form
@@ -2468,6 +2510,7 @@ pass	tuple access on a tuple chosen by a conditional projects the element
 pass	tuple elements are accessed by index
 pass	tuple elements consume and read a shared binding in both orders
 pass	tuples are deconstructed by pattern matching
+pass	two BigInt accumulators co-threaded through recursion compute a fibonacci
 pass	two LEXICALLY-NESTED handlers of the same effect partition the performs by region
 pass	two MUTUALLY-recursive functions dispatching on a recursive sum compute its parity
 pass	two MUTUALLY-recursive sum types fold across their boundary
@@ -2536,6 +2579,7 @@ pass	unary negation of a non-numeric value is a type error
 pass	unary negation of a nonzero float
 pass	unary negation of a parenthesized sum negates the whole expression
 pass	unary negation of a runtime integer parameter negates at run time
+pass	unary negation of an arbitrary-precision integer
 pass	under-applying a unary constructor is a type error, not a fabricated unit payload
 pass	unequal-depth payload paths bind distinctly
 pass	union cardinality with a runtime-element operand
@@ -2666,7 +2710,6 @@ todo	MULTI-EXPORT: two same-sig closures each taking TWO Tuple args share one `c
 todo	MULTI-EXPORT: two two-Tuple-arg closures with a BYTE-ROPE result
 todo	MULTI-EXPORT: two two-Tuple-arg closures with a LIST result share one `call`
 todo	MULTI-EXPORT: two two-Tuple-arg closures with a fixed COMPOUND result
-todo	N-suffixed literals compose under BigInt arithmetic
 todo	Qty.unit recovers a quantity's unit to build another quantity of the same unit
 todo	SUM ARG + LIST RESULT declines cleanly (Option arg, List result)
 todo	THREE Tuple args cross the direct-call boundary
@@ -2679,8 +2722,6 @@ todo	TWO Tuple args with a fixed-shape COMPOUND result
 todo	TWO Tuple args with a scalar BETWEEN them (tuple, scalar, tuple)
 todo	TWO prefix scalars then a Tuple then a suffix scalar cross the direct-call boundary
 todo	Type is a first-class value
-todo	Unit.in over a BigInt quantity truncates a non-dividing ratio
-todo	Unit.in over a BigInt-magnitude quantity converts in unbounded arithmetic and unwraps
 todo	Unit.in over a runtime Rational quantity keeps a fractional scale exact
 todo	Unit.in over a runtime Rational-magnitude quantity converts exactly and unwraps
 todo	a 3-FIELD Tuple ARG among scalars crosses the direct-call boundary
@@ -2689,7 +2730,6 @@ todo	a 32-bit-integer closure crosses the host boundary
 todo	a 64-bit-unsigned closure crosses the host boundary
 todo	a BOOL-field Tuple closure ARG flattens + rebuilds (box-bool imported)
 todo	a BOOL-field Tuple closure ARG, false discriminant
-todo	a BigInt factorial accumulator computes 25! exactly
 todo	a BigInt-inner quantity grows past Int64.max without trapping
 todo	a BigInt-inner quantity scales by a bare BigInt on the bigint path
 todo	a Bytes-returning closure alongside a plain export — the closure runs
@@ -2731,7 +2771,6 @@ todo	a NESTED mixed ARG (a tuple containing a record) crosses the direct-call bo
 todo	a NESTED-tuple ARG composes with a NESTED-tuple RESULT
 todo	a NOMINAL-over-tuple ARG crosses as the underlying tuple (direct-call)
 todo	a NaN map key is found by a differently-produced NaN
-todo	a RADIX literal carries the N type suffix
 todo	a RATIONAL compound = has DISCRIMINATING power (1/2 ≠ 1/3, but 0/2 = 0/3)
 todo	a RATIONAL leaf in a compound compares by CANONICAL form (2n/4 = n/2 inside a tuple)
 todo	a RECORD closure ARG among scalars crosses the direct-call boundary (scalar result)
@@ -2765,8 +2804,6 @@ todo	a Tuple ARG of FLOAT fields crosses the direct-call boundary
 todo	a Tuple ARG of MIXED widths (Int32, Int64) crosses the direct-call boundary
 todo	a Tuple ARG with a Bool field between Int64 fields crosses the direct-call boundary
 todo	a UInt64 closure round-trips through a consumer export
-todo	a beyond-i64 constant BigInt is an operand of a runtime bigint op
-todo	a binary-radix literal carries the N suffix and an underscore group
 todo	a bottom-up fold matches a tuple of its recursive results with constructor patterns
 todo	a build-time delegated effect whose result a returned closure captures does not escape
 todo	a built-in comparison on an abstract theorem value outside the kernel is rejected
@@ -2830,8 +2867,6 @@ todo	a closure whose body calls a top-level helper function
 todo	a computed float map key is found by its literal twin
 todo	a conditional performs only the taken branch's effect — else
 todo	a conditional performs only the taken branch's effect — then
-todo	a constant BigInt crosses the host boundary as its value form
-todo	a constant BigInt operand of a runtime BigInt op materializes as a heap value
 todo	a consumer applies TWO handed-back closures
 todo	a consumer applies the handed-back closure inside a larger expression
 todo	a consumer applies the handed-back closure to an internal constant
@@ -2844,7 +2879,6 @@ todo	a decimal literal annotated Rational is exact for a value no float rounds c
 todo	a decoded field re-encodes into the same-width segment without an explicit narrow
 todo	a default-fraction pragma grounds a bare DECIMAL literal to its exact fraction
 todo	a default-fraction pragma makes a bare literal exact — 1/3 not 0
-todo	a default-integer pragma makes a bare literal take the declared integer type
 todo	a delegated effect performed inside an intra-program handler
 todo	a delegated host effect composes with the value-heap runtime
 todo	a dimensionless quantity carries the group identity Unit.one
@@ -2878,7 +2912,6 @@ todo	a kernel rule using α-equivalence accepts an α-variant premise a structur
 todo	a list of closures each keeps its own capture, selected by a runtime index
 todo	a list pattern in a sum-variant payload matches a runtime node by its child count
 todo	a list-arm constructor element over a runtime-built list
-todo	a match on a BigInt with a single catch-all binder binds and uses it
 todo	a multi-argument closure among distinct-signature exports
 todo	a multi-argument closure returning a COMPOUND round-trips — flat arrow spelling
 todo	a multi-argument closure round-trips through a consumer
@@ -2894,20 +2927,15 @@ todo	a mutual AST walker re-extracts a node's payload in a sibling operand while
 todo	a mutually-recursive AST walker reads a node's child list without corrupting a sibling head-read
 todo	a mutually-recursive decoder returns a heap value and cursor and its heap slot is dispatched
 todo	a naive (non-renaming) substitution captures a free variable — the bug capture-avoidance prevents
-todo	a negative constant BigInt crosses the boundary with its sign
 todo	a negative decimal literal annotated Rational normalizes its sign onto the numerator
 todo	a negative power is the reciprocal, deriving an inverse unit
-todo	a negative power over a BigInt magnitude truncates the reciprocal exactly
 todo	a negative power over a Rational magnitude is the EXACT reciprocal
-todo	a negative runtime BigInt result crosses the host boundary with its sign
 todo	a negative-power SI prefix is an exact rational scale
 todo	a nested element pattern dispatches on a NON-variant-0 list payload
 todo	a nested tuple list element is bound over a runtime list and folded across the rest
 todo	a non-byte-aligned bit-field width takes its exact arbitrary-width unsigned type
-todo	a parameterized export drives an Option-of-runtime-BigInt on both arms
 todo	a parameterized export returning a capturing closure is made and called by the host
 todo	a parameterized export returning a multi-argument capturing closure
-todo	a parameterized export returns a runtime BigInt computed from its argument
 todo	a parameterized export returns a runtime Rational computed from its argument
 todo	a parameterized plain export alongside a closure export applies its argument
 todo	a parameterized plain export alongside a closure export — the closure captures and applies
@@ -2949,15 +2977,6 @@ todo	a round-trip consumer binds the applied closure through a let
 todo	a round-trip consumer takes the non-applying match arm
 todo	a round-trip consumer that does NOT apply the closure on the taken branch
 todo	a run's result is a deterministic function of a host call's recorded response
-todo	a runtime BigInt accumulator threaded through recursion grows past Int64
-todo	a runtime BigInt comparison sees an intermediate that overflows Int64
-todo	a runtime BigInt divide crosses the host boundary as its truncated quotient
-todo	a runtime BigInt in an Option payload crosses the host boundary
-todo	a runtime BigInt intermediate that overflows Int64 does not trap
-todo	a runtime BigInt ordering compares by the arbitrary-precision value
-todo	a runtime BigInt remainder takes the dividend's sign
-todo	a runtime MIXED-SCALE BigInt comparison converts to the reference before comparing
-todo	a runtime MIXED-SCALE BigInt-magnitude sum converts to the reference in unbounded arithmetic
 todo	a runtime MIXED-SCALE Rational-magnitude sum converts to the reference EXACTLY
 todo	a runtime NaN leaf in a tuple compares equal, a runtime -0.0 leaf stays distinct
 todo	a runtime Rational MAP KEY is found by a normalized-equal key
@@ -2981,7 +3000,6 @@ todo	a runtime signed little-endian segment lays the low byte first
 todo	a runtime signed little-endian segment round-trips a negative value
 todo	a runtime value is constructed into a fixed-width segment and its length read
 todo	a runtime value narrowed to the segment width constructs without trapping
-todo	a runtime-computed BigInt result crosses the host boundary
 todo	a runtime-computed Rational crosses the host boundary as its exact value
 todo	a scalar BETWEEN two Tuple args with a LIST result
 todo	a scientific-notation literal annotated Rational scales the numerator
@@ -2994,7 +3012,6 @@ todo	a sum variant's list payload split across empty and rest arms is exhaustive
 todo	a symbol is constructed from a string
 todo	a three-argument closure exported to the host is called with all three
 todo	a truncating conversion to an unusual width keeps that width's low bits
-todo	a tuple-parameter export returns a BigInt computed from its fields
 todo	a tuple-returning closure alongside a plain export — the closure
 todo	a tuple-returning closure alongside a plain export — the plain
 todo	a two-argument closure exported to the host is called with both arguments
@@ -3006,8 +3023,6 @@ todo	adding two units of one dimension converts to the reference unit exactly
 todo	an 8-bit-integer closure crosses the host boundary
 todo	an IEC binary prefix scales a unit by a power of two
 todo	an IEC-prefixed quantity displays scaled to its reference over Int64
-todo	an N suffix lets a huge literal need no annotation
-todo	an N-suffixed integer literal is a BigInt
 todo	an R-suffixed decimal literal is its exact fraction
 todo	an R-suffixed integer literal is that integer over one
 todo	an R-suffixed literal composes with exact rational arithmetic
@@ -3017,8 +3032,6 @@ todo	an abstract theorem is obtained only through the kernel's exported inferenc
 todo	an abstract theorem type cannot be forged by constructing its rule constructor outside the kernel
 todo	an abstract type is used through the module's exported constructor and accessor
 todo	an abstract type's constructor is not reachable outside its module
-todo	an arbitrary-precision integer multiplication does not overflow
-todo	an arbitrary-precision literal beyond 64 bits is an exact BigInt
 todo	an entrypoint delegation lets a program reach its host function
 todo	an entrypoint delegation reaches an effect performed in a recursive callee
 todo	an erased-newtype's list payload split across empty and rest arms dispatches with vec-get
@@ -3026,7 +3039,6 @@ todo	an escaping closure captures two values and takes three arguments
 todo	an escaping closure whose body binds a multi-variable let
 todo	an escaping closure whose body is a match hits the literal arm
 todo	an escaping closure whose body is a match hits the wildcard arm
-todo	an export mixing a scalar and a tuple parameter returns a BigInt from both
 todo	an export name with a digit-led kebab segment is rejected, not silently invalid
 todo	an imported helper reaches its own file's private definition when inlined
 todo	an imported name resolves to a sibling file's exported definition
@@ -3046,7 +3058,6 @@ todo	binary operator operands are evaluated left to right
 todo	capture-avoiding substitution renames a binder so the substituted term's free variable is not captured
 todo	compound equality over a Rational leaf respects normalization (1/2 = 2/4)
 todo	compound equality over a runtime Rational leaf compares by the normalized form
-todo	converting a fixed-width integer to BigInt is explicit
 todo	converting a unit to another unit of the same dimension is an exact rational scale
 todo	dimensional equality is decided by canonical exponent map, not written form
 todo	distinct signatures sharing a core valtype shape dispatch distinct bodies
@@ -3129,13 +3140,11 @@ todo	multi-export record result — canonical field order
 todo	multi-export record result — the second closure, with a negative leaf
 todo	multiplying a scaled-unit quantity by the literal one keeps its dimension and displays scaled
 todo	multiplying quantities multiplies their dimensions
-todo	narrowing a BigInt-valued if back to Int64 works over both branches
 todo	negative zero and zero are distinct map keys
 todo	one of several same-signature closure exports is made and called by the host
 todo	one of two DIFFERENT-signature closure exports is made and called
 todo	or performs the right operand's effect when the left is false
 todo	or short-circuit does not perform the right operand's effect
-todo	raising a BigInt-magnitude quantity to a power runs the unbounded multiply
 todo	raising a quantity to a compile-time power composes the unit and the magnitude
 todo	round-trip byte-rope consumer alongside a plain export — the consumer
 todo	round-trip byte-rope consumer alongside a plain export — the plain
@@ -3179,9 +3188,6 @@ todo	round-trip: a scalar consumer + a compound consumer of the same closure —
 todo	round-trip: a scalar consumer and a byte-rope consumer of the same closure — the byte-rope one
 todo	round-trip: a scalar consumer and a byte-rope consumer of the same closure — the scalar one
 todo	round-trip: an UNANNOTATED inner closure with a List param via the context arrow
-todo	runtime BigInt addition runs on the arbitrary-precision runtime
-todo	runtime BigInt equality holds for values reached by different arithmetic
-todo	runtime BigInt remainder runs on the arbitrary-precision runtime
 todo	runtime Rational arithmetic adds two parameter-built fractions exactly
 todo	scaling a quantity by a dimensionless quantity keeps its dimension
 todo	the empty and None arms of a list-payload split dispatch to their own values
@@ -3211,7 +3217,6 @@ todo	three closures with a SHARED signature cross as two resource types
 todo	three distinct closure signatures cross as three resource types
 todo	three same-variant literal arms fall through in order
 todo	tuple elements are evaluated left to right
-todo	two BigInt accumulators co-threaded through recursion compute a fibonacci
 todo	two definitions imported under the same name are rejected
 todo	two exports normalizing to the same kebab extern name are rejected
 todo	two host calls consume their responses in order
@@ -3223,7 +3228,6 @@ todo	two same-signature closures alongside a plain export all coexist
 todo	two same-signature closures alongside a plain export — the plain export runs
 todo	two sibling modules may each define a private helper of the same name
 todo	unary negation of a quantity preserves its unit
-todo	unary negation of an arbitrary-precision integer
 todo	unary negation of an exact rational negates the numerator
 todo	α-equivalence (aconv) recognizes (λx.x) and (λy.y) as the same term up to bound-variable renaming
 todo	α-equivalence handles nesting and distinguishes a bound variable from a same-numbered free variable

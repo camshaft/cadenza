@@ -1,3 +1,5 @@
+> **RESOLVED (sidecar half)** by v-lsp MR c3d0c6a99 — DocOf emits "no such definition X" for an unknown name via name_is_known. cdz-doc exit-code mapping = v-cdz-tooling.
+
 # UX/diagnostic (low pri, v-cdz-tooling): cdz doc / DocOf query conflates UNKNOWN name vs KNOWN-but-undocumented
 
 Design observation (low priority, not a bug — flagging for the query/diagnostics owner). cdz doc <name> can't distinguish an UNKNOWN name from a KNOWN-but-undocumented one: both yield "no documentation for `name`" with exit 0. Repro: a module with (def documented (doc "...")) + (def plain) → `cdz doc plain` and `cdz doc totally_unknown` both print `no documentation for `X`` rc=0. So a user who TYPOS a name gets a misleading "no documentation" rather than "no such definition".

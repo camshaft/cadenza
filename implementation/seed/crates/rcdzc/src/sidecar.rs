@@ -667,8 +667,20 @@ pub fn run_query(db: &mut Db, query: &Query) -> QueryResult {
             // grammar keyword). Each step reads a column the compiler already fills; none matches the name
             // against a hardcoded key (the built-in step resolves the name to its prelude record, THEN
             // reads a channel — the same generic path member access takes).
-            let text =
-                doc_of_name(db, name).unwrap_or_else(|| format!("no documentation for `{name}`"));
+            //
+            // TOTAL, but with TWO distinct "no answer" verdicts so a consumer can tell a TYPO from an
+            // undocumented-but-real name (a `cdz doc` then maps the "no such definition" variant to a
+            // non-zero exit): a name that refers to SOMETHING (a user def / built-in / grammar keyword)
+            // but carries no doc → "no documentation for `X`"; a name that refers to NOTHING → "no such
+            // definition `X`". A cdz-side pre-check can't draw this line (it also documents built-ins that
+            // aren't in the file's `Symbols`), but the query knows the `Db` + prelude + keyword tables.
+            let text = doc_of_name(db, name).unwrap_or_else(|| {
+                if name_is_known(db, name) {
+                    format!("no documentation for `{name}`")
+                } else {
+                    format!("no such definition `{name}`")
+                }
+            });
             QueryResult {
                 kind: KIND_DOC,
                 name: name.clone(),
@@ -963,6 +975,17 @@ fn doc_of_name(db: &mut Db, name: &str) -> Option<String> {
     }
     // 3. A grammar keyword's doc.
     grammar_keyword_doc(name).map(str::to_string)
+}
+
+/// Whether `name` refers to ANYTHING documentable — a user definition, a built-in prelude binding, or a
+/// grammar keyword — regardless of whether it actually carries doc text. The SAME resolution ladder
+/// `doc_of_name` walks, minus the doc-text read, so `DocOf` can tell a real-but-undocumented name from a
+/// typo and give the two cases different "no answer" verdicts. No hardcoded key match (the built-in step
+/// tests the prelude record's existence — the generic path a name resolution takes).
+fn name_is_known(db: &Db, name: &str) -> bool {
+    db.def_by_name(name).is_some()
+        || db.prelude.contains_key(name)
+        || grammar_keyword_doc(name).is_some()
 }
 
 /// The documentation of the definition the node at `id` belongs to or references — the `DocAt` read.
