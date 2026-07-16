@@ -45929,6 +45929,49 @@ mod stage1 {
     }
 
     #[test]
+    fn a_duplicate_module_declaration_in_one_scope_is_rejected() {
+        use crate::testkit::parse;
+        // CONTRAST with `two_same_named_effects_are_distinct_not_conflated`: a `(module a …)` BINDS its
+        // name `a` in the enclosing scope (`11-modules.sexp`: "a module binds its name in the enclosing
+        // scope"), reached by member access `(. a field)` — exactly like a `def`/`type` name. So declaring
+        // `(module a …)` TWICE in ONE scope is a fixed-name-set collision (member access resolved
+        // inconsistently between the two), NOT the first-wins DISTINCT that same-named EFFECTS have (an
+        // effect is reached through a handler naming it, not by name-in-scope). It rejects CDZ0201 + a
+        // delete fix, keyed on `(parent scope, name)`.
+        let d = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(do (module a (def (g) 1) (export g)) (module a (def (h) 2) (export h)) \
+             (def (main) 0) (export main))",
+        )))
+        .into_iter()
+        .find(|d| d.message.contains("module `a` is declared more than once"))
+        .expect("a duplicate module in one scope must be rejected");
+        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+        assert_eq!(
+            d.fix.as_ref().map(|f| f.kind),
+            Some(crate::abi::FixKind::Delete),
+            "carries a delete-the-duplicate fix: {}",
+            d.message
+        );
+        // NO false positive: a single module, two DIFFERENTLY-named modules, and the SAME nested-module
+        // name under DIFFERENT parents (distinct scopes) are all clean — the collision is per-scope.
+        for ok in [
+            "(do (module a (def (g) 1) (export g)) (def (main) ((. a g))) (export main))",
+            "(do (module a (def (g) 1) (export g)) (module b (def (h) 2) (export h)) \
+             (def (main) 0) (export main))",
+            "(do (module outer1 (module inner (def (g) 1) (export g)) (def (a) 1) (export a)) \
+             (module outer2 (module inner (def (h) 2) (export h)) (def (b) 2) (export b)) \
+             (def (main) 0) (export main))",
+        ] {
+            assert!(
+                !crate::diagnostics(&mut crate::db::Db::load(parse(ok)))
+                    .iter()
+                    .any(|d| d.message.contains("is declared more than once")),
+                "a non-duplicate module layout is not flagged: {ok}"
+            );
+        }
+    }
+
+    #[test]
     fn an_effect_reached_with_no_handler_or_delegation_is_cdz0401() {
         // E1d: an effect operation performed with NEITHER an enclosing handler NOR a host delegation has
         // no home — CDZ0401 (`capabilities-and-effects.md` §An Ungranted Effect Is A Compile-Time Error).

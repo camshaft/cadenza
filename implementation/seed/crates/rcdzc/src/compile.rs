@@ -1390,6 +1390,44 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
             )),
         );
     }
+    // DUPLICATE MODULE DECLARATION. A `(module a …)` declaration BINDS its name `a` in the enclosing
+    // scope to a record of its exports (`modules-and-namespaces.md` / `11-modules.sexp`: "a module binds
+    // its name in the enclosing scope") — reached by member access `(. a field)`, exactly like a `def`/
+    // `type` name. So declaring `(module a …)` TWICE in ONE scope is the same fixed-name-set ill-formedness
+    // a duplicate `type`/`def`/`export` is. It was SILENTLY ACCEPTED: both `ModuleDecl`s register, and
+    // member access resolved INCONSISTENTLY (`(. a g)` and `(. a h)` each found a DIFFERENT one of the two
+    // `a`s) — a genuine ambiguity, not the first-wins DISTINCT that same-named EFFECTS deliberately have
+    // (an effect is reached through a handler naming it, not by name-in-scope; a module IS a name binding).
+    // Reject each declaration after the first CDZ0201, with a delete fix. Keyed on `(parent, name)` — the
+    // enclosing form is the scope, so two same-named modules under the SAME parent collide, while the same
+    // name in DIFFERENT parents (a nested `inner` in two separate `outer`s, or two files) stays distinct.
+    let mut seen_modules: std::collections::HashSet<(Option<StructId>, &str)> =
+        std::collections::HashSet::new();
+    let dup_modules: Vec<(String, StructId)> = db
+        .modules
+        .iter()
+        .filter(|m| db.is_user_node(m.occ))
+        .filter(|m| {
+            !m.name.is_empty() && !seen_modules.insert((db.parent_of(m.occ), m.name.as_str()))
+        })
+        .map(|m| (m.name.clone(), m.occ))
+        .collect();
+    for (name, occ) in dup_modules {
+        faults.push(
+            Reject::coded(
+                Code::Malformed,
+                format!(
+                    "module `{name}` is declared more than once in this scope (a module binds its name, \
+                     and a scope has a fixed set of names)"
+                ),
+            )
+            .at(occ)
+            .with_fix(crate::diag::Fix::delete_heuristic(
+                occ,
+                format!("remove the duplicate declaration of module `{name}`"),
+            )),
+        );
+    }
     // DUPLICATE EFFECT OPERATION. An effect `(effect E (op f …) (op f …))` declares its operation NAMES
     // as a fixed SET (capabilities-and-effects.md §An Effect Declaration Names The Effect And Types Its
     // Operations: each name is bound to ONE operation type), so naming an operation twice is the SAME
