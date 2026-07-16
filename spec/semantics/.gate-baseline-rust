@@ -156,6 +156,8 @@ pass	a NaN nested in a tuple compares equal under the canonical byte form
 pass	a NaN operand makes every runtime float ordering relation false (unordered)
 pass	a PARTIALLY-applied multi-payload constructor is a first-class function value
 pass	a RADIX literal carries the N type suffix
+pass	a RATIONAL compound = has DISCRIMINATING power (1/2 ≠ 1/3, but 0/2 = 0/3)
+pass	a RATIONAL leaf in a compound compares by CANONICAL form (2n/4 = n/2 inside a tuple)
 pass	a RECURSIVE effectful walk accumulates into a list-state handler
 pass	a RESULT-returning effect op is matched on Ok / Err — the fallible-step idiom
 pass	a RUNTIME guarded sum-match arm dispatches through its guard
@@ -532,6 +534,7 @@ pass	a function-typed parameter annotation is not silently discarded in the body
 pass	a function-typed parameter annotation's result type is checked against the argument
 pass	a function-typed parameter with a matching Bool-returning argument is accepted
 pass	a general recursive-sum recursion (Nil|Cons count) reads the right payload through the fold
+pass	a generated value with a BIGINT leaf is reproducible (compound = walks the bignum)
 pass	a generic definition takes the type as a type-valued parameter
 pass	a generic recursive sum references itself bare and carries its own type parameter
 pass	a generic recursive sum with a bare self-reference nested in a list parameter
@@ -2085,9 +2088,11 @@ pass	comparing two quantities of the same dimension yields a Bool
 pass	comparing two same-shape nominal sum types is a type error, not false
 pass	comparing two same-unit Float-inner quantities at RUNTIME rides the scalar float compare
 pass	comparing two units of one dimension converts before comparing
+pass	compound equality over a Rational leaf respects normalization (1/2 = 2/4)
 pass	compound equality over a runtime BigInt leaf compares by the canonical bytes
 pass	compound equality over a runtime BigInt leaf distinguishes different values
 pass	compound equality over a runtime NaN float leaf: nan equals nan
+pass	compound equality over a runtime Rational leaf compares by the normalized form
 pass	compound equality over a runtime float leaf: different floats compare unequal
 pass	compound equality over a runtime float leaf: equal floats compare equal
 pass	compound equality over a runtime float leaf: negative zero is not equal to positive zero
@@ -2191,6 +2196,7 @@ pass	equality of an integer and a float is rejected, not silently promoted
 pass	equality of an integer and a string is a type error
 pass	equality of two records with different field sets is a type error
 pass	equality of two tuples of different arity is a type error
+pass	equality over a Rational carried in a SUM payload respects normalization
 pass	equality over a partly-un-built sum with a free Err type compiles on every backend
 pass	equality over a runtime float in a SUM payload compares by the float leaf
 pass	eval does not see through a splice whose operand is itself an Ast value
@@ -2983,8 +2989,6 @@ todo	a NESTED Tuple arg ALONGSIDE a flat Tuple arg
 todo	a NESTED mixed ARG (a tuple containing a record) crosses the direct-call boundary
 todo	a NESTED-tuple ARG composes with a NESTED-tuple RESULT
 todo	a NOMINAL-over-tuple ARG crosses as the underlying tuple (direct-call)
-todo	a RATIONAL compound = has DISCRIMINATING power (1/2 ≠ 1/3, but 0/2 = 0/3)
-todo	a RATIONAL leaf in a compound compares by CANONICAL form (2n/4 = n/2 inside a tuple)
 todo	a RECORD closure ARG among scalars crosses the direct-call boundary (scalar result)
 todo	a RECORD closure ARG on the MULTI-EXPORT path
 todo	a RECORD closure ARG whose fields are NOT in sorted source order
@@ -3107,7 +3111,6 @@ todo	a fixed-shape Tuple ARG with a Tuple RESULT crosses the direct-call boundar
 todo	a fixed-shape scalar RECORD closure ARG crosses the DIRECT-CALL boundary
 todo	a fixed-shape scalar Tuple closure ARG crosses the DIRECT-CALL boundary (host supplies the tuple)
 todo	a float leaf and a Bytes leaf compare together in one compound
-todo	a generated value with a BIGINT leaf is reproducible (compound = walks the bignum)
 todo	a host call's response is an ordinary value that feeds a LATER host call
 todo	a host effect with a non-kebab NAME crosses under a normalized interface extern name
 todo	a host effect with a non-kebab OPERATION name crosses under a normalized func extern name
@@ -3253,8 +3256,6 @@ todo	breaker exists: EXISTS-intro rejects a witness whose instance does not matc
 todo	breaker exists: EXISTS-intro with the witness variable also free in the body substitutes all occurrences
 todo	capture-avoiding substitution renames a Forall binder to avoid capture (logical-form subst)
 todo	capture-avoiding substitution renames a binder so the substituted term's free variable is not captured
-todo	compound equality over a Rational leaf respects normalization (1/2 = 2/4)
-todo	compound equality over a runtime Rational leaf compares by the normalized form
 todo	conjunction elimination CONJUNCT2 preserves both operand hypotheses
 todo	conjunction elimination keeps BOTH operand hypotheses, not just the projected conjunct's
 todo	conjunction of two theorems sharing a hypothesis concatenates without dedup
@@ -3306,7 +3307,6 @@ todo	distinct-signature capturing producers
 todo	distinct-signature closures alongside a plain export — the Int64->Bool closure runs
 todo	distinct-signature closures alongside a plain export — the Int64->Int64 closure runs
 todo	distinct-signature closures alongside a plain export — the plain export runs
-todo	equality over a Rational carried in a SUM payload respects normalization
 todo	equality over a compound mixing a float and a Bytes leaf walks both
 todo	eval does not forge a private constructor NESTED in a compound
 todo	eval of a fully-concrete imported constructor is legal from outside

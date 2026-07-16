@@ -701,13 +701,26 @@ pub(super) fn ty_derives_eq(
         // value equality the wasm heap walk gives. (`String` eq already worked via a different path; this
         // adds `Bytes` + `Char` + the compound-containing-them cases — see v-core-opt's Bytes-eq note.)
         Ty::String | Ty::Char | Ty::Bytes => true,
+        // `BigInt`/`Rational` map to `cdz_num::Big`/`cdz_num::Rational`, both of which `#[derive(PartialEq,
+        // Eq)]` — so a runtime `=` over them (and over a compound CONTAINING them: a `(Tuple Rational Int64)`,
+        // a Rational in a SUM payload) emits a native `==`. CRUCIALLY this is the CANONICAL-FORM equality the
+        // value semantics require: `Big` is stored sign-magnitude with no leading-zero limbs, and `Rational`
+        // is stored NORMALIZED (lowest terms, sign on the numerator, positive denominator) — so a derived
+        // field-wise `==` compares by value (`1/2 == 2/4`, `0/2 == 0/3`), matching the wasm heap walk's
+        // canonical-byte comparison. (Bare BigInt/Rational eq already worked via the `BigIntCmp`/`RationalCmp`
+        // op path; this adds the COMPOUND-containing-them cases, which route through `Core::ValueEq`.)
+        Ty::BigInt | Ty::Rational => true,
         // A `List`/`Set` of an `Eq` element → `Vec<T>`/`BTreeSet<T>` is `Eq` (elementwise); a `Map` is `Eq`
         // when both key and value are. Recurse into the element/key/value type (a `List Float64` is NOT Eq,
         // caught by the recursion). `BTreeMap`/`BTreeSet` `==` compares by content, matching value equality.
         Ty::List(e) | Ty::Set(e) => ty_derives_eq(db, e, visited),
         Ty::Map(k, v) => ty_derives_eq(db, k, visited) && ty_derives_eq(db, v, visited),
-        // A function/closure, a free `Ty::Var`/`Any`, a `Qty` — not `Eq`-derivable here (no native rep or
-        // not `Eq`). Conservative: an unknown type declines the derive.
+        // A `Qty` erases to its inner magnitude in `lower` (the unit is compile-time), so a runtime `=` over
+        // a quantity IS the `=` over its inner numeric type — Eq-derivable iff the inner is. A `(Qty BigInt …)`
+        // / `(Qty Rational …)` / `(Qty Int64 …)` leaf in a compound thus compares by its erased magnitude.
+        Ty::Qty { inner, .. } => ty_derives_eq(db, inner, visited),
+        // A function/closure, a free `Ty::Var`/`Any` — not `Eq`-derivable here (no native rep or not `Eq`).
+        // Conservative: an unknown type declines the derive.
         _ => false,
     }
 }

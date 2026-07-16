@@ -2362,6 +2362,40 @@ fn rustc_roundtrip_runtime_equality_over_a_payload_sum() {
 }
 
 #[test]
+fn rustc_roundtrip_runtime_equality_over_a_compound_with_a_rational_or_bigint_leaf() {
+    // Runtime `(= a b)` over a COMPOUND carrying a Rational / BigInt leaf. `cdz_num::Rational` is stored
+    // NORMALIZED (lowest terms) and `cdz_num::Big` sign-magnitude with no leading zeros, both `#[derive(Eq)]`
+    // — so a native field-wise `==` compares by CANONICAL value, matching the wasm heap walk. Was a decline
+    // ("runtime structural equality over this compound is not yet rendered").
+    // A tuple with a Rational leaf: `(1/2, 1) == (2/4, 1)` is TRUE (normalization), `(1/2,1) == (1/3,1)` FALSE.
+    let rat = compile_rust(
+        "(module m (def (eq2 (: n Int64) (: d Int64)) \
+           (if (= (tuple (Rational.of 1 2) 1) (tuple (Rational.of n d) 1)) 1 0)) (export eq2))",
+    );
+    assert!(
+        rat.contains("=="),
+        "a tuple with a Rational leaf emits a native == :\n{rat}"
+    );
+    if let Some(out) = rustc_run(&rat, "eq2(2, 4)") {
+        assert_eq!(out, "1", "1/2 == 2/4 (normalized) inside a tuple");
+    }
+    if let Some(out) = rustc_run(&rat, "eq2(1, 3)") {
+        assert_eq!(out, "0", "1/2 != 1/3 inside a tuple");
+    }
+    // A tuple with a BigInt leaf compares by value: `(big 5, 1) == (big 5, 1)` → 1, vs `(big 6, 1)` → 0.
+    let big = compile_rust(
+        "(module m (def (eqb (: k Int64)) \
+           (if (= (tuple (BigInt.of 5) 1) (tuple (BigInt.of k) 1)) 1 0)) (export eqb))",
+    );
+    if let Some(out) = rustc_run(&big, "eqb(5)") {
+        assert_eq!(out, "1", "a BigInt leaf compares equal by value");
+    }
+    if let Some(out) = rustc_run(&big, "eqb(6)") {
+        assert_eq!(out, "0", "a differing BigInt leaf compares unequal");
+    }
+}
+
+#[test]
 fn rustc_roundtrip_runtime_equality_over_a_generic_sum() {
     // Runtime `(= a b)` over a GENERIC user sum at a concrete instantiation — `(type Box (W a) (E))`
     // compared at `Box Int64`. The generic enum `enum Box<T0> { W(T0), E }` `#[derive(PartialEq, Eq)]`
