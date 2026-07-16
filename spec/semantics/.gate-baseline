@@ -583,6 +583,7 @@ pass	a deep chain of runtime-list let-bindings compiles and returns the final le
 pass	a deep compound nesting all six leaf kinds round-trips through encode and decode
 pass	a deep consume leaves the intermediate compound and a sibling element readable
 pass	a deep four-leaf tree round-trips through encode and decode
+pass	a deep push chain beside two other live bindings retains each correctly
 pass	a deeper nested call chain still folds in linear time near the inliner limit
 pass	a deeply nested constant expression compiles or declines without crashing
 pass	a deeply nested expression is diagnosed by the parser, never crashes it
@@ -1763,6 +1764,7 @@ pass	a tuple-pattern parameter over a tuple threaded from a helper call
 pass	a tuple-returning closure alongside a plain export — the closure
 pass	a tuple-returning closure alongside a plain export — the plain
 pass	a tuple-wrapped self-application is rejected in bounded time, not a compiler stack overflow
+pass	a twenty-deep push chain retains the still-live source binding
 pass	a two-argument closure exported to the host is called with both arguments
 pass	a two-arm Bool match selects its second (false) arm
 pass	a two-arm list match reading an element binder keeps the branch — no speculative empty read

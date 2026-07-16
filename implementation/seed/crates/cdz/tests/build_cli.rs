@@ -108,6 +108,25 @@ fn build_with_no_manifest_errors() {
 }
 
 #[test]
+fn build_a_named_manifest_that_does_not_exist_errors_not_dir_walks() {
+    // Sibling-consistency with `cdz check`/`cdz test` (PR #422): `cdz build path/to/Project.cdz` when
+    // that manifest DOESN'T EXIST must error clearly ("no such file") naming the arg — not resolve to the
+    // parent dir and report the confusing "no `Project.cdz` in <parent>". The dir HAS another manifest
+    // absent, so this is purely the missing-named-file case.
+    let dir = std::env::temp_dir().join(format!("cdz-build-nomani-named-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let missing = dir.join("Project.cdz");
+    let (ok, _o, err) = run(&["build", missing.to_str().unwrap()]);
+    assert!(!ok, "naming a non-existent manifest must fail");
+    assert!(
+        err.contains("no such file"),
+        "the error names the missing manifest as a missing file: {err}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn build_a_manifest_without_an_entry_errors() {
     // A manifest with no `entry` cannot build a component — a clear, actionable error.
     let dir = std::env::temp_dir().join(format!("cdz-build-noentry-{}", std::process::id()));

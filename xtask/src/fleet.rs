@@ -1271,25 +1271,38 @@ fn reroute_unknown(fleet: &Fleet, dry_run: bool) {
 /// bumping `cited` merge to the higher, with zero conflict. Exits 0 on success (git then treats the
 /// merge as resolved); non-zero tells git the driver failed (falls back to a conflict, the old behavior
 /// — safe). A `_note`/other fields on either side are preserved from `ours`.
-fn merge_floor(ours: &Path, theirs: &Path) {
-    // Parse `cited`/`total` from a floor file; missing/garbage → 0 so the other side wins.
+/// The PURE core of the floor merge: given both parsed sides, return OUR object with `cited`/`total`
+/// replaced by the field-wise MAX. Missing/garbage counters read as 0 so the other side wins; all
+/// other keys on `ours` (e.g. `_note`) are preserved. Kept separate from `merge_floor`'s file I/O +
+/// `process::exit` so the max/preserve semantics are unit-testable without touching the filesystem.
+fn merged_floor_value(
+    mut ours: serde_json::Value,
+    theirs: &serde_json::Value,
+) -> serde_json::Value {
     let field = |v: &serde_json::Value, k: &str| v.get(k).and_then(|n| n.as_u64()).unwrap_or(0);
+    let merged_cited = field(&ours, "cited").max(field(theirs, "cited"));
+    let merged_total = field(&ours, "total").max(field(theirs, "total"));
+    // Overwrite the two counters on OUR object (keeps ours' `_note` etc.).
+    if let Some(map) = ours.as_object_mut() {
+        map.insert("cited".to_string(), serde_json::json!(merged_cited));
+        map.insert("total".to_string(), serde_json::json!(merged_total));
+    }
+    ours
+}
+
+fn merge_floor(ours: &Path, theirs: &Path) {
     let load = |p: &Path| -> Option<serde_json::Value> {
         serde_json::from_str(&std::fs::read_to_string(p).ok()?).ok()
     };
-    let (Some(mut o), Some(t)) = (load(ours), load(theirs)) else {
+    let (Some(o), Some(t)) = (load(ours), load(theirs)) else {
         eprintln!(
             "fleet merge-floor: could not parse both floor files — leaving the conflict for a human"
         );
         std::process::exit(1);
     };
-    let merged_cited = field(&o, "cited").max(field(&t, "cited"));
-    let merged_total = field(&o, "total").max(field(&t, "total"));
-    // Overwrite the two counters on OUR object (keeps ours' `_note` etc.), then rewrite the file.
-    if let Some(map) = o.as_object_mut() {
-        map.insert("cited".to_string(), serde_json::json!(merged_cited));
-        map.insert("total".to_string(), serde_json::json!(merged_total));
-    }
+    let o = merged_floor_value(o, &t);
+    let merged_cited = o.get("cited").and_then(|n| n.as_u64()).unwrap_or(0);
+    let merged_total = o.get("total").and_then(|n| n.as_u64()).unwrap_or(0);
     match serde_json::to_string_pretty(&o) {
         Ok(s) => {
             if std::fs::write(ours, format!("{s}\n")).is_err() {
@@ -2431,6 +2444,60 @@ mod tests {
             serde_json::from_str(r#"{"from":"a","to":"b","kind":"note","subject":"s","seq":9}"#)
                 .unwrap();
         assert_eq!(old.in_reply_to, "");
+    }
+
+    #[test]
+    fn merged_floor_takes_field_wise_max() {
+        // The driver's whole reason to exist: two agents each bumped the monotone floor, so the merge
+        // must be the field-wise MAX of both sides — never one side clobbering the other's higher count.
+        let ours = serde_json::json!({"cited": 645, "total": 900});
+        let theirs = serde_json::json!({"cited": 644, "total": 901});
+        let m = merged_floor_value(ours, &theirs);
+        assert_eq!(m.get("cited").and_then(|n| n.as_u64()), Some(645)); // ours higher
+        assert_eq!(m.get("total").and_then(|n| n.as_u64()), Some(901)); // theirs higher
+    }
+
+    #[test]
+    fn merged_floor_is_symmetric_and_idempotent() {
+        // max is commutative, so which side is `ours` must not change the merged counters (only which
+        // side's extra keys survive) — and merging a value with itself is a no-op.
+        let a = serde_json::json!({"cited": 10, "total": 20});
+        let b = serde_json::json!({"cited": 30, "total": 15});
+        let ab = merged_floor_value(a.clone(), &b);
+        let ba = merged_floor_value(b.clone(), &a);
+        assert_eq!(ab.get("cited"), ba.get("cited"));
+        assert_eq!(ab.get("total"), ba.get("total"));
+        assert_eq!(ab.get("cited").and_then(|n| n.as_u64()), Some(30));
+        assert_eq!(ab.get("total").and_then(|n| n.as_u64()), Some(20));
+        let self_merged = merged_floor_value(a.clone(), &a);
+        assert_eq!(self_merged.get("cited").and_then(|n| n.as_u64()), Some(10));
+        assert_eq!(self_merged.get("total").and_then(|n| n.as_u64()), Some(20));
+    }
+
+    #[test]
+    fn merged_floor_preserves_ours_extra_keys() {
+        // Ours' non-counter fields (e.g. the `_note` describing the file) must survive the merge —
+        // the driver rewrites only `cited`/`total`, everything else on ours is kept verbatim.
+        let ours =
+            serde_json::json!({"cited": 1, "total": 2, "_note": "coverage floor — do not lower"});
+        let theirs = serde_json::json!({"cited": 5, "total": 5});
+        let m = merged_floor_value(ours, &theirs);
+        assert_eq!(
+            m.get("_note").and_then(|s| s.as_str()),
+            Some("coverage floor — do not lower")
+        );
+        assert_eq!(m.get("cited").and_then(|n| n.as_u64()), Some(5));
+    }
+
+    #[test]
+    fn merged_floor_missing_or_garbage_counter_reads_as_zero() {
+        // A missing/non-numeric counter must read as 0 so the OTHER side wins, never poisoning the
+        // merged floor to 0 or panicking. (A monotone floor should never regress to 0 by a bad merge.)
+        let ours = serde_json::json!({"total": 900}); // no `cited`
+        let theirs = serde_json::json!({"cited": 644, "total": "oops"}); // garbage `total`
+        let m = merged_floor_value(ours, &theirs);
+        assert_eq!(m.get("cited").and_then(|n| n.as_u64()), Some(644)); // theirs, ours missing→0
+        assert_eq!(m.get("total").and_then(|n| n.as_u64()), Some(900)); // ours, theirs garbage→0
     }
 
     #[test]

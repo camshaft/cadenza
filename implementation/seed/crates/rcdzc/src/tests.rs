@@ -66945,6 +66945,72 @@ mod cross_component_oracle {
     }
 
     // ------------------------------------------------------------------------------------------------
+    // PL23 — a peer op returning a MAP crosses + the consumer both COUNTS it and LOOKS UP a value by key.
+    // Completes the CHAMP-collection trilogy over the peer boundary (List PL18, Set PL22, Map here) — a
+    // key-value CHAMP crosses as its u32 handle. Two reads over the shared runtime: `Map.len` (→2) and
+    // `Map.lookup` of a key present in the peer-built map (→ Some, matched to the value). The provider
+    // builds `{x: x+1, x+10: x+11}`; mkmap(5)={5:6,15:16}, len 2, lookup 5 → 6.
+    // ------------------------------------------------------------------------------------------------
+    #[test]
+    fn a_peer_op_returning_a_map_crosses_and_is_counted_and_looked_up() {
+        use crate::testkit::parse;
+        // PROVIDER: mkmap(x) builds {x: x+1, x+10: x+11}.
+        let provider = compile_provider(
+            "(do (def (mkmap (: x Int64)) \
+             (Map.insert (Map.insert (Map.empty) x (+ x 1)) (+ x 10) (+ x 11))) (export mkmap))",
+            "cadenza:m/api",
+        );
+        let opts = |()| cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec!["5".to_string()],
+            runtime: super::find_runtime_wasm(),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        let peers = || {
+            vec![cdz_run::Peer {
+                bytes: provider.clone(),
+                interface: "cadenza:m/api".to_string(),
+            }]
+        };
+        if super::find_runtime_wasm().is_none() {
+            eprintln!("[PL23] runtime wasm not found; skipping");
+            return;
+        }
+        // (a) Map.len of the crossed map → 2.
+        let len_src = "(do (effect M (op mkmap (-> Int64 (Map Int64 Int64)))) (bind M \"cadenza:m/api\") \
+            (def (main (: x Int64)) (host (M) (Map.len (M.mkmap x)))) (export main))";
+        let len_consumer =
+            crate::compile::compile_component(&crate::codec::encode(&parse(len_src)))
+                .unwrap_or_else(|d| {
+                    panic!("map-len consumer compiles: {} [{:?}]", d.message, d.code)
+                });
+        match cdz_run::run_with_peers(&len_consumer, &peers(), &opts(()))
+            .expect("a peer op returning a map crosses (len)")
+        {
+            cdz_run::Outcome::Value(s) => assert_eq!(s, "2", "Map.len of the crossed map"),
+            cdz_run::Outcome::Trap(t) => panic!("map-len run trapped: {t}"),
+        }
+        // (b) Map.lookup a key present in the peer-built map, matched to a scalar → the value.
+        let lk_src = "(do (effect M (op mkmap (-> Int64 (Map Int64 Int64)))) (bind M \"cadenza:m/api\") \
+            (def (main (: x Int64)) \
+              (host (M) (match (Map.lookup (M.mkmap x) x) ((Some v) v) (None 0)))) (export main))";
+        let lk_consumer = crate::compile::compile_component(&crate::codec::encode(&parse(lk_src)))
+            .unwrap_or_else(|d| {
+                panic!("map-lookup consumer compiles: {} [{:?}]", d.message, d.code)
+            });
+        match cdz_run::run_with_peers(&lk_consumer, &peers(), &opts(()))
+            .expect("a peer op returning a map crosses (lookup)")
+        {
+            // lookup key 5 in {5:6,15:16} = Some 6 → 6. The key-value CHAMP crossed + was queried by key.
+            cdz_run::Outcome::Value(s) => {
+                assert_eq!(s, "6", "Map.lookup of a key in the crossed map")
+            }
+            cdz_run::Outcome::Trap(t) => panic!("map-lookup run trapped: {t}"),
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------------
     // PL19 — the ELEMENT read of a peer-returned list, USED (matched to a scalar). The common pattern:
     // a peer op returns a `(List Int64)`, the consumer indexes it with `List.at` and matches the
     // resulting `Option` down to a scalar the entrypoint returns. main(7) = match (List.at [8,9] 0) →

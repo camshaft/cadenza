@@ -54,3 +54,5 @@ same normalize-to-base-with-factor routine the mixed path already uses (one sour
 - `5 kilometer * 1` keeps its unit.
 - Existing correct mixed cases (`5 kilometer + 5 meter` → `5005 meter`) still pass.
 - Add corpus/calc regression cases for a bare prefixed quantity and a homogeneous-prefix sum.
+
+<!-- RESOLVED 2026-07-16 (trunk@4fec411d9, v-quantity display-scaling fix): a prefixed quantity now displays SCALED to its reference unit — (Qty.of 5 (kilo meter)) → (Qty.of 5000.0 (base meter)), coefficient ×1000 (was the "5 meter" relabel bug). VERIFIED: the "prefixed quantity displays scaled to its reference (Float)" pin in 18-units-of-measure.sexp PASSES (value 5000.0). Done lazily (display-scaling, reusing normalize-to-reference), not eager-normalize Q2, per operator ruling. 3 corpus pins. -->
