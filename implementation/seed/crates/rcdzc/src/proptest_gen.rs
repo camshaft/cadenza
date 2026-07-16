@@ -7,7 +7,8 @@
 //! could not be property-tested — it declined at the export boundary.
 //!
 //! This pass closes that gap by SYNTHESIS. For a `@test` whose single parameter is a generatable
-//! compound type (a `(List ELEM)` or `(Tuple T…)` over integer / `Bool` leaves, nested arbitrarily), e.g.
+//! compound type (a `(List ELEM)`, `(Tuple T…)`, or `(Record (f T)…)` over integer / `Bool` leaves,
+//! nested arbitrarily), e.g.
 //!
 //! ```text
 //! (@ test (def (p (: xs (List Int64))) BODY))
@@ -30,9 +31,9 @@
 //! into a `let` (an inlined one under a constructor is not seen within the `host` scope). The existing
 //! gen-driven runner detects the wrapper (it pulls `Test.gen` ints), runs `--trials` trials, and shrinks
 //! over the int pool — no ABI change, no runner change. Increments so far cover G1 `List<Int>`, G2
-//! `List<Bool>` + element recursion, and G3 `Tuple` + arbitrary nesting; still to come are record and sum
-//! elements, `Set`/`Map`, variable-length lists, `Float`/`Char`, multi-parameter tests, and a lone
-//! single-form file (which currently needs a `do`-block root).
+//! `List<Bool>` + element recursion, G3 `Tuple` + nesting, G4 `Record`, and G5 user `sum` (bounded — a
+//! recursive sum declines), and G6 `Set`/`Map`; still to come are variable-length lists, `Float`/`Char`,
+//! multi-parameter tests, and a lone single-form file (which currently needs a `do`-block root).
 //!
 //! Runs at load BEFORE `strip_annotations`/`scan_top_level`, so the synthesized `(effect …)` and
 //! `(@ test (def …))` flow through the ordinary effect-synthesis + test-hoist + resolve/infer/lower with
@@ -78,7 +79,7 @@ pub fn synthesize(ast: &mut Arenas) {
     // with ELEM an integer type. Record (item index, def-name occ text, param count) to synthesize for.
     let mut plans: Vec<TestPlan> = Vec::new();
     for (idx, &item) in items.iter().enumerate() {
-        if let Some(plan) = plan_for_item(ast, idx, item) {
+        if let Some(plan) = plan_for_item(ast, idx, item, &items) {
             plans.push(plan);
         }
     }
@@ -150,11 +151,31 @@ enum GenTy {
     List(Box<GenTy>),
     /// `(Tuple T…)`: `<gen>` = `(tuple <gen:T> …)`, one generated value per slot.
     Tuple(Vec<GenTy>),
+    /// `(Record (f T)…)`: `<gen>` = `(record (f <gen:T>) …)`, one generated value per named field.
+    Record(Vec<(String, GenTy)>),
+    /// A user SUM `(type NAME (V PAYLOAD?)…)` named by a bare type name: `<gen>` picks a variant by
+    /// `Test.gen % k` and constructs `((. NAME V) <gen:PAYLOAD>)` (a nullary variant is just `(. NAME V)`).
+    /// Carries the sum's NAME and each variant's `(ctor-name, optional payload GenTy)`.
+    Sum {
+        type_name: String,
+        variants: Vec<(String, Option<GenTy>)>,
+    },
+    /// `(Set ELEM)`: `<gen>` = `(Set.of (list <gen:ELEM> …))` — build a fixed-length list then dedup into
+    /// a set (a collision just yields a smaller set, which is fine).
+    Set(Box<GenTy>),
+    /// `(Map K V)`: `<gen>` = a fold of `Map.insert` over `G1_LIST_LEN` generated key/value pairs, seeded
+    /// from `Map.empty` (a repeated key is last-write-wins, yielding a smaller map — fine).
+    Map(Box<GenTy>, Box<GenTy>),
 }
 
 /// Recognize `(@ test (def (NAME (: PARAM (List ELEM))) BODY))` with ELEM an integer type; return its
 /// plan, or `None` if the item is not such a test.
-fn plan_for_item(ast: &Arenas, item_idx: usize, item: StructId) -> Option<TestPlan> {
+fn plan_for_item(
+    ast: &Arenas,
+    item_idx: usize,
+    item: StructId,
+    items: &[StructId],
+) -> Option<TestPlan> {
     // `(@ test INNER)` — the annotation must be the bare name `test`.
     let ann = ast.as_form(item, "@")?;
     let (&name_occ, &inner) = (ann.first()?, ann.get(1)?);
@@ -178,11 +199,12 @@ fn plan_for_item(ast: &Arenas, item_idx: usize, item: StructId) -> Option<TestPl
     }
     let ann_param = ast.as_form(params[0], ":")?; // `(: name TYPE)`
     let &ty = ann_param.get(1)?;
-    // The parameter must be a COMPOUND type this pass generates (a `(List …)` or `(Tuple …)` — a bare
-    // scalar is left to the existing boundary-arg route, which needs no wrapper). Classify recursively;
-    // `None` (a non-generatable or bare-scalar type) declines the synthesis, leaving the def as-is.
-    let gen_ty = classify_ty(ast, ty)?;
-    if !matches!(gen_ty, GenTy::List(_) | GenTy::Tuple(_)) {
+    // The parameter must be a COMPOUND type this pass generates (`(List …)`/`(Tuple …)`/`(Record …)` — a
+    // bare scalar is left to the existing boundary-arg route, which needs no wrapper). Classify
+    // recursively; `None` (a non-generatable or bare-scalar type) declines the synthesis, leaving the def
+    // as-is.
+    let gen_ty = classify_ty(ast, ty, items)?;
+    if matches!(gen_ty, GenTy::Int | GenTy::Bool) {
         return None; // a scalar param — the boundary-arg route handles it; no wrapper needed
     }
     Some(TestPlan {
@@ -199,24 +221,46 @@ fn plan_for_item(ast: &Arenas, item_idx: usize, item: StructId) -> Option<TestPl
 }
 
 /// Recursively classify a parameter TYPE occurrence into the [`GenTy`] whose `<gen:T>` this pass builds,
-/// or `None` if it is not (yet) generatable. Handles integer scalars, `Bool`, `(List ELEM)` (recursing
-/// into ELEM), and `(Tuple T…)` (recursing into each slot). A `Float`/`Char`, record, sum, `Set`/`Map`,
-/// or a bare/unresolved type is `None` — the caller then declines the synthesis.
-fn classify_ty(ast: &Arenas, ty: StructId) -> Option<GenTy> {
-    // A bare NAME type — a scalar (`Int64`/`Bool`/…).
+/// or `None` if it is not (yet) generatable. Handles integer scalars, `Bool`, `(List ELEM)`, `(Tuple T…)`,
+/// `(Record (f T)…)`, and a bare-name USER SUM (resolved against the program's `(type …)` declarations in
+/// `items`). A `Float`/`Char`, `Set`/`Map`, or an unresolvable name is `None` — the caller then declines
+/// the synthesis. `items` is the top-level form list, so a bare type name can find its declaration.
+fn classify_ty(ast: &Arenas, ty: StructId, items: &[StructId]) -> Option<GenTy> {
+    classify_ty_at(ast, ty, items, 0)
+}
+
+/// The type-nesting depth beyond which classification declines. Bounds the recursion so a RECURSIVE sum
+/// (`type Tree = Leaf Int64 | Node (Tuple Tree Tree)`) — whose generator would be unbounded / infinite —
+/// declines rather than recursing forever (a stack overflow). Also caps pathological deep nesting. A
+/// generatable value's type tree is shallow in practice, so this never rejects a real finite shape.
+const MAX_GEN_DEPTH: usize = 8;
+
+/// The depth-tracked worker for [`classify_ty`]. `depth` counts type-constructor / sum nesting; past
+/// [`MAX_GEN_DEPTH`] it declines (→ the recursive-sum guard).
+fn classify_ty_at(ast: &Arenas, ty: StructId, items: &[StructId], depth: usize) -> Option<GenTy> {
+    if depth > MAX_GEN_DEPTH {
+        return None;
+    }
+    // A bare NAME type — a scalar (`Int64`/`Bool`/…) or a user sum named by its declaration.
     if let Some(n) = ast.as_name(ty) {
         return match n {
             "Int8" | "Int16" | "Int32" | "Int64" | "UInt8" | "UInt16" | "UInt32" | "UInt64" => {
                 Some(GenTy::Int)
             }
             "Bool" => Some(GenTy::Bool),
-            _ => None,
+            // A bare name that is neither a scalar nor `Bool` MAY be a user `(type NAME …)` sum.
+            other => classify_sum(ast, other, items, depth),
         };
     }
     // `(List ELEM)` — recurse into the element type.
     if let Some(list_tail) = ast.as_form(ty, "List") {
         let &elem = list_tail.first()?;
-        return Some(GenTy::List(Box::new(classify_ty(ast, elem)?)));
+        return Some(GenTy::List(Box::new(classify_ty_at(
+            ast,
+            elem,
+            items,
+            depth + 1,
+        )?)));
     }
     // `(Tuple T…)` — recurse into each slot; every slot must be generatable.
     if let Some(tup_tail) = ast.as_form(ty, "Tuple") {
@@ -225,11 +269,86 @@ fn classify_ty(ast: &Arenas, ty: StructId) -> Option<GenTy> {
         }
         let mut slots = Vec::with_capacity(tup_tail.len());
         for &slot in tup_tail {
-            slots.push(classify_ty(ast, slot)?);
+            slots.push(classify_ty_at(ast, slot, items, depth + 1)?);
         }
         return Some(GenTy::Tuple(slots));
     }
+    // `(Record (f T)…)` — each field is `(FIELD-NAME TYPE)`; recurse into each field's type. Every field
+    // must be generatable; a zero-field record is not modeled.
+    if let Some(rec_tail) = ast.as_form(ty, "Record") {
+        if rec_tail.is_empty() {
+            return None;
+        }
+        let mut fields = Vec::with_capacity(rec_tail.len());
+        for &field in rec_tail {
+            // `field` = `(NAME TYPE)` — a two-element list.
+            let field_items = match ast.get(field) {
+                crate::ast::Struct::List(items) if items.len() == 2 => items,
+                _ => return None,
+            };
+            let fname = ast.as_name(field_items[0])?.to_string();
+            let fty = classify_ty_at(ast, field_items[1], items, depth + 1)?;
+            fields.push((fname, fty));
+        }
+        return Some(GenTy::Record(fields));
+    }
+    // `(Set ELEM)` — recurse into the element type.
+    if let Some(set_tail) = ast.as_form(ty, "Set") {
+        let &elem = set_tail.first()?;
+        return Some(GenTy::Set(Box::new(classify_ty_at(
+            ast,
+            elem,
+            items,
+            depth + 1,
+        )?)));
+    }
+    // `(Map K V)` — recurse into the key and value types (both must be generatable).
+    if let Some(map_tail) = ast.as_form(ty, "Map") {
+        let (&kty, &vty) = (map_tail.first()?, map_tail.get(1)?);
+        let k = classify_ty_at(ast, kty, items, depth + 1)?;
+        let v = classify_ty_at(ast, vty, items, depth + 1)?;
+        return Some(GenTy::Map(Box::new(k), Box::new(v)));
+    }
     None
+}
+
+/// Resolve a bare type name to a user SUM `(type NAME (V PAYLOAD?)…)` declared in the top-level `items`,
+/// classifying it into a [`GenTy::Sum`] — or `None` if no such declaration exists, it has no variants, or
+/// any variant's payload is not generatable. A variant is `(VNAME PAYLOAD)` (one payload type) or
+/// `(VNAME)` (nullary); a multi-field payload is written as a single `(Tuple …)`/`(Record …)`, so exactly
+/// zero or one payload occurrence per variant.
+fn classify_sum(ast: &Arenas, type_name: &str, items: &[StructId], depth: usize) -> Option<GenTy> {
+    // Find `(type NAME variant…)` with a matching NAME.
+    let decl_tail = items.iter().find_map(|&it| {
+        let tail = ast.as_form(it, "type")?;
+        (ast.as_name(*tail.first()?) == Some(type_name)).then_some(tail)
+    })?;
+    let variant_forms = decl_tail.get(1..).filter(|v| !v.is_empty())?;
+    let mut variants = Vec::with_capacity(variant_forms.len());
+    for &vf in variant_forms {
+        // A variant is a list `(VNAME PAYLOAD?)`.
+        let vitems = match ast.get(vf) {
+            crate::ast::Struct::List(v) if !v.is_empty() => v.as_slice(),
+            _ => return None,
+        };
+        let vname = ast.as_name(vitems[0])?.to_string();
+        let payload = match vitems.get(1) {
+            None => None, // nullary variant
+            // depth+1 so a RECURSIVE sum (a payload naming the sum itself, directly or through a
+            // List/Tuple/Record) exceeds MAX_GEN_DEPTH and declines rather than recursing forever.
+            Some(&pty) => Some(classify_ty_at(ast, pty, items, depth + 1)?),
+        };
+        // A variant with more than one payload occurrence is not the modeled shape (payloads are a single
+        // type — a tuple/record for several fields).
+        if vitems.len() > 2 {
+            return None;
+        }
+        variants.push((vname, payload));
+    }
+    Some(GenTy::Sum {
+        type_name: type_name.to_string(),
+        variants,
+    })
 }
 
 /// Whether the program already declares an effect named `Test` carrying a `gen` operation — so the pass
@@ -391,7 +510,141 @@ fn build_gen(ast: &mut Arenas, ty: &GenTy, binds: &mut Vec<(StructId, StructId)>
             }
             push_list(ast, children)
         }
+        // `(record (f <gen:T>) …)` — one generated value per named field, each a `(field-name value)` pair.
+        GenTy::Record(fields) => {
+            let head = name(ast, "record");
+            let mut children = vec![head];
+            for (fname, fty) in fields {
+                let fval = build_gen(ast, fty, binds);
+                let fnm = name(ast, fname);
+                let pair = push_list(ast, vec![fnm, fval]);
+                children.push(pair);
+            }
+            push_list(ast, children)
+        }
+        // A user sum: pick a variant by a hoisted `Test.gen % k`, then a nested `if`-chain constructs the
+        // chosen variant `((. TYPE V) <gen:payload>)` (nullary variant = `(. TYPE V)`). The LAST variant is
+        // the final `else`, so every draw lands on some variant (`% k` in `0..k`, and the chain covers all).
+        GenTy::Sum {
+            type_name,
+            variants,
+        } => build_sum_gen(ast, type_name, variants, binds),
+        // `(Set.of (list <gen:ELEM> …))` — build a fixed-length list then dedup into a set.
+        GenTy::Set(elem) => {
+            let list_head = name(ast, "list");
+            let mut list_children = vec![list_head];
+            for _ in 0..G1_LIST_LEN {
+                list_children.push(build_gen(ast, elem, binds));
+            }
+            let list = push_list(ast, list_children);
+            let set_of = {
+                let dot = name(ast, ".");
+                let set = name(ast, "Set");
+                let of = name(ast, "of");
+                push_list(ast, vec![dot, set, of])
+            };
+            push_list(ast, vec![set_of, list])
+        }
+        // A fold of `Map.insert` over `G1_LIST_LEN` generated key/value pairs, seeded from `Map.empty`:
+        // `(Map.insert (Map.insert (Map.empty) k0 v0) k1 v1) …`.
+        GenTy::Map(kty, vty) => {
+            // `(Map.empty)` — the seed.
+            let mut acc = {
+                let dot = name(ast, ".");
+                let mapn = name(ast, "Map");
+                let empty = name(ast, "empty");
+                let member = push_list(ast, vec![dot, mapn, empty]);
+                push_list(ast, vec![member])
+            };
+            for _ in 0..G1_LIST_LEN {
+                let k = build_gen(ast, kty, binds);
+                let v = build_gen(ast, vty, binds);
+                let insert = {
+                    let dot = name(ast, ".");
+                    let mapn = name(ast, "Map");
+                    let ins = name(ast, "insert");
+                    push_list(ast, vec![dot, mapn, ins])
+                };
+                acc = push_list(ast, vec![insert, acc, k, v]);
+            }
+            acc
+        }
     }
+}
+
+/// Build a user-sum `<gen>` — pick a variant index by a hoisted `(% ((. Test gen)) k)` and emit a nested
+/// `if`-chain of variant constructions. Each variant `V` builds `((. TYPE V) <gen:payload>)` (or the bare
+/// `(. TYPE V)` when nullary). Variant `i` is chosen by `(= sel i)`; the last variant is the trailing
+/// `else`, so the chain is total over `sel ∈ 0..k`.
+fn build_sum_gen(
+    ast: &mut Arenas,
+    type_name: &str,
+    variants: &[(String, Option<GenTy>)],
+    binds: &mut Vec<(StructId, StructId)>,
+) -> StructId {
+    // `sel = (% ((. Test gen)) k)` — the hoisted variant selector, bound to `gN`. Capture its NAME so
+    // each `(= sel i)` comparison below can reference it with a fresh occurrence.
+    let k = variants.len() as i64;
+    let sel_name = format!("g{}", binds.len());
+    {
+        let g = gen_call(ast);
+        let kn = push_atom(
+            ast,
+            Leaf::Int {
+                value: crate::ast::IntValue::from_i64(k),
+                radix: crate::ast::Radix::Dec,
+            },
+        );
+        let rem = name(ast, "%");
+        let sel_expr = push_list(ast, vec![rem, g, kn]);
+        let var = name(ast, &sel_name);
+        binds.push((var, sel_expr));
+    }
+    // Build each variant's construction expression (payloads recurse through `build_gen`, hoisting their
+    // own `Test.gen`s into the same `binds` — evaluated unconditionally before the `if`, which is fine:
+    // an unused draw is harmless, and it keeps every gen a plain `let`).
+    let ctors: Vec<StructId> = variants
+        .iter()
+        .map(|(vname, payload)| {
+            // `(. TYPE V)` — the variant constructor (member access).
+            let ctor = {
+                let dot = name(ast, ".");
+                let tn = name(ast, type_name);
+                let vn = name(ast, vname);
+                push_list(ast, vec![dot, tn, vn])
+            };
+            match payload {
+                None => ctor, // nullary variant: the ctor value itself
+                Some(pty) => {
+                    let pval = build_gen(ast, pty, binds);
+                    push_list(ast, vec![ctor, pval])
+                }
+            }
+        })
+        .collect();
+    // Fold the ctors into a nested `if`-chain from the LAST (the trailing else) backward: for i<k-1,
+    // `(if (= sel i) ctor_i <rest>)`.
+    let mut chain = *ctors
+        .last()
+        .expect("a sum has ≥1 variant (checked in classify_sum)");
+    for i in (0..ctors.len().saturating_sub(1)).rev() {
+        let cond = {
+            let eq = name(ast, "=");
+            // A fresh occurrence of the selector name for this comparison.
+            let sel_use = name(ast, &sel_name);
+            let iv = push_atom(
+                ast,
+                Leaf::Int {
+                    value: crate::ast::IntValue::from_i64(i as i64),
+                    radix: crate::ast::Radix::Dec,
+                },
+            );
+            push_list(ast, vec![eq, sel_use, iv])
+        };
+        let if_head = name(ast, "if");
+        chain = push_list(ast, vec![if_head, cond, ctors[i], chain]);
+    }
+    chain
 }
 
 /// Hoist a scalar generator EXPRESSION into a fresh `let` binding `gN = <expr>` (recorded in `binds`) and
@@ -514,6 +767,122 @@ mod tests {
                 "{def}: expected wrapper {wrapper}, got {names:?}"
             );
         }
+    }
+
+    /// G4: a `(Record (f T)…)` parameter is generatable (`(record (f <gen>) …)`), and nesting composes
+    /// (`(List (Record …))`) — both gain a wrapper.
+    #[test]
+    fn synthesizes_a_generator_wrapper_for_a_record_test() {
+        for (src, def, wrapper) in [
+            (
+                "(do (@ test (def (r (: v (Record (x Int64) (y Bool)))) 0)) (def (o) 1))",
+                "r",
+                "r-gen",
+            ),
+            (
+                "(do (@ test (def (lr (: xs (List (Record (a Int64) (b Bool)))))  (List.len xs))) (def (o) 1))",
+                "lr",
+                "lr-gen",
+            ),
+        ] {
+            let db = Db::load(crate::testkit::parse(src));
+            let names: Vec<String> = db
+                .test_defs()
+                .into_iter()
+                .map(|i| db.defs[i].name.clone())
+                .collect();
+            assert!(
+                names.iter().any(|n| n == wrapper) && !names.iter().any(|n| n == def),
+                "{def}: expected wrapper {wrapper}, got {names:?}"
+            );
+        }
+    }
+
+    /// G5: a `@test` over a USER SUM `(type NAME (V PAYLOAD?)…)` gains a wrapper — the generator picks a
+    /// variant by `Test.gen % k` and builds its payload. Covers a mix of payload'd + nullary variants,
+    /// and a sum nested inside a `List`.
+    #[test]
+    fn synthesizes_a_generator_wrapper_for_a_sum_test() {
+        for (src, def, wrapper) in [
+            (
+                "(do (type Ty (Var Int64) (Con Bool) (Nil)) \
+                   (@ test (def (t (: v Ty)) 0)) (def (o) 1))",
+                "t",
+                "t-gen",
+            ),
+            (
+                "(do (type Ty (Var Int64) (Con Bool)) \
+                   (@ test (def (ls (: xs (List Ty))) (List.len xs))) (def (o) 1))",
+                "ls",
+                "ls-gen",
+            ),
+        ] {
+            let db = Db::load(crate::testkit::parse(src));
+            let names: Vec<String> = db
+                .test_defs()
+                .into_iter()
+                .map(|i| db.defs[i].name.clone())
+                .collect();
+            assert!(
+                names.iter().any(|n| n == wrapper) && !names.iter().any(|n| n == def),
+                "{def}: expected wrapper {wrapper}, got {names:?}"
+            );
+        }
+    }
+
+    /// G6: `(Set ELEM)` and `(Map K V)` params are generatable (`(Set.of (list …))` / a `Map.insert`
+    /// fold), and nesting composes (`List (Set Int64)`).
+    #[test]
+    fn synthesizes_a_generator_wrapper_for_set_and_map_tests() {
+        for (src, def, wrapper) in [
+            (
+                "(do (@ test (def (s (: v (Set Int64))) 0)) (def (o) 1))",
+                "s",
+                "s-gen",
+            ),
+            (
+                "(do (@ test (def (m (: v (Map Int64 Bool))) 0)) (def (o) 1))",
+                "m",
+                "m-gen",
+            ),
+            (
+                "(do (@ test (def (ls (: xs (List (Set Int64)))) (List.len xs))) (def (o) 1))",
+                "ls",
+                "ls-gen",
+            ),
+        ] {
+            let db = Db::load(crate::testkit::parse(src));
+            let names: Vec<String> = db
+                .test_defs()
+                .into_iter()
+                .map(|i| db.defs[i].name.clone())
+                .collect();
+            assert!(
+                names.iter().any(|n| n == wrapper) && !names.iter().any(|n| n == def),
+                "{def}: expected wrapper {wrapper}, got {names:?}"
+            );
+        }
+    }
+
+    /// A RECURSIVE sum (`Tree = Leaf Int64 | Node (Tuple Tree Tree)`) must DECLINE, not recurse forever
+    /// (the classify depth guard) — no wrapper, so it declines at the boundary. Pins the stack-overflow
+    /// guard: an unbounded generator is not synthesized.
+    #[test]
+    fn a_recursive_sum_declines_without_hanging() {
+        let ast = crate::testkit::parse(
+            "(do (type Tree (Leaf Int64) (Node (Tuple Tree Tree))) \
+               (@ test (def (tr (: t Tree)) unit)) (def (o) 1))",
+        );
+        let db = Db::load(ast);
+        let names: Vec<String> = db
+            .test_defs()
+            .into_iter()
+            .map(|i| db.defs[i].name.clone())
+            .collect();
+        assert!(
+            !names.iter().any(|n| n == "tr-gen"),
+            "a recursive sum gets no wrapper (depth guard): {names:?}"
+        );
     }
 
     /// A `@test` over a genuinely NON-generatable element (`(List Float64)` — floats are not yet
