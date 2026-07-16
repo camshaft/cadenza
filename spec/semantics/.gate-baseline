@@ -2353,6 +2353,10 @@ pass	boxed closures of two fn types in one sum: the unbuilt variant's dispatch i
 pass	branches performing DIFFERENT counts each thread their own post-state to the continuation
 pass	breaker capsubst: a non-capturing substitution takes the plain path
 pass	breaker capsubst: the fresh binder clears the body's ids, not only s's
+pass	breaker exists: DISJ2 preserves the premise's hypothesis
+pass	breaker exists: EXISTS-intro preserves multiple hypotheses from the premise
+pass	breaker exists: EXISTS-intro rejects a witness whose instance does not match the premise (unforgeability)
+pass	breaker exists: EXISTS-intro with the witness variable also free in the body substitutes all occurrences
 pass	breaker holsubst: a free occurrence beside a shadow substitutes selectively
 pass	breaker holsubst: a shadowing binder blocks substitution
 pass	breaker holsubst: the naive subst's documented capture hazard
