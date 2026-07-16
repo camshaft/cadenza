@@ -69,6 +69,13 @@ ALL integration. Two disciplines keep that from ever happening — follow BOTH e
    d. If you ever decide a merge-request is a stray/duplicate you won't integrate, STILL `fleet ack
       <request> --outcome reject --body "not integrated: <reason, e.g. superseded/duplicate>"` — a
       deliberate reject is fine; a silent drop is the bug.
+   e. **Stamp your heartbeat after EACH request** — `cargo xtask fleet heartbeat pr-sync` at the end
+      of every integrate-one-MR iteration, not just once at tick-top (step 1). A long batch runs many
+      MRs continuously WITHOUT cycling `/loop` ticks, so a tick-top-only heartbeat goes 20–30min stale
+      while you're actively integrating — which reads as "pr-sync STALLED" to other agents (who, unlike
+      the watchdog, don't special-case you via trunk-advance) and triggers false "nudge/compact pr-sync!"
+      escalations (someone could interrupt your live integration). A per-MR heartbeat keeps the mtime
+      honest: fresh whenever you're working, stale only when you're genuinely idle.
 3. **Publish to the remote** (the PR half — unchanged in spirit from the old staging loop). When
    `trunk` is ahead of `origin/main` and clean:
    - **🚫 INVARIANT: NEVER move the `trunk` ref backward. Do NOT run `git reset --hard origin/main`
