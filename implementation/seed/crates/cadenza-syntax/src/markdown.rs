@@ -993,6 +993,59 @@ mod tests {
         assert_idempotent(md);
     }
 
+    /// A random valid s-expr program body (bounded by `depth`) to embed in a fence — atoms, infix,
+    /// call, `let`, `if`, nested. No compound-ctor spellings (they'd need surface-specific handling);
+    /// the point is exercising the embed→standalone-parse agreement over the ordinary program space.
+    fn gen_fence_body(rng: &mut Rng, depth: usize) -> String {
+        let atoms = ["a", "b", "x", "y", "f", "g", "1", "42", "true"];
+        if depth == 0 || rng.below(3) == 0 {
+            return atoms[rng.below(atoms.len())].to_string();
+        }
+        let sub = |rng: &mut Rng| gen_fence_body(rng, depth - 1);
+        match rng.below(5) {
+            0 => format!("(+ {} {})", sub(rng), sub(rng)),
+            1 => format!("(f {} {})", sub(rng), sub(rng)),
+            2 => format!("(if {} {} {})", sub(rng), sub(rng), sub(rng)),
+            3 => format!("(let ((x {})) {})", sub(rng), sub(rng)),
+            _ => format!("(g {} {} {})", sub(rng), sub(rng), sub(rng)),
+        }
+    }
+
+    #[test]
+    fn embedded_fence_subtree_equals_the_standalone_parse_over_generated_programs() {
+        // The "code inside a doc IS arena" contract, swept: a ```sexp fence's embedded subtree must be
+        // the SAME tree `sexpr::read` produces for the fence body standalone — over random programs, not
+        // one hand case (`cdz_code_block_embeds_program_subtree`). Pins the CodeRole::Sexpr embed path
+        // (`embed_program` → `clone_subtree`) against an independent standalone parse across the program
+        // space; a clone-subtree or fence-body-extraction regression surfaces as a structural mismatch.
+        let mut rng = Rng(0x00fe_4ce5_ab77_ee01);
+        for _ in 0..2000 {
+            let depth = 1 + rng.below(4);
+            let body = gen_fence_body(&mut rng, depth);
+            let md = format!("```sexp\n{body}\n```\n");
+            let a = read(&md);
+            let cb = (0..a.structure.len() as u32)
+                .map(StructId)
+                .find(|&id| a.head_name(id) == Some("code-block"))
+                .expect("a code-block node");
+            let items = list_items(&a, cb);
+            assert_eq!(
+                items.len(),
+                4,
+                "a clean sexp fence embeds a subtree (head + info + raw + subtree) for {body:?}"
+            );
+            // Lift the embedded subtree into its own arena and compare to the standalone parse.
+            let mut b = Builder::new();
+            let root = super::Md::new(&mut b, None).clone_subtree(&a, items[3], Span::new(0, 0));
+            let lifted = b.finish(root);
+            let standalone = crate::sexpr::read(&body).expect("body parses standalone");
+            assert!(
+                lifted.structurally_eq(&standalone),
+                "embedded subtree != standalone parse for {body:?}"
+            );
+        }
+    }
+
     #[test]
     fn a_cdz_fence_with_a_malformed_body_falls_back_to_raw_only() {
         // Graceful degradation: a ```cdz fence whose body does NOT parse cleanly must NOT embed a
