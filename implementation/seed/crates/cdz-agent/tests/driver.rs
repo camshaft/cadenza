@@ -375,6 +375,10 @@ fn the_driver_replies_to_the_sender_with_the_model_completion() {
         reply.contains(r#""body":"DO THE TASK""#),
         "the reply body is the model's ACTUAL completion (mock uppercases): {reply}"
     );
+    assert!(
+        reply.contains(r#""in_reply_to":"001-msg.json""#),
+        "the reply names the SOURCE message filename in `in_reply_to` (audit correlation): {reply}"
+    );
 }
 
 #[test]

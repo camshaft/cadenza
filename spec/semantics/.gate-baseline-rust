@@ -632,6 +632,7 @@ pass	a hexadecimal literal past Int64.max is a malformed literal, not a bit patt
 pass	a hexadecimal literal with digit separators
 pass	a high UInt64 literal operand takes UInt64 from context, not Int64
 pass	a high-bit scrutinee misses an offset jump table whose bias cancels its low bits
+pass	a high-power product cancels exactly to dimensionless (meter^100 * meter^-100)
 pass	a higher-order function applies a callback that matches its own sum argument
 pass	a higher-order left fold applies its combiner, not a fixed operator
 pass	a higher-order left fold over a built-in list with an annotated callback
@@ -1760,8 +1761,10 @@ pass	accessing through an empty-side split-at is usable, like the equivalent lit
 pass	accumulator introduction threads a transformed extra parameter through a multi-parameter recursion
 pass	adding a cubed length to a squared length is a dimension mismatch
 pass	adding a squared length to a plain length is a dimension mismatch
+pass	adding adjacent high-power quantities is a mismatch (meter^100 + meter^101)
 pass	adding quantities of incompatible dimension is a compile-time error
 pass	adding rational-magnitude quantities of incompatible dimension is still a compile-time error
+pass	adding two equal high-power quantities joins (meter^100 + meter^100)
 pass	adding two named family units of one dimension converts to the reference (Float)
 pass	adding two quantities of the same dimension keeps that dimension
 pass	adding two squared-length quantities is well-dimensioned
@@ -2506,6 +2509,9 @@ pass	recursive fibonacci over a RUNTIME argument computes the predecessors corre
 pass	recursive fibonacci with literal match base cases
 pass	redeclaring a built-in unit with its own conversion is admissible
 pass	redeclaring a user-declared unit with the same conversion is admissible
+pass	reifying a constant NaN into an Ast.Float declines (no canonical value form)
+pass	reifying a finite float into an Ast.Float is unaffected by the non-canonical guard
+pass	reifying a positive-infinity float into an Ast.Float declines
 pass	rejection sampling draws until the refinement holds — an only-even generator produces an even value
 pass	rejection sampling into a narrow range refinement produces only in-range values
 pass	rejection sampling terminates on fuel exhaustion when the refinement is unsatisfiable
@@ -2718,6 +2724,7 @@ pass	the scalar-len of an in-bounds String.slice equals its span (end - start), 
 pass	the second element of a runtime-content fn-return tuple is projected directly
 pass	the selected operand decides a hoisted comparison
 pass	the selected operand decides a hoisted float equality
+pass	the shift-by-zero identities preserve a runtime narrow UInt8 (x << 0 = x, x >> 0 = x)
 pass	the shrinking search terminates via its fuel bound rather than searching unboundedly
 pass	the slice overflow guard holds on a chained slice-of-a-slice
 pass	the taken arm's checked add still overflows under the operator hoist

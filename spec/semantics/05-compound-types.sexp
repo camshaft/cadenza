@@ -3665,6 +3665,86 @@
   (call   main (: false Bool))
   (output (: 0 Int64)))
 
+; The erased-newtype literal-payload read above must also compare at the payload's NATIVE WIDTH. An erased
+; scalar newtype leaves the RAW payload on the stack at its machine width — i64 for `Int64`, but i32 for a
+; NARROW newtype (`(Wrap UInt8)`/`Int8`/`Int16`/`Int32`, whose raw rep is an i32 slot). Reading the raw
+; scalar but comparing it at a hard-coded i64 (`i64.eqz`) over the i32 payload emitted an INVALID component
+; (the narrow-width twin of the Int64 invalid-component above — same op, opposite width, `expected i64,
+; found i32`). The compare op is keyed on the payload width: `i32.eqz`/`i32.eq` for a narrow raw leaf,
+; `i64` for an Int64 raw leaf (and for any BOXED payload, whose `get-int` normalizes to i64). The bare
+; non-newtype narrow literal-match already compared at i32; these pin the erased-newtype path matches it.
+
+(case "a single-variant UInt8 newtype literal-payload arm compiles at the payload width"
+  (doc    "`(match (W.Wrap n) ((W.Wrap 0) 100) ((W.Wrap x) x))` where `W = (Wrap UInt8)`, n=0 → 100: the
+           erased newtype's raw payload is an i32 (narrow rep), so the literal-0 check must be `i32.eqz`,
+           not `i64.eqz`. Emitting the compare at the hard-coded i64 over the i32 payload was an INVALID
+           component (`expected i64, found i32`) — the narrow-width analogue of the Int64 single-variant
+           case. Pins the erased-payload literal compare is keyed on the payload's machine width.")
+  (input  (do (type W (Wrap UInt8))
+              (def (main (: n UInt8)) (match (W.Wrap n) ((W.Wrap 0) 100) ((W.Wrap x) x)))
+              (export main)))
+  (call   main (: 0 UInt8))
+  (output (: 100 Int64)))
+
+(case "a single-variant UInt8 newtype literal-payload arm falls through to the binding arm on a miss"
+  (doc    "The miss companion at narrow width: n=5 misses `(W.Wrap 0)` and binds via `(W.Wrap x)` → 5.
+           Together with the hit case it pins BOTH arms of the narrow-newtype refinement compile — the whole
+           match emitted an invalid component before the width-keyed compare, not just one arm.")
+  (input  (do (type W (Wrap UInt8))
+              (def (main (: n UInt8)) (match (W.Wrap n) ((W.Wrap 0) 100) ((W.Wrap x) x)))
+              (export main)))
+  (call   main (: 5 UInt8))
+  (output (: 5 Int64)))
+
+(case "a single-variant Int32 newtype literal-payload arm compiles at the payload width"
+  (doc    "The Int32 width (a signed narrow rep, also an i32 slot): `(match (W.Wrap n) ((W.Wrap 0) 100)
+           ((W.Wrap x) x))` with `W = (Wrap Int32)`, n=0 → 100. Pins the width-keyed compare spans every
+           narrow width (i32-backed), not only UInt8 — the fix carries the payload width for signed narrow
+           newtypes too.")
+  (input  (do (type W (Wrap Int32))
+              (def (main (: n Int32)) (match (W.Wrap n) ((W.Wrap 0) 100) ((W.Wrap x) x)))
+              (export main)))
+  (call   main (: 0 Int32))
+  (output (: 100 Int64)))
+
+(case "a single-variant Int64 newtype literal-payload arm still compiles (the wide control)"
+  (doc    "The control that was always correct at i64: the SAME shape on an `(Wrap Int64)` newtype, n=0 →
+           100 — the raw payload is an i64, matching the i64 compare. Pins the width fix did not disturb the
+           Int64 single-variant case (it stays `i64.eqz`).")
+  (input  (do (type W (Wrap Int64))
+              (def (main (: n Int64)) (match (W.Wrap n) ((W.Wrap 0) 100) ((W.Wrap x) x)))
+              (export main)))
+  (call   main (: 0 Int64))
+  (output (: 100 Int64)))
+
+(case "a bare UInt8 literal-match (no newtype) is the width template"
+  (doc    "The non-newtype control: `(match n (0 100) (x x))` over a bare `UInt8` n=0 → 100 — the ordinary
+           narrow literal-match already compares at i32 width. Pins the bug was the erased-NEWTYPE payload
+           path specifically; the plain narrow literal-match is correct and is the width template the
+           newtype path now follows.")
+  (input  (do (def (main (: n UInt8)) (match n (0 100) (x x))) (export main)))
+  (call   main (: 0 UInt8))
+  (output (: 100 Int64)))
+
+(case "a CALL-returned single-variant newtype with a literal-payload arm spills at the right width"
+  (doc    "The SPILL-path sibling of the inline erased-newtype cases above: the match scrutinee is a
+           CALL RESULT (`(f (mk d))`), not an inline `(W.Wrap n)` construction — so it is NOT a reusable
+           handle and the sum-match emit SPILLS it into a fresh scratch slot before probing. That spill slot
+           was hardcoded i32 (assuming a boxed-sum handle), but an erased single-variant newtype over a
+           scalar (`(type W (Wrap Int64))`) is a bare i64 — storing the i64 into an i32 slot re-typed one
+           wasm local to two widths → `type mismatch: expected i32, found i64`, an invalid component. (The
+           inline cases pass a directly-constructed scrutinee that need not spill, so they did NOT catch
+           this.) Fix: the spill slot takes the SCRUTINEE'S machine width (`valtype_of`), i64 here. `mk d` =
+           `Wrap (d+1)`; `f` matches `(Wrap 5)`→100 else the payload. d=4 → Wrap 5 → 100; d=6 → Wrap 7 → 7.")
+  (input  (do
+            (type W (Wrap Int64))
+            (def (mk (: n Int64)) (W.Wrap (+ n 1)))
+            (def (f (: w W)) (match w ((W.Wrap 5) 100) ((W.Wrap n) n)))
+            (def (main (: d Int64)) (f (mk d)))
+            (export main)))
+  (call   main (: 4 Int64)) (output (: 100 Int64))
+  (call   main (: 6 Int64)) (output (: 7 Int64)))
+
 (case "a recursive resolver transforms one runtime sum tree into another, then consumes it"
   (doc    "The compiler's reader→pipeline JOIN shape: a recursive function that transforms a runtime-built
            value of ONE sum type into a value of a DIFFERENT sum type, whose result is then consumed. A

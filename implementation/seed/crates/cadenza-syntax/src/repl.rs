@@ -92,14 +92,42 @@ pub fn defined_names(src: &Arenas) -> Vec<String> {
 
 /// Copy a subtree from `src` into `b`, preserving structure and leaf values. Leaves re-intern (dedup is
 /// fine — an atom occurrence is what carries identity), lists rebuild child-by-child.
-fn copy_subtree(b: &mut Builder, src: &Arenas, id: StructId) -> StructId {
-    match src.get(id) {
-        Struct::Atom(leaf_id) => b.atom_leaf(src.leaf(*leaf_id).clone()),
-        Struct::List(kids) => {
-            let copied: Vec<StructId> = kids.iter().map(|&k| copy_subtree(b, src, k)).collect();
-            b.list(copied)
+///
+/// Uses an EXPLICIT `Job{Visit|Emit}` stack (post-order, same shape as `query::Tree::from_arena` and
+/// `canon::visit`), not native recursion. In practice a REPL buffer/expr arrives via the depth-capped
+/// reader (`MAX_NESTING_DEPTH`), so recursion here wouldn't overflow today — but keeping every
+/// arena-tree walk in the crate iterative is the standing rule (`codec::decode` is UNcapped, so any
+/// arena a walk MIGHT see can be arbitrarily deep), and it costs nothing to be consistent + defensive.
+fn copy_subtree(b: &mut Builder, src: &Arenas, root: StructId) -> StructId {
+    enum Job {
+        Visit(StructId),
+        // Emit a `List` for `n` already-copied children sitting atop `results`.
+        Emit(usize),
+    }
+    let mut jobs: Vec<Job> = vec![Job::Visit(root)];
+    let mut results: Vec<StructId> = Vec::new();
+    while let Some(job) = jobs.pop() {
+        match job {
+            Job::Visit(id) => match src.get(id) {
+                Struct::Atom(leaf_id) => results.push(b.atom_leaf(src.leaf(*leaf_id).clone())),
+                Struct::List(kids) => {
+                    jobs.push(Job::Emit(kids.len()));
+                    // Push children reversed so they pop (and thus copy) left-to-right → their new ids
+                    // land on `results` in source order for the parent's `b.list`.
+                    for &k in kids.iter().rev() {
+                        jobs.push(Job::Visit(k));
+                    }
+                }
+            },
+            Job::Emit(n) => {
+                let copied = results.split_off(results.len() - n);
+                results.push(b.list(copied));
+            }
         }
     }
+    results
+        .pop()
+        .expect("copy_subtree leaves the root's new id")
 }
 
 /// The do-local module the EXACT-MODE entry body is wrapped in — its `(pragma default-fraction Rational)`
@@ -488,5 +516,29 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn copy_subtree_is_iterative_not_recursive_on_a_deep_expr() {
+        // `assemble_repl_program` deep-copies the buffer + expr via `copy_subtree`, now iterative. Build a
+        // deeply-nested expr arena DIRECTLY (bypassing the reader's MAX_NESTING_DEPTH cap) and assemble
+        // it — a native-recursive copy would overflow the stack here. `Arenas` is FLAT (no recursive
+        // drop), so this needs no big-stack thread — only `copy_subtree`'s own recursion was the concern,
+        // and it is now an explicit stack. Assert assembly completes and produces the entry.
+        let depth = 60_000usize;
+        let mut eb = Builder::new();
+        let mut cur = eb.name("x");
+        for _ in 0..depth {
+            let f = eb.name("f");
+            cur = eb.list(vec![f, cur]);
+        }
+        let expr = eb.finish(cur);
+        let buffer = crate::sexpr::read("(def (g y) y)").unwrap();
+        let assembled = assemble_repl_program(&buffer, &expr); // must NOT overflow via copy_subtree
+        // The deep expr became the entry body: encode succeeds and the entry/export are present.
+        let bytes = crate::codec::encode(&assembled);
+        assert!(!bytes.is_empty(), "deep assembled program encodes");
+        let rendered_head = assembled.head_name(assembled.root);
+        assert_eq!(rendered_head, Some("do"), "assembled root is a do block");
     }
 }

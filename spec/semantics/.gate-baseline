@@ -234,6 +234,7 @@ pass	a Bool match with only the true arm is non-exhaustive
 pass	a Bytes-returning closure alongside a plain export — the closure runs
 pass	a Bytes-returning closure alongside a plain export — the plain runs
 pass	a Bytes-returning closure on a different argument
+pass	a CALL-returned single-variant newtype with a literal-payload arm spills at the right width
 pass	a CAPTURING closure carried in a sum payload keeps its capture through the match binder
 pass	a CAPTURING closure returning a List
 pass	a CAPTURING closure returning a tuple
@@ -388,6 +389,7 @@ pass	a `?` on an ill-typed operand reports the operand's error, not a `?`-shape 
 pass	a `?` result is usable mid-body, not only in tail position
 pass	a `?` whose Result error type disagrees with the boundary's is rejected
 pass	a `?` with no fallible enclosing function boundary is rejected
+pass	a bare UInt8 literal-match (no newtype) is the width template
 pass	a bare arithmetic keyword is rejected, not a crash
 pass	a bare binding form with no bindings and no body is rejected, not a crash
 pass	a bare built-in constructor Some is passed as a first-class function
@@ -901,6 +903,7 @@ pass	a hexadecimal literal past Int64.max is a malformed literal, not a bit patt
 pass	a hexadecimal literal with digit separators
 pass	a high UInt64 literal operand takes UInt64 from context, not Int64
 pass	a high-bit scrutinee misses an offset jump table whose bias cancels its low bits
+pass	a high-power product cancels exactly to dimensionless (meter^100 * meter^-100)
 pass	a higher-order function applies a callback that matches its own sum argument
 pass	a higher-order left fold applies its combiner, not a fixed operator
 pass	a higher-order left fold over a built-in list with an annotated callback
@@ -1872,7 +1875,11 @@ pass	a signed segment reads the sign-bit-only byte as the minimum, not its magni
 pass	a signed-byte entrypoint returns its runtime argument
 pass	a single-form body admits a sequence by holding a do block
 pass	a single-scalar String.slice equals the String.at of the same index (the two scalar-addressing paths agree)
+pass	a single-variant Int32 newtype literal-payload arm compiles at the payload width
+pass	a single-variant Int64 newtype literal-payload arm still compiles (the wide control)
 pass	a single-variant NEWTYPE escapes with its tag ERASED, only the type header naming it
+pass	a single-variant UInt8 newtype literal-payload arm compiles at the payload width
+pass	a single-variant UInt8 newtype literal-payload arm falls through to the binding arm on a miss
 pass	a single-variant abstract theorem's constructor match outside the kernel is a withheld-constructor rejection (CDZ0214)
 pass	a single-variant abstract type's constructor match outside its module is rejected CDZ0214 (withheld-ctor)
 pass	a single-variant newtype BOOL literal-payload arm falls through on false
@@ -2136,8 +2143,10 @@ pass	accessing through an empty-side split-at is usable, like the equivalent lit
 pass	accumulator introduction threads a transformed extra parameter through a multi-parameter recursion
 pass	adding a cubed length to a squared length is a dimension mismatch
 pass	adding a squared length to a plain length is a dimension mismatch
+pass	adding adjacent high-power quantities is a mismatch (meter^100 + meter^101)
 pass	adding quantities of incompatible dimension is a compile-time error
 pass	adding rational-magnitude quantities of incompatible dimension is still a compile-time error
+pass	adding two equal high-power quantities joins (meter^100 + meter^100)
 pass	adding two named family units of one dimension converts to the reference (Float)
 pass	adding two quantities of the same dimension keeps that dimension
 pass	adding two squared-length quantities is well-dimensioned
@@ -3003,6 +3012,9 @@ pass	recursive fibonacci over a RUNTIME argument computes the predecessors corre
 pass	recursive fibonacci with literal match base cases
 pass	redeclaring a built-in unit with its own conversion is admissible
 pass	redeclaring a user-declared unit with the same conversion is admissible
+pass	reifying a constant NaN into an Ast.Float declines (no canonical value form)
+pass	reifying a finite float into an Ast.Float is unaffected by the non-canonical guard
+pass	reifying a positive-infinity float into an Ast.Float declines
 pass	rejection sampling draws until the refinement holds — an only-even generator produces an even value
 pass	rejection sampling into a narrow range refinement produces only in-range values
 pass	rejection sampling terminates on fuel exhaustion when the refinement is unsatisfiable
@@ -3295,6 +3307,7 @@ pass	the second element of a runtime-content fn-return tuple is projected direct
 pass	the selected operand decides a hoisted comparison
 pass	the selected operand decides a hoisted float equality
 pass	the sequent-shaped kernel Thm is unforgeable — building Thm.Seq outside the kernel is CDZ0214
+pass	the shift-by-zero identities preserve a runtime narrow UInt8 (x << 0 = x, x >> 0 = x)
 pass	the shrinking search terminates via its fuel bound rather than searching unboundedly
 pass	the slice overflow guard holds on a chained slice-of-a-slice
 pass	the taken arm's checked add still overflows under the operator hoist

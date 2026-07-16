@@ -4795,7 +4795,14 @@ fn emit_tail(
             } else {
                 let slot = *high;
                 *high = slot + 1;
-                scratch_ty.insert(slot, ValType::I32);
+                // The spill slot's width is the SCRUTINEE'S machine type, NOT always i32: a real boxed sum is
+                // an i32 handle, but an ERASED single-variant newtype over a SCALAR (`(type W (Wrap Int64))`)
+                // is a bare i64 (no box) — spilling that i64 into a hardcoded-i32 slot re-types one wasm local
+                // to two widths → `type mismatch: expected i32, found i64`, an invalid module (a literal-
+                // payload arm `(match (mk d) ((Wrap 5) …))` over a runtime-built erased newtype). Default to
+                // i32 for a rep-less type (a handle-shaped scrutinee).
+                let scrut_vt = valtype_of(&type_of(db, scrutinee)).unwrap_or(ValType::I32);
+                scratch_ty.insert(slot, scrut_vt);
                 emit(
                     db,
                     scrutinee,
@@ -8137,7 +8144,14 @@ fn emit(
                 // i64 arm temp.
                 let slot = *high;
                 *high = slot + 1;
-                scratch_ty.insert(slot, ValType::I32);
+                // The spill slot's width is the SCRUTINEE'S machine type, NOT always i32: a real boxed sum is
+                // an i32 handle, but an ERASED single-variant newtype over a SCALAR (`(type W (Wrap Int64))`)
+                // is a bare i64 (no box) — spilling that i64 into a hardcoded-i32 slot re-types one wasm local
+                // to two widths → `type mismatch: expected i32, found i64`, an invalid module (a literal-
+                // payload arm `(match (mk d) ((Wrap 5) …))` over a runtime-built erased newtype). Default to
+                // i32 for a rep-less type (a handle-shaped scrutinee).
+                let scrut_vt = valtype_of(&type_of(db, scrutinee)).unwrap_or(ValType::I32);
+                scratch_ty.insert(slot, scrut_vt);
                 emit(
                     db,
                     scrutinee,
@@ -11061,13 +11075,31 @@ fn emit_sum_cont(
             // the sum-payload twin of the scalar-probe eqz special case.
             match probe {
                 crate::core::Probe::Int(v) => {
-                    // Read the scalar out of the box (`get-int` → normalized i64) ONLY when the leaf is a
-                    // heap handle; an ERASED scalar newtype left a raw i64 on the stack (no box to unbox).
-                    if holds_handle {
-                        out.push(Lir::CallImport(OP_GET_INT)); // [i64]
-                    }
+                    // Read the scalar out of the box (`get-int` → NORMALIZED i64) when the leaf is a heap
+                    // handle, and compare at i64. An ERASED scalar newtype instead left the RAW payload on
+                    // the stack at its NATIVE machine width — i64 for `Int64`, but i32 for a NARROW newtype
+                    // (`(Wrap UInt8)`/`Int8`/`Int16`/`Int32`, whose raw rep is an i32 slot). So the compare
+                    // op must match the payload's actual width: `i64.eqz`/`i64.eq` over a boxed-or-i64 leaf,
+                    // `i32.eqz`/`i32.eq` over a narrow raw leaf. Reading the raw scalar but comparing it at
+                    // the hard-coded i64 emitted `i64.eqz` over an i32 → an INVALID component (the narrow
+                    // twin of the Int64 invalid-component this branch first fixed; `holds_handle`=false but
+                    // the width was still assumed i64). Boxed path stays i64 (`get-int` normalizes).
+                    let slot32 = if holds_handle {
+                        out.push(Lir::CallImport(OP_GET_INT)); // [i64] — normalized
+                        false
+                    } else {
+                        // The erased payload's native slot: i32 for a narrow width (`≤ 32`), else i64. `cur`
+                        // is the payload type after the path walk (an `Int` for a scalar newtype).
+                        match cur.strip_nominal() {
+                            Ty::Int(it) => Machine::of(*it).slot32,
+                            _ => false, // non-narrow / unknown → i64 (Int64 and the prior behavior)
+                        }
+                    };
                     if v.to_i64_bits() == 0 {
-                        out.push(Lir::I64Eqz); // [bool]
+                        out.push(if slot32 { Lir::I32Eqz } else { Lir::I64Eqz }); // [bool]
+                    } else if slot32 {
+                        out.push(Lir::ConstI32(v.to_i64_bits() as i32));
+                        out.push(Lir::I32Eq); // [bool]
                     } else {
                         out.push(Lir::ConstI64(v.to_i64_bits()));
                         out.push(Lir::I64Eq); // [bool]

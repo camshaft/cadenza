@@ -15067,6 +15067,98 @@ mod match_engine {
     }
 
     #[test]
+    fn a_narrow_newtype_literal_payload_arm_compares_at_the_payload_width() {
+        // The erased-newtype literal-payload read (the fix above) must ALSO compare at the payload's native
+        // machine width. An erased scalar newtype leaves the RAW payload on the stack — i64 for `Int64`, but
+        // i32 for a NARROW newtype (`(Wrap UInt8)`/`Int8`/`Int16`/`Int32`, raw rep i32). Reading the raw
+        // scalar but comparing at the hard-coded i64 (`i64.eqz`) over the i32 payload emitted an INVALID
+        // component (`expected i64, found i32` — the narrow twin of the Int64 invalid-component). The
+        // compare is keyed on the payload width: `i32.eqz`/`i32.eq` for a narrow raw leaf, i64 for an Int64
+        // raw leaf (and any BOXED payload, whose `get-int` normalizes to i64). breaker-found (incomplete-fix
+        // of the single-variant Int64 case).
+        if super::find_runtime_wasm().is_none() {
+            eprintln!("runtime wasm not found; skipping narrow-newtype-payload heap-runs");
+            return;
+        }
+        // UInt8 newtype: literal-0 hit (→100) and miss to the binding arm (→5), both now VALID at i32 width.
+        assert_eq!(
+            run_heap_value(
+                "(do (type W (Wrap UInt8)) (def (main) (match (W.Wrap 0) ((W.Wrap 0) 100) ((W.Wrap x) x))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "100",
+            "an erased UInt8 newtype literal-0 arm is selected (was an invalid component — i64.eqz over i32)"
+        );
+        assert_eq!(
+            run_heap_value(
+                "(do (type W (Wrap UInt8)) (def (main) (match (W.Wrap 5) ((W.Wrap 0) 100) ((W.Wrap x) x))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "5",
+            "an erased UInt8 newtype falls through to the binding arm on a miss"
+        );
+        // A NONZERO narrow literal (exercises the `i32.eq` const path, not just `i32.eqz`).
+        assert_eq!(
+            run_heap_value(
+                "(do (type W (Wrap UInt8)) (def (main) (match (W.Wrap 7) ((W.Wrap 7) 100) ((W.Wrap x) x))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "100",
+            "an erased UInt8 newtype nonzero-literal arm compares at i32 width (i32.eq const)"
+        );
+        // Int32 (a signed narrow width, also i32-backed).
+        assert_eq!(
+            run_heap_value(
+                "(do (type W (Wrap Int32)) (def (main) (match (W.Wrap 0) ((W.Wrap 0) 100) ((W.Wrap x) x))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "100",
+            "an erased Int32 newtype literal arm compiles at i32 width (every narrow width, not only UInt8)"
+        );
+        // The Int64 WIDE control: the raw payload is an i64, so the compare stays i64 — unaffected.
+        assert_eq!(
+            run_heap_value(
+                "(do (type W (Wrap Int64)) (def (main) (match (W.Wrap 0) ((W.Wrap 0) 100) ((W.Wrap x) x))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "100",
+            "an erased Int64 newtype literal arm still compares at i64 width (the wide control, unchanged)"
+        );
+    }
+
+    #[test]
+    fn a_call_returned_erased_newtype_literal_match_spills_at_the_right_width() {
+        // The SPILL-path sibling of the erased-newtype literal-payload test above. When the match scrutinee
+        // is a CALL RESULT (`(f (mk d))`) rather than an inline `(W.Wrap n)` construction, it is NOT a
+        // reusable handle, so the sum-match emit SPILLS it into a fresh scratch slot before probing. That
+        // spill slot was hardcoded i32 (assuming a boxed-sum handle); an erased single-variant newtype over
+        // a scalar (`(type W (Wrap Int64))`) is a bare i64, so storing it into the i32 slot re-typed one
+        // wasm local to two widths → `type mismatch: expected i32, found i64`, an invalid component (the
+        // inline cases pass a directly-constructed scrutinee that need not spill, so they missed this). Fix:
+        // the spill slot takes the scrutinee's machine width (`valtype_of`). `mk d` = `Wrap (d+1)`.
+        let src = "(module m \
+               (type W (Wrap Int64)) \
+               (def (mk (: n Int64)) (W.Wrap (+ n 1))) \
+               (def (f (: w W)) (match w ((W.Wrap 5) 100) ((W.Wrap n) n))) \
+               (def (main (: d Int64)) (f (mk d))) (export main))";
+        // `component` asserts a VALID, linkable module (it `.expect`s compile + the backend validates) — the
+        // core of the bug was an invalid component.
+        let _ = component(src);
+        // And it runs correctly at both a literal-hit and a fall-through arg.
+        if let Some(out) = run_heap_value(src, vec!["4".to_string()]) {
+            assert_eq!(out, "100", "mk 4 → Wrap 5 → literal arm → 100");
+        }
+        if let Some(out) = run_heap_value(src, vec!["6".to_string()]) {
+            assert_eq!(out, "7", "mk 6 → Wrap 7 → binder arm → 7");
+        }
+    }
+
+    #[test]
     fn a_tail_loop_threading_a_projected_boxed_sum_accumulator_decodes_correctly() {
         // A tuple-projected boxed sum threaded through a self-tail loop must SURVIVE the loop step. `one`
         // returns `(tuple (W.Atom <byte>) (+ pos 1))`; `loop` threads `(. r 0)` (the nested-compound boxed
@@ -33713,6 +33805,37 @@ mod match_engine {
                 "Ast.Float — {what}"
             );
         }
+    }
+
+    #[test]
+    fn a_non_canonical_float_cannot_be_reified_into_an_ast_float_uniform_decline() {
+        // 12-metaprogramming / adv-ast-float-nan differential: a NaN Float64 has no canonical value form,
+        // so `(Ast.Float Float64.nan)` used to DIVERGE across backends (wasm TRAPped at the host encode
+        // boundary, rust returned the value) — a differential miscompile on an accepted program. Operator
+        // ruling (A): the CONSTANT non-canonical reify DECLINES at construction (lower_sum_new guard),
+        // uniformly on both backends, matching the sibling `,@`-of-NaN-list and `Ast.Float`-of-+inf
+        // declines. A DECLINE is a Todo (no coded error), not a CDZ reject — so `reject_code` is None but
+        // the program does not compile. (The runtime-produced-NaN half is caught at the escape boundary.)
+        assert!(
+            compile_component(&crate::codec::encode(&crate::testkit::parse(
+                "(module m (def (main) (Ast.Float Float64.nan)) (export main))"
+            )))
+            .is_err(),
+            "(Ast.Float Float64.nan) declines — a NaN has no canonical value form to reify"
+        );
+        // A FINITE float is UNAFFECTED — the guard is surgical (only non-canonical payloads decline).
+        assert!(
+            run_returns::<bool>(
+                &compile_component(&crate::codec::encode(&crate::testkit::parse(
+                    "(module m (def (main) \
+                       (match (Ast.Float 2.5) ((Ast.Float f) (= f 2.5)) (_ false))) \
+                     (export main))"
+                )))
+                .expect("a finite Ast.Float still compiles"),
+                "main"
+            ),
+            "a finite Ast.Float (2.5) reifies normally — the non-canonical guard does not touch it"
+        );
     }
 
     #[test]

@@ -2314,6 +2314,20 @@
             (export main)))
   (call   main (: -50 Int8)) (output (: 1 Int64)))
 
+(case "the shift-by-zero identities preserve a runtime narrow UInt8 (x << 0 = x, x >> 0 = x)"
+  (doc    "The shift-count-zero no-ops hold at narrow width too: `(<< x 0)` and `(>> x 0)` both RETURN a
+           runtime `UInt8` `x` unchanged (a zero shift count keeps the operand; `arith_identity` elides the
+           shift). Checked at `x = 200` (high bit set): `(= (<< x 0) x)` AND `(= (>> x 0) x)` both hold → 1.
+           The UInt8 companion of the Int64 shift-by-zero case above — an identity fold must return the
+           operand at the SAME width, not a width-re-derived value (a narrow right-shift-by-0 that masked or
+           re-fit could corrupt the high bit). Both backends.")
+  (input  (do
+            (def (l0 (: x UInt8)) (<< x 0))
+            (def (r0 (: x UInt8)) (>> x 0))
+            (def (main (: x UInt8)) (if (and (= (l0 x) x) (= (r0 x) x)) 1 0))
+            (export main)))
+  (call   main (: 200 UInt8)) (output (: 1 Int64)))
+
 ; The runtime narrow-wrap cases above wrap modulo the TYPE's width. Their CONSTANT-fold twins must give the
 ; IDENTICAL result — a wrapping op has a defined modular outcome regardless of whether its operands are
 ; constant. A narrow-width const-fold that reused the trapping/checked width-fit gate would REJECT CDZ0302

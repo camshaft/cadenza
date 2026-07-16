@@ -218,7 +218,8 @@ enum Cmd {
     Symbols(SymbolsArgs),
     /// SEMANTIC SYNTAX HIGHLIGHTING for FILE: every token CLASSIFIED by the role it plays (type vs
     /// constructor vs local vs call vs unbound), as `file:line:col: kind` — the LSP `semanticTokens`
-    /// analogue, coloured by MEANING (the compiler's columns) rather than by spelling.
+    /// analogue, coloured by MEANING (the compiler's columns) rather than by spelling (`--json` emits one
+    /// structured object per token for an editor).
     Highlight(HighlightArgs),
     /// The documentation of a definition NAME in FILE — its `(doc "…")` text, or a built-in's
     /// documentation (a prelude module's `(meta doc)` channel, or a grammar keyword's help) when the
@@ -2943,6 +2944,12 @@ struct InstantiationsArgs {
 struct HighlightArgs {
     /// The program file (`.cdz`/`.ml` → ml, `.sexp`/`.sexpr` → sexpr).
     file: String,
+    /// Emit each classified token as a machine-readable JSON object (one per line) instead of the human
+    /// `file:line:col: kind` text — the shape an editor consumes for semantic syntax highlighting without
+    /// re-parsing the text layout. Each object has `file`, `line`, `col`, `kind` (the `cdz symbols
+    /// --json`/`cdz check --json` machine-readable convention). The `semanticTokens` payload.
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(clap::Args)]
@@ -4374,7 +4381,9 @@ fn run_highlight(args: &HighlightArgs) -> ExitCode {
     // `line_col`). With the index it is linear. (The fixes-8-11 pattern — the same swap `uses`/`scope`
     // already carry.)
     let index = cadenza_syntax::query::driver::LineIndex::new(&source);
-    // Each line is `node-id<TAB>kind`. Map the node to a `file:line:col`, skipping a span-less node.
+    // Each line is `node-id<TAB>kind`. Map the node to a `file:line:col`, skipping a span-less node (so
+    // every emitted token — human OR `--json` — carries a real position; no raw-id fallback here). Both
+    // output shapes are computed from the SAME resolved `(kind, line, col)` so they can't drift.
     for line in text.lines() {
         let mut cols = line.splitn(2, '\t');
         let (node, kind) = match (cols.next(), cols.next()) {
@@ -4387,7 +4396,17 @@ fn run_highlight(args: &HighlightArgs) -> ExitCode {
             .and_then(|d| spans.get(cadenza_syntax::StructId(d)))
         {
             let (l, c) = index.line_col(&source, span.start);
-            println!("{}:{l}:{c}: {kind}", args.file);
+            if args.json {
+                use cadenza_syntax::query::json;
+                let mut obj = json::Object::new();
+                obj.string("file", &args.file);
+                obj.raw("line", &l.to_string());
+                obj.raw("col", &c.to_string());
+                obj.string("kind", kind);
+                println!("{}", obj.finish());
+            } else {
+                println!("{}:{l}:{c}: {kind}", args.file);
+            }
         }
     }
     ExitCode::SUCCESS

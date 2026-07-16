@@ -17,11 +17,12 @@
 //! driver is read-only (prints outcomes, leaves the inbox untouched — useful for a dry run).
 //!
 //! `--reply-to <dir>` closes the hive loop: after a message is driven, the model's completion is written
-//! back as a reply message JSON (`{from,to,kind:"answer",subject,body}`, the fleet's own format) into
-//! `<dir>` — addressed `to` the source message's `from`. So a peer sends a task and gets the agent's
-//! answer back. A reply is written only for a message that actually reached the model (a Cedar-DENIED
-//! run made no model call, so there is nothing to answer) whose sender is known; a bare tick without
-//! `--reply-to` still just prints outcomes.
+//! back as a reply message JSON (`{from,to,kind:"answer",subject,body,in_reply_to}`, the fleet's own
+//! format) into `<dir>` — addressed `to` the source message's `from`, with `in_reply_to` naming the
+//! source filename (the correlation `fleet audit` uses, so the driver's replies are auditable). So a peer
+//! sends a task and gets the agent's answer back. A reply is written only for a message that actually
+//! reached the model (a Cedar-DENIED run made no model call, so there is nothing to answer) whose sender
+//! is known; a bare tick without `--reply-to` still just prints outcomes.
 
 use anyhow::{anyhow, Result};
 use std::path::{Path, PathBuf};
@@ -183,21 +184,26 @@ fn run() -> Result<()> {
     Ok(())
 }
 
-/// Write a reply message back to the sender: a fleet-format JSON (`{from,to,kind:"answer",subject,body}`)
-/// naming this driver as `from`, the source message's sender as `to`, and the model's completion as the
-/// `body`. The filename is derived deterministically from the source message name (`reply-<source>`) so
-/// runs are reproducible and a re-drive overwrites its own prior reply rather than piling up duplicates
-/// (the toolchain forbids wall-clock, and reusing the hub's durable delivery-seq would couple this leaf
+/// Write a reply message back to the sender: a fleet-format JSON
+/// (`{from,to,kind:"answer",subject,body,in_reply_to}`) naming this driver as `from`, the source
+/// message's sender as `to`, and the model's completion as the `body`. `in_reply_to` names the SOURCE
+/// message's filename — the same correlation `fleet ack`/`fleet audit` use to prove a request got
+/// exactly one reply, so the driver's replies are first-class auditable (not "unverifiable"). The
+/// reply's own filename is derived deterministically from the source name (`reply-<source>`) so runs are
+/// reproducible and a re-drive overwrites its own prior reply rather than piling up duplicates (the
+/// toolchain forbids wall-clock, and reusing the hub's durable delivery-seq would couple this leaf
 /// binary to the hub's counter file). Returns the written path.
 fn write_reply(dir: &Path, source_name: &str, to: &str, answer: &str) -> Result<PathBuf> {
     let subject = format!("re: {source_name}");
     // Assemble the JSON by hand (no serde dep in this leaf binary), escaping every string field so a
     // completion containing quotes/newlines/control chars can't break the message or inject fields.
+    // `in_reply_to` carries the source filename verbatim (also escaped, though fleet names are tame).
     let json = format!(
-        r#"{{"from":"cdz-agent","to":"{}","kind":"answer","subject":"{}","body":"{}"}}"#,
+        r#"{{"from":"cdz-agent","to":"{}","kind":"answer","subject":"{}","body":"{}","in_reply_to":"{}"}}"#,
         cdz_agent::json_escape(to),
         cdz_agent::json_escape(&subject),
-        cdz_agent::json_escape(answer)
+        cdz_agent::json_escape(answer),
+        cdz_agent::json_escape(source_name)
     );
     let path = dir.join(format!("reply-{source_name}"));
     std::fs::write(&path, json).map_err(|e| anyhow!("write reply {}: {e}", path.display()))?;

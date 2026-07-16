@@ -885,6 +885,39 @@
   (input  (Ast.Float "x"))
   (error  CDZ0201))
 
+; --- A non-canonical float cannot be reified into an Ast.Float (uniform decline) ------------------
+; A NaN Float64 has no canonical value form — its bit pattern is rejected at the host canonical-value
+; encode boundary. Reifying one into an `Ast.Float` node used to DIVERGE across backends (wasm TRAPped at
+; the encode boundary, rust accepted the value), a differential miscompile on an accepted program.
+; Operator ruling (A): `(Ast.Float <non-canonical>)` DECLINES uniformly at compile time, matching the
+; sibling non-canonical-float-in-AST paths that already decline (`,@` of a NaN list; `(Ast.Float +inf)`,
+; whose non-finite arithmetic operand declines upstream). A FINITE float still reifies. These pin the
+; CONSTANT half of that fix (a runtime-produced NaN payload is caught at the escape boundary separately).
+
+(case "reifying a constant NaN into an Ast.Float declines (no canonical value form)"
+  (doc    "`(Ast.Float Float64.nan)` — wrapping a NaN, which has no canonical value form — DECLINES at
+           compile time rather than trapping on one backend and returning a value on the other. The
+           construction guard rejects a non-canonical constant float payload, so the node is never built.
+           Pins the uniform-decline fix (adv-ast-float-nan differential); a bare NaN value still crosses.")
+  (input  (do (def (main) (Ast.Float Float64.nan)) (export main)))
+  (declines))
+
+(case "reifying a positive-infinity float into an Ast.Float declines"
+  (doc    "The +inf companion: `(Ast.Float (/ 1.0 0.0))` declines — the non-finite division has no value
+           form (declines upstream), so the reify never gets a canonical payload. Pins that ALL
+           non-canonical floats (NaN and infinities) are uniformly kept out of an `Ast.Float` node.")
+  (input  (do (def (main) (Ast.Float (/ 1.0 0.0))) (export main)))
+  (declines))
+
+(case "reifying a finite float into an Ast.Float is unaffected by the non-canonical guard"
+  (doc    "The control: a FINITE float reifies normally — `(Ast.Float 2.5)` builds the node and its payload
+           reads back as 2.5. Pins that the non-canonical-float guard is surgical (only NaN/inf decline), a
+           finite Ast.Float is untouched.")
+  (input  (match (Ast.Float 2.5)
+            ((Ast.Float f) (= f 2.5))
+            (_             false)))
+  (output (: true Bool)))
+
 (case "eval of a quoted float executes it to the float value"
   (doc    "eval executes an AST value as code; a float form evaluates to itself, so `(eval (quote 1.5))`
            runs to `1.5` — the float companion of `(eval (quote true))`.")
