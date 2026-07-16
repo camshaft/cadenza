@@ -720,6 +720,65 @@ fn rustc_roundtrip_string_at_is_scalar_indexed_and_from_bytes_validates() {
 }
 
 #[test]
+fn a_context_typed_empty_map_or_set_emits_a_bare_new_not_a_decline() {
+    // REGRESSION: an `Map.empty`/`Set.of(list)` whose element type is pinned only by DOWNSTREAM use (a
+    // typed callee param) has unsolved vars AT THE NODE, so `type_of`→None — the empty-collection handler
+    // used to DECLINE. It must instead emit a BARE `BTreeMap::new()`/`BTreeSet::new()` and let Rust infer
+    // the element type from the use. A recursive map-accumulator seeded with `Map.empty` compiles+runs.
+    let m = compile_rust(
+        "(module m \
+           (def (ins (: n Int64) (: mp (Map Int64 Int64))) \
+              (if (< n 1) mp (ins (- n 1) (Map.insert mp n (* n 10))))) \
+           (def (mk (: n Int64)) \
+              (match (List.at (Map.to-list (ins n (Map.empty))) 0) \
+                 ((Some p) (match p ((tuple k v) (+ k v)))) ((None _) -1))) (export mk))",
+    );
+    assert!(
+        m.contains("std::collections::BTreeMap::new()"),
+        "empty map is a bare BTreeMap::new():\n{m}"
+    );
+    if let Some(out) = rustc_run(&m, "mk(5)") {
+        assert_eq!(out, "11", "min key 1 + val 10 from the accumulated map");
+    }
+    // A set accumulator seeded with `Set.of (list)` (empty) likewise infers its element type.
+    let s = compile_rust(
+        "(module m \
+           (def (ins (: n Int64) (: st (Set Int64))) (if (< n 1) st (ins (- n 1) (Set.insert st n)))) \
+           (def (mk (: n Int64)) (Set.len (ins n (Set.of (list))))) (export mk))",
+    );
+    if let Some(out) = rustc_run(&s, "mk(3)") {
+        assert_eq!(
+            out, "3",
+            "3 distinct elements accumulated into a context-typed empty set"
+        );
+    }
+}
+
+#[test]
+fn bytes_slice_is_total_on_a_usize_overflowing_range() {
+    // REGRESSION (Copilot PR#435): the `Bytes.slice` bounds guard summed `(start as usize)+(len as usize)`,
+    // which OVERFLOWS usize for two near-i64::MAX operands (wraps to a small sum in release) → the guard
+    // passed and the index PANICKED. `Bytes.slice` must be TOTAL → the guard now uses `checked_add`, so an
+    // overflowing range returns None. Assert the emitted source uses the checked form.
+    let sl = compile_rust(
+        "(module m (def (f (: n Int64)) (if (= n 0) (Bytes.of (list 1 2 3)) (f (+ n -1)))) \
+           (def (g (: st Int64) (: ln Int64)) (match (Bytes.slice (f 1) st ln) ((Some b) (Bytes.len b)) ((None _) -1))) \
+           (export g))",
+    );
+    assert!(
+        sl.contains("checked_add(") && !sl.contains("as usize) + (__len as usize)"),
+        "Bytes.slice bound uses checked_add, not a wrapping sum:\n{sl}"
+    );
+    // In-range slice works; a huge (overflowing) start/len returns None, not a panic.
+    if let Some(out) = rustc_run(&sl, "g(1, 2)") {
+        assert_eq!(out, "2", "in-range slice [1..3) has length 2");
+    }
+    if let Some(out) = rustc_run(&sl, "g(9223372036854775807, 9223372036854775807)") {
+        assert_eq!(out, "-1", "a usize-overflowing range is None, not a panic");
+    }
+}
+
+#[test]
 fn an_ill_formed_integer_width_is_rejected_not_declined() {
     // An out-of-range integer WIDTH (negative/non-natural, or over-ceiling `(UInt 65)`) is an ILL-FORMED
     // TYPE, not a target limitation — a boundary of that type must REJECT (CDZ0302), the SAME outcome the
