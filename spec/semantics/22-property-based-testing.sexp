@@ -64,6 +64,20 @@
               (export main)))
   (call   main (: 7 Int64)) (output (: false Bool)))
 
+(case "a COMPOUND generated value is reproducible from its seed (a tuple draws identically twice)"
+  (doc    "Witnesses §Generation Is Seeded And Reproducible for a generator that produces a COMPOUND value,
+           not just a scalar: `gen` draws a `(Tuple Int64 Bool)` from the seed (a masked int + a threshold
+           bool), and `(= (gen seed) (gen seed))` = true — the whole compound value re-generates identically.
+           This exercises RUNTIME structural equality on a heap value (a tuple), realized for
+           tuple/record/set/map (list equality is a separate later increment). Runs at the boundary so the
+           generation + the compound compare are real instructions, not a compile-time fold.")
+  (input  (do (def (next (: s Int64)) (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
+              (def (gen (: s Int64)) (tuple (& (next s) 255) (< (& (next (next s)) 255) 128)))
+              (def (main (: seed Int64)) (= (gen seed) (gen seed)))
+              (export main)))
+  (call   main (: 12345 Int64)) (output (: true Bool))
+  (call   main (: -7 Int64)) (output (: true Bool)))
+
 ; --- §Refinements Constrain Generation --------------------------------------------------------------
 ; "A generator for a value of a refined type MUST produce only values satisfying that type's
 ; refinement." A bounded generator masks the raw stream into a range: `roll s = next s & (2^k − 1)`

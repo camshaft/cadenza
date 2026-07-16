@@ -207,6 +207,7 @@ pass	a CBOR reader walks a variable-length array using its decoded length as the
 pass	a CBOR simple value that is not a known boolean is classified as not-a-boolean
 pass	a CBOR skip steps over a tagged item to the value it wraps
 pass	a CBOR skip walks past a whole nested item to the next offset
+pass	a COMPOUND generated value is reproducible from its seed (a tuple draws identically twice)
 pass	a CONSTANT recursive sum compares equal to a differently-built RUNTIME one
 pass	a Char-payload sum value escapes across the boundary in its canonical form
 pass	a DOUBLY-nested Tuple ARG (three levels deep) crosses the direct-call boundary
