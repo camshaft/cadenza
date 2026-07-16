@@ -2008,7 +2008,9 @@ pass	a type-name-colliding variant construct coexists with the width type it col
 pass	a type-value in integer-width position is rejected
 pass	a type-valued parameter threaded through a second call reaches Type.eq with its type intact
 pass	a u16 segment encodes an integer big-endian by default
+pass	a u16 segment round-trips at its maximum value
 pass	a u32 segment encodes four big-endian bytes
+pass	a u32 segment round-trips at its maximum value
 pass	a u64 pattern segment reads eight big-endian bytes back into an integer
 pass	a u64 segment encodes eight big-endian bytes
 pass	a unary constructor applied to a runtime value is returned as a program result
@@ -2251,6 +2253,7 @@ pass	an export with two tuple parameters returns a list from both
 pass	an exported closure with a narrow-arg wide-result mismatched body is rejected, not miscompiled
 pass	an exported closure with an annotation-mismatched body is rejected, not emitted invalid
 pass	an expression tree built at run time is evaluated by matching its node variants
+pass	an i16 segment round-trips at its two's-complement minimum
 pass	an identity closure composes at a single Int element type (not only String)
 pass	an identity closure composes over a COMPOUND (tuple) element at one element type
 pass	an identity closure composes through TWO chained recursive-generic maps at one element type

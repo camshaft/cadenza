@@ -217,6 +217,36 @@
   (input  (= (bin (i8 -128)) (Bytes.of (list 128))))
   (output (: true Bool)))
 
+; The round-trip cases above use mid-range values (258) and the i8 extremes (-1, -128). These pin the
+; MULTI-BYTE-WIDTH extremes — where an off-by-one in the shift/mask byte-assembly or a sign-extension slip
+; would surface: u16 at its max (65535 = every bit set across two bytes), u32 at its max (four bytes all
+; 0xFF), and i16 at its two's-complement minimum (-32768 = 0x8000). Each constructs then matches back to the
+; same value, both backends.
+
+(case "a u16 segment round-trips at its maximum value"
+  (doc    "`(bin (u16 65535))` — the u16 maximum, every bit set across two big-endian bytes (0xFF 0xFF) —
+           matched by `(bin (u16 n))` reads back 65535. Pins the round-trip at the u16 ceiling: a byte-
+           assembly that dropped or mis-shifted the high byte would read a smaller value. The extreme
+           companion of the mid-range `(u16 258)` round-trip.")
+  (input  (match (bin (u16 65535)) ((bin (u16 n)) n) (_ -1)))
+  (output (: 65535 Int64)))
+
+(case "a u32 segment round-trips at its maximum value"
+  (doc    "`(bin (u32 4294967295))` — the u32 maximum, four big-endian bytes all 0xFF — matched by `(bin
+           (u32 n))` reads back 4294967295. Pins the four-byte big-endian assembly is exact at the ceiling
+           (a value past u16 range, so all four bytes carry significant bits); an off-by-one in the 8/16/24-
+           bit shifts would corrupt it.")
+  (input  (match (bin (u32 4294967295)) ((bin (u32 n)) n) (_ -1)))
+  (output (: 4294967295 Int64)))
+
+(case "an i16 segment round-trips at its two's-complement minimum"
+  (doc    "`(bin (i16 -32768))` — the Int16 minimum, 0x8000 (only the sign bit set across two bytes) —
+           matched by `(bin (i16 n))` reads back -32768, NOT +32768 or a mis-sign-extended value. Pins the
+           signed multi-byte round-trip at the sign-bit extreme, the i16 companion of the `(i8 -128)` ⇆
+           0x80 round-trip.")
+  (input  (match (bin (i16 -32768)) ((bin (i16 n)) n) (_ 0)))
+  (output (: -32768 Int64)))
+
 (case "a bits pattern segment reads sub-byte fields back into integers"
   (doc    "The packed byte `0b1010_0101` matched against `(bin (bits a 1) (bits b 2) (bits c 5))` reads the
            three most-significant-field-first sub-byte fields back: a = 1, b = 0b01 = 1, c = 0b00101 = 5,
