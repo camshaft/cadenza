@@ -6144,6 +6144,25 @@ fn total_conversion_wrap(expected: &Ty, actual: &Ty) -> Option<(String, String, 
                 ),
             ))
         }
+        // A Char where a BIGINT is expected — `(+ #\a (BigInt.of 5))`. `Char.to-int` yields Int64 and
+        // `BigInt.of : ∀a. (Int a) → BigInt` lifts it; a bare `Char.to-int` re-fails (Int64 vs BigInt, no
+        // implicit promotion), so the working repair is the TWO-STEP `(BigInt.of (Char.to-int …))` — the
+        // BigInt twin of the Char→Float wrap.
+        (Ty::BigInt, Ty::Char) => Some((
+            "(BigInt.of (Char.to-int ".to_string(),
+            "))".to_string(),
+            "convert the char to its Int64 scalar value then to a BigInt with `BigInt.of`"
+                .to_string(),
+        )),
+        // A Char where a RATIONAL is expected — `(+ #\a (Rational.of-int 5))`. `Rational.of-int : ∀a. (Int
+        // a) → Rational` lifts the `Char.to-int` scalar; a bare `Char.to-int` re-fails (Int64 vs Rational),
+        // so the working repair is the TWO-STEP `(Rational.of-int (Char.to-int …))` — the Rational twin.
+        (Ty::Rational, Ty::Char) => Some((
+            "(Rational.of-int (Char.to-int ".to_string(),
+            "))".to_string(),
+            "convert the char to its Int64 scalar value then to a Rational with `Rational.of-int`"
+                .to_string(),
+        )),
         // A Symbol where a String is expected — `Symbol.to-string : Symbol → String` is TOTAL (recovers
         // the symbol's underlying content), so wrap it. The text-model twin of the String→Bytes case.
         (Ty::String, Ty::Symbol) => Some((
@@ -8235,7 +8254,16 @@ fn check_application(
                 } else {
                     (args[0], &a0)
                 };
-                if let Some(fix) = numeric_text_coercion_fix(db, &Ty::BigInt, other, fix_arg) {
+                // A CHAR other needs the two-step `(BigInt.of (Char.to-int …))` (via `total_conversion_wrap`)
+                // — `numeric_text_coercion_fix` only retypes/wraps a fixed-INT other, so a char got no fix.
+                // The char-with-BigInt twin of the char-with-Float arith repair.
+                let fix = if matches!(other, Ty::Char) {
+                    total_conversion_wrap(&Ty::BigInt, other)
+                        .map(|(p, s, v)| Fix::wrap_heuristic(fix_arg, p, s, v))
+                } else {
+                    numeric_text_coercion_fix(db, &Ty::BigInt, other, fix_arg)
+                };
+                if let Some(fix) = fix {
                     reject = reject.with_fix(fix);
                 }
                 out.push(reject);
@@ -8280,7 +8308,15 @@ fn check_application(
                 } else {
                     (args[0], &a0)
                 };
-                if let Some(fix) = numeric_text_coercion_fix(db, &Ty::Rational, other, fix_arg) {
+                // A CHAR other needs the two-step `(Rational.of-int (Char.to-int …))` (via
+                // `total_conversion_wrap`) — the char-with-Rational twin of the BigInt/Float char repairs.
+                let fix = if matches!(other, Ty::Char) {
+                    total_conversion_wrap(&Ty::Rational, other)
+                        .map(|(p, s, v)| Fix::wrap_heuristic(fix_arg, p, s, v))
+                } else {
+                    numeric_text_coercion_fix(db, &Ty::Rational, other, fix_arg)
+                };
+                if let Some(fix) = fix {
                     reject = reject.with_fix(fix);
                 }
                 out.push(reject);

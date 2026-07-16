@@ -1514,6 +1514,23 @@
   (input  (do (def (main) (+ #\a 1.0)) (export main)))
   (error  CDZ0301))
 
+(case "arithmetic between a char and a BigInt is rejected with a working two-step conversion fix"
+  (doc    "The BigInt sibling of the char-with-float arithmetic case: `(+ #\\a (BigInt.of 5))` mixes a `Char`
+           with a `BigInt` — CDZ0301 (a Char is not a number). `Char.to-int` yields Int64, and Int64 + BigInt
+           re-fails (no implicit promotion), so the working repair is the two-step `(BigInt.of (Char.to-int
+           #\\a))`. Pins fix parity across the numeric tower: Char + {Int, Float, BigInt, Rational} each offer
+           a repair that type-checks in one shot (Int keeps the plain `Char.to-int`; the wider types wrap it
+           in the target's `of`/`of-int`).")
+  (input  (do (def (main) (+ #\a (BigInt.of 5))) (export main)))
+  (error  CDZ0301))
+
+(case "arithmetic between a char and a Rational is rejected with a working two-step conversion fix"
+  (doc    "The Rational sibling: `(+ #\\a (Rational.of-int 5))` mixes a `Char` with a `Rational` — CDZ0301.
+           The working repair is `(Rational.of-int (Char.to-int #\\a))` (Int64 scalar then lifted to the whole
+           rational), completing char-with-numeric fix parity alongside the Int/Float/BigInt cases.")
+  (input  (do (def (main) (+ #\a (Rational.of-int 5))) (export main)))
+  (error  CDZ0301))
+
 ; --- Char-LITERAL patterns: a `match` dispatches by scalar value ----------------------------------
 ; A char is a scalar whose identity IS its Unicode scalar value (collections-and-text.md #A Char Is A
 ; Single Unicode Scalar Value), so a char-literal pattern `(#\a …)` matches by that value — the Char
