@@ -385,6 +385,7 @@ pass	a bare prelude-colliding variant name matches as the local variant
 pass	a bare type-name-colliding variant name constructs as the local variant
 pass	a bare user constructor is passed as a first-class function to a higher-order function
 pass	a bare variant reusing a prelude DATA-constructor name constructs and matches as the local variant
+pass	a base member not re-exported by the middle module is unreachable from the entry
 pass	a beyond-i64 constant BigInt is an operand of a runtime bigint op
 pass	a bin arm whose fixed-width segment overruns the input falls through
 pass	a bin pattern binds an integer read from a fixed-width segment
@@ -1072,6 +1073,7 @@ pass	a match whose only variant arm is guarded is non-exhaustive
 pass	a match-arm binder shadowing a parameter binds the scrutinee, not the argument
 pass	a match-of-closures on a runtime-selected variant is applied per arm
 pass	a member access with no field operand is rejected, not a crash
+pass	a middle module re-exports a base function and also uses it in its own exported function
 pass	a misspelled segment kind is rejected with a rename suggestion
 pass	a misspelled utf8 segment kind is rejected
 pass	a mixed-ownership inlined-match operand leaves the source map intact across repeated compares
@@ -1923,6 +1925,7 @@ pass	a transformation observably rewrites the tree, not just its value
 pass	a transformation over the built-in Ast composes across a function call
 pass	a transitive import (app <- lib <- kernel) can use a theorem through re-exported kernel functions
 pass	a transitive import cannot forge a theorem — the kernel's private constructor is unreachable from the app
+pass	a transitive re-export reaches the base module's function through the middle module
 pass	a trapping condition of a same-constructor if traps before either arm
 pass	a trapping condition preempts the hoisted operator's trap
 pass	a trapping earlier let-init is NOT dropped by a constant-failure `?` short-circuit
