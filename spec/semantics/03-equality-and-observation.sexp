@@ -35,6 +35,32 @@
   (call   main (: 2 Int64) (: 1 Int64))
   (output (: true Bool)))
 
+; The boolean-coercion equality above also composes over a runtime FLOAT `=` — now that runtime scalar
+; float equality is realized (the canonical-byte cases below), `(= (= x y) true/false)` nests a runtime
+; float compare inside the bool-literal equality. The inner float `=` is the NaN-canonicalizing bit
+; compare; the outer `= true`/`= false` coerces/negates its Bool result. These pin the composition (the
+; earlier cases used an integer `<` as the inner Bool; these use a float `=`), on both backends.
+
+(case "a runtime float equality feeds the true-literal boolean coercion"
+  (doc    "`(= (= x y) true)` over Float64 params: the inner `(= x y)` is the runtime canonical-byte float
+           compare, the outer `= true` yields that Bool. (1.5,1.5) → equal → true; (1.5,2.5) → false.
+           Pins the bool-literal-equality fold composing over a runtime FLOAT equality operand.")
+  (input  (do (def (main (: x Float64) (: y Float64)) (= (= x y) true)) (export main)))
+  (call   main (: 1.5 Float64) (: 1.5 Float64))
+  (output (: true Bool))
+  (call   main (: 1.5 Float64) (: 2.5 Float64))
+  (output (: false Bool)))
+
+(case "a runtime float equality negated by the false-literal coercion"
+  (doc    "The dual: `(= (= x y) false)` negates the inner float equality — (1.5,1.5) → equal, `= false` →
+           false; (1.5,2.5) → not equal, `= false` → true. Pins `(= bexpr false)` = ¬bexpr composing over
+           a runtime float `=`, both backends.")
+  (input  (do (def (main (: x Float64) (: y Float64)) (= (= x y) false)) (export main)))
+  (call   main (: 1.5 Float64) (: 1.5 Float64))
+  (output (: false Bool))
+  (call   main (: 1.5 Float64) (: 2.5 Float64))
+  (output (: true Bool)))
+
 (case "negative zero is not equal to positive zero"
   (doc    "Witnesses core-semantics.md #Floating-Point Equality Follows The Canonical Byte Form:
            -0.0 and 0.0 have distinct canonical byte forms, so they are not equal.")

@@ -1478,6 +1478,8 @@ pass	a runtime final rest segment binds the empty tail when the scrutinee is onl
 pass	a runtime fixed-width segment is emitted big-endian and read back by index
 pass	a runtime float addition emits the machine add
 pass	a runtime float division rounds under the fixed mode
+pass	a runtime float equality feeds the true-literal boolean coercion
+pass	a runtime float equality negated by the false-literal coercion
 pass	a runtime float multiplication emits the machine mul
 pass	a runtime float promotes to a wider width with the machine promote
 pass	a runtime float subtraction emits the machine sub
