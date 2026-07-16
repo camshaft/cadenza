@@ -3,16 +3,17 @@
 /// of an effect — a gensym threading unique ids (node labels, SSA names, type-variable ids) through a
 /// pass WITHOUT plumbing a counter parameter by hand. A `handle Fresh(0)` supplies 0, 1, 2, …
 ///
-/// It threads the effect in the SINGLE-RECURSIVE-SPINE shape that the tail-resumptive fold handles
-/// correctly: a straight `Fresh.next() + <self-call>` loop over a FLAT node count, NOT a two-sibling
-/// tree walk (a self-recursive effectful fn with TWO sibling recursive calls in a match arm miscompiles —
-/// the handler state is not threaded between the siblings; see
-/// `mlrepro-miscompile-effect-state-not-threaded-across-sibling-recursive-calls` (queue)). So this pass first
-/// counts the nodes PURELY (`count-nodes`), then draws that many ids in one linear effectful loop
-/// (`draw-sum`) — the standard "flatten, then gensym" structure that keeps the effect on one spine.
+/// It threads the effect in the NATURAL tree-walk shape: `relabel(Bin(_, l, r)) = Fresh.next() +
+/// relabel(l) + relabel(r)` — a `perform` followed by TWO sibling self-calls in one match arm. This walk
+/// once MISCOMPILED (the handler state was not threaded between the siblings, so the second sibling drew
+/// stale ids), and the pass was written in the workaround "flatten to a count, then draw on one spine"
+/// shape. That gap is now FIXED (v-effects, batch-86: a multi-value-return calling convention threads the
+/// out-state across siblings; `mlrepro-decline-effect-state-across-sibling-recursive-calls` is resolved),
+/// so the pass is written in its ideal direct form — one `Fresh.next()` per node, walked in place.
 ///
 /// `run-labels e` sums the ids drawn (labels 0..N-1 → N*(N-1)/2, the Gauss closed form the tests check);
-/// `label-count e` uses a constant-handback handler to count the draws (must equal `count-nodes`).
+/// `label-count e` uses a constant-handback handler to count the draws (must equal `count-nodes`). A pure
+/// `count-nodes` is kept only as the reference the effectful walk is checked against.
 
 import { Tok, Expr, parse } from "parse"
 
@@ -25,28 +26,26 @@ def count-nodes(e: Expr) = match e with
   | Expr.Lit(_) => 1
   | Expr.Bin(_, l, r) => 1 + count-nodes(l) + count-nodes(r)
 
-/// Draw `n` fresh ids and SUM them — a single self-recursive effectful spine (the shape the fold reduces
-/// correctly): each step draws one id (let-bound, so no perform sits inside a constructor) and recurses.
-def draw-sum(n: Int64) =
-  if n == 0 then
-    0
-  else
-    let id = Fresh.next() in
-    id + draw-sum(n - 1)
+/// Relabel every node: draw one fresh id per node and SUM the ids, walking the tree directly. The `Bin`
+/// arm is a `perform` (the node's own id) plus TWO sibling self-calls — the natural shape now that the
+/// handler state threads across siblings.
+def relabel(e: Expr) = match e with
+  | Expr.Lit(_) => Fresh.next()
+  | Expr.Bin(_, l, r) => Fresh.next() + relabel(l) + relabel(r)
 
-/// Label every node of `e`: draw one fresh id per node and sum the ids, under a 0-based counter.
+/// Label every node of `e`: sum the fresh ids drawn over the tree, under a 0-based counter.
 def run-labels(e: Expr) =
   handle Fresh(0) with
     | next(s) => resume(s, s + 1)
   in
-  draw-sum(count-nodes(e))
+  relabel(e)
 
 /// Count the ids drawn for `e` (constant-handback handler hands back 1 per draw) — must equal `count-nodes`.
 def label-count(e: Expr) =
   handle Fresh(0) with
     | next(s) => resume(1, s)
   in
-  draw-sum(count-nodes(e))
+  relabel(e)
 
 /// The closed form: labels 0..(N-1) sum to N*(N-1)/2.
 def gauss(n: Int64) = n * (n - 1) / 2
@@ -97,5 +96,13 @@ def label-deep-tree() =
   // a left-leaning chain: ((((1+2)+3)+4)+5) → 9 nodes → gauss(9) = 36
   let e = Expr.Bin(43, Expr.Bin(43, Expr.Bin(43, bin2(1, 2), Expr.Lit(3)), Expr.Lit(4)), Expr.Lit(5)) in
   if count-nodes(e) == 9 then (if run-labels(e) == gauss(9) then unit else trap("9-node sum = 36")) else trap("9 nodes")
+
+@test
+def label-sibling-walk-threads-state() =
+  // REGRESSION: the direct two-sibling relabel (once miscompiled — stale state on the 2nd sibling) must
+  // give the SAME sum as the pure Gauss count. Bin(op, Bin(op,Lit,Lit), Lit) = 5 nodes → gauss(5) = 10.
+  // If the siblings didn't thread, the right subtree would redraw ids the left already took → wrong sum.
+  let e = Expr.Bin(43, bin2(1, 2), Expr.Lit(9)) in
+  if count-nodes(e) == 5 then (if run-labels(e) == gauss(5) then unit else trap("sibling walk sums to gauss(5)=10")) else trap("5 nodes")
 
 export { count-nodes, run-labels, label-count }
