@@ -2616,6 +2616,7 @@ pass	the identity function applied to an integer returns the integer
 pass	the int-to-float generator is order-preserving (a < b implies of a <= of b — NON-decreasing)
 pass	the intersection contains the elements in both sets
 pass	the intersection of disjoint sets is empty
+pass	the keeping + bitwise self-identities hold on a runtime SIGNED narrow Int8 at a negative value
 pass	the largest factorial that fits the integer type computes exactly
 pass	the le modifier encodes a u16 little-endian
 pass	the left payload of the taken arm traps before the right payload

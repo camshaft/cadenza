@@ -2298,6 +2298,22 @@
             (export main)))
   (call   main (: 200 UInt8)) (output (: 1 Int64)))
 
+(case "the keeping + bitwise self-identities hold on a runtime SIGNED narrow Int8 at a negative value"
+  (doc    "The identities hold on a SIGNED narrow type too, and at a NEGATIVE runtime value where a fold's
+           sign-handling could corrupt the result: for a runtime `Int8` `x`, `(Int8.wrapping-add x 0)` = `x`
+           (additive keep), `(& x x)` = `x` (bitwise self-AND), and `(^ x x)` = 0 (XOR cancel). Checked at
+           `x = -50` (sign bit set): all three hold → 1. The signed-Int8 companion of the UInt8 keeping +
+           bitwise identities above — an identity fold must return the operand exactly (a re-derivation that
+           mishandled the sign or the narrow width would corrupt a negative value), and the XOR result is
+           compared to an `(Int8.wrap 0)` at width (not widened). Both backends.")
+  (input  (do
+            (def (a0 (: x Int8)) (Int8.wrapping-add x 0))
+            (def (aa (: x Int8)) (& x x))
+            (def (xx (: x Int8)) (^ x x))
+            (def (main (: x Int8)) (if (and (and (= (a0 x) x) (= (aa x) x)) (= (xx x) (Int8.wrap 0))) 1 0))
+            (export main)))
+  (call   main (: -50 Int8)) (output (: 1 Int64)))
+
 ; The runtime narrow-wrap cases above wrap modulo the TYPE's width. Their CONSTANT-fold twins must give the
 ; IDENTICAL result — a wrapping op has a defined modular outcome regardless of whether its operands are
 ; constant. A narrow-width const-fold that reused the trapping/checked width-fit gate would REJECT CDZ0302

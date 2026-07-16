@@ -3214,6 +3214,7 @@ pass	the implication-extended kernel Thm stays unforgeable — Thm.Seq of a bogu
 pass	the int-to-float generator is order-preserving (a < b implies of a <= of b — NON-decreasing)
 pass	the intersection contains the elements in both sets
 pass	the intersection of disjoint sets is empty
+pass	the keeping + bitwise self-identities hold on a runtime SIGNED narrow Int8 at a negative value
 pass	the kernel defines T (truth) as a constant and DERIVES |- T through the rules
 pass	the kernel proves reflexivity end-to-end: refl t yields a theorem whose conclusion is (t = t)
 pass	the kernel proves the identity theorem ⊢ (λx.x) y = y via BETA — the first-theorem milestone
