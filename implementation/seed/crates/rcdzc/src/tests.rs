@@ -18864,6 +18864,78 @@ mod match_engine {
     }
 
     #[test]
+    fn a_bitwise_operator_on_a_non_integer_operand_names_the_integer_requirement() {
+        use crate::testkit::parse;
+        // The bitwise/shift operators `& | ^ << >>` carry the `∀a. (Int a) → (Int a) → (Int a)` scheme, so
+        // a non-Int operand made the generic scheme-unify ground the var to `Int64` and report the opaque
+        // "type mismatch: Int64 and Bool must be the same type here" (an internal-clash read). They are NOT
+        // in the arith/comparison cross-kind list (those share numeric-coercion hints a bitwise op lacks),
+        // so this had no specific message. Now named: a bitwise/shift op is integer-only. A BOOL operand
+        // also gets the likely-intent hint (`and`/`or` are the boolean connectives — the C/Python habit).
+        for (src, ty, want_hint) in [
+            (
+                "(module m (def (f (: a Bool) (: b Bool)) (& a b)) (def (main) 0) (export main))",
+                "Bool",
+                true,
+            ),
+            (
+                "(module m (def (f (: a Bool) (: b Bool)) (^ a b)) (def (main) 0) (export main))",
+                "Bool",
+                true,
+            ),
+            (
+                "(module m (def (f (: c Char)) (<< c 1)) (def (main) 0) (export main))",
+                "Char",
+                false,
+            ),
+            (
+                "(module m (def (f (: a String)) (| a a)) (def (main) 0) (export main))",
+                "String",
+                false,
+            ),
+        ] {
+            let d = crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| {
+                    d.message
+                        .contains("a bitwise/shift operator needs integer operands")
+                })
+                .unwrap_or_else(|| {
+                    panic!("a bitwise op on a non-int operand must be named: {src}")
+                });
+            assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
+            assert!(
+                d.message
+                    .contains(&format!("a value of type {ty} was given"))
+                    && !d.message.contains("must be the same type here"),
+                "names the bad operand type, not a phantom clash: {}",
+                d.message
+            );
+            assert_eq!(
+                d.message.contains("use `and`/`or`"),
+                want_hint,
+                "the `and`/`or` hint appears for a Bool operand only: {}",
+                d.message
+            );
+        }
+        // NO false positive: valid integer bitwise/shift, and the boolean connective `and` on Bools.
+        for ok in [
+            "(module m (def (f (: a Int64) (: b Int64)) (& a b)) (def (main) (f 5 3)) (export main))",
+            "(module m (def (f (: x Int64)) (<< x 2)) (def (main) (f 1)) (export main))",
+            "(module m (def (f (: a Bool) (: b Bool)) (and a b)) (def (main) 0) (export main))",
+        ] {
+            assert!(
+                !crate::diagnostics(&mut crate::db::Db::load(parse(ok)))
+                    .iter()
+                    .any(|d| d
+                        .message
+                        .contains("a bitwise/shift operator needs integer operands")),
+                "a valid integer bitwise op / boolean `and` is not flagged: {ok}"
+            );
+        }
+    }
+
+    #[test]
     fn a_bare_literal_past_int64_is_malformed_not_out_of_range() {
         // 01-literals "an out-of-range integer literal is a malformed literal": a BARE unannotated literal
         // that overflows the default signed `Int64` — `9223372036854775808` (Int64.max+1),

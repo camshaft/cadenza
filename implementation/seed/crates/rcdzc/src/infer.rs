@@ -7493,6 +7493,72 @@ fn check_application(
     // would report `unify::mismatch` = CDZ0203; catch the text/scalar clash FIRST for the right code. Only
     // fires when EXACTLY one side is text and the other is a definite scalar — String-vs-String (a valid
     // comparison), text-vs-compound, and two scalars all fall through to the generic path unchanged.
+    // A BITWISE / SHIFT operator (`& | ^ << >>`) on a NON-INTEGER operand — `(& true false)`, `(<< c 1)`,
+    // `(| "a" "b")`. These carry the `∀a. (Int a) → (Int a) → (Int a)` scheme, so a non-Int operand makes
+    // the generic scheme-unify ground the type var to `Int64` and report the opaque "type mismatch: Int64
+    // and Bool must be the same type here" — an internal-clash read that hides the real fault (a bitwise op
+    // needs integers). This block is NOT in the comparison/arith list below (those share numeric coercion
+    // hints a bitwise op has no analogue for), so it would otherwise leak the phantom clash. Name it: a
+    // bitwise/shift op is integer-only. For a BOOL operand, add the likely-intent hint — `and`/`or` are the
+    // boolean connectives (a `&`/`|` on Bools is the C/Python habit). Fires only on a DEFINITE non-Int
+    // operand (a `Var`/`Any`/`Int` never a false reject); a shift's COUNT is also `(Int a)` so a non-Int
+    // count is caught too. CDZ0203 (an operand-type fault), like the arith cross-kind messages.
+    if args.len() == 2 {
+        let bitwise = matches!(
+            crate::eval::meta_apply_of(db, head),
+            Some(
+                crate::resolved::Prim::BitAnd
+                    | crate::resolved::Prim::BitOr
+                    | crate::resolved::Prim::BitXor
+                    | crate::resolved::Prim::Shl
+                    | crate::resolved::Prim::Shr
+            )
+        );
+        if bitwise {
+            // Skip any NUMERIC or open operand: a bitwise op is Int-only, but a FLOAT/Rational/BigInt
+            // operand is a NUMERIC mismatch the generic scheme-unify already reports as the specific
+            // CDZ0301 "no implicit conversion between numeric types" (pinned: `(& 2 2.0)` cites the
+            // Float64↔Int mismatch, NOT this message). Fire ONLY on a DEFINITE NON-NUMERIC operand
+            // (Bool/Char/String/compound); a `Var`/`Any` is unsolved (never a false reject).
+            let is_numeric_or_open = |t: &Ty| {
+                matches!(
+                    t,
+                    Ty::Int(_) | Ty::Float(_) | Ty::Rational | Ty::BigInt | Ty::Any | Ty::Var(_)
+                )
+            };
+            let (a, b) = (type_of(db, args[0]), type_of(db, args[1]));
+            let bad = if !is_numeric_or_open(&a) {
+                Some((args[0], a))
+            } else if !is_numeric_or_open(&b) {
+                Some((args[1], b))
+            } else {
+                None
+            };
+            if let Some((bad_arg, bad_ty)) = bad {
+                let hint = if bad_ty == Ty::Bool {
+                    " — for boolean logic use `and`/`or`, not the bitwise operators"
+                } else {
+                    ""
+                };
+                trace!(target: "rcdzc::infer", head = head.0, ty = %bad_ty.render_name(), "fault: bitwise/shift op on a non-integer operand (CDZ0203)");
+                out.push(
+                    Reject::coded(
+                        Code::TypeMismatch,
+                        format!(
+                            "a bitwise/shift operator needs integer operands, but a value of type {} \
+                             was given{hint}",
+                            bad_ty.render_name()
+                        ),
+                    )
+                    .at(bad_arg),
+                );
+                for &arg in args {
+                    collect(db, arg, out);
+                }
+                return;
+            }
+        }
+    }
     if args.len() == 2
         && matches!(
             crate::eval::meta_apply_of(db, head),
