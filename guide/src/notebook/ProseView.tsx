@@ -63,6 +63,33 @@ function renderBlock(block: Block, key: number): ReactNode {
           {renderInline(block.spans)}
         </blockquote>
       );
+    case "table":
+      return (
+        <div key={key} className="my-4 overflow-x-auto">
+          <table className="w-full border-collapse text-sm">
+            <thead>
+              <tr>
+                {block.header.map((cell, c) => (
+                  <th key={c} className="border-b border-slate-700 px-3 py-1.5 text-left font-semibold text-slate-200">
+                    {renderInline(cell)}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {block.rows.map((row, r) => (
+                <tr key={r} className="odd:bg-slate-900/30">
+                  {row.map((cell, c) => (
+                    <td key={c} className="border-b border-slate-800 px-3 py-1 text-slate-300">
+                      {renderInline(cell)}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      );
   }
 }
 

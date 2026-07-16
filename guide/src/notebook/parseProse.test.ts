@@ -100,3 +100,38 @@ test("CRLF prose is normalized (no stray \\r leaking into spans)", () => {
   assert.deepEqual(b[0], { t: "heading", level: 1, spans: [{ t: "text", text: "H" }] });
   assert.deepEqual(b[1], { t: "paragraph", spans: [{ t: "text", text: "para" }] });
 });
+
+test("a GFM pipe table parses into a table block (header + rows, inline spans per cell)", () => {
+  const b = parseProse("| Name | Age |\n|------|-----|\n| Ada | 36 |\n| Bob | 40 |");
+  assert.equal(b.length, 1);
+  assert.equal(b[0].t, "table");
+  if (b[0].t === "table") {
+    assert.deepEqual(b[0].header, [[{ t: "text", text: "Name" }], [{ t: "text", text: "Age" }]]);
+    assert.equal(b[0].rows.length, 2);
+    assert.deepEqual(b[0].rows[0], [[{ t: "text", text: "Ada" }], [{ t: "text", text: "36" }]]);
+  }
+});
+
+test("table cells carry inline spans (bold/code)", () => {
+  const b = parseProse("| a | b |\n|---|---|\n| **x** | `y` |");
+  if (b[0].t === "table") {
+    assert.deepEqual(b[0].rows[0][0], [{ t: "strong", text: "x" }]);
+    assert.deepEqual(b[0].rows[0][1], [{ t: "code", text: "y" }]);
+  }
+});
+
+test("a delimiter row with alignment colons is accepted", () => {
+  const b = parseProse("| a | b |\n|:--|--:|\n| 1 | 2 |");
+  assert.equal(b[0].t, "table");
+});
+
+test("a pipe line with NO delimiter row stays a paragraph (not a table)", () => {
+  const b = parseProse("a | b | c\njust prose with pipes");
+  assert.equal(b[0].t, "paragraph");
+});
+
+test("a table with no body rows is still a table (header only)", () => {
+  const b = parseProse("| h1 | h2 |\n|----|----|");
+  assert.equal(b[0].t, "table");
+  if (b[0].t === "table") assert.equal(b[0].rows.length, 0);
+});

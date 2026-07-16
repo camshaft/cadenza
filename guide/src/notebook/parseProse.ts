@@ -29,7 +29,9 @@ export type Block =
   | { t: "heading"; level: 1 | 2 | 3 | 4 | 5 | 6; spans: Inline[] }
   | { t: "paragraph"; spans: Inline[] }
   | { t: "list"; ordered: boolean; items: Inline[][] }
-  | { t: "blockquote"; spans: Inline[] };
+  | { t: "blockquote"; spans: Inline[] }
+  /// A GFM pipe table: a header row + body rows, each cell a list of inline spans.
+  | { t: "table"; header: Inline[][]; rows: Inline[][][] };
 
 /// Parse inline markdown within a single logical line/paragraph text into spans. A left-to-right scan;
 /// the first matching delimiter wins, so `**a**` is strong and `*a*` is em. Unclosed delimiters render
@@ -100,6 +102,17 @@ const HEADING_RE = /^(#{1,6})\s+(.*)$/;
 const UL_RE = /^[-*]\s+(.*)$/;
 const OL_RE = /^\d+\.\s+(.*)$/;
 const QUOTE_RE = /^>\s?(.*)$/;
+/// A GFM table delimiter row: only `|`, `-`, `:`, and spaces, with at least one `-` (e.g. `|---|:--:|`).
+const TABLE_DELIM_RE = /^\|?[\s|:-]*-[\s|:-]*\|?$/;
+
+/// Split a GFM pipe-table row into trimmed cell strings, dropping the optional leading/trailing `|`.
+/// (A literal `\|` escape isn't supported — a documented limitation; the common case is plain cells.)
+function tableCells(row: string): string[] {
+  let s = row.trim();
+  if (s.startsWith("|")) s = s.slice(1);
+  if (s.endsWith("|")) s = s.slice(0, -1);
+  return s.split("|").map((c) => c.trim());
+}
 
 /// Parse a prose cell's markdown into a list of blocks. Blank lines separate blocks; consecutive list
 /// items coalesce into one list; consecutive non-special lines coalesce into a paragraph.
@@ -129,6 +142,22 @@ export function parseProse(markdown: string): Block[] {
       flushPara();
       blocks.push({ t: "heading", level: h[1].length as 1 | 2 | 3 | 4 | 5 | 6, spans: parseInline(h[2].trim()) });
       i++;
+      continue;
+    }
+    // A GFM pipe table: a header row (contains `|`) immediately followed by a delimiter row (`|---|`),
+    // then zero+ body rows (each a `|`-row). The delimiter line is what disambiguates a table from a
+    // paragraph that happens to contain a pipe.
+    const nextTrimmed = i + 1 < lines.length ? lines[i + 1].trim() : "";
+    if (trimmed.includes("|") && TABLE_DELIM_RE.test(nextTrimmed) && nextTrimmed.includes("-")) {
+      flushPara();
+      const header = tableCells(trimmed).map(parseInline);
+      i += 2; // consume header + delimiter
+      const rows: Inline[][][] = [];
+      while (i < lines.length && lines[i].trim().includes("|") && lines[i].trim() !== "") {
+        rows.push(tableCells(lines[i].trim()).map(parseInline));
+        i++;
+      }
+      blocks.push({ t: "table", header, rows });
       continue;
     }
     // A run of list items (all same ordered-ness) → one list block.
