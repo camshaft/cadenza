@@ -371,6 +371,32 @@
   (input  (= "x" (Symbol.of "x")))
   (error  CDZ0202))
 
+; The nominal boundary holds in a `match` PATTERN too, not just `=`. A String and a Symbol literal
+; pattern share the `Core::ConstStr` rep, but the two types are distinct across the nominal boundary, so
+; a text-literal pattern must match a scrutinee of its OWN kind: a `"add"` (String) pattern over a Symbol
+; scrutinee — or a `#"add"` (Symbol) pattern over a String scrutinee — is a pattern/scrutinee type
+; mismatch (CDZ0201, the general shape/type-mismatch code the char/bool-over-int pattern cases carry),
+; the pattern-path sibling of the `=` CDZ0202 above. Pins that the pattern path is NOT more permissive
+; than `=` on this boundary — the type comes from the PATTERN's kind, not the scrutinee. (The check is
+; structural: it holds even for a CONSTANT scrutinee, before any fold.)
+
+(case "a string-literal pattern over a symbol scrutinee is a type error"
+  (doc    "`(match (Symbol.of \"x\") (\"add\" 1) (_ 0))` matches a Symbol scrutinee against a STRING literal
+           pattern `\"add\"` — across the nominal boundary — so the compiler rejects it (CDZ0201, the
+           pattern/scrutinee type-mismatch code). The `match` sibling of `(= (Symbol.of \"x\") \"add\")` →
+           CDZ0202: a symbol-literal `#\"add\"` matches a Symbol, a string-literal `\"add\"` matches a
+           String, and the two do not cross. Pins the pattern path respects the Symbol↔String boundary.")
+  (input  (match (Symbol.of "x") ("add" 1) (_ 0)))
+  (error  CDZ0201))
+
+(case "a symbol-literal pattern over a string scrutinee is a type error"
+  (doc    "The order-flipped companion: `(match \"x\" (#\"add\" 1) (_ 0))` matches a String scrutinee against
+           a SYMBOL literal pattern `#\"add\"` — the same nominal-boundary violation with the tag on the
+           pattern side — CDZ0201. Pins that the boundary is checked whichever kind the pattern carries, the
+           pattern-path mirror of the two `=` CDZ0202 cases above.")
+  (input  (match "x" (#"add" 1) (_ 0)))
+  (error  CDZ0201))
+
 ; ============================================================================================
 ; The reader literal — #"<text>" reads to (Symbol.of "<text>")
 ; ============================================================================================

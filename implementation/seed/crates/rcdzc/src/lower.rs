@@ -3598,11 +3598,16 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
             crate::core::Probe::Bool(_) => Some(crate::ty::Ty::Bool),
             // A `Str` probe comes from a String-literal `"…"` pattern OR a SYMBOL-literal `#"…"` pattern —
             // both lower to a `Core::ConstStr` (a symbol's identity is its text, shared rep), so ONE probe
-            // serves both. It agrees with a `String` OR a `Symbol` scrutinee; expect the scrutinee's OWN
-            // kind when it is either, so a `#"add"` pattern over a `Symbol` scrutinee (and a `"add"` over a
-            // `String`) both type-check, while a `Str` probe over a non-text scrutinee (an Int) still faults.
-            crate::core::Probe::Str(_) => match scrut_ty {
-                crate::ty::Ty::Symbol => Some(crate::ty::Ty::Symbol),
+            // serves both. But `String` and `Symbol` are a distinct NOMINAL boundary that `=` (CDZ0202) and
+            // fn-args reject, so the expected type must come from the PATTERN's own kind, NOT the scrutinee:
+            // resolve `probe_pats[i]` — a `SymbolConst` pattern expects `Symbol`, a `Str` pattern expects
+            // `String`. Then `agrees_with` accepts the same-kind cases (`#"add"` over `Symbol`, `"add"` over
+            // `String`) and FAULTS the cross-boundary mix (a `"add"` pattern over a `Symbol` scrutinee, or a
+            // `#"add"` over a `String`) exactly as `=` does. Keying on the scrutinee instead made the check
+            // trivially true for any text scrutinee — the pattern path was more permissive than `=` (the
+            // Inc-45 regression, reviewer-found; `pattern_constraints` already tags origin this way).
+            crate::core::Probe::Str(_) => match crate::resolve::resolved_of(db, probe_pats[i]) {
+                crate::resolved::Resolved::SymbolConst(_) => Some(crate::ty::Ty::Symbol),
                 _ => Some(crate::ty::Ty::String),
             },
             // A `Char` probe comes from a char-literal `#\a` pattern; it agrees only with a `Char`
