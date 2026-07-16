@@ -112,3 +112,13 @@ share ONE type and compose by construction. (b) is the whole point of the shared
 confirms (a) wouldn't actually connect the passes (distinct types with the same name don't unify). So the
 migration MUST route through a shared core-ex, not per-module ctor exports. No language gap — the diagnostics
 are correct + helpful; it's purely a design/wiring consequence.
+
+## STEP 1 LANDED (tick 150) — core-ex.cdz is on the branch (concierge-authorized additive island)
+
+`core-ex.cdz` committed (5cbb86c04, MR to pr-sync). Concierge authorized landing it WITHOUT the full A/B/C
+ruling because it's additive + unwired (island): the canonical `Ex` (Int64 var ids; one `Bin(op, l, r)`
+op-coded +43/-45/*42//47; `Let`/`Lam`/`App`) + helpers (op-of/size/depth/max-id/is-atom/op-count/builders),
+`export { Ex.* }`, 10 @tests. GUARDRAIL held: no existing pass imports it (verified grep-clean) — wiring is
+the (B) reshape, still gated on the operator. So the migration state is now: step 1 DONE; steps 2-5 (migrate
+each pass onto core-ex, intern names, build the driver) start immediately IF operator picks (B), else core-ex
+is a 1-commit delete. B is a fast-start from here.
