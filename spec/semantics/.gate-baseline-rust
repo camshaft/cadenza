@@ -926,7 +926,7 @@ pass	a narrow addition reconciles a constant LEFT operand to the variable's widt
 pass	a narrow comparison reconciles a constant LEFT operand to the variable's width
 pass	a narrow match binder used in arithmetic with the scrutinee
 pass	a narrow multiplication reconciles a constant LEFT operand to the variable's width
-pass	a narrow newtype boxed as a map value stores at the widened cell
+pass	a narrow newtype boxed as a map value round-trips through lookup at the widened cell
 pass	a narrow newtype boxed in a list round-trips two payloads through binder reads
 pass	a narrow value in the else branch opposite a bare literal computes at the narrow width
 pass	a narrow-UInt8-guarded div is not select-ified — the guard shields the trap
@@ -1027,6 +1027,7 @@ pass	a non-exhaustive guarded match is rejected even when a constant scrutinee f
 pass	a non-final unquote-splice in a quote pattern is ill-formed
 pass	a non-final unsized bytes segment is ill-formed
 pass	a non-first field is projected from a record returned across a call boundary
+pass	a non-integer exponent in a Unit.^ power is rejected
 pass	a non-linear tuple binding pattern is rejected
 pass	a non-matching literal inside a constructor pattern binds the runtime payload
 pass	a non-power-of-two float width is rejected
@@ -1035,6 +1036,9 @@ pass	a non-tail accumulable recursion runs to a large runtime N in constant stac
 pass	a non-tail call passing a heap-match argument compiles to valid wasm
 pass	a non-tail recursion with a fallible read in its base arm composes
 pass	a non-tail-resumptive outer handler reduces a reducible inner handle before its own fold
+pass	a non-unit base in a Unit.^ power is rejected
+pass	a non-unit factor in a Unit.* composition is rejected
+pass	a non-unit factor in a Unit./ composition is rejected
 pass	a not of a runtime conjunction computes the negated conjunction
 pass	a nullary Sign variant applied to a non-unit payload is a type error
 pass	a nullary constructor is a plain first-class value stored in a tuple
@@ -1153,6 +1157,9 @@ pass	a quote pattern binds an unquoted operand of a compound form
 pass	a quote pattern is equivalent to the Ast.* constructor pattern
 pass	a quote pattern matches a fixed arity
 pass	a quote pattern used to recognize a compiler form reads as that form
+pass	a quote pattern's Int literal does not match a Float literal of the same value
+pass	a quote pattern's literal operand is position-sensitive
+pass	a quote pattern's literal operand matches only the exact literal
 pass	a quote-built and constructor-built AST of the same tree encode to identical bytes
 pass	a quote-built and constructor-built FLOAT AST encode to identical bytes
 pass	a quote-pattern match with no catch-all is non-exhaustive

@@ -15,9 +15,9 @@
 // `Cedar.authorize` performs route to the host delegated cedar closure with no code change.
 //
 // Single-shot tail-resumptive, fuel-bounded, dispatch count in run's own `count` PARAMETER (handler state
-// inert Int64, resumed fresh `0`). Each test fixes a LITERAL action + a specific agent/delegation policy
-// pair, rather than one parameterized run-with — the v-effects merged-nested-context capture limit (ACKED
-// + owned) drops an outer-param capture when two effects are both reached by the recursive driver.
+// inert Int64, resumed fresh `0`). One `run-with(fuel, action)` drives any action (it flows as a `run`
+// parameter to the intersection gate), so the four intersection cases are four calls with different action
+// arguments rather than four near-identical mock functions.
 // The authorization effect: given a tool's ACTION NAME, return 1 (allow) or 0 (deny) — here the DELEGATED
 // decision (agent ∩ delegation). Performed before every dispatch; the embedder binds it to the delegated
 // cedar-policy closure over the same name.
@@ -57,9 +57,12 @@ def run(fuel: Int64, action: String, count: Int64) =
     else
       Tools.done(count)
 
-// Run `fuel` turns on `action` under the delegated (intersection) authorizer. Handler state is inert
-// (the count lives in `run`'s `count`), so each resumes with a fresh `0`.
-def run-search(fuel: Int64) =
+// Run `fuel` turns on `action` under the delegated (intersection) authorizer. A permitted action (BOTH
+// agent AND delegation) dispatches every turn (count = fuel); an action denied by either bound ends the
+// loop with count 0, the tool never run. Handler state is inert (the count lives in `run`'s `count`),
+// fresh `0`. So `run-with(fuel, "tool:search")` = fuel (both permit), and any single-side or neither
+// action → 0.
+def run-with(fuel: Int64, action: String) =
   handle Cedar(0) with
     | authorize(a, s) => resume(authorized(a), 0)
   in
@@ -67,40 +70,7 @@ def run-search(fuel: Int64) =
     | dispatch(a, s) => resume(1, 0)
     | done(a, s) => resume(a, 0)
   in
-  run(fuel, "tool:search", 0)
-
-// "tool:delete": the AGENT permits it but the DELEGATION does not → intersection denies (narrower bound).
-def run-delete(fuel: Int64) =
-  handle Cedar(0) with
-    | authorize(a, s) => resume(authorized(a), 0)
-  in
-  handle Tools(0) with
-    | dispatch(a, s) => resume(1, 0)
-    | done(a, s) => resume(a, 0)
-  in
-  run(fuel, "tool:delete", 0)
-
-// "tool:read": the DELEGATION permits it but the AGENT does not → intersection denies (agent lacks it).
-def run-read(fuel: Int64) =
-  handle Cedar(0) with
-    | authorize(a, s) => resume(authorized(a), 0)
-  in
-  handle Tools(0) with
-    | dispatch(a, s) => resume(1, 0)
-    | done(a, s) => resume(a, 0)
-  in
-  run(fuel, "tool:read", 0)
-
-// "tool:write": NEITHER the agent nor the delegation permits it → denied.
-def run-write(fuel: Int64) =
-  handle Cedar(0) with
-    | authorize(a, s) => resume(authorized(a), 0)
-  in
-  handle Tools(0) with
-    | dispatch(a, s) => resume(1, 0)
-    | done(a, s) => resume(a, 0)
-  in
-  run(fuel, "tool:write", 0)
+  run(fuel, action, 0)
 
 @test
 def intersection-both-permit-allows() =
@@ -126,19 +96,25 @@ def intersection-neither-denies() =
 
 @test
 def on-behalf-of-allowed-action-dispatches-every-turn() =
-  if run-search(3) == 3 then unit else trap("both-permit action dispatches every turn")
+  if run-with(3, "tool:search") == 3 then unit else trap("both-permit action dispatches every turn")
 
 @test
 def on-behalf-of-agent-only-never-dispatches() =
-  if run-delete(5) == 0 then unit else trap("agent-only action never dispatches on-behalf-of")
+  if run-with(5, "tool:delete") == 0 then
+    unit
+  else
+    trap("agent-only action never dispatches on-behalf-of")
 
 @test
 def on-behalf-of-delegation-only-never-dispatches() =
-  if run-read(5) == 0 then
+  if run-with(5, "tool:read") == 0 then
     unit
   else
     trap("delegation-only action never dispatches (agent lacks it)")
 
 @test
 def on-behalf-of-neither-never-dispatches() =
-  if run-write(4) == 0 then unit else trap("an action neither permits never dispatches")
+  if run-with(4, "tool:write") == 0 then
+    unit
+  else
+    trap("an action neither permits never dispatches")

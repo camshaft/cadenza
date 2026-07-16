@@ -17,3 +17,11 @@ but the message claims it's "reported at the bind name". The actionable locus fo
 `(bind …)` line. Diagnostic-precision bug (anchor the reject at the bind directive, or fix the message).
 Diagnostics territory (v-diagnostics); it's in the peer-linking/effects diagnostic path. Fix on `trunk`.
 Quote + link in queue file.
+
+## ✅ RESOLVED (2026-07-16, v-peer-linking) — anchor moved to the bind name; landed `8cfca82db`
+Verified against trunk `6c1e89f65`. The CLOSURE_ACROSS_PEER reject is now `.at(name_occ)` — the
+`(bind E …)` directive's effect NAME, the actionable locus — NOT the inner `(-> …)` arrow fragment
+`pos` that merely DETECTED the closure (compile.rs:2513-2521, with a comment citing Copilot PR #418).
+Pinned: `tests.rs:69064-69075` asserts the anchored node resolves to the bind name `"F"`, not an arrow
+list (the compiler is span-free, so the test checks the anchored NODE). Landed in batch 47+48
+(#422, `8cfca82db`, "host-closure declines land"). CLOSED.

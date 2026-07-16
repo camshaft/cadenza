@@ -10,3 +10,5 @@
 ;; OWNER: v-patterns (root-causing as its next unit). Ships fix + the strengthened corpus case together
 ;; (the strengthened case won't compile until fixed). Verify by content on land: read-back valid + payload round-trips.
 (do (type W (Wrap UInt8)) (def (main (: n UInt8)) (match (Map.lookup (Map.insert Map.empty 1 (W.Wrap n)) 1) ((Some (W.Wrap x)) x) (_ 0))) (export main))
+
+; ✅ RESOLVED 2026-07-16 — VERIFIED ALL NARROW WIDTHS BY CONTENT on trunk 8a290d224: UInt8/Int8/Int16/Int32 map-value read-back+use all VALID wasm (was INVALID func-N i32/i64). Fixed by v-memory-safety int_ty_of strip_nominal change (8e1c18a67) — verified by revert-attribution (revert int_ty_of → INVALID). NOTE two-vertical convergence: this is the int_ty_of SIBLING of v-patterns Inc-53 is_narrow_int strip_nominal fix — both strip_nominal-class gaps in adjacent type-derivation helpers (is_narrow_int = box-widen construction; int_ty_of = the read-back/type-of side). Code CLOSED. Strengthened corpus read-back pin: v-memory-safety + v-patterns coordinating who lands it in 05-compound-types (not double-adding) — coverage-only, tracked by them. CLOSED.

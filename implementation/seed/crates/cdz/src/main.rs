@@ -2217,9 +2217,6 @@ fn run_watch(args: &WatchArgs) -> ExitCode {
         dir.display()
     );
 
-    // 1. Initial run.
-    let _ = rerun();
-
     // Whether a batch of filesystem events touched a SOURCE file / the manifest — the only changes that
     // warrant a re-run. Artifact writes (a `build`/`run`'s own `.wasm`/`link-map.txt`) and editor temp
     // churn are ignored, so they never self-trigger.
@@ -2231,45 +2228,41 @@ fn run_watch(args: &WatchArgs) -> ExitCode {
         })
     };
 
-    // 1. Initial run.
+    // 1. Initial run (once — the initial feedback, like `cargo watch`).
     let _ = rerun();
 
     // 2/3. Event loop: block for a change, debounce-coalesce, re-run, then check whether MORE source
     // edits arrived DURING the run — if so, run again (a mid-run save must not be lost).
     let mut pending = false; // a source edit seen while a run was in flight, not yet acted on
     loop {
-        // If a source edit landed during the last run, act on it now WITHOUT blocking (don't wait for the
-        // next event — that edit is real and unreflected). Otherwise block until some event arrives.
-        let batch = if pending {
+        if pending {
+            // A source edit landed DURING the last run — it is real + unreflected, so re-run NOW without
+            // blocking or re-checking (we already confirmed it touched source when we set `pending`).
+            // Still coalesce whatever else is immediately queued so a mid-run burst folds into this run.
             pending = false;
-            // Still coalesce a burst that's mid-flight: collect whatever is immediately queued.
-            let mut b = Vec::new();
-            while let Ok(ev) = rx.try_recv() {
-                b.push(ev);
-            }
-            b
+            while rx.try_recv().is_ok() {}
         } else {
+            // Block until some event arrives (or the channel closes → exit), then coalesce the debounce
+            // window and re-run only if the batch touched a SOURCE file / the manifest.
             let first = match rx.recv() {
                 Ok(ev) => ev,
                 Err(_) => return ExitCode::SUCCESS, // watcher dropped
             };
-            // Collect this event plus everything that lands within the debounce window.
-            let mut b = vec![first];
+            let mut batch = vec![first];
             while let Ok(ev) = rx.recv_timeout(debounce) {
-                b.push(ev);
+                batch.push(ev);
             }
-            b
-        };
-        // Re-run only if at least one event touched a SOURCE file / the manifest.
-        if !batch_touches_source(&batch) {
-            continue;
+            if !batch_touches_source(&batch) {
+                continue; // artifact/temp churn only — nothing to re-run
+            }
         }
         eprintln!("{PROG}: ⟳ change detected — re-running `cdz {label}`");
         let _ = rerun();
-        // Drain events that arrived DURING the re-run. An artifact-only batch (the run's own outputs) is
-        // discarded — those are already reflected. But a SOURCE edit made mid-run is NOT reflected in the
-        // run we just finished, so flag it (`pending`) to re-run once more rather than silently dropping
-        // that save until some future event happens to arrive.
+        // Inspect events that arrived DURING the re-run. Artifact-only churn (the run's own outputs) is
+        // discarded — already reflected. But a SOURCE edit made mid-run is NOT reflected in the run we
+        // just finished, so flag it (`pending`) to re-run once more rather than silently dropping that
+        // save. (`pending` re-runs UNCONDITIONALLY next iteration — the source check happens HERE, so an
+        // artifact-only follow-on batch can't cancel a real mid-run edit.)
         let mut during = Vec::new();
         while let Ok(ev) = rx.try_recv() {
             during.push(ev);

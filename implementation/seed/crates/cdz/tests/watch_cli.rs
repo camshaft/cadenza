@@ -125,6 +125,49 @@ fn watch_reruns_check_when_a_source_file_changes() {
 }
 
 #[test]
+fn watch_runs_the_command_exactly_once_on_startup() {
+    // REGRESSION (Copilot PR #506): the mid-run-edit rework accidentally left TWO identical initial-run
+    // `rerun()` blocks, so `cdz watch` ran the command TWICE on startup. Pin a SINGLE initial run: a
+    // scaffold with an unused private def emits exactly one CDZ0306 "unused" line per check run — so
+    // before any edit, that diagnostic must appear EXACTLY ONCE.
+    let (root, proj) = scaffold("once");
+    // Add an unused private def so `check` emits a stable, countable diagnostic each run.
+    std::fs::write(
+        proj.join("main.cdz"),
+        "def helper() -> Int64 = 0\ndef main() -> Int64 = 0\n\nexport { main }\n",
+    )
+    .expect("seed source with an unused def");
+    let (mut child, cap) = spawn_watch(&proj, &[], "once");
+    assert!(
+        wait_for(&cap, "watching", Duration::from_secs(20)),
+        "startup banner: {}",
+        read_cap(&cap)
+    );
+    // Wait for the initial run's diagnostic, then a little longer to catch a spurious second run.
+    assert!(
+        wait_for(&cap, "CDZ0306", Duration::from_secs(20)),
+        "the initial check runs (emits the unused-def diagnostic): {}",
+        read_cap(&cap)
+    );
+    std::thread::sleep(Duration::from_secs(2));
+    let initial_runs = count(&cap, "CDZ0306");
+    let reruns_before_edit = count(&cap, "change detected");
+
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::remove_file(&cap);
+    assert_eq!(
+        initial_runs, 1,
+        "the command runs EXACTLY ONCE on startup (not twice): {initial_runs} runs"
+    );
+    assert_eq!(
+        reruns_before_edit, 0,
+        "no re-run fires before any edit: {reruns_before_edit}"
+    );
+}
+
+#[test]
 fn watch_reports_diagnostics_from_the_rerun() {
     let (root, proj) = scaffold("diag");
     let (mut child, cap) = spawn_watch(&proj, &[], "diag");

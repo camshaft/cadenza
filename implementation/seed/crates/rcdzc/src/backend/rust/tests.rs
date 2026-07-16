@@ -203,21 +203,26 @@ fn rustc_roundtrip_signed_div_min_by_neg1_traps_overflow_not_div_by_zero() {
     }
     // MIN / -1 must TRAP, and the panic message must name OVERFLOW (not divide-by-zero) — the two kinds the
     // gate's `trap_kind` classifies by message. `rustc_run` asserts SUCCESS so it can't check a trap; use
-    // the trap-asserting `rustc_run_traps` (returns the panic message, or `None` if the prog ran/there is no
-    // rustc). (This is the coverage the test's NAME promised — previously it only ran the two NON-trapping
-    // inputs above, Copilot PR#492.)
-    if let Some(msg) = rustc_run_traps(&rs, "d(i64::MIN, -1)") {
-        assert!(
+    // the trap-asserting `rustc_run_traps`. Match on `TrapRun`: a `Trapped` asserts the KIND; a `RanOk`
+    // FAILS (a lost trap must not pass silently — the regression-blindness Copilot PR#496 flagged); only
+    // `NoRustc` skips. (This is the coverage the test's NAME promised — previously it ran only NON-trapping
+    // inputs, Copilot PR#492.)
+    match rustc_run_traps(&rs, "d(i64::MIN, -1)") {
+        TrapRun::Trapped(msg) => assert!(
             msg.contains("overflow") && !msg.contains("by zero"),
             "MIN / -1 must trap as OVERFLOW (not divide-by-zero); panic was:\n{msg}"
-        );
+        ),
+        TrapRun::RanOk(out) => panic!("MIN / -1 must TRAP (overflow), but ran → {out}"),
+        TrapRun::NoRustc => {}
     }
     // A zero divisor traps as DIVIDE-BY-ZERO — the sibling kind, distinct message.
-    if let Some(msg) = rustc_run_traps(&rs, "d(7, 0)") {
-        assert!(
+    match rustc_run_traps(&rs, "d(7, 0)") {
+        TrapRun::Trapped(msg) => assert!(
             msg.contains("by zero"),
             "x / 0 must trap as divide-by-zero; panic was:\n{msg}"
-        );
+        ),
+        TrapRun::RanOk(out) => panic!("x / 0 must TRAP (divide-by-zero), but ran → {out}"),
+        TrapRun::NoRustc => {}
     }
 }
 
@@ -1539,16 +1544,31 @@ fn rustc_run(module: &str, call: &str) -> Option<String> {
     Some(out)
 }
 
-/// Compile `module` + `println!(call)`, run it, and return the panic MESSAGE (`Some(stderr)`) when the
-/// program TRAPS (a non-zero exit — the Cadenza trap the emit compiles to `panic!`). `Some("")`-free: a
-/// program that RUNS successfully returns `None` (the caller asserts it SHOULD have trapped and fails on a
-/// `None`). `None` also when `rustc` is absent (skip, like `rustc_run`). This is the trap-asserting twin of
-/// `rustc_run` (which asserts SUCCESS and so cannot validate a trap) — it lets a pin verify a MIN/-1
-/// overflow / a divide-by-zero actually aborts, and inspect the panic message the gate's `trap_kind` reads.
-fn rustc_run_traps(module: &str, call: &str) -> Option<String> {
+/// The outcome of running a trap-EXPECTING program (see [`rustc_run_traps`]). A three-way result so a
+/// trap-asserting pin can distinguish "no rustc → skip" from "ran without trapping → FAIL" — the earlier
+/// `Option<String>` conflated those two into `None`, making a pin regression-BLIND: `if let Some(msg) = …`
+/// silently did nothing when the emit STOPPED trapping (a lost trap), so a real regression passed (Copilot
+/// PR#496). The caller matches on this and MUST fail on `RanOk` to be sound.
+#[derive(Debug)]
+enum TrapRun {
+    /// `rustc` is absent — the round-trip is skipped (like `rustc_run`); the caller does nothing.
+    NoRustc,
+    /// The program trapped (a `panic!` → non-zero exit). Carries the panic MESSAGE (stderr) so the caller
+    /// can assert WHICH trap KIND fired (the message the gate's `trap_kind` classifies).
+    Trapped(String),
+    /// The program RAN to completion (no trap). Carries the printed stdout. A trap-expecting pin FAILS on
+    /// this — a lost trap must not pass silently.
+    RanOk(String),
+}
+
+/// Compile `module` + `println!(call)`, run it, and report whether it TRAPPED — the trap-asserting twin of
+/// `rustc_run` (which asserts SUCCESS and so cannot validate a trap). Returns a [`TrapRun`] so the caller
+/// distinguishes a trap (with its message, for `trap_kind`) from a silent run-to-completion (a regression)
+/// from a skipped no-rustc environment — see `TrapRun` for why the old `Option<String>` was regression-blind.
+fn rustc_run_traps(module: &str, call: &str) -> TrapRun {
     use std::process::Command;
     if Command::new("rustc").arg("--version").output().is_err() {
-        return None; // no rustc — skip.
+        return TrapRun::NoRustc; // no rustc — skip.
     }
     let dir = unique_tmp_dir("rcdzc-rust-trap", test_key(module, call));
     let _ = std::fs::create_dir_all(&dir);
@@ -1582,11 +1602,9 @@ fn rustc_run_traps(module: &str, call: &str) -> Option<String> {
     );
     let run = Command::new(&bin_path).output().expect("run compiled prog");
     let result = if run.status.success() {
-        None // ran to completion — did NOT trap (the caller asserts a trap was expected)
+        TrapRun::RanOk(String::from_utf8_lossy(&run.stdout).trim().to_string())
     } else {
-        // Trapped (a `panic!` → non-zero exit). Return the panic message (stderr) so the caller can assert
-        // WHICH trap kind fired (the same message the gate's `trap_kind` classifies).
-        Some(String::from_utf8_lossy(&run.stderr).to_string())
+        TrapRun::Trapped(String::from_utf8_lossy(&run.stderr).to_string())
     };
     let _ = std::fs::remove_dir_all(&dir);
     result

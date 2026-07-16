@@ -3063,6 +3063,65 @@ mod tests {
     }
 
     #[test]
+    fn display_printer_is_total_over_sexpr_sourced_arenas_including_malformed_quantities() {
+        // `print_display` is a DISTINCT code path from `print` (the `display` flag routes through
+        // `display_quantity` / `display_unit`, the `Rational` bare-resugar, and the root `(: v t)` strip),
+        // yet only ~10 hand-picked WELL-FORMED value programs exercise it. It renders compiler-produced
+        // values in the REPL / notebook, so it must be TOTAL — never panic — on ANY arena, including a
+        // MALFORMED quantity/unit shape (a `Qty.of` / `Unit./` / `Unit.^` with the wrong arity or an
+        // empty operand slot) that a value-producing path could hand it. `print`'s own totality is swept
+        // by `ml_printer_is_total_over_sexpr_sourced_arenas`; this asserts the DISPLAY arms are equally
+        // total. No round-trip claim (display output is not required to re-read); the invariant is
+        // no-panic at every width, and — since display output should still be lexable text — that the
+        // ML reader doesn't panic on it either.
+        let alphabet: Vec<char> = "()\"#\\b. ,;|=>-+*/<:@`0123456789abcxeNR_\tλ中\n"
+            .chars()
+            .collect();
+        let mut rng = SplitMix64(0xd150_1a70_1a1c_0de1);
+        let mut clean = 0usize;
+        for len in 0..=32usize {
+            for _ in 0..160 {
+                let s: String = (0..len)
+                    .map(|_| alphabet[(rng.next() as usize) % alphabet.len()])
+                    .collect();
+                let Ok(arena) = sexpr::read(&s) else { continue };
+                clean += 1;
+                for width in [0usize, 1, 20, 80] {
+                    let printed = print_display(&arena, width); // DISPLAY mode must not panic
+                    let _ = parser::read_ml(&printed); // its output must not panic the ML reader
+                }
+            }
+        }
+        // Directly-built quantity/unit shapes that drive the display-only arms head-on — malformed arities
+        // and empty operand slots the value-rendering path could conceivably hand `print_display`.
+        for shape in [
+            "(: 1/3 Rational)",                             // the resugar arm
+            "(: 8/1 Rational)",                             // integral rational (drops /1)
+            "(Qty.of)",                                     // no value, no unit
+            "(Qty.of 1/4)",                                 // value, no unit
+            "(Qty.of 1/4 (Unit.base #\"meter\") extra)",    // arity overflow
+            "(Qty.of 1/4 (Unit./ (Unit.base #\"meter\")))", // Unit./ missing an operand
+            "(Qty.of 1/4 (Unit./))",                        // Unit./ no operands
+            "(Qty.of 1/4 (Unit.^ (Unit.base #\"meter\")))", // Unit.^ missing the exponent
+            "(Qty.of 1/4 (Unit.^))",                        // Unit.^ empty
+            "(Qty.of 1/4 (Unit.base))",                     // Unit.base no name
+            "(: (Qty.of 5.0 (Unit.base #\"meter\")) ())",   // empty type annotation
+            "(: () Rational)",                              // empty value in an annotation
+        ] {
+            if let Ok(a) = sexpr::read(shape) {
+                for width in [0usize, 1, 40, 80] {
+                    let printed = print_display(&a, width); // must not panic on a malformed quantity
+                    let _ = parser::read_ml(&printed);
+                }
+            }
+        }
+        assert!(
+            clean > 1000,
+            "swept a meaningful space of display-mode arenas, got {clean}"
+        );
+    }
+
+    #[test]
     fn unquote_over_an_empty_list_does_not_panic() {
         // Regression (found by `printer_is_total_on_arbitrary_input_…`): `unquote_atomic` indexed
         // `items[0]` on a `Struct::List` WITHOUT checking it was non-empty, so an unquote wrapping an

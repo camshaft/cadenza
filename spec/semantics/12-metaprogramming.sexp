@@ -1671,6 +1671,43 @@
             (other      0)))
   (output (: 0 Int64)))
 
+; The literal-head case above constrains the HEAD. These pin a literal OPERAND subterm (a peephole-rewrite
+; idiom, `` `(+ ,x 0) `` for `(+ x 0) ⇒ x`) matches with the same precision a value literal-pattern has: it
+; is POSITION-sensitive (the `0` must be that operand, not a commuted one), matches ONLY the exact literal
+; (not a different one), and respects the Int/Float literal DISTINCTION (an `(Ast.Int 0)` pattern does not
+; match an `(Ast.Float 0.0)` subterm) — the metaprogramming analogue of the scalar-literal pattern's
+; type/value exactness. A quote-pattern literal that commuted, matched loosely, or conflated Int/Float would
+; make a rewrite rule fire on the wrong AST (an unsound refactor).
+
+(case "a quote pattern's literal operand is position-sensitive"
+  (doc    "`` `(+ ,x 0) `` matches an addition whose SECOND operand is the literal `0`, binding the first.
+           Against `(quote (+ 0 y))` — the `0` is the FIRST operand — it does NOT match (the pattern is not
+           commuted), so `simp` leaves it unchanged. Pins that a literal operand constrains its POSITION, so
+           a `(+ x 0) ⇒ x` rewrite does not misfire on `(+ 0 y)` (a different, non-simplifiable shape here).")
+  (input  (do (def (simp node) (match node (`(+ ,x 0) x) (other other)))
+              (def (main) (= (simp (quote (+ 0 y))) (quote (+ 0 y)))) (export main)))
+  (output (: true Bool)))
+
+(case "a quote pattern's literal operand matches only the exact literal"
+  (doc    "`` `(+ ,x 0) `` matches only when the second operand is exactly `0`; against `(quote (+ y 1))` —
+           second operand `1` ≠ `0` — it does NOT match, so `simp` leaves it unchanged. Pins the literal
+           operand is an equality test on the exact value, the operand analogue of the literal-HEAD case
+           above — a `(+ x 0) ⇒ x` rule does not fire on `(+ x 1)`.")
+  (input  (do (def (simp node) (match node (`(+ ,x 0) x) (other other)))
+              (def (main) (= (simp (quote (+ y 1))) (quote (+ y 1)))) (export main)))
+  (output (: true Bool)))
+
+(case "a quote pattern's Int literal does not match a Float literal of the same value"
+  (doc    "The Int/Float literal distinction in a quote pattern: `` `(+ ,x 0) `` has an `(Ast.Int 0)` literal
+           subterm, which does NOT match an `(Ast.Float 0.0)` subterm even though 0 and 0.0 are numerically
+           equal — they are distinct AST leaves. Against `(quote (+ y 0.0))` the pattern does not match, so
+           `simp` leaves it unchanged. Pins that a quote-pattern literal respects the Int-vs-Float leaf
+           distinction (the metaprogramming analogue of the scalar-literal pattern's type exactness) — a
+           rewrite keyed on the integer `0` must not misfire on the float `0.0`.")
+  (input  (do (def (simp node) (match node (`(+ ,x 0) x) (other other)))
+              (def (main) (= (simp (quote (+ y 0.0))) (quote (+ y 0.0)))) (export main)))
+  (output (: true Bool)))
+
 (case "a quote pattern matches a fixed arity"
   (doc    "A compound template `` `(f ,a ,b) `` matches an `Ast.List` of EXACTLY three elements — the
            reading of `(Ast.List (list (Ast.Name \"f\") a b))`, whose `(list …)` sub-pattern fixes
