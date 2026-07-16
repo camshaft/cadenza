@@ -1494,12 +1494,14 @@ pass	a runtime element collapses against a constant one at build
 pass	a runtime exact mixing of inch and millimeter keeps the fractional scale
 pass	a runtime final rest segment binds the empty tail when the scrutinee is only the header
 pass	a runtime fixed-width segment is emitted big-endian and read back by index
+pass	a runtime float absent from a Set is not found
 pass	a runtime float addition emits the machine add
 pass	a runtime float addition with nan propagates the nan
 pass	a runtime float divide by zero yields a non-trapping infinity
 pass	a runtime float division rounds under the fixed mode
 pass	a runtime float equality feeds the true-literal boolean coercion
 pass	a runtime float equality negated by the false-literal coercion
+pass	a runtime float is found as a Set element by canonical byte form
 pass	a runtime float leaf in a tuple compares by the canonical byte form
 pass	a runtime float multiplication emits the machine mul
 pass	a runtime float promotes to a wider width with the machine promote
@@ -2411,6 +2413,7 @@ pass	equality of an integer and a float is rejected, not silently promoted
 pass	equality of an integer and a string is a type error
 pass	equality of two records with different field sets is a type error
 pass	equality of two tuples of different arity is a type error
+pass	equality over a compound mixing a float and a Bytes leaf walks both
 pass	equality over a partly-un-built sum with a free Err type compiles on every backend
 pass	equality over a runtime float in a SUM payload compares by the float leaf
 pass	eval does not see through a splice whose operand is itself an Ast value
