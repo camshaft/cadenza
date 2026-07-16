@@ -1653,6 +1653,7 @@ pass	a round-trip consumer that does NOT apply the closure on the taken branch
 pass	a run's result is a deterministic function of a host call's recorded response
 pass	a run-time-index String.at result compares equal to the same character as a literal
 pass	a run-time-index scalar read is present in bounds and absent out of bounds
+pass	a runtime -0.0 float leaf two levels deep stays distinct from positive zero
 pass	a runtime BigInt absent from a Set is not found
 pass	a runtime BigInt accumulator threaded through recursion grows past Int64
 pass	a runtime BigInt comparison sees an intermediate that overflows Int64
@@ -1686,6 +1687,7 @@ pass	a runtime MIXED-SCALE BigInt comparison converts to the reference before co
 pass	a runtime MIXED-SCALE BigInt-magnitude sum converts to the reference in unbounded arithmetic
 pass	a runtime MIXED-SCALE Rational-magnitude sum converts to the reference EXACTLY
 pass	a runtime NaN equals a runtime NaN under the canonical byte form
+pass	a runtime NaN float leaf two levels deep (a record-of-tuple) compares equal by the canonical byte form
 pass	a runtime NaN leaf in a tuple compares equal, a runtime -0.0 leaf stays distinct
 pass	a runtime Option carrying a user sum is matched by a nested constructor pattern
 pass	a runtime Rational MAP KEY is found by a normalized-equal key
