@@ -404,6 +404,21 @@
   (input  (= (String.concat "" "hi") "hi"))
   (output (: true Bool)))
 
+(case "String.concat with an empty operand is the identity on a RUNTIME string (the emit path, not the fold)"
+  (doc    "The two identity cases above use CONSTANT operands, so they fold at compile time. This pins the
+           SAME left/right identity on a RUNTIME string — `s` built via `(if true \"hi\" \"x\")` so it is
+           not a constant — exercising the runtime `String.concat` EMIT, which must handle a zero-length
+           operand (an empty rope leaf / empty UTF-8 span) rather than assuming a non-empty side. `(String.
+           concat \"\" s)` and `(String.concat s \"\")` both equal `s` = \"hi\"; `(and …)` of the two → 1.
+           A runtime concat that mishandled the empty operand (read a phantom byte, or dropped the non-empty
+           side) would break here where the folded cases could not catch it, both backends.")
+  (input  (do
+            (def (lid (: s String)) (String.concat "" s))
+            (def (rid (: s String)) (String.concat s ""))
+            (def (main) (if (and (= (lid (if true "hi" "x")) "hi") (= (rid (if true "hi" "x")) "hi")) 1 0))
+            (export main)))
+  (output (: 1 Int64)))
+
 (case "an empty-range slice of a non-empty string is Some of the empty string"
   (doc    "`(String.slice \"hello\" 2 2)` has start = end, so it selects no scalar values — Some of the
            empty string (the in-bounds degenerate companion of the empty-range slice at index 0 already

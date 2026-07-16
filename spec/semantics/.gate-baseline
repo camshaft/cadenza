@@ -140,6 +140,7 @@ pass	Set.to-list length is the set's cardinality (deduped)
 pass	Set.to-list of a runtime-empty but element-typed set is the empty list
 pass	Set.to-list over a RUNTIME-built set yields canonical order (first element is the minimum)
 pass	Set.to-list over a runtime set sums its distinct elements
+pass	String.concat with an empty operand is the identity on a RUNTIME string (the emit path, not the fold)
 pass	String.from-bytes accepts a two-byte sequence split across a concat seam
 pass	String.from-bytes decodes a RUNTIME byte sequence built by a recursive appender
 pass	String.from-bytes decodes a multibyte RUNTIME Bytes ROPE, flattening before validation
