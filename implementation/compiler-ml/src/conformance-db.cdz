@@ -1,0 +1,117 @@
+/// conformance-db.cdz — Increment 6 (gate-integration) of the Cadenza-in-Cadenza compiler: the CONFORMANCE
+/// SCOREBOARD, in Cadenza. This is the Cadenza-side substrate the operator's gate addition needs: a CORPUS
+/// of integer programs paired with their EXPECTED outcomes, plus a RUNNER that drives each through the whole
+/// lazy-query-DB pipeline (`eval-db.run`) and reports conformance as a count — `X / N` passing.
+///
+/// The point (rcdzc's bootstrap strategy): start LOW and CLIMB. Each case is `(tokens, Expect)`; widening the
+/// language = ADDING cases (and, when a case fails, fixing the column that made it fail). The scoreboard is
+/// the driver — `conformance()` returns `(passed, total)`, and a case's expectation is one of:
+///   - `Runs(v)`   — the program is well-typed and evaluates to `v`.
+///   - `Declines`  — the program is ill-typed (unbound name / etc.) so it has NO core form and does not run.
+/// A case PASSES when the pipeline's actual `Option(Int64)` matches its `Expect` (Some v == Runs v; None ==
+/// Declines). This mirrors the real corpus's pass/decline/miscompile grading, scoped to the integer subset.
+///
+/// The Rust-side wiring — a `cadenza-ml` `cargo xtask gate` TARGET that invokes this and prints `X/N` — is
+/// COORDINATED WITH v-fleet-tooling (they own `xtask`/gate plumbing). This module is the conformance ENGINE
+/// that target calls; keeping it in Cadenza means the scoreboard itself is dogfooded and grows with the tests.
+
+import { Tok } from "parse-db"
+import { run } from "eval-db"
+
+/// The expected outcome of a corpus case.
+type Expect =
+  | Runs(Int64)     // well-typed, evaluates to this value
+  | Declines        // ill-typed (no core form) — does not run
+
+/// A conformance case: a token program and its expected outcome.
+type Case =
+  | Case(List(Tok), Expect)
+
+/// Does the pipeline's actual result for `ts` match `exp`? `Some v` matches `Runs v`; `None` matches
+/// `Declines`. Any other pairing (ran-but-wrong-value, ran-when-should-decline, declined-when-should-run) is
+/// a FAIL — the miscompile/mismatch the real gate catches, scoped here to the integer subset.
+def case-passes(ts: List(Tok), exp: Expect) = match run(ts) with
+  | Option.Some(v) => (match exp with | Expect.Runs(w) => v == w | Expect.Declines => false)
+  | Option.None(_) => (match exp with | Expect.Declines => true | Expect.Runs(_) => false)
+
+/// Does a `Case` pass?
+def check-case(c: Case) = match c with | Case.Case(ts, exp) => case-passes(ts, exp)
+
+/// Count how many of `cases` pass (from index `i`, accumulating into `acc`) — the scoreboard's core fold.
+def count-passing(cases: List(Case), i: Int64, acc: Int64) =
+  (if i == List.len(cases) then acc
+   else (match List.at(cases, i) with
+     | Option.Some(c) => count-passing(cases, i + 1, (if check-case(c) then acc + 1 else acc))
+     | Option.None(_) => acc))
+
+// ---- The corpus (integer subset). Op codes: 43 +, 45 -, 42 *. name-id 1 = x, 2 = y. ----
+
+/// `5` → Runs 5.
+def c-literal() = Case.Case([Tok.TNum(5)], Expect.Runs(5))
+/// `1 + 2` → Runs 3.
+def c-add() = Case.Case([Tok.TNum(1), Tok.TOp(43), Tok.TNum(2)], Expect.Runs(3))
+/// `10 - 3` → Runs 7.
+def c-sub() = Case.Case([Tok.TNum(10), Tok.TOp(45), Tok.TNum(3)], Expect.Runs(7))
+/// `4 * 6` → Runs 24.
+def c-mul() = Case.Case([Tok.TNum(4), Tok.TOp(42), Tok.TNum(6)], Expect.Runs(24))
+/// `1 + 2 * 3` → Runs 7 (precedence).
+def c-precedence() = Case.Case([Tok.TNum(1), Tok.TOp(43), Tok.TNum(2), Tok.TOp(42), Tok.TNum(3)], Expect.Runs(7))
+/// `let x = 2 in x` → Runs 2.
+def c-let-trivial() = Case.Case([Tok.TLet, Tok.TName(1), Tok.TEq, Tok.TNum(2), Tok.TIn, Tok.TName(1)], Expect.Runs(2))
+/// THE MILESTONE `let x = 2 in x * 3 + 1` → Runs 7.
+def c-milestone() = Case.Case([Tok.TLet, Tok.TName(1), Tok.TEq, Tok.TNum(2), Tok.TIn, Tok.TName(1), Tok.TOp(42), Tok.TNum(3), Tok.TOp(43), Tok.TNum(1)], Expect.Runs(7))
+/// `let x = 1 in let y = 2 in x + y` → Runs 3 (nested lets).
+def c-nested-lets() = Case.Case([Tok.TLet, Tok.TName(1), Tok.TEq, Tok.TNum(1), Tok.TIn, Tok.TLet, Tok.TName(2), Tok.TEq, Tok.TNum(2), Tok.TIn, Tok.TName(1), Tok.TOp(43), Tok.TName(2)], Expect.Runs(3))
+/// `let x = 1 in let x = 2 in x` → Runs 2 (shadowing).
+def c-shadowing() = Case.Case([Tok.TLet, Tok.TName(1), Tok.TEq, Tok.TNum(1), Tok.TIn, Tok.TLet, Tok.TName(1), Tok.TEq, Tok.TNum(2), Tok.TIn, Tok.TName(1)], Expect.Runs(2))
+/// `x` (unbound) → Declines.
+def c-unbound-declines() = Case.Case([Tok.TName(1)], Expect.Declines)
+/// `x + 1` (unbound x) → Declines.
+def c-unbound-in-arith-declines() = Case.Case([Tok.TName(1), Tok.TOp(43), Tok.TNum(1)], Expect.Declines)
+
+/// THE CORPUS: every conformance case. Widening the language = appending here (start-low-and-climb).
+def corpus() = [
+  c-literal(), c-add(), c-sub(), c-mul(), c-precedence(),
+  c-let-trivial(), c-milestone(), c-nested-lets(), c-shadowing(),
+  c-unbound-declines(), c-unbound-in-arith-declines()
+]
+
+/// THE SCOREBOARD: `(passed, total)` over the corpus — what the `cadenza-ml` gate target prints as `X/N`.
+def conformance() = (count-passing(corpus(), 0, 0), List.len(corpus()))
+
+/// Are all corpus cases passing? (100% conformance for the current integer subset.)
+def all-pass() = match conformance() with | (passed, total) => passed == total
+
+@test
+def cf-milestone-case-passes() =
+  // the milestone case itself passes the pipeline.
+  (if check-case(c-milestone()) then unit else trap("milestone case runs to 7"))
+
+@test
+def cf-runs-mismatch-is-fail() =
+  // a case whose expected value is WRONG must FAIL (the scoreboard catches a wrong-value miscompile).
+  (if case-passes([Tok.TNum(1), Tok.TOp(43), Tok.TNum(2)], Expect.Runs(999)) == false then unit else trap("1+2 != 999 must fail"))
+
+@test
+def cf-declines-case-passes() =
+  // an unbound program is EXPECTED to decline; matching None == Declines passes.
+  (if check-case(c-unbound-declines()) then unit else trap("unbound x declines as expected"))
+
+@test
+def cf-declines-mismatch-is-fail() =
+  // expecting a decline but the program RUNS is a fail (would catch a should-be-rejected program running).
+  (if case-passes([Tok.TNum(5)], Expect.Declines) == false then unit else trap("5 runs, so expecting Declines fails"))
+
+@test
+def cf-corpus-all-pass() =
+  // the whole integer corpus is at 100% — the current conformance floor.
+  (match conformance() with | (passed, total) =>
+    (if passed == total then (if total == 11 then unit else trap("11 cases")) else trap("all cases pass")))
+
+@test
+def cf-count-passing-partial() =
+  // a mixed list: one right, one wrong → exactly one passes (the fold counts correctly).
+  (let mixed = [Case.Case([Tok.TNum(1)], Expect.Runs(1)), Case.Case([Tok.TNum(1)], Expect.Runs(2))] in
+   (if count-passing(mixed, 0, 0) == 1 then unit else trap("one of two passes")))
+
+export { Expect.*, Case.*, case-passes, check-case, count-passing, corpus, conformance, all-pass }
