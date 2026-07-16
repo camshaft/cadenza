@@ -76,6 +76,9 @@ export default function NotebookPage() {
 
   const runCells = useCallback(
     (indices: number[], vals: WidgetValues, from: Surface, token: number) => {
+      // Chain onto the prior run (serialized worker). `.catch` resets a poisoned chain: if a run callback
+      // ever rejected, a bare `.then` on the rejected promise would silently skip EVERY future run — so
+      // swallow any rejection to keep `runChain.current` a resolved promise the next enqueue can build on.
       runChain.current = runChain.current.then(async () => {
         for (const i of indices) {
           if (runToken.current !== token) return; // superseded — stop the stale chain
@@ -83,9 +86,11 @@ export default function NotebookPage() {
           // marking left a cell stuck at "running…" forever if the run was superseded before reaching it
           // (a partial widget-recompute plan re-marks only its own cells, orphaning the rest).
           setStates((s) => ({ ...s, [i]: { phase: "running" } }));
-          const { buffer, entry } = assembleForRun(cells, i, widgets, vals, from);
           let output: CellOutput;
           try {
+            // assembleForRun is inside the try so a bad-shape assembly error renders as a cell error
+            // rather than rejecting the chain callback (which would poison all subsequent runs).
+            const { buffer, entry } = assembleForRun(cells, i, widgets, vals, from);
             const compiled = await replEval(buffer, entry, from);
             if (!compiled.component) {
               const d = compiled.diagnostics.find((x) => x.error) ?? compiled.diagnostics[0];
@@ -102,6 +107,9 @@ export default function NotebookPage() {
           if (runToken.current !== token) return;
           setStates((s) => ({ ...s, [i]: { phase: "done", output } }));
         }
+      }).catch(() => {
+        // Defensive: the loop already catches per-cell errors, but never let an unexpected rejection
+        // poison the chain — a rejected runChain.current would make every future `.then` a no-op.
       });
     },
     [cells, widgets],

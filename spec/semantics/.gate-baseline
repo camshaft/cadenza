@@ -649,6 +649,10 @@ pass	a consumer returns a different type than the closure it applies
 pass	a consumer takes the handed-back closure as its SECOND parameter
 pass	a consuming op inside a hoisted list element respects a still-live binding
 pass	a consuming op on a still-live binding inside one match arm's payload keeps its retain
+pass	a context-typed empty float map accepts a runtime float key insert
+pass	a context-typed empty float map needs no key inserted to ground its wrapper type
+pass	a context-typed empty float set grounds its element wrapper type
+pass	a context-typed empty float32 map grounds the narrow-float wrapper
 pass	a contradictory ARROW annotation on a function value is rejected
 pass	a correctly-annotated function parameter is accepted
 pass	a cross-type variant pattern whose payload width differs is rejected, not miscompiled
@@ -2516,6 +2520,7 @@ pass	compacting a slice preserves its bytes
 pass	compacting is the identity on value for a whole byte sequence
 pass	comparing a Float32 nan to a Float64 finite value is a cross-width type error
 pass	comparing a Float32 nan to a Float64 nan is a cross-width type error
+pass	comparing a char to a FLOAT is rejected with a working two-step conversion fix
 pass	comparing a greater value to a lesser yields Greater
 pass	comparing a lesser value to a greater yields Less
 pass	comparing a map to a record is a type error
@@ -3210,6 +3215,7 @@ pass	the implication-extended kernel Thm stays unforgeable — Thm.Seq of a bogu
 pass	the int-to-float generator is order-preserving (a < b implies of a <= of b — NON-decreasing)
 pass	the intersection contains the elements in both sets
 pass	the intersection of disjoint sets is empty
+pass	the keeping + bitwise self-identities hold on a runtime SIGNED narrow Int8 at a negative value
 pass	the kernel defines T (truth) as a constant and DERIVES |- T through the rules
 pass	the kernel proves reflexivity end-to-end: refl t yields a theorem whose conclusion is (t = t)
 pass	the kernel proves the identity theorem ⊢ (λx.x) y = y via BETA — the first-theorem milestone

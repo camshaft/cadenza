@@ -258,10 +258,11 @@ async fn bedrock_invoke(model_id: &str, max_tokens: u32, prompt: &str) -> Result
     first_text_block(text).ok_or_else(|| anyhow!("bedrock response missing content[].text: {text}"))
 }
 
-/// Escape a string for embedding as a JSON string value (the prompt into the request body). Handles the
-/// characters JSON requires: `"`, `\`, and the control chars a prompt might carry.
-#[cfg(feature = "bedrock")]
-fn json_escape(s: &str) -> String {
+/// Escape a string for embedding as a JSON string value — used both for the Bedrock request body (the
+/// prompt) and for the driver's reply message (the model completion). Handles the characters JSON
+/// requires: `"`, `\`, and the control chars the text might carry. Not feature-gated: the reply-writer
+/// in the default (mock) build needs it too.
+pub fn json_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         match c {
