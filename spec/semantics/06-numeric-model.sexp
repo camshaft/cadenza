@@ -2024,6 +2024,42 @@
   (input  (= (Int64.wrapping-add Int64.min 0) (Int64.wrapping-mul Int64.min 1)))
   (output (: true Bool)))
 
+; The identity case above preserves Int64.min under `+% 0` / `*% 1`. These pin the SELF-WRAP at min: the
+; two-s-complement fact that `min * -1` and `0 - min` both compute +2^63, which is ≡ -2^63 (mod 2^64) =
+; Int64.min — so negating the minimum wraps back to itself. And the three-family divergence at that input:
+; checked → None, wrapping → min (trapping → trap is pinned elsewhere).
+
+(case "wrapping-mul of the minimum integer by -1 wraps back to the minimum"
+  (doc    "`(Int64.wrapping-mul Int64.min -1)` = Int64.min: mathematically min·-1 = +2^63, which is one past
+           Int64.max and wraps to -2^63 = Int64.min (mod 2^64). The self-wrap at the minimum — negating the
+           most-negative value cannot represent its positive, so wrapping returns the value unchanged. The
+           wrapping companion of the trapping `(* min -1)` (traps) and checked `(checked-mul min -1)` (None).")
+  (input  (= (Int64.wrapping-mul -9223372036854775808 -1) -9223372036854775808))
+  (output (: true Bool)))
+
+(case "wrapping-sub of the minimum integer from zero wraps back to the minimum"
+  (doc    "`(Int64.wrapping-sub 0 Int64.min)` = Int64.min: `0 - (-2^63)` = +2^63 ≡ -2^63 (mod 2^64). The
+           subtractive form of the self-wrap — negating Int64.min via `0 - min` overflows and wraps to min,
+           exactly as `wrapping-mul min -1` does. Pins that the two spellings of negating the minimum agree
+           under wrapping (both = min), the wrapping companion of the trapping `(- 0 min)` which traps.")
+  (input  (= (Int64.wrapping-sub 0 -9223372036854775808) -9223372036854775808))
+  (output (: true Bool)))
+
+(case "at min times -1 the three overflow families diverge: checked None, wrapping min"
+  (doc    "The same overflowing input `min * -1` distinguishes the three arithmetic families: `checked-mul`
+           reports None (overflow, no representable result), and `wrapping-mul` yields Int64.min (the
+           self-wrap). Matching the checked None falls through to the wrapping value → Int64.min. Pins that
+           checked and wrapping genuinely DIVERGE on this input (checked refuses, wrapping wraps) — a
+           dispatch that conflated them would give the wrong answer. (The trapping `*` traps here, pinned
+           separately — the third family.)")
+  (input  (do
+            (def (main)
+              (match (Int64.checked-mul -9223372036854775808 -1)
+                ((Some v) v)
+                ((None _) (Int64.wrapping-mul -9223372036854775808 -1))))
+            (export main)))
+  (output (: -9223372036854775808 Int64)))
+
 (case "wrapping arithmetic over runtime operands wraps at run time"
   (doc    "The runtime companion: `(w a b)` = `(Int64.wrapping-add a b)` over parameters wraps on the
            i64.add path (wasm's add wraps; no overflow guard), so `(w Int64.max 1)` = Int64.min — the
