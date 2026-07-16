@@ -665,6 +665,28 @@
               (export main)))
   (call   main (: 1 Int64) (: 2 Int64))
   (output (: 4 Int64)))
+; --- `String.at i` and `String.slice i (i+1)` are the SAME single-scalar addressing — they must agree ---
+; `String.at` and `String.slice` are the two runtime scalar-addressing String ops (both byte-walk the UTF-8
+; leaf, mapping scalar offsets to byte offsets). A single-scalar slice `[i, i+1)` selects exactly the one
+; scalar `String.at i` returns — so `String.slice s i (i+1)` and `String.at s i` MUST produce the equal
+; one-scalar substring for the same runtime `s`/`i`. They lower through separate emit paths (String.at's
+; one-scalar read vs String.slice's start..end byte-walk), so this pins the two paths AGREE — a lowering
+; that computed a different byte span for one (an off-by-one scalar→byte map, or slicing bytes not scalars)
+; would diverge them. Checked over a MULTI-BYTE scalar (é = 1 scalar, 2 bytes) so a byte/scalar confusion
+; in either path is observable, on both backends.
+(case "a single-scalar String.slice equals the String.at of the same index (the two scalar-addressing paths agree)"
+  (doc    "`(String.slice s i (+ i 1))` and `(String.at s i)` both address the single scalar at index `i`,
+           so their one-scalar substrings are equal. Over a runtime `s = \"aébc\"` (é is one scalar, TWO
+           UTF-8 bytes) at `i = 1`: both yield \"é\" — `(= (slice…) (at…))` → true (1). Pins that the
+           String.slice byte-walk and the String.at read map scalar→byte identically for a single scalar
+           (a byte/scalar off-by-one in either path would make them unequal), both backends. `s` is built
+           via `(if true …)` so it is a runtime value, not a folded constant.")
+  (input  (do
+            (def (viaslice (: s String) (: i Int64)) (Option.expect (String.slice s i (+ i 1)) "in bounds"))
+            (def (viaat (: s String) (: i Int64)) (Option.expect (String.at s i) "in bounds"))
+            (def (main) (if (= (viaslice (if true "aébc" "x") 1) (viaat (if true "aébc" "x") 1)) 1 0))
+            (export main)))
+  (output (: 1 Int64)))
 
 ; --- A string operation consumes a string SELECTED by runtime control flow -----------------
 ; A string operation (String.scalar-len/at/slice/concat) takes a string ARGUMENT; that argument may be a

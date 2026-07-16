@@ -1380,6 +1380,7 @@ pass	a signed pattern segment reads a two's-complement integer as negative
 pass	a signed segment reads the sign-bit-only byte as the minimum, not its magnitude
 pass	a signed-byte entrypoint returns its runtime argument
 pass	a single-form body admits a sequence by holding a do block
+pass	a single-scalar String.slice equals the String.at of the same index (the two scalar-addressing paths agree)
 pass	a single-variant NEWTYPE escapes with its tag ERASED, only the type header naming it
 pass	a single-variant newtype over a COMPOUND escapes the bare compound under its type header
 pass	a single-variant open sum with an open-tail arm dispatches its named variant
@@ -2811,6 +2812,7 @@ todo	a RECORD closure ARG whose fields are NOT in sorted source order
 todo	a RECORD closure ARG with a LIST result
 todo	a RECORD closure ARG with a narrow Bool field, among scalars
 todo	a RECORD with a nested TUPLE field crosses the direct-call boundary
+todo	a REFL tactic closes a reflexivity goal by driving the kernel, and cannot close a false goal
 todo	a RUNTIME-built Rational is usable as a map key, matched by its exact value
 todo	a RUNTIME-built Rational set deduplicates by exact value
 todo	a Rational accumulator threaded through recursion sums exactly
@@ -2820,6 +2822,7 @@ todo	a Rational-annotated literal composes with exact rational arithmetic
 todo	a Rational-inner quantity addition stays exact through the quantity wrapper
 todo	a Rational-payload sum value escapes across the boundary in its canonical form
 todo	a SOLE RECORD closure ARG crosses the direct-call boundary
+todo	a SYM tactic reduces a goal to a subgoal plus a kernel justification (backward proof)
 todo	a String-returning closure alongside a parameterized plain export
 todo	a String-returning closure alongside a parameterized plain export — the plain runs
 todo	a THREE-argument closure round-trips — flat arrow spelling
