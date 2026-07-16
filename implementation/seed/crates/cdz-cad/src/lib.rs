@@ -415,4 +415,48 @@ mod tests {
     fn rejects_a_truncated_form() {
         assert!(parse_solid("(: (Union (Sphere 1.0)").is_err());
     }
+
+    #[test]
+    fn parser_is_total_on_malformed_input_never_panics() {
+        // A driver parses UNTRUSTED rendered text; every malformed shape must be a clean Err, never a panic.
+        // (This pins the totality validated by the vertical's robustness probe.)
+        for bad in [
+            "",                                               // empty
+            "(",                                              // lone open
+            ")",                                              // lone close
+            "()",                                             // empty list (no ctor head)
+            "(Cube)",                                         // missing payload
+            "(Cube (: (tuple 1.0) Vec3))",                    // Vec3 with too few components
+            "(Cube (: (tuple 1.0 2.0 3.0 4.0) Vec3))",        // Vec3 with too many
+            "(: (Cube (: (tuple a b c) Vec3)) Solid)",        // non-numeric floats
+            "(Sphere 1.0 2.0 3.0)",                           // wrong arity
+            "(Union (Sphere 1.0) (Sphere 2.0) (Sphere 3.0))", // Union with 3 args
+            "not-an-sexpr",                                   // a bare atom
+            "((((((((((",                                     // runaway opens
+        ] {
+            assert!(
+                parse_solid(bad).is_err(),
+                "malformed input should Err (not panic / not Ok): {bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn parser_handles_a_reasonably_deep_chain() {
+        // A moderately deep Union chain (100) parses + counts correctly — well beyond any real CAD model's
+        // nesting. NOTE: the parser + node_count are RECURSIVE (one stack frame per nesting level), so an
+        // ADVERSARIAL chain of many hundreds can overflow a small (2 MiB) thread stack — a known limit, not
+        // exercised here because a real model never nests that deep. (A future hardening could make the
+        // parse/fold iterative or add an explicit depth cap; tracked in the vertical log.) Keep this depth
+        // safely under the test-thread stack so the test is not stack-size-fragile.
+        let depth = 100;
+        let mut s = String::from("(Sphere 1.0)");
+        for _ in 0..depth {
+            s = format!("(Union (Sphere 1.0) {s})");
+        }
+        let parsed = parse_solid(&format!("(: {s} Solid)")).expect("deep chain parses");
+        // depth unions + (depth + 1) spheres = 2*depth + 1 nodes.
+        assert_eq!(parsed.node_count(), 2 * depth + 1);
+        assert_eq!(parsed.leaf_count(), depth + 1);
+    }
 }
