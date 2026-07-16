@@ -47,6 +47,22 @@
   (input  (do (def (main) (: 5 Foo)) (export main)))
   (error  CDZ0101))
 
+(case "a lowercase type variable in a USER-GENERIC parameter annotation is rejected"
+  (doc    "`(def (next (: it (Iter a))) …)` annotates a parameter with a USER-GENERIC type applied to a
+           lowercase `a` — the ML/Haskell reflex for a generic signature `next : Iter a -> …`. But Cadenza
+           has NO `∀`-binder in an annotation: generics are type-valued parameters (type-system.md
+           #Generics Are Type-Valued Parameters), so `a` in the annotation names no type and is a hard
+           CDZ0101 'unbound name'. The nested lowercase leaf inside a user generic `(Iter a)` gets the same
+           reject the bare `(: x a)` does — the actionable route is to drop the annotation (an UNANNOTATED
+           parameter is already polymorphic) or take the element type as an explicit `(: t Type)` parameter.
+           Pins that a lowercase type var in a user-generic constructor position rejects, not silently
+           binds a fresh variable.")
+  (input  (do (type Iter (FromList (List a)))
+              (def (next (: it (Iter a))) it)
+              (def (main) 0)
+              (export main)))
+  (error  CDZ0101))
+
 (case "an integer literal in a type annotation's type position is rejected"
   (doc    "`(: 5 42)` puts the integer literal `42` — a VALUE, not a type — in type position. A value is
            not a type, so the annotation is meaningless and rejects (CDZ0203, 'expected a type'). Pins

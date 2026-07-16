@@ -908,6 +908,7 @@ pass	a loop whose bound is an invariant computation runs correctly (the bound is
 pass	a loop-invariant computed in both the condition and the body is shared, computing correctly
 pass	a loop-invariant subexpression in a MATCH scrutinee is hoisted to valid wasm
 pass	a loop-invariant trapping expression is not evaluated when the loop runs zero iterations
+pass	a lowercase type variable in a USER-GENERIC parameter annotation is rejected
 pass	a lowercase-named type cross-references another lowercase-named type in a field
 pass	a lowercase-named type is referenceable in a field (types are values, not gated by case)
 pass	a magic header and a length-prefixed chunk parse together

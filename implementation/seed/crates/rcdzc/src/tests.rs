@@ -41761,6 +41761,26 @@ mod stage1 {
                 "the lowercase-type-var hint points at the unannotated-generic route: {m}"
             );
         }
+        // At a PARAMETER site (where a generic function is being written), the hint ALSO names the explicit
+        // `Type`-parameter idiom — the composable route for a documenting user-generic signature `(: it (Iter
+        // a))`. The value/let-binder sites (no parameter list) do NOT, keeping only the drop / concrete-type
+        // guidance. (Generics are type-valued parameters — spec §"Generics Are Type-Valued Parameters".)
+        let param_hint =
+            unbound_hint("(module m (def (id (: x a)) x) (def (main) (id 1)) (export main))");
+        assert!(
+            param_hint.contains("`Type` parameter") && param_hint.contains("(: t Type)"),
+            "a parameter-site lowercase type-var also names the Type-parameter route: {param_hint}"
+        );
+        for value_site in [
+            "(module m (def (main) (: 5 a)) (export main))",
+            "(module m (def (main) (let (((: y a) 5)) y)) (export main))",
+        ] {
+            let m = unbound_hint(value_site);
+            assert!(
+                !m.contains("`Type` parameter"),
+                "a value/binder-site hint does NOT name the Type-parameter route (no param list): {m}"
+            );
+        }
         // NESTED type-var positions get the SAME rich guidance (was the terse "unbound name `b`"): a var
         // inside `(List b)` / `(Tuple a b)` / `(-> a b)` / `(Map k v)`, at every annotation site.
         for src in [
