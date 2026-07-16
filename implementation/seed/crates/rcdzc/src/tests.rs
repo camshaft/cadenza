@@ -23296,6 +23296,13 @@ mod match_engine {
                 "(module m (def (g (: q (Qty))) q) (export g))",
                 "`Qty` takes 2 type arguments, but 0 were supplied — write `(Qty T u)`",
             ),
+            // The ARROW ctor `->` takes ONE OR MORE args (`(-> R)` nullary, `(-> P R)`, `(-> A B … R)`
+            // curried) — so ONLY the ZERO-arg `(->)` is a wrong arity. It read as the generic "found a
+            // non-type"; now the arrow shape + its minimum (a result type) is named.
+            (
+                "(module m (def (g (: h (->))) 0) (export g))",
+                "an arrow type is `(-> Arg… Result)` — it needs at least a result type",
+            ),
         ] {
             let d = reject_full(src).unwrap_or_else(|| panic!("{src} rejects"));
             assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
@@ -23343,6 +23350,21 @@ mod match_engine {
             "a genuine non-type keeps the generic message: {}",
             lit.message
         );
+        // A VALID arrow at every arity (nullary `(-> R)`, ordinary `(-> P R)`, curried `(-> A B R)`, and
+        // nested inside a `(List …)`) raises no arrow-arity fault — only the empty `(->)` does.
+        for ok_arrow in [
+            "(module m (def (g (: h (-> Int64))) 0) (export g))",
+            "(module m (def (g (: h (-> Int64 Bool))) (h 5)) (export g))",
+            "(module m (def (g (: h (-> Int64 Int64 Int64))) 0) (export g))",
+            "(module m (def (g (: h (List (-> Int64 Bool)))) 0) (export g))",
+        ] {
+            assert!(
+                crate::diagnostics(&mut crate::db::Db::load(parse(ok_arrow)))
+                    .iter()
+                    .all(|d| !d.message.contains("an arrow type is")),
+                "a well-formed arrow raises no arrow-arity fault: {ok_arrow}"
+            );
+        }
     }
 
     #[test]
