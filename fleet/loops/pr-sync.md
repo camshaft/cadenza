@@ -71,11 +71,22 @@ ALL integration. Two disciplines keep that from ever happening — follow BOTH e
       deliberate reject is fine; a silent drop is the bug.
 3. **Publish to the remote** (the PR half — unchanged in spirit from the old staging loop). When
    `trunk` is ahead of `origin/main` and clean:
-   - Re-parent onto `origin/main` so the squash-merge doesn't show a spurious revert: work in a
-     scratch commit whose `HEAD^ == origin/main` carrying trunk's tree, as the old staging loop did.
-   - `git push origin HEAD:staging-<topic>` then `gh pr create --base main --head staging-<topic>
-     --fill` (or reuse the open PR). Enable auto-merge: `gh pr merge --squash --auto
-     --delete-branch`.
+   - **🚫 INVARIANT: NEVER move the `trunk` ref backward. Do NOT run `git reset --hard origin/main`
+     (or any reset/`branch -f`) in your worktree — it is checked out on `trunk`, so that resets the
+     LIVE `trunk` ref to `origin/main`, dropping every commit you've integrated since the last publish
+     until you re-replay them. That backward move IS the "trunk clobber" (it drops acked MRs in the
+     replay window). `trunk` only ever moves FORWARD (merges/cherry-picks). Build the re-parented tree
+     somewhere that is NOT your trunk worktree.**
+   - Re-parent onto `origin/main` in a THROWAWAY scratch worktree, so the squash-merge doesn't show a
+     spurious revert AND `trunk` is never touched: create a detached scratch checkout at `origin/main`
+     and lay trunk's tree on top of it there —
+     `git worktree add --detach /tmp/pr-sync-publish origin/main` (or reuse it), then in that scratch:
+     `git read-tree -u --reset trunk` + `git commit -m "publish: trunk@<sha>"` (HEAD^ == origin/main,
+     tree == trunk), and push THAT scratch commit. Remove the scratch worktree when done
+     (`git worktree remove /tmp/pr-sync-publish`). Your `trunk` worktree stays on `trunk`, untouched.
+   - `git push origin <scratch-HEAD>:staging-<topic>` then `gh pr create --base main --head
+     staging-<topic> --fill` (or reuse the open PR). Enable auto-merge: `gh pr merge --squash --auto
+     --delete-branch`. (Push the SCRATCH commit, never a reset trunk.)
    - **Validate on the EXIT CODE of `cargo test`, never a stdout grep** (the staging-loop trap: a
      pipe masks cargo's failure; a stack overflow is EXIT=101 with 0 "FAILED" lines). Remember CI's
      `test` job builds NO runtime store, so a `.unwrap()` on a heap value is local-green/CI-red —
