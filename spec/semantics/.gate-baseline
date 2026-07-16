@@ -2323,6 +2323,8 @@ pass	equality across types is rejected regardless of operand order
 pass	equality against zero answers by value in both operand orders
 pass	equality applied to one operand is rejected, not a crash
 pass	equality of a record with a subset of another's fields is a type error
+pass	equality of a runtime boolean against the false literal negates it
+pass	equality of a runtime boolean against the true literal is the boolean
 pass	equality of an integer and a boolean is a type error
 pass	equality of an integer and a float is rejected, not silently promoted
 pass	equality of an integer and a string is a type error
