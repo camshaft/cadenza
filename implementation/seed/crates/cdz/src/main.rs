@@ -825,20 +825,30 @@ fn run_metadata(args: &MetadataArgs) -> ExitCode {
         Some(n) => obj.string("name", n),
         None => obj.raw("name", "null"),
     }
-    // The entry: its declared pattern, and the single file it resolves to (a component has ONE boundary;
-    // a glob matching ≠1 file yields `null`, matching how `cdz build` treats it as an error at build time).
+    // The entry: its declared pattern, the single file it resolves to (a component has ONE boundary; a
+    // glob matching ≠1 file yields `null`, matching how `cdz build` treats it as an error at build time),
+    // and that file's SURFACE (`ml` for `.cdz`/`.ml`, `sexpr` for `.sexp`/`.sexpr`) — so a consumer knows
+    // which parser the project's boundary uses without re-deriving it from the extension. `null` when the
+    // entry is absent or doesn't resolve to exactly one file.
     match &m.entry {
         Some(e) => {
             obj.string("entry", e);
             let resolved = expand_manifest_globs(&dir, std::slice::from_ref(e), &m.exclude);
             match resolved.as_slice() {
-                [one] => obj.string("entry_file", one),
-                _ => obj.raw("entry_file", "null"),
+                [one] => {
+                    obj.string("entry_file", one);
+                    obj.string("surface", if is_ml_source(one) { "ml" } else { "sexpr" });
+                }
+                _ => {
+                    obj.raw("entry_file", "null");
+                    obj.raw("surface", "null");
+                }
             }
         }
         None => {
             obj.raw("entry", "null");
             obj.raw("entry_file", "null");
+            obj.raw("surface", "null");
         }
     }
     match &m.opt_level {

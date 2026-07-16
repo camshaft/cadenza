@@ -107,6 +107,12 @@ fn metadata_reports_the_manifest_fields_and_resolved_files_as_json() {
         json_str(&out, "entry_file").is_some_and(|f| f.ends_with("app.cdz")),
         "entry_file resolves to app.cdz: {out}"
     );
+    // A `.cdz` entry has the `ml` surface.
+    assert_eq!(
+        json_str(&out, "surface"),
+        Some("ml"),
+        "a .cdz entry reports the ml surface: {out}"
+    );
     // Glob expansion: `lib/*.cdz` pulls in helper.cdz; `exclude` drops lib/skip.cdz. `skip.cdz` still
     // appears in the `exclude` PATTERN list (echoed back), so assert it's absent from the RESOLVED
     // `module_files` array specifically, not the whole document.
@@ -158,6 +164,24 @@ fn metadata_a_named_manifest_that_does_not_exist_errors() {
     assert!(
         err.contains("no such file"),
         "error names the missing file: {err}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn metadata_reports_the_sexpr_surface_for_an_s_expression_entry() {
+    // A `.sexp` entry reports the `sexpr` surface — so a consumer picks the s-expression parser.
+    let dir = std::env::temp_dir().join(format!("cdz-metadata-sexpr-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("Project.cdz"), "def entry = \"main.sexp\"\n").unwrap();
+    std::fs::write(dir.join("main.sexp"), "(do (def (main) 0) (export main))\n").unwrap();
+    let (ok, out, err) = run_in(&dir, &["metadata", "."]);
+    assert!(ok, "sexpr-entry metadata failed: {err}");
+    assert_eq!(
+        json_str(&out, "surface"),
+        Some("sexpr"),
+        "a .sexp entry reports the sexpr surface: {out}"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
