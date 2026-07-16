@@ -3566,30 +3566,42 @@ mod tests {
         // walk must not overflow). A native-recursive rewrite overflowed the stack (SIGABRT) on a deep
         // subject via `cdz rewrite`. Assert a rewrite over a 100k-deep chain completes without overflow,
         // for a rule that matches at EVERY level (max work) and one that matches nowhere (pure descent).
-        let depth = 100_000usize;
-        let mut b = Builder::new();
-        let mut cur = b.name("x");
-        for _ in 0..depth {
-            cur = b.list(vec![cur]);
+        // Run on a 64 MB stack: `rewrite_node`/`Tree::of` are iterative (that's what this pins), but the
+        // 100k-deep `Tree`/`Builder` structures this BUILDS then DROPS recurse one native frame per level
+        // on Drop, SIGABRTing a default ~2 MB test-worker stack — same idiom as the sibling from_arena +
+        // ml_print deep tests (run_with_compiler_stack is rcdzc-only; resume_unwind so an inner assert fails).
+        let h = std::thread::Builder::new()
+            .stack_size(64 * 1024 * 1024)
+            .spawn(|| {
+                let depth = 100_000usize;
+                let mut b = Builder::new();
+                let mut cur = b.name("x");
+                for _ in 0..depth {
+                    cur = b.list(vec![cur]);
+                }
+                let a = b.finish(cur);
+                let t = Tree::of(&a);
+                // No-match rule: pure full-depth descent, nothing rewritten.
+                let none = rewrite(&pat("(nomatch ,x)"), &tmpl(",x"), &t);
+                assert_eq!(none.count, 0, "a non-matching rule rewrites nothing");
+                assert!(
+                    tree_eq(&none.tree, &t),
+                    "a no-op rewrite returns the subject unchanged"
+                );
+                // Match-every-level rule: `(,c)` (a 1-element list) matches every List node in the chain;
+                // unwrap it to its child. Bottom-up, every one of the `depth` list levels fires — maximal
+                // work, deepest stack. Must complete without overflow; the chain collapses to the leaf `x`.
+                let all = rewrite(&pat("(,c)"), &tmpl(",c"), &t);
+                assert_eq!(all.count, depth, "every list level is rewritten");
+                assert!(
+                    matches!(all.tree, Tree::Atom(Leaf::Name(ref n), _) if n == "x"),
+                    "chain collapses to x"
+                );
+            })
+            .expect("spawn big-stack rewrite worker");
+        if let Err(p) = h.join() {
+            std::panic::resume_unwind(p);
         }
-        let a = b.finish(cur);
-        let t = Tree::of(&a);
-        // No-match rule: pure full-depth descent, nothing rewritten.
-        let none = rewrite(&pat("(nomatch ,x)"), &tmpl(",x"), &t);
-        assert_eq!(none.count, 0, "a non-matching rule rewrites nothing");
-        assert!(
-            tree_eq(&none.tree, &t),
-            "a no-op rewrite returns the subject unchanged"
-        );
-        // Match-every-level rule: `(,c)` (a 1-element list) matches every List node in the chain; unwrap
-        // it to its child. Bottom-up, every one of the `depth` list levels fires — maximal work, deepest
-        // stack. Must complete without overflow; the whole chain collapses to the bare leaf `x`.
-        let all = rewrite(&pat("(,c)"), &tmpl(",c"), &t);
-        assert_eq!(all.count, depth, "every list level is rewritten");
-        assert!(
-            matches!(all.tree, Tree::Atom(Leaf::Name(ref n), _) if n == "x"),
-            "chain collapses to x"
-        );
     }
 
     fn pat(src: &str) -> Pattern {
