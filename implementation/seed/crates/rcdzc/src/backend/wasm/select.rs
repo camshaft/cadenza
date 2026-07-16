@@ -11633,6 +11633,26 @@ fn core_eq(db: &mut Db, a: StructId, b: StructId) -> bool {
                 rhs: ry,
             },
         ) => ox == oy && core_eq(db, lx, ly) && core_eq(db, rx, ry),
+        // A pure float equality (`Core::FloatCompare`): same operator AND WIDTH over recursively-equal
+        // operands. `is_cse_shareable` already admits a `FloatCompare` (it is a total canon-and-compare),
+        // so `core_eq` MUST recognize two equal ones or the CSE could never fire for it — the sibling of
+        // the `Compare` arm above, plus the `width` (an f32-eq and an f64-eq of the same operands are
+        // DIFFERENT machine ops — `i32.eq` over canon f32 bits vs `i64.eq` over canon f64 bits — so a
+        // width mismatch is not the same value).
+        (
+            Core::FloatCompare {
+                op: ox,
+                lhs: lx,
+                rhs: rx,
+                width: wx,
+            },
+            Core::FloatCompare {
+                op: oy,
+                lhs: ly,
+                rhs: ry,
+                width: wy,
+            },
+        ) => ox == oy && wx == wy && core_eq(db, lx, ly) && core_eq(db, rx, ry),
         // A pure conversion: same op over an equal operand.
         (
             Core::Convert {

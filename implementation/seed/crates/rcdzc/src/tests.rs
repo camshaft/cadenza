@@ -11658,6 +11658,36 @@ mod runtime_ops {
                 2,
                 "distinct conditions are not shared, got: {code2:?}"
             );
+            // A repeated runtime FLOAT equality (`Core::FloatCompare`) is CSE'd too: `is_cse_shareable`
+            // admits it, so `core_eq` must recognize two equal ones. `(+ (if (= a b) 10 0) (if (= a b) 20
+            // 0))` over Float64 emits the canon-and-compare (a single `i64.eq` over the canonicalized bits)
+            // ONCE, not twice. Regression guard for the `core_eq` FloatCompare arm.
+            let src3 = "(module m (def (f (: a Float64) (: b Float64)) (+ (if (= a b) 10 0) (if (= a b) 20 0))) (def (main) 0) (export main))";
+            let mut db3 = crate::db::Db::load(crate::testkit::parse(src3));
+            let layout3 = crate::layout::compute(&mut db3).expect("layout");
+            let d3 = db3.def_by_name("f").expect("f");
+            let ps3: Vec<_> = db3.defs[d3]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db3
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db3, b))
+                })
+                .collect();
+            let body3 = db3.defs[d3].body.expect("body");
+            let code3 = select_function(&mut db3, body3, &ps3, &layout3)
+                .expect("select")
+                .code;
+            assert_eq!(
+                code3.iter().filter(|i| matches!(i, Lir::I64Eq)).count(),
+                1,
+                "the identical float equality is computed once, got: {code3:?}"
+            );
         }
     }
 
