@@ -71,15 +71,12 @@ def v3r-max(a: Vec3r, b: Vec3r) =
     (match b with | Vec3r.V3r(bx, by, bz) =>
       Vec3r.V3r(rmax(ax, bx), rmax(ay, by), rmax(az, bz)))
 
-/// Exact vector equality. Component-wise (destructure once each), NOT a direct `a == b`: the whole-compound
-/// `==` heap-walk currently admits `Ty::Float` leaves but NOT `Ty::Rational` (the `ty_heap_walkable` fix
-/// `e6017d04b` covered Float only), so a whole-`Vec3r` `==` declines — filed as a follow-up. Scalar Rational
-/// `==` works, so compare the three components. (When Rational is admitted to `ty_heap_walkable`, this
-/// reduces to `a == b` like `v3-eq` did for Float.)
-def v3r-eq(a: Vec3r, b: Vec3r) =
-  match a with | Vec3r.V3r(ax, ay, az) =>
-    (match b with | Vec3r.V3r(bx, by, bz) =>
-      ax == bx and ay == by and az == bz)
+/// Exact vector equality — a direct whole-compound `==`. The `ty_heap_walkable` heap-walk now admits
+/// `Ty::Rational` (and `Ty::BigInt`) leaves — both are canonical by construction (a Rational is a normalized
+/// two-BigInt-handle node), so `champ_eq` walks a `Vec3r` of Rationals EXACTLY, INCLUDING normalization
+/// (`1/2 == 2/4` → true). This replaced the earlier component-wise workaround (which existed only because the
+/// walk once covered `Ty::Float` but not `Ty::Rational`); `v3r-eq-is-a-direct-compound-walk` pins the invariant.
+def v3r-eq(a: Vec3r, b: Vec3r) = a == b
 
 /// The union of two exact boxes — the enclosing box (min of the mins, max of the maxes).
 def aabbr-union(p: Aabbr, q: Aabbr) =
@@ -146,6 +143,18 @@ def rmin-rmax-exact() =
   let third = Rational.of(1, 3) in
   let half = Rational.of(1, 2) in
   if rmin(third, half) == third then (if rmax(third, half) == half then unit else trap("rmax")) else trap("rmin")
+
+@test
+def v3r-eq-is-a-direct-compound-walk() =
+  // PINS the ty_heap_walkable Rational admission that lets v3r-eq be a direct `a == b`: a whole-Vec3r `==`
+  // over Rational leaves must WALK (compile + run), incl. exact normalization — 1/2 and 2/4 are the SAME
+  // Rational, so the vectors are equal; a differing component makes them unequal. If a future change drops
+  // Rational from the walk, v3r-eq would decline and this case fails — guarding the whole vertical's equality.
+  let a = v3r(Rational.of(1, 2), Rational.of(1, 3), Rational.of(1, 6)) in
+  let b = v3r(Rational.of(2, 4), Rational.of(1, 3), Rational.of(1, 6)) in   // 1/2 == 2/4 normalized
+  let c = v3r(Rational.of(1, 2), Rational.of(1, 3), Rational.of(5, 6)) in   // z differs
+  if v3r-eq(a, b) then (if v3r-eq(a, c) then trap("differing z must be unequal") else unit)
+  else trap("whole-Vec3r == over Rational must walk (1/2 == 2/4 normalized)")
 
 @test
 def v3r-eq-and-add() =
