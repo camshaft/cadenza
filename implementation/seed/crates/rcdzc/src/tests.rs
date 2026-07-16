@@ -33716,6 +33716,37 @@ mod match_engine {
     }
 
     #[test]
+    fn a_non_canonical_float_cannot_be_reified_into_an_ast_float_uniform_decline() {
+        // 12-metaprogramming / adv-ast-float-nan differential: a NaN Float64 has no canonical value form,
+        // so `(Ast.Float Float64.nan)` used to DIVERGE across backends (wasm TRAPped at the host encode
+        // boundary, rust returned the value) — a differential miscompile on an accepted program. Operator
+        // ruling (A): the CONSTANT non-canonical reify DECLINES at construction (lower_sum_new guard),
+        // uniformly on both backends, matching the sibling `,@`-of-NaN-list and `Ast.Float`-of-+inf
+        // declines. A DECLINE is a Todo (no coded error), not a CDZ reject — so `reject_code` is None but
+        // the program does not compile. (The runtime-produced-NaN half is caught at the escape boundary.)
+        assert!(
+            compile_component(&crate::codec::encode(&crate::testkit::parse(
+                "(module m (def (main) (Ast.Float Float64.nan)) (export main))"
+            )))
+            .is_err(),
+            "(Ast.Float Float64.nan) declines — a NaN has no canonical value form to reify"
+        );
+        // A FINITE float is UNAFFECTED — the guard is surgical (only non-canonical payloads decline).
+        assert!(
+            run_returns::<bool>(
+                &compile_component(&crate::codec::encode(&crate::testkit::parse(
+                    "(module m (def (main) \
+                       (match (Ast.Float 2.5) ((Ast.Float f) (= f 2.5)) (_ false))) \
+                     (export main))"
+                )))
+                .expect("a finite Ast.Float still compiles"),
+                "main"
+            ),
+            "a finite Ast.Float (2.5) reifies normally — the non-canonical guard does not touch it"
+        );
+    }
+
+    #[test]
     fn eval_of_a_compile_time_ast_executes_it_as_code() {
         use crate::testkit::parse;
         // 12-metaprogramming §Eval Is Optional For Macros And Interactive Use: `(eval <ast>)` executes an

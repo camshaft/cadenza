@@ -3003,6 +3003,9 @@ pass	recursive fibonacci over a RUNTIME argument computes the predecessors corre
 pass	recursive fibonacci with literal match base cases
 pass	redeclaring a built-in unit with its own conversion is admissible
 pass	redeclaring a user-declared unit with the same conversion is admissible
+pass	reifying a constant NaN into an Ast.Float declines (no canonical value form)
+pass	reifying a finite float into an Ast.Float is unaffected by the non-canonical guard
+pass	reifying a positive-infinity float into an Ast.Float declines
 pass	rejection sampling draws until the refinement holds — an only-even generator produces an even value
 pass	rejection sampling into a narrow range refinement produces only in-range values
 pass	rejection sampling terminates on fuel exhaustion when the refinement is unsatisfiable

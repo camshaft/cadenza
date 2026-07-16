@@ -17998,6 +17998,28 @@ fn lower_sum_new(db: &mut Db, head: StructId, args: &[StructId]) -> Core {
             payloads: Vec::new(),
         };
     }
+    // NON-CANONICAL Ast.Float GUARD (uniform decline — operator-ruled A, adv-ast-float-nan differential).
+    // Reifying a NON-canonical float (a NaN) into an `Ast.Float` node has no canonical value form: the wasm
+    // host-encode boundary TRAPS on the NaN bit pattern ("encode bytes are not a valid canonical value
+    // form") while the rust backend would accept it — a backend DISAGREEMENT on an accepted program. The
+    // sibling non-canonical-float-in-AST paths (`,@(list nan)` splice-lift, `(Ast.Float (/ 1.0 0.0))` +inf)
+    // already DECLINE at compile time; make the direct `(Ast.Float nan)` construction consistent by
+    // declining a CONSTANT non-canonical payload here (reject-don't-miscompile, uniform on both backends).
+    // A runtime-produced NaN payload is caught at the escape boundary (v-runtime's canonical-encode piece);
+    // this is the compile-time-constant half. Only the `Ast` sum's Float variant is guarded — an ordinary
+    // float value crosses fine (a bare NaN round-trips identically on both backends).
+    if args.len() == 1
+        && matches!(core_of(db, args[0]), Core::ConstFloatNan)
+        && let Some(ast_disc) = ast_variant_discs(db)
+        && disc == ast_disc.float
+        && matches!(&ast_disc.ty, crate::ty::Ty::Sum { decl, .. }
+            if crate::eval::variant_owner_decl(db, head).is_some_and(|d| d == *decl))
+    {
+        return Core::Poison(Reject::decline(
+            "an `Ast.Float` node cannot carry a non-canonical float (a NaN has no canonical value \
+             form); a finite float reifies, matching how `,@` of a NaN list and `Ast.Float` of +inf decline",
+        ));
+    }
     Core::SumNew {
         disc,
         payloads: args.to_vec(),
