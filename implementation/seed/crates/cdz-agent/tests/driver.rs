@@ -91,3 +91,61 @@ fn the_driver_processes_inbox_messages_through_the_authorized_loop() {
         "the driver reports processing both messages: {stdout}"
     );
 }
+
+#[test]
+fn the_driver_returns_the_actual_model_completion() {
+    // Now that a multi-peer entrypoint may RETURN a String (v-peer-linking PL46), the loop can return the
+    // model's actual completion — not just a scalar byte-len. This consumer's main RETURNS
+    // Model.converse(Inbox.next()) directly; the mock model uppercases, so the driver reports the real
+    // answer text `(: "DO THE TASK" String)`, proving the completion (not a derived scalar) flows out.
+    let fixture: PathBuf = [
+        env!("CARGO_MANIFEST_DIR"),
+        "tests/fixtures/inbox-model-return-consumer.wasm",
+    ]
+    .iter()
+    .collect();
+    let consumer = std::fs::read(&fixture).expect("read the return-consumer fixture");
+    let req = cdz_run::required_runtime(&consumer)
+        .expect("read fixture runtime requirement")
+        .expect("the fixture imports the value-heap runtime");
+    if !find_runtime_present(&req.hash) {
+        eprintln!(
+            "[cdz-agent driver] runtime {} absent or stale fixture; skipping",
+            req.hash
+        );
+        return;
+    }
+
+    let dir = std::env::temp_dir().join(format!("cdz-agent-return-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("mkdir temp inbox");
+    std::fs::write(
+        dir.join("001-msg.json"),
+        r#"{"from":"tester","to":"cdz-agent","kind":"note","subject":"s","body":"do the task"}"#,
+    )
+    .unwrap();
+
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_cdz-agent"))
+        .args([
+            "--consumer",
+            fixture.to_str().unwrap(),
+            "--inbox",
+            dir.to_str().unwrap(),
+        ])
+        .output()
+        .expect("spawn cdz-agent");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert!(
+        out.status.success(),
+        "the driver must exit 0: stdout=<{stdout}> stderr=<{stderr}>"
+    );
+    // The mock uppercases "do the task" → "DO THE TASK"; the loop returns that String, rendered
+    // `(: "DO THE TASK" String)` — the ACTUAL model answer, not a byte-len.
+    assert!(
+        stdout.contains(r#"(: "DO THE TASK" String)"#),
+        "the driver reports the model's actual completion text: {stdout}"
+    );
+}

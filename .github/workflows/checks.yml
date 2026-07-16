@@ -235,6 +235,10 @@ jobs:
             > /tmp/inbox-consumer.sexp
           ./target/release/cdz compile /tmp/inbox-consumer.sexp \
             -o implementation/seed/crates/cdz-agent/tests/fixtures/inbox-model-consumer.wasm
+          printf '%s' '(do (effect Inbox (op next (-> Unit String))) (effect Model (op converse (-> String String))) (effect Cedar (op authorize (-> String Int64))) (bind Inbox "cadenza:inbox/api") (bind Model "cadenza:model/api") (bind Cedar "cadenza:cedar/api") (def (main) (if (= (host (Cedar) (Cedar.authorize "tool:chat")) 1) (host (Model) (Model.converse (host (Inbox) (Inbox.next)))) "denied")) (export main))' \
+            > /tmp/return-consumer.sexp
+          ./target/release/cdz compile /tmp/return-consumer.sexp \
+            -o implementation/seed/crates/cdz-agent/tests/fixtures/inbox-model-return-consumer.wasm
       - name: Test + lint the cdz-agent crate (standalone workspace)
         working-directory: implementation/seed/crates/cdz-agent
         run: |
