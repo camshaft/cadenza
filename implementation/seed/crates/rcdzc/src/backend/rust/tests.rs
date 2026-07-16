@@ -1565,6 +1565,27 @@ fn quantity_result_maps_to_inner_at_a_scale1_base_unit_else_declines() {
         scaled.is_err(),
         "a non-scale-1 (mile) quantity result declines (display-scaling not yet done):\n{scaled:?}"
     );
+    // A SINGLE base to a POSITIVE power — `meter²`, an area from `m·m` — is a scale-1 derived unit whose
+    // `render()` (`(Unit.^ (Unit.base #"meter") 2)`) matches cdz-run's value form, so it maps to the inner
+    // f64 and carries the `Unit.^` return note (the gate's 3 area cases pin the end-to-end render).
+    let area = compile_rust(
+        "(module m (def (g) (* (Qty.of 2.0 (Unit.base #\"meter\")) (Qty.of 3.0 (Unit.base #\"meter\")))) (export g))",
+    );
+    assert!(
+        area.contains("-> f64")
+            && area.contains("// cdz-return[g]: (Qty Float64 (Unit.^ (Unit.base #\"meter\") 2))"),
+        "a meter² (scale-1, single-base positive power) result emits the inner f64 + a Unit.^ note:\n{area}"
+    );
+    // A PRODUCT of DISTINCT bases / a QUOTIENT still DECLINES: a velocity `m/s` renders `Unit.*`/`Unit.^ -1`,
+    // a form cdz-run's canonical value spelling (which uses `Unit./`) does not match, so the harness cannot
+    // yet reconstruct it — decline rather than emit a wrong render (deferred to the value-form-rebuild slice).
+    let velocity = compile_rust_result(
+        "(module m (def (g) (/ (Qty.of 6.0 (Unit.base #\"meter\")) (Qty.of 2.0 (Unit.base #\"second\")))) (export g))",
+    );
+    assert!(
+        velocity.is_err(),
+        "a velocity (m/s, a distinct-base quotient) result declines (value-form rebuild not yet done):\n{velocity:?}"
+    );
 }
 
 #[test]

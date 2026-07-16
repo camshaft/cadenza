@@ -2110,6 +2110,7 @@ pass	difference cardinality with a runtime-element subtrahend
 pass	difference over a runtime-element set removes exactly that element
 pass	different runtime Bytes nested in a tuple compare unequal
 pass	differing trapping operands trap by selection only under the arith hoist
+pass	dimensional equality is decided by canonical exponent map, not written form
 pass	disjunction is false exactly when both operands are false
 pass	disjunction shields a trapping right operand when the left is true
 pass	distinct large floats are not equal
@@ -2300,6 +2301,7 @@ pass	multiplication
 pass	multiplication of an integer and a float does not silently promote
 pass	multiplication of the minimum integer by -1 overflows and traps
 pass	multiplication past the maximum integer overflows and traps
+pass	multiplying quantities multiplies their dimensions
 pass	narrowing a BigInt-valued if back to Int64 works over both branches
 pass	narrowing a constant BigInt out of the target range is rejected at compile time
 pass	negating a runtime Int64 near the boundary is exact just above the min
@@ -2389,6 +2391,7 @@ pass	quote-vs-constructor AST equality holds regardless of operand order
 pass	quoting an empty compound produces an empty Ast.List
 pass	raising a BigInt-magnitude quantity to a power runs the unbounded multiply
 pass	raising a COMPUTED (derived) quantity to a power squares its magnitude and dimension
+pass	raising a quantity to a compile-time power composes the unit and the magnitude
 pass	raising a runtime computed quantity to a power squares the runtime magnitude
 pass	reaching an effect neither handled nor delegated is rejected at compile time
 pass	read classifies a lone punctuation token as an Ast.Name and it round-trips
@@ -3198,7 +3201,6 @@ todo	compound equality over a runtime Rational leaf compares by the normalized f
 todo	conjunction elimination CONJUNCT2 preserves both operand hypotheses
 todo	conjunction elimination keeps BOTH operand hypotheses, not just the projected conjunct's
 todo	conjunction of two theorems sharing a hypothesis concatenates without dedup
-todo	dimensional equality is decided by canonical exponent map, not written form
 todo	distinct signatures sharing a core valtype shape dispatch distinct bodies
 todo	distinct-sig byte-rope closure alongside a plain export — the closure
 todo	distinct-sig byte-rope closure alongside a plain export — the plain
@@ -3276,13 +3278,11 @@ todo	multi-export compound result — three capturing closures share one call
 todo	multi-export record result — canonical field order
 todo	multi-export record result — the second closure, with a negative leaf
 todo	multiplying a scaled-unit quantity by the literal one keeps its dimension and displays scaled
-todo	multiplying quantities multiplies their dimensions
 todo	negative zero and zero are distinct map keys
 todo	one of several same-signature closure exports is made and called by the host
 todo	one of two DIFFERENT-signature closure exports is made and called
 todo	or performs the right operand's effect when the left is false
 todo	or short-circuit does not perform the right operand's effect
-todo	raising a quantity to a compile-time power composes the unit and the magnitude
 todo	round-trip byte-rope consumer alongside a plain export — the consumer
 todo	round-trip byte-rope consumer alongside a plain export — the plain
 todo	round-trip: a HIGHER-ORDER closure arg composed with a SUM result
