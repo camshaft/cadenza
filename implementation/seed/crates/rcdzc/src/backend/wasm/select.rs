@@ -8970,24 +8970,14 @@ enum HandleOwnership {
 /// of `value-eq`/`champ_eq` (a physical-byte compare) is canonicalized with `bytes-compact` before the
 /// compare so a rope and its flat twin compare equal. A `Symbol` is a nominal over a String leaf (same
 /// rope-capable rep); peel nominals so a `Symbol`/String-newtype operand is compacted too.
-fn operand_is_string(db: &mut Db, id: StructId) -> bool {
-    fn peel(ty: &Ty) -> &Ty {
-        match ty {
-            Ty::Nominal { inner, .. } => peel(inner),
-            other => other,
-        }
-    }
-    matches!(peel(&type_of(db, id)), Ty::String | Ty::Symbol)
-}
-
-/// Whether a DIRECT `Core::ValueEq` operand is a rope-capable text/byte value that must be `bytes-compact`ed
-/// before the physical `champ_eq` compare — a `String`/`Symbol` (per [`operand_is_string`]) OR a `Bytes`.
-/// A runtime `Bytes` can be a `bytes-concat`/`.slice` ROPE (physical bytes ≠ a flat leaf of equal content),
-/// exactly like a `String.concat` rope, so a direct Bytes operand of `=` is canonicalized the same way (the
-/// runtime `bytes-compact` is refcount-neutral, so it is safe on an owned OR a borrowed operand). Used ONLY
-/// on the direct `value-eq` operand path — NOT for a Map/Set KEY (`key_needs_compaction` stays String/Symbol
-/// only, so `ty_heap_walkable` still declines a NESTED Bytes leaf / a `Set Bytes` whose key path is not yet
-/// Bytes-compacting; a direct Bytes operand is admitted in `compound_eq_heap_walkable`).
+/// Whether an operand is a rope-capable text/byte value that must be `bytes-compact`ed before the physical
+/// `champ_eq` compare — a `String`/`Symbol` OR a `Bytes`. A runtime `Bytes` can be a `bytes-concat`/`.slice`
+/// ROPE (physical bytes ≠ a flat leaf of equal content), exactly like a `String.concat` rope, so it is
+/// canonicalized the same way (the runtime `bytes-compact` is refcount-neutral, so it is safe on an owned
+/// OR a borrowed operand). Used at BOTH physical-byte compare sites: the DIRECT `Core::ValueEq` operand
+/// path AND the Map/Set KEY path (`key_needs_compaction`). With the key path now Bytes-compacting,
+/// `ty_heap_walkable` admits a `Bytes` leaf (nested in a compound / a Set/Map key) — the nested/keyed
+/// companion of the direct-operand Bytes `=`.
 fn operand_is_string_or_bytes(db: &mut Db, id: StructId) -> bool {
     fn peel(ty: &Ty) -> &Ty {
         match ty {
@@ -8999,17 +8989,20 @@ fn operand_is_string_or_bytes(db: &mut Db, id: StructId) -> bool {
 }
 
 /// Whether a Map/Set KEY operand needs `bytes-compact` before the CHAMP `champ_hash`/`champ_eq` — an
-/// OWNED runtime String (a `String.concat` rope, whose physical bytes differ from a flat twin's of equal
-/// content, so it would hash into a different slot and never match its flat twin). This is the KEY-path
-/// companion of the `Core::ValueEq` compaction (`731dbf09`): both `value-eq` and the map/set key path use
-/// `champ_eq` over physical bytes, so a rope must be canonicalized at BOTH. Only a DIRECT, OWNED String
-/// key is compacted — a BORROWED String key (a param / a kept-local reference) is a FLAT leaf in practice
-/// and `bytes-compact` would consume it under its owner (mirrors the value-eq ownership gate); a String
-/// NESTED inside a compound key is the same rarer deferred case value-eq leaves. A compacted owned key is
-/// stack- and ownership-NEUTRAL: an owned rope in, an owned flat leaf out, so each site's existing key
-/// accounting (consumed by insert, or the dropped borrow-temporary at lookup/remove/contains) is unchanged.
+/// OWNED runtime String OR Bytes (a `String.concat`/`Bytes.concat`/`.slice` rope, whose physical bytes
+/// differ from a flat twin's of equal content, so it would hash into a different slot and never match its
+/// flat twin). This is the KEY-path companion of the `Core::ValueEq` compaction (`731dbf09`): both
+/// `value-eq` and the map/set key path use `champ_eq` over physical bytes, so a rope must be canonicalized
+/// at BOTH. Bytes is included alongside String/Symbol (`operand_is_string_or_bytes`) because a `Bytes`
+/// value has the SAME rope representation and the same physical-byte CHAMP key contract — the reasoning is
+/// verbatim the String story. Only a DIRECT, OWNED key is compacted — a BORROWED key (a param / a
+/// kept-local reference) is a FLAT leaf in practice and `bytes-compact` would consume it under its owner
+/// (mirrors the value-eq ownership gate); a String/Bytes NESTED inside a compound key is the same rarer
+/// deferred case value-eq leaves. A compacted owned key is stack- and ownership-NEUTRAL: an owned rope in,
+/// an owned flat leaf out, so each site's existing key accounting (consumed by insert, or the dropped
+/// borrow-temporary at lookup/remove/contains) is unchanged.
 fn key_needs_compaction(db: &mut Db, key: StructId) -> bool {
-    operand_is_string(db, key)
+    operand_is_string_or_bytes(db, key)
         && matches!(heap_operand_ownership(db, key), Ok(HandleOwnership::Owned))
 }
 

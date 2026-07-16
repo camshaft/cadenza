@@ -911,3 +911,67 @@
                 ((None) (- 0 1))))
             (export main)))
   (output (: 42 Int64)))
+
+; --- NESTED / keyed runtime BYTES value-equality (a DIRECT Bytes leaf in a compound / a CHAMP key) -----
+; The DIRECT-operand Bytes `=` (`(= bytesA bytesB)`) already compacts each operand before `value-eq`. These
+; pin the NESTED and KEYED faces: a Bytes leaf inside a tuple/sum (compared by the `value-eq` heap-walk), and
+; a Bytes as a Map/Set KEY (compared/hashed by CHAMP `champ_eq`/`champ_hash`). `ty_heap_walkable` now admits
+; a `Bytes` leaf, and `key_needs_compaction` compacts a Bytes key — so a `Bytes.concat` ROPE canonicalizes to
+; its flat byte form at BOTH the element-construction site (`elem_needs_rope_compaction`) and the key site,
+; and the physical byte-walk is EXACT. Before this a compound/keyed runtime Bytes `=` declined "comparison of
+; a compound value needs a heap walk". `rep b n` appends the byte 120 (`x`) `n` times to force a runtime rope.
+
+(case "a runtime Bytes rope nested in a tuple compares equal to its flat twin"
+  (doc    "`(= (tuple a 1) (tuple b 1))` where `a` is a runtime `Bytes.concat` rope [104,120] and `b` the
+           flat `Bytes.of [104,120]` — the nested Bytes leaf is compacted at the tuple construction, so the
+           value-eq heap-walk sees identical bytes → true. Pins the NESTED-Bytes face of compound equality.")
+  (input  (do
+            (def (rep (: b Bytes) (: n Int64)) (if (< n 1) b (rep (Bytes.concat b (Bytes.of (list 120))) (- n 1))))
+            (def (eq (: a Bytes) (: c Bytes)) (= (tuple a 1) (tuple c 1)))
+            (def (main) (eq (rep (Bytes.of (list 104)) 1) (Bytes.of (list 104 120)))) (export main)))
+  (call   main)
+  (output (: true Bool)))
+
+(case "different runtime Bytes nested in a tuple compare unequal"
+  (doc    "The negative companion: distinct Bytes leaves in the tuple → false. Confirms the nested-Bytes
+           compound walk is genuinely structural, not always-true.")
+  (input  (do
+            (def (eq (: a Bytes) (: c Bytes)) (= (tuple a 1) (tuple c 1)))
+            (def (main) (eq (Bytes.of (list 104)) (Bytes.of (list 105)))) (export main)))
+  (call   main)
+  (output (: false Bool)))
+
+(case "a runtime Bytes rope is found as a Set element by its flat twin"
+  (doc    "A `Set Bytes` membership test with a rope query key: `(Set.contains (Set.of (list flat)) rope)` —
+           the rope query [104,120] is compacted at the `set-contains` KEY site, so it hashes into the same
+           CHAMP slot as the flat element it equals → true. Pins the Bytes CHAMP-KEY face (a rope key must
+           hash identically to its flat twin, else it would never be found). `key_needs_compaction` now
+           compacts a Bytes key.")
+  (input  (do
+            (def (rep (: b Bytes) (: n Int64)) (if (< n 1) b (rep (Bytes.concat b (Bytes.of (list 120))) (- n 1))))
+            (def (main) (Set.contains (Set.of (list (Bytes.of (list 104 120)))) (rep (Bytes.of (list 104)) 1))) (export main)))
+  (call   main)
+  (output (: true Bool)))
+
+(case "a runtime Bytes rope map key is looked up by its flat twin"
+  (doc    "A `Map Bytes _` lookup with a rope query key: insert under the flat key `[104,120]`→42, look up
+           with the rope `(rep [104] 1)`. The rope query is compacted at the `map-lookup` KEY site, hashing
+           to the flat key's slot → 42. Pins the Bytes map-KEY face (the direct-Bytes-key analogue of the
+           nested-tuple-key case above).")
+  (input  (do
+            (def (rep (: b Bytes) (: n Int64)) (if (< n 1) b (rep (Bytes.concat b (Bytes.of (list 120))) (- n 1))))
+            (def (main) (Option.expect (Map.lookup (Map.insert (Map.empty) (Bytes.of (list 104 120)) 42) (rep (Bytes.of (list 104)) 1)) "found")) (export main)))
+  (call   main)
+  (output (: 42 Int64)))
+
+(case "a runtime Bytes rope in a SUM payload compares equal to its flat twin"
+  (doc    "The variant-payload face: `(B.Wrap rope)` vs `(B.Wrap flat)` — the Bytes payload is compacted at
+           the sum construction, so the value-eq walk compares equal → true. Pins that `ty_heap_walkable`
+           admits a Bytes leaf through a sum variant's payload, not only a tuple position.")
+  (input  (do
+            (type B (Wrap Bytes))
+            (def (rep (: b Bytes) (: n Int64)) (if (< n 1) b (rep (Bytes.concat b (Bytes.of (list 120))) (- n 1))))
+            (def (eq (: a Bytes) (: c Bytes)) (= (B.Wrap a) (B.Wrap c)))
+            (def (main) (eq (rep (Bytes.of (list 104)) 1) (Bytes.of (list 104 120)))) (export main)))
+  (call   main)
+  (output (: true Bool)))

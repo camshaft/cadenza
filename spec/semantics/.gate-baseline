@@ -1440,6 +1440,10 @@ pass	a runtime BigInt intermediate that overflows Int64 does not trap
 pass	a runtime BigInt operation does not silently promote a fixed-width operand
 pass	a runtime BigInt ordering compares by the arbitrary-precision value
 pass	a runtime BigInt remainder takes the dividend's sign
+pass	a runtime Bytes rope in a SUM payload compares equal to its flat twin
+pass	a runtime Bytes rope is found as a Set element by its flat twin
+pass	a runtime Bytes rope map key is looked up by its flat twin
+pass	a runtime Bytes rope nested in a tuple compares equal to its flat twin
 pass	a runtime FLOAT width nested in a compound annotation is rejected
 pass	a runtime Float32 addition emits the f32 machine add
 pass	a runtime Float32 division emits f32.div
@@ -2315,6 +2319,7 @@ pass	deeply nested pattern matching
 pass	demoting a Float64 to Float32 rounds to the nearest binary32
 pass	difference cardinality with a runtime-element subtrahend
 pass	difference over a runtime-element set removes exactly that element
+pass	different runtime Bytes nested in a tuple compare unequal
 pass	differing trapping operands trap by selection only under the arith hoist
 pass	dimensional equality is decided by canonical exponent map, not written form
 pass	disjunction is false exactly when both operands are false
