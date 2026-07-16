@@ -493,6 +493,7 @@ pass	a failure `?` propagates through TWO nested fallible boundaries
 pass	a failure `?` short-circuits BEFORE later computation runs
 pass	a fallible parser threads a Result((value,cursor),String) through mutual recursion, short-circuiting on Err
 pass	a false variant guard shields its arm's trapping body
+pass	a family quantity displays scaled to its reference over Int64, truncating a non-whole ratio
 pass	a far-miss segment kind keeps the plain unrecognized message
 pass	a field is projected from a record chosen across a call boundary by a runtime conditional
 pass	a field is projected from a record returned across a call boundary
@@ -1084,6 +1085,7 @@ pass	a post-order effectful walk draws each node's id AFTER both children (SSA r
 pass	a post-order labeling walk returns a labeled tree (heap result, id drawn after children)
 pass	a predicate closure returning Bool drives an early-exit recursive HOF
 pass	a prefix literal does not shadow a longer string arm
+pass	a prefixed quantity displays scaled to its reference unit (Float)
 pass	a prefixed unit combines with its base by converting to the reference (Float)
 pass	a private module member is still visible to a sibling
 pass	a private module member participates in mutual recursion with an exported sibling
@@ -1783,6 +1785,7 @@ pass	an AST from quasiquoting a runtime value equals the same AST built by quote
 pass	an Ast-value-spliced template round-trips through encode and decode
 pass	an IEC binary prefix converts exactly over Int64
 pass	an IEC binary prefix scales a unit by a power of two
+pass	an IEC-prefixed quantity displays scaled to its reference over Int64
 pass	an Int argument to a Bool-annotated parameter is rejected
 pass	an Int argument to a parameter used as a Bool condition is rejected
 pass	an N suffix lets a huge literal need no annotation
@@ -2395,6 +2398,7 @@ pass	multiplication
 pass	multiplication of an integer and a float does not silently promote
 pass	multiplication of the minimum integer by -1 overflows and traps
 pass	multiplication past the maximum integer overflows and traps
+pass	multiplying a scaled-unit quantity by the literal one keeps its dimension and displays scaled
 pass	multiplying quantities multiplies their dimensions
 pass	narrowing a BigInt-valued if back to Int64 works over both branches
 pass	narrowing a constant BigInt out of the target range is rejected at compile time
@@ -3156,7 +3160,6 @@ todo	a distinct-signature round-trip applies the Int64->Bool closure
 todo	a distinct-signature round-trip applies the Int64->Int64 closure
 todo	a distinct-signature round-trip's Bool closure on a nonzero input
 todo	a family quantity displays scaled exactly to its reference (Rational)
-todo	a family quantity displays scaled to its reference over Int64, truncating a non-whole ratio
 todo	a fixed-shape Tuple ARG with a Bytes RESULT crosses the direct-call boundary
 todo	a fixed-shape Tuple ARG with a List RESULT crosses the direct-call boundary
 todo	a fixed-shape Tuple ARG with a Map RESULT crosses the direct-call boundary
@@ -3203,7 +3206,6 @@ todo	a parameterized export returning a multi-argument capturing closure
 todo	a parameterized plain export alongside a closure export applies its argument
 todo	a parameterized plain export alongside a closure export — the closure captures and applies
 todo	a pass-through closure that returns its arg via a trivial let composes at one element type
-todo	a prefixed quantity displays scaled to its reference unit (Float)
 todo	a prelude Option value crosses a module boundary as an export result
 todo	a private constructor cannot be MATCHED from outside its module either
 todo	a produced closure is handed back into a consumer export (the round trip)
@@ -3279,7 +3281,6 @@ todo	a tuple-returning closure alongside a plain export — the plain
 todo	a two-argument closure exported to the host is called with both arguments
 todo	a wildcard-exported variant whose name shadows a prelude type is constructible in an importer
 todo	an 8-bit-integer closure crosses the host boundary
-todo	an IEC-prefixed quantity displays scaled to its reference over Int64
 todo	an INFINITY-axiom theorem is unforgeable — its Thm cannot be fabricated outside the kernel
 todo	an abortive handler abandons a host call in the path it discards
 todo	an abstract theorem is obtained only through the kernel's exported inference rule and accessor
@@ -3396,7 +3397,6 @@ todo	multi-export compound result — the second closure's tuple
 todo	multi-export compound result — three capturing closures share one call
 todo	multi-export record result — canonical field order
 todo	multi-export record result — the second closure, with a negative leaf
-todo	multiplying a scaled-unit quantity by the literal one keeps its dimension and displays scaled
 todo	one of several same-signature closure exports is made and called by the host
 todo	one of two DIFFERENT-signature closure exports is made and called
 todo	or performs the right operand's effect when the left is false

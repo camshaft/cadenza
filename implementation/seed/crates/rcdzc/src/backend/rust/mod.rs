@@ -427,7 +427,22 @@ fn emit_signature(
     // the driver splices it verbatim. Inert to rustc; keyed by ident like the return note.
     let unit_note = match result {
         crate::ty::Ty::Qty { unit, .. } => {
-            format!("// cdz-unit[{ident}]: {}\n", unit.render_value_form())
+            // A quantity DISPLAYS at its dimension's REFERENCE unit (scale dropped) — `5 kilometer` prints
+            // `5000 meter`, NOT `5 kilometer`. So the value-form unit is `unit.at_reference()` (the same
+            // exponent map at scale 1/1). For a scale-1 unit this is `unit` itself (byte-neutral). Plus, a
+            // NON-scale-1 unit needs the magnitude SCALED to that reference: emit its `num/den` in a
+            // `// cdz-scale[ident]:` note so the harness multiplies the boundary value (a scale-1 unit emits
+            // NO scale note — the magnitude is displayed as stored). Both notes are inert `//` comments.
+            let (num, den) = unit.scale();
+            let scale_note = if (num, den) == (1, 1) {
+                String::new()
+            } else {
+                format!("// cdz-scale[{ident}]: {num}/{den}\n")
+            };
+            format!(
+                "// cdz-unit[{ident}]: {}\n{scale_note}",
+                unit.at_reference().render_value_form()
+            )
         }
         _ => String::new(),
     };
