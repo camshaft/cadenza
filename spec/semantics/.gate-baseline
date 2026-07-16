@@ -2462,6 +2462,8 @@ pass	comparing records with different field-name sets is a type error
 pass	comparing same-shape nominal types is a type error
 pass	comparing sums with disjoint variant sets is a type error
 pass	comparing tuples of different lengths is a type error
+pass	comparing two function literals with = is a type error
+pass	comparing two function-typed parameters with = is a type error
 pass	comparing two quantities of the same dimension yields a Bool
 pass	comparing two same-shape nominal sum types is a type error, not false
 pass	comparing two same-unit Float-inner quantities at RUNTIME rides the scalar float compare
