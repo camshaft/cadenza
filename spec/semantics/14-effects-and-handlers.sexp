@@ -3398,3 +3398,28 @@
                 (lower (Bin (Lit 1) (Bin (Lit 2) (Lit 3))))))
             (export main)))
   (output (: 4 Int64)))
+
+(case "a nested inner handler that re-threads its own state folds (merged-context seed from init)"
+  (doc    "Two NESTED handlers over a cross-function recursive loop that performs BOTH effects — the
+           merged-context signature. The INNER handler `Tools` re-threads its OWN bound state in the arm
+           `(step (a) s (resume a s))` — the resume's next-state is the state BINDER `s`, not a fresh
+           value. `type_of` of a bare state binder alone is `Any` (its type is the seed's), so deriving
+           the merged inner slot's type from the arms' next-states ALONE yielded `Any` and DECLINED the
+           merge — while the SAME handler standalone folded (single-handler `reduce_handle` seeds the slot
+           type from the init). The merged path now seeds identically from the inner `init` (`Tools 0` →
+           Int64), so a stateful inner handler re-threading `s` folds. `loop 3 0` draws step ids handing
+           back the accumulator each turn: 3, then 2, then 1 → stop(6) → 6. (Reported by v-agent-harness
+           Inc-2; the fix mirrors the single-handler init-seeded state-type derivation.)")
+  (input  (do
+            (effect Model (op ask (-> Int64 Int64)))
+            (effect Tools (op step (-> Int64 Int64)) (op stop (-> Int64 Int64)))
+            (def (loop (: i Int64) (: acc Int64))
+              (if (= (Model.ask i) 0)
+                  (Tools.stop acc)
+                  (loop (- i 1) (Tools.step (+ acc i)))))
+            (def (main)
+              (handle Model 0 ((ask (q) s (resume q q)))
+                (handle Tools 0 ((step (a) s (resume a s)) (stop (a) s (resume a s)))
+                  (loop 3 0))))
+            (export main)))
+  (output (: 6 Int64)))

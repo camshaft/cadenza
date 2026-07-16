@@ -5627,6 +5627,34 @@ fn a_selfcall_gated_in_an_if_condition_declines_not_hoisted() {
     }
 }
 
+/// A NESTED inner handler whose arm RE-THREADS its own bound state — `(step (a) s (resume a s))`, the
+/// resume's next-state is the state BINDER `s`, not a fresh value — under a merged nested context must
+/// FOLD, not decline. `type_of` of a bare state binder alone is `Any` (its type is the seed's), so the
+/// merged path once derived the inner slot's type from the arms' next-states ALONE, got `Any`, and DECLINED
+/// the merge — while the SAME handler standalone folded (single-handler `reduce_handle` seeds the slot type
+/// from the init via `state_ty_of_arms`). `merged_nested_ctx` now seeds identically from the inner `init`,
+/// so a stateful inner handler re-threading `s` folds. `loop 3 0` performing `Tools.step` (hands back the
+/// accumulator each turn) under nested `Model`/`Tools` → 3+2+1 = 6. (Reported by v-agent-harness Inc-2.)
+#[test]
+fn a_nested_inner_handler_rethreading_its_state_folds() {
+    use crate::testkit::parse;
+    let src = "(do \
+        (effect Model (op ask (-> Int64 Int64))) \
+        (effect Tools (op step (-> Int64 Int64)) (op stop (-> Int64 Int64))) \
+        (def (loop (: i Int64) (: acc Int64)) \
+          (if (= (Model.ask i) 0) (Tools.stop acc) (loop (- i 1) (Tools.step (+ acc i))))) \
+        (def (main) \
+          (handle Model 0 ((ask (q) s (resume q q))) \
+            (handle Tools 0 ((step (a) s (resume a s)) (stop (a) s (resume a s))) \
+              (loop 3 0)))) (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect(
+        "a nested inner handler re-threading its bound state folds (merged-context init seed)",
+    );
+    if let Some(v) = run_linked(&bytes, "main") {
+        assert_eq!(v, "6");
+    }
+}
+
 // --- HOST-COMPOSITION INVARIANT boundary (§4.4: a reified/duplicated continuation must NOT span a host
 // call or an outer handler's effect). These are documented in 14-effects-and-handlers.sexp as a "clean
 // decline" but were not pinned by any test — so a future fold change that admitted the multi-shot /
