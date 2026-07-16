@@ -2263,6 +2263,7 @@ pass	eval on malformed AST traps
 pass	every not-a-number value is equal to every not-a-number value
 pass	exact rational arithmetic is exact and normalized
 pass	exact rational division is total and exact for a nonzero divisor
+pass	expansion recurses to a fixpoint through a tag whose body is another tagged template
 pass	expect makes a checked-arithmetic result trap on overflow
 pass	expect on a RUNTIME-absent optional traps with the canonical unreachable kind
 pass	expect traps on the err case of a RUNTIME result

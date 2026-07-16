@@ -90,6 +90,28 @@
             (export main)))
   (output (: 42 Int64)))
 
+; A DISTINCT fixpoint dimension: a tag function whose BODY is ITSELF a tagged template (not just a tag
+; returning a plain Ast). `outer` expands to `(tagged-template inner …)`, which must ITSELF be expanded —
+; the expander re-runs on the result until no template survives ("expanding to a fixpoint before type
+; checking"). This exercises the RECURSION of the expansion pass through a tag body, which the case above
+; (a tag returning a bare `Ast.Int`) does not reach. If the expander ran only once, the inner template
+; would survive into resolve as an unbound `tagged-template` form (4× CDZ0101), not fold to the Int.
+
+(case "expansion recurses to a fixpoint through a tag whose body is another tagged template"
+  (doc    "`outer`'s body IS `(tagged-template inner …)`; `inner` returns `(Ast.Int 7)`. Expanding the
+           outer template yields the inner template, which the expander must ITSELF expand (fixpoint) so the
+           final spliced value is `(Ast.Int 7)`, read here as 7. Pins that expansion re-runs on its own
+           output through a tag body — not a single pass — so a nested-macro-producing tag fully reduces
+           before type-checking (else the inner `(tagged-template …)` survives as an unbound form).")
+  (input  (do
+            (def (inner chunks holes) (Ast.Int 7))
+            (def (outer chunks holes) (tagged-template inner (chunks "") (holes)))
+            (def (main) (match (tagged-template outer (chunks "x") (holes))
+                          ((Ast.Int n) n)
+                          (_           0)))
+            (export main)))
+  (output (: 7 Int64)))
+
 ; --- The tag's TYPE is enforced (dispatch by binding requires the right shape) ---------------------
 ; metaprogramming.md: the tag "MUST … require it to be a compile-time function from a list of the chunk
 ; strings and a list of the hole expressions to an abstract syntax tree." A tag bound to a NON-FUNCTION
