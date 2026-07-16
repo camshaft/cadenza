@@ -618,7 +618,7 @@
            (length) but DIFFERENT units (km vs m), which are DIFFERENT `(Qty T u)` types (their unit's
            scale to the reference differs: km is 1000/1, m is 1/1). A quantity join does not auto-convert
            to the reference — a unit conversion is explicit (`in`/`as`, the no-silent-promotion rule) —
-           so the join is rejected CDZ0203. (Both branches RENDER to `(Qty Int64 (Unit.base meter))` —
+           so the join is rejected CDZ0203. (Both branches RENDER to `(Qty Int64 (Unit.base #\"meter\"))` —
            the reference-unit name with the scale dropped — so the diagnostic must name the SCALE
            difference, not misread it as a shadowed-declaration same-name clash.)")
   (input  (do (def (main (: b Bool))
@@ -666,6 +666,31 @@
   (input  (: (* (Qty.of 2.0 (Unit.base #"meter")) (Qty.of 3.0 (Unit.base #"meter")))
              (Qty Float64 (Unit.base #"meter"))))
   (error  CDZ0501))
+
+; An annotation checks the DIMENSION, not the scale — a unit is construction sugar for a magnitude at
+; the dimension's reference (units-of-measure.md; DESIGN §Interaction With Annotations: "accept any unit
+; of the right dimension; scale is construction sugar"). So annotating a quantity at a SAME-DIMENSION
+; DIFFERENT-unit type is accepted, and the annotated value KEEPS ITS OWN SCALE — the annotation checks
+; the dimension, it does NOT normalize/coerce the value to its unit. A cross-DIMENSION annotation is
+; still CDZ0501; a same-dimension annotation whose INNER NUMERIC type differs is still CDZ0203.
+
+(case "annotating a quantity at a same-dimension DIFFERENT unit is accepted (dimension checked, not scale)"
+  (doc    "`(: (Qty.of 1 kilometer) (Qty Int64 meter))` annotates a kilometer quantity at meter — the SAME
+           dimension (length) at a different scale. The annotation checks the DIMENSION, not the unit's
+           scale (a unit is construction sugar), so it is ACCEPTED, and the value KEEPS ITS OWN SCALE: it
+           stays 1 km, so `Qty.value` reads back 1 (the km magnitude), NOT a coerced-to-meter 1000. The
+           annotation constrains the dimension without normalizing the value to its unit.")
+  (input  (Qty.value (: (Qty.of 1 (Unit.prefix kilo (Unit.base #"meter"))) (Qty Int64 (Unit.base #"meter")))))
+  (output (: 1 Int64)))
+
+(case "a same-dimension quantity annotation whose inner numeric type differs is still an error"
+  (doc    "`(: (Qty.of 1 kilometer) (Qty Float64 meter))` shares the dimension (length) but the value's
+           inner numeric type is Int64 while the annotation says Float64 — a genuine numeric-type conflict,
+           CDZ0203. The dimension agreeing does NOT excuse a numeric mismatch: an annotation is an
+           additional constraint on the WHOLE type, and the inner numeric types must still unify (the same
+           no-silent-promotion the bare `(: 5 Float64)` enforces), even when the units share a dimension.")
+  (input  (Qty.value (: (Qty.of 1 (Unit.prefix kilo (Unit.base #"meter"))) (Qty Float64 (Unit.base #"meter")))))
+  (error  CDZ0203))
 
 ; ============================================================================================
 ; Erasure — a quantity is byte-identical to its underlying numeric (the numeric core is untouched)
@@ -1420,3 +1445,39 @@
   (input  (Qty.value (+ (Qty.of (UInt8.of 1) (Unit.prefix kilo (Unit.base #"meter")))
                         (Qty.of (UInt8.of 50) (Unit.base #"meter")))))
   (error  CDZ0304))
+
+; --- Quantity joins: the same-unit flow and the explicit-conversion repair --------------------------
+; 806e45ba9 fixed the mixed-unit join DIAGNOSTIC (a scale clash, not a shadowed declaration). These
+; pin the join semantics around it, promoted from passing breaker probes: a same-unit join is ONE
+; type and flows; the repair for a mixed join is the explicit conversion (no silent unification).
+
+(case "a same-unit quantity join flows and its magnitude reads back"
+  (doc    "`(if (> b 0) (Qty.of 1 kilometer) (Qty.of 5 kilometer))` — BOTH branches are `(Qty Int64
+           kilometer)`, one type, so the join flows; `Qty.value` reads the selected magnitude (1).
+           The positive control beside the mixed-unit rejection: unit identity, not mere dimension
+           agreement, is what joins (the conversion of a JOINED quantity is a separate, currently
+           declining capability — this pins the join itself).")
+  (input  (do
+            (def (main (: b Int64))
+              (Qty.value (if (> b 0) (Qty.of 1 (Unit.of #"kilometer")) (Qty.of 5 (Unit.of #"kilometer")))))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 1 Int64)))
+
+(case "an explicit conversion repairs a mixed-unit join"
+  (doc    "The REPAIR the scale-clash diagnostic names: convert one branch explicitly so both are
+           meters — `(if b (Qty.of 1000 meter) (Qty.of (Unit.in meter (Qty.of 1 kilometer)) meter))`
+           — and the join flows; both directions unwrap to 1000. Pins the no-silent-conversion rule's
+           constructive half: the program states the scale change, and the two spellings of one
+           kilometer agree exactly.")
+  (input  (do
+            (def (main (: b Int64))
+              (Unit.in (Unit.of #"meter")
+                (if (> b 0)
+                    (Qty.of 1000 (Unit.of #"meter"))
+                    (Qty.of (Unit.in (Unit.of #"meter") (Qty.of 1 (Unit.of #"kilometer"))) (Unit.of #"meter")))))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 1000 Int64))
+  (call   main (: 0 Int64))
+  (output (: 1000 Int64)))

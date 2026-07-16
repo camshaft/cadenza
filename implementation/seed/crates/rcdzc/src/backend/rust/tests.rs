@@ -563,6 +563,41 @@ fn nested_option_matches_bind_distinct_payload_names() {
 }
 
 #[test]
+fn a_string_constant_emits_an_owned_string() {
+    // A `Ty::String` → Rust `String`; a `ConstStr` → `"…".to_string()`, with content-safe escaping.
+    let rs = compile_rust(
+        "(module m (def (f (: n Int64)) (if (= n 0) \"café\" (f (+ n -1)))) (def (g) (f 1)) (export g))",
+    );
+    assert!(rs.contains("-> String"), "string return type:\n{rs}");
+    assert!(
+        rs.contains("\"café\".to_string()"),
+        "const string with UTF-8 preserved:\n{rs}"
+    );
+    // A String PARAMETER crosses as `String`.
+    let param = compile_rust("(module m (def (id (: s String)) s) (export id))");
+    assert!(param.contains("id(s: String)"), "string param:\n{param}");
+    // A string literal with escapes emits valid Rust (quote + backslash + newline).
+    let esc = compile_rust(
+        "(module m (def (f (: n Int64)) (if (= n 0) \"a\\\"b\" (f (+ n -1)))) (def (g) (f 1)) (export g))",
+    );
+    assert!(esc.contains("\\\""), "escaped quote in the literal:\n{esc}");
+}
+
+#[test]
+fn rustc_roundtrip_string_result_renders_quoted() {
+    // A runtime string result crosses end-to-end and renders as cdz-run's `"…"` form (raw UTF-8, quoted).
+    let module = compile_rust(
+        "(module m (def (f (: n Int64)) (if (= n 0) \"parse error\" (f (+ n -1)))) \
+           (def (mk) (f 1)) (export mk))",
+    );
+    // The driver renders a `String` result as `"<content>"` — a multi-word string keeps its spaces.
+    let driver = "fn main() { let s = prog::mk(); println!(\"\\\"{}\\\"\", s); }";
+    if let Some(out) = rustc_run_driver(&module, driver) {
+        assert_eq!(out, "\"parse error\"", "a multi-word string renders quoted");
+    }
+}
+
+#[test]
 fn an_ill_formed_integer_width_is_rejected_not_declined() {
     // An out-of-range integer WIDTH (negative/non-natural, or over-ceiling `(UInt 65)`) is an ILL-FORMED
     // TYPE, not a target limitation — a boundary of that type must REJECT (CDZ0302), the SAME outcome the

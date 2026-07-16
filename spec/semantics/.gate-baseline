@@ -678,6 +678,7 @@ pass	a fixpoint that re-seeds a fresh list each round via a helper returns a lis
 pass	a flat string map key is found by a runtime rope twin
 pass	a float annotation reaches the 32-bit width
 pass	a float in integer-width position is rejected
+pass	a float width from runtime data is rejected, like an integer width
 pass	a float width outside the admitted set is rejected
 pass	a floating-point literal
 pass	a four-level nested-constructor pattern with a generic user sum in the middle matches
@@ -1563,7 +1564,9 @@ pass	a runtime-scrutinee match with a bare-binder first arm and a differently-ty
 pass	a runtime-selected closure survives as a value threaded through a recursive HOF (false branch)
 pass	a runtime-selected closure survives as a value threaded through a recursive HOF (true branch)
 pass	a runtime-selected function chosen directly at the application head is applied
+pass	a same-dimension quantity annotation whose inner numeric type differs is still an error
 pass	a same-type sum match is accepted and binds the payload (the control)
+pass	a same-unit quantity join flows and its magnitude reads back
 pass	a scalar BETWEEN two Tuple args with a LIST result
 pass	a scalar element is projected DIRECTLY from a named function's runtime tuple result
 pass	a scalar element is projected directly from a function's runtime tuple result
@@ -1678,6 +1681,7 @@ pass	a symbol is constructed from a string
 pass	a symbol's identity is its content, not how the content was derived
 pass	a tag-length-value record round-trips through construct then match
 pass	a tagged template expands via its binding-dispatched tag function
+pass	a tagged template threads MULTIPLE holes and an interior chunk to its tag function
 pass	a tagged template weaves a hole into its expansion
 pass	a tagged template whose tag is not a function is rejected
 pass	a tagged template whose tag is unbound is a scope error
@@ -1896,6 +1900,8 @@ pass	an absorbing or-true keeps an effectful left operand's perform
 pass	an abstract type is used through the module's exported constructor and accessor
 pass	an abstract type's constructor is not reachable outside its module
 pass	an absurd runtime width is rejected, not silently ignored
+pass	an active unquote lifts a RUNTIME boolean operand, not only a constant
+pass	an active unquote lifts a RUNTIME float operand, not only a constant
 pass	an active unquote lifts a RUNTIME integer operand, not only a constant
 pass	an active unquote of a boolean literal lifts to an Ast.Bool node
 pass	an active unquote of a computed boolean expression lifts to Ast.Bool
@@ -1992,6 +1998,7 @@ pass	an explicit annotation overrides the default-fraction pragma
 pass	an explicit annotation overrides the default-integer pragma
 pass	an explicit conversion makes the operation well-typed
 pass	an explicit conversion off the truncating-display quantity is still exact (5 foot in inches = 60)
+pass	an explicit conversion repairs a mixed-unit join
 pass	an explicit float-width conversion makes a mixed-width operation well-typed
 pass	an export and a like-named metadata key do not collide
 pass	an export mixing a scalar and a nested-tuple parameter returns a list from both
@@ -2125,6 +2132,7 @@ pass	and performs the right operand's effect when the left is true
 pass	and short-circuit does not perform the right operand's effect
 pass	and short-circuits at run time: a false left operand skips the trapping right operand
 pass	annotating a quantity at a dimension the expression does not derive is an error
+pass	annotating a quantity at a same-dimension DIFFERENT unit is accepted (dimension checked, not scale)
 pass	applying a boolean is a type error
 pass	applying a float is a type error
 pass	applying a non-function is a type error

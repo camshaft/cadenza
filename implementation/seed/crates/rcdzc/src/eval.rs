@@ -2704,22 +2704,39 @@ fn read_width(db: &mut Db, id: StructId) -> WidthRead {
     }
 }
 
-/// Whether the type expression at `id` is an integer type `(Int W)`/`(UInt W)` whose WIDTH is RUNTIME
-/// DATA — a function PARAMETER (or a reference chain reaching one). Such a width puts a runtime value in
-/// a type-determining position, which the type system forbids (a width must be a compile-time natural,
-/// `numeric-model.md §An Integer Type Is Indexed By A Compile-Time Width`). Checked on the UN-INLINED
+/// Whether the type expression at `id` is a width-indexed numeric type — `(Int W)`/`(UInt W)` or
+/// `(Float W)` — whose WIDTH is RUNTIME DATA (a function PARAMETER, or a reference chain reaching one).
+/// Such a width puts a runtime value in a type-determining position, which the type system forbids (a
+/// width must be a compile-time value, `numeric-model.md §An Integer Type Is Indexed By A Compile-Time
+/// Width` / §A Floating-Point Type Is Indexed By A Compile-Time Width). Checked on the UN-INLINED
 /// annotation body so `(def (mk n) (: 5 (UInt n)))` rejects even though a constant call site would fold
 /// `n` — the width is non-dependent by declaration, not by how it is called. Only a genuine
 /// runtime-value width is flagged; a constant width, an unbound name, or a not-yet-built thing is not
-/// (those are handled elsewhere — a malformed width by `read_width`, an unbound name by scope).
+/// (those are handled elsewhere — a malformed/out-of-set width by `read_width`, an unbound name by scope).
+/// A `(Float n)` runtime width MUST reach here: the admitted-set check (`is_ill_formed_float_width`) reads
+/// `read_width`, which yields `NotConst` for a runtime `n` and so does NOT flag it — without this predicate
+/// a runtime float width would reduce to the sentinel `Float0` and slip past `cdz check` (PR #425).
 pub fn is_runtime_width_type(db: &mut Db, id: StructId) -> bool {
     let Resolved::Apply { head, args } = resolved_of(db, id) else {
         return false;
     };
     match meta_apply_of(db, head) {
-        Some(Prim::IntCtor | Prim::UIntCtor) if args.len() == 1 => width_is_runtime(db, args[0]),
+        Some(Prim::IntCtor | Prim::UIntCtor | Prim::FloatCtor) if args.len() == 1 => {
+            width_is_runtime(db, args[0])
+        }
         _ => false,
     }
+}
+
+/// Whether the type expression at `id` is a `(Float W)` (the `FloatCtor` applied to one argument),
+/// regardless of what the width is. Lets a runtime-width diagnostic name the FLOAT axis (admitted IEEE
+/// widths) rather than the integer one when the offending type is a float. A companion of
+/// `is_runtime_width_type`, which admits `FloatCtor` alongside the integer ctors.
+pub fn is_float_ctor_type(db: &mut Db, id: StructId) -> bool {
+    let Resolved::Apply { head, args } = resolved_of(db, id) else {
+        return false;
+    };
+    meta_apply_of(db, head) == Some(Prim::FloatCtor) && args.len() == 1
 }
 
 /// Whether a width expression resolves to a RUNTIME value — a function parameter (through any `Ref`

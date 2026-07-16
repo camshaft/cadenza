@@ -1256,6 +1256,16 @@ pub mod driver {
     /// to ML and re-parsed; if that fails, the rewrite is REJECTED (no output) with the parse error —
     /// never a half-applied edit. (Type-checking the result is the Rung-3 step, requiring the compiler
     /// crate; re-parse well-formedness is what this dependency-free layer can guarantee.)
+    //
+    // The re-parse + structural-equality gate below is exactly this: a structural edit either yields a
+    // program that re-parses cleanly (well-formed), or returns an `Err` naming why (a machine-readable
+    // rejection) — it never emits a malformed result silently.
+    //
+    //= spec/capabilities/agent-authoring.md#structural-edits-preserve-well-formedness-or-report
+    //# A structural edit MUST either yield a well-formed program or report a machine-readable rejection.
+    //
+    //= spec/capabilities/agent-authoring.md#structural-edits-preserve-well-formedness-or-report
+    //# A structural edit MUST NOT yield a program that is malformed without reporting why.
     pub fn apply_rewrite(
         rules: &RuleSet,
         strategy: Strategy,
@@ -1308,6 +1318,13 @@ pub mod driver {
     ///
     /// `surface` is the source's surface (ML or s-expr), used both to re-parse for validation and to
     /// render the replacement text of changed/inserted nodes so a splice reads like its neighbours.
+    //
+    // Splicing only the changed subtrees at their spans — leaving every unmatched byte verbatim — is
+    // how a structural edit operates WITHOUT re-parsing code unrelated to its target: untouched
+    // regions are copied through as source bytes, never re-read or re-printed.
+    //
+    //= spec/capabilities/agent-authoring.md#a-structural-interface-exists
+    //# A structural query or edit MUST operate without re-parsing code unrelated to its target.
     pub fn apply_rewrite_preserving(
         rules: &RuleSet,
         strategy: Strategy,

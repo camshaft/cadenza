@@ -2209,18 +2209,22 @@ fn run_check(args: &CheckArgs) -> ExitCode {
     let mut covered: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut any_error = false;
     for f in &files {
-        if covered.contains(&canon(f)) {
+        // Canonicalize ONCE per target (a filesystem `canonicalize` + allocation) — reused for both the
+        // already-covered test and the insert below, rather than recomputing it each place.
+        let canon_f = canon(f);
+        if covered.contains(&canon_f) {
             continue; // already checked via an earlier target's closure — don't double-report
         }
-        any_error |= check_one(f, args.json, args.verify_fixes);
-        // Mark f AND every file its closure pulled in as covered, so a later target that is one of those
-        // imported modules is skipped. A load error here just means f alone is covered (check_one already
-        // reported it).
-        covered.insert(canon(f));
-        if let Ok(closure) = load_import_closure_with(f, &|_| None) {
-            for lf in &closure {
-                covered.insert(canon(&lf.path));
-            }
+        // `check_one` follows + parses f's whole import closure to check it; it hands the closure's file
+        // paths back so we mark f AND every file it pulled in as covered WITHOUT reloading + reparsing the
+        // same closure here (the redundant second load this used to do). A later target that is one of
+        // those imported modules is then skipped. On a load error the returned closure is empty, so f
+        // itself is still covered below (check_one already reported the error).
+        let (had_error, closure_paths) = check_one(f, args.json, args.verify_fixes);
+        any_error |= had_error;
+        covered.insert(canon_f);
+        for path in &closure_paths {
+            covered.insert(canon(path));
         }
     }
     if any_error {
@@ -2316,10 +2320,14 @@ fn resolve_check_targets(target: Option<&str>) -> Result<Vec<String>, String> {
     }
 }
 
-/// Check ONE file (following its import closure) — the per-file core of `cdz check`. Returns `true` if
-/// any error-severity fault (including a parse error) was reported, so a project-wide [`run_check`] can
-/// OR the results across many files. `json`/`verify_fixes` are the `cdz check` flags.
-fn check_one(file: &str, json: bool, verify_fixes: bool) -> bool {
+/// Check ONE file (following its import closure) — the per-file core of `cdz check`. Returns
+/// `(had_error, closure_paths)`: `had_error` is `true` if any error-severity fault (including a parse
+/// error) was reported (so a project-wide [`run_check`] can OR the results across many files), and
+/// `closure_paths` is the on-disk path of EVERY file this check pulled into the import closure — so the
+/// caller can mark them covered WITHOUT reloading + reparsing the closure (which `check_one` already
+/// did). On a load failure the closure is empty (the caller still covers `file` itself).
+/// `json`/`verify_fixes` are the `cdz check` flags.
+fn check_one(file: &str, json: bool, verify_fixes: bool) -> (bool, Vec<String>) {
     // Follow the entry file's IMPORT CLOSURE so a cross-file reference (an imported type or definition)
     // resolves and checks — `cdz check FILE` then sees the SAME linked program the package compile does.
     // A file that imports nothing loads as a lone file, byte-identical to a standalone check; only a file
@@ -2329,7 +2337,7 @@ fn check_one(file: &str, json: bool, verify_fixes: bool) -> bool {
         Ok(f) => f,
         Err(e) => {
             eprintln!("{PROG}: {e}");
-            return true; // load failure = an error
+            return (true, Vec::new()); // load failure = an error; nothing loaded to cover
         }
     };
     // A file that did NOT fully parse — an unclosed `(`, an arm-less `match`, a `then` with no `else`.
@@ -2379,7 +2387,10 @@ fn check_one(file: &str, json: bool, verify_fixes: bool) -> bool {
     };
     let Some(bytes) = out.artifact(rcdzc::sidecar::KIND_DIAGNOSTICS) else {
         report_errors(&out);
-        return true; // the diagnostics query itself failed = an error
+        // The diagnostics query itself failed = an error. The closure DID load, so still hand its paths
+        // back for the caller's coverage set (the files were checked as far as this point).
+        let closure_paths = files.into_iter().map(|f| f.path).collect();
+        return (true, closure_paths);
     };
     let text = String::from_utf8_lossy(bytes);
     let mut any_error = false;
@@ -2672,7 +2683,9 @@ fn check_one(file: &str, json: bool, verify_fixes: bool) -> bool {
     // program), even when the truncated arena carries no downstream semantic fault. `check`'s contract is
     // "exits non-zero if any error-severity fault is present", and the parse error was already printed to
     // stderr from the load boundary — so fail here too, closing the "prints an error but exits 0" gap.
-    any_error || any_parse_error
+    // Hand the closure's file paths back so the project driver can mark them covered without reloading.
+    let closure_paths = files.into_iter().map(|f| f.path).collect();
+    (any_error || any_parse_error, closure_paths)
 }
 
 /// `cdz fix FILE` — apply every VERIFIED fix and write the repaired program back. Runs the same

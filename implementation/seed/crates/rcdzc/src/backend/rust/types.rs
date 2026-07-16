@@ -122,6 +122,11 @@ pub fn rust_type(ty: &Ty) -> Option<String> {
         // A SET is a persistent collection of unique elements — Rust's ordered `BTreeSet<T>` (sorted
         // iteration = the canonical `Set.to-list` order; `Ord` element compares by value, dedup at insert).
         Ty::Set(elem) => Some(format!("std::collections::BTreeSet<{}>", rust_type(elem)?)),
+        // A STRING is a UTF-8 text value — Rust's owned `String`. A Cadenza string counts UNICODE SCALAR
+        // VALUES (not bytes), which Rust's `String`/`.chars()` model directly. Non-Copy (owned heap
+        // buffer) → clone-on-read covers a shared string. (`String` is `Ord`, so it can also key a
+        // `BTreeMap` — unblocking String-keyed maps that declined while `String` had no rep.)
+        Ty::String => Some("String".to_string()),
         // Functions and type/erased values have no native mapping.
         _ => None,
     }

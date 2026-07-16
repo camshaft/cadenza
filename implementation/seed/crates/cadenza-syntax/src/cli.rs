@@ -50,6 +50,16 @@ pub struct Cli {
 
 /// The syntax subcommands — embeddable in another bin's subcommand tree (the `cdz` bin flattens these
 /// alongside the compiler's).
+///
+/// `Query`/`Rewrite` are the documented structural interface an agent uses to read and rewrite a
+/// program's canonical representation directly — matching/editing the arena tree by s-expression
+/// pattern, never patching source text:
+//
+//= spec/capabilities/agent-authoring.md#a-structural-interface-exists
+//# The language MUST expose a documented interface to read a program's canonical representation without textual patching.
+//
+//= spec/capabilities/agent-authoring.md#a-structural-interface-exists
+//# The language MUST expose a documented interface to rewrite a program's canonical representation without textual patching.
 #[derive(Subcommand)]
 pub enum Cmd {
     /// Convert a program between surfaces (reads FILE or stdin, writes stdout).

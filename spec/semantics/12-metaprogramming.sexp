@@ -1215,6 +1215,11 @@
 ; const-only reify (or a lift that mis-wraps a non-constant payload) would pass them all yet break real
 ; macro use. These pin the lift over a value that arrives at RUN TIME through the export boundary: the
 ; scalar reaches `ast-lift` as a live operand, is wrapped, reconstructed by eval, and computed on.
+; `lower_ast_lift` has a per-type arm (Int64→Ast.Int, Bool→Ast.Bool, Float64→Ast.Float, String→Ast.Str);
+; the Int/Bool/Float arms are pinned over a genuine runtime scalar here. The STRING arm is NOT pinned at
+; run time because a `String` parameter can't cross the export boundary this harness calls through (a
+; plain `String`-param export declines identically, so the decline is the boundary, not the lift) — its
+; runtime lift stays witnessed by the literal/String-op cases above.
 
 (case "an active unquote lifts a RUNTIME integer operand, not only a constant"
   (doc    "`(main n) = (eval `(+ ,n 1))` called with n=41 → 42. `n` is a runtime parameter (arrives via
@@ -1229,6 +1234,31 @@
             (export main)))
   (call   main (: 41 Int64))
   (output (: 42 Int64)))
+
+(case "an active unquote lifts a RUNTIME boolean operand, not only a constant"
+  (doc    "The Bool arm of the runtime lift: `(main b) = (eval `(if ,b 10 20))` called with b=false → 20.
+           `b` is a runtime parameter, so the `Ast.Bool` wrap is built on a NON-constant payload and eval's
+           branch dispatch consumes the lifted leaf at run time. Companion of the runtime-int case: pins the
+           `Bool→Ast.Bool` arm of `lower_ast_lift` over a live operand (a const-only reify declines it; a
+           mis-wrapped bool payload selects the wrong branch and answers 10).")
+  (input  (do
+            (def (main (: b Bool))
+              (eval (quasiquote (if (unquote b) 10 20))))
+            (export main)))
+  (call   main (: false Bool))
+  (output (: 20 Int64)))
+
+(case "an active unquote lifts a RUNTIME float operand, not only a constant"
+  (doc    "The Float arm of the runtime lift: `(main x) = (eval `(+ ,x 1.5))` called with x=2.5 → 4.0. `x`
+           is a runtime Float64 parameter, so the `Ast.Float` wrap carries a NON-constant payload that
+           eval reconstructs into ordinary float arithmetic. Companion of the runtime-int case for the
+           `Float64→Ast.Float` arm (a payload mis-read as the i64 bit pattern computes garbage, not 4.0).")
+  (input  (do
+            (def (main (: x Float64))
+              (eval (quasiquote (+ (unquote x) 1.5))))
+            (export main)))
+  (call   main (: 2.5 Float64))
+  (output (: 4.0 Float64)))
 
 ; --- `quote` is a grammar head in EXPRESSION position, not a reserved DEFINITION name -------------
 ; `quote`/`quasiquote` are grammar forms the resolver dispatches STRUCTURALLY only when they head an

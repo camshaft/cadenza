@@ -17,7 +17,8 @@
 //! `cdz run … | cdz-cad - -o out.stl` directly.
 //!
 //! Output format is chosen by the `-o` file EXTENSION: `.stl` → binary STL (printer convenience), `.glb` →
-//! binary glTF (design-primary, watertight-preserving). 3MF (a ZIP+XML format needing extra deps) is later.
+//! binary glTF (design-primary, watertight-preserving). `--ascii` writes ASCII STL instead of binary (for a
+//! `.stl` target). 3MF (a ZIP+XML format needing extra deps) is later.
 
 use std::io::Read;
 use std::path::PathBuf;
@@ -54,6 +55,7 @@ struct Args {
     input: String,           // a path, or "-" for stdin
     output: Option<PathBuf>, // None in --info mode (inspect only, write nothing)
     segments: i32,
+    ascii: bool, // for a `.stl` target: write ASCII STL instead of binary
 }
 
 fn main() -> ExitCode {
@@ -61,7 +63,7 @@ fn main() -> ExitCode {
         Ok(a) => a,
         Err(msg) => {
             eprintln!(
-                "cdz-cad: {msg}\n\nusage: cdz-cad <input.sexp|-> (-o <out.stl|out.glb> | --info) [--segments N]"
+                "cdz-cad: {msg}\n\nusage: cdz-cad <input.sexp|-> (-o <out.stl|out.glb> | --info) [--segments N] [--ascii]"
             );
             return ExitCode::FAILURE;
         }
@@ -105,6 +107,7 @@ fn main() -> ExitCode {
     match (&args.output, format) {
         (Some(path), Some(fmt)) => {
             let bytes = match fmt {
+                Format::Stl if args.ascii => stl::to_ascii_stl(&m).into_bytes(),
                 Format::Stl => stl::to_binary_stl(&m),
                 Format::Glb => gltf::to_glb(&m),
             };
@@ -154,6 +157,7 @@ fn parse_args() -> Result<Args, String> {
     let mut input: Option<String> = None;
     let mut output: Option<PathBuf> = None;
     let mut info = false;
+    let mut ascii = false;
     let mut segments: i32 = cdz_cad::DEFAULT_SEGMENTS;
 
     let mut it = std::env::args().skip(1);
@@ -164,6 +168,8 @@ fn parse_args() -> Result<Args, String> {
             }
             // `--info`: mesh + report bounds/counts, but write NO file (inspect a model).
             "--info" => info = true,
+            // `--ascii`: for a `.stl` target, write human-readable ASCII STL instead of binary.
+            "--ascii" => ascii = true,
             "--segments" => {
                 let s = it.next().ok_or("`--segments` needs a number")?;
                 segments = s
@@ -197,10 +203,34 @@ fn parse_args() -> Result<Args, String> {
         _ => {}
     }
 
+    // `--ascii` only affects a `.stl` target (glTF is inherently binary) — flag a misuse rather than
+    // silently ignoring it. (In --info mode there's no file, so --ascii is also meaningless there.)
+    if ascii {
+        match &output {
+            None => {
+                return Err(
+                    "`--ascii` needs a `.stl` output (it does nothing with `--info`)".to_string(),
+                )
+            }
+            Some(p) => {
+                let is_stl = p
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .is_some_and(|e| e.eq_ignore_ascii_case("stl"));
+                if !is_stl {
+                    return Err(
+                        "`--ascii` applies only to a `.stl` output (glTF is binary)".to_string()
+                    );
+                }
+            }
+        }
+    }
+
     Ok(Args {
         input: input.ok_or("no input (a file path, or `-` for stdin)")?,
         output,
         segments,
+        ascii,
     })
 }
 

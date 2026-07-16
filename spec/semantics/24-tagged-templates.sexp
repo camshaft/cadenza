@@ -133,6 +133,36 @@
             (export main)))
   (output (: 7 Int64)))
 
+; --- MULTIPLE holes + an INTERIOR chunk: the expander's multi-element list construction -------------
+; Every case above uses zero or one hole (and only edge chunks). The expander builds `(<tag> (list c…)
+; (list h…))` — with two holes and three chunks BOTH lists are multi-element, and an INTERIOR chunk
+; (`chunks[1]`, between two holes) must land in the middle of the chunk list. This pins that
+; `tagged_template::rewrite_of` threads ALL holes positionally and preserves chunk order (the
+; `chunks.len() == holes.len() + 1` structure with an interior chunk) — an off-by-one in either list, or
+; dropping a non-edge chunk, would flip this case. `weave` reads chunk 1 ("MID") and both holes (10, 20):
+; `byte-len("MID") + 10 + 20 = 33`.
+
+(case "a tagged template threads MULTIPLE holes and an interior chunk to its tag function"
+  (doc    "Two holes and three chunks — both the `(list c…)` and `(list h…)` the expander builds are
+           multi-element, and the middle chunk sits BETWEEN the holes. `weave` reads chunk 1 (\"MID\") and
+           both holes (Ast.Int 10, Ast.Int 20) and returns `(Ast.List (Ast.Name \"MID\") 10 20)`, scored
+           `byte-len(\"MID\") + 10 + 20 = 33`. Pins the multi-element list construction in
+           `tagged_template::rewrite_of`: all holes are threaded positionally and chunk order (including a
+           non-edge chunk) is preserved — an off-by-one or a dropped interior chunk flips the answer.")
+  (input  (do
+            (def (weave chunks holes)
+              (match holes
+                ((list a b) (match chunks
+                              ((list c0 c1 c2) (Ast.List (list (Ast.Name c1) a b)))
+                              (_               (Ast.List (list)))))
+                (_          (Ast.List (list)))))
+            (def (main) (match (tagged-template weave (chunks "p" "MID" "q") (holes (Ast.Int 10) (Ast.Int 20)))
+                          ((Ast.List (list (Ast.Name nm) (Ast.Int x) (Ast.Int y)))
+                           (+ (String.byte-len nm) (+ x y)))
+                          (_ 0)))
+            (export main)))
+  (output (: 33 Int64)))
+
 ; --- Composition: a hole may itself be a quote/Ast expression ---------------------------------------
 ; A `{expr}` hole is an ORDINARY expression, so it may be a `(quote …)` (or any Ast-valued expression) —
 ; the two metaprogramming surfaces compose. The hole is parsed as one expression and lowered to `Ast`, so

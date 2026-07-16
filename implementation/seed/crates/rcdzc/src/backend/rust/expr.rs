@@ -637,6 +637,11 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         }),
         // Unit is Rust's `()`.
         Core::Unit => Ok("()".to_string()),
+        // A STRING constant → a Rust `String` (`"…".to_string()`). The literal's bytes are escaped for a
+        // Rust string literal — `\`, `"`, newline/CR/tab, and any non-printable byte via `\u{..}` — so the
+        // emitted source is valid regardless of the string's content. A Cadenza `String` is owned text, so
+        // `.to_string()` gives the owned `String` the type map (`Ty::String`→`String`) expects.
+        Core::ConstStr(s) => Ok(format!("{}.to_string()", rust_string_literal(&s))),
         // A parameter or kept-let reference — read the identifier its binder maps to. A binder with no
         // environment entry is a compiler bug (a ref whose binding was not brought into scope), so
         // decline rather than emit a dangling name.
@@ -1249,8 +1254,7 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         // panic carrying its own op-named reason, not `Core::Trap`, so this literal is only the non-
         // arithmetic explicit trap, whose canonical kind IS `unreachable`.)
         Core::Trap => Ok("panic!(\"unreachable\")".to_string()),
-        Core::ConstStr(_)
-        | Core::ConstChar(_)
+        Core::ConstChar(_)
         | Core::ConstFloatNan
         | Core::BytesOf { .. }
         | Core::BytesLen { .. }
@@ -1827,9 +1831,9 @@ fn needs_clone_on_read(db: &mut Db, id: StructId) -> bool {
 /// a compound is non-Copy iff any element/field/payload is. Everything else this backend emits is Copy.
 fn ty_is_non_copy(ty: &Ty) -> bool {
     match ty {
-        // `Vec<T>`/`BTreeMap<K,V>`/`BTreeSet<T>` are heap collections — non-Copy (move-only), so a binding
-        // of one read in more than one position clones (the clone-on-read discipline), like any heap value.
-        Ty::List(_) | Ty::Map(_, _) | Ty::Set(_) => true,
+        // `Vec<T>`/`BTreeMap<K,V>`/`BTreeSet<T>`/`String` are heap-owned values — non-Copy (move-only), so a
+        // binding of one read in more than one position clones (the clone-on-read discipline).
+        Ty::List(_) | Ty::Map(_, _) | Ty::Set(_) | Ty::String => true,
         // A compound is non-Copy iff any component is (a tuple/record of scalars stays Copy).
         Ty::Tuple(elems) => elems.iter().any(ty_is_non_copy),
         Ty::Record(fields) => fields.values().any(ty_is_non_copy),
@@ -1849,6 +1853,34 @@ fn ty_is_non_copy(ty: &Ty) -> bool {
         Ty::Fn(_, _) => true,
         _ => false,
     }
+}
+
+/// Render `s` as a Rust STRING LITERAL (`"…"`) with a valid escape for every character — so the emitted
+/// source compiles regardless of the string's content. Escapes `\`, `"`, the common whitespace controls
+/// (`\n`/`\r`/`\t`), and any other control/non-printable char via `\u{..}`; a printable non-ASCII char
+/// (a UTF-8 letter like `é`) passes through verbatim (a Rust string literal is UTF-8, so this preserves
+/// the exact scalar content — matching cdz-run's raw-passthrough String render). Includes the surrounding
+/// quotes.
+fn rust_string_literal(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            // A control / non-printable scalar → an explicit `\u{..}` escape (valid in a Rust string
+            // literal). A printable char (ASCII or a higher UTF-8 scalar) is emitted verbatim.
+            c if (c as u32) < 0x20 || c == '\u{7f}' => {
+                out.push_str(&format!("\\u{{{:x}}}", c as u32))
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 /// A human op name for a trap panic message.

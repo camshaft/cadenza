@@ -54,3 +54,25 @@ def run() =
 export { run }
 
 /// ⚠ OPEN but DO-NOT-RE-MINT-YET (2026-07-16): fix agents for this STALLED at startup (environmental issue, 6 stall instances this session — escalated to concierge/fleet-tooling as the #1 fix-pipeline blocker). Re-minting is confirmed futile until window.sh/startup is fixed. Well-characterized here; pick up once the env is repaired.
+///
+/// ═══ CORRECTED DIAGNOSIS (v-wasm-opt, 2026-07-16 — the filed root cause above is WRONG) ═══
+/// The "reused compound binding / nearby-liveness misclassification in select.rs value-eq" story is a RED
+/// HERRING that burned 5 fix-agents. DECISIVE test: a BARE two-param compare with ZERO compound bindings —
+///     def run(x: Float64, y: Float64) = if x < y then 1 else 0
+/// ALSO DECLINES with the same error. And `def run(x: Float64) = if x == 1.0 …` DECLINES. Meanwhile the
+/// "single-use" control COMPILES only because `vx(constantVec3)` CONSTANT-FOLDS the whole compare away —
+/// double-use just defeats const-prop, leaving a genuine RUNTIME float compare that then declines. So ALL
+/// runtime float compares decline uniformly; the reused-binding/recursion "discriminators" are const-fold
+/// artifacts, not the root.
+/// TRUE ROOT: runtime float comparison is UNIMPLEMENTED. `is_scalar` (lower.rs:20160) is Int|Bool ONLY
+/// (excludes Float), so `Core::Compare` dispatch (lower.rs ~16008) sends every runtime Float =/</>/<=/>= to
+/// the compound-heap-walk `else` decline (16066). No float-compare machinery exists: Prim has FAdd/FSub/
+/// FMul/FDiv only; Lir has F64Eq/F64Ne/F32Eq/F32Ne but NO ordering ops; `Core::Compare` emit (select.rs:
+/// 7805) is integer-only. Only CONSTANT float compares fold (lower.rs:15930).
+/// NOT A WASM-OPT SLICE — it is a CORE/NUMERIC gap gated on 2 SEMANTICS decisions the backend must not make
+/// unilaterally: (1) EQUALITY `=` is CANONICAL-BYTE (core-semantics.md:313 → NaN=NaN TRUE, -0.0≠+0.0), the
+/// OPPOSITE of wasm f64.eq → needs a BITWISE compare + NaN canonicalization, not f64.eq. (2) ORDERING on
+/// NaN is spec-UNDEFINED and the const fold DECLINES it (15908/15944); emitting f64.lt (false on NaN) would
+/// invent a runtime answer the const path refuses. RE-FILE to the numeric-model/core vertical + design, NOT
+/// the wasm backend. Reject-don't-miscompile is currently correct behavior; don't "fix" it with a bare f64
+/// compare.

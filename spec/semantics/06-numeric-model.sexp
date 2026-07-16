@@ -2870,6 +2870,21 @@
   (call   main (: 99 Int64))
   (error  CDZ0302))
 
+(case "a float width from runtime data is rejected, like an integer width"
+  (doc    "`(Float n)` with `n` a runtime function parameter puts a runtime value in a type-determining
+           position — forbidden exactly as `(UInt n)` is (numeric-model.md #A Floating-Point Type Is
+           Indexed By A Compile-Time Width: the width MUST be resolved from a compile-time value, never
+           runtime data). Rejected at compile time (CDZ0302). The float admitted-set check reads the width
+           via the same reader as the integer path, which classifies a runtime width as non-constant (not
+           an out-of-set literal), so the set-membership check alone does NOT flag it — the runtime-width
+           guard (shared with the integer ctors) is what rejects it. Without that guard a runtime float
+           width reduced to the sentinel `Float0` and slipped past `cdz check` (the float companion of the
+           integer runtime-width reject above; regression guard for PR #425).")
+  (input  (do
+            (def (mk n) (: 1.5 (Float n)))
+            (def (main) (mk 32)) (export main)))
+  (error  CDZ0302))
+
 ; --- Negation `(- 0 a)` overflows only at the type's MIN -------------------------------------------
 ; Negating a two's-complement integer overflows at exactly ONE input: the type's minimum, whose
 ; magnitude has no positive counterpart in the range (numeric-model.md #Overflow Is Defined — the

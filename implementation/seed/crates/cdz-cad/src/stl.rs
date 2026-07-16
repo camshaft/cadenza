@@ -48,6 +48,30 @@ pub fn to_binary_stl(mesh: &Mesh) -> Vec<u8> {
     out
 }
 
+/// Serialize `mesh` to ASCII STL (a UTF-8 string). Human-readable and required by some legacy tools;
+/// larger than binary STL (verbose text), so binary is the default and this is opt-in (`--ascii`). Same
+/// geometry + face normals as [`to_binary_stl`], just the text encoding of the format.
+pub fn to_ascii_stl(mesh: &Mesh) -> String {
+    let name = "cdz_cad";
+    let mut out = String::new();
+    out.push_str(&format!("solid {name}\n"));
+    for t in 0..mesh.triangle_count() {
+        let a = vertex(mesh, mesh.indices[t * 3] as usize);
+        let b = vertex(mesh, mesh.indices[t * 3 + 1] as usize);
+        let c = vertex(mesh, mesh.indices[t * 3 + 2] as usize);
+        let n = face_normal(a, b, c);
+        out.push_str(&format!("  facet normal {} {} {}\n", n[0], n[1], n[2]));
+        out.push_str("    outer loop\n");
+        for v in [a, b, c] {
+            out.push_str(&format!("      vertex {} {} {}\n", v[0], v[1], v[2]));
+        }
+        out.push_str("    endloop\n");
+        out.push_str("  endfacet\n");
+    }
+    out.push_str(&format!("endsolid {name}\n"));
+    out
+}
+
 /// The i-th vertex position `[x, y, z]` from the interleaved buffer.
 fn vertex(mesh: &Mesh, i: usize) -> [f32; 3] {
     [
@@ -130,5 +154,29 @@ mod tests {
             (len - 1.0).abs() < 1e-5,
             "a cube face normal is unit length"
         );
+    }
+
+    #[test]
+    fn ascii_stl_is_well_formed_with_one_facet_per_triangle() {
+        let m = mesh(&parse_solid("(: (Cube (: (tuple 2.0 2.0 2.0) Vec3)) Solid)").unwrap());
+        let s = to_ascii_stl(&m);
+        assert!(s.starts_with("solid cdz_cad"), "opens with a solid header");
+        assert!(
+            s.trim_end().ends_with("endsolid cdz_cad"),
+            "closes the solid"
+        );
+        // one `facet normal` per triangle (a cube = 12), and a matching endfacet count.
+        assert_eq!(s.matches("facet normal").count(), 12);
+        assert_eq!(s.matches("endfacet").count(), 12);
+        // each facet has exactly 3 vertices → 36 vertex lines.
+        assert_eq!(s.matches("vertex ").count(), 36);
+    }
+
+    #[test]
+    fn ascii_stl_of_empty_has_no_facets() {
+        let m = mesh(&parse_solid("(: (Empty unit) Solid)").unwrap());
+        let s = to_ascii_stl(&m);
+        assert_eq!(s.matches("facet normal").count(), 0);
+        assert!(s.contains("solid cdz_cad") && s.contains("endsolid cdz_cad"));
     }
 }

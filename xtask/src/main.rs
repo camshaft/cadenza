@@ -963,7 +963,12 @@ fn run_program_rust(tools: &Tools, program: &str, call: Option<&Call>, async_mod
     struct TmpDir(PathBuf);
     impl Drop for TmpDir {
         fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
+            // `RCDZC_GATE_KEEP=1` leaves the per-trial temp dir (emitted `prog.rs` + binary) in place for
+            // debugging a build failure — the gate's `BadArtifact` message shows only the first stderr
+            // line (often a warning), so keeping the source lets a developer see the full rustc error.
+            if std::env::var_os("RCDZC_GATE_KEEP").is_none() {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
         }
     }
     let _guard = TmpDir(dir.clone());
@@ -1553,6 +1558,13 @@ fn cdz_render_at(
             "{{ let mut __s = String::from(\"(map\"); for ({kbind}, {vbind}) in ({path}).iter() {{ __s.push_str(&format!(\" ({{}} {{}})\", {kr}, {vr})); }} __s.push(')'); __s }}"
         );
     }
+    // A `String` value is the Rust `String` the backend emits — render it as cdz-run's canonical
+    // `"<content>"` form: the RAW UTF-8 content wrapped in double quotes, with NO escaping (matching the
+    // runtime's `Shape::Str => format!("\"{}\"", …)` — a raw passthrough). `{path}` is a `String`/`&String`;
+    // `format!` displays it verbatim between the quotes.
+    if ty == "String" {
+        return format!("format!(\"\\\"{{}}\\\"\", {path})");
+    }
     // The BUILT-IN `Option`/`Result` map to Rust's OWN `Option`/`Result`, so a value of one is rendered by
     // MATCHING it — the driver knows both variant shapes (`Some`/`None`, `Ok`/`Err`) and cdz-run's canonical
     // BARE form for a built-in variant (`(Some <p>)`, `(None unit)`, `(Ok <p>)`, `(Err <p>)`). The payload
@@ -1688,13 +1700,29 @@ fn cdz_render_at(
                 .any(|h| h.contains(&format!("fn {fn_name}(")))
             {
                 on_path.push(ty.to_string());
+                // A variant's DISPLAY HEAD (including the opening paren) in the canonical value form. Most
+                // user/prelude sums render a variant BARE — `(Cons …`, `(Pos …`. But the prelude reflection
+                // sum `Ast` renders QUALIFIED — `((. Ast Int) …`, `((. Ast Name) …` — because its variant
+                // names (`Int`, `List`, `Bool`, `Float`) collide with prelude/type names, so the canonical
+                // form disambiguates via member access (matching cdz-run + the wasm gate for `Ast`;
+                // `Sign`/`Ordering`, whose variants don't collide, stay bare). Keyed on the sum name `Ast` —
+                // the one reflection value-type whose escape form is qualified. Every arm then emits
+                // `{head} <payload…>)` uniformly (nullary → `{head} unit)`).
+                let disp_head = |vname: &str| -> String {
+                    if ty == "Ast" {
+                        format!("((. {ty} {vname})")
+                    } else {
+                        format!("({vname}")
+                    }
+                };
                 let mut arms = Vec::with_capacity(variants.len());
                 for (vname, payloads) in variants {
                     let vident = sum_rust_ident(vname);
+                    let head = disp_head(vname);
                     match payloads.len() {
-                        // A nullary variant → `(Name unit)`.
+                        // A nullary variant → `{head} unit)`.
                         0 => arms.push(format!(
-                            "prog::{ty_ident}::{vident} => \"({vname} unit)\".to_string()"
+                            "prog::{ty_ident}::{vident} => \"{head} unit)\".to_string()"
                         )),
                         // A single-payload variant → `(Name <payload>)`, the payload rendered from `__p`
                         // (its own type — a scalar, tuple, record, or nested sum; kept nested if a tuple).
@@ -1709,7 +1737,7 @@ fn cdz_render_at(
                                 on_path,
                             );
                             arms.push(format!(
-                                "prog::{ty_ident}::{vident}(__p) => format!(\"({vname} {{}})\", {inner})"
+                                "prog::{ty_ident}::{vident}(__p) => format!(\"{head} {{}})\", {inner})"
                             ));
                         }
                         // A MULTI-payload variant → `(Name e0 e1 …)` SPREAD FLAT. Its N payloads box as ONE
@@ -1734,7 +1762,7 @@ fn cdz_render_at(
                                 })
                                 .collect();
                             arms.push(format!(
-                                "prog::{ty_ident}::{vident}(__p) => format!(\"({vname} {placeholders})\", {})",
+                                "prog::{ty_ident}::{vident}(__p) => format!(\"{head} {placeholders})\", {})",
                                 parts.join(", ")
                             ));
                         }
@@ -1757,8 +1785,14 @@ fn cdz_render_at(
     // named. Inline the exact `display_float` logic (widening a Float32 to f64 first) so the Rust-gate
     // render matches the value form the wasm gate + cdz-run produce.
     if ty == "Float64" || ty == "Float32" {
+        // `.clone() as f64` (not a bare `as f64`): the path may be a VALUE (`.0`, top-level `__r`) OR a
+        // `&f64` reference (a payload binder in a sum-render helper `match &v { Enum::Float(__p) => … }`
+        // binds `__p: &f64`), and `(&f64) as f64` is an invalid reference cast (E0606). `f64: Clone` +
+        // autoref makes `.clone()` yield an owned `f64` from either, then `as f64` is a no-op / a
+        // Float32→f64 widen. (Surfaced when `Ast` — a sum with a `Float` payload — became renderable once
+        // its `String` payload got a rep; the helper then hit the `&f64` cast.)
         return format!(
-            "{{ let __f = ({path}) as f64; \
+            "{{ let __f = ({path}).clone() as f64; \
              if __f == 0.0 && __f.is_sign_negative() {{ \"-0.0\".to_string() }} \
              else if __f.is_nan() {{ \"NaN\".to_string() }} \
              else if __f.fract() == 0.0 && __f.is_finite() {{ format!(\"{{:.0}}.0\", __f) }} \
@@ -2562,6 +2596,22 @@ fn expected_value(payload: &str) -> String {
                     }
                 }
                 _ => {}
+            }
+        }
+        rest.to_string()
+    } else if bytes.first() == Some(&b'"') {
+        // A QUOTED STRING value (`(: "parse error" String)`) — take up to and INCLUDING the closing `"`.
+        // A String value contains INTERNAL SPACES, so the bare-atom "up to next space" split would cut it
+        // wrong (`"parse` — breaking every multi-word string result). Scan for the matching close quote,
+        // honoring a `\"` escape so an embedded quote does not end the token early.
+        let mut escaped = false;
+        for (i, &b) in bytes.iter().enumerate().skip(1) {
+            if escaped {
+                escaped = false;
+            } else if b == b'\\' {
+                escaped = true;
+            } else if b == b'"' {
+                return rest[..=i].to_string();
             }
         }
         rest.to_string()

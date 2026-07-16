@@ -33225,6 +33225,59 @@ mod match_engine {
     }
 
     #[test]
+    fn annotating_a_quantity_at_a_same_dimension_different_unit_is_accepted_keeping_its_scale() {
+        // A quantity annotation checks the DIMENSION, not the unit's scale (a unit is construction sugar
+        // for a magnitude at the reference — DESIGN §Interaction With Annotations). So `(: (Qty.of 1 km)
+        // (Qty Int64 meter))` — km and meter share dimension length — is ACCEPTED, and the value KEEPS ITS
+        // OWN SCALE: it stays 1 km, so Qty.value reads back 1 (NOT a coerced-to-meter 1000; the annotation
+        // does not normalize to its unit). This was a bug: the annotation branch compared full-unit equality
+        // (au != eu, scale included) and rejected CDZ0501 with a nonsense "dimension meter but annotated
+        // meter" message (both units render to the reference name). Now it compares `same_dimension`.
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(
+                    "(do (def (main) ((. Qty value) \
+                     (: ((. Qty of) 1 ((. Unit prefix) kilo ((. Unit base) #\"meter\"))) \
+                        (Qty Int64 ((. Unit base) #\"meter\"))))) (export main))"
+                )))
+                .expect("a same-dimension quantity annotation is accepted"),
+                "main"
+            ),
+            1,
+            "the annotated value keeps its own km scale (Qty.value = 1, not a coerced 1000)"
+        );
+        // A cross-DIMENSION annotation is still CDZ0501 (meter vs second).
+        assert_eq!(
+            reject_code(
+                "(module m (def (main) ((. Qty value) \
+                 (: ((. Qty of) 5 ((. Unit base) #\"meter\")) (Qty Int64 ((. Unit base) #\"second\"))))) \
+                 (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0501"),
+            "a cross-dimension quantity annotation is still a dimensional error"
+        );
+        // A same-dimension annotation whose INNER numeric type differs is still CDZ0203 (Int value vs
+        // Float annotation) — the dimension agreeing does not excuse a numeric-type clash.
+        let inner = reject_full(
+            "(module m (def (main) ((. Qty value) \
+             (: ((. Qty of) 1 ((. Unit prefix) kilo ((. Unit base) #\"meter\"))) \
+                (Qty Float64 ((. Unit base) #\"meter\"))))) (export main))",
+        )
+        .expect("a same-dimension quantity annotation with a mismatched inner type is rejected");
+        assert_eq!(
+            inner.code.as_deref(),
+            Some("CDZ0203"),
+            "an inner numeric mismatch is CDZ0203"
+        );
+        assert!(
+            inner.message.contains("units share a dimension"),
+            "the message names the inner-numeric clash, not a dimension mismatch: {}",
+            inner.message
+        );
+    }
+
+    #[test]
     fn an_if_join_over_different_unit_quantities_names_the_scale_not_a_shadowed_declaration() {
         // Two same-dimension quantities at DIFFERENT units (km vs m) are distinct `(Qty T u)` types (the
         // unit carries the scale), so an if-join rejects them CDZ0203 — but BOTH render to
@@ -65128,6 +65181,42 @@ mod cross_component_oracle {
                 .any(|d| d.message.contains("cannot take or return a CLOSURE")),
             "a closure-typed op on a NON-peer-bound effect must NOT be flagged: {:?}",
             d13.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        // (i) a peer-bound op with a STRING ARGUMENT is CDZ0201 — an inbound rope to a peer lowers as a
+        // component `string` the peer envelope cannot satisfy (no `mem`), which emitted an INVALID
+        // component ("missing module instantiation argument named `mem`") — a silent invalid-component
+        // miscompile. Now a clean compile-time decline (report-don't-miscompile).
+        let str_arg = "(do (effect S (op blen (-> String Int64))) (bind S \"cadenza:str/api\") \
+                       (def (main) 0) (export main))";
+        let d14 = crate::diagnostics(&mut crate::db::Db::load(parse(str_arg)));
+        assert!(
+            d14.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
+                && d.message
+                    .contains("cannot yet take a String or Bytes ARGUMENT")),
+            "a peer-bound op with a String ARGUMENT is CDZ0201, not a silent invalid component: {:?}",
+            d14.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        // A Bytes argument is caught the same way.
+        let bytes_arg = "(do (effect S (op f (-> Bytes Int64))) (bind S \"cadenza:str/api\") \
+                         (def (main) 0) (export main))";
+        let d15 = crate::diagnostics(&mut crate::db::Db::load(parse(bytes_arg)));
+        assert!(
+            d15.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
+                && d.message.contains("String or Bytes ARGUMENT")),
+            "a peer-bound op with a Bytes ARGUMENT is CDZ0201: {:?}",
+            d15.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        // NO FALSE POSITIVE: a String/Bytes RESULT (not an argument) crosses fine — the peer builds the
+        // rope handle + returns it — so it must NOT be flagged. (`(-> Int64 String)`: the String is the
+        // RESULT, the last arrow element.)
+        let str_result = "(do (effect G (op greet (-> Int64 String))) (bind G \"cadenza:g/api\") \
+                          (def (main) 0) (export main))";
+        let d16 = crate::diagnostics(&mut crate::db::Db::load(parse(str_result)));
+        assert!(
+            !d16.iter()
+                .any(|d| d.message.contains("String or Bytes ARGUMENT")),
+            "a peer-bound op with a String RESULT must NOT be flagged (only an argument is): {:?}",
+            d16.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
     }
 
