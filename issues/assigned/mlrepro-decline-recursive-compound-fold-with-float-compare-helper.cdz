@@ -1,3 +1,15 @@
+; ============================================================================
+; STATUS 2026-07-16 (corpus-bugfix): NOT a wasm-backend misclassification.
+; Root = UNIMPLEMENTED runtime float compare (v-wasm-opt confirmed via a BARE
+;   two-param compare 'def run(x:Float64,y:Float64)=if x<y then 1 else 0' that
+;   declines IDENTICALLY with zero compound bindings). The 'reused-binding' /
+;   'recursion' discriminators were CONST-FOLD artifacts. is_scalar excludes
+;   Float -> Core::Compare routes to the compound-heap-walk else-decline.
+; This DECLINE is CURRENTLY CORRECT (reject-don't-miscompile). BLOCKED on a
+;   SEMANTICS RULING (NaN ordering: total-order vs decline) -> escalated to
+;   concierge 2026-07-16. Equality is fully spec'd (canonical-byte); ordering
+;   awaits the ruling. Do NOT 'fix' with f64.eq/f64.lt. See v-wasm-opt note.
+; ============================================================================
 /// MISCOMPILE-CLASS DECLINE (2nd, sharper trigger) — 2026-07-15, seed rcdzc (wasm backend), found by the
 /// `v-cad` vertical building the CAD `bounding-box` fold (GH #400). SAME error string as
 /// `mlrepro-decline-scalar-eq-misclassified-after-compound-binding-reused.cdz` but a DIFFERENT, recursion-
