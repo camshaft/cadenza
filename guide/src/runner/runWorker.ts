@@ -21,13 +21,30 @@ export interface RunJob {
   component: Uint8Array;
   /** The value-heap runtime component bytes, or null when none is bundled (scalar-only). */
   runtime: Uint8Array | null;
+  /** When "test", the component is a test-layout build (from `compile_tests`): invoke each named `@test`
+   *  export and report per-test pass/fail instead of running a single entry. Absent = normal run. */
+  mode?: "test";
+  /** The nullary `@test` export names to run (from `compile_tests`'s `nullary_test_names`). */
+  testNames?: string[];
 }
 
 export type RunResult =
   | { kind: "value-bytes"; bytes: Uint8Array }
   | { kind: "scalar"; value: string }
   | { kind: "trap"; message: string }
-  | { kind: "error"; message: string };
+  | { kind: "error"; message: string }
+  | { kind: "tests"; results: TestResult[] };
+
+/// One `@test`'s outcome. `pass` = the test export returned cleanly; `!pass` with `error` = it trapped
+/// (assertion failure). `deferred` = the export performed `Test.gen` (a property test compiled to a `-gen`
+/// wrapper) so a bare invoke can't run it — reported as deferred, NOT failed (property trials are a
+/// follow-up that supplies the `Test.gen` host-responses).
+export interface TestResult {
+  name: string;
+  pass: boolean;
+  error?: string;
+  deferred?: boolean;
+}
 
 interface Transpiled {
   instantiate: (
@@ -84,18 +101,65 @@ function blobUrl(source: string): string {
   return URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
 }
 
-async function runComponent(job: RunJob): Promise<RunResult> {
-  // Prepare the runtime's heap interface if the program imports it.
+/// Transpile + instantiate the program component (wiring the value-heap runtime if it imports one),
+/// returning the exports root. Shared by the normal run path and the test-runner path.
+async function instantiateComponent(job: RunJob): Promise<Record<string, unknown>> {
   let heap: Record<string, unknown> | null = null;
   if (job.runtime) {
     const rt = await loadComponent(job.runtime, "heap");
-    const root = await rt.instantiate(rt.getCoreModule, {});
-    heap = (root[HEAP_IMPORT] ?? root["heap"]) as Record<string, unknown>;
+    const rtRoot = await rt.instantiate(rt.getCoreModule, {});
+    heap = (rtRoot[HEAP_IMPORT] ?? rtRoot["heap"]) as Record<string, unknown>;
   }
-
   const prog = await loadComponent(job.component, "prog");
   const imports = heap ? { [HEAP_IMPORT]: heap } : {};
-  const root = await prog.instantiate(prog.getCoreModule, imports);
+  return prog.instantiate(prog.getCoreModule, imports);
+}
+
+/// Run each named `@test` export and report per-test pass/fail. Contract (mirrors `cdz test`): a test
+/// export that RETURNS CLEANLY passed; one that TRAPS (an assertion via `trap(msg)`) failed. Belt +
+/// suspenders on top of `compile_tests`'s `-gen`-suffix classification: if invoking an export errors in a
+/// way that signals an unanswered `Test.gen` host op (a property `-gen` wrapper that slipped through), it
+/// is reported DEFERRED, not failed — property-trial driving is a follow-up.
+/// Normalize an identifier for cross-naming-convention matching: a Cadenza source name (`one_plus_one`)
+/// crosses the component boundary as a kebab WIT name (`one-plus-one`) that jco then binds in JS as
+/// camelCase (`onePlusOne`) — so strip `-`/`_` and lowercase to compare source names to actual exports.
+function normalizeName(n: string): string {
+  return n.replace(/[-_]/g, "").toLowerCase();
+}
+
+async function runTests(job: RunJob): Promise<RunResult> {
+  const root = await instantiateComponent(job);
+  const names = job.testNames ?? [];
+  // Map each actual function export by its normalized name, so a source test name (`one_plus_one`) finds
+  // its boundary export whatever convention jco bound it under (kebab/camel).
+  const exportsByNorm = new Map<string, (...a: unknown[]) => unknown>();
+  for (const { name, fn } of exportedFunctions(root)) exportsByNorm.set(normalizeName(name), fn);
+  const results: TestResult[] = [];
+  for (const name of names) {
+    const fn = exportsByNorm.get(normalizeName(name));
+    if (typeof fn !== "function") {
+      results.push({ name, pass: false, error: "test export not found" });
+      continue;
+    }
+    try {
+      (fn as () => unknown)();
+      results.push({ name, pass: true });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      // An unanswered `Test.gen` host op means this is a property/`-gen` test a bare invoke can't run —
+      // defer it (not a failure). Everything else is a genuine assertion trap = fail.
+      if (/test\.gen|no enclosing handler|unhandled|host (op|function)/i.test(message)) {
+        results.push({ name, pass: false, deferred: true, error: "property test — deferred (needs generated inputs)" });
+      } else {
+        results.push({ name, pass: false, error: message });
+      }
+    }
+  }
+  return { kind: "tests", results };
+}
+
+async function runComponent(job: RunJob): Promise<RunResult> {
+  const root = await instantiateComponent(job);
 
   // Compound result: the resource-escape path exposes `cadenza:run/run` with make()/encode().
   const runIface = (root["cadenza:run/run"] ?? root["run"]) as
@@ -143,7 +207,7 @@ function exportedFunctions(root: Record<string, unknown>): { name: string; fn: (
 
 self.onmessage = async (e: MessageEvent<RunJob>) => {
   try {
-    const result = await runComponent(e.data);
+    const result = e.data.mode === "test" ? await runTests(e.data) : await runComponent(e.data);
     (self as unknown as Worker).postMessage(result);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

@@ -8,6 +8,7 @@
 import * as Comlink from "comlink";
 import init, {
   compile as wasmCompile,
+  compile_tests as wasmCompileTests,
   diagnostics as wasmDiagnostics,
   type_at as wasmTypeAt,
   define_at as wasmDefineAt,
@@ -72,6 +73,15 @@ export interface CompileOutcome {
   /** The emitted component bytes, or null if compilation failed. */
   component: Uint8Array | null;
   diagnostics: Diag[];
+}
+
+/** A test-layout compile (`compileTests`): the component (boundary = the `@test` defs), diagnostics, and
+ *  the discovered test names split into nullary (run now) and parameterized (deferred property tests). */
+export interface TestCompileOutcome {
+  component: Uint8Array | null;
+  diagnostics: Diag[];
+  nullaryTestNames: string[];
+  paramTestNames: string[];
 }
 
 /** The inferred type at a source offset, for hover. */
@@ -170,6 +180,28 @@ const api = {
     const component = r.component ? new Uint8Array(r.component) : null;
     const diagnostics: Diag[] = r.diagnostics.map(toDiag);
     return { component, diagnostics };
+  },
+
+  /// Compile `text` in TEST-LAYOUT mode (`compile_tests`): the component's boundary is the program's
+  /// `@test` defs, so each `@test` is an invocable export. Returns the component + diagnostics + the
+  /// discovered test names (nullary = run now, param = deferred property tests). The run worker then
+  /// invokes each nullary export to report pass/fail. Same parse-error handling as `compile`.
+  async compileTests(text: string, from: Surface): Promise<TestCompileOutcome> {
+    await ensureReady();
+    let r: ReturnType<typeof wasmCompileTests>;
+    try {
+      r = wasmCompileTests(text, from);
+    } catch (e) {
+      return { component: null, diagnostics: [parseErrorDiag(e)], nullaryTestNames: [], paramTestNames: [] };
+    }
+    const component = r.component ? new Uint8Array(r.component) : null;
+    const diagnostics: Diag[] = r.diagnostics.map(toDiag);
+    return {
+      component,
+      diagnostics,
+      nullaryTestNames: r.nullary_test_names,
+      paramTestNames: r.param_test_names,
+    };
   },
 
   /// Type-check `text` and return all diagnostics with source spans — no component built, no export
