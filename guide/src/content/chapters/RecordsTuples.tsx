@@ -31,12 +31,11 @@ export default function RecordsTuples() {
         <C>(field value)</C> pair, and it hands back a copy with that field replaced. Here a price of{" "}
         <C>2</C> becomes <C>9</C>:
       </P>
-      <Runnable source={`(. (Record.with (record (item 1) (price 2)) (price 9)) price)`} />
+      <Runnable source={`(. (Record.with (record (item 1) (price 2)) #"price" 9) price)`} />
       <Note>
-        The way you name the field is being revised: today it's the <C>(price 9)</C> pair shown above,
-        and it's moving to a <C>#price</C> field-selector — <C>(Record.with rec #price 9)</C>. When that
-        lands, this chapter's examples update to the newer spelling; the meaning (a copy with one field
-        replaced) is unchanged.
+        The field is named with a <C>#"price"</C> field-selector — <C>(Record.with rec #"price" 9)</C> —
+        a record, the field to replace, and the new value. (A copy with one field replaced; the original
+        is unchanged.)
       </Note>
       <P>
         "Hands back a copy" is the important part — the original is untouched. Bind a record, make an
@@ -44,10 +43,10 @@ export default function RecordsTuples() {
       </P>
       <Runnable
         source={`(let ((base (record (hp 5) (mp 3))))
-  (. (Record.with base (hp 99)) hp))`}
+  (. (Record.with base #"hp" 99) hp))`}
       />
       <P>
-        That reads <C>99</C> — but swap <C>Record.with base (hp 99)</C> for plain <C>base</C> and Run
+        That reads <C>99</C> — but swap <C>Record.with base #"hp" 99</C> for plain <C>base</C> and Run
         again: <C>5</C>, the original, still there. Two records, sharing everything but the one field.
       </P>
       <P>
@@ -55,13 +54,13 @@ export default function RecordsTuples() {
         <C>Record.extend</C>. Keeping them separate is deliberate — it means a typo'd field name can't
         silently create a new field where you meant to update an old one:
       </P>
-      <Runnable source={`(. (Record.extend (record (x 1) (y 2)) (z 3)) z)`} />
+      <Runnable source={`(. (Record.extend (record (x 1) (y 2)) #"z" 3) z)`} />
       <P>
         And the compiler holds the line: use <C>Record.with</C> on a field that isn't there and it
         won't guess — it tells you to reach for <C>Record.extend</C> instead.
       </P>
       <Runnable
-        source={`(. (Record.with (record (a 1)) (z 5)) z)`}
+        source={`(. (Record.with (record (a 1)) #"z" 5) z)`}
         expect="error"
       />
 
@@ -176,8 +175,8 @@ export default function RecordsTuples() {
             <C>extend</C>? Fill in the blank.
           </>
         }
-        starter={`(. (Record.? (record (x 10) (y 20)) (z 30)) z)`}
-        solution={`(. (Record.extend (record (x 10) (y 20)) (z 30)) z)`}
+        starter={`(. (Record.? (record (x 10) (y 20)) #"z" 30) z)`}
+        solution={`(. (Record.extend (record (x 10) (y 20)) #"z" 30) z)`}
         expected="30"
         hint={
           <>
