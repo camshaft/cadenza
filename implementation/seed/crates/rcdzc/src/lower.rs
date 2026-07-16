@@ -19006,9 +19006,20 @@ fn lower_str_slice(
                 }
             }
         }
-        // A runtime string or runtime bound — the byte-rope slice is a later increment.
+        // A RUNTIME string (or a runtime bound over any string) — walk the UTF-8 byte buffer to the
+        // `start`-th and `end`-th scalar starts and slice that byte span (`Core::StrSlice`). Same flat-leaf
+        // buffer walk `String.at` uses (a byte is a scalar START iff `(b & 0xC0) != 0x80`); the backend
+        // slices `[p0, p1)` and COMPACTS it so the result compares by content. Guarded on the string operand
+        // being a definite `Ty::String` (the bounds are any integers).
+        _ if matches!(crate::infer::type_of(db, string), crate::ty::Ty::String) => Core::StrSlice {
+            string,
+            start,
+            end,
+            disc_some,
+            disc_none,
+        },
         _ => Core::Poison(Reject::decline(
-            "String.slice on a runtime string is not yet computed (constant strings only)",
+            "String.slice needs a String operand (its runtime read walks the UTF-8 buffer)",
         )),
     }
 }

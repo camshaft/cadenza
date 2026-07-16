@@ -26655,6 +26655,87 @@ mod match_engine {
     }
 
     #[test]
+    fn a_runtime_string_is_sliced_by_scalar_range() {
+        // `String.slice` on a RUNTIME string (a `String.concat`-built rope, not a folding constant) reads the
+        // half-open SCALAR sub-range `[start, end)` as a String, fallibly. `Core::StrSlice` WALKS the UTF-8
+        // buffer scalar-by-scalar (a byte is a scalar START iff `(b & 0xC0) != 0x80`), skipping to the start
+        // and end scalar byte positions and `bytes-slice`ing that span (COMPACTED to a flat leaf). "café" is
+        // c/a/f/é; slice [1,3) is "af" (2 ASCII bytes), and slice [1,4) is "afé" (é is 2 bytes → 4 bytes),
+        // proving the walk counts SCALARS not bytes for the bound but slices the whole multi-byte scalar.
+        let Some(v) = run_heap_value_escape(
+            "(module m (def (sl s a b) ((. String slice) ((. String concat) s \"\") a b)) \
+               (def (main) (sl \"café\" 1 4)) (export main))",
+        ) else {
+            eprintln!("runtime wasm not found; skipping runtime String.slice run");
+            return;
+        };
+        assert_eq!(
+            v, "(: (Some \"afé\") (Option String))",
+            "runtime String.slice [1,4) of café is afé (scalar-addressed, multi-byte é whole)"
+        );
+
+        // A byte-length assertion pins the multi-byte handling: [1,4) is "afé" = 4 bytes (a+f = 2, é = 2).
+        assert_eq!(
+            run_heap_value(
+                "(module m (def (sl s a b) ((. String slice) ((. String concat) s \"\") a b)) \
+                   (def (main) (match (sl \"café\" 1 4) ((Some x) ((. String byte-len) x)) ((None _) -1))) \
+                   (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "4",
+            "runtime String.slice [1,4) of café spans 4 bytes (é is 2)"
+        );
+
+        // start == end is an in-range EMPTY slice → Some "" (byte-len 0), NOT None.
+        assert_eq!(
+            run_heap_value(
+                "(module m (def (sl s a b) ((. String slice) ((. String concat) s \"\") a b)) \
+                   (def (main) (match (sl \"hello\" 2 2) ((Some x) ((. String byte-len) x)) ((None _) -1))) \
+                   (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "0",
+            "runtime String.slice with start == end is an in-range empty string"
+        );
+
+        // Slicing to the very end (end == scalar-len) is in range: [3,5) of "hello" is "lo" (2 bytes).
+        assert_eq!(
+            run_heap_value(
+                "(module m (def (sl s a b) ((. String slice) ((. String concat) s \"\") a b)) \
+                   (def (main) (match (sl \"hello\" 3 5) ((Some x) ((. String byte-len) x)) ((None _) -1))) \
+                   (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "2",
+            "runtime String.slice to the very end is in range"
+        );
+
+        // Out of range → None: end past the scalar-len, a reversed range, and a negative start.
+        for (a, b, why) in [
+            (1, 9, "end past scalar-len"),
+            (4, 1, "reversed range"),
+            (-1, 3, "negative start"),
+        ] {
+            assert_eq!(
+                run_heap_value(
+                    &format!(
+                        "(module m (def (sl s a b) ((. String slice) ((. String concat) s \"\") a b)) \
+                           (def (main) (match (sl \"hello\" {a} {b}) ((Some x) ((. String byte-len) x)) ((None _) -1))) \
+                           (export main))"
+                    ),
+                    vec![],
+                )
+                .unwrap(),
+                "-1",
+                "runtime String.slice out of range → None ({why})"
+            );
+        }
+    }
+
+    #[test]
     fn a_runtime_list_is_matched_by_element_and_rest_patterns() {
         // L4: a match over a RUNTIME `List` scrutinee dispatches by LENGTH (`Core::MatchList` → `vec-len`),
         // binds leading elements via `vec-get` (`SumPayload{Elem(i)}`), and the REST binder via `vec-drop`

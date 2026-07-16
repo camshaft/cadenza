@@ -416,6 +416,24 @@ pub enum Core {
         disc_some: u32,
         disc_none: u32,
     },
+    /// `String.slice string start end` — the fallible SCALAR sub-range read, half-open `[start, end)`.
+    /// FOLDS in `lower` (`chars()` collect + slice) when all three are constant, so this reaches the
+    /// backend only for a runtime string (or a runtime bound over a constant string). A String is a flat
+    /// UTF-8 byte leaf, so the backend WALKS the byte buffer scalar-by-scalar (a byte is a scalar START iff
+    /// `(byte & 0xC0) != 0x80`): skip `start` scalars to the byte position `p0`, then skip `end - start`
+    /// more scalars to the byte position `p1`, and the sub-range is the byte span `[p0, p1)`. In bounds
+    /// (`0 <= start <= end <= scalar-len`) → `Some(bytes-slice(str, p0, p1 - p0))` COMPACTED to an
+    /// independent flat leaf (a slice is a rope offset INTO the source; content-equality/key-hashing walk
+    /// PHYSICAL bytes, so it MUST be flattened at construction — the same discipline `StrAt` uses). A
+    /// reversed (`end < start`), over-long (`end > scalar-len`), or negative bound → `None`. The multi-scalar
+    /// companion of `StrAt` (which slices a single scalar's span); both address by SCALAR, not byte.
+    StrSlice {
+        string: StructId,
+        start: StructId,
+        end: StructId,
+        disc_some: u32,
+        disc_none: u32,
+    },
     /// `Bytes.concat` — append `lhs` and `rhs` into one byte sequence (runtime `bytes-concat`; consumes
     /// both, empty is the identity). Present when the pair is not both compile-time-visible constants (a
     /// constant pair folds to a `Core::BytesOf` in `lower`). The byte companion of `Core::ListConcat`.

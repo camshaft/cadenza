@@ -420,6 +420,16 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
         Core::StrAt { string, index, .. } => {
             binding_escapes(db, string, binder, true) || binding_escapes(db, index, binder, false)
         }
+        // `String.slice` BORROWS its string operand (the Some branch `dup`s it before the consuming
+        // `bytes-slice`, the None branch takes no reference — same discipline as `String.at`), so a binding
+        // used as the string does NOT escape (its owner reclaims it). start/end are scalars.
+        Core::StrSlice {
+            string, start, end, ..
+        } => {
+            binding_escapes(db, string, binder, true)
+                || binding_escapes(db, start, binder, false)
+                || binding_escapes(db, end, binder, false)
+        }
         // `Bytes.concat`/`slice`/`compact` all CONSUME their bytes operand(s) into the new sequence
         // (`bytes-concat`/`bytes-slice`/`bytes-compact` consume, per `value-heap-runtime.md §Constructors
         // Consume`). A binding used as an operand escapes into the result. `slice`'s start/len are scalars.
@@ -806,6 +816,13 @@ pub fn core_child_ids(db: &mut Db, id: StructId) -> Vec<StructId> {
             cs.push(start);
             cs.push(len);
         }
+        Core::StrSlice {
+            string, start, end, ..
+        } => {
+            cs.push(string);
+            cs.push(start);
+            cs.push(end);
+        }
         Core::ListUpdate { list, index, elem } => {
             cs.push(list);
             cs.push(index);
@@ -1188,6 +1205,16 @@ fn mark_binder_dups_inner(
         Core::StrAt { string, index, .. } => {
             seq(db, &[(string, false), (index, false)], live_after, sites)
         }
+        // `String.slice` likewise CONSUMES its string (the Some branch `dup`s + slices out of it); the
+        // start/end bounds are scalars.
+        Core::StrSlice {
+            string, start, end, ..
+        } => seq(
+            db,
+            &[(string, false), (start, false), (end, false)],
+            live_after,
+            sites,
+        ),
         // `String.from-bytes` CONSUMES its bytes operand (`str-from-bytes` transfers it out as the String).
         Core::StrFromBytes { bytes, .. } => consume(db, bytes, live_after, sites),
         // `String.to-bytes` CONSUMES its string operand (`bytes-compact` transfers it out as the Bytes).
@@ -2249,6 +2276,24 @@ fn collect_used_ops_into(
             out.insert(OP_SUM_NEW);
             collect_used_ops_into(db, string, out);
             collect_used_ops_into(db, index, out);
+        }
+        // `String.slice` walks the UTF-8 buffer to the start/end scalar byte positions (`bytes-len`/`bytes-
+        // get`), slices that span (`bytes-slice`, which CONSUMES the string handle → the Some branch `dup`s
+        // first), COMPACTS the fresh slice to an independent flat leaf (content-equality/key-hashing), and
+        // builds `Some`/`None` (`sum-new`; `None` is the inline `IMM_UNIT`, no `arr-alloc`). Same op set as
+        // `String.at`. The source string is NOT dropped here (its owner reclaims it), so no `drop` import.
+        Core::StrSlice {
+            string, start, end, ..
+        } => {
+            out.insert(OP_BYTES_LEN);
+            out.insert(OP_BYTES_GET);
+            out.insert(OP_BYTES_SLICE);
+            out.insert(OP_BYTES_COMPACT);
+            out.insert(OP_DUP);
+            out.insert(OP_SUM_NEW);
+            collect_used_ops_into(db, string, out);
+            collect_used_ops_into(db, start, out);
+            collect_used_ops_into(db, end, out);
         }
         // `Bytes.concat` = `bytes-concat`; `Bytes.compact` = `bytes-compact`; `Bytes.slice` bounds-checks
         // via `bytes-len` then builds `Some(bytes-slice)` (a Bytes HANDLE, no box) / `None` (`arr-alloc(0)`).
@@ -6948,6 +6993,167 @@ fn emit(
             // pushing the derived constant is equivalent and drops one import call per `None` (the same
             // optimization the `SumNew` nullary path already uses; this brings the `List.at`/`Map.lookup`/
             // `String.at`/`Bytes.at` None arms to parity).
+            out.push(Lir::ConstI32(super::runtime_abi::IMM_UNIT as i32)); // [disc_none, unit-payload]
+            out.push(Lir::CallImport(OP_SUM_NEW)); // [None-handle]
+            out.push(Lir::End);
+            Ok(())
+        }
+        // `String.slice string start end` — the fallible half-open SCALAR sub-range `[start, end)`. Walk the
+        // flat UTF-8 buffer scalar-by-scalar (identical machinery to `String.at`, generalized to TWO scalar
+        // positions): PHASE 1 skips `start` scalars, recording the byte position `spanstart`; PHASE 2 skips
+        // to `end`, leaving the byte position `pos`. The slice is the byte span `[spanstart, pos)`. In range
+        // (`start >= 0 && start <= end && scalar == end` — reaching `scalar == end` proves exactly `end`
+        // scalars existed, so `end <= scalar-len`) → `Some(bytes-slice(str, spanstart, pos - spanstart))`
+        // COMPACTED to an independent flat leaf; else `None`. `pos == bytelen` is a VALID end (slicing to the
+        // very end), so the found test does NOT require `pos < bytelen` (unlike `String.at`, which reads a
+        // scalar AT pos). `str` is BORROWED (Some branch `dup`s it before the consuming `bytes-slice`; None
+        // branch takes no reference) — the owner reclaims it, exactly like `String.at`.
+        Core::StrSlice {
+            string,
+            start,
+            end,
+            disc_some,
+            disc_none,
+        } => {
+            let str_slot = base;
+            let start_slot = base + 1;
+            let end_slot = base + 2;
+            let pos_slot = base + 3;
+            let scalar_slot = base + 4;
+            let bytelen_slot = base + 5;
+            let spanstart_slot = base + 6;
+            if spanstart_slot + 1 > *high {
+                *high = spanstart_slot + 1;
+            }
+            scratch_ty.insert(str_slot, ValType::I32);
+            for s in [
+                start_slot,
+                end_slot,
+                pos_slot,
+                scalar_slot,
+                bytelen_slot,
+                spanstart_slot,
+            ] {
+                scratch_ty.insert(s, ValType::I64);
+            }
+            emit(db, string, slots, base + 7, high, scratch_ty, layout, out)?; // [str]
+            out.push(Lir::LocalSet(str_slot));
+            emit(db, start, slots, base + 7, high, scratch_ty, layout, out)?; // [start:i64]
+            out.push(Lir::LocalSet(start_slot));
+            emit(db, end, slots, base + 7, high, scratch_ty, layout, out)?; // [end:i64]
+            out.push(Lir::LocalSet(end_slot));
+            // byte-count (i64), read repeatedly below.
+            out.push(Lir::LocalGet(str_slot));
+            out.push(Lir::CallImport(OP_BYTES_LEN));
+            out.push(Lir::I64ExtendI32U);
+            out.push(Lir::LocalSet(bytelen_slot));
+            out.push(Lir::ConstI64(0));
+            out.push(Lir::LocalSet(pos_slot)); // pos = 0
+            out.push(Lir::ConstI64(0));
+            out.push(Lir::LocalSet(scalar_slot)); // scalar = 0
+            // A byte at `pos` (`pos < bytelen`) begins a NEW scalar iff it is NOT a `10xxxxxx` continuation
+            // byte: `(bytes-get(str, pos) & 0xC0) != 0x80`. (Same helper as `String.at`.)
+            let push_is_lead = |out: &mut Emit| {
+                out.push(Lir::LocalGet(str_slot));
+                out.push(Lir::LocalGet(pos_slot));
+                out.push(Lir::I32WrapI64);
+                out.push(Lir::CallImport(OP_BYTES_GET)); // [byte:i32]
+                out.push(Lir::ConstI32(0xC0));
+                out.push(Lir::I32And);
+                out.push(Lir::ConstI32(0x80));
+                out.push(Lir::I32Ne); // [(byte & 0xC0) != 0x80]
+            };
+            // "Advance `pos` past ONE whole scalar" — `pos++`, then skip continuation bytes. Precondition:
+            // `pos < bytelen`. (Same helper as `String.at`.)
+            let emit_skip_one_scalar = |out: &mut Emit, push_is_lead: &dyn Fn(&mut Emit)| {
+                out.push(Lir::LocalGet(pos_slot));
+                out.push(Lir::ConstI64(1));
+                out.push(Lir::I64Add);
+                out.push(Lir::LocalSet(pos_slot));
+                out.push(Lir::Block(BlockType::Empty)); // $cont_done
+                out.push(Lir::Loop(BlockType::Empty)); // $cont
+                out.push(Lir::LocalGet(pos_slot));
+                out.push(Lir::LocalGet(bytelen_slot));
+                out.push(Lir::I64GeS);
+                out.push(Lir::BrIf(1)); // pos >= bytelen → $cont_done
+                push_is_lead(out);
+                out.push(Lir::BrIf(1)); // lead byte → $cont_done
+                out.push(Lir::LocalGet(pos_slot));
+                out.push(Lir::ConstI64(1));
+                out.push(Lir::I64Add);
+                out.push(Lir::LocalSet(pos_slot));
+                out.push(Lir::Br(0)); // → $cont
+                out.push(Lir::End); // end $cont
+                out.push(Lir::End); // end $cont_done
+            };
+            // A "skip scalars until `scalar >= <limit_slot>` or `pos >= bytelen`" loop — used for both
+            // phases (limit = start, then end). Advances pos/scalar together. Captures `push_is_lead` /
+            // `emit_skip_one_scalar` from the enclosing scope (rather than taking them as params) so its
+            // signature stays a simple `(&mut Emit, u32)`.
+            let emit_skip_until = |out: &mut Emit, limit_slot: u32| {
+                out.push(Lir::Block(BlockType::Empty)); // $done
+                out.push(Lir::Loop(BlockType::Empty)); // $skip
+                out.push(Lir::LocalGet(scalar_slot));
+                out.push(Lir::LocalGet(limit_slot));
+                out.push(Lir::I64GeS);
+                out.push(Lir::BrIf(1)); // scalar >= limit → $done
+                out.push(Lir::LocalGet(pos_slot));
+                out.push(Lir::LocalGet(bytelen_slot));
+                out.push(Lir::I64GeS);
+                out.push(Lir::BrIf(1)); // pos >= bytelen → $done (limit beyond scalar-len)
+                emit_skip_one_scalar(out, &push_is_lead);
+                out.push(Lir::LocalGet(scalar_slot));
+                out.push(Lir::ConstI64(1));
+                out.push(Lir::I64Add);
+                out.push(Lir::LocalSet(scalar_slot));
+                out.push(Lir::Br(0)); // → $skip
+                out.push(Lir::End); // end $skip
+                out.push(Lir::End); // end $done
+            };
+            // PHASE 1 — skip `start` scalars, then record the slice's byte start.
+            emit_skip_until(out, start_slot);
+            out.push(Lir::LocalGet(pos_slot));
+            out.push(Lir::LocalSet(spanstart_slot)); // spanstart = byte pos of the start-th scalar
+            // PHASE 2 — skip on to `end`; `pos` is then the byte position of the end-th scalar boundary.
+            emit_skip_until(out, end_slot);
+            // found = (start >= 0) & (start <= end) & (scalar == end). `scalar == end` proves exactly `end`
+            // scalars were consumed (so `end <= scalar-len`); `start <= end` rejects a reversed range (which
+            // could otherwise reach `scalar == end` when phase 1 ran out at exactly `end` scalars); `start >=
+            // 0` rejects a negative start (which skips no scalars, leaving `scalar` free to reach `end`).
+            out.push(Lir::LocalGet(start_slot));
+            out.push(Lir::ConstI64(0));
+            out.push(Lir::I64GeS); // [start >= 0]
+            out.push(Lir::LocalGet(start_slot));
+            out.push(Lir::LocalGet(end_slot));
+            out.push(Lir::I64LeS); // [.., start <= end]
+            out.push(Lir::I32And);
+            out.push(Lir::LocalGet(scalar_slot));
+            out.push(Lir::LocalGet(end_slot));
+            out.push(Lir::I64Eq); // [.., scalar == end]
+            out.push(Lir::I32And); // [found]
+            out.push(Lir::If(BlockType::Val(ValType::I32)));
+            // THEN — `Some(bytes-slice(str, spanstart, pos - spanstart))`. `bytes-slice` CONSUMES its buffer,
+            // but `str` is BORROWED, so `dup` (rc++) before the slice takes an independent reference (exactly
+            // as `String.at` does). COMPACT the fresh slice rope to a flat leaf so its content-equality /
+            // key-hashing compares by physical bytes, not rope offset (the `String.at` content-eq fix,
+            // refcount-neutral). `spanstart == pos` (an empty slice, `start == end`) yields `Some ""`.
+            out.push(Lir::ConstI32(disc_some as i32)); // [disc_some]
+            out.push(Lir::LocalGet(str_slot));
+            out.push(Lir::CallImport(OP_DUP)); // rc++ str: the slice takes an independent reference
+            out.push(Lir::LocalGet(str_slot)); // [disc_some, str] (retained)
+            out.push(Lir::LocalGet(spanstart_slot));
+            out.push(Lir::I32WrapI64); // [.., spanstart:i32]
+            out.push(Lir::LocalGet(pos_slot));
+            out.push(Lir::LocalGet(spanstart_slot));
+            out.push(Lir::I64Sub);
+            out.push(Lir::I32WrapI64); // [.., span_len:i32]
+            out.push(Lir::CallImport(OP_BYTES_SLICE)); // [disc_some, slice-handle] (consumes the dup'd str)
+            out.push(Lir::CallImport(OP_BYTES_COMPACT)); // slice rope → independent flat leaf (owned→owned)
+            out.push(Lir::CallImport(OP_SUM_NEW)); // [Some-handle]
+            out.push(Lir::Else);
+            // ELSE — None. `str` was BORROWED (this branch took no reference), so it is NOT dropped here; its
+            // owner reclaims it (exactly like `String.at`'s None branch).
+            out.push(Lir::ConstI32(disc_none as i32));
             out.push(Lir::ConstI32(super::runtime_abi::IMM_UNIT as i32)); // [disc_none, unit-payload]
             out.push(Lir::CallImport(OP_SUM_NEW)); // [None-handle]
             out.push(Lir::End);

@@ -3731,6 +3731,13 @@ fn collect_reached_poisons_at(db: &mut Db, id: StructId, out: &mut Vec<Reject>) 
             collect_reached_poisons(db, string, out);
             collect_reached_poisons(db, index, out);
         }
+        Core::StrSlice {
+            string, start, end, ..
+        } => {
+            collect_reached_poisons(db, string, out);
+            collect_reached_poisons(db, start, out);
+            collect_reached_poisons(db, end, out);
+        }
         Core::BytesConcat { lhs, rhs } => {
             collect_reached_poisons(db, lhs, out);
             collect_reached_poisons(db, rhs, out);
