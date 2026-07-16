@@ -887,6 +887,7 @@ pass	a list-carrying recursion whose base arm does a fallible indexed read compi
 pass	a list-concatenating helper threads lists through a call
 pass	a list-payload split missing the empty arm is non-exhaustive
 pass	a list-payload split missing the non-empty arm is non-exhaustive
+pass	a list-scrutinee match arm whose head is an unbound name is rejected in a recursive body (CDZ0101)
 pass	a literal arm wins over a later guard arm that also matches
 pass	a literal in a let binder is refutable and rejected
 pass	a literal inside a NESTED constructor pattern refines the match
@@ -1358,7 +1359,6 @@ pass	a recursive sum consumer whose arguments are recursive sum producers compil
 pass	a recursive sum recurses THROUGH a record-typed payload
 pass	a recursive sum type works with pattern matching
 pass	a recursive unifier distinguishes arrow components through the payload slots
-pass	a list-scrutinee match arm whose head is an unbound name is rejected in a recursive body (CDZ0101)
 pass	a recursive user sum built in a lib is folded by the entry over the imported type
 pass	a recursive user sum type is built at run time and renders its variant names
 pass	a recursive walk consulting a node's own and its child's String key computes correctly
@@ -1417,6 +1417,9 @@ pass	a runtime BigInt operation does not silently promote a fixed-width operand
 pass	a runtime BigInt ordering compares by the arbitrary-precision value
 pass	a runtime BigInt remainder takes the dividend's sign
 pass	a runtime Float32 addition emits the f32 machine add
+pass	a runtime Float32 division emits f32.div
+pass	a runtime Float32 multiplication emits f32.mul
+pass	a runtime Float32 subtraction emits f32.sub
 pass	a runtime List built past 32 elements reads correctly by index across the RRB leaf-to-trie boundary
 pass	a runtime MIXED-SCALE BigInt comparison converts to the reference before comparing
 pass	a runtime MIXED-SCALE BigInt-magnitude sum converts to the reference in unbounded arithmetic
@@ -2176,7 +2179,6 @@ pass	chained guards of the same variant are tried in order
 pass	char to-int and from-int round-trip through the scalar value
 pass	checked addition yields None on overflow instead of trapping
 pass	checked addition yields Some of the sum when it fits
-pass	checked minus traps where wrapping-sub wraps on the same inputs
 pass	checked multiplication reports overflow as None
 pass	checked multiplication yields Some when it fits
 pass	checked subtraction yields None on underflow instead of trapping
@@ -2666,7 +2668,6 @@ pass	runtime float inequality compares by canonical byte form
 pass	runtime structural equality over a GENERIC RECURSIVE sum walks the whole tree
 pass	runtime structural equality over a payload-carrying sum agrees on both backends
 pass	runtime tuple concatenation preserves element order across the seam
-pass	runtime wrapping subtraction wraps at both sign extremes
 pass	same-arity tuple match arms share an equal element and sink the differing one
 pass	same-key-set record match arms share an equal field and sink the differing one
 pass	same-length list match arms share an equal element and sink the differing one
