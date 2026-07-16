@@ -51,3 +51,11 @@ tokio = { version = "1", features = ["rt", "rt-multi-thread"], optional = true }
 [lib]
 name = "cdz_agent"
 path = "src/lib.rs"
+
+# The inbox-loop DRIVER (hardening: a real hive-driving binary that dogfoods the fleet). Reads fleet
+# inbox JSON messages and runs each through the authorized Cadenza agent loop. Default = the mock model;
+# `--features bedrock` drives a real Bedrock model. A SEPARATE binary (not a seed subcommand) so the
+# aws-sdk/tokio tree stays in this excluded crate.
+[[bin]]
+name = "cdz-agent"
+path = "src/main.rs"

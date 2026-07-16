@@ -47,3 +47,5 @@ with `assemble_runtime_resource` the SAME way `assemble_extern_runtime_resource`
 Pin e2e with `run_with_peers`/`run` + a host-response fixture (a host op returning a scalar fed into the
 escaped tuple). SIZE: ~150-250 lines mirroring the peer twin; NOT green-partial-able (byte assembler).
 v-peer-linking's `assemble_extern_runtime_resource` (envelope.rs) is the line-by-line reference.
+
+## OWNERSHIP SETTLED (concierge, ruled 2 ticks ago + v-effects ACKED): v-effects OWNS this (host_imports/assemble_host_runtime seam). v-peer-linking hands over assemble_extern_runtime_resource as the TEMPLATE + consults on the resource-escape envelope. QUEUED at v-effects behind its agent-harness Inc-3 effectful-helper param-loss fix. LOW urgency (safe decline). NOTE: I redundantly re-escalated this ownership (it was already ruled) — the file said "ruling requested" but the request had been answered; check settled-status before re-routing an ownership ask.

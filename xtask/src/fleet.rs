@@ -366,8 +366,17 @@ pub enum FleetCmd {
     /// forever. This resets onto `trunk`, then cherry-picks back ONLY the local commits not yet upstream
     /// by patch-id (dropping any pr-sync already landed, even under a re-parented sha), so the branch tip
     /// keeps containing your unlanded work + any queued `--ref` stays reachable. Refuses on a dirty tree
-    /// and restores your pre-sync HEAD on any cherry-pick conflict, so it can never lose work.
-    Sync,
+    /// and restores your pre-sync HEAD on any cherry-pick conflict, so it can never lose work. Also
+    /// refuses (unless `--force`) if replaying would re-sha a commit that a merge-request you ALREADY
+    /// sent pr-sync still points at — the cherry-pick gives it a new sha, orphaning the queued `--ref`;
+    /// leave the branch alone until that MR resolves.
+    Sync {
+        /// Sync even if it would re-sha (and thus orphan) a merge-request you already have queued with
+        /// pr-sync. By default `sync` REFUSES in that case. Use this only when the queued MR is dead
+        /// (e.g. you're about to resend a fresh `--ref` anyway).
+        #[arg(long)]
+        force: bool,
+    },
     /// Resolve a `merge-request` ATOMICALLY: reply to its sender AND archive the request in one step.
     /// This closes a reliability hole in the single-integrator model — pr-sync used to reply and move
     /// the request to `processed/` as two decoupled manual steps, so a missed reply left the sender
@@ -541,7 +550,7 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
         FleetCmd::Heartbeat { name } => heartbeat(&fleet, &name),
         FleetCmd::Describe { name } => describe(&fleet, &name),
         FleetCmd::Archive { no_commit } => archive(&fleet, no_commit),
-        FleetCmd::Sync => sync(),
+        FleetCmd::Sync { force } => sync(&fleet, force),
         FleetCmd::Watchdog {
             dry_run,
             stale_mult,
@@ -2253,7 +2262,7 @@ fn archive(fleet: &Fleet, no_commit: bool) {
 /// footgun); and if any cherry-pick fails (e.g. a real conflict against the advanced trunk), it aborts
 /// the pick and RESTORES the pre-sync HEAD, so the worst case is exactly where the agent started —
 /// `fleet sync` can never lose or half-apply work. On a conflict it exits non-zero with guidance.
-fn sync() {
+fn sync(fleet: &Fleet, force: bool) {
     let cwd = std::env::current_dir().expect("cwd");
     let git = |args: &[&str]| -> std::process::Output {
         Command::new("git")
@@ -2292,6 +2301,28 @@ fn sync() {
     // Which local commits are genuinely unlanded (patch-id not upstream)? `git cherry trunk <head>`.
     let cherry = git_stdout(&["cherry", TRUNK, &old_head]);
     let replay = commits_to_replay(&cherry);
+
+    // GUARD: refuse if replaying would re-sha a commit a merge-request we already sent still points at.
+    // The cherry-pick below gives replayed commits NEW shas, so the `--ref` on a queued MR would go
+    // dangling and pr-sync would silently skip it. Derive our agent name from the current branch
+    // (`fleet/<me>`) and scan pr-sync's inbox for a still-queued MR from us naming a to-be-replayed sha.
+    if !force && !replay.is_empty() {
+        let branch = git_stdout(&["rev-parse", "--abbrev-ref", "HEAD"]);
+        if let Some(me) = sender_from_branch_name(&branch) {
+            let queued = read_messages(&fleet.inbox("pr-sync"));
+            if let Some(orphaned) = queued_ref_would_orphan(&replay, &me, &queued) {
+                eprintln!(
+                    "fleet sync: REFUSING — a merge-request you already sent pr-sync names commit \
+                     {orphaned}, which this sync would re-sha (cherry-pick → new sha), orphaning that \
+                     queued --ref so pr-sync silently skips it. Leave your branch alone until that MR \
+                     lands or is rejected (being behind trunk is fine — pr-sync merges your sent ref \
+                     onto current trunk and re-gates). If that MR is dead and you'll resend a fresh \
+                     --ref, re-run with `--force`."
+                );
+                std::process::exit(1);
+            }
+        }
+    }
 
     // Land on the integrated tip.
     if !git_ok(&["reset", "--hard", TRUNK]) {
@@ -2867,6 +2898,36 @@ fn commits_to_replay(cherry_output: &str) -> Vec<String> {
             }
         })
         .collect()
+}
+
+/// Guard for `fleet sync`: would replaying `replay_shas` orphan a merge-request THIS agent already sent?
+/// `fleet sync` cherry-picks unlanded commits onto the fresh trunk, giving them NEW shas — so if a
+/// commit in the replay set is the exact `--ref` of a merge-request still queued in pr-sync's inbox
+/// (sent by `me`), syncing would move the branch off that ref and pr-sync could no longer fetch it
+/// (the silent-skip orphan trap). Returns the FULL sent ref that would be orphaned (so the caller can
+/// name it), or `None` if no queued MR from `me` names a to-be-replayed commit. Pure so it's unit
+/// testable: the caller passes the already-read pr-sync messages + the replay shas. A queued MR whose
+/// ref is NOT in the replay set is fine — either it already landed (so it's not a `+` replay commit) or
+/// it's some older ref that the sync doesn't touch. Matching is by prefix in EITHER direction, since a
+/// `git cherry` sha is full-length but a hand-sent `--ref` may be abbreviated (or vice-versa).
+fn queued_ref_would_orphan(
+    replay_shas: &[String],
+    me: &str,
+    pr_sync_messages: &[Message],
+) -> Option<String> {
+    for m in pr_sync_messages {
+        if m.kind != "merge-request" || m.from != me || m.r#ref.is_empty() {
+            continue;
+        }
+        let sent = m.r#ref.as_str();
+        if replay_shas
+            .iter()
+            .any(|s| s.starts_with(sent) || sent.starts_with(s.as_str()))
+        {
+            return Some(sent.to_string());
+        }
+    }
+    None
 }
 
 /// `(ahead, behind)` of `trunk` relative to `origin/main`, or `None` if either ref is unresolvable.
@@ -3730,6 +3791,64 @@ mod tests {
         );
         // A `+ <sha> <subject>` form (some git configs append the subject) keeps just the sha.
         assert_eq!(commits_to_replay("+ 9999 wip: something"), vec!["9999"]);
+    }
+
+    #[test]
+    fn queued_ref_would_orphan_detects_a_to_be_reshaed_sent_ref() {
+        let mr = |from: &str, r#ref: &str| Message {
+            from: from.into(),
+            to: "pr-sync".into(),
+            kind: "merge-request".into(),
+            subject: "x".into(),
+            r#ref: r#ref.into(),
+            body: String::new(),
+            seq: 1,
+            in_reply_to: String::new(),
+        };
+        let replay = vec![
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
+        ];
+
+        // A queued MR from me naming a to-be-replayed commit → would orphan (returns that ref).
+        let msgs = vec![mr("v-x", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")];
+        assert_eq!(
+            queued_ref_would_orphan(&replay, "v-x", &msgs),
+            Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string())
+        );
+
+        // Abbreviated sent ref still matches (prefix, either direction).
+        let msgs = vec![mr("v-x", "bbbbbbb")];
+        assert_eq!(
+            queued_ref_would_orphan(&replay, "v-x", &msgs),
+            Some("bbbbbbb".to_string())
+        );
+
+        // An MR from a DIFFERENT agent naming the same sha is not ours → no orphan.
+        let msgs = vec![mr("v-other", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")];
+        assert_eq!(queued_ref_would_orphan(&replay, "v-x", &msgs), None);
+
+        // Our MR names a sha NOT in the replay set (e.g. already landed) → no orphan.
+        let msgs = vec![mr("v-x", "cccccccccccccccccccccccccccccccccccccccc")];
+        assert_eq!(queued_ref_would_orphan(&replay, "v-x", &msgs), None);
+
+        // A non-merge-request message from us (e.g. a note) is ignored even if its ref matches.
+        let mut note = mr("v-x", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        note.kind = "note".into();
+        assert_eq!(queued_ref_would_orphan(&replay, "v-x", &[note]), None);
+
+        // Empty ref / empty inbox → no orphan.
+        assert_eq!(
+            queued_ref_would_orphan(&replay, "v-x", &[mr("v-x", "")]),
+            None
+        );
+        assert_eq!(queued_ref_would_orphan(&replay, "v-x", &[]), None);
+
+        // Nothing to replay → never an orphan (caller also short-circuits on empty replay).
+        assert_eq!(
+            queued_ref_would_orphan(&[], "v-x", &[mr("v-x", "aaaaaaaa")]),
+            None
+        );
     }
 
     #[test]

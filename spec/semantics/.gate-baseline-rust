@@ -767,6 +767,7 @@ pass	a module value definition registers a reachable export field
 pass	a module with two definitions of the same name is rejected
 pass	a module's delegated capability is reachable as metadata, not as an export
 pass	a monomorphic user sum applied to a type argument in an annotation is rejected
+pass	a multi-arg constructor with mixed-kind payloads binds each by its own kind
 pass	a multi-argument call node is evaluated by iterating its payload arg list
 pass	a multi-field record with one param-named key survives the call
 pass	a multi-parameter closure keeps its captured environment distinct from its arguments
@@ -1115,6 +1116,7 @@ pass	a recursive walk consulting a node's own and its child's String key compute
 pass	a recursive walk threads THREE nested handlers' states at once
 pass	a recursive walk threads TWO effects at once — a fresh-index counter and a running total
 pass	a recursive-generic producer composes at two element types (the tied result var)
+pass	a recursive-generic producer over a list of its own generic-producer results declines pending the scheme re-entrancy fix
 pass	a recursive-generic producer wrapping elements in a user sum is consumed at one type
 pass	a recursive-generic producer's element is usable at each instantiation
 pass	a recursive-generic transformer threading an IDENTITY closure at TWO types declines pending the multi-instantiation result tie
@@ -1306,6 +1308,11 @@ pass	a runtime-element set's equality is independent of written order
 pass	a runtime-index list read out of bounds is None, not a trap
 pass	a runtime-index list read yields the element at that index
 pass	a runtime-index read of a runtime-built list
+pass	a runtime-index string slice compares equal to the expected multi-byte scalar by content
+pass	a runtime-index string slice isolates a multi-byte scalar by its scalar offset
+pass	a runtime-index string slice isolates a supplementary-plane scalar (four UTF-8 bytes)
+pass	a runtime-index string slice of the ASCII prefix before a multi-byte scalar
+pass	a runtime-index string slice spanning ASCII and a multi-byte scalar
 pass	a runtime-index update leaves the other elements unchanged
 pass	a runtime-index update replaces exactly that element, read back at the same index
 pass	a runtime-keyed map entry enumerates as its key-value tuple
@@ -1465,6 +1472,7 @@ pass	a three-deep known-disc nested match reads the right payload at every level
 pass	a three-deep tuple projection chain retains the innermost consumed child
 pass	a three-element runtime tuple is returned as a result
 pass	a three-level curried spine applies through both intermediate closures
+pass	a three-level nested multi-arg constructor destructures to every leaf payload
 pass	a three-parameter closure is applied at full arity through a recursive HOF
 pass	a three-payload constructor fully curried builds the variant
 pass	a three-payload constructor partially applied in a runtime tuple completes via eta-closure
@@ -2493,6 +2501,7 @@ pass	the runtime-list version of a tail fold compiles and folds correctly
 pass	the same function called under two handlers is discharged by each in turn
 pass	the same mixed-scale comparison is EXACT over Rational (keeps the fractional scale)
 pass	the scalar length of a runtime multi-byte string counts scalars, not bytes
+pass	the scalar-len of an in-bounds String.slice equals its span (end - start), independent of byte width
 pass	the second element of a runtime-content fn-return tuple is projected directly
 pass	the selected operand decides a hoisted comparison
 pass	the selected operand decides a hoisted float equality
@@ -2971,6 +2980,7 @@ todo	a negative decimal literal annotated Rational normalizes its sign onto the 
 todo	a negative power is the reciprocal, deriving an inverse unit
 todo	a negative power over a Rational magnitude is the EXACT reciprocal
 todo	a negative-power SI prefix is an exact rational scale
+todo	a nested conjunction accumulates all three operand hypotheses
 todo	a nested element pattern dispatches on a NON-variant-0 list payload
 todo	a nested tuple list element is bound over a runtime list and folded across the rest
 todo	a non-byte-aligned bit-field width takes its exact arbitrary-width unsigned type
@@ -3116,6 +3126,9 @@ todo	breaker exists: EXISTS-intro with the witness variable also free in the bod
 todo	capture-avoiding substitution renames a binder so the substituted term's free variable is not captured
 todo	compound equality over a Rational leaf respects normalization (1/2 = 2/4)
 todo	compound equality over a runtime Rational leaf compares by the normalized form
+todo	conjunction elimination CONJUNCT2 preserves both operand hypotheses
+todo	conjunction elimination keeps BOTH operand hypotheses, not just the projected conjunct's
+todo	conjunction of two theorems sharing a hypothesis concatenates without dedup
 todo	converting a unit to another unit of the same dimension is an exact rational scale
 todo	dimensional equality is decided by canonical exponent map, not written form
 todo	distinct signatures sharing a core valtype shape dispatch distinct bodies

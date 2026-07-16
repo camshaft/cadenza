@@ -1482,6 +1482,7 @@ pass	a recursive walk threads THREE nested handlers' states at once
 pass	a recursive walk threads TWO effects at once — a fresh-index counter and a running total
 pass	a recursive-generic filter threading a predicate closure composes at two element types
 pass	a recursive-generic producer composes at two element types (the tied result var)
+pass	a recursive-generic producer over a list of its own generic-producer results declines pending the scheme re-entrancy fix
 pass	a recursive-generic producer wrapping elements in a user sum is consumed at one type
 pass	a recursive-generic producer's element is usable at each instantiation
 pass	a recursive-generic producer's result is consumed by an element-typed consumer
@@ -3144,6 +3145,7 @@ pass	the same mixed-scale comparison is EXACT over Rational (keeps the fractiona
 pass	the same program with a different response gives a different deterministic result
 pass	the same-core-shape sibling dispatches ITS body, not the first
 pass	the scalar length of a runtime multi-byte string counts scalars, not bytes
+pass	the scalar-len of an in-bounds String.slice equals its span (end - start), independent of byte width
 pass	the second distinct-signature closure export returns its own type
 pass	the second element of a runtime-content fn-return tuple is projected directly
 pass	the selected operand decides a hoisted comparison

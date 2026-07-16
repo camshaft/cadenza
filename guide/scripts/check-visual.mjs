@@ -51,11 +51,26 @@ const ROUTES = [
     // isn't a mobile-overflow surface, and the heavy three+manifold chunk is slow to double-run).
     path: "/cad",
     waitFor: "textarea",
-    label: "cad",
+    label: "cad (s-expr)",
+    surface: "sexpr",
     onlyViewports: ["desktop-1280"],
     expectCanvas: true,
     async interact(page) {
       // Auto-run on mount meshes the starter; wait up to 30s for the canvas (compile+run+lazy 3D chunk).
+      await page.waitForSelector("canvas", { timeout: 30000 }).catch(() => {});
+    },
+  },
+  {
+    // Same route in the ML surface — /cad respects the global surface toggle and ships a per-surface
+    // starter, so BOTH must compile→render→mesh on first load (the ML starter was verified to render to
+    // the same canonical Solidr as the s-expr one). Guards the ML editing path from regressing.
+    path: "/cad",
+    waitFor: "textarea",
+    label: "cad (ml)",
+    surface: "ml",
+    onlyViewports: ["desktop-1280"],
+    expectCanvas: true,
+    async interact(page) {
       await page.waitForSelector("canvas", { timeout: 30000 }).catch(() => {});
     },
   },
@@ -103,6 +118,12 @@ try {
       });
       page.on("pageerror", (e) => errs.push(String(e)));
       try {
+        // A route can pin the guide surface (ML vs s-expr) — seed localStorage on the origin BEFORE the
+        // SPA boots, so a surface-dependent route (e.g. /cad's per-surface starter) renders in that surface.
+        if (route.surface) {
+          await page.goto(`${base}/`, { waitUntil: "domcontentloaded", timeout: 30000 });
+          await page.evaluate((s) => localStorage.setItem("cadenza.syntax", s), route.surface);
+        }
         await page.goto(`${base}${route.path}`, { waitUntil: "networkidle", timeout: 30000 });
         await page.waitForSelector(route.waitFor, { timeout: 30000 });
         if (route.interact) await route.interact(page);

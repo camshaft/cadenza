@@ -71,7 +71,10 @@ function isCadenzaInfo(info: string): boolean {
 /// cadenza fence becomes a code cell with whatever source it accumulated, a non-cadenza fence stays
 /// prose — so a half-typed document never throws or drops content.
 export function parseDocument(markdown: string): Cell[] {
-  const lines = markdown.split("\n");
+  // Normalize line endings up front so the parser is line-ending agnostic: a Windows `\r\n` (or a lone
+  // classic-Mac `\r`) document would otherwise leave a trailing `\r` on every split line, which ends up
+  // INSIDE a code cell's source and breaks its downstream Cadenza compile/render (reported on PR #471).
+  const lines = markdown.replace(/\r\n?/g, "\n").split("\n");
   const cells: Cell[] = [];
 
   let proseBuf: string[] = [];

@@ -2494,6 +2494,54 @@ mod tests {
     }
 
     #[test]
+    fn multiline_def_body_equals_single_line_and_survives_the_export_wrapper() {
+        // Follow-up to a reported native-vs-browser divergence (v-guide-infra): a `def main() =` whose
+        // NESTED multi-arg-ctor body starts on the NEXT line and spans several indented continuation
+        // lines was reported to fail "expected an expression" in browser-wasm (native cdz clean). The ML
+        // parser handles it identically to the single-line form: layout (newline-then-indent after `=`)
+        // is not significant, so the multi-line body parses to a STRUCTURALLY IDENTICAL tree — and the
+        // guide's `wrapModule` shape (snippet + "\nexport { main }") parses clean too. Pins the exact
+        // authored-snippet shape the guide feeds, so a real layout-sensitivity regression here is caught.
+        // (The reported browser failure is not in read_ml — confirmed identical trees + native `cdz
+        // check` exit 0 on the wrapped form; it lives in the guide's JS/wasm-bundle layer.)
+        let single = "type Vec3r = | V3r(Rational, Rational, Rational)\n\
+                      type Solidr = | Cuber(Vec3r) | Spherer(Rational) | Differencer(Solidr, Solidr)\n\
+                      def r(n: Int64) = Rational.of(n, 1)\n\
+                      def main() = Solidr.Differencer(Solidr.Cuber(V3r(r(4), r(4), r(4))), Solidr.Spherer(Rational.of(5, 2)))";
+        let multi = "type Vec3r = | V3r(Rational, Rational, Rational)\n\
+                     type Solidr =\n\
+                     \x20\x20| Cuber(Vec3r)\n\
+                     \x20\x20| Spherer(Rational)\n\
+                     \x20\x20| Differencer(Solidr, Solidr)\n\
+                     def r(n: Int64) = Rational.of(n, 1)\n\
+                     def main() =\n\
+                     \x20\x20Solidr.Differencer(\n\
+                     \x20\x20\x20\x20Solidr.Cuber(V3r(r(4), r(4), r(4))),\n\
+                     \x20\x20\x20\x20Solidr.Spherer(Rational.of(5, 2)))";
+        let ps = read_ml(single);
+        let pm = read_ml(multi);
+        assert!(ps.ok(), "single-line form parses, got {:?}", ps.errors);
+        assert!(
+            pm.ok(),
+            "multi-line def body (body on next line, indented continuation) parses, got {:?}",
+            pm.errors
+        );
+        // Layout is insignificant: the two lay out to the SAME tree (no "expected an expression").
+        assert!(
+            ps.arenas.structurally_eq(&pm.arenas),
+            "multi-line and single-line def bodies must parse to identical trees"
+        );
+        // And the guide's wrapper shape (`… \nexport { main }`) parses clean on the multi-line form.
+        let wrapped = format!("{multi}\nexport {{ main }}");
+        let pw = read_ml(&wrapped);
+        assert!(
+            pw.ok(),
+            "the wrapModule shape (snippet + export list) parses, got {:?}",
+            pw.errors
+        );
+    }
+
+    #[test]
     fn nested_multi_arg_constructor_in_a_type_def_block_parses_and_round_trips() {
         // Regression for a reported cdz-vs-browser divergence (v-guide-infra): a NESTED multi-arg
         // constructor application inside a multi-line sum-type-def block — `Solidr.Differencer(
