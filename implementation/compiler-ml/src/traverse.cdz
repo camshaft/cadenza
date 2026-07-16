@@ -3,12 +3,13 @@
 /// map over every child, filter a symbol list, fold constraints, count nodes matching a predicate.
 ///
 /// NOTE on the annotations: each higher-order parameter carries an explicit ARROW type (`f: Int64 ->
-/// Int64`, `p: Ast -> Bool`). That is not decoration — it is REQUIRED here: an unannotated closure
-/// passed to a SELF-RECURSIVE HOF fails to infer its parameter types (they are left unsolved →
-/// "a closure's parameter type has no machine representation"). See
-/// `mlrepro-reject-inferred-closure-param-through-recursive-hof.sexp` (queue). Annotating the HOF's function
-/// parameter (or the closure's params) gives inference the anchor it can't derive through the
-/// recursion; the arrow annotation is the idiomatic fix and reads well.
+/// Int64`, `p: Ast -> Bool`). This USED to be required — an unannotated closure passed to a SELF-recursive
+/// HOF once failed to infer its parameter types (left unsolved → "a closure's parameter type has no machine
+/// representation"). That inference gap is now RESOLVED
+/// (`mlrepro-reject-inferred-closure-param-through-recursive-hof`, queue), so the arrow annotations are now
+/// a STYLE CHOICE, not a necessity — kept here because annotating a HOF's function parameter documents its
+/// contract and reads well. The `fold-inferred-regression` test below pins the fully-inferred spelling
+/// (no annotations anywhere) so the fix stays fixed.
 import { Ast } from "ast"
 
 /// Map a function over an Int64 list (the `List.map` the prelude lacks).
@@ -98,6 +99,21 @@ def int-total-nested() =
 @test
 def count-where-none() =
   if count-where(is-int-node, Ast.Name("x")) == 0 then unit else trap("no int in a Name")
+
+/// A left fold with NO arrow annotation on its function parameter — the fully-inferred spelling that once
+/// failed (the closure's param types were left unsolved through the recursion). Kept solely as a live
+/// regression guard for `mlrepro-reject-inferred-closure-param-through-recursive-hof` (now RESOLVED); the
+/// exported `fold-list` above keeps its documenting arrow annotation.
+def fold-inferred(f, acc, xs) = match xs with
+  | [] => acc
+  | [h, .. t] => fold-inferred(f, f(h, acc), t)
+
+@test
+def fold-inferred-regression() =
+  // REGRESSION: an unannotated closure through a self-recursive HOF (both unannotated) now infers — this
+  // is the classic foldl written the fully-inferred way. Was CDZ0203 "no machine representation" before
+  // the inference fix; must keep compiling AND summing to 42.
+  if fold-inferred(fn(x, a) => a + x, 0, [5, 7, 30]) == 42 then unit else trap("inferred fold sums to 42")
 
 /// Structural Int64-list equality (test helper).
 def int-list-eq(a: List(Int64), b: List(Int64)) = match a with
