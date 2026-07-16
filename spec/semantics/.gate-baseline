@@ -3006,6 +3006,9 @@ pass	print renders a nested compound with a string leaf as its exact canonical t
 pass	print renders a single-element Ast.List as one parenthesized element
 pass	print renders a template that splices an Ast value — the non-executing path works
 pass	print renders an empty Ast.List as the empty-parens form
+pass	print then read an Ast.Float at full 17-significant-digit precision round-trips
+pass	print then read an Ast.Float at the maximum finite magnitude round-trips
+pass	print then read an Ast.Float at the smallest subnormal round-trips
 pass	print then read of a digit-led Ast.Name reclassifies it per the number/identifier boundary
 pass	print then read of a keyword-spelled Ast.Name reclassifies it as the boolean literal
 pass	projecting a field is independent of the order fields are written
@@ -3420,6 +3423,7 @@ pass	two dependent-size segments each bind the count a preceding segment named
 pass	two different variants of the SAME sum compare unequal
 pass	two differing runtime Ok values of a multi-parameter sum compare unequal by a heap walk
 pass	two differing runtime sum values compare unequal by a heap walk
+pass	two distinct doubles print to distinct text — 0.3 and 0.1+0.2 do not round-trip-collide
 pass	two distinct map-keys are distinct entries
 pass	two distinct names bound to the same value key the same map entry
 pass	two distinct-named modules in one scope coexist

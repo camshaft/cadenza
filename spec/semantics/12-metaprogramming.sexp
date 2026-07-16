@@ -1066,6 +1066,47 @@
   (input  (= (read (print (Ast.Float -0.0))) (Ast.Float -0.0)))
   (output (: true Bool)))
 
+; The sign/exponent/-0.0 cases above pin the FORM of the text path; these pin its PRECISION. `print` renders
+; the SHORTEST round-tripping decimal — the contract is `read(print v) == v` for EVERY Float64, so a printer
+; that emitted too few significant digits would pass the small-integer/sign cases yet silently corrupt a value
+; needing full precision. These pin the round-trip at a 17-significant-digit value (the `0.1 + 0.2` result,
+; the classic precision stress), the maximum finite magnitude, the smallest subnormal, and the INJECTIVITY
+; the shortest-form contract requires: two DISTINCT doubles must print to DISTINCT text (`0.3` and the
+; `0.1+0.2` result are `==`-close but different doubles, so they must NOT round-trip-collide — a printer
+; truncating both to `0.3` would collapse them).
+
+(case "print then read an Ast.Float at full 17-significant-digit precision round-trips"
+  (doc    "The precision companion of the form cases: `0.30000000000000004` (the exact `0.1 + 0.2` binary64
+           result) needs all 17 significant digits to round-trip. `read(print (Ast.Float 0.30000000000000004))
+           == it` pins that `print` emits enough digits — a printer rendering the shorter `0.3` would re-read
+           as a DIFFERENT double and fail this, though it passes the `1.5`/`3.0`/sign cases.")
+  (input  (= (read (print (Ast.Float 0.30000000000000004))) (Ast.Float 0.30000000000000004)))
+  (output (: true Bool)))
+
+(case "print then read an Ast.Float at the maximum finite magnitude round-trips"
+  (doc    "The large-magnitude extreme: `1.7976931348623157e308` (≈ Float64.max) round-trips through the text
+           path — `read(print v) == v`. Pins the shortest-form renderer handles the top of the exponent range
+           bit-exactly, not only the `1e10` mid-range exponent case.")
+  (input  (= (read (print (Ast.Float 1.7976931348623157e308))) (Ast.Float 1.7976931348623157e308)))
+  (output (: true Bool)))
+
+(case "print then read an Ast.Float at the smallest subnormal round-trips"
+  (doc    "The tiny-magnitude extreme: `5e-324` (the smallest positive subnormal Float64) round-trips —
+           `read(print v) == v`. Pins the text path preserves a subnormal (denormalized) value, the bottom of
+           the magnitude range, which a renderer flushing subnormals to zero or mis-scaling the exponent
+           would lose.")
+  (input  (= (read (print (Ast.Float 5e-324))) (Ast.Float 5e-324)))
+  (output (: true Bool)))
+
+(case "two distinct doubles print to distinct text — 0.3 and 0.1+0.2 do not round-trip-collide"
+  (doc    "The INJECTIVITY the shortest-round-tripping contract requires: `0.3` and the `0.1 + 0.2` result
+           (`0.30000000000000004`) are distinct Float64 values (differing in the last ULP). `print` must
+           render them to DISTINCT text so `read` recovers each exactly — so `(= (read (print (Ast.Float 0.3)))
+           (read (print (Ast.Float (+ 0.1 0.2)))))` is FALSE (0). A printer truncating both to `0.3` would
+           collapse them to equal text and wrongly answer true — the precision-loss failure this rules out.")
+  (input  (do (def (main) (if (= (read (print (Ast.Float 0.3))) (read (print (Ast.Float (+ 0.1 0.2))))) 1 0)) (export main)))
+  (output (: 0 Int64)))
+
 ; --- `read` is TOTAL over its input: malformed text DECLINES, never traps or panics ------------------
 ; `read : String → Ast` parses the s-expression subset `print` emits (`lower_read`/`SexprReader`). The
 ; round-trip cases above only feed it WELL-FORMED text (`read(print v)`); none exercises the failure
