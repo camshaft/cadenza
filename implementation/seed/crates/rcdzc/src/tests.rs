@@ -14949,6 +14949,65 @@ mod match_engine {
     }
 
     #[test]
+    fn a_string_or_symbol_literal_pattern_respects_the_nominal_boundary() {
+        // A String and a Symbol literal pattern share the `Core::ConstStr` rep (`classify_probe` maps BOTH
+        // to a `Probe::Str`), but `String` and `Symbol` are a distinct NOMINAL boundary that `=` (CDZ0202)
+        // and fn-args reject. The scalar match path must fault the CROSS-boundary mix too — a `"add"` pattern
+        // over a `Symbol` scrutinee, or a `#"add"` over a `String` — by keying the expected type on the
+        // PATTERN's origin (resolve `probe_pats[i]`), NOT the scrutinee. Was the Inc-45 regression (the check
+        // keyed on the scrutinee → trivially true for any text scrutinee → the pattern path was more
+        // permissive than `=`; reviewer-found on `1fc13499a`). Checked structurally (storeless — the type
+        // check runs before any heap emit / boundary-rep check).
+        // CROSS 1 — a STRING literal pattern over a SYMBOL scrutinee faults (CDZ0201-class, the same shape/
+        // type-mismatch code the char/bool-over-int cases carry).
+        let cross_str_over_sym =
+            reject_full("(module m (def (f (: s Symbol)) (match s (\"add\" 1) (_ 0))) (export f))")
+                .expect("a String pattern over a Symbol scrutinee must reject");
+        assert_eq!(
+            cross_str_over_sym.code.as_deref(),
+            Some("CDZ0201"),
+            "got: {}",
+            cross_str_over_sym.message
+        );
+        // CROSS 2 — a SYMBOL literal pattern over a STRING scrutinee faults.
+        let cross_sym_over_str = reject_full(
+            "(module m (def (f (: s String)) (match s (#\"add\" 1) (_ 0))) (export f))",
+        )
+        .expect("a Symbol pattern over a String scrutinee must reject");
+        assert_eq!(
+            cross_sym_over_str.code.as_deref(),
+            Some("CDZ0201"),
+            "got: {}",
+            cross_sym_over_str.message
+        );
+        // CONTROLS — the SAME-kind cases must still COMPILE (the intended dispatch Inc-45 shipped). A folded
+        // Symbol scrutinee matched by a symbol literal, and a folded String by a string literal, each select
+        // their arm; guard on the store (heap run) like the other match tests.
+        if super::find_runtime_wasm().is_none() {
+            eprintln!("runtime wasm not found; skipping same-kind control heap-runs");
+            return;
+        }
+        assert_eq!(
+            run_heap_value(
+                "(do (def (main) (match (Symbol.of (String.concat \"ad\" \"d\")) (#\"add\" 1) (_ 0))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "1",
+            "a Symbol pattern over a Symbol scrutinee still dispatches (same-kind control)"
+        );
+        assert_eq!(
+            run_heap_value(
+                "(do (def (main) (match (String.concat \"ad\" \"d\") (\"add\" 1) (_ 0))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "1",
+            "a String pattern over a String scrutinee still dispatches (same-kind control)"
+        );
+    }
+
+    #[test]
     fn a_tail_loop_threading_a_projected_boxed_sum_accumulator_decodes_correctly() {
         // A tuple-projected boxed sum threaded through a self-tail loop must SURVIVE the loop step. `one`
         // returns `(tuple (W.Atom <byte>) (+ pos 1))`; `loop` threads `(. r 0)` (the nested-compound boxed
@@ -33879,6 +33938,49 @@ mod match_engine {
             )
             .is_none(),
             "an active splice of a constant Int list flattens its elements into the surrounding form"
+        );
+        // The splice-lift is TYPE-DIRECTED across the scalar leaves, not Int-only: each constant element is
+        // wrapped in the `Ast` leaf its kind denotes (Float64→`Ast.Float`, Bool→`Ast.Bool`, String→
+        // `Ast.Str`), matching the active-unquote `ast-lift` leaf set. Each equality pins the lifted shape
+        // against the longhand quote of the same elements — a wrong-tagged leaf (e.g. the old unconditional
+        // `Ast.Int` wrap) would make the equality false, and a decline would surface as a non-None reject.
+        for (src, kind) in [
+            (
+                "(module m (def (main) \
+                   (let ((xs (list 1.5 2.5))) (= (quasiquote (f (unquote-splicing xs))) \
+                                                 (quote (f 1.5 2.5))))) (export main))",
+                "float",
+            ),
+            (
+                "(module m (def (main) \
+                   (let ((xs (list true false))) (= (quasiquote (f (unquote-splicing xs))) \
+                                                    (quote (f true false))))) (export main))",
+                "bool",
+            ),
+            (
+                "(module m (def (main) \
+                   (let ((xs (list \"a\" \"bb\"))) (= (quasiquote (f (unquote-splicing xs))) \
+                                                   (quote (f \"a\" \"bb\"))))) (export main))",
+                "string",
+            ),
+        ] {
+            assert!(
+                reject_code(src).is_none(),
+                "an active splice of a constant {kind} list lifts each element to its matching Ast leaf"
+            );
+        }
+        // A NESTED-list element has no scalar value leaf this increment, so the splice DECLINES (a Todo, the
+        // runtime splice map is unbuilt) rather than mis-lifting — reject-don't-miscompile. It is not a
+        // CDZ0201 non-list error (the operand IS a list); it simply cannot fold yet.
+        assert_eq!(
+            reject_code(
+                "(module m (def (main) \
+                   (let ((xs (list (list 1) (list 2)))) (quasiquote (f (unquote-splicing xs)))) ) \
+                 (export main))"
+            )
+            .as_deref(),
+            None,
+            "splicing a list of nested lists declines (Ast unbuilt), it is not a CDZ0201 non-list error"
         );
         // The operand of `,@` MUST be a list: `provably_not_list` types (an Int64 literal or a let-bound
         // Int64) have no elements to splice → CDZ0201, matching the pre-desugar reject. The message is the

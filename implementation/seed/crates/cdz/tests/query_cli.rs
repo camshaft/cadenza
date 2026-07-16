@@ -2323,6 +2323,41 @@ fn exports_lists_each_export_with_its_type() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[test]
+fn exports_json_emits_one_structured_object_per_export() {
+    // `--json` emits one machine-readable object per export — {file,line,col,name,type} — the shape a
+    // tool consumes to read a module's public interface without re-parsing the `file:line:col: name :
+    // type` text. Both output shapes are computed from the SAME resolved export, so they keep row parity.
+    let dir = scratch_dir("exports_json");
+    let f = dir.join("prog.sexp");
+    let src = "(module m (def (inc (: n Int64)) (+ n 1)) (def (v) (: 5 Int64)) \
+               (export inc) (export v))\n";
+    std::fs::write(&f, src).unwrap();
+    let (ok, stdout, err) = run(&["exports", f.to_str().unwrap(), "--json"], "");
+    assert!(ok, "cdz exports --json should succeed: {err}");
+    let rows: Vec<&str> = stdout.lines().filter(|l| !l.trim().is_empty()).collect();
+    assert_eq!(rows.len(), 2, "one JSON object per export: {stdout}");
+    for row in &rows {
+        assert!(
+            row.trim_start().starts_with('{') && row.trim_end().ends_with('}'),
+            "each row is a JSON object: {row}"
+        );
+        for key in ["\"file\"", "\"line\"", "\"col\"", "\"name\"", "\"type\""] {
+            assert!(row.contains(key), "row has {key}: {row}");
+        }
+    }
+    // The export names + their types ride through as structured fields (same facts as the human form).
+    assert!(
+        stdout.contains("\"name\":\"inc\"") && stdout.contains("\"type\":\"(-> Int64 Int64)\""),
+        "the function export inc carries its arrow type: {stdout}"
+    );
+    assert!(
+        stdout.contains("\"name\":\"v\"") && stdout.contains("\"type\":\"Int64\""),
+        "the value export v carries its type: {stdout}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // ---- `cdz type-at` hover polish: keywords + def signatures, not `Any` ----
 
 #[test]

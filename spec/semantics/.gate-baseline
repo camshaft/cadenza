@@ -1081,6 +1081,7 @@ pass	a match building one Some per arm sinks to a single Some around a payload m
 pass	a match not covering the scrutinee is a compile-time rejection
 pass	a match on a BigInt with a single catch-all binder binds and uses it
 pass	a match on a computed runtime value dispatches on the result
+pass	a match on a genuinely-runtime char (from a runtime Char.from-int) declines pending the runtime Char rep
 pass	a match on a record field selects a later literal arm
 pass	a match on a record-field-access scrutinee dispatches on the field value
 pass	a match on a runtime integer scrutinee producing a boolean
@@ -1887,6 +1888,7 @@ pass	a string literal payload refines a ctor list element
 pass	a string passed to a function as a runtime argument is measured by its byte length
 pass	a string spelled like a keyword round-trips as an Ast.Str, not an Ast.Bool or Ast.Name
 pass	a string-literal pattern in a match selects by string equality, distinguishing Unicode
+pass	a string-literal pattern over a symbol scrutinee is a type error
 pass	a success `?` observes an earlier trapping let-init so the trap is not elided
 pass	a success `?` then a failure `?` short-circuits at the second
 pass	a suffixed BigInt literal annotated as Int64 is a type mismatch
@@ -1924,6 +1926,7 @@ pass	a symbol-literal match agrees with the equivalent if-(= s lit) chain
 pass	a symbol-literal match reaches the second arm by content
 pass	a symbol-literal pattern nested in a variant payload matches by content
 pass	a symbol-literal pattern over a multi-byte symbol matches by content
+pass	a symbol-literal pattern over a string scrutinee is a type error
 pass	a tag-length-value record round-trips through construct then match
 pass	a tagged template expands via its binding-dispatched tag function
 pass	a tagged template nested in another's hole composes — the inner's result reaches the outer tag
@@ -3409,6 +3412,10 @@ pass	unit is the empty tuple
 pass	unquote in quasiquote evaluates normally and embeds
 pass	unquote outside quasiquote is a syntax error
 pass	unquote with more than one operand inside a quasiquote is malformed
+pass	unquote-splicing a list of nested lists declines — no scalar leaf to lift into
+pass	unquote-splicing lifts a boolean list to Ast.Bool leaves
+pass	unquote-splicing lifts a float list to Ast.Float leaves
+pass	unquote-splicing lifts a string list to Ast.Str leaves
 pass	unquote-splicing splices list elements into parent
 pass	unsigned 8-bit addition that overflows its width is rejected at compile time
 pass	unsigned comparison orders by magnitude, not by signed interpretation

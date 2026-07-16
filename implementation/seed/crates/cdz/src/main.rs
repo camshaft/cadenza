@@ -207,7 +207,7 @@ enum Cmd {
     /// binding as `file:line:col: name : type` (innermost first).
     Scope(ScopeArgs),
     /// The module's exported interface: each `(export …)` name and its type, as
-    /// `file:line:col: name : type`.
+    /// `file:line:col: name : type` (`--json` emits one structured object per export for a tool).
     Exports(ExportsArgs),
     /// The document OUTLINE of FILE: every top-level declaration (value/function/type/effect/module)
     /// classified by kind, as `file:line:col: kind name` — the LSP `documentSymbol` analogue (`--json`
@@ -2900,6 +2900,12 @@ struct ScopeArgs {
 struct ExportsArgs {
     /// The program file (`.cdz`/`.ml` → ml, `.sexp`/`.sexpr` → sexpr).
     file: String,
+    /// Emit each export as a machine-readable JSON object (one per line) instead of the human
+    /// `file:line:col: name : type` text — the shape a tool consumes to read a module's public interface
+    /// without re-parsing the text layout. Each object has `file`, `line`, `col`, `name`, `type` (the
+    /// `cdz symbols --json`/`cdz check --json` machine-readable convention).
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(clap::Args)]
@@ -4114,7 +4120,9 @@ fn run_exports(args: &ExportsArgs) -> ExitCode {
         return ExitCode::SUCCESS;
     }
     // Each line is `name<TAB>type<TAB>def-name-node-id` (`-` when the export names no def).
-    // One line-start index (binary-searched line:col) so a wide export list stays linear.
+    // One line-start index (binary-searched line:col) so a wide export list stays linear. Both output
+    // shapes — the human `file:line:col: name : type` and the `--json` object — are computed from the
+    // SAME resolved `(name, type, line, col)` so they can't drift (mirrors `cdz symbols`).
     let index = cadenza_syntax::query::driver::LineIndex::new(&source);
     for line in text.lines() {
         let mut cols = line.splitn(3, '\t');
@@ -4122,18 +4130,29 @@ fn run_exports(args: &ExportsArgs) -> ExitCode {
             (Some(n), Some(t), Some(d)) => (n, t, d),
             _ => continue,
         };
-        let loc = match node
+        let line_col = node
             .parse::<u32>()
             .ok()
             .and_then(|d| spans.get(cadenza_syntax::StructId(d)))
-        {
-            Some(span) => {
-                let (l, c) = index.line_col(&source, span.start);
-                format!("{}:{l}:{c}", args.file)
+            .map(|span| index.line_col(&source, span.start));
+        if args.json {
+            use cadenza_syntax::query::json;
+            let mut obj = json::Object::new();
+            obj.string("file", &args.file);
+            if let Some((l, c)) = line_col {
+                obj.raw("line", &l.to_string());
+                obj.raw("col", &c.to_string());
             }
-            None => args.file.clone(),
-        };
-        println!("{loc}: {name} : {ty}");
+            obj.string("name", name);
+            obj.string("type", ty);
+            println!("{}", obj.finish());
+        } else {
+            let loc = match line_col {
+                Some((l, c)) => format!("{}:{l}:{c}", args.file),
+                None => args.file.clone(),
+            };
+            println!("{loc}: {name} : {ty}");
+        }
     }
     ExitCode::SUCCESS
 }

@@ -1546,18 +1546,20 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                         },
                     }
                 }
-                // `ast-splice-lift` — the quasiquote-splice lift `(List Int64) → (List Ast)`: wrap each
-                // element in an `Ast.Int` node. FOLD a constant list literal into a `Core::ListNew` of
-                // `(Ast.Int e)` `Core::SumNew` nodes (the Ast sum's `Int` variant is disc 0, one payload).
-                // A runtime list operand (no visible `ListNew`) declines — the runtime map is a later
-                // increment. A non-Int element declines (a wrong lift would corrupt the value).
+                // `ast-splice-lift` — the quasiquote-splice lift `(List a) → (List Ast)`: wrap each element
+                // in the `Ast` leaf its constant kind denotes (Int64→`Ast.Int`, Float64→`Ast.Float`,
+                // Bool→`Ast.Bool`, String→`Ast.Str`). FOLD a constant list literal into a `Core::ListNew`
+                // of leaf `Core::SumNew` nodes (discs read by name). A runtime list operand (no visible
+                // `ListNew`) declines — the runtime map is a later increment. A non-scalar element (a
+                // nested list, a char, a NaN float) declines (a wrong lift would corrupt the value).
                 Some(Prim::AstSpliceLift) if args.len() == 1 => match core_of(db, args[0]) {
                     Core::Poison(r) => Core::Poison(r),
                     Core::ListNew { elems } => match lower_ast_splice_lift(db, id, &elems) {
                         Some(core) => core,
                         None => Core::Poison(Reject::decline(
-                            "an active `,@` splice needs a compile-time-constant Int64 list \
-                                 (the runtime splice map is not yet built)",
+                            "an active `,@` splice needs a compile-time-constant list of scalar \
+                                 (Int64/Float64/Bool/String) elements (the runtime splice map is not \
+                                 yet built)",
                         )),
                     },
                     _ => Core::Poison(Reject::decline(
@@ -2154,32 +2156,36 @@ fn ctor_head_display_name(db: &Db, head: StructId) -> Option<String> {
         .map(str::to_string)
 }
 
-/// Fold `ast-splice-lift` over a CONSTANT list's element cores: wrap each in an `(Ast.Int e)` node — a
-/// `Core::SumNew` at the `Ast` sum's `Int` variant disc (one payload). Returns a `Core::ListNew` of the
-/// wrapped nodes (the lifted `(List Ast)`), or `None` if the `Ast` sum / its `Int` variant is somehow
-/// absent OR an element is not an Int (a non-Int element cannot lift — the splice declines rather than
-/// building a wrong `Ast.Int`). `id` seeds nothing structural; the synthesized nodes carry their own
-/// `Ty::Sum{Ast}`. The splice companion of the active-unquote `(Ast.Int e)` wrap (Int-only this increment).
+/// Fold `ast-splice-lift` over a CONSTANT list's element cores: wrap each in the `Ast` leaf its CONSTANT
+/// kind denotes — `ConstInt`→`Ast.Int`, `ConstFloat`→`Ast.Float`, `ConstBool`→`Ast.Bool`, `ConstStr`→
+/// `Ast.Str` (each a `Core::SumNew` at the leaf disc, one payload). Returns a `Core::ListNew` of the
+/// wrapped nodes (the lifted `(List Ast)`), or `None` if the `Ast` sum is absent OR an element has no
+/// scalar-value leaf — a nested list, a char, a NaN float, or a runtime element declines rather than
+/// building a wrong-typed node. The list is homogeneous, so in practice every element shares one leaf.
+/// `id` seeds nothing structural; the synthesized nodes carry their own `Ty::Sum{Ast}`. This is the
+/// constant splice companion of the active-unquote `ast-lift` wrap (which dispatches by inferred TYPE for
+/// the runtime case); the two agree on the leaf set (Int64/Float64/Bool/String).
 fn lower_ast_splice_lift(db: &mut Db, id: StructId, elems: &[StructId]) -> Option<Core> {
-    // The `Ast` sum type + its `Int` variant discriminant (the decl's variant order pins Int = disc 0;
-    // read it by name so a reordering does not silently mis-tag).
-    let ast_ty = {
-        let occ = db.type_decls.iter().find(|t| t.name == "Ast")?.occ;
-        db.normalize_sum(occ, "Ast".to_string(), Vec::new())
-    };
-    let int_disc = variant_disc_by_name(db, &ast_ty, "Int")?;
+    // The `Ast` sum type + its variant discriminants (read by name so a decl reordering never mis-tags).
+    let disc = ast_variant_discs(db)?;
+    let ast_ty = disc.ty.clone();
     let _ = id;
     let mut wrapped = Vec::with_capacity(elems.len());
     for &e in elems {
-        // Every element must be a constant Int (the list's element type is Int64; a non-Int constant —
-        // e.g. a nested list — has no `Ast.Int` lift this increment). Confirm it folds to a `ConstInt`.
-        if !matches!(core_of(db, e), Core::ConstInt(_)) {
-            return None;
-        }
+        // Dispatch each element by its CONSTANT core kind to the matching `Ast` leaf. A non-scalar
+        // constant (nested list, char, NaN float) or a runtime element has no leaf this increment →
+        // decline the whole splice (never build a wrong-typed leaf). Mirrors `lower_ast_lift`'s leaf set.
+        let leaf_disc = match core_of(db, e) {
+            Core::ConstInt(_) => disc.int,
+            Core::ConstFloat(_) => disc.float,
+            Core::ConstBool(_) => disc.bool,
+            Core::ConstStr(_) => disc.str,
+            _ => return None,
+        };
         let node = synth_core(
             db,
             Core::SumNew {
-                disc: int_disc,
+                disc: leaf_disc,
                 payloads: vec![e],
             },
             ast_ty.clone(),
@@ -3592,11 +3598,16 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
             crate::core::Probe::Bool(_) => Some(crate::ty::Ty::Bool),
             // A `Str` probe comes from a String-literal `"…"` pattern OR a SYMBOL-literal `#"…"` pattern —
             // both lower to a `Core::ConstStr` (a symbol's identity is its text, shared rep), so ONE probe
-            // serves both. It agrees with a `String` OR a `Symbol` scrutinee; expect the scrutinee's OWN
-            // kind when it is either, so a `#"add"` pattern over a `Symbol` scrutinee (and a `"add"` over a
-            // `String`) both type-check, while a `Str` probe over a non-text scrutinee (an Int) still faults.
-            crate::core::Probe::Str(_) => match scrut_ty {
-                crate::ty::Ty::Symbol => Some(crate::ty::Ty::Symbol),
+            // serves both. But `String` and `Symbol` are a distinct NOMINAL boundary that `=` (CDZ0202) and
+            // fn-args reject, so the expected type must come from the PATTERN's own kind, NOT the scrutinee:
+            // resolve `probe_pats[i]` — a `SymbolConst` pattern expects `Symbol`, a `Str` pattern expects
+            // `String`. Then `agrees_with` accepts the same-kind cases (`#"add"` over `Symbol`, `"add"` over
+            // `String`) and FAULTS the cross-boundary mix (a `"add"` pattern over a `Symbol` scrutinee, or a
+            // `#"add"` over a `String`) exactly as `=` does. Keying on the scrutinee instead made the check
+            // trivially true for any text scrutinee — the pattern path was more permissive than `=` (the
+            // Inc-45 regression, reviewer-found; `pattern_constraints` already tags origin this way).
+            crate::core::Probe::Str(_) => match crate::resolve::resolved_of(db, probe_pats[i]) {
+                crate::resolved::Resolved::SymbolConst(_) => Some(crate::ty::Ty::Symbol),
                 _ => Some(crate::ty::Ty::String),
             },
             // A `Char` probe comes from a char-literal `#\a` pattern; it agrees only with a `Char`

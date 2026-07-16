@@ -528,12 +528,12 @@ fn a_bare_float_set_or_map_key_uses_the_cdz_f64_total_order_wrapper() {
            (def (main (: d Int64)) (if (test Float64.nan Float64.nan) 1 0)) (export main))",
     );
     assert!(
-        s.contains("struct CdzF64(u64)") && s.contains("BTreeSet<CdzF64>"),
-        "a float set emits the CdzF64 wrapper + a BTreeSet<CdzF64>:\n{s}"
+        s.contains("struct __CdzF64(u64)") && s.contains("BTreeSet<__CdzF64>"),
+        "a float set emits the __CdzF64 wrapper + a BTreeSet<__CdzF64>:\n{s}"
     );
     assert!(
-        s.contains("CdzF64::new("),
-        "the stored element + the contains probe are lifted through CdzF64::new:\n{s}"
+        s.contains("__CdzF64::new("),
+        "the stored element + the contains probe are lifted through __CdzF64::new:\n{s}"
     );
     // A float-KEYED map likewise: keys lifted through `CdzF64::new` on insert AND lookup (so the probe
     // matches the stored key's wrapper type). (The seed map here is `Map.empty`, whose BTreeMap type Rust
@@ -544,14 +544,14 @@ fn a_bare_float_set_or_map_key_uses_the_cdz_f64_total_order_wrapper() {
            (match (Map.lookup (Map.insert (Map.empty) x 42) x) ((Some v) v) ((None _) -1))) (export main))",
     );
     assert!(
-        m.matches("CdzF64::new(").count() >= 2 && m.contains("struct CdzF64(u64)"),
-        "a float-keyed map lifts its insert + lookup keys through CdzF64::new:\n{m}"
+        m.matches("__CdzF64::new(").count() >= 2 && m.contains("struct __CdzF64(u64)"),
+        "a float-keyed map lifts its insert + lookup keys through __CdzF64::new:\n{m}"
     );
     // The wrapper is NOT emitted for a float-free program (gated on use — no dead struct).
     let plain = compile_rust("(module m (def (g (: n Int64)) (+ n 1)) (export g))");
     assert!(
-        !plain.contains("CdzF64"),
-        "a float-free program does not emit the CdzF64 wrapper:\n{plain}"
+        !plain.contains("__CdzF64"),
+        "a float-free program does not emit the __CdzF64 wrapper:\n{plain}"
     );
     // A float-CARRYING COMPOUND key still DECLINES (the wrapper is not threaded through a tuple).
     let nested = compile_rust_result(
@@ -561,6 +561,58 @@ fn a_bare_float_set_or_map_key_uses_the_cdz_f64_total_order_wrapper() {
     assert!(
         nested.is_err(),
         "a (Tuple Float Int64) set element still declines (wrapper not threaded through a compound):\n{nested:?}"
+    );
+}
+
+#[test]
+fn float_set_key_wrapper_is_width_specific_and_the_reserved_name_never_collides() {
+    // Copilot review on PR #487 found two bugs in the bare-float set/map key support:
+    //  (1) the wrapper was WIDTH-BLIND — a `Float32` key emitted a `__CdzF64` (over `u64`) around an `f32`
+    //      value, a rustc type error. The wrapper is now width-specific: `Float32` → `__CdzF32` (over `u32`).
+    //  (2) the wrapper name `CdzF64` was a LEGAL user sum name, so `(type CdzF64 …)` collided with the
+    //      injected `struct CdzF64` (E0428) even in a float-free program. The name is now `__`-reserved and
+    //      injection is gated on the `__CdzF{32,64}::new(` marker, so a user `CdzF64`/`CdzF32` sum is fine.
+
+    // (1) A Float32-keyed set emits the `__CdzF32` wrapper (over u32 bits, `f32::NAN`), NOT `__CdzF64`.
+    let f32set = compile_rust(
+        "(module m (def (main (: d Float32)) (Set.len (Set.insert (Set.of (list)) d))) (export main))",
+    );
+    assert!(
+        f32set.contains("struct __CdzF32(u32)")
+            && f32set.contains("__CdzF32::new(")
+            && !f32set.contains("__CdzF64"),
+        "a Float32 set key uses the u32-backed __CdzF32 wrapper, not __CdzF64:\n{f32set}"
+    );
+    // A Float64-keyed set still uses `__CdzF64` (over u64), NOT `__CdzF32`.
+    let f64set = compile_rust(
+        "(module m (def (main (: d Float64)) (Set.len (Set.insert (Set.of (list)) d))) (export main))",
+    );
+    assert!(
+        f64set.contains("struct __CdzF64(u64)") && !f64set.contains("__CdzF32"),
+        "a Float64 set key uses the u64-backed __CdzF64 wrapper:\n{f64set}"
+    );
+
+    // (2) A user sum literally NAMED `CdzF64` in a FLOAT-FREE program emits `enum CdzF64` and NO injected
+    // wrapper struct — the reserved `__CdzF64` name cannot collide, and injection needs the `::new(` marker.
+    let user = compile_rust(
+        "(module m (type CdzF64 (A) (B)) \
+           (def (main (: d Int64)) (match (CdzF64.A) ((A) 1) ((B) 2))) (export main))",
+    );
+    assert!(
+        user.contains("enum CdzF64")
+            && !user.contains("struct __CdzF64")
+            && !user.contains("struct CdzF64"),
+        "a user `CdzF64` sum emits its enum with no injected wrapper struct (no E0428):\n{user}"
+    );
+    // And a user `CdzF64` sum ALONGSIDE a real Float64 set key: the enum and the `__CdzF64` wrapper coexist
+    // (distinct names), no collision.
+    let both = compile_rust(
+        "(module m (type CdzF64 (A) (B)) \
+           (def (main (: d Float64)) (Set.len (Set.insert (Set.of (list)) d))) (export main))",
+    );
+    assert!(
+        both.contains("enum CdzF64") && both.contains("struct __CdzF64(u64)"),
+        "a user `CdzF64` sum coexists with the injected __CdzF64 float-key wrapper:\n{both}"
     );
 }
 
@@ -608,15 +660,15 @@ fn a_bare_float_set_or_map_uses_cdz_f64_but_float_carrying_sum_declines() {
         "(module m (def (main (: d Float64)) (Set.len (Set.insert (Set.of (list)) d))) (export main))",
     );
     assert!(
-        set_float.contains("CdzF64::new(") && set_float.contains("struct CdzF64"),
-        "a float-element Set now compiles via CdzF64:\n{set_float}"
+        set_float.contains("__CdzF64::new(") && set_float.contains("struct __CdzF64"),
+        "a float-element Set now compiles via __CdzF64:\n{set_float}"
     );
     let map_float = compile_rust(
         "(module m (def (main (: d Float64)) (Map.len (Map.insert (Map.empty) d 1))) (export main))",
     );
     assert!(
-        map_float.contains("CdzF64::new("),
-        "a float-KEY Map now compiles via CdzF64:\n{map_float}"
+        map_float.contains("__CdzF64::new("),
+        "a float-KEY Map now compiles via __CdzF64:\n{map_float}"
     );
     // CONTROL: an Int-keyed set/map still compiles (unchanged — Int is natively Ord, no wrapper).
     let set_int = compile_rust(

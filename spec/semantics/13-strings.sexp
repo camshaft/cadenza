@@ -1579,6 +1579,29 @@
   (call   main)
   (output (: 2 Int64)))
 
+; Every char-pattern case above dispatches a CONSTANT char scrutinee — even the "runtime char" case folds,
+; because its `(Char.from-int 98)` argument is a compile-time constant that reduces to `#\b` before the
+; match. A GENUINELY runtime char — `(Char.from-int n)` where `n` is a def PARAMETER supplied by `(call …)`
+; — has no runtime Char representation in the seed yet (a Char is not `ty_heap_walkable`: the scalar runtime
+; char rep is a later increment, select.rs ~5413), so a match (or `=`) on it DECLINES. This grades that
+; boundary: a runtime char scrutinee is a sound reject-don't-miscompile decline, NOT a bug — the constant
+; path dispatches correctly (cases above) and the runtime path refuses rather than emitting a wrong compare.
+; A future change that made a runtime char match/`=` silently MISCOMPILE (a truncated-code-unit compare, a
+; wrong scalar box) instead of declining would flip this `(declines)`. Upgrades to an executing witness when
+; the runtime Char rep lands.
+(case "a match on a genuinely-runtime char (from a runtime Char.from-int) declines pending the runtime Char rep"
+  (doc    "`classify` matches a Char against char-literal arms; called with `(Char.from-int n)` where `n` is
+           a runtime Int64 PARAMETER (so the char is not constant-folded to a literal like the cases above),
+           the seed has no runtime scalar-char representation to dispatch on, so it soundly DECLINES rather
+           than emitting a possibly-truncated compare. Contrast the constant `(Char.from-int 98)` case above
+           (which folds to `#\\b` and matches → 2). Grades the genuinely-runtime char match decline as an
+           intentional, tracked boundary pending the runtime Char rep (a Char is not ty_heap_walkable yet).")
+  (input  (do
+            (def (classify (: c Char)) (match c (#\a 1) (#\b 2) (_ 0)))
+            (def (main (: n Int64)) (classify (Option.expect (Char.from-int n) "in range")))
+            (export main)))
+  (declines))
+
 ; --- String operations at RUN TIME: a string not fixed at compile time ---------------------------------
 ; The string cases above operate on CONSTANT string literals, so their lengths / slices / concatenations
 ; fold at compile time. A string chosen at run time — an `(if …)` selecting between two literals produces

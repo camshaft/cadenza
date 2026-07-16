@@ -997,6 +997,69 @@ mod tests {
         }
     }
 
+    /// The exact rational value a `Decimal` denotes, as `(numerator, denominator)` in lowest-common
+    /// terms enough for equality: `sig * 10^exp`, expressed with a non-negative power of ten as the
+    /// denominator so two decimals compare by cross-multiplication. Sign folded into the numerator.
+    fn decimal_value(d: &Decimal) -> (BigInt, BigInt) {
+        let ten = BigInt::from(10u32);
+        let sig = if d.negative {
+            -d.significand.clone()
+        } else {
+            d.significand.clone()
+        };
+        if d.exponent >= 0 {
+            (sig * ten.pow(d.exponent as u32), BigInt::from(1u32))
+        } else {
+            (sig, ten.pow((-d.exponent) as u32))
+        }
+    }
+
+    #[test]
+    fn float_render_parse_preserves_value_over_generated_decimals() {
+        // `parse_float(render_decimal(d))` denotes the SAME rational value as `d` — the float inverse-pair
+        // (companion to the int + string sweeps). It is NOT structurally the identity: `parse_float`
+        // strips trailing zeros from the significand (150e-2 → 15e-1, 100e0 → 1e2), so the round-trip
+        // NORMALIZES. So assert (a) VALUE equality (sig·10^exp equal as rationals, via cross-multiply),
+        // and (b) parse_float's output is a FIXED POINT — re-render+re-parse it and get the identical
+        // Decimal (the normalized form is stable). Swept over random sign/significand(0..2^80)/exponent
+        // (−12..=12), the whole render/parse space, so a placement or trailing-zero-normalization
+        // regression surfaces as a value mismatch no fixed decimal necessarily hits.
+        use num_bigint::Sign;
+        let mut rng = Rng(0xf10a_7c0d_ef10_a701);
+        for _ in 0..30_000 {
+            let nbytes = (rng.next() % 11) as usize; // significand 0..~2^80
+            let mag: Vec<u8> = (0..nbytes).map(|_| (rng.next() & 0xff) as u8).collect();
+            let significand = BigInt::from_bytes_be(Sign::Plus, &mag);
+            // A zero significand is never negative (no signed-zero decimal — parse yields {0,0}).
+            let negative = significand != BigInt::from(0u32) && rng.next() & 1 == 0;
+            let exponent = (rng.next() % 25) as i64 - 12; // -12..=12
+            let d = Decimal {
+                negative,
+                significand,
+                exponent,
+            };
+            let text = render_decimal(&d);
+            let parsed = parse_float(&text).unwrap_or_else(|| {
+                panic!("render_decimal({d:?})={text:?} did not parse as a float")
+            });
+            // (a) VALUE preserved: d and parsed denote equal rationals (cross-multiply the (num,den) forms).
+            let (dn, dd) = decimal_value(&d);
+            let (pn, pd) = decimal_value(&parsed);
+            assert_eq!(
+                &dn * &pd,
+                &pn * &dd,
+                "value not preserved: {d:?} → {text:?} → {parsed:?}"
+            );
+            // (b) parse_float's output is a FIXED POINT (the normalized form re-renders + re-parses to
+            // itself), so any downstream re-normalization cannot drift it.
+            assert_eq!(
+                parse_float(&render_decimal(&parsed)),
+                Some(parsed.clone()),
+                "parse_float output is not a fixed point for {d:?} (normalized {parsed:?})"
+            );
+        }
+    }
+
     #[test]
     fn string_escape_reparses() {
         for s in [
