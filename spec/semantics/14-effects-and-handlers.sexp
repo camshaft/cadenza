@@ -2932,21 +2932,27 @@
             (def (main) 0) (export main)))
   (error  CDZ0201))
 
-(case "a peer-bound operation cannot take a String argument"
-  (doc    "A String/Bytes RESULT from a peer crosses fine (the peer builds the rope handle and returns
-           it), but an inbound String/Bytes ARGUMENT is not yet emittable: it lowers as a component
-           `string` (a canonical `lower` needing a `mem` option) rather than a runtime handle, and the
-           peer envelope supplies no `mem` — so emitting the consumer produced an INVALID component
-           (`missing module instantiation argument named mem`) with NO diagnostic, a silent
-           invalid-component miscompile. Reject it at the binding (CDZ0201) — a String/Bytes in a PARAMETER
-           position of a peer-bound op — until the inbound-rope-handle emit is wired (report-don't-
-           miscompile). Only parameters are checked, so a String/Bytes RESULT is not flagged; a compound
-           (tuple/record) argument, which crosses as a handle, is likewise unaffected.")
+(case "a peer-bound operation takes a String argument (it crosses as a runtime handle)"
+  (doc    "A String/Bytes ARGUMENT to a peer-bound op crosses the boundary as a runtime rope HANDLE, just
+           like a compound (tuple/record) argument — both peers share one value-heap runtime, so the arg is
+           an opaque u32 handle into it, never a marshaled component `string`. (This once DECLINED CDZ0201:
+           the arg lowered as a component `string` needing a `mem` canonical option the runtime-only peer
+           envelope never supplied, producing an invalid consumer component; the inbound-rope-handle emit is
+           now wired — `collect_used_ops`/`collect_host_arg_strings` are peer-aware, so a peer String arg
+           builds a rope while a HOST String arg still marshals as `(ptr,len)`.) This case pins that
+           DECLARING and PERFORMING such an op now COMPILES + runs: an in-program handler overrides the peer
+           binding (the free test-mock) and answers `blen(s) = 100` regardless of `s`, so `(S.blen \"hi\")`
+           = 100 — proving the String-arg op type-checks and its argument flows without a live peer. The e2e
+           crossing to a real peer (byte-len read there) is pinned by the `a_string_argument_crosses_to_a_
+           peer_*` backend tests. Only the ARGUMENT direction changed; a String/Bytes RESULT already worked.")
   (input  (do
             (effect S (op blen (-> String Int64)))
             (bind S "cadenza:str/api")
-            (def (main) 0) (export main)))
-  (error  CDZ0201))
+            (def (main)
+              (handle S 0 ((blen (s) k (resume 100 k)))
+                (S.blen "hi"))) (export main)))
+  (output (: 100 Int64))
+  (host-calls))
 
 (case "a handle whose head names a value rather than an effect is rejected"
   (doc    "A `handle`'s HEAD names the effect the handler discharges, and its arms ARE that effect's

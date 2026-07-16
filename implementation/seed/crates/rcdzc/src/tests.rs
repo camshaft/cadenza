@@ -66709,28 +66709,28 @@ mod cross_component_oracle {
             "a closure-typed op on a NON-peer-bound effect must NOT be flagged: {:?}",
             d13.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
-        // (i) a peer-bound op with a STRING ARGUMENT is CDZ0201 — an inbound rope to a peer lowers as a
-        // component `string` the peer envelope cannot satisfy (no `mem`), which emitted an INVALID
-        // component ("missing module instantiation argument named `mem`") — a silent invalid-component
-        // miscompile. Now a clean compile-time decline (report-don't-miscompile).
+        // (i) a peer-bound op with a STRING ARGUMENT is now EMITTED, not declined — an inbound rope crosses
+        // to a peer as a runtime HANDLE (like any compound), so declaring one must NOT raise the old
+        // "String or Bytes ARGUMENT" decline. (Was a CDZ0201 decline while the inbound-rope-handle emit was
+        // unwired; now `collect_used_ops`/`collect_host_arg_strings` are peer-aware and the handle crosses.
+        // The e2e crossing is pinned by `a_string_argument_crosses_to_a_peer_*`.)
         let str_arg = "(do (effect S (op blen (-> String Int64))) (bind S \"cadenza:str/api\") \
                        (def (main) 0) (export main))";
         let d14 = crate::diagnostics(&mut crate::db::Db::load(parse(str_arg)));
         assert!(
-            d14.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
-                && d.message
-                    .contains("cannot yet take a String or Bytes ARGUMENT")),
-            "a peer-bound op with a String ARGUMENT is CDZ0201, not a silent invalid component: {:?}",
+            !d14.iter()
+                .any(|d| d.message.contains("String or Bytes ARGUMENT")),
+            "a peer-bound op with a String ARGUMENT must no longer be declined (it crosses as a handle): {:?}",
             d14.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
-        // A Bytes argument is caught the same way.
+        // A Bytes argument is likewise emittable now (the same rope-handle path).
         let bytes_arg = "(do (effect S (op f (-> Bytes Int64))) (bind S \"cadenza:str/api\") \
                          (def (main) 0) (export main))";
         let d15 = crate::diagnostics(&mut crate::db::Db::load(parse(bytes_arg)));
         assert!(
-            d15.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
-                && d.message.contains("String or Bytes ARGUMENT")),
-            "a peer-bound op with a Bytes ARGUMENT is CDZ0201: {:?}",
+            !d15.iter()
+                .any(|d| d.message.contains("String or Bytes ARGUMENT")),
+            "a peer-bound op with a Bytes ARGUMENT must no longer be declined: {:?}",
             d15.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
         // NO FALSE POSITIVE: a String/Bytes RESULT (not an argument) crosses fine — the peer builds the
@@ -68615,6 +68615,143 @@ mod cross_component_oracle {
                 "two compound arguments each cross as their own handle in one peer call"
             ),
             cdz_run::Outcome::Trap(t) => panic!("two-compound-argument run trapped: {t}"),
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // PL28 — a STRING ARGUMENT crosses to a peer as a runtime HANDLE (the Bedrock-as-peer critical path).
+    // U16/PL17 pin a COMPOUND arg crossing as a handle; a String is the same shape — a rope leaf on the
+    // shared value heap, handed in as its u32 handle (NOT marshaled as a component `string`). The provider
+    // takes a `String` arg and returns its `byte-len` (an Int64 result, so NO result-escape is involved —
+    // this isolates the ARGUMENT direction). main = S.blen("hello") = 5. Before this cell the consumer was
+    // rejected (PL24, STRING_ARG_ACROSS_PEER) because the arg's rope-build ops were not collected into the
+    // runtime-import set, so the emitted consumer took the runtime-FREE extern envelope and called an
+    // unimported `bytes-alloc` → an invalid component. The fix teaches `collect_used_ops` that a PEER
+    // String/Bytes arg builds a rope (unlike a HOST String arg, marshaled as (ptr,len)).
+    // ------------------------------------------------------------------------------------------------
+    #[test]
+    fn a_string_argument_crosses_to_a_peer_as_a_runtime_handle() {
+        use crate::backend::wasm::runtime_abi::{REQUIRED_RUNTIME_HASH, RUNTIME_IFACE};
+        use crate::testkit::parse;
+        let import_name = format!("{RUNTIME_IFACE}@0.0.0+{REQUIRED_RUNTIME_HASH}");
+        // PROVIDER (source): `blen : String -> Int64` reads the crossed String's byte length.
+        let provider = compile_provider(
+            "(do (def (blen (: s String)) (String.byte-len s)) (export blen))",
+            "cadenza:strs/api",
+        );
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&provider)
+                .expect("the string-arg provider validates");
+        }
+        // CONSUMER (source): passes a String LITERAL into the peer op. The literal builds a rope handle on
+        // the shared runtime and the handle crosses — so the consumer imports the value-heap runtime.
+        let src = "(do \
+            (effect S (op blen (-> String Int64))) \
+            (bind S \"cadenza:strs/api\") \
+            (def (main) (host (S) (S.blen \"hello\"))) \
+            (export main))";
+        let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .unwrap_or_else(|d| {
+                panic!("string-arg consumer compiles: {} [{:?}]", d.message, d.code)
+            });
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&consumer)
+                .expect("string-arg consumer validates");
+        }
+        assert!(
+            String::from_utf8_lossy(&consumer).contains(&import_name),
+            "a String-arg peer consumer imports the value-heap runtime (it builds the rope handle)"
+        );
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("[PL28] runtime wasm not found; skipping");
+            return;
+        };
+        let peers = vec![cdz_run::Peer {
+            bytes: provider,
+            interface: "cadenza:strs/api".to_string(),
+        }];
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: Vec::new(),
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run_with_peers(&consumer, &peers, &opts)
+            .expect("a string argument crosses to a peer")
+        {
+            // The consumer built the rope "hello" and passed its handle to the peer; the peer read its
+            // byte length → 5. A STRING ARGUMENT crossed the boundary as a shared handle (inbound).
+            cdz_run::Outcome::Value(s) => assert_eq!(
+                s, "5",
+                "a string argument crosses to a peer as a shared handle and is read there"
+            ),
+            cdz_run::Outcome::Trap(t) => panic!("string-argument run trapped: {t}"),
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // PL29 — a NON-CONSTANT String argument crosses to a peer. PL28 pins a String LITERAL (a `Core::ConstStr`
+    // built into a rope at the call site); this pins that a String value produced at RUNTIME — here a
+    // `String.concat` — ALSO crosses as its handle. The concat result is already a value-heap rope handle,
+    // so the peer arg emit hands it straight over (no data-segment marshaling). main = S.blen("ab"++"cde") =
+    // byte-len("abcde") = 5. This confirms the decline can drop entirely (not just for constants).
+    // ------------------------------------------------------------------------------------------------
+    #[test]
+    fn a_non_constant_string_argument_crosses_to_a_peer() {
+        use crate::testkit::parse;
+        let provider = compile_provider(
+            "(do (def (blen (: s String)) (String.byte-len s)) (export blen))",
+            "cadenza:strs2/api",
+        );
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&provider)
+                .expect("the non-const string-arg provider validates");
+        }
+        // The arg is a RUNTIME `String.concat`, not a literal — a value-heap rope handle produced in-body.
+        let src = "(do \
+            (effect S (op blen (-> String Int64))) \
+            (bind S \"cadenza:strs2/api\") \
+            (def (main) (host (S) (S.blen (String.concat \"ab\" \"cde\")))) \
+            (export main))";
+        let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .unwrap_or_else(|d| {
+                panic!(
+                    "non-const string-arg consumer compiles: {} [{:?}]",
+                    d.message, d.code
+                )
+            });
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&consumer)
+                .expect("non-const string-arg consumer validates");
+        }
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("[PL29] runtime wasm not found; skipping");
+            return;
+        };
+        let peers = vec![cdz_run::Peer {
+            bytes: provider,
+            interface: "cadenza:strs2/api".to_string(),
+        }];
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: Vec::new(),
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run_with_peers(&consumer, &peers, &opts)
+            .expect("a non-constant string argument crosses to a peer")
+        {
+            cdz_run::Outcome::Value(s) => assert_eq!(
+                s, "5",
+                "a runtime-produced String argument crosses to a peer as its handle"
+            ),
+            cdz_run::Outcome::Trap(t) => panic!("non-const string-argument run trapped: {t}"),
         }
     }
 
