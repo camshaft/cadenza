@@ -691,6 +691,22 @@
             (export main)))
   (output (: 1 Int64)))
 
+(case "the scalar-len of an in-bounds String.slice equals its span (end - start), independent of byte width"
+  (doc    "`String.slice` addresses SCALARS, so an in-bounds `(String.slice s i j)` returns exactly `j - i`
+           scalar values regardless of how many BYTES each occupies — `(String.scalar-len (slice s i j))`
+           == `j - i`. Over a runtime `s = \"aébcd\"` (é is one scalar, TWO UTF-8 bytes) with the span
+           `1..4`: the slice is \"ébc\" — 3 scalars (though 4 bytes), so scalar-len = 3 = 4 - 1. Pins the
+           slice's scalar count is its scalar SPAN, not a byte count — a slice that returned a byte-measured
+           length, or that mis-mapped the multi-byte scalar, would give the wrong count. The scalar-count
+           companion of the slice≡at case above, both backends. `s` is built via `(if true …)` so it is a
+           runtime value, not a folded constant.")
+  (input  (do
+            (def (spanlen (: s String) (: i Int64) (: j Int64))
+              (String.scalar-len (Option.expect (String.slice s i j) "in bounds")))
+            (def (main) (spanlen (if true "aébcd" "x") 1 4))
+            (export main)))
+  (output (: 3 Int64)))
+
 ; --- A string operation consumes a string SELECTED by runtime control flow -----------------
 ; A string operation (String.scalar-len/at/slice/concat) takes a string ARGUMENT; that argument may be a
 ; string SELECTED at run time by an `if` or a `match`, not only a literal. The seed resolves a string

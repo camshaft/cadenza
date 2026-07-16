@@ -3144,6 +3144,7 @@ pass	the same mixed-scale comparison is EXACT over Rational (keeps the fractiona
 pass	the same program with a different response gives a different deterministic result
 pass	the same-core-shape sibling dispatches ITS body, not the first
 pass	the scalar length of a runtime multi-byte string counts scalars, not bytes
+pass	the scalar-len of an in-bounds String.slice equals its span (end - start), independent of byte width
 pass	the second distinct-signature closure export returns its own type
 pass	the second element of a runtime-content fn-return tuple is projected directly
 pass	the selected operand decides a hoisted comparison
