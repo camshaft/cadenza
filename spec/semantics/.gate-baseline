@@ -302,6 +302,7 @@ pass	a Result built by an if with the Err branch first type-checks
 pass	a Result carrying a Result is matched by a nested pattern to its inner value
 pass	a Result pipeline short-circuits on the first Err
 pass	a Result-valued `?` under an Option boundary is a type error
+pass	a SELECT-axiom theorem is unforgeable — its Thm cannot be fabricated outside the kernel
 pass	a SINGLE-variant open sum still requires an open-tail arm
 pass	a SOLE RECORD closure ARG crosses the direct-call boundary
 pass	a STRING-result effect op resumes with a string that folds through a concat
@@ -3009,6 +3010,7 @@ pass	the ETA axiom is minted via new_axiom as a hypothesis-free theorem
 pass	the Float codec round-trips a negative value
 pass	the Int codec round-trips i64::MIN — the two's-complement boundary
 pass	the LEB128 byte composition runs on a runtime operand
+pass	the SELECT (choice) axiom is minted via new_axiom as a hypothesis-free theorem
 pass	the additive-zero identity preserves a boundary-crossing runtime operand
 pass	the arithmetic operator rejects a float-first mixed operand pair
 pass	the bitwise-AND-with-zero annihilator does not discard a trapping runtime operand
