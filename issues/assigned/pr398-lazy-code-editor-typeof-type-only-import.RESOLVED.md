@@ -16,3 +16,5 @@ to be a VALUE binding, but `import type` erases it to a type-only symbol — a T
 under a loose config, it's still incorrect). Fix: `ComponentProps<typeof import("./CodeEditor.tsx")["CodeEditor"]>`
 (a type query on the dynamic import, keeping CodeEditor lazy) and drop the `import type` line. Guide
 territory (v-guide). Fix on `trunk`. Quote + link in queue file.
+
+<!-- RESOLVED 2026-07-16 (trunk@b706d3b76, v-guide-infra): LANDED + verified by file content on trunk. -->

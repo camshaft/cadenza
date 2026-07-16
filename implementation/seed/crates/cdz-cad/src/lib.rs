@@ -32,9 +32,11 @@
 
 use std::fmt;
 
+pub mod bounds;
 pub mod gltf;
 pub mod mesh;
 pub mod stl;
+pub use bounds::{bounds, bounds_with_segments, Bounds};
 pub use mesh::{
     mesh, mesh_with_segments, to_manifold, to_manifold_with_segments, Mesh, DEFAULT_SEGMENTS,
 };

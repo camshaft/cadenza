@@ -890,6 +890,47 @@
             ((Err _) 0)))
   (output (: 0 Int64)))
 
+; Ast.decode stays TOTAL (Err, never a trap) on adversarial bytes that specifically exercise the FLOAT
+; (tag 0x05, 8-byte f64) and STR (tag 0x04, len-prefixed UTF-8) decode arms this vertical added, plus an
+; unknown tag. The generic non-canonical/trailing-byte cases above don't reach these arms; a change to the
+; Float/Str decode that dropped a bounds/finite check would pass those yet regress here. All → Err.
+
+(case "decode of a truncated Float tag yields the error case, not a trap"
+  (doc    "The Float decode arm reads 8 bytes after tag 0x05; a truncated payload (tag + only 3 bytes) is
+           not a canonical encoding, so `Ast.decode` returns `Err` (value-interchange.md #A Decode Over
+           External Bytes Is Total). Pins the length check on the Float arm — never a partial read or trap.")
+  (input  (match (Ast.decode (Bytes.of (list 5 1 2 3)))
+            ((Ok _)  1)
+            ((Err _) 0)))
+  (output (: 0 Int64)))
+
+(case "decode of a Float tag with a non-finite (NaN) bit pattern yields the error case"
+  (doc    "A Float payload whose 8 bytes are a NaN bit pattern (`7ff8…0001`) has no finite `Decimal` value
+           form, so the decode reports `Err` rather than fabricating a non-finite `Ast.Float` — the decode
+           arm rejects a non-finite double. Pins that the byte→Decimal step stays total on NaN/inf.")
+  (input  (match (Ast.decode (Bytes.of (list 5 1 0 0 0 0 0 248 127)))
+            ((Ok _)  1)
+            ((Err _) 0)))
+  (output (: 0 Int64)))
+
+(case "decode of a Str tag with an oversized length yields the error case"
+  (doc    "The Str decode arm reads a 4-byte length then that many UTF-8 bytes; a length (255) exceeding
+           the bytes present is not a canonical encoding, so `Ast.decode` returns `Err`. Pins the Str arm's
+           bounds check — never reads past the input.")
+  (input  (match (Ast.decode (Bytes.of (list 4 255 0 0 0)))
+            ((Ok _)  1)
+            ((Err _) 0)))
+  (output (: 0 Int64)))
+
+(case "decode of an unknown tag byte yields the error case"
+  (doc    "A leading tag byte the encoding does not assign (0x09 — beyond Int/Name/List/Bool/Str/Float =
+           0x00..0x05) is not a canonical AST, so `Ast.decode` returns `Err`. Pins that the tag dispatch's
+           fallthrough is a clean decline, not a trap — total over ANY external byte.")
+  (input  (match (Ast.decode (Bytes.of (list 9 0 0 0 0)))
+            ((Ok _)  1)
+            ((Err _) 0)))
+  (output (: 0 Int64)))
+
 ; ============================================================================================
 ; Quote patterns — the quasiquote surface in PATTERN position (options/quote-patterns/)
 ; ============================================================================================

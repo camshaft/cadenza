@@ -1364,16 +1364,40 @@ fn watchdog(fleet: &Fleet, dry_run: bool, stale_mult: u32, stale_cap: u64, grace
         }
         checked += 1;
 
-        // Liveness = the heartbeat touch-file's mtime (stamped at the top of every tick). A missing
-        // file means the agent has never ticked (freshly launched) — treat its age as "just now" so we
-        // give the first tick its full stale window before judging it, rather than nuking a booting agent.
+        // Liveness = the heartbeat touch-file's mtime (stamped at the top of every tick).
         let hb_age = heartbeat_age_secs(fleet, &a.name, now);
         let interval = parse_interval_secs(&a.interval);
         let stale_after = stale_window_secs(interval, stale_mult, stale_cap);
-        let Some(age) = hb_age else {
-            continue; // never stamped yet — a booting agent; leave it for the next pass.
+        let age = match hb_age {
+            Some(age) => age,
+            None => {
+                // NEVER stamped a heartbeat: either still booting its first tick, OR its cold start
+                // FAILED (launched, never completed tick 1, so never stamped — the fresh-fix-agent stall
+                // the concierge flagged: heartbeat never advances, seed msg never drained, and a plain
+                // `continue` nudge alone didn't revive it). We can't tell "still booting" from "cold
+                // start died" without a clock, so mark first-sight (`firstseen/<agent>`) and give a
+                // GENEROUS cold-start window (2× the stale window — a first tick may build). If the
+                // marker is older than that and there's STILL no heartbeat, the cold start failed →
+                // fall through and re-arm it (below), rather than skipping it forever.
+                let coldstart_window = stale_after.saturating_mul(2);
+                match firstseen_age_secs(fleet, &a.name, now) {
+                    None => {
+                        stamp_firstseen(fleet, &a.name);
+                        continue; // just noticed it booting — give it the cold-start window.
+                    }
+                    Some(seen) if seen <= coldstart_window => continue, // still within cold-start grace.
+                    Some(seen) => {
+                        // Cold start failed: live window, no heartbeat, past the window. Treat as stale.
+                        println!(
+                            "  ! {} never stamped a heartbeat in {seen}s (> {coldstart_window}s cold-start window) — FAILED cold start, re-arming",
+                            a.name
+                        );
+                        seen // use the first-seen age as the "staleness" for the logic below.
+                    }
+                }
+            }
         };
-        if age <= stale_after {
+        if hb_age.is_some() && age <= stale_after {
             continue; // ticked recently — healthy.
         }
 
@@ -1533,6 +1557,21 @@ fn stamp_rearm(fleet: &Fleet, name: &str) {
     let dir = fleet.root.join("rearm");
     std::fs::create_dir_all(&dir).ok();
     std::fs::write(dir.join(name), "rearm\n").ok();
+}
+
+/// Age in seconds since the watchdog FIRST saw this (never-heartbeated) agent with a live window
+/// (mtime of `.claude/fleet/firstseen/<name>`), or `None` if never marked. Gives a clock to tell a
+/// still-booting agent from one whose cold start FAILED (launched, never completed tick 1).
+fn firstseen_age_secs(fleet: &Fleet, name: &str, now: u64) -> Option<u64> {
+    file_mtime_unix(&fleet.root.join("firstseen").join(name)).map(|m| now.saturating_sub(m))
+}
+
+/// Touch `.claude/fleet/firstseen/<name>` the first time the watchdog sees a never-heartbeated agent
+/// with a live window, so a later pass can measure how long its cold start has been pending.
+fn stamp_firstseen(fleet: &Fleet, name: &str) {
+    let dir = fleet.root.join("firstseen");
+    std::fs::create_dir_all(&dir).ok();
+    std::fs::write(dir.join(name), "firstseen\n").ok();
 }
 
 /// A file's modification time as seconds since the epoch, or `None` if it can't be read.

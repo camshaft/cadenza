@@ -24559,6 +24559,40 @@ mod match_engine {
     }
 
     #[test]
+    fn a_string_param_threaded_and_concatenated_in_a_selfrec_loop_is_retained_not_freed() {
+        // REGRESSION (OOB TRAP): a String PARAM threaded UNCHANGED through a self-recursive loop AND consumed
+        // by `String.concat` each step — `build(s, n, acc) = build(s, n-1, String.concat(acc, s))` — trapped
+        // "out of bounds memory access" at n≥4. `cdz check` clean; `cdz compile` ok; RAN → trap. `s` is
+        // consumed by `String.concat` (rc--) yet re-passed to the self-call, so the shared ROPE was freed
+        // while still referenced and the rope walk read OOB past a depth threshold. ROOT: `is_heap_type` (the
+        // Perceus retain-candidate gate) included `Bytes` but NOT `String`/`Symbol` — though a String is a
+        // heap rope exactly as Bytes is — so `s` was never a retain candidate and no `dup` was emitted (the
+        // List ops worked because `Ty::List` WAS in `is_heap_type`). FIX: add `String`/`Symbol` to
+        // `is_heap_type`. Now `s` duped before the consuming concat; the threaded copy stays live.
+        let Some(out) = run_on_heap(
+            "(module m \
+               (def (build (: s String) (: n Int64) (: acc String)) \
+                 (if (= n 0) acc (build s (- n 1) ((. String concat) acc s)))) \
+               (def (main) ((. String byte-len) (build \"x\" 8 \"\"))) (export main))",
+        ) else {
+            eprintln!("runtime wasm not found; skipping String-concat threaded-param run");
+            return;
+        };
+        assert_eq!(
+            out, "8",
+            "a String param consumed by String.concat AND threaded to the self-call is retained — the rope \
+             stays live for n=8 (was an OOB trap at n≥4)"
+        );
+        // The FBIP fast path guard: a SINGLE-consume String.concat (no threading) must NOT import `dup`.
+        let single = "(module m (def (f (: a String)) ((. String byte-len) ((. String concat) a \"y\"))) \
+               (def (main) (f \"x\")) (export main))";
+        assert!(
+            !component_imports_op(&component(single), "dup"),
+            "a single-consume String.concat must not import `dup` (FBIP fast path — bench guard)"
+        );
+    }
+
+    #[test]
     fn a_list_concat_joins_and_its_runtime_length_sums() {
         // `List.concat(a, b)` joins two lists into a new persistent one (`vec-concat`, consuming both). To
         // exercise the RUNTIME concat (a constant-list concat now folds), a RUNTIME-built list (`build 0 2`
@@ -51170,6 +51204,42 @@ mod stage1 {
     }
 
     #[test]
+    fn a_boxed_closure_taking_unit_a_lazy_thunk_is_forced_and_runs() {
+        // The canonical lazy THUNK `Thunk = Susp(Unit -> Int64)` — a closure with a `Unit` PARAMETER boxed
+        // in a sum, extracted by a match, and FORCED (`(f unit)`). `valtype_of(Unit) = None`, so the
+        // boxed-closure lift guard declined "a closure's parameter type has no machine representation" —
+        // but a Unit param, like a Unit result, occupies NO wasm slot. The fix ELIDES a Unit param from
+        // the closure's functype (lift guard, `select_function_of` slot assignment, `Core::Param` read of
+        // a Unit binder, `closure_type_index`, and `collect_closure_call_sigs`, all in lockstep). Unlike
+        // the Unit-RESULT face, the forced call is NOT dead (its result is observed), so a real
+        // `call_indirect` runs → 42. Unblocks the ideal thunk-based lazy `Iter` (v-iterators).
+        use crate::testkit::parse;
+        let src = "(module m \
+            (type Thunk (Susp (-> Unit Int64))) \
+            (def (force (: t Thunk)) (match t (((. Thunk Susp) f) (f unit)))) \
+            (def (mk) ((. Thunk Susp) (fn ((: u Unit)) 42))) \
+            (def (main) (force (mk))) \
+            (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src)))
+            .expect("a boxed Unit-param closure (thunk) compiles (was: declined)");
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
+            return;
+        };
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec![],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run(&bytes, &opts).expect("run boxed-unit-param thunk") {
+            cdz_run::Outcome::Value(s) => assert_eq!(s, "42"),
+            cdz_run::Outcome::Trap(t) => panic!("boxed-unit-param thunk trapped: {t}"),
+        }
+    }
+
+    #[test]
     fn lambda_lifting_dedups_by_body_and_gives_distinct_lambdas_distinct_slots() {
         // `Db::lift_lambda` dedups by the lambda's `body` occurrence via an O(1) index (was a linear scan
         // of `db.lifted` per lift → O(N²) for a program lifting N distinct closures). This locks in the two
@@ -51931,6 +52001,28 @@ mod stage1 {
             d.code.as_deref(),
             Some("CDZ0203"),
             "a Result-`?` under an Option boundary is CDZ0203, got: {}",
+            d.message
+        );
+    }
+
+    #[test]
+    fn a_result_try_whose_error_type_disagrees_with_the_boundary_is_rejected() {
+        // SOUNDNESS: `(: (let ((y (try (Err true)))) (Ok y)) (Result Int64 Int64))` — the `?`'s operand
+        // `(Err true)` is a `Result _ Bool`, but the boundary's error type is `Int64`. A `?` passes its
+        // `Err` out UNCHANGED as the boundary value, so the error types must agree (§5, no coercion).
+        // Without this the `Bool` `true` escaped as a claimed `Int64` — a soundness hole. CDZ0203.
+        let src = "(module m \
+            (def (main) (: (let ((y (try (Err true)))) (Ok y)) (Result Int64 Int64))) (export main))";
+        let d = compile_component(&crate::codec::encode(&parse(src))).expect_err("must reject");
+        assert_eq!(
+            d.code.as_deref(),
+            Some("CDZ0203"),
+            "a `?`'d Result whose error type disagrees with the boundary is CDZ0203, got: {}",
+            d.message
+        );
+        assert!(
+            d.message.contains("error type"),
+            "the message names the error-type disagreement: {}",
             d.message
         );
     }
@@ -64572,12 +64664,31 @@ mod cross_component_oracle {
         // value-heap handles; a closure has no peer-boundary form. Both faces (result + arg):
         let clo_result = "(do (effect F (op mk (-> Int64 (-> Int64 Int64)))) (bind F \"cadenza:f/api\") \
                           (def (main) 0) (export main))";
-        let d11 = crate::diagnostics(&mut crate::db::Db::load(parse(clo_result)));
-        assert!(
-            d11.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
-                && d.message.contains("cannot take or return a CLOSURE")),
-            "a peer-bound op RETURNING a closure is CDZ0201 with the clear reason: {:?}",
-            d11.iter().map(|d| &d.message).collect::<Vec<_>>()
+        let mut clo_db = crate::db::Db::load(parse(clo_result));
+        let d11 = crate::diagnostics(&mut clo_db);
+        let clo_d = d11
+            .iter()
+            .find(|d| {
+                d.code.as_deref() == Some("CDZ0201")
+                    && d.message.contains("cannot take or return a CLOSURE")
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "a peer-bound op RETURNING a closure is CDZ0201 with the clear reason: {:?}",
+                    d11.iter().map(|d| &d.message).collect::<Vec<_>>()
+                )
+            });
+        // The diagnostic is anchored at the `(bind F …)` directive's effect NAME — the ACTIONABLE locus the
+        // author edits (change the route, or give the op a value type) — NOT the nested `(-> Int64 Int64)`
+        // arrow fragment that merely detected the closure (Copilot PR #418). The compiler is span-free, so
+        // assert on the anchored NODE: it resolves to the bare name `F` (the bind name), not an arrow list.
+        let anchor = clo_d
+            .node
+            .expect("the closure-across-peer reject is anchored");
+        assert_eq!(
+            clo_db.ast.as_name(crate::ast::StructId(anchor)),
+            Some("F"),
+            "the reject anchors at the bind name `F`, not the inner `(-> …)` arrow (node {anchor})"
         );
         let clo_arg = "(do (effect F (op run (-> (-> Int64 Int64) Int64))) (bind F \"cadenza:f/api\") \
                        (def (main) 0) (export main))";
@@ -66451,6 +66562,70 @@ mod cross_component_oracle {
                 "a peer-returned list crosses as a handle; List.len reads it over the shared runtime"
             ),
             cdz_run::Outcome::Trap(t) => panic!("list-result run trapped: {t}"),
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // PL19 — the ELEMENT read of a peer-returned list, USED (matched to a scalar). The common pattern:
+    // a peer op returns a `(List Int64)`, the consumer indexes it with `List.at` and matches the
+    // resulting `Option` down to a scalar the entrypoint returns. main(7) = match (List.at [8,9] 0) →
+    // Some 8 → 8. This WORKS and is worth pinning.
+    //
+    // ⚠ THE BOUNDARY (root-caused this tick, filed queue/peerbug-list-at-of-peer-returned-list-declines…):
+    // if the entrypoint RETURNS the raw `Option` (i.e. `List.at` IS the whole body), the export escapes a
+    // compound RESULT via `emit_runtime_resource`, which does NOT thread the peer extern-import set (never
+    // calls `with_extern_order`) → the peer op declines "not in the extern-import set". So the gap is NOT
+    // `List.at` per se — it is a peer-bound HostCall in a body whose EXPORT RESULT escapes as a resource.
+    // The common case (read the element, return a scalar — this test) takes the normal `emit` path and
+    // WORKS. Pinning the working shape; the resource-escape+peer fusion is the filed follow-up.
+    // ------------------------------------------------------------------------------------------------
+    #[test]
+    fn an_element_of_a_peer_returned_list_is_read_and_used() {
+        use crate::testkit::parse;
+        // PROVIDER: mklist(x) = [x+1, x+2].
+        let provider = compile_provider(
+            "(do (def (mklist (: x Int64)) (list (+ x 1) (+ x 2))) (export mklist))",
+            "cadenza:l/api",
+        );
+        // CONSUMER: reads element 0 with List.at, matches the Option to a SCALAR the entrypoint returns
+        // (so the export result is Int64 — the normal emit path, not the resource escape).
+        let src = "(do \
+            (effect L (op mklist (-> Int64 (List Int64)))) \
+            (bind L \"cadenza:l/api\") \
+            (def (main (: x Int64)) \
+              (host (L) (match (List.at (L.mklist x) 0) ((Some v) v) (None 0)))) \
+            (export main))";
+        let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .unwrap_or_else(|d| {
+                panic!(
+                    "element-read consumer compiles: {} [{:?}]",
+                    d.message, d.code
+                )
+            });
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("[PL19] runtime wasm not found; skipping");
+            return;
+        };
+        let peers = vec![cdz_run::Peer {
+            bytes: provider,
+            interface: "cadenza:l/api".to_string(),
+        }];
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec!["7".to_string()],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run_with_peers(&consumer, &peers, &opts)
+            .expect("an element of a peer-returned list is read + used")
+        {
+            // mklist(7) = [8,9]; List.at 0 = Some 8; the Some arm yields 8.
+            cdz_run::Outcome::Value(s) => assert_eq!(
+                s, "8",
+                "an element read from a peer-returned list crosses + is used (scalar-return path)"
+            ),
+            cdz_run::Outcome::Trap(t) => panic!("element-read run trapped: {t}"),
         }
     }
 

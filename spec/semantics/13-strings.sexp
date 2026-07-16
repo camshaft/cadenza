@@ -1460,3 +1460,22 @@
             (export main)))
   (call   main (: 195 Int64))
   (output (: 2 Int64)))
+
+(case "a String param threaded through a self-recursive loop and concatenated each step is retained"
+  (doc    "The idiomatic pretty-printer shape: `build(s, n, acc) = build(s, n-1, String.concat(acc, s))`
+           — a String PARAM `s` threaded UNCHANGED through the recursion AND consumed by `String.concat`
+           each step. Regression: `s` is consumed by `String.concat` (rc--) yet re-passed to the self-call,
+           so the shared ROPE was freed while still referenced and the rope walk read OUT OF BOUNDS past a
+           depth threshold — `cdz check` clean, `cdz compile` ok, RAN → wasm trap at n≥4. ROOT: `is_heap_
+           type` (the Perceus retain-candidate gate) included `Bytes` but NOT `String` — though a String is
+           a heap rope exactly as Bytes is — so `s` was never a retain candidate and no `dup` was emitted
+           (the List ops worked because `List` WAS in `is_heap_type`). The fix adds `String`/`Symbol`. Now
+           `s` is duped before the consuming concat and the threaded copy stays live. `build(\"x\", 8, \"\")`
+           → an 8-char string → byte-len 8.")
+  (input  (do
+            (def (build (: s String) (: n Int64) (: acc String))
+              (if (= n 0) acc (build s (- n 1) (String.concat acc s))))
+            (def (run (: n Int64)) (String.byte-len (build "x" n "")))
+            (export run)))
+  (call   run (: 8 Int64))
+  (output (: 8 Int64)))

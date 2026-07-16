@@ -9257,6 +9257,23 @@ fn ctor_spine_fueled(db: &mut Db, id: StructId, fuel: u32) -> Option<(StructId, 
 /// body is recorded (`db.captured_ref`) so lowering that reference in the lifted body reads the env cell
 /// (`Core::Captured`) rather than following through to the (out-of-scope) binding. The param + result
 /// machine types come from the lambda's body (`type_of`).
+/// Whether lambda occurrence `id` is lexically NESTED inside another `(fn …)` form — i.e. it is a
+/// closure RETURNED (or otherwise built) by an enclosing lambda, the curried closure-returning-closure
+/// shape. Walks enclosing forms outward via `parent_of`, testing each for a `fn` head. Used to keep a
+/// `Unit`-parameter lambda on that (pre-existing-broken) curried boxed-closure path DECLINING rather than
+/// compiling into an "indirect call type mismatch" trap. A stop at the enclosing DEF/module is implicit:
+/// a def body is not a `fn` form, so the walk simply finds no enclosing lambda for a top-level closure.
+fn lambda_is_nested_in_lambda(db: &Db, id: StructId) -> bool {
+    let mut cur = db.parent_of(id);
+    while let Some(p) = cur {
+        if db.ast.as_form(p, "fn").is_some() {
+            return true;
+        }
+        cur = db.parent_of(p);
+    }
+    false
+}
+
 fn lower_lambda_value(db: &mut Db, id: StructId, params: &[StructId], body: StructId) -> Core {
     // At least one parameter (a nullary lambda value has no use here). A multi-parameter lambda IS
     // supported — it lifts to an `(env, p1, …, pn) -> result` function and is applied at FULL arity via
@@ -9352,7 +9369,30 @@ fn lower_lambda_value(db: &mut Db, id: StructId, params: &[StructId], body: Stru
         {
             pt = ep.clone();
         }
-        if crate::backend::wasm::lir::valtype_of(&pt).is_none() {
+        // A `Unit` parameter is representable at the boxed-closure boundary — it occupies NO wasm slot
+        // (elided from the functype's params by `select_function_of`, the read analogue of a Unit result's
+        // zero-result functype and a Unit argument pushing nothing), so a `(-> Unit T)` closure (the
+        // canonical lazy THUNK `Susp(Unit -> …)`) lifts fine. Only a param that is neither machine-repr NOR
+        // Unit (an unrepresentable compound closure param) declines.
+        //
+        // EXCEPTION — a Unit param declines when the lambda participates in a CURRIED CLOSURE-RETURNING-
+        // CLOSURE chain: either its own RESULT is a function (`(-> Unit (-> A B))`, case B), or it is a
+        // lambda lexically NESTED inside another lambda (a returned inner closure, `(-> A (-> Unit B))`,
+        // case C). That boxed curried path is PRE-EXISTING BROKEN independent of Unit (the all-`Int64`
+        // `(-> A (-> A B))` boxed form ALSO traps "indirect call type mismatch" on trunk); the Unit-arg
+        // elision would merely let a Unit program compile far enough to hit that same trap. Declining keeps
+        // the outcome SAFE (a refusal, not a miscompile) for those shapes, while the value-result thunk
+        // `(-> Unit T)` — the shape the lazy-`Iter` proposal needs — compiles. (Fixing the underlying
+        // curried boxed-closure trap is a separate, larger increment; filed to the PM.)
+        if matches!(pt, crate::ty::Ty::Unit)
+            && (matches!(crate::infer::type_of(db, body), crate::ty::Ty::Fn(..))
+                || lambda_is_nested_in_lambda(db, id))
+        {
+            return Core::Poison(Reject::decline(crate::diag::CLOSURE_PARAM_NO_REPR_DECLINE));
+        }
+        if !matches!(pt, crate::ty::Ty::Unit)
+            && crate::backend::wasm::lir::valtype_of(&pt).is_none()
+        {
             return Core::Poison(Reject::decline(crate::diag::CLOSURE_PARAM_NO_REPR_DECLINE));
         }
         // RECORD the solved param type so the LIFTED BODY's own `type_of(p)` reads it — otherwise the

@@ -1183,6 +1183,10 @@ fn check_no_home_walk(
             handled.truncate(before);
         }
         // A `host` — its listed effects are DELEGATED for the body. Push each delegated effect's decl.
+        // The `host` clause is where the entrypoint ENUMERATES, at the entrypoint itself, the effects it
+        // grants to the boundary — authority enters here, not from any effect's declaration.
+        //= spec/capabilities/capabilities-and-effects.md#an-entrypoint-delegates-the-capabilities-it-grants-to-the-host
+        //# An entrypoint MUST enumerate, at the entrypoint itself, every effect whose operations it delegates to the host, so that granting a capability is a decision made where authority enters the program rather than a property an effect's declaration carries.
         Resolved::Host { effects, body } => {
             let added: Vec<(StructId, u32)> = effects
                 .iter()
@@ -1326,6 +1330,12 @@ fn check_no_home_walk(
 /// The latent-authority check (CDZ0404) uses this so a `(host (E0 … EN) body)` delegating N effects does
 /// ONE body walk + N O(1) set lookups, not N full body walks — which was O(N²) (an N-effect delegation
 /// over an O(N) body = 2s at 1600 effects, ~81% in the per-effect walk).
+///
+/// This SET is the function's inferred EFFECT ROW: each performed operation contributes its declaring
+/// effect, following calls so a cross-function perform still counts — and the manifest of delegated
+/// effects is a projection of this row (`host.rs::collect_host_imports`).
+//= spec/capabilities/capabilities-and-effects.md#performing-an-operation-is-typed-and-contributes-to-the-row
+//# Performing an operation MUST add its declaring effect to the effect row of the function that performs it, so that a function's inferred row is the set of effects its operations reach and the manifest of delegated effects is a projection of that row.
 fn body_reached_effects(db: &mut Db, node: StructId) -> std::collections::HashSet<u32> {
     let mut reached = std::collections::HashSet::new();
     let mut visited = std::collections::HashSet::new();

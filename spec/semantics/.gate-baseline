@@ -49,6 +49,8 @@ pass	DISTINCT-SIG: two-Tuple-arg closures of different signatures ALONGSIDE a pl
 pass	DOMINATOR CSE does not reuse a condition's perform-product in the taken branch
 pass	Int64.min crosses the parameter boundary and back unchanged
 pass	Int64.min crossing the boundary is still negative
+pass	List.len of a concat of call-site lists with runtime elements folds to the summed arity
+pass	List.len of a list built at the call site from runtime elements folds to the arity
 pass	MIXED among-scalars: a scalar-then-Tuple closure ALONGSIDE a plain export — driving the closure
 pass	MIXED among-scalars: a scalar-then-Tuple closure with a COMPOUND result ALONGSIDE a plain export
 pass	MIXED among-scalars: a scalar-then-Tuple closure with a LIST result ALONGSIDE a plain export
@@ -282,6 +284,7 @@ pass	a Sign match missing two of three variants is non-exhaustive
 pass	a Some carrying a bare None type-checks under a whole-expression annotation
 pass	a Some carrying an inner-annotated None matches its arm (the control)
 pass	a String compound export under a non-main name crosses to the host
+pass	a String param threaded through a self-recursive loop and concatenated each step is retained
 pass	a String-returning closure alongside a parameterized plain export
 pass	a String-returning closure alongside a parameterized plain export — the plain runs
 pass	a THREE-argument closure round-trips — flat arrow spelling
@@ -316,6 +319,7 @@ pass	a `?` inside an if-branch resolves against the enclosing function boundary
 pass	a `?` on a String operand is a type error
 pass	a `?` on a non-fallible operand is a type error
 pass	a `?` result is usable mid-body, not only in tail position
+pass	a `?` whose Result error type disagrees with the boundary's is rejected
 pass	a `?` with no fallible enclosing function boundary is rejected
 pass	a bare arithmetic keyword is rejected, not a crash
 pass	a bare binding form with no bindings and no body is rejected, not a crash
@@ -377,6 +381,8 @@ pass	a bound effect performed with neither a handler nor a host delegation has n
 pass	a bound name in a map key is used by its value, not the literal name
 pass	a bounded generator produces only in-range values (0 <= roll < 64) for a runtime seed
 pass	a boxed nested-unary curried closure applies without trapping
+pass	a boxed runtime closure returning Unit applies without declining
+pass	a boxed runtime closure taking Unit (a lazy thunk) is forced without declining
 pass	a branch perform under two nested handlers threads the inner state to the continuation
 pass	a branching recursive tree fold infers its unannotated callback across both arms
 pass	a build-time delegated effect whose result a returned closure captures does not escape
@@ -628,7 +634,6 @@ pass	a factorial that overflows the integer type traps through the recursion
 pass	a factory RETURNS a closure capturing the def's SCALAR parameter
 pass	a factory RETURNS a closure that captures a let-bound inner closure
 pass	a failing guard falls through to a later arm
-pass	a failing nested-list guard falls to a later arm re-binding the inner list
 pass	a failing payload-binder guard falls to a later arm re-binding the payload
 pass	a failing tuple guard falls to a later arm re-binding the elements
 pass	a failure `?` short-circuits BEFORE later computation runs
@@ -1108,7 +1113,6 @@ pass	a nested unquote pattern matches a Float sub-AST by shape
 pass	a nested unquote pattern matches a Str sub-AST by shape
 pass	a nested unquote pattern matches a sub-AST by shape
 pass	a nested-let chain that reuses each binding folds to one value
-pass	a nested-list guard reads the inner binder and the outer rest together
 pass	a neutral and-true keeps both the trap and the value of its left operand
 pass	a nominal record compared to a plain record of the same shape is a type error
 pass	a non-byte-aligned bit-field width takes its exact arbitrary-width unsigned type
@@ -2192,6 +2196,10 @@ pass	converting a surrogate code point to a char yields None
 pass	converting a unit to another unit of the same dimension is an exact rational scale
 pass	converting an out-of-range integer to a char yields None
 pass	declaring a unit with a conversion conflicting with a built-in is an error
+pass	decode of a Float tag with a non-finite (NaN) bit pattern yields the error case
+pass	decode of a Str tag with an oversized length yields the error case
+pass	decode of a truncated Float tag yields the error case, not a trap
+pass	decode of an unknown tag byte yields the error case
 pass	decoding a four-byte sequence for a code point above U+10FFFF yields none
 pass	decoding a runtime ROPE Bytes as UTF-8 flattens before validating (well-formed)
 pass	decoding a runtime ROPE Bytes that is ill-formed yields none
@@ -2921,8 +2929,8 @@ pass	wrapping-add wraps a boundary-crossing runtime Int64 at the max boundary
 pass	wrapping-mul on a runtime UInt8 wraps modulo 256
 pass	wrapping-mul wraps a boundary-crossing runtime Int64
 todo	SUM ARG + LIST RESULT declines cleanly (Option arg, List result)
-todo	a closure returning Unit is declined — Unit has no machine representation
-todo	a closure-typed closure ARG on the DIRECT-CALL path is declined — host would supply the closure
-todo	a producer capturing a host-supplied COMPOUND parameter is declined — host→guest decode
+pass	a closure returning Unit is declined — Unit has no machine representation
+pass	a closure-typed closure ARG on the DIRECT-CALL path is declined — host would supply the closure
+pass	a producer capturing a host-supplied COMPOUND parameter is declined — host→guest decode
 todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional

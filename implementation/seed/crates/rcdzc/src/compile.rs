@@ -2299,10 +2299,14 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
                     break;
                 }
             }
-            if let Some(pos) = closure_op {
+            if closure_op.is_some() {
+                // Anchor at the `(bind E …)` name — the ACTIONABLE locus the author edits (change the
+                // route, or give the op a value type), NOT the nested `(-> …)` arrow fragment mid-signature
+                // that merely DETECTED the closure. (Copilot PR #418: the reject was `.at(pos)`, the inner
+                // arrow, while the comment says "reported at the bind name" — align them on the bind name.)
                 faults.push(
                     Reject::coded(Code::Malformed, crate::diag::CLOSURE_ACROSS_PEER_MESSAGE)
-                        .at(pos),
+                        .at(name_occ),
                 );
                 continue;
             }

@@ -17,7 +17,7 @@
 //!   program\t<normalized program, s-expression on one line>
 //!   call\t<export>                 (present only when the case has a `(call …)` clause)
 //!   arg\t<value-form>              (zero or more, in order; the arguments to the call)
-//!   expect\t(output <value-form>) | (error <CODE>) | (trap <reason>)
+//!   expect\t(output <value-form>) | (error <CODE>) | (trap <reason>) | (declines)
 //!   ---
 
 pub mod markdown;
@@ -100,6 +100,16 @@ pub enum Expect {
     Error(String),
     /// `(trap "<reason>")` — the run halts with this reason.
     Trap(String),
+    /// `(declines)` — the compiler DECLINES to emit a component for this program: a well-formed program
+    /// whose shape the compiler does not (yet) realize, so it produces no artifact rather than a value
+    /// or a coded rejection (`reference-compiler.md` §A "No" Is A First-Class Value Produced Where The
+    /// Decision Is Made — decline is a first-class outcome alongside reject and trap). The DISTINCTION
+    /// from `(error CODE)`: an `error` is a coded well-formedness REJECTION (the program is ill-formed);
+    /// a `declines` is a CODELESS decline (the program is well-formed, the compiler cannot realize its
+    /// shape — e.g. a type with no boundary representation, per `component-abi.md` §A Type That Has No
+    /// Defined Boundary Representation Must Not Appear In An Exported Or Imported Signature). Grades Pass
+    /// when the compiler declines, Fail when it emits (the "declines rather than miscompiles" property).
+    Declines,
 }
 
 /// Parse a corpus file's `text` into records. Returns an error only if the file itself does not
@@ -178,6 +188,11 @@ pub fn render(records: &[Record]) -> String {
                 Expect::Trap(reason) => {
                     out.push_str("trap ");
                     out.push_str(reason);
+                }
+                // `(declines)` carries no payload — the bare keyword IS the expectation. The grader keys
+                // on the `declines` prefix alone (no value follows).
+                Expect::Declines => {
+                    out.push_str("declines");
                 }
             }
             out.push('\n');
@@ -309,6 +324,14 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
                         expect: Expect::Trap(reason),
                     });
                 }
+            }
+            Some("declines") => {
+                // `(declines)` — closes a trial that must produce NO artifact: the compiler declines
+                // (codelessly) rather than emit a component. A bare keyword clause, no payload.
+                trials.push(Trial {
+                    call: pending_call.take(),
+                    expect: Expect::Declines,
+                });
             }
             Some("compiler") => {
                 // `(compiler (error <CODE>))` — a provable-at-compile-time rejection accompanying a
@@ -565,6 +588,52 @@ mod tests {
         assert_eq!(recs[0].trials.len(), 2);
         assert!(matches!(&recs[0].trials[0].expect, Expect::Output(_)));
         assert!(matches!(&recs[0].trials[1].expect, Expect::Trap(r) if r == "integer overflow"));
+    }
+
+    /// A `(declines)` clause parses to a `Declines` expectation — a payloadless trial (no call, no value).
+    #[test]
+    fn a_declines_clause_is_a_declines_expectation() {
+        let recs = read(
+            r#"(case "x"
+                 (input (do (def (mk) (fn ((: x Int64)) unit)) (export mk)))
+                 (declines))"#,
+        )
+        .unwrap();
+        assert_eq!(recs.len(), 1);
+        assert_eq!(recs[0].trials.len(), 1);
+        assert!(recs[0].trials[0].call.is_none());
+        assert!(matches!(&recs[0].trials[0].expect, Expect::Declines));
+    }
+
+    /// A `(declines)` renders to a bare `expect\tdeclines` line (no payload after the keyword).
+    #[test]
+    fn render_emits_a_bare_declines_expect_line() {
+        let text = to_records(
+            r#"(case "x"
+                 (input (do (def (mk) (fn ((: x Int64)) unit)) (export mk)))
+                 (declines))"#,
+        )
+        .unwrap();
+        assert!(
+            text.contains("expect\tdeclines\n"),
+            "declines renders as a bare keyword line, got: {text:?}"
+        );
+    }
+
+    /// A `(declines)` MAY pair with a `(call …)` (the trial's call is recorded, the expectation is a
+    /// decline) — so a case that drives a specific export can still pin the decline outcome.
+    #[test]
+    fn a_declines_clause_pairs_with_a_pending_call() {
+        let recs = read(
+            r#"(case "x"
+                 (input (do (def (mk (: xs (List Int64))) (fn ((: i Int64)) ((. List len) xs))) (export mk)))
+                 (call mk (: 5 Int64))
+                 (declines))"#,
+        )
+        .unwrap();
+        assert_eq!(recs[0].trials.len(), 1);
+        assert_eq!(recs[0].trials[0].call.as_ref().unwrap().export, "mk");
+        assert!(matches!(&recs[0].trials[0].expect, Expect::Declines));
     }
 
     /// The flat record stream emits one `call?`/`arg*`/`expect` group per trial (round-trips the shape).

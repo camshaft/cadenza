@@ -281,19 +281,18 @@
 ; supplies — a `make` parameter of type `(List …)`/`(Tuple …)`/a sum — needs a host→guest DECODE into the
 ; guest value-heap (a `value-decode` runtime op that does not exist), so it declines. This is the mirror of
 ; the round-trip relaxation: an in-GUEST-built compound arg crosses freely (built guest-side), but a
-; host-SUPPLIED compound does not. The compiler DECLINES (a `todo`) rather than emit a component that can't
-; accept the argument.
+; host-SUPPLIED compound does not. The compiler DECLINES (pinned `(declines)`) rather than emit a component
+; that can't accept the argument — the "decline rather than miscompile" outcome, now a live guard.
 
 (case "a producer capturing a host-supplied COMPOUND parameter is declined — host→guest decode"
   (doc    "`(def (mk (: xs (List Int64))) (fn (i) ((. List len) xs)))` returns a closure capturing the List
            `xs`, but `xs` is a `make` PARAMETER the HOST supplies over the boundary — a `(List Int64)` has no
            scalar host-boundary representation, and there is no host→guest decode of a compound into the guest
-           heap. Declines (a `todo`). Contrast the round-trip cases, where a compound closure argument is
-           BUILT in-guest and crosses freely.")
+           heap. Declines (pinned `(declines)`). Contrast the round-trip cases, where a compound closure
+           argument is BUILT in-guest and crosses freely.")
   (input  (do (def (mk (: xs (List Int64))) (fn ((: i Int64)) ((. List len) xs)))
               (export mk)))
-  (call   mk (: 5 Int64))
-  (output (: 3 Int64)))
+  (declines))
 
 ; The scope fence is SCOPED to the returned closure's body — a BUILD-TIME delegated effect whose result
 ; the closure merely CAPTURES does NOT escape and must not be rejected. The distinction is where the
@@ -4572,12 +4571,11 @@
 (case "a closure-typed closure ARG on the DIRECT-CALL path is declined — host would supply the closure"
   (doc    "A single higher-order closure export called DIRECTLY by the host: the host would have to supply the
            `(-> Int64 Int64)` function argument OVER the boundary (itself a closure resource passed INTO a
-           call), which the current envelope does not accept. Declines (a `todo`); contrast the round-trip
-           cases above, where the inner closure is built in-guest.")
+           call), which the current envelope does not accept. Declines (pinned `(declines)`); contrast the
+           round-trip cases above, where the inner closure is built in-guest.")
   (input  (do (def (mk) (fn ((: f (-> Int64 Int64))) (f 10)))
               (export mk)))
-  (call   mk (: 0 Int64))
-  (output (: 10 Int64)))
+  (declines))
 
 ; A SUM (Option/Result/user sum) result, and a fixed-shape COMPOUND result CONTAINING a variable-length
 ; element (a tuple/record with a List/Map/Set inside), cross as `list<u8>` via the runtime `value-encode`
@@ -4809,15 +4807,73 @@
 ; represented), so it declines at lambda-lift ("a closure's result type has no machine representation"),
 ; BEFORE the resource envelope. A `Unit`-returning closure is a pure side-effecting callback — only
 ; meaningful once a closure may perform an effect (which the scope fence CDZ0406 forbids crossing today), so
-; there is nothing for it to DO across the boundary. Declines as a `todo` — a documented boundary, not a
-; miscompile.
+; there is nothing for it to DO across the boundary. Declines (pinned `(declines)`) — a documented boundary,
+; not a miscompile.
 
 (case "a closure returning Unit is declined — Unit has no machine representation"
   (doc    "`(def (mk) (fn (x) unit))` — the closure returns `Unit`, which has no machine slot; the lifted
            lambda's result cannot be represented, so it declines at lift (`a closure's result type has no
            machine representation`). A pure Unit-returning closure only makes sense as an effect callback, and
            closures escaping effects are forbidden (CDZ0406) — so a `Unit` result has no boundary role today.
-           Declines (a `todo`).")
+           Declines (pinned `(declines)`).")
   (input  (do (def (mk) (fn ((: x Int64)) unit)) (export mk)))
-  (call   mk (: 5 Int64))
-  (output (: unit Unit)))
+  (declines))
+
+; CONTRAST — the INTERNAL boxed Unit-result closure COMPILES. The sound decline above is about EXPORTING
+; a Unit-result closure to the HOST (the host `call` boundary needs a scalar result). But a Unit-result
+; closure boxed in a GUEST sum, extracted by a match, and applied via `call_indirect` crosses no host
+; boundary — it is an ordinary internal runtime closure. `valtype_of(Unit) = None`, but a Unit result is a
+; ZERO-RESULT wasm functype (the serializer already emits `0x60 <params> <>` for a Unit-returning
+; function), so the lift guard / `closure_type_index` / the unreached-lift stub must map Unit to a
+; zero-result functype, NOT decline. Was a MISCOMPILE-adjacent DECLINE (Copilot PR #388): the whole program
+; declined "a runtime closure application has no matching function type". (A pure Unit-returning call is
+; also dead — no observable result, no escaping effect — so the optimizer may fold the dispatch; the point
+; pinned is that the program COMPILES and RUNS rather than declining.)
+
+(case "a boxed runtime closure returning Unit applies without declining"
+  (doc    "A closure `(-> Int64 Unit)` boxed in a sum, extracted by a match, then applied — the runtime
+           `call_indirect` path (Copilot PR #388). `closure_type_index` did `valtype_of(&result_ty)?`
+           which is `None` for `Ty::Unit`, so the whole program declined 'no matching function type' —
+           even though the serializer already treats a Unit result as a ZERO-RESULT functype. The fix maps
+           a Unit result to a zero-result functype in the lift guard, `closure_type_index`, and the
+           unreached-lift stub (a Unit stub body is EMPTY, not `const 0`). `main` runs the boxed Unit
+           closure for its (absent) effect, then returns 42. Contrast the sound decline above: EXPORTING a
+           Unit-result closure to the HOST still declines (the host `call` needs a scalar); only the
+           INTERNAL boxed path compiles.")
+  (input  (do
+            (type Box (C (-> Int64 Unit)))
+            (def (run (: b Box) (: x Int64)) (match b (((. Box C) f) (do (f x) x))))
+            (def (ignore (: n Int64)) unit)
+            (def (main) (do (run ((. Box C) ignore) 5) 42))
+            (export main)))
+  (output (: 42 Int64)))
+
+; The Unit-PARAM face — the canonical lazy THUNK `Susp(Unit -> T)` (the iterators proposal's delayed
+; computation). A closure `(-> Unit Int64)` boxed in a sum, extracted by a match, and FORCED (`(f unit)`).
+; `valtype_of(Unit) = None`, so the boxed-closure lift guard declined "a closure's parameter type has no
+; machine representation" — even though a Unit param, like a Unit result, occupies NO wasm slot. The fix
+; ELIDES a Unit param from the closure's functype (mirroring the Unit-result zero-result functype and a
+; Unit argument pushing nothing): the lift guard, `select_function_of`'s slot assignment, a `Core::Param`
+; read of a Unit binder (emits nothing), `closure_type_index`, and the extra-functype registration
+; (`collect_closure_call_sigs`) all drop the Unit param in lockstep. Unlike the Unit-RESULT face, the
+; forced call is NOT dead (its result is observed), so a REAL `call_indirect` runs. (A Unit param on a
+; CURRIED closure-returning-closure — `(-> Unit (-> A B))` or `(-> A (-> Unit B))` — still declines: that
+; boxed-curried path is pre-existing-broken independent of Unit, so eliding there would only expose the
+; same "indirect call type mismatch" trap.)
+
+(case "a boxed runtime closure taking Unit (a lazy thunk) is forced without declining"
+  (doc    "The lazy-thunk shape `Thunk = Susp(Unit -> Int64)`: `mk` boxes `(fn (u) 42)` into the sum
+           variant; `force` matches it out and applies it to `unit`. `valtype_of(Unit) = None`, so the
+           boxed-closure lift declined 'a closure's parameter type has no machine representation' — but a
+           Unit param occupies NO wasm slot, so it is ELIDED from the closure's functype (like a Unit
+           result's zero-result functype and a Unit argument pushing nothing). `force(mk())` runs the
+           thunk through a real `call_indirect` → 42. This unblocks the ideal thunk-based lazy `Iter`
+           (`Iter a = Susp(Unit -> Option (a, Iter a))`), which today uses a defunctionalized encoding to
+           avoid this wall.")
+  (input  (do
+            (type Thunk (Susp (-> Unit Int64)))
+            (def (force (: t Thunk)) (match t (((. Thunk Susp) f) (f unit))))
+            (def (mk) ((. Thunk Susp) (fn ((: u Unit)) 42)))
+            (def (main) (force (mk)))
+            (export main)))
+  (output (: 42 Int64)))

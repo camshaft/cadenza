@@ -734,4 +734,19 @@ fn a_list_parameter_test_is_property_tested_by_a_synthesized_generator() {
             && stdout.contains("PASS map_ok-gen (8 trials)"),
         "a Set and a Map parameter are both property-tested via synthesized wrappers: {stdout}"
     );
+
+    // G7: generated lists are VARIABLE-length (0..=3), so the EMPTY list is reachable — a "never empty"
+    // property MUST fail within a modest trial count. With the old fixed-length-3 list this would
+    // spuriously PASS (never empty). Pins that the generator exercises the empty + short-list cases.
+    let varlen = write(
+        &d,
+        "varlen.cdz",
+        "@test def never_empty(xs: List(Int64)) = if List.len(xs) > 0 then unit else trap(\"empty\")\n\
+         @test def anchor6() = if 1 == 1 then unit else trap(\"a\")\n",
+    );
+    let (ok, stdout, _) = run(&["test", &varlen, "--seed", "0", "--trials", "20"]);
+    assert!(
+        !ok && stdout.contains("FAIL never_empty-gen"),
+        "a variable-length list generator reaches the empty list (a never-empty property fails): {stdout}"
+    );
 }
