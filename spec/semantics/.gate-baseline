@@ -1703,6 +1703,7 @@ pass	a runtime float absent from a Set is not found
 pass	a runtime float addition emits the machine add
 pass	a runtime float addition with nan propagates the nan
 pass	a runtime float divide by zero yields a non-trapping infinity
+pass	a runtime float divided by ITSELF is not folded to 1.0 — 0.0/0.0 is nan, no trap
 pass	a runtime float division rounds under the fixed mode
 pass	a runtime float equality feeds the true-literal boolean coercion
 pass	a runtime float equality negated by the false-literal coercion
