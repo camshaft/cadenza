@@ -16,12 +16,12 @@
 // tools; the SAME loop swaps to the cadenza:bedrock/api peer + a real tool-dispatch peer with no code
 // change once those shims land (a nearer handler wins over the peer binding).
 //
-// NOTE (v-effects, reported REPORT/FIX): the mock model's completion is a LITERAL per test rather than a
-// `run-with(fuel, tool)` PARAMETER, because a handler arm that captures an outer fn param is dropped
-// (CDZ0101 unbound) when the loop also performs a second effect op (`Tools.dispatch`) in its recursive
-// SELF-CALL argument — the same family as the queued effectful-helper-in-self-call-arg limit. A literal
-// per test avoids the capture and still exercises the full multi-tool routing (each test drives a
-// distinct tool). When that upstream limit is fixed this collapses to one parameterized `run-with`.
+// The mock model names the tool via a `run-with(fuel, tool)` PARAMETER captured in the handler arm
+// (`converse(q, s) => resume(tool, 0)`). This capture — a handler arm closing over an enclosing fn param
+// while the loop also performs a second effect (`Tools.dispatch`) reached by the recursive driver — was a
+// v-effects CDZ0101 miscompile this module's dogfood surfaced (merged-nested specialization didn't thread
+// the captured param); v-effects fixed it (trunk 4da9e70bd), so the parameterized form now lowers and this
+// collapses four near-identical literal-per-tool mocks into one.
 // The model effect: a turn's prompt in, the model's chosen tool NAME out (the string the loop routes).
 effect Model =
   | converse : String -> String
@@ -49,44 +49,13 @@ def run(fuel: Int64, acc: Int64) =
     let choice = Model.converse("turn") in
     if choice == "stop" then Tools.done(acc) else run(fuel - 1, acc + Tools.dispatch(choice))
 
-// Run `fuel` turns with a mock that names "search" every turn, routing through `route`. Handlers carry no
-// state (the running total is in `run`'s `acc`), so each resumes with a fresh `0`. So this = fuel * 10.
-def run-search(fuel: Int64) =
+// Run `fuel` turns with a mock that names `tool` every turn, routing through `route`. The tool name is a
+// PARAMETER captured in the model handler arm (`resume(tool, 0)`) — so one function drives ANY tool,
+// instead of a near-identical copy per tool. Handlers carry no state (the running total is in `run`'s
+// `acc`), so each resumes with a fresh `0`. So `run-with(fuel, tool)` = fuel * route(tool).
+def run-with(fuel: Int64, tool: String) =
   handle Model(0) with
-    | converse(q, s) => resume("search", 0)
-  in
-  handle Tools(0) with
-    | dispatch(a, s) => resume(route(a), 0)
-    | done(a, s) => resume(a, 0)
-  in
-  run(fuel, 0)
-
-// As above but the mock names "calc" every turn → fuel * 20.
-def run-calc(fuel: Int64) =
-  handle Model(0) with
-    | converse(q, s) => resume("calc", 0)
-  in
-  handle Tools(0) with
-    | dispatch(a, s) => resume(route(a), 0)
-    | done(a, s) => resume(a, 0)
-  in
-  run(fuel, 0)
-
-// As above but the mock names "write" every turn → fuel * 30.
-def run-write(fuel: Int64) =
-  handle Model(0) with
-    | converse(q, s) => resume("write", 0)
-  in
-  handle Tools(0) with
-    | dispatch(a, s) => resume(route(a), 0)
-    | done(a, s) => resume(a, 0)
-  in
-  run(fuel, 0)
-
-// As above but the mock names an UNKNOWN tool every turn → route falls through to 0 → acc stays 0.
-def run-unknown(fuel: Int64) =
-  handle Model(0) with
-    | converse(q, s) => resume("frobnicate", 0)
+    | converse(q, s) => resume(tool, 0)
   in
   handle Tools(0) with
     | dispatch(a, s) => resume(route(a), 0)
@@ -103,23 +72,23 @@ def route-unknown-falls-through-to-zero() =
 
 @test
 def dispatch-routes-search-across-turns() =
-  if run-search(3) == 30 then unit else trap("3 * search(10) = 30")
+  if run-with(3, "search") == 30 then unit else trap("3 * search(10) = 30")
 
 @test
 def dispatch-routes-calc-across-turns() =
-  if run-calc(2) == 40 then unit else trap("2 * calc(20) = 40")
+  if run-with(2, "calc") == 40 then unit else trap("2 * calc(20) = 40")
 
 @test
 def dispatch-routes-write-across-turns() =
-  if run-write(1) == 30 then unit else trap("1 * write(30) = 30")
+  if run-with(1, "write") == 30 then unit else trap("1 * write(30) = 30")
 
 @test
 def dispatch-unknown-tool-routes-zero-through-the-loop() =
-  if run-unknown(4) == 0 then unit else trap("an unknown tool routes 0 through the loop")
+  if run-with(4, "frobnicate") == 0 then unit else trap("an unknown tool routes 0 through the loop")
 
 @test
 def dispatch-tools-route-independently() =
-  if run-search(3) + run-calc(2) + run-write(1) == 100 then
+  if run-with(3, "search") + run-with(2, "calc") + run-with(1, "write") == 100 then
     unit
   else
     trap("search(30) + calc(40) + write(30) = 100")
