@@ -1907,6 +1907,7 @@ pass	a symbol compared to a string is a type error
 pass	a symbol converts back to its content string
 pass	a symbol is constructed from a string
 pass	a symbol's identity is its content, not how the content was derived
+pass	a symbol-literal match agrees with its if-(= s lit) chain on the DEFAULT fall-through arm
 pass	a symbol-literal match agrees with the equivalent if-(= s lit) chain
 pass	a symbol-literal match reaches the second arm by content
 pass	a symbol-literal pattern nested in a variant payload matches by content
