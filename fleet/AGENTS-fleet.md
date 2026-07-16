@@ -68,13 +68,31 @@ Every firing of your `/loop`, in order:
    act on each; then move it to `.claude/fleet/inbox/<you>/processed/`. Answering peers takes
    priority over starting new work (a `reject` from pr-sync means your last merge needs a fix —
    handle it before anything else).
-4. **Sync your base.** `git -C <your-worktree> fetch -q` then `git reset --hard trunk`. `trunk` is a
-   LOCAL branch in the bare hub (shared via the common git dir) — there is NO `origin/trunk` (`origin`
-   is GitHub), so a bare `trunk` is the ref to use, never `origin/trunk`. Reset (not rebase): pr-sync
-   squash-integrates, so a plain `rebase` replays your already-landed commits as orphans against the
-   new tree — `reset --hard trunk` lands you exactly on the integrated tip. Rebuild what you measure
-   against (`cargo xtask build` for the runtime store; a stale store makes heap cases false-fail).
-   This is also what refreshes your role body on disk for next tick's step 1.
+4. **Sync your base — at tick START, before you commit/send this tick's work.** Run **`cargo xtask
+   fleet sync`** from your worktree — the safe base-sync. It `fetch`es, resets onto `trunk`, then
+   cherry-picks back ONLY your commits that are not yet upstream BY PATCH-ID, so it lands you on the
+   integrated tip WITHOUT losing work and WITHOUT re-stacking a commit pr-sync already landed under a
+   re-parented sha (that one is dropped, no empty pick). It refuses on a dirty tree and restores your
+   pre-sync HEAD on any conflict. `trunk` is a LOCAL branch in the bare hub (shared via the common git
+   dir) — there is NO `origin/trunk` (`origin` is GitHub), so a bare `trunk` is the ref, never
+   `origin/trunk`. Then rebuild what you measure against (`cargo xtask build` for the runtime store; a
+   stale store makes heap cases false-fail). This is also what refreshes your role body on disk for
+   next tick's step 1.
+   - **⚠ Do NOT re-sync (this OR a bare reset) while you have a merge-request already queued.** Any
+     re-sync moves your branch off the commit it was on: a bare `git reset --hard trunk` DANGLES an
+     unlanded commit, and even `fleet sync` REPLAYS an unlanded commit under a NEW sha (cherry-pick) —
+     either way, the `--ref <sha>` you already sent pr-sync no longer names a commit reachable from
+     `fleet/<you>`. pr-sync fetches that `--ref` from your BRANCH and CANNOT fetch a now-unreachable
+     commit, so it **silently SKIPS your MR every tick with no reject** while your work sits queued
+     forever (this has cost multiple agents multiple ticks). So once you've sent an MR: LEAVE the branch
+     alone — being behind `trunk` is fine, pr-sync merges your sent `--ref` onto current `trunk` and
+     re-gates. Only re-sync after that MR lands or is rejected (on a reject you fix + resend a fresh
+     `--ref` anyway). If you already re-synced and orphaned a sent `--ref`, recover with `git reset
+     --hard <that-ref>` (the commit object survives in the shared store) — or just resend a new
+     `merge-request` naming your current tip. Verify with `git branch --contains <ref>`. (`fleet sync`'s
+     guarantee is "never lose WORK + never re-stack an already-landed commit", NOT "safe to run under a
+     pending MR" — the sha still moves.) Reset — not `rebase`: pr-sync squash-integrates, so a plain
+     `rebase` replays your already-landed commits as orphans against the new tree.
 5. **Do ONE well-scoped unit of work** per your role body. Gate it (below). Never leave `trunk`
    broken — but your worktree may be left dirty across ticks (the next tick resumes it).
 6. **If a commit is ready,** send `pr-sync` a `merge-request` (below). Otherwise reschedule.
