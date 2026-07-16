@@ -243,4 +243,60 @@ mod tests {
         let mut r = Reader::new(&[0x80]);
         assert_eq!(r.read_varu64(), None);
     }
+
+    /// A tiny deterministic PRNG (SplitMix64) — reproducible byte-soup without a dependency (mirrors the
+    /// unit-test PRNGs in `codec.rs`/`lexer.rs`).
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+            z ^ (z >> 31)
+        }
+    }
+
+    #[test]
+    fn read_varu64_over_arbitrary_bytes_never_panics_and_accept_implies_canonical() {
+        // The bijection is TOTAL over arbitrary bytes: `read_varu64` on ANY byte prefix (a) never PANICS
+        // and never over-reads (position stays within the slice), and (b) whenever it ACCEPTS, the value
+        // it returns RE-ENCODES to exactly the bytes it consumed — i.e. an accepted input is always the
+        // canonical form of its value. That "accept ⇒ canonical" property is precisely what makes the
+        // codec's byte form a bijection (`ast-encoding.md`): no two byte strings can decode to the same
+        // value, because any non-minimal string is rejected outright. The hand-written tests pin specific
+        // overlong/truncated cases; this sweeps the whole 1..=11-byte space with random content — the
+        // regression guard for the minimality check (a `shift`/`payload==0` off-by-one would let some
+        // non-canonical string through, and this catches it as an accepted-but-non-canonical input).
+        let mut rng = Rng(0x1eb1_28fa_ce5e_ed01);
+        for _ in 0..200_000 {
+            // 1..=11 bytes (11 > the 10-byte max, so over-length inputs are exercised too).
+            let len = 1 + (rng.next() % 11) as usize;
+            let buf: Vec<u8> = (0..len).map(|_| (rng.next() & 0xff) as u8).collect();
+            let mut r = Reader::new(&buf);
+            let got = r.read_varu64(); // must not panic
+            // Position never runs past the slice, whether it accepted or rejected.
+            assert!(
+                r.position() <= buf.len(),
+                "reader over-read: pos {} > len {} for {buf:?}",
+                r.position(),
+                buf.len()
+            );
+            if let Some(v) = got {
+                // Accept ⇒ the consumed prefix is EXACTLY the canonical encoding of `v`.
+                let consumed = &buf[..r.position()];
+                let mut canon = Vec::new();
+                write_u64(&mut canon, v);
+                assert_eq!(
+                    consumed,
+                    canon.as_slice(),
+                    "accepted a non-canonical encoding of {v}: consumed {consumed:?}, canonical {canon:?}"
+                );
+                // And that canonical form decodes right back to the same value at exactly its length.
+                let mut r2 = Reader::new(&canon);
+                assert_eq!(r2.read_varu64(), Some(v));
+                assert!(r2.at_end());
+            }
+        }
+    }
 }
