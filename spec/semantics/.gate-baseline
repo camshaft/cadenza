@@ -310,6 +310,7 @@ pass	a Unit element in a multi-payload sum variant compiles to valid wasm
 pass	a Unit projected from a function-returned tuple (owned-reclaim path)
 pass	a Unit projected out of a multi-payload sum and bound to a name
 pass	a Unit record field beside an Int64 field, the Int64 read
+pass	a `?` in a CALLED (inlined, non-exported) helper finds its boundary
 pass	a `?` on a String operand is a type error
 pass	a `?` on a non-fallible operand is a type error
 pass	a `?` result is usable mid-body, not only in tail position
@@ -395,6 +396,7 @@ pass	a byte-string literal equals the explicit byte sequence it desugars to
 pass	a byte-string literal with escapes equals its explicit byte sequence
 pass	a camelCase round-trip resolves through kebab boundary-name normalization
 pass	a camelCase same-signature multi-export normalizes each make-<name>
+pass	a capture-free de Bruijn beta-reduction over a nameless term sum reduces correctly
 pass	a capturing 32-bit-integer closure crosses and is called
 pass	a capturing closure crosses as a repeatable (borrow<t>) callback handle
 pass	a capturing closure export tracks both the captured value and the call argument
@@ -566,6 +568,7 @@ pass	a decoded length field re-encodes a length-prefixed frame end to end
 pass	a decoded payload feeds ordinary arithmetic
 pass	a deep balanced tree is built and folded to a scalar, consuming both children
 pass	a deep chain of runtime-list let-bindings compiles and returns the final length
+pass	a deep compound nesting all six leaf kinds round-trips through encode and decode
 pass	a deep consume leaves the intermediate compound and a sibling element readable
 pass	a deeper nested call chain still folds in linear time near the inliner limit
 pass	a deeply nested constant expression compiles or declines without crashing
@@ -623,6 +626,7 @@ pass	a factorial that overflows the integer type traps through the recursion
 pass	a factory RETURNS a closure capturing the def's SCALAR parameter
 pass	a factory RETURNS a closure that captures a let-bound inner closure
 pass	a failing guard falls through to a later arm
+pass	a failing payload-binder guard falls to a later arm re-binding the payload
 pass	a fallible parser threads a Result((value,cursor),String) through mutual recursion, short-circuiting on Err
 pass	a false variant guard shields its arm's trapping body
 pass	a family quantity displays scaled exactly to its reference (Rational)
@@ -696,11 +700,14 @@ pass	a generic unwrap helper consumes a fallible Bytes.at result
 pass	a genuinely-narrow op with a wrapped-down MATCH-operand yields the exact value
 pass	a genuinely-narrow op with a wrapped-down if-operand still traps on overflow
 pass	a genuinely-narrow op with a wrapped-down if-operand yields the exact value when in range
+pass	a guard combines the payload binder with the rest binder
 pass	a guard on a ctor list element reads the constructor's payload binder
 pass	a guard on a literal-element list pattern reads an enclosing let binding through inlining
 pass	a guard on a tuple arm reads the tuple's element binders
 pass	a guard over a variant pattern gates on the payload
 pass	a guard reads a binding from the enclosing scope, not only its pattern's
+pass	a guard reads payload binders from two ctor list elements
+pass	a guard reads the payload binder and an enclosing parameter together
 pass	a guard sees the names its pattern binds and arms are tried in order
 pass	a guard-elided masked add computes inline over runtime operands
 pass	a guarded arm among same-constructor match arms keeps first-match-wins
@@ -863,6 +870,7 @@ pass	a literal inside a constructor pattern matches a runtime payload
 pass	a literal inside a tuple pattern matches a runtime element
 pass	a literal inside an Ok pattern refines a Result match
 pass	a literal list element dispatches a runtime list by its value
+pass	a literal nested in a compound payload that overflows the annotated width is rejected
 pass	a literal nested in a tuple def-parameter is refutable and rejected
 pass	a literal nested in a tuple let-binder is refutable and rejected
 pass	a literal segment before a binder dispatches then reads the payload
@@ -989,6 +997,7 @@ pass	a multi-segment bin concatenates mixed-width signed and unsigned segments i
 pass	a multi-variant constructor nested in a tuple let-binder is refutable and rejected
 pass	a multi-variant-sum binding pattern is refutable and rejected
 pass	a multi-way string-head dispatch resolves an operator name to its operation
+pass	a multibyte-UTF-8 Ast.Str round-trips through print and read
 pass	a mutual AST walker re-extracts a node's payload in a sibling operand while a mutual call consumes it
 pass	a mutual walk where BOTH partners perform threads one shared counter across the cycle
 pass	a mutually tail-recursive even/odd over a large runtime count iterates in constant stack
@@ -1368,6 +1377,8 @@ pass	a runtime BigInt operation does not silently promote a fixed-width operand
 pass	a runtime BigInt ordering compares by the arbitrary-precision value
 pass	a runtime BigInt remainder takes the dividend's sign
 pass	a runtime List built past 32 elements reads correctly by index across the RRB leaf-to-trie boundary
+pass	a runtime MIXED-SCALE BigInt comparison converts to the reference before comparing
+pass	a runtime MIXED-SCALE BigInt-magnitude sum converts to the reference in unbounded arithmetic
 pass	a runtime Option carrying a user sum is matched by a nested constructor pattern
 pass	a runtime Rational built from a parameter compares by its exact value
 pass	a runtime Rational comparison of a parameter is false when it should be
@@ -1592,6 +1603,7 @@ pass	a string equality on an inlined match operand
 pass	a string literal
 pass	a string literal is normalized to the canonical text form
 pass	a string passed to a function as a runtime argument is measured by its byte length
+pass	a string spelled like a keyword round-trips as an Ast.Str, not an Ast.Bool or Ast.Name
 pass	a string-literal pattern in a match selects by string equality, distinguishing Unicode
 pass	a suffixed BigInt literal annotated as Int64 is a type mismatch
 pass	a suffixed Rational literal annotated as Int64 is a type mismatch
@@ -1661,6 +1673,7 @@ pass	a transformation observably rewrites the tree, not just its value
 pass	a transformation over the built-in Ast composes across a function call
 pass	a trapping condition of a same-constructor if traps before either arm
 pass	a trapping condition preempts the hoisted operator's trap
+pass	a trapping earlier let-init is NOT dropped by a constant-failure `?` short-circuit
 pass	a trapping element in the taken arm of a same-length list if still traps
 pass	a trapping element in the untaken arm of a same-arity tuple if does not trap
 pass	a trapping element in the untaken arm of a same-length list if does not trap
@@ -1844,6 +1857,7 @@ pass	an active unquote of an Ast-valued expression splices the subtree as identi
 pass	an active-unquoted boolean literal equals the quoted form
 pass	an agreeing redeclaration compares the normalized ratio, not the literal numerator and denominator
 pass	an all-constant Set.of still folds membership with a constant query (control)
+pass	an all-escapes Ast.Str round-trips through print and read
 pass	an all-nullary enum dispatches its runtime-selected variant and escapes
 pass	an all-nullary enum nested in a tuple carries its discriminant through the heap
 pass	an all-nullary enum reached through a tuple element inside a boxed sum survives the heap round-trip
@@ -1902,6 +1916,8 @@ pass	an empty quote is rejected, not a crash
 pass	an empty scrutinee matches an empty bin pattern
 pass	an empty string is unequal to a non-empty string
 pass	an empty-range slice of a non-empty string is Some of the empty string
+pass	an empty-string Ast.Str round-trips through encode and decode
+pass	an empty-string Ast.Str round-trips through print and read
 pass	an encode-decode round-trip preserves an ASCII string's byte length
 pass	an entrypoint delegation lets a program reach its host function
 pass	an entrypoint delegation reaches an effect performed in a recursive callee

@@ -11066,6 +11066,59 @@ mod runtime_ops {
     }
 
     #[test]
+    fn a_refined_list_payload_match_compiles_in_linear_time() {
+        // REGRESSION (perf, S3): a match whose arms each refine a LIST PAYLOAD by literal elements
+        // (`(Some (list 0 0)) … (Some (list N N)) (_ -1)`) compiled `lower::build_tree` in O(2^arms). The
+        // multi-column fix (S1) shares the fall-through only for NON-refining Int/Str probes; a `(list i i)`
+        // arm prepends a `ListLen` REFINING probe before its element lit-tests, and S1 excluded refining
+        // probes → the ListLen `then_` (passed-length world) re-compiled the whole remaining matrix at each
+        // element-test = O(2^arms) (N=20 = 3.2s to `cdz check`). FIX (S3): the ListLen `then_`'s fall-through
+        // is `else_rows` REFINED to the PASSED length (`refine_listlen_to_passed`), compiled ONCE and threaded
+        // as the matched arm's `fallthrough` (S1's mechanism, refined tail); arms length-inconsistent with the
+        // passed length are dropped (provably unmatchable there), so exhaustiveness is preserved.
+        //
+        // NOISE-FREE signal `BUILD_TREE_CALLS`. A 2-element-refined list match with N arms must recurse
+        // O(N), not O(2^N). Correctness (dispatch + the empty/rest-arm exhaustiveness partition) is pinned by
+        // the match_engine suite, which stays byte-identical.
+        fn refined_list_match_src(n: usize) -> String {
+            let mut arms = String::new();
+            for i in 0..n {
+                arms.push_str(&format!("((Some (list {i} {i})) {i}) "));
+            }
+            format!(
+                "(module m (def (f (: o (Option (List Int64)))) (match o {arms}(_ -1))) \
+                 (def (main) (f (Some (list 1 1)))) (export main))"
+            )
+        }
+        let diags = crate::diagnostics(&mut crate::db::Db::load(parse(&refined_list_match_src(4))));
+        assert!(
+            diags
+                .iter()
+                .all(|d| d.severity != crate::abi::Severity::Error),
+            "a refined-list-payload match compiles with no error diagnostics: {diags:?}"
+        );
+        fn build_tree_calls(src: &str) -> u64 {
+            crate::host::run_with_compiler_stack(|| {
+                crate::db::BUILD_TREE_CALLS.with(|c| c.set(0));
+                let _ = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+                crate::db::BUILD_TREE_CALLS.with(|c| c.get())
+            })
+        }
+        // Arms 12→16 (+4): LINEAR ⇒ small additive growth (< 4×); the O(2^arms) blow-up was ~16×. VERIFIED:
+        // reverting S3 (append `else_rows` into the ListLen `then_`) fails here with a ~16× explosion.
+        let n12 = build_tree_calls(&refined_list_match_src(12));
+        let n16 = build_tree_calls(&refined_list_match_src(16));
+        let ratio = n16 as f64 / (n12.max(1)) as f64;
+        assert!(
+            n12 > 0 && ratio < 4.0,
+            "a refined-list-payload match must compile in O(arms) `build_tree` recursions, not O(2^arms) \
+             (a `ListLen` probe's passed-world fall-through must be compiled once via \
+             `refine_listlen_to_passed` and shared): arms 12→16 grew {ratio:.1}× (n12={n12}, n16={n16}); \
+             linear is ~1.3×, the exponential was ~16×"
+        );
+    }
+
+    #[test]
     fn a_deep_nested_let_chain_collects_binding_uses_in_bounded_time() {
         // REGRESSION (perf): `lower::lower_let` collects each binding's use facts by walking its whole `let`
         // REGION (all inits + body) in one pass (fix-44, which fused a WIDE let's per-binding walks). But a
@@ -17413,6 +17466,56 @@ mod match_engine {
             w.message.contains("0..=18446744073709551615"),
             "UInt64.max renders exactly: {}",
             w.message
+        );
+    }
+
+    #[test]
+    fn an_out_of_range_literal_in_a_compound_payload_is_rejected_at_check() {
+        // CHECK-vs-EMIT gap fix (v-inference): a NESTED narrow-width literal — the payload of `(: (Some 999)
+        // (Option Int8))`, an element of `(: (tuple 999) (Tuple Int8))` / `(: (list 999) (List Int8))` — was
+        // ACCEPTED by `cdz check` (rc=0) while the EMIT path rejected it CDZ0302. The annotation's `Int8`
+        // propagates into the payload's type, but the literal itself stays a deferred `Int64` (its own
+        // `type_of` reads `Int64`), so the top-level `literal_width_fault` never fired on it. Now
+        // `nested_literal_width_faults` descends the annotation's expected type against the value's
+        // payload/elements and range-checks each nested literal — so `check` agrees with emit.
+        for (src, shape) in [
+            (
+                "(module m (def (main) (: (Some 999) (Option Int8))) (export main))",
+                "Some payload",
+            ),
+            (
+                "(module m (def (main) (: (tuple 999) (Tuple Int8))) (export main))",
+                "tuple element",
+            ),
+            (
+                "(module m (def (main) (: (list 999) (List Int8))) (export main))",
+                "list element",
+            ),
+            (
+                "(module m (def (main) (: (Some (tuple 999)) (Option (Tuple Int8)))) (export main))",
+                "doubly-nested Some/tuple",
+            ),
+        ] {
+            let d = reject_full(src).unwrap_or_else(|| {
+                panic!("{shape}: nested out-of-range literal must be rejected at check")
+            });
+            assert_eq!(
+                d.code.as_deref(),
+                Some("CDZ0302"),
+                "{shape}: got {}",
+                d.message
+            );
+            assert!(
+                d.message.contains("Int8") && d.message.contains("-128..=127"),
+                "{shape}: names the width + range: {}",
+                d.message
+            );
+        }
+        // NO over-rejection: an IN-RANGE nested literal still type-checks.
+        assert!(
+            reject_full("(module m (def (main) (: (Some 5) (Option Int8))) (export main))")
+                .is_none(),
+            "an in-range nested payload literal must still be accepted"
         );
     }
 
@@ -32258,6 +32361,29 @@ mod match_engine {
     }
 
     #[test]
+    fn a_mixed_scale_bigint_quantity_combine_converts_to_the_reference() {
+        // `lower_quantity_combine` gained a BigInt arm: a MIXED-SCALE combine (km + m) over a BigInt inner
+        // converts each operand to the reference in unbounded bigint arithmetic (v km → v*1000 m) then
+        // combines. Previously it fell to the fixnum runtime path (bare-int scale factors) and declined
+        // ("ownership cannot prove"). Nullary (both operands narrowed from runtime BigInts so no fold):
+        // (2 km + 500 m) = 2500. Uses the FULL runtime; skips if absent (corpus gate covers it e2e).
+        let src = "(do \
+                   (def (rt) ((. Int64 of) ((. BigInt of) 2))) \
+                   (def (main) \
+                     ((. Qty value) (+ ((. Qty of) ((. BigInt of) (rt)) \
+                                          ((. Unit prefix) kilo ((. Unit base) #\"meter\"))) \
+                                       ((. Qty of) ((. BigInt of) 500) ((. Unit base) #\"meter\"))))) \
+                   (export main))";
+        let Some(rendered) = run_heap_value_escape(src) else {
+            return; // no runtime store — the corpus gate is the e2e witness
+        };
+        assert!(
+            rendered.contains("2500"),
+            "2 km + 500 m (BigInt, mixed scale) converts to the reference → 2500: {rendered}"
+        );
+    }
+
+    #[test]
     fn a_bigint_or_rational_inner_quantity_comparison_folds_to_the_exact_compare() {
         // Companion to the bigint-quantity arithmetic fix: a `(Qty BigInt/Rational u)` COMPARISON must
         // route to the exact bigint/rational compare, not decline as a "compound value needs a heap walk".
@@ -46457,6 +46583,70 @@ mod stage1 {
     }
 
     #[test]
+    fn a_typed_parameter_missing_its_colon_names_the_annotated_binder_shape() {
+        // A typed parameter is `(: <name> <Type>)` (an annotated binder). Writing `(a Float64)` — the
+        // binder juxtaposed with its type, no leading `:` — reaches `check_binding_pattern` as a
+        // two-element list whose head `a` is not a constructor, previously giving the misleading generic
+        // "a binding pattern head is not a tuple, record, or constructor". It now recognizes the shape
+        // (second child resolves as a type) and names the real repair — add the `:` — with a VERIFIED
+        // fix carrying the exact `(: a Float64)` replacement.
+        let d = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def (f (a Float64)) 0))",
+        )))
+        .into_iter()
+        .find(|d| d.message.contains("typed parameter"))
+        .expect("a colon-less typed param reports the annotated-binder shape");
+        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+        assert!(
+            d.message.contains("`(: <name> <Type>)`")
+                && d.message.contains("leading `:`")
+                && d.message.contains("binder `a`"),
+            "names the missing-colon repair: {}",
+            d.message
+        );
+        let fix = d.fix.as_ref().expect("carries a verified add-`:` fix");
+        assert!(fix.verified, "the colon rewrite is a rule, not a guess");
+        assert_eq!(
+            fix.replacement, "(: a Float64)",
+            "the exact repair spelling"
+        );
+
+        // A COMPOUND type (`(List Int64)`) has no single name atom to splice — the message still fires
+        // (routing the repair) but carries NO fix.
+        let dc = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def (f (xs (List Int64))) 0))",
+        )))
+        .into_iter()
+        .find(|d| d.message.contains("typed parameter"))
+        .expect("a compound-typed colon-less param still names the shape");
+        assert!(
+            dc.fix.is_none(),
+            "no fix when the type is compound (no single spelling): {:?}",
+            dc.fix
+        );
+
+        // NO false positive: a genuine two-BINDER pattern `(a b)` whose second child is NOT a type keeps
+        // the generic shape message (it is a real malformed pattern, not a missing-colon annotation).
+        assert!(
+            crate::diagnostics(&mut crate::db::Db::load(parse(
+                "(module m (def (f (a b)) 0))"
+            )))
+            .iter()
+            .any(|d| d.message.contains("is not a tuple, record, or constructor")),
+            "a non-type second child is not hijacked as a missing-colon annotation"
+        );
+
+        // NO false change: the properly-colon'd `(: a Float64)` param compiles clean.
+        assert!(
+            crate::compile::compile_component(&crate::codec::encode(&parse(
+                "(module m (def (f (: a Float64)) a) (def (main) (f 1.0)) (export main))"
+            )))
+            .is_ok(),
+            "a correctly annotated typed param is valid"
+        );
+    }
+
+    #[test]
     fn a_recursive_dictionary_consumer_inlines_and_erases_the_dictionary() {
         // 09-functions "a recursive consumer of a dictionary record inlines and erases the dictionary":
         // ad-hoc polymorphism as a record of functions passed as an argument. `fold-n` marks its dict
@@ -51318,6 +51508,24 @@ mod stage1 {
     }
 
     #[test]
+    fn a_try_in_a_called_helper_finds_its_boundary_not_a_false_cdz0230() {
+        // REGRESSION: a `?` in a CALLED (inlined, non-exported) helper. `(def (f) (let ((x (try (Some
+        // 7)))) (Some (+ x 3))))` is called by `main` (only `main` exported), so `f` is INLINED. `f`'s
+        // result type IS `Option`, so the `?` is well-formed — but the boundary walk fell off the inlined
+        // COPY's re-parented tree and FALSELY raised CDZ0230. Now the walk is inconclusive on a re-parented
+        // copy (raises nothing); the genuine non-fallible reject still fires from the original body. So this
+        // COMPILES (a value, not a reject).
+        let src = "(module m \
+            (def (f) (let ((x (try (Some 7)))) (Some (+ x 3)))) \
+            (def (main) (f)) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_ok(),
+            "a `?` in a called (inlined) helper whose result type is Option must compile, not \
+             falsely reject CDZ0230"
+        );
+    }
+
+    #[test]
     fn a_result_try_under_an_option_boundary_is_a_type_mismatch() {
         // A `Result`-valued `?` under an `Option` boundary cannot short-circuit — the kinds disagree, and
         // there is no coercion (§5). The body's tail `(Some …)` makes the enclosing function's result
@@ -51360,6 +51568,28 @@ mod stage1 {
         assert!(
             compile_component(&crate::codec::encode(&parse(src))).is_ok(),
             "a constant-`None` `?` short-circuits the boundary to `None`, not declines"
+        );
+    }
+
+    #[test]
+    fn a_trapping_earlier_let_init_is_not_dropped_by_a_try_short_circuit() {
+        // REGRESSION (PR #409): the constant-failure `?` fast-path (BRICK 3a) folds a `let` whose init is a
+        // `Core::Break` to the break value, discarding earlier bindings. It guarded only host-call-freedom,
+        // so a trapping earlier init `(a (/ 1 0))` was folded AWAY when short-circuiting — dropping a
+        // DEFINED trap that is OBSERVED before the `?` (§283/§285, dead-binding-drops-a-defined-trap). The
+        // fast path now also requires earlier inits to be `is_trap_free`. The `÷0` is compile-provable, so
+        // the program is rejected CDZ0304 (a compile-provable trap fails the build) rather than yielding
+        // `None`.
+        let src = "(module m (def (main) (let ((a (/ 1 0)) (x (try (None unit)))) (Some (+ a x)))) \
+                   (export main))";
+        let d = compile_component(&crate::codec::encode(&parse(src))).expect_err(
+            "a trapping earlier init must not be dropped — the ÷0 is CDZ0304, not folded to None",
+        );
+        assert_eq!(
+            d.code.as_deref(),
+            Some("CDZ0304"),
+            "the trapping earlier init is a compile-provable trap (CDZ0304), got: {}",
+            d.message
         );
     }
 
@@ -65753,6 +65983,68 @@ mod cross_component_oracle {
                 "a peer-produced handle passes through to another peer (ownership transfers)"
             ),
             cdz_run::Outcome::Trap(t) => panic!("pass-through run trapped: {t}"),
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // PL15 — a FALLIBLE (Result-returning) peer op crosses + both variants match across the boundary.
+    // The operator's north star is "rich interfaces exposed by other modules"; a `(-> Int64 (Result
+    // Int64 Int64))` op is a rich shape (a user sum) with NO prior cross-component coverage. A `Result`
+    // crosses as its opaque u32 handle (like any compound/sum), and the consumer MATCHES on it — Ok and
+    // Err each reached over the shared runtime. Pins that a peer's fallibility (carried in its own
+    // result type, per ABI v5 — the boundary adds nothing) round-trips: safediv(5)=Ok(20)→20,
+    // safediv(0)=Err(1)→ the Err arm returns -1.
+    // ------------------------------------------------------------------------------------------------
+    #[test]
+    fn a_fallible_result_returning_peer_op_crosses_and_both_variants_match() {
+        use crate::testkit::parse;
+        // PROVIDER: safediv returns (Result Int64 Int64) — Ok(100/x) or Err(1) on zero.
+        let provider = compile_provider(
+            "(do (def (safediv (: x Int64)) (if (= x 0) (Err 1) (Ok (/ 100 x)))) (export safediv))",
+            "cadenza:d/api",
+        );
+        // CONSUMER: binds it, MATCHES the crossed Result — the Ok payload passes through, the Err
+        // payload is negated so the two arms are distinguishable in the scalar result.
+        let src = "(do \
+            (effect D (op safediv (-> Int64 (Result Int64 Int64)))) \
+            (bind D \"cadenza:d/api\") \
+            (def (main (: x Int64)) \
+              (host (D) (match (D.safediv x) ((Ok q) q) ((Err e) (- 0 e))))) \
+            (export main))";
+        let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .unwrap_or_else(|d| {
+                panic!(
+                    "fallible-peer consumer compiles: {} [{:?}]",
+                    d.message, d.code
+                )
+            });
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("[PL15] runtime wasm not found; skipping");
+            return;
+        };
+        let run = |arg: &str| {
+            let peers = vec![cdz_run::Peer {
+                bytes: provider.clone(),
+                interface: "cadenza:d/api".to_string(),
+            }];
+            let opts = cdz_run::RunOpts {
+                export: Some("main".to_string()),
+                args: vec![arg.to_string()],
+                runtime: Some(runtime.clone()),
+                runtime_cache_dir: None,
+                host_responses: Vec::new(),
+            };
+            cdz_run::run_with_peers(&consumer, &peers, &opts)
+        };
+        // Ok path: safediv(5) = Ok(100/5) = Ok(20) → the Ok arm yields 20.
+        match run("5").expect("fallible peer op (Ok path) crosses") {
+            cdz_run::Outcome::Value(s) => assert_eq!(s, "20", "Ok(20) matched → 20"),
+            cdz_run::Outcome::Trap(t) => panic!("fallible-peer Ok run trapped: {t}"),
+        }
+        // Err path: safediv(0) = Err(1) → the Err arm yields -1 (distinct from any Ok result).
+        match run("0").expect("fallible peer op (Err path) crosses") {
+            cdz_run::Outcome::Value(s) => assert_eq!(s, "-1", "Err(1) matched → -1"),
+            cdz_run::Outcome::Trap(t) => panic!("fallible-peer Err run trapped: {t}"),
         }
     }
 

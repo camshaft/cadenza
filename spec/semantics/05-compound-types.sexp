@@ -1613,6 +1613,45 @@
             (export main)))
   (output (: 101 Int64)))
 
+; A capture-free BETA-REDUCTION over a nameless (de Bruijn) term — the evaluator core of a self-hosted
+; λ-calculus front end (the compiler-ml port's beta/normalize passes). A `Tm` is `Ix index` / `Lam body`
+; / `App f x` (nameless: a binder carries no name; a bound variable is its de Bruijn index). `shift` raises
+; free indices under binders; `subst` replaces a free index, shifting the substituted term up under each
+; binder; `contract` reduces `(App (Lam body) arg)` = `shift -1 (subst 0 (shift 1 arg) body)`. This pins
+; the index calculus three recursive functions over a recursive sum implement — the shape that has NO
+; capture problem precisely because the term is nameless. Reducing `(App (Lam (App (Ix 1) (Ix 0))) (Ix 7))`
+; gives `(App (Ix 0) (Ix 7))`: the bound `Ix 1` refers past the reduced binder so it shifts DOWN to `Ix 0`
+; (lhs), and `Ix 0` is replaced by the arg `Ix 7` (rhs). Encodes as lhs*100 + rhs = 0*100 + 7 = 7.
+(case "a capture-free de Bruijn beta-reduction over a nameless term sum reduces correctly"
+  (doc    "`shift`/`subst`/`contract` implement β-reduction over a nameless `Tm` (Ix/Lam/App) — three
+           mutually-shaped recursions over a recursive sum, the self-hosted λ-evaluator's core. Reducing
+           `(App (Lam (App (Ix 1) (Ix 0))) (Ix 7))`: the redex's body is `(App (Ix 1) (Ix 0))`; `Ix 0` is
+           replaced by the arg (shifted to survive crossing, then the binder consumed) → `Ix 7`, and the
+           free `Ix 1` shifts DOWN by one when the binder is dropped → `Ix 0`. Result `(App (Ix 0) (Ix 7))`;
+           read as lhs*100 + rhs = 0*100 + 7 = 7. Pins the de Bruijn index calculus (shift-under-binder,
+           subst, drop-binder) that capture-free substitution — and hence a correct λ-calculus normalizer —
+           depends on.")
+  (input  (do
+            (type Tm (Ix Int64) (Lam Tm) (App Tm Tm))
+            (def (shift (: d Int64) (: c Int64) (: t Tm))
+              (match t
+                ((Ix k) (if (>= k c) (Ix (+ k d)) (Ix k)))
+                ((Lam b) (Lam (shift d (+ c 1) b)))
+                ((App f x) (App (shift d c f) (shift d c x)))))
+            (def (subst (: j Int64) (: s Tm) (: t Tm))
+              (match t
+                ((Ix k) (if (= k j) s (Ix k)))
+                ((Lam b) (Lam (subst (+ j 1) (shift 1 0 s) b)))
+                ((App f x) (App (subst j s f) (subst j s x)))))
+            (def (contract (: body Tm) (: arg Tm)) (shift (- 0 1) 0 (subst 0 (shift 1 0 arg) body)))
+            (def (rhs (: t Tm)) (match t ((App _ x) (match x ((Ix k) k) (_ (- 0 1)))) (_ (- 0 2))))
+            (def (lhs (: t Tm)) (match t ((App f _) (match f ((Ix k) k) (_ (- 0 1)))) (_ (- 0 2))))
+            (def (main)
+              (+ (* 100 (lhs (contract (App (Ix 1) (Ix 0)) (Ix 7))))
+                 (rhs (contract (App (Ix 1) (Ix 0)) (Ix 7)))))
+            (export main)))
+  (output (: 7 Int64)))
+
 (case "a map with a user-sum VALUE looks up and matches the stored variant"
   (doc    "A user sum used as a Map VALUE — `(Map.insert Map.empty 1 (C.R))` stores the variant `C.R` at key
            1, `Map.lookup 1` returns `(Option.Some (C.R))`, and the nested match deconstructs the stored
@@ -8927,3 +8966,78 @@
             (export main)))
   (call   main (: 7 Int64))
   (output (: 22 Int64)))
+
+; --- Guard-reads-payload-binder: the scope-composition faces ---------------------------------------
+; d6483cee2 folds a user guard cond into the innermost discriminant arm so a ctor list element's
+; payload binders are LIVE in the cond (was a false CDZ0101). Its pin covers one binder at the head;
+; these pin the scope compositions, promoted from passing breaker probes.
+
+(case "a guard reads payload binders from two ctor list elements"
+  (doc    "`(guard (list (Op.Add a) (Op.Mul b) .. r) (> a b))` — the cond reads binders from TWO
+           refutable elements, so the fold must land where BOTH are live (the innermost of the two
+           discriminant tests). [Add 5, Mul 2] passes → 7; [Add 1, Mul 9] fails → -1 → 6. A cond
+           folded after only the first element's test leaves `b` unbound.")
+  (input  (do
+            (type Op (Add Int64) (Mul Int64) (Neg Unit))
+            (def (f (: xs (List Op)))
+              (match xs
+                ((guard (list (Op.Add a) (Op.Mul b) .. r) (> a b)) (+ a b))
+                (_ -1)))
+            (def (main (: v Int64))
+              (+ (f (List.push (List.push (list) (Op.Add 5)) (Op.Mul 2)))
+                 (f (List.push (List.push (list) (Op.Add 1)) (Op.Mul v)))))
+            (export main)))
+  (call   main (: 9 Int64))
+  (output (: 6 Int64)))
+
+(case "a guard reads the payload binder and an enclosing parameter together"
+  (doc    "The cond `(> n k)` mixes the element's payload binder with an ENCLOSING param — the folded
+           cond must see both scopes (the relocated cond's environment is the arm's, chained to the
+           function's). Passing (5 > 3 → 5) and failing (2 > 3 → -1) both verified → 4.")
+  (input  (do
+            (type Op (Add Int64) (Mul Int64) (Neg Unit))
+            (def (f (: xs (List Op)) (: k Int64))
+              (match xs
+                ((guard (list (Op.Add n) .. r) (> n k)) n)
+                (_ -1)))
+            (def (main (: v Int64))
+              (+ (f (List.push (list) (Op.Add 5)) 3) (f (List.push (list) (Op.Add v)) 3)))
+            (export main)))
+  (call   main (: 2 Int64))
+  (output (: 4 Int64)))
+
+(case "a failing payload-binder guard falls to a later arm re-binding the payload"
+  (doc    "Arm one guards `(> n 9)` (→ 100+n), arm two re-binds the SAME ctor payload unguarded
+           (→ n): [Add 15] passes the guard → 115... verified as 120 total with [Add 5] falling to
+           arm two → 5. Pins the fall-through re-desugar: BOTH arms independently desugar their
+           refutable element, and the first arm's folded cond failing must reach the second arm's
+           discriminant test, not the trap the original bug left behind.")
+  (input  (do
+            (type Op (Add Int64) (Mul Int64) (Neg Unit))
+            (def (f (: xs (List Op)))
+              (match xs
+                ((guard (list (Op.Add n) .. r) (> n 9)) (+ 100 n))
+                ((list (Op.Add n) .. r) n)
+                (_ -1)))
+            (def (main (: v Int64))
+              (+ (f (List.push (list) (Op.Add 15))) (f (List.push (list) (Op.Add v)))))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 120 Int64)))
+
+(case "a guard combines the payload binder with the rest binder"
+  (doc    "`(guard (list (Op.Add n) .. r) (> n (List.len r)))` — the cond reads the payload binder
+           AND the rest binder `r` (the list's tail, len 0 here): [Add 2] → 2 > 0 → 2; [Add 0] →
+           fails → -1 → 1. Pins that the relocated cond sees every binder the arm pattern introduces,
+           including the rest.")
+  (input  (do
+            (type Op (Add Int64) (Mul Int64) (Neg Unit))
+            (def (f (: xs (List Op)))
+              (match xs
+                ((guard (list (Op.Add n) .. r) (> n (List.len r))) n)
+                (_ -1)))
+            (def (main (: v Int64))
+              (+ (f (List.push (list) (Op.Add 2))) (f (List.push (list) (Op.Add v)))))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 1 Int64)))

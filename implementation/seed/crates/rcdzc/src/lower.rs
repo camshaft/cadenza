@@ -3155,11 +3155,19 @@ fn lower_let(
         if matches!(resolved_of(db, init), Resolved::Try { .. })
             && let Core::Break { value } = core_of(db, init)
         {
-            // Every earlier init must be pure (its discarded value carries no lost effect). A perform/host
-            // call / trap in an earlier init is an effect the break would drop — leave it to a later brick.
+            // Every earlier init must be DISCARDABLE — its value is dropped when the break fires, so it may
+            // carry NO observable effect. Two observability channels, both of which the break would elide:
+            //   * a HOST CALL / perform (`subtree_reaches_host_call`) — an ordered observable effect, and
+            //   * a TRAP (`(trap …)`, checked overflow, ÷0 — NOT trap-free) — a strict earlier init on the
+            //     unconditional spine is OBSERVED before the `?`, so its trap MUST fire (§283/§285,
+            //     `dead-binding-drops-a-defined-trap` / `trap-kind-is-observable`); folding it away drops a
+            //     defined trap (the exact PR #409 miscompile: `(let ((a (/ 1 0))) (let ((x (try None))) …))`
+            //     wrongly yielded `None` instead of trapping). So the fast path requires earlier inits to be
+            //     BOTH host-call-free AND trap-free; otherwise the break is left to a later brick (the
+            //     runtime `Core::Block`/`Break` emit sequences the earlier init's effect before the break).
             if bindings[..i]
                 .iter()
-                .all(|&(_, prev)| !subtree_reaches_host_call(db, prev))
+                .all(|&(_, prev)| !subtree_reaches_host_call(db, prev) && is_trap_free(db, prev))
             {
                 return core_of(db, value);
             }
@@ -6818,6 +6826,49 @@ fn classify_binding_ctor(
             )
             .at(pat));
         }
+        // A TYPED PARAMETER MISSING ITS COLON — `(a Float64)` written where `(: a Float64)` was meant.
+        // The author reached for the annotated-binder form (§Annotations Constrain) but juxtaposed the
+        // binder and its type instead of heading them with `:`, so it reaches here as a two-element list
+        // whose head `a` is not a constructor → the generic "not a tuple/record/constructor" message is
+        // misleading (and, if the body uses `a`, spawns a consequent "unbound name `a`"). Recognize the
+        // shape — a two-element list `(<name> <Type>)` whose SECOND child resolves as a type
+        // (`typeval_of`) and whose FIRST is a plain binder name — and name the real repair. The rewrite
+        // `(<name> <Type>)` → `(: <name> <Type>)` is a deterministic rule (not a guess), so when both
+        // parts are simple name atoms the fix is VERIFIED and carries the exact replacement spelling.
+        let two_children = match db.ast.get(pat) {
+            crate::ast::Struct::List(items) => match items.as_slice() {
+                [first, second] => Some((*first, *second)),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some((first, second)) = two_children
+            && db.ast.as_name(first).is_some_and(|n| n != "_")
+            && crate::eval::variant_owner_decl(db, first).is_none()
+            && crate::eval::typeval_of(db, second).is_some()
+        {
+            let name = db.ast.as_name(first).unwrap().to_string();
+            let base = Reject::coded(
+                Code::Malformed,
+                format!(
+                    "a typed parameter is written `(: <name> <Type>)`, with a leading `:` — the binder \
+                     `{name}` is juxtaposed with its type, so it reads as a constructor pattern, not an \
+                     annotated binder; add the `:` to annotate it"
+                ),
+            )
+            .at(pat);
+            // A compound type (`(List Int64)`) has no single name atom to splice, so carry the fix only
+            // when the type is a bare name — the common `(a Float64)` case — where the replacement is a
+            // literal `(: <name> <Type>)`; otherwise the message alone routes the repair.
+            return Err(match db.ast.as_name(second) {
+                Some(ty_name) => base.with_fix(Fix::replace_verified(
+                    pat,
+                    format!("(: {name} {ty_name})"),
+                    "add the leading `:`",
+                )),
+                None => base,
+            });
+        }
         // Not a constructor — a shape error (a head that is neither tuple/record/list nor a ctor). But a
         // BARE NAME head that is a plausible TYPO of a variant of the matched (element) SUM type — e.g.
         // `(list (Ad) .. r)` on `(List Op)` for `(type Op (Add) …)` — read as "not a constructor" here
@@ -7723,6 +7774,8 @@ fn non_exhaustive_sum_reject(
     // cannot enumerate (`type-system.md §206`). When every named variant IS covered but the match lacks a
     // `_` arm, name the open-tail requirement + carry the "add a `_` arm" fix (the open-sum analogue of
     // the missing-variant fix below). The `_` body is a diverging `(trap "TODO")` placeholder.
+    //= spec/capabilities/type-system.md#a-sum-type-may-be-open-with-a-mandatory-open-tail-arm
+    //# A match on an open sum MUST carry an open-tail arm covering the variants not named, and a match that omits it MUST be a compile-time rejection, so that exhaustiveness holds for an open sum exactly as it does for a closed one and an unknown variant is handled rather than unmatched.
     let is_open = t.open_tail.is_some();
     let missing_named = t
         .variants
@@ -8353,18 +8406,48 @@ fn build_lit_test(
     //    ordinary way — the matched row APPENDED with `else_rows` — and `els` is the refined tree. No
     //    sharing (a finite refining probe has only 2 / a few branches — no exponential fan-out to dedup).
     let (then_, els) = match probe {
-        crate::core::Probe::Bool(_) | crate::core::Probe::ListLen { .. } => {
-            // Refining: matched arm sees the real tail; els is refined. (No sharing — finite fan-out.)
+        crate::core::Probe::ListLen { len, at_least } => {
+            // A ListLen probe REFINES its else (the failed-length world), so `els` differs from the matched
+            // arm's fall-through — but BOTH the matched arm's fall-through (the PASSED-length world) and the
+            // `els` (the failed-length world) are FIXED matrices, compilable ONCE and shared. Without sharing,
+            // a match refining a LIST payload by literal elements (`(Some (list 0 0))`) re-compiles the whole
+            // remaining matrix at each element-test → O(2^arms) (fire #28). Compile the PASSED-world tail once
+            // (`refine_listlen_to_passed` — arms inconsistent with the passed length dropped) + thread it as
+            // the matched arm's `fallthrough` (S1's mechanism, refined tail), and compile the FAILED-world
+            // `els` once. Exhaustiveness is preserved: the passed-world refinement never drops a reachable
+            // arm (a dropped row is provably unmatchable at the passed length), and the matched arm still
+            // bottoms out on the shared passed tail exactly as `[matched] ++ else_rows` would.
+            let passed = refine_listlen_to_passed(else_rows, &lit_path, len, at_least);
+            // Only compile+share the passed-world tail when it is NON-EMPTY. An empty `passed` (every else
+            // arm is length-inconsistent with the passed length, so dropped) has NO fall-through — building
+            // `build_tree(&[])` would raise a spurious CDZ0210 (empty matrix) that must not propagate, since
+            // the matched arm alone covers the passed world (it is an unconditional leaf after its length
+            // test). Thread the OUTER `fallthrough` unchanged there (identical to the pre-S3 append when the
+            // tail contributes nothing).
+            let then_ = if passed.is_empty() {
+                build_tree_ft(db, scrutinee, matched_rows, path_types, fallthrough)?
+            } else {
+                let passed_tail = std::rc::Rc::new(build_tree_ft(
+                    db,
+                    scrutinee,
+                    &passed,
+                    path_types,
+                    fallthrough,
+                )?);
+                build_tree_ft(db, scrutinee, matched_rows, path_types, Some(&passed_tail))?
+            };
+            let refined = refine_listlen_else_rows(else_rows, &lit_path, len, at_least);
+            let els = build_tree_ft(db, scrutinee, &refined, path_types, fallthrough)?;
+            (std::rc::Rc::new(then_), std::rc::Rc::new(els))
+        }
+        crate::core::Probe::Bool(b) => {
+            // Refining: matched arm sees the real tail; els is refined. (No sharing — a Bool test has only
+            // 2 values, so its fan-out is capped and the exponential is small; the passed-world share is
+            // deferred, unlike the unbounded-length ListLen case above.)
             let mut matched = matched_rows.to_vec();
             matched.extend_from_slice(else_rows);
             let then_ = build_tree_ft(db, scrutinee, &matched, path_types, fallthrough)?;
-            let refined = match probe {
-                crate::core::Probe::Bool(b) => refine_bool_else_rows(db, else_rows, &lit_path, b),
-                crate::core::Probe::ListLen { len, at_least } => {
-                    refine_listlen_else_rows(else_rows, &lit_path, len, at_least)
-                }
-                _ => unreachable!("outer match restricts to Bool/ListLen"),
-            };
+            let refined = refine_bool_else_rows(db, else_rows, &lit_path, b);
             let els = build_tree_ft(db, scrutinee, &refined, path_types, fallthrough)?;
             (std::rc::Rc::new(then_), std::rc::Rc::new(els))
         }
@@ -8487,6 +8570,95 @@ fn refine_listlen_else_rows(
             {
                 // The residual guarantees this length test holds → drop it (row unconditional at this path).
                 continue;
+            }
+            kept.push((p.clone(), probe.clone()));
+        }
+        out.push(MatchRow {
+            constraints: row.constraints.clone(),
+            lit_tests: kept,
+            body: row.body,
+            guard: row.guard,
+        });
+    }
+    out
+}
+
+/// Refine `else_rows` for the SUCCEEDING (`then_`) branch of a `ListLen{tested_len, tested_at_least}` test
+/// at `lit_path` — the sub-value there is now known to satisfy the tested length. This is the DUAL of
+/// [`refine_listlen_else_rows`] (which refines the FAILED else): a row whose own `ListLen` test at `lit_path`
+/// is INCONSISTENT with the passed length can never match in this world and is DROPPED entirely; a row whose
+/// test is GUARANTEED by the passed length has that test satisfied → drop the test (leaving the row's deeper
+/// tests). It exists to KILL an O(2^arms) blow-up (fire #28): a match arm refining a LIST payload by literal
+/// elements (`(Some (list 0 0))`) lowers via [`build_lit_test`] to a `ListLen` probe then per-element
+/// `LitTest`s; the ListLen `then_` (this world) is the matched arm's further element-tests, whose fall-through
+/// on a mismatch is exactly these remaining SAME-LENGTH arms — so compiling this refined tail ONCE and
+/// threading it as the arm's `fallthrough` (S1's mechanism, refined tail) makes the element-test chain reuse
+/// it instead of re-compiling the whole `else_rows` matrix per element = O(arms).
+///
+/// The PASSED SET after `ListLen{tlen, t_at_least}` succeeds: `{ len : t_at_least ? len ≥ tlen : len == tlen }`.
+/// A row test `{rlen, r_at_least}` MATCHES `{ len : r_at_least ? len ≥ rlen : len == rlen }`. For each row test
+/// at `lit_path` we decide, over the PASSED set: DROP the whole row (unreachable here) iff the passed set
+/// and the row's matched set are DISJOINT; DROP the test (guaranteed here) iff the passed set is a SUBSET of
+/// the row's matched set; else KEEP the test verbatim (it still discriminates within the passed set).
+///
+/// Conservative on the exact/at-least interval logic — a wrong verdict is only ever "keep the test" (never a
+/// spurious drop/reachability change), so exhaustiveness is preserved (the emitted tree is behavior-identical
+/// to the un-refined `[matched] ++ else_rows`, just without the exponential re-compile).
+fn refine_listlen_to_passed(
+    else_rows: &[MatchRow],
+    lit_path: &[crate::core::PathStep],
+    tested_len: usize,
+    tested_at_least: bool,
+) -> Vec<MatchRow> {
+    // The passed set is `P = { n : tested_at_least ? n ≥ tested_len : n == tested_len }`. Classify a row's
+    // own `ListLen{rlen, r_at_least}` test (matched set `R`) against `P`.
+    #[derive(PartialEq)]
+    enum Verdict {
+        DropRow,  // P ∩ R = ∅ → this row can't match in the passed world
+        DropTest, // P ⊆ R → the row's test is guaranteed; drop it (keep the row's deeper tests)
+        KeepTest, // otherwise → the test still discriminates; keep it verbatim
+    }
+    let classify = |rlen: usize, r_at_least: bool| -> Verdict {
+        // Membership of a point `n` in R.
+        let in_r = |n: usize| if r_at_least { n >= rlen } else { n == rlen };
+        if tested_at_least {
+            // P = { n ≥ tested_len } (infinite). P ⊆ R iff R also contains all n ≥ tested_len: an exact R
+            // ({rlen} — one point) can't → not ⊆; a rest R {≥ rlen} ⊆ holds iff rlen ≤ tested_len.
+            // P ∩ R = ∅ iff no n ≥ tested_len is in R: an exact R disjoint iff rlen < tested_len; a rest R
+            // {≥ rlen} always overlaps P (both are up-rays) → never disjoint.
+            if r_at_least {
+                if rlen <= tested_len {
+                    Verdict::DropTest
+                } else {
+                    Verdict::KeepTest // rlen > tested_len: R ⊊ P, the test still discriminates
+                }
+            } else if rlen < tested_len {
+                Verdict::DropRow // exact rlen below the passed floor — unreachable
+            } else {
+                Verdict::KeepTest // exact rlen ≥ tested_len: a single point inside P, still discriminates
+            }
+        } else {
+            // P = { tested_len } (one point). Membership decides everything.
+            if in_r(tested_len) {
+                Verdict::DropTest // the sole passed length satisfies R → test guaranteed
+            } else {
+                Verdict::DropRow // the sole passed length fails R → row unreachable here
+            }
+        }
+    };
+    let mut out = Vec::with_capacity(else_rows.len());
+    'rows: for row in else_rows {
+        let mut kept: Vec<(std::rc::Rc<[crate::core::PathStep]>, crate::core::Probe)> =
+            Vec::with_capacity(row.lit_tests.len());
+        for (p, probe) in &row.lit_tests {
+            if p.as_ref() == lit_path
+                && let crate::core::Probe::ListLen { len, at_least } = probe
+            {
+                match classify(*len, *at_least) {
+                    Verdict::DropRow => continue 'rows, // row can't match in the passed world
+                    Verdict::DropTest => continue, // test guaranteed → drop it, keep deeper tests
+                    Verdict::KeepTest => {}        // fall through to push it verbatim
+                }
             }
             kept.push((p.clone(), probe.clone()));
         }
@@ -12133,6 +12305,58 @@ fn lower_quantity_combine(
         return Core::Poison(Reject::decline(
             "runtime mixed-unit Rational combine (not yet emitted)",
         ));
+    }
+    // BIGINT inner: convert each operand to the reference by `value * num / den` in UNBOUNDED bigint
+    // arithmetic (the heap-handle magnitudes can't take the i128 fold below — that path is for fixnum
+    // Int). A constant pair folds exactly over `IntValue` bignum (mul + truncating divmod); a runtime one
+    // synthesizes `value * (BigInt.of num) / (BigInt.of den)` per operand (`convert_operand_ast_bigint`)
+    // so the conversion `*`/`/` route to the runtime bigint ops, then the combine op runs on the two
+    // converted BigInt values. This is the mixed-scale analogue of the BigInt Unit.in arm.
+    let inner_is_bigint = matches!(
+        crate::infer::type_of(db, lhs),
+        crate::ty::Ty::Qty { inner, .. } if matches!(*inner, crate::ty::Ty::BigInt)
+    );
+    if inner_is_bigint {
+        // Convert `v * n / d` over IntValue bignum (exact mul, truncating divmod). `None` if a value is
+        // not a constant BigInt (→ runtime path below).
+        let conv_const = |v: &IntValue, n: i128, d: i128| -> Option<IntValue> {
+            let scaled = v.mul(&IntValue::from_i128(n));
+            scaled.divmod(&IntValue::from_i128(d)).map(|(q, _)| q)
+        };
+        if let (Core::ConstInt(lv), Core::ConstInt(rv)) = (&lc, &rc)
+            && let (Some(l), Some(r)) = (conv_const(lv, ln, ld), conv_const(rv, rn, rd))
+        {
+            // Both converted to reference-unit BigInts — fold the op (arith → a BigInt ConstInt;
+            // comparison → a ConstBool via the exact bignum compare).
+            return match op {
+                Prim::Add => Core::ConstInt(l.add(&r)),
+                Prim::Sub => Core::ConstInt(l.sub(&r)),
+                Prim::Lt | Prim::Gt | Prim::Le | Prim::Ge | Prim::Eq => {
+                    Core::ConstBool(compare_ord(op, l.cmp(&r)))
+                }
+                _ => Core::Poison(Reject::decline("mixed-unit bigint: unsupported operator")),
+            };
+        }
+        // RUNTIME — synthesize `(op (value_l * (BigInt.of ln) / (BigInt.of ld)) (value_r * …))` and lower.
+        let lconv = match convert_operand_ast_bigint(db, lhs, ln, ld) {
+            Some(n) => n,
+            None => {
+                return Core::Poison(Reject::decline(
+                    "runtime mixed-unit BigInt combine over a non-Qty.of operand (not yet emitted)",
+                ));
+            }
+        };
+        let rconv = match convert_operand_ast_bigint(db, rhs, rn, rd) {
+            Some(n) => n,
+            None => {
+                return Core::Poison(Reject::decline(
+                    "runtime mixed-unit BigInt combine over a non-Qty.of operand (not yet emitted)",
+                ));
+            }
+        };
+        let head = db.push_name(combine_op_name(op));
+        let app = db.push_list(vec![head, lconv, rconv]);
+        return core_of(db, app);
     }
     // INT (and other exact inner): convert each by `v * num / den` over i128 (exact; truncates on a
     // non-whole ratio, per opting into integer math).

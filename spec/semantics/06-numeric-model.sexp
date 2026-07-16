@@ -276,6 +276,24 @@
   (input  (: 100000000000000000000 Int64))
   (error  CDZ0302))
 
+; The width fit-check must ALSO reach a literal NESTED in a COMPOUND payload. `(: (Some 999) (Option Int8))`
+; propagates the annotation's `Int8` into the `Some` payload, so `999` is grounded at `Int8` — and 999
+; OVERFLOWS Int8 (max 127), a CDZ0302 exactly as the bare `(: 999 Int8)` is. The literal's OWN type stays a
+; deferred `Int64` (only the enclosing value's type carries the `Int8`), so the top-level fit-check does not
+; see it; the check descends the annotation's expected type against the value's payload to range-check the
+; nested literal. Pins that the range check is not fooled by a compound wrapper — the same "check descends
+; into the compound payload" the type-agreement check already does, now for the width fit-check (it closes a
+; check-vs-emit gap: the emit path already rejected this, `cdz check` used to accept it).
+(case "a literal nested in a compound payload that overflows the annotated width is rejected"
+  (doc    "`(: (Some 999) (Option Int8))` — the annotation's `Int8` grounds the `Some` payload literal
+           `999`, which overflows Int8 (valid range -128..=127) → CDZ0302, exactly as the bare `(: 999
+           Int8)`. The nested literal's own type is a deferred Int64, so the width fit-check must DESCEND the
+           annotation into the payload to catch it (the range-check analogue of the annotation-descends-into-
+           compound-payload type check). Pins that a compound wrapper does not hide an out-of-range payload
+           literal from the width check.")
+  (input  (: (Some 999) (Option Int8)))
+  (error  CDZ0302))
+
 (case "an R-suffixed literal composes with exact rational arithmetic"
   (doc    "`(+ 0.5R (Rational.of 1 3))` = 1/2 + 1/3 = 5/6 exactly — the suffixed literal flows into the
            exact `+` just like the explicit constructor, so both spellings denote one kind of value.")

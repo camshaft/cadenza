@@ -40,6 +40,35 @@ use crate::db::Db;
 use crate::diag::Reject;
 use crate::layout::Layout;
 
+/// If `ty` is an integer type whose FIXED width is ILL-FORMED (outside the admitted `1..=64`), return the
+/// CDZ0302 reject that names the fault — else `None`. An out-of-range width (the sentinel `Int0` a
+/// `reduce_ctor` clamp leaves after a malformed/negative/over-ceiling width like `(Int -8)` / `(UInt 65)`)
+/// is an ILL-FORMED TYPE: no value of it can exist, so a boundary of that type is a REJECT, not a target
+/// limitation. This mirrors the wasm backend, which reaches CDZ0302 by fit-checking the ground literal
+/// against the empty width-0 range (`select.rs`); the Rust backend's type-mapping decline would otherwise
+/// fire FIRST and mask the diagnostic (a codeless "no native Rust representation" → the gate reads it as an
+/// unimplemented-construct `todo` instead of the typed rejection `pass` the wasm target gives). MUST be
+/// distinguished from a VALID-but-non-aliased width (`UInt7`, `UInt24` — in `1..=64`): that is a genuine
+/// backend limitation with no native Rust primitive, which stays a codeless decline (todo, correct).
+fn ill_formed_int_width_reject(ty: &crate::ty::Ty) -> Option<Reject> {
+    use crate::ty::{Ty, Width};
+    let Ty::Int(it) = ty else { return None };
+    let Width::Fixed(w) = it.width else {
+        return None;
+    };
+    if (1..=64).contains(&w) {
+        return None;
+    }
+    Some(Reject::coded(
+        crate::diag::Code::IntOutOfRange,
+        format!(
+            "`{}{w}` is not a valid integer type: a width must be in 1..=64 (a fixed-size integer wider \
+             than 64 bits is reserved to the big-integer layer, and 0 is not a width)",
+            if it.ground_signed() { "Int" } else { "UInt" }
+        ),
+    ))
+}
+
 /// Which calling convention the Rust backend emits.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Mode {
@@ -196,6 +225,11 @@ fn emit_signature(
                 ty.render_name()
             )));
         }
+        // An ILL-FORMED integer width in a parameter type is a REJECT (CDZ0302), not a target decline —
+        // catch it before the codeless "no native rep" decline so the diagnostic matches the wasm target.
+        if let Some(reject) = ill_formed_int_width_reject(ty) {
+            return Err(reject);
+        }
         let rty = types::rust_type(ty).ok_or_else(|| {
             Reject::decline(format!(
                 "`{name}`: parameter type {} has no native Rust representation",
@@ -223,6 +257,13 @@ fn emit_signature(
     // has no defined value to return.
     let diverges = types::rust_type(result).is_none()
         && matches!(crate::lower::core_of(db, body), crate::core::Core::Trap);
+    // An ILL-FORMED integer width in the RESULT type is a REJECT (CDZ0302), not a decline — the twin of
+    // the parameter check above, matching the wasm target (`(: 5 (Int -8))` → CDZ0302, not a codeless
+    // decline). NOT for a DIVERGING body: it produces no value, so a `!` return is legitimate regardless of
+    // the nominal result width (the `diverges` guard below wins). Checked before the type-mapping decline.
+    if !diverges && let Some(reject) = ill_formed_int_width_reject(result) {
+        return Err(reject);
+    }
     let ret = if diverges {
         "!".to_string()
     } else {

@@ -3370,6 +3370,23 @@ mod tests {
             assert_roundtrip("type C = | A | B(Int64)", 80),
             "type C =\n  | A\n  | B(Int64)"
         );
+        // A ZERO-named-variant open sum (`type Opaque = .. r`) — the body is ONLY a row tail, no
+        // variants. The parser must not require a leading variant (it skips the variant loop at a `..`
+        // head), and the printer emits `.. r` on its own line. Round-trips through both ML and s-expr.
+        // (Regression: `type_expr`'s variant loop used to call `variant()` unconditionally, so it hit
+        // `..` expecting a name and failed to re-parse the printed form — a trunk-red round-trip gap.)
+        assert_eq!(
+            sexpr::print(&parser::read_ml("type Opaque =\n  .. r").arenas),
+            "(type Opaque .. r)"
+        );
+        assert_eq!(
+            assert_roundtrip("type Opaque = .. r", 80),
+            "type Opaque =\n  .. r"
+        );
+        assert_eq!(
+            print(&sexpr::read("(type Opaque .. r)").unwrap(), 80),
+            "type Opaque =\n  .. r"
+        );
     }
 
     #[test]

@@ -20,3 +20,5 @@
   (def (wrap (: sub Ast)) (quasiquote (+ (unquote sub) 1)))
   (def (main) (match (wrap (Ast.Int 9)) ((Ast.List es) (List.len es)) (_ -1)))
   (export main))
+
+;; RESOLVED 2026-07-16 (trunk@523b09acf, v-metaprogramming): unquote of a computed Ast value now splices — runtime active-unquote ast-lift intrinsic. (quasiquote (+ (unquote sub) 1)) with sub:Ast → gate PASS (value 3). Corpus-pinned in 12-metaprogramming.sexp.

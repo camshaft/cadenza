@@ -51,9 +51,12 @@ function blockedBy(ex) {
 
 // ---- the compiler (browser wasm) + runner (jco), loaded once ----
 const pkgDir = join(guideRoot, "src/wasm/pkg");
-const { default: init, compile, render_value, render_syntax } = await import(join(pkgDir, "cdz_wasm.js"));
+const { default: init, compile, render_value, render_syntax, export_types } = await import(join(pkgDir, "cdz_wasm.js"));
 await init({ module_or_path: readFileSync(join(pkgDir, "cdz_wasm_bg.wasm")) });
 const { transpileBytes } = await import("@bytecodealliance/jco-transpile");
+// Mirror the app run path's scalar formatting (a whole-number Float gets its `.0` back from the static
+// result type) so the harness validates the SAME rendered text the browser shows.
+const { formatScalarByType, resultTypeOf } = await import(join(guideRoot, "src/runner/scalarFormat.ts"));
 
 // ---- wrapModule / stripModule: the ONE real implementation, imported from the guide source ----
 // Previously this harness carried a hand-copy of these — which silently DRIFTED from the app (a bug-(C)
@@ -124,7 +127,10 @@ async function getHeap() {
 }
 
 // ---- run a compiled component through jco, return its rendered value text ----
-async function runComponent(componentBytes) {
+// `program`/`surface` (optional) let the SCALAR path recover a whole-number Float's `.0` from the static
+// export type — the same fix the app run path applies (see runner/scalarFormat.ts). Omitting them (the
+// expect="error" probe) just skips that formatting.
+async function runComponent(componentBytes, program, surface) {
   const prog = await loadComponent(componentBytes, "prog");
   const heap = await getHeap();
   const imports = heap ? { [HEAP_IMPORT]: heap } : {};
@@ -135,7 +141,11 @@ async function runComponent(componentBytes) {
     return render_value(iface.encode(iface.make())); // canonical value text, e.g. "(: (tuple 1 2) …)"
   }
   const fn = Object.values(root).find((v) => typeof v === "function");
-  return fn ? String(fn()) : null;
+  if (!fn) return null;
+  const value = String(fn());
+  if (program == null) return value;
+  const resultType = resultTypeOf(export_types(program, surface));
+  return formatScalarByType(value, resultType);
 }
 
 // ---- extract `source=`/`solution=`/`expected=`/`expect=` from a chapter's TSX ----
@@ -231,7 +241,7 @@ async function checkProgram(program, surface, ex, where) {
       return `${ex.file} [Exercise] (${where}): \`expected\` is a COMPOUND value (${JSON.stringify(ex.expected.slice(0, 40))}…) — graded exercises must return a SCALAR (it's compared in the reader's surface, and a compound renders differently in ML vs s-expr). Show the compound as a Runnable instead.\n    ${brief}`;
     let got;
     try {
-      got = await runComponent(r.component);
+      got = await runComponent(r.component, program, surface);
     } catch (e) {
       // A run failure is the trust-breaker: a compiled example that crashes/traps/stack-overflows.
       const label = ex.expected != null ? "solution" : ex.kind;

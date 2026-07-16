@@ -62,7 +62,8 @@ freely IMPORT non-colliding names from a sibling.
 
 Source modules live under `src/`; `Project.cdz`, `README.md`, and `TESTING.md` sit at the top. (Language
 issues this port finds are filed in the shared queue — see "Language issues found" below — not a private
-`repros/` dir.) Current `src/` modules (each with same-file `@test`s — 393 tests total across 40 modules):
+`repros/` dir.) Every `src/` module carries same-file `@test`s (run the whole suite with `cdz test .`).
+Current `src/` modules:
 
 - `src/ast.cdz` — the AST datatype + pure traversals (`node-count`, `head-name`; the `ast.rs`
   analogue). One recursive sum; a node contains its children (no arena — the language has real
@@ -304,6 +305,23 @@ issues this port finds are filed in the shared queue — see "Language issues fo
   gaps (`mlrepro-decline-generic-iterator-composed-transformers.cdz` (queue),
   `mlrepro-reject-user-generic-type-var-in-annotation.cdz` (queue)); the any-element-type version is the real
   goal, gated on those.
+
+The λ-calculus front-end family — resolve/scope through evaluation, over the canonical `Ast`, each
+threading its state through the idiomatic mutual `_ / _-list` recursion the still-live-binding backend
+fixes unblocked:
+- `src/alpha.cdz` — ALPHA-EQUIVALENCE: two terms equal up to consistent renaming of BOUND variables
+  (threads a renaming `Map String String` through the mutual walk). Distinct from `ast-eq` (structural)
+  and `scopecheck` (free-var counting) — `(fn (x) x) ~ (fn (y) y)`, K vs KI distinguished, free vars rigid.
+- `src/debruijn.cdz` — NAMELESS (de Bruijn) conversion: each bound var → its de Bruijn index (binders
+  between use and binder), each `(fn (x) …)` loses its param name. Makes α-equivalence syntactic
+  (α-equal terms convert to identical nameless terms). Threads a `Map String Int64` name→binding-depth.
+- `src/beta.cdz` — capture-free BETA-REDUCTION over nameless terms: the `shift`/`subst`/`beta1` index
+  calculus reduces `(app (fn () body) arg)` with no capture (the payoff of the nameless form).
+- `src/normalize.cdz` — normal-order BETA-NORMALIZATION: drives `beta1` to β-normal form (leftmost-
+  outermost redex + a congruence walk under binders/args), fuel-bounded for totality.
+- `src/symtab.cdz` — a SYMBOL TABLE with DETERMINISTIC enumeration via the `Map.to-list`/`Set.to-list`
+  ops (canonical-order iteration): ordered names, value sum, indexed lookup, a canonical name Set — the
+  shape a back end takes to emit declarations / a symbol dump in a reproducible order.
 
 A `resolve` pass (lexical scope-check accumulating unbound-variable diagnostics — a `Set String` scope
 threaded down, a `List String` of faults threaded through, `Let` binding + shadowing) is written and

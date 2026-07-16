@@ -1,6 +1,10 @@
 //! cdz-cad — the native mesh driver for Cadenza CAD (GH #400, increment G2).
 //!
-//! # This sub-slice: the `Solid` s-expression parser + CSG tree (pure Rust, no geometry dep yet)
+//! # What this crate does
+//!
+//! Two halves: (1) THIS module parses a Cadenza program's rendered `Solid` value (canonical s-expr text)
+//! into a [`Solid`] CSG tree; (2) [`mesh`] walks that tree into a manifold mesh (`manifold-csg`). A CLI
+//! sub-slice (`cdz cad`) wires "run the program → parse → mesh → write 3MF/glTF/STL" together.
 //!
 //! A Cadenza program built on `implementation/cad`'s `Solid` library describes a solid as a recursive
 //! `Solid` value. When such a program's single export crosses the component boundary, cdz-run renders the
@@ -27,6 +31,11 @@
 //! a fully-annotated form (belt-and-suspenders — it never depends on WHICH positions are annotated).
 
 use std::fmt;
+
+pub mod mesh;
+pub use mesh::{
+    mesh, mesh_with_segments, to_manifold, to_manifold_with_segments, Mesh, DEFAULT_SEGMENTS,
+};
 
 /// A 3-D vector / point — the parsed form of the library's `Vec3` (a `(tuple x y z)`), all `f64`.
 #[derive(Clone, Copy, PartialEq, Debug)]

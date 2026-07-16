@@ -908,6 +908,33 @@
   (call   main (: 1 Int64))
   (output (: 1500 Int64)))
 
+(case "a runtime MIXED-SCALE BigInt-magnitude sum converts to the reference in unbounded arithmetic"
+  (doc    "`(+ (Qty.of (BigInt.of v) kilometer) (Qty.of (BigInt.of 500) meter))` — a MIXED-SCALE combine
+           (km + m) over a BigInt inner: each operand converts to the reference `meter` by its exact scale
+           in UNBOUNDED bigint arithmetic (v km → v*1000 m), then adds. v=2 → 2000 + 500 = 2500. Pins the
+           BigInt arm of `lower_quantity_combine` — a mixed-scale BigInt combine previously declined
+           ('ownership cannot prove'), routing to the fixnum runtime path with bare-int scale factors; now
+           it synthesizes `value * (BigInt.of scale)` so the conversion runs the runtime bigint ops.")
+  (input  (do
+            (def (main (: v Int64))
+              (Qty.value (+ (Qty.of (BigInt.of v) (Unit.prefix kilo (Unit.base #"meter")))
+                            (Qty.of (BigInt.of 500) (Unit.base #"meter")))))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 2500 BigInt)))
+
+(case "a runtime MIXED-SCALE BigInt comparison converts to the reference before comparing"
+  (doc    "`(< (Qty.of (BigInt.of v) kilometer) (Qty.of (BigInt.of 5000) meter))` — a mixed-scale BigInt
+           COMPARISON: v km converts to meters (×1000) before comparing. v=2 → 2000 m < 5000 m → true (1);
+           v=6 → 6000 m < 5000 m → false (0). Pins that a mixed-scale BigInt comparison converts through
+           the bigint conversion + `bigint-cmp`, not the declining fixnum path.")
+  (input  (do
+            (def (main (: v Int64))
+              (if (< (Qty.of (BigInt.of v) (Unit.prefix kilo (Unit.base #"meter")))
+                     (Qty.of (BigInt.of 5000) (Unit.base #"meter"))) 1 0))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 1 Int64))
+  (call   main (: 6 Int64)) (output (: 0 Int64)))
+
 (case "a runtime Unit.in conversion emits the scale multiply (Int)"
   (doc    "`(Unit.in meter (Qty.of v kilometer))` with `v` a runtime Int64: converts v km to meters by
            *1000 at run time, so v=3 → 3000 m. The explicit-conversion companion of the runtime mixed
