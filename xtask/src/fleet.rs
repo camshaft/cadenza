@@ -35,6 +35,16 @@ const TRUNK: &str = "trunk";
 /// 100% is unrecoverable (even `/compact` can't submit).
 const CTX_SATURATION_THRESHOLD: u8 = 85;
 
+/// Context-% at which an agent is UNRECOVERABLY WEDGED — `/compact` can no longer submit (it needs
+/// headroom the full window lacks), so the agent can't self-heal and only an operator restart clears it.
+/// At/above this the watchdog auto-escalates to the concierge (a `note`; never keystrokes to the victim).
+/// Distinct from the lower `CTX_SATURATION_THRESHOLD` warn level, where the agent can still self-`/compact`.
+const CTX_WEDGE_THRESHOLD: u8 = 100;
+
+/// Rate-limit (seconds) for the context-wedge concierge escalation, so a wedged agent generates at most
+/// one concierge `note` per this window until the operator acts (the watchdog sweeps every ~4 min).
+const SAT_NOTIFY_GRACE: u64 = 1800;
+
 /// Short recheck window (seconds) for a drain-nudge that DIDN'T stick: if the SAME flagged message is
 /// still unconsumed this long after we auto-nudged, re-nudge (and flag loudly) rather than waiting out
 /// the full `--drain-nudge-grace` anti-churn window. Two ticks of a typical vertical (30m interval is
@@ -1907,6 +1917,7 @@ fn watchdog(
     let mut checked = 0usize;
     let mut drain_stalls = 0usize;
     let mut saturated = 0usize;
+    let mut wedge_escalations = 0usize;
     for a in &reg.agents {
         // Only ACTIVE agents with no stop-file are candidates — a stopped/removed agent SHOULD be idle.
         if a.status != "active" || fleet.stopfile(&a.name).exists() {
@@ -2045,12 +2056,71 @@ fn watchdog(
         if context_saturation_warning(ctx_pct, CTX_SATURATION_THRESHOLD) {
             saturated += 1;
             let pct = ctx_pct.unwrap_or(0);
-            let tail = if pct >= 100 {
+            let tail = if pct >= CTX_WEDGE_THRESHOLD {
                 "UNRECOVERABLE (/compact can't submit); needs an operator restart"
             } else {
                 "approaching the 100% wall — proactive `/compact` NOW while it still submits"
             };
             eprintln!("  ⚠ '{}' is at {pct}% context — {tail}.", a.name);
+
+            // At the UNRECOVERABLE wall (100%), the agent can't self-heal and the watchdog can't fix it
+            // with keystrokes (a `/loop`/Esc can't preempt a full window) — only an operator restart
+            // clears it. The saturation warning above only goes to stderr/`watchdog.log`, so a wedge
+            // depended on a human reading watchdog output. Auto-escalate to the concierge (the sole role
+            // that routes an operator action) with a `note` — rate-limited so a persistent wedge doesn't
+            // regenerate a note every sweep. NEVER keystroke the victim (that's the operator's call).
+            let notified_recently =
+                sat_notify_age_secs(fleet, &a.name, now).is_some_and(|s| s < SAT_NOTIFY_GRACE);
+            // A wedged CONCIERGE can't be helped by a note (it lands in the inbox it can't drain) — only
+            // the operator can restart it. Emit a loud, distinct line so a human scanning watchdog output
+            // sees it directly. (The escalation path below is skipped for the concierge by the guard.)
+            if a.name == "concierge" && pct >= CTX_WEDGE_THRESHOLD {
+                eprintln!(
+                    "  ‼ CONCIERGE itself is at {pct}% — the human interface is WEDGED and cannot be \
+                     auto-notified (a note lands in an inbox it can't drain). OPERATOR must restart the \
+                     concierge window."
+                );
+            }
+            if should_notify_saturation(&a.name, ctx_pct, CTX_WEDGE_THRESHOLD, notified_recently) {
+                if dry_run {
+                    println!(
+                        "  DRY-RUN would escalate '{}' context-wedge ({pct}%) to concierge",
+                        a.name
+                    );
+                } else {
+                    deliver(
+                        fleet,
+                        &Message {
+                            from: "watchdog".to_string(),
+                            to: "concierge".to_string(),
+                            kind: "note".to_string(),
+                            subject: format!(
+                                "context-WEDGE: '{}' at {pct}% — /compact can't submit; needs an operator restart",
+                                a.name
+                            ),
+                            body: format!(
+                                "The fleet watchdog detected '{}' at {pct}% context — the unrecoverable \
+                                 wall. It cannot self-`/compact` (no headroom) and a watchdog re-arm/\
+                                 nudge can't preempt a full window. Per the contract this needs an \
+                                 OPERATOR action: interrupt+restart the '{}' window, or Esc its pane to \
+                                 clear a queued-but-unsubmittable `/compact`. Auto-surfaced so a wedge \
+                                 doesn't sit unseen in watchdog stderr; rate-limited to one note per \
+                                 ~30min per agent until it clears.",
+                                a.name, a.name
+                            ),
+                            seq: next_seq(),
+                            r#ref: String::new(),
+                            in_reply_to: String::new(),
+                        },
+                    );
+                    stamp_sat_notify(fleet, &a.name);
+                    wedge_escalations += 1;
+                    println!(
+                        "  + escalated '{}' context-wedge ({pct}%) to concierge (rate-limited)",
+                        a.name
+                    );
+                }
+            }
         }
 
         if hb_age.is_some() && age <= stale_after {
@@ -2247,6 +2317,7 @@ fn watchdog(
             drain_stalls,
             saturated,
             landed_queued.len(),
+            wedge_escalations,
         );
         if let Some(line) = summary {
             let log = fleet.root.join("watchdog.log");
@@ -2287,13 +2358,19 @@ fn watchdog_log_line(
     drain_stalls: usize,
     saturated: usize,
     queued_but_landed: usize,
+    wedge_escalations: usize,
 ) -> Option<String> {
-    if rearmed == 0 && reaped == 0 && drain_stalls == 0 && saturated == 0 && queued_but_landed == 0
+    if rearmed == 0
+        && reaped == 0
+        && drain_stalls == 0
+        && saturated == 0
+        && queued_but_landed == 0
+        && wedge_escalations == 0
     {
         return None;
     }
     Some(format!(
-        "{now}\trearmed={rearmed}\treaped={reaped}\tdrain_stalls={drain_stalls}\tsaturated={saturated}\tqueued_but_landed={queued_but_landed}"
+        "{now}\trearmed={rearmed}\treaped={reaped}\tdrain_stalls={drain_stalls}\tsaturated={saturated}\tqueued_but_landed={queued_but_landed}\twedge_escalations={wedge_escalations}"
     ))
 }
 
@@ -2336,6 +2413,41 @@ fn stamp_rearm(fleet: &Fleet, name: &str) {
     let dir = fleet.root.join("rearm");
     std::fs::create_dir_all(&dir).ok();
     std::fs::write(dir.join(name), "rearm\n").ok();
+}
+
+/// Age in seconds since we last notified the concierge that this agent is context-WEDGED (mtime of
+/// `.claude/fleet/sat-notify/<name>`), or `None` if never. Rate-limits the auto-escalation so a wedged
+/// agent doesn't generate a fresh concierge `note` on every 4-min sweep until the operator acts.
+fn sat_notify_age_secs(fleet: &Fleet, name: &str, now: u64) -> Option<u64> {
+    file_mtime_unix(&fleet.root.join("sat-notify").join(name)).map(|m| now.saturating_sub(m))
+}
+
+/// Touch `.claude/fleet/sat-notify/<name>` to record that we escalated this agent's context-wedge to the
+/// concierge (for the rate-limit).
+fn stamp_sat_notify(fleet: &Fleet, name: &str) {
+    let dir = fleet.root.join("sat-notify");
+    std::fs::create_dir_all(&dir).ok();
+    std::fs::write(dir.join(name), "sat-notify\n").ok();
+}
+
+/// Should the watchdog auto-escalate a context-WEDGED agent to the concierge this sweep? Pure so the
+/// gate is unit-tested. Fires only when ALL hold:
+///   * at/above the UNRECOVERABLE wall (`ctx_pct >= wedge_threshold`, 100%) — NOT the lower 85% warn
+///     level, where the agent can still self-`/compact` (escalation there is premature);
+///   * NOT rate-limited (`!notified_recently`) — one note per grace window, not every sweep;
+///   * the wedged agent is NOT the concierge itself — a `note` to a wedged concierge lands in the very
+///     inbox it can't drain, so it's useless. A concierge wedge is the one case only the OPERATOR can
+///     fix directly; the caller emits a LOUD stderr line for it instead of a self-note.
+///
+/// The escalation is a `note` only — never keystrokes to the victim (100% needs an operator restart per
+/// the contract; a `/loop`/Esc keystroke can't preempt a full window). The concierge/operator decides.
+fn should_notify_saturation(
+    agent: &str,
+    ctx_pct: Option<u8>,
+    wedge_threshold: u8,
+    notified_recently: bool,
+) -> bool {
+    agent != "concierge" && matches!(ctx_pct, Some(p) if p >= wedge_threshold) && !notified_recently
 }
 
 /// The last auto drain-nudge we sent this agent, as `(flagged-message-id, age-in-secs)`, or `None`
@@ -4584,19 +4696,68 @@ mod tests {
     #[test]
     fn watchdog_log_line_writes_only_when_notable() {
         // A fully clean sweep → None (no log line; the log records anomalies only).
-        assert_eq!(watchdog_log_line(1000, 0, 0, 0, 0, 0), None);
+        assert_eq!(watchdog_log_line(1000, 0, 0, 0, 0, 0, 0), None);
         // ANY nonzero counter → a tab-separated summary stamped with `now`.
         assert_eq!(
-            watchdog_log_line(1700000000, 2, 1, 0, 3, 5),
+            watchdog_log_line(1700000000, 2, 1, 0, 3, 5, 1),
             Some(
-                "1700000000\trearmed=2\treaped=1\tdrain_stalls=0\tsaturated=3\tqueued_but_landed=5"
+                "1700000000\trearmed=2\treaped=1\tdrain_stalls=0\tsaturated=3\tqueued_but_landed=5\twedge_escalations=1"
                     .to_string()
             )
         );
         // A single drain-stall is notable on its own.
-        assert!(watchdog_log_line(1, 0, 0, 1, 0, 0).is_some());
+        assert!(watchdog_log_line(1, 0, 0, 1, 0, 0, 0).is_some());
         // A single saturated agent is notable on its own.
-        assert!(watchdog_log_line(1, 0, 0, 0, 1, 0).is_some());
+        assert!(watchdog_log_line(1, 0, 0, 0, 1, 0, 0).is_some());
+        // A wedge escalation alone is notable (even with no other anomaly).
+        assert!(watchdog_log_line(1, 0, 0, 0, 0, 0, 1).is_some());
+    }
+
+    #[test]
+    fn should_notify_saturation_only_at_the_wedge_wall_and_rate_limited() {
+        // At/above the wedge wall (100), not recently notified, non-concierge → escalate.
+        assert!(should_notify_saturation(
+            "v-inference",
+            Some(100),
+            100,
+            false
+        ));
+        assert!(should_notify_saturation(
+            "v-inference",
+            Some(101),
+            100,
+            false
+        )); // defensive; clamp upstream
+        // Below the wall → NOT yet (the agent can still self-`/compact` at the 85% warn level).
+        assert!(!should_notify_saturation(
+            "v-inference",
+            Some(99),
+            100,
+            false
+        ));
+        assert!(!should_notify_saturation(
+            "v-inference",
+            Some(85),
+            100,
+            false
+        ));
+        // No reading → nothing to escalate.
+        assert!(!should_notify_saturation("v-inference", None, 100, false));
+        // Rate-limited (notified within grace) → suppress, even at 100%.
+        assert!(!should_notify_saturation(
+            "v-inference",
+            Some(100),
+            100,
+            true
+        ));
+        // The concierge is NEVER auto-notified about its OWN wedge (a note it can't read) — the caller
+        // handles a concierge wedge with a loud operator-facing stderr line instead.
+        assert!(!should_notify_saturation(
+            "concierge",
+            Some(100),
+            100,
+            false
+        ));
     }
 
     #[test]
