@@ -107,6 +107,21 @@ Every firing of your `/loop`, in order:
    broken — but your worktree may be left dirty across ticks (the next tick resumes it).
 6. **If a commit is ready,** send `pr-sync` a `merge-request` (below). Otherwise reschedule.
 
+### ⚠ Keep your context small — self-compact at tick-top AND per work unit
+A saturated context is the fleet's worst failure mode: at ~100% even `/compact` can't submit (it
+queues behind your busy turn and never fires), so a wedged agent needs a manual operator RESTART —
+recurring churn across every role that does long turns. The rule, applied by EVERY role (with any
+role-specific cadence layered on top in the role body — e.g. pr-sync's per-MR checkpoint, the
+vertical's per-slice one):
+- **Tick-top:** if context is past ~70% at the START of a tick (right after the heartbeat, step 2),
+  run `/compact` FIRST, before draining the inbox or doing any work — a compact at 70% submits fine,
+  at 100% it cannot.
+- **Per work unit:** after EACH significant unit within a tick — a gate/build/test run (the biggest
+  single context ingest), a landed edit — CHECK context and `/compact` if past ~70% BEFORE starting
+  the next unit. A tick-top check ALONE is insufficient: a long continuous turn (common in a build
+  phase) never returns to the tick-top check, so it climbs to 100% mid-tick and starves its own
+  compact. Never carry a near-full window into another gate cycle.
+
 ## The message protocol
 
 A message is a single JSON file in the recipient's inbox. **Send with the tool, never by hand** so
