@@ -2623,3 +2623,149 @@
                   ((Option.None) false))))
             (export main)))
   (output (: true Bool)))
+
+; --- Increment 12 conjunction NEIGHBORS (breaker): the elim/accumulation faces the landed case skips ---
+; The Inc-12 conjunction case pins CONJ union + CONJUNCT1 preservation over a single conj. These pin the
+; unpinned neighbors — CONJUNCT2 (the other elim), a nested three-deep conj (accumulation), the soundness-
+; critical detail that CONJUNCT1 keeps BOTH operand hyps (not just the projected side's), and that conj
+; concats a shared hyp without dedup (matching List.concat). Same gap-shape the TRANS/MK_COMB union bug hid.
+
+(case "conjunction elimination CONJUNCT2 preserves both operand hypotheses"
+  (doc    "The Inc-12 conjunction case checks CONJUNCT1; this pins CONJUNCT2, the other projection. From
+           CONJ(ASSUME a, ASSUME b) : {a,b} ⊢ a∧b, CONJUNCT2 derives {a,b} ⊢ b — the SECOND conjunct, with
+           BOTH hypotheses still carried. A CONJUNCT2 that dropped a hypothesis (kept only b's, or emptied
+           the set) would silently discharge the live assumption a — the elim analogue of the TRANS/MK_COMB
+           hypothesis-drop soundness bug. Asserts the conclusion is b AND both a,b survive as hypotheses.")
+  (module "hol"
+    (do
+      (type Term (Var Int64) (Comb Term Term) (Eq Term Term) (Conj Term Term))
+      (type Thm (Seq (List Term) Term))
+      (def (term-eq (: a Term) (: b Term))
+        (match a
+          ((Term.Var n)    (match b ((Term.Var m) (= n m)) (_ false)))
+          ((Term.Comb x y) (match b ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) (_ false)))
+          ((Term.Eq x y)   (match b ((Term.Eq p q) (and (term-eq x p) (term-eq y q))) (_ false)))
+          ((Term.Conj x y) (match b ((Term.Conj p q) (and (term-eq x p) (term-eq y q))) (_ false)))))
+      (def (assume (: p Term)) (Thm.Seq (list p) p))
+      (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
+      (def (hyps (: th Thm)) (match th ((Thm.Seq h _) h)))
+      (def (conj (: th1 Thm) (: th2 Thm))
+        (Thm.Seq (List.concat (hyps th1) (hyps th2)) (Term.Conj (concl th1) (concl th2))))
+      (def (conjunct2 (: th Thm))
+        (match (concl th) ((Term.Conj a b) (Option.Some (Thm.Seq (hyps th) b))) (_ (Option.None))))
+      (export (. Term *))
+      (export Thm) (export term-eq) (export assume) (export conj) (export conjunct2)
+      (export concl) (export hyps)))
+  (input (do
+           (import "hol" (Term Thm term-eq assume conj conjunct2 concl hyps))
+           (def (main)
+             (let ((a (Term.Var 1)) (b (Term.Var 2)))
+               (match (conjunct2 (conj (assume a) (assume b)))
+                 ((Option.Some c2)
+                   (and (term-eq (concl c2) b)
+                        (match (hyps c2) ((list h1 h2) (and (term-eq h1 a) (term-eq h2 b))) (_ false))))
+                 ((Option.None) false))))
+           (export main)))
+  (output (: true Bool)))
+
+(case "a nested conjunction accumulates all three operand hypotheses"
+  (doc    "Hypotheses must accumulate across nested conjunction structure, not just pairwise. CONJ(CONJ(
+           ASSUME a, ASSUME b), ASSUME c) derives {a,b,c} ⊢ (a∧b)∧c — three hypotheses. This guards a union
+           that reset or capped at the most recent operand (the accumulation face that caught MK_COMB in
+           the TRANS/MK_COMB audit). Asserts the conclusion shape (a∧b)∧c and that hyps has length 3.")
+  (module "hol"
+    (do
+      (type Term (Var Int64) (Comb Term Term) (Eq Term Term) (Conj Term Term))
+      (type Thm (Seq (List Term) Term))
+      (def (term-eq (: a Term) (: b Term))
+        (match a
+          ((Term.Var n)    (match b ((Term.Var m) (= n m)) (_ false)))
+          ((Term.Comb x y) (match b ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) (_ false)))
+          ((Term.Eq x y)   (match b ((Term.Eq p q) (and (term-eq x p) (term-eq y q))) (_ false)))
+          ((Term.Conj x y) (match b ((Term.Conj p q) (and (term-eq x p) (term-eq y q))) (_ false)))))
+      (def (assume (: p Term)) (Thm.Seq (list p) p))
+      (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
+      (def (hyps (: th Thm)) (match th ((Thm.Seq h _) h)))
+      (def (conj (: th1 Thm) (: th2 Thm))
+        (Thm.Seq (List.concat (hyps th1) (hyps th2)) (Term.Conj (concl th1) (concl th2))))
+      (export (. Term *))
+      (export Thm) (export term-eq) (export assume) (export conj) (export concl) (export hyps)))
+  (input (do
+           (import "hol" (Term Thm term-eq assume conj concl hyps))
+           (def (main)
+             (let ((a (Term.Var 1)) (b (Term.Var 2)) (c (Term.Var 3)))
+               (let ((nested (conj (conj (assume a) (assume b)) (assume c))))
+                 (and (term-eq (concl nested) (Term.Conj (Term.Conj a b) c))
+                      (match (hyps nested) ((list h1 h2 h3) true) (_ false))))))
+           (export main)))
+  (output (: true Bool)))
+
+(case "conjunction elimination keeps BOTH operand hypotheses, not just the projected conjunct's"
+  (doc    "The soundness-critical projection detail: CONJUNCT1 of CONJ(ASSUME a, ASSUME b) yields ⊢ a, and
+           it must keep BOTH {a,b} as hypotheses — the conjunction's full assumption set — not just {a},
+           the projected conjunct's own. A projection that narrowed the hypotheses to the returned side
+           would discharge the live assumption b behind the eliminated conjunct. Asserts conclusion a AND
+           that both a,b remain hypotheses (the union survives the projection).")
+  (module "hol"
+    (do
+      (type Term (Var Int64) (Comb Term Term) (Eq Term Term) (Conj Term Term))
+      (type Thm (Seq (List Term) Term))
+      (def (term-eq (: a Term) (: b Term))
+        (match a
+          ((Term.Var n)    (match b ((Term.Var m) (= n m)) (_ false)))
+          ((Term.Comb x y) (match b ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) (_ false)))
+          ((Term.Eq x y)   (match b ((Term.Eq p q) (and (term-eq x p) (term-eq y q))) (_ false)))
+          ((Term.Conj x y) (match b ((Term.Conj p q) (and (term-eq x p) (term-eq y q))) (_ false)))))
+      (def (assume (: p Term)) (Thm.Seq (list p) p))
+      (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
+      (def (hyps (: th Thm)) (match th ((Thm.Seq h _) h)))
+      (def (conj (: th1 Thm) (: th2 Thm))
+        (Thm.Seq (List.concat (hyps th1) (hyps th2)) (Term.Conj (concl th1) (concl th2))))
+      (def (conjunct1 (: th Thm))
+        (match (concl th) ((Term.Conj a b) (Option.Some (Thm.Seq (hyps th) a))) (_ (Option.None))))
+      (export (. Term *))
+      (export Thm) (export term-eq) (export assume) (export conj) (export conjunct1)
+      (export concl) (export hyps)))
+  (input (do
+           (import "hol" (Term Thm term-eq assume conj conjunct1 concl hyps))
+           (def (main)
+             (let ((a (Term.Var 1)) (b (Term.Var 2)))
+               (match (conjunct1 (conj (assume a) (assume b)))
+                 ((Option.Some c1)
+                   (and (term-eq (concl c1) a)
+                        (match (hyps c1) ((list h1 h2) (and (term-eq h1 a) (term-eq h2 b))) (_ false))))
+                 ((Option.None) false))))
+           (export main)))
+  (output (: true Bool)))
+
+(case "conjunction of two theorems sharing a hypothesis concatenates without dedup"
+  (doc    "The kernel's hypothesis union is List.concat, which does NOT dedup — a deliberate, sound choice
+           (a multiset of assumptions; discharging still requires matching each). CONJ(ASSUME a, ASSUME a)
+           carries [a, a] — length 2, not collapsed to 1. Pins that the union is a faithful concat, so a
+           later refactor to a deduping set is a deliberate change caught here, not a silent one. (Dedup
+           would be sound too, but this documents the CURRENT multiset behavior the other cases count on.)")
+  (module "hol"
+    (do
+      (type Term (Var Int64) (Comb Term Term) (Eq Term Term) (Conj Term Term))
+      (type Thm (Seq (List Term) Term))
+      (def (term-eq (: a Term) (: b Term))
+        (match a
+          ((Term.Var n)    (match b ((Term.Var m) (= n m)) (_ false)))
+          ((Term.Comb x y) (match b ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) (_ false)))
+          ((Term.Eq x y)   (match b ((Term.Eq p q) (and (term-eq x p) (term-eq y q))) (_ false)))
+          ((Term.Conj x y) (match b ((Term.Conj p q) (and (term-eq x p) (term-eq y q))) (_ false)))))
+      (def (assume (: p Term)) (Thm.Seq (list p) p))
+      (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
+      (def (hyps (: th Thm)) (match th ((Thm.Seq h _) h)))
+      (def (conj (: th1 Thm) (: th2 Thm))
+        (Thm.Seq (List.concat (hyps th1) (hyps th2)) (Term.Conj (concl th1) (concl th2))))
+      (export (. Term *))
+      (export Thm) (export term-eq) (export assume) (export conj) (export concl) (export hyps)))
+  (input (do
+           (import "hol" (Term Thm term-eq assume conj concl hyps))
+           (def (main)
+             (let ((a (Term.Var 1)))
+               (let ((c (conj (assume a) (assume a))))
+                 (match (hyps c) ((list h1 h2) (and (term-eq h1 a) (term-eq h2 a))) (_ false)))))
+           (export main)))
+  (output (: true Bool)))

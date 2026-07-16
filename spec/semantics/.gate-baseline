@@ -1177,6 +1177,7 @@ pass	a nested chain of function calls compiles in linear time and folds to a con
 pass	a nested conditional (the sign idiom) folds to branchless nested selects — negative
 pass	a nested conditional (the sign idiom) folds to branchless nested selects — positive
 pass	a nested conditional (the sign idiom) folds to branchless nested selects — zero
+pass	a nested conjunction accumulates all three operand hypotheses
 pass	a nested constant multiply preserves the inner overflow rather than combining the factors
 pass	a nested constructor in a multi-payload position destructures two levels
 pass	a nested constructor match on a variant past the first dispatches on that variant's payload
@@ -2431,7 +2432,10 @@ pass	concatenating with the empty list on the right yields the operand by value
 pass	concatenation is associative by content
 pass	concatenation with a run-time-selected operand joins the actual strings
 pass	conditional propagation respects a shadowing rebind of the condition variable
+pass	conjunction elimination CONJUNCT2 preserves both operand hypotheses
+pass	conjunction elimination keeps BOTH operand hypotheses, not just the projected conjunct's
 pass	conjunction is true exactly when both operands are true
+pass	conjunction of two theorems sharing a hypothesis concatenates without dedup
 pass	conjunction shields a trapping right operand when the left is false
 pass	constructing a bit-field from a value wider than its width is rejected
 pass	constructing a byte sequence with a negative value is a type error
