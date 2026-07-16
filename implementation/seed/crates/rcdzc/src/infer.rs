@@ -1519,7 +1519,35 @@ fn enrich_nested_lowercase_type_vars(
     // constructor, not a type var.
     if let crate::ast::Struct::List(kids) = db.ast.get(node) {
         let kids = kids.clone();
-        for &child in kids.iter().skip(1) {
+        // `(Qty T u)` is SPECIAL: its 2nd argument is a UNIT position, not a type position. A bare unbound
+        // name THERE — `(Qty Int64 meter)` — is a botched unit, NOT a would-be type variable / unknown
+        // type, so the ordinary type-var ("leave the parameter unannotated") / unknown-type ("declare it
+        // with `(type …)`") guidance MISLEADS. Give a unit-specific message and do NOT recurse the unit
+        // position as a type. (A malformed unit that is a COMPOUND — `(Qty Int64 (bogus))` — still falls
+        // through to the normal path; only a bare-name unit is redirected, the common slip.)
+        let is_qty = kids.first().is_some_and(|&h| {
+            crate::eval::meta_apply_of(db, h) == Some(crate::resolved::Prim::QtyCtor)
+        });
+        for (i, &child) in kids.iter().enumerate().skip(1) {
+            if is_qty
+                && i == 2
+                && db.ast.as_name(child).is_some()
+                && matches!(resolved_of(db, child), Resolved::Poison(_))
+            {
+                let unit = db.ast.as_name(child).unwrap().to_string();
+                out.push(
+                    Reject::coded(
+                        Code::Unbound,
+                        format!(
+                            "`{unit}` is not a unit — `Qty`'s second argument is a UNIT, not a type, so a \
+                             bare name does not name one. Write a unit expression, e.g. `(Unit.base \
+                             #\"{unit}\")` for a base unit, or `Unit.one` for the dimensionless unit"
+                        ),
+                    )
+                    .at(child),
+                );
+                continue;
+            }
             enrich_nested_lowercase_type_vars(db, child, lead, at_parameter, out);
         }
     }
