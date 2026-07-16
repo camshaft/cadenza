@@ -34,6 +34,8 @@
     { "name": "v-slack-bridge", "role": "vertical", "vertical": "slack-bridge", "area": "integrations", "model": "opus", "effort": "high", "interval": "30m" },
     { "name": "v-try-operator", "role": "vertical", "vertical": "try-operator", "area": "rcdzc", "model": "opus", "effort": "high", "interval": "30m" },
     { "name": "v-cad", "role": "vertical", "vertical": "cad-solid-modeling", "area": "cad", "model": "opus", "effort": "high", "interval": "30m" },
-    { "name": "v-rust-backend", "role": "vertical", "vertical": "rust-backend", "area": "rcdzc", "model": "opus", "effort": "high", "interval": "30m" }
+    { "name": "v-rust-backend", "role": "vertical", "vertical": "rust-backend", "area": "rcdzc", "model": "opus", "effort": "high", "interval": "30m" },
+    { "name": "v-verification", "role": "vertical", "vertical": "verification", "area": "rcdzc", "model": "opus", "effort": "high", "interval": "30m" },
+    { "name": "v-agent-harness", "role": "vertical", "vertical": "agent-harness", "area": "rcdzc", "model": "opus", "effort": "high", "interval": "30m" }
   ]
 }
