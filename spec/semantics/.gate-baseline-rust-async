@@ -2910,6 +2910,9 @@ todo	a function argument is applied through a recursive higher-order function
 todo	a function deriving a velocity from a distance and a time
 todo	a function stored in a record field of a sum payload is called after a match
 todo	a generated value with a BIGINT leaf is reproducible (compound = walks the bignum)
+todo	a genuinely-runtime left-shift count beyond the bit width traps rather than masking to a small count
+todo	a genuinely-runtime left-shift count equal to the bit width traps rather than masking
+todo	a genuinely-runtime negative right-shift count traps rather than masking
 todo	a higher-order left fold applies its combiner, not a fixed operator
 todo	a higher-order left fold over a built-in list with an annotated callback
 todo	a higher-order left fold over a built-in list with an annotated fn parameter

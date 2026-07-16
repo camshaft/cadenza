@@ -1479,6 +1479,28 @@ fn rustc_roundtrip_bigint_arithmetic_and_render() {
     if let Some(out) = rustc_run(&divv, "g().to_decimal_string()") {
         assert_eq!(out, "14", "truncating BigInt divide");
     }
+    // REGRESSION (Copilot PR#464): `BigInt.of` is `∀a.(Int a)->BigInt`, so a runtime UNSIGNED operand
+    // >= 2^63 must widen BY VALUE. The old `Big::from_i64((v) as i64)` reinterpreted a large u64 as
+    // NEGATIVE (silent miscompile). The emit now goes through `i128` (a `uN as i128` keeps its true sign).
+    // Pin `BigInt.of` on a runtime UInt64 = 2^63 → the POSITIVE 9223372036854775808, not a negative value.
+    let usig = compile_rust("(module m (def (g (: n UInt64)) (BigInt.of n)) (export g))");
+    assert!(
+        usig.contains("as i128"),
+        "BigInt.of widens via i128 (not `as i64`):\n{usig}"
+    );
+    if let Some(out) = rustc_run(&usig, "g(9223372036854775808u64).to_decimal_string()") {
+        assert_eq!(
+            out, "9223372036854775808",
+            "BigInt.of on a UInt64 >= 2^63 is POSITIVE, not negative"
+        );
+    }
+    // …and u64::MAX round-trips as its true positive value (was -1 under the `as i64` bug).
+    if let Some(out) = rustc_run(&usig, "g(u64::MAX).to_decimal_string()") {
+        assert_eq!(
+            out, "18446744073709551615",
+            "BigInt.of(u64::MAX) is the positive max, not -1"
+        );
+    }
 }
 
 #[test]

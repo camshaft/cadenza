@@ -2934,6 +2934,9 @@ todo	a fixed-shape scalar Tuple closure ARG crosses the DIRECT-CALL boundary (ho
 todo	a float leaf and a Bytes leaf compare together in one compound
 todo	a function deriving a velocity from a distance and a time
 todo	a generated value with a BIGINT leaf is reproducible (compound = walks the bignum)
+todo	a genuinely-runtime left-shift count beyond the bit width traps rather than masking to a small count
+todo	a genuinely-runtime left-shift count equal to the bit width traps rather than masking
+todo	a genuinely-runtime negative right-shift count traps rather than masking
 todo	a host call's response is an ordinary value that feeds a LATER host call
 todo	a host effect with a non-kebab NAME crosses under a normalized interface extern name
 todo	a host effect with a non-kebab OPERATION name crosses under a normalized func extern name
