@@ -2967,3 +2967,101 @@
             (def (main) (Thm.MkThm 99))
             (export main)))
   (error  CDZ0101))
+
+; ============================================================================================
+; Increment 19 — substitution must cover the LOGICAL connective forms (not just the term core). A real
+; kernel's subst/INST recurses through EVERY term constructor. Inc-4/5 pinned capture-avoiding subst over
+; the core forms (Var/Comb/Eq/Abs); these pin the same discipline over the LOGICAL forms (Imp / Forall):
+; (1) subst must FIRE inside an implication (a subst that treats Imp as opaque and returns it unchanged
+;     would miss the substitution — verified this case has teeth: it fails against a non-recursing subst);
+; (2) subst under a Forall must AVOID CAPTURE (α-rename the quantifier binder when the substituted term's
+;     free variable would be captured), exactly as it does under Abs. These guard that INST over a
+;     quantified/implicational goal — the normal shape once the logical layer is in use — stays sound.
+; ============================================================================================
+
+(case "substitution fires inside an implication (subst recurses into Imp)"
+  (doc    "A kernel's subst must recurse into EVERY term form, including the logical connectives. Here
+           subst 1:=(Var 9) into (Imp (Var 1) (Var 2)) must yield (Imp (Var 9) (Var 2)) — the antecedent's
+           (Var 1) is replaced. A subst that treated Imp as opaque (returned it unchanged) would miss this;
+           the case has teeth (it fails against such a non-recursing subst). Pins that substitution/INST
+           reaches inside implications — required the moment a proof instantiates an implicational goal.")
+  (module "hol"
+    (do
+      (type Term (Var Int64) (Comb Term Term) (Eq Term Term) (Imp Term Term))
+      (def (term-eq (: a Term) (: b Term))
+        (match a
+          ((Term.Var n) (match b ((Term.Var m) (= n m)) (_ false)))
+          ((Term.Comb x y) (match b ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) (_ false)))
+          ((Term.Eq x y) (match b ((Term.Eq p q) (and (term-eq x p) (term-eq y q))) (_ false)))
+          ((Term.Imp x y) (match b ((Term.Imp p q) (and (term-eq x p) (term-eq y q))) (_ false)))))
+      (def (subst (: v Int64) (: s Term) (: t Term))
+        (match t
+          ((Term.Var n) (if (= n v) s (Term.Var n)))
+          ((Term.Comb f x) (Term.Comb (subst v s f) (subst v s x)))
+          ((Term.Eq a b) (Term.Eq (subst v s a) (subst v s b)))
+          ((Term.Imp a b) (Term.Imp (subst v s a) (subst v s b)))))
+      (export (. Term *))
+      (export term-eq)
+      (export subst)))
+  (input  (do
+            (import "hol" (Term term-eq subst))
+            (def (main)
+              (term-eq (subst 1 (Term.Var 9) (Term.Imp (Term.Var 1) (Term.Var 2)))
+                       (Term.Imp (Term.Var 9) (Term.Var 2))))
+            (export main)))
+  (output (: true Bool)))
+
+(case "capture-avoiding substitution renames a Forall binder to avoid capture (logical-form subst)"
+  (doc    "Capture-avoidance must hold under the LOGICAL quantifier binder Forall, exactly as under Abs
+           (Inc-5). Substituting into (Forall x0. (Imp (P x0) (P y))) for y := (Var 0) — where (Var 0)'s
+           free variable IS the quantifier's bound x0 — must α-rename x0 to a fresh id before descending, so
+           the substituted (Var 0) stays FREE in the result (uncaptured). The case checks free-in 0 result =
+           true. subst also descends into the Imp to reach y. Pins that INST under a universal quantifier is
+           capture-avoiding — a naive Forall subst would bind (Var 0), an unsound instantiation.")
+  (module "hol"
+    (do
+      (type Term (Var Int64) (Comb Term Term) (Eq Term Term) (Imp Term Term) (Forall Int64 Term))
+      (def (free-in (: v Int64) (: t Term))
+        (match t
+          ((Term.Var n) (= n v))
+          ((Term.Comb f x) (or (free-in v f) (free-in v x)))
+          ((Term.Eq a b) (or (free-in v a) (free-in v b)))
+          ((Term.Imp a b) (or (free-in v a) (free-in v b)))
+          ((Term.Forall w body) (if (= w v) false (free-in v body)))))
+      (def (max-id (: t Term))
+        (match t
+          ((Term.Var n) n)
+          ((Term.Comb f x) (let ((a (max-id f)) (b (max-id x))) (if (> a b) a b)))
+          ((Term.Eq a b) (let ((p (max-id a)) (q (max-id b))) (if (> p q) p q)))
+          ((Term.Imp a b) (let ((p (max-id a)) (q (max-id b))) (if (> p q) p q)))
+          ((Term.Forall w body) (let ((m (max-id body))) (if (> w m) w m)))))
+      (def (rename (: from Int64) (: to Int64) (: t Term))
+        (match t
+          ((Term.Var n) (if (= n from) (Term.Var to) (Term.Var n)))
+          ((Term.Comb f x) (Term.Comb (rename from to f) (rename from to x)))
+          ((Term.Eq a b) (Term.Eq (rename from to a) (rename from to b)))
+          ((Term.Imp a b) (Term.Imp (rename from to a) (rename from to b)))
+          ((Term.Forall w body) (if (= w from) (Term.Forall w body) (Term.Forall w (rename from to body))))))
+      (def (subst (: v Int64) (: s Term) (: t Term))
+        (match t
+          ((Term.Var n) (if (= n v) s (Term.Var n)))
+          ((Term.Comb f x) (Term.Comb (subst v s f) (subst v s x)))
+          ((Term.Eq a b) (Term.Eq (subst v s a) (subst v s b)))
+          ((Term.Imp a b) (Term.Imp (subst v s a) (subst v s b)))
+          ((Term.Forall w body)
+            (if (= w v) (Term.Forall w body)
+                (if (free-in w s)
+                    (let ((fresh (+ 1 (let ((ms (max-id s)) (mt (max-id body))) (if (> ms mt) ms mt)))))
+                      (Term.Forall fresh (subst v s (rename w fresh body))))
+                    (Term.Forall w (subst v s body)))))))
+      (export (. Term *))
+      (export free-in)
+      (export subst)))
+  (input  (do
+            (import "hol" (Term free-in subst))
+            (def (main)
+              (let ((p (Term.Var 7)) (y (Term.Var 1)))
+                (let ((term (Term.Forall 0 (Term.Imp (Term.Comb p (Term.Var 0)) (Term.Comb p y)))))
+                  (free-in 0 (subst 1 (Term.Var 0) term)))))
+            (export main)))
+  (output (: true Bool)))

@@ -2430,6 +2430,7 @@ pass	byte length agrees with the length of the encoded bytes
 pass	byte length counts the normalized form, not the source spelling
 pass	byte length is the UTF-8 byte count
 pass	byte sequences are equal by their bytes in order
+pass	capture-avoiding substitution renames a Forall binder to avoid capture (logical-form subst)
 pass	capture-avoiding substitution renames a binder so the substituted term's free variable is not captured
 pass	chained guards of the same variant are tried in order
 pass	char to-int and from-int round-trip through the scalar value
@@ -3046,6 +3047,7 @@ pass	string to bytes produces the exact UTF-8 byte values, not just the right co
 pass	strings differing only in Unicode normalization are equal
 pass	structural equality holds component-wise
 pass	subset record comparison is explicit projection, not an overloaded equality
+pass	substitution fires inside an implication (subst recurses into Imp)
 pass	subtracting quantities of incompatible dimension is a compile-time error
 pass	subtraction
 pass	subtraction below the minimum integer overflows and traps
