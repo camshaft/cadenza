@@ -1489,12 +1489,13 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 Some(Prim::RecordMerge) if args.len() == 2 => {
                     lower_record_merge(db, id, args[0], args[1])
                 }
-                // `Record.extend r (z v)` / `Record.with r (z v)` — both INSERT field `z ↦ v` into a
-                // constant `Core::Record` (extend adds an absent field, with replaces a present one; the
-                // presence/absence CDZ0211/0212 is `infer`'s, so the fold is the same insert). The `(z v)`
-                // pair's value occurrence carries into the field.
-                Some(Prim::RecordExtend | Prim::RecordWith) if args.len() == 2 => {
-                    lower_record_insert(db, id, args[0], args[1])
+                // `Record.extend r #z v` / `Record.with r #z v` (3-operand, DESIGN-record-update-syntax.md)
+                // — both INSERT field `z ↦ v` into a constant `Core::Record` (extend adds an absent field,
+                // with replaces a present one; the presence/absence CDZ0211/0212 is `infer`'s, so the fold
+                // is the same insert). The field LABEL is the `#symbol` 2nd operand (`read_label`); the
+                // value `v` is the 3rd operand (its value occurrence carries into the field).
+                Some(Prim::RecordExtend | Prim::RecordWith) if args.len() == 3 => {
+                    lower_record_insert(db, id, args[0], args[1], args[2])
                 }
                 // `Record.pop r z` — `(tuple (. r z) (r without z))`: the popped field's value paired with
                 // the remaining record. Folds a constant `Core::Record` to a `Core::Tuple`.
@@ -19061,7 +19062,13 @@ fn lower_record_merge(db: &mut Db, id: StructId, a: StructId, b: StructId) -> Co
 /// CDZ0211/0212 is `infer`'s, so the fold is one insert for both). The `(z v)` pair's value occurrence
 /// carries into the new field. A poison operand propagates; a non-constant/non-record operand, or a
 /// malformed pair, declines/rejects.
-fn lower_record_insert(db: &mut Db, id: StructId, record: StructId, pair: StructId) -> Core {
+fn lower_record_insert(
+    db: &mut Db,
+    id: StructId,
+    record: StructId,
+    label_node: StructId,
+    value: StructId,
+) -> Core {
     let Core::Record { fields } = core_of(db, record) else {
         return match core_of(db, record) {
             Core::Poison(r) => Core::Poison(r),
@@ -19070,10 +19077,10 @@ fn lower_record_insert(db: &mut Db, id: StructId, record: StructId, pair: Struct
             )),
         };
     };
-    let Some((label, value)) = crate::resolve::record_op_pair(db, pair) else {
+    let Some(label) = crate::resolve::read_label(db, label_node) else {
         return Core::Poison(Reject::coded(
             Code::Malformed,
-            "the second operand is a `(name value)` field pair, e.g. `(z 5)`",
+            "the second operand is a `#field` label, e.g. `#z`",
         ));
     };
     let mut out: std::collections::BTreeMap<_, _> =

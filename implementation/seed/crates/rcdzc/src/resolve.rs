@@ -4568,6 +4568,14 @@ pub(crate) fn read_key(db: &Db, node: StructId) -> Option<Symbol> {
     if let Some(n) = db.ast.as_name(node) {
         return Some(Symbol::plain(n));
     }
+    // A `#symbol` LITERAL (`#field` / `#"field"`, a `Leaf::Sym`) read as a plain field LABEL — the
+    // 3-operand row-op field selector (`Record.with r #field v`). The name is taken at RESOLVE time as a
+    // static label (NOT demanded as a `Ty::Symbol` value that flows through inference), exactly like the
+    // bare-name and `(meta …)` cases: `#field` is where the label comes FROM, not a change to whether it
+    // is static (DESIGN-record-update-syntax.md — the row-op field name stays a compile-time label).
+    if let Some(s) = db.ast.as_sym(node) {
+        return Some(Symbol::plain(s));
+    }
     // `(meta NAME)` → the symbol `NAME` in the `meta` namespace.
     if let Some(tail) = db.ast.as_form(node, "meta")
         && let Some(name) = tail.first().and_then(|&s| db.ast.as_name(s))
