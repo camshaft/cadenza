@@ -1447,6 +1447,38 @@
   (call   main (: 0 Int64))
   (output (: 7 Int64)))
 
+; eval reconstructs + folds every CORE CONTROL FORM, not only arithmetic and `if`: a quoted `let` (a binder-
+; introducing form), a quoted `match` (a scrutinee + arms), and a quoted lambda APPLICATION all reconstruct
+; to the source they denote and fold through the ordinary compile-time path (`metaprogramming.md` §Eval Is
+; Optional / §Compile-Time Evaluation Is One Tier). The existing eval cases exercise `(+ …)` and `if`; these
+; pin that `reconstruct` (recursively rebuilding an `Ast.List` as `(<recon e>…)`) preserves the meaning of a
+; binding form, a match, and an applied `fn` — so a reconstruction that mishandled one of these control
+; heads (e.g. dropped a `let` binder or a match arm) would flip them.
+
+(case "eval of a quoted let-binding form folds"
+  (doc    "`(eval (quote (let ((x 4)) (+ x 6))))` = 10: the quoted `let` reconstructs to the binding form it
+           denotes, whose `x` binds 4 and body folds to 10. Pins that eval preserves a BINDER-introducing
+           control form (the `let`'s bound name resolves in the reconstructed body), not just flat
+           arithmetic.")
+  (input  (eval (quote (let ((x 4)) (+ x 6)))))
+  (output (: 10 Int64)))
+
+(case "eval of a quoted match form folds to the selected arm"
+  (doc    "`(eval (quote (match 7 (0 100) (n n))))` = 7: the quoted `match` reconstructs to the match it
+           denotes; the scrutinee 7 misses the `0` arm and binds the catch-all `n`, so the arm returns 7.
+           Pins that eval reconstructs a MATCH (scrutinee + arms + a binding pattern), not only expression
+           forms.")
+  (input  (eval (quote (match 7 (0 100) (n n)))))
+  (output (: 7 Int64)))
+
+(case "eval of a quoted lambda application folds"
+  (doc    "`(eval (quote ((fn (x) (* x x)) 5)))` = 25: the quoted form is a lambda APPLIED to 5; eval
+           reconstructs the `fn` and its application, β-reduces `x`↦5, and folds `(* 5 5)` to 25. Pins that
+           eval reconstructs and folds an applied anonymous function (the `fn` head + its param + the
+           argument), the higher-order control-form companion of the `let`/`match` cases.")
+  (input  (eval (quote ((fn (x) (* x x)) 5))))
+  (output (: 25 Int64)))
+
 (case "a constructed Ast.Bool leaf drives an evaluated conditional"
   (doc    "`(if (eval (Ast.Bool true)) 5 6)` = 5: the Bool leaf is CONSTRUCTED (not quoted), evaluated
            to its payload, and the resulting runtime boolean drives an ORDINARY (non-reified) `if`.
