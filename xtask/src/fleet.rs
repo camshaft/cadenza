@@ -2208,11 +2208,22 @@ fn sender_from_branch(fleet: &Fleet) -> Option<String> {
     if !out.status.success() {
         return None;
     }
-    let branch = String::from_utf8(out.stdout).ok()?.trim().to_string();
+    let branch = String::from_utf8(out.stdout).ok()?;
+    sender_from_branch_name(branch.trim())
+}
+
+/// The PURE branch-name → sender-agent mapping (kept separate from `sender_from_branch`'s git shell so
+/// it's unit-testable). An agent's worktree is on `fleet/<agent>`, so its branch names the sender;
+/// pr-sync runs on `trunk`. A branch that is neither → `None` (the caller then falls back to `unknown`,
+/// which dead-letters replies — the reply-graveyard trap this derivation exists to avoid), and the
+/// derived `<agent>` must pass the name charset so we never resolve a sender to a garbage/traversal
+/// token. The empty string (detached HEAD → `git branch --show-current` prints nothing) is `None`.
+fn sender_from_branch_name(branch: &str) -> Option<String> {
     if branch.is_empty() {
         None
     } else if let Some(agent) = branch.strip_prefix("fleet/") {
-        Some(agent.to_string())
+        // A `fleet/<garbage>` branch must not resolve to a garbage sender.
+        validate_agent_name(agent).ok().map(|()| agent.to_string())
     } else if branch == TRUNK {
         Some("pr-sync".to_string())
     } else {
@@ -2520,6 +2531,31 @@ mod tests {
         assert!(recipient_from_subject("some unrelated subject").is_none());
         // A traversal-y agent token is rejected by the name charset → None (never route to garbage).
         assert!(recipient_from_subject("merged: fleet/../etc").is_none());
+    }
+
+    #[test]
+    fn sender_from_branch_name_maps_branch_to_agent() {
+        // A vertical/fix agent's worktree is on `fleet/<agent>` → that branch names the sender. This is
+        // the `--from` derivation that keeps pr-sync's replies from dead-lettering to `unknown`.
+        assert_eq!(
+            sender_from_branch_name("fleet/v-fleet-tooling").as_deref(),
+            Some("v-fleet-tooling")
+        );
+        assert_eq!(
+            sender_from_branch_name("fleet/fix-two-string-payloads").as_deref(),
+            Some("fix-two-string-payloads")
+        );
+        // pr-sync runs on `trunk` itself.
+        assert_eq!(sender_from_branch_name("trunk").as_deref(), Some("pr-sync"));
+        // Neither a fleet/ branch nor trunk → None (caller falls back to `unknown`), and an empty
+        // string (detached HEAD prints nothing) → None, never a bogus sender.
+        assert!(sender_from_branch_name("main").is_none());
+        assert!(sender_from_branch_name("some-feature").is_none());
+        assert!(sender_from_branch_name("").is_none());
+        // A `fleet/<garbage>` branch must NOT resolve to a garbage/traversal sender (name charset guard).
+        assert!(sender_from_branch_name("fleet/../etc").is_none());
+        assert!(sender_from_branch_name("fleet/").is_none());
+        assert!(sender_from_branch_name("fleet/a b").is_none());
     }
 
     #[test]
