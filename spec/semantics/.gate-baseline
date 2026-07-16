@@ -1923,6 +1923,7 @@ pass	an Option built by an if with the nullary branch first type-checks
 pass	an Option built by an if with the payload branch first type-checks (the control)
 pass	an Option carrying a Result is matched across two different sum types
 pass	an Option pipeline short-circuits on the first None
+pass	an Option.expect payload consumed per iteration while the option is threaded accumulates stably
 pass	an R-suffixed decimal literal is its exact fraction
 pass	an R-suffixed integer literal is that integer over one
 pass	an R-suffixed literal composes with exact rational arithmetic

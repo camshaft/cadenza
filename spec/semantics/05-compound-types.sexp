@@ -1623,6 +1623,26 @@
   (call   main (: 3 Int64)) (output (: 9 Int64))
   (call   main (: 4 Int64)) (output (: 12 Int64)))
 
+(case "an Option.expect payload consumed per iteration while the option is threaded accumulates stably"
+  (doc    "The `SumExpect` (`Option.expect`/`Result.expect`) twin of the sum-payload case above — the shape
+           the compiler-in-ML port hits threading an env Option through its AST walkers. `Option.expect s`
+           reads `sum-payload` (a BORROW, no rc++) of the present variant; consuming that heap payload
+           (`List.push`) while `s` is STILL LIVE (threaded UNCHANGED to the self-recursive call) FBIP-mutates
+           the shared payload at rc==1, so the next iteration reads the grown list. `s` = `Some [7, 8]`; each
+           iteration reads `(List.len (List.push (Option.expect s) 9))` = 3, so 4 iterations = 12. Before the
+           fix the wasm backend drifted 3,4,5,6 → 18 (the Rust backend computed 12 — a clean differential
+           catch). Fix: the `SumExpect` arm of `mark_binder_dups` marks a child-`dup` site (mirroring the
+           `SumPayload`/`Proj` arms) and the `SumExpect` emit `dup`s the extracted compound payload. A scalar
+           payload copies out and never dups (FBIP fast path intact). Found by the breaker, wasm-only.")
+  (input  (do
+            (def (go (: s (Option (List Int64))) (: n Int64) (: acc Int64))
+              (if (= n 0) acc
+                  (go s (- n 1) (+ acc (List.len (List.push (Option.expect s "v") 9))))))
+            (def (main (: d Int64))
+              (go (Option.Some (List.push (List.push (list) d) 8)) 4 0))
+            (export main)))
+  (call   main (: 7 Int64)) (output (: 12 Int64)))
+
 ; The mutual-recursion companion of the still-live-binding family above: the IDIOMATIC homoiconic-AST
 ; walker shape — a `fc` (per-node) / `fl` (per-child-list) mutual pair over a recursive `Ast` sum. Here
 ; `fc` matches a `List` node binding its child list `elems`, reads the head OUT OF `elems` directly

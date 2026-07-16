@@ -1152,7 +1152,25 @@ fn mark_binder_dups_inner(
             // extraction dups).
             mark_binder_dups_inner(db, scrutinee, binder, false, live_after, true, sites)
         }
-        Core::SumExpect { scrutinee, .. } => borrow(db, scrutinee, live_after, sites),
+        Core::SumExpect { scrutinee, .. } => {
+            // The `SumExpect` twin of the `SumPayload` child-retain above: `Option.expect`/`Result.expect`
+            // reads `sum-payload` (a BORROW, no rc++) of the present variant. A COMPOUND payload
+            // (`get_op` None) consumed while the scrutinee `binder` is STILL LIVE (a self-recursive call
+            // threading the Option, or a re-expect in the same expression) must `dup` the extracted child —
+            // else the consuming op FBIP-mutates the shared payload at rc==1 and the still-live scrutinee
+            // reads the grown value (drift). Same shape as `SumPayload`; no `RestFrom` case (a `SumExpect`
+            // reads exactly one payload). A scalar payload COPIES out → never a site (FBIP fast path intact).
+            let scalar_leaf = matches!(get_op(db, id), Ok(Some(_)));
+            if consuming
+                && !scalar_leaf
+                && !in_proj_operand
+                && live_after
+                && payload_or_proj_chain_roots_at_binder(db, scrutinee, binder)
+            {
+                sites.insert(id);
+            }
+            mark_binder_dups_inner(db, scrutinee, binder, false, live_after, true, sites)
+        }
         // `List.at`/`Bytes.at` BORROW the sequence; the index is a scalar (consume position, no heap).
         Core::ListAt { list, index, .. } => {
             seq(db, &[(list, true), (index, false)], live_after, sites)
@@ -7450,7 +7468,23 @@ fn emit(
             out.push(Lir::LocalGet(handle_slot));
             out.push(Lir::CallImport(OP_SUM_PAYLOAD)); // [payload-handle]
             let unboxed = get_op(db, id)?;
-            emit_heap_read_tail(db, id, unboxed, out); // [scalar | handle | nothing]
+            // PERCEUS RETAIN of the extracted COMPOUND child (mirrors the `SumPayload` emit): a marked site
+            // (`mark_binder_dups`' `SumExpect` arm) is a compound payload consumed while its scrutinee stays
+            // live, so `dup` the child (rc++) before it flows into the consuming op — else the shared payload
+            // is FBIP-mutated at rc==1 and the still-live scrutinee drifts. Only a COMPOUND leaf (`unboxed`
+            // None — a handle) aliases; a scalar unboxes/copies and is never a site. `dup` POPS + returns
+            // nothing, so tee the child, dup the copy, leave the original for the consumer. A fresh scratch
+            // slot at `*high` (never `base`, which a width-different sibling may claim).
+            if unboxed.is_none() && out.dup_sites.contains(&id) {
+                let child_slot = *high;
+                *high = child_slot + 1;
+                scratch_ty.insert(child_slot, ValType::I32);
+                out.push(Lir::LocalTee(child_slot)); // [child], child_slot = child
+                out.push(Lir::LocalGet(child_slot)); // [child, child]
+                out.push(Lir::CallImport(OP_DUP)); // pops the 2nd copy, rc++ → [child]
+            } else {
+                emit_heap_read_tail(db, id, unboxed, out); // [scalar | handle | nothing]
+            }
             out.push(Lir::Else);
             // ELSE — absent variant: trap. `unreachable` leaves the stack polymorphic, so the block's
             // declared result type validates without a produced value.
