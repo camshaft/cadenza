@@ -2643,6 +2643,7 @@ pass	print of an Ast.Float renders a re-readable decimal and read inverts it
 pass	print of an Ast.Str renders a quoted literal with escapes and read inverts it
 pass	print of an integer-valued Ast.Float keeps its float form through read
 pass	print renders a nested compound with a string leaf as its exact canonical text
+pass	print renders a single-element Ast.List as one parenthesized element
 pass	print renders a template that splices an Ast value — the non-executing path works
 pass	print renders an empty Ast.List as the empty-parens form
 pass	print then read of a digit-led Ast.Name reclassifies it per the number/identifier boundary

@@ -116,6 +116,14 @@
   (input  (= (print (Ast.List (list))) "()"))
   (output (: true Bool)))
 
+(case "print renders a single-element Ast.List as one parenthesized element"
+  (doc    "`print (quote (f))` is exactly `\"(f)\"` — the ONE-element (arity-1) list: open paren, the single
+           element, close paren, no inter-element space. Completes the list-arity rendering coverage — 0
+           elements → `()`, 1 → `(f)`, 2+ → the nested/compound cases above. Pins that the space-separator
+           logic (only BETWEEN elements) emits none for a lone element.")
+  (input  (= (print (quote (f))) "(f)"))
+  (output (: true Bool)))
+
 (case "the AST is a sum type deconstructible by pattern matching"
   (doc    "Witnesses metaprogramming.md #Quote Produces An AST Value (2nd sentence): the AST is a
            sum type with variants for each syntactic form. Pattern matching over (quote 42) binds
