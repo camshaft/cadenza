@@ -41,6 +41,8 @@ export default function WhatsNext() {
         And you've seen what makes Cadenza its own language:{" "}
         <Ch to="/effects">effects &amp; handlers</Ch>, where a handler decides what a performed operation
         means; <Ch to="/modules">modules</Ch> that are just records of their exports;{" "}
+        <Ch to="/opaque-types">opaque types</Ch> that hide a representation behind a module boundary so an
+        invariant can't be broken;{" "}
         <Ch to="/units">units of measure</Ch> that catch a dimensional mistake at compile time and then
         vanish before the program runs; <Ch to="/types-as-values">types as values</Ch> you can reflect,
         compare, and branch on at compile time; <Ch to="/ad-hoc-polymorphism">ad-hoc polymorphism</Ch>{" "}

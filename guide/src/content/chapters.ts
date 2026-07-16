@@ -203,6 +203,14 @@ export const CHAPTERS: Chapter[] = [
     Component: lazy(() => import("./chapters/Modules.tsx")),
   },
   {
+    slug: "opaque-types",
+    title: "Opaque types",
+    blurb: "Export a type's name but keep its constructor private: values flow only through the module's functions, so an invariant can't be broken.",
+    section: "What makes Cadenza different",
+    exercises: 2,
+    Component: lazy(() => import("./chapters/OpaqueTypes.tsx")),
+  },
+  {
     slug: "units",
     title: "Units of measure",
     blurb: "Carry a unit with a value; mix dimensions and it won't compile.",
