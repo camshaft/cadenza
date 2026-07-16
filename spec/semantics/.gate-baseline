@@ -3045,6 +3045,8 @@ pass	the kernel's GEN (∀-introduction) enforces its free-variable side-conditi
 pass	the kernel's MK_COMB rule: equals applied to equals are equal — from f=g and x=y derive (f x)=(g y)
 pass	the kernel's SPEC (∀-elimination) instantiates the quantified body with the witness
 pass	the kernel's conjunction: CONJ unions hypotheses, CONJUNCT1/2 project (hyps survive)
+pass	the kernel's disjunction introduction (DISJ1/DISJ2) preserves hypotheses
+pass	the kernel's existential introduction (EXISTS) checks the witness and preserves hypotheses
 pass	the kernel's modus ponens (⇒-elimination): from ⊢ p⇒q and ⊢ p derive ⊢ q
 pass	the largest factorial that fits the integer type computes exactly
 pass	the le modifier encodes a u16 little-endian

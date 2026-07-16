@@ -2101,3 +2101,108 @@
                       ((Option.None) false))))))
             (export main)))
   (output (: true Bool)))
+
+; ============================================================================================
+; Increment 12 slice 2 — the remaining logical connectives: disjunction (∨) and the existential (∃).
+; ∨ via its introduction rules DISJ1 (G⊢a → G⊢a∨b) and DISJ2 (G⊢b → G⊢a∨b), each preserving hypotheses.
+; ∃ via EXISTS-introduction — the dual of SPEC: to prove ∃x.P from a theorem of P[witness/x], the rule
+; CHECKS (via the capture-aware subst) that the premise's conclusion really is P[witness/x] before minting
+; ∃x.P, carrying the premise's hypotheses. Together with T/∧ (slice 1) and the Inc-7/8 ⇒/∀, this completes
+; the propositional + first-order connective set as kernel-minted theorems. (The three HOL axioms —
+; ETA/SELECT/INFINITY — are a later slice.)
+; ============================================================================================
+
+(case "the kernel's disjunction introduction (DISJ1/DISJ2) preserves hypotheses"
+  (doc    "∨-introduction. DISJ1 takes G ⊢ a and an arbitrary other disjunct b, deriving G ⊢ a∨b; DISJ2 is
+           the mirror (from G ⊢ b derive G ⊢ a∨b). Both PRESERVE the premise's hypotheses. From ASSUME(a) :
+           {a}⊢a, DISJ1 with b yields {a} ⊢ a∨b — the hypothesis {a} survives. The case checks the
+           disjunction conclusion and that the hypothesis is preserved. Pins the ∨ intro rules + a Disj
+           term form.")
+  (module "hol"
+    (do
+      (type Term (Var Int64) (Comb Term Term) (Eq Term Term) (Disj Term Term) (Neg Term))
+      (type Thm (Seq (List Term) Term))
+      (def (term-eq (: a Term) (: b Term))
+        (match a
+          ((Term.Var n)    (match b ((Term.Var m) (= n m)) (_ false)))
+          ((Term.Comb x y) (match b ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) (_ false)))
+          ((Term.Eq x y)   (match b ((Term.Eq p q) (and (term-eq x p) (term-eq y q))) (_ false)))
+          ((Term.Disj x y) (match b ((Term.Disj p q) (and (term-eq x p) (term-eq y q))) (_ false)))
+          ((Term.Neg x)    (match b ((Term.Neg p) (term-eq x p)) (_ false)))))
+      (def (assume (: p Term)) (Thm.Seq (list p) p))
+      (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
+      (def (hyps (: th Thm)) (match th ((Thm.Seq h _) h)))
+      (def (disj1 (: th Thm) (: b Term)) (Thm.Seq (hyps th) (Term.Disj (concl th) b)))
+      (def (disj2 (: a Term) (: th Thm)) (Thm.Seq (hyps th) (Term.Disj a (concl th))))
+      (export (. Term *))
+      (export Thm)
+      (export term-eq)
+      (export assume)
+      (export disj1)
+      (export disj2)
+      (export concl)
+      (export hyps)))
+  (input  (do
+            (import "hol" (Term Thm term-eq assume disj1 disj2 concl hyps))
+            (def (main)
+              (let ((a (Term.Var 1)) (b (Term.Var 2)))
+                (let ((d (disj1 (assume a) b)))
+                  (and (term-eq (concl d) (Term.Disj a b))
+                       (match (hyps d) ((list h) (term-eq h a)) (_ false))))))
+            (export main)))
+  (output (: true Bool)))
+
+(case "the kernel's existential introduction (EXISTS) checks the witness and preserves hypotheses"
+  (doc    "∃-introduction, the dual of SPEC. To prove ∃x.P, EXISTS takes a witness t and a theorem of
+           P[t/x]; it CHECKS (via the capture-aware subst) that the premise's conclusion really is P[t/x]
+           before minting ∃x.P, carrying the premise's hypotheses. Here body = (x0 = a), witness = a, so
+           P[a/x0] = (a = a); from ASSUME(a=a) : {a=a} ⊢ (a=a), EXISTS derives ⊢ ∃x0.(x0=a) with the
+           hypothesis preserved. Pins that ∃-intro validates the witness through substitution (a wrong
+           witness would fail the term-eq check → Option.None) and threads hypotheses — the existential
+           counterpart to SPEC's universal instantiation.")
+  (module "hol"
+    (do
+      (type Term (Var Int64) (Comb Term Term) (Eq Term Term) (Abs Int64 Term) (Exists Int64 Term))
+      (type Thm (Seq (List Term) Term))
+      (def (term-eq (: a Term) (: b Term))
+        (match a
+          ((Term.Var n)    (match b ((Term.Var m) (= n m)) (_ false)))
+          ((Term.Comb x y) (match b ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) (_ false)))
+          ((Term.Eq x y)   (match b ((Term.Eq p q) (and (term-eq x p) (term-eq y q))) (_ false)))
+          ((Term.Abs v x)  (match b ((Term.Abs w q) (and (= v w) (term-eq x q))) (_ false)))
+          ((Term.Exists v x) (match b ((Term.Exists w q) (and (= v w) (term-eq x q))) (_ false)))))
+      (def (subst (: v Int64) (: s Term) (: t Term))
+        (match t
+          ((Term.Var n) (if (= n v) s (Term.Var n)))
+          ((Term.Comb f x) (Term.Comb (subst v s f) (subst v s x)))
+          ((Term.Eq a b) (Term.Eq (subst v s a) (subst v s b)))
+          ((Term.Abs w body) (if (= w v) (Term.Abs w body) (Term.Abs w (subst v s body))))
+          ((Term.Exists w body) (if (= w v) (Term.Exists w body) (Term.Exists w (subst v s body))))))
+      (def (assume (: p Term)) (Thm.Seq (list p) p))
+      (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
+      (def (hyps (: th Thm)) (match th ((Thm.Seq h _) h)))
+      (def (exists-intro (: x Int64) (: body Term) (: witness Term) (: th Thm))
+        (if (term-eq (concl th) (subst x witness body))
+            (Option.Some (Thm.Seq (hyps th) (Term.Exists x body)))
+            (Option.None)))
+      (export (. Term *))
+      (export Thm)
+      (export term-eq)
+      (export subst)
+      (export assume)
+      (export exists-intro)
+      (export concl)
+      (export hyps)))
+  (input  (do
+            (import "hol" (Term Thm term-eq subst assume exists-intro concl hyps))
+            (def (main)
+              (let ((a (Term.Var 5)))
+                (let ((body (Term.Eq (Term.Var 0) a))
+                      (pinst (Term.Eq a a)))
+                  (match (exists-intro 0 body a (assume pinst))
+                    ((Option.Some e)
+                      (and (term-eq (concl e) (Term.Exists 0 body))
+                           (match (hyps e) ((list h) (term-eq h pinst)) (_ false))))
+                    ((Option.None) false)))))
+            (export main)))
+  (output (: true Bool)))
