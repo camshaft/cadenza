@@ -2152,8 +2152,47 @@ pub fn reflected_ty(db: &mut Db, id: StructId) -> Ty {
                 }
                 Ty::Map(Box::new(key_ty), Box::new(val_ty))
             }
-            // A non-compound application (a call, a sum ctor, an operator) has no fn element to ground —
-            // its result reflects exactly as `type_of` types it.
+            // A SUM-VARIANT CONSTRUCTOR applied to a payload — `(Some f)`, `(Box.Wrap f)`. The payload
+            // becomes a TYPE ARGUMENT of the resulting `Ty::Sum{args}` via the ctor's scheme (`Some :
+            // ∀a. a → Option a`), but `apply_type` unifies `a` with the payload's BOTTOM-UP `type_of`, so a
+            // fn payload's unannotated domain leaks in as `Any` (`Option (-> Any Int64)`) — the sum sibling
+            // of the tuple/list/record element leak. `(Some f)` and `(Some g)` (different fn domains) then
+            // reflect the SAME `Option (-> Any Int64)` and `Type.eq` returns a wrong `true`. Re-run the
+            // ctor's scheme unification with each payload's GROUNDED `reflected_ty` (mirroring `apply_type`'s
+            // instantiate+unify loop, but body-solving a fn payload's domain) so the sum's type argument is
+            // the real payload type. A nullary variant (no payload / no scheme) or any non-fn payload
+            // reflects exactly as `type_of` (the grounded type equals the bottom-up one). Guarded to a
+            // genuine variant ctor head via `variant_disc_of`; everything else (a call, an operator) keeps
+            // the plain `type_of`.
+            _ if crate::eval::variant_disc_of(db, head).is_some() => {
+                let mut fresh = crate::unify::Fresh::new();
+                match crate::eval::scheme_of(db, head, &mut fresh) {
+                    Some(scheme) => {
+                        let mut cur = crate::unify::instantiate(&scheme, &mut fresh);
+                        let mut subst = Subst::new();
+                        for &arg in args.iter() {
+                            match subst.apply(&cur) {
+                                Ty::Fn(param, result) => {
+                                    // GROUND the payload (a fn payload's domain body-solves) then freshen
+                                    // past the ctor's instantiation counter — the same occurs-check dodge
+                                    // `apply_type` applies to a bare-nullary payload sharing from-0 vars.
+                                    let arg_ty = reflected_ty(db, arg);
+                                    let at = freshen_arg(db, &arg_ty, &mut fresh);
+                                    let _ = crate::unify::unify(&mut subst, &param, &at);
+                                    cur = *result;
+                                }
+                                // Over-applied / non-arrow tail — fall back to the bottom-up type (a fault
+                                // is reported elsewhere; reflection stays total).
+                                _ => return type_of(db, id),
+                            }
+                        }
+                        subst.apply(&cur)
+                    }
+                    None => type_of(db, id),
+                }
+            }
+            // A non-compound application (a call, an operator) has no fn element to ground — its result
+            // reflects exactly as `type_of` types it.
             _ => type_of(db, id),
         },
         // The SYMBOL-headed compound value nodes (`Resolved::Tuple`/`List`/`Record`/`Map`) — the same
