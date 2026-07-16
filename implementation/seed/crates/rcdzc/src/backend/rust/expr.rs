@@ -635,8 +635,10 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             // a BigInt-typed export sees a `Big`. In-i64 range → `Big::from_i64`; a beyond-i64 constant →
             // `Big::from_sign_magnitude_bytes(&[sign, LE-magnitude…])` (the runtime's canonical leaf form,
             // the same route the wasm backend's `bigint-of-bytes` takes). `IntValue.magnitude` is
-            // BIG-endian, so reverse it for the LE form the parser expects.
-            if matches!(type_of(db, id), Ty::BigInt) {
+            // BIG-endian, so reverse it for the LE form the parser expects. `is_bigint_valued` also covers
+            // a `Qty{inner:BigInt}`-typed constant — a BigInt-magnitude quantity's constant erases to a
+            // `Big`, NOT an i64 (else a BigInt op over the erased Qty would `.mul()` on a mismatched i64).
+            if is_bigint_valued(&type_of(db, id)) {
                 Ok(const_big_expr(&v))
             } else {
                 emit_const_int(db, id, &v)
@@ -1546,16 +1548,18 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         // through `divmod` (returns `None` on a zero divisor → TRAP, matching the wasm `bigint-div`).
         Core::BigIntBinOp { op, lhs, rhs } => {
             // The `Big` methods (`add`/`mul`/…) require BOTH operands to emit as a `cdz_num::Big`. That
-            // holds when each operand node is `Ty::BigInt`-typed. But a QUANTITY over a BigInt magnitude
-            // erases the `Ty::Qty` wrapper to its inner in `lower`, and a CONSTANT magnitude inside that
-            // erased context can reach here typed as a plain `Int` (emitting an `i64` literal, not a
-            // `Big`) — calling `.mul(&Big)` on an `i64` is a type error (E0308/E0599). Until the Qty
-            // emit-side is built (a later increment), DECLINE when an operand isn't `Ty::BigInt`, rather
-            // than emit uncompilable source. (Pure-BigInt programs always type both operands `BigInt`.)
-            if !matches!(type_of(db, lhs), Ty::BigInt) || !matches!(type_of(db, rhs), Ty::BigInt) {
+            // holds when each operand's type IS a BigInt — either bare `Ty::BigInt` OR a `Ty::Qty { inner:
+            // BigInt }` (a QUANTITY over a BigInt magnitude: `lower` erases the `Ty::Qty` wrapper to its
+            // inner, so `(Qty.of (BigInt.of x) u)` emits the same `Big` as `(BigInt.of x)` — the unit is
+            // compile-time-only). So a `Qty{inner:BigInt}` operand is FINE. What must still DECLINE is a
+            // CONSTANT magnitude that reaches here typed as a plain `Ty::Int` (it emits an `i64` literal,
+            // not a `Big` — `.mul(&Big)` on an `i64` is E0308/E0599). `is_bigint_valued` accepts the two
+            // BigInt shapes and rejects the bare-Int one. (Mirrors the wasm backend's
+            // `Ty::Qty { inner, .. } if matches!(*inner, Ty::BigInt)` treatment.)
+            if !is_bigint_valued(&type_of(db, lhs)) || !is_bigint_valued(&type_of(db, rhs)) {
                 return Err(Reject::decline(
-                    "a BigInt op whose operand is not BigInt-typed (Qty-erased magnitude) is not yet \
-                     rendered on the Rust backend",
+                    "a BigInt op whose operand is neither BigInt nor a BigInt-magnitude quantity (a \
+                     bare-Int-typed operand would emit an i64, not a Big) is not yet rendered",
                 ));
             }
             let l = emit(db, lhs, env, ctx)?;
@@ -1579,12 +1583,12 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         // fixed compare, mirroring the wasm lowering (`bigint-cmp` then a fixed compare-with-zero). Result
         // is a `bool`. `=`/`≠` compare the `Ordering` to `Equal`; the relational ops compare the sign.
         Core::BigIntCmp { op, lhs, rhs } => {
-            // Both operands must emit as `Big` (see the `BigIntBinOp` note) — a Qty-erased non-BigInt
-            // operand declines rather than emit a `.cmp` on a mismatched type.
-            if !matches!(type_of(db, lhs), Ty::BigInt) || !matches!(type_of(db, rhs), Ty::BigInt) {
+            // Both operands must be BigInt-VALUED to emit as `Big` (bare `BigInt` or a `Qty{inner:BigInt}`
+            // whose wrapper erases; a bare-`Int` constant would emit an i64 → declines). See `BigIntBinOp`.
+            if !is_bigint_valued(&type_of(db, lhs)) || !is_bigint_valued(&type_of(db, rhs)) {
                 return Err(Reject::decline(
-                    "a BigInt comparison whose operand is not BigInt-typed (Qty-erased) is not yet \
-                     rendered on the Rust backend",
+                    "a BigInt comparison whose operand is neither BigInt nor a BigInt-magnitude quantity \
+                     is not yet rendered on the Rust backend",
                 ));
             }
             let l = emit(db, lhs, env, ctx)?;
@@ -1726,6 +1730,20 @@ fn ty_supports_native_eq(db: &mut Db, ty: &Ty) -> bool {
 /// (`Int64`), which unification does not thread the context width back onto.
 fn emit_const_int(db: &mut Db, id: StructId, v: &IntValue) -> Result<String, Reject> {
     emit_const_int_at(int_ty_of(db, id), v)
+}
+
+/// Whether a solved type is BIGINT-VALUED — a value that emits as a `cdz_num::Big`. That is a bare
+/// `Ty::BigInt` OR a `Ty::Qty { inner: BigInt }` (a quantity over a BigInt magnitude: the `Ty::Qty`
+/// wrapper is compile-time-only and `lower` erases it, so the magnitude emits as a `Big`). A bare
+/// `Ty::Int` is NOT (it emits a fixed-width int literal). Used by the `BigIntBinOp`/`BigIntCmp` guards to
+/// admit a BigInt-magnitude quantity while still declining a constant that reaches the op typed plain
+/// `Int`. Mirrors the wasm backend's `Ty::Qty { inner, .. } if matches!(*inner, Ty::BigInt)`.
+fn is_bigint_valued(ty: &Ty) -> bool {
+    match ty {
+        Ty::BigInt => true,
+        Ty::Qty { inner, .. } => matches!(**inner, Ty::BigInt),
+        _ => false,
+    }
 }
 
 /// A `cdz_num::Big` constructor EXPRESSION for a CONSTANT integer `v` — in-i64 range → `Big::from_i64`,
