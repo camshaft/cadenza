@@ -384,6 +384,44 @@
                (def (main)  (fst (tuple 7 8))) (export main)))
   (output    (: 7 Int64)))
 
+; ── Projecting a compound BUILT AT THE PROJECTION SITE from RUNTIME elements folds to the element ─────
+; `(. (tuple a b) 0)` where the tuple is constructed right where it is projected folds to the element
+; occurrence `a` — a compile-time-visible constructor's projection reduces to the element directly in
+; `lower` (core.rs: a projection of a compile-time-visible tuple "folds to the element … leaving no
+; Tuple"/`Proj`). The tuple is NEVER built on the heap. Distinct from the cases above (constant elements,
+; or a whole tuple arriving as a PARAMETER): here the elements are RUNTIME parameters, so the fold must
+; THREAD each runtime value into the projection rather than bake a constant — and the UNPROJECTED sibling
+; is not evaluated (its trap is shielded, since building the tuple is elided). Both backends inherit the fold.
+
+(case "projecting a tuple built from runtime elements folds to the projected element"
+  (doc    "`(. (tuple a b) 0)` and `(. (tuple a b) 1)` over runtime parameters fold to `a` / `b` directly
+           — the tuple is built at the projection site, so `lower` reduces the projection to the element
+           occurrence, building no heap tuple. `(f 7 9)` projecting index 0 → 7, index 1 → 9 (checked via a
+           tuple of both projections). Pins that the projection-of-just-built-compound fold threads the
+           RUNTIME element value (not a constant), on both backends.")
+  (input  (do (def (main (: a Int64) (: b Int64)) (tuple (. (tuple a b) 0) (. (tuple a b) 1))) (export main)))
+  (call   main (: 7 Int64) (: 9 Int64))
+  (output (: (tuple 7 9) (Tuple Int64 Int64))))
+
+(case "reading a field of a record built from runtime elements folds to the field"
+  (doc    "The record companion: `(. (record (a x) (b (+ x 1))) b)` folds to the field initializer
+           `(+ x 1)` directly — the record is built at the access site, so the projection reduces to the
+           field's occurrence (no heap record). `(main 5)` → 6. Pins the field-of-just-built-record fold
+           threads the runtime field value, both backends.")
+  (input  (do (def (main (: x Int64)) (. (record (a x) (b (+ x 1))) b)) (export main)))
+  (call   main (: 5 Int64))
+  (output (: 6 Int64)))
+
+(case "projecting a just-built tuple does not evaluate the unprojected sibling's trap"
+  (doc    "`(. (tuple a (/ 1 z)) 0)` with z = 0 projects element 0 (`a`), so the sibling `(/ 1 z)` — a
+           divide-by-zero — is NEVER evaluated: the fold reduces to `a` and building the tuple is elided,
+           so the sibling's trap does not occur. `(f 7 0)` → 7, not a trap. The runtime-element,
+           built-at-site companion of the un-projected-tuple-element shielding (§an un-projected tuple
+           element is not evaluated): here the tuple is built from runtime operands at the projection.")
+  (input  (do (def (main (: a Int64) (: z Int64)) (. (tuple a (/ 1 z)) 0)) (export main)))
+  (call   main (: 7 Int64) (: 0 Int64))
+  (output (: 7 Int64)))
+
 (case "member access of a missing field is a type error"
   (doc    "Witnesses core-semantics.md #Member Access Projects A Record Field (3rd sentence):
            projecting a field the record does not contain has no defined result. A record's field

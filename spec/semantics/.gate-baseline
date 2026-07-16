@@ -2473,9 +2473,11 @@ pass	print of an integer-valued Ast.Float keeps its float form through read
 pass	print of an integer-valued Ast.Float keeps its float form through read
 pass	projecting a field is independent of the order fields are written
 pass	projecting a field of a non-compound argument is rejected at the call site
+pass	projecting a just-built tuple does not evaluate the unprojected sibling's trap
 pass	projecting a record onto an absent field is rejected
 pass	projecting a record restricts it to the named fields
 pass	projecting a record with a duplicate label is rejected
+pass	projecting a tuple built from runtime elements folds to the projected element
 pass	projecting a tuple passed as a function parameter yields the element, never an invalid component
 pass	projecting an if-of-tuples does not evaluate the untaken branch's unprojected sibling
 pass	projecting an if-of-tuples evaluates the taken branch's projected element, so its trap occurs
@@ -2493,6 +2495,7 @@ pass	raising a BigInt-magnitude quantity to a power runs the unbounded multiply
 pass	raising a quantity to a compile-time power composes the unit and the magnitude
 pass	reaching an effect neither handled nor delegated is rejected at compile time
 pass	reading a byte from a sequence built with a RUNTIME element widens it to the Option payload
+pass	reading a field of a record built from runtime elements folds to the field
 pass	reading a member from an if-of-records resolves each branch's field by its own sorted order
 pass	reading a string's scalar addresses scalar values, not bytes
 pass	reading a string's scalar in bounds yields Some of the char
