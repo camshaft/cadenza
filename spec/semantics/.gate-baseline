@@ -299,6 +299,8 @@ pass	a nested non-exhaustive match names the uncovered inner variant (CDZ0210 no
 pass	a Some carrying a bare None type-checks under a whole-expression annotation
 pass	a Some carrying an inner-annotated None matches its arm (the control)
 pass	a String compound export under a non-main name crosses to the host
+pass	a String match with a BOUND default arm equals its (= s literal) if-chain with a bound else
+pass	a String match with disjoint literal arms is order-independent (reordering the arms preserves the result)
 pass	a String param threaded through a self-recursive loop and concatenated each step is retained
 pass	a String-returning closure alongside a parameterized plain export
 pass	a String-returning closure alongside a parameterized plain export — the plain runs
