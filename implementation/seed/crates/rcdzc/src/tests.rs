@@ -53199,6 +53199,47 @@ mod stage1 {
     }
 
     #[test]
+    fn the_rest_marker_dotdot_used_as_a_value_names_the_pattern_only_role() {
+        // `..` is the REST/SPREAD marker of a collection PATTERN (`(list a .. rest)` / `(map (k v) .. r)`).
+        // Used as a VALUE or form HEAD — `(.. xs)`, `(g ..)` — it previously drew "unbound name `..`" (and,
+        // in head position, a misleading "did you mean `.`?" — a rest marker is not a mistyped member `.`).
+        // It now names the pattern-only role (CDZ0201), NO fix (the `.`-rename is a wrong guess; a rest
+        // marker has no value rewrite). The sibling of the `_`-as-value and `?`-as-head sigil messages.
+        for body in ["(.. xs)", "(g ..)"] {
+            let src = format!("(module m (def (g a) a) (def (f xs) {body}) (export f))");
+            let d = compile_component(&crate::codec::encode(&parse(&src)))
+                .expect_err("`..` as a value must be rejected");
+            assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+            assert!(
+                d.message.contains("`..` is a rest/spread marker")
+                    && d.message.contains("PATTERN")
+                    && d.message.contains("(list a .. rest)"),
+                "names the pattern-only role: {}",
+                d.message
+            );
+            assert!(
+                d.fix.is_none(),
+                "no misleading fix for a rest marker: {:?}",
+                d.fix
+            );
+        }
+        // NO false positive: a `..` in its LEGITIMATE list/map PATTERN position (match AND binding) is
+        // untouched — the pattern parser consumes the marker before it could reach the value-ref path.
+        for ok in [
+            "(module m (def (f (: xs (List Int64))) (match xs ((list a .. r) a) (_ 0))) (export f))",
+            "(module m (def (f (: mp (Map Int64 Int64))) (match mp ((map (k v) .. rest) k) (_ 0))) (export f))",
+            "(module m (def (f (: xs (List Int64))) (let (((list a .. r) xs)) a)) (export f))",
+        ] {
+            assert!(
+                !crate::diagnostics(&mut crate::db::Db::load(parse(ok)))
+                    .iter()
+                    .any(|d| d.message.contains("`..` is a rest/spread marker")),
+                "a legitimate pattern `..` is not flagged: {ok}"
+            );
+        }
+    }
+
+    #[test]
     fn a_try_with_no_fallible_enclosing_function_is_cdz0230() {
         // T0b boundary check (DESIGN-try-operator-rcdzc.md §6): a `?` short-circuits the enclosing
         // function's fallible result type. `(def (main) (try (Ok 1)))` — main's body IS the `?`, whose

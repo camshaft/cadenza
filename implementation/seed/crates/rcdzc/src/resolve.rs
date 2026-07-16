@@ -841,6 +841,28 @@ fn resolve_name(db: &Db, id: StructId, name: &str) -> Resolved {
             .with_fix(crate::diag::Fix::replace_verified(id, "try", "replace `?` with `try`")),
         );
     }
+    // `..` used as a VALUE / form HEAD — `(.. xs)`, `(g ..)`. `..` is the REST/SPREAD marker of a
+    // collection PATTERN (`(list a .. rest)`, `(map (k v) .. rest)`); a real pattern rest is consumed by
+    // the list/map pattern parser (which scans for `as_name(e) == Some("..")`) and NEVER reaches here as a
+    // value reference. So a `..` that DOES reach `resolve_name` is a category misuse — the pattern-only
+    // sigil written where a value/head belongs. The generic path gave "unbound name `..`" (and, in head
+    // position, a misleading "did you mean `.`?" — `..` is distance-1 from member-access `.`, but a rest
+    // marker is not a mistyped `.`). Name the real role instead. NO fix: a rest marker has no value
+    // rewrite, and the `.`-rename is a wrong guess. (Fires on ANY bare `..`, like the `_` branch — `..`
+    // never denotes a value; a `..`-LED name is not a thing.) The uppercase/`?`/`_` sibling of the
+    // sigil-in-value-position family.
+    if name == ".." {
+        trace!(target: "rcdzc::resolve", node = id.0, "`..` rest marker used as a value (CDZ0201)");
+        return Resolved::Poison(
+            Reject::coded(
+                Code::Malformed,
+                "`..` is a rest/spread marker, valid only inside a `(list …)` or `(map …)` PATTERN \
+                 (e.g. `(list a .. rest)`, which binds the leading elements and the tail) — it is not a \
+                 value or a form head here",
+            )
+            .at(id),
+        );
+    }
     trace!(target: "rcdzc::resolve", node = id.0, %name, "name UNBOUND (CDZ0101)");
     // The "did you mean?" typo suggestion (the nearest in-scope name) is computed LAZILY, at the ONE site
     // that SURFACES an unbound name as a user fault (`infer::collect_node`) — NOT here. `resolved_of` is
