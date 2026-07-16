@@ -1,0 +1,101 @@
+/// units-typed.cdz — P1 "units everywhere", stage S2: STRONG UNIT TYPING at the geometry API boundary.
+///
+/// OPERATOR DIRECTION (v-cad reopening req #2, refined): "the Vec3 would be over the Rational+Meter types
+/// … we really want strong typing about units!" + the Q1 ruling: the internal model is exact Rational
+/// METERS (the language's base length unit); an app authors in ANY unit and the language's exact
+/// conversions make it "just work"; f64 only at the manifold edge.
+///
+/// THE SHAPE (and WHY it's this shape, not a Qty-boxed product). We want a coordinate to BE a length so
+/// that mixing a length with a bare number is a compile-time TYPE ERROR. The natural move — a product
+/// `V3q(Qty, Qty, Qty)` storing quantities — is BLOCKED today: a `Qty(Rational, Unit.base(#"meter"))`
+/// payload inside a `type` declaration makes the type spuriously GENERIC (the unit expression's names are
+/// captured as type parameters → CDZ0203 "Holder is a type constructor"). Filed to v-inference. So S2
+/// puts the unit typing where it works TODAY and where it MATTERS MOST: on the CONSTRUCTOR + ACCESSOR
+/// SIGNATURES. An author builds a vector by passing length-`Qty` values (type-checked — a bare number is
+/// rejected at the call); the value is stored as exact bare-Rational METERS (the operator's internal
+/// model); an accessor hands a coordinate back OUT as a length-`Qty`. Strong typing at the boundary,
+/// exact Rational meters inside — no Qty box in every node, no dependence on the blocked generic path.
+///
+/// This composes with the existing bare-`Rational` `Vec3r` (exact.cdz): `Vec3m` here IS the meter-model
+/// store; `to-vec3r` bridges to the existing CSG/bbox machinery unchanged (all still exact Rational).
+
+import { Vec3r } from "exact"
+import { v3r } from "exact"
+
+/// A length in the base METER unit — the type an author supplies for a coordinate/size. Written inline
+/// (a `type Len = …` alias does not bridge the variant-payload path either); this is the ONE spelling of
+/// "an exact length" the API uses. `Length` = `Qty` of `Rational` in the base meter unit.
+///  (When the file-top `default-fraction` pragma capability lands — filed, pending — the `Rational.of`
+///   calls in callers become bare `n/d`; the TYPES here are unaffected.)
+
+/// The meter-model position/size vector: three exact-`Rational` MAGNITUDES, understood as METERS. This is
+/// the storage form (bare Rational, so it rides the existing exact CSG/bbox math); the UNIT lives in the
+/// constructor/accessor signatures below, not boxed in the payload.
+type Vec3m =
+  | V3m(Rational, Rational, Rational)
+
+/// Build a meter-model vector from three LENGTHS. Each argument is a `Qty(Rational, meter)` — so a caller
+/// MUST pass a length (a bare `Rational` is a CDZ0301 type error here, which is exactly the strong typing
+/// we want), and a length authored in any unit converts to exact meters before storage. Stores the exact
+/// bare-Rational meter magnitude.
+def v3-len(
+  x: Qty(Rational, Unit.base(#"meter")),
+  y: Qty(Rational, Unit.base(#"meter")),
+  z: Qty(Rational, Unit.base(#"meter"))
+) = Vec3m.V3m(Qty.value(x), Qty.value(y), Qty.value(z))
+
+/// Read a coordinate back OUT as a length-`Qty` in meters (the dual of `v3-len`). The stored magnitude is
+/// re-wrapped as a meter quantity, so downstream code that wants units gets them.
+def m-x(v: Vec3m) = match v with | Vec3m.V3m(x, _, _) => Qty.of(x, Unit.of(#"meter"))
+def m-y(v: Vec3m) = match v with | Vec3m.V3m(_, y, _) => Qty.of(y, Unit.of(#"meter"))
+def m-z(v: Vec3m) = match v with | Vec3m.V3m(_, _, z) => Qty.of(z, Unit.of(#"meter"))
+
+/// A single length → its exact bare-Rational METER magnitude (the storage projection; the boundary that a
+/// primitive's radius/height uses). A caller supplies a length in any unit; the language converts.
+def len-m(q: Qty(Rational, Unit.base(#"meter"))) = Qty.value(q)
+
+/// A meter length from an integer count of meters (the everyday constructor: `meters(5)` = a 5-metre
+/// length). Sugar over `Qty.of` so callers rarely spell the unit by hand.
+def meters(n: Int64) = Qty.of(Rational.of(n, 1), Unit.of(#"meter"))
+
+/// Bridge a meter-model vector to the exact bare-`Rational` `Vec3r` the existing CSG/bbox machinery
+/// (exact.cdz) consumes — the magnitudes ARE the (meter) coordinates, so this is a direct re-pack, still
+/// fully exact. This is how S2 plugs into the model without touching the CSG core.
+def to-vec3r(v: Vec3m) = match v with | Vec3m.V3m(x, y, z) => v3r(x, y, z)
+
+/// ============================ @test suite (S2 — boundary unit typing, exact meters) ============================
+
+@test
+def v3-len-stores-exact-meters() =
+  // Build from three 1/2/3-metre lengths; stored magnitudes are exactly 1, 2, 3 (bare Rational meters).
+  let v = v3-len(meters(1), meters(2), meters(3)) in
+  match v with | Vec3m.V3m(x, y, z) =>
+    if x == Rational.of(1, 1) then
+      (if y == Rational.of(2, 1) then (if z == Rational.of(3, 1) then unit else trap("z")) else trap("y"))
+    else trap("x")
+
+@test
+def a-coordinate-round-trips-out-as-a-meter-length() =
+  // m-x is the dual of v3-len: read the x coordinate back as a Qty in meters, magnitude exactly 1.
+  let v = v3-len(meters(1), meters(2), meters(3)) in
+  if Qty.value(m-x(v)) == Rational.of(1, 1) then unit else trap("m-x")
+
+@test
+def authoring-in-inches-stores-exact-meters() =
+  // THE showcase of the operator's model: author a coordinate in INCHES; the language converts to exact
+  // Rational METERS at the boundary. 1 inch = 127/5000 m EXACTLY (no float rounding). Author-unit-agnostic.
+  let one-inch = Qty.of(Rational.of(1, 1), Unit.of(#"inch")) in
+  let as-exact-meters = Qty.of(Qty.value(Unit.in(Unit.of(#"meter"), one-inch)), Unit.of(#"meter")) in
+  let v = v3-len(as-exact-meters, meters(0), meters(0)) in
+  match v with | Vec3m.V3m(x, _, _) =>
+    if x == Rational.of(127, 5000) then unit else trap("1 inch = 127/5000 m exactly")
+
+@test
+def to-vec3r-bridges-to-the-exact-csg-model() =
+  // The meter-model vector re-packs to the bare-Rational Vec3r the CSG/bbox core consumes — same exact
+  // magnitudes, so a units-typed build plugs into the existing exact machinery unchanged.
+  let v = v3-len(meters(4), meters(5), meters(6)) in
+  match to-vec3r(v) with | Vec3r.V3r(x, y, z) =>
+    if x == Rational.of(4, 1) then (if z == Rational.of(6, 1) then unit else trap("z")) else trap("x")
+
+export { Vec3m.*, v3-len, m-x, m-y, m-z, len-m, meters, to-vec3r }
