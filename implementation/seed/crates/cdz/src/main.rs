@@ -2756,9 +2756,26 @@ struct DocAtOffsetArgs {
     offset: usize,
 }
 
+/// Does a total by-NAME query's rendered result (`type`/`doc`/`instantiations`) mean "the name resolves
+/// to NOTHING" (a typo) rather than a real answer? The `TypeOf`/`DocOf`/… sidecar queries are TOTAL — they
+/// return a defined line even for an unknown name: `no such definition `<name>`` optionally followed by a
+/// hint (` — did you mean `Y`?` OR ` — closest matches: …`). A `cdz` command maps THIS verdict to a
+/// non-zero exit so a script can tell a typo from a real (if empty/undocumented) answer.
+///
+/// Match by RECONSTRUCTING the exact sentinel for the QUERIED `name` and comparing the WHOLE trimmed text
+/// (`== sentinel`, or `sentinel + " — "` + any hint) — NOT a loose `contains`/`starts_with` on arbitrary
+/// rendered prose, which would misclassify a legitimate result that merely began with that phrase (the
+/// pr467 brittleness fix, generalized across the by-name queries).
+fn is_no_such_definition(rendered: &str, name: &str) -> bool {
+    let sentinel = format!("no such definition `{name}`");
+    let trimmed = rendered.trim();
+    trimmed == sentinel || trimmed.starts_with(&format!("{sentinel} — "))
+}
+
 /// `cdz type NAME FILE` — parse in-process, drive the compiler's `TypeOf` sidecar query, print the
 /// rendered type. A query is a pure, total fact read: it answers even for a program that would not
-/// compile (`DESIGN-sidecar-api.md`).
+/// compile (`DESIGN-sidecar-api.md`). An UNRESOLVABLE name (a typo) exits non-zero — the answer is still
+/// printed, but it's a "no such definition" verdict, not a type.
 fn run_type(args: &TypeArgs) -> ExitCode {
     let (source, arenas) = match load_program(&args.file) {
         Ok(v) => v,
@@ -2776,8 +2793,15 @@ fn run_type(args: &TypeArgs) -> ExitCode {
     );
     match out.artifact(rcdzc::sidecar::KIND_TYPE_INFO) {
         Some(bytes) => {
-            println!("{}", String::from_utf8_lossy(bytes));
-            ExitCode::SUCCESS
+            let text = String::from_utf8_lossy(bytes);
+            println!("{text}");
+            // A total query answers even for an unknown name with a "no such definition `X`" verdict —
+            // map that to a FAILURE (a typo isn't a type), while a real type stays SUCCESS.
+            if is_no_such_definition(&text, &args.name) {
+                ExitCode::FAILURE
+            } else {
+                ExitCode::SUCCESS
+            }
         }
         None => {
             report_errors(&out);
@@ -2854,21 +2878,10 @@ fn run_doc(args: &DocArgs) -> ExitCode {
             // "no documentation for `X`" line (a REAL definition that carries no doc), and a "no such
             // definition `X`" line (the name resolves to NOTHING — a typo). The first two are a SUCCESS
             // (`X` exists; asking for its doc is a legitimate answer), but an unresolvable name is a
-            // FAILURE — a caller/script should be able to tell "you misspelled the name" from "this exists
-            // but is undocumented".
-            //
-            // Detect the unresolvable-name verdict by RECONSTRUCTING the sidecar's EXACT one-line sentinel
-            // for THIS requested name — `no such definition `<name>`` (optionally followed by a
-            // ` — did you mean `<near>`?` hint) — and matching the WHOLE output against it, rather than a
-            // loose `starts_with` on arbitrary doc prose: a legitimate doc string that merely began with
-            // "no such definition `" would otherwise be misclassified as a failure. Tying the match to the
-            // queried `args.name` and the exact sentinel shape makes a false positive effectively
-            // impossible (a real doc would have to be verbatim this sentence for the exact name asked).
-            let sentinel = format!("no such definition `{}`", args.name);
-            let trimmed = text.trim();
-            let is_unresolvable =
-                trimmed == sentinel || trimmed.starts_with(&format!("{sentinel} — did you mean `"));
-            if is_unresolvable {
+            // FAILURE — a caller/script should tell "you misspelled the name" from "this exists but is
+            // undocumented". `is_no_such_definition` matches the exact sentinel for the queried name (not a
+            // loose prefix on the doc prose — the pr467 brittleness fix, shared with `cdz type`).
+            if is_no_such_definition(&text, &args.name) {
                 ExitCode::FAILURE
             } else {
                 ExitCode::SUCCESS
@@ -4009,12 +4022,14 @@ fn run_instantiations(args: &InstantiationsArgs) -> ExitCode {
     let text = String::from_utf8_lossy(bytes);
     if text.trim().is_empty() {
         // Empty ONLY for an UNKNOWN name — a known def always emits a `disp` line. (A near-typo gets no
-        // suggestion here; `cdz type NAME` is the name-oriented query that offers "did you mean?".)
+        // suggestion here; `cdz type NAME` is the name-oriented query that offers "did you mean?".) An
+        // unresolvable name is a FAILURE (rc≠0) — consistent with `cdz type`/`cdz doc`, so a script can
+        // tell a typo from a real result rather than reading a success exit on a "no such definition".
         eprintln!(
             "{PROG}: no such definition `{}` in {}",
             args.name, args.file
         );
-        return ExitCode::SUCCESS;
+        return ExitCode::FAILURE;
     }
     // Two line kinds, each TAB-tagged:
     //   `disp<TAB>node<TAB>disposition`               — the def's fate (specialized/inlined/emitted/…)
