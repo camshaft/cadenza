@@ -382,6 +382,7 @@ pass	a bare built-in constructor Some is passed as a first-class function
 pass	a bare conditional keyword is rejected, not a crash
 pass	a bare construct and a qualified match name the same colliding variant
 pass	a bare data-constructor-colliding variant's OTHER arm fires on the other discriminant
+pass	a bare empty list reflects an undetermined element, distinct from a concrete list type
 pass	a bare equality keyword is rejected, not a crash
 pass	a bare literal exceeding the default-integer pragma's narrow type is rejected
 pass	a bare literal that overflows the annotated width does not fit it
@@ -3201,6 +3202,7 @@ pass	the runtime-list version of a tail fold compiles and folds correctly
 pass	the same declared effect is handled in-program by one entrypoint and delegated by another
 pass	the same function called under two handlers is discharged by each in turn
 pass	the same mixed-scale comparison is EXACT over Rational (keeps the fractional scale)
+pass	the same nullary variant constrained to different concrete types reflects different types
 pass	the same program with a different response gives a different deterministic result
 pass	the same-core-shape sibling dispatches ITS body, not the first
 pass	the scalar length of a runtime multi-byte string counts scalars, not bytes
@@ -3264,6 +3266,7 @@ pass	two MUTUALLY-recursive functions dispatching on a recursive sum compute its
 pass	two MUTUALLY-recursive sum types fold across their boundary
 pass	two `?`s in one boundary both unwrap (nested happy path)
 pass	two adjacent modules declared inside a function body compose
+pass	two bare nullary variants reflect the same undetermined type
 pass	two chars with different scalar values are unequal
 pass	two closures from one factory capture distinct values
 pass	two constant records with the same fields in different written order are equal

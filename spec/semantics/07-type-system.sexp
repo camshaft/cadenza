@@ -1073,6 +1073,43 @@
             (export main)))
   (output (: 1 Int64)))
 
+; The two cases above pin bare-vs-concrete and context-constrains. These pin the NEIGHBORS: two bare
+; undetermined values reflect the SAME type (the undetermined element canonicalizes, so `Type.of` is stable
+; — not two distinct fresh vars that compare unequal), the same nullary variant constrained to DIFFERENT
+; concrete types reflects different types, and the List analogue of the bare-None undetermined case.
+
+(case "two bare nullary variants reflect the same undetermined type"
+  (doc    "`(Type.eq (Type.of (None)) (Type.of (None)))` is true — both bare `(None)`s reflect `Option ?a`
+           with the SAME canonical undetermined element, so their reflected types are equal. Pins that the
+           undetermined element is CANONICAL (stable) across two reflections, not two distinct fresh vars
+           that would compare unequal — the type-level analogue of the value-level `(= (None) (None))` = true.
+           Complements the bare-vs-concrete case (Option ?a ≠ Option Int64): undetermined = undetermined,
+           undetermined ≠ concrete.")
+  (input  (do (def (main) (if (Type.eq (Type.of (None)) (Type.of (None))) 1 0)) (export main)))
+  (output (: 1 Int64)))
+
+(case "the same nullary variant constrained to different concrete types reflects different types"
+  (doc    "`(None)` forced to `Option Int64` by one context and `Option Bool` by another reflects DIFFERENT
+           concrete types: `(Type.eq (Type.of (pi (None))) (Type.of (pb (None))))` is false. Pins that
+           `Type.of` tracks the element each surrounding constraint determines — the same syntactic `(None)`
+           reflects `Option Int64` in an Int64 context and `Option Bool` in a Bool context, so the two are
+           unequal. The differing-constraint companion of the single-constraint case above.")
+  (input  (do
+            (def (pi (: o (Option Int64))) o)
+            (def (pb (: o (Option Bool))) o)
+            (def (main) (if (Type.eq (Type.of (pi (None))) (Type.of (pb (None)))) 1 0))
+            (export main)))
+  (output (: 0 Int64)))
+
+(case "a bare empty list reflects an undetermined element, distinct from a concrete list type"
+  (doc    "The List analogue of the bare-`None` undetermined case: `(Type.of (list))` is `List ?a` (an empty
+           list carries no element to fix the type), distinct from the concrete `(Type.of (list 1))` = `List
+           Int64`, so `Type.eq` is false. Pins that reflection over an empty polymorphic collection sees the
+           element as undetermined, exactly as a bare nullary variant does — the collection form of the
+           inferred-not-eagerly-grounded rule.")
+  (input  (do (def (main) (if (Type.eq (Type.of (list)) (Type.of (list 1))) 1 0)) (export main)))
+  (output (: 0 Int64)))
+
 (case "Type.eq compares a TUPLE type-value structurally, by element types"
   (doc    "`Type.of` on a tuple value reflects its structural `Ty::Tuple` type, compared element-wise.
            `(Type.of (tuple 1 \"a\"))` is `(Tuple Int64 String)`: equal to another `(Tuple Int64 String)`
