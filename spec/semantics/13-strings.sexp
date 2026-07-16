@@ -2096,3 +2096,22 @@
   (output (: 1 Int64))
   (call   main (: 1 Int64))
   (output (: 2 Int64)))
+
+; ============================================================================================
+; An exported entry with a STRING parameter, called with a string argument — the exported-entry String-arg
+; boundary. The emitted rust LIBRARY (`fn main(s: String) -> i64`) is valid, but the rust-target test DRIVER
+; that marshals the `"abc"` argument used to pass it as a `&str` literal against the owned-`String` param →
+; E0308 (a differential: wasm cleanly declines, rust FAILED to build). Fixed in the rust gate harness
+; (`rust_call_arg` now wraps a string-literal arg `.to_string()` so it crosses as an owned String). A String
+; param on a HELPER already built on both backends; this pins the exported-entry surface (breaker-found,
+; corpus-bugfix). On wasm this DECLINES (a String across the component entry boundary is unrealized) — a
+; sound todo; on rust it now runs → 3, matching the recorded value.
+
+(case "an exported entry with a String parameter is called with a string argument"
+  (doc    "`(def (main (: s String)) (String.byte-len s))` exported and called with `\"abc\"` → the UTF-8
+           byte length 3. The rust DRIVER now marshals the string arg as an owned `String` (`\"abc\".to_string()`),
+           matching the emitted `fn main(s: String)` signature — no more E0308. (wasm declines the String
+           entry arg — a sound todo; rust computes it.)")
+  (input  (do (def (main (: s String)) (String.byte-len s)) (export main)))
+  (call   main (: "abc" String))
+  (output (: 3 Int64)))

@@ -1979,6 +1979,7 @@ pass	an export with a tuple parameter before a scalar returns a list from both
 pass	an export with two tuple parameters returns a list from both
 pass	an exported closure with a narrow-arg wide-result mismatched body is rejected, not miscompiled
 pass	an exported closure with an annotation-mismatched body is rejected, not emitted invalid
+pass	an exported entry with a String parameter is called with a string argument
 pass	an expression tree built at run time is evaluated by matching its node variants
 pass	an i16 segment round-trips at its two's-complement minimum
 pass	an identity conversion unwraps the magnitude unchanged
