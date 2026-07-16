@@ -1471,6 +1471,26 @@
             (export main)))
   (output (: 12 Int64)))
 
+(case "a variadic Ast form is folded via a tail-splice rest-binder over its operands"
+  (doc    "The n-ary / variadic-macro idiom, using the FINAL `,@rest` splice binder: `` `(f ,@rest) `` binds
+           the arbitrary-length operand list of an `f`-headed form, and a helper `sum-args` recursively folds
+           it. Over `(quote (f 10 20 30))` the rest-binder captures the three `Ast.Int` operands and their
+           sum is 60. Pins the tail-splice-binder companion of the fixed-arity recursive-eval case above — a
+           macro/interpreter destructuring a form of UNKNOWN arity by binding the rest, then walking it. (The
+           `,@rest` pattern binder over a runtime Ast is the capability v-patterns' note flagged as landed.)")
+  (input  (do
+            (def (sum-args (: xs (List Ast)))
+              (match xs
+                ((list) 0)
+                ((list h .. t) (+ (match h ((Ast.Int n) n) (_ 0)) (sum-args t)))))
+            (def (sum-form (: a Ast))
+              (match a
+                ((quasiquote (f (unquote-splicing rest))) (sum-args rest))
+                (_ -1)))
+            (def (main) (sum-form (quote (f 10 20 30))))
+            (export main)))
+  (output (: 60 Int64)))
+
 ; --- eval drives CONTROL FLOW reified from quoted source (the Ast.Bool integration faces) ---------
 ; The Ast.Bool cases above pin the leaf (quote/match/eval/encode/print of a bare boolean); these pin
 ; the boolean leaf DOING ITS JOB inside evaluated control flow — an `if` whose condition arrives
