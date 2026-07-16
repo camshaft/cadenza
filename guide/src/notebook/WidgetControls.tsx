@@ -2,19 +2,21 @@
 /// changes to the notebook's reactive engine. Purely presentational + the onChange callback; the widget
 /// descriptors come from the tested parseWidgets, and the recompute logic lives in NotebookPage.
 
-import type { Widget } from "./parseWidgets.ts";
+import type { Widget, WidgetError } from "./parseWidgets.ts";
 import type { WidgetValues } from "./assembleForRun.ts";
 
 export function WidgetControls({
   widgets,
   values,
   onChange,
+  errors = [],
 }: {
   widgets: Widget[];
   values: WidgetValues;
   onChange: (name: string, value: number | boolean | string) => void;
+  errors?: WidgetError[];
 }) {
-  if (widgets.length === 0) return null;
+  if (widgets.length === 0 && errors.length === 0) return null;
   return (
     <div className="my-3 flex flex-col gap-3 rounded-lg border border-cadenza-800/40 bg-slate-900/40 px-4 py-3" data-testid="widgets">
       {widgets.map((w) => (
@@ -22,6 +24,13 @@ export function WidgetControls({
           <span className="w-28 shrink-0 font-mono text-cadenza-300">{w.name}</span>
           <Control widget={w} value={values[w.name] ?? w.default} onChange={(v) => onChange(w.name, v)} />
         </label>
+      ))}
+      {/* Surface per-line widget-DSL parse errors so a mistyped widget line isn't a silently-missing
+          control (e.g. `rate : Flat64 = slider(...)` → "unknown type Flat64"). */}
+      {errors.map((e) => (
+        <p key={e.line} className="font-mono text-xs text-rose-400" data-testid="widget-error">
+          line {e.line}: {e.message} — <span className="text-slate-500">{e.source}</span>
+        </p>
       ))}
     </div>
   );

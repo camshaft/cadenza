@@ -201,7 +201,10 @@ export default function NotebookPage() {
           cell.kind === "prose" ? (
             <ProseView key={i} markdown={cell.markdown} />
           ) : cell.directive.kind === "widget" ? (
-            <WidgetControls key={i} widgets={parseWidgets(cell.source).widgets} values={values} onChange={onWidgetChange} />
+            (() => {
+              const parsed = parseWidgets(cell.source);
+              return <WidgetControls key={i} widgets={parsed.widgets} errors={parsed.errors} values={values} onChange={onWidgetChange} />;
+            })()
           ) : (
             <CodeCellView key={i} source={cell.source} hidden={cell.directive.kind === "hidden"} state={states[i]} />
           ),
