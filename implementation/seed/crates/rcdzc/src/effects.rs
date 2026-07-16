@@ -3126,23 +3126,7 @@ fn thread_bounded(
             //     `(do stmt… v)`: the statements sequenced (folded later under their own enclosing
             //     handler / emitted as host calls), then the resume value. This is what lets an inner
             //     handler INTERPOSE on a delegated effect — count it via an outer effect, then forward.
-            let (value, next_state) = match tail_resume(db, arm_body) {
-                Some(vs) => vs,
-                None => {
-                    // A `(do stmt… (resume v s))` arm body: peel the trailing resume, keep the stmts.
-                    let items = db.ast.as_form(arm_body, "do")?.to_vec();
-                    let (&last, stmts) = items.split_last()?;
-                    let (v, s) = tail_resume(db, last)?;
-                    // Rebuild `(do stmt… v)` — the statements run for effect, then `v` is the value. A
-                    // pure-statement `do` would have no reason to wrap the resume, so the statements here
-                    // carry the interposing side effects that must survive.
-                    let do_head = db.push_name("do");
-                    let mut children = vec![do_head];
-                    children.extend_from_slice(stmts);
-                    children.push(v);
-                    (db.push_list(children), s)
-                }
-            };
+            let (value, next_state) = peel_resume_from_arm_body(db, arm_body)?;
             // `value`/`next_state` are the resume node's own CHILDREN, so their `parent_of` still points at
             // that (now-discarded) `resume` node — an orphan whose parent chain does NOT reach the threaded
             // body's enclosing `(def …)`. If either carries a NAME reference (e.g. a state-threading arm's
@@ -4422,6 +4406,65 @@ fn tail_resume(db: &mut Db, node: StructId) -> Option<(StructId, StructId)> {
         Resolved::Resume { value, next_state } => Some((value, next_state)),
         _ => None,
     }
+}
+
+/// Extract `(value, next_state)` from a tail-resumptive handler arm body, handling the CONTROL-shaped bodies
+/// the thread path serves — the perform arm reduces the arm body to its resume VALUE (the perform's result)
+/// + its NEXT-STATE (threaded forward). Shapes:
+///   * a bare `(resume v s)` → `(v, s)`.
+///   * a `(do stmt… (resume v s))` (interposing/forwarding) → `((do stmt… v), s)` — the statements run for
+///     effect, then `v` is the value.
+///   * a `(match scrut (pat (resume v s))…)` (the arm DESTRUCTURES its op arg, resuming per branch) → the
+///     VALUE is the match rebuilt around each branch's resume value `(match scrut (pat v)…)`, and the
+///     NEXT-STATE is the branches' shared next-state. Every branch must itself peel to a resume; the
+///     branches must AGREE on the next-state (structurally identical) — a branch-VARYING next-state is a
+///     match-valued state the tail fold cannot thread as a single slot value, so DECLINE (`None`). The common
+///     case — destructure the arg (`(k, v)`) but thread ONE state (all branches `resume(…, Map.insert(s,k,v))`
+///     or `resume(…, s)`) — agrees, and folds. (v-compiler-ml's get/put memoized-DB shape: a `put` arm
+///     `(match kv (| (k,v) => resume(unit, Map.insert(s,k,v))))` performed in a `;`-sequence with a `get`.)
+///
+/// `None` if the arm body is not one of these (the honest "not yet reducible" decline).
+fn peel_resume_from_arm_body(db: &mut Db, arm_body: StructId) -> Option<(StructId, StructId)> {
+    // Bare `(resume v s)`.
+    if let Some(vs) = tail_resume(db, arm_body) {
+        return Some(vs);
+    }
+    // `(do stmt… (resume v s))` — peel the trailing resume, keep the leading statements around the value.
+    if let Some(items) = db.ast.as_form(arm_body, "do").map(|t| t.to_vec()) {
+        let (&last, stmts) = items.split_last()?;
+        let (v, s) = peel_resume_from_arm_body(db, last)?;
+        let do_head = db.push_name("do");
+        let mut children = vec![do_head];
+        children.extend_from_slice(stmts);
+        children.push(v);
+        return Some((db.push_list(children), s));
+    }
+    // `(match scrut (pat body)…)` — the arm DESTRUCTURES its op arg and resumes per branch. Peel each
+    // branch's resume, then rebuild TWO matches over the SAME scrutinee: the VALUE match `(match scrut (pat
+    // branch-value)…)` (the perform's result) and the NEXT-STATE match `(match scrut (pat branch-next-state)
+    // …)` (threaded forward). Keeping BOTH match-wrapped is load-bearing: a branch's next-state may reference
+    // the branch's PATTERN BINDERS (the DB `put` arm's `Map.insert(s, k, v)` uses `k`,`v` bound by `(k, v)`),
+    // so the next-state CANNOT be hoisted out of the match (the binders would go unbound) — it must stay
+    // inside its branch. The state then threads forward as a match-VALUED expression (sound because the
+    // scrutinee is the pure op arg, so evaluating it in both matches duplicates no effect; the match-distrib
+    // path likewise requires a pure scrutinee). A subsequent perform reading the state sees a well-formed
+    // `(match arg (pat …))` that evaluates to the new state. Each branch must itself peel to a resume.
+    if let Resolved::Match { scrutinee, arms } = resolved_of(db, arm_body) {
+        if arms.is_empty() {
+            return None;
+        }
+        let vhead = db.push_name("match");
+        let shead = db.push_name("match");
+        let mut value_children = vec![vhead, scrutinee];
+        let mut state_children = vec![shead, scrutinee];
+        for (pat, body) in arms {
+            let (v, s) = peel_resume_from_arm_body(db, body)?;
+            value_children.push(db.push_list(vec![pat, v]));
+            state_children.push(db.push_list(vec![pat, s]));
+        }
+        return Some((db.push_list(value_children), db.push_list(state_children)));
+    }
+    None
 }
 
 /// Whether the arm body `node` is TAIL-RESUMPTIVE in the sense the `thread` path serves — either a bare
