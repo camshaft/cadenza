@@ -628,3 +628,52 @@ fn lsp_package_references_on_a_shadowing_local_does_not_leak_the_imported_symbol
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn lsp_package_references_include_declaration_points_at_the_imported_def() {
+    // includeDeclaration cross-file: references on a use of an IMPORTED `helper` (in main), WITH
+    // includeDeclaration, must add the declaration site — which lives in lib.sexp. Guards the refactor
+    // that derives the declaration node from the PACKAGE `Symbols` answer (a GLOBAL id demuxed to lib),
+    // not the entry-local `Symbols` (which would have no `helper` decl and thus miss it).
+    let dir = std::env::temp_dir().join(format!("cdz-lsp-xrefdecl-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    std::fs::write(
+        dir.join("lib.sexp"),
+        "(module lib (def (helper x) (+ x 1)) (export helper))",
+    )
+    .expect("write lib");
+    let main_path = dir.join("main.sexp");
+    let main_text = "(do (import \"lib\" (helper)) (def (main) (helper 41)) (export main))";
+    std::fs::write(&main_path, main_text).expect("write main");
+    let main_uri = format!("file://{}", main_path.display());
+    let use_char = main_text
+        .match_indices("helper")
+        .nth(1)
+        .map(|(i, _)| i)
+        .expect("a helper use") as i64;
+
+    let msgs = drive_messages(&[
+        serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{},"processId":null,"rootUri":null}}),
+        serde_json::json!({"jsonrpc":"2.0","method":"initialized","params":{}}),
+        serde_json::json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":main_uri,"languageId":"cadenza","version":1,"text":main_text}}}),
+        serde_json::json!({"jsonrpc":"2.0","id":10,"method":"textDocument/references","params":{"textDocument":{"uri":main_uri},"position":{"line":0,"character":use_char},"context":{"includeDeclaration":true}}}),
+        serde_json::json!({"jsonrpc":"2.0","id":99,"method":"shutdown","params":null}),
+        serde_json::json!({"jsonrpc":"2.0","method":"exit","params":null}),
+    ]);
+    let refs = response(&msgs, 10).expect("a references response");
+    let uris: Vec<String> = refs
+        .pointer("/result")
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|l| l.pointer("/uri").and_then(|u| u.as_str()).map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(
+        uris.iter().any(|u| u.ends_with("lib.sexp")),
+        "includeDeclaration should add the imported def's site in lib.sexp: {uris:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
