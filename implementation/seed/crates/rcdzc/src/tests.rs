@@ -14517,6 +14517,15 @@ mod match_engine {
 
     #[test]
     fn a_runtime_string_pattern_dispatches_by_content() {
+        // These asserts run heap values; skip when the value-heap runtime store is absent (CI's bare
+        // `cargo test` builds no store), matching the established heap-test pattern — else the
+        // `run_heap_value(...).unwrap()` panics `None` storeless (staging-sync-loop-harness-trap).
+        if super::find_runtime_wasm().is_none() {
+            eprintln!(
+                "runtime wasm not found (run `cargo xtask build`); skipping heap-run assertions"
+            );
+            return;
+        }
         // Runtime STRING patterns: `(match s ("ab" 1) ("cd" 2) (_ 0))` over a RUNTIME String value now
         // emits a `value-eq` content compare (the `Str`-probe LitTest), where before it DECLINED ("a string
         // pattern over a runtime payload is not yet supported"). The scrutinee is built with `String.concat`
