@@ -72,6 +72,7 @@ pass	MIXED: driving the PLAIN export alongside a two-Tuple-arg LIST closure
 pass	MIXED: driving the PLAIN export alongside a two-Tuple-arg closure
 pass	MIXED: driving the PLAIN export alongside an Option-arg closure
 pass	MK_COMB unions its operands' hypotheses — an assumption threaded through MK_COMB survives (soundness)
+pass	MP should match its antecedent up to α-equivalence: aconv-MP accepts an α-variant a structural equality rejects
 pass	MULTI-EXPORT: THREE tuple args with a LIST result, shared `call`
 pass	MULTI-EXPORT: a nested-Tuple-arg closure with a LIST result
 pass	MULTI-EXPORT: among-scalars tuple arg with a BYTE-ROPE result
@@ -139,6 +140,7 @@ pass	String.to-bytes of a genuinely-runtime string yields its UTF-8 byte length
 pass	String.to-bytes of a runtime string threaded through recursion round-trips its bytes
 pass	THREE Tuple args cross the direct-call boundary
 pass	THREE Tuple args with a LIST result
+pass	TRANS should match its middle term up to α-equivalence: aconv-TRANS chains an α-variant a structural equality rejects
 pass	TRANS unions its operands' hypotheses — an assumption threaded through TRANS survives (soundness)
 pass	TWO Record args cross the direct-call boundary
 pass	TWO Tuple args cross the direct-call boundary
