@@ -1394,6 +1394,23 @@ mod tests {
             n,
             "span table is total (1:1 with structure) for {src:?}"
         );
+        // Every span is a GEOMETRICALLY VALID slice of the source — ordered, in-bounds, on UTF-8 char
+        // boundaries. Totality only says a span EXISTS per node; this says `&src[sp.start..sp.end]` (an
+        // LSP hover / diagnostic underline / span-based structural edit over the document) can be taken
+        // WITHOUT panicking. Markdown synthesizes spans for container nodes AND for a code-block's embedded
+        // program subtree (a best-effort span covering the whole `(code-block …)`, in the DOCUMENT's
+        // coordinate system) — so a span escaping the source or landing off a char boundary is a real risk
+        // on multibyte / fenced input. Completes the span-geometry sweep across all read_spanned surfaces.
+        for id in (0..n as u32).map(StructId) {
+            let sp = spans.get(id).expect("total span table");
+            assert!(
+                sp.start <= sp.end
+                    && sp.end <= src.len()
+                    && src.is_char_boundary(sp.start)
+                    && src.is_char_boundary(sp.end),
+                "span {sp:?} for node {id:?} is not a valid slice of {src:?}"
+            );
+        }
         fn walk(a: &Arenas, id: StructId) {
             if let crate::ast::Struct::List(kids) = a.get(id) {
                 for &c in kids {
