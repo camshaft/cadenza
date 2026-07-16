@@ -7918,30 +7918,52 @@ fn check_application(
                     | crate::resolved::Prim::Compare
             )
         );
-        let char_operand = if a == Ty::Char && matches!(b, Ty::Int(_) | Ty::Float(_)) {
-            Some(args[0])
+        // The CHAR operand AND the NUMERIC SIBLING's type — the fix depends on whether the sibling is an
+        // INTEGER or a FLOAT. `Char.to-int : Char → Int64` yields an `Int64`, which type-checks a
+        // comparison against an INTEGER sibling directly; but a FLOAT sibling needs a further
+        // `Float{W}.of-int` step, because Cadenza never implicitly promotes Int64 → Float (a bare
+        // `(Char.to-int c)` against a `Float64` re-fails CDZ0301, so the old one-size fix was non-working
+        // for the float case).
+        let (char_arg, sibling) = if a == Ty::Char && matches!(b, Ty::Int(_) | Ty::Float(_)) {
+            (Some(args[0]), b.clone())
         } else if b == Ty::Char && matches!(a, Ty::Int(_) | Ty::Float(_)) {
-            Some(args[1])
+            (Some(args[1]), a.clone())
         } else {
-            None
+            (None, Ty::Any)
         };
-        if is_compare_or_eq && let Some(char_arg) = char_operand {
+        if is_compare_or_eq && let Some(char_arg) = char_arg {
             trace!(target: "rcdzc::infer", head = head.0, "fault: Char compared to a number — not comparable, offer Char.to-int (CDZ0203)");
-            out.push(
-                Reject::coded(
-                    Code::TypeMismatch,
-                    "a character and a number are not comparable directly — a `Char` is not a number; \
-                     convert it to its Int64 scalar value with `Char.to-int` first"
-                        .to_string(),
-                )
-                .at(char_arg)
-                .with_fix(Fix::wrap_heuristic(
+            // A FLOAT sibling needs `Float{W}.of-int` around the `Char.to-int` (else the Int64 it yields
+            // still can't compare to the float — Cadenza has no implicit Int→Float promotion). An INTEGER
+            // sibling takes the plain `Char.to-int` wrap. The float MODULE name follows the sibling's
+            // ground width (`Float32`/`Float64`), so the wrapped value matches the sibling's exact type.
+            let reject = Reject::coded(
+                Code::TypeMismatch,
+                "a character and a number are not comparable directly — a `Char` is not a number; \
+                 convert it to its scalar value with `Char.to-int` first"
+                    .to_string(),
+            )
+            .at(char_arg);
+            let reject = if let Ty::Float(ft) = sibling {
+                let module = format!("Float{}", ft.ground_width());
+                reject.with_fix(Fix::wrap_heuristic(
+                    char_arg,
+                    format!("({module}.of-int (Char.to-int "),
+                    "))",
+                    format!(
+                        "convert the char to its Int64 scalar value then to a float with \
+                         `{module}.of-int`"
+                    ),
+                ))
+            } else {
+                reject.with_fix(Fix::wrap_heuristic(
                     char_arg,
                     "(Char.to-int ",
                     ")",
                     "convert the char to its Int64 scalar value with `Char.to-int`",
-                )),
-            );
+                ))
+            };
+            out.push(reject);
             for &arg in args {
                 collect(db, arg, out);
             }

@@ -2520,6 +2520,7 @@ pass	compacting a slice preserves its bytes
 pass	compacting is the identity on value for a whole byte sequence
 pass	comparing a Float32 nan to a Float64 finite value is a cross-width type error
 pass	comparing a Float32 nan to a Float64 nan is a cross-width type error
+pass	comparing a char to a FLOAT is rejected with a working two-step conversion fix
 pass	comparing a greater value to a lesser yields Greater
 pass	comparing a lesser value to a greater yields Less
 pass	comparing a map to a record is a type error

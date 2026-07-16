@@ -1491,6 +1491,18 @@
   (input  (compare #\a #\a))
   (output (: (Equal unit) Ordering)))
 
+(case "comparing a char to a FLOAT is rejected with a working two-step conversion fix"
+  (doc    "A `Char` is not a number, so `(< #\\a 1.0)` is CDZ0203 (collections-and-text.md #A Char Is A
+           Single Unicode Scalar Value — a char compares to a char, not to a raw number). The DIAGNOSTIC's
+           fix must actually type-check: `Char.to-int` yields Int64, but Cadenza never implicitly promotes
+           Int64 → Float, so a bare `(Char.to-int #\\a)` still fails against a `Float64` (CDZ0301). The fix
+           therefore wraps BOTH steps — `(Float64.of-int (Char.to-int #\\a))` — matching the sibling float's
+           width (a `Float32` sibling gets `Float32.of-int`). Pins that the char-to-number reject offers a
+           REPAIR that resolves the error in one shot for the float case (the integer sibling keeps the plain
+           `Char.to-int` wrap). The program's outcome is the rejection; there is no value.")
+  (input  (do (def (main) (< #\a 1.0)) (export main)))
+  (error  CDZ0203))
+
 ; --- Char-LITERAL patterns: a `match` dispatches by scalar value ----------------------------------
 ; A char is a scalar whose identity IS its Unicode scalar value (collections-and-text.md #A Char Is A
 ; Single Unicode Scalar Value), so a char-literal pattern `(#\a …)` matches by that value — the Char
