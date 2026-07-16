@@ -2474,17 +2474,22 @@ fn doc_by_name_reads_a_user_doc_a_builtin_and_a_keyword() {
         "an undocumented real def still exits 0 (total): {stdout}"
     );
     assert_eq!(stdout.trim(), "no documentation for `main`");
-    // `ghost` names nothing → the distinct "no such definition" line (exit-code mapping of THIS variant
-    // to non-zero is the cdz-command layer's half, owned by v-cdz-tooling; the query stays total).
+    // `ghost` names nothing → the distinct "no such definition" line. The sidecar query stays TOTAL (it
+    // returns a defined line), but the cdz-command layer maps this "no such definition" variant to a
+    // NON-ZERO exit — so a user/script can tell an unresolvable name (a typo) from a real-but-undocumented
+    // one. (v-cdz-tooling's half of the split; the "no documentation for" case above stays exit 0.)
     let (ok, stdout, _) = run(&["doc", "ghost", path], "");
     assert!(
-        ok,
-        "the query is total — a defined line either way: {stdout}"
+        !ok,
+        "an unresolvable name now exits non-zero (distinct from undocumented): {stdout}"
     );
     assert_eq!(stdout.trim(), "no such definition `ghost`");
-    // A typo that is a NEAR-MISS of a real def gets a "did you mean?" — `answr` → `answer`.
+    // A typo that is a NEAR-MISS of a real def gets a "did you mean?" — `answr` → `answer` — and also fails.
     let (ok, stdout, _) = run(&["doc", "answr", path], "");
-    assert!(ok, "total: {stdout}");
+    assert!(
+        !ok,
+        "an unresolvable near-miss also exits non-zero: {stdout}"
+    );
     assert_eq!(
         stdout.trim(),
         "no such definition `answr` — did you mean `answer`?"

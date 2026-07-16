@@ -7,6 +7,7 @@ pass	Int64.min crosses the parameter boundary and back unchanged
 pass	Int64.min crossing the boundary is still negative
 pass	List.len of a concat of call-site lists with runtime elements folds to the summed arity
 pass	List.len of a list built at the call site from runtime elements folds to the arity
+pass	MK_COMB unions the hypotheses of BOTH operands when each carries a distinct assumption
 pass	Map.to-list enumerates the entries as a List of (key value) tuples in canonical KEY order
 pass	Map.to-list length is the map's entry count
 pass	Map.to-list of a runtime-empty but key/value-typed map is the empty list
@@ -26,6 +27,7 @@ pass	Result propagates errors without trapping
 pass	Result type for fallible operations
 pass	Set.contains does not fold a set whose element is a runtime scalar
 pass	Set.contains finds a runtime STRING-rope element built via Set.of
+pass	Set.contains over negative zero does not find positive zero
 pass	Set.insert does not fold a duplicate against a runtime element
 pass	Set.remove does not fold a set whose element is a runtime scalar
 pass	Set.remove of a rope-element set built via Set.of lowers the cardinality
@@ -44,6 +46,9 @@ pass	String.scalar-len of a string selected by a runtime if
 pass	String.scalar-len of a string selected by a runtime match
 pass	String.to-bytes of a genuinely-runtime string yields its UTF-8 byte length
 pass	String.to-bytes of a runtime string threaded through recursion round-trips its bytes
+pass	TRANS carries a hypothesis borne by the RIGHT operand only (mirror of the left-only pin)
+pass	TRANS chained three deep accumulates every operand's hypotheses
+pass	TRANS unions the hypotheses of BOTH operands when each carries a distinct assumption
 pass	TWO performs in an if condition both fold on the strict-first spine
 pass	Type.eq compares a reflected type against a written type
 pass	Type.eq distinguishes quantities by their unit
@@ -96,6 +101,7 @@ pass	a HOF callback matching its sum argument reaches the nullary arm
 pass	a LEB128 final byte is the shifted remainder masked to seven bits
 pass	a LEB128 non-final byte composes mask, continuation bit, and truncation
 pass	a MATCH-dispatched mutual group with the perform in one arm and the mutual call in another folds
+pass	a MULTI-PAYLOAD variant with a nested same-sum variant reads the right payload depth (known outer disc)
 pass	a MULTI-payload struct newtype escapes as its payload tuple under the type header
 pass	a MULTI-shot arm folds a perform in a let-bound lambda applied in the body
 pass	a MULTI-shot arm folds a perform under a CURRIED lambda applied to pure arguments
@@ -151,6 +157,7 @@ pass	a `?` inside a match-arm resolves against the enclosing function boundary
 pass	a `?` inside an if-branch resolves against the enclosing function boundary
 pass	a `?` on a String operand is a type error
 pass	a `?` on a non-fallible operand is a type error
+pass	a `?` on an ill-typed operand reports the operand's error, not a `?`-shape cascade
 pass	a `?` result is usable mid-body, not only in tail position
 pass	a `?` whose Result error type disagrees with the boundary's is rejected
 pass	a `?` with no fallible enclosing function boundary is rejected
@@ -243,6 +250,7 @@ pass	a checked conversion of a negative CONSTANT into an unsigned type is reject
 pass	a checked integer conversion of an out-of-range CONSTANT is rejected at compile time
 pass	a checked integer conversion that fits succeeds
 pass	a checked result is consumed by matching its Option at run time
+pass	a checked-add over a RUNTIME operand declines pending the Core::CheckedArith runtime emit
 pass	a closure argument is another closure's result
 pass	a closure captures another closure and applies it
 pass	a closure captures another closure and applies it at RUNTIME
@@ -452,6 +460,10 @@ pass	a generic unwrap helper consumes a fallible Bytes.at result
 pass	a genuinely-narrow op with a wrapped-down MATCH-operand yields the exact value
 pass	a genuinely-narrow op with a wrapped-down if-operand still traps on overflow
 pass	a genuinely-narrow op with a wrapped-down if-operand yields the exact value when in range
+pass	a genuinely-runtime in-range shift count works
+pass	a genuinely-runtime left-shift count beyond the bit width traps rather than masking to a small count
+pass	a genuinely-runtime left-shift count equal to the bit width traps rather than masking
+pass	a genuinely-runtime negative right-shift count traps rather than masking
 pass	a grafted template is structurally equal to the directly-quoted tree
 pass	a guard combines the payload binder with the rest binder
 pass	a guard compares two distinct sum payloads from one tuple
@@ -734,6 +746,7 @@ pass	a multi-argument call node is evaluated by iterating its payload arg list
 pass	a multi-field record with one param-named key survives the call
 pass	a multi-parameter closure keeps its captured environment distinct from its arguments
 pass	a multi-payload destructure binds the head and recurses on the tail
+pass	a multi-payload nested same-sum match falls through when the nested variant differs
 pass	a multi-payload pattern of the wrong arity is a malformed destructure
 pass	a multi-payload variant destructures its payloads positionally
 pass	a multi-payload variant whose spread element is itself a compound escapes correctly
@@ -1072,7 +1085,6 @@ pass	a recursive-generic producer composes at two element types (the tied result
 pass	a recursive-generic producer wrapping elements in a user sum is consumed at one type
 pass	a recursive-generic producer's element is usable at each instantiation
 pass	a recursive-generic transformer threading an IDENTITY closure at TWO types declines pending the multi-instantiation result tie
-todo	a recursive-generic transformer threading an IDENTITY closure composes at a single element type
 pass	a recursive-sum payload projected more than once folds to a scalar
 pass	a recursively-built MULTI-PAYLOAD-variant list renders its spine FLAT
 pass	a recursively-built binary tree renders its full runtime structure
@@ -1841,6 +1853,7 @@ pass	breaker capsubst: the fresh binder clears the body's ids, not only s's
 pass	breaker holsubst: a free occurrence beside a shadow substitutes selectively
 pass	breaker holsubst: a shadowing binder blocks substitution
 pass	breaker holsubst: the naive subst's documented capture hazard
+pass	breaker specsubst: GEN of refl then SPEC substitutes the bound var throughout the body
 pass	byte length agrees with the length of the encoded bytes
 pass	byte length counts the normalized form, not the source spelling
 pass	byte length is the UTF-8 byte count
@@ -2649,6 +2662,7 @@ todo	MIXED: driving the PLAIN export alongside a two-Tuple-arg LIST closure
 todo	MIXED: driving the PLAIN export alongside a two-Tuple-arg closure
 todo	MIXED: driving the PLAIN export alongside an Option-arg closure
 todo	MK_COMB unions its operands' hypotheses — an assumption threaded through MK_COMB survives (soundness)
+todo	MP should match its antecedent up to α-equivalence: aconv-MP accepts an α-variant a structural equality rejects
 todo	MULTI-EXPORT: THREE tuple args with a LIST result, shared `call`
 todo	MULTI-EXPORT: a nested-Tuple-arg closure with a LIST result
 todo	MULTI-EXPORT: among-scalars tuple arg with a BYTE-ROPE result
@@ -2678,8 +2692,10 @@ todo	MULTI-EXPORT: two two-Tuple-arg closures with a LIST result share one `call
 todo	MULTI-EXPORT: two two-Tuple-arg closures with a fixed COMPOUND result
 todo	Qty.unit recovers a quantity's unit to build another quantity of the same unit
 todo	SUM ARG + LIST RESULT declines cleanly (Option arg, List result)
+todo	Set.contains over nan finds nan
 todo	THREE Tuple args cross the direct-call boundary
 todo	THREE Tuple args with a LIST result
+todo	TRANS should match its middle term up to α-equivalence: aconv-TRANS chains an α-variant a structural equality rejects
 todo	TRANS unions its operands' hypotheses — an assumption threaded through TRANS survives (soundness)
 todo	TWO Record args cross the direct-call boundary
 todo	TWO Tuple args cross the direct-call boundary
@@ -2900,6 +2916,7 @@ todo	a higher-order left fold over a built-in list with an annotated fn paramete
 todo	a host call's response is an ordinary value that feeds a LATER host call
 todo	a host effect with a non-kebab NAME crosses under a normalized interface extern name
 todo	a host effect with a non-kebab OPERATION name crosses under a normalized func extern name
+todo	a host op with a String parameter composes with the value-heap runtime
 todo	a host-called closure applied to a different argument tracks the input
 todo	a host-called closure with a different body dispatches the right code
 todo	a kernel may deliberately export its rule as a first-class value
@@ -2936,6 +2953,7 @@ todo	a parameterized plain export alongside a closure export applies its argumen
 todo	a parameterized plain export alongside a closure export — the closure captures and applies
 todo	a partial constructor in a runtime tuple element completes via an eta-closure lift
 todo	a partially-applied function escapes as a value and runs through a recursive HOF
+todo	a pass-through closure that returns its arg via a trivial let composes at one element type
 todo	a predicate closure returning Bool drives an early-exit recursive HOF
 todo	a prefixed quantity displays scaled to its reference unit (Float)
 todo	a prelude Option value crosses a module boundary as an export result
@@ -2969,6 +2987,8 @@ todo	a recursive-generic filter threading a predicate closure composes at two el
 todo	a recursive-generic producer's result is consumed by an element-typed consumer
 todo	a recursive-generic transformer composes with itself
 todo	a recursive-generic transformer threading a closure composes at two element types
+todo	a recursive-generic transformer threading an IDENTITY closure composes at a single element type
+todo	a recursive-generic transformer with a bare-Nil STOP branch composes at two element types
 todo	a recursive-generic transformer with an element-CHANGING closure ties domain to codomain
 todo	a round-trip alongside a parameterized plain export applies its argument
 todo	a round-trip alongside a plain export — the plain export runs
@@ -3014,6 +3034,10 @@ todo	a scalar BETWEEN two Tuple args with a LIST result
 todo	a scientific-notation literal annotated Rational scales the numerator
 todo	a second same-signature closure export shares the one call method
 todo	a set dedups NaN elements and keeps zero signs distinct
+todo	a set of negative zero and positive zero keeps both (distinct sign bits)
+todo	a set of two NaN floats dedups to one (canonical quiet-NaN)
+todo	a set of two identical positive floats dedups to one
+todo	a single-variant abstract theorem's constructor match outside the kernel is a withheld-constructor rejection (CDZ0214)
 todo	a single-variant abstract type's constructor match outside its module is rejected CDZ0214 (withheld-ctor)
 todo	a specific constructor export exposes one variant and keeps the rest private
 todo	a sum TYPE and its constructors are imported by a wildcard and constructed in the entry
@@ -3052,6 +3076,9 @@ todo	an escaping closure whose body binds a multi-variable let
 todo	an escaping closure whose body is a match hits the literal arm
 todo	an escaping closure whose body is a match hits the wildcard arm
 todo	an export name with a digit-led kebab segment is rejected, not silently invalid
+todo	an identity closure composes at a single Int element type (not only String)
+todo	an identity closure composes over a COMPOUND (tuple) element at one element type
+todo	an identity closure composes through TWO chained recursive-generic maps at one element type
 todo	an identity closure threads through a recursive-generic HOF at one element type
 todo	an imported helper reaches its own file's private definition when inlined
 todo	an imported name resolves to a sibling file's exported definition
@@ -3210,6 +3237,7 @@ todo	scaling a quantity by a dimensionless quantity keeps its dimension
 todo	the built variant is the multi-arg one, the unbuilt arm still gets its call type
 todo	the empty and None arms of a list-payload split dispatch to their own values
 todo	the implication-extended kernel Thm stays unforgeable — Thm.Seq of a bogus implication outside is CDZ0214
+todo	the kernel defines T (truth) as a constant and DERIVES |- T through the rules
 todo	the kernel proves reflexivity end-to-end: refl t yields a theorem whose conclusion is (t = t)
 todo	the kernel proves the identity theorem ⊢ (λx.x) y = y via BETA — the first-theorem milestone
 todo	the kernel proves the tautology ⊢ p ⇒ p via DISCH (implication introduction) over ASSUME
@@ -3221,6 +3249,9 @@ todo	the kernel's EQ_MP rule: from |- p=q and G |- p derive G |- q (hypotheses u
 todo	the kernel's GEN (∀-introduction) enforces its free-variable side-condition
 todo	the kernel's MK_COMB rule: equals applied to equals are equal — from f=g and x=y derive (f x)=(g y)
 todo	the kernel's SPEC (∀-elimination) instantiates the quantified body with the witness
+todo	the kernel's conjunction: CONJ unions hypotheses, CONJUNCT1/2 project (hyps survive)
+todo	the kernel's disjunction introduction (DISJ1/DISJ2) preserves hypotheses
+todo	the kernel's existential introduction (EXISTS) checks the witness and preserves hypotheses
 todo	the kernel's modus ponens (⇒-elimination): from ⊢ p⇒q and ⊢ p derive ⊢ q
 todo	the program manifest is the union of its entrypoints' delegations
 todo	the round trip tracks the produced closure's captured value

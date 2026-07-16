@@ -36,6 +36,13 @@ bedrock = ["dep:aws-config", "dep:aws-sdk-bedrockruntime", "dep:tokio"]
 cdz-run = { path = "../cdz-run" }
 anyhow = "1"
 
+# Cedar authorization (Inc-3): the real `cedar-policy` evaluator, behind every tool dispatch + resource
+# access. The SAME crate `cadenza-syntax` already vendors for its `.cedar` SURFACE (parse/print) — here
+# we use its EVALUATOR (`Authorizer::is_authorized`). Pure + sync (no async/network), so it stays a
+# default dep, not feature-gated like the Bedrock backend. The concierge-approved (4.3-A) authz path: a
+# real engine host-side now; a Cadenza-native evaluator (4.3-B) is a later v-verification flagship.
+cedar-policy = "4"
+
 # The real Bedrock backend, behind the `bedrock` feature only (heavy async tree — kept out of default).
 aws-config = { version = "1", optional = true }
 aws-sdk-bedrockruntime = { version = "1", optional = true }

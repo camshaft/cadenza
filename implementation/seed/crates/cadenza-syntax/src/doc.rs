@@ -398,6 +398,71 @@ mod tests {
         widest
     }
 
+    /// Emit a random BALANCED, HARDBREAK-FREE box subtree into `d`, and simultaneously build the
+    /// FLAT string it should render to when it fits: a word contributes its text, a break contributes
+    /// `blank_space` spaces (space→1, zerobreak→0), boxes contribute nothing. Every pair of tokens still
+    /// gets a break between them, but never a hardbreak — so the whole tree CAN lay out flat.
+    fn gen_flat_doc(rng: &mut Rng, d: &mut Doc, depth: usize, flat: &mut String) {
+        let words = ["a", "bb", "ccc", "word", "longer-token", "x"];
+        let n = 1 + rng.below(4);
+        for i in 0..n {
+            if i > 0 {
+                // A soft break (space or zerobreak) between tokens — NEVER a hardbreak.
+                if rng.below(2) == 0 {
+                    d.space();
+                    flat.push(' '); // a space break is one blank when flat
+                } else {
+                    d.zerobreak(); // zero blanks when flat
+                }
+            }
+            if depth == 0 || rng.below(3) == 0 {
+                let w = words[rng.below(words.len())];
+                d.word(w);
+                flat.push_str(w);
+            } else if rng.below(2) == 0 {
+                d.cbox(rng.below(4) as isize);
+                gen_flat_doc(rng, d, depth - 1, flat);
+                d.end();
+            } else {
+                d.ibox(rng.below(4) as isize);
+                gen_flat_doc(rng, d, depth - 1, flat);
+                d.end();
+            }
+        }
+    }
+
+    #[test]
+    fn flat_render_equals_the_flat_string_when_the_width_admits_it() {
+        // The "fits ⇒ flat" contract, the counterpart to the overflow sweep: a HARDBREAK-FREE doc wrapped
+        // in one outer box, rendered at a width ≥ its own flat width, must (a) contain NO newline and
+        // (b) render EXACTLY the flat concatenation (words + the blank-spaces of unfired breaks). This
+        // pins phase-1's flat-width computation AND the `fits` decision — the existing sweep only bounds
+        // line length, never asserts a fitting doc actually lays out flat. Rendered both at the exact
+        // flat width and comfortably above it (the decision must be monotone: more room never breaks).
+        let mut rng = Rng(0xf1a7_c0de_1eee_7777);
+        for _ in 0..3000 {
+            let mut d = Doc::new();
+            let mut flat = String::new();
+            // An OUTER box so there are no top-level bare breaks (a break outside any box always fires).
+            d.cbox(0);
+            let depth = 1 + rng.below(4);
+            gen_flat_doc(&mut rng, &mut d, depth, &mut flat);
+            d.end();
+            let flat_width = flat.chars().count();
+            for &width in &[flat_width, flat_width + 1, flat_width + 50] {
+                let out = d.render(width);
+                assert!(
+                    !out.contains('\n'),
+                    "a doc that fits in width {width} (flat_width {flat_width}) broke a line:\n{out}"
+                );
+                assert_eq!(
+                    out, flat,
+                    "flat render at width {width} must equal the flat concatenation"
+                );
+            }
+        }
+    }
+
     #[test]
     fn render_never_panics_and_respects_the_width_bound() {
         // The pretty-printer's core correctness property, swept over random BALANCED token streams (a

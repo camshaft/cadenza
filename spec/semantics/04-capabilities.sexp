@@ -244,3 +244,26 @@
   (input  (do (effect e (op Ask (-> Unit Int64))) (def (main) (host (e) (e.Ask))) (export main)))
   (host-responses (respond e.Ask (: 0 Int64)))
   (output (: 0 Int64)))
+
+(case "a host op with a String parameter composes with the value-heap runtime"
+  (doc    "The shared-memory host shape and the value-heap runtime import compose in ONE component
+           (`envelope::assemble_host_runtime_mem`). `main` builds a runtime `List` (the value-heap runtime
+           import) AND delegates a host effect `Note` whose op takes a `String` parameter (the shared-memory
+           host shape — the `(ptr,len)` a `string` lowers to is read from a memory both the program and the
+           op's canon-lower bind). Previously this COMBINATION declined ('a host op with a string parameter
+           composed with the value-heap runtime is not yet emitted') while each half alone emitted; the
+           envelope now threads the shared-memory core module through the two-interface (host + heap) fusion.
+           `build 3` makes a length-3 list; the host `Note.note` fires with its String arg; the terminal
+           value is `(List.len xs)` = 3. Unblocks a property test asserting-with-MESSAGE over a heap
+           collection (v-property-testing). The (host-calls …) pins the String arg crossing shared memory.")
+  (input  (do
+            (effect Note (op note (-> String Unit)))
+            (def (build (: n Int64))
+              (if (= n 0) (list) ((. List push) (build (- n 1)) n)))
+            (def (main)
+              (host (Note)
+                (let ((xs (build 3)))
+                  (do (Note.note "built") ((. List len) xs)))))
+            (export main)))
+  (output (: 3 Int64))
+  (host-calls (call note.note (: "built" String))))

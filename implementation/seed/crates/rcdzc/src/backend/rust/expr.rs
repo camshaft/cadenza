@@ -704,7 +704,22 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             let c = emit(db, cond, env, ctx)?;
             let t = emit_branch(db, then_, id, env, ctx)?;
             let e = emit_branch(db, else_, id, env, ctx)?;
-            Ok(format!("if {c} {{ {t} }} else {{ {e} }}"))
+            let bare = format!("if {c} {{ {t} }} else {{ {e} }}");
+            // ANNOTATE the `if` result when it is a GENERIC SUM (`Option<…>`/`Result<…>`/a user generic
+            // enum). A branch that is a bare nullary generic variant (`Option::None`) carries no type
+            // parameter, and rustc types the branches LEFT-TO-RIGHT — so a `None`-first `if` fails to infer
+            // (E0282) even though the sibling `Some` fixes it. Wrapping in `{ let __if: <ty> = …; __if }`
+            // with the if's OWN solved type (well-typed even when a leaf isn't) gives rustc the type up
+            // front. Only for a generic sum with a spellable type (the ambiguity case); every other result
+            // type keeps the bare `if` (a monomorphic sum / scalar / collection branch is never ambiguous).
+            if let ty @ Ty::Sum { args, .. } = type_of(db, id).strip_nominal()
+                && !args.is_empty()
+                && let Some(rty) = types::rust_type(ty)
+            {
+                Ok(format!("{{ let __if: {rty} = {bare}; __if }}"))
+            } else {
+                Ok(bare)
+            }
         }
         // A short-circuiting boolean connective → Rust's own `&&`/`||`, which short-circuit with
         // exactly the core's semantics: `rhs` is evaluated ONLY on the non-short-circuiting branch, so
@@ -1354,8 +1369,15 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                 }
             };
             match args.len() {
-                // A nullary variant is the bare path (`None`, `Shape::Circle` with no payload).
-                0 => Ok(path),
+                // A nullary variant is the bare path (`None`, `Shape::Circle` with no payload) — EXCEPT
+                // for a GENERIC sum, where a bare `Option::None` gives rustc nothing to infer the type
+                // parameter from when the constructor sits in a position without an expected type (e.g. an
+                // `if`/`match` branch whose OTHER arm is the `Some`, but which rustc types left-to-right —
+                // the `None` branch comes first and can't see the `Some`'s type). Emit a TURBOFISH with the
+                // node's solved type args (`Option::<(Vec<Term>, Term)>::None`) so the type is explicit.
+                // A MONOMORPHIC sum (no args) keeps the bare path. This is the nullary-generic-variant twin
+                // of the empty-collection annotation — a construct with no operand to carry its element type.
+                0 => nullary_variant_path(&ty, disc, &path),
                 // A one-payload variant carries its payload directly (`Some(x)`), boxed if recursive.
                 1 => Ok(format!("{path}({})", wrap(args[0].clone()))),
                 // A MULTI-payload variant carries ONE TUPLE (matching the enum decl's `V((T0, T1))` and the
@@ -2225,6 +2247,47 @@ fn int_ty_of(db: &mut Db, id: StructId) -> IntTy {
 fn sum_variant_path(db: &mut Db, id: StructId, disc: u32) -> Result<String, Reject> {
     let ty = type_of(db, id);
     sum_variant_path_of_ty(db, &ty, disc)
+}
+
+/// Emit a nullary variant's constructor from its bare path (`Enum::Variant`, from `sum_variant_path`).
+///
+/// A MONOMORPHIC sum keeps the bare path (`Shape::Circle`). A GENERIC sum needs a TYPE ANNOTATION: a bare
+/// `Option::None` gives rustc nothing to infer the type parameter from in a position with no expected type
+/// (an `if`/`match` branch typed before its sibling `Some` arm). When the node's type args are SOLVED, emit
+/// a turbofish — `Option::<(Vec<Term>, Term)>::None`. When they are UNSOLVED (a bare `Ty::Var` — the None's
+/// own type is `Option<?>`, the concrete arg living only in the surrounding context this local emit can't
+/// see), we cannot spell the annotation, and a bare `Option::None` would be E0282 "type annotations needed"
+/// (an uncompilable artifact). So DECLINE — decline-don't-miscompile. (A later increment that threads the
+/// expected type from the enclosing `def` result / match subject into the branch emit would lift this; the
+/// wasm backend has the type at the value-encode boundary, so it does not hit this.)
+fn nullary_variant_path(ty: &Ty, disc: u32, bare: &str) -> Result<String, Reject> {
+    let _ = disc; // the disc already selected `bare`; kept for call-site symmetry with sum_variant_path.
+    let Ty::Sum { args, .. } = ty.strip_nominal() else {
+        return Ok(bare.to_string());
+    };
+    if args.is_empty() {
+        return Ok(bare.to_string()); // monomorphic sum — bare path, no annotation needed.
+    }
+    // Generic sum: build the turbofish from the SOLVED args — a pure improvement over the bare path when
+    // every arg has a native rep. If ANY arg is unsolved (`Ty::Var`) or unrepresentable, `rust_type`
+    // returns `None`: fall back to the BARE path (the status-quo emit). rustc infers the bare form in most
+    // contexts; the residual case where it CANNOT (the None branch typed before its sibling Some, with the
+    // concrete arg living only in the enclosing context) is a known gap — a FALSE decline here would
+    // regress the many cases rustc DOES infer, so keep bare and leave that one E0282 to a later
+    // expected-type-threading increment. (Annotate-when-known, don't-decline-when-unknown.)
+    let mut params = Vec::with_capacity(args.len());
+    for a in args.iter() {
+        match types::rust_type(a) {
+            Some(p) => params.push(p),
+            None => return Ok(bare.to_string()),
+        }
+    }
+    match bare.rsplit_once("::") {
+        Some((enum_path, variant)) => {
+            Ok(format!("{enum_path}::<{}>::{variant}", params.join(", ")))
+        }
+        None => Ok(bare.to_string()),
+    }
 }
 
 /// The Rust `<Enum>::<Variant>` path for the `disc`-th variant of the sum TYPE `ty` — the type-keyed core

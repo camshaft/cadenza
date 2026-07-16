@@ -2638,9 +2638,14 @@ fn trap_kind(reason: &str) -> Option<&'static str> {
     } else if r.contains("overflow") {
         // "integer overflow" / bare "overflow" — an arithmetic result outside the type width.
         Some("overflow")
-    } else if r.contains("unreachable") {
+    } else if r.contains("unreachable") || r.contains("shift count out of range") {
         // wasmtime "wasm 'unreachable' instruction executed" / the corpus bare "unreachable" — the
         // compiler lowers an explicit non-arithmetic trap (a `trap`/uninhabited-match) to `unreachable`.
+        // The rust backend's shift-count guard panics "shift count out of range" for the SAME
+        // non-arithmetic `Core::Trap` the wasm backend lowers to bare `unreachable` (an out-of-range
+        // shift count) — map it to the same canonical kind so a `(trap "unreachable")` shift-count case
+        // grades pass on BOTH backends. (Rust's second shift panic, "integer overflow in left shift",
+        // already classifies via the "overflow" arm above.)
         Some("unreachable")
     } else {
         None

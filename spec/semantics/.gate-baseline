@@ -461,6 +461,7 @@ pass	a checked conversion of a negative CONSTANT into an unsigned type is reject
 pass	a checked integer conversion of an out-of-range CONSTANT is rejected at compile time
 pass	a checked integer conversion that fits succeeds
 pass	a checked result is consumed by matching its Option at run time
+pass	a checked-add over a RUNTIME operand declines pending the Core::CheckedArith runtime emit
 pass	a closure applied through an unbuilt sibling variant compiles and runs
 pass	a closure argument is another closure's result
 pass	a closure captures a boolean and reads it back inside its lifted body through a recursive HOF
@@ -1473,6 +1474,7 @@ pass	a recursive-generic transformer composes with itself
 pass	a recursive-generic transformer threading a closure composes at two element types
 pass	a recursive-generic transformer threading an IDENTITY closure at TWO types declines pending the multi-instantiation result tie
 pass	a recursive-generic transformer threading an IDENTITY closure composes at a single element type
+pass	a recursive-generic transformer with a bare-Nil STOP branch composes at two element types
 pass	a recursive-generic transformer with an element-CHANGING closure ties domain to codomain
 pass	a recursive-sum payload projected more than once folds to a scalar
 pass	a recursively-built MULTI-PAYLOAD-variant list renders its spine FLAT
@@ -1778,6 +1780,7 @@ pass	a signed segment reads the sign-bit-only byte as the minimum, not its magni
 pass	a signed-byte entrypoint returns its runtime argument
 pass	a single-form body admits a sequence by holding a do block
 pass	a single-variant NEWTYPE escapes with its tag ERASED, only the type header naming it
+pass	a single-variant abstract theorem's constructor match outside the kernel is a withheld-constructor rejection (CDZ0214)
 pass	a single-variant abstract type's constructor match outside its module is rejected CDZ0214 (withheld-ctor)
 pass	a single-variant newtype over a COMPOUND escapes the bare compound under its type header
 pass	a single-variant open sum with an open-tail arm dispatches its named variant
@@ -3044,6 +3047,8 @@ pass	the kernel's GEN (∀-introduction) enforces its free-variable side-conditi
 pass	the kernel's MK_COMB rule: equals applied to equals are equal — from f=g and x=y derive (f x)=(g y)
 pass	the kernel's SPEC (∀-elimination) instantiates the quantified body with the witness
 pass	the kernel's conjunction: CONJ unions hypotheses, CONJUNCT1/2 project (hyps survive)
+pass	the kernel's disjunction introduction (DISJ1/DISJ2) preserves hypotheses
+pass	the kernel's existential introduction (EXISTS) checks the witness and preserves hypotheses
 pass	the kernel's modus ponens (⇒-elimination): from ⊢ p⇒q and ⊢ p derive ⊢ q
 pass	the largest factorial that fits the integer type computes exactly
 pass	the le modifier encodes a u16 little-endian
@@ -3274,3 +3279,4 @@ pass	α-equivalence handles nesting and distinguishes a bound variable from a sa
 todo	SUM ARG + LIST RESULT declines cleanly (Option arg, List result)
 todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
+pass	a host op with a String parameter composes with the value-heap runtime

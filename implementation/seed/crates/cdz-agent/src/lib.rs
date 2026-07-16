@@ -21,6 +21,9 @@
 use anyhow::Result;
 use cdz_run::{Outcome, RunOpts};
 
+/// Cedar authorization (Inc-3) — the decision every tool dispatch + resource access passes through.
+pub mod cedar;
+
 /// The interface + op a Cadenza agent loop binds its model call to (`(bind Model "cadenza:model/api")`,
 /// `Model.converse : String -> String`). Fixed here so the embedder and the loop agree by construction.
 pub const MODEL_IFACE: &str = "cadenza:model/api";

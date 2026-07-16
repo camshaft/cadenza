@@ -461,7 +461,19 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
             // The if's type is the join of its branches — `Any` yields the other, and a branch that
             // fixed a deferred integer width contributes it. The cond-is-Bool and branches-agree
             // CHECKS are `type_errors`' job; this fills the value column.
-            then_ty.join(&else_ty)
+            //
+            // RIGID-BIASED join: when the two branches are the SAME sum built two ways whose element vars
+            // DIFFER, and one element is a RIGID param var (this def's own parameter element, marked in
+            // `scheme_rigid_vars` — the recursive-generic element tie), prefer THAT var. The plain `join`
+            // picks a branch arbitrarily for two `Ty::Var`s (`(Var, t) => t`), so a recursive-generic
+            // transformer's STOP branch — `take-while`'s `(if (p h) (Iter.Cons h (rec …)) (Iter.Nil))`
+            // where the `Iter.Nil` else-branch carries a FRESH element var and the then-branch carries the
+            // param's rigid element — could pick the fresh var, severing the result-element↔param tie so
+            // the scheme generalized a disconnected result var and monomorphization declined CDZ0201 at ≥2
+            // types (v-iterators' take-while, the bare-nullary-leaf-on-one-path family). Biasing the join
+            // toward the rigid element keeps the result tied. Only reorders the two operands (still a
+            // `join`, same result set); a non-sum / no-rigid / equal-var join is byte-identical.
+            rigid_biased_join(db, &then_ty, &else_ty)
         }
         // A boolean connective is a Bool. Reading the operands' types is the backward demand; the
         // operands-are-Bool CHECK is `type_errors`' job (this fills the value column).
@@ -2719,6 +2731,44 @@ fn module_default_float_ty(db: &mut Db, id: StructId) -> Option<Ty> {
     let ty_expr = *db.default_float_literals.get(&id)?;
     let ty = crate::eval::typeval_of(db, ty_expr)?;
     matches!(ty, Ty::Float(_)).then_some(ty)
+}
+
+/// The join of two `if`-branch types, BIASED toward a RIGID param var when the branches are the same sum
+/// whose element vars differ. `Ty::join` for two `Ty::Var`s returns the second operand arbitrarily; when
+/// one branch's sum element is a rigid param var (this def's own parameter element, in
+/// `db.scheme_rigid_vars`) and the other's is not, we must keep the RIGID one so a recursive-generic
+/// transformer's result element stays tied to its parameter (the take-while bare-nullary-stop-leaf case).
+/// Detects the shape: both `Ty::Sum` of the same decl, single-arg element, exactly one element a rigid
+/// `Ty::Var`; then joins with the rigid side SECOND (so `join`'s `(Var, t) => t` keeps it). Everything
+/// else falls back to the plain `then.join(else)` — byte-identical.
+fn rigid_biased_join(db: &Db, then_ty: &Ty, else_ty: &Ty) -> Ty {
+    let is_rigid = |t: &Ty| matches!(t, Ty::Var(v) if db.scheme_rigid_vars.as_ref().is_some_and(|r| r.contains(v)));
+    if let (
+        Ty::Sum {
+            decl: da, args: aa, ..
+        },
+        Ty::Sum {
+            decl: db_decl,
+            args: ab,
+            ..
+        },
+    ) = (then_ty, else_ty)
+        && da == db_decl
+        && aa.len() == 1
+        && ab.len() == 1
+    {
+        let then_rigid = is_rigid(&aa[0]);
+        let else_rigid = is_rigid(&ab[0]);
+        // Put the rigid-element branch SECOND so `join`'s `(Var, t) | (t, Var) => t` keeps it (for two
+        // vars it returns the second operand). Only reorder when exactly one side is rigid.
+        if else_rigid && !then_rigid {
+            return then_ty.join(else_ty); // else (rigid) is already second — keep as-is
+        }
+        if then_rigid && !else_rigid {
+            return else_ty.join(then_ty); // swap so the rigid `then` is second
+        }
+    }
+    then_ty.join(else_ty)
 }
 
 /// Ground a solved parameter type: a still-unsolved variable that a numeric use constrained becomes the

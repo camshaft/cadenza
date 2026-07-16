@@ -22,7 +22,14 @@ directly and keep `AskUserQuestion`; every other role runs unattended (see invar
    `pr-sync` agent writes it.** There is no `git update-ref` CAS anymore, and no landing race — you
    finish a unit of work, commit it in your worktree, and send `pr-sync` a **`merge-request`**
    message. It merges, gates, and replies `merged` or `reject`. This is the whole point of the
-   redesign: one serializing writer, zero dropped commits.
+   redesign: one serializing writer, zero dropped commits. `trunk` only ever moves FORWARD (merges/
+   cherry-picks) — never a backward `git reset`. This single-writer invariant is guarded + monitored
+   by tooling `fleet up` installs (or `cargo xtask fleet install-hooks` re-deploys on demand): a
+   `pre-commit` hook refuses a direct commit on `trunk` outside pr-sync's worktree, and a fail-open
+   `reference-transaction` hook LOGS any backward `trunk`→origin/main move (with the writer's parent
+   command-line) to `.claude/fleet/trunk-clobber.log`. `cargo xtask fleet status` surfaces such a
+   "trunk regression" if one is in effect. If you see that alarm/log, it means something reset the
+   `trunk` ref backward — route it to `v-fleet-tooling`/the concierge, don't work around it.
 
 3. **You do the substantive work in THIS loop, not a spawned Claude subagent.** Read/edit/gate/
    commit yourself. A one-shot read-only `Explore` for a broad lookup is fine; delegating the

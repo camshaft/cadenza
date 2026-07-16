@@ -122,3 +122,6 @@ op-coded +43/-45/*42//47; `Let`/`Lam`/`App`) + helpers (op-of/size/depth/max-id/
 the (B) reshape, still gated on the operator. So the migration state is now: step 1 DONE; steps 2-5 (migrate
 each pass onto core-ex, intern names, build the driver) start immediately IF operator picks (B), else core-ex
 is a 1-commit delete. B is a fast-start from here.
+
+## STEP 1 MERGED (tick 154): core-ex.cdz landed on pr-sync trunk (sha 096613d57), hub publish lagging.
+Still an island (no importers). Steps 2-5 (wire passes / intern / driver) remain gated on the operator's (B) ruling.

@@ -2240,6 +2240,40 @@ fn rustc_roundtrip_builtin_option_matches() {
     }
 }
 
+#[test]
+fn rustc_roundtrip_nullary_first_if_returns_generic_option() {
+    // REGRESSION (E0282, surfaced when the BigInt emit-side enabled a kernel program's rust path): an `if`
+    // whose result is a GENERIC sum and whose FIRST (`then`) branch is the bare nullary variant — `if c
+    // then (Option.None) else (Option.Some …)` — gave rustc no type parameter to infer at the `None`
+    // (branches type left-to-right; the sibling `Some` comes second). Bare `Option::None` → "type
+    // annotations needed". FIX: the backend annotates the whole `if` with its solved generic-sum type
+    // (`{ let __if: Option<i64> = if … ; __if }`), so rustc has the type up front.
+    let rs = compile_rust(
+        "(module m (def (mk (: n Int64)) (if (= n 0) (Option.None unit) (Option.Some n))) (export mk))",
+    );
+    assert!(
+        rs.contains("let __if: Option<i64>"),
+        "the generic-sum if is type-annotated:\n{rs}"
+    );
+    // n=0 → None → the match's None arm; n=5 → Some(5). Render via a driver that maps to cdz-run's form.
+    let driver = "fn main(){ let v = prog::mk(0); let s = match v { Some(x) => format!(\"(Some {})\", x), \
+                  None => \"(None unit)\".to_string() }; println!(\"{}\", s); }";
+    if let Some(out) = rustc_run_driver(&rs, driver) {
+        assert_eq!(
+            out, "(None unit)",
+            "nullary-first if returns None on the true branch"
+        );
+    }
+    // CONTROL: a MONOMORPHIC-sum if (no type params) stays a bare `if` — the annotation is generic-only.
+    let mono = compile_rust(
+        "(module m (type S (A) (B)) (def (mk (: n Int64)) (if (= n 0) (S.A) (S.B))) (export mk))",
+    );
+    assert!(
+        !mono.contains("let __if:"),
+        "a monomorphic-sum if is NOT annotated (bare if):\n{mono}"
+    );
+}
+
 // ── async / gas-metered emission ─────────────────────────────────────────────────────────────────
 
 /// Compile a program to the ASYNC Rust backend (gas-metered `async fn`s + the `CdzEnv` trait).

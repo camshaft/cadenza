@@ -1901,6 +1901,29 @@
             (def (main) (+ (add-or 20 22 -1) (add-or Int64.max 1 -1))) (export main)))
   (output (: 41 Int64)))
 
+; The checked-arith cases above all fold at COMPILE TIME — every operand is a constant (or an inlined
+; constant through a called def), so `lower_checked_arith` evaluates the overflow check and builds the
+; `Some`/`None` Option directly. A checked op over a genuinely RUNTIME operand (a value not known until
+; run time — a def PARAMETER supplied by `(call …)`) has no constant to fold, so it currently DECLINES:
+; the seed does not yet emit the runtime overflow check + Option box (that is the `Core::CheckedArith`
+; node — a runtime-emit feature spanning core.rs + both backends + the Perceus retain of the Option
+; payload, deferred as a coordinated cross-vertical build; concierge ruling B, 2026-07-16). The decline is
+; a SOUND todo, NOT a miscompile: the constant path is correct and the runtime path refuses rather than
+; emitting a wrong result. This case GRADES that decline explicitly, so the boundary is tracked/tested —
+; a future change that made a runtime checked op silently MISCOMPILE (emit a wrapping add, or drop the
+; overflow branch) instead of declining would flip this `(declines)` and be caught. When Core::CheckedArith
+; lands, this case is upgraded to an executing `(call … (output …))` witness.
+(case "a checked-add over a RUNTIME operand declines pending the Core::CheckedArith runtime emit"
+  (doc    "`(Int64.checked-add a 1)` with `a` a runtime Int64 PARAMETER (supplied by `(call main …)`, so not
+           constant-folded) has no compile-time operand for `lower_checked_arith` to fold, and the seed does
+           not yet emit the runtime overflow-check + Option construction (the `Core::CheckedArith` node,
+           deferred). So it soundly DECLINES rather than emitting a wrong (e.g. wrapping, unchecked) result —
+           the reject-don't-miscompile discipline. Contrast the folding cases above where every operand is a
+           constant. Grades the runtime-checked-arith decline as an intentional, tracked boundary (pending
+           the feature), so a regression to a silent runtime miscompile is caught here.")
+  (input  (do (def (main (: a Int64)) (match (Int64.checked-add a 1) ((Some v) v) ((None _) -1))) (export main)))
+  (declines))
+
 (case "wrapping addition wraps modulo two to the sixty-fourth on overflow"
   (doc    "`(Int64.wrapping-add Int64.max 1)` = Int64.min (-9223372036854775808): wrapping addition does
            NOT trap on overflow — it wraps in two's complement, so MAX + 1 becomes MIN (numeric-model.md

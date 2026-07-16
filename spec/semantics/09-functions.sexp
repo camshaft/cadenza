@@ -3658,6 +3658,31 @@
             (export main)))
   (output (: 3 Int64)))
 
+(case "a recursive-generic transformer with a bare-Nil STOP branch composes at two element types"
+  (doc    "`take-while : (Iter a) → (a → Bool) → (Iter a)` keeps a leading run, STOPPING at a bare
+           `(Iter.Nil)` when the predicate fails: `(if (p h) (Iter.Cons h (take-while rest p)) (Iter.Nil))`.
+           The stop branch is a bare nullary constructor whose element is untied ON THAT PATH; the `if`'s
+           result-type join must keep the RESULT element tied to the parameter's (the rigid-biased join),
+           else the two coexisting monomorphizations at ≥2 types have a disconnected result var and decline
+           CDZ0201. Composes at Int64 (`(< x 3)` over `[1,2,3]` keeps `[1,2]`) AND String
+           (`(< byte-len 3)` over `[\"a\",\"bb\",\"ccc\"]` keeps `[\"a\",\"bb\"]`): 2 + 2 = 4. Pins that a
+           bare-nullary-leaf stop branch (v-iterators' take-while) does not sever the result-element tie.")
+  (input  (do
+            (type Iter (Nil) (Cons a (Iter a)))
+            (def (from-list xs)
+              (match xs ((list) (Iter.Nil)) ((list h .. t) (Iter.Cons h (from-list t)))))
+            (def (take-while it p)
+              (match it
+                ((Iter.Nil) (Iter.Nil))
+                ((Iter.Cons h rest) (if (p h) (Iter.Cons h (take-while rest p)) (Iter.Nil)))))
+            (def (icount it)
+              (match it ((Iter.Nil) 0) ((Iter.Cons h rest) (+ 1 (icount rest)))))
+            (def (main)
+              (+ (icount (take-while (from-list (list 1 2 3)) (fn (x) (< x 3))))
+                 (icount (take-while (from-list (list "a" "bb" "ccc")) (fn (s) (< (String.byte-len s) 3))))))
+            (export main)))
+  (output (: 4 Int64)))
+
 (case "a recursive-generic transformer threading an IDENTITY closure composes at a single element type"
   (doc    "A pure IDENTITY closure `(fn (s) s)`, whose RESULT is determined only by its DOMAIN (not fixed by
            the body bottom-up), now composes through a recursive-generic transformer at a single element

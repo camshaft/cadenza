@@ -2760,8 +2760,20 @@ fn run_doc(args: &DocArgs) -> ExitCode {
     );
     match out.artifact(rcdzc::sidecar::KIND_DOC) {
         Some(bytes) => {
-            println!("{}", String::from_utf8_lossy(bytes));
-            ExitCode::SUCCESS
+            let text = String::from_utf8_lossy(bytes);
+            println!("{text}");
+            // The `DocOf` query is TOTAL — it returns a doc artifact for THREE outcomes: the doc text, a
+            // "no documentation for `X`" line (a REAL definition that carries no doc), and a "no such
+            // definition `X`" line (the name resolves to NOTHING — a typo). The first two are a SUCCESS
+            // (`X` exists; asking for its doc is a legitimate answer), but an unresolvable name is a
+            // FAILURE — a caller/script should be able to tell "you misspelled the name" from "this exists
+            // but is undocumented". Key off the sidecar's distinct "no such definition `" prefix (it also
+            // carries an optional "— did you mean `Y`?" hint, so match the prefix, not the whole line).
+            if text.trim_start().starts_with("no such definition `") {
+                ExitCode::FAILURE
+            } else {
+                ExitCode::SUCCESS
+            }
         }
         None => {
             report_errors(&out);
