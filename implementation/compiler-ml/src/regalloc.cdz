@@ -1,0 +1,144 @@
+/// regalloc.cdz — REGISTER ALLOCATION by graph coloring, the classic backend pass that assigns each live
+/// variable to one of `k` machine registers. Two variables INTERFERE when they are simultaneously live
+/// (they cannot share a register); the interference graph has an edge for each such pair. Allocation is a
+/// graph K-COLORING: assign each variable a color (register) `0..k-1` so no two interfering variables
+/// share one. When a variable's already-colored neighbors use all `k` colors, it cannot be colored — it
+/// SPILLS to memory (color `-1`). This module models the interference graph as an edge list and does the
+/// standard GREEDY coloring (color variables in a fixed order, each taking the smallest color free among
+/// its colored neighbors). It pairs with `liveness.cdz`, which computes the simultaneously-live sets the
+/// edges come from.
+///
+///   - `neighbors edges v`      — the variables `v` interferes with.
+///   - `degree edges v`         — |neighbors| (a var with degree < k is always colorable).
+///   - `color-all vars edges k` — the greedy coloring, a `Map(var → color)` (`-1` = spilled).
+///   - `spill-count`            — how many variables spilled.
+///   - `valid-coloring`         — no interfering pair shares a (non-spill) color (the correctness check).
+
+type Edge =
+  | E(Int64, Int64)     // an interference between two variable ids (unordered)
+
+def touches(e: Edge, v: Int64) = match e with | Edge.E(a, b) => a == v or b == v
+def other(e: Edge, v: Int64) = match e with | Edge.E(a, b) => if a == v then b else a
+
+/// The set of variables `v` interferes with.
+def neighbors(edges: List(Edge), v: Int64, acc: Set(Int64)) = match edges with
+  | [] => acc
+  | [e, .. rest] => neighbors(rest, v, (if touches(e, v) then Set.insert(acc, other(e, v)) else acc))
+
+/// The interference degree of `v`.
+def degree(edges: List(Edge), v: Int64) = Set.len(neighbors(edges, v, Set.of([])))
+
+/// The colors used by `v`'s already-colored neighbors.
+def used-colors(nbrs: List(Int64), coloring: Map(Int64, Int64), acc: Set(Int64)) = match nbrs with
+  | [] => acc
+  | [n, .. rest] => (match Map.lookup(coloring, n) with
+    | Option.Some(c) => used-colors(rest, coloring, Set.insert(acc, c))
+    | Option.None(_) => used-colors(rest, coloring, acc))
+
+/// The smallest color in `0..k-1` not in `used`, or -1 (spill) if all `k` are taken.
+def smallest-free(used: Set(Int64), c: Int64, k: Int64) =
+  if c >= k then 0 - 1
+  else (if Set.contains(used, c) then smallest-free(used, c + 1, k) else c)
+
+/// Greedy K-coloring: color `vars` left to right, each taking the smallest color free among its already-
+/// colored neighbors; a variable whose neighbors use all `k` colors spills (color -1).
+def color-all(vars: List(Int64), edges: List(Edge), k: Int64, coloring: Map(Int64, Int64)) = match vars with
+  | [] => coloring
+  | [v, .. rest] =>
+    let nbrs = Set.to-list(neighbors(edges, v, Set.of([]))) in
+    let c = smallest-free(used-colors(nbrs, coloring, Set.of([])), 0, k) in
+    color-all(rest, edges, k, Map.insert(coloring, v, c))
+
+/// The color assigned to `v` (-1 if spilled or unseen).
+def color-of(coloring: Map(Int64, Int64), v: Int64) = match Map.lookup(coloring, v) with
+  | Option.Some(c) => c
+  | Option.None(_) => 0 - 1
+
+/// How many of `vars` spilled (color -1).
+def spill-count(vars: List(Int64), coloring: Map(Int64, Int64)) = sc(vars, coloring, 0)
+
+def sc(vars: List(Int64), coloring: Map(Int64, Int64), acc: Int64) = match vars with
+  | [] => acc
+  | [v, .. rest] => sc(rest, coloring, (if color-of(coloring, v) == (0 - 1) then acc + 1 else acc))
+
+/// Is the coloring VALID — does every interference edge join two DIFFERENTLY-colored (or spilled) vars?
+/// A spilled endpoint (-1) never conflicts (it lives in memory, not a register).
+def valid-coloring(edges: List(Edge), coloring: Map(Int64, Int64)) = match edges with
+  | [] => true
+  | [e, .. rest] => (match e with | Edge.E(a, b) =>
+    let ca = color-of(coloring, a) in
+    let cb = color-of(coloring, b) in
+    if ca == (0 - 1) then valid-coloring(rest, coloring)
+    else (if cb == (0 - 1) then valid-coloring(rest, coloring)
+      else (if ca == cb then false else valid-coloring(rest, coloring))))
+
+/// Builders.
+def edge(a: Int64, b: Int64) = Edge.E(a, b)
+
+@test
+def ra-degree() =
+  // triangle 0-1, 1-2, 0-2: each vertex has degree 2.
+  let es = [edge(0, 1), edge(1, 2), edge(0, 2)] in
+  if degree(es, 0) == 2 then (if degree(es, 1) == 2 then unit else trap("deg 1 = 2")) else trap("deg 0 = 2")
+
+@test
+def ra-independent-one-color() =
+  // no edges: all vars can share color 0, no spills, valid.
+  let c = color-all([0, 1, 2], [], 1, Map.empty) in
+  if spill-count([0, 1, 2], c) == 0 then (if valid-coloring([], c) then unit else trap("valid")) else trap("no spills with k=1 when independent")
+
+@test
+def ra-triangle-needs-three() =
+  // triangle: 3 mutually interfering → needs 3 colors. k=3 → 0 spills, valid.
+  let es = [edge(0, 1), edge(1, 2), edge(0, 2)] in
+  let c = color-all([0, 1, 2], es, 3, Map.empty) in
+  if spill-count([0, 1, 2], c) == 0 then (if valid-coloring(es, c) then unit else trap("valid 3-coloring")) else trap("triangle 3-colorable")
+
+@test
+def ra-triangle-k2-spills-one() =
+  // triangle with only k=2 registers → exactly one variable spills (the third, whose 2 neighbors took
+  // both colors). The result is still a VALID coloring (the spilled var conflicts with no one).
+  let es = [edge(0, 1), edge(1, 2), edge(0, 2)] in
+  let c = color-all([0, 1, 2], es, 2, Map.empty) in
+  if spill-count([0, 1, 2], c) == 1 then (if valid-coloring(es, c) then unit else trap("valid with a spill")) else trap("k=2 spills one")
+
+@test
+def ra-line-two-colors() =
+  // path 0-1-2 (0-1, 1-2; 0 and 2 do NOT interfere) is 2-colorable: 0→0, 1→1, 2→0. no spills.
+  let es = [edge(0, 1), edge(1, 2)] in
+  let c = color-all([0, 1, 2], es, 2, Map.empty) in
+  if spill-count([0, 1, 2], c) == 0 then
+    (if color-of(c, 0) == color-of(c, 2) then (if valid-coloring(es, c) then unit else trap("valid")) else trap("0 and 2 reuse a color"))
+  else trap("path is 2-colorable")
+
+@test
+def ra-adjacent-differ() =
+  // in any valid coloring, adjacent vars get different colors: 0 and 1 interfere → different colors.
+  let es = [edge(0, 1), edge(1, 2)] in
+  let c = color-all([0, 1, 2], es, 2, Map.empty) in
+  if color-of(c, 0) == color-of(c, 1) then trap("interfering vars must differ") else unit
+
+@test
+def ra-star-two-colors() =
+  // star: center 0 interferes with 1,2,3 (leaves don't interfere with each other). 2-colorable: center 0,
+  // leaves all 1. no spills.
+  let es = [edge(0, 1), edge(0, 2), edge(0, 3)] in
+  let c = color-all([0, 1, 2, 3], es, 2, Map.empty) in
+  if spill-count([0, 1, 2, 3], c) == 0 then (if valid-coloring(es, c) then unit else trap("valid star coloring")) else trap("star is 2-colorable")
+
+@test
+def ra-k4-clique-needs-four() =
+  // a 4-clique needs 4 colors; with k=3 exactly one spills.
+  let es = [edge(0,1), edge(0,2), edge(0,3), edge(1,2), edge(1,3), edge(2,3)] in
+  let c3 = color-all([0,1,2,3], es, 3, Map.empty) in
+  let c4 = color-all([0,1,2,3], es, 4, Map.empty) in
+  if spill-count([0,1,2,3], c3) == 1 then (if spill-count([0,1,2,3], c4) == 0 then (if valid-coloring(es, c4) then unit else trap("valid 4-coloring")) else trap("k=4 no spill")) else trap("k=3 spills one")
+
+@test
+def ra-spill-does-not-invalidate() =
+  // even when a spill happens, valid-coloring holds (the spilled var lives in memory).
+  let es = [edge(0, 1), edge(1, 2), edge(0, 2)] in
+  let c = color-all([0, 1, 2], es, 2, Map.empty) in
+  if valid-coloring(es, c) then (if spill-count([0, 1, 2], c) == 1 then unit else trap("one spill")) else trap("still valid with a spill")
+
+export { neighbors, degree, color-all, color-of, spill-count, valid-coloring }
