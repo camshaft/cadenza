@@ -1867,6 +1867,7 @@ pass	a string literal payload refines a ctor list element
 pass	a string passed to a function as a runtime argument is measured by its byte length
 pass	a string spelled like a keyword round-trips as an Ast.Str, not an Ast.Bool or Ast.Name
 pass	a string-literal pattern in a match selects by string equality, distinguishing Unicode
+pass	a success `?` observes an earlier trapping let-init so the trap is not elided
 pass	a success `?` then a failure `?` short-circuits at the second
 pass	a suffixed BigInt literal annotated as Int64 is a type mismatch
 pass	a suffixed Rational literal annotated as Int64 is a type mismatch
@@ -1953,6 +1954,7 @@ pass	a trapping element in the taken arm of a same-length list if still traps
 pass	a trapping element in the untaken arm of a same-arity tuple if does not trap
 pass	a trapping element in the untaken arm of a same-length list if does not trap
 pass	a trapping field in the untaken arm of a same-shape record if does not trap
+pass	a trapping init observed inside the `?`'s own operand is not elided
 pass	a trapping payload in a non-taken arm of a same-constructor match does not trap
 pass	a trapping payload in the TAKEN arm of a same-constructor if still traps
 pass	a trapping payload in the taken arm of a same-constructor match still traps
