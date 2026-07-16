@@ -2,7 +2,13 @@
 
 **Author:** design agent (`design-try-operator`). **Audience:** the `vertical` agent that builds this,
 plus `v-effects` / `v-inference` / `v-syntax`, who own seams it touches.
-**Status:** **DESIGN ONLY — nothing landed.** Line numbers are landmarks at 2026-07-15, not promises.
+**Status (2026-07-16):** **LARGELY LANDED.** T0a (the `Try` node through resolve/infer + operand-shape
+CDZ0203), T0b (the boundary check `enclosing_boundary_ty` + CDZ0230 + kind-mismatch CDZ0203), BRICK 1
+(the `Core::Block`/`Break` nodes), BRICK 2a (constant-success fold), and BRICK 3a (constant-failure
+short-circuit) are all on trunk — a constant `?` compiles + executes both the happy and the short-circuit
+path. REMAINING: the RUNTIME `?` (a non-constant operand → the `Core::MatchSum`/block-br emit, BRICK 3b),
+the ML postfix `?` surface (v-syntax), the `try { }` block boundary (v2 / §4), and the T3 conversion-idiom
+prelude ops (`Result.map-err`/`Option.ok-or`). Line numbers are landmarks, not promises.
 
 > **Origin.** The operator asked for "a `?` operator like Rust — there are quite a few nested matches we
 > could clean up" and, crucially, *"is that a monad generally? do we start going down that territory?"*
