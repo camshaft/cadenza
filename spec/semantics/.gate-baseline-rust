@@ -1027,6 +1027,7 @@ pass	a non-exhaustive guarded match is rejected even when a constant scrutinee f
 pass	a non-final unquote-splice in a quote pattern is ill-formed
 pass	a non-final unsized bytes segment is ill-formed
 pass	a non-first field is projected from a record returned across a call boundary
+pass	a non-integer exponent in a Unit.^ power is rejected
 pass	a non-linear tuple binding pattern is rejected
 pass	a non-matching literal inside a constructor pattern binds the runtime payload
 pass	a non-power-of-two float width is rejected
@@ -1035,6 +1036,9 @@ pass	a non-tail accumulable recursion runs to a large runtime N in constant stac
 pass	a non-tail call passing a heap-match argument compiles to valid wasm
 pass	a non-tail recursion with a fallible read in its base arm composes
 pass	a non-tail-resumptive outer handler reduces a reducible inner handle before its own fold
+pass	a non-unit base in a Unit.^ power is rejected
+pass	a non-unit factor in a Unit.* composition is rejected
+pass	a non-unit factor in a Unit./ composition is rejected
 pass	a not of a runtime conjunction computes the negated conjunction
 pass	a nullary Sign variant applied to a non-unit payload is a type error
 pass	a nullary constructor is a plain first-class value stored in a tuple

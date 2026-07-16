@@ -1789,3 +1789,41 @@
   (input  (Unit.in (Unit.of #"meter")
             (: (: (Qty.of 1 (Unit.of #"kilometer")) (Qty Int64 (Unit.of #"meter"))) (Qty Int64 (Unit.of #"centimeter")))))
   (output (: 1000 Int64)))
+
+; --- A MALFORMED unit COMPOSITION operand is named, not silently shipped (CDZ0201) ---------------
+; `Unit.*`/`Unit./` compose two UNITS; `Unit.^` raises a unit to a compile-time INTEGER. A malformed
+; operand — a non-unit factor (`(Unit.* (Unit.base #"m") 5)`), a non-unit power base, or a non-integer
+; exponent (`(Unit.^ u 2.5)`) — is CDZ0201, naming the offending operand. Before this the `Qty.of`
+; not-a-unit check SKIPPED a unit-builder-headed arg (deferring to the builder's own validation, which
+; had NONE): the composition silently reduced to a unitless `Any`, `cdz check` PASSED, and `cdz compile`
+; leaked "function return type has no machine representation" — a check-miss the reject now closes. A
+; VALID composition is unaffected (the control cases in the body of the file exercise those).
+
+(case "a non-unit factor in a Unit.* composition is rejected"
+  (doc    "`(Unit.* (Unit.base #\"meter\") 5)` multiplies a unit by the integer `5` — `5` is not a unit, so
+           the composition is malformed and rejected CDZ0201, naming the non-unit operand. Pins that a
+           `Unit.*` factor must itself be a unit; before, this slipped `check` (the composition reduced to
+           a unitless value) and only surfaced as a leaked 'no machine representation' at compile.")
+  (input  (do (def (main) (Qty.value (Qty.of 1.0 (Unit.* (Unit.base #"meter") 5)))) (export main)))
+  (error  CDZ0201))
+
+(case "a non-unit factor in a Unit./ composition is rejected"
+  (doc    "`(Unit./ (Unit.base #\"meter\") 5)` — the quotient sibling: a non-unit divisor `5` is rejected
+           CDZ0201, exactly as the product case. Pins the whole two-operand composer family refuses a
+           non-unit operand.")
+  (input  (do (def (main) (Qty.value (Qty.of 1.0 (Unit./ (Unit.base #"meter") 5)))) (export main)))
+  (error  CDZ0201))
+
+(case "a non-integer exponent in a Unit.^ power is rejected"
+  (doc    "`(Unit.^ (Unit.base #\"meter\") 2.5)` raises a unit to `2.5` — a unit power's exponent must be a
+           compile-time INTEGER (a fractional power has no unit meaning), so it is rejected CDZ0201, naming
+           the exponent requirement. The power sibling of the non-unit-factor cases.")
+  (input  (do (def (main) (Qty.value (Qty.of 1.0 (Unit.^ (Unit.base #"meter") 2.5)))) (export main)))
+  (error  CDZ0201))
+
+(case "a non-unit base in a Unit.^ power is rejected"
+  (doc    "`(Unit.^ 5 2)` raises the integer `5` to a power — the BASE of a unit power must be a unit, so a
+           non-unit base is rejected CDZ0201. Completes the malformed-composition family: both operands of
+           `Unit.^` (base and exponent) are validated, like both factors of `Unit.*`/`Unit./`.")
+  (input  (do (def (main) (Qty.value (Qty.of 1.0 (Unit.^ 5 2)))) (export main)))
+  (error  CDZ0201))
