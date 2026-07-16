@@ -638,7 +638,7 @@ fn ground_free_vars(ty: &crate::ty::Ty) -> crate::ty::Ty {
 /// `Ty::Var`/`Any` (unknown) do NOT. Recurses with a `visited` set of sum decls so a recursive sum
 /// (`Box<Self>`) terminates: a back-edge to an in-progress decl is treated as `Eq` (its own variants are
 /// checked at the top level), so `enum L { Cons(Box<(i64, L)>), Nil }` derives `Eq` iff `i64` does.
-fn ty_derives_eq(
+pub(super) fn ty_derives_eq(
     db: &mut Db,
     ty: &crate::ty::Ty,
     visited: &mut std::collections::HashSet<crate::ast::StructId>,
@@ -752,6 +752,23 @@ pub(super) fn sum_representable(db: &mut Db, ty: &crate::ty::Ty) -> bool {
             !mentions_decl(inner, *decl)
                 && sum_representable(db, inner)
                 && args.iter().all(|a| sum_representable(db, a))
+        }
+        // A LIST element must be representable; a `Vec<T>` needs no `Ord`, so no Ord check.
+        Ty::List(e) => sum_representable(db, e),
+        // A SET element / MAP key maps to `BTreeSet<T>`/`BTreeMap<K,_>`, which need `T`/`K: Ord`. `rust_type`
+        // is pure and can't check a SUM key's Ord-derivability, so it maps the shape unconditionally — this
+        // Db-aware gate is where a non-Ord key/element in a TYPE POSITION (a param/result `Set`/`Map` type,
+        // with no construction op to catch it) DECLINES. Without it, a `(Set W)` param where `W` is a
+        // float-carrying sum emits `BTreeSet<W>` though `enum W` derives no `Ord` → uncompilable (E0277,
+        // Copilot PR#455 — the float-carrying-sum twin of the bare-float-key decline). `types::ty_is_ord` is
+        // the Ord predicate (floats + float-carrying compounds/sums excluded; a sum orderable iff its enum
+        // derives `Ord`; BigInt/Rational ARE Ord). The element/value must ALSO be representable — but a
+        // non-Ord VALUE is fine (only the KEY needs `Ord`).
+        Ty::Set(e) => sum_representable(db, e) && crate::backend::rust::types::ty_is_ord(db, e),
+        Ty::Map(k, v) => {
+            sum_representable(db, k)
+                && sum_representable(db, v)
+                && crate::backend::rust::types::ty_is_ord(db, k)
         }
         _ => true,
     }

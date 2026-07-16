@@ -582,6 +582,45 @@ fn a_float_keyed_set_or_map_declines_no_btreeset_f64() {
         set_int.contains("BTreeSet"),
         "an Int-element Set still emits a BTreeSet:\n{set_int}"
     );
+
+    // FOLLOW-ON (Copilot PR#455): a sum CARRYING A FLOAT is one type-shape past a bare float key — its
+    // emitted enum derives no `Ord` (a float payload isn't `Eq`/`Ord`), so a `Set<Enum>`/`Map<Enum,_>`
+    // is still uncompilable. The old `ty_is_ord` returned `true` for EVERY `Ty::Sum` (comment claimed the
+    // enum-derive path caught it — but that's a rustc COMPILE ERROR, not the clean decline). Both the
+    // VALUE path (a construction op) and the TYPE-POSITION path (a param `(Set W)`, no construction op —
+    // caught by the `sum_representable` gate) must decline.
+    let sum_float_set_val = compile_rust_result(
+        "(module m (type W (F Float64) (G)) \
+           (def (main (: d Float64)) (Set.len (Set.of (list ((. W F) d))))) (export main))",
+    );
+    assert!(
+        sum_float_set_val.is_err(),
+        "a Set of a float-carrying sum (value) must DECLINE, got:\n{sum_float_set_val:?}"
+    );
+    let sum_float_set_param = compile_rust_result(
+        "(module m (type W (F Float64) (G)) (def (main (: s (Set W))) (Set.len s)) (export main))",
+    );
+    assert!(
+        sum_float_set_param.is_err(),
+        "a (Set W) PARAM where W carries a float must DECLINE (no BTreeSet<W>), got:\n{sum_float_set_param:?}"
+    );
+    // CONTROL: an ALL-NULLARY sum (its enum DOES derive Ord) is a valid Set element/key — the fix is
+    // Ord-derivability-specific, not "decline every sum key".
+    let nullary_sum_set = compile_rust(
+        "(module m (type W (A) (B)) (def (main (: s (Set W))) (Set.len s)) (export main))",
+    );
+    assert!(
+        nullary_sum_set.contains("BTreeSet<W>"),
+        "an all-nullary sum is a valid (Ord) Set element:\n{nullary_sum_set}"
+    );
+    // CONTROL: a float-carrying sum is fine as a Map VALUE (only the KEY needs Ord) — `(Map Int64 W)`.
+    let sum_float_map_val = compile_rust(
+        "(module m (type W (F Float64) (G)) (def (main (: mp (Map Int64 W))) (Map.len mp)) (export main))",
+    );
+    assert!(
+        sum_float_map_val.contains("BTreeMap<i64, W>"),
+        "a float-carrying sum is a valid Map VALUE (only the key needs Ord):\n{sum_float_map_val}"
+    );
 }
 
 #[test]
