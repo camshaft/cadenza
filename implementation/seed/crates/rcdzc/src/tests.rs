@@ -13856,6 +13856,28 @@ mod match_engine {
             "1",
             "equal 2nd components (Int,Int) unify to 1 — b2 reads b's payload"
         );
+        // A 3-TUPLE of sums (three colliding `[Elem(i), Payload]` prefixes of equal length) — the stronger
+        // guard (v-compiler-ml flagged the sibling shapes). `u3(a2,b2,c2)` recurses to (Int,Int,Bool); not
+        // all TInt → 0. A length-only key would alias all three prefixes to one slot; the full-prefix-STEPS
+        // key keeps them distinct (Elem(0)/Elem(1)/Elem(2) differ). Verified the sum-wrapped-pair sibling
+        // (`P.Mk(a,b)` then `match (a,b)`) resolves too — same steps-key mechanism.
+        assert_eq!(
+            run_heap_value(
+                "(module m (type Ty (TInt) (TBool) (TArrow Ty Ty)) \
+                   (def (u3 (: a Ty) (: b Ty) (: c Ty)) \
+                     (match (tuple a b c) \
+                       ((tuple (Ty.TArrow a1 a2) (Ty.TArrow b1 b2) (Ty.TArrow c1 c2)) (u3 a2 b2 c2)) \
+                       ((tuple (. Ty TInt) (. Ty TInt) (. Ty TInt)) 1) \
+                       ((tuple _ _ _) 0))) \
+                   (def (main) (u3 (Ty.TArrow (Ty.TInt) (Ty.TInt)) (Ty.TArrow (Ty.TInt) (Ty.TInt)) \
+                                   (Ty.TArrow (Ty.TInt) (Ty.TBool)))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "0",
+            "a 3-tuple of sums recurses u3(a2,b2,c2) = u3(Int,Int,Bool) → not all TInt → 0 (three distinct \
+             same-length payload prefixes each read from their own slot)"
+        );
     }
 
     #[test]
