@@ -577,6 +577,43 @@
             ((Err _) false)))
   (output (: true Bool)))
 
+; --- The Float payload is the raw IEEE-754 f64 BIT PATTERN: sign and signed-zero survive --------------
+; ast-encoding.md / lower.rs: an `Ast.Float f` encodes as tag 0x05 then the f64 BIT PATTERN as 8 bytes LE
+; (`to_f64_bits`/`from_f64`), a canonical form where "equal doubles → equal bits; -0.0 ≠ 0.0". The round-
+; trip case above uses only the positive `1.5`, so it never exercises the sign bit or the signed-zero
+; distinction. A codec that normalized the bits (e.g. canonicalized -0.0 → 0.0, or dropped the sign) would
+; pass `1.5` yet lose `-0.0`'s identity. These pin the BIT-EXACT contract: a negative float round-trips,
+; and `-0.0` is byte-DISTINCT from `0.0` (they are `==` as floats but NOT bit-equal — the encoding keeps
+; the difference the spec comment calls out). (NaN is not pinned here — `Float64.nan` is a field that does
+; not fold in this const-codec position; its byte form is witnessed by the runtime-lift/print paths.)
+
+(case "the Float codec round-trips a negative value"
+  (doc    "`Ast.Float -2.5` encodes+decodes to an equal AST — the sign bit of the f64 payload survives the
+           byte round-trip. The negative companion of the `Ast.Float 1.5` round-trip; a codec that mis-read
+           the sign or the exponent bits would corrupt it.")
+  (input  (match (Ast.decode (Ast.encode (Ast.Float -2.5)))
+            ((Ok a)  (= a (Ast.Float -2.5)))
+            ((Err _) false)))
+  (output (: true Bool)))
+
+(case "negative zero encodes to bytes distinct from positive zero"
+  (doc    "`-0.0` and `0.0` are `==` as Float64 but have DISTINCT IEEE-754 bit patterns (only the sign bit
+           differs), and the codec stores the raw bits — so `Ast.encode (Ast.Float -0.0)` ≠ `Ast.encode
+           (Ast.Float 0.0)`. Pins the exact invariant the encoding comment calls out (\"-0.0 ≠ 0.0\"): a
+           codec that canonicalized signed zero would collapse these to equal bytes and lose `-0.0`.")
+  (input  (= (Ast.encode (Ast.Float -0.0)) (Ast.encode (Ast.Float 0.0))))
+  (output (: false Bool)))
+
+(case "negative zero round-trips through the codec by byte identity"
+  (doc    "`Ast.Float -0.0` decodes to an AST that re-encodes to identical bytes — the sign bit of signed
+           zero is preserved end-to-end (comparing by re-encoded bytes, since `-0.0 = 0.0` is true as a
+           float value and would not distinguish them). Companion of the distinct-bytes case: pins that the
+           round-trip, not just the initial encode, keeps signed zero.")
+  (input  (match (Ast.decode (Ast.encode (Ast.Float -0.0)))
+            ((Ok a)  (= (Ast.encode a) (Ast.encode (Ast.Float -0.0))))
+            ((Err _) false)))
+  (output (: true Bool)))
+
 (case "print of an Ast.Float renders a re-readable decimal and read inverts it"
   (doc    "`print` renders an `Ast.Float` as the shortest round-tripping decimal — always carrying a `.`
            (or `e`) so it re-reads as a float — and `read` parses it back: `read(print v) == v`.")
