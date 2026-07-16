@@ -1543,6 +1543,42 @@
   (call   main)
   (output (: 1 Int64)))
 
+; The landed char-pattern cases use CONSTANT char scrutinees. These pin the neighbors: a RUNTIME char (from
+; Char.from-int, not a const fold) reaching a later arm; a char pattern over a NON-char scrutinee is a type
+; error (the char pattern enforces its type from the PATTERN — unlike the String/Symbol pattern leak, the
+; char path is sound); and a supplementary-plane char literal matches by scalar value.
+
+(case "a runtime char reaches a later char-literal arm by scalar value"
+  (doc    "`(match c (#\\a 1) (#\\b 2) (_ 0))` with a RUNTIME `c` = `(Char.from-int 98)` = `#\\b` (not a
+           constant fold) takes the SECOND arm → 2. Pins that char-literal dispatch works on a runtime char
+           value across the arm list (the runtime companion of the landed constant `#\\b` case), so the
+           scalar-value compare runs at run time, not only in the constant fold.")
+  (input  (do
+            (def (classify (: c Char)) (match c (#\a 1) (#\b 2) (_ 0)))
+            (def (main) (classify (Option.expect (Char.from-int 98) "b")))
+            (export main)))
+  (call   main)
+  (output (: 2 Int64)))
+
+(case "a char-literal pattern over a non-char scrutinee is a type error"
+  (doc    "`(match n (#\\a 1) (_ 0))` with `n : Int64` — a Char pattern over an Int64 scrutinee — is rejected
+           CDZ0201 ('match pattern type Char does not match scrutinee type Int64'). Pins that the char
+           pattern enforces its type FROM THE PATTERN: a Char pattern requires a Char scrutinee, so a
+           non-char scrutinee (Int64 here, and equally a String) is caught — the char path does NOT have the
+           String/Symbol pattern's cross-nominal leak, it derives the pattern type soundly.")
+  (input  (do (def (main (: n Int64)) (match n (#\a 1) (_ 0))) (export main)))
+  (call   main (: 97 Int64))
+  (error  CDZ0201))
+
+(case "a supplementary-plane char literal matches by scalar value"
+  (doc    "`(match #\\😀 (#\\a 1) (#\\😀 2) (_ 0))` is 2 — the supplementary-plane scalar U+1F600 (😀, above
+           the BMP) equals the second arm's char literal, dispatched by scalar value. Pins that char-literal
+           dispatch compares the full 21-bit scalar, not a truncated code unit, so a supplementary-plane
+           char discriminates correctly — the char-pattern companion of the supplementary-plane String.at.")
+  (input  (do (def (main) (match #\😀 (#\a 1) (#\😀 2) (_ 0))) (export main)))
+  (call   main)
+  (output (: 2 Int64)))
+
 ; --- String operations at RUN TIME: a string not fixed at compile time ---------------------------------
 ; The string cases above operate on CONSTANT string literals, so their lengths / slices / concatenations
 ; fold at compile time. A string chosen at run time — an `(if …)` selecting between two literals produces
