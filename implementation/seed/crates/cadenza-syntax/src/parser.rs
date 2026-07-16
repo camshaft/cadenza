@@ -3373,6 +3373,51 @@ mod tests {
         }
     }
 
+    /// A tiny deterministic PRNG (SplitMix64) — reproducible fuzz without a dependency, matching the
+    /// lexer/codec house style (the crate stays "plain").
+    struct SplitMix64(u64);
+    impl SplitMix64 {
+        fn next(&mut self) -> u64 {
+            self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+            z ^ (z >> 31)
+        }
+    }
+
+    #[test]
+    fn recovered_arena_invariants_hold_on_arbitrary_input() {
+        // The parser's charter invariant — never panic, always produce a well-formed traversable arena
+        // with a TOTAL span table — on ARBITRARY input, not just the hand-picked garbage above. The
+        // lexer's own fuzz calls `read_ml` on random soup but only checks non-panic; this asserts the
+        // PARSER's structural invariants (`recovered`) hold on every fuzzed string. The alphabet stresses
+        // the grammar's structural sigils (parens/brackets/braces, `,`/`;`/`|`, keywords' lead chars,
+        // operators, quote/comment openers, unicode) so recovery, resync, and span-table upkeep are
+        // exercised across deeply malformed shapes.
+        let alphabet: Vec<char> = "()[]{}|,;=>-+*/<:.@#`\"\\ \tabcdefimntxλ中0123456789\n"
+            .chars()
+            .collect();
+        let mut rng = SplitMix64(0x5111_7a5f_11e2_0d1c);
+        for len in 0..=32usize {
+            for _ in 0..120 {
+                let s: String = (0..len)
+                    .map(|_| alphabet[(rng.next() as usize) % alphabet.len()])
+                    .collect();
+                // `recovered` asserts: non-empty arena, root in range, span table 1:1 with structure,
+                // and every reachable child id in range (fully traversable) — for THIS fuzzed input.
+                let _ = recovered(&s);
+            }
+        }
+        // A few pathological repeats that have historically stressed recovery/depth guards.
+        for s in [
+            "((((((((", "))))))))", "{{{{{{{{", "[,[,[,[,", ";;;;;;;;", "||||||||", "@@@@@@@@",
+        ] {
+            let _ = recovered(s);
+            let _ = recovered(&s.repeat(8));
+        }
+    }
+
     #[test]
     fn does_not_bail_at_first_error() {
         // Several independent mistakes are ALL reported, not just the first. Three stray symbols
