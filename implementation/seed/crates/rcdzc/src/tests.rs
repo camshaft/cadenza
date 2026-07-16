@@ -58199,6 +58199,52 @@ mod sidecar_driven {
     }
 
     #[test]
+    fn emit_tests_declines_a_non_ascii_export_name_with_a_cause_specific_diagnostic() {
+        // REGRESSION (concierge assign, 2026-07-16; v-syntax found+characterized): Cadenza's ML lexer
+        // admits UNICODE idents (`def π`, `def café`, `a·b`), but a component extern name is ASCII kebab
+        // only (`[a-z0-9-]`, `wasmparser`'s `KebabStr`). `kebab_extern_name` keeps a non-ASCII char VERBATIM,
+        // so it fails `is_kebab_word` and (before the guard) emitted a component wasmtime rejects wholesale
+        // at load — no compiler diagnostic. The `invalid_kebab_export_name` guard already rejects it; this
+        // pins that the diagnostic is CAUSE-SPECIFIC: it names the offending NON-ASCII CHARACTER and points
+        // at ASCII-kebab renaming, rather than the (wrong-for-this-case) "segment must start with a letter"
+        // message — which would be actively confusing for `café` (which DOES start with a letter).
+        for (name, bad) in [("π", "π"), ("café", "é"), ("a·b", "·"), ("ναμε", "ν")] {
+            let src = format!("(do (@ test (def ({name}) unit))) ");
+            let out = compile(&inputs(&src, &[Request::EmitTests]), &[]);
+            assert!(
+                out.has_error(),
+                "a @test named `{name}` (non-ASCII) must DECLINE, not silently emit an unloadable component: {:?}",
+                out.diagnostics
+            );
+            let d = out
+                .diagnostics
+                .iter()
+                .find(|d| {
+                    d.code.as_deref() == Some("CDZ0201")
+                        && d.message.contains("valid component boundary name")
+                })
+                .unwrap_or_else(|| {
+                    panic!(
+                        "the decline for `{name}` is the coded boundary-name CDZ0201: {:?}",
+                        out.diagnostics
+                            .iter()
+                            .map(|d| &d.message)
+                            .collect::<Vec<_>>()
+                    )
+                });
+            // Cause-specific: names the bad char + points at ASCII kebab, NOT the digit-led "start with a letter" text.
+            assert!(
+                d.message.contains(&format!("it contains `{bad}`"))
+                    && d.message.contains("ASCII kebab-case only")
+                    && !d.message.contains("START WITH A LETTER"),
+                "the decline for `{name}` must name the non-ASCII char `{bad}` + point at ASCII kebab \
+                 (not the digit-led message): {}",
+                d.message
+            );
+        }
+    }
+
+    #[test]
     fn a_host_op_result_crosses_at_every_aliased_int_width() {
         // The host-op boundary ABI (`host::abi_val_type`) crosses EVERY aliased INT width — the narrow
         // ints `Int8`/`Int16`/`Int32` + unsigned `UInt8`, not only the earlier `Int64`/`UInt32`. Each

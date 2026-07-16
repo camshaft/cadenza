@@ -171,33 +171,53 @@ fn kebab_export_collision(layout: &Layout) -> Option<Reject> {
 
 /// If an export's NORMALIZED extern name is not a valid component-model kebab word, return a reject
 /// naming it (else `None`). `kebab_extern_name` maps uppercase/underscore runs to well-formed kebab
-/// words, but it keeps `-` and digits VERBATIM — so a source name whose hyphen-delimited segment STARTS
-/// WITH A DIGIT (a valid Cadenza identifier: `step-by-2`, `a-2-b`, `range-step-2x`) normalizes to
-/// itself, and that self is NOT a valid kebab word (`wasmparser`'s `KebabStr` requires each `-`-delimited
-/// label to start with an ASCII LETTER). Emitting it produces a component `wasmtime` rejects WHOLESALE at
-/// load — surfacing (for `cdz test`) as every test in the file failing with no explanation, and (for
-/// `cdz compile`) as an unloadable artifact — an invalid-component miscompile with NO compiler diagnostic
-/// (the [[rcdzc-kebab-extern-name-gotcha]] family). Reject it here, before emit, naming the offending
-/// export + a concrete fix, so the silent total-component failure becomes a clear compile error. The
-/// FIRST offending export (in layout order) is reported. This is the export-NAME analogue of the
+/// words, but it keeps `-`, digits, and — critically — NON-ASCII characters VERBATIM. Two distinct source
+/// shapes therefore normalize to a non-kebab extern name that `wasmtime` rejects WHOLESALE at load (an
+/// unloadable-component miscompile with no runtime diagnostic; the [[rcdzc-kebab-extern-name-gotcha]]
+/// family), so both are rejected here before emit with a CAUSE-SPECIFIC message:
+///   (1) a NON-ASCII identifier — Cadenza's ML lexer admits Unicode idents (`def π`, `def café`, `a·b`),
+///       but a component extern name is ASCII kebab only (`[a-z0-9-]`, `wasmparser`'s `KebabStr`). A
+///       non-ASCII char is kept verbatim and fails to load. Name the offending character in the fix.
+///   (2) a DIGIT- or HYPHEN-LED segment — a valid Cadenza identifier (`step-by-2`, `a-2-b`) whose
+///       `-`-delimited label starts with a non-letter, which `KebabStr` forbids (each label must start
+///       with an ASCII letter). Point at the letter-led rewrite.
+/// The FIRST offending export (layout order) is reported. This is the export-NAME analogue of the
 /// interface-NAME guard (`is_valid_interface_name`): a boundary name that isn't valid kebab is a
-/// compile-time reject, not a silent load failure.
+/// compile-time reject, not a silent load failure. (Mirrors `cadenza_syntax::extern_name`'s ASCII
+/// precondition — kept a CONSUMER-side reject since the pure lib core takes `cadenza-syntax` DEV-only.)
 fn invalid_kebab_export_name(layout: &Layout) -> Option<Reject> {
     for e in &layout.exports {
         let extern_name = kebab_extern_name(&e.name);
-        if !is_kebab_word(&extern_name) {
-            return Some(Reject::coded(
-                crate::diag::Code::Malformed,
-                format!(
-                    "the export/`@test` name `{}` is not a valid component boundary name: it normalizes \
-                     to `{extern_name}`, whose `-`-separated segments must each START WITH A LETTER (a \
-                     digit-led segment like `-2` is not a valid component extern name, so the emitted \
-                     component would fail to load) — rename it so every hyphen-delimited segment begins \
-                     with a letter (e.g. `step-by-2` → `step-by-two` or `step-by2`)",
-                    e.name
-                ),
-            ));
+        if is_kebab_word(&extern_name) {
+            continue;
         }
+        // Pinpoint WHY it fails, so the fix is actionable rather than a generic "not valid kebab".
+        // A char outside the kebab alphabet `[A-Za-z0-9-]` (a non-ASCII letter like `π`/`é`, or a symbol
+        // like `·`) is the (1) non-ASCII cause; otherwise the alphabet is fine but a segment is digit-/
+        // hyphen-led (2).
+        let bad_char = extern_name
+            .chars()
+            .find(|c| !(c.is_ascii_alphanumeric() || *c == '-'));
+        let msg = if let Some(bad) = bad_char {
+            format!(
+                "the export/`@test` name `{}` is not a valid component boundary name: it contains `{bad}`, \
+                 but a component extern name is ASCII kebab-case only (`[a-z0-9-]`) — Cadenza accepts a \
+                 Unicode identifier in source, but the emitted component would fail to load (`wasmtime` \
+                 rejects a non-kebab extern name wholesale). Rename this export to an ASCII kebab name \
+                 (e.g. `π` → `pi`, `café` → `cafe`)",
+                e.name
+            )
+        } else {
+            format!(
+                "the export/`@test` name `{}` is not a valid component boundary name: it normalizes to \
+                 `{extern_name}`, whose `-`-separated segments must each START WITH A LETTER (a digit-led \
+                 segment like `-2` is not a valid component extern name, so the emitted component would \
+                 fail to load) — rename it so every hyphen-delimited segment begins with a letter (e.g. \
+                 `step-by-2` → `step-by-two` or `step-by2`)",
+                e.name
+            )
+        };
+        return Some(Reject::coded(crate::diag::Code::Malformed, msg));
     }
     None
 }
