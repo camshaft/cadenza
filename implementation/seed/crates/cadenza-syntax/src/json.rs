@@ -1094,6 +1094,21 @@ mod tests {
             "root id in range for {src:?}"
         );
         assert_eq!(spans.len(), n, "span table is total for {src:?}");
+        // Every span is a GEOMETRICALLY VALID slice of the source — ordered, in-bounds, on UTF-8 char
+        // boundaries — even on malformed input. Totality only says a span EXISTS per node; this says
+        // `&src[sp.start..sp.end]` (an LSP hover / diagnostic underline / span-based edit) can be taken
+        // WITHOUT panicking. The reader synthesizes spans for structural nodes (objects/arrays), so an
+        // off-by-one or a span past a truncated source is a real risk on the error path.
+        for id in (0..n as u32).map(StructId) {
+            let sp = spans.get(id).expect("total span table");
+            assert!(
+                sp.start <= sp.end
+                    && sp.end <= src.len()
+                    && src.is_char_boundary(sp.start)
+                    && src.is_char_boundary(sp.end),
+                "span {sp:?} for node {id:?} is not a valid slice of {src:?}"
+            );
+        }
         fn walk(a: &Arenas, id: StructId) {
             if let crate::ast::Struct::List(kids) = a.get(id) {
                 for &c in kids {
