@@ -4223,17 +4223,23 @@ fn strip_annotations(ast: &mut Arenas) -> StrippedAnnotations {
                 _ => None, // `@tag` with not-exactly-one-arg (or a non-string arg) — not a modeled tag
             }
         });
-        // A `(tag …)` HEAD that is NOT a valid `@tag("string")` — the arg is not exactly one STRING (a
-        // number `@tag(5)`, a bare name `@tag(foo)`, zero args `@tag()`, or two `@tag("a" "b")`). This is
-        // always an author mistake: silently ignoring it (recording no tag) masks the error, so record the
-        // offending `(tag …)` occurrence for `collect_faults` to REJECT (a malformed tag annotation).
-        if tag_app.is_some() && tag_arg.is_none() {
-            malformed_tags.push(name_occ);
-        }
         // The inner must be a `(def SIG BODY …)` — read its children to adopt them + find the BODY occ.
+        // NOTE: this def check is BEFORE the malformed-`@tag` recording below on purpose — the `@tag`
+        // contract only applies when the annotation wraps a DEFINITION, so a `@tag` around a NON-def is
+        // handled solely by the existing "annotation wraps no definition" rejection; recording a
+        // malformed-tag fault here too would double-diagnose one mistake (Copilot PR#484).
         let Some(def_tail) = ast.as_form(inner, "def") else {
             continue; // an annotation around a non-def — leave untouched (a well-formedness concern elsewhere)
         };
+        // A `(tag …)` HEAD that is NOT a valid `@tag("string")` — the arg is not exactly one STRING (a
+        // number `@tag(5)`, a bare name `@tag(foo)`, zero args `@tag()`, or two `@tag("a" "b")`). This is
+        // always an author mistake: silently ignoring it (recording no tag) masks the error, so record the
+        // offending `(tag …)` occurrence for `collect_faults` to REJECT (a malformed tag annotation). Only
+        // meaningful once the inner IS a def (checked above) — a `@tag` on a non-def is already the
+        // "wraps no definition" mistake, not additionally a malformed-tag one.
+        if tag_app.is_some() && tag_arg.is_none() {
+            malformed_tags.push(name_occ);
+        }
         // The def's BODY occurrence: `def_tail = [SIG, BODY, …]`, so index 1 (a well-formed def has ≥2).
         let Some(&body) = def_tail.get(1) else {
             continue;

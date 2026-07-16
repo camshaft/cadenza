@@ -16410,6 +16410,27 @@ mod match_engine {
                 "a valid @tag is not flagged: {ok}"
             );
         }
+        // A malformed `@tag` wrapping a NON-def is ONE mistake — "wraps no definition" — NOT ALSO a
+        // malformed-tag fault (the `@tag` contract only applies to a def). `strip_annotations` records the
+        // malformed-tag AFTER the def check, so `(@ (tag 5) 5)` yields exactly the wraps-no-definition
+        // diagnostic, not two redundant ones (Copilot PR#484).
+        let non_def = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (@ (tag 5) 5) (def (main) 0) (export main))",
+        )));
+        assert!(
+            non_def
+                .iter()
+                .any(|d| d.message.contains("annotation wraps no definition")),
+            "a @tag on a non-def is the wraps-no-definition mistake: {non_def:?}"
+        );
+        assert!(
+            !non_def
+                .iter()
+                .any(|d| d
+                    .message
+                    .contains("`@tag` annotation takes exactly one STRING")),
+            "a @tag on a non-def must NOT also record a malformed-tag fault (no double-diagnostic): {non_def:?}"
+        );
     }
 
     /// A SHAPE-valid constructor-export `(export (. T A))` / `(export (. T *))` must ALSO be SEMANTICALLY
