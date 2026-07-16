@@ -38744,6 +38744,54 @@ mod stage1 {
     }
 
     #[test]
+    fn a_wildcard_used_as_a_value_names_the_binding_position_misuse() {
+        // `_` is a binding-position WILDCARD (it discards the bound value in a pattern / a discarded `let`
+        // binder); using it as a VALUE — `(+ _ 1)`, `(g _)`, a bare `_` body — previously drew the generic
+        // "unbound name `_`" (a "did you mean?" typo suggestion is nonsense for it). It now names the
+        // category misuse specifically and points at the legitimate uses.
+        let all = |src: &str| crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+        for src in [
+            "(module m (def x (+ _ 1)) (export x))",
+            "(module m (def (g a) a) (def x (g _)) (export x))",
+            "(module m (def (f) _) (export f))",
+        ] {
+            let d = all(src)
+                .into_iter()
+                .find(|d| d.message.contains("`_` is a wildcard"))
+                .unwrap_or_else(|| panic!("`_` as a value names the misuse: {src}"));
+            assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+            assert!(
+                d.message.contains("only in a binding position")
+                    && d.message.contains("discards the value"),
+                "names the wildcard misuse + the legitimate use: {}",
+                d.message
+            );
+        }
+        // NO false positive: a LEGITIMATE `_` in a binding position is not flagged — a wildcard match arm,
+        // a wildcard tuple-pattern element, and a discarded `let` binder all compile clean.
+        for ok in [
+            "(module m (def (f (: n Int64)) (match n (0 1) (_ 2))) (export f))",
+            "(module m (def (f (: p (Tuple Int64 Int64))) (match p ((tuple _ b) b))) (export f))",
+            "(module m (def (f) (let ((_ 5)) 3)) (export f))",
+        ] {
+            assert!(
+                !all(ok)
+                    .iter()
+                    .any(|d| d.message.contains("`_` is a wildcard")),
+                "a legitimate binding-position `_` is not flagged: {ok}"
+            );
+        }
+        // A `_`-LED binder (`_x`) is an ORDINARY name (a silenced binder), never the bare wildcard — it
+        // must not draw the wildcard-misuse message.
+        assert!(
+            !all("(module m (def (f (: _x Int64)) _x) (export f))")
+                .iter()
+                .any(|d| d.message.contains("`_` is a wildcard")),
+            "a `_x` silenced binder is an ordinary name, not the bare wildcard"
+        );
+    }
+
+    #[test]
     fn a_miscased_boolean_literal_suggests_the_lowercase_literal() {
         // `True`/`False` (the cross-language habit) read as unbound NAMES (the lexer only classifies
         // lowercase `true`/`false` as `Leaf::Bool`), so the one-shot fix is the lowercase literal — which
@@ -66725,6 +66773,44 @@ mod cross_component_oracle {
             ),
             cdz_run::Outcome::Trap(t) => panic!("element-read run trapped: {t}"),
         }
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // PL21 — the peer-op-in-a-resource-escaping-entrypoint decline is ACTIONABLE, not opaque. When a
+    // peer-bound op is reached in a body whose ENTRYPOINT RESULT escapes as a runtime resource (it
+    // RETURNS the compound/collection the peer produced — `List.at` as the whole body), the resource-
+    // escape emit path (`emit_runtime_resource`) does not carry the peer extern envelope, so the op has
+    // no import to call. This declines (SAFE — no wasm) with a message that NAMES the op + interface,
+    // the real cause, and the workaround (consume to a scalar / handle in-program), rather than the
+    // opaque internal "not in the extern-import set". The resource×peer-extern envelope fusion is the
+    // filed follow-up (queue/assigned/peerbug-list-at-…); this pins the actionable decline meanwhile.
+    // ------------------------------------------------------------------------------------------------
+    #[test]
+    fn a_peer_op_in_a_resource_escaping_entrypoint_declines_actionably() {
+        use crate::testkit::parse;
+        // main RETURNS the raw Option (List.at is the whole body) → escapes as a runtime resource.
+        let src = "(do \
+            (effect L (op mklist (-> Int64 (List Int64)))) \
+            (bind L \"cadenza:l/api\") \
+            (def (main (: x Int64)) (host (L) (List.at (L.mklist x) 0))) \
+            (export main))";
+        let err = crate::compile::compile_component(&crate::codec::encode(&parse(src))).expect_err(
+            "a peer op whose result escapes as a resource must DECLINE, not miscompile",
+        );
+        assert!(
+            err.message.contains("escapes as a runtime resource")
+                && err.message.contains("mklist")
+                && err.message.contains("cadenza:l/api")
+                && err.message.contains("scalar"),
+            "the decline must name the op + interface + workaround, not be opaque: {}",
+            err.message
+        );
+        // Not the opaque internal phrasing any more.
+        assert!(
+            !err.message.contains("not in the extern-import set"),
+            "the opaque internal message must be replaced: {}",
+            err.message
+        );
     }
 
     // ------------------------------------------------------------------------------------------------

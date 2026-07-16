@@ -1190,21 +1190,53 @@ fn package_hover_at(
 }
 
 /// A `file://` URI for a local filesystem path — the inverse of `uri_to_path`, for a cross-file
-/// `Location` that points into an imported file. Percent-encodes nothing beyond what a path needs (a
-/// space); the common ASCII path passes through. `None` for a non-absolute path (a `Location` needs a
-/// resolvable URI).
+/// `Location` that points into an imported file. Percent-encodes every path byte that is not an
+/// unreserved URI character (keeping `/` as the path separator), so a path containing a space, a `%`,
+/// or a reserved char (`#`/`?`/…) yields a VALID, unambiguous `file://` URI. `None` for a non-absolute
+/// path (a `Location` needs a resolvable URI).
+///
+/// 🪤 Encoding a literal `%` is LOAD-BEARING for the `uri_to_path`/`percent_decode` round-trip: the
+/// decoder turns any `%XX` back into a byte, so a real path segment like `a%2Fb` MUST be emitted as
+/// `a%252Fb` — else it would decode to `a/b` (a different path). Encoding only a space (the old behavior)
+/// broke that and also produced invalid URIs for `#`/`?`.
 fn path_to_uri(path: &str) -> Option<Uri> {
     use std::str::FromStr;
-    // The closure stores each file's path as given to `load` (an absolute entry + resolved siblings);
-    // build `file://` + the path, percent-encoding a space (the one char that breaks a URI in practice).
-    let encoded = path.replace(' ', "%20");
-    let s = if encoded.starts_with('/') {
+    let encoded = percent_encode_path(path);
+    let s = if path.starts_with('/') {
         format!("file://{encoded}")
     } else {
         // A relative path (unusual for a closure file) — best-effort; prefix a slash so it's a valid URI.
         format!("file:///{encoded}")
     };
     Uri::from_str(&s).ok()
+}
+
+/// Percent-encode a filesystem path for the path component of a `file://` URI: keep `/` (the separator)
+/// and the RFC 3986 unreserved set (`A-Z a-z 0-9 - . _ ~`) verbatim, `%XX`-encode every other byte
+/// (space, `%`, `#`, `?`, and any non-ASCII UTF-8 byte). The exact inverse of [`percent_decode`] over the
+/// path bytes (decode∘encode is the identity), so a cross-file `Location`'s URI round-trips back to the
+/// same path via `uri_to_path`.
+fn percent_encode_path(path: &str) -> String {
+    let mut out = String::with_capacity(path.len());
+    for &b in path.as_bytes() {
+        let unreserved = b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~' | b'/');
+        if unreserved {
+            out.push(b as char);
+        } else {
+            out.push('%');
+            out.push(
+                char::from_digit((b >> 4) as u32, 16)
+                    .unwrap()
+                    .to_ascii_uppercase(),
+            );
+            out.push(
+                char::from_digit((b & 0xf) as u32, 16)
+                    .unwrap()
+                    .to_ascii_uppercase(),
+            );
+        }
+    }
+    out
 }
 
 /// Find-references: every occurrence that references the SAME definition as the NAME under `pos`
@@ -1362,25 +1394,45 @@ fn package_references_at(
 
     // SHADOWING GUARD (package flavor). `UsesOf` is NAME-keyed, so a LOCAL binder shadowing a top-level
     // name would leak the top-level's refs. Proceed only when the cursor genuinely belongs to a
-    // top-level symbol: it IS the entry's own top-level declaration node (entry-local, base 0), OR it
-    // RESOLVES to a def (a use of a top-level/imported name resolves; a purely-local binder still
-    // resolves, but then `UsesOf{name}` returning the top-level's uses is the very leak — so also
-    // require the name to BE a top-level symbol somewhere in the package). Otherwise return empty and
-    // let the single-buffer path (its own guard) handle it.
-    let top_node = top_level_symbol_node(&entry_arenas, &name);
+    // top-level symbol — either it IS one of the package's top-level declaration name-nodes, or it
+    // RESOLVES to one. The authority is the PACKAGE `Symbols` query (global node ids, and it lists
+    // IMPORTED defs too — an imported `helper`'s def appears with the id `ResolveOf` returns), run over
+    // the same linked program so the ids line up. A purely-local binder resolves to its OWN occurrence,
+    // which is NEVER a `Symbols` node — so it fails the guard and returns empty (the single-buffer path,
+    // with its own guard, handles the local). This is the package twin of `references_at`'s guard.
+    //
+    // 🪤 The earlier `resolves_to.is_some()` test was too permissive: `ResolveOf` succeeds for a LOCAL
+    // binder too (it resolves to itself), so a cursor on a shadowing local passed the guard and leaked
+    // the top-level's uses. Requiring the resolve TARGET to be a `Symbols` node is what distinguishes a
+    // genuine top-level from a shadowing local.
+    let symbol_nodes: std::collections::HashSet<u32> =
+        run_query(rcdzc::sidecar::Query::Symbols, rcdzc::sidecar::KIND_SYMBOLS)
+            .map(|answer| {
+                answer
+                    .lines()
+                    .filter_map(|line| {
+                        line.rsplit('\t')
+                            .next()
+                            .and_then(|c| c.trim().parse::<u32>().ok())
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
     let resolves_to = run_query(
         rcdzc::sidecar::Query::ResolveOf { node: cursor.0 },
         rcdzc::sidecar::KIND_RESOLVE,
     )
     .and_then(|a| a.trim().parse::<u32>().ok());
-    let is_entry_top_decl = top_node == Some(cursor.0);
-    // The name names a top-level symbol somewhere in the package iff `UsesOf` (below) would be
-    // meaningful; the entry's own Symbols covers entry decls, and a resolves-to into an imported file's
-    // range means it resolved to an imported top-level def. Require one of these.
-    let name_is_package_top_level = top_node.is_some() || resolves_to.is_some();
-    if !(is_entry_top_decl || name_is_package_top_level) {
+    // The cursor belongs to a top-level symbol iff it IS a `Symbols` name-node (a declaration occurrence,
+    // entry-local == global at base 0) or RESOLVES to one (a use of a top-level/imported name).
+    let cursor_is_symbol = symbol_nodes.contains(&cursor.0);
+    let resolves_to_symbol = resolves_to.is_some_and(|t| symbol_nodes.contains(&t));
+    if !(cursor_is_symbol || resolves_to_symbol) {
         return Vec::new();
     }
+    // The entry-local declaration node (base 0) for the include-declaration fallback below — `None` when
+    // the top-level symbol is defined in an imported file (then `resolves_to` carries its global id).
+    let top_node = top_level_symbol_node(&entry_arenas, &name);
 
     let files_ref = &files;
     let mut out: Vec<Location> = Vec::new();
@@ -2574,13 +2626,22 @@ mod tests {
     #[test]
     fn path_to_uri_round_trips_through_uri_to_path() {
         // `path_to_uri` (cross-file Location) is the inverse of `uri_to_path`: an absolute path → a
-        // `file://` URI whose `uri_to_path` recovers the original (incl. a space via %20).
-        for p in ["/home/u/lib.sexp", "/tmp/pkg/main.cdz", "/a b/c.sexp"] {
+        // `file://` URI whose `uri_to_path` recovers the original — including a space, and the reserved
+        // chars (`%`/`#`/`?`) the old space-only encoder mangled into an invalid or meaning-changed URI.
+        for p in [
+            "/home/u/lib.sexp",
+            "/tmp/pkg/main.cdz",
+            "/a b/c.sexp",
+            "/tmp/weird%2Fname/lib.sexp",
+            "/tmp/has#hash/lib.sexp",
+            "/tmp/q?mark/lib.sexp",
+        ] {
             let u = path_to_uri(p).expect("a file uri");
             assert_eq!(
                 uri_to_path(&u).as_deref(),
                 Some(std::path::Path::new(p)),
-                "round-trip failed for {p}"
+                "round-trip failed for {p} (uri {})",
+                u.as_str()
             );
         }
     }
@@ -2600,5 +2661,17 @@ mod tests {
         // A malformed escape (`%` not followed by two hex digits) is left as-is.
         assert_eq!(percent_decode("50%"), "50%");
         assert_eq!(percent_decode("%zz"), "%zz");
+    }
+
+    #[test]
+    fn percent_encode_path_keeps_unreserved_and_escapes_the_rest() {
+        // The path separator + the RFC 3986 unreserved set pass through; everything else is %XX.
+        assert_eq!(percent_encode_path("/a/b_c.sexp"), "/a/b_c.sexp");
+        assert_eq!(percent_encode_path("/a b/c"), "/a%20b/c");
+        // The reserved chars that the OLD (space-only) encoder produced invalid/ambiguous URIs for:
+        assert_eq!(percent_encode_path("/a#b"), "/a%23b");
+        assert_eq!(percent_encode_path("/a?b"), "/a%3Fb");
+        // A LITERAL `%` must be encoded (else the decoder would re-interpret a following `2F` as `/`).
+        assert_eq!(percent_encode_path("/a%2Fb"), "/a%252Fb");
     }
 }

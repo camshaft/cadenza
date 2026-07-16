@@ -8,11 +8,27 @@ calculator). You can look at https://github.com/camshaft/rsolid and my printing 
 I'm after … port rsolid to cadenza and make a really nice interface for it. I don't really care about the
 openscad backend - I think manifold is a lot faster route. And I'm pretty sure it compiles to wasm too."*
 
-> **STATUS (2026-07-15) — design pass, not yet built.** This is the survey + design + increment plan
-> handed to a `vertical` agent (area = a mix: mostly a **Cadenza library** + `cdz`/guide tooling, with
-> ONE compiler-adjacent seam — the manifold host binding). The operator is on Slack, not the tmux window;
-> **two decisions are flagged to the concierge as `ask`s** (§3, marked ⚑) with a chosen default so the
-> build is never blocked. Written against `trunk` @ `9ae29c12a`.
+> **STATUS (updated 2026-07-16) — G1 + G2 BUILT & MERGED; G3 blocked on an operator scope call.**
+> Progress by the `v-cad` vertical:
+> - ✅ **G1 model library** — `implementation/cad/` (the recursive `Solid` sum + Vec3 + primitives + boolean
+>   combinators + transforms + `simplify` + analysis folds). 45 `@test`, gated by the `cad-tests` CI job.
+> - ✅ **G4 (partial)** — worked examples `plate`/`washer`/`capsule`/`tube`/`cube-row`/`radial-pattern`/`gear`
+>   in `implementation/cad/src/examples.cdz`.
+> - ✅ **G2 native driver — COMPLETE** — the `cdz-cad` crate (`implementation/seed/crates/cdz-cad`,
+>   workspace-excluded so its C++/cmake `manifold-csg` build never burdens the seed): parse a rendered
+>   `Solid` s-expr → mesh via manifold → write **STL + binary glTF** (extension-dispatched) → report the
+>   **bounding box** (extents/size/center). Driven as `cdz run model.cdz | cdz-cad - -o out.stl|out.glb`.
+>   36 tests incl. an integration suite over the real examples. Manifold binds as a per-surface DRIVER (B1,
+>   §2), NOT a Cadenza peer — confirmed: `manifold-csg` builds+runs on aarch64.
+> - ⏸️ **G3 browser `/cad`** — DESIGNED + de-risked, but HELD on an operator SCOPE decision (does a heavy-dep
+>   three.js/manifold-3d app-page belong in the guide vs a standalone surface vs defer). Territory split with
+>   v-guide-infra agreed. Awaiting the `answer`.
+> - 🔧 One language gap found + reported (not worked around, per the assign): a recursive Float64-compare fold
+>   hits an unimplemented runtime scalar-Float64-`==` (`fix-scalar-eq-misclassified`) → the language-side
+>   `bounding-box` fold is deferred (the native `bounds` covers it meanwhile).
+>
+> The original design pass (below) was written against `trunk` @ `9ae29c12a`; **two ⚑ decisions** (§3) shipped
+> on their chosen defaults (D1 plain applicative surface, D2 = B1 render-tree-as-data — both borne out).
 
 This design leans on one structural finding, exactly the way the calculator design did: **almost none of
 this is new language work.** A CSG model is *Cadenza data* — a recursive sum (the CSG tree) over records

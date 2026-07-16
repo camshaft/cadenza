@@ -581,3 +581,50 @@ fn lsp_completion_offers_an_imported_name_across_files() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn lsp_package_references_on_a_shadowing_local_does_not_leak_the_imported_symbols_uses() {
+    // The PACKAGE-level shadowing guard: `helper` is imported from lib AND is the name of a PARAMETER of
+    // `g` in main that shadows it. A references request on the LOCAL `helper` (the param use in g's body)
+    // must NOT return the IMPORTED `helper`'s uses — `UsesOf` is name-keyed and can't distinguish them,
+    // so the guard suppresses it (empty). Regression for the too-permissive `resolves_to.is_some()` guard
+    // (a local binder also resolves — to itself — so the check must be "resolves to a Symbols node").
+    let dir = std::env::temp_dir().join(format!("cdz-lsp-xshadow-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    std::fs::write(
+        dir.join("lib.sexp"),
+        "(module lib (def (helper x) (+ x 1)) (export helper))",
+    )
+    .expect("write lib");
+    let main_path = dir.join("main.sexp");
+    let main_text = "(do (import \"lib\" (helper)) (def (use1) (helper 1)) (def (g helper) helper) (export use1))";
+    std::fs::write(&main_path, main_text).expect("write main");
+    let main_uri = format!("file://{}", main_path.display());
+    // The LOCAL `helper` use in g's body — the LAST occurrence of `helper` in the text.
+    let local_use = main_text
+        .match_indices("helper")
+        .last()
+        .map(|(i, _)| i)
+        .expect("a local helper use") as i64;
+
+    let msgs = drive_messages(&[
+        serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{},"processId":null,"rootUri":null}}),
+        serde_json::json!({"jsonrpc":"2.0","method":"initialized","params":{}}),
+        serde_json::json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":main_uri,"languageId":"cadenza","version":1,"text":main_text}}}),
+        serde_json::json!({"jsonrpc":"2.0","id":10,"method":"textDocument/references","params":{"textDocument":{"uri":main_uri},"position":{"line":0,"character":local_use},"context":{"includeDeclaration":false}}}),
+        serde_json::json!({"jsonrpc":"2.0","id":99,"method":"shutdown","params":null}),
+        serde_json::json!({"jsonrpc":"2.0","method":"exit","params":null}),
+    ]);
+    let refs = response(&msgs, 10).expect("a references response");
+    let locs = refs
+        .pointer("/result")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        locs.is_empty(),
+        "a shadowing LOCAL `helper` must not leak the imported symbol's refs, got {locs:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

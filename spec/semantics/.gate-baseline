@@ -451,6 +451,7 @@ pass	a closure exported to the host is called by the host
 pass	a closure factory's returned capturing closure is applied at the call site
 pass	a closure returned from a recursive function is applied through a recursive HOF
 pass	a closure returning Bytes crosses to the host as list<u8>
+pass	a closure returning Unit is declined — Unit has no machine representation
 pass	a closure returning a LIST of tuples (direct-call)
 pass	a closure returning a List crosses as the value form
 pass	a closure returning a Map — canonical key order
@@ -487,6 +488,7 @@ pass	a closure whose CALL returns a user sum crosses as the value form
 pass	a closure whose CALL returns an Option crosses as the value form
 pass	a closure whose body applies a nested lambda in place runs through a recursive HOF
 pass	a closure whose body calls a top-level helper function
+pass	a closure-typed closure ARG on the DIRECT-CALL path is declined — host would supply the closure
 pass	a collection-carrying recursion whose base arm does a fallible indexed read compiles
 pass	a common constructor composes through a hoisted tuple field to build once
 pass	a comparison's trapping shared bound fires under a trap-free condition
@@ -578,6 +580,7 @@ pass	a deep balanced tree is built and folded to a scalar, consuming both childr
 pass	a deep chain of runtime-list let-bindings compiles and returns the final length
 pass	a deep compound nesting all six leaf kinds round-trips through encode and decode
 pass	a deep consume leaves the intermediate compound and a sibling element readable
+pass	a deep four-leaf tree round-trips through encode and decode
 pass	a deeper nested call chain still folds in linear time near the inliner limit
 pass	a deeply nested constant expression compiles or declines without crashing
 pass	a deeply nested expression is diagnosed by the parser, never crashes it
@@ -1217,6 +1220,7 @@ pass	a private module member is still visible to a sibling
 pass	a private module member participates in mutual recursion with an exported sibling
 pass	a private sibling defined after its exported caller still resolves
 pass	a produced closure is handed back into a consumer export (the round trip)
+pass	a producer capturing a host-supplied COMPOUND parameter is declined — host→guest decode
 pass	a program declares its own family unit and converts with it
 pass	a program that delegates no effect is pure and never suspends
 pass	a program that makes a host call has that call in its observable behavior
@@ -1520,6 +1524,7 @@ pass	a runtime value narrowed to the segment width constructs without trapping
 pass	a runtime value under a const key binds through the map pattern
 pass	a runtime wider integer is truncated into a byte by wrap
 pass	a runtime wrapper sum whose payload is a variant is matched by a nested constructor pattern
+pass	a runtime-assembled tree round-trips equal to its quoted twin
 pass	a runtime-branched tuple returned from a callee is projected in the caller
 pass	a runtime-built generic user sum escapes with its parametric type frame
 pass	a runtime-built open-sum variant decodes through the schema
@@ -2473,6 +2478,7 @@ pass	nested patterns with literals
 pass	nested quasiquote embeds a FLOAT via the inner unquote
 pass	nullary constructor patterns are uniform with unary
 pass	one effect's result flows as the ARGUMENT to a DIFFERENT effect's op under nested handlers
+pass	one encode-decode cycle is byte-stable
 pass	one entrypoint's host authority is not reachable by another that does not delegate it
 pass	one generic sum instantiated at two different types in one program
 pass	one module's export clause does not affect a same-named member of another module
@@ -2532,6 +2538,7 @@ pass	quasiquote makes AST construction readable
 pass	quasiquote nests with inner unquote evaluated
 pass	quasiquotes unquoting a runtime variable and a literal build equal ASTs
 pass	quote produces an AST value without evaluating
+pass	quote-built and constructor-built equal trees encode byte-identically
 pass	quote-vs-constructor AST equality holds regardless of operand order
 pass	raising a BigInt-magnitude quantity to a power runs the unbounded multiply
 pass	raising a COMPUTED (derived) quantity to a power squares its magnitude and dimension
@@ -2936,8 +2943,5 @@ pass	wrapping-add wraps a boundary-crossing runtime Int64 at the max boundary
 pass	wrapping-mul on a runtime UInt8 wraps modulo 256
 pass	wrapping-mul wraps a boundary-crossing runtime Int64
 todo	SUM ARG + LIST RESULT declines cleanly (Option arg, List result)
-pass	a closure returning Unit is declined — Unit has no machine representation
-pass	a closure-typed closure ARG on the DIRECT-CALL path is declined — host would supply the closure
-pass	a producer capturing a host-supplied COMPOUND parameter is declined — host→guest decode
 todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional

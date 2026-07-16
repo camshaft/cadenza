@@ -248,6 +248,19 @@ def entry-next(it) = match it with
 /// Iterate a MAP's ENTRIES as `(key, value)` pairs in CANONICAL key order.
 def iter-map-entries(m) = EntryIter.EFromList(Map.to-list(m))
 
+// build the `(index, element)` pair list by walking an Int64 iterator with a running index. Forces the
+// source (materializes into the EntryIter's list) — enumerate is EAGER, unlike the lazy Iter transformers.
+def index-pairs-from(it, i) = match next(it) with
+  | Option.None(_) => []
+  | Option.Some(p) => (match p with | (v, rest) => List.concat([(i, v)], index-pairs-from(rest, i + 1)))
+
+/// Pair each element of an iterator with its zero-based INDEX, as an `EntryIter` of `(index, element)`.
+/// The index-carrying companion of `iter-map-entries` — walk index AND value together
+/// (`fold-entries(enumerate(it), …, fn(acc, i, x) => …)`). Reuses the `(Int64, Int64)` EntryIter, so no
+/// generic/tuple element is needed. NB: eager (drains the source), so bound an infinite source with
+/// `take` FIRST (`enumerate(take(iterate(…), n))`).
+def enumerate(it) = EntryIter.EFromList(index-pairs-from(it, 0))
+
 /// Left fold over entries: thread `acc` through `f(acc, key, value)` for every entry, in key order.
 def fold-entries(it, acc, f: Int64 -> Int64 -> Int64 -> Int64) = match entry-next(it) with
   | Option.None(_) => acc
@@ -1274,5 +1287,48 @@ def entries-sum-keys-matches-iter-map-keys() =
     unit
   else
     trap("entry-key-sum ≠ iter-map-keys sum")
+
+// ── enumerate: pair each element with its index ──────────────────────────────────────────────────
+
+@test
+def enumerate-index-dot-value() =
+  // enumerate [10,20,30] -> (0,10),(1,20),(2,30); sum of index*value = 0 + 20 + 60 = 80
+  if fold-entries(enumerate(from-list([10, 20, 30])), 0, fn(acc, i, v) => acc + i * v) == 80 then
+    unit
+  else
+    trap("sum i*v = 80")
+
+@test
+def enumerate-count-matches-length() =
+  // enumerate produces one pair per element
+  if entry-count(enumerate(range(0, 7))) == 7 then unit else trap("7 pairs")
+
+@test
+def enumerate-first-index-is-zero() =
+  // the first pair's index is 0 and its value is the source's first element
+  match entry-next(enumerate(from-list([42, 43]))) with
+    | Option.None(_) => trap("nonempty")
+    | Option.Some(p) => (match p with | (kv, _) => (match kv with | (i, v) =>
+        if i == 0 then (if v == 42 then unit else trap("first value 42")) else trap("first index 0")))
+
+@test
+def enumerate-empty() =
+  if entry-count(enumerate(empty())) == 0 then unit else trap("enumerate of empty is empty")
+
+@test
+def enumerate-over-a-transformed-iter() =
+  // enumerate composes after a transformer: evens of 0..10 = [0,2,4,6,8], indexed, sum of index = 0+1+2+3+4=10
+  if fold-entries(enumerate(filter(range(0, 10), fn(x) => x % 2 == 0)), 0, fn(acc, i, _v) => acc + i) == 10 then
+    unit
+  else
+    trap("index sum of 5 evens = 10")
+
+@test
+def enumerate-of-bounded-infinite() =
+  // an infinite source bounded by take first, then enumerated: take 3 of iterate*2 = [1,2,4] -> indices 0,1,2
+  if fold-entries(enumerate(take(iterate(1, fn(x) => x * 2), 3)), 0, fn(acc, i, _v) => acc + i) == 3 then
+    unit
+  else
+    trap("index sum 0+1+2 = 3")
 
 export { Iter.* }

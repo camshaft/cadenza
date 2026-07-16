@@ -11,10 +11,14 @@
 ///
 /// `id-sum n` draws `n` ids and sums them — with a 0-based counter that is `0 + 1 + … + (n-1)` =
 /// `n*(n-1)/2`, a closed form the tests check. `id-sum` is a SINGLE self-recursive effectful function;
-/// that shape specializes + runs correctly (a MUTUALLY-recursive effectful group with the perform in a
-/// different branch from the mutual call does not yet — see
-/// `mlrepro-miscompile-mutually-recursive-effectful-functions.sexp` (queue)), so the port threads fresh ids with
-/// self-recursion.
+/// that shape specializes + runs correctly. A MUTUALLY-recursive effectful group with the perform in a
+/// DIFFERENT branch from the mutual call ALSO works now (fixed 2026-07-15; that repro is resolved). What
+/// still DECLINES ("not yet reducible by the tail-resumptive fold") is TWO SIBLING self-recursive calls in
+/// one arm — the natural effectful AST walk `relabel(Node l r) = relabel(l) + relabel(r)` with `Fresh` in
+/// the `Leaf` — because the specialization threads only the INCOMING state, so the 2nd sibling can't see
+/// the state the 1st advanced (queue: `mlrepro-decline-effect-state-across-sibling-recursive-calls`). So a
+/// genuine tree-walking gensym still threads the counter by hand until the out-state multi-value-return
+/// tier lands; `id-sum`'s single self-recursive spine is the shape that specializes today.
 effect Fresh =
   | next : -> Int64
 

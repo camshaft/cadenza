@@ -1224,4 +1224,84 @@ mod tests {
         assert!(run_fmt(&fmt_args(vec![path], false, true, true)).is_err());
         std::fs::remove_dir_all(&dir).ok();
     }
+
+    #[test]
+    fn resolve_to_prefers_flag_then_extension_then_sexpr() {
+        // Explicit `--to` always wins (even when the file extension says otherwise).
+        assert!(matches!(
+            resolve_to(Some(Fmt::Binary), Some("out.ml")),
+            Format::Binary
+        ));
+        // No `--to`: infer from the output file's extension.
+        assert!(matches!(resolve_to(None, Some("out.ml")), Format::Ml));
+        assert!(matches!(resolve_to(None, Some("out.sexp")), Format::Sexpr));
+        assert!(matches!(resolve_to(None, Some("out.json")), Format::Json));
+        // No `--to`, and the destination is stdin/`-` or an unknown/absent extension: default to sexpr.
+        // (Unlike `resolve_from`, output resolution never errors — it always has the sexpr fallback.)
+        assert!(matches!(resolve_to(None, Some("-")), Format::Sexpr));
+        assert!(matches!(resolve_to(None, None), Format::Sexpr));
+        assert!(matches!(
+            resolve_to(None, Some("out.unknownext")),
+            Format::Sexpr
+        ));
+    }
+
+    #[test]
+    fn extension_inference_is_case_insensitive() {
+        // `Format::from_extension` lowercases the extension, so `.ML`/`.SEXP` infer like their lowercase
+        // forms — used by both resolve_from and resolve_to.
+        assert!(matches!(resolve_to(None, Some("OUT.ML")), Format::Ml));
+        assert!(matches!(resolve_to(None, Some("Out.Sexp")), Format::Sexpr));
+        assert!(resolve_from(None, Some("/tmp/cdz-nope.SEXP")).is_ok());
+    }
+
+    #[test]
+    fn fmt_to_format_is_a_total_one_to_one_mapping() {
+        // Every surface `Fmt` maps to its like-named `Format` — a closed correspondence, so a new
+        // surface flag can't silently route to the wrong backend. (The match is exhaustive, so a new
+        // `Fmt` variant is a compile error in `From<Fmt>` until mapped; this pins the pairing.)
+        let pairs = [
+            (Fmt::Binary, Format::Binary),
+            (Fmt::Sexpr, Format::Sexpr),
+            (Fmt::Ml, Format::Ml),
+            (Fmt::Markdown, Format::Markdown),
+            (Fmt::Json, Format::Json),
+            (Fmt::Toml, Format::Toml),
+            (Fmt::Cedar, Format::Cedar),
+            (Fmt::Debug, Format::Debug),
+            (Fmt::Flat, Format::Flat),
+        ];
+        for (f, expected) in pairs {
+            assert_eq!(
+                std::mem::discriminant(&Format::from(f)),
+                std::mem::discriminant(&expected),
+                "Fmt maps to its like-named Format"
+            );
+        }
+    }
+
+    #[test]
+    fn ensure_trailing_newline_is_idempotent_and_adds_exactly_one() {
+        // Adds a newline when missing; leaves an already-terminated string alone (no double newline);
+        // idempotent. A file writer relies on "exactly one trailing newline".
+        assert_eq!(ensure_trailing_newline("abc"), "abc\n");
+        assert_eq!(ensure_trailing_newline("abc\n"), "abc\n");
+        // Already-terminated input is returned unchanged — a trailing blank line is NOT collapsed here
+        // (that is the printer's job); this only guarantees the string ENDS in a newline.
+        assert_eq!(ensure_trailing_newline("abc\n\n"), "abc\n\n");
+        assert_eq!(ensure_trailing_newline(""), "\n");
+        // Idempotence: applying twice equals applying once.
+        let once = ensure_trailing_newline("x");
+        assert_eq!(ensure_trailing_newline(&once), once);
+    }
+
+    #[test]
+    fn label_and_with_path_name_the_target_or_stdin() {
+        // `label` names the file, or `(stdin)` when there is none; `with_path` prefixes a message with it
+        // so a multi-file run points at the culprit.
+        assert_eq!(label(&Some("a/b.sexp".to_string())), "a/b.sexp");
+        assert_eq!(label(&None), "(stdin)");
+        assert_eq!(with_path(&Some("f.ml".to_string()), "boom"), "f.ml: boom");
+        assert_eq!(with_path(&None, "boom"), "(stdin): boom");
+    }
 }
