@@ -42291,12 +42291,20 @@ mod stage1 {
         // `Type`-parameter idiom — the composable route for a documenting user-generic signature `(: it (Iter
         // a))`. The value/let-binder sites (no parameter list) do NOT, keeping only the drop / concrete-type
         // guidance. (Generics are type-valued parameters — spec §"Generics Are Type-Valued Parameters".)
-        let param_hint =
-            unbound_hint("(module m (def (id (: x a)) x) (def (main) (id 1)) (export main))");
-        assert!(
-            param_hint.contains("`Type` parameter") && param_hint.contains("(: t Type)"),
-            "a parameter-site lowercase type-var also names the Type-parameter route: {param_hint}"
-        );
+        // The parameter-ness is driven by an EXPLICIT flag threaded from the call site, NOT by sniffing the
+        // human-readable `lead` string (Copilot PR #438) — so these by-site assertions also guard that a
+        // future reword of `lead` cannot silently drop/add the Type-parameter route. Both the TOP-LEVEL and
+        // a NESTED `(List a)` parameter annotation carry it (the flag threads through the nested walk).
+        for param_site in [
+            "(module m (def (id (: x a)) x) (def (main) (id 1)) (export main))",
+            "(module m (def (id (: x (List a))) x) (def (main) (id (list))) (export main))",
+        ] {
+            let param_hint = unbound_hint(param_site);
+            assert!(
+                param_hint.contains("`Type` parameter") && param_hint.contains("(: t Type)"),
+                "a parameter-site lowercase type-var (top-level + nested) names the Type-parameter route: {param_hint}"
+            );
+        }
         for value_site in [
             "(module m (def (main) (: 5 a)) (export main))",
             "(module m (def (main) (let (((: y a) 5)) y)) (export main))",

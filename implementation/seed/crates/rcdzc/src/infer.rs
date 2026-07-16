@@ -1311,7 +1311,13 @@ fn bare_type_ctor_needs_argument(db: &mut Db, ty_expr: StructId) -> Option<(Stri
 /// label `x` (the naive value-`collect` mis-resolves labels as unbound names — M125). Otherwise: collect the
 /// operand's own faults (an unbound name → CDZ0101), and if none surfaced (a well-formed non-type — a
 /// literal, a compound), add the "expected a type" CDZ0203 with `lead` naming the site.
-fn validate_non_type_annotation(db: &mut Db, ty_expr: StructId, lead: &str, out: &mut Vec<Reject>) {
+fn validate_non_type_annotation(
+    db: &mut Db,
+    ty_expr: StructId,
+    lead: &str,
+    at_parameter: bool,
+    out: &mut Vec<Reject>,
+) {
     if crate::compile::is_record_bearing(db, ty_expr) || db.ast.head_name(ty_expr) == Some("Record")
     {
         let mut positions: Vec<(StructId, Vec<String>)> = Vec::new();
@@ -1363,7 +1369,12 @@ fn validate_non_type_annotation(db: &mut Db, ty_expr: StructId, lead: &str, out:
         && name.starts_with(|c: char| c.is_ascii_lowercase())
         && matches!(resolved_of(db, ty_expr), Resolved::Poison(_))
     {
-        out.push(lowercase_type_var_reject(&name, ty_expr, lead));
+        out.push(lowercase_type_var_reject(
+            &name,
+            ty_expr,
+            lead,
+            at_parameter,
+        ));
         return;
     }
     // A bare UPPERCASE name in a type position that resolves to NOTHING and is not a declared type —
@@ -1393,7 +1404,7 @@ fn validate_non_type_annotation(db: &mut Db, ty_expr: StructId, lead: &str, out:
     // gets fix-parity with the top-level one. If any fired, we are done (the enriched rejects replace what
     // `collect` would have said); otherwise fall through to the ordinary path.
     let before_tv = out.len();
-    enrich_nested_lowercase_type_vars(db, ty_expr, lead, out);
+    enrich_nested_lowercase_type_vars(db, ty_expr, lead, at_parameter, out);
     if out.len() != before_tv {
         return;
     }
@@ -1432,11 +1443,13 @@ fn validate_non_type_annotation(db: &mut Db, ty_expr: StructId, lead: &str, out:
 /// preceding `(: t Type)` parameter gives the annotated generic signature with no `∀`-binder. Keyed off
 /// `lead` naming a parameter; the value/let-binder sites (where there is no parameter list to add a `Type`
 /// binder to) keep the drop-the-annotation / concrete-type guidance only.
-fn lowercase_type_var_reject(name: &str, at: StructId, lead: &str) -> Reject {
+fn lowercase_type_var_reject(name: &str, at: StructId, lead: &str, at_parameter: bool) -> Reject {
     // A parameter annotation can be made generic BOTH ways — drop it, or bind the type as an explicit
     // preceding `(: t Type)` parameter (the composable idiom for a user-generic signature). A value/binder
-    // annotation has no parameter list, so only the drop / concrete-type routes apply.
-    let type_param_route = if lead.contains("parameter") {
+    // annotation has no parameter list, so only the drop / concrete-type routes apply. The parameter-ness
+    // is passed EXPLICITLY by the caller (which knows the site) — NOT sniffed from the human-readable
+    // `lead` string, so a reword of `lead` can never silently drop/add this guidance (Copilot PR #438).
+    let type_param_route = if at_parameter {
         " — or take the type as an explicit `Type` parameter, `(def (f (: t Type) (: x (List t))) …)`, \
          which keeps a documenting generic signature"
     } else {
@@ -1485,6 +1498,7 @@ fn enrich_nested_lowercase_type_vars(
     db: &mut Db,
     node: StructId,
     lead: &str,
+    at_parameter: bool,
     out: &mut Vec<Reject>,
 ) {
     // A bare NAME node is a leaf — enrich it if it resolves to nothing (a lowercase would-be type var, or
@@ -1492,7 +1506,7 @@ fn enrich_nested_lowercase_type_vars(
     if let Some(name) = db.ast.as_name(node).map(str::to_string) {
         if matches!(resolved_of(db, node), Resolved::Poison(_)) {
             if name.starts_with(|c: char| c.is_ascii_lowercase()) {
-                out.push(lowercase_type_var_reject(&name, node, lead));
+                out.push(lowercase_type_var_reject(&name, node, lead, at_parameter));
             } else if name.starts_with(|c: char| c.is_ascii_uppercase())
                 && crate::resolve::nearest_unbound_suggestion(db, node, &name).is_none()
             {
@@ -1506,7 +1520,7 @@ fn enrich_nested_lowercase_type_vars(
     if let crate::ast::Struct::List(kids) = db.ast.get(node) {
         let kids = kids.clone();
         for &child in kids.iter().skip(1) {
-            enrich_nested_lowercase_type_vars(db, child, lead, out);
+            enrich_nested_lowercase_type_vars(db, child, lead, at_parameter, out);
         }
     }
 }
@@ -1849,7 +1863,7 @@ pub fn param_annotation_faults(db: &mut Db, param: StructId, out: &mut Vec<Rejec
     // as a variant payload's do, without a spurious label fault.
     if crate::eval::typeval_of(db, ty_expr).is_none() {
         trace!(target: "rcdzc::infer", param = param.0, "fault: parameter annotation type is not a type");
-        validate_non_type_annotation(db, ty_expr, "a parameter's annotation", out);
+        validate_non_type_annotation(db, ty_expr, "a parameter's annotation", true, out);
     }
 }
 
@@ -10120,7 +10134,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                     // (the naive value-`collect` mis-resolved labels), and a bound-value-misused-as-a-type
                     // gets the category message the parameter + value sites use — the let-binder is not the
                     // odd one out.
-                    validate_non_type_annotation(db, ann[1], "a binder's annotation", out);
+                    validate_non_type_annotation(db, ann[1], "a binder's annotation", false, out);
                 }
                 collect(db, value, out);
             }
@@ -11292,6 +11306,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                     db,
                     ty_expr,
                     "the type position of an annotation",
+                    false,
                     out,
                 );
             }
