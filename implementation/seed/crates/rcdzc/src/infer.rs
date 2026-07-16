@@ -6108,6 +6108,20 @@ fn total_conversion_wrap(expected: &Ty, actual: &Ty) -> Option<(String, String, 
             ")".to_string(),
             "convert the char to its Int64 scalar value with `Char.to-int`".to_string(),
         )),
+        // A Char where a FLOAT is expected — `(+ #\a 1.0)`, `(< #\a 1.0)`. `Char.to-int` yields Int64, and
+        // Cadenza never implicitly promotes Int64 → Float, so a bare `Char.to-int` re-fails; the TWO-STEP
+        // `(Float{W}.of-int (Char.to-int …))` is the working repair (W = the expected float's width, so the
+        // result matches the sibling's exact type). The float twin of the Char→Int64 wrap above.
+        (Ty::Float(exp), Ty::Char) => {
+            let module = format!("Float{}", exp.ground_width());
+            Some((
+                format!("({module}.of-int (Char.to-int "),
+                "))".to_string(),
+                format!(
+                    "convert the char to its Int64 scalar value then to a float with `{module}.of-int`"
+                ),
+            ))
+        }
         // A Symbol where a String is expected — `Symbol.to-string : Symbol → String` is TOTAL (recovers
         // the symbol's underlying content), so wrap it. The text-model twin of the String→Bytes case.
         (Ty::String, Ty::Symbol) => Some((
@@ -8310,6 +8324,21 @@ fn check_application(
                     )
                 };
                 let mut reject = Reject::coded(Code::NumericMismatch, msg).at(app);
+                // A CHAR operand against the float — `(+ #\a 1.0)`. A Char is not a number, so the generic
+                // mix message above stands, but the WORKING repair is the two-step `(Float{W}.of-int
+                // (Char.to-int …))` (`total_conversion_wrap` on `(Float, Char)`); a bare `Char.to-int` would
+                // re-fail (Int64 vs Float, no implicit promotion) — the arithmetic twin of the char-vs-float
+                // COMPARISON fix. Offered on whichever operand is the Char, BEFORE the numeric-literal retype
+                // (a Char has no int/float literal spelling, so that fallback finds nothing here).
+                let char_fix = if matches!(a0, Ty::Char) {
+                    total_conversion_wrap(&b0, &a0)
+                        .map(|(p, s, v)| Fix::wrap_heuristic(args[0], p, s, v))
+                } else if matches!(b0, Ty::Char) {
+                    total_conversion_wrap(&a0, &b0)
+                        .map(|(p, s, v)| Fix::wrap_heuristic(args[1], p, s, v))
+                } else {
+                    None
+                };
                 // Prefer conforming the SECOND operand to the first (the first establishes the intended
                 // type). But when that operand has no clean one-shot — a NON-LITERAL float against an int
                 // context (`(+ 5 y)`, `y : Float64`: `numeric_text_coercion_fix(Int64, Float64, y)` is
@@ -8319,7 +8348,8 @@ fn check_application(
                 // identical slip. Try the second-operand coercion first, then fall back to the first, so a
                 // literal-int-on-either-side/float-param mix always gets the retype. Deterministic (second
                 // preferred, then first); a fix on neither leaves the bare CDZ0301.
-                let fix = numeric_text_coercion_fix(db, &expected, actual, fix_arg)
+                let fix = char_fix
+                    .or_else(|| numeric_text_coercion_fix(db, &expected, actual, fix_arg))
                     .or_else(|| numeric_text_coercion_fix(db, &b0, &a0, args[0]));
                 if let Some(fix) = fix {
                     reject = reject.with_fix(fix);
