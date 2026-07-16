@@ -6166,6 +6166,33 @@
     (export main)))
   (output (: 11 Int64)))
 
+(case "a Unit payload expected from a still-live sum at a dup-site drops the sentinel"
+  (doc    "The Perceus DUP-SITE face of the Unit-in-heap class: `Option.expect` on a runtime `(Option Unit)`
+           whose scrutinee `o` STAYS LIVE (threaded through a self-recursive `loop`, so `o` is consumed at
+           ≥2 sites) marks the SumExpect a dup-site. A COMPOUND payload at a dup-site is `dup`ed (rc++) to
+           keep the live scrutinee intact — but a UNIT payload is the `IMM_UNIT` sentinel, NOT a handle, so
+           it must be DROPPED, not dup'ed (else the sentinel is left on the stack → invalid wasm). `(mk 1)`
+           = `(Some ())`; expect yields unit, dropped; the sum's `Some` arm → 5. The graded companion of the
+           SumExpect/SumPayload Unit-dup-site fix (the code fix is on trunk; this pins it at the corpus).")
+  (input (do
+    (def (mk (: n Int64)) (if (< n 0) (None ()) (if (= n 0) (Some ()) (mk (- n 1)))))
+    (def (loop (: o (Option Unit)) (: k Int64)) (if (= k 0) (tuple (Option.expect o "u") o) (loop o (- k 1))))
+    (def (main) (match (. (loop (mk 1) 2) 1) ((Some _) 5) ((None) 0)))
+    (export main)))
+  (output (: 5 Int64)))
+
+(case "a Unit payload MATCH-bound from a still-live sum at a dup-site drops the sentinel"
+  (doc    "The `SumPayload` twin (a `match` binder rather than `Option.expect`): the Some arm binds the Unit
+           payload `u` while the scrutinee `o` stays live (threaded through the self-recursive `loop`),
+           marking the payload extraction a dup-site. Same Unit-sentinel-not-a-handle rule → dropped, not
+           dup'ed. The Some arm → 6.")
+  (input (do
+    (def (mk (: n Int64)) (if (< n 0) (None ()) (if (= n 0) (Some ()) (mk (- n 1)))))
+    (def (loop (: o (Option Unit)) (: k Int64)) (if (= k 0) (match o ((Some u) (tuple u o)) ((None) (tuple () o))) (loop o (- k 1))))
+    (def (main) (match (. (loop (mk 1) 2) 1) ((Some _) 6) ((None) 0)))
+    (export main)))
+  (output (: 6 Int64)))
+
 (case "a two-payload sum escapes its second variant with a bare name"
   (doc    "A sum whose variants are both payload-carrying — `(type E (A Int64) (B Int64))` — escaping its
            SECOND variant `(E.B 7)` renders `(: (B 7) E)`: the bare name of the matched variant (the

@@ -215,6 +215,8 @@ pass	a DOUBLY-nested projected list, consumed then read, is unchanged (child ret
 pass	a FLAT runtime string nested in a tuple is unaffected (control)
 pass	a FLOAT-field Tuple closure ARG flattens + rebuilds (box-float imported)
 pass	a FLOAT-result effect op threads a float state and its resume folds under a float-dispatched operator
+pass	a Float KEY inserted into an empty (runtime) map boxes with box-float, not box-int
+pass	a Float VALUE inserted into an empty (runtime) map boxes with box-float, not box-int
 pass	a Float element inserted into an empty (runtime) set boxes with box-float, not box-int
 pass	a Float64 closure captures a Float64 build-time host effect result
 pass	a GENERIC recursive sum branching through a tuple folds at a concrete instantiation
@@ -318,6 +320,8 @@ pass	a UInt64 closure round-trips through a consumer export
 pass	a UInt64 holds a value above the signed 64-bit maximum
 pass	a Unit element between two Int64s in a tuple, a later element read
 pass	a Unit element in a multi-payload sum variant compiles to valid wasm
+pass	a Unit payload MATCH-bound from a still-live sum at a dup-site drops the sentinel
+pass	a Unit payload expected from a still-live sum at a dup-site drops the sentinel
 pass	a Unit projected from a function-returned tuple (owned-reclaim path)
 pass	a Unit projected out of a multi-payload sum and bound to a name
 pass	a Unit record field beside an Int64 field, the Int64 read
