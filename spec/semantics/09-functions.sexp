@@ -3604,27 +3604,68 @@
   (call   main (: 10 Int64)) (output (: 5 Int64)))
 
 ; The COMPLEMENT of the producer tie above — a recursive-generic TRANSFORMER that threads a CLOSURE:
-; `(gmap it f) = (Cons (f h) (gmap rest f))` maps `f` over each element. Its principal type SHOULD be
+; `(gmap it f) = (Cons (f h) (gmap rest f))` maps `f` over each element, principal type
 ; `∀a b. (Iter a) → (a → b) → (Iter b)` with the closure DOMAIN `a` tied to the element `it` carries. The
-; seed's scheme solve does NOT yet make that tie: it infers the closure param `f`'s domain as a FREE
-; variable disconnected from `it`'s element (the scheme prints `(-> (Iter Int64) (-> (-> _ _) (Iter _)))`
-; even when `it` is concrete), so a monomorphization at ≥2 element types has no single concrete domain to
-; bind and DECLINES (CDZ0201). This is the sibling gap to the producer element tie (which the
-; rigid-param-var fix closed): the CONSUMER-of-element-via-closure tie, a tracked inference follow-up.
-; Pinned as a DECLINE so the boundary is executable — when the closure-domain tie lands, this flips to a
-; positive run and moves beside the producer case above. (A closure whose body itself fixes its parameter
-; — `(fn (x) (+ x 1))` at ONE type — already monomorphizes by the body-solve; the gap is the closure whose
-; domain only the ELEMENT determines, exercised here by the identity `(fn (s) s)` at the String use.)
+; scheme-solve makes that tie (the `(Iter.Cons h rest)` pattern binds `h` to `it`'s element var, `(f h)`
+; unifies `f`'s domain with it, and a cross-parameter seed-unify pins the shared element var CONSISTENTLY
+; across the `it` and `f` parameters), so a `gmap`/`filter` threading a BODY-TYPED closure composes at TWO
+; element types. ONE residual gap remains a DECLINE: a closure whose result the body cannot type bottom-up
+; — the pure IDENTITY `(fn (s) s)`, whose result is determined ONLY by its domain — still declines CDZ0201
+; (the closure-body result←domain flow is the narrower not-yet-built follow-up). The two positive cases
+; below pin the fixed tie (body-typed map + predicate filter at two types); the decline case pins the
+; residual identity-closure gap (flips to a run when that lands).
 
-(case "a recursive-generic transformer threading a closure declines pending the closure-domain tie"
-  (doc    "`gmap` maps a closure `f` over a generic `Iter`, recursing `(Iter.Cons (f h) (gmap rest f))`. Its
-           closure parameter's domain should be tied to the element type `it` carries, but the seed's
-           recursive-generic scheme solve leaves `f`'s domain a FREE variable (disconnected from the
-           element), so a use at TWO element types (Int64 with `(fn (x) (+ x 1))`, String with the identity
-           `(fn (s) s)`) has no single domain to bind and DECLINES (CDZ0201). Contrast the recursive-generic
-           PRODUCER above, whose result-element tie IS made: the transformer's closure-domain tie is the
-           not-yet-built sibling. A generation that makes that tie runs this (3 + 2 = 5); until then it
-           declines.")
+(case "a recursive-generic transformer threading a closure composes at two element types"
+  (doc    "`gmap : (Iter a) → (a → b) → (Iter b)` maps a closure over a generic `Iter`, recursing
+           `(Iter.Cons (f h) (gmap rest f))`. The closure's DOMAIN is tied to the element `it` carries (the
+           scheme-solve closure-domain tie), so `gmap` composes at BOTH Int64 (mapping `(+ x 1)` over
+           `[1,2,3]`) AND String (mapping `String.concat s s` over `[\"a\",\"b\"]`) in one program, each
+           monomorphized independently. `icount` of each mapped iter: 3 + 2 = 5. Pins the recursive-generic
+           transformer closure tie — the closure-carrying sibling of the producer element tie.")
+  (input  (do
+            (type Iter (Nil) (Cons a (Iter a)))
+            (def (from-list xs)
+              (match xs ((list) (Iter.Nil)) ((list h .. t) (Iter.Cons h (from-list t)))))
+            (def (gmap it f)
+              (match it ((Iter.Nil) (Iter.Nil)) ((Iter.Cons h rest) (Iter.Cons (f h) (gmap rest f)))))
+            (def (icount it)
+              (match it ((Iter.Nil) 0) ((Iter.Cons h rest) (+ 1 (icount rest)))))
+            (def (main)
+              (+ (icount (gmap (from-list (list 1 2 3)) (fn (x) (+ x 1))))
+                 (icount (gmap (from-list (list "a" "b")) (fn (s) (String.concat s s))))))
+            (export main)))
+  (output (: 5 Int64)))
+
+(case "a recursive-generic filter threading a predicate closure composes at two element types"
+  (doc    "`filt : (Iter a) → (a → Bool) → (Iter a)` keeps the elements a predicate closure accepts,
+           recursing over a generic `Iter`. The predicate's domain is tied to the element type (the same
+           closure-domain tie), so `filt` composes at Int64 (`(> x 1)` over `[1,2,3]` keeps `[2,3]`) AND
+           String (`(> (String.byte-len s) 1)` over `[\"a\",\"bb\"]` keeps `[\"bb\"]`) in one program. Counts:
+           2 + 1 = 3. Pins that the transformer closure tie covers a PREDICATE closure (Bool result) too, not
+           only an element-mapping one.")
+  (input  (do
+            (type Iter (Nil) (Cons a (Iter a)))
+            (def (from-list xs)
+              (match xs ((list) (Iter.Nil)) ((list h .. t) (Iter.Cons h (from-list t)))))
+            (def (filt it p)
+              (match it ((Iter.Nil) (Iter.Nil))
+                ((Iter.Cons h rest) (if (p h) (Iter.Cons h (filt rest p)) (filt rest p)))))
+            (def (icount it)
+              (match it ((Iter.Nil) 0) ((Iter.Cons h rest) (+ 1 (icount rest)))))
+            (def (main)
+              (+ (icount (filt (from-list (list 1 2 3)) (fn (x) (> x 1))))
+                 (icount (filt (from-list (list "a" "bb")) (fn (s) (> (String.byte-len s) 1))))))
+            (export main)))
+  (output (: 3 Int64)))
+
+(case "a recursive-generic transformer threading an IDENTITY closure declines pending the result tie"
+  (doc    "The RESIDUAL closure-tie gap after the domain tie landed: a pure IDENTITY closure `(fn (s) s)`,
+           whose RESULT is determined only by its DOMAIN (not fixed by the body bottom-up), still leaves the
+           transformer's result element a free variable — so a use at TWO element types (Int64 with the
+           body-typed `(fn (x) (+ x 1))`, String with the identity `(fn (s) s)`) has no single result type
+           to bind and DECLINES (CDZ0201). Contrast the body-typed cases above (which now run): the missing
+           piece is the closure-body result←domain flow (identity propagation). A generation that makes that
+           flow runs this (3 + 2 = 5); until then it declines cleanly (no miscompile).")
   (input  (do
             (type Iter (Nil) (Cons a (Iter a)))
             (def (from-list xs)

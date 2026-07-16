@@ -1046,7 +1046,7 @@ pass	a recursive walk threads TWO effects at once — a fresh-index counter and 
 pass	a recursive-generic producer composes at two element types (the tied result var)
 pass	a recursive-generic producer wrapping elements in a user sum is consumed at one type
 pass	a recursive-generic producer's element is usable at each instantiation
-pass	a recursive-generic transformer threading a closure declines pending the closure-domain tie
+pass	a recursive-generic transformer threading an IDENTITY closure declines pending the result tie
 pass	a recursive-sum payload projected more than once folds to a scalar
 pass	a recursively-built MULTI-PAYLOAD-variant list renders its spine FLAT
 pass	a recursively-built binary tree renders its full runtime structure
@@ -2905,7 +2905,9 @@ todo	a recursive fold over a sum list infers its unannotated callback parameter
 todo	a recursive fold with an unannotated two-argument callback parameter
 todo	a recursive map rebuilding a sum list infers its unannotated callback
 todo	a recursive user sum built in a lib is folded by the entry over the imported type
+todo	a recursive-generic filter threading a predicate closure composes at two element types
 todo	a recursive-generic producer's result is consumed by an element-typed consumer
+todo	a recursive-generic transformer threading a closure composes at two element types
 todo	a round-trip alongside a parameterized plain export applies its argument
 todo	a round-trip alongside a plain export — the plain export runs
 todo	a round-trip alongside a plain export — the round-trip still works
