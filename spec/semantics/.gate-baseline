@@ -295,7 +295,6 @@ pass	a STRING-result effect op resumes with a string that folds through a concat
 pass	a SUM constructor payload that is a compound built from performs threads and destructures
 pass	a SUM is threaded as a handler's folded state across operations
 pass	a Sign match missing two of three variants is non-exhaustive
-pass	a nested non-exhaustive match names the uncovered inner variant (CDZ0210 not the generic message)
 pass	a Some carrying a bare None type-checks under a whole-expression annotation
 pass	a Some carrying an inner-annotated None matches its arm (the control)
 pass	a String compound export under a non-main name crosses to the host
@@ -573,6 +572,7 @@ pass	a constant multi-payload variant match reaches each payload and dispatches 
 pass	a constant tuple is returned as a program result
 pass	a constant-index String.at result compares equal to a literal by content
 pass	a constant-index String.at result compares unequal to a different literal
+pass	a constant-returning closure threads through a recursive-generic HOF
 pass	a constructed Ast.Bool leaf drives an evaluated conditional
 pass	a constructor CHOSEN by matching one sum is applied to build another
 pass	a constructor STORED in a tuple is extracted and applied as a first-class closure
@@ -1178,6 +1178,7 @@ pass	a nested match on a recursive sum falls through when the inner variant diff
 pass	a nested match on a recursive sum with a KNOWN outer discriminant reads the right payload depth
 pass	a nested match on a runtime scrutinee
 pass	a nested module's function export is applied through the projection chain
+pass	a nested non-exhaustive match names the uncovered inner variant (CDZ0210 not the generic message)
 pass	a nested option value annotated with the wrong inner payload type is rejected
 pass	a nested pattern under an open sum's named variant still requires the outer open-tail arm
 pass	a nested runtime tuple built behind a recursive call escapes to the host
@@ -2167,6 +2168,7 @@ pass	an export with two tuple parameters returns a list from both
 pass	an exported closure with a narrow-arg wide-result mismatched body is rejected, not miscompiled
 pass	an exported closure with an annotation-mismatched body is rejected, not emitted invalid
 pass	an expression tree built at run time is evaluated by matching its node variants
+pass	an identity closure threads through a recursive-generic HOF at one element type
 pass	an identity conversion unwraps the magnitude unchanged
 pass	an if choosing between two nullary enum variants selects branchlessly on the discriminant
 pass	an if on Type.eq selects a branch at compile time
