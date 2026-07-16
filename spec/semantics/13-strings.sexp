@@ -302,6 +302,39 @@
             (def (main) (op (if true "add" "sub"))) (export main)))
   (output (: 1 Int64)))
 
+; --- A runtime String `match` is OBSERVABLY EQUIVALENT to its desugared `(= s literal)` if-chain --------
+; The runtime String match above "lowers to a chain of `(= s literal)` value-eq tests, the wildcard the
+; tail" (its own doc). That desugaring is a backend-independent lowering choice — so a String match and the
+; hand-written `if (= s "a") … else if (= s "b") … else DEFAULT` chain over the SAME scrutinee MUST compute
+; the SAME value for every input, including the FALL-THROUGH (no literal matches → the wildcard / else).
+; These pin the equivalence by computing BOTH forms in one program and checking they agree — a matched arm
+; AND the default arm — so a lowering that reordered the arm tests, dropped the wildcard, or diverged the
+; match from its `=`-chain desugaring would be caught, both backends. (A String is a heap value, so its
+; runtime scrutinee is constructed inside `main` via `(if …)`, not passed as a call arg.)
+(case "a runtime String match on a hit arm agrees with its desugared (= s literal) if-chain"
+  (doc    "`viamatch s = (match s (\"add\" 1) (\"sub\" 2) (_ 9))` and `viachain s = (if (= s \"add\") 1 (if
+           (= s \"sub\") 2 9))` are the match and its `=`-chain desugaring. On a hit (`\"add\"`, built at
+           runtime via `(if true \"add\" \"sub\")` so it is not a constant): match → 1, chain → 1, combined
+           `10*match + chain` = 11. Pins the two forms agree on a matched arm, both backends.")
+  (input  (do
+            (def (viamatch (: s String)) (match s ("add" 1) ("sub" 2) (_ 9)))
+            (def (viachain (: s String)) (if (= s "add") 1 (if (= s "sub") 2 9)))
+            (def (main) (+ (* 10 (viamatch (if true "add" "sub"))) (viachain (if true "add" "sub"))))
+            (export main)))
+  (output (: 11 Int64)))
+
+(case "a runtime String match and its (= s literal) if-chain agree on the DEFAULT fall-through arm"
+  (doc    "The fall-through case: a scrutinee matching NO literal (`\"xyz\"`, built at runtime via `(if false
+           \"add\" \"xyz\")`) must take the wildcard `(_ 9)` in the match AND the trailing `else 9` in the
+           chain — the arm a dropped-wildcard or diverged desugaring would get wrong. `10*viamatch + viachain`
+           = 10*9 + 9 = 99. Pins match ≡ `=`-chain on the DEFAULT arm, both backends.")
+  (input  (do
+            (def (viamatch (: s String)) (match s ("add" 1) ("sub" 2) (_ 9)))
+            (def (viachain (: s String)) (if (= s "add") 1 (if (= s "sub") 2 9)))
+            (def (main) (+ (* 10 (viamatch (if false "add" "xyz"))) (viachain (if false "add" "xyz"))))
+            (export main)))
+  (output (: 99 Int64)))
+
 ; --- The empty string is an ordinary String value ---------------------------------------
 ; `""` is the zero-length string — a first-class String the compiler needs (an empty error message, an
 ; empty name). Its length is 0 (counted in Unicode scalar values, of which it has none), it is equal

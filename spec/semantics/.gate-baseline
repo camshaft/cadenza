@@ -1265,6 +1265,8 @@ pass	a pattern that binds the same name across nested sub-patterns is rejected
 pass	a pattern that binds the same name twice is rejected
 pass	a payload-in-payload nested list pattern dispatches through two recorded types
 pass	a peephole rewrite rule reads in the shape of the code it rewrites
+pass	a peer op whose SUM RESULT escapes the entrypoint declines (the recursive-sum resource path)
+pass	a peer op whose compound RESULT escapes the entrypoint declines (resource-escape lacks the peer import)
 pass	a peer-bound operation cannot take or return a closure
 pass	a peer-bound operation takes a String argument (it crosses as a runtime handle)
 pass	a perform BETWEEN two sibling recursive calls threads the intervening state
@@ -1523,6 +1525,8 @@ pass	a runtime Rational built from a parameter compares by its exact value
 pass	a runtime Rational comparison of a parameter is false when it should be
 pass	a runtime Result carrying a String error is matched
 pass	a runtime Result constructed from a condition selects its Ok or Err arm
+pass	a runtime String match and its (= s literal) if-chain agree on the DEFAULT fall-through arm
+pass	a runtime String match on a hit arm agrees with its desugared (= s literal) if-chain
 pass	a runtime Unit.in conversion emits the scale multiply (Int)
 pass	a runtime arithmetic right shift preserves the sign
 pass	a runtime bin match binds the tail after a fixed header via a final rest segment
