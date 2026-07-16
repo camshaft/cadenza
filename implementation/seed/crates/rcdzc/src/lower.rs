@@ -6389,6 +6389,21 @@ fn fold_sum_path(db: &mut Db, root: StructId, steps: &[crate::core::PathStep]) -
             ty = (**inner).clone();
             continue;
         }
+        // A `Payload` step over a MULTI-payload `SumNew` is a no-op landing on the payload TUPLE; the
+        // following `Elem(i)` indexes `payloads[i]` (the `(Elem, SumNew)` arm below) — mirrors the runtime
+        // `sum-payload` + `arr-get i`. Without it a constant multi-payload variant match (`(match (Mk 3 4)
+        // ((Mk a b) …))`) never folded (fell to `None`, emitted a runtime build+disc-walk), and the wasm
+        // `const_disc_at` twin lost the disc → wrong-payload-depth (Copilot PR#457). Single-payload is
+        // `[Payload]` with no following `Elem`, so it still unwraps in the arm below.
+        if matches!(step, PathStep::Payload)
+            && let Core::SumNew { payloads, .. } = core_of(db, cur)
+            && payloads.len() > 1
+        {
+            // Keep `cur` at the SumNew; re-sync the type cursor to the entered variant's payload tuple so a
+            // following `Elem` step's type is correct.
+            ty = crate::infer::type_of(db, cur);
+            continue;
+        }
         cur = match (step, core_of(db, cur)) {
             (PathStep::Payload, Core::SumNew { payloads, .. }) if payloads.len() == 1 => {
                 payloads[0]
@@ -6397,6 +6412,14 @@ fn fold_sum_path(db: &mut Db, root: StructId, steps: &[crate::core::PathStep]) -
             // A list-pattern element binder reads position `i` of a CONSTANT list — the same `Elem` step a
             // tuple element uses, over a `Core::ListNew`. A runtime list has no `Core::ListNew` here.
             (PathStep::Elem(i), Core::ListNew { elems }) => *elems.get(*i)?,
+            // A MULTI-payload variant's payloads: after the `Payload` no-op above, `cur` is the `SumNew` and
+            // `Elem(i)` selects the i-th payload — the constant twin of `sum-payload` + `arr-get i`.
+            (
+                PathStep::Elem(i),
+                Core::SumNew {
+                    payloads: elems, ..
+                },
+            ) => *elems.get(*i)?,
             // A list-pattern REST binder over a CONSTANT list folds to a fresh `Core::ListNew` of the tail
             // elements (from index `k`) — a synthesized node so the tail sublist is itself constant.
             (PathStep::RestFrom(k), Core::ListNew { elems }) => {
@@ -9078,6 +9101,14 @@ fn const_at_path(db: &mut Db, scrutinee: StructId, path: &[crate::core::PathStep
         if matches!(step, PathStep::Payload) && crate::infer::type_is_nominal(db, cur) {
             continue;
         }
+        // A `Payload` over a MULTI-payload `SumNew` is a no-op landing on the payload tuple; the following
+        // `Elem(i)` indexes `payloads[i]` (see `fold_sum_path`/`const_disc_at` — Copilot PR#457).
+        if matches!(step, PathStep::Payload)
+            && let Core::SumNew { payloads, .. } = core_of(db, cur)
+            && payloads.len() > 1
+        {
+            continue;
+        }
         cur = match (step, core_of(db, cur)) {
             (PathStep::Payload, Core::SumNew { payloads, .. }) if payloads.len() == 1 => {
                 payloads[0]
@@ -9086,6 +9117,13 @@ fn const_at_path(db: &mut Db, scrutinee: StructId, path: &[crate::core::PathStep
             // A list-pattern element binder reads position `i` of a CONSTANT list — the same `Elem` step a
             // tuple element uses, over a `Core::ListNew`. A runtime list has no `Core::ListNew` here.
             (PathStep::Elem(i), Core::ListNew { elems }) => *elems.get(*i)?,
+            // A MULTI-payload variant's payloads: `Elem(i)` after the `Payload` no-op selects payload `i`.
+            (
+                PathStep::Elem(i),
+                Core::SumNew {
+                    payloads: elems, ..
+                },
+            ) => *elems.get(*i)?,
             // A list-pattern REST binder over a CONSTANT list folds to a fresh `Core::ListNew` of the tail
             // elements (from index `k`) — a synthesized node so the tail sublist is itself constant.
             (PathStep::RestFrom(k), Core::ListNew { elems }) => {

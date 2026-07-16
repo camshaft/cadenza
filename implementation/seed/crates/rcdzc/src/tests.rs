@@ -2798,6 +2798,53 @@ fn a_multi_use_constant_tuple_folds_away_with_no_heap() {
     assert_eq!(run_returns::<i64>(&bytes, "main"), 30);
 }
 
+/// MISCOMPILE (Copilot PR#457): a CONSTANT MULTI-payload variant match reaching a payload past the first —
+/// `(match (Mk 7 (IB 42)) ((Mk a (IB y)) …))` — lost its discriminant. The path into a multi-payload
+/// variant's payload is `Payload` THEN `Elem(i)`, but the constant-fold walkers (`fold_sum_path`/
+/// `const_at_path`/`const_disc_at`) had no `(Elem, SumNew{payloads})` arm — only single-payload unwrap and
+/// `(Elem, Tuple|ListNew)`. So the constant match never folded (built a runtime disc-walk) and the wasm
+/// backend defaulted to variant 0, reading the nested payload at the WRONG depth. With the fix — `Payload`
+/// over a multi-payload `SumNew` is a no-op landing on the payload tuple, `Elem(i)` selects `payloads[i]` —
+/// the whole match FOLDS to a constant (no heap runtime), proving both the payload position and the nested
+/// variant discriminant resolve correctly.
+#[test]
+fn a_constant_multi_payload_variant_match_folds_at_the_right_depth() {
+    use crate::testkit::parse;
+    let fold = |src: &str| -> i64 {
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        // Folds to a scalar — NO value-heap runtime imported (a runtime disc-walk would import one).
+        assert!(
+            cdz_run::required_runtime(&bytes).expect("valid").is_none(),
+            "a constant multi-payload variant match must fold, importing no runtime op"
+        );
+        run_returns::<i64>(&bytes, "main")
+    };
+    // 2nd payload is a NESTED sum; the IB arm reads `7*100 + 42` = 742. (Before the fix: wrong depth.)
+    assert_eq!(
+        fold(
+            "(module m (type Inner (IA Int64) (IB Int64)) (type T (Mk Int64 Inner) (Other Int64)) \
+             (def (main) (match (Mk 7 (IB 42)) ((Mk a (IA x)) (+ a x)) ((Mk a (IB y)) (+ (* a 100) y)) ((Other z) z))) (export main))"
+        ),
+        742
+    );
+    // The IA nested variant + the 1st payload position: `7 + 42` = 49.
+    assert_eq!(
+        fold(
+            "(module m (type Inner (IA Int64) (IB Int64)) (type T (Mk Int64 Inner) (Other Int64)) \
+             (def (main) (match (Mk 7 (IA 42)) ((Mk a (IA x)) (+ a x)) ((Mk a (IB y)) (+ (* a 100) y)) ((Other z) z))) (export main))"
+        ),
+        49
+    );
+    // A plain multi-payload variant (no nesting) reaching each of its two payloads.
+    assert_eq!(
+        fold(
+            "(module m (type T (Mk Int64 Int64) (Other Int64)) \
+             (def (main) (match (Mk 3 4) ((Mk a b) (+ (* a 10) b)) ((Other x) x))) (export main))"
+        ),
+        34
+    );
+}
+
 /// The routing pin: a projection-only tuple LITERAL folds whether or not its elements are runtime —
 /// what a projection reads is the element's own computation, not a heap cell. `(let ((t (tuple 10 a)))
 /// (+ (. t 0) (. t 1)))` folds to `(+ 10 a)`: no heap, no runtime import, even though `a` is a runtime
