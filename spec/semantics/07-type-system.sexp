@@ -1183,6 +1183,49 @@
             (export main)))
   (output (: 0 Int64)))
 
+; The fix's cases pin that DIFFERENT body-solved arrows reflect DISTINCT types (and match an annotated
+; signature). These pin the complements: two functions with the SAME body-solved arrow but different BODIES
+; reflect EQUAL types (the domain-solve equates, doesn't spuriously distinguish by body), and the CODOMAIN
+; is body-solved too (not just the domain) — a function whose result is inferred to Bool reflects a distinct
+; arrow from one returning Int64, and two Int64→Bool functions reflect equal.
+
+(case "two functions with the same body-solved arrow but different bodies reflect equal types"
+  (doc    "`f x = x + 1` and `h x = x * 2` are BOTH unannotated with body-solved domain `Int64` and result
+           `Int64`, so their reflected arrows are the SAME `(-> Int64 Int64)` despite different bodies —
+           `Type.eq` is true. The equality companion of the fix's distinguish-different-domains case: the
+           domain-solve reflects the TYPE, not the body, so two genuinely same-typed functions equate (a
+           reflection keyed on the body would wrongly distinguish them).")
+  (input  (do
+            (def (f x) (+ x 1))
+            (def (h x) (* x 2))
+            (def (main) (if (Type.eq (Type.of f) (Type.of h)) 1 0))
+            (export main)))
+  (output (: 1 Int64)))
+
+(case "a function's reflected CODOMAIN is body-solved, distinguishing an Int64 result from a Bool result"
+  (doc    "The fix's cases all return Int64; this pins the RESULT type is body-solved too. `f x = x + 1` is
+           `(-> Int64 Int64)` and `p x = x > 0` is `(-> Int64 Bool)` (the `>` solves the result to Bool),
+           so their reflected arrows differ in the CODOMAIN → `Type.eq` false. Pins that reflection solves
+           both ends of the arrow, not just the domain — a codomain left `Any` would wrongly equate them.")
+  (input  (do
+            (def (f x) (+ x 1))
+            (def (p x) (> x 0))
+            (def (main) (if (Type.eq (Type.of f) (Type.of p)) 1 0))
+            (export main)))
+  (output (: 0 Int64)))
+
+(case "two functions both body-solved to Int64->Bool reflect equal arrows"
+  (doc    "The equality companion at a body-solved CODOMAIN: `p x = x > 0` and `q x = x < 5` are both
+           `(-> Int64 Bool)` (domain Int64 from the comparison, result Bool), so their reflected arrows are
+           equal → `Type.eq` true. Together with the case above this pins that the codomain-solve equates
+           same-result functions and distinguishes different-result ones — the arrow is solved end-to-end.")
+  (input  (do
+            (def (p x) (> x 0))
+            (def (q x) (< x 5))
+            (def (main) (if (Type.eq (Type.of p) (Type.of q)) 1 0))
+            (export main)))
+  (output (: 1 Int64)))
+
 (case "an if on Type.eq selects a branch at compile time"
   (doc    "The headline of compile-time reflection: `(if (Type.eq (Type.of 5) Int64) 100 200)` folds the
            condition to the constant `true`, so the whole `if` is `100`. A program BRANCHES on types at

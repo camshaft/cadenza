@@ -30,6 +30,11 @@ use crate::Paths;
 /// (Historically the local `spec` branch; renamed to `trunk` when the fleet landed.)
 const TRUNK: &str = "trunk";
 
+/// Context-% at/above which the watchdog surfaces a saturation warning (report-only). Below the 100%
+/// wall so the concierge can `/compact` proactively while it still submits — a session that reaches
+/// 100% is unrecoverable (even `/compact` can't submit).
+const CTX_SATURATION_THRESHOLD: u8 = 85;
+
 /// One agent's durable row in the manifest. The registry is the source of truth that survives a
 /// reboot; `fleet up` reconstitutes every `Active` agent's worktree + tmux window from these rows.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1868,8 +1873,14 @@ fn watchdog(fleet: &Fleet, dry_run: bool, stale_mult: u32, stale_cap: u64, grace
         // human/operator wants to see the anomaly, and a spurious nudge mid-anything is riskier than a
         // warning). Interactive roles (concierge/design) legitimately sit idle with mail a human reads,
         // so exempt them. Uses the canonical hub inbox (fleet.inbox), never a relative path.
+        // Capture the pane ONCE for the two report-only pane signals below (drain-stall + saturation).
+        let pane = capture_pane(&session, &a.name);
+        let pane_working = pane
+            .as_deref()
+            .is_some_and(|s| s.contains("esc to interrupt"));
+
         let hub_inbox_depth = count_dir(&fleet.inbox(&a.name), |f| f.ends_with(".json"));
-        let pane_idle = hb_age.is_some() && !window_is_working(&session, &a.name);
+        let pane_idle = hb_age.is_some() && !pane_working;
         if is_probable_drain_stall(&a.role, hub_inbox_depth, pane_idle) {
             eprintln!(
                 "  ⚠ '{}' is IDLE at prompt with {hub_inbox_depth} UNCONSUMED message(s) in its hub \
@@ -1881,6 +1892,24 @@ fn watchdog(fleet: &Fleet, dry_run: bool, stale_mult: u32, stale_cap: u64, grace
             );
             // fall through — still run the normal heartbeat logic below (a drain-stall usually has a
             // FRESH heartbeat and would `continue` as healthy, so the warning above is the signal).
+        }
+
+        // CONTEXT-SATURATION detection (report-only). A saturated agent is invisible to EVERY other
+        // check: its loop is alive (heartbeat fresh → sails past the staleness `continue`) and its pane
+        // is NOT idle-at-prompt (it's mid-turn / queuing → the drain-stall signal doesn't fire), yet at
+        // 100% context it's UNRECOVERABLE — `/compact` can't even submit. Scrape the pane's "N% context"
+        // marker and warn at/above the threshold (default 85, below the 100% wall) so the concierge can
+        // `/compact` proactively while it still submits, or route an operator restart. Report-only, like
+        // the other watchdog signals. `ctx_saturation_threshold` is a const (not a flag) for now.
+        let ctx_pct = pane.as_deref().and_then(parse_context_pct);
+        if context_saturation_warning(ctx_pct, CTX_SATURATION_THRESHOLD) {
+            let pct = ctx_pct.unwrap_or(0);
+            let tail = if pct >= 100 {
+                "UNRECOVERABLE (/compact can't submit); needs an operator restart"
+            } else {
+                "approaching the 100% wall — proactive `/compact` NOW while it still submits"
+            };
+            eprintln!("  ⚠ '{}' is at {pct}% context — {tail}.", a.name);
         }
 
         if hb_age.is_some() && age <= stale_after {
@@ -1927,9 +1956,9 @@ fn watchdog(fleet: &Fleet, dry_run: bool, stale_mult: u32, stale_cap: u64, grace
         // origin/trunk-flail mints sit forever (corpus-bugfix's capture). So: honor the busy pane only
         // when the agent has stamped a heartbeat at least once; a never-heartbeated agent re-arms even
         // if the pane looks busy. (`busy pane + zero heartbeats ever` = stuck, not a long tick.)
-        // Only capture the pane when the agent has looped before (never-heartbeated → pane can't be
-        // trusted, so don't even bother reading it).
-        let pane_busy = hb_age.is_some() && window_is_working(&session, &a.name);
+        // Only trust the pane when the agent has looped before (never-heartbeated → pane can't be
+        // trusted). Reuse the single capture taken above (`pane_working`), no second tmux read.
+        let pane_busy = hb_age.is_some() && pane_working;
         if pane_busy_means_working(hb_age.is_some(), pane_busy) {
             println!(
                 "  = {} heartbeat stale but pane shows work in flight — left alone",
@@ -2183,19 +2212,61 @@ fn is_probable_drain_stall(role: &str, inbox_depth: usize, pane_idle: bool) -> b
     inbox_depth > 0 && pane_idle
 }
 
-/// Does the agent's tmux pane show Claude actively working? Claude Code prints an "esc to interrupt"
-/// affordance in its status line while a turn is in flight; its presence means the loop is alive and
-/// mid-tick, so a stale heartbeat is just a long tick — don't re-arm (that would inject a `/loop`
-/// into the middle of real work). Captures only the visible pane (no scrollback).
-fn window_is_working(session: &str, agent: &str) -> bool {
+/// Capture an agent's visible tmux pane text (no scrollback), or `None` if tmux errors / the window is
+/// gone. Shared by the pane-based signals (working-detection, context-saturation) so the watchdog reads
+/// each pane once per concern via one primitive.
+fn capture_pane(session: &str, agent: &str) -> Option<String> {
     let target = format!("{session}:{agent}");
     Command::new("tmux")
         .args(["capture-pane", "-p", "-t", &target])
         .output()
         .ok()
+        .filter(|o| o.status.success())
         .and_then(|o| String::from_utf8(o.stdout).ok())
+}
+
+/// Does the agent's tmux pane show Claude actively working? Claude Code prints an "esc to interrupt"
+/// affordance in its status line while a turn is in flight; its presence means the loop is alive and
+/// mid-tick, so a stale heartbeat is just a long tick — don't re-arm (that would inject a `/loop`
+/// into the middle of real work). Captures only the visible pane (no scrollback).
+fn window_is_working(session: &str, agent: &str) -> bool {
+    capture_pane(session, agent)
         .map(|s| s.contains("esc to interrupt"))
         .unwrap_or(false)
+}
+
+/// Parse the "% context used" indicator Claude Code renders in its status line (e.g. "97% context
+/// used", or just "100% context" mid-render) out of a captured pane. Returns the integer percent, or
+/// `None` if no such marker is present (the agent isn't near any threshold, or the pane didn't render
+/// it this capture). Pure so the parse is unit-testable. Takes the LAST match (the live status line is
+/// at the bottom; an older value may linger higher in the visible buffer).
+fn parse_context_pct(pane_text: &str) -> Option<u8> {
+    let mut found: Option<u8> = None;
+    for (i, _) in pane_text.match_indices("% context") {
+        // Walk back over the digits immediately preceding the '%'.
+        let bytes = pane_text.as_bytes();
+        let mut start = i;
+        while start > 0 && bytes[start - 1].is_ascii_digit() {
+            start -= 1;
+        }
+        if start < i
+            && let Ok(pct) = pane_text[start..i].parse::<u16>()
+        {
+            found = Some(pct.min(100) as u8); // clamp; a status line never exceeds 100%
+        }
+    }
+    found
+}
+
+/// Whether a captured context-percent crosses the report threshold for the watchdog's saturation
+/// signal. Pure so the gate is unit-testable. A context-saturated agent is INVISIBLE to the other
+/// liveness checks — its loop is alive (heartbeat fresh) and its pane is not idle-at-prompt (it's
+/// mid-turn / "Noodling"), so neither the staleness check nor the drain-stall signal flags it — yet at
+/// 100% it's unrecoverable (even `/compact` can't submit). Flagging at a threshold BELOW 100% (default
+/// 85) lets the concierge `/compact` proactively while it still submits. `None` (no marker) → not
+/// flagged.
+fn context_saturation_warning(pct: Option<u8>, threshold: u8) -> bool {
+    matches!(pct, Some(p) if p >= threshold)
 }
 
 /// Re-arm a stalled agent by nudging its idle pane to run a tick NOW — by typing `continue` + Enter,
@@ -4050,6 +4121,35 @@ mod tests {
         );
         // A `+ <sha> <subject>` form (some git configs append the subject) keeps just the sha.
         assert_eq!(commits_to_replay("+ 9999 wip: something"), vec!["9999"]);
+    }
+
+    #[test]
+    fn parse_context_pct_extracts_the_status_line_percent() {
+        assert_eq!(parse_context_pct("... 97% context used ..."), Some(97));
+        assert_eq!(parse_context_pct("100% context"), Some(100));
+        assert_eq!(parse_context_pct("  9% context left"), Some(9));
+        // No marker → None (not near any threshold / didn't render).
+        assert_eq!(parse_context_pct("esc to interrupt"), None);
+        assert_eq!(parse_context_pct(""), None);
+        // A '% context' with no leading digits is not a valid reading.
+        assert_eq!(parse_context_pct("% context"), None);
+        // Multiple lines → take the LAST (the live status line is at the bottom; older value lingers up top).
+        assert_eq!(
+            parse_context_pct("70% context used\n... work ...\n88% context used"),
+            Some(88)
+        );
+        // Clamp a nonsense over-100 reading to 100 (never trust a status line above the wall).
+        assert_eq!(parse_context_pct("140% context"), Some(100));
+    }
+
+    #[test]
+    fn context_saturation_warning_gates_on_threshold() {
+        assert!(context_saturation_warning(Some(85), 85)); // exactly at threshold → warn
+        assert!(context_saturation_warning(Some(100), 85)); // at the wall → warn
+        assert!(context_saturation_warning(Some(97), 85));
+        assert!(!context_saturation_warning(Some(84), 85)); // just below → quiet
+        assert!(!context_saturation_warning(Some(0), 85));
+        assert!(!context_saturation_warning(None, 85)); // no marker → never warn
     }
 
     #[test]

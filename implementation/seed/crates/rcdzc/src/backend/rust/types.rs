@@ -148,13 +148,16 @@ pub fn rust_type(ty: &Ty) -> Option<String> {
         // shape; a non-Ord key/element is caught before it can emit an uncompilable `BTreeMap`/`BTreeSet`.
         Ty::Map(k, v) => Some(format!(
             "std::collections::BTreeMap<{}, {}>",
-            rust_type(k)?,
+            ord_key_type(k)?,
             rust_type(v)?
         )),
         // A SET is a persistent collection of unique elements — Rust's ordered `BTreeSet<T>` (sorted
         // iteration = the canonical `Set.to-list` order; `Ord` element compares by value, dedup at insert).
         // The Ord-element decline is enforced by the `Db`-aware gates (see the `Ty::Map` note), not here.
-        Ty::Set(elem) => Some(format!("std::collections::BTreeSet<{}>", rust_type(elem)?)),
+        Ty::Set(elem) => Some(format!(
+            "std::collections::BTreeSet<{}>",
+            ord_key_type(elem)?
+        )),
         // A BYTES value is a raw byte sequence — Rust's owned `Vec<u8>`. Non-Copy (owned heap buffer) →
         // clone-on-read covers a shared bytes value. (Cadenza's `Bytes` is a persistent rope at run time;
         // the native rep is a flat `Vec<u8>`, and every emitted bytes op produces a NEW `Vec` — the
@@ -170,6 +173,20 @@ pub fn rust_type(ty: &Ty) -> Option<String> {
         // separate v-rust-backend increment; a runtime Symbol op declines cleanly on rust until then,
         // while the wasm side emits it as a tagless byte-leaf retag.)
         _ => None,
+    }
+}
+
+/// The Rust type for a Set ELEMENT / Map KEY position — like [`rust_type`], except a bare `Float` maps to
+/// the total-order wrapper `CdzF64` (a `BTreeSet`/`BTreeMap` needs `Ord`, which `f64` lacks). This is the
+/// ONLY place a float becomes `CdzF64`: a float in a NON-key position (a value, a tuple element, a Map
+/// VALUE) stays a bare `f64`. A float NESTED inside a compound KEY (a `(Tuple Float Int64)` key) is NOT
+/// handled here — that still declines via `ty_is_ord` (the wrapper would have to be threaded through the
+/// tuple, a later increment); this covers the bare-`Float` key/element the corpus exercises. Any other
+/// type falls through to `rust_type` unchanged.
+pub(super) fn ord_key_type(ty: &Ty) -> Option<String> {
+    match ty {
+        Ty::Float(_) => Some("CdzF64".to_string()),
+        _ => rust_type(ty),
     }
 }
 
@@ -217,6 +234,22 @@ pub(super) fn ty_is_ord(db: &mut Db, ty: &Ty) -> bool {
         // Every other representable type (Int/Bool/Unit/Char/String/Bytes and the NUMERIC BigInt/Rational,
         // which have a total order) maps to an `Ord` Rust type. A non-representable type declines earlier.
         _ => true,
+    }
+}
+
+/// Whether `ty` can occupy a Set ELEMENT / Map KEY position directly — the gate the construction ops and
+/// the boundary use. Like [`ty_is_ord`], EXCEPT a BARE `Float` is now OK: it maps to the total-order
+/// wrapper `CdzF64` (see [`ord_key_type`]), which IS `Ord`. A float NESTED inside a compound key (a
+/// `(Tuple Float …)` / a float-payload sum) is still NOT ok — the wrapper is only substituted at the
+/// top-level key/element by `ord_key_type`, not threaded through a compound — so those delegate to
+/// `ty_is_ord` (which rejects the contained float). This is the ONE place the bare-float relaxation lives;
+/// `ty_is_ord` stays strict so its RECURSIVE use (a float inside a compound) keeps declining.
+pub(super) fn ty_is_ord_key(db: &mut Db, ty: &Ty) -> bool {
+    match ty {
+        // A bare float keys/elements via the `CdzF64` wrapper — representable and totally ordered.
+        Ty::Float(_) => true,
+        // Any other shape uses the strict predicate (a nested float still declines).
+        _ => ty_is_ord(db, ty),
     }
 }
 

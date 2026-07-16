@@ -1062,6 +1062,35 @@
   (input  (< 2 3))
   (output (: true Bool)))
 
+; The Int64 total order above uses mid-range 2,3. These pin its EXTREMES (Int64.min < Int64.max holds and
+; its reverse is false — the widest possible ordered pair) and the CROSS-TYPE rejection: ordering, like
+; equality, is defined only within one ordered type, so `< Int64 Bool` is a type error, not a coercion —
+; the ordering companion of the cross-width/function-value equality rejections.
+
+(case "comparing an Int64 to a Bool with < is a type error"
+  (doc    "`(< 5 true)` orders an Int64 against a Bool — two DIFFERENT types. Ordering is defined only within
+           one ordered type (Cadenza has no cross-type coercion), so it is CDZ0203, exactly as a cross-type
+           `=` is. Pins that the `<` operator's operands must share a type — the ordering analogue of the
+           cross-width-float and function-value equality type errors, not a silent Int-vs-Bool comparison.")
+  (input  (do (def (main) (if (< 5 true) 1 0)) (export main)))
+  (error  CDZ0203))
+
+(case "the Int64 total order holds at its extremes"
+  (doc    "`(< Int64.min Int64.max)` — the widest ordered pair — is true, and its reverse `(< Int64.max
+           Int64.min)` is false. Pins the total order at the type's boundary values (the mid-range `(< 2 3)`
+           cannot witness the extremes): a comparison that mis-signed or wrapped at Int64.min/max would flip
+           one of these. -2^63 < +2^63-1 is the maximal true ordering; the reverse is the maximal false.")
+  (input  (< -9223372036854775808 9223372036854775807))
+  (output (: true Bool)))
+
+(case "the reversed extreme ordering is false"
+  (doc    "The complement fixing the direction at the extremes: `(< Int64.max Int64.min)` = `(< 2^63-1 -2^63)`
+           is false — the maximum is not below the minimum. Together with the case above this pins the total
+           order's direction across the full Int64 range, ruling out a sign-confusion at the boundary that a
+           mid-range pair would not expose.")
+  (input  (< 9223372036854775807 -9223372036854775808))
+  (output (: false Bool)))
+
 (case "an entrypoint returning a comparison presents a Bool result at the boundary"
   (doc    "Type-directed emission at the component boundary: a nullary `main` whose body is an Int64
            comparison has result type Bool, so the `run` export is framed at the Bool boundary valtype,

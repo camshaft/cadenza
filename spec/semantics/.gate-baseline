@@ -794,6 +794,7 @@ pass	a function stored in a tuple element is called after extraction
 pass	a function takes a boolean parameter and branches on it
 pass	a function whose body always diverges has result type Never
 pass	a function whose name is capitalized is called, not treated as a constructor
+pass	a function's reflected CODOMAIN is body-solved, distinguishing an Int64 result from a Bool result
 pass	a function's reflected domain matches an equivalent explicitly-annotated signature
 pass	a function's return type ascription agreeing with the body is transparent
 pass	a function's return type contradicting the body is rejected
@@ -1907,6 +1908,7 @@ pass	a symbol compared to a string is a type error
 pass	a symbol converts back to its content string
 pass	a symbol is constructed from a string
 pass	a symbol's identity is its content, not how the content was derived
+pass	a symbol-literal match agrees with its if-(= s lit) chain on the DEFAULT fall-through arm
 pass	a symbol-literal match agrees with the equivalent if-(= s lit) chain
 pass	a symbol-literal match reaches the second arm by content
 pass	a symbol-literal pattern nested in a variant payload matches by content
@@ -2483,6 +2485,7 @@ pass	comparing a Float32 nan to a Float64 nan is a cross-width type error
 pass	comparing a greater value to a lesser yields Greater
 pass	comparing a lesser value to a greater yields Less
 pass	comparing a map to a record is a type error
+pass	comparing an Int64 to a Bool with < is a type error
 pass	comparing an empty map to an empty record is a type error
 pass	comparing equal values yields Equal
 pass	comparing quantities of incompatible dimension is a compile-time error
@@ -3112,6 +3115,7 @@ pass	the ETA axiom is minted via new_axiom as a hypothesis-free theorem
 pass	the Float codec round-trips a negative value
 pass	the INFINITY axiom is minted via new_axiom (an infinite type exists)
 pass	the Int codec round-trips i64::MIN — the two's-complement boundary
+pass	the Int64 total order holds at its extremes
 pass	the LEB128 byte composition runs on a runtime operand
 pass	the SELECT (choice) axiom is minted via new_axiom as a hypothesis-free theorem
 pass	the additive-zero identity preserves a boundary-crossing runtime operand
@@ -3227,6 +3231,7 @@ pass	the remainder takes the sign of the dividend for a negative divisor
 pass	the rest binder carries the unmatched runtime-keyed remainder
 pass	the retired Tuple.cat name is rejected with the Tuple.concat rename fix-it (CDZ0603)
 pass	the retired Tuple.pop name is rejected with the Tuple.remove rename fix-it (CDZ0603)
+pass	the reversed extreme ordering is false
 pass	the round trip tracks the produced closure's captured value
 pass	the runtime UTF-8 encoding of a string equals its exact byte literal
 pass	the runtime-if list takes its else branch and measures that length
@@ -3323,7 +3328,9 @@ pass	two expects of one bound optional share its resident handle
 pass	two exports normalizing to the same kebab extern name are rejected
 pass	two fallible reads of one Bytes parameter share its resident handle slot
 pass	two fallible reads of one collection parameter share its resident handle slot
+pass	two functions both body-solved to Int64->Bool reflect equal arrows
 pass	two functions defined by mutual recursion compute a result
+pass	two functions with the same body-solved arrow but different bodies reflect equal types
 pass	two host calls consume their responses in order
 pass	two host responses combine in call order through a non-commutative operator
 pass	two lists are concatenated into one flat list

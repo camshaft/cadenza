@@ -764,11 +764,15 @@ pub(super) fn sum_representable(db: &mut Db, ty: &crate::ty::Ty) -> bool {
         // the Ord predicate (floats + float-carrying compounds/sums excluded; a sum orderable iff its enum
         // derives `Ord`; BigInt/Rational ARE Ord). The element/value must ALSO be representable — but a
         // non-Ord VALUE is fine (only the KEY needs `Ord`).
-        Ty::Set(e) => sum_representable(db, e) && crate::backend::rust::types::ty_is_ord(db, e),
+        // The KEY/element gate is `ty_is_ord_key` (not `ty_is_ord`): a BARE `Float` key/element is now
+        // representable via the `CdzF64` total-order wrapper, while a float-CARRYING compound/sum key still
+        // declines (the wrapper is not threaded through a compound). The element/value must also be
+        // representable — but a non-Ord VALUE is fine (only the KEY needs `Ord`).
+        Ty::Set(e) => sum_representable(db, e) && crate::backend::rust::types::ty_is_ord_key(db, e),
         Ty::Map(k, v) => {
             sum_representable(db, k)
                 && sum_representable(db, v)
-                && crate::backend::rust::types::ty_is_ord(db, k)
+                && crate::backend::rust::types::ty_is_ord_key(db, k)
         }
         _ => true,
     }

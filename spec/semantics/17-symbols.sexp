@@ -227,6 +227,21 @@
             (export main)))
   (output (: 0 Int64)))
 
+(case "a symbol-literal match agrees with its if-(= s lit) chain on the DEFAULT fall-through arm"
+  (doc    "The match≡chain case above tests a HIT arm (`#\"sub\"`); this pins the DEFAULT face. A symbol
+           matching NO literal arm (`#\"xyz\"`, built at runtime) must take the wildcard `(_ 9)` in the
+           match AND the trailing `else 9` in the chain — the arm a dropped-wildcard or a diverged
+           desugaring would get wrong (the hit case cannot witness the fall-through). `(match s (#\"add\"
+           1) (#\"sub\" 2) (_ 9))` and `(if (= s #\"add\") 1 (if (= s #\"sub\") 2 9))` both give 9, so
+           their difference is 0. Completes the symbol match≡=-chain equivalence (hit + default), the
+           symbol twin of the String fall-through pin.")
+  (input  (do
+            (def (via-match (: s Symbol)) (match s (#"add" 1) (#"sub" 2) (_ 9)))
+            (def (via-chain (: s Symbol)) (if (= s #"add") 1 (if (= s #"sub") 2 9)))
+            (def (main) (let ((s (Symbol.of (String.concat "x" "yz")))) (- (via-match s) (via-chain s))))
+            (export main)))
+  (output (: 0 Int64)))
+
 (case "a symbol-literal pattern over a multi-byte symbol matches by content"
   (doc    "`(match s (#\"café\" 1) (_ 0))` with a runtime `#\"café\"` (é = 2 UTF-8 bytes) takes the literal
            arm → 1. Pins that the symbol-literal content test compares the full UTF-8 byte content, not an
