@@ -24,9 +24,11 @@ fn find_runtime_present(hash: &str) -> bool {
 
 #[test]
 fn the_driver_processes_inbox_messages_through_the_authorized_loop() {
+    // The 3-effect consumer: Inbox.next -> Model.converse (on the MESSAGE BODY) -> Cedar-gated. So the
+    // returned byte-len reflects the message body's length, proving the body reaches the model.
     let fixture: PathBuf = [
         env!("CARGO_MANIFEST_DIR"),
-        "tests/fixtures/authz-model-consumer.wasm",
+        "tests/fixtures/inbox-model-consumer.wasm",
     ]
     .iter()
     .collect();
@@ -46,6 +48,8 @@ fn the_driver_processes_inbox_messages_through_the_authorized_loop() {
     let dir = std::env::temp_dir().join(format!("cdz-agent-driver-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("mkdir temp inbox");
+    // Two messages with DISTINCT body byte-lengths, so the reported value proves the body reached the
+    // model (a fixed prompt would give the same value for both). "do the task" = 11, "another" = 7.
     std::fs::write(
         dir.join("001-msg.json"),
         r#"{"from":"tester","to":"cdz-agent","kind":"note","subject":"hi","body":"do the task"}"#,
@@ -57,8 +61,10 @@ fn the_driver_processes_inbox_messages_through_the_authorized_loop() {
     )
     .unwrap();
 
-    // Invoke the built binary: permit-all default policy, mock model — it should process BOTH messages
-    // and, since the consumer authorizes "tool:chat" (permitted) then converses, print `value 2` for each.
+    // Invoke the built binary: permit-all default policy, mock model. The loop reads each body via
+    // Inbox.next, converses (mock = uppercase, same byte-len), and returns its byte-len — so message 1
+    // ("do the task", 11 bytes) → value 11 and message 2 ("another", 7 bytes) → value 7. Distinct values
+    // prove the ACTUAL body drove each model call.
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_cdz-agent"))
         .args([
             "--consumer",
@@ -77,8 +83,8 @@ fn the_driver_processes_inbox_messages_through_the_authorized_loop() {
         "the driver must exit 0: stdout=<{stdout}> stderr=<{stderr}>"
     );
     assert!(
-        stdout.contains("001-msg.json -> value 2") && stdout.contains("002-msg.json -> value 2"),
-        "both messages drive the authorized loop to `value 2` (permit-all → allow → mock converse): {stdout}"
+        stdout.contains("001-msg.json -> value 11") && stdout.contains("002-msg.json -> value 7"),
+        "each message's OWN body drives its model call (11 and 7 bytes) — the body reaches the model: {stdout}"
     );
     assert!(
         stdout.contains("processed 2 message(s)"),

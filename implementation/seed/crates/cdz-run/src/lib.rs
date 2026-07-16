@@ -752,6 +752,225 @@ fn check_authz_op_shape(
     Ok(())
 }
 
+/// One HOST OP an agent loop performs, answered by a Rust closure over the shared value-heap runtime.
+/// The variant fixes the boundary shape — how the closure's String/scalar values marshal to/from the
+/// runtime rope handles (`str-get`/`str-new`) — so the runner binds each op correctly. This is the
+/// general form the fixed [`run_agent`]/[`run_agent_authorized`] runners are special cases of.
+pub enum HostOp {
+    /// `(String) -> String` (crosses `(u32) -> u32`): read the arg rope, call the closure, mint the
+    /// result rope. E.g. the model call `converse(prompt) -> completion`.
+    StringToString(Box<dyn Fn(String) -> String + Send + Sync>),
+    /// `(String) -> Int64` (crosses `(u32) -> s64`): read the arg rope, call the closure, write the
+    /// scalar. E.g. `authorize(action) -> decision`.
+    StringToScalar(Box<dyn Fn(String) -> i64 + Send + Sync>),
+    /// `() -> String` (crosses `() -> u32`): call the closure, mint the result rope. E.g. `next() ->
+    /// message` (read the next inbox message).
+    UnitToString(Box<dyn Fn() -> String + Send + Sync>),
+}
+
+/// A host op binding: the interface + op the consumer imports, and the closure (with its shape) that
+/// answers it. Passed to [`run_agent_hosted`].
+pub struct HostOpBinding {
+    pub iface: String,
+    pub op: String,
+    pub host: HostOp,
+}
+
+/// Run a CONSUMER agent-loop component, answering EACH of its imported host ops with a Rust closure —
+/// the general embedder runner. Every op's String args/results cross as runtime rope handles into the
+/// ONE shared value-heap runtime (the runner captures its `str-get`/`str-new` and marshals per each
+/// [`HostOp`] shape). The agent loop stays pure Cadenza; the closures are the only non-Cadenza surface
+/// (a Bedrock model call, a Cedar decision, an inbox read). [`run_agent`]/[`run_agent_authorized`] are
+/// fixed-shape special cases; this is the form that also binds e.g. `next() -> message` so the loop can
+/// read its input.
+pub fn run_agent_hosted(
+    consumer_bytes: &[u8],
+    opts: &RunOpts,
+    bindings: Vec<HostOpBinding>,
+) -> Result<Outcome> {
+    use std::sync::Arc;
+    let engine = engine();
+    let consumer = Component::new(&engine, consumer_bytes)
+        .map_err(|e| anyhow!("invalid consumer component: {e}"))?;
+    let mut store = Store::new(&engine, ());
+    let mut linker: Linker<()> = Linker::new(&engine);
+
+    // Shape-check each binding against the consumer's declared import (clear up-front error, not an
+    // opaque trap in the closure). Skips a binding the consumer doesn't import (the linker reports that).
+    for b in &bindings {
+        let want = match &b.host {
+            HostOp::StringToString(_) => (&[Type::U32][..], &[Type::U32][..]),
+            HostOp::StringToScalar(_) => (&[Type::U32][..], &[Type::S64][..]),
+            HostOp::UnitToString(_) => (&[][..], &[Type::U32][..]),
+        };
+        check_host_op_shape(&engine, &consumer, &b.iface, &b.op, want.0, want.1)?;
+    }
+
+    // One shared value-heap runtime serves the consumer + every closure (String args/results are ropes).
+    let req = find_runtime_req(&engine, &consumer).ok_or_else(|| {
+        anyhow!(
+            "run_agent_hosted requires the consumer to import the value-heap runtime (String host-op \
+             args/results cross as rope handles), but it declares no runtime import"
+        )
+    })?;
+    let (rt_instance, heap_names) = instantiate_runtime(&engine, &mut store, &req, opts)?;
+    bind_runtime_into(
+        &engine,
+        &mut store,
+        &mut linker,
+        &req.import_name,
+        &rt_instance,
+        &heap_names,
+    )?;
+
+    let heap_idx = rt_instance
+        .get_export_index(&mut store, None, RUNTIME_IFACE)
+        .ok_or_else(|| anyhow!("runtime does not export {RUNTIME_IFACE}"))?;
+    let get_func_named =
+        |store: &mut Store<()>, fname: &str| -> Result<wasmtime::component::Func> {
+            let fidx = rt_instance
+                .get_export_index(&mut *store, Some(&heap_idx), fname)
+                .ok_or_else(|| anyhow!("runtime missing `{fname}`"))?;
+            rt_instance
+                .get_func(&mut *store, fidx)
+                .ok_or_else(|| anyhow!("runtime export `{fname}` is not a func"))
+        };
+    let str_get = get_func_named(&mut store, "str-get")?;
+    let str_new = get_func_named(&mut store, "str-new")?;
+
+    // Bind each op to a `func_new` closure of the right shape. Reading the arg rope (`str-get`) / minting
+    // the result rope (`str-new`) inside the closure via the passed `ctx` is the `bind_runtime_into`
+    // pattern. A helper reads a u32 arg handle to its String; each arm marshals per its HostOp variant.
+    for b in bindings {
+        let HostOpBinding { iface, op, host } = b;
+        let mut iface_linker = linker
+            .instance(&iface)
+            .map_err(|e| anyhow!("linker instance {iface}: {e}"))?;
+        let op_label = op.clone();
+        match host {
+            HostOp::StringToString(f) => {
+                let f = Arc::new(f);
+                let (sg, sn) = (str_get, str_new);
+                iface_linker.func_new(&op, move |mut ctx, params, results| {
+                    let arg = read_arg_string(&mut ctx, &sg, params, &op_label)?;
+                    let out = f(arg);
+                    let mut made = [Val::Bool(false)];
+                    sn.call(&mut ctx, &[Val::String(out)], &mut made)?;
+                    sn.post_return(&mut ctx)?;
+                    write_result(results, made[0].clone(), &op_label)?;
+                    Ok(())
+                })?;
+            }
+            HostOp::StringToScalar(f) => {
+                let f = Arc::new(f);
+                let sg = str_get;
+                iface_linker.func_new(&op, move |mut ctx, params, results| {
+                    let arg = read_arg_string(&mut ctx, &sg, params, &op_label)?;
+                    write_result(results, Val::S64(f(arg)), &op_label)?;
+                    Ok(())
+                })?;
+            }
+            HostOp::UnitToString(f) => {
+                let f = Arc::new(f);
+                let sn = str_new;
+                iface_linker.func_new(&op, move |mut ctx, _params, results| {
+                    let out = f();
+                    let mut made = [Val::Bool(false)];
+                    sn.call(&mut ctx, &[Val::String(out)], &mut made)?;
+                    sn.post_return(&mut ctx)?;
+                    write_result(results, made[0].clone(), &op_label)?;
+                    Ok(())
+                })?;
+            }
+        }
+    }
+
+    run_export(&engine, &consumer, &mut store, &linker, opts)
+}
+
+/// Read a host op's single `u32` arg handle to its `String` via the runtime's `str-get`. Shared by the
+/// String-arg [`HostOp`] arms.
+fn read_arg_string(
+    ctx: &mut wasmtime::StoreContextMut<()>,
+    str_get: &wasmtime::component::Func,
+    params: &[Val],
+    op_label: &str,
+) -> Result<String> {
+    let h = match params.first() {
+        Some(Val::U32(h)) => *h,
+        other => {
+            return Err(anyhow!(
+                "op `{op_label}` expected a u32 arg handle, got {other:?}"
+            ));
+        }
+    };
+    let mut got = [Val::Bool(false)];
+    str_get.call(&mut *ctx, &[Val::U32(h)], &mut got)?;
+    str_get.post_return(&mut *ctx)?;
+    match &got[0] {
+        Val::String(s) => Ok(s.to_string()),
+        other => Err(anyhow!("str-get returned a non-string: {other:?}")),
+    }
+}
+
+/// Write a host op's single result into the first result slot (guarded — a shape mismatch is an error,
+/// not a panic; the up-front shape check already proved the slot exists).
+fn write_result(results: &mut [Val], value: Val, op_label: &str) -> Result<()> {
+    let slot = results
+        .first_mut()
+        .ok_or_else(|| anyhow!("op `{op_label}` returned no result slot to write"))?;
+    *slot = value;
+    Ok(())
+}
+
+/// Verify a consumer's imported op `iface`.`op` has the expected `(want_params) -> (want_results)`
+/// boundary shape. Generalizes [`check_model_op_shape`]/[`check_authz_op_shape`]; Ok if the op/iface
+/// isn't imported (the linker reports that clearly).
+fn check_host_op_shape(
+    engine: &Engine,
+    consumer: &Component,
+    iface: &str,
+    op: &str,
+    want_params: &[Type],
+    want_results: &[Type],
+) -> Result<()> {
+    let Some(sigs) = consumer
+        .component_type()
+        .imports(engine)
+        .find(|(n, _)| *n == iface)
+        .and_then(|(_, item)| iface_func_sigs(engine, &item))
+    else {
+        return Ok(());
+    };
+    let Some((_, params, results)) = sigs.iter().find(|(n, _, _)| n == op) else {
+        return Ok(());
+    };
+    let matches_ty = |got: &[Type], want: &[Type]| {
+        got.len() == want.len()
+            && got
+                .iter()
+                .zip(want)
+                .all(|(g, w)| std::mem::discriminant(g) == std::mem::discriminant(w))
+    };
+    if !matches_ty(params, want_params) || !matches_ty(results, want_results) {
+        let shape = |ts: &[Type]| {
+            ts.iter()
+                .map(|t| format!("{t:?}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        return Err(anyhow!(
+            "the host op `{iface}`.`{op}` must be `({}) -> ({})`, but the consumer imports it as \
+             `({}) -> ({})`",
+            shape(want_params),
+            shape(want_results),
+            shape(params),
+            shape(results),
+        ));
+    }
+    Ok(())
+}
+
 /// Instantiate the linked component and invoke its chosen export (or the resource-escape path), returning
 /// the rendered outcome. Split out of [`run_capturing`] so the host-call observation wraps it.
 fn run_export(

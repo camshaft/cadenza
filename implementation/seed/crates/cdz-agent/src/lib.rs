@@ -72,6 +72,52 @@ where
     )
 }
 
+/// The interface + op an agent loop binds its INBOX read to (`(bind Inbox "cadenza:inbox/api")`,
+/// `Inbox.next : Unit -> String`) — the loop reads its next message body, then feeds it to the model.
+pub const INBOX_IFACE: &str = "cadenza:inbox/api";
+pub const INBOX_OP: &str = "next";
+
+/// Run a compiled Cadenza agent-loop `consumer` that performs ALL THREE harness ops — `Inbox.next` (read
+/// the message body), `Model.converse` (call the model on it), `Cedar.authorize` (gate the tool
+/// dispatch) — answering each with a host closure. This is the full hive-agent shape: the loop reads its
+/// input, so the message body actually reaches the model (unlike the fixed-prompt
+/// [`run_authorized_agent_loop`]). Over the general [`cdz_run::run_agent_hosted`] runner.
+pub fn run_hive_agent_loop<N, F, A>(
+    consumer_bytes: &[u8],
+    opts: &RunOpts,
+    next_message: N,
+    converse: F,
+    authorize: A,
+) -> Result<Outcome>
+where
+    N: Fn() -> String + Send + Sync + 'static,
+    F: Fn(String) -> String + Send + Sync + 'static,
+    A: Fn(String) -> i64 + Send + Sync + 'static,
+{
+    use cdz_run::{HostOp, HostOpBinding};
+    cdz_run::run_agent_hosted(
+        consumer_bytes,
+        opts,
+        vec![
+            HostOpBinding {
+                iface: INBOX_IFACE.to_string(),
+                op: INBOX_OP.to_string(),
+                host: HostOp::UnitToString(Box::new(next_message)),
+            },
+            HostOpBinding {
+                iface: MODEL_IFACE.to_string(),
+                op: MODEL_OP.to_string(),
+                host: HostOp::StringToString(Box::new(converse)),
+            },
+            HostOpBinding {
+                iface: CEDAR_IFACE.to_string(),
+                op: CEDAR_OP.to_string(),
+                host: HostOp::StringToScalar(Box::new(authorize)),
+            },
+        ],
+    )
+}
+
 /// A deterministic MOCK model: uppercase the prompt. Stands in for a real model in tests + offline runs
 /// (same `String -> String` seam the real backend fills), so the loop can be exercised with no network.
 pub fn mock_converse(prompt: String) -> String {
