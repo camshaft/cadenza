@@ -2586,6 +2586,42 @@ fn rustc_roundtrip_runtime_equality_over_a_generic_sum() {
 }
 
 #[test]
+fn ast_float_reify_traps_a_runtime_non_canonical_float_matching_wasm() {
+    // The reify `Ast` sum's `Float` variant must carry a CANONICAL float — a non-canonical NaN/±inf has no
+    // canonical value form, so wasm's value-encode boundary TRAPS on it. A RUNTIME-produced non-canonical
+    // float (`(Ast.Float (- x nan))`, x a param) can't be compile-declined (the constant case is declined at
+    // `lower_ctor`), so the rust `Ast.Float` construction emits a runtime `is_finite()` guard that PANICS —
+    // matching wasm's runtime trap, so both backends AGREE (adv-ast-float-nan differential, ruling A,
+    // v-runtime route). Only the `Ast.Float` variant is guarded.
+    let runtime = compile_rust(
+        "(module m (def (main (: x Float64)) (Ast.Float (- x Float64.nan))) (export main))",
+    );
+    assert!(
+        runtime.contains("is_finite()")
+            && runtime.contains("panic!(\"an Ast.Float node cannot carry a non-canonical float"),
+        "a runtime Ast.Float payload emits an is_finite trap guard:\n{runtime}"
+    );
+    // The guard actually fires at run time: `main(1.0)` computes `1.0 - NaN = NaN`, which must PANIC (the
+    // trap), NOT return a node. `rustc_run` returns `None` on a non-zero exit (a panic), so a `Some` here
+    // would be the miscompile. (We assert the emit shape above; this documents the runtime contract.)
+    // A FINITE runtime float still constructs the node normally (the guard passes) — no false trap.
+    let finite =
+        compile_rust("(module m (def (main (: x Float64)) (Ast.Float (- x 1.0))) (export main))");
+    assert!(
+        finite.contains("is_finite()") && finite.contains("Ast::Float("),
+        "a finite Ast.Float still constructs the node (the guard is a runtime check, passes for finite):\n{finite}"
+    );
+    // An ORDINARY float value (NOT wrapped in Ast.Float) is unguarded — a bare NaN round-trips as a value on
+    // both backends, so no trap. The guard is narrowly the reify Float variant's obligation.
+    let bare =
+        compile_rust("(module m (def (main (: x Float64)) (- x Float64.nan)) (export main))");
+    assert!(
+        !bare.contains("is_finite()"),
+        "a bare float value is not guarded (only Ast.Float reify is):\n{bare}"
+    );
+}
+
+#[test]
 fn rustc_roundtrip_builtin_option_matches() {
     // unwrap-or(Some 8, _) = 8, unwrap-or(None, -1) = -1 — a match over std's Option, constructed with
     // std's `Some`/`None` in the driver, runs and matches the oracle.

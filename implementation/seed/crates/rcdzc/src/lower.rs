@@ -2718,6 +2718,25 @@ struct AstDiscs {
     list: u32,
     ty: crate::ty::Ty,
 }
+/// Whether a `Core::SumNew { disc }` at result type `ty` constructs the reify `Ast` sum's `Float` variant
+/// — the ONE variant whose payload is a float that must be CANONICAL to cross the value-encode boundary (a
+/// non-canonical NaN/±inf has no canonical value form). The rust backend uses this to guard a RUNTIME
+/// non-canonical float at construction (a compile-time-constant NaN is already declined at `lower_ctor`),
+/// matching wasm's runtime value-encode trap. Only the `Ast` sum's Float variant — an ordinary float value
+/// (or any other sum's float payload) crosses fine, so this is narrowly the reify escape's obligation.
+pub(crate) fn is_ast_float_variant(db: &mut Db, ty: &crate::ty::Ty, disc: u32) -> bool {
+    let crate::ty::Ty::Sum { decl, .. } = ty else {
+        return false;
+    };
+    match ast_variant_discs(db) {
+        Some(a) => {
+            disc == a.float
+                && matches!(&a.ty, crate::ty::Ty::Sum { decl: ast_decl, .. } if ast_decl == decl)
+        }
+        None => false,
+    }
+}
+
 fn ast_variant_discs(db: &mut Db) -> Option<AstDiscs> {
     let ty = {
         let occ = db.type_decls.iter().find(|t| t.name == "Ast")?.occ;

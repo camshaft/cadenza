@@ -1440,6 +1440,20 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             // A non-recursive variant's field is unboxed. `wrap` applies the box exactly when the enum decl
             // did (`variant_is_recursive` is the shared predicate).
             let ty = type_of(db, id);
+            // The reify `Ast` sum's `Float` variant must carry a CANONICAL float: a non-canonical value
+            // (NaN / ±inf) has no canonical value form, so wasm's value-encode boundary TRAPS on it
+            // ("encode bytes are not a valid canonical value form"). A compile-time-constant NaN payload is
+            // already declined at `lower_ctor` (uniform compile-decline, ruling A); a RUNTIME-produced
+            // non-canonical float (`(Ast.Float (- x nan))`, x a param) can't be compile-declined and reaches
+            // here — guard it with a runtime `is_finite()` check that PANICS (an aborting trap), matching
+            // wasm's runtime trap so the two backends AGREE (adv-ast-float-nan differential, v-runtime route).
+            // Only the `Ast.Float` variant — an ordinary float value crosses fine.
+            if args.len() == 1 && crate::lower::is_ast_float_variant(db, &ty, disc) {
+                let v = args[0].clone();
+                args[0] = format!(
+                    "{{ let __f = {v}; if !__f.is_finite() {{ panic!(\"an Ast.Float node cannot carry a non-canonical float (NaN/inf has no canonical value form)\") }} __f }}"
+                );
+            }
             let boxed = super::enums::variant_is_recursive(db, &ty, disc);
             let wrap = |payload: String| {
                 // Fully-qualify `::std::boxed::Box::new` (not the prelude `Box`) — the deref twin of the
