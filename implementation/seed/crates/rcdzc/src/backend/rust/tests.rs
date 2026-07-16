@@ -3269,3 +3269,72 @@ fn rustc_roundtrip_single_variant_newtype_literal_payload_arm_at_narrow_widths()
         assert_eq!(out, "100", "tuple-element literal arm hit");
     }
 }
+
+#[test]
+fn rustc_roundtrip_structural_eq_over_a_compound_with_a_float_leaf() {
+    // A runtime `(= a b)` over a TUPLE/RECORD carrying a Float leaf can't use a derived `==` (f64 is
+    // PartialEq not Eq, and `==` gives the WRONG NaN/-0.0 answer). The backend now emits a STRUCTURAL walk:
+    // each non-float leaf by `==`, each float leaf by the CANONICAL BYTE FORM (nan==nan, -0.0 != +0.0 —
+    // byte-identical to FloatCompare + the wasm heap walk). Was a decline ("runtime structural equality
+    // over this compound is not yet rendered").
+    // (a) a tuple of one Float64: equal floats -> equal; NaN==NaN -> equal; -0.0 vs 0.0 -> distinct.
+    let tup = compile_rust(
+        "(module m (def (run (: a Float64) (: b Float64)) (if (= (tuple a) (tuple b)) 1 0)) (export run))",
+    );
+    assert!(
+        tup.contains("is_nan()") && tup.contains("to_bits()"),
+        "a float tuple leaf compares by the canonical byte form:\n{tup}"
+    );
+    if let Some(out) = rustc_run(&tup, "run(1.5, 1.5)") {
+        assert_eq!(out, "1", "equal floats -> equal tuples");
+    }
+    if let Some(out) = rustc_run(&tup, "run(1.5, 2.5)") {
+        assert_eq!(out, "0", "unequal floats -> unequal tuples");
+    }
+    if let Some(out) = rustc_run(&tup, "run(f64::NAN, f64::NAN)") {
+        assert_eq!(out, "1", "NaN == NaN under the canonical byte form");
+    }
+    if let Some(out) = rustc_run(&tup, "run(-0.0, 0.0)") {
+        assert_eq!(out, "0", "-0.0 stays distinct from +0.0");
+    }
+
+    // (b) a MIXED Int+Float tuple: the Int leaf compares by `==`, the Float by canonical bytes; both must
+    // agree for equality. n equal AND floats equal -> 1; a differing float -> 0.
+    let mixed = compile_rust(
+        "(module m (def (run (: n Int64) (: a Float64) (: b Float64)) \
+           (if (= (tuple n a) (tuple n b)) 1 0)) (export run))",
+    );
+    assert!(
+        mixed.contains("&&"),
+        "a mixed tuple ANDs its per-leaf comparisons:\n{mixed}"
+    );
+    if let Some(out) = rustc_run(&mixed, "run(7, 1.5, 1.5)") {
+        assert_eq!(out, "1", "equal int + equal float -> equal");
+    }
+    if let Some(out) = rustc_run(&mixed, "run(7, 1.5, 2.5)") {
+        assert_eq!(out, "0", "a differing float leaf -> unequal");
+    }
+
+    // (c) a tuple mixing a Float and a Bytes leaf — Bytes is native-Eq (`Vec<u8> ==` borrows, compares
+    // content), the Float canonical-byte; both walk in one compound. Equal -> 1.
+    let fb = compile_rust(
+        "(module m (def (run (: f Float64) (: b Bytes) (: c Bytes)) (if (= (tuple f b) (tuple f c)) 1 0)) \
+           (export run))",
+    );
+    // Build two equal byte sequences at the call site; a `Vec<u8> == Vec<u8>` compares content.
+    if let Some(out) = rustc_run(&fb, "run(1.5, vec![104u8], vec![104u8])") {
+        assert_eq!(out, "1", "equal float + equal bytes -> equal compound");
+    }
+    if let Some(out) = rustc_run(&fb, "run(1.5, vec![104u8], vec![105u8])") {
+        assert_eq!(out, "0", "a differing bytes leaf -> unequal");
+    }
+
+    // A compound with a non-Eq-non-float leaf (a bare closure) is NOT walkable — still declines.
+    let bad = try_compile_rust(
+        "(module m (def (run (: f (-> Int64 Int64))) (if (= (tuple f) (tuple f)) 1 0)) (export run))",
+    );
+    assert!(
+        bad.is_err(),
+        "a compound with a function leaf is not float-walkable — declines:\n{bad:?}"
+    );
+}

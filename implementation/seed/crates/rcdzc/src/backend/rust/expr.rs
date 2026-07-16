@@ -1803,12 +1803,136 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                 let l = emit(db, lhs, env, ctx)?;
                 let r = emit(db, rhs, env, ctx)?;
                 Ok(format!("{{ let __eq_l: {rust_ty} = {l}; (__eq_l == {r}) }}"))
+            } else if ty_float_walkable(db, &ty) {
+                // The type is NOT native-`Eq` only because it carries a FLOAT leaf (`f64`/`f32` is
+                // `PartialEq` not `Eq`, and `==` gives the WRONG NaN/-0.0 answer), but every leaf is either
+                // native-Eq OR a float — so a STRUCTURAL walk compares it: each non-float leaf by `==`, each
+                // float leaf by the CANONICAL BYTE FORM (`FloatCompare`'s NaN-canonicalizing bit compare —
+                // nan==nan, -0.0 != +0.0), matching the wasm heap walk. Bind both operands once (they may be
+                // compound/non-Copy) and recurse. `emit_value_eq_walk` handles tuple/record/nominal shapes;
+                // a sum/list/map at runtime is NOT reached here (it folds, or declines at `lower`).
+                let l = emit(db, lhs, env, ctx)?;
+                let r = emit(db, rhs, env, ctx)?;
+                let cmp = emit_value_eq_walk(db, &ty, "__eq_l", "__eq_r")?;
+                Ok(format!("{{ let __eq_l = {l}; let __eq_r = {r}; {cmp} }}"))
             } else {
                 Err(Reject::decline(
                     "runtime structural equality over this compound is not yet rendered by the Rust backend",
                 ))
             }
         }
+    }
+}
+
+/// Whether `ty` is a compound whose leaves are each either native-`Eq` (via [`enums::ty_supports_eq`]) or a
+/// FLOAT — so a structural walk ([`emit_value_eq_walk`]) can compare it (float leaves by the canonical byte
+/// form, the rest by `==`). Only the shapes the walk emits qualify: a TUPLE/RECORD/NOMINAL of walkable
+/// leaves, or a bare float. A sum/list/map/fn does NOT (a runtime sum/list eq folds or declines at `lower`;
+/// admitting them here would emit an unhandled shape). Returns false when the type is ALREADY native-Eq
+/// (that path is taken before this) or carries a non-Eq-non-float leaf (a function, an unknown var).
+fn ty_float_walkable(db: &mut Db, ty: &Ty) -> bool {
+    match ty {
+        // A bare float leaf — walkable (canonical-byte compare).
+        Ty::Float(_) => true,
+        // A native-Eq leaf — walkable (plain `==`). Checked here so a tuple element that is itself Eq
+        // (an Int, a Bytes, a nested all-Eq tuple) passes without needing the float path.
+        _ if super::enums::ty_supports_eq(db, ty) => true,
+        // A tuple/record is walkable iff every element/field is. A nominal newtype walks its inner.
+        Ty::Tuple(elems) => {
+            let elems: Vec<Ty> = elems.to_vec();
+            elems.iter().all(|e| ty_float_walkable(db, e))
+        }
+        Ty::Record(fields) => {
+            let vals: Vec<Ty> = fields.values().cloned().collect();
+            vals.iter().all(|v| ty_float_walkable(db, v))
+        }
+        Ty::Nominal { inner, .. } => ty_float_walkable(db, inner),
+        // A Qty erases to its inner magnitude (unit is compile-time); walk the inner.
+        Ty::Qty { inner, .. } => ty_float_walkable(db, inner),
+        // A sum, list, map, function, or unknown var — not walked by this slice.
+        _ => false,
+    }
+}
+
+/// Emit a boolean Rust expression comparing the two OWNED Rust expressions `l`/`r` (both of type `ty`) by
+/// STRUCTURAL value equality — the recursive walk for a compound carrying a FLOAT leaf that cannot use a
+/// derived `==`. Each leaf compares as: a native-`Eq` leaf → `(l == r)`; a FLOAT leaf → the canonical byte
+/// form (NaN-canonicalizing bit compare, `nan==nan`, `-0.0 != +0.0`, byte-identical to `FloatCompare`'s
+/// emit + the wasm heap walk); a TUPLE/RECORD → the `&&`-chain of its projected fields (`.0`/`.1`… in
+/// rust_type's element order, which for a record is sorted-key order); a NOMINAL → its inner (the newtype is
+/// transparent). `l`/`r` are already-bound identifiers (or field projections built on them), so re-reading
+/// them per leaf is sound (a projection of a bound value; the enclosing bind is done once by the caller).
+fn emit_value_eq_walk(db: &mut Db, ty: &Ty, l: &str, r: &str) -> Result<String, Reject> {
+    // A native-Eq leaf (Int/Bool/Bytes/String/BigInt/… and any all-Eq compound) — a plain `==`. Checked
+    // FIRST so an Eq sub-tree compares in one `==` rather than being walked field-by-field (identical
+    // result, smaller emit; and it is the ONLY path for a sum/list/map leaf, which the walk does not spell).
+    if super::enums::ty_supports_eq(db, ty) {
+        return Ok(format!("({l} == {r})"));
+    }
+    match ty {
+        // A FLOAT leaf — the canonical byte form (mirror `FloatCompare`'s FEq emit). Canonicalize each side
+        // to its integer bit pattern with NaN folded to one form, then integer-`==`.
+        Ty::Float(ft) => {
+            let (canon_nan, bits_ty) = if ft.ground_width() == 32 {
+                ("0x7FC0_0000u32", "u32")
+            } else {
+                ("0x7FF8_0000_0000_0000u64", "u64")
+            };
+            let canon = |v: &str| {
+                format!(
+                    "({{ let __f = {v}; if __f.is_nan() {{ {canon_nan} }} else {{ __f.to_bits() as {bits_ty} }} }})"
+                )
+            };
+            Ok(format!("({} == {})", canon(l), canon(r)))
+        }
+        // A TUPLE — the `&&`-chain of element comparisons, each projected `.i` off both operands.
+        Ty::Tuple(elems) => {
+            let elems = elems.clone();
+            let mut parts = Vec::with_capacity(elems.len());
+            for (i, e) in elems.iter().enumerate() {
+                parts.push(emit_value_eq_walk(
+                    db,
+                    e,
+                    &format!("{l}.{i}"),
+                    &format!("{r}.{i}"),
+                )?);
+            }
+            Ok(join_and(parts))
+        }
+        // A RECORD — a tuple in rust_type's SORTED-KEY order, so project `.i` over the sorted fields.
+        Ty::Record(fields) => {
+            let tys: Vec<Ty> = fields.values().cloned().collect();
+            let mut parts = Vec::with_capacity(tys.len());
+            for (i, e) in tys.iter().enumerate() {
+                parts.push(emit_value_eq_walk(
+                    db,
+                    e,
+                    &format!("{l}.{i}"),
+                    &format!("{r}.{i}"),
+                )?);
+            }
+            Ok(join_and(parts))
+        }
+        // A NOMINAL newtype is transparent — its Rust value IS the inner, so walk the inner over the same
+        // operands (no projection; the newtype adds no Rust wrapper).
+        Ty::Nominal { inner, .. } => emit_value_eq_walk(db, inner, l, r),
+        // A Qty erases to its inner magnitude — walk the inner (same operands).
+        Ty::Qty { inner, .. } => emit_value_eq_walk(db, inner, l, r),
+        // Any other shape should have been excluded by `ty_float_walkable` before we got here.
+        _ => Err(Reject::decline(
+            "runtime structural equality over this compound is not yet rendered by the Rust backend",
+        )),
+    }
+}
+
+/// Join boolean parts with `&&`, yielding `true` for an empty list (an empty tuple/record is always equal to
+/// itself) and the sole part unparenthesized for a singleton. A multi-part chain is parenthesized so it
+/// composes as one boolean sub-expression inside a larger `&&`.
+fn join_and(parts: Vec<String>) -> String {
+    match parts.len() {
+        0 => "true".to_string(),
+        1 => parts.into_iter().next().unwrap(),
+        _ => format!("({})", parts.join(" && ")),
     }
 }
 

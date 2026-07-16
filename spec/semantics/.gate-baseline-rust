@@ -549,6 +549,7 @@ pass	a fixpoint that re-seeds a fresh list each round via a helper returns a lis
 pass	a flat string map key is found by a runtime rope twin
 pass	a float annotation reaches the 32-bit width
 pass	a float in integer-width position is rejected
+pass	a float leaf and a Bytes leaf compare together in one compound
 pass	a float width from runtime data is rejected, like an integer width
 pass	a float width outside the admitted set is rejected
 pass	a float-form literal with the N (BigInt) suffix is rejected with a swap-to-R fix
@@ -1353,6 +1354,7 @@ pass	a runtime MIXED-SCALE BigInt comparison converts to the reference before co
 pass	a runtime MIXED-SCALE BigInt-magnitude sum converts to the reference in unbounded arithmetic
 pass	a runtime MIXED-SCALE Rational-magnitude sum converts to the reference EXACTLY
 pass	a runtime NaN equals a runtime NaN under the canonical byte form
+pass	a runtime NaN leaf in a tuple compares equal, a runtime -0.0 leaf stays distinct
 pass	a runtime Option carrying a user sum is matched by a nested constructor pattern
 pass	a runtime Rational MAP KEY is found by a normalized-equal key
 pass	a runtime Rational built from a parameter compares by its exact value
@@ -1391,6 +1393,7 @@ pass	a runtime float division rounds under the fixed mode
 pass	a runtime float equality feeds the true-literal boolean coercion
 pass	a runtime float equality negated by the false-literal coercion
 pass	a runtime float is found as a Set element by canonical byte form
+pass	a runtime float leaf in a tuple compares by the canonical byte form
 pass	a runtime float multiplication emits the machine mul
 pass	a runtime float promotes to a wider width with the machine promote
 pass	a runtime float subtraction emits the machine sub
@@ -2347,6 +2350,7 @@ pass	equality of an integer and a string is a type error
 pass	equality of two records with different field sets is a type error
 pass	equality of two tuples of different arity is a type error
 pass	equality over a Rational carried in a SUM payload respects normalization
+pass	equality over a compound mixing a float and a Bytes leaf walks both
 pass	equality over a partly-un-built sum with a free Err type compiles on every backend
 pass	equality over a runtime float in a SUM payload compares by the float leaf
 pass	eval does not see through a splice whose operand is itself an Ast value
@@ -3291,7 +3295,6 @@ todo	a fixed-shape Tuple ARG with a SUM (Option) RESULT crosses the direct-call 
 todo	a fixed-shape Tuple ARG with a Tuple RESULT crosses the direct-call boundary
 todo	a fixed-shape scalar RECORD closure ARG crosses the DIRECT-CALL boundary
 todo	a fixed-shape scalar Tuple closure ARG crosses the DIRECT-CALL boundary (host supplies the tuple)
-todo	a float leaf and a Bytes leaf compare together in one compound
 todo	a host call's response is an ordinary value that feeds a LATER host call
 todo	a host effect with a non-kebab NAME crosses under a normalized interface extern name
 todo	a host effect with a non-kebab OPERATION name crosses under a normalized func extern name
@@ -3360,7 +3363,6 @@ todo	a round-trip consumer binds the applied closure through a let
 todo	a round-trip consumer takes the non-applying match arm
 todo	a round-trip consumer that does NOT apply the closure on the taken branch
 todo	a run's result is a deterministic function of a host call's recorded response
-todo	a runtime NaN leaf in a tuple compares equal, a runtime -0.0 leaf stays distinct
 todo	a runtime bin construction result compares equal to the Bytes it builds
 todo	a runtime bin construction result unequal to different content is false
 todo	a runtime bin match binds the tail after a fixed header via a final rest segment
@@ -3371,7 +3373,6 @@ todo	a runtime bit-field run spans two bytes and composes with an int segment
 todo	a runtime bytes value is spliced into a length-prefixed frame
 todo	a runtime final rest segment binds the empty tail when the scrutinee is only the header
 todo	a runtime fixed-width segment is emitted big-endian and read back by index
-todo	a runtime float leaf in a tuple compares by the canonical byte form
 todo	a runtime nibble truncation keeps the low four bits
 todo	a runtime out-of-bounds list update traps rather than aliasing a valid slot
 todo	a runtime signed little-endian segment lays the low byte first
@@ -3489,7 +3490,6 @@ todo	distinct-signature capturing producers
 todo	distinct-signature closures alongside a plain export — the Int64->Bool closure runs
 todo	distinct-signature closures alongside a plain export — the Int64->Int64 closure runs
 todo	distinct-signature closures alongside a plain export — the plain export runs
-todo	equality over a compound mixing a float and a Bytes leaf walks both
 todo	eval does not forge a private constructor NESTED in a compound
 todo	eval of a fully-concrete imported constructor is legal from outside
 todo	eval of a partially-exported type's EXPORTED constructor works
