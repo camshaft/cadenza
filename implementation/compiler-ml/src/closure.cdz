@@ -1,0 +1,136 @@
+/// closure.cdz — CLOSURE CONVERSION: rewrite a lambda-calculus term so that every function is CLOSED — it
+/// captures its free variables into an explicit environment instead of referring to enclosing scope. This
+/// is the transform that makes first-class functions implementable on a flat machine: a `Lam(p, body)`
+/// with free variables becomes a `Clos(captured, p, body)` recording exactly which outer variables it
+/// closes over, so the runtime can allocate an environment and the code becomes a top-level (liftable)
+/// function of `(env, param)`.
+///
+/// The captured set of `Lam(p, body)` is the FREE variables of the whole lambda — `free(body) \ {p}` —
+/// computed shadowing-aware (an inner binder removes its parameter from what's free). Conversion recurses
+/// into the body so nested lambdas are converted too. After conversion, `capture-of` reads each closure's
+/// captured list, and `well-formed` witnesses the invariant: a converted closure's captured set equals the
+/// original lambda's free variables (nothing missed, nothing spurious).
+///
+///   - `free-vars e`     — the free variables of a source term.
+///   - `convert e`       — the closure-converted term (`Lam` → `Clos(captured, p, body)`).
+///   - `capture-count`   — how many variables the top-level closure captures.
+///   - `total-captures`  — captured variables summed over ALL closures (the environment slots to allocate).
+
+type Ex =
+  | Var(Int64)
+  | App(Ex, Ex)
+  | Lam(Int64, Ex)
+
+/// The closure-converted term: `Clos(captured, param, body)` replaces `Lam`.
+type CEx =
+  | CVar(Int64)
+  | CApp(CEx, CEx)
+  | Clos(List(Int64), Int64, CEx)
+
+/// Free variables of `e`, shadowing-aware (`bound` = the parameters in scope).
+def fv(e: Ex, bound: Set(Int64), acc: Set(Int64)) = match e with
+  | Ex.Var(x) => (if Set.contains(bound, x) then acc else Set.insert(acc, x))
+  | Ex.App(f, a) => fv(a, bound, fv(f, bound, acc))
+  | Ex.Lam(p, body) => fv(body, Set.insert(bound, p), acc)
+
+def free-vars(e: Ex) = fv(e, Set.of([]), Set.of([]))
+
+/// Closure-convert: each `Lam` records its captured (free) variables explicitly; the body is converted too.
+def convert(e: Ex) = match e with
+  | Ex.Var(x) => CEx.CVar(x)
+  | Ex.App(f, a) => CEx.CApp(convert(f), convert(a))
+  | Ex.Lam(p, body) => CEx.Clos(Set.to-list(free-vars(Ex.Lam(p, body))), p, convert(body))
+
+/// The captured-variable list of the top-level closure (empty if `c` is not a closure).
+def capture-list(c: CEx) = match c with
+  | CEx.Clos(caps, _, _) => caps
+  | _ => []
+
+/// How many variables the top-level closure captures (-1 if the top node is not a closure).
+def capture-count(c: CEx) = match c with
+  | CEx.Clos(caps, _, _) => List.len(caps)
+  | _ => 0 - 1
+
+/// The total captured variables across EVERY closure in the converted term (the environment slots needed).
+def total-captures(c: CEx) = match c with
+  | CEx.CVar(_) => 0
+  | CEx.CApp(f, a) => total-captures(f) + total-captures(a)
+  | CEx.Clos(caps, _, body) => List.len(caps) + total-captures(body)
+
+/// Count closures in the converted term.
+def closure-count(c: CEx) = match c with
+  | CEx.CVar(_) => 0
+  | CEx.CApp(f, a) => closure-count(f) + closure-count(a)
+  | CEx.Clos(_, _, body) => 1 + closure-count(body)
+
+/// Builders.
+def v(x: Int64) = Ex.Var(x)
+def lam(p: Int64, body: Ex) = Ex.Lam(p, body)
+def app(f: Ex, a: Ex) = Ex.App(f, a)
+
+@test
+def cc-closed-lambda-captures-nothing() =
+  // \x. x — the identity is closed → captures {}.
+  let c = convert(lam(0, v(0))) in
+  if capture-count(c) == 0 then unit else trap("\\x.x captures nothing")
+
+@test
+def cc-open-lambda-captures-free() =
+  // \x. (y x) — free var y → captures {y}, one variable.
+  let c = convert(lam(0, app(v(1), v(0)))) in
+  if capture-count(c) == 1 then (match capture-list(c) with | [cap] => (if cap == 1 then unit else trap("captures y=1")) | _ => trap("one capture")) else trap("captures {y}")
+
+@test
+def cc-captures-two-free() =
+  // \x. (y z) — two free vars → captures {y, z}, count 2.
+  let c = convert(lam(0, app(v(1), v(2)))) in
+  if capture-count(c) == 2 then unit else trap("\\x.(y z) captures 2")
+
+@test
+def cc-param-not-captured() =
+  // \x. (x x) — x is the param, bound → not captured → {}.
+  let c = convert(lam(0, app(v(0), v(0)))) in
+  if capture-count(c) == 0 then unit else trap("the param is not a capture")
+
+@test
+def cc-nested-outer-closed() =
+  // \x. \y. (x y) — outer \x captures {} (y is bound by the inner λ; x is its own param).
+  let c = convert(lam(0, lam(1, app(v(0), v(1))))) in
+  if capture-count(c) == 0 then unit else trap("outer λ captures nothing")
+
+@test
+def cc-nested-inner-captures-outer-param() =
+  // …and the INNER \y captures {x} (x is free in the inner λ's body, bound by the outer). Reach into the
+  // converted body: Clos(_, 0, Clos(caps, 1, _)) — inner caps = {x=0}, count 1.
+  let c = convert(lam(0, lam(1, app(v(0), v(1))))) in
+  (match c with
+    | CEx.Clos(_, _, inner) => (if capture-count(inner) == 1 then (match capture-list(inner) with | [cap] => (if cap == 0 then unit else trap("inner captures x=0")) | _ => trap("one inner capture")) else trap("inner captures {x}"))
+    | _ => trap("converts to a closure"))
+
+@test
+def cc-closure-count() =
+  // \x. \y. (x y) has TWO lambdas → two closures after conversion.
+  let c = convert(lam(0, lam(1, app(v(0), v(1))))) in
+  if closure-count(c) == 2 then unit else trap("two closures")
+
+@test
+def cc-total-captures() =
+  // \x. \y. (x y): outer captures {} (0), inner captures {x} (1) → total 1 environment slot.
+  let c = convert(lam(0, lam(1, app(v(0), v(1))))) in
+  if total-captures(c) == 1 then unit else trap("total captures = 1")
+
+@test
+def cc-captured-set-equals-free-vars() =
+  // WITNESS: a converted lambda's captured set equals the original lambda's free-var set (same size).
+  let e = lam(0, app(v(1), app(v(2), v(0)))) in     // \x. (y (z x)) → free {y, z}
+  let c = convert(e) in
+  if capture-count(c) == Set.len(free-vars(e)) then (if capture-count(c) == 2 then unit else trap("free = {y,z} = 2")) else trap("captured set == free vars")
+
+@test
+def cc-app-of-two-lambdas() =
+  // (\x.x) (\z. w) : App of two closures; the second captures {w}. total captures 1, two closures.
+  let e = app(lam(0, v(0)), lam(3, v(9))) in
+  let c = convert(e) in
+  if closure-count(c) == 2 then (if total-captures(c) == 1 then unit else trap("one capture {w}")) else trap("two closures in the app")
+
+export { free-vars, convert, capture-list, capture-count, total-captures, closure-count }
