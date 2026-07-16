@@ -224,6 +224,66 @@ mod tests {
         assert_eq!(t.node_at_offset(2), Some(StructId(3)));
     }
 
+    /// A tiny deterministic PRNG (SplitMix64) — reproducible generation without a dependency (mirrors
+    /// the unit-test PRNGs in `codec.rs`/`lexer.rs`).
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+            z ^ (z >> 31)
+        }
+        fn below(&mut self, n: usize) -> usize {
+            (self.next() % n as u64) as usize
+        }
+    }
+
+    #[test]
+    fn node_at_offset_matches_a_brute_force_reference_over_generated_tables() {
+        // `node_at_offset`'s contract — the INNERMOST (smallest-length) recorded span containing the
+        // offset, ties broken by LOWEST id — swept over random span tables at every offset, checked
+        // against an independent brute-force reference. The hand-picked tests pin specific shapes
+        // (nesting, past-end, tie); this pins the FULL contract (an off-by-one in `contains`, a `<=`-vs-`<`
+        // tie regression, or a wrong extremum) over arbitrary overlapping/empty/coincident spans. Spans
+        // are drawn over a small coordinate range so overlaps + exact-length ties happen often.
+        let mut rng = Rng(0x5da7_c0de_5da7_c0de);
+        for _ in 0..4000 {
+            let n = 1 + rng.below(12); // 1..=12 spans
+            let mut t = SpanTable::new(FileId(0));
+            let mut spans: Vec<Span> = Vec::with_capacity(n);
+            for _ in 0..n {
+                // Random [start, end) over 0..=10, possibly empty (start == end).
+                let a = rng.below(11);
+                let b = rng.below(11);
+                let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+                let s = Span::new(lo, hi);
+                t.push(s);
+                spans.push(s);
+            }
+            // Probe every offset in the coordinate range plus one past the end.
+            for off in 0..=11usize {
+                // Brute-force reference: the min-length containing span, ties → lowest id.
+                let mut want: Option<(usize, usize)> = None; // (id, len)
+                for (i, s) in spans.iter().enumerate() {
+                    if s.contains(off) {
+                        let len = s.len();
+                        if want.is_none_or(|(_, wlen)| len < wlen) {
+                            want = Some((i, len));
+                        }
+                    }
+                }
+                let want_id = want.map(|(i, _)| StructId(i as u32));
+                assert_eq!(
+                    t.node_at_offset(off),
+                    want_id,
+                    "node_at_offset({off}) disagreed with brute force for spans {spans:?}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn remap_then_resolve_round_trips_a_cursor_through_canonicalization() {
         // End-to-end pairing with `canon::canonicalize_with_map` (the id_map producer): a span table
