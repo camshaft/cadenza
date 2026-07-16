@@ -7691,6 +7691,10 @@ fn check_application(
                     | crate::resolved::Prim::Sub
                     | crate::resolved::Prim::Mul
                     | crate::resolved::Prim::Div
+                    // `%` (Rem) is integer arithmetic like `+`/`-`; include it so a non-numeric operand
+                    // gets the "arithmetic is not defined on X" message rather than the phantom
+                    // "type mismatch: Int64 and X" clash. (A `%` on a Qty is declined earlier, before here.)
+                    | crate::resolved::Prim::Rem
             )
         )
     {
@@ -7817,6 +7821,9 @@ fn check_application(
                     | crate::resolved::Prim::Sub
                     | crate::resolved::Prim::Mul
                     | crate::resolved::Prim::Div
+                    // `%` (Rem) is integer arithmetic — a non-numeric operand (`(% "a" "b")`) is "arithmetic
+                    // is not defined on String", the same as `+` (no `.concat` fix — that is `+`-only below).
+                    | crate::resolved::Prim::Rem
             )
         );
         // Symbol and Unit join text/compound: adding two Symbols / two Units is as non-numeric as adding

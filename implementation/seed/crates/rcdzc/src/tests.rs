@@ -22711,15 +22711,19 @@ mod match_engine {
             bytes.message
         );
 
-        // `-`/`*`/`/` on two texts: honest message, but NO concat fix (subtraction is not concatenation).
-        for op in ["-", "*", "/"] {
+        // `-`/`*`/`/`/`%` on two texts: honest message, but NO concat fix (subtraction/remainder is not
+        // concatenation). `%` (Rem) is integer arithmetic like the others — a non-numeric operand names
+        // "arithmetic is not defined on String" instead of the phantom "type mismatch: Int64 and String"
+        // (Rem was formerly omitted from the arith cross-kind list, so it leaked the internal-clash read).
+        for op in ["-", "*", "/", "%"] {
             let d = reject_full(&format!(
                 "(module m (def (f (: a String) (: b String)) ({op} a b)) (export f))"
             ))
             .unwrap_or_else(|| panic!("({op} String String) must reject"));
             assert!(
-                d.message.contains("arithmetic is not defined on String"),
-                "`{op}` names the real type: {}",
+                d.message.contains("arithmetic is not defined on String")
+                    && !d.message.contains("must be the same type here"),
+                "`{op}` names the real type, not a phantom Int64 clash: {}",
                 d.message
             );
             assert!(
