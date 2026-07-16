@@ -236,11 +236,13 @@ Current `src/` modules:
 - `src/ssa.cdz` — an SSA LINEARIZER: flatten the arithmetic `Expr` (cross-file from `parse`) into a
   straight-line list of THREE-ADDRESS instructions (`Lit(dst, v)` / `Op(dst, opcode, ra, rb)`), each
   defining a fresh SSA register — the pre-register-allocation form a real backend lowers to. Mints fresh
-  register ids by THREADING A COUNTER through the result (`(reg, next, instrs)` triple), NOT a `Fresh`
-  effect: the effect-based gensym over a two-child tree needs two sibling recursive calls under a
-  state-threading handler, which the tail-resumptive fold declines (see
-  `mlrepro-decline-effect-state-across-sibling-recursive-calls.cdz` (queue)) — pure counter-threading is the
-  correct portable design. An `interp` over the instruction list (a `Map Int64 Int64` register file)
+  register ids by THREADING A COUNTER through the result (`(reg, next, instrs)` triple) rather than a
+  `Fresh` effect. (Historically the effect-based gensym over a two-child tree DECLINED — two sibling
+  recursive calls under a state-threading handler; `mlrepro-decline-effect-state-across-sibling-recursive-
+  calls`. That gap is now FIXED — the multi-value-return specialization threads the out-state across
+  siblings, so a `Fresh` gensym over a tree works, cf. `label.cdz`. Pure counter-threading is RETAINED here
+  as an equally-valid portable design, not a workaround.) An `interp` over the instruction list (a `Map
+  Int64 Int64` register file)
   re-executes the SSA form and must agree with `parse`'s tree-walking `run`. 10 `@test`s. Confirmed
   WORKING (registers dense 0..n-1, instr-count == node-count, SSA eval == tree-walk).
 - `src/strlex.cdz` — a STRING LEXER: tokenize a real `String` of source text into a `List Token`
