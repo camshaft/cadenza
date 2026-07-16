@@ -1301,16 +1301,7 @@ fn validate_non_type_annotation(db: &mut Db, ty_expr: StructId, lead: &str, out:
         && matches!(resolved_of(db, ty_expr), Resolved::Poison(_))
         && crate::resolve::nearest_unbound_suggestion(db, ty_expr, &name).is_none()
     {
-        out.push(
-            Reject::coded(
-                Code::Unbound,
-                format!(
-                    "unknown type `{name}` — no type by that name is declared ({lead} names an existing \
-                     type); declare it with `(type {name} …)`, or use a type that is in scope"
-                ),
-            )
-            .at(ty_expr),
-        );
+        out.push(unknown_type_reject(&name, ty_expr, lead));
         return;
     }
     // A COMPOUND type expression carrying a lowercase type-var in a nested position — `(List b)`,
@@ -1366,27 +1357,50 @@ fn lowercase_type_var_reject(name: &str, at: StructId, lead: &str) -> Reject {
     .at(at)
 }
 
-/// Walk a COMPOUND type-annotation expression's NESTED type positions and emit the rich
-/// [`lowercase_type_var_reject`] for each lowercase name that resolves to nothing — so a type-var nested in
-/// `(List b)` / `(Tuple a b)` / `(-> a b)` / `(Map k v)` gets the SAME "not a type variable here" guidance
-/// the top-level `(: x a)` does, instead of the terse "unbound name `b`" the generic `collect` gives. Only
-/// a bare lowercase name resolving to `Poison` is enriched (an uppercase unknown type, or a name that IS a
-/// value, keeps its own fault). Recurses through the tail elements of a `(head …)` form (the type-argument
-/// positions), NOT the head (`List`/`Map`/`->` are the known ctors); a record-bearing type never reaches
-/// here (the caller's record branch returns first), so there are no field LABELS to skip.
+/// The CDZ0101 reject for an UPPERCASE name in a type position that names no declared type — `Widget` in
+/// `(: 5 Widget)` / `(List Widget)` / a variant payload. Says a TYPE is what is missing (rustc's "cannot
+/// find type `T`"), not the terse "unbound name". Shared by the top-level bare-name case and the
+/// NESTED-position walk so `(: x Widget)` and `(: x (List Widget))` read identically — the uppercase twin
+/// of [`lowercase_type_var_reject`]. Callers GATE on there being no near suggestion (a typo of a real type
+/// keeps its did-you-mean); this helper just builds the message. `lead` names the site.
+fn unknown_type_reject(name: &str, at: StructId, lead: &str) -> Reject {
+    Reject::coded(
+        Code::Unbound,
+        format!(
+            "unknown type `{name}` — no type by that name is declared ({lead} names an existing type); \
+             declare it with `(type {name} …)`, or use a type that is in scope"
+        ),
+    )
+    .at(at)
+}
+
+/// Walk a COMPOUND type-annotation expression's NESTED type positions and emit the rich per-leaf reject:
+/// [`lowercase_type_var_reject`] for a lowercase would-be type variable, [`unknown_type_reject`] for an
+/// uppercase name that names no declared type — so a `(List b)` / `(Tuple a Widget)` / `(Map k v)` leaf
+/// gets the SAME guidance the top-level `(: x a)` / `(: x Widget)` does, instead of the terse "unbound
+/// name" the generic `collect` gives. Only a bare name resolving to `Poison` is enriched (a name that IS a
+/// value keeps its own fault); the uppercase branch further requires NO near suggestion, so a nested typo
+/// of a real type (`(List Strng)`) keeps its did-you-mean. Recurses through the tail elements of a `(head
+/// …)` form (the type-argument positions), NOT the head (`List`/`Map`/`->` are the known ctors); a
+/// record-bearing type never reaches here (the caller's record branch returns first), so there are no
+/// field LABELS to skip.
 fn enrich_nested_lowercase_type_vars(
     db: &mut Db,
     node: StructId,
     lead: &str,
     out: &mut Vec<Reject>,
 ) {
-    // A bare NAME node is a leaf — enrich it if it is a lowercase would-be type var resolving to nothing,
-    // then stop (a name has no tail to recurse).
+    // A bare NAME node is a leaf — enrich it if it resolves to nothing (a lowercase would-be type var, or
+    // an uppercase unknown type with no near suggestion), then stop (a name has no tail to recurse).
     if let Some(name) = db.ast.as_name(node).map(str::to_string) {
-        if name.starts_with(|c: char| c.is_ascii_lowercase())
-            && matches!(resolved_of(db, node), Resolved::Poison(_))
-        {
-            out.push(lowercase_type_var_reject(&name, node, lead));
+        if matches!(resolved_of(db, node), Resolved::Poison(_)) {
+            if name.starts_with(|c: char| c.is_ascii_lowercase()) {
+                out.push(lowercase_type_var_reject(&name, node, lead));
+            } else if name.starts_with(|c: char| c.is_ascii_uppercase())
+                && crate::resolve::nearest_unbound_suggestion(db, node, &name).is_none()
+            {
+                out.push(unknown_type_reject(&name, node, lead));
+            }
         }
         return;
     }

@@ -41321,8 +41321,10 @@ mod stage1 {
                 "a NESTED lowercase type-var gets the rich hint too: {src} -> {m}"
             );
         }
-        // NO false change: an UPPERCASE unknown type nested in a compound stays the plain message (a real
-        // missing type, not a would-be var), and a well-formed nested type is clean.
+        // An UPPERCASE unknown type NESTED in a compound (`(List Widget)`) now names it a missing TYPE too
+        // (the same message the top-level case gets — the nested walk enriches uppercase leaves alongside
+        // lowercase type-vars), NOT a would-be var and NOT the terse "unbound name". A near typo in the same
+        // nested position still keeps its did-you-mean (asserted below).
         let nested_upper = crate::diagnostics(&mut crate::db::Db::load(parse(
             "(module m (def (f (: x (List Widget))) x) (export f))",
         )))
@@ -41330,10 +41332,24 @@ mod stage1 {
         .find(|d| d.code.as_deref() == Some("CDZ0101"))
         .expect("Widget nested is unbound");
         assert!(
-            nested_upper.message.contains("unbound name `Widget`")
+            nested_upper.message.contains("unknown type `Widget`")
+                && nested_upper.message.contains("(type Widget …)")
                 && !nested_upper.message.contains("not a type variable"),
-            "an uppercase nested missing type keeps the plain message: {}",
+            "an uppercase nested missing type names the missing type: {}",
             nested_upper.message
+        );
+        // NO false change: a NEAR typo of a real type nested in a compound (`(List Strng)`) keeps the
+        // did-you-mean (the branch is gated on no near suggestion, exactly as the top-level case is).
+        let nested_typo = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def (f (: x (List Strng))) x) (export f))",
+        )))
+        .into_iter()
+        .find(|d| d.code.as_deref() == Some("CDZ0101"))
+        .expect("Strng nested is unbound");
+        assert!(
+            nested_typo.message.contains("did you mean `String`?"),
+            "a near type typo nested in a compound keeps the did-you-mean: {}",
+            nested_typo.message
         );
         assert!(
             crate::diagnostics(&mut crate::db::Db::load(parse(
@@ -41354,11 +41370,10 @@ mod stage1 {
             .all(|d| d.severity != crate::abi::Severity::Error),
             "a lowercase name in a variant payload is a type variable, not an unbound-name fault"
         );
-        // A bare UPPERCASE unknown type at a TOP-LEVEL annotation position now names it a missing TYPE
-        // (not a would-be type variable, not the generic "unbound name"): "unknown type `Widget` — no type
-        // by that name is declared … declare it with `(type Widget …)`". Still CDZ0101. (A nested position
-        // like `(List Widget)` keeps the bare message — the top-level branch does not descend; the
-        // `nested_upper` case above pins that.)
+        // A bare UPPERCASE unknown type at a TOP-LEVEL annotation position names it a missing TYPE (not a
+        // would-be type variable, not the generic "unbound name"): "unknown type `Widget` — no type by that
+        // name is declared … declare it with `(type Widget …)`". Still CDZ0101. (A nested position like
+        // `(List Widget)` now gets the SAME message — the `nested_upper` case above pins that.)
         let widget = crate::diagnostics(&mut crate::db::Db::load(parse(
             "(module m (def (f (: x Widget)) x) (def (main) (f 1)) (export main))",
         )))
