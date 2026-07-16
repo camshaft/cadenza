@@ -1443,6 +1443,11 @@ fn run_test_file(
             // domain is astronomically/infinitely large) makes `exhaustive_domain` return `None` → report
             // (the property must narrow its types, e.g. to `Bool`/`UInt8`, to be exhaustively provable).
             Some(gens) if *exhaustive => match exhaustive_domain(gens) {
+                // An unbounded domain (a wide integer / float) is DECLINED with a diagnostic, never
+                // silently sampled — so an exhaustive result is never reported for a domain not fully
+                // covered.
+                //= spec/capabilities/property-based-testing.md#an-unbounded-domain-declines-exhaustive-checking
+                //# A property requested to be checked exhaustively over an unbounded input domain MUST be declined with a diagnostic rather than silently sampled, so that an exhaustive result is never reported for a domain that was not fully covered.
                 None => {
                     failed += 1;
                     println!(
@@ -1457,6 +1462,10 @@ fn run_test_file(
                         .into_iter()
                         .find(|inputs| matches!(run_one(inputs), TrialOutcome::Fail(_)))
                     {
+                        // No failing case in the WHOLE enumerated domain → a proof over the domain, not a
+                        // sample.
+                        //= spec/capabilities/property-based-testing.md#exhaustive-coverage-is-a-proof-over-a-bounded-domain
+                        //# A property whose inputs range over a bounded finite domain MAY be checked by enumerating that entire domain, in which case a run that finds no failing input MUST be treated as a proof of the property over the domain rather than as a sample.
                         None => {
                             passed += 1;
                             println!("PASS {name} (exhaustive, {total} cases)");

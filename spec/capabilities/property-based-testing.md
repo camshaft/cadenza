@@ -39,6 +39,16 @@ The shrinking search MUST terminate rather than search unboundedly.
 
 The shrinking search MUST report a minimal failing input.
 
+## Coverage
+
+### Exhaustive Coverage Is A Proof Over A Bounded Domain
+
+A property whose inputs range over a bounded finite domain MAY be checked by enumerating that entire domain, in which case a run that finds no failing input MUST be treated as a proof of the property over the domain rather than as a sample.
+
+### An Unbounded Domain Declines Exhaustive Checking
+
+A property requested to be checked exhaustively over an unbounded input domain MUST be declined with a diagnostic rather than silently sampled, so that an exhaustive result is never reported for a domain that was not fully covered.
+
 ## Contracts As Oracles
 
 ### A Postcondition Is Usable As A Property
