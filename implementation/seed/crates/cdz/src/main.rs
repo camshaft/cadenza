@@ -185,6 +185,15 @@ enum Cmd {
     /// suite. Exits non-zero if any test fails.
     Test(TestArgs),
 
+    // ── watch ───────────────────────────────────────────────────────────────────────────────────
+    /// Watch the project's source files and RE-RUN a command on every change (the `cargo watch`
+    /// analogue) — the fast edit→feedback loop. `cdz watch` re-runs `cdz check` on save (diagnostics as
+    /// you type, from the shell); `cdz watch --exec test` (or `build`) re-runs that instead. Resolves the
+    /// same `Project.cdz` as `cdz build`/`test` (searching upward when given no argument) and watches its
+    /// declared source set + the manifest. Rapid saves are DEBOUNCED (coalesced) and an in-flight run is
+    /// superseded by the next change, so a burst of edits triggers ONE re-run. Ctrl-C exits.
+    Watch(WatchArgs),
+
     // ── semantic queries — the in-process win (both libraries + spans) ──────────────────────────
     /// The solved type of a definition NAME in FILE, rendered (a compiler query over the type column).
     Type(TypeArgs),
@@ -282,6 +291,7 @@ fn main() -> ExitCode {
         Cmd::Completions(a) => run_completions(&a),
         Cmd::Doctor(a) => run_doctor(&a),
         Cmd::Test(a) => run_test(&a),
+        Cmd::Watch(a) => run_watch(&a),
         // The span-mapped semantic queries live here (they need both libraries in one process).
         Cmd::Type(a) => run_type(&a),
         Cmd::TypeAt(a) => run_type_at(&a),
@@ -2093,6 +2103,136 @@ fn run_test_file(
     Ok((passed, failed))
 }
 
+// ── cdz watch ──────────────────────────────────────────────────────────────────────────────────
+
+/// Is `path` a Cadenza SOURCE file (or the project manifest) — the only changes `cdz watch` re-runs on?
+/// A POSITIVE filter (source extensions + `Project.cdz`) is what keeps `watch` from self-triggering: a
+/// `watch build`/`watch test` writes `.wasm`/`.rs`/`.dwarf`/`link-map.txt`/`.cdz-run-*` artifacts INTO the
+/// watched dir, and an editor churns swap/temp files — none of those are source, so none re-fire the run.
+fn is_watch_trigger(path: &std::path::Path) -> bool {
+    if path.file_name().and_then(|n| n.to_str()) == Some(MANIFEST_NAME) {
+        return true;
+    }
+    matches!(
+        path.extension().and_then(|e| e.to_str()),
+        Some("cdz" | "ml" | "sexp" | "sexpr")
+    )
+}
+
+/// `cdz watch [target] --exec <check|test|build>` — the `cargo watch` analogue. Resolve the project's
+/// manifest directory (the same `Project.cdz` `cdz build`/`test` use, searching upward when omitted),
+/// watch that directory recursively, and RE-RUN the chosen command whenever a SOURCE file (or the
+/// manifest) changes. The loop runs the command once up front (initial feedback, like `cargo watch`),
+/// then blocks on the filesystem event channel; on a source-file event it DEBOUNCES (keeps draining
+/// events for `debounce_ms` so a burst of saves — or an editor's write-then-rename — coalesces into ONE
+/// run), re-runs SYNCHRONOUSLY (so runs never overlap — the concierge guard), then drains any events that
+/// arrived DURING the run (already reflected in what we just ran) before blocking again. Ctrl-C exits.
+/// The re-run itself is the ordinary in-process `run_check`/`run_test`/`run_build`.
+fn run_watch(args: &WatchArgs) -> ExitCode {
+    use notify::{RecursiveMode, Watcher};
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    // Resolve the project dir to watch (no entry requirement — `check` needs none; `build`/`test` report
+    // their own missing-entry error on the re-run). This validates the target up front so `cdz watch` on a
+    // manifest-less dir fails immediately rather than watching nothing.
+    let (dir, _mpath, _m) = match resolve_project_manifest(args.target.as_deref(), "cdz watch") {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
+
+    // The re-run closure: construct the chosen command's Args (threading `--store` through to test/build)
+    // targeted at the resolved manifest dir, and invoke the ordinary handler in-process. Returns its code.
+    let store = args.store.clone();
+    let dir_str = dir.to_string_lossy().into_owned();
+    let rerun = move || -> ExitCode {
+        match args.exec {
+            WatchCmd::Check => run_check(&CheckArgs {
+                file: Some(dir_str.clone()),
+                json: false,
+                verify_fixes: false,
+            }),
+            WatchCmd::Test => run_test(&TestArgs {
+                file: Some(dir_str.clone()),
+                filter: None,
+                tag: None,
+                store: store.clone(),
+                trials: 100,
+                seed: 0,
+            }),
+            WatchCmd::Build => run_build(&BuildArgs {
+                dir: Some(dir_str.clone()),
+                out: None,
+                release: false,
+                opt_level: None,
+                target: BuildTargetArg::Wasm,
+            }),
+        }
+    };
+
+    let label = match args.exec {
+        WatchCmd::Check => "check",
+        WatchCmd::Test => "test",
+        WatchCmd::Build => "build",
+    };
+
+    // Set up the recursive watch on the manifest directory. `notify`'s recommended watcher is the
+    // platform-native backend (inotify/FSEvents/kqueue). Events flow over an mpsc channel.
+    let (tx, rx) = mpsc::channel();
+    let mut watcher = match notify::recommended_watcher(move |res| {
+        // A send failure only means the receiver was dropped (we're exiting) — nothing to do.
+        let _ = tx.send(res);
+    }) {
+        Ok(w) => w,
+        Err(e) => {
+            eprintln!("{PROG}: cannot create a filesystem watcher: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if let Err(e) = watcher.watch(&dir, RecursiveMode::Recursive) {
+        eprintln!("{PROG}: cannot watch {}: {e}", dir.display());
+        return ExitCode::FAILURE;
+    }
+
+    let debounce = Duration::from_millis(args.debounce_ms);
+    eprintln!(
+        "{PROG}: watching {} — re-running `cdz {label}` on change (Ctrl-C to stop)",
+        dir.display()
+    );
+
+    // 1. Initial run.
+    let _ = rerun();
+
+    // 2/3. Event loop: block for a change, debounce-coalesce, re-run, drain, repeat.
+    loop {
+        // Block until SOME event arrives (or the channel closes → exit).
+        let first = match rx.recv() {
+            Ok(ev) => ev,
+            Err(_) => return ExitCode::SUCCESS, // watcher dropped
+        };
+        // Collect this event plus everything that lands within the debounce window.
+        let mut batch = vec![first];
+        while let Ok(ev) = rx.recv_timeout(debounce) {
+            batch.push(ev);
+        }
+        // Re-run only if at least one event touched a SOURCE file / the manifest (ignore artifact writes
+        // + editor temp churn, which would otherwise self-trigger a `watch build`/`test`).
+        let touched_source = batch.iter().any(|res| {
+            res.as_ref()
+                .map(|ev| ev.paths.iter().any(|p| is_watch_trigger(p)))
+                .unwrap_or(false)
+        });
+        if !touched_source {
+            continue;
+        }
+        eprintln!("{PROG}: ⟳ change detected — re-running `cdz {label}`");
+        let _ = rerun();
+        // Drain any events that arrived DURING the re-run — they're already reflected in what we just ran,
+        // so discard them rather than triggering an immediate redundant re-run.
+        while rx.try_recv().is_ok() {}
+    }
+}
+
 /// The scalar KIND of a property-test parameter — what the runner generates a value of and renders to a
 /// `cdz-run --arg` string. Restricted to the scalars `cdz-run`'s `coerce_one` parses from `--arg` text:
 /// the boundary-crossable scalars this first property-testing increment supports (a compound param —
@@ -2820,6 +2960,40 @@ struct TestArgs {
     /// failure prints the seed to replay with `--seed`). Default 0 (deterministic run-to-run).
     #[arg(long, default_value_t = 0)]
     seed: u64,
+}
+
+// ── cdz watch ──────────────────────────────────────────────────────────────────────────────────
+
+/// Which command `cdz watch` re-runs on each change. Kept to the project-scoped commands that read the
+/// same `Project.cdz` (so the watched file set and the re-run target agree).
+#[derive(clap::ValueEnum, Clone, Copy, PartialEq, Eq)]
+enum WatchCmd {
+    /// Re-run `cdz check` (report diagnostics) — the default, the cheapest + most useful "on save" loop.
+    Check,
+    /// Re-run `cdz test` (the project's `@test` suite).
+    Test,
+    /// Re-run `cdz build` (compile the entry to a component).
+    Build,
+}
+
+#[derive(clap::Args)]
+struct WatchArgs {
+    /// The project to watch: a `Project.cdz` or a directory holding one. OMITTED → search up from the
+    /// current directory for the nearest `Project.cdz` (like `cdz build`/`test`). The watched file set is
+    /// the manifest's declared sources (entry + modules + tests), plus the manifest itself.
+    target: Option<String>,
+    /// Which command to re-run on each change: `check` (default), `test`, or `build`.
+    #[arg(long, value_enum, default_value_t = WatchCmd::Check)]
+    exec: WatchCmd,
+    /// The debounce window in milliseconds — filesystem events within this window of each other are
+    /// COALESCED into a single re-run (so saving several files at once, or an editor's write-then-rename,
+    /// triggers one run, not a storm). Default 400ms.
+    #[arg(long, default_value_t = 400)]
+    debounce_ms: u64,
+    /// The runtime store `cdz test`/`cdz build` resolve the value-heap runtime from (passed through to the
+    /// re-run). Defaults to `<repo>/target/cadenza-store`.
+    #[arg(long)]
+    store: Option<PathBuf>,
 }
 
 // ── the semantic queries ─────────────────────────────────────────────────────────────────────────
