@@ -2963,6 +2963,10 @@ pass	scaling a Float64 quantity by a bare integer is a numeric-type mismatch
 pass	scaling a quantity by a bare number of its own numeric type keeps its dimension
 pass	scaling a quantity by a dimensionless quantity keeps its dimension
 pass	scaling an integer quantity by a bare integer of its own type keeps its dimension
+pass	scan emits the seed plus one accumulator per element (n+1 outputs)
+pass	scan over an empty iterator emits just the seed
+pass	scan threads its accumulator left-to-right (an order-sensitive folder)
+pass	scan's kth emitted accumulator is the running fold of the first k elements
 pass	self-operand division is NOT folded to one — it still traps at zero
 pass	self-operand subtraction and xor are zero, and-or are the operand, on a runtime value
 pass	set equality is independent of the order elements are written
