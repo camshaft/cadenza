@@ -3318,3 +3318,47 @@
                 (relabel (Node (Leaf) (Leaf)))))
             (export main)))
   (output (: -1 Int64)))
+
+(case "a sibling-recursive walk threads a HEAP list accumulator across the siblings"
+  (doc    "The ssa/collect face of the multi-value-return walk: each leaf draws a fresh id into a
+           singleton list and a Node CONCATENATES its two sibling walks' lists — `collect(Node l r) =
+           List.concat (collect l) (collect r)`. The out-state a self-call advances is threaded to its
+           sibling, and the VALUE carried back through the tuple return is now a HEAP value (a List), not
+           a scalar — so this pins that the multi-value return threads a heap-allocated result across the
+           siblings correctly (a `.0` projection off the runtime tuple, not just an Int64). A 3-leaf tree
+           draws ids 0,1,2 into a length-3 list. Regression guard for the real SSA-linearizer shape,
+           where the accumulated instruction list is the threaded heap value.")
+  (input  (do
+            (effect Fresh (op next (-> Unit Int64)))
+            (type Tree (Leaf) (Node Tree Tree))
+            (def (collect (: t Tree))
+              (match t
+                ((Leaf) ((. List push) (list) (Fresh.next)))
+                ((Node l r) ((. List concat) (collect l) (collect r)))))
+            (def (main)
+              (handle Fresh 0 ((next (u) s (resume s (+ s 1))))
+                ((. List len) (collect (Node (Node (Leaf) (Leaf)) (Leaf))))))
+            (export main)))
+  (output (: 3 Int64)))
+
+(case "a post-order effectful walk draws each node's id AFTER both children (SSA reg-alloc shape)"
+  (doc    "The exact SSA register-allocation shape: a node's own id is drawn AFTER lowering both children
+           — `lower(Bin l r) = let a = lower l in let b = lower r in Fresh.next()`, so the parent register
+           number follows its subtrees'. The two sibling self-calls (`lower l`, `lower r`) each advance
+           the id supply, then the node itself draws the NEXT id — the multi-value return must thread the
+           counter through BOTH children and leave the parent's draw last. `Bin (Lit) (Bin (Lit) (Lit))`
+           over a 0-based counter: left Lit=0, right subtree (Lit=1, Lit=2, its Bin=3), root Bin=4 → the
+           root's result register is 4. Pins the natural post-order gensym the compiler-ml SSA linearizer
+           writes (its hand-threaded counter can become this effectful walk once repro-1 landed).")
+  (input  (do
+            (effect Fresh (op next (-> Unit Int64)))
+            (type Expr (Lit Int64) (Bin Expr Expr))
+            (def (lower (: e Expr))
+              (match e
+                ((Lit v) (Fresh.next))
+                ((Bin l r) (let ((a (lower l))) (let ((b (lower r))) (Fresh.next))))))
+            (def (main)
+              (handle Fresh 0 ((next (u) s (resume s (+ s 1))))
+                (lower (Bin (Lit 1) (Bin (Lit 2) (Lit 3))))))
+            (export main)))
+  (output (: 4 Int64)))

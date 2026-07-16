@@ -3155,3 +3155,5 @@ pass	wrapping-sub wraps a boundary-crossing runtime Int64 at the min boundary
 todo	SUM ARG + LIST RESULT declines cleanly (Option arg, List result)
 todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
+pass	a sibling-recursive walk threads a HEAP list accumulator across the siblings
+pass	a post-order effectful walk draws each node's id AFTER both children (SSA reg-alloc shape)
