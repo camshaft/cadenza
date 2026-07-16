@@ -1588,6 +1588,31 @@ fn cdz_render_at(
             "{{ let mut __s = String::from(\"(map\"); for ({kbind}, {vbind}) in ({path}).iter() {{ __s.push_str(&format!(\" ({{}} {{}})\", {kr}, {vr})); }} __s.push(')'); __s }}"
         );
     }
+    // A QUANTITY result `(Qty <inner> <unit>)` — the rust backend maps a `Ty::Qty { inner }` at a scale-1
+    // simple (base/dimensionless) unit to its INNER magnitude's type (the wrapper erases), so `{path}` is
+    // the magnitude. cdz-run renders it `(Qty.of <magnitude> <unit>)`: render the magnitude by its inner
+    // type, splice the unit s-expr from the return note VERBATIM (it is already the canonical shorthand
+    // `(Unit.base #"…")` / `Unit.one` the corpus records), escaping the embedded `"` for the Rust literal.
+    // Scale-1 only reaches here, so the stored magnitude IS the displayed one (no scaling in the render).
+    if let Some(args) = parse_head_type(ty, "Qty") {
+        let inner_ty = args.first().map(String::as_str).unwrap_or("");
+        // cdz-run's canonical VALUE form is the fully DOTTED member-access spelling — `((. Qty of) <mag>
+        // <unit>)` with `((. Unit base) #"m")` / `(. Unit one)` — NOT the `(Qty.of …)`/`(Unit.base …)`
+        // shorthand the type note carries. Convert the unit to the dotted value form (only the simple
+        // base/dimensionless shapes reach here — the backend declines derived units), then escape `"` for
+        // the Rust literal.
+        let unit = match args.get(1).map(String::as_str).unwrap_or("") {
+            "Unit.one" => "(. Unit one)".to_string(),
+            u if u.starts_with("(Unit.base ") => {
+                // `(Unit.base #"meter")` → `((. Unit base) #"meter")`.
+                format!("((. Unit base) {}", &u["(Unit.base ".len()..])
+            }
+            other => other.to_string(), // shouldn't occur (backend declines derived units); pass through.
+        };
+        let unit_lit = unit.replace('\\', "\\\\").replace('"', "\\\"");
+        let inner = cdz_render_at(inner_ty, path, sums, newtypes, sum_params, helpers, on_path);
+        return format!("format!(\"((. Qty of) {{}} {unit_lit})\", {inner})");
+    }
     // A `BigInt` value is the Rust `cdz_num::Big` the backend emits — render it as its exact decimal, the
     // BARE integer text cdz-run prints for a BigInt (`42`, `-58`), via `Big::to_decimal_string`. `{path}`
     // is a `Big`/`&Big`; the method takes `&self`, so a reference works. Matches the runtime's BigInt
