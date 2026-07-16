@@ -1047,6 +1047,24 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
         }
         faults.push(reject);
     }
+    // A bare NAME atom top-level item resolving to NOTHING — `(module m nonesuch …)` — is the paren-less
+    // twin of the `(nonesuch)` APPLICATION rejected in the loop above, and the two must behave identically.
+    // `head_name` is `None` for an atom, so `unknown_top_forms` never sees it and the item was SILENTLY
+    // ACCEPTED. A bare name naming no binding is broken under ANY reading of the grammar (whether or not a
+    // bare EXPRESSION is a legal top-level item — a pending design call routed to the operator — a bare
+    // expression referencing a binding that does not exist cannot be intentional). Reject it CDZ0101 with
+    // the SAME "unbound name at the top level" message + defined-name did-you-mean the application gets. A
+    // LITERAL or a BOUND bare name is left to the bare-expression-legality ruling (not returned here).
+    for (name, occ) in db.unbound_bare_name_items() {
+        let hint = crate::diag::suggest::did_you_mean(&name, &defined_names, 3);
+        faults.push(
+            Reject::decline(format!(
+                "unbound name `{name}` at the top level{hint} (if `{name}` is meant as a declaration, \
+                 it is not one this compiler models — the program cannot be compiled either way)"
+            ))
+            .at(occ),
+        );
+    }
     // MODULE DIRECTIVE `(pragma <key> <arg>…)`. A directive's key must be drawn from the fixed registry
     // the specification defines (`modules-and-namespaces.md` §A Module Directive Is Drawn From A Fixed
     // Set), and its arguments must match the shape that key defines — so an unknown key is CDZ0601 and a

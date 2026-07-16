@@ -16334,6 +16334,58 @@ mod match_engine {
     }
 
     #[test]
+    fn a_bare_unbound_name_top_level_item_is_the_same_unbound_error_as_its_application_twin() {
+        use crate::testkit::parse;
+        // A bare NAME atom top-level item resolving to NOTHING — `(module m nonesuch …)` — is the
+        // paren-less twin of the `(nonesuch)` APPLICATION and MUST behave identically. `head_name` is
+        // `None` for an atom, so `unknown_top_forms` never saw it and it was SILENTLY ACCEPTED; a bare name
+        // naming no binding is broken under any reading of the grammar. It now gets the SAME code-less
+        // "unbound name at the top level" decline (found by message) the application form gives.
+        let find = |src: &str| {
+            crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.message.contains("at the top level"))
+        };
+        // The bare-name twin and the application both report the SAME message.
+        let bare = find("(module m nonesuch (def (main) 0) (export main))")
+            .expect("a bare unbound name is now reported");
+        let app = find("(module m (nonesuch) (def (main) 0) (export main))")
+            .expect("the application twin is reported");
+        assert!(
+            bare.message
+                .contains("unbound name `nonesuch` at the top level"),
+            "the bare name is named unbound: {}",
+            bare.message
+        );
+        assert_eq!(
+            bare.message, app.message,
+            "the bare name and its application twin report identically"
+        );
+        // A near-miss to a def name carries the confident did-you-mean hint.
+        let near = find("(module m maim (def (main) 0) (export main))")
+            .expect("a near-miss bare name is reported");
+        assert!(
+            near.message.contains("did you mean `main`?"),
+            "names the near def: {}",
+            near.message
+        );
+        // NO false positive: a LITERAL, a BOUND bare name, a grammar head, a prelude name, and a TYPE name
+        // are all left to the (pending) bare-expression-legality ruling — not flagged as unbound.
+        for ok in [
+            "(module m 5 (def (main) 0) (export main))",    // literal
+            "(module m main (def (main) 0) (export main))", // bound name
+            "(module m if (def (main) 0) (export main))",   // grammar head
+            "(module m unit (def (main) 0) (export main))", // prelude
+            "(module m Int64 (def (main) 0) (export main))", // type name
+        ] {
+            assert!(
+                find(ok).is_none(),
+                "a resolvable / literal bare item is not flagged unbound: {ok}"
+            );
+        }
+    }
+
+    #[test]
     fn an_import_form_is_named_as_unmodeled_not_a_typo_of_export() {
         // `import` is a KNOWN surface keyword (the ML reader parses `import { … } from "…"` → an
         // `(import …)` top-level form) that this compiler does not yet model. Because `import`→`export` is

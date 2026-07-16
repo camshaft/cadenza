@@ -3331,6 +3331,34 @@ impl Db {
         out
     }
 
+    /// The top-level items that are a bare NAME atom resolving to NOTHING — `(module m nonesuch …)`, the
+    /// paren-less twin of the `(nonesuch)` APPLICATION that `unknown_top_forms` already rejects. A bare
+    /// name in a top-level/module item position that names no definition, prelude entry, or type is an
+    /// error under ANY reading of the grammar (whether or not a bare EXPRESSION is a legal top-level item
+    /// — a pending design call — a bare expression referencing a binding that does not exist is broken),
+    /// yet it was SILENTLY ACCEPTED: `head_name` returns `None` for an atom, so `unknown_top_forms` (which
+    /// flags a LIST whose head is unbound) never sees it, and nothing else in the top-level scan claims a
+    /// bare atom. Returned as `(name, occurrence)` for `collect_faults` to reject CDZ0101 exactly as the
+    /// application form — the two should behave identically. The SAME resolution guards as
+    /// `unknown_top_forms`: a name is unbound only if it is neither a grammar/keyword head nor resolves as
+    /// a def / prelude entry / type. A LITERAL (`5`, `"s"` — `as_name` is `None`) or a BOUND bare name
+    /// (`main`) is left to the pending bare-expression-legality ruling, not flagged here.
+    pub fn unbound_bare_name_items(&self) -> Vec<(String, StructId)> {
+        let mut out = Vec::new();
+        for item in top_items(&self.ast) {
+            if let Some(name) = self.ast.as_name(item)
+                && !TOP_LEVEL_FORMS.contains(&name)
+                && !crate::resolve::is_grammar_head(name)
+                && self.def_by_name(name).is_none()
+                && !self.prelude.contains_key(name)
+                && self.type_decl_by_name(name).is_none()
+            {
+                out.push((name.to_string(), item));
+            }
+        }
+        out
+    }
+
     /// The TOP-LEVEL `(bind …)` peer-binding directives — the same scope `scan_effect_bindings` reads. A
     /// `(bind …)` is a top-level DIRECTIVE (like `def`/`export`/`effect`); a `(bind …)` list appearing
     /// NESTED (e.g. a handler arm for an effect operation named `bind` — `((bind (k) s body) …)`) is NOT a
