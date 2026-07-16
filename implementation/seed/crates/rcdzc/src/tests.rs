@@ -33658,6 +33658,43 @@ mod match_engine {
     }
 
     #[test]
+    fn a_runtime_same_unit_float_quantity_comparison_rides_the_scalar_float_compare() {
+        // A same-unit Float-inner quantity comparison erases to a plain scalar float compare (the
+        // `(Qty Float64 meter)` erases to its f64), so at RUNTIME it must route to the IEEE float compare,
+        // NOT decline as "a compound value needs a heap walk". Fixed by peeling `Ty::Qty` in `float_operand`
+        // (mirrors `bigint_operand`/`rational_operand`) — a gap masked until runtime float ordering landed
+        // (before that even the bare float compare declined). Uses the FULL runtime; skips if absent.
+        let src = "(do (def (main (: x Float64)) \
+                   (if (< ((. Qty of) x ((. Unit base) #\"meter\")) \
+                          ((. Qty of) 5.0 ((. Unit base) #\"meter\"))) 1 0)) (export main))";
+        let comp = compile_component(&crate::codec::encode(&parse(src))).expect(
+            "a same-unit Float-inner quantity comparison compiles (was a heap-walk decline)",
+        );
+        let Some(runtime) = super::find_runtime_wasm() else {
+            return; // no runtime store — the corpus gate is the e2e witness
+        };
+        let call = |x: &str, want: i64| {
+            let opts = cdz_run::RunOpts {
+                export: None,
+                args: vec![x.to_string()],
+                runtime: Some(runtime.clone()),
+                runtime_cache_dir: None,
+                host_responses: Vec::new(),
+            };
+            match cdz_run::run(&comp, &opts).expect("run") {
+                cdz_run::Outcome::Value(s) => assert!(
+                    s.contains(&want.to_string()),
+                    "(x m) < (5.0 m) at x={x} should be {want}: {s}"
+                ),
+                cdz_run::Outcome::Trap(t) => panic!("float-qty comparison trapped at x={x}: {t}"),
+            }
+        };
+        call("3.0", 1); // 3 < 5 → true
+        call("7.0", 0); // 7 < 5 → false
+        call("nan", 0); // NaN < 5 → false (IEEE partial order, inherited from the numeric core)
+    }
+
+    #[test]
     fn a_mixed_scale_comparison_truncates_over_int_but_is_exact_over_rational() {
         // A mixed-scale comparison converts each operand to the reference in the INNER numeric type. Over
         // Int64 that conversion TRUNCATES (the numeric core's rule), so two sub-reference-unit quantities

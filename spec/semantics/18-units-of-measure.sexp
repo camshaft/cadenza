@@ -586,6 +586,28 @@
   (input  (< (Qty.of 2.0 (Unit.base #"meter")) (Qty.of 3.0 (Unit.base #"meter"))))
   (output (: true Bool)))
 
+(case "comparing two same-unit Float-inner quantities at RUNTIME rides the scalar float compare"
+  (doc    "`(< (Qty.of x meter) (Qty.of 5.0 meter))` with `x` a RUNTIME Float64: a same-unit Float-inner
+           quantity comparison erases to a plain scalar float compare (the `(Qty Float64 meter)` erases to
+           its f64), so it runs the runtime IEEE compare — x=3.0 → true (1), x=7.0 → false (0). Pins that a
+           same-unit Float quantity comparison routes to the scalar float path (`float_operand` peels
+           `Ty::Qty` to see the inner Float), NOT the compound-heap-walk decline it hit before — a gap
+           masked until runtime float ordering landed (before that the bare float compare declined too).")
+  (input  (do (def (main (: x Float64))
+                (if (< (Qty.of x (Unit.base #"meter")) (Qty.of 5.0 (Unit.base #"meter"))) 1 0)) (export main)))
+  (call   main (: 3.0 Float64)) (output (: 1 Int64))
+  (call   main (: 7.0 Float64)) (output (: 0 Int64)))
+
+(case "a runtime Float quantity comparison against NaN is the IEEE partial order (false)"
+  (doc    "`(< (Qty.of nan meter) (Qty.of 5.0 meter))` — a runtime NaN magnitude compares FALSE under the
+           IEEE partial order (NaN is unordered), exactly as the bare `nan < 5.0` does: the quantity's Float
+           inner rides the same runtime float compare, and units don't change the numeric ordering. x=nan →
+           0. Pins that the Float-quantity comparison inherits the numeric core's IEEE partial-order
+           semantics for NaN (the dimensional layer is erased before the compare).")
+  (input  (do (def (main (: x Float64))
+                (if (< (Qty.of x (Unit.base #"meter")) (Qty.of 5.0 (Unit.base #"meter"))) 1 0)) (export main)))
+  (call   main (: nan Float64)) (output (: 0 Int64)))
+
 (case "comparing quantities of incompatible dimension is a compile-time error"
   (doc    "`(< (Qty.of 2.0 meter) (Qty.of 3.0 second))` orders a length against a time — incompatible
            dimensions — so the compiler rejects it (CDZ0501): comparison, like `+`/`-`, requires equal

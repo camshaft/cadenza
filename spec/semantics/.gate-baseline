@@ -1466,6 +1466,7 @@ pass	a runtime Bytes rope is found as a Set element by its flat twin
 pass	a runtime Bytes rope map key is looked up by its flat twin
 pass	a runtime Bytes rope nested in a tuple compares equal to its flat twin
 pass	a runtime FLOAT width nested in a compound annotation is rejected
+pass	a runtime Float quantity comparison against NaN is the IEEE partial order (false)
 pass	a runtime Float32 addition emits the f32 machine add
 pass	a runtime Float32 division emits f32.div
 pass	a runtime Float32 equality compares by the canonical byte form
@@ -2284,6 +2285,7 @@ pass	comparing sums with disjoint variant sets is a type error
 pass	comparing tuples of different lengths is a type error
 pass	comparing two quantities of the same dimension yields a Bool
 pass	comparing two same-shape nominal sum types is a type error, not false
+pass	comparing two same-unit Float-inner quantities at RUNTIME rides the scalar float compare
 pass	comparing two units of one dimension converts before comparing
 pass	compound equality over a runtime NaN float leaf: nan equals nan
 pass	compound equality over a runtime float leaf: different floats compare unequal
