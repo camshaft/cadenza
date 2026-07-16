@@ -471,6 +471,62 @@ impl Unit {
         acc
     }
 
+    /// Render the unit as the canonical VALUE-form s-expression cdz-run prints inside a `((. Qty of) <mag>
+    /// <unit>)` result — the DOTTED member-access surface, byte-for-byte identical to what [`crate::lower`]'s
+    /// `unit_value_ast` bakes (that builds an arena tree; this builds its text). It differs from [`render`]
+    /// (the TYPE-annotation surface) in two ways the corpus records demand:
+    ///   - the base leaf is DOTTED member access `((. Unit base) #"name")` (not the bare `(Unit.base …)`),
+    ///     and the dimensionless unit is `(. Unit one)` (not `Unit.one`);
+    ///   - a unit with NEGATIVE exponents renders as a QUOTIENT `(Unit./ <numerator> <denominator>)` — the
+    ///     velocity surface `(Unit./ meter second)`, NOT `render`'s `(Unit.* meter (Unit.^ second -1))`.
+    ///
+    /// The numerator is the positive-exponent factors as a left-nested `(Unit.* …)` product (`(. Unit one)`
+    /// if none); the denominator the negative-exponent factors with exponents made positive. `Unit.^`/
+    /// `Unit.*`/`Unit./` stay BARE (a non-alphabetic segment the reader does not desugar). This is the note
+    /// the Rust-backend gate splices verbatim, so it MUST track `unit_value_ast` exactly.
+    pub fn render_value_form(&self) -> String {
+        // A single base at a (positive) exponent: `((. Unit base) #"name")` or `(Unit.^ … k)`.
+        fn factor(name: &str, exp: i64) -> String {
+            let base = format!("((. Unit base) #\"{name}\")");
+            if exp == 1 {
+                base
+            } else {
+                format!("(Unit.^ {base} {exp})")
+            }
+        }
+        // Left-nested product of a factor list, or `(. Unit one)` when empty.
+        fn product(factors: &[(&String, i64)]) -> String {
+            let Some((first, rest)) = factors.split_first() else {
+                return "(. Unit one)".to_string();
+            };
+            let mut acc = factor(first.0, first.1);
+            for (name, exp) in rest {
+                acc = format!("(Unit.* {acc} {})", factor(name, *exp));
+            }
+            acc
+        }
+        // Split into positive (numerator) and negative (denominator, exponents made positive) factors, in
+        // the `BTreeMap`'s sorted base-name order (deterministic, matching `unit_value_ast`'s `entries()`).
+        let num: Vec<(&String, i64)> = self
+            .exp
+            .iter()
+            .filter(|(_, e)| **e > 0)
+            .map(|(n, &e)| (n, e))
+            .collect();
+        let den: Vec<(&String, i64)> = self
+            .exp
+            .iter()
+            .filter(|(_, e)| **e < 0)
+            .map(|(n, &e)| (n, -e))
+            .collect();
+        if den.is_empty() {
+            // All positive (or empty → `(. Unit one)`) — a plain product / single factor / identity.
+            return product(&num);
+        }
+        // A quotient `(Unit./ numerator denominator)` — the derived-unit surface.
+        format!("(Unit./ {} {})", product(&num), product(&den))
+    }
+
     /// A compact, HUMAN-readable rendering of the unit for a DIAGNOSTIC — the base names joined by `·`
     /// with `^n` exponents (`meter`, `meter^2`, `meter·second^-1`), and `dimensionless` for the empty
     /// unit. Unlike [`render`] (the round-tripping `(Unit.base …)` surface form), this is for a message

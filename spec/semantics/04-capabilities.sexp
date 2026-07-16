@@ -106,6 +106,39 @@
   (call   main (: false Bool))
   (output (: unit Unit)))
 
+; Reachability follows into a HIGHER-ORDER call, not only direct/recursive/conditional ones: an effect
+; performed inside a CLOSURE passed to a HOF is reached through the closure's call site. Both directions
+; are pinned — granted (delegated → runs) and the soundness-critical UNGRANTED (an effect hidden in a
+; closure-passed-to-a-HOF is NOT a loophole; the analysis finds it and rejects CDZ0401). The granted case is
+; TODO on rust (host-boundary gap); the reject grades on BOTH backends (a compile-time check, no emit).
+
+(case "a delegated effect performed in a closure passed to a HOF is reached and fires"
+  (doc    "`log.emit` is performed inside `(fn (u) (log.emit \"hi\"))` passed to `apply-fn`, which calls it.
+           Reachability follows the closure through the HOF's call site, so the `(host (log) …)` delegation
+           grants it and the program runs, firing one host call. Pins that host-delegation reachability
+           traverses a higher-order/indirect call — an effect reached only via a closure argument is granted,
+           the HOF companion of the recursive-callee reachability case.")
+  (input  (do
+            (effect log (op emit (-> String Unit)))
+            (def (apply-fn (: f (-> Unit Unit))) (f unit))
+            (def (main) (host (log) (apply-fn (fn (u) (log.emit "hi")))))
+            (export main)))
+  (output (: unit Unit))
+  (host-calls (call log.emit (: "hi" String))))
+
+(case "an ungranted effect hidden in a closure passed to a HOF is still rejected"
+  (doc    "The soundness-critical direction: the SAME closure `(fn (u) (log.emit \"hi\"))` passed to a HOF,
+           but with NO `(host (log) …)` delegation and no handler. The effect is still REACHED through the
+           closure's call site, so it is ungranted and the program is rejected CDZ0401 — a closure passed to
+           a HOF is NOT a loophole to smuggle an effect past the grant check. Pins that reachability finds an
+           effect through a higher-order call for the REJECTION too, not only when granting.")
+  (input  (do
+            (effect log (op emit (-> String Unit)))
+            (def (apply-fn (: f (-> Unit Unit))) (f unit))
+            (def (main) (apply-fn (fn (u) (log.emit "hi"))))
+            (export main)))
+  (error  CDZ0401))
+
 (case "reaching an effect neither handled nor delegated is rejected at compile time"
   (doc    "Witnesses capabilities-and-effects.md #An Ungranted Effect Is A Compile-Time Error: main
            performs `log.emit` for an effect no enclosing handler discharges and the entrypoint does not

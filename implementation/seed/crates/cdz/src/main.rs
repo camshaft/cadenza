@@ -4684,6 +4684,18 @@ fn load_program_spanned_counted(
     ),
     String,
 > {
+    // A DIRECTORY passed where a program FILE is expected: `read_to_string` would surface a raw
+    // `Is a directory (os error 21)` — an errno leak, not a diagnostic. The by-name/by-offset query
+    // commands (`type`/`doc`/`uses`/`def`/`scope`/`type-at`/`…`) all funnel through here, so pre-check
+    // once and give a clean, actionable message naming a concrete file to pass — consistent with the
+    // directory guidance `cdz check`/`cdz compile` already give (they walk a dir; a single-file query
+    // command takes ONE file, so it points the user at naming one).
+    if std::path::Path::new(file).is_dir() {
+        return Err(format!(
+            "{file} is a directory — this command takes a single program file; name one \
+             (e.g. `{file}/main.cdz`)"
+        ));
+    }
     let source = std::fs::read_to_string(file).map_err(|e| format!("reading {file}: {e}"))?;
     parse_program_spanned_counted(file, source)
 }

@@ -165,6 +165,32 @@
   (input  (do (def (main) (let ((a (/ 1 0))) (let ((x (try (None unit)))) (Some (+ a x))))) (export main)))
   (output (: (None unit) (Option Int64))))
 
+; The §283 elision above applies ONLY to an UNOBSERVED trapping init (the `?` short-circuits before its
+; value is used). The NEGATIVE boundary: when the trapping init's value IS observed, the trap still FIRES —
+; it is not silently dropped. These pin both observation shapes: a SUCCESS `?` (no short-circuit, so the
+; init is used in the result) and an init observed IN the `?`'s own operand (used before the short-circuit
+; could even happen). Both keep the provable ÷0 as a CDZ0304 reject, guarding that the elision does not
+; over-reach into observable traps (the observable-trap-is-preserved axis, sibling of the trap-ordering rule).
+
+(case "a success `?` observes an earlier trapping let-init so the trap is not elided"
+  (doc    "The negative boundary of the §283 elision: `(let ((a (/ 1 0)) (x (try (Some 5)))) (Some (+ a x)))`
+           — the `?` sees a `Some` and does NOT short-circuit, so `(+ a x)` runs and `a`'s ÷0 IS observed. The
+           trap is therefore NOT elided: the provable ÷0 is a CDZ0304 reject, exactly as it is without any
+           `?`. Pins that the elision fires only when the `?` short-circuits AWAY from the trapping value —
+           a SUCCESS `?` leaves the value observed, so the trap stands. The complement of the elide cases
+           above (which all short-circuit on a constant None).")
+  (input  (do (def (main) (let ((a (/ 1 0)) (x (try (Some 5)))) (Some (+ a x)))) (export main)))
+  (error  CDZ0304))
+
+(case "a trapping init observed inside the `?`'s own operand is not elided"
+  (doc    "`(let ((a (/ 1 0)) (x (try (Some a)))) (Some x))` — `a`'s value flows INTO the `?`'s operand
+           `(Some a)`, so it is observed BEFORE the short-circuit could occur (the operand must be built to
+           be matched). The ÷0 is observed regardless of the `?`'s success/failure, so the trap is not
+           elided: CDZ0304. Pins that a value consumed by the `?` operand itself is observed, distinct from
+           a value used only in a body the `?` may short-circuit past.")
+  (input  (do (def (main) (let ((a (/ 1 0)) (x (try (Some a)))) (Some x))) (export main)))
+  (error  CDZ0304))
+
 (case "a `?` in a CALLED (inlined, non-exported) helper finds its boundary"
   (doc    "Regression pin: `(def (f) (let ((x (try (Some 7)))) (Some (+ x 3))))` is CALLED by `main` (only
            `main` is exported), so `f` is INLINED at the call site. `f`'s result type IS `Option`, so the

@@ -895,6 +895,40 @@
   (input  (if true (if true 5 (/ 1 0)) 9))
   (output (: 5 Int64)))
 
+; The shield cases above use CONSTANT-selected branches with PROVABLE traps (folded/shielded at compile
+; time). The RUNTIME face: a branch selected by a runtime `Bool`, whose body divides by a RUNTIME divisor
+; (not statically provable, so a runtime trap not CDZ0304). The trap fires ONLY when that branch is
+; actually taken AND the divisor is zero — the branch-body companion of the runtime-div-in-the-CONDITION
+; case (`(if (> (/ 10 z) 0) …)`) elsewhere in this file. Pins that #Conditionals Evaluate One Branch holds
+; at run time: the untaken branch's potential trap does not fire.
+
+(case "a runtime-selected branch with a runtime-divisor div-by-zero traps only when taken"
+  (doc    "`(if b (/ 10 z) 42)` with runtime `b`/`z`: the trapping expression `(/ 10 z)` has a RUNTIME divisor
+           (not a provable ÷0, so not CDZ0304 — a runtime trap). Called with `b = true, z = 0` the trapping
+           branch is selected and z = 0, so it traps 'divide by zero'. Pins that a runtime-selected branch
+           evaluates its body — the branch-body companion of the runtime-div-in-the-condition trap case.")
+  (input  (do (def (main (: b Bool) (: z Int64)) (if b (/ 10 z) 42)) (export main)))
+  (call   main (: true Bool) (: 0 Int64))
+  (trap   "divide by zero"))
+
+(case "the untaken branch's runtime div-by-zero does not fire"
+  (doc    "The one-branch guarantee at run time: the SAME `(if b (/ 10 z) 42)` with `b = false, z = 0` takes
+           the ELSE branch, so `(/ 10 z)` — which would trap at z = 0 — is NOT evaluated, and the result is
+           42. Pins that #Conditionals Evaluate One Branch shields a RUNTIME trap in the unselected branch,
+           the runtime companion of the constant-shield cases above (which fold the trap away at compile
+           time; here the shielding is a run-time branch choice).")
+  (input  (do (def (main (: b Bool) (: z Int64)) (if b (/ 10 z) 42)) (export main)))
+  (call   main (: false Bool) (: 0 Int64))
+  (output (: 42 Int64)))
+
+(case "a runtime-selected trapping branch with a non-zero divisor computes normally"
+  (doc    "The no-trap control: `(if b (/ 10 z) 42)` with `b = true, z = 2` selects the division branch and
+           z is non-zero, so `10 / 2` = 5. Rules out a spurious trap on the taken branch when the divisor is
+           valid — the trap in the taken-branch case is the z = 0 divisor, not the branch selection itself.")
+  (input  (do (def (main (: b Bool) (: z Int64)) (if b (/ 10 z) 42)) (export main)))
+  (call   main (: true Bool) (: 2 Int64))
+  (output (: 5 Int64)))
+
 (case "a conditional's condition may itself be a conditional"
   (doc    "`(if (if true false true) 1 2)`: the condition is an `if` that evaluates to `false`, so the
            outer conditional selects its else-branch, yielding 2. Pins that the condition position
@@ -3487,6 +3521,26 @@
             (export main)))
   (call   main (: 1 Int64) (: 0 Int64))
   (trap   "divide by zero"))
+
+; The UNDEMANDED-element face the case above deferred is now SETTLED: the same §283 dead-init ruling that
+; lets a `?` short-circuit elide an unobserved trapping let-init (23-try-operator) — and that lets an
+; unreferenced `let` binding's trap be elided (the dead-binding cases below) — makes a tuple element the
+; projection DISCARDS unobserved too. So projecting the SAFE position of a tuple whose OTHER position would
+; trap does NOT trap: observation, not construction, forces a trap (core-semantics.md §A Trap Occurs Only
+; Where Its Computation Is Observed). This grades the discard face — the complement of the demanded-element
+; trap above — so a fold that eagerly evaluated the whole tuple (materializing the discarded trapping
+; element) would be caught FLIPPING this from its value to a trap.
+(case "projecting the safe element of a tuple elides the discarded trapping element's trap"
+  (doc    "`(. (tuple (/ 10 d) 1) 1)` projects position 1 (the `1`) and DISCARDS position 0 (`(/ 10 d)`).
+           At d = 0 the discarded element WOULD divide by zero, but the projection never observes it, so
+           per §A Trap Occurs Only Where Its Computation Is Observed (the same rule that elides an unused
+           `let` init and a `?`-short-circuited earlier init) the trap is ELIDED — the result is `1`, not a
+           trap. Settles the undemanded-element dead-trap-on-discard question the demanded-element case
+           above deferred; the discarded element's evaluation is not forced by tuple CONSTRUCTION, only by
+           projection of THAT position. `d` is a runtime parameter so this is emitted code, both backends.")
+  (input  (do (def (main (: d Int64)) (. (tuple (/ 10 d) 1) 1)) (export main)))
+  (call   main (: 0 Int64))
+  (output (: 1 Int64)))
 
 (case "an escaping tuple evaluates its trapping element"
   (doc    "`(tuple (/ 10 d) 1)` RETURNED whole (no projection): every element is demanded by the

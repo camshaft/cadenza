@@ -14750,6 +14750,78 @@ mod match_engine {
     }
 
     #[test]
+    fn a_symbol_literal_pattern_dispatches_by_content() {
+        // Symbol-LITERAL patterns: `(match sym (#"add" 1) (#"sub" 2) (_ 0))`. A Symbol shares the
+        // constant-string rep (`SymbolConst` → `Core::ConstStr`), so it reuses the SAME `Str`-probe
+        // classify/fold/emit as a string literal — the scalar-path fix teaches `classify_probe` +
+        // the scalar probe-type check to accept a `Str` probe against a `Symbol` scrutinee, and the
+        // nested-payload fix teaches `pattern_constraints` the `SymbolConst` arm (typed `Symbol`).
+        // Skip the heap-run asserts storeless (staging-sync-loop-harness-trap).
+        if super::find_runtime_wasm().is_none() {
+            eprintln!(
+                "runtime wasm not found (run `cargo xtask build`); skipping heap-run assertions"
+            );
+            return;
+        }
+        // A RUNTIME Symbol (built via `Symbol.of` over a runtime rope, so not a constant fold) dispatches
+        // by content across the arms.
+        assert_eq!(
+            run_heap_value(
+                "(do (def (classify (: s Symbol)) (match s (#\"add\" 1) (#\"sub\" 2) (_ 0))) \
+                     (def (main) (classify (Symbol.of (String.concat \"ad\" \"d\")))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "1",
+            "Symbol.of \"add\" matches the first symbol-literal arm by CONTENT"
+        );
+        assert_eq!(
+            run_heap_value(
+                "(do (def (classify (: s Symbol)) (match s (#\"add\" 1) (#\"sub\" 2) (_ 0))) \
+                     (def (main) (classify (Symbol.of (String.concat \"su\" \"b\")))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "2",
+            "Symbol.of \"sub\" selects the second arm — genuine content dispatch, not a fold to arm 1"
+        );
+        assert_eq!(
+            run_heap_value(
+                "(do (def (classify (: s Symbol)) (match s (#\"add\" 1) (#\"sub\" 2) (_ 0))) \
+                     (def (main) (classify (Symbol.of (String.concat \"x\" \"y\")))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "0",
+            "an unlisted symbol falls through to the wildcard → 0"
+        );
+        // A NESTED symbol-literal payload sub-pattern — `(Mk #"add")` matches a `Mk` carrying exactly the
+        // symbol `#"add"` (the `pattern_constraints` `SymbolConst` arm). The scrutinee is built at run time.
+        assert_eq!(
+            run_heap_value(
+                "(do (type W (Mk Symbol)) \
+                     (def (f (: w W)) (match w ((Mk #\"add\") 1) ((Mk _) 0))) \
+                     (def (main) (f (Mk (Symbol.of (String.concat \"ad\" \"d\"))))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "1",
+            "a nested symbol-literal payload `(Mk #\"add\")` matches by content"
+        );
+        assert_eq!(
+            run_heap_value(
+                "(do (type W (Mk Symbol)) \
+                     (def (f (: w W)) (match w ((Mk #\"add\") 1) ((Mk _) 0))) \
+                     (def (main) (f (Mk (Symbol.of (String.concat \"su\" \"b\"))))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "0",
+            "a nested symbol-literal payload falls through to the wildcard arm on a non-match"
+        );
+    }
+
+    #[test]
     fn a_tail_loop_threading_a_projected_boxed_sum_accumulator_decodes_correctly() {
         // A tuple-projected boxed sum threaded through a self-tail loop must SURVIVE the loop step. `one`
         // returns `(tuple (W.Atom <byte>) (+ pos 1))`; `loop` threads `(. r 0)` (the nested-compound boxed
@@ -48770,6 +48842,37 @@ mod stage1 {
         let engine = wasmtime::Engine::default();
         wasmtime::component::Component::from_binary(&engine, &bytes)
             .expect("the composed host-resource-escape component must be valid");
+    }
+
+    #[test]
+    fn two_distinct_host_effects_in_a_resource_escape_decline_cleanly() {
+        // `assemble_host_runtime_resource` imports exactly ONE host interface instance, so host ops from >1
+        // DISTINCT effect delegated from a resource-escaping entrypoint would be conflated into that single
+        // interface and MIS-SERIALIZED (silent, not a clean decline) — the host arms took `iface =
+        // host_imports[0].effect` with no single-effect guard (PR #481, Copilot). The guard now declines the
+        // multi-effect shape cleanly on ALL THREE resource-escape arms (Flat tuple / Sum / recursive-sum
+        // List), mirroring the non-resource host-envelope path. (The multi-interface host-resource shape is a
+        // later increment.)
+        for src in [
+            // FLAT (tuple) — two effects A, B
+            "(do (effect A (op a (-> Int64 Int64))) (effect B (op b (-> Int64 Int64))) \
+             (def (main (: x Int64)) (host (A) (host (B) (\"tuple\" (A.a x) (B.b x))))) (export main))",
+            // SUM (Option)
+            "(do (effect A (op a (-> Int64 Int64))) (effect B (op b (-> Int64 Int64))) (type Opt (None) (Some Int64)) \
+             (def (main (: x Int64)) (host (A) (host (B) (Some (+ (A.a x) (B.b x)))))) (export main))",
+            // RECURSIVE-SUM (List)
+            "(do (effect A (op a (-> Int64 Int64))) (effect B (op b (-> Int64 Int64))) \
+             (def (main (: x Int64)) (host (A) (host (B) ((. List push) (list) (+ (A.a x) (B.b x)))))) (export main))",
+        ] {
+            let err = compile_component(&crate::codec::encode(&parse(src))).expect_err(
+                "two distinct host effects in a resource escape must decline, not mis-serialize",
+            );
+            assert!(
+                err.message.contains("more than one host effect"),
+                "the multi-host-effect resource-escape decline must name the cause: {}",
+                err.message
+            );
+        }
     }
 
     #[test]

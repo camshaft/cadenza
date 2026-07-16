@@ -3568,7 +3568,15 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
         let pat_ty = match probe {
             crate::core::Probe::Int(_) => Some(crate::ty::Ty::int()),
             crate::core::Probe::Bool(_) => Some(crate::ty::Ty::Bool),
-            crate::core::Probe::Str(_) => Some(crate::ty::Ty::String),
+            // A `Str` probe comes from a String-literal `"…"` pattern OR a SYMBOL-literal `#"…"` pattern —
+            // both lower to a `Core::ConstStr` (a symbol's identity is its text, shared rep), so ONE probe
+            // serves both. It agrees with a `String` OR a `Symbol` scrutinee; expect the scrutinee's OWN
+            // kind when it is either, so a `#"add"` pattern over a `Symbol` scrutinee (and a `"add"` over a
+            // `String`) both type-check, while a `Str` probe over a non-text scrutinee (an Int) still faults.
+            crate::core::Probe::Str(_) => match scrut_ty {
+                crate::ty::Ty::Symbol => Some(crate::ty::Ty::Symbol),
+                _ => Some(crate::ty::Ty::String),
+            },
             // A `ListLen`/`MapHasKeys` probe never arises in the SCALAR match path (each comes from a
             // list/map PAYLOAD sub-pattern in the sum decision tree, not `classify_probe`); no scalar-type
             // check applies.
@@ -7330,6 +7338,13 @@ fn pattern_constraints(
         crate::resolved::Resolved::Str(s) => {
             Some((crate::core::Probe::Str(s), crate::ty::Ty::String))
         }
+        // A SYMBOL-literal payload sub-pattern — `(Mk #"add")` matches a `Mk` carrying the symbol `#"add"`.
+        // A symbol shares the constant-string rep (`SymbolConst` → `Core::ConstStr`), so it reuses the
+        // SAME `Str` probe/fold/emit as a string literal; its expected sub-value type is `Symbol` (the
+        // symbol twin of the String-literal payload — the nested face of the top-level symbol-match support).
+        crate::resolved::Resolved::SymbolConst(s) => {
+            Some((crate::core::Probe::Str(s), crate::ty::Ty::Symbol))
+        }
         _ => None,
     };
     if let Some((probe, lit_ty)) = probe {
@@ -9210,10 +9225,18 @@ fn classify_probe(db: &mut Db, pat: StructId) -> Option<crate::core::Probe> {
     match resolved_of(db, pat) {
         Resolved::Int(v) => Some(crate::core::Probe::Int(v)),
         Resolved::Bool(b) => Some(crate::core::Probe::Bool(b)),
-        // A STRING-literal pattern (`("hello" …)`). Only the constant-scrutinee fold uses it (a runtime
-        // string match declines — `is_scalar` is Int/Bool); it is classified here so a match on a
-        // constant string selects its arm.
+        // A STRING-literal pattern (`("hello" …)`). Classified as a `Str` probe — a constant scrutinee
+        // folds by value equality, a runtime scrutinee emits a `value-eq` content compare (the Str-probe
+        // LitTest).
         Resolved::Str(s) => Some(crate::core::Probe::Str(s)),
+        // A SYMBOL-literal pattern (`(#"add" …)`). A symbol SHARES the constant-string representation —
+        // its identity is its text, `Resolved::SymbolConst` lowers to the same `Core::ConstStr` a string
+        // does (see the `SymbolConst` arm of `core_of`), and `=` on two symbols folds via the shared
+        // constant-string equality. So a symbol-literal pattern reuses the SAME `Str` probe: the const-fold
+        // compares by text and the runtime path emits the same `value-eq` content compare — a match on
+        // `#"add"` dispatches exactly as a match on `"add"` does. This is the head-dispatch idiom over a
+        // symbol (`(match tag (#"add" …) (#"sub" …))`), the symbol twin of String-literal patterns.
+        Resolved::SymbolConst(s) => Some(crate::core::Probe::Str(s)),
         _ => None,
     }
 }

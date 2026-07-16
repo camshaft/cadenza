@@ -70,3 +70,25 @@ fn type_of_a_near_typo_fails_with_did_you_mean() {
     );
     let _ = std::fs::remove_dir_all(f.parent().unwrap());
 }
+
+#[test]
+fn a_directory_in_the_file_slot_gives_a_clean_diagnostic_not_a_raw_os_error() {
+    // A DIRECTORY passed where a program FILE is expected must give a clean, actionable message — not the
+    // raw `Is a directory (os error 21)` a `read_to_string` leaks. This pins the shared program loader's
+    // pre-check, which fixes it for EVERY by-name/by-offset query command at once (type/doc/uses/def/
+    // scope/type-at/doc-at/exports/symbols/highlight/instantiations all funnel through it).
+    let dir = std::env::temp_dir().join(format!("cdz-type-dir-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (ok, out, err) = run(&["type", "foo", dir.to_str().unwrap()]);
+    assert!(!ok, "a directory in the file slot must fail: {out}{err}");
+    assert!(
+        err.contains("is a directory") && err.contains("single program file"),
+        "clean directory diagnostic naming what to pass, not a raw errno: {err}"
+    );
+    assert!(
+        !err.contains("os error"),
+        "the raw OS error is not surfaced: {err}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

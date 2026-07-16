@@ -23,29 +23,11 @@ import { renderOutput, type CellOutput, type RunOutcome } from "./renderOutput.t
 import { ProseView } from "./ProseView.tsx";
 import { OutputView } from "./OutputView.tsx";
 import { WidgetControls } from "./WidgetControls.tsx";
+import { DEFAULT_EXAMPLE } from "./examples.ts";
 
-/// A starter notebook, self-contained (no imports — the browser compiler can't resolve library modules),
-/// s-expr surface (the driver consumes canonical renders; matches /cad's rationale). Shows prose, a
-/// widget, a value cell that reacts to the widget, and a table.
-const STARTER = `# Compound interest
-
-Drag the **rate** slider and watch the balance recompute.
-
-~~~cadenza widget
-rate : Float64 = slider(0.0, 0.2, step: 0.01, default: 0.05)
-~~~
-
-The balance after one year on a 1000.0 principal:
-
-~~~cadenza
-(def (main) (* 1000.0 (+ 1.0 rate)))
-~~~
-
-A little schedule (year, growth factor):
-
-~~~cadenza table
-(def (main) (list (tuple 1 (+ 1.0 rate)) (tuple 2 (* (+ 1.0 rate) (+ 1.0 rate)))))
-~~~`;
+/// The starter notebook the route opens with — the flagship compound-interest example (from the shared
+/// `examples` module, so the route, the docs, and check:visual all draw from one source of truth).
+const STARTER = DEFAULT_EXAMPLE.markdown;
 
 /// Per-code-cell run state, keyed by the cell's index in the parsed cell list.
 type CellState = { phase: "idle" } | { phase: "running" } | { phase: "done"; output: CellOutput };

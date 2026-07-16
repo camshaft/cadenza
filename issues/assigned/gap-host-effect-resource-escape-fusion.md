@@ -65,3 +65,11 @@ done (Flat + Sum + RecursiveSum). REMAINING: (1) with-methods String/Bytes site 
 6850); (2) STRING-param host op = shared-memory `_mem` variant (all sites decline it cleanly today via
 set_needs_memory). Both non-urgent; mirror the peer twins with leading_is_host=true + host_import_functype
 (2-slot) for the string case.
+
+## UPDATE (PR#481/#483 single-effect guard): MR `cd923d38a` (queued) guards ALL 3 host-resource arms
+(Flat/Sum/RecursiveSum) — the Copilot-flagged 7092/7352 arms included. Supersedes the Flat-only `16644feaf`
+(pr-sync REJECTED it as redundant, correct). Once cd923d38a lands, PR#481+#483 guard gap closed.
+⏭️ BONUS follow-up (PR#483 id 3596437345, queued, post-cd923d38a-land): the SUM + recursive-sum arms
+re-implement the HostImport→ExternImport projection INLINE (mod.rs ~7126) instead of using the
+`host_as_extern_for` helper (added for exactly this) — fold them onto the helper (dedup, avoids divergence).
+Small cleanup, do AFTER cd923d38a lands (same arms; stacking now conflicts).

@@ -78,6 +78,7 @@ pass	Type.eq on a constructed generic sum compares the full instantiated type
 pass	Type.eq on a type-valued parameter against a COMPOUND type is structural
 pass	Type.of carries a quantity's unit into a same-type annotation
 pass	Type.of on a bare nullary variant reflects its element as UNDETERMINED
+pass	Type.of reflects a function's BODY-SOLVED domain, distinguishing different parameter types
 pass	Type.of reflects a runtime parameter's type at compile time
 pass	Type.of reflects a value's type for use as an annotation
 pass	UInt16.wrap at exactly two-to-the-sixteenth is zero
@@ -503,6 +504,7 @@ pass	a function chosen by a runtime condition is applied (false branch)
 pass	a function chosen by a runtime condition is applied (true branch)
 pass	a function declaration in a do block calls an earlier sibling declaration
 pass	a function declaration in a do block is callable by the following forms
+pass	a function deriving a velocity from a distance and a time
 pass	a function is passed as an argument (higher-order)
 pass	a function is returned as a result
 pass	a function open over a record's extra fields accepts any record with the used field
@@ -515,6 +517,7 @@ pass	a function stored in a tuple element is called after extraction
 pass	a function takes a boolean parameter and branches on it
 pass	a function whose body always diverges has result type Never
 pass	a function whose name is capitalized is called, not treated as a constructor
+pass	a function's reflected domain matches an equivalent explicitly-annotated signature
 pass	a function's return type ascription agreeing with the body is transparent
 pass	a function's return type contradicting the body is rejected
 pass	a function-typed parameter annotation is not silently discarded in the body
@@ -888,6 +891,7 @@ pass	a negative hexadecimal literal negates its value
 pass	a negative integer literal pattern matches a runtime scrutinee
 pass	a negative integer nested in a compound round-trips by byte identity
 pass	a negative integer width is rejected
+pass	a negative power is the reciprocal, deriving an inverse unit
 pass	a negative power over a BigInt magnitude truncates the reciprocal exactly
 pass	a negative power over a Rational magnitude is the EXACT reciprocal
 pass	a negative power over an integer magnitude truncates the reciprocal
@@ -1074,6 +1078,7 @@ pass	a quantity is constructed from a numeric value and a unit
 pass	a quantity over a BigInt magnitude compares by its exact value
 pass	a quantity over a BigInt magnitude runs unbounded arithmetic on the erased handles
 pass	a quantity over a Rational magnitude compares by its exact value
+pass	a quantity over an exact rational magnitude divides exactly and derives its dimension
 pass	a quantity raised to the zeroth power is a dimensionless one
 pass	a quantity's erased value is the identical numeric value the bare literal has
 pass	a quote inside a tagged-template hole reaches the tag function as an Ast value
@@ -2130,6 +2135,7 @@ pass	distinct large floats are not equal
 pass	distinct names bound to the same string key the same map entry
 pass	distinct seeds produce distinct generated values (the stream covers, it is not constant)
 pass	dividing a quantity by a bare number keeps its dimension
+pass	dividing quantities divides their dimensions
 pass	division by zero traps
 pass	division of an integer and a float does not silently promote
 pass	division of the minimum integer by -1 overflows and traps
@@ -2391,6 +2397,7 @@ pass	projecting a tuple passed as a function parameter yields the element, never
 pass	projecting an if-of-tuples does not evaluate the untaken branch's unprojected sibling
 pass	projecting an if-of-tuples evaluates the taken branch's projected element, so its trap occurs
 pass	projecting the result of a function that threads a tuple parameter must not trap
+pass	projecting the safe element of a tuple elides the discarded trapping element's trap
 pass	promoting a Float32 to Float64 is exact
 pass	pushing an element of a different type onto a list is a type error
 pass	pushing an element onto a list appends it
@@ -3068,7 +3075,6 @@ todo	a fixed-shape Tuple ARG with a Tuple RESULT crosses the direct-call boundar
 todo	a fixed-shape scalar RECORD closure ARG crosses the DIRECT-CALL boundary
 todo	a fixed-shape scalar Tuple closure ARG crosses the DIRECT-CALL boundary (host supplies the tuple)
 todo	a float leaf and a Bytes leaf compare together in one compound
-todo	a function deriving a velocity from a distance and a time
 todo	a generated value with a BIGINT leaf is reproducible (compound = walks the bignum)
 todo	a host call's response is an ordinary value that feeds a LATER host call
 todo	a host effect with a non-kebab NAME crosses under a normalized interface extern name
@@ -3097,7 +3103,6 @@ todo	a mutual AST walker re-extracts a node's payload in a sibling operand while
 todo	a mutually-recursive AST walker reads a node's child list without corrupting a sibling head-read
 todo	a mutually-recursive decoder returns a heap value and cursor and its heap slot is dispatched
 todo	a naive (non-renaming) substitution captures a free variable — the bug capture-avoidance prevents
-todo	a negative power is the reciprocal, deriving an inverse unit
 todo	a nested conjunction accumulates all three operand hypotheses
 todo	a nested element pattern dispatches on a NON-variant-0 list payload
 todo	a nested tuple list element is bound over a runtime list and folded across the rest
@@ -3114,7 +3119,6 @@ todo	a produced closure is handed back into a consumer export (the round trip)
 todo	a program that makes a host call has that call in its observable behavior
 todo	a program uses a response-returning delegated host function's return value
 todo	a purely-logical composed proof over a quantified proposition: DISCH then MP
-todo	a quantity over an exact rational magnitude divides exactly and derives its dimension
 todo	a re-declared same-name theorem type in another module is a distinct type a kernel value does not satisfy
 todo	a record-returning closure alongside a parameterized plain export — the closure
 todo	a record-returning closure alongside a parameterized plain export — the plain
@@ -3272,7 +3276,6 @@ todo	distinct-signature capturing producers
 todo	distinct-signature closures alongside a plain export — the Int64->Bool closure runs
 todo	distinct-signature closures alongside a plain export — the Int64->Int64 closure runs
 todo	distinct-signature closures alongside a plain export — the plain export runs
-todo	dividing quantities divides their dimensions
 todo	equality over a Rational carried in a SUM payload respects normalization
 todo	equality over a compound mixing a float and a Bytes leaf walks both
 todo	eval does not forge a private constructor NESTED in a compound

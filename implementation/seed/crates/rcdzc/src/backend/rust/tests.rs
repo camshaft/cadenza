@@ -1547,16 +1547,18 @@ fn rustc_roundtrip_rational_arithmetic_and_render() {
 }
 
 #[test]
-fn quantity_result_maps_to_inner_at_a_scale1_base_unit_else_declines() {
-    // A QUANTITY RESULT at a scale-1 SIMPLE unit maps to its INNER magnitude's Rust type (the `Ty::Qty`
-    // wrapper erases in `lower`); the unit is carried in the `cdz-return` note + rendered `((. Qty of)
-    // <mag> <unit>)` by the gate harness (the 9 corpus cases pin the end-to-end render). Here we pin the
-    // EMIT side: a base-unit Qty result compiles with the inner type; a non-scale-1 unit still declines.
+fn quantity_result_maps_to_inner_at_any_scale1_unit_else_declines() {
+    // A QUANTITY RESULT at a scale-1 unit maps to its INNER magnitude's Rust type (the `Ty::Qty` wrapper
+    // erases in `lower`); the unit's canonical VALUE form is carried in a `// cdz-unit` note
+    // (`Unit::render_value_form`) and rendered `((. Qty of) <mag> <unit>)` by the gate harness (the corpus
+    // cases pin the end-to-end render). Here we pin the EMIT side: a scale-1 unit of ANY shape compiles with
+    // the inner type + the value-form note; a non-scale-1 unit still declines.
     let base = compile_rust("(module m (def (g) (Qty.of 5.0 (Unit.base #\"meter\"))) (export g))");
     assert!(
         base.contains("-> f64")
-            && base.contains("// cdz-return[g]: (Qty Float64 (Unit.base #\"meter\"))"),
-        "a Qty{{Float64,meter}} result emits the inner f64 + a Qty return note:\n{base}"
+            && base.contains("// cdz-return[g]: (Qty Float64 (Unit.base #\"meter\"))")
+            && base.contains("// cdz-unit[g]: ((. Unit base) #\"meter\")"),
+        "a Qty{{Float64,meter}} result emits the inner f64 + return + value-form unit notes:\n{base}"
     );
     // A NON-reference (scaled) unit still DECLINES — its display would scale the magnitude (deferred).
     let scaled =
@@ -1565,26 +1567,36 @@ fn quantity_result_maps_to_inner_at_a_scale1_base_unit_else_declines() {
         scaled.is_err(),
         "a non-scale-1 (mile) quantity result declines (display-scaling not yet done):\n{scaled:?}"
     );
-    // A SINGLE base to a POSITIVE power — `meter²`, an area from `m·m` — is a scale-1 derived unit whose
-    // `render()` (`(Unit.^ (Unit.base #"meter") 2)`) matches cdz-run's value form, so it maps to the inner
-    // f64 and carries the `Unit.^` return note (the gate's 3 area cases pin the end-to-end render).
+    // A SINGLE base to a POSITIVE power — `meter²`, an area from `m·m`. The value-form note carries the
+    // `Unit.^` surface (the gate's area cases pin the end-to-end render).
     let area = compile_rust(
         "(module m (def (g) (* (Qty.of 2.0 (Unit.base #\"meter\")) (Qty.of 3.0 (Unit.base #\"meter\")))) (export g))",
     );
     assert!(
         area.contains("-> f64")
-            && area.contains("// cdz-return[g]: (Qty Float64 (Unit.^ (Unit.base #\"meter\") 2))"),
-        "a meter² (scale-1, single-base positive power) result emits the inner f64 + a Unit.^ note:\n{area}"
+            && area.contains("// cdz-unit[g]: (Unit.^ ((. Unit base) #\"meter\") 2)"),
+        "a meter² result emits the inner f64 + a `Unit.^` value-form unit note:\n{area}"
     );
-    // A PRODUCT of DISTINCT bases / a QUOTIENT still DECLINES: a velocity `m/s` renders `Unit.*`/`Unit.^ -1`,
-    // a form cdz-run's canonical value spelling (which uses `Unit./`) does not match, so the harness cannot
-    // yet reconstruct it — decline rather than emit a wrong render (deferred to the value-form-rebuild slice).
-    let velocity = compile_rust_result(
+    // A QUOTIENT of DISTINCT bases — a velocity `m/s` — now COMPILES (scale-1, the value-form note renders it
+    // as a `Unit./` quotient, cdz-run's canonical surface). The `cdz-return` note's TYPE surface spells it
+    // `Unit.*`/`Unit.^ -1`, but the `cdz-unit` note carries the quotient form the boundary render needs.
+    let velocity = compile_rust(
         "(module m (def (g) (/ (Qty.of 6.0 (Unit.base #\"meter\")) (Qty.of 2.0 (Unit.base #\"second\")))) (export g))",
     );
     assert!(
-        velocity.is_err(),
-        "a velocity (m/s, a distinct-base quotient) result declines (value-form rebuild not yet done):\n{velocity:?}"
+        velocity.contains("-> f64")
+            && velocity.contains(
+                "// cdz-unit[g]: (Unit./ ((. Unit base) #\"meter\") ((. Unit base) #\"second\"))"
+            ),
+        "a velocity (m/s) result emits the inner f64 + a `Unit./` quotient value-form note:\n{velocity}"
+    );
+    // A reciprocal / negative power — `second⁻¹`, a frequency — renders as `(Unit./ (. Unit one) …)`.
+    let freq = compile_rust(
+        "(module m (def (g) (Qty.pow (Qty.of 2.0 (Unit.base #\"second\")) -1)) (export g))",
+    );
+    assert!(
+        freq.contains("// cdz-unit[g]: (Unit./ (. Unit one) ((. Unit base) #\"second\"))"),
+        "a frequency (second⁻¹) result emits a `Unit./` over the dimensionless numerator:\n{freq}"
     );
 }
 

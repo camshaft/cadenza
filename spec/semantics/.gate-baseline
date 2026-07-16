@@ -184,6 +184,7 @@ pass	Type.eq on a constructed generic sum compares the full instantiated type
 pass	Type.eq on a type-valued parameter against a COMPOUND type is structural
 pass	Type.of carries a quantity's unit into a same-type annotation
 pass	Type.of on a bare nullary variant reflects its element as UNDETERMINED
+pass	Type.of reflects a function's BODY-SOLVED domain, distinguishing different parameter types
 pass	Type.of reflects a runtime parameter's type at compile time
 pass	Type.of reflects a value's type for use as an annotation
 pass	UInt16.wrap at exactly two-to-the-sixteenth is zero
@@ -679,6 +680,7 @@ pass	a default-integer pragma makes a bare literal take the declared integer typ
 pass	a default-integer pragma naming a non-integer type is rejected
 pass	a default-integer pragma naming an unbound type is rejected as unbound, like an annotation
 pass	a delegated capability is not itself an export field
+pass	a delegated effect performed in a closure passed to a HOF is reached and fires
 pass	a delegated effect performed inside an intra-program handler
 pass	a delegated effect reached only through an if-branch is granted and fires when the branch is taken
 pass	a delegated host effect composes with the value-heap runtime
@@ -791,6 +793,7 @@ pass	a function stored in a tuple element is called after extraction
 pass	a function takes a boolean parameter and branches on it
 pass	a function whose body always diverges has result type Never
 pass	a function whose name is capitalized is called, not treated as a constructor
+pass	a function's reflected domain matches an equivalent explicitly-annotated signature
 pass	a function's return type ascription agreeing with the body is transparent
 pass	a function's return type contradicting the body is rejected
 pass	a function-typed parameter annotation is not silently discarded in the body
@@ -1245,6 +1248,7 @@ pass	a nested pattern under an open sum's named variant still requires the outer
 pass	a nested runtime tuple built behind a recursive call escapes to the host
 pass	a nested runtime tuple is returned as a result
 pass	a nested sum match missing an inner variant is non-exhaustive
+pass	a nested symbol-literal payload falls through on a non-matching symbol
 pass	a nested tuple list element is bound over a runtime list and folded across the rest
 pass	a nested tuple pattern of the wrong arity is a type error
 pass	a nested tuple-arity mismatch in equality is a type error
@@ -1712,7 +1716,9 @@ pass	a runtime sum whose payload comes from recursion compares unequal by a heap
 pass	a runtime sum whose payload is a runtime tuple nests across the boundary
 pass	a runtime symbol compared to an interned constant matches by content
 pass	a runtime symbol is found among a set of known symbols
+pass	a runtime symbol matches a symbol-literal pattern arm by content
 pass	a runtime symbol not among the known symbols is rejected
+pass	a runtime symbol not among the literal arms falls through to the wildcard
 pass	a runtime symbol that differs from the interned constant does not match
 pass	a runtime three-level nested tuple compares equal by a deep walk
 pass	a runtime three-variant classifier dispatches to the middle arm
@@ -1760,9 +1766,11 @@ pass	a runtime-magnitude quotient divides the erased magnitudes
 pass	a runtime-magnitude same-unit difference subtracts the erased magnitudes
 pass	a runtime-magnitude same-unit sum adds the erased magnitudes
 pass	a runtime-scrutinee match with a bare-binder first arm and a differently-typed second arm is a type error
+pass	a runtime-selected branch with a runtime-divisor div-by-zero traps only when taken
 pass	a runtime-selected closure survives as a value threaded through a recursive HOF (false branch)
 pass	a runtime-selected closure survives as a value threaded through a recursive HOF (true branch)
 pass	a runtime-selected function chosen directly at the application head is applied
+pass	a runtime-selected trapping branch with a non-zero divisor computes normally
 pass	a same-dimension annotation is the identity under its own unit's conversion
 pass	a same-dimension annotation preserves the value's own scale through a conversion
 pass	a same-dimension quantity annotation whose inner numeric type differs is still an error
@@ -1864,6 +1872,7 @@ pass	a string literal payload refines a ctor list element
 pass	a string passed to a function as a runtime argument is measured by its byte length
 pass	a string spelled like a keyword round-trips as an Ast.Str, not an Ast.Bool or Ast.Name
 pass	a string-literal pattern in a match selects by string equality, distinguishing Unicode
+pass	a success `?` observes an earlier trapping let-init so the trap is not elided
 pass	a success `?` then a failure `?` short-circuits at the second
 pass	a suffixed BigInt literal annotated as Int64 is a type mismatch
 pass	a suffixed Rational literal annotated as Int64 is a type mismatch
@@ -1894,6 +1903,7 @@ pass	a symbol compared to a string is a type error
 pass	a symbol converts back to its content string
 pass	a symbol is constructed from a string
 pass	a symbol's identity is its content, not how the content was derived
+pass	a symbol-literal pattern nested in a variant payload matches by content
 pass	a tag-length-value record round-trips through construct then match
 pass	a tagged template expands via its binding-dispatched tag function
 pass	a tagged template nested in another's hole composes — the inner's result reaches the outer tag
@@ -1950,6 +1960,7 @@ pass	a trapping element in the taken arm of a same-length list if still traps
 pass	a trapping element in the untaken arm of a same-arity tuple if does not trap
 pass	a trapping element in the untaken arm of a same-length list if does not trap
 pass	a trapping field in the untaken arm of a same-shape record if does not trap
+pass	a trapping init observed inside the `?`'s own operand is not elided
 pass	a trapping payload in a non-taken arm of a same-constructor match does not trap
 pass	a trapping payload in the TAKEN arm of a same-constructor if still traps
 pass	a trapping payload in the taken arm of a same-constructor match still traps
@@ -2364,6 +2375,7 @@ pass	an underscore export name crosses under a normalized extern name
 pass	an underscore-letter identifier binds and resolves
 pass	an underscore-prefixed function parameter binds its argument
 pass	an underscore-prefixed token is an identifier, not an integer
+pass	an ungranted effect hidden in a closure passed to a HOF is still rejected
 pass	an unimported sibling definition is not in scope
 pass	an unproductive self-recursion is declined, not a compiler crash
 pass	an unquote nested inside a plain quote is a syntax error, not an active unquote
@@ -2902,6 +2914,7 @@ pass	projecting a tuple passed as a function parameter yields the element, never
 pass	projecting an if-of-tuples does not evaluate the untaken branch's unprojected sibling
 pass	projecting an if-of-tuples evaluates the taken branch's projected element, so its trap occurs
 pass	projecting the result of a function that threads a tuple parameter must not trap
+pass	projecting the safe element of a tuple elides the discarded trapping element's trap
 pass	promoting a Float32 to Float64 is exact
 pass	pushing an element of a different type onto a list is a type error
 pass	pushing an element onto a list appends it
@@ -3242,6 +3255,7 @@ pass	the underlying numeric type obeys the numeric core — no silent promotion 
 pass	the union contains the elements of either set
 pass	the unit recovered from a runtime-magnitude quantity is dimensionally checked
 pass	the unit value
+pass	the untaken branch's runtime div-by-zero does not fire
 pass	the value-yielding insert of a new key adds the entry
 pass	the value-yielding insert reports None when the key is new
 pass	the value-yielding insert reports the prior value at a runtime key

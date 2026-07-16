@@ -1999,6 +1999,14 @@ fn emit_runtime_resource(
             .map(|hi| (hi.effect.clone(), hi.op.clone()))
             .collect();
         let iface = host_imports[0].effect.clone();
+        // SINGLE effect only — `assemble_host_runtime_resource` imports ONE host interface, so >1 distinct
+        // effect would be conflated + mis-serialized (PR #481). Decline the multi-effect shape cleanly.
+        if host_imports.iter().any(|hi| hi.effect != iface) {
+            return Err(Reject::decline(
+                "delegating more than one host effect from a resource-escaping entrypoint is not yet \
+                 emitted (one interface per envelope; the multi-interface host shape is a later increment)",
+            ));
+        }
         let host_layout = layout
             .with_import_base(h + k + 2)
             .with_host_order(host_order);
@@ -7087,6 +7095,14 @@ fn emit_runtime_sum_resource(
             .map(|hi| (hi.effect.clone(), hi.op.clone()))
             .collect();
         let iface = host_imports[0].effect.clone();
+        // SINGLE effect only — `assemble_host_runtime_resource` imports ONE host interface, so >1 distinct
+        // effect would be conflated + mis-serialized (PR #481). Decline the multi-effect shape cleanly.
+        if host_imports.iter().any(|hi| hi.effect != iface) {
+            return Err(Reject::decline(
+                "delegating more than one host effect from a resource-escaping entrypoint is not yet \
+                 emitted (one interface per envelope; the multi-interface host shape is a later increment)",
+            ));
+        }
         let host_layout = layout
             .with_import_base(h + k + 2)
             .with_host_order(host_order);
@@ -7347,6 +7363,14 @@ fn emit_recursive_sum_resource(
             .map(|hi| (hi.effect.clone(), hi.op.clone()))
             .collect();
         let iface = host_imports[0].effect.clone();
+        // SINGLE effect only — `assemble_host_runtime_resource` imports ONE host interface, so >1 distinct
+        // effect would be conflated + mis-serialized (PR #481). Decline the multi-effect shape cleanly.
+        if host_imports.iter().any(|hi| hi.effect != iface) {
+            return Err(Reject::decline(
+                "delegating more than one host effect from a resource-escaping entrypoint is not yet \
+                 emitted (one interface per envelope; the multi-interface host shape is a later increment)",
+            ));
+        }
         let host_layout = layout
             .with_import_base(h + k + 2)
             .with_host_order(host_order);
