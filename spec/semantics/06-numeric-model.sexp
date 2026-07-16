@@ -969,6 +969,45 @@
   (call   main (: 3.0 Float32) (: 2.0 Float32))
   (output (: 1.5 Float32)))
 
+; --- Float arithmetic NEVER traps: NaN propagates, and `/0` is infinity (IEEE), not a halt -----------
+; Unlike checked integer arithmetic (overflow / ÷0 → trap), a runtime float op has a DEFINED non-trapping
+; outcome for every input (numeric-model.md: "a float op never traps — IEEE overflow → inf"). These pin
+; that at run time: a NaN operand PROPAGATES through `+`/`-` (result is NaN, observed by `= _ nan` — true
+; ONLY for NaN under the canonical byte form), and float `/0` yields ±inf (which equals ITSELF and does
+; NOT halt — the OPPOSITE of integer `/0`). Now that runtime float `=` and ConstFloatNan are realized on
+; both backends, these are dual-backend observable.
+
+(case "a runtime float addition with nan propagates the nan"
+  (doc    "`(= (+ x Float64.nan) Float64.nan)` with a runtime `x` = 1.5: `x + nan` is NaN (IEEE: any
+           arithmetic with a NaN operand is NaN), and `= _ nan` is true only for a NaN result (canonical
+           byte form). So the result is true — the addition did NOT trap and produced NaN. Pins NaN
+           propagation through a runtime float add, both backends.")
+  (input  (do (def (main (: x Float64)) (= (+ x Float64.nan) Float64.nan)) (export main)))
+  (call   main (: 1.5 Float64))
+  (output (: true Bool)))
+
+(case "a runtime float divide by zero yields a non-trapping infinity"
+  (doc    "`(/ x y)` with y = 0.0 does NOT trap (the OPPOSITE of integer `/0`, which halts): float `/0` is
+           ±inf (IEEE), a defined value. Observed by `(= (/ x y) (/ x y))` = true — inf equals itself, and
+           crucially the divide RAN to a value rather than halting. y = 2.0 (6/2 = 3, finite) is also
+           self-equal → true, the control. Pins that a runtime float divide is total (non-trapping) on
+           both backends — distinct from the trapping integer `/0`.")
+  (input  (do (def (main (: x Float64) (: y Float64)) (= (/ x y) (/ x y))) (export main)))
+  (call   main (: 1.0 Float64) (: 0.0 Float64))
+  (output (: true Bool))
+  (call   main (: 6.0 Float64) (: 2.0 Float64))
+  (output (: true Bool)))
+
+(case "a runtime nan minus nan is nan, not zero"
+  (doc    "`(- Float64.nan Float64.nan)` is NaN, NOT 0 — subtraction of equal NaNs does not cancel to zero
+           (a NaN is not equal to itself under IEEE arithmetic identity; every NaN-operand op is NaN).
+           `(= (- x-forced-nan …) nan)` → 1. Uses a runtime `x` to keep the subtraction off the const-fold
+           path. Pins that a runtime float subtraction with NaN operands propagates NaN rather than
+           applying the `x - x = 0` integer identity, both backends.")
+  (input  (do (def (main (: x Float64)) (if (= (- x Float64.nan) Float64.nan) 1 0)) (export main)))
+  (call   main (: 5.0 Float64))
+  (output (: 1 Int64)))
+
 (case "a runtime integer converts to a float with the machine convert"
   (doc    "`(Float64.of-int n)` over a runtime Int64 `n` emits `f64.convert_i64_s`; `(of-int 42)` = 42.0.
            The explicit int→float conversion (numeric-model.md #A Conversion Involving A Floating-Point

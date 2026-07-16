@@ -33365,6 +33365,43 @@ mod match_engine {
     }
 
     #[test]
+    fn a_mixed_scale_comparison_truncates_over_int_but_is_exact_over_rational() {
+        // A mixed-scale comparison converts each operand to the reference in the INNER numeric type. Over
+        // Int64 that conversion TRUNCATES (the numeric core's rule), so two sub-reference-unit quantities
+        // can truncate to the SAME reference value and compare EQUAL even when their exact values differ:
+        // 30 cm = 30/100 m and 1 foot = 381/1250 m both truncate to 0 m over Int → (= 30cm 1foot) is TRUE.
+        // The same comparison over Rational is EXACT (375/1250 < 381/1250), giving the correct ordering.
+        // Pins the documented lossy-Int / exact-Rational contract for a mixed-scale comparison (a passing-
+        // but-surprising behavior — the Int truncation is opting into integer math, not a miscompile).
+        // Int64: 30 cm and 1 foot both truncate to 0 m → EQUAL (1).
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(
+                    "(do (def (main) (if (= ((. Qty of) 30 ((. Unit of) #\"centimeter\")) \
+                     ((. Qty of) 1 ((. Unit of) #\"foot\"))) 1 0)) (export main))"
+                )))
+                .expect("a mixed-scale Int comparison compiles"),
+                "main"
+            ),
+            1,
+            "30 cm and 1 foot both truncate to 0 m over Int → compare equal (lossy, documented)"
+        );
+        // Rational: exact — 375/1250 m < 381/1250 m → 30 cm < 1 foot is TRUE (1), the answer Int truncates.
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(
+                    "(do (def (main) (if (< ((. Qty of) ((. Rational of) 30 1) ((. Unit of) #\"centimeter\")) \
+                     ((. Qty of) ((. Rational of) 1 1) ((. Unit of) #\"foot\"))) 1 0)) (export main))"
+                )))
+                .expect("a mixed-scale Rational comparison compiles"),
+                "main"
+            ),
+            1,
+            "30 cm < 1 foot exactly over Rational (375/1250 < 381/1250) — the answer Int truncates away"
+        );
+    }
+
+    #[test]
     fn a_bigint_or_rational_inner_quantity_comparison_folds_to_the_exact_compare() {
         // Companion to the bigint-quantity arithmetic fix: a `(Qty BigInt/Rational u)` COMPARISON must
         // route to the exact bigint/rational compare, not decline as a "compound value needs a heap walk".
@@ -37886,6 +37923,31 @@ mod diagnostics {
                 .all(|d| d.severity != crate::abi::Severity::Error),
             "a well-formed map rest pattern still checks clean: {:?}",
             diags_of(ok)
+        );
+        // NESTED: a malformed-rest map INSIDE a variant payload (`(Wrap (map … .. r (j w)))`) gets the
+        // SAME specific rest-shape message (not the vague "a malformed map pattern") and NO unbound leak —
+        // the `pattern_constraints` + Case-Mmr nested twin of the top-level fix.
+        let nested = "(module m (type W (Wrap (Map Int64 Int64))) \
+                      (def (f (: w W)) (match w ((Wrap (map (1 v) .. r (2 x))) v) (_ 0))) (export f))";
+        let all = diags_of(nested);
+        assert!(
+            all.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
+                && d.message.contains("map rest pattern is")),
+            "a nested malformed-rest map gets the specific rest-shape message: {all:?}"
+        );
+        assert!(
+            all.iter().all(|d| d.code.as_deref() != Some("CDZ0101")),
+            "no misleading 'unbound name' for a nested malformed-map binder: {all:?}"
+        );
+        // NO false alarm: a WELL-FORMED nested map (`.. r` final) still checks clean.
+        let nested_ok = "(module m (type W (Wrap (Map Int64 Int64))) \
+                         (def (f (: w W)) (match w ((Wrap (map (1 v) .. r)) v) (_ 0))) (export f))";
+        assert!(
+            diags_of(nested_ok)
+                .iter()
+                .all(|d| d.severity != crate::abi::Severity::Error),
+            "a well-formed nested map rest pattern still checks clean: {:?}",
+            diags_of(nested_ok)
         );
     }
 

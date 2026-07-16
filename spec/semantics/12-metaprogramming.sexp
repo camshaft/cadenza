@@ -266,6 +266,30 @@
   (input  (eval (quasiquote (+ (unquote (quote (* 2 3))) 1))))
   (declines))
 
+; The boundary is specifically the EVAL/execution surface — not the spliced Ast value, which is a
+; perfectly well-formed tree. The SAME template that `eval` declines above is handled by the NON-executing
+; interchange paths: `print` renders it and `Ast.encode`/`Ast.decode` round-trip it. These pin that an
+; Ast-value-spliced template is a valid AST (it is only RUNNING it as code that hits the optional-runtime-
+; eval line), so a future reader does not mistake the eval decline for a malformed template.
+
+(case "print renders a template that splices an Ast value — the non-executing path works"
+  (doc    "The same template `eval` declines above prints fine: `(quasiquote (+ ,(quote (* 2 3)) 1))` splices
+           the quoted subtree `(* 2 3)` at its position, and `print` renders the whole as `\"(+ (* 2 3) 1)\"`.
+           Pins that the Ast-value splice builds a WELL-FORMED tree (the eval limit is the execution surface,
+           not the construction) — `print` reads through the spliced subtree with no decline.")
+  (input  (= (print (quasiquote (+ (unquote (quote (* 2 3))) 1))) "(+ (* 2 3) 1)"))
+  (output (: true Bool)))
+
+(case "an Ast-value-spliced template round-trips through encode and decode"
+  (doc    "The byte-path companion: the template `eval` declines encodes and decodes back equal. `Ast.encode`/
+           `Ast.decode` treat the spliced `(* 2 3)` subtree as ordinary nested AST structure, so the
+           bijection holds over it — confirming the spliced value is a valid AST the interchange paths handle,
+           and only the eval/execution surface has the (optional-runtime-eval) limit.")
+  (input  (match (Ast.decode (Ast.encode (quasiquote (+ (unquote (quote (* 2 3))) 1))))
+            ((Ok a)  (= a (quasiquote (+ (unquote (quote (* 2 3))) 1))))
+            ((Err _) false)))
+  (output (: true Bool)))
+
 (case "an active unquote of a let-bound boolean lifts to Ast.Bool by inferred type"
   (doc    "A RUNTIME operand (a let-bound name) lifts by its inferred type: `b : Bool` → `Ast.Bool`.
            `(let ((b true)) `(f ,b))` builds `(Ast.List (list (Ast.Name \"f\") (Ast.Bool true)))`. Pins the

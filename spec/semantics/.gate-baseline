@@ -999,6 +999,7 @@ pass	a member access with no field operand is rejected, not a crash
 pass	a misspelled segment kind is rejected with a rename suggestion
 pass	a misspelled utf8 segment kind is rejected
 pass	a mixed-ownership inlined-match operand leaves the source map intact across repeated compares
+pass	a mixed-scale Int comparison truncates each operand to the reference (lossy, can compare equal)
 pass	a mixed-scale narrow-width Int quantity combine that overflows the inner width traps
 pass	a module declaration binds its name in the enclosing scope
 pass	a module function calls a sibling export by name
@@ -1128,6 +1129,7 @@ pass	a nested lambda captures+applies a closure-typed def PARAMETER (inline lamb
 pass	a nested list element composes over a runtime list of lists
 pass	a nested literal pattern of the wrong type is a type error
 pass	a nested map pattern falls through when its key is absent
+pass	a nested map pattern with a malformed rest names the shape, not an unbound binder (CDZ0201)
 pass	a nested match missing an inner variant under a DISC-≥1 variant is non-exhaustive
 pass	a nested match on a runtime scrutinee
 pass	a nested module's function export is applied through the projection chain
@@ -1493,6 +1495,8 @@ pass	a runtime exact mixing of inch and millimeter keeps the fractional scale
 pass	a runtime final rest segment binds the empty tail when the scrutinee is only the header
 pass	a runtime fixed-width segment is emitted big-endian and read back by index
 pass	a runtime float addition emits the machine add
+pass	a runtime float addition with nan propagates the nan
+pass	a runtime float divide by zero yields a non-trapping infinity
 pass	a runtime float division rounds under the fixed mode
 pass	a runtime float equality feeds the true-literal boolean coercion
 pass	a runtime float equality negated by the false-literal coercion
@@ -1521,6 +1525,7 @@ pass	a runtime mixed-scale combine converts a COMPUTED Float quantity operand
 pass	a runtime mixed-unit sum emits the scale conversion (Int)
 pass	a runtime modulo of the minimum integer by -1 is zero on every backend
 pass	a runtime multiplication that overflows traps
+pass	a runtime nan minus nan is nan, not zero
 pass	a runtime negative dividend divided by a constant power of two truncates toward zero
 pass	a runtime negative dividend mod a constant power of two takes the dividend's sign
 pass	a runtime negative zero is not equal to positive zero
@@ -1916,6 +1921,7 @@ pass	all four leaf kinds in one quoted form dispatch their own tags
 pass	all-nullary enum equality compares discriminants
 pass	an 8-bit-integer closure crosses the host boundary
 pass	an AST from quasiquoting a runtime value equals the same AST built by quote
+pass	an Ast-value-spliced template round-trips through encode and decode
 pass	an IEC binary prefix converts exactly over Int64
 pass	an IEC binary prefix scales a unit by a power of two
 pass	an IEC-prefixed quantity displays scaled to its reference over Int64
@@ -2626,6 +2632,7 @@ pass	print of an Ast.Float renders a re-readable decimal and read inverts it
 pass	print of an Ast.Str renders a quoted literal with escapes and read inverts it
 pass	print of an integer-valued Ast.Float keeps its float form through read
 pass	print renders a nested compound with a string leaf as its exact canonical text
+pass	print renders a template that splices an Ast value — the non-executing path works
 pass	print renders an empty Ast.List as the empty-parens form
 pass	projecting a field is independent of the order fields are written
 pass	projecting a field of a non-compound argument is rejected at the call site
@@ -2895,6 +2902,7 @@ pass	the runtime-if list takes its else branch and measures that length
 pass	the runtime-list version of a tail fold compiles and folds correctly
 pass	the same declared effect is handled in-program by one entrypoint and delegated by another
 pass	the same function called under two handlers is discharged by each in turn
+pass	the same mixed-scale comparison is EXACT over Rational (keeps the fractional scale)
 pass	the same program with a different response gives a different deterministic result
 pass	the same-core-shape sibling dispatches ITS body, not the first
 pass	the scalar length of a runtime multi-byte string counts scalars, not bytes

@@ -1384,16 +1384,20 @@ fn run_test_file(
                 );
             }
             // An `@exhaustive` test whose (original) parameter was COMPOUND: the compiler synthesized a
-            // gen-driven wrapper (nullary here, pulling random ints), but a COLLECTION/compound domain is
-            // UNBOUNDED — it cannot be exhaustively enumerated. Decline cleanly (the same spirit as an
-            // unbounded scalar domain), rather than sampling under an `@exhaustive` label (which would
-            // falsely imply a proof) or aborting the whole file at the compound param's export boundary.
+            // gen-driven wrapper that builds the value from the runner's random int POOL, which offers no
+            // way to ENUMERATE a domain (it samples). So exhaustive checking is not (yet) supported for a
+            // compound-parameter test — regardless of whether that domain is unbounded (a `List`) or
+            // finite (a small user-sum enum). Decline cleanly, rather than sampling under an `@exhaustive`
+            // label (which would falsely imply a proof) or aborting the file at the compound export
+            // boundary. (Exhaustive enumeration works for a BOUNDED SCALAR signature — the boundary-arg
+            // route above — where the domain is enumerated directly, not drawn from the pool.)
             Some(gens) if gens.is_empty() && *exhaustive => {
                 failed += 1;
                 println!(
-                    "FAIL {name}: @exhaustive needs a BOUNDED input domain — this test's parameter is a \
-                     collection/compound type, whose domain is unbounded; use a sampled `@test`, or an \
-                     `@exhaustive` over bounded scalar parameters (Bool / a narrow integer)"
+                    "FAIL {name}: @exhaustive is not supported for a compound parameter (a \
+                     collection/tuple/record/sum) — its generator samples the random pool and cannot \
+                     enumerate a domain; use a sampled `@test` for it, or make the signature bounded \
+                     SCALAR parameters (Bool / a narrow integer) for exhaustive checking"
                 );
             }
             // Nullary SOURCE signature — but this splits at runtime into two cases by whether the body
@@ -1465,7 +1469,7 @@ fn run_test_file(
                         // No failing case in the WHOLE enumerated domain → a proof over the domain, not a
                         // sample.
                         //= spec/capabilities/property-based-testing.md#exhaustive-coverage-is-a-proof-over-a-bounded-domain
-                        //# A property whose inputs range over a bounded finite domain MAY be checked by enumerating that entire domain, in which case a run that finds no failing input MUST be treated as a proof of the property over the domain rather than as a sample.
+                        //# When a property is checked by enumerating its entire bounded finite domain, a run that finds no failing input MUST be treated as a proof of the property over the domain rather than as a sample.
                         None => {
                             passed += 1;
                             println!("PASS {name} (exhaustive, {total} cases)");

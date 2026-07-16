@@ -2887,4 +2887,53 @@ mod tests {
         assert_eq!(resolve_model("some-future-model"), "some-future-model");
         assert_eq!(resolve_model(""), "");
     }
+
+    #[test]
+    fn agent_from_roster_derives_branch_worktree_and_disallow_ask() {
+        let fleet = Fleet {
+            root: PathBuf::from("/hub/.claude/fleet"),
+            worktrees: PathBuf::from("/hub/.claude/worktrees"),
+            repo: PathBuf::from("/hub"),
+            src: PathBuf::from("/wt/fleet"),
+        };
+        let entry = |name: &str, role: &str| RosterEntry {
+            name: name.into(),
+            role: role.into(),
+            vertical: String::new(),
+            area: String::new(),
+            interval: "10m".into(),
+            model: "opus".into(),
+            effort: "high".into(),
+        };
+
+        // A vertical/fix agent: branch = fleet/<name>, worktree = worktrees/<name>, active.
+        let v = agent_from_roster(&fleet, &entry("v-fleet-tooling", "vertical"));
+        assert_eq!(v.branch, "fleet/v-fleet-tooling");
+        assert_eq!(v.worktree, "/hub/.claude/worktrees/v-fleet-tooling");
+        assert_eq!(v.status, "active");
+
+        // pr-sync is the ONE agent on `trunk` itself (it integrates there), not a fleet/ branch.
+        let ps = agent_from_roster(&fleet, &entry("pr-sync", "pr-sync"));
+        assert_eq!(ps.branch, "trunk");
+
+        // SAFETY INVARIANT: disallow_ask is FALSE only for the interactive roles (concierge/design) —
+        // they may pop an AskUserQuestion to the human. EVERY other role is unattended, so it MUST be
+        // denied that tool (window.sh passes --disallowedTools AskUserQuestion), else an unattended
+        // agent could block its window forever on a human prompt.
+        assert!(!agent_from_roster(&fleet, &entry("concierge", "concierge")).disallow_ask);
+        assert!(!agent_from_roster(&fleet, &entry("design", "design")).disallow_ask);
+        for unattended in [
+            "vertical",
+            "fix",
+            "pr-sync",
+            "breaker",
+            "fuzzer",
+            "corpus-bugfix",
+        ] {
+            assert!(
+                agent_from_roster(&fleet, &entry("x", unattended)).disallow_ask,
+                "role {unattended:?} is unattended and MUST disallow AskUserQuestion"
+            );
+        }
+    }
 }

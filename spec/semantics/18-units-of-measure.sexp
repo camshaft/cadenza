@@ -602,6 +602,35 @@
   (input  (= (Qty.of 1.0 (Unit.base #"meter")) (Qty.of 1.0 (Unit.base #"second"))))
   (error  CDZ0501))
 
+; A mixed-scale comparison converts each operand to the reference in the INNER numeric type, so over Int
+; the conversion TRUNCATES (the numeric core's rule, `Int truncates on a non-whole ratio`) — and two
+; sub-reference-unit quantities can truncate to the SAME reference value and compare EQUAL even when their
+; exact values differ. This is a documented consequence of opting into integer math (contrast the exact
+; Rational comparison, which keeps the fractional scale). These pin that a mixed-scale comparison converts
+; in the inner type — lossy over Int, exact over Rational — so the surprising Int result can't silently
+; change and the Rational contrast documents the exact answer.
+
+(case "a mixed-scale Int comparison truncates each operand to the reference (lossy, can compare equal)"
+  (doc    "`(= (Qty.of 30 centimeter) (Qty.of 1 foot))` over Int64: each converts to the reference `meter`
+           by its scale — 30 cm = 30/100 m and 1 foot = 381/1250 m — but INTEGER conversion truncates both
+           to 0 m (each is < 1 m), so they compare EQUAL (1) even though 0.30 m ≠ 0.3048 m exactly. The
+           documented Int-truncates rule (opting into integer math) applied to a comparison: the conversion
+           happens in the inner type before comparing, so a sub-reference-unit Int quantity loses its
+           fractional part. Contrast the exact Rational case below. Not a miscompile — the same truncation
+           `Unit.in` over Int gives (30 cm in meter = 0, 1 foot in meter = 0).")
+  (input  (if (= (Qty.of 30 (Unit.of #"centimeter")) (Qty.of 1 (Unit.of #"foot"))) 1 0))
+  (output (: 1 Int64)))
+
+(case "the same mixed-scale comparison is EXACT over Rational (keeps the fractional scale)"
+  (doc    "`(< (Qty.of 30/1 centimeter) (Qty.of 1/1 foot))` over Rational: each converts to the reference
+           EXACTLY — 30 cm = 3/10 = 375/1250 m, 1 foot = 381/1250 m — so 375/1250 < 381/1250 is true (1),
+           the correct answer the Int case above truncates away. Pins that a Rational mixed-scale
+           comparison keeps the fractional scale and gives the exact ordering (the reason exact rationals
+           are load-bearing for units — the numeric type decides precision, not the dimensional layer).")
+  (input  (if (< (Qty.of (Rational.of 30 1) (Unit.of #"centimeter"))
+                 (Qty.of (Rational.of 1 1) (Unit.of #"foot"))) 1 0))
+  (output (: 1 Int64)))
+
 ; ============================================================================================
 ; Join sites — an if/match/list of quantities must share ONE quantity type (unit AND scale)
 ; ============================================================================================

@@ -7530,6 +7530,17 @@ fn pattern_constraints(
         let (entries, _rest) = match crate::resolve::map_pattern_of(db, pat) {
             Some(mp) => mp,
             None => {
+                // A NESTED map pattern (inside a variant/tuple payload) with a MALFORMED `..` rest — give
+                // the SAME specific rest-shape message the TOP-LEVEL map matcher does (Inc 42), not the
+                // vague "a malformed map pattern". The nested twin of that fix; `map_form_is_malformed_rest`
+                // distinguishes a bad rest from any other malformed map shape.
+                if crate::resolve::map_form_is_malformed_rest(db, pat) {
+                    return Err(Reject::coded(
+                        Code::Malformed,
+                        "a map rest pattern is `(map (k v) … .. rest)` — exactly one binder after `..`",
+                    )
+                    .at(pat));
+                }
                 return Err(Reject::coded(Code::Malformed, "a malformed map pattern").at(pat));
             }
         };

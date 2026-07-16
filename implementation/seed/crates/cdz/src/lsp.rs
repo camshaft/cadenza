@@ -2538,6 +2538,41 @@ mod tests {
     }
 
     #[test]
+    fn sexpr_code_action_anchors_the_quickfix_to_the_right_node_in_a_multi_form_program() {
+        // A MULTI-form s-expr program where the 2nd def has an unused param — the exact case that
+        // mis-anchored in the CLI `cdz fix` path (its `reparse_spans` s-expr arm skipped canonicalization,
+        // so the canonical fix-node indexed a NEIGHBOUR span → the fix rewrote the TYPE, not the param;
+        // filed to v-cdz-tooling). The LSP code_action goes through `parse_surface`, which DOES canonicalize
+        // the s-expr arena (fix 281291b36), so its quick-fix must anchor to the `y` PARAM, not its type.
+        // Pins that the LSP path is (and stays) correct on the case that broke the sibling.
+        let text = "(def (a (: x Int64)) x)\n(def (b (: y Int64)) 5)\n(export a b)";
+        let whole = Range::new(Position::new(0, 0), Position::new(2, 20));
+        let (title, edits) = only_action(&code_actions_at(text, false, &test_uri(), whole));
+        assert!(
+            title.contains("_y"),
+            "title should name the `_y` replacement, got {title:?}"
+        );
+        assert_eq!(
+            edits.len(),
+            1,
+            "the unused-param fix is a single replace: {edits:?}"
+        );
+        let e = &edits[0];
+        assert_eq!(e.new_text, "_y", "replaces the param name with `_y`");
+        // The edit must cover the PARAM `y` on line 1 (col 11..12), NOT its `Int64` type — the
+        // neighbour-mis-anchor bug would have landed the edit on the type instead.
+        assert_eq!(
+            (
+                e.range.start.line,
+                e.range.start.character,
+                e.range.end.character
+            ),
+            (1, 11, 12),
+            "the edit must cover the `y` param, not its type: {e:?}"
+        );
+    }
+
+    #[test]
     fn references_finds_every_use_of_the_name_under_the_cursor() {
         // `helper` is used twice (lines 1 and 2). References from any occurrence finds both uses;
         // excluding the declaration by default (UsesOf excludes the defining occurrence).
