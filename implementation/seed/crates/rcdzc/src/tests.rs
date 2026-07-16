@@ -37958,6 +37958,22 @@ mod diagnostics {
             all.iter().all(|d| d.code.as_deref() != Some("CDZ0101")),
             "no misleading 'unbound name' for the value/rest binder: {all:?}"
         );
+        // The body references the value binder that appears AFTER `..` (`w` in the trailing `(2 w)` pair) —
+        // Copilot PR #440 / corpus-bugfix: `map_form_binds_name` only treated a BARE name after `..` as a
+        // binder, so a `(k v)` pair after `..` left its value `w` unrecognized → a spurious CDZ0101 layered
+        // on the malformed pattern. Now `w` is recognized inert (no unbound leak); one clean rest-shape reject.
+        let w_after = "(module m (def (f (: mp (Map Int64 Int64))) \
+                       (match mp ((map (1 v) .. rest (2 w)) w) (_ 0))) (export f))";
+        let all = diags_of(w_after);
+        assert!(
+            all.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
+                && d.message.contains("map rest pattern is")),
+            "a body ref to a value binder after `..` still reports the rest-shape CDZ0201: {all:?}"
+        );
+        assert!(
+            all.iter().all(|d| d.code.as_deref() != Some("CDZ0101")),
+            "no 'unbound name' for a `(k v)` value binder appearing AFTER `..` (PR #440): {all:?}"
+        );
         // Two `..` markers — same clear message, no unbound leak.
         let two_dots = "(module m (def (f (: mp (Map Int64 Int64))) \
                         (match mp ((map (1 v) .. r1 .. r2) v) (_ 0))) (export f))";

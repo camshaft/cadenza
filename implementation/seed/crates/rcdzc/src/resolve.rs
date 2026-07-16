@@ -2837,16 +2837,27 @@ fn map_form_binds_name(db: &Db, pat: StructId, name: &str) -> bool {
     let dotdot = tail.iter().position(|&e| db.ast.as_name(e) == Some(".."));
     for (i, &item) in tail.iter().enumerate() {
         match dotdot {
-            // The element(s) after a `..` are REST binders (there may be more than one in a malformed
-            // pattern — accept each as a rest-position binder so none leaks unbound).
+            // The `..` marker itself binds nothing.
+            Some(d) if i == d => {}
+            // Item(s) AFTER a `..` in a MALFORMED pattern. In a well-formed pattern this is exactly one
+            // bare rest binder, but a malformed one may put another `(k v)` ENTRY here (`(map (1 v) ..
+            // rest (2 w))`) — treat BOTH shapes as binding: a bare name is a rest-position binder, and a
+            // `(k v)` pair binds its VALUE `v` (the key is a label). Without the `(k v)` arm, a body
+            // reference to a value binder after `..` (`w`) leaked a misleading CDZ0101 on top of the
+            // already-malformed pattern (Copilot PR #440 / corpus-bugfix). The KEY is never a binder.
             Some(d) if i > d => {
                 if db.ast.as_name(item) == Some(name) {
                     return true;
                 }
+                if let Struct::List(kv) = db.ast.get(item)
+                    && kv.len() == 2
+                    && db.ast.as_name(kv[1]) == Some(name)
+                {
+                    return true;
+                }
             }
-            // The `..` marker itself binds nothing.
-            Some(d) if i == d => {}
-            // An entry `(key value)` — the VALUE (second child) is the binder; the KEY is not.
+            // An entry `(key value)` BEFORE `..` (or in a pattern with no `..`) — the VALUE (second child)
+            // is the binder; the KEY is not.
             _ => {
                 if let Struct::List(kv) = db.ast.get(item)
                     && kv.len() == 2
