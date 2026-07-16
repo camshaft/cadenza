@@ -81,3 +81,18 @@ Probed the emitted consumer for `argonly2.sexp` (String literal arg, Int64 resul
 Then the FULL `(-> String String)` also needs task #6 (result-escape). Test: `argonly2.sexp` (arg only,
 scalar result) must VALIDATE + run first; then a both-sides-source round trip (peer reads the crossed
 String, returns a scalar). Byte-validate each step with `wasm-tools validate`.
+
+## ✅ RESOLVED (2026-07-16, commit 8572e19b9 → MR to pr-sync)
+Fixed with TWO small peer-vs-host edits + the PL24 decline dropped:
+1. `collect_used_ops` (select.rs HostCall arm): recurse into a PEER String/Bytes arg (it builds a rope →
+   bytes-alloc/bytes-set enter the runtime-import set → the consumer takes `assemble_extern_runtime`).
+   A HOST String arg still skips (marshaled as (ptr,len), no runtime op).
+2. `collect_host_arg_strings` (mod.rs HostCall arm): do NOT lay a PEER call's constant String in the data
+   segment (that tripped `needs_memory` → the spurious `mem` import). Peer String = rope handle, not a
+   data-segment string.
+The emit side already handed over the handle (emit(arg) → ConstStr builds the rope), so NO emit change.
+Both const + runtime-produced (String.concat) args verified e2e crossing to a real peer (byte-len = 5).
+PL24 (STRING_ARG_ACROSS_PEER_MESSAGE) + the obsolete corpus reject case removed; the reject case became a
+passing handler-override case. Gate 3123 pass / 3 todo / 0 fail. Pinned by
+`a_string_argument_crosses_to_a_peer_as_a_runtime_handle` + `a_non_constant_string_argument_crosses_to_a_peer`.
+STILL OPEN for full (-> String String): task #6 result-escape (main returns the peer's String).
