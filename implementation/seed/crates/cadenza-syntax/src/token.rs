@@ -472,39 +472,106 @@ mod tests {
         }
     }
 
+    /// The canonical spelling of every `Keyword` variant. This match is EXHAUSTIVE, so adding a variant
+    /// to the enum is a COMPILE ERROR here until it is given a spelling — this is the compile-time half
+    /// of the "no dead/unspelled keyword variant" guard. `every_keyword_variant_has_a_spelling` is the
+    /// runtime half: it drives assertions from [`ALL_KEYWORDS`] (the full variant set), not from the
+    /// `KEYWORD_SPELLINGS` table, so a variant MISSING from that table is caught (the original test
+    /// iterated the table and could not — PR #420 Copilot finding).
+    fn canonical_spelling(kw: Keyword) -> &'static str {
+        match kw {
+            Keyword::Let => "let",
+            Keyword::In => "in",
+            Keyword::If => "if",
+            Keyword::Then => "then",
+            Keyword::Else => "else",
+            Keyword::Fn => "fn",
+            Keyword::Def => "def",
+            Keyword::Type => "type",
+            Keyword::Match => "match",
+            Keyword::With => "with",
+            Keyword::Module => "module",
+            Keyword::Import => "import",
+            Keyword::Export => "export",
+            Keyword::Effect => "effect",
+            Keyword::Handle => "handle",
+            Keyword::Host => "host",
+            Keyword::As => "as",
+        }
+    }
+
+    // Every `Keyword` variant, independent of the `KEYWORD_SPELLINGS` table. Kept complete by the
+    // `assert_all_keywords_listed` exhaustive match below (a new variant fails to compile there until
+    // added here), so this is a trustworthy source of "all variants" the tests can iterate.
+    const ALL_KEYWORDS: &[Keyword] = &[
+        Keyword::Let,
+        Keyword::In,
+        Keyword::If,
+        Keyword::Then,
+        Keyword::Else,
+        Keyword::Fn,
+        Keyword::Def,
+        Keyword::Type,
+        Keyword::Match,
+        Keyword::With,
+        Keyword::Module,
+        Keyword::Import,
+        Keyword::Export,
+        Keyword::Effect,
+        Keyword::Handle,
+        Keyword::Host,
+        Keyword::As,
+    ];
+
+    // A compile-time completeness check for `ALL_KEYWORDS`: this exhaustive match fails to compile if a
+    // `Keyword` variant is added without also being listed in `ALL_KEYWORDS` (the `matches!` naming each
+    // variant forces the update). Never called — its purpose is the exhaustiveness it forces.
+    #[allow(dead_code)]
+    fn assert_all_keywords_listed(kw: Keyword) -> bool {
+        matches!(
+            kw,
+            Keyword::Let
+                | Keyword::In
+                | Keyword::If
+                | Keyword::Then
+                | Keyword::Else
+                | Keyword::Fn
+                | Keyword::Def
+                | Keyword::Type
+                | Keyword::Match
+                | Keyword::With
+                | Keyword::Module
+                | Keyword::Import
+                | Keyword::Export
+                | Keyword::Effect
+                | Keyword::Handle
+                | Keyword::Host
+                | Keyword::As
+        )
+    }
+
     #[test]
     fn every_keyword_variant_has_a_spelling() {
-        // Guard against adding a `Keyword` enum variant without a `keyword()` spelling (it would be
-        // unreachable — a dead keyword). The `canonical_spelling` match below is EXHAUSTIVE, so adding
-        // a variant is a compile error until it is given a spelling; then this asserts that spelling
-        // round-trips back through `keyword()` to the same variant.
-        fn canonical_spelling(kw: Keyword) -> &'static str {
-            match kw {
-                Keyword::Let => "let",
-                Keyword::In => "in",
-                Keyword::If => "if",
-                Keyword::Then => "then",
-                Keyword::Else => "else",
-                Keyword::Fn => "fn",
-                Keyword::Def => "def",
-                Keyword::Type => "type",
-                Keyword::Match => "match",
-                Keyword::With => "with",
-                Keyword::Module => "module",
-                Keyword::Import => "import",
-                Keyword::Export => "export",
-                Keyword::Effect => "effect",
-                Keyword::Handle => "handle",
-                Keyword::Host => "host",
-                Keyword::As => "as",
-            }
-        }
-        for &(_, kw) in KEYWORD_SPELLINGS {
+        // Drive from ALL_KEYWORDS (the full variant set), NOT KEYWORD_SPELLINGS — so a variant that is
+        // missing from the table is caught (the original test iterated the table and so could not; PR
+        // #420 Copilot finding). For every variant: (1) its canonical spelling classifies back to it,
+        // and (2) it appears in the KEYWORD_SPELLINGS table (which the other tests iterate).
+        for &kw in ALL_KEYWORDS {
             assert_eq!(
                 keyword(canonical_spelling(kw)),
                 Some(kw),
                 "{kw:?} round-trips through its spelling"
             );
+            assert!(
+                KEYWORD_SPELLINGS.iter().any(|&(_, k)| k == kw),
+                "{kw:?} is missing from KEYWORD_SPELLINGS (the table the other tests iterate)"
+            );
         }
+        // And the reverse: the table has no stale entry for a spelling that no longer classifies.
+        assert_eq!(
+            KEYWORD_SPELLINGS.len(),
+            ALL_KEYWORDS.len(),
+            "KEYWORD_SPELLINGS and ALL_KEYWORDS must list the same variants"
+        );
     }
 }
