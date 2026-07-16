@@ -3007,10 +3007,16 @@ fn queued_ref_would_orphan(
             continue;
         }
         let sent = m.r#ref.as_str();
-        if replay_shas
-            .iter()
-            .any(|s| s.starts_with(sent) || sent.starts_with(s.as_str()))
-        {
+        // Compare CASE-INSENSITIVELY: a `git cherry`/`rev-parse` sha is lowercase hex, but a `--ref`
+        // may be hand-entered UPPERCASE (git treats commit IDs case-insensitively), and a case-sensitive
+        // prefix match would then miss the orphan and let the guard pass a sync that drops the MR ref
+        // (PR #473 Copilot). Lowercase both, then prefix-match either direction (the sent ref may be
+        // abbreviated relative to the full replay sha, or vice-versa).
+        let sent_lc = sent.to_ascii_lowercase();
+        if replay_shas.iter().any(|s| {
+            let s_lc = s.to_ascii_lowercase();
+            s_lc.starts_with(&sent_lc) || sent_lc.starts_with(&s_lc)
+        }) {
             return Some(sent.to_string());
         }
     }
@@ -3932,6 +3938,20 @@ mod tests {
         assert_eq!(
             queued_ref_would_orphan(&replay, "v-x", &msgs),
             Some("bbbbbbb".to_string())
+        );
+
+        // UPPERCASE hand-entered ref must still match the lowercase replay sha (PR #473 — git commit
+        // IDs are case-insensitive; a case-sensitive compare would MISS the orphan and drop the MR).
+        let msgs = vec![mr("v-x", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")];
+        assert_eq!(
+            queued_ref_would_orphan(&replay, "v-x", &msgs),
+            Some("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".to_string())
+        );
+        // Mixed-case abbreviated ref, too.
+        let msgs = vec![mr("v-x", "BbBbBbB")];
+        assert_eq!(
+            queued_ref_would_orphan(&replay, "v-x", &msgs),
+            Some("BbBbBbB".to_string())
         );
 
         // An MR from a DIFFERENT agent naming the same sha is not ours → no orphan.
