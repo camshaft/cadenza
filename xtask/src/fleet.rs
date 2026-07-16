@@ -515,6 +515,20 @@ pub enum FleetCmd {
         /// its final scrollback glanceable for one cycle).
         #[arg(long, default_value_t = 120)]
         grace_secs: u64,
+        /// OPT-IN: auto-nudge a probable DRAIN-STALL's idle pane with the canonical drain instruction
+        /// (`cargo xtask fleet inbox <agent>`), instead of only reporting it. OFF by default (report-
+        /// only) — auto-sending keystrokes is the highest-risk action, so it's the operator's choice to
+        /// enable (the concierge runs its own watchdog with this set, since it owns tmux). Hard-guarded:
+        /// only nudges a pane that is idle-at-prompt (not working) AND not context-saturated (a
+        /// saturated pane needs a RESTART, not a nudge — reported, never nudged), and rate-limited to at
+        /// most one nudge per agent per `--drain-nudge-grace` seconds so a truly-wedged one isn't spammed.
+        #[arg(long)]
+        nudge_drain_stalls: bool,
+        /// Rate-limit (seconds) for `--nudge-drain-stalls`: don't re-nudge an agent auto-nudged within
+        /// this window. Default 900s (15 min) — a nudged agent that's going to recover does so within a
+        /// tick or two; a longer suppression avoids keystroke-spamming a genuinely-wedged one.
+        #[arg(long, default_value_t = 900)]
+        drain_nudge_grace: u64,
     },
 }
 
@@ -584,7 +598,17 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
             stale_mult,
             stale_cap,
             grace_secs,
-        } => watchdog(&fleet, dry_run, stale_mult, stale_cap, grace_secs),
+            nudge_drain_stalls,
+            drain_nudge_grace,
+        } => watchdog(
+            &fleet,
+            dry_run,
+            stale_mult,
+            stale_cap,
+            grace_secs,
+            nudge_drain_stalls,
+            drain_nudge_grace,
+        ),
         FleetCmd::Ack {
             request,
             outcome,
@@ -1764,6 +1788,40 @@ fn nudge_tick(session: &str, agent: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Auto-nudge a drain-stalled agent's idle pane with the canonical drain instruction (opt-in, from the
+/// watchdog under `--nudge-drain-stalls`). Sends a literal message telling it to drain its hub inbox via
+/// `cargo xtask fleet inbox <agent>` (the resolver — never a relative glob), then TWO Enters: the first
+/// submits the line, the second clears any paste-buffering that can otherwise leave the text unsent (a
+/// quirk the concierge had to work around by hand). The message is what makes a re-armed agent re-read
+/// its charter (step 1) + adopt the canonical resolver, self-healing the stall.
+fn nudge_drain_stall(session: &str, agent: &str) -> bool {
+    let target = format!("{session}:{agent}");
+    let msg = format!(
+        "cargo xtask fleet inbox {agent} — drain your hub inbox via this resolver (NOT a relative \
+         .claude/fleet/inbox glob, which silently matches nothing); process each message, then continue."
+    );
+    let sent = Command::new("tmux")
+        .args(["send-keys", "-t", &target, "-l", &msg])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !sent {
+        return false;
+    }
+    // Two Enters: submit + clear paste-buffering (the by-hand workaround, now automated).
+    for _ in 0..2 {
+        let ok = Command::new("tmux")
+            .args(["send-keys", "-t", &target, "Enter"])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !ok {
+            return false;
+        }
+    }
+    true
+}
+
 fn heartbeat(fleet: &Fleet, name: &str) {
     // Presence is a touch-file per agent under `.claude/fleet/heartbeat/<name>` — cheap, and avoids
     // rewriting the whole registry on every tick (which would contend with `add`/`remove`).
@@ -1803,7 +1861,15 @@ fn describe(fleet: &Fleet, name: &str) {
 
 /// Self-heal a stalled fleet: re-arm any active agent whose `/loop` heartbeat has gone stale. See the
 /// `Watchdog` doc comment for the full contract. One pass, then return; a cron drives the cadence.
-fn watchdog(fleet: &Fleet, dry_run: bool, stale_mult: u32, stale_cap: u64, grace_secs: u64) {
+fn watchdog(
+    fleet: &Fleet,
+    dry_run: bool,
+    stale_mult: u32,
+    stale_cap: u64,
+    grace_secs: u64,
+    nudge_drain_stalls: bool,
+    drain_nudge_grace: u64,
+) {
     if !in_tmux() {
         eprintln!(
             "fleet watchdog: not inside a tmux session (no $TMUX) — nothing to re-arm. Run it from\n\
@@ -1879,9 +1945,11 @@ fn watchdog(fleet: &Fleet, dry_run: bool, stale_mult: u32, stale_cap: u64, grace
             .as_deref()
             .is_some_and(|s| s.contains("esc to interrupt"));
 
+        let ctx_pct = pane.as_deref().and_then(parse_context_pct);
         let hub_inbox_depth = count_dir(&fleet.inbox(&a.name), |f| f.ends_with(".json"));
         let pane_idle = hb_age.is_some() && !pane_working;
-        if is_probable_drain_stall(&a.role, hub_inbox_depth, pane_idle) {
+        let drain_stall = is_probable_drain_stall(&a.role, hub_inbox_depth, pane_idle);
+        if drain_stall {
             eprintln!(
                 "  ⚠ '{}' is IDLE at prompt with {hub_inbox_depth} UNCONSUMED message(s) in its hub \
                  inbox ({}) — probable DRAIN-STALL (loop alive, heartbeat fresh, but not draining; \
@@ -1890,6 +1958,31 @@ fn watchdog(fleet: &Fleet, dry_run: bool, stale_mult: u32, stale_cap: u64, grace
                 fleet.inbox(&a.name).display(),
                 a.name
             );
+            // OPT-IN auto-nudge (`--nudge-drain-stalls`): send the canonical drain instruction to the
+            // idle pane so it re-reads its charter + adopts the resolver, self-healing — instead of the
+            // concierge hand-arming each one. Hard-guarded (see `should_nudge_drain_stall`): skips a
+            // context-saturated pane (needs a restart, not a nudge) and rate-limits per agent.
+            let nudged_recently =
+                drain_nudge_age_secs(fleet, &a.name, now).is_some_and(|s| s < drain_nudge_grace);
+            if should_nudge_drain_stall(
+                nudge_drain_stalls,
+                drain_stall,
+                ctx_pct,
+                CTX_SATURATION_THRESHOLD,
+                nudged_recently,
+            ) {
+                if dry_run {
+                    println!("  DRY-RUN would auto-nudge '{}' to drain its inbox", a.name);
+                } else if nudge_drain_stall(&session, &a.name) {
+                    stamp_drain_nudge(fleet, &a.name);
+                    println!(
+                        "  + auto-nudged '{}' to drain its inbox (--nudge-drain-stalls)",
+                        a.name
+                    );
+                } else {
+                    eprintln!("  ! failed to send drain-nudge keys to '{}'", a.name);
+                }
+            }
             // fall through — still run the normal heartbeat logic below (a drain-stall usually has a
             // FRESH heartbeat and would `continue` as healthy, so the warning above is the signal).
         }
@@ -1900,8 +1993,7 @@ fn watchdog(fleet: &Fleet, dry_run: bool, stale_mult: u32, stale_cap: u64, grace
         // 100% context it's UNRECOVERABLE — `/compact` can't even submit. Scrape the pane's "N% context"
         // marker and warn at/above the threshold (default 85, below the 100% wall) so the concierge can
         // `/compact` proactively while it still submits, or route an operator restart. Report-only, like
-        // the other watchdog signals. `ctx_saturation_threshold` is a const (not a flag) for now.
-        let ctx_pct = pane.as_deref().and_then(parse_context_pct);
+        // the other watchdog signals.
         if context_saturation_warning(ctx_pct, CTX_SATURATION_THRESHOLD) {
             let pct = ctx_pct.unwrap_or(0);
             let tail = if pct >= 100 {
@@ -2134,6 +2226,20 @@ fn stamp_rearm(fleet: &Fleet, name: &str) {
     std::fs::write(dir.join(name), "rearm\n").ok();
 }
 
+/// Age in seconds since we last auto-nudged this agent's drain-stall (mtime of
+/// `.claude/fleet/drain-nudge/<name>`), or `None` if never. Rate-limits the opt-in auto-nudge so a
+/// truly-wedged agent isn't spammed keystrokes every sweep.
+fn drain_nudge_age_secs(fleet: &Fleet, name: &str, now: u64) -> Option<u64> {
+    file_mtime_unix(&fleet.root.join("drain-nudge").join(name)).map(|m| now.saturating_sub(m))
+}
+
+/// Touch `.claude/fleet/drain-nudge/<name>` to record an auto drain-nudge (for the rate-limit).
+fn stamp_drain_nudge(fleet: &Fleet, name: &str) {
+    let dir = fleet.root.join("drain-nudge");
+    std::fs::create_dir_all(&dir).ok();
+    std::fs::write(dir.join(name), "drain-nudge\n").ok();
+}
+
 /// Age in seconds since the watchdog FIRST saw this (never-heartbeated) agent with a live window
 /// (mtime of `.claude/fleet/firstseen/<name>`), or `None` if never marked. Gives a clock to tell a
 /// still-booting agent from one whose cold start FAILED (launched, never completed tick 1).
@@ -2210,6 +2316,32 @@ fn is_probable_drain_stall(role: &str, inbox_depth: usize, pane_idle: bool) -> b
         return false;
     }
     inbox_depth > 0 && pane_idle
+}
+
+/// Whether the watchdog should AUTO-NUDGE a probable drain-stall (only under the opt-in
+/// `--nudge-drain-stalls`). Pure so the guard combination is unit-tested — auto-sending keystrokes to
+/// panes is the highest-risk watchdog action, so every guard is explicit here:
+///   * `nudge_enabled` — the opt-in flag (default OFF; report-only unless the operator sets it).
+///   * `is_drain_stall` — the signal already fired (idle-at-prompt + unconsumed hub mail).
+///   * NOT context-saturated — a `>=` saturation-threshold pane needs a RESTART, not a nudge (a nudge
+///     can't help a session that can't submit); those are report-only, never nudged. `ctx_pct` None
+///     (no marker) is treated as NOT saturated (safe to nudge).
+///   * NOT rate-limited — `nudged_recently` (a per-agent marker within N ticks) suppresses re-nudging
+///     so a truly-wedged agent isn't spammed keystrokes every sweep.
+///
+/// The pane-idle + role-exempt conditions are already folded into `is_drain_stall`.
+fn should_nudge_drain_stall(
+    nudge_enabled: bool,
+    is_drain_stall: bool,
+    ctx_pct: Option<u8>,
+    saturation_threshold: u8,
+    nudged_recently: bool,
+) -> bool {
+    if !nudge_enabled || !is_drain_stall || nudged_recently {
+        return false;
+    }
+    // A saturated pane can't act on a nudge — leave it for a restart (report-only).
+    !matches!(ctx_pct, Some(p) if p >= saturation_threshold)
 }
 
 /// Capture an agent's visible tmux pane text (no scrollback), or `None` if tmux errors / the window is
@@ -4150,6 +4282,24 @@ mod tests {
         assert!(!context_saturation_warning(Some(84), 85)); // just below → quiet
         assert!(!context_saturation_warning(Some(0), 85));
         assert!(!context_saturation_warning(None, 85)); // no marker → never warn
+    }
+
+    #[test]
+    fn should_nudge_drain_stall_is_hard_guarded() {
+        // Happy path: enabled + is-a-stall + not saturated + not recently nudged → nudge.
+        assert!(should_nudge_drain_stall(true, true, None, 95, false));
+        assert!(should_nudge_drain_stall(true, true, Some(40), 95, false));
+        // Opt-in OFF (default) → never nudge, whatever else holds (report-only).
+        assert!(!should_nudge_drain_stall(false, true, None, 95, false));
+        // Not actually a drain-stall → nothing to nudge.
+        assert!(!should_nudge_drain_stall(true, false, None, 95, false));
+        // Context-saturated (>= threshold) → needs a RESTART, not a nudge; skip.
+        assert!(!should_nudge_drain_stall(true, true, Some(95), 95, false));
+        assert!(!should_nudge_drain_stall(true, true, Some(100), 95, false));
+        // Just below the saturation threshold → still nudge-able.
+        assert!(should_nudge_drain_stall(true, true, Some(94), 95, false));
+        // Rate-limited (nudged recently) → suppress, don't spam.
+        assert!(!should_nudge_drain_stall(true, true, None, 95, true));
     }
 
     #[test]
