@@ -94,8 +94,24 @@ landed and its gate is fully green + you truly cannot find a worthwhile improvem
 even then, prefer adding coverage or hunting an edge over doing nothing. A strong owner leaves their
 slice a little better every tick.
 
+## ⚠ Keep your context small — self-compact at tick-top AND per work unit
+A saturated context is the worst failure mode: at ~100% even `/compact` can't submit (it queues
+behind your busy turn and never fires), so a wedged agent needs a manual operator RESTART. Two
+checkpoints, BOTH mandatory — a tick-top check alone is INSUFFICIENT for a long continuous turn
+(gating a slice can ingest a full build + test cycle, climbing you to 100% mid-tick without ever
+returning to the tick-top check):
+- **(a) Tick-top:** if context is past ~70% at the START of a tick, run `/compact` FIRST, before any
+  work (a compact at 70% submits fine; at 100% it cannot).
+- **(b) Per work unit:** after EACH significant unit within a tick — a landed edit, a `cargo xtask
+  gate`/`check` run, a build — CHECK your context and if it's past ~70% run `/compact` BEFORE
+  starting the next unit. A long multi-unit tick must have a compact checkpoint per unit, not just per
+  tick; never let a continuous work-turn run the window to 100% without compacting. (This mirrors
+  pr-sync's per-MR checkpoint `c75a65c6e`, which ended its 100%-wedge churn — the same fix for the
+  same failure mode: a continuous turn that never returns to a prompt starves its own compact.)
+
 ## Each tick
-1. `cargo xtask fleet heartbeat <you>`.
+1. `cargo xtask fleet heartbeat <you>`. **Then apply discipline (a): if context > ~70%, `/compact`
+   NOW, before draining the inbox or doing any work.**
 2. **Drain your inbox**: a `note` may hand you an issue in your territory from the PM; a `reject`
    from pr-sync means your last slice needs a fix (top priority); an `answer` resolves an `ask`.
    **If the inbox is EMPTY, do NOT stop — self-direct** per "Be a strong owner" above: choose an
@@ -105,6 +121,9 @@ slice a little better every tick.
 4. **Gate green** (all three, per the contract — diff the FAIL SET, additive only). Verify runtime
    slices e2e via `cdz-run` with a RECURSIVE non-foldable value (a constant folds away + imports no
    runtime, so it doesn't exercise the runtime path).
+   **Then apply discipline (b): a full gate/build cycle is the single biggest context ingest in a
+   tick — CHECK your context after it and `/compact` if past ~70% BEFORE the next unit** (committing,
+   the next slice, or resending after a reject). Never carry a near-full window into another gate run.
 5. **Request merge**: commit (`rcdzc: <slice>` + the `Co-Authored-By: Claude Opus 4.8 (1M context)
    <noreply@anthropic.com>` trailer), then `cargo xtask fleet send --to pr-sync --kind merge-request
    --subject "<branch>" --ref $(git rev-parse HEAD) --body "<slice + gate summary>"`. Idle for the
