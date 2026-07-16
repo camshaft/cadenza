@@ -29,7 +29,9 @@ def read-str(b: Bytes, pos: Int64) -> String =
   let count = Option.expect(Bytes.at(b, pos), "strlen") in
   match Bytes.slice(b, pos + 1, count) with
     | Option.Some(sub) => Option.expect(String.from-bytes(sub), "utf8")
-    | Option.None(_) => ""
+    // An out-of-bounds slice means the buffer is malformed/truncated — TRAP rather than silently
+    // returning "" (which would turn a partial buffer into a valid-looking empty Name/Str). Copilot PR #433.
+    | Option.None(_) => trap("codec: string payload slice out of bounds (malformed buffer)")
 
 def nsize(b: Bytes, pos: Int64) -> Int64 =
   let tag = Option.expect(Bytes.at(b, pos), "tag") in
