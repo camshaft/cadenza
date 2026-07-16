@@ -2982,6 +2982,7 @@ todo	a recursive-generic filter threading a predicate closure composes at two el
 todo	a recursive-generic producer's result is consumed by an element-typed consumer
 todo	a recursive-generic transformer composes with itself
 todo	a recursive-generic transformer threading a closure composes at two element types
+todo	a recursive-generic transformer with a bare-Nil STOP branch composes at two element types
 todo	a recursive-generic transformer with an element-CHANGING closure ties domain to codomain
 todo	a round-trip alongside a parameterized plain export applies its argument
 todo	a round-trip alongside a plain export — the plain export runs
