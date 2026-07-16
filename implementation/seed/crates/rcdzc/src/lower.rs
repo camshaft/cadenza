@@ -2590,10 +2590,13 @@ impl<'a> SexprReader<'a> {
         }
         let tok = std::str::from_utf8(&self.bytes[start..self.pos]).ok()?;
         // `true`/`false` are BOOLEAN literals, not names — `print_ast_value` emits an `Ast.Bool` as the
-        // bare word, and the lexer never yields a `Name` spelled `true`/`false`, so the round-trip is
-        // unambiguous (a name can never collide). Then a decimal `i64`; then a FLOAT token (one carrying a
-        // `.`/`e`/`E` that parses as finite f64 — `print` always renders an `Ast.Float` with a `.`/`e`, so
-        // an int-shaped token stays `Ast.Int`); else a bare name.
+        // bare word, and the lexer never yields a `Name` spelled `true`/`false` FROM SOURCE, so a
+        // source-derived round-trip is unambiguous. (A HAND-CONSTRUCTED `Ast.Name "true"` — or a digit-led
+        // `Ast.Name "1.5"` — prints its bare word and reads back HERE as the keyword/number it looks like,
+        // not the Name: the text round-trip is scoped to grammatically-valid identifiers, the encode/decode
+        // byte path is total over any name. Pinned in 12-metaprogramming.) Then a decimal `i64`; then a
+        // FLOAT token (one carrying a `.`/`e`/`E` that parses as finite f64 — `print` always renders an
+        // `Ast.Float` with a `.`/`e`, so an int-shaped token stays `Ast.Int`); else a bare name.
         match tok {
             "true" => Some(SNode::Bool(true)),
             "false" => Some(SNode::Bool(false)),

@@ -977,18 +977,24 @@ fn proj_chain_roots_at_binder(db: &mut Db, id: StructId, binder: StructId) -> bo
     }
 }
 
-/// Whether `id` is a chain of BORROWING heap-child extractions (`Core::Proj` `arr-get` OR `Core::SumPayload`
-/// `sum-payload`/`arr-get`, in any mix) ultimately rooted at `binder`. Each intermediate step is a BORROW
-/// that returns a handle to a cell living INSIDE `binder` (no rc++), so the extracted leaf aliases `binder`'s
-/// storage under its single refcount. A consuming op on the leaf would FBIP-mutate it while `binder` still
-/// owns it — the [`Core::SumPayload`]/[`Core::Proj`] child-retain sites in [`mark_binder_dups_inner`] use
-/// this to decide a `dup`. The `SumPayload` analogue of [`proj_chain_roots_at_binder`]; bottoms out at the
-/// `LocalRef`/`Param` for `binder`.
+/// Whether `id` is a chain of BORROWING heap-child extractions (`Core::Proj` `arr-get`, `Core::SumPayload`
+/// `sum-payload`/`arr-get`, OR `Core::SumExpect` `sum-payload`, in any mix) ultimately rooted at `binder`.
+/// Each intermediate step is a BORROW that returns a handle to a cell living INSIDE `binder` (no rc++), so
+/// the extracted leaf aliases `binder`'s storage under its single refcount. A consuming op on the leaf would
+/// FBIP-mutate it while `binder` still owns it — the [`Core::SumPayload`]/[`Core::SumExpect`]/[`Core::Proj`]
+/// child-retain sites in [`mark_binder_dups_inner`] use this to decide a `dup`. The `SumPayload`/`SumExpect`
+/// analogue of [`proj_chain_roots_at_binder`]; bottoms out at the `LocalRef`/`Param` for `binder`. Following
+/// `SumExpect` too is load-bearing for a CHAINED extraction — `(Option.expect (Option.expect s))` over a
+/// threaded `(Option (Option (List …)))`: the outer expect's scrutinee is the inner expect, which must
+/// resolve through to the root `s` so the consuming op on the leaf retains.
 fn payload_or_proj_chain_roots_at_binder(db: &mut Db, id: StructId, binder: StructId) -> bool {
     match core_of(db, id) {
         Core::LocalRef { binder: b } | Core::Param { binder: b } => b == binder,
         Core::Proj { operand, .. }
         | Core::SumPayload {
+            scrutinee: operand, ..
+        }
+        | Core::SumExpect {
             scrutinee: operand, ..
         } => payload_or_proj_chain_roots_at_binder(db, operand, binder),
         _ => false,
@@ -6993,6 +6999,13 @@ fn emit(
             Ok(())
         }
         // `Bytes.compact(b)` — emit the handle, `bytes-compact` (consumes it, returns a content-equal one).
+        // `Bytes.compact` realizes the memory model's storage-independence guarantee: it derives from a
+        // value (a `bytes-slice`/`bytes-concat` rope that may RETAIN a large backing buffer through a small
+        // window) another value EQUAL to it whose storage is independent (a fresh flat leaf holding only the
+        // window's bytes), so the larger buffer can be released — changing storage use without changing the
+        // value.
+        //= spec/capabilities/memory-and-resource-model.md#retained-storage-is-what-a-value-s-representation-holds-live
+        //# A program MUST be able to derive from a value another value equal to it whose storage is independent of the storage the value was derived from, so that a value retaining a small part of a larger value's storage can release the larger value's storage, changing storage use without changing the value.
         Core::BytesCompact { operand } => {
             emit(db, operand, slots, base, high, scratch_ty, layout, out)?; // [b]
             out.push(Lir::CallImport(OP_BYTES_COMPACT)); // → [compacted]
@@ -8035,6 +8048,13 @@ fn emit(
         // remembered owned handle leaves that bool on top. An operand whose ownership cannot be proved
         // (an `if`/`match`/`let` that may return a borrowed sub-value) DECLINES — reject, never a leak or
         // a double-free.
+        // Canonicalizing every rope operand before the physical `champ_eq` is what makes a value that
+        // SHARES another's storage (a `String.concat`/`Bytes.concat` rope over shared segments) and a value
+        // that COPIES it (a flat leaf of the same content) compare EQUAL — indistinguishable by equality and
+        // by the canonical byte form, exactly as the memory model requires. (The float leaf's twin of this
+        // is `op_box_float`'s canonicalize-on-construct; here it is the rope compaction.)
+        //= spec/capabilities/memory-and-resource-model.md#sharing-is-not-observable
+        //# A value that shares another value's storage and a value that copies it MUST be indistinguishable by every operation the executable semantics defines, including equality, length, indexing, and the value's canonical byte form, so that whether storage is shared is never observable.
         Core::ValueEq { lhs, rhs } => {
             // `value-eq` is `champ_eq` — a PHYSICAL-byte compare (the map-key contract). A runtime String OR
             // Bytes operand can be a ROPE (a `String.concat`/`Bytes.concat`/`.slice` lowers to a rope node),

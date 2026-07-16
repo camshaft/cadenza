@@ -1643,6 +1643,25 @@
             (export main)))
   (call   main (: 7 Int64)) (output (: 12 Int64)))
 
+(case "a chained Option.expect(Option.expect s) payload consumed per iteration accumulates stably"
+  (doc    "The CHAINED-extraction face of the SumExpect retain: `(Option.expect (Option.expect s))` over a
+           threaded `(Option (Option (List Int64)))`. The outer `Option.expect`'s scrutinee is the INNER
+           `Option.expect` (both `sum-payload` BORROWS), so the extracted list aliases `s`'s storage two
+           extractions deep. Consuming it (`List.push`) while `s` is threaded UNCHANGED to the self-call
+           FBIP-mutates the shared list at rc==1 → drift. `s` = `Some (Some [7, 8])`; each iteration reads
+           `(List.len (List.push … 9))` = 3, so 4 iterations = 12. Before the fix the wasm backend drifted
+           3,4,5,6 → 18 (Rust computed 12 — differential catch). Fix: `payload_or_proj_chain_roots_at_binder`
+           follows `SumExpect` links too (not only `Proj`/`SumPayload`), so a chained expect resolves through
+           to the root `s` and the consuming push retains. Found by v-memory-safety breaker-watch, wasm-only.")
+  (input  (do
+            (def (go (: s (Option (Option (List Int64)))) (: n Int64) (: acc Int64))
+              (if (= n 0) acc
+                  (go s (- n 1) (+ acc (List.len (List.push (Option.expect (Option.expect s "v") "w") 9))))))
+            (def (main (: d Int64))
+              (go (Option.Some (Option.Some (List.push (List.push (list) d) 8))) 4 0))
+            (export main)))
+  (call   main (: 7 Int64)) (output (: 12 Int64)))
+
 ; The mutual-recursion companion of the still-live-binding family above: the IDIOMATIC homoiconic-AST
 ; walker shape — a `fc` (per-node) / `fl` (per-child-list) mutual pair over a recursive `Ast` sum. Here
 ; `fc` matches a `List` node binding its child list `elems`, reads the head OUT OF `elems` directly

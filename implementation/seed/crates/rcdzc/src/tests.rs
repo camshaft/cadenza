@@ -25123,6 +25123,21 @@ mod match_engine {
             !component_imports_op(&component(linear), "dup"),
             "a single-consume Option.expect with a dead scrutinee must not import `dup` (FBIP fast path)"
         );
+        // CHAINED extraction: `(Option.expect (Option.expect s))` over a threaded `(Option (Option (List)))`.
+        // The outer expect's scrutinee is the INNER expect — `payload_or_proj_chain_roots_at_binder` must
+        // follow `SumExpect` links too (not just Proj/SumPayload) to reach the root `s`, else the consuming
+        // push gets no retain and the shared inner list drifts (per-iter 3,4,5,6 → 18 not 12 before the fix).
+        let chained = "(module m \
+               (def (go (: s (Option (Option (List Int64)))) (: n Int64) (: acc Int64)) \
+                 (if (= n 0) acc (go s (- n 1) (+ acc ((. List len) ((. List push) ((. Option expect) ((. Option expect) s \"v\") \"w\") 9)))))) \
+               (def (main) (go (Option.Some (Option.Some ((. List push) ((. List push) (list) 7) 8))) 4 0)) \
+               (export main))";
+        if let Some(out) = run_on_heap(chained) {
+            assert_eq!(
+                out, "12",
+                "a chained Option.expect(Option.expect s) consumed per iteration must not drift"
+            );
+        }
     }
 
     #[test]
@@ -37942,6 +37957,22 @@ mod diagnostics {
         assert!(
             all.iter().all(|d| d.code.as_deref() != Some("CDZ0101")),
             "no misleading 'unbound name' for the value/rest binder: {all:?}"
+        );
+        // The body references the value binder that appears AFTER `..` (`w` in the trailing `(2 w)` pair) —
+        // Copilot PR #440 / corpus-bugfix: `map_form_binds_name` only treated a BARE name after `..` as a
+        // binder, so a `(k v)` pair after `..` left its value `w` unrecognized → a spurious CDZ0101 layered
+        // on the malformed pattern. Now `w` is recognized inert (no unbound leak); one clean rest-shape reject.
+        let w_after = "(module m (def (f (: mp (Map Int64 Int64))) \
+                       (match mp ((map (1 v) .. rest (2 w)) w) (_ 0))) (export f))";
+        let all = diags_of(w_after);
+        assert!(
+            all.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
+                && d.message.contains("map rest pattern is")),
+            "a body ref to a value binder after `..` still reports the rest-shape CDZ0201: {all:?}"
+        );
+        assert!(
+            all.iter().all(|d| d.code.as_deref() != Some("CDZ0101")),
+            "no 'unbound name' for a `(k v)` value binder appearing AFTER `..` (PR #440): {all:?}"
         );
         // Two `..` markers — same clear message, no unbound leak.
         let two_dots = "(module m (def (f (: mp (Map Int64 Int64))) \
