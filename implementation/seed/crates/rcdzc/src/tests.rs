@@ -3430,6 +3430,50 @@ fn a_runtime_string_rope_compares_equal_and_leaves_no_live_objects() {
     );
 }
 
+/// A RUNTIME BYTES ROPE compared with `=` is canonicalized (`bytes-compact`) before `value-eq` — the byte
+/// twin of the String-rope case above. A `Bytes.concat` produces a ROPE whose physical bytes differ from a
+/// flat leaf of identical content, so a direct Bytes operand of `=` is compacted first (the fix that made
+/// `compound_eq_heap_walkable` admit a DIRECT Bytes). Two shapes in one:
+///   (a) VALUE — the rope's content is `[104,105,120]` ("hix" bytes), so `(= rope flat)` is true → 1.
+///   (b) LEAK — the owned rope operand + its compacted flat leaf net to 0 live cells (the flat `Bytes.of`
+///       literal side is compacted+dropped too; nothing survives the scalar-returning `main`).
+/// A NESTED Bytes (inside a tuple/sum) or a `Set Bytes` key still DECLINES (the key path is not yet
+/// Bytes-compacting) — only the DIRECT operand is wired, verified by the corpus decline probes.
+/// `#[ignore]` — needs the debug-counters store (`cargo xtask build`).
+#[test]
+#[ignore]
+fn a_runtime_bytes_rope_compares_equal_and_leaves_no_live_objects() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
+        eprintln!(
+            "[bytes-rope-eq] debug-counters runtime not in the store; skipping balance probe"
+        );
+        return;
+    };
+    // `rep` appends the byte 120 ('x') once via `Bytes.concat` → an OWNED rope whose content is [104,105,120].
+    let src = "(module m \
+                 (def (rep (: b Bytes) (: n Int64)) \
+                    (if (< n 1) b (rep (Bytes.concat b (Bytes.of (list 120))) (- n 1)))) \
+                 (def (main) (if (= (rep (Bytes.of (list 104 105)) 1) (Bytes.of (list 104 105 120))) 1 0)) \
+                 (export main))";
+    let program = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    let mut rt = ComposedRuntime::new(&program, &runtime_bytes);
+    assert_eq!(
+        rt.call("main", &[]),
+        Val::S64(1),
+        "a runtime bytes rope must compare EQUAL to its flat twin (the direct-Bytes value-eq compaction — \
+         a champ_eq physical-byte miscompile without it)"
+    );
+    assert_eq!(
+        rt.live_objects(),
+        0,
+        "bytes-rope-eq leak: the owned rope operand + its compacted flat leaf must net to 0 live cells \
+         after the borrowing value-eq (the compact consumes the rope; the emit drops the compacted result)"
+    );
+}
+
 /// A BORROWED runtime string ROPE compared with `=` must ALSO be canonicalized. The earlier rope-eq fix
 /// compacted only an OWNED String operand (a fresh `String.concat` result); a rope reaching `=` through a
 /// BORROWED operand — a `Map.lookup`-stored value, a `SumPayload`-extracted payload, or a runtime-rope

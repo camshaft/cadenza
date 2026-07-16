@@ -17163,6 +17163,18 @@ fn const_key_order(db: &mut Db, a: StructId, b: StructId) -> Option<std::cmp::Or
 /// declaration occurrences visited, tracked in `seen`.
 fn compound_eq_heap_walkable(db: &mut Db, id: StructId) -> bool {
     let ty = crate::infer::type_of(db, id);
+    // A DIRECT `Bytes` operand is walkable even though a NESTED `Bytes` leaf is not (`ty_heap_walkable`'s
+    // `Ty::Bytes => false`). The distinction is canonicalization: a runtime `Bytes` can be a `bytes-concat`
+    // ROPE (physical bytes ≠ a flat leaf of equal content), so a raw `champ_eq` walk would misread it — but
+    // the `Core::ValueEq` EMIT compacts every DIRECT String/Bytes operand with `bytes-compact` before the
+    // compare (exactly as it does for a direct String, which is admitted the same way). A NESTED Bytes has
+    // no such per-operand compaction: it rides the construction-site element compaction for tuple/list/
+    // record/sum elements (`elem_needs_rope_compaction` DOES include Bytes) — but a `Set Bytes`/`Map Bytes`
+    // KEY does NOT (`key_needs_compaction` is String/Symbol only), so a blanket walkable-Bytes would admit a
+    // rope-keyed CHAMP miscompile. Scope to the DIRECT operand until the key path also compacts Bytes.
+    if matches!(ty, crate::ty::Ty::Bytes) {
+        return true;
+    }
     ty_heap_walkable(db, &ty, &mut Vec::new())
 }
 

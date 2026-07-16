@@ -710,6 +710,40 @@
              (def (main)   (Option.expect (Bytes.at (enc "café") 4) "in range")) (export main)))
   (output  (: 169 Int64)))
 
+(case "two runtime Bytes values of equal content compare equal (rope vs flat)"
+  (doc    "Runtime `Bytes` value-equality (`=`): a `Bytes.concat` builds a ROPE whose physical node bytes
+           differ from a flat leaf of IDENTICAL content, so the tagless `champ_eq` walk would compare them
+           UNEQUAL unless the rope is flattened first. The `value-eq` emit `bytes-compact`s every direct
+           Bytes operand before the compare (the byte twin of the String-operand compaction), so a
+           `Bytes.concat` rope `[104,105]` compares EQUAL to the flat literal `Bytes.of [104,105]` → true.
+           Pins the DIRECT-operand runtime Bytes `=` — was declined 'comparison of a compound value needs a
+           heap walk'.")
+  (input   (do
+             (def (rope)   (Bytes.concat (Bytes.of (list 104)) (Bytes.of (list 105))))
+             (def (main)   (= (rope) (Bytes.of (list 104 105)))) (export main)))
+  (output  (: true Bool)))
+
+(case "runtime Bytes value-equality distinguishes different content"
+  (doc    "The negative companion: two runtime Bytes of DIFFERENT content compare `false` (not merely a
+           physical-identity check). A `Bytes.concat` rope `[104,105]` is NOT equal to `Bytes.of [104,106]`.
+           Confirms the `value-eq` compare is genuinely structural over the flattened bytes, not a trivial
+           always-true / handle-identity compare.")
+  (input   (do
+             (def (rope)   (Bytes.concat (Bytes.of (list 104)) (Bytes.of (list 105))))
+             (def (main)   (= (rope) (Bytes.of (list 104 106)))) (export main)))
+  (output  (: false Bool)))
+
+(case "the runtime UTF-8 encoding of a string equals its exact byte literal"
+  (doc    "The round-trip the compiler-in-Cadenza codec rests on: `String.to-bytes` of a genuinely-runtime
+           string (forced by `String.concat s \"\"`) compares EQUAL to the exact UTF-8 `Bytes.of` literal.
+           `\"é😀\"` = `195 169 240 159 152 128` (é = C3 A9, 😀 = F0 9F 98 80). The to-bytes result is itself
+           a `bytes-compact`ed flat leaf and the `value-eq` emit compacts the literal operand too, so the
+           structural compare is exact → true. This is the case that DECLINED before direct-Bytes `=`.")
+  (input   (do
+             (def (enc s)  (String.to-bytes (String.concat s "")))
+             (def (main)   (= (enc "é😀") (Bytes.of (list 195 169 240 159 152 128)))) (export main)))
+  (output  (: true Bool)))
+
 (case "the scalar length of a runtime multi-byte string counts scalars, not bytes"
   (doc    "`String.scalar-len` of a runtime string counts Unicode scalar values, not UTF-8 bytes:
            `(slen \"café\")` is 4 (c, a, f, é) even though the byte length is 5. Pins that scalar length

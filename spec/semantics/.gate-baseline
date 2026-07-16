@@ -2658,6 +2658,7 @@ pass	round-trip: an UNANNOTATED inner closure with a List param via the context 
 pass	runtime BigInt addition runs on the arbitrary-precision runtime
 pass	runtime BigInt equality holds for values reached by different arithmetic
 pass	runtime BigInt remainder runs on the arbitrary-precision runtime
+pass	runtime Bytes value-equality distinguishes different content
 pass	runtime Rational arithmetic adds two parameter-built fractions exactly
 pass	runtime float equality compares by canonical byte form
 pass	runtime float inequality compares by canonical byte form
@@ -2817,6 +2818,7 @@ pass	the rest binder carries the unmatched runtime-keyed remainder
 pass	the retired Tuple.cat name is rejected with the Tuple.concat rename fix-it (CDZ0603)
 pass	the retired Tuple.pop name is rejected with the Tuple.remove rename fix-it (CDZ0603)
 pass	the round trip tracks the produced closure's captured value
+pass	the runtime UTF-8 encoding of a string equals its exact byte literal
 pass	the runtime-if list takes its else branch and measures that length
 pass	the runtime-list version of a tail fold compiles and folds correctly
 pass	the same declared effect is handled in-program by one entrypoint and delegated by another
@@ -2916,6 +2918,7 @@ pass	two performs of a MULTI-parameter op each combine both args with the state 
 pass	two rationals denoting the same number are equal regardless of how they were written
 pass	two recursion-built linked lists compare equal by a deep heap walk
 pass	two recursion-built linked lists of different lengths compare unequal by a heap walk
+pass	two runtime Bytes values of equal content compare equal (rope vs flat)
 pass	two runtime Ok values of a multi-parameter sum compare equal by a heap walk
 pass	two runtime maps built in different insertion orders compare equal by content
 pass	two runtime maps with the same keys but a different value are unequal
