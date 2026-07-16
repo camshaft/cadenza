@@ -3398,6 +3398,7 @@ fn inbox_list(fleet: &Fleet, name: &str) {
         );
         return;
     }
+    let mut actionable = 0usize;
     for n in &names {
         // Cheap peek at from/kind without a hard serde dependency on every field being present.
         let (from, kind) = std::fs::read_to_string(dir.join(n))
@@ -3405,7 +3406,28 @@ fn inbox_list(fleet: &Fleet, name: &str) {
             .and_then(|t| serde_json::from_str::<Message>(&t).ok())
             .map(|m| (m.from, m.kind))
             .unwrap_or_else(|| ("?".to_string(), "?".to_string()));
-        println!("  {n}  [{kind}] from {from}");
+        // Flag actionable mail (must DO something) vs informational (read-and-archive) — same
+        // classifier the watchdog's drain-stall signal uses, so the CLI and the health check agree.
+        let is_act = message_kind_is_actionable(&kind);
+        if is_act {
+            actionable += 1;
+        }
+        let mark = if is_act { "⚑" } else { "·" };
+        println!("  {mark} {n}  [{kind}] from {from}");
+    }
+    // Summary: the actionable/informational split so an agent knows at a glance whether idling is a
+    // real drain-stall (has ⚑ work) or just un-archived FYI mail (only ·). Mirrors the drain-stall
+    // signal exactly (see `message_kind_is_actionable`), reinforcing the drain discipline.
+    let informational = names.len().saturating_sub(actionable);
+    println!(
+        "  ── {actionable} actionable (⚑ assign/reject/ask/issue/request/answer), \
+         {informational} informational (· note/merged/backlog/status/reply)"
+    );
+    if actionable == 0 {
+        println!(
+            "  ✓ nothing ACTIONABLE queued — the informational mail is safe to archive to processed/ \
+             (it is not a drain-stall)."
+        );
     }
 }
 
