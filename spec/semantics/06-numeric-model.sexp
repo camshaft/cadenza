@@ -256,6 +256,17 @@
   (input  0.5R)
   (output (: 1/2 Rational)))
 
+(case "a float-form literal with the N (BigInt) suffix is rejected with a swap-to-R fix"
+  (doc    "`1.5N` puts the `N` (BigInt) suffix on a DECIMAL/float body — but BigInt is an unbounded INTEGER,
+           written as a plain integer, so a fractional body cannot carry it. Rejected CDZ0201 with the
+           structural repair the resolve.rs suffix-swap fix names: 'for a decimal value use the R (Rational)
+           suffix: 1.5R'. Pins the float-form × N-suffix rejection — the integer-form `5N` (BigInt above) and
+           the decimal-form `0.5R`/`1.5R` (Rational) are the valid corners; `1.5N` is the meaningless one the
+           diagnostic redirects to `R`. The complement of `5N` being valid: the suffix's type must agree with
+           the literal's FORM (integral body for N, any body for R).")
+  (input  (do (def (main) 1.5N) (export main)))
+  (error  CDZ0201))
+
 ; --- A suffixed literal carries its OWN type: annotating it narrower is a MISMATCH, not an overflow ---
 ; A suffix gives a literal a concrete type (`N`→BigInt, `R`→Rational) — so annotating `100N` as `Int64`
 ; is a genuine type MISMATCH (BigInt ≠ Int64), a single CDZ0203, NOT a bare literal being grounded that

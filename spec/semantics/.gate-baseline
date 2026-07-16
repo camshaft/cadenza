@@ -745,6 +745,7 @@ pass	a float in integer-width position is rejected
 pass	a float leaf and a Bytes leaf compare together in one compound
 pass	a float width from runtime data is rejected, like an integer width
 pass	a float width outside the admitted set is rejected
+pass	a float-form literal with the N (BigInt) suffix is rejected with a swap-to-R fix
 pass	a floating-point literal
 pass	a four-level nested-constructor pattern with a generic user sum in the middle matches
 pass	a fresh-id supply threads state across two sibling recursive calls in one arm
