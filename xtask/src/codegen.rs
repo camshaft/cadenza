@@ -656,6 +656,19 @@ mod wasm_abi {
             op("F64_NE", Instruction::F64Ne),
             op("F32_EQ", Instruction::F32Eq),
             op("F32_NE", Instruction::F32Ne),
+            // Float ORDERING (f64/f32) — runtime `< <= > >=` under IEEE PARTIAL order (operator ruling):
+            // a NaN operand yields false (unordered — NaN is neither <, >, nor = anything), and -0.0
+            // compares equal-under-ordering to +0.0 (`f64.le -0.0 0.0` = true). These are the RAW IEEE
+            // compares, DISTINCT from the canonical-byte equality above (which the two relations disagree
+            // with on NaN + signed zero — inherent to float).
+            op("F64_LT", Instruction::F64Lt),
+            op("F64_GT", Instruction::F64Gt),
+            op("F64_LE", Instruction::F64Le),
+            op("F64_GE", Instruction::F64Ge),
+            op("F32_LT", Instruction::F32Lt),
+            op("F32_GT", Instruction::F32Gt),
+            op("F32_LE", Instruction::F32Le),
+            op("F32_GE", Instruction::F32Ge),
             // Float width conversion (F5): `f32.demote_f64` narrows Float64→Float32 (rounds),
             // `f64.promote_f32` widens Float32→Float64 (exact). Int↔float conversions land with `of-int`.
             op("F32_DEMOTE_F64", Instruction::F32DemoteF64),

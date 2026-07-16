@@ -568,13 +568,20 @@ impl Server {
         let importers: Vec<Uri> = {
             let open = self.open_resolver();
             self.docs
-                .keys()
-                .filter(|uri| {
+                .iter()
+                .filter(|(uri, doc)| {
                     let Some(path) = uri_to_path(uri) else {
                         return false;
                     };
                     if path == changed {
                         return false; // the changed doc itself is already (re)published by the caller
+                    }
+                    // PERF: a doc that declares NO `(import …)` cannot possibly depend on `changed`, so
+                    // skip it BEFORE the (parse-every-file) closure load — this runs per keystroke, and
+                    // `closure::load` walks + reads + parses the whole transitive closure, so paying it for
+                    // every single-file buffer open in the editor would be O(open_docs × closure) per edit.
+                    if !self.doc_declares_import(doc) {
+                        return false;
                     }
                     // Load this open doc's TRANSITIVE closure (overlay-aware); is `changed` in it?
                     match crate::closure::load(&path.to_string_lossy(), &open) {
@@ -584,7 +591,7 @@ impl Server {
                         Err(_) => false,
                     }
                 })
-                .cloned()
+                .map(|(uri, _)| uri.clone())
                 .collect()
         };
         for uri in importers {
@@ -2505,11 +2512,12 @@ mod tests {
             ("   ", false),         // whitespace-only
         ];
         for &(text, is_ml) in cases {
-            // In-range and out-of-range cursors; include_declaration both ways. Just must not panic.
-            let _ = definition_at(text, is_ml, Position::new(0, 3), &test_uri());
-            let _ = definition_at(text, is_ml, Position::new(9, 9), &test_uri());
-            let _ = references_at(text, is_ml, Position::new(0, 3), &test_uri(), true);
-            let _ = references_at(text, is_ml, Position::new(0, 3), &test_uri(), false);
+            // In-range AND out-of-range cursors; include_declaration both ways. Just must not panic.
+            for pos in [Position::new(0, 3), Position::new(9, 9)] {
+                let _ = definition_at(text, is_ml, pos, &test_uri());
+                let _ = references_at(text, is_ml, pos, &test_uri(), true);
+                let _ = references_at(text, is_ml, pos, &test_uri(), false);
+            }
         }
     }
 

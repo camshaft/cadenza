@@ -640,3 +640,21 @@
             (export main)))
   (call   main (: 7 Int64))
   (output (: 42 Int64)))
+
+(case "a Float element inserted into an empty (runtime) set boxes with box-float, not box-int"
+  (doc    "MISCOMPILE (invalid wasm, wasm-only): `Set.insert (Set.of (list)) x` with `x : Float64` — a
+           SINGLE float insert into a runtime EMPTY set — imported `box-int` but the emit called
+           `box-float`, so `box-float` was un-imported and the call resolved to `u32::MAX` → invalid
+           component at load. ROOT: the import collector used `box_op_ty(elem_ty)` while the emit used
+           `box_op_for(elem_node, elem_ty)`; for an empty base the element type is an unresolved `Var`, which
+           `box_op_ty` DEFAULTS to `box-int` but `box_op_for` resolves from the element NODE (a Float →
+           `box-float`) — a coemit mismatch, the empty-set String box-int bug's float twin. A CONSTANT float
+           `Set.of` folds (never emits the insert), which is why only the runtime empty-base insert broke. Fix:
+           the collector's Set/Map insert arms use `box_op_for` (node-aware) so imports match the emit.
+           `Set.len` of the 1-element set is 1.")
+  (input  (do
+            (def (main (: d Float64))
+              (Set.len (Set.insert (Set.of (list)) d)))
+            (export main)))
+  (call   main (: 2.5 Float64))
+  (output (: 1 Int64)))

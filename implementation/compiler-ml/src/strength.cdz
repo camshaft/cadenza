@@ -1,0 +1,165 @@
+/// strength.cdz — STRENGTH REDUCTION: replace an expensive operation with a cheaper equivalent. The
+/// classic backend/peephole transform — a multiply by a power of two becomes a shift, a multiply by two
+/// becomes an add, and the algebraic identities (`*1`, `*0`, `+0`, `-0`) fold away. Distinct from constant
+/// folding (which needs BOTH operands constant): strength reduction fires when only the CONSTANT operand
+/// has a special value, rewriting the op over an arbitrary sub-expression `e`.
+///
+/// Rewrites (both operand orders where commutative):
+///   e * 2^k  ⟶  e << k     (k ≥ 2; a shift is cheaper than a multiply)
+///   e * 2    ⟶  e + e       (an add is cheaper than a multiply; preferred over `<< 1`)
+///   e * 1    ⟶  e           e * 0 ⟶ 0       0 * e ⟶ 0
+///   e + 0    ⟶  e           0 + e ⟶ e       e - 0 ⟶ e
+///
+/// Applied bottom-up (reduce the operands first, then this node). Contract: `reduce` PRESERVES meaning —
+/// `eval(reduce(e)) == eval(e)` for every environment — while lowering multiplies to shifts/adds. The
+/// `Shl` result node models the shift the backend would emit (`eval` computes `x << k`, matching `x·2^k`).
+
+type Ex =
+  | Num(Int64)
+  | Var(Int64)
+  | Add(Ex, Ex)
+  | Sub(Ex, Ex)
+  | Mul(Ex, Ex)
+  | Shl(Ex, Int64)      // e << k — the reduced form of a multiply by 2^k
+
+/// The exponent `k` such that `n == 2^k`, or -1 if `n` is not a positive power of two.
+def log2-exact(n: Int64, k: Int64, acc: Int64) =
+  if acc == n then k
+  else (if acc > n then 0 - 1 else log2-exact(n, k + 1, acc * 2))
+
+def pow2-exp(n: Int64) = if n <= 0 then 0 - 1 else log2-exact(n, 0, 1)
+
+/// Reduce a multiply `l * r` (operands already reduced). Fires the strongest applicable rewrite.
+def reduce-mul(l: Ex, r: Ex) = match r with
+  | Ex.Num(0) => Ex.Num(0)
+  | Ex.Num(1) => l
+  | Ex.Num(2) => Ex.Add(l, l)                         // e * 2 → e + e
+  | Ex.Num(rv) => (let k = pow2-exp(rv) in
+      if k >= 2 then Ex.Shl(l, k) else Ex.Mul(l, r))  // e * 2^k → e << k (k≥2); else keep
+  | _ => (match l with                                 // constant on the LEFT (commute)
+    | Ex.Num(0) => Ex.Num(0)
+    | Ex.Num(1) => r
+    | Ex.Num(2) => Ex.Add(r, r)
+    | Ex.Num(lv) => (let k = pow2-exp(lv) in if k >= 2 then Ex.Shl(r, k) else Ex.Mul(l, r))
+    | _ => Ex.Mul(l, r))
+
+/// Reduce an add `l + r` — drop an additive zero.
+def reduce-add(l: Ex, r: Ex) = match r with
+  | Ex.Num(0) => l
+  | _ => (match l with | Ex.Num(0) => r | _ => Ex.Add(l, r))
+
+/// Reduce a subtract `l - r` — drop a subtracted zero (NOT commutative, only `e - 0`).
+def reduce-sub(l: Ex, r: Ex) = match r with
+  | Ex.Num(0) => l
+  | _ => Ex.Sub(l, r)
+
+/// Strength-reduce `e`, bottom-up.
+def reduce(e: Ex) = match e with
+  | Ex.Num(n) => Ex.Num(n)
+  | Ex.Var(x) => Ex.Var(x)
+  | Ex.Add(l, r) => reduce-add(reduce(l), reduce(r))
+  | Ex.Sub(l, r) => reduce-sub(reduce(l), reduce(r))
+  | Ex.Mul(l, r) => reduce-mul(reduce(l), reduce(r))
+  | Ex.Shl(e2, k) => Ex.Shl(reduce(e2), k)
+
+/// Reference evaluator (a free var reads as -1). `Shl` computes `x << k` — equal to `x · 2^k`.
+def ev(e: Ex, env: Map(Int64, Int64)) = match e with
+  | Ex.Num(n) => n
+  | Ex.Var(x) => (match Map.lookup(env, x) with | Option.Some(v) => v | Option.None(_) => 0 - 1)
+  | Ex.Add(l, r) => ev(l, env) + ev(r, env)
+  | Ex.Sub(l, r) => ev(l, env) - ev(r, env)
+  | Ex.Mul(l, r) => ev(l, env) * ev(r, env)
+  | Ex.Shl(e2, k) => ev(e2, env) << k
+
+def eval(e: Ex) = ev(e, Map.empty)
+
+/// Count multiply nodes remaining (strength reduction should lower these).
+def mul-count(e: Ex) = match e with
+  | Ex.Add(l, r) => mul-count(l) + mul-count(r)
+  | Ex.Sub(l, r) => mul-count(l) + mul-count(r)
+  | Ex.Mul(l, r) => 1 + mul-count(l) + mul-count(r)
+  | Ex.Shl(e2, _) => mul-count(e2)
+  | _ => 0
+
+/// Is `e` a `Shl`? (a multiply was lowered to a shift.)
+def is-shl(e: Ex) = match e with | Ex.Shl(_, _) => true | _ => false
+
+/// Builders. `x` is a variable id; env for tests binds it.
+def v(x: Int64) = Ex.Var(x)
+def n(k: Int64) = Ex.Num(k)
+def env1(x: Int64, val: Int64) = Map.insert(Map.empty, x, val)
+
+@test
+def sr-pow2-exp-correct() =
+  // 8 = 2^3, 6 is not a power of two, 1 = 2^0, 1024 = 2^10.
+  if pow2-exp(8) == 3 then
+    (if pow2-exp(6) == 0 - 1 then (if pow2-exp(1) == 0 then (if pow2-exp(1024) == 10 then unit else trap("1024")) else trap("1")) else trap("6"))
+  else trap("8 = 2^3")
+
+@test
+def sr-mul-pow2-to-shift() =
+  // x * 8 → x << 3, no multiply left; eval with x=7 → 56.
+  let e = Ex.Mul(v(0), n(8)) in
+  let r = reduce(e) in
+  if is-shl(r) then (if mul-count(r) == 0 then (if ev(r, env1(0, 7)) == 56 then unit else trap("7*8=56")) else trap("no mul")) else trap("x*8 → shift")
+
+@test
+def sr-mul-two-to-add() =
+  // x * 2 → x + x (add, not shift); eval x=5 → 10.
+  let e = Ex.Mul(v(0), n(2)) in
+  let r = reduce(e) in
+  (match r with | Ex.Add(_, _) => (if ev(r, env1(0, 5)) == 10 then unit else trap("5+5=10")) | _ => trap("x*2 → x+x"))
+
+@test
+def sr-mul-one-identity() =
+  // x * 1 → x
+  let r = reduce(Ex.Mul(v(0), n(1))) in
+  (match r with | Ex.Var(_) => (if ev(r, env1(0, 9)) == 9 then unit else trap("=9")) | _ => trap("x*1 → x"))
+
+@test
+def sr-mul-zero-annihilates() =
+  // x * 0 → 0 (and 0 * x → 0)
+  let r = reduce(Ex.Mul(v(0), n(0))) in
+  let l = reduce(Ex.Mul(n(0), v(0))) in
+  (match r with | Ex.Num(z) => (if z == 0 then (match l with | Ex.Num(z2) => (if z2 == 0 then unit else trap("0*x=0")) | _ => trap("0*x → 0")) else trap("x*0=0")) | _ => trap("x*0 → 0"))
+
+@test
+def sr-add-zero-identity() =
+  // x + 0 → x and 0 + x → x
+  let r = reduce(Ex.Add(v(0), n(0))) in
+  let l = reduce(Ex.Add(n(0), v(0))) in
+  (match r with | Ex.Var(_) => (match l with | Ex.Var(_) => unit | _ => trap("0+x → x")) | _ => trap("x+0 → x"))
+
+@test
+def sr-sub-zero-identity() =
+  // x - 0 → x, but 0 - x is NOT reduced (negation, not identity).
+  let r = reduce(Ex.Sub(v(0), n(0))) in
+  (match r with | Ex.Var(_) => (match reduce(Ex.Sub(n(0), v(0))) with | Ex.Sub(_, _) => unit | _ => trap("0-x stays a Sub")) | _ => trap("x-0 → x"))
+
+@test
+def sr-commuted-constant() =
+  // 8 * x → x << 3 (constant on the LEFT); eval x=3 → 24.
+  let r = reduce(Ex.Mul(n(8), v(0))) in
+  if is-shl(r) then (if ev(r, env1(0, 3)) == 24 then unit else trap("8*3=24")) else trap("8*x → shift")
+
+@test
+def sr-preserves-meaning-nested() =
+  // (x * 4) + (y * 2) with x=5,y=6 → 20 + 12 = 32; reduce lowers both multiplies (→ shl, →add).
+  let e = Ex.Add(Ex.Mul(v(0), n(4)), Ex.Mul(v(1), n(2))) in
+  let r = reduce(e) in
+  let env = Map.insert(env1(0, 5), 1, 6) in
+  if ev(r, env) == ev(e, env) then (if ev(r, env) == 32 then (if mul-count(r) == 0 then unit else trap("no mul left")) else trap("=32")) else trap("meaning preserved")
+
+@test
+def sr-non-pow2-multiply-kept() =
+  // x * 3 → not a power of two (and not 0/1/2) → the multiply is KEPT.
+  let r = reduce(Ex.Mul(v(0), n(3))) in
+  if mul-count(r) == 1 then (if ev(r, env1(0, 5)) == 15 then unit else trap("5*3=15")) else trap("x*3 kept as multiply")
+
+@test
+def sr-shift-equals-multiply() =
+  // the core correctness witness: for x=7, (x*8) and reduce(x*8)=(x<<3) evaluate equal.
+  let e = Ex.Mul(v(0), n(8)) in
+  if ev(reduce(e), env1(0, 7)) == ev(e, env1(0, 7)) then unit else trap("x<<3 == x*8")
+
+export { reduce, pow2-exp, eval, mul-count }

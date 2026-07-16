@@ -13,6 +13,7 @@
     "wasm": "cd ../implementation/seed/crates/cdz-wasm && wasm-pack build --target web --release && node ../../../../guide/scripts/stage-wasm.mjs",
     "check:examples": "node scripts/check-examples.mjs",
     "check:calculator": "node scripts/check-calculator.mjs",
+    "check:prose": "node scripts/check-prose-annotations.mjs",
     "test:unit": "node --test --experimental-strip-types 'src/**/*.test.ts'"
   },
   "dependencies": {

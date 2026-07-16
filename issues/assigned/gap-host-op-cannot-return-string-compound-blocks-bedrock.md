@@ -39,3 +39,41 @@ shim)** now — a peer op returns String by handle TODAY, zero compiler change, 
 loop immediately. Route A (this host-result String lift) is the *eventual* cleanup so the SigV4 edge can
 live in-Cadenza; schedule it as a dedicated increment, not a blocker. I OWN it (host-boundary ABI is my
 territory) and will build it when v-agent-harness reaches Inc-1′ and confirms Route A is the priority.
+
+## IMPLEMENTATION PLAN — Route A extends `assemble_host_mem` (studied the byte layout 2026-07-16)
+The reuse target is confirmed: `assemble_host_mem` (envelope.rs:1572) — the host envelope variant used
+when an op takes a `string` PARAMETER. It ALREADY provides: a shared-memory core module + instance + a
+memory alias (core memory 0), a Memory canon-option on each op's canon-`lower`, and the program instance
+instantiated with both `"host"` (lowered ops) + `"mem"` (shared memory). Its current SCOPE line says
+"scalar/unit result, string or scalar params" — the result direction is the one missing piece.
+
+A host String RESULT is the mirror of the String ARG (which already works via `(ptr,len)` into that
+shared memory). The arg direction: guest writes the string into mem, passes `(ptr,len)`, host reads via
+the canonical ABI. The result direction: host writes the string, the canonical ABI needs a `realloc`
+(the ret-area allocator) + the guest reads `(ptr,len)` back and builds a value-heap rope.
+
+STEPS (do String first; list<u8>/compound is a further increment):
+1. `abi_val_type` (host.rs:59) + `first_unrepresentable_host_op` (:635): admit `Ty::String` as a RESULT
+   ONLY when the emit takes the mem-path (i.e. gate the widening on "an op in this program uses the mem
+   envelope"), keeping the scalar-only decline where no memory is emitted. (A String result in a
+   NON-mem, scalar-only program must still force the mem path — so the routing in mod.rs:945 that picks
+   `assemble_host_mem` vs `assemble_host` must also trigger on a String RESULT, not only a String ARG.)
+2. `assemble_host_mem`: add a `Realloc` canon-option (alongside the existing Memory option) on the lower
+   of an op with a `string`/`list` RESULT — the canonical ABI's ret-area allocator. `cabi_realloc` core
+   func: the resource path (serialize.rs:1005) has a STUB `(ConstI32 0)` realloc; a real bump-allocator
+   (or reuse the value-heap `arr-alloc`) is needed for a real result buffer. Confirm whether the
+   canonical `string`-lift for an IMPORT result needs a guest realloc export or reads a host-provided
+   ret-area — check the component-model canonical ABI for imported-func string results (the lift side).
+3. Guest-side receive: after the `CallHostImport`, the result is a `(ptr,len)` in mem; emit the
+   `str-from-bytes`/rope-build ops (the same the value-heap uses) to turn it into a String handle the
+   program holds. `select.rs`'s `Core::HostCall` result handling (currently a scalar on the stack) gains
+   a String arm that reads `(ptr,len)` + builds the rope.
+4. `host_op_comp_functype` (mod.rs:1295-ish): map a String result to `COMP_STRING` (0x73) instead of
+   declining. The functype builder already handles `HostParam::Str` → COMP_STRING for a param
+   (mod.rs:1314) — mirror it for the result.
+
+SIZE: ~120-180 lines (steps 1-4), MODERATE byte-emit risk. Byte-validate the produced consumer with
+`wasm-tools validate` per step. The `assemble_host_mem` memory+Memory-option scaffolding is the load-
+bearing reuse — this is a result-direction ADD to a working envelope, NOT new machinery. list<u8>/
+compound results are a further step (the value-encode walker, like the peer compound result path).
+BUILD when v-agent-harness confirms priority + the exact op shape (String->String? list<u8> for bytes?).

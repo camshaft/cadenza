@@ -2404,6 +2404,49 @@ fn char_maps_to_rust_char_and_escapes_across_a_sum_payload() {
 }
 
 #[test]
+fn char_literal_escapes_c1_controls_not_just_c0() {
+    // Regression pin (Copilot PR#444 / corpus-bugfix issue): `rust_char_literal`/`rust_string_literal`
+    // once escaped only C0 (`< 0x20`) + DEL (`0x7f`), leaking a RAW C1 control (0x80-0x9F) into the
+    // generated `'…'`/`"…"` literal. The guard is now `is_control()`, matching
+    // `cadenza-syntax::render_char`. Pin that a C1 control — U+0085 NEL — emits `\u{85}`, not a raw byte.
+    let nel = compile_rust("(module m (def (g) #\\u+0085) (export g))");
+    assert!(
+        nel.contains("'\\u{85}'"),
+        "C1 control U+0085 → escaped char literal '\\u{{85}}', not a raw control:\n{nel}"
+    );
+    assert!(
+        !nel.contains("Ch('\u{85}')") && !nel.lines().any(|l| l.contains('\u{85}')),
+        "no RAW C1 control byte in the emitted source:\n{nel}"
+    );
+    // DEL (0x7f) — the old guard's upper edge — still escapes.
+    let del = compile_rust("(module m (def (g) #\\u+007F) (export g))");
+    assert!(
+        del.contains("'\\u{7f}'"),
+        "DEL U+007F → escaped char literal:\n{del}"
+    );
+    // A C1 control as a sum payload emits an escaped field literal (the reader-error surrogate case is
+    // static; a C1 control is a VALID scalar, so it reaches codegen and must escape).
+    let payload = compile_rust(
+        "(module m (type Tok (Ch Char) (End)) (def (mk) ((. Tok Ch) #\\u+0085)) (export mk))",
+    );
+    assert!(
+        payload.contains("Ch('\\u{85}')"),
+        "C1 control across a sum payload escapes:\n{payload}"
+    );
+    // e2e: the escaped literal compiles and round-trips to the same scalar (Char.to-int = 133).
+    let n = compile_rust(
+        "(module m (def (f) (match ((. Char from-int) 133) ((Some c) (Char.to-int c)) ((None _) -1))) \
+           (export f))",
+    );
+    if let Some(out) = rustc_run(&n, "f()") {
+        assert_eq!(
+            out, "133",
+            "U+0085 round-trips through generated Rust as scalar 133"
+        );
+    }
+}
+
+#[test]
 fn rustc_roundtrip_value_eq_over_bytes_string_and_compounds() {
     // `Core::ValueEq` over a String/Char/Bytes (and a compound containing them) now emits a native `==`
     // (`String`/`char`/`Vec<u8>` are Eq; `==` compares by content = the canonical-byte value equality).

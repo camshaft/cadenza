@@ -2021,14 +2021,17 @@ fn collect_used_ops_into(
             out.insert(OP_MAP_EMPTY);
             if !entries.is_empty() {
                 out.insert(OP_MAP_INSERT);
-                if let Ok(Some(op)) = box_op_ty(db, &key_ty) {
-                    out.insert(op);
-                }
-                if let Ok(Some(op)) = box_op_ty(db, &val_ty) {
-                    out.insert(op);
-                }
             }
             for (k, v) in &entries {
+                // NODE-AWARE box op (mirror the emit's `box_op_for`, not `box_op_ty`) — a Float key/value into
+                // an empty (`Var`-typed) map must import the `box-float` the emit calls, not the `box-int`
+                // `box_op_ty` defaults an unresolved `Var` to (the empty-collection float-element gap).
+                if let Ok(Some(op)) = box_op_for(db, *k, &key_ty) {
+                    out.insert(op);
+                }
+                if let Ok(Some(op)) = box_op_for(db, *v, &val_ty) {
+                    out.insert(op);
+                }
                 if key_needs_compaction(db, *k) {
                     out.insert(OP_BYTES_COMPACT);
                 }
@@ -2036,7 +2039,8 @@ fn collect_used_ops_into(
                 collect_used_ops_into(db, *v, out);
             }
         }
-        // `Map.insert` = `map-insert`, boxing the key and value by their types.
+        // `Map.insert` = `map-insert`, boxing the key and value by their types (NODE-AWARE `box_op_for` so a
+        // Float key/value into an empty `Var`-typed map imports the `box-float` the emit calls — see `MapNew`).
         Core::MapInsert {
             map,
             key,
@@ -2045,10 +2049,10 @@ fn collect_used_ops_into(
             val_ty,
         } => {
             out.insert(OP_MAP_INSERT);
-            if let Ok(Some(op)) = box_op_ty(db, &key_ty) {
+            if let Ok(Some(op)) = box_op_for(db, key, &key_ty) {
                 out.insert(op);
             }
-            if let Ok(Some(op)) = box_op_ty(db, &val_ty) {
+            if let Ok(Some(op)) = box_op_for(db, val, &val_ty) {
                 out.insert(op);
             }
             if key_needs_compaction(db, key) {
@@ -2072,7 +2076,9 @@ fn collect_used_ops_into(
             out.insert(OP_DUP);
             out.insert(OP_DROP);
             out.insert(OP_SUM_NEW);
-            if let Ok(Some(op)) = box_op_ty(db, &key_ty) {
+            // NODE-AWARE box op for the looked-up KEY (mirror the emit) — a Float key into an empty `Var`-typed
+            // map imports the `box-float` the emit calls, not `box_op_ty`'s `box-int` default.
+            if let Ok(Some(op)) = box_op_for(db, key, &key_ty) {
                 out.insert(op);
             }
             if key_needs_compaction(db, key) {
@@ -2081,12 +2087,11 @@ fn collect_used_ops_into(
             collect_used_ops_into(db, map, out);
             collect_used_ops_into(db, key, out);
         }
-        // `Map.remove` = `map-remove`, boxing the key by its type. `map-remove` BORROWS the key, so the
-        // emit drops an OWNED-TEMPORARY key after the borrow (the ownership gate) — hence `drop`.
+        // `Map.remove` = `map-remove`, boxing the key by its type (NODE-AWARE `box_op_for` — see `MapInsert`).
         Core::MapRemove { map, key, key_ty } => {
             out.insert(OP_MAP_REMOVE);
             out.insert(OP_DROP);
-            if let Ok(Some(op)) = box_op_ty(db, &key_ty) {
+            if let Ok(Some(op)) = box_op_for(db, key, &key_ty) {
                 out.insert(op);
             }
             if key_needs_compaction(db, key) {
@@ -2109,11 +2114,17 @@ fn collect_used_ops_into(
             out.insert(OP_SET_EMPTY);
             if !elems.is_empty() {
                 out.insert(OP_SET_INSERT);
-                if let Ok(Some(op)) = box_op_ty(db, &elem_ty) {
-                    out.insert(op);
-                }
             }
             for &e in &elems {
+                // NODE-AWARE box op (mirror the emit's `box_op_for`, NOT `box_op_ty`): when `elem_ty` is an
+                // unresolved `Var`/`Any` (an empty-base set fixed no element type), `box_op_ty` DEFAULTS to
+                // `box-int`, but the emit's `box_op_for` falls back to the ELEMENT NODE's real type — a Float
+                // element emits `box-float`. Collecting `box-int` while the emit calls `box-float` leaves
+                // `box-float` un-imported → `call u32::MAX` → INVALID WASM (the empty-set float-element gap,
+                // the historical empty-set String box-int bug's twin). Use the node so the two agree.
+                if let Ok(Some(op)) = box_op_for(db, e, &elem_ty) {
+                    out.insert(op);
+                }
                 if key_needs_compaction(db, e) {
                     out.insert(OP_BYTES_COMPACT);
                 }
@@ -2124,7 +2135,7 @@ fn collect_used_ops_into(
         Core::SetContains { set, elem, elem_ty } => {
             out.insert(OP_SET_CONTAINS);
             out.insert(OP_DROP);
-            if let Ok(Some(op)) = box_op_ty(db, &elem_ty) {
+            if let Ok(Some(op)) = box_op_for(db, elem, &elem_ty) {
                 out.insert(op);
             }
             if key_needs_compaction(db, elem) {
@@ -2133,10 +2144,12 @@ fn collect_used_ops_into(
             collect_used_ops_into(db, set, out);
             collect_used_ops_into(db, elem, out);
         }
-        // `Set.insert`/`Set.remove` = `set-insert`/`set-remove`, boxing the element by its type.
+        // `Set.insert`/`Set.remove` = `set-insert`/`set-remove`, boxing the element by its type. NODE-AWARE
+        // `box_op_for` (not `box_op_ty`) so a Float element into an empty (`Var`-typed) set imports the
+        // `box-float` the emit calls, not the `box-int` `box_op_ty` defaults a `Var` to — see `SetOf`.
         Core::SetInsert { set, elem, elem_ty } => {
             out.insert(OP_SET_INSERT);
-            if let Ok(Some(op)) = box_op_ty(db, &elem_ty) {
+            if let Ok(Some(op)) = box_op_for(db, elem, &elem_ty) {
                 out.insert(op);
             }
             if key_needs_compaction(db, elem) {
@@ -2150,7 +2163,7 @@ fn collect_used_ops_into(
         Core::SetRemove { set, elem, elem_ty } => {
             out.insert(OP_SET_REMOVE);
             out.insert(OP_DROP);
-            if let Ok(Some(op)) = box_op_ty(db, &elem_ty) {
+            if let Ok(Some(op)) = box_op_for(db, elem, &elem_ty) {
                 out.insert(op);
             }
             if key_needs_compaction(db, elem) {
@@ -8044,11 +8057,26 @@ fn emit(
         // non-canonical NaN across the host boundary, so the canonicalize is load-bearing (it matches
         // `op_box_float`'s runtime canonicalization and the constant fold's `to_f64_bits` basis).
         Core::FloatCompare {
-            lhs, rhs, width, ..
+            op,
+            lhs,
+            rhs,
+            width,
         } => {
-            emit_canon_float_bits(db, lhs, width, slots, base, high, scratch_ty, layout, out)?;
-            emit_canon_float_bits(db, rhs, width, slots, base, high, scratch_ty, layout, out)?;
-            out.push(if width == 32 { Lir::I32Eq } else { Lir::I64Eq });
+            if op == Prim::FEq {
+                // EQUALITY: canonical-byte bit compare (see above).
+                emit_canon_float_bits(db, lhs, width, slots, base, high, scratch_ty, layout, out)?;
+                emit_canon_float_bits(db, rhs, width, slots, base, high, scratch_ty, layout, out)?;
+                out.push(if width == 32 { Lir::I32Eq } else { Lir::I64Eq });
+            } else {
+                // ORDERING (`< <= > >=`): the RAW IEEE float compare (operator ruling — IEEE partialOrd).
+                // `f64.lt`/etc. already give the wanted semantics: a NaN operand → 0 (unordered → false),
+                // and `-0.0`/`+0.0` compare EQUAL (`f64.le -0.0 0.0` = 1). NO canonicalization — that's the
+                // equality path; ordering DISAGREES with it on NaN + signed zero, by design. Emit each float
+                // operand directly (grounded to the op width), then the raw compare op.
+                emit_float_operand(db, lhs, width, slots, base, high, scratch_ty, layout, out)?;
+                emit_float_operand(db, rhs, width, slots, base, high, scratch_ty, layout, out)?;
+                out.push(float_ordering_op(op, width));
+            }
             Ok(())
         }
         // RUNTIME STRUCTURAL EQUALITY on two COMPOUND heap values — a `value-eq` (`champ_eq`) call. The
@@ -13321,6 +13349,25 @@ fn int_ty_of(db: &mut Db, id: StructId) -> IntTy {
 
 /// The wasm machine op for a runtime FLOAT arithmetic prim at a given width — the f64/f32 `add`/`sub`/
 /// `mul`/`div`. `width` is the operands' solved float width (32 → f32, else f64). IEEE, never trapping.
+/// The raw IEEE float-ordering machine op for `Prim::FLt/FLe/FGt/FGe` at the given width. IEEE partialOrd:
+/// a NaN operand → 0 (false), `-0.0`/`+0.0` compare equal. (Not for `FEq` — equality uses the canonical-
+/// byte bit compare, a different relation.)
+fn float_ordering_op(op: Prim, width: u32) -> Lir {
+    let f32 = width == 32;
+    match op {
+        Prim::FLt if f32 => Lir::F32Lt,
+        Prim::FLt => Lir::F64Lt,
+        Prim::FLe if f32 => Lir::F32Le,
+        Prim::FLe => Lir::F64Le,
+        Prim::FGt if f32 => Lir::F32Gt,
+        Prim::FGt => Lir::F64Gt,
+        Prim::FGe if f32 => Lir::F32Ge,
+        Prim::FGe => Lir::F64Ge,
+        // Not a float-ordering prim — `Core::FloatCompare` only carries FEq (handled separately) or these.
+        _ => unreachable!("float_ordering_op called with a non-ordering prim"),
+    }
+}
+
 fn float_arith_op(op: Prim, width: u32) -> Lir {
     let f32 = width == 32;
     match op {

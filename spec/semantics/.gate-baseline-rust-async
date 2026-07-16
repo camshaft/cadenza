@@ -216,9 +216,11 @@ pass	a byte sequence written as a literal renders back to the same literal
 pass	a byte-decode loop advancing by a tuple projection while accumulating sum nodes compiles and runs
 pass	a byte-string literal equals the explicit byte sequence it desugars to
 pass	a byte-string literal with escapes equals its explicit byte sequence
+pass	a bytes value chosen by a runtime if is length-measured with valid wasm
 pass	a capture-free de Bruijn beta-reduction over a nameless term sum reduces correctly
 pass	a captured pre-shadow value survives the re-binding
 pass	a capturing closure stored in a tuple is extracted and applied
+pass	a chained Option.expect(Option.expect s) payload consumed per iteration accumulates stably
 pass	a chained access through an if-of-records composes and shields the untaken branch's trap
 pass	a char literal naming a surrogate is a reader error
 pass	a char order agrees with its scalar value
@@ -293,6 +295,7 @@ pass	a constructor pattern nested under Some matches a runtime list element
 pass	a constructor selected at RUNTIME is a first-class value that is then applied
 pass	a constructor whose payload is a constructor keeps the outer variant tag
 pass	a constructor with an all-irrefutable payload shadows a later refining arm of the same variant
+pass	a consumed and a borrowed read of one loop invariant coexist per iteration
 pass	a consumed bare None type-checks without annotation (ambiguity is escape-only)
 pass	a consumed empty list type-checks without annotation (ambiguity is escape-only)
 pass	a consuming op inside a hoisted list element respects a still-live binding
@@ -971,6 +974,7 @@ pass	a record whose field is misnamed is both missing and extra
 pass	a record with a duplicate field name is a type error
 pass	a record with a non-adjacent duplicate field name is a type error
 pass	a record with a runtime field is returned as a program result
+pass	a record-field loop invariant consumed per iteration accumulates stably
 pass	a record-parameter export returns a tuple computed from its fields
 pass	a recursion carrying a Bytes parameter does a fallible read in its base arm
 pass	a recursion carrying a List parameter does a fallible read in its base arm
@@ -1021,7 +1025,7 @@ pass	a recursive user sum type is built at run time and renders its variant name
 pass	a recursive walk consulting a node's own and its child's String key computes correctly
 pass	a recursive walk threads THREE nested handlers' states at once
 pass	a recursive walk threads TWO effects at once — a fresh-index counter and a running total
-pass	a recursive-generic producer at two element types is rejected with a tied-result-var diagnostic
+pass	a recursive-generic producer composes at two element types (the tied result var)
 pass	a recursive-generic producer wrapping elements in a user sum is consumed at one type
 pass	a recursive-sum payload projected more than once folds to a scalar
 pass	a recursively-built MULTI-PAYLOAD-variant list renders its spine FLAT
@@ -1230,6 +1234,7 @@ pass	a set as a map value: runtime membership tested through the lookup
 pass	a set built at run time escapes to the host as its value form
 pass	a set built from generated values is equal regardless of insertion order (order-independent equality on generated inputs)
 pass	a set chosen by a runtime if is membership-tested with valid wasm
+pass	a set chosen by a runtime if is size-measured with valid wasm
 pass	a set collapses a duplicate element
 pass	a set consumed by Set.insert in one operand is unchanged for a later read of the same binding
 pass	a set is constructed from a list of its elements
@@ -1306,6 +1311,7 @@ pass	a sum whose variants are named after target-language keywords constructs an
 pass	a sum with FOUR type parameters instantiates and matches each at a distinct type
 pass	a sum-match payload's heap child consumed while the scrutinee is live is retained
 pass	a sum-match recursion that accumulates a built-in list returns a list
+pass	a sum-payload loop invariant consumed per iteration accumulates stably
 pass	a sum-payload-wrapped self-application is rejected in bounded time, not a compiler stack overflow
 pass	a sum-type value is constructed through a variant
 pass	a sum-type value is deconstructed by an exhaustive match
@@ -1398,6 +1404,7 @@ pass	a tuple-parameter export returns a list computed from its fields
 pass	a tuple-pattern parameter binds the halves of its pair argument
 pass	a tuple-pattern parameter destructures a runtime-built tuple
 pass	a tuple-pattern parameter over a tuple threaded from a helper call
+pass	a tuple-projected loop invariant consumed per iteration accumulates stably
 pass	a tuple-wrapped self-application is rejected in bounded time, not a compiler stack overflow
 pass	a twenty-deep push chain retains the still-live source binding
 pass	a two-arm Bool match selects its second (false) arm
@@ -2076,9 +2083,11 @@ pass	print of an Ast.Float renders a re-readable decimal and read inverts it
 pass	print of an Ast.Str renders a quoted literal with escapes and read inverts it
 pass	print of an integer-valued Ast.Float keeps its float form through read
 pass	print renders a nested compound with a string leaf as its exact canonical text
+pass	print renders a single-element Ast.List as one parenthesized element
 pass	print renders a template that splices an Ast value — the non-executing path works
 pass	print renders an empty Ast.List as the empty-parens form
 pass	print then read of a digit-led Ast.Name reclassifies it per the number/identifier boundary
+pass	print then read of a keyword-spelled Ast.Name reclassifies it as the boolean literal
 pass	projecting a field is independent of the order fields are written
 pass	projecting a field of a non-compound argument is rejected at the call site
 pass	projecting a just-built tuple does not evaluate the unprojected sibling's trap
@@ -2217,6 +2226,7 @@ pass	the boolean literals
 pass	the built-in Ast is transformed as an ordinary value
 pass	the built-in list is folded by an element-with-rest pattern
 pass	the byte codec round-trips a digit-led Ast.Name that the text path would reclassify
+pass	the byte codec round-trips a keyword-spelled Ast.Name that the text path would reclassify
 pass	the byte length of a run-time multibyte string exceeds its scalar length
 pass	the byte length of a run-time-selected string reads the actual handle
 pass	the byte length of a runtime string equals the length of its encoded bytes
@@ -2239,6 +2249,8 @@ pass	the entrypoint multiplies its runtime argument
 pass	the entrypoint returns its runtime argument unchanged
 pass	the entrypoint returns its runtime boolean argument
 pass	the entrypoint sums its two runtime arguments
+pass	the expander rewrites a directly-written node even when chunks != holes+1 (no re-check)
+pass	the expander threads the hole list to the tag even with zero chunks and zero holes
 pass	the exponent marker is case-insensitive
 pass	the first failing `?` short-circuits; a later `?` never runs
 pass	the generated-set convergence property has discriminating power — two different generated sets are NOT equal

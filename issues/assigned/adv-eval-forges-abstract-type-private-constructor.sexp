@@ -46,3 +46,7 @@
             (def (main) (eval (quote (Color.Green))))
             (export main)))
   (error  CDZ0214))
+
+; UPDATE 2026-07-16 (corpus-bugfix): OWNERSHIP RESOLVED — concierge assigned v-metaprogramming to own the fix
+; (my escalation + v-metaprogramming/v-verification reports converged). v-verification owns the GATE
+; COVERAGE (will pin a graded verification-corpus case when the fix lands). No further routing needed.

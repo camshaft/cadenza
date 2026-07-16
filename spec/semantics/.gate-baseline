@@ -215,6 +215,7 @@ pass	a DOUBLY-nested projected list, consumed then read, is unchanged (child ret
 pass	a FLAT runtime string nested in a tuple is unaffected (control)
 pass	a FLOAT-field Tuple closure ARG flattens + rebuilds (box-float imported)
 pass	a FLOAT-result effect op threads a float state and its resume folds under a float-dispatched operator
+pass	a Float element inserted into an empty (runtime) set boxes with box-float, not box-int
 pass	a Float64 closure captures a Float64 build-time host effect result
 pass	a GENERIC recursive sum branching through a tuple folds at a concrete instantiation
 pass	a GENERIC user sum crosses a module boundary at a concrete instantiation
@@ -256,6 +257,7 @@ pass	a NON-tail-resumptive arm projects a tuple parameter twice in its pure one-
 pass	a NaN nested in a list compares equal under the canonical byte form
 pass	a NaN nested in a sum payload compares equal under the canonical byte form
 pass	a NaN nested in a tuple compares equal under the canonical byte form
+pass	a NaN operand makes every runtime float ordering relation false (unordered)
 pass	a PARTIALLY-applied multi-payload constructor is a first-class function value
 pass	a RADIX literal carries the N type suffix
 pass	a RECORD closure ARG among scalars crosses the direct-call boundary (scalar result)
@@ -408,6 +410,7 @@ pass	a byte sequence written as a literal renders back to the same literal
 pass	a byte-decode loop advancing by a tuple projection while accumulating sum nodes compiles and runs
 pass	a byte-string literal equals the explicit byte sequence it desugars to
 pass	a byte-string literal with escapes equals its explicit byte sequence
+pass	a bytes value chosen by a runtime if is length-measured with valid wasm
 pass	a camelCase round-trip resolves through kebab boundary-name normalization
 pass	a camelCase same-signature multi-export normalizes each make-<name>
 pass	a capture-free de Bruijn beta-reduction over a nameless term sum reduces correctly
@@ -541,6 +544,7 @@ pass	a const-key entry is found beside a distinct runtime-keyed entry
 pass	a constant BigInt crosses the host boundary as its value form
 pass	a constant BigInt operand of a runtime BigInt op materializes as a heap value
 pass	a constant argument out of a narrow parameter's range is rejected, not laundered
+pass	a constant float ordering with a NaN operand folds to false, not a decline
 pass	a constant integer widens to BigInt and narrows back through Int64 unchanged
 pass	a constant left shift of -1 by 63 is exactly the minimum integer
 pass	a constant left shift of 1 by 63 overflows and is rejected
@@ -1659,6 +1663,7 @@ pass	a set as a map value: runtime membership tested through the lookup
 pass	a set built at run time escapes to the host as its value form
 pass	a set built from generated values is equal regardless of insertion order (order-independent equality on generated inputs)
 pass	a set chosen by a runtime if is membership-tested with valid wasm
+pass	a set chosen by a runtime if is size-measured with valid wasm
 pass	a set collapses a duplicate element
 pass	a set consumed by Set.insert in one operand is unchanged for a later read of the same binding
 pass	a set is constructed from a list of its elements
@@ -2757,6 +2762,8 @@ pass	runtime Bytes value-equality distinguishes different content
 pass	runtime Rational arithmetic adds two parameter-built fractions exactly
 pass	runtime float equality compares by canonical byte form
 pass	runtime float inequality compares by canonical byte form
+pass	runtime float ordering is a strict/non-strict partial order over finite values
+pass	runtime float ordering treats negative and positive zero as equal, unlike equality
 pass	runtime structural equality over a GENERIC RECURSIVE sum walks the whole tree
 pass	runtime structural equality over a payload-carrying sum agrees on both backends
 pass	runtime tuple concatenation preserves element order across the seam

@@ -24819,6 +24819,39 @@ mod match_engine {
     }
 
     #[test]
+    fn a_float_element_into_an_empty_set_imports_box_float_not_box_int() {
+        // MISCOMPILE (invalid wasm): `Set.insert (Set.of (list)) x` with `x : Float64` — a single float
+        // insert into a runtime EMPTY set — imported `box-int` (the import collector's `box_op_ty(elem_ty)`
+        // DEFAULTS an unresolved `Var` element type to `box-int`) while the emit's node-aware `box_op_for`
+        // called `box-float` → `box-float` un-imported → `call u32::MAX` → invalid component. Fix: the
+        // collector's Set/Map insert arms use `box_op_for` (node-aware). Assert the component imports
+        // `box-float` (and not the wrong default) so it links. A CONSTANT float set folds (no insert), so
+        // the empty runtime base is the trigger.
+        let set_f64 = "(module m \
+               (def (mk (: x Float64)) ((. Set insert) ((. Set of) (list)) x)) \
+               (def (main (: d Float64)) ((. Set len) (mk d))) (export main))";
+        assert!(
+            component_imports_op(&component(set_f64), "box-float"),
+            "a Float64 set element must import `box-float` (else the emit's box-float call is unresolved)"
+        );
+        // f32 → box-float32; and a float map VALUE into an empty map likewise.
+        let set_f32 = "(module m \
+               (def (mk (: x Float32)) ((. Set insert) ((. Set of) (list)) x)) \
+               (def (main (: d Float32)) ((. Set len) (mk d))) (export main))";
+        assert!(
+            component_imports_op(&component(set_f32), "box-float32"),
+            "a Float32 set element must import `box-float32`"
+        );
+        let map_f64 = "(module m \
+               (def (mk (: x Float64)) ((. Map insert) (map) 0 x)) \
+               (def (main (: d Float64)) ((. Map len) (mk d))) (export main))";
+        assert!(
+            component_imports_op(&component(map_f64), "box-float"),
+            "a Float64 map value into an empty map must import `box-float`"
+        );
+    }
+
+    #[test]
     fn list_len_over_an_owned_temporary_reclaims_it_but_a_borrowed_list_is_left_to_its_owner() {
         // LEAK reclamation (mirror the scalar-element `Core::Proj` reclaim): `vec-len` BORROWS the list and
         // returns a scalar count, so an OWNED-TEMPORARY operand (`List.len (build …)` — a fresh list used
