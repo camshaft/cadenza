@@ -1055,6 +1055,8 @@ pass	a negative hexadecimal literal negates its value
 pass	a negative integer literal pattern matches a runtime scrutinee
 pass	a negative integer width is rejected
 pass	a negative power is the reciprocal, deriving an inverse unit
+pass	a negative power over a BigInt magnitude truncates the reciprocal exactly
+pass	a negative power over a Rational magnitude is the EXACT reciprocal
 pass	a negative power over an integer magnitude truncates the reciprocal
 pass	a negative right-shift count traps rather than masking
 pass	a negative runtime BigInt result crosses the host boundary with its sign

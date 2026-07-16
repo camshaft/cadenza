@@ -12802,10 +12802,13 @@ fn lower_unit_in(db: &mut Db, target: StructId, q: StructId) -> Core {
 /// `second⁻¹`) — the division runs in the inner type, so Float divides and Int TRUNCATES (`1 / 8 = 0`),
 /// the documented "precision loss only where the numeric type is itself inexact / integer truncates".
 fn lower_qty_pow(db: &mut Db, q: StructId, exp: StructId) -> Core {
-    let inner_is_float = matches!(
-        crate::infer::type_of(db, q),
-        crate::ty::Ty::Qty { inner, .. } if matches!(*inner, crate::ty::Ty::Float(_))
-    );
+    let inner = match crate::infer::type_of(db, q) {
+        crate::ty::Ty::Qty { inner, .. } => *inner,
+        other => other,
+    };
+    let inner_is_float = matches!(inner, crate::ty::Ty::Float(_));
+    let inner_is_bigint = matches!(inner, crate::ty::Ty::BigInt);
+    let inner_is_rational = matches!(inner, crate::ty::Ty::Rational);
     let n = match crate::resolve::resolved_of(db, exp) {
         crate::resolved::Resolved::Int(v) => match v.to_i64() {
             Some(n) => n,
@@ -12817,9 +12820,44 @@ fn lower_qty_pow(db: &mut Db, q: StructId, exp: StructId) -> Core {
             ));
         }
     };
-    // `n = 0` — the dimensionless identity `1` (`1.0` for a float inner).
+    // The multiplicative identity `1` in q's INNER numeric type — `1.0` for a float inner, `(BigInt.of 1)`
+    // for a BigInt inner, `(Rational.of 1 1)` for a Rational inner, else the fixed-width int `1`. The inner
+    // type matters because the negative-exponent reciprocal `1 / value^|n|` (and the `n = 0` identity) must
+    // be in the SAME numeric type as `value`: a bare Int `1` over a BigInt/Rational `value` is a numeric
+    // mismatch (`Int64` vs `BigInt`), which slips past the check inside a quantity and surfaces as a backend
+    // ownership error on the reciprocal divide (`1` and the heap handle disagree). Build `1` in-type here.
+    let inner_one = |db: &mut Db| -> StructId {
+        if inner_is_bigint {
+            let dot = db.push_name(".");
+            let bigint = db.push_name("BigInt");
+            let of = db.push_name("of");
+            let head = db.push_list(vec![dot, bigint, of]);
+            let lit = db.push_atom(crate::ast::Leaf::Int {
+                value: IntValue::from_i128(1),
+                radix: crate::ast::Radix::Dec,
+            });
+            db.push_list(vec![head, lit])
+        } else if inner_is_rational {
+            let dot = db.push_name(".");
+            let rational = db.push_name("Rational");
+            let of = db.push_name("of");
+            let head = db.push_list(vec![dot, rational, of]);
+            let n_lit = db.push_atom(crate::ast::Leaf::Int {
+                value: IntValue::from_i128(1),
+                radix: crate::ast::Radix::Dec,
+            });
+            let d_lit = db.push_atom(crate::ast::Leaf::Int {
+                value: IntValue::from_i128(1),
+                radix: crate::ast::Radix::Dec,
+            });
+            db.push_list(vec![head, n_lit, d_lit])
+        } else {
+            num_literal(db, 1, inner_is_float)
+        }
+    };
+    // `n = 0` — the dimensionless identity `1` (in the inner type).
     if n == 0 {
-        let one = num_literal(db, 1, inner_is_float);
+        let one = inner_one(db);
         return core_of(db, one);
     }
     // The erased magnitude to raise: a directly-written `(Qty.of x u)` operand yields its value occurrence
@@ -12848,7 +12886,7 @@ fn lower_qty_pow(db: &mut Db, q: StructId, exp: StructId) -> Core {
     // its operand type); a positive one is the power itself. Lower the synthesized node through the
     // ordinary arith path (so the constant case folds and a runtime magnitude emits the multiplies/div).
     if n < 0 {
-        let one = num_literal(db, 1, inner_is_float);
+        let one = inner_one(db);
         let div_head = db.push_name("/");
         node = db.push_list(vec![div_head, one, node]);
     }
