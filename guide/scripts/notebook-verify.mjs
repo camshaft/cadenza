@@ -72,13 +72,16 @@ try {
   const out0 = await page.locator('[data-testid="cell-output"]').first().innerText();
   ok(/\d/.test(out0) && !/error|running/i.test(out0), "initial cell-output is a computed value: " + JSON.stringify(out0));
 
-  // Drive the rate slider. A React controlled range input updates on the INPUT event; fill() is flaky on
-  // ranges, so set .value + dispatch input & change. (Never keyboard.type into the CodeMirror editor —
-  // auto-indent corrupts multi-line source.)
+  // Drive the rate slider. It's a React CONTROLLED range input: React installs a value-tracker that
+  // OVERRIDES a raw `el.value = v` assignment, so onChange never fires and the cell won't recompute
+  // (v-guide-infra hit exactly this — the output stayed 1050). Go through the NATIVE value setter React
+  // observes, then dispatch `input`. (Never keyboard.type into the CodeMirror editor — auto-indent
+  // corrupts multi-line source.)
   await page.$eval(
     '[data-testid="widget-rate"]',
     (el, v) => {
-      el.value = v;
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+      setter.call(el, v);
       el.dispatchEvent(new Event("input", { bubbles: true }));
       el.dispatchEvent(new Event("change", { bubbles: true }));
     },
