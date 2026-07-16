@@ -809,6 +809,35 @@ fn down(fleet: &Fleet) {
     );
 }
 
+/// Whether an agent's row should carry the `⚠STALE` flag on the board. Pure so it can be unit-tested
+/// and so the board's verdict provably MATCHES the watchdog's re-arm gate (a mismatch would show a
+/// stall the watchdog silently ignores, or vice-versa — either way the operator loses trust in the
+/// board). An agent reads stale only when it is `active`, has a live window, and its heartbeat age
+/// exceeds its stale window. The one exemption mirrors `watchdog`: for `pr-sync`, a `trunk` commit
+/// newer than the stale window proves liveness (only pr-sync writes `trunk`), so a stale heartbeat
+/// mid-batch is NOT a stall. `trunk_commit_age` is `None` for every non-pr-sync agent (and for
+/// pr-sync when trunk's age is unknown), in which case only the heartbeat gate applies.
+fn agent_reads_stale(
+    name: &str,
+    agent_status: &str,
+    has_window: bool,
+    hb_age: u64,
+    window_secs: u64,
+    trunk_commit_age: Option<u64>,
+) -> bool {
+    if agent_status != "active" || !has_window || hb_age <= window_secs {
+        return false;
+    }
+    // pr-sync trunk-advance exemption — a fresh trunk commit means it's alive integrating, not stalled.
+    if name == "pr-sync"
+        && let Some(commit_age) = trunk_commit_age
+        && commit_age <= window_secs
+    {
+        return false;
+    }
+    true
+}
+
 fn status(fleet: &Fleet) {
     let reg = fleet.load();
     let session = if in_tmux() {
@@ -842,7 +871,23 @@ fn status(fleet: &Fleet) {
             None => ("never".to_string(), ""),
             Some(age) => {
                 let window_secs = stale_window_secs(parse_interval_secs(&a.interval), 2, 600);
-                let is_stale = a.status == "active" && has_window && age > window_secs;
+                // Mirror the watchdog's pr-sync exemption so the board and the watchdog AGREE: pr-sync
+                // does minutes-long synchronous gate work per MR, so its heartbeat legitimately goes
+                // stale mid-batch — a recent commit on `trunk` (which only pr-sync writes) proves it's
+                // alive. Only pr-sync's row consults trunk; every other agent passes None (unread).
+                let trunk_commit_age = if a.name == "pr-sync" {
+                    last_commit_age_secs(&fleet.repo, TRUNK)
+                } else {
+                    None
+                };
+                let is_stale = agent_reads_stale(
+                    &a.name,
+                    &a.status,
+                    has_window,
+                    age,
+                    window_secs,
+                    trunk_commit_age,
+                );
                 if is_stale {
                     stale += 1;
                 }
@@ -3523,5 +3568,55 @@ mod tests {
         std::fs::write(ib.join("000000000002-2-note.json"), "{}").unwrap();
         assert_eq!(inbox_depth(&fleet, "v-x"), "2 msg");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn agent_reads_stale_matches_watchdog_gate() {
+        // Window = 600s throughout; a plain vertical ignores the trunk arg entirely.
+        // Healthy: heartbeat within the window → not stale.
+        assert!(!agent_reads_stale("v-x", "active", true, 300, 600, None));
+        // Genuinely stalled: active + live window + heartbeat past the window → stale.
+        assert!(agent_reads_stale("v-x", "active", true, 900, 600, None));
+        // Exactly at the window is NOT past it (strict `>`), so not stale.
+        assert!(!agent_reads_stale("v-x", "active", true, 600, 600, None));
+        // A stopped agent never reads stale, however old its heartbeat.
+        assert!(!agent_reads_stale("v-x", "stopped", true, 9999, 600, None));
+        // No live tmux window → can't be a live-but-stalled loop, so no flag.
+        assert!(!agent_reads_stale("v-x", "active", false, 9999, 600, None));
+        // The trunk arg is IGNORED for a non-pr-sync agent even if fresh — it stays stale.
+        assert!(agent_reads_stale("v-x", "active", true, 900, 600, Some(1)));
+
+        // pr-sync exemption (mirrors `watchdog`): stale heartbeat but a FRESH trunk commit → alive
+        // mid-batch, NOT stale.
+        assert!(!agent_reads_stale(
+            "pr-sync",
+            "active",
+            true,
+            1500,
+            600,
+            Some(120)
+        ));
+        // pr-sync with a STALE trunk commit too (nothing landed within the window) → genuinely stalled.
+        assert!(agent_reads_stale(
+            "pr-sync",
+            "active",
+            true,
+            1500,
+            600,
+            Some(1200)
+        ));
+        // pr-sync with an UNKNOWN trunk age (None) falls back to the heartbeat gate → stale.
+        assert!(agent_reads_stale(
+            "pr-sync", "active", true, 1500, 600, None
+        ));
+        // pr-sync ticking within its window is healthy regardless of trunk.
+        assert!(!agent_reads_stale(
+            "pr-sync",
+            "active",
+            true,
+            120,
+            600,
+            Some(9999)
+        ));
     }
 }
