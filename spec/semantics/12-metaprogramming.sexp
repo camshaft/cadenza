@@ -870,6 +870,16 @@
   (input  (read ""))
   (declines))
 
+(case "read classifies a lone punctuation token as an Ast.Name and it round-trips"
+  (doc    "A bare non-numeric, non-keyword atom — even a punctuation/operator symbol like `.` — is read as an
+           `Ast.Name` (the `SexprReader`'s atom fallthrough: not a number, not `true`/`false`, so a name). It
+           is a WELL-FORMED single node (does NOT decline), and prints back to `\".\"` so `read(print v) == v`.
+           Pins the reader's atom-vs-structure boundary at an operator-symbol token — the sound companion of
+           the alphanumeric-name / keyword-collision cases, and of the decline cases above (a lone `.` is a
+           valid name atom, not malformed input).")
+  (input  (= (print (read ".")) "."))
+  (output (: true Bool)))
+
 (case "an active unquote of a float literal lifts to an Ast.Float node"
   (doc    "`` `(f ,2.5) `` embeds the float literal `2.5` as the `Ast.Float` leaf its value denotes — the
            same node `(quote (f 2.5))` builds. The float companion of the literal Int/Bool/Str cases.")
