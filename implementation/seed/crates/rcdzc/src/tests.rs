@@ -69120,6 +69120,82 @@ mod cross_component_oracle {
     }
 
     // ------------------------------------------------------------------------------------------------
+    // PL31 — a RECORD-of-(String, scalar) argument crosses to a peer (the Bedrock REQUEST-STRUCT idiom).
+    // A real model call bundles its inputs as a request record — `{ prompt: String, max-tokens: Int64 }` —
+    // not as loose positional args. PL30 pins loose String+scalar args; u16 pins a scalar-only compound;
+    // PL31 pins that a compound carrying a STRING FIELD crosses as ONE handle and the peer reads both a
+    // rope-leaf field AND a scalar field out of it. This is the nested-rope-in-compound arg path (the
+    // tuple's String element is itself a heap handle stored in the tuple), distinct from PL30's flat args.
+    // Provider `req : (Tuple String Int64) -> Int64` = byte-len(prompt) + max-tokens. Consumer builds
+    // `("hi", 4)` → 2 + 4 = 6 — the request struct crossed as a handle, both fields read on the peer side.
+    // ------------------------------------------------------------------------------------------------
+    #[test]
+    fn a_record_of_string_and_scalar_argument_crosses_to_a_peer() {
+        use crate::backend::wasm::runtime_abi::{REQUIRED_RUNTIME_HASH, RUNTIME_IFACE};
+        use crate::testkit::parse;
+        let import_name = format!("{RUNTIME_IFACE}@0.0.0+{REQUIRED_RUNTIME_HASH}");
+        // PROVIDER: reads BOTH the String field (byte-len) and the scalar field of a single tuple arg.
+        let provider = compile_provider(
+            "(do (def (req (: t (Tuple String Int64))) (+ (String.byte-len (. t 0)) (. t 1))) (export req))",
+            "cadenza:req/api",
+        );
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&provider)
+                .expect("the request-struct provider validates");
+        }
+        // CONSUMER: builds a request tuple `("hi", 4)` — a String field + a scalar field — and passes it
+        // as ONE handle into the peer op.
+        let src = "(do \
+            (effect S (op req (-> (Tuple String Int64) Int64))) \
+            (bind S \"cadenza:req/api\") \
+            (def (main) (host (S) (S.req (tuple \"hi\" 4)))) \
+            (export main))";
+        let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .unwrap_or_else(|d| {
+                panic!(
+                    "request-struct consumer compiles: {} [{:?}]",
+                    d.message, d.code
+                )
+            });
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&consumer)
+                .expect("request-struct consumer validates");
+        }
+        assert!(
+            String::from_utf8_lossy(&consumer).contains(&import_name),
+            "a request-struct peer consumer imports the value-heap runtime (it builds the tuple + rope)"
+        );
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("[PL31] runtime wasm not found; skipping");
+            return;
+        };
+        let peers = vec![cdz_run::Peer {
+            bytes: provider,
+            interface: "cadenza:req/api".to_string(),
+        }];
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: Vec::new(),
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run_with_peers(&consumer, &peers, &opts)
+            .expect("a request-struct argument crosses to a peer")
+        {
+            // byte-len("hi") + 4 = 2 + 4 = 6. A compound carrying a String field crossed as ONE handle;
+            // the peer projected both the rope-leaf field and the scalar field out of it.
+            cdz_run::Outcome::Value(s) => assert_eq!(
+                s, "6",
+                "a record-of-(String,scalar) argument crosses to a peer as one handle, both fields read"
+            ),
+            cdz_run::Outcome::Trap(t) => panic!("request-struct run trapped: {t}"),
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------------
     // PL18 — a peer op returning a LIST (a variable-length collection) crosses + the consumer reads its
     // LENGTH. The rich-interface north star names lists crossing the peer boundary; the List RESULT read
     // was untested e2e (U5d built a list peer but did not run a source consumer reading it). A List
