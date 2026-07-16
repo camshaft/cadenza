@@ -2497,6 +2497,7 @@ pass	double negation of a runtime boolean is the identity
 pass	dropping an absent field from a record is rejected
 pass	dropping fields from a record leaves the remaining fields
 pass	each definition in a module registers a reachable export field
+pass	effect state threads across a successful `?`
 pass	encoding a decoded string round-trips to the same bytes
 pass	encoding and decoding a constructor-built AST round-trips to an equal value
 pass	encoding and decoding a constructor-built compound AST round-trips
