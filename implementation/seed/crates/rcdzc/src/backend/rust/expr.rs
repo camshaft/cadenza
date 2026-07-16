@@ -1488,7 +1488,19 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         // continuation is a leaf body or a nested switch (the decision tree). A payload BINDER in a body
         // is not bound in the arm pattern here — it resolves to a `Core::SumPayload` that re-extracts the
         // payload — so the arm pattern ignores the payload (`Enum::V { .. }` / `Enum::V(_)`).
-        Core::MatchSum { scrutinee, root } => emit_sum_match(db, scrutinee, &root, env, ctx),
+        Core::MatchSum { scrutinee, root } => {
+            // The match's RESULT integer type, if any — a Leaf arm body is grounded to it so a
+            // default-Int64 literal arm beside a NARROW-width arm (a widened sum payload) does not yield
+            // mismatched `if`/`match` branches + a wrong fn return width (Rust E0308). The scalar-`match`
+            // path (`emit_match_impl`) already does this via `result_it`; the sum-decision-tree path did
+            // not, so a `(match b ((A 0) 100) ((A x) x) …)` over a `UInt8` payload emitted `if … { 100i64 }
+            // else { x_u8 }` — mismatched. Compute it here and thread it through the whole tree.
+            let result_it = match type_of(db, id) {
+                Ty::Int(it) => Some(it),
+                _ => None,
+            };
+            emit_sum_match(db, scrutinee, &root, result_it, env, ctx)
+        }
         // A LIST match `(match xs ((list) …) ((list a .. rest) …) …)` → a length-tested `if`/`else if`
         // chain over `xs.len()`. Each arm's condition is `== n` (fixed arity), `>= lead` (rest pattern),
         // or always (bare binder/`_`); the first satisfied arm's body runs. The scrutinee is bound ONCE
@@ -2607,6 +2619,10 @@ fn emit_sum_match(
     db: &mut Db,
     scrutinee: StructId,
     root: &crate::core::SumCont,
+    // The match's solved integer RESULT type, if any — each `Leaf` continuation body is grounded to it (a
+    // narrow sum-payload arm widened to a wider unified result, a default-Int64 literal arm narrowed).
+    // `None` for a non-integer result (no width to reconcile).
+    result_it: Option<IntTy>,
     env: &Env,
     ctx: &Ctx,
 ) -> Result<String, Reject> {
@@ -2623,11 +2639,13 @@ fn emit_sum_match(
     // it — the last non-Switch-root gap.
     match root {
         crate::core::SumCont::Switch { path, arms } => {
-            emit_sum_switch(db, scrutinee, path, arms, env, ctx)
+            emit_sum_switch(db, scrutinee, path, arms, result_it, env, ctx)
         }
         crate::core::SumCont::Guarded { .. }
         | crate::core::SumCont::Leaf(_)
-        | crate::core::SumCont::LitTest { .. } => emit_sum_cont(db, scrutinee, root, env, ctx),
+        | crate::core::SumCont::LitTest { .. } => {
+            emit_sum_cont(db, scrutinee, root, result_it, env, ctx)
+        }
     }
 }
 
@@ -2640,11 +2658,13 @@ fn emit_sum_match(
 /// arm's continuation switches Ok/Err of the payload). Guarded / literal-payload continuations are still
 /// declined (a later slice). This is what lets a RUNTIME nested sum match render on the Rust backend, the
 /// two-compiler companion of the wasm decision-tree walk.
+#[allow(clippy::too_many_arguments)]
 fn emit_sum_switch(
     db: &mut Db,
     scrutinee: StructId,
     sw_path: &[crate::core::PathStep],
     arms: &[crate::core::SumArm],
+    result_it: Option<IntTy>,
     env: &Env,
     ctx: &Ctx,
 ) -> Result<String, Reject> {
@@ -2717,13 +2737,13 @@ fn emit_sum_switch(
                     }
                     (format!("({name})"), c)
                 };
-                let cont = emit_sum_cont(db, scrutinee, &arm.cont, env, &arm_ctx)?;
+                let cont = emit_sum_cont(db, scrutinee, &arm.cont, result_it, env, &arm_ctx)?;
                 out.push_str(&format!("{vpath}{pat_tail} => {cont}, "));
             }
             None => {
                 // The default (wildcard) tail. Its continuation is emitted in the OUTER ctx (no payload
                 // bound — a wildcard arm binds nothing of the switched variant).
-                let cont = emit_sum_cont(db, scrutinee, &arm.cont, env, ctx)?;
+                let cont = emit_sum_cont(db, scrutinee, &arm.cont, result_it, env, ctx)?;
                 out.push_str(&format!("_ => {cont}, "));
             }
         }
@@ -2743,22 +2763,34 @@ fn emit_sum_switch(
 ///    { <els-cont> }` — a payload-literal refinement (`(Some 0)`); the sub-value is read via
 ///    `emit_sum_payload` (folds a constant / reads the bound name), compared to the literal, and a mismatch
 ///    falls through to `els` (the binding arm). Both mirror the wasm `emit_sum_cont`'s desugar to an `if`.
+#[allow(clippy::too_many_arguments)]
 fn emit_sum_cont(
     db: &mut Db,
     scrutinee: StructId,
     cont: &crate::core::SumCont,
+    // The enclosing match's integer RESULT type — a `Leaf`/`Guarded`-body leaf is GROUNDED to it, so a
+    // narrow sum-payload arm (a `UInt8` payload read) widens to the unified result and a default-Int64
+    // literal arm narrows, keeping every `if`/`match` branch AND the fn return type at one width (else
+    // rustc E0308). `None` for a non-integer result.
+    result_it: Option<IntTy>,
     env: &Env,
     ctx: &Ctx,
 ) -> Result<String, Reject> {
+    // Ground a Leaf body to the match's result width (mirrors `emit_match_impl`'s per-arm grounding).
+    let leaf = |db: &mut Db, b: StructId, ctx: &Ctx| match result_it {
+        Some(it) => emit_grounded(db, b, it, env, ctx),
+        None => emit(db, b, env, ctx),
+    };
     match cont {
-        crate::core::SumCont::Leaf(b) => emit(db, *b, env, ctx),
+        crate::core::SumCont::Leaf(b) => leaf(db, *b, ctx),
         crate::core::SumCont::Switch { path, arms } => {
-            emit_sum_switch(db, scrutinee, path, arms, env, ctx)
+            emit_sum_switch(db, scrutinee, path, arms, result_it, env, ctx)
         }
         crate::core::SumCont::Guarded { cond, body, els } => {
             let c = emit(db, *cond, env, ctx)?;
-            let then_ = emit(db, *body, env, ctx)?;
-            let els = emit_sum_cont(db, scrutinee, els, env, ctx)?;
+            // The guard's BODY is a result leaf → ground it; the `els` continuation recurses (grounded there).
+            let then_ = leaf(db, *body, ctx)?;
+            let els = emit_sum_cont(db, scrutinee, els, result_it, env, ctx)?;
             Ok(format!("if {c} {{ {then_} }} else {{ {els} }}"))
         }
         crate::core::SumCont::LitTest {
@@ -2801,8 +2833,8 @@ fn emit_sum_cont(
                     ));
                 }
             };
-            let then_ = emit_sum_cont(db, scrutinee, then_, env, ctx)?;
-            let els = emit_sum_cont(db, scrutinee, els, env, ctx)?;
+            let then_ = emit_sum_cont(db, scrutinee, then_, result_it, env, ctx)?;
+            let els = emit_sum_cont(db, scrutinee, els, result_it, env, ctx)?;
             Ok(format!(
                 "if ({subject}) == {lit} {{ {then_} }} else {{ {els} }}"
             ))
