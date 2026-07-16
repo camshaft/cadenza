@@ -9491,3 +9491,32 @@
                 (match rest ((Zorp x) (go (list x))) (_ 0)))
               (export go)))
   (error CDZ0101))
+
+(case "a reified (sum-of-step-shapes) lazy pull-iterator compiles, runs, and is lazy"
+  (doc    "The inline pull-iterator model iter.cdz + the guide's Iterators chapter depend on: `Iter` is a
+           SUM of step-shapes (Range, Take) and `next : Iter -> Option (Tuple elem Iter)` interprets one
+           step — an ordinary recursive fn over a plain sum, NOT a recursive-closure type (which rcdzc's
+           inference cannot tie yet). Pins that rcdzc compiles + runs this: `sum-it (Take 3 (Range 0
+           1000000))` pulls exactly 3 elements of a million-element range → 0+1+2 = 3. Laziness is
+           observable (a strict range would be astronomically large). Guards the reified-iterator
+           encoding against a future recursive-sum / monomorphization / match regression.")
+  (input  (do
+            (type Iter
+              (Range (Tuple Int64 Int64))
+              (Take (Tuple Int64 Iter)))
+            (def (next (: it Iter))
+              (match it
+                ((Range r) (match r ((tuple lo hi)
+                  (if (< lo hi) (Some (tuple lo (Range (tuple (+ lo 1) hi)))) (None unit)))))
+                ((Take nf) (match nf ((tuple n src)
+                  (if (<= n 0) (None unit)
+                    (match (next src)
+                      ((None _u) (None unit))
+                      ((Some p) (match p ((tuple v rest) (Some (tuple v (Take (tuple (- n 1) rest))))))))))))))
+            (def (sum-it (: it Iter))
+              (match (next it)
+                ((None _u) 0)
+                ((Some p) (match p ((tuple v rest) (+ v (sum-it rest)))))))
+            (def (main) (sum-it (Take (tuple 3 (Range (tuple 0 1000000))))))
+            (export main)))
+  (output (: 3 Int64)))

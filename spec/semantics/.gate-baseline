@@ -1380,6 +1380,7 @@ pass	a referenced let binding whose init overflows IS observed, so its trap occu
 pass	a reflected quantity type rejects a value of a different dimension
 pass	a refutable constructor pattern in a let binder is rejected
 pass	a refutable map value sub-pattern dispatches by the value's constructor
+pass	a reified (sum-of-step-shapes) lazy pull-iterator compiles, runs, and is lazy
 pass	a repeated condition inside a branch propagates the known truth value
 pass	a repeated let binding shadows the earlier one for what follows
 pass	a repeated runtime checked-multiply is computed once and still traps on overflow
