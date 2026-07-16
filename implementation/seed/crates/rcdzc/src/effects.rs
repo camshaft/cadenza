@@ -3995,6 +3995,83 @@ fn selfcall_precedes_perform_in_operands(
     }
 }
 
+/// Whether the recursive body has a SELF-CALL whose ARGUMENT contains a call to a cross-function
+/// effect-performing HELPER whose own body performs a discharged op UNDER A CONDITIONAL (`if`/`match`).
+/// This is the residual of the effectful-helper-in-a-self-call-arg family the deep-fresh-copy fixes do NOT
+/// cover: threading the self-call arg inlines the helper's `if`, and a perform in a branch produces a state
+/// reference (`f#ctx$s0`) that the branch-local `if` threading does not bind into the synthesized def →
+/// CDZ0101 leaking the internal `$s0` name. A helper that performs on its UNCONDITIONAL spine (no `if`
+/// gating the perform) folds via the inline path (`deep_fresh_copy`) — that is NOT flagged here. Declining
+/// this shape UP FRONT turns the confusing `$s0`-leaking CDZ0101 into a clean "not yet reducible" todo.
+fn selfcall_arg_inlines_conditional_perform(
+    db: &mut Db,
+    node: StructId,
+    callee_def: usize,
+    ctx: &HandlerCtx,
+) -> bool {
+    if let Resolved::Apply { head, args } = resolved_of(db, node)
+        && callee_def_index_of(db, head) == Some(callee_def)
+    {
+        // A self-call: does any ARG reach a cross-fn helper that performs under a conditional?
+        for &a in args.iter() {
+            if arg_inlines_conditional_perform(db, a, ctx) {
+                return true;
+            }
+        }
+    }
+    match db.ast.get(node).clone() {
+        Struct::List(children) => children
+            .iter()
+            .any(|&c| selfcall_arg_inlines_conditional_perform(db, c, callee_def, ctx)),
+        Struct::Atom(_) => false,
+    }
+}
+
+/// Whether `node` contains a call to a NON-RECURSIVE cross-function helper whose body performs a discharged
+/// op UNDER A CONDITIONAL (`if`/`match`). Used by [`selfcall_arg_inlines_conditional_perform`].
+fn arg_inlines_conditional_perform(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> bool {
+    if let Resolved::Apply { head, .. } = resolved_of(db, node)
+        && call_reaches_discharged_effect(db, head, ctx)
+        && let Some(body) = crate::eval::lambda_body(db, head)
+            .or_else(|| crate::eval::lambda_body_of_nullary(db, head))
+        && perform_under_conditional(db, body, ctx)
+    {
+        return true;
+    }
+    match db.ast.get(node).clone() {
+        Struct::List(children) => children
+            .iter()
+            .any(|&c| arg_inlines_conditional_perform(db, c, ctx)),
+        Struct::Atom(_) => false,
+    }
+}
+
+/// Whether `node` contains an `if`/`match` that GATES a discharged perform — either in a BRANCH/arm body
+/// or in the `if` CONDITION / `match` SCRUTINEE (both flow into the branch-local threading that leaks the
+/// internal `f#ctx$s0` state-param when the inlined form lands in a self-call arg). A perform on a fully
+/// unconditional spine (no `if`/`match` anywhere over it) is NOT flagged — that folds via the inline path.
+fn perform_under_conditional(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> bool {
+    match resolved_of(db, node) {
+        Resolved::If { cond, then_, else_ } => {
+            contains_any_perform(db, cond, ctx)
+                || contains_any_perform(db, then_, ctx)
+                || contains_any_perform(db, else_, ctx)
+        }
+        Resolved::Match { scrutinee, arms } => {
+            contains_any_perform(db, scrutinee, ctx)
+                || arms
+                    .iter()
+                    .any(|&(_, body)| contains_any_perform(db, body, ctx))
+        }
+        _ => match db.ast.get(node).clone() {
+            Struct::List(children) => children
+                .iter()
+                .any(|&c| perform_under_conditional(db, c, ctx)),
+            Struct::Atom(_) => false,
+        },
+    }
+}
+
 /// Recursive worker for [`recursive_self_calls_all_tail`]: verify every self-call (a call resolving to
 /// `callee_def`) occurs only at a `tail` position. Returns `false` at the first off-tail self-call.
 fn self_calls_tail(db: &mut Db, node: StructId, callee_def: usize, tail: bool) -> bool {
@@ -4080,6 +4157,17 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
     // UNDETERMINED component (an `Any` — most commonly an empty-list seed `(list)`, whose element type is
     // `Ty::Any` until an operation pins it) or a MISSING slot type would bake a wrong/loose annotation
     // (`(: s (List Any))`) that mistypes the threaded body. Decline cleanly rather than emit it.
+    // EFFECTFUL-HELPER-WITH-A-CONDITIONAL-PERFORM IN A SELF-CALL ARG: decline cleanly. The deep-fresh-copy
+    // of an inlined helper body (the `call_reaches_discharged_effect` arm) folds a helper that performs on
+    // its UNCONDITIONAL spine, but a helper whose perform sits inside an `if`/`match` branch threads that
+    // branch state-locally and leaks the internal `f#ctx$s0` state-param name (an unresolved reference the
+    // branch-local `if` threading does not bind into the synthesized def) — a confusing CDZ0101. Until the
+    // branch-state threading of an inlined conditional-perform is handled, decline UP FRONT so the shape is
+    // an honest "not yet reducible" todo rather than a leaking coded error. (v-agent-harness Inc-3 residual;
+    // the non-conditional effectful-helper family folds via the deep-fresh-copy fixes.)
+    if selfcall_arg_inlines_conditional_perform(db, orig_body, callee_def, ctx) {
+        return None;
+    }
     let slot_tys: Vec<crate::ty::Ty> = ctx
         .slots
         .iter()

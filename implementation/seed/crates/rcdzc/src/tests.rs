@@ -5710,6 +5710,42 @@ fn an_effectful_helper_reading_a_driver_param_in_a_selfcall_arg_folds() {
     }
 }
 
+/// The residual sub-case of the effectful-helper-in-a-self-call-arg family: an inlined helper whose perform
+/// sits UNDER A CONDITIONAL (`if`/`match`) — either in a branch (`if c then acc + B.b x else acc`) or in the
+/// condition (`if B.b x == 1 then …`). The deep-fresh-copy fixes fold a helper that performs on its
+/// unconditional spine, but a CONDITIONAL perform threads branch-state-locally and leaked the internal
+/// `f#ctx$s0` state-param in a confusing CDZ0101. It now DECLINES CLEANLY ("not yet reducible") — pinned so a
+/// future change either folds it (clearing this) or keeps the clean decline, never regressing to the `$s0`
+/// leak. (v-agent-harness Inc-3 residual; the non-conditional effectful-helper family folds — see the two
+/// `_folds` tests above.)
+#[test]
+fn an_effectful_helper_with_a_conditional_perform_in_a_selfcall_arg_declines_cleanly() {
+    use crate::testkit::parse;
+    for src in [
+        // perform in a BRANCH of the inlined helper's if
+        "(do (effect B (op b (-> Int64 Int64)) (op done (-> Int64 Int64))) \
+         (def (turn (: x Int64) (: acc Int64)) (if (= x 1) (+ acc (B.b x)) acc)) \
+         (def (run (: fuel Int64) (: acc Int64)) \
+           (if (= fuel 0) (B.done acc) (run (- fuel 1) (turn fuel acc)))) \
+         (def (main) (handle B 0 ((b (x) s (resume x x)) (done (x) s (resume x x))) (run 4 0))) (export main))",
+        // perform in the CONDITION of the inlined helper's if
+        "(do (effect B (op b (-> Int64 Int64)) (op done (-> Int64 Int64))) \
+         (def (turn (: x Int64) (: acc Int64)) (if (= (B.b x) 1) (+ acc 1) acc)) \
+         (def (run (: fuel Int64) (: acc Int64)) \
+           (if (= fuel 0) (B.done acc) (run (- fuel 1) (turn fuel acc)))) \
+         (def (main) (handle B 0 ((b (x) s (resume x x)) (done (x) s (resume x x))) (run 4 0))) (export main))",
+    ] {
+        let err = compile_component(&crate::codec::encode(&parse(src))).expect_err(
+            "an inlined helper with a conditional perform in a self-call arg must decline",
+        );
+        assert!(
+            !err.message.contains("#eff") && !err.message.contains("$s"),
+            "the decline must be clean (no leaked internal state-param name), got: {}",
+            err.message
+        );
+    }
+}
+
 // --- HOST-COMPOSITION INVARIANT boundary (§4.4: a reified/duplicated continuation must NOT span a host
 // call or an outer handler's effect). These are documented in 14-effects-and-handlers.sexp as a "clean
 // decline" but were not pinned by any test — so a future fold change that admitted the multi-shot /
