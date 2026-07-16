@@ -211,6 +211,14 @@ fn action_uid(tag: &str) -> String {
 #[cfg(feature = "bedrock")]
 pub fn bedrock_converse(model_id: String, max_tokens: u32) -> impl Fn(String) -> String {
     move |prompt: String| {
+        // FAIL FAST on a malformed model id: an empty / whitespace-bearing / control-char id is a caller
+        // mistake that Bedrock only rejects AFTER a full SigV4 + HTTPS round-trip (an opaque
+        // ValidationException). Catching it here returns a clear error-marker immediately, without a
+        // network call — cheaper and far more legible than the SDK's rejection. (A well-formed-but-unknown
+        // id still round-trips; we only reject shapes that CANNOT be a valid id.)
+        if let Err(why) = validate_model_id(&model_id) {
+            return format!("{MODEL_ERROR_PREFIX}{why}");
+        }
         // The loop's converse is sync (a wasmtime host-call closure); run the async SDK on a per-call
         // current-thread runtime. A model call is seconds-scale + one-per-turn, so the runtime setup cost
         // is negligible relative to the network round-trip.
@@ -224,6 +232,40 @@ pub fn bedrock_converse(model_id: String, max_tokens: u32) -> impl Fn(String) ->
             // reports a FAILURE, so a Bedrock error never silently becomes an answer the loop acts on.
             .unwrap_or_else(|e| format!("{MODEL_ERROR_PREFIX}{e}"))
     }
+}
+
+/// Validate a Bedrock model / inference-profile id BEFORE the network call — a pure, no-network check so a
+/// caller's typo fails fast with a legible message instead of an opaque Bedrock ValidationException after
+/// a round-trip. We reject only shapes that CANNOT be a valid id (a well-formed-but-nonexistent id must
+/// still round-trip, since only Bedrock knows the live catalog): an empty / all-whitespace id (no id at
+/// all); leading/trailing whitespace (a copy-paste artifact the SDK won't trim); and any interior
+/// whitespace or ASCII control char (a real id is a single unbroken token like
+/// `us.anthropic.claude-haiku-4-5-20251001-v1:0`). Returns Ok(()) for anything that could plausibly be a
+/// real id.
+#[cfg(feature = "bedrock")]
+fn validate_model_id(model_id: &str) -> std::result::Result<(), String> {
+    if model_id.trim().is_empty() {
+        return Err(
+            "empty model id (pass a Bedrock model / inference-profile id, e.g. \
+             us.anthropic.claude-haiku-4-5-20251001-v1:0)"
+                .to_string(),
+        );
+    }
+    if model_id != model_id.trim() {
+        return Err(format!(
+            "model id {model_id:?} has leading/trailing whitespace — the SDK won't trim it; pass the bare id"
+        ));
+    }
+    if let Some(bad) = model_id
+        .chars()
+        .find(|c| c.is_whitespace() || c.is_control())
+    {
+        return Err(format!(
+            "model id {model_id:?} contains an invalid character {bad:?} — a Bedrock id is a single \
+             unbroken token (no spaces/newlines)"
+        ));
+    }
+    Ok(())
 }
 
 /// The async Bedrock `InvokeModel` round-trip: build the Anthropic Messages body, send it, parse the
@@ -353,6 +395,52 @@ mod bedrock_tests {
     #[test]
     fn first_text_block_none_when_absent() {
         assert_eq!(first_text_block(r#"{"content":[]}"#), None);
+    }
+
+    #[test]
+    fn validate_model_id_accepts_a_real_inference_profile_id() {
+        // A region-prefixed inference-profile id (the documented shape) is well-formed → Ok, so it
+        // round-trips to Bedrock (which alone knows if it's live).
+        assert!(validate_model_id("us.anthropic.claude-haiku-4-5-20251001-v1:0").is_ok());
+        assert!(validate_model_id("us.anthropic.claude-opus-4-8").is_ok());
+        // A well-formed but (here) unknown id is NOT rejected locally — only Bedrock knows the catalog.
+        assert!(validate_model_id("anthropic.claude-3-5-sonnet-20240620-v1:0").is_ok());
+    }
+
+    #[test]
+    fn validate_model_id_rejects_empty_and_whitespace() {
+        // The caller mistakes that Bedrock only rejects after a round-trip, caught up front:
+        assert!(validate_model_id("").is_err(), "empty id");
+        assert!(validate_model_id("   ").is_err(), "all-whitespace id");
+        assert!(
+            validate_model_id(" us.anthropic.claude-opus-4-8 ").is_err(),
+            "leading/trailing whitespace (a copy-paste artifact the SDK won't trim)"
+        );
+        assert!(
+            validate_model_id("claude opus 4 8").is_err(),
+            "interior spaces — a real id is a single unbroken token"
+        );
+        assert!(
+            validate_model_id("claude\n4-8").is_err(),
+            "an embedded newline is not a valid id"
+        );
+    }
+
+    #[test]
+    fn bedrock_converse_fails_fast_on_a_bad_model_id_without_a_network_call() {
+        // A malformed model id returns a MODEL_ERROR_PREFIX completion IMMEDIATELY (no AWS creds / network
+        // needed for this path — the validation short-circuits before the SDK call). The driver's
+        // is_model_error then reports a failure rather than an answer.
+        let converse = bedrock_converse("  ".to_string(), 16);
+        let out = converse("hi".to_string());
+        assert!(
+            is_model_error(&out),
+            "a blank model id must fail fast as a model-error, not attempt a call: {out}"
+        );
+        assert!(
+            out.contains("empty model id"),
+            "the failure names the empty-model-id cause: {out}"
+        );
     }
 }
 
