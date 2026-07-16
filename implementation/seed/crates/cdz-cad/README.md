@@ -36,7 +36,7 @@ subcommand can simply shell out to this binary (the `cdz calc` precedent).
 
 | `-o` extension | format | notes |
 |---|---|---|
-| `.stl` | binary STL | universal printer format; lossy (no topology/units), a convenience |
+| `.stl` | binary STL | universal printer format; lossy (no topology/units), a convenience. `--ascii` writes the human-readable ASCII variant instead |
 | `.glb` | binary glTF 2.0 | design-primary, watertight-preserving, read by every web/3D viewer; zero extra deps |
 
 3MF (a ZIP-of-XML format) is a later add — it would pull a zip + xml dependency.
