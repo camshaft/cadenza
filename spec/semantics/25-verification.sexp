@@ -2206,3 +2206,38 @@
                     ((Option.None) false)))))
             (export main)))
   (output (: true Bool)))
+
+; ============================================================================================
+; Increment 13 — pin the single-variant abstract-Thm MATCH-outside case as CDZ0214. A HOL-kernel `Thm` is
+; a newtype-style SINGLE-VARIANT sum (e.g. (type Thm (MkThm …))). Matching its withheld constructor from
+; outside the kernel module must be the withheld-constructor rejection CDZ0214 — exactly like construction
+; and like a multi-variant match. This was previously CDZ0203 (a single-variant newtype-erases to a
+; nominal, so its match hit the nominal wrong-ctor check that emitted the bare code without the withheld
+; poison); v-patterns FIXED it (the newtype path now propagates the withheld poison first). This pins the
+; fixed behavior for the exact shape the kernel uses, so the actionable "this ctor is withheld, use the
+; accessor" message can't silently regress to the generic CDZ0203. (Was filed as the queue repro
+; adv-single-variant-abstract-match-wrong-diag-cdz0203-not-cdz0214.sexp; now graded here.)
+; ============================================================================================
+
+(case "a single-variant abstract theorem's constructor match outside the kernel is a withheld-constructor rejection (CDZ0214)"
+  (doc    "The kernel's `Thm` is a single-variant newtype sum; matching its withheld constructor outside the
+           module must be CDZ0214 (the withheld-constructor code), NOT the generic CDZ0203 — exactly as
+           construction (case 'an abstract theorem type cannot be forged…') and a multi-variant match (case
+           'a multi-variant abstract proof type's constructor match…') already are. `hol` exports the
+           abstract handle `Thm` + a smart constructor `refl` but not `Thm`'s constructor `MkThm`; the entry
+           tries to destructure a Thm via `(match … (Thm.MkThm c) …)` → CDZ0214. Pins the single-variant
+           match-outside diagnostic (v-patterns fixed CDZ0203→CDZ0214 for the newtype-erased path), so a
+           kernel accessor written outside the module gets the actionable withheld-ctor message. Completes
+           the withheld-constructor coverage: construct + single-variant match + multi-variant match all
+           give CDZ0214.")
+  (module "hol"
+    (do
+      (type Thm (MkThm Int64))
+      (def (refl (: x Int64)) (Thm.MkThm x))
+      (export Thm)
+      (export refl)))
+  (input  (do
+            (import "hol" (Thm refl))
+            (def (concl (: t Thm)) (match t ((Thm.MkThm c) c)))
+            (export concl)))
+  (error  CDZ0214))
