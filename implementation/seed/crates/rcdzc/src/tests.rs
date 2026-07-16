@@ -2522,6 +2522,52 @@ fn a_wrap_whose_source_fits_the_target_is_the_identity() {
     assert_eq!(run_returns_with::<i8>(&b, "f", &[Val::U8(100)]), 100);
 }
 
+/// A runtime CHECKED conversion `T.of x` whose SOURCE type provably fits the target is TOTAL — no value
+/// can be out of range, so it can never trap and is emitted as the widening `wrap` (extend-and-
+/// reinterpret). This is the runtime `Int64.of (x:UInt8)` gap the corpus pinned as a decline; it now
+/// runs. A NON-total `of` (a narrowing, or a sign-change that overflows) still DECLINES — that needs the
+/// range-check-then-trap emit, a later increment. `of` and `wrap` differ only on an out-of-range value,
+/// and totality proves there is none, so reusing the `wrap` emit is sound.
+#[test]
+fn a_runtime_integer_of_whose_source_fits_the_target_widens_totally() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+    // UInt8 → Int64: the pinned gap. A UInt8 (0..255) always fits Int64, so `Int64.of` is total; the max
+    // 255 and the top-bit 200 widen to the same non-negative Int64 (zero-extend, NOT sign-extend).
+    let u8_to_i64 = "(module m (def (f (: a UInt8)) (Int64.of a)) (export f))";
+    let b = compile_component(&crate::codec::encode(&parse(u8_to_i64))).expect("compile");
+    assert_eq!(run_returns_with::<i64>(&b, "f", &[Val::U8(255)]), 255);
+    assert_eq!(run_returns_with::<i64>(&b, "f", &[Val::U8(200)]), 200);
+    assert_eq!(run_returns_with::<i64>(&b, "f", &[Val::U8(0)]), 0);
+    // Int8 → Int64: a signed widening SIGN-extends — -1 stays -1, -128 stays -128 (not 128 or a big u).
+    let i8_to_i64 = "(module m (def (f (: a Int8)) (Int64.of a)) (export f))";
+    let b = compile_component(&crate::codec::encode(&parse(i8_to_i64))).expect("compile");
+    assert_eq!(run_returns_with::<i64>(&b, "f", &[Val::S8(-1)]), -1);
+    assert_eq!(run_returns_with::<i64>(&b, "f", &[Val::S8(-128)]), -128);
+    assert_eq!(run_returns_with::<i64>(&b, "f", &[Val::S8(127)]), 127);
+    // UInt8 → UInt16: a same-sign narrow widening also totals (0..255 ⊂ 0..65535).
+    let u8_to_u16 = "(module m (def (f (: a UInt8)) (UInt16.of a)) (export f))";
+    let b = compile_component(&crate::codec::encode(&parse(u8_to_u16))).expect("compile");
+    assert_eq!(run_returns_with::<u16>(&b, "f", &[Val::U8(255)]), 255);
+    // UInt8 → UInt64: a full-width unsigned widening zero-extends (255 stays 255, no sign confusion).
+    let u8_to_u64 = "(module m (def (f (: a UInt8)) (UInt64.of a)) (export f))";
+    let b = compile_component(&crate::codec::encode(&parse(u8_to_u64))).expect("compile");
+    assert_eq!(run_returns_with::<u64>(&b, "f", &[Val::U8(255)]), 255);
+    // NON-total `of` still DECLINES (the checked-narrowing emit is a later increment): a UInt8 → Int8
+    // could hold 255 which overflows Int8 (-128..127), so `Int8.of (x:UInt8)` must trap-check → declines.
+    let not_total = "(module m (def (f (: a UInt8)) (Int8.of a)) (export f))";
+    assert!(
+        compile_component(&crate::codec::encode(&parse(not_total))).is_err(),
+        "a non-total (possibly out-of-range) runtime T.of must still decline, not emit a truncating wrap"
+    );
+    // A genuine narrowing UInt64 → UInt8 likewise declines (most values overflow UInt8).
+    let narrowing = "(module m (def (f (: a UInt64)) (UInt8.of a)) (export f))";
+    assert!(
+        compile_component(&crate::codec::encode(&parse(narrowing))).is_err(),
+        "a runtime narrowing T.of must still decline"
+    );
+}
+
 /// `T.wrap(U.wrap x)` where the outer width N ≤ the inner width M — the inner wrap is redundant (the
 /// outer keeps only the low N ≤ M bits, unchanged by the inner). The inner Convert is elided; VALUE
 /// parity is preserved (the composed wrap gives the same low bits as the single outer wrap).
@@ -16364,6 +16410,25 @@ mod match_engine {
                 "a valid @tag is not flagged: {ok}"
             );
         }
+        // A malformed `@tag` wrapping a NON-def is ONE mistake — "wraps no definition" — NOT ALSO a
+        // malformed-tag fault (the `@tag` contract only applies to a def). `strip_annotations` records the
+        // malformed-tag AFTER the def check, so `(@ (tag 5) 5)` yields exactly the wraps-no-definition
+        // diagnostic, not two redundant ones (Copilot PR#484).
+        let non_def = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (@ (tag 5) 5) (def (main) 0) (export main))",
+        )));
+        assert!(
+            non_def
+                .iter()
+                .any(|d| d.message.contains("annotation wraps no definition")),
+            "a @tag on a non-def is the wraps-no-definition mistake: {non_def:?}"
+        );
+        assert!(
+            !non_def.iter().any(|d| d
+                .message
+                .contains("`@tag` annotation takes exactly one STRING")),
+            "a @tag on a non-def must NOT also record a malformed-tag fault (no double-diagnostic): {non_def:?}"
+        );
     }
 
     /// A SHAPE-valid constructor-export `(export (. T A))` / `(export (. T *))` must ALSO be SEMANTICALLY
@@ -19352,13 +19417,74 @@ mod match_engine {
         );
     }
 
+    /// `Symbol.of` on a GENUINELY-RUNTIME string interns by CANONICALIZING its bytes — a Symbol is a String
+    /// byte-leaf at run time (tagless heap, no intern table), so two symbols of equal content compare equal
+    /// because both are canonical flat leaves. The runtime-string→Symbol intern gap corpus-bugfix filed;
+    /// the intern analogue of the runtime String.slice byte-walk. `Symbol.to-string` of a runtime symbol is
+    /// the inverse retag. Both reuse `bytes-compact` (no new op, frozen hash unchanged). The runtime string
+    /// is built with a `rep` concat loop (a byte-rope, unfoldable) — the same idiom the runtime `String.at`
+    /// tests use — so the operand genuinely reaches the runtime emit rather than const-folding.
+    #[test]
+    fn a_runtime_string_interns_to_a_symbol_by_content() {
+        use crate::testkit::parse;
+        // Compose against the real runtime wasm (the string-op path needs `bytes-alloc`/`bytes-compact`);
+        // skip gracefully if it is not built, exactly like the sibling runtime-String.concat test.
+        let run = |src: &str| -> Option<String> {
+            let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+            let runtime = crate::tests::find_runtime_wasm()?;
+            let opts = cdz_run::RunOpts {
+                export: Some("main".to_string()),
+                args: vec![],
+                runtime: Some(runtime),
+                runtime_cache_dir: None,
+                host_responses: Vec::new(),
+            };
+            match cdz_run::run(&bytes, &opts).expect("run") {
+                cdz_run::Outcome::Value(s) => Some(s),
+                cdz_run::Outcome::Trap(t) => panic!("runtime Symbol op trapped (miscompile?): {t}"),
+            }
+        };
+        // `(rep "" 3)` builds "xxx" as a runtime rope; `Symbol.of` interns it, compared to `#"xxx"` by
+        // CONTENT → true (both canonical byte leaves). A different-length build → not equal.
+        let rep = "(def (rep s n) (if (< n 1) s (rep ((. String concat) s \"x\") (- n 1))))";
+        let Some(eq_same) = run(&format!(
+            "(module m {rep} (def (main) (if (= (Symbol.of (rep \"\" 3)) #\"xxx\") 1 0)) (export main))"
+        )) else {
+            eprintln!(
+                "runtime wasm not found (run `cargo xtask build`); skipping runtime Symbol.of run"
+            );
+            return;
+        };
+        assert_eq!(
+            eq_same, "1",
+            "runtime Symbol.of of \"xxx\" matches #\"xxx\" by content"
+        );
+        assert_eq!(
+            run(&format!(
+                "(module m {rep} (def (main) (if (= (Symbol.of (rep \"\" 2)) #\"xxx\") 1 0)) (export main))"
+            )).unwrap(),
+            "0",
+            "runtime Symbol.of of \"xx\" does NOT match #\"xxx\""
+        );
+        // The round-trip: `Symbol.to-string (Symbol.of s)` recovers the String from the runtime rope,
+        // observed via byte-len — exercises BOTH runtime retags in one chain. "xx"+3 → "xxxxx" → 5 bytes.
+        assert_eq!(
+            run(&format!(
+                "(module m {rep} (def (main) ((. String byte-len) (Symbol.to-string (Symbol.of (rep \"xx\" 3))))) (export main))"
+            )).unwrap(),
+            "5",
+            "Symbol.of then Symbol.to-string of a runtime rope round-trips to the same bytes"
+        );
+    }
+
     #[test]
     fn symbol_of_a_non_string_reports_one_error_not_a_misleading_runtime_string_decline() {
         // `(Symbol.of 5)` is a type error (`Symbol.of : String → Symbol`, applied to Int64) — CDZ0203.
         // It used to ALSO emit the emit-path decline "Symbol.of on a runtime string is not yet interned",
         // which is a LIE (5 is not a string at all) AND a second `error:`. Now the decline is suppressed
         // (an uncoded decline at a node that carries a coded reject is shadowed by it), so the type error
-        // is the ONE story. A genuine runtime STRING still declines honestly elsewhere.
+        // is the ONE story. (A genuine runtime STRING now interns via a byte-compact retag — see
+        // `a_runtime_string_interns_to_a_symbol_by_content`; the non-string case here is still a type error.)
         let out = crate::compile::compile(
             &[crate::abi::Artifact::new(
                 crate::abi::Artifact::KIND_AST,
@@ -23796,6 +23922,45 @@ mod match_engine {
             "a wrong-arity trap keeps the over-application message: {:?}",
             arity.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn a_non_string_read_argument_names_the_string_requirement_not_a_phantom_clash() {
+        use crate::testkit::parse;
+        // The `trap` SIBLING: `read : String → Ast` (parses re-readable text back into an `Ast`). A
+        // non-String operand (`(read 5)`, `(read true)`) is a type error, but the generic scheme-unify
+        // grounded the operand parameter to `String` and reported the OPAQUE "type mismatch: String and
+        // Int64 must be the same type here" (unlike `print : Ast → String`, whose distinctive `Ast` operand
+        // the checker names directly). It now names the real fault, exactly as the `trap` arm.
+        for (src, ty) in [
+            ("(module m (def (f) (read 5)) (export f))", "Int64"),
+            ("(module m (def (f) (read true)) (export f))", "Bool"),
+        ] {
+            let d = crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.message.contains("`read`'s argument must be a String"))
+                .unwrap_or_else(|| panic!("a non-String read argument must be named: {src}"));
+            assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
+            assert!(
+                d.message
+                    .contains(&format!("a value of type {ty} was given"))
+                    && !d.message.contains("must be the same type here"),
+                "names the argument-type, not a phantom clash: {}",
+                d.message
+            );
+        }
+        // NO false positive: a String literal and a String-typed param argument are clean.
+        for ok in [
+            "(module m (def (f) (read \"(+ 1 2)\")) (export f))",
+            "(module m (def (f (: s String)) (read s)) (export f))",
+        ] {
+            assert!(
+                !crate::diagnostics(&mut crate::db::Db::load(parse(ok)))
+                    .iter()
+                    .any(|d| d.message.contains("`read`'s argument must be a String")),
+                "a well-formed read is not flagged: {ok}"
+            );
+        }
     }
 
     #[test]
@@ -58053,6 +58218,52 @@ mod sidecar_driven {
     }
 
     #[test]
+    fn emit_tests_declines_a_non_ascii_export_name_with_a_cause_specific_diagnostic() {
+        // REGRESSION (concierge assign, 2026-07-16; v-syntax found+characterized): Cadenza's ML lexer
+        // admits UNICODE idents (`def π`, `def café`, `a·b`), but a component extern name is ASCII kebab
+        // only (`[a-z0-9-]`, `wasmparser`'s `KebabStr`). `kebab_extern_name` keeps a non-ASCII char VERBATIM,
+        // so it fails `is_kebab_word` and (before the guard) emitted a component wasmtime rejects wholesale
+        // at load — no compiler diagnostic. The `invalid_kebab_export_name` guard already rejects it; this
+        // pins that the diagnostic is CAUSE-SPECIFIC: it names the offending NON-ASCII CHARACTER and points
+        // at ASCII-kebab renaming, rather than the (wrong-for-this-case) "segment must start with a letter"
+        // message — which would be actively confusing for `café` (which DOES start with a letter).
+        for (name, bad) in [("π", "π"), ("café", "é"), ("a·b", "·"), ("ναμε", "ν")] {
+            let src = format!("(do (@ test (def ({name}) unit))) ");
+            let out = compile(&inputs(&src, &[Request::EmitTests]), &[]);
+            assert!(
+                out.has_error(),
+                "a @test named `{name}` (non-ASCII) must DECLINE, not silently emit an unloadable component: {:?}",
+                out.diagnostics
+            );
+            let d = out
+                .diagnostics
+                .iter()
+                .find(|d| {
+                    d.code.as_deref() == Some("CDZ0201")
+                        && d.message.contains("valid component boundary name")
+                })
+                .unwrap_or_else(|| {
+                    panic!(
+                        "the decline for `{name}` is the coded boundary-name CDZ0201: {:?}",
+                        out.diagnostics
+                            .iter()
+                            .map(|d| &d.message)
+                            .collect::<Vec<_>>()
+                    )
+                });
+            // Cause-specific: names the bad char + points at ASCII kebab, NOT the digit-led "start with a letter" text.
+            assert!(
+                d.message.contains(&format!("it contains `{bad}`"))
+                    && d.message.contains("ASCII kebab-case only")
+                    && !d.message.contains("START WITH A LETTER"),
+                "the decline for `{name}` must name the non-ASCII char `{bad}` + point at ASCII kebab \
+                 (not the digit-led message): {}",
+                d.message
+            );
+        }
+    }
+
+    #[test]
     fn a_host_op_result_crosses_at_every_aliased_int_width() {
         // The host-op boundary ABI (`host::abi_val_type`) crosses EVERY aliased INT width — the narrow
         // ints `Int8`/`Int16`/`Int32` + unsigned `UInt8`, not only the earlier `Int64`/`UInt32`. Each
@@ -69080,6 +69291,54 @@ mod cross_component_oracle {
             msg.contains("must be `(u32) -> u32`") && msg.contains("converse"),
             "the rejection must name the op + the required (u32)->u32 shape, got: {msg}"
         );
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // U11 — the embedder's model loop runs correctly at DEPTH (a many-turn agent loop). The existing u7-9
+    // fixtures do one turn; a real agent loops. This drives a 50-turn recursive loop where EACH turn
+    // performs `Model.converse` (a String prompt IN, a String completion OUT — a fresh rope allocated +
+    // consumed per turn) and folds the completion's byte-len. It pins that repeated rope alloc across the
+    // host-closure boundary over a real recursion has no rc-leak / miscompile / fold error at depth (a
+    // class the 1-turn tests can't surface). The host `converse` appends "X" (so "turn"→"turnX", 5 bytes);
+    // 50 turns × 5 = 250.
+    // ------------------------------------------------------------------------------------------------
+    #[test]
+    fn u11_the_embedder_model_loop_runs_at_depth() {
+        use crate::testkit::parse;
+        let src = "(do \
+            (effect Model (op converse (-> String String))) \
+            (bind Model \"cadenza:model/api\") \
+            (def (loop (: n Int64) (: acc Int64)) \
+                (if (= n 0) acc \
+                    (loop (- n 1) (+ acc (String.byte-len (host (Model) (Model.converse \"turn\"))))))) \
+            (def (main) (loop 50 0)) \
+            (export main))";
+        let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .unwrap_or_else(|d| panic!("consumer compiles: {} [{:?}]", d.message, d.code));
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("[U11] runtime wasm not found; skipping");
+            return;
+        };
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: Vec::new(),
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        // The host model appends "X": "turn" -> "turnX" (5 bytes). Fresh rope per turn, 50 turns.
+        let converse = |prompt: String| format!("{prompt}X");
+        match cdz_run::run_agent(&consumer, "cadenza:model/api", "converse", &opts, converse)
+            .expect("the many-turn model loop runs")
+        {
+            // 50 turns × byte-len("turnX")=5 → 250. Repeated rope alloc/consume across the boundary at
+            // depth, no leak/miscompile.
+            cdz_run::Outcome::Value(s) => assert_eq!(
+                s, "250",
+                "a 50-turn loop folds 50×5 = 250 — the model loop runs correctly at depth"
+            ),
+            cdz_run::Outcome::Trap(t) => panic!("deep model-loop run trapped: {t}"),
+        }
     }
 
     // ------------------------------------------------------------------------------------------------

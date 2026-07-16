@@ -165,7 +165,10 @@ pub fn rust_type(ty: &Ty) -> Option<String> {
         // buffer) → clone-on-read covers a shared string. (`String` is `Ord`, so it can also key a
         // `BTreeMap` — unblocking String-keyed maps that declined while `String` had no rep.)
         Ty::String => Some("String".to_string()),
-        // Functions and type/erased values have no native mapping.
+        // Functions and type/erased values have no native mapping. (A `Ty::Symbol` has no rust rep yet —
+        // the rust-backend Symbol representation, incl. its render/const/conversion handling, is a
+        // separate v-rust-backend increment; a runtime Symbol op declines cleanly on rust until then,
+        // while the wasm side emits it as a tagless byte-leaf retag.)
         _ => None,
     }
 }

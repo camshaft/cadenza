@@ -482,7 +482,13 @@ pub enum FleetCmd {
     /// whose tmux window is still live gets that window killed — role-agnostic, so it catches design/
     /// self-removed agents the PM's `remove --close` reaper never gets a note about. The registry row
     /// is kept (history/archive); only the panel goes away, and a `--grace-secs` window off the stop
-    /// keeps a just-stopped agent's final scrollback glanceable for one cycle. Meant to run from a
+    /// keeps a just-stopped agent's final scrollback glanceable for one cycle. INTEGRATION-RECORD
+    /// SWEEP (report-only): each run also folds in `fleet audit`'s queued-but-already-landed check —
+    /// merge-requests still in pr-sync's inbox whose `--ref` is already on trunk by patch-id (no-ops
+    /// that would gate to empty merges) — and surfaces them. This lives here because the audit's value
+    /// is inspecting LIVE hub state, which only exists on the fleet machine (a gitignored `.claude/
+    /// fleet` means it can't run in CI). It only SURFACES them; pr-sync owns rejecting its own MRs.
+    /// Meant to run from a
     /// short cron (~every 4 min); one pass then exit. This is the fleet's reliability backbone — a
     /// fleet-wide `/loop` stall froze every agent once, and stopped windows otherwise pile up.
     Watchdog {
@@ -1459,36 +1465,7 @@ fn audit(fleet: &Fleet, verbose: bool, strict: bool) {
     // (`fleet ack <file> --outcome reject --body "already landed by patch-id; superseded"`) rather than
     // re-gate each. Only checks merge-requests from still-active senders (a stale one-shot's leftover is
     // noise). Read-only; skipped silently if git can't resolve `trunk`.
-    let mut landed_queued: Vec<(String, String, String)> = Vec::new(); // (filename, sender, ref)
-    let pr_inbox = fleet.inbox("pr-sync");
-    if let Ok(rd) = std::fs::read_dir(&pr_inbox) {
-        for entry in rd.filter_map(Result::ok) {
-            let p = entry.path();
-            let fname = entry.file_name().to_string_lossy().to_string();
-            if !p.is_file() || !fname.ends_with("merge-request.json") {
-                continue;
-            }
-            let Ok(text) = std::fs::read_to_string(&p) else {
-                continue;
-            };
-            let Ok(mr) = serde_json::from_str::<Message>(&text) else {
-                continue;
-            };
-            if mr.r#ref.is_empty() || !active.contains(&mr.from) {
-                continue;
-            }
-            let cherry = Command::new("git")
-                .current_dir(&fleet.repo)
-                .args(["cherry", TRUNK, &mr.r#ref])
-                .output();
-            if let Ok(out) = cherry
-                && out.status.success()
-                && cherry_says_landed(&String::from_utf8_lossy(&out.stdout))
-            {
-                landed_queued.push((fname, mr.from.clone(), mr.r#ref.clone()));
-            }
-        }
-    }
+    let landed_queued = find_queued_but_landed(fleet, &active);
     if !landed_queued.is_empty() {
         eprintln!(
             "\n  ⚠ QUEUED-BUT-ALREADY-LANDED — a merge-request still in pr-sync's inbox whose --ref is \
@@ -1507,6 +1484,50 @@ fn audit(fleet: &Fleet, verbose: bool, strict: bool) {
             std::process::exit(1);
         }
     }
+}
+
+/// Scan pr-sync's LIVE inbox for merge-requests whose `--ref` content is ALREADY on trunk by patch-id
+/// (pr-sync integrated it under a re-parented/squashed sha but never acked the original file, so the
+/// no-op MR lingers and would gate to an empty merge). Returns `(filename, sender, ref)` for each,
+/// considering only merge-requests from still-`active` senders (a stale one-shot's leftover is noise).
+/// Shared by `audit` and the `watchdog` health sweep so both surface the same set. Read-only; a git
+/// failure on any single ref just skips it. Kept as a fn (not pure) because it does I/O + git, but the
+/// per-ref decision is the pure `cherry_says_landed`.
+fn find_queued_but_landed(
+    fleet: &Fleet,
+    active: &std::collections::HashSet<String>,
+) -> Vec<(String, String, String)> {
+    let mut out: Vec<(String, String, String)> = Vec::new();
+    let Ok(rd) = std::fs::read_dir(fleet.inbox("pr-sync")) else {
+        return out;
+    };
+    for entry in rd.filter_map(Result::ok) {
+        let p = entry.path();
+        let fname = entry.file_name().to_string_lossy().to_string();
+        if !p.is_file() || !fname.ends_with("merge-request.json") {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&p) else {
+            continue;
+        };
+        let Ok(mr) = serde_json::from_str::<Message>(&text) else {
+            continue;
+        };
+        if mr.r#ref.is_empty() || !active.contains(&mr.from) {
+            continue;
+        }
+        let cherry = Command::new("git")
+            .current_dir(&fleet.repo)
+            .args(["cherry", TRUNK, &mr.r#ref])
+            .output();
+        if let Ok(o) = cherry
+            && o.status.success()
+            && cherry_says_landed(&String::from_utf8_lossy(&o.stdout))
+        {
+            out.push((fname, mr.from.clone(), mr.r#ref.clone()));
+        }
+    }
+    out
 }
 
 /// Read every `*.json` message in a directory (non-recursive), skipping unparseable files. Used by
@@ -2012,9 +2033,34 @@ fn watchdog(fleet: &Fleet, dry_run: bool, stale_mult: u32, stale_cap: u64, grace
         }
     }
 
+    // ── Integration-record sweep (report-only) ───────────────────────────────────────────────────
+    // Fold `fleet audit`'s queued-but-already-landed check into the periodic health sweep (concierge
+    // ruling A: the audit's value is inspecting LIVE hub state, which exists only on the fleet machine
+    // where the watchdog runs — a gitignored `.claude/fleet` means it can't run in CI). REPORT-ONLY:
+    // pr-sync owns rejecting its own MRs (its role-body step 5 sweeps these each tick), so the watchdog
+    // just SURFACES them each cycle for visibility, never rejects (a second mutator would race pr-sync).
+    let active: std::collections::HashSet<String> = reg
+        .agents
+        .iter()
+        .filter(|a| a.status == "active")
+        .map(|a| a.name.clone())
+        .collect();
+    let landed_queued = find_queued_but_landed(fleet, &active);
+    if !landed_queued.is_empty() {
+        eprintln!(
+            "  ⚠ {} QUEUED-BUT-ALREADY-LANDED merge-request(s) in pr-sync's inbox (content on trunk by \
+             patch-id; would gate to empty merges) — pr-sync should reject as superseded:",
+            landed_queued.len()
+        );
+        for (fname, from, ref_sha) in &landed_queued {
+            eprintln!("    • {fname}  (from '{from}', ref {ref_sha})");
+        }
+    }
+
     println!(
-        "fleet watchdog: checked {checked} active windowed agent(s); {}{rearmed} re-armed, {reaped} stopped window(s) reaped.",
-        if dry_run { "DRY-RUN: " } else { "" }
+        "fleet watchdog: checked {checked} active windowed agent(s); {}{rearmed} re-armed, {reaped} stopped window(s) reaped, {} queued-but-landed MR(s) surfaced.",
+        if dry_run { "DRY-RUN: " } else { "" },
+        landed_queued.len()
     );
 }
 

@@ -45,6 +45,11 @@ export default function NotebookPage() {
     [cells],
   );
   const [values, setValues] = useState<WidgetValues>({});
+  // A ref mirror of `values`, so the debounced widget-change handler can read the LATEST committed values
+  // to build the recompute buffer WITHOUT running a side effect inside a setState updater (that updater
+  // can be double-invoked under StrictMode/batching, which would enqueue duplicate runs).
+  const valuesRef = useRef<WidgetValues>(values);
+  useEffect(() => { valuesRef.current = values; }, [values]);
   // Seed any widget missing a value with its default (on doc/widget change).
   useEffect(() => {
     setValues((prev) => {
@@ -105,15 +110,16 @@ export default function NotebookPage() {
   const debounce = useRef<ReturnType<typeof setTimeout> | null>(null);
   const onWidgetChange = useCallback(
     (name: string, value: number | boolean | string) => {
+      // Commit the control's value immediately (the slider thumb tracks the drag). valuesRef keeps a live
+      // mirror so the debounced recompute reads the latest committed values without a state read.
       setValues((v) => ({ ...v, [name]: value }));
       if (debounce.current) clearTimeout(debounce.current);
       debounce.current = setTimeout(() => {
         const token = ++runToken.current;
-        setValues((v) => {
-          const next = { ...v, [name]: value };
-          runCells(recomputePlan(cells, widgets, name, surface), next, surface, token);
-          return next;
-        });
+        // Build the recompute values from the live ref (+ this change) and kick the run OUTSIDE any state
+        // updater — a side effect in a setState updater can double-fire under StrictMode/batching.
+        const next = { ...valuesRef.current, [name]: value };
+        runCells(recomputePlan(cells, widgets, name, surface), next, surface, token);
       }, 150);
     },
     [cells, widgets, surface, runCells],

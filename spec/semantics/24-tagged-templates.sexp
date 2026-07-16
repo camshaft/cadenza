@@ -163,6 +163,23 @@
             (export main)))
   (output (: 33 Int64)))
 
+(case "a three-hole tag reads its holes in exact left-to-right order"
+  (doc    "The 2-hole case above uses [10,20]; three holes with distinct DIGIT values catch a position
+           off-by-one it cannot. `pick` reads `(list a b c)` and returns them REORDERED as `(list c a b)`;
+           with holes `(Ast.Int 1) (Ast.Int 2) (Ast.Int 3)` the tag sees a=1, b=2, c=3, so the reordered
+           result is [3,1,2], read as `3*100 + 1*10 + 2` = 312. Pins that the expander threads THREE holes
+           positionally in exact left-to-right order (a scrambled or off-by-one threading would give a
+           different digit arrangement), strengthening the two-hole order pin.")
+  (input  (do
+            (def (pick chunks holes)
+              (match holes ((list a b c) (Ast.List (list c a b))) (_ (Ast.List (list)))))
+            (def (main)
+              (match (tagged-template pick (chunks "" "" "" "") (holes (Ast.Int 1) (Ast.Int 2) (Ast.Int 3)))
+                ((Ast.List (list (Ast.Int x) (Ast.Int y) (Ast.Int z))) (+ (* x 100) (+ (* y 10) z)))
+                (_ 0)))
+            (export main)))
+  (output (: 312 Int64)))
+
 ; --- Composition: a hole may itself be a quote/Ast expression ---------------------------------------
 ; A `{expr}` hole is an ORDINARY expression, so it may be a `(quote …)` (or any Ast-valued expression) —
 ; the two metaprogramming surfaces compose. The hole is parsed as one expression and lowered to `Ast`, so

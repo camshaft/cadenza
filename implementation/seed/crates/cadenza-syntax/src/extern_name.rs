@@ -26,8 +26,19 @@
 ///   * runs of separators are collapsed and leading/trailing separators trimmed, so the result is a
 ///     well-formed kebab name (no `--`, no edge `-`).
 ///
-/// A source identifier always starts with a letter (a digit-led token is a numeric literal, rejected
-/// earlier), so the result always starts with a letter — a valid kebab word.
+/// An ASCII-letter-led source identifier always starts with an ASCII letter (a digit-led token is a
+/// numeric literal, rejected earlier), so the result always starts with a letter — a valid kebab word.
+///
+/// ⚠ PRECONDITION — the "always a valid kebab word" guarantee holds ONLY for names over ASCII letters,
+/// digits, `_` and `-`. A Cadenza identifier may contain NON-ASCII letters (the ML lexer's
+/// `is_ident_start` admits `c.is_alphabetic()` and any `!c.is_ascii() && !c.is_whitespace()` char — so
+/// `π`, `café`, `ναμε` are valid identifiers). Such a char is NOT `[a-z0-9-]`, so this function passes it
+/// through verbatim and the result FAILS [`is_kebab_word`] — which `wasmtime` rejects at load with no
+/// diagnostic (the recurring invalid-component miscompile). This is a KNOWN GAP: a non-ASCII export name
+/// must be handled at the compile boundary (reject-with-diagnostic, or a deterministic transliteration)
+/// — a cross-crate contract decision tracked with the compiler/peer-linking owner, NOT resolved here.
+/// The tripwire test `non_ascii_names_are_the_known_unhandled_gap` pins the current behavior so a fix has
+/// a baseline. Callers that only ever pass ASCII-letter-led identifiers are unaffected.
 pub fn kebab_extern_name(name: &str) -> String {
     let mut out = String::with_capacity(name.len() + 4);
     for c in name.chars() {
@@ -222,6 +233,34 @@ mod tests {
             }
         }
         assert!(count > 2_000, "swept a meaningful space, got {count}");
+    }
+
+    #[test]
+    fn non_ascii_names_are_the_known_unhandled_gap() {
+        // TRIPWIRE for a KNOWN latent miscompile (reported to the compiler/peer-linking owner, not fixed
+        // here — it's a cross-crate contract call: reject-with-diagnostic vs deterministic transliterate).
+        // A Cadenza identifier may contain NON-ASCII letters (the ML lexer's `is_ident_start` admits
+        // `c.is_alphabetic()` and any `!c.is_ascii() && !c.is_whitespace()` char), so `def π() = 0;
+        // export { π }` is a valid program whose export name reaches `kebab_extern_name`. Today it passes
+        // the non-ASCII char through verbatim, yielding a string `wasmtime` rejects at load (no
+        // diagnostic). This test PINS that current behavior — NOT an endorsement of it — so that when the
+        // real fix lands (at the compile boundary), THIS test flips and flags the fixed sites. The
+        // ASCII-letter-led guarantee is the exhaustive sweep above; this documents its precise boundary.
+        for name in ["café", "π", "ναμε", "myFünc"] {
+            let k = kebab_extern_name(name);
+            assert!(
+                !is_kebab_word(&k),
+                "GOOD NEWS — `{name}` now normalizes to the valid kebab word `{k}`. The non-ASCII \
+                 extern-name gap has been FIXED at the boundary; update this tripwire test (and the \
+                 precondition note on `kebab_extern_name`) to assert the new guarantee."
+            );
+        }
+        // The ASCII precondition still holds unconditionally: an ASCII-letter-led name is always valid.
+        let name = "café".chars().filter(|c| c.is_ascii()).collect::<String>();
+        assert!(
+            is_kebab_word(&kebab_extern_name(&name)),
+            "ASCII residue stays valid"
+        );
     }
 
     #[test]

@@ -184,6 +184,7 @@ pass	Type.eq on a constructed generic sum compares the full instantiated type
 pass	Type.eq on a type-valued parameter against a COMPOUND type is structural
 pass	Type.of carries a quantity's unit into a same-type annotation
 pass	Type.of on a bare nullary variant reflects its element as UNDETERMINED
+pass	Type.of reflects a RETURNED function's body-solved domain, at every currying level
 pass	Type.of reflects a function's BODY-SOLVED domain, distinguishing different parameter types
 pass	Type.of reflects a runtime parameter's type at compile time
 pass	Type.of reflects a value's type for use as an annotation
@@ -1362,6 +1363,7 @@ pass	a plain quote does not evaluate a quasiquote's unquote nested inside it
 pass	a plain record compared to a nominal record of the same shape is a type error
 pass	a plural family-unit spelling names the same unit as its singular
 pass	a positional tuple access out of the tuple's static arity is a type error
+pass	a possibly-out-of-range runtime integer conversion still declines (checked emit pending)
 pass	a post-order effectful walk draws each node's id AFTER both children (SSA reg-alloc shape)
 pass	a post-order labeling walk returns a labeled tree (heap result, id drawn after children)
 pass	a predicate closure returning Bool drives an early-exit recursive HOF
@@ -1693,6 +1695,7 @@ pass	a runtime square multiply traps exactly past the Int64 square-root boundary
 pass	a runtime string bound from a sum payload compares equal to a string parameter
 pass	a runtime string compared against a literal folds against the literal side
 pass	a runtime string equality selects a branch by comparing a parameter to a literal
+pass	a runtime string interns to a symbol matched by content
 pass	a runtime string is indexed by scalar and the extracted scalar is returned
 pass	a runtime string is sliced by scalar offsets
 pass	a runtime string pattern dispatches by content (value-eq compare)
@@ -1719,6 +1722,7 @@ pass	a runtime symbol is found among a set of known symbols
 pass	a runtime symbol matches a symbol-literal pattern arm by content
 pass	a runtime symbol not among the known symbols is rejected
 pass	a runtime symbol not among the literal arms falls through to the wildcard
+pass	a runtime symbol round-trips back to its string
 pass	a runtime symbol that differs from the interned constant does not match
 pass	a runtime three-level nested tuple compares equal by a deep walk
 pass	a runtime three-variant classifier dispatches to the middle arm
@@ -1903,7 +1907,10 @@ pass	a symbol compared to a string is a type error
 pass	a symbol converts back to its content string
 pass	a symbol is constructed from a string
 pass	a symbol's identity is its content, not how the content was derived
+pass	a symbol-literal match agrees with the equivalent if-(= s lit) chain
+pass	a symbol-literal match reaches the second arm by content
 pass	a symbol-literal pattern nested in a variant payload matches by content
+pass	a symbol-literal pattern over a multi-byte symbol matches by content
 pass	a tag-length-value record round-trips through construct then match
 pass	a tagged template expands via its binding-dispatched tag function
 pass	a tagged template nested in another's hole composes — the inner's result reaches the outer tag
@@ -1932,6 +1939,7 @@ pass	a three-arm match consumed as an operand yields into the enclosing expressi
 pass	a three-deep known-disc nested match reads the right payload at every level
 pass	a three-deep tuple projection chain retains the innermost consumed child
 pass	a three-element runtime tuple is returned as a result
+pass	a three-hole tag reads its holes in exact left-to-right order
 pass	a three-level curried spine applies through both intermediate closures
 pass	a three-level nested multi-arg constructor destructures to every leaf payload
 pass	a three-parameter closure is applied at full arity through a recursive HOF
@@ -2543,7 +2551,7 @@ pass	converting a scalar-valued integer to a char yields Some
 pass	converting a surrogate code point to a char yields None
 pass	converting a unit to another unit of the same dimension is an exact rational scale
 pass	converting an out-of-range integer to a char yields None
-pass	cross-width widening a runtime narrow int with .of (UInt16.of a UInt8) declines (emit pending)
+pass	cross-width widening a runtime narrow int with .of (UInt16.of a UInt8) emits (total)
 pass	declaring a unit with a conversion conflicting with a built-in is an error
 pass	decode of a Float tag with a non-finite (NaN) bit pattern yields the error case
 pass	decode of a Str tag with an oversized length yields the error case
@@ -3392,7 +3400,8 @@ pass	updating a record field preserves the other fields' values
 pass	updating a record field replaces its value
 pass	updating an absent record field is rejected
 pass	when two abortive performs sit on one spine the FIRST (leftmost) abort wins
-pass	widening a runtime narrow-width integer to Int64 declines (the emit is a later increment)
+pass	widening a runtime narrow-width unsigned integer to Int64 zero-extends (total, emits)
+pass	widening a runtime signed narrow integer to Int64 sign-extends (total, emits)
 pass	wrapping addition of in-range operands is ordinary addition
 pass	wrapping addition wraps modulo two to the sixty-fourth on overflow
 pass	wrapping an unwrapped number re-enters the units world at the new unit

@@ -1057,23 +1057,36 @@
   (output (: 1.5 Float64)))
 
 ; The float widening above (runtime Float32 → Float64) EMITS. The integer analogue — widening a runtime
-; NARROW-width int up to Int64 (`(Int64.of x)` where `x : UInt8`) — does NOT yet emit: the seed DECLINES
-; a runtime narrow→wide integer conversion (the runtime narrow-int rep exists — `UInt8.wrapping-add` on a
-; runtime UInt8 works, cases below — but the emit for the widening CONVERT is a later increment). It is a
-; SOUND decline, NOT a miscompile: the CONSTANT `(Int64.of (UInt8.wrap 300))` folds correctly (→ 44), and
-; the runtime path refuses rather than emitting a wrong (unmasked / sign-extended) widen. This case GRADES
-; that decline so the boundary is tracked — a future change that made a runtime integer widen silently
-; MISCOMPILE (sign-extend a UInt8's high bit, or read adjacent bytes) instead of declining would flip this
-; `(declines)` and be caught. (Contrast: the runtime float widen above, and runtime BigInt.of widening,
-; both EMIT — this is specifically the fixed-narrow-int→Int64 convert.)
-(case "widening a runtime narrow-width integer to Int64 declines (the emit is a later increment)"
-  (doc    "`(Int64.of x)` with `x` a runtime `UInt8` PARAMETER widens a narrow int up to Int64. The seed
-           does not yet emit this runtime integer-widening convert, so it soundly DECLINES rather than
-           emitting a possibly-wrong (sign-extended / unmasked) result — reject-don't-miscompile. Contrast
-           the runtime FLOAT widen `(Float64.of x:Float32)` above (which emits `f64.promote_f32`) and the
-           CONSTANT `(Int64.of (UInt8.wrap 300))` = 44 (which folds). Grades the runtime narrow→wide
-           INTEGER conversion decline as an intentional, tracked boundary pending its emit.")
+; NARROW-width int up to Int64 (`(Int64.of x)` where `x : UInt8`) — now ALSO emits, when the conversion is
+; provably TOTAL: every UInt8 (0..255) fits Int64, so `Int64.of` can never trap and is a pure widening
+; (zero-extend for the unsigned source; a signed source sign-extends). A NON-total `T.of` (a narrowing, or
+; a sign-change that overflows — `Int8.of (x:UInt8)`, where 255 exceeds Int8) still DECLINES: that needs a
+; range-check-then-trap emit, a later increment. `of` and `wrap` differ only on an out-of-range value, and
+; totality proves there is none, so the total case reuses the widening `wrap` emit soundly.
+(case "widening a runtime narrow-width unsigned integer to Int64 zero-extends (total, emits)"
+  (doc    "`(Int64.of x)` with `x` a runtime `UInt8` PARAMETER widens a narrow int up to Int64. Every UInt8
+           fits Int64, so the conversion is TOTAL — it emits a zero-extend (NOT sign-extend: the top-bit
+           value 200 widens to +200, not a negative). The runtime integer analogue of the Float32→Float64
+           widen above; also matches the CONSTANT fold `(Int64.of (UInt8.wrap 300))` = 44.")
   (input  (do (def (main (: x UInt8)) (Int64.of x)) (export main)))
+  (call   main (: 200 UInt8))
+  (output (: 200 Int64)))
+
+(case "widening a runtime signed narrow integer to Int64 sign-extends (total, emits)"
+  (doc    "`(Int64.of x)` with `x` a runtime `Int8` widens totally by SIGN-extending — -1 stays -1, not a
+           large positive. Every Int8 (-128..127) fits Int64, so no trap; contrasts the unsigned case's
+           zero-extend, pinning that the widen respects the SOURCE signedness.")
+  (input  (do (def (main (: x Int8)) (Int64.of x)) (export main)))
+  (call   main (: -1 Int8))
+  (output (: -1 Int64)))
+
+(case "a possibly-out-of-range runtime integer conversion still declines (checked emit pending)"
+  (doc    "`(Int8.of x)` with `x` a runtime `UInt8` is NOT total — a UInt8 value like 255 overflows Int8's
+           -128..127, so `of` must TRAP-check at run time. The range-check-then-trap emit is a later
+           increment, so this soundly DECLINES rather than emitting a truncating `wrap` (which would
+           silently keep the low bits where `of` must trap — a miscompile). Grades the non-total boundary
+           as tracked; contrast the TOTAL widenings above, which emit.")
+  (input  (do (def (main (: x UInt8)) (Int8.of x)) (export main)))
   (declines))
 
 ; The widen decline above is one face of a family: the runtime `.of` fixed-width integer CONVERT does not
@@ -1093,14 +1106,14 @@
   (input  (do (def (main (: n Int64)) (Int64.of (UInt8.of n))) (export main)))
   (declines))
 
-(case "cross-width widening a runtime narrow int with .of (UInt16.of a UInt8) declines (emit pending)"
-  (doc    "`(UInt16.of x)` with `x` a runtime `UInt8` widens one fixed-narrow type to a wider fixed type —
-           a runtime `.of` CONVERT between narrow widths, distinct from the Int64-widen and the Int64-narrow
-           above. The seed does not yet emit it, so it soundly DECLINES. Completes the runtime `.of`
-           integer-conversion decline family (widen-to-Int64 / narrow-from-Int64 / cross-narrow-width) as a
-           single tracked boundary pending the convert emit; the `wrap` truncation path is unaffected.")
+(case "cross-width widening a runtime narrow int with .of (UInt16.of a UInt8) emits (total)"
+  (doc    "`(UInt16.of x)` with `x` a runtime `UInt8` widens one fixed-narrow type to a wider fixed type.
+           Every UInt8 (0..255) fits UInt16, so the conversion is TOTAL — it emits (zero-extend), like the
+           widen-to-Int64 cases. Distinct from the narrow-DIRECTION `.of` above (Int64→UInt8), which is
+           genuinely checked and still declines. The max UInt8 255 widens to 255.")
   (input  (do (def (main (: x UInt8)) (UInt16.of x)) (export main)))
-  (declines))
+  (call   main (: 255 UInt8))
+  (output (: 255 UInt16)))
 
 ; --- Float is WIDTH-INDEXED: (Float N) over N in {32, 64}, with Float32/Float64 aliases -------------
 ; numeric-model.md #A Floating-Point Type Is Indexed By A Compile-Time Width: a float type is the

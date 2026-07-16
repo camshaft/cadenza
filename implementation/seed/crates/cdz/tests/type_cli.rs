@@ -92,3 +92,22 @@ fn a_directory_in_the_file_slot_gives_a_clean_diagnostic_not_a_raw_os_error() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_bare_stdin_marker_gives_a_clean_diagnostic_not_a_raw_os_error() {
+    // A bare `-` (the stdin marker) passed to a command that does NOT read stdin — the by-name/by-offset
+    // query commands take a NAMED file (its extension picks the surface) — must give a clean message
+    // pointing at the stdin-capable commands, not the raw `reading -: No such file or directory (os error
+    // 2)` that `read_to_string("-")` leaks (it looks for a file literally named `-`). Pinned via the shared
+    // loader (so it holds for every query command at once).
+    let (ok, out, err) = run(&["type", "foo", "-"]);
+    assert!(!ok, "a bare `-` must fail here: {out}{err}");
+    assert!(
+        err.contains("stdin") && err.contains("not supported by this command"),
+        "clean stdin diagnostic pointing at the stdin-capable commands: {err}"
+    );
+    assert!(
+        !err.contains("os error"),
+        "the raw OS error is not surfaced: {err}"
+    );
+}

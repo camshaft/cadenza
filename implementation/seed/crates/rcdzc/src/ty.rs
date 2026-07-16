@@ -127,6 +127,32 @@ impl IntTy {
     pub fn width_is_fixed(self) -> bool {
         matches!(self.width, Width::Fixed(_))
     }
+
+    /// The inclusive `[min, max]` value range of this integer at its ground (signed, width), in `i128`
+    /// space so every 1..=64-bit bound is exact (`2^64` fits `i128`). Signed → `[-2^(w-1), 2^(w-1)-1]`;
+    /// unsigned → `[0, 2^w - 1]`.
+    fn ground_range(self) -> (i128, i128) {
+        let w = self.ground_width();
+        if self.ground_signed() {
+            let half = 1i128 << (w - 1);
+            (-half, half - 1)
+        } else {
+            (0, (1i128 << w) - 1)
+        }
+    }
+
+    /// Whether EVERY value of this (source) integer type provably fits `target` — i.e. `self`'s value
+    /// range is a subset of `target`'s. When true, a checked conversion `target.of(x : self)` can NEVER
+    /// trap (every source value is in range), so it is a pure representation change identical to
+    /// `target.wrap(x)` — the backend emits the extend-and-reinterpret with no range check. When false
+    /// (a narrowing, or an unsigned→signed of equal width where the top value overflows), the conversion
+    /// is genuinely checked and must trap at run time. Both ranges are computed in `i128`, so this is
+    /// exact for all 1..=64-bit widths.
+    pub fn fits_within(self, target: IntTy) -> bool {
+        let (s_min, s_max) = self.ground_range();
+        let (t_min, t_max) = target.ground_range();
+        t_min <= s_min && s_max <= t_max
+    }
 }
 
 /// The default float width a float literal grounds to when nothing fixes it (`Float64` — binary64).

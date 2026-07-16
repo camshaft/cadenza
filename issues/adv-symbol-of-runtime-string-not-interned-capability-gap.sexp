@@ -36,3 +36,5 @@
         general — the constant path is fully supported.")
   (input (do (def (main) (Symbol.to-string (Symbol.of "abc"))) (export main)))
   (output (: "abc" String)))
+
+; UPDATE 2026-07-16: v-runtime IMPLEMENTED this (Symbol = tagless String byte-leaf; Symbol.of canonicalizes rope→flat leaf = intern under by-content rep; no str-intern op needed). Bundled into widening MR (ref fleet/v-runtime = 4fb0ad79a, QUEUED, clean FF onto trunk). 2 cases adopted into 17-symbols.sexp (rope-intern-by-content, Symbol round-trip byte-len) — WASM emits, RUST declines-todo (no Symbol rep in rust backend yet, separate v-rust-backend increment). RETIRE this probe ONLY after the MR lands + verify-by-content that Symbol.of(runtime string) EMITS on wasm (declines flip to values).
