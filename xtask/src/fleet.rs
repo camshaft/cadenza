@@ -641,6 +641,8 @@ fn maxfloor_driver_command() -> &'static str {
 /// reflog count, and an operator kills the source. Deliberately NOT a blocking guard.
 const REF_TXN_HOOK_MARKER: &str = "# fleet:reference-transaction-clobber-logger";
 fn reference_transaction_hook_body(log_path: &str) -> String {
+    // Quote the log path in the shell redirect so a path with spaces/metachars is safe (PR #458).
+    let q = format!("'{}'", log_path.replace('\'', "'\\''"));
     format!(
         "#!/usr/bin/env bash\n\
          {REF_TXN_HOOK_MARKER}\n\
@@ -651,12 +653,26 @@ fn reference_transaction_hook_body(log_path: &str) -> String {
          [ \"$state\" = \"committed\" ] || exit 0\n\
          while read -r old new ref; do\n\
          \t[ \"$ref\" = \"refs/heads/trunk\" ] || continue\n\
-         \t# Skip creation/deletion (all-zeros) — only real moves matter.\n\
+         \t# Only a real MOVE: skip a creation (old all-zeros) OR a deletion (new all-zeros) — PR #458.\n\
          \tcase \"$old\" in *[!0]*) : ;; *) continue ;; esac\n\
+         \tcase \"$new\" in *[!0]*) : ;; *) continue ;; esac\n\
          \t# A backward/sideways move: new is NOT a descendant of old (a fast-forward would be).\n\
          \tif ! git merge-base --is-ancestor \"$old\" \"$new\" 2>/dev/null; then\n\
          \t\tts=\"$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)\"\n\
-         \t\techo \"$ts trunk NON-FF move ${{old:0:12}} -> ${{new:0:12}} (target=$(git rev-parse --abbrev-ref \"$new\" 2>/dev/null || echo ?)) pid=$$ ppid=$PPID\" >> {log_path} 2>/dev/null || true\n\
+         \t\t# (Target is always trunk since we scoped to it — don't resolve $new, it is a SHA — PR #459.)\n\
+         \t\techo \"$ts trunk NON-FF move ${{old:0:12}} -> ${{new:0:12}} pid=$$ ppid=$PPID\" >> {q} 2>/dev/null || true\n\
+         \t\t# The clobber writer is SUB-SECOND, so external `ps` post-mortem can't trace it. Capture\n\
+         \t\t# the ancestry INLINE now — the hook runs SYNCHRONOUSLY in the writer's own process, so\n\
+         \t\t# its parent chain is still alive. Walk up from PPID ~5 levels, logging each command line;\n\
+         \t\t# that argv (the parent shell's `-c <script>`, the cron, …) NAMES the source.\n\
+         \t\tp=$PPID\n\
+         \t\tfor _ in 1 2 3 4 5; do\n\
+         \t\t\t{{ [ -n \"$p\" ] && [ \"$p\" != 0 ] && [ \"$p\" != 1 ]; }} || break\n\
+         \t\t\tline=$(ps -o ppid=,args= -p \"$p\" 2>/dev/null)\n\
+         \t\t\t[ -n \"$line\" ] || break\n\
+         \t\t\techo \"  ^ pid=$p $line\" >> {q} 2>/dev/null || true\n\
+         \t\t\tp=$(echo \"$line\" | awk '{{print $1}}')\n\
+         \t\tdone\n\
          \tfi\n\
          done\n\
          exit 0\n"
@@ -3409,10 +3425,18 @@ mod tests {
         // Fail-open: the only exits are `exit 0`; there is no non-zero exit anywhere.
         assert!(body.contains("exit 0"));
         assert!(!body.contains("exit 1"));
-        // Scoped to trunk, and writes the configured log path.
+        // Scoped to trunk, and writes the configured log path — QUOTED in the redirect (PR #458).
         assert!(body.contains("refs/heads/trunk"));
-        assert!(body.contains("/hub/.claude/fleet/trunk-clobber.log"));
+        assert!(body.contains(">> '/hub/.claude/fleet/trunk-clobber.log'"));
         // Uses a descendant check to classify a backward (non-fast-forward) move.
         assert!(body.contains("merge-base --is-ancestor"));
+        // Guards BOTH creation (old all-zeros) and deletion (new all-zeros) — PR #458.
+        assert!(body.contains("case \"$old\" in"));
+        assert!(body.contains("case \"$new\" in"));
+        // Dropped the always-failing `rev-parse --abbrev-ref $new` (PR #459): $new is a SHA.
+        assert!(!body.contains("abbrev-ref"));
+        // Captures the parent-command-line ancestry INLINE (the enabler for naming the clobber source).
+        assert!(body.contains("ps -o ppid=,args= -p"));
+        assert!(body.contains("ppid=$PPID"));
     }
 }
