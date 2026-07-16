@@ -2078,6 +2078,25 @@
   (call   main (: 5 Int64)) (output (: 10 Int64))
   (call   main (: 0 Int64)) (output (: 99 Int64)))
 
+(case "a bytes value chosen by a runtime if is length-measured with valid wasm"
+  (doc    "`(Bytes.len (if (> b 0) (Bytes.of (list 1 2 3)) (Bytes.of (list 4 5))))` selects one of two
+           runtime byte sequences by the Bool and reads its length — b=5 → the 3-byte → 3, b=-5 → the
+           2-byte → 2. The `if` unifies two `Bytes` branches into one heap handle that `Bytes.len` reads;
+           pins the join emits valid wasm for a BYTES handle (the bytes analogue of the runtime-if list/map,
+           both backends now that rust has Bytes).")
+  (input  (do (def (main (: b Int64)) (Bytes.len (if (> b 0) (Bytes.of (list 1 2 3)) (Bytes.of (list 4 5))))) (export main)))
+  (call   main (: 5 Int64)) (output (: 3 Int64))
+  (call   main (: -5 Int64)) (output (: 2 Int64)))
+
+(case "a set chosen by a runtime if is size-measured with valid wasm"
+  (doc    "`(Set.len (if (> b 0) (Set.of (list 1 2 3)) (Set.of (list 4 5))))` selects one of two runtime
+           sets by the Bool and reads its size — b=5 → 3, b=-5 → 2. The `if` unifies two `(Set Int64)`
+           branches into one CHAMP handle that `Set.len` reads; pins the join emits valid wasm for a SET
+           handle, completing the heap-type runtime-if family (list/map/sum/bytes/set), both backends.")
+  (input  (do (def (main (: b Int64)) (Set.len (if (> b 0) (Set.of (list 1 2 3)) (Set.of (list 4 5))))) (export main)))
+  (call   main (: 5 Int64)) (output (: 3 Int64))
+  (call   main (: -5 Int64)) (output (: 2 Int64)))
+
 (case "a sum chosen by a runtime if is matched with valid wasm"
   (doc    "`(match (if (> b 0) (W.A b) (W.B b)) …)` selects one of two sum constructors by the runtime Bool,
            then matches the joined value — b=5 → `(W.A 5)` → 5, b=0 → `(W.B 0)` → 0+100 = 100. The `if`
