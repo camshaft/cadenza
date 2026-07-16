@@ -481,8 +481,11 @@ struct Message {
     r#ref: String,
     #[serde(default)]
     body: String,
-    /// A monotonic ordinal (not wall-clock — the toolchain forbids `Date::now`); makes filenames
-    /// sort in send order within a run. Combined with pid for cross-process uniqueness.
+    /// A per-process ordinal from `next_seq` (not wall-clock — the toolchain forbids `Date::now`).
+    /// Metadata only: it is WRITTEN into every message but NOT read for ordering. The inbox sorts by
+    /// FILENAME, whose leading field is the DURABLE cross-process `next_delivery_seq` counter — NOT
+    /// this field, which is process-local and so is always 1 for a one-shot `fleet send`. Do not use
+    /// `seq` to order messages (see `next_delivery_seq`); it is kept for on-disk-format compatibility.
     seq: u64,
     /// For a `merged`/`reject` reply emitted by `fleet ack`: the FILENAME of the merge-request it
     /// resolves (in pr-sync's inbox). Empty for every other message. `fleet audit` uses it to prove
@@ -2248,8 +2251,10 @@ fn is_safe_component(s: &str) -> bool {
         && !s.contains("..")
 }
 
-/// A process-local monotonic sequence for message ordering (wall-clock is unavailable in the
-/// toolchain, and even so a counter is enough to order messages within one sender's run).
+/// A process-local counter for the `Message::seq` metadata field. NOT used for inbox ordering —
+/// that's `next_delivery_seq`, a durable cross-process counter, because a one-shot `fleet send` process
+/// only ever calls this once (so it's always 1). Kept because `seq` is part of the on-disk message
+/// format; a multi-message process (e.g. `reroute-unknown`) still gets a distinct value per message.
 fn next_seq() -> u64 {
     use std::sync::atomic::{AtomicU64, Ordering};
     static SEQ: AtomicU64 = AtomicU64::new(1);
