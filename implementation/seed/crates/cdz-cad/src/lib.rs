@@ -118,6 +118,7 @@ pub fn parse_solid(text: &str) -> Result<Solid, ParseError> {
     let mut p = Parser {
         toks: &toks,
         pos: 0,
+        depth: 0,
     };
     let s = p.parse_solid_value()?;
     if p.pos != p.toks.len() {
@@ -166,9 +167,18 @@ fn tokenize(text: &str) -> Vec<Tok> {
     toks
 }
 
+/// The maximum `Solid` nesting depth the recursive-descent parser accepts. The parser (and the tree walks
+/// that follow: `mesh`, `node_count`) recurse one stack frame per level, so an ADVERSARIAL deeply-nested
+/// input could otherwise overflow the thread stack (empirically ~400 levels on a 2 MiB stack). A real CAD
+/// model never nests remotely this deep (a gear/bracket is a handful of levels), so a generous cap turns a
+/// crash into a clean `Err` with no practical cost. 256 is far above any real model, far below the overflow.
+const MAX_DEPTH: usize = 256;
+
 struct Parser<'a> {
     toks: &'a [Tok],
     pos: usize,
+    /// Current `Solid` nesting depth (guards against a stack-overflowing adversarial input — see MAX_DEPTH).
+    depth: usize,
 }
 
 impl Parser<'_> {
@@ -208,17 +218,27 @@ impl Parser<'_> {
     }
 
     /// Parse a value at a `Solid` position, transparently unwrapping any `(: <value> Type>)` annotations
-    /// (top-level `(: … Solid)`, and defensively any nested one), then the bare `(Ctor …)` node.
+    /// (top-level `(: … Solid)`, and defensively any nested one), then the bare `(Ctor …)` node. Bounds the
+    /// recursion depth (MAX_DEPTH) so an adversarial deeply-nested input Errs cleanly instead of overflowing.
     fn parse_solid_value(&mut self) -> Result<Solid, ParseError> {
-        if self.is_annotation_ahead() {
+        self.depth += 1;
+        if self.depth > MAX_DEPTH {
+            return Err(ParseError(format!(
+                "solid nests deeper than the limit ({MAX_DEPTH}) — refusing to recurse further"
+            )));
+        }
+        let result = if self.is_annotation_ahead() {
             self.expect_open()?; // (
             let _colon = self.expect_atom()?; // :
             let inner = self.parse_solid_value()?; // the annotated value
             let _ty = self.expect_atom()?; // Type name (e.g. Solid)
             self.expect_close()?; // )
-            return Ok(inner);
-        }
-        self.parse_solid_node()
+            Ok(inner)
+        } else {
+            self.parse_solid_node()
+        };
+        self.depth -= 1;
+        result
     }
 
     /// Parse a bare `(Ctor arg…)` Solid constructor.
@@ -443,12 +463,7 @@ mod tests {
 
     #[test]
     fn parser_handles_a_reasonably_deep_chain() {
-        // A moderately deep Union chain (100) parses + counts correctly — well beyond any real CAD model's
-        // nesting. NOTE: the parser + node_count are RECURSIVE (one stack frame per nesting level), so an
-        // ADVERSARIAL chain of many hundreds can overflow a small (2 MiB) thread stack — a known limit, not
-        // exercised here because a real model never nests that deep. (A future hardening could make the
-        // parse/fold iterative or add an explicit depth cap; tracked in the vertical log.) Keep this depth
-        // safely under the test-thread stack so the test is not stack-size-fragile.
+        // A moderately deep Union chain (100) — well beyond any real CAD model's nesting — parses + counts.
         let depth = 100;
         let mut s = String::from("(Sphere 1.0)");
         for _ in 0..depth {
@@ -458,5 +473,21 @@ mod tests {
         // depth unions + (depth + 1) spheres = 2*depth + 1 nodes.
         assert_eq!(parsed.node_count(), 2 * depth + 1);
         assert_eq!(parsed.leaf_count(), depth + 1);
+    }
+
+    #[test]
+    fn an_adversarially_deep_chain_errs_cleanly_instead_of_overflowing() {
+        // Past MAX_DEPTH the parser must return an Err (the depth guard), NOT recurse into a stack overflow.
+        // Build a chain well beyond the cap; the parse should stop with the depth-limit error.
+        let mut s = String::from("(Sphere 1.0)");
+        for _ in 0..(MAX_DEPTH + 50) {
+            s = format!("(Union (Sphere 1.0) {s})");
+        }
+        let err = parse_solid(&format!("(: {s} Solid)")).unwrap_err();
+        assert!(
+            err.0.contains("nests deeper than the limit"),
+            "expected the depth-limit error, got: {}",
+            err.0
+        );
     }
 }

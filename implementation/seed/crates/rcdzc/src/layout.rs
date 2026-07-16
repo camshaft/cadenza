@@ -821,6 +821,7 @@ fn collect_closure_codes_at(db: &mut Db, id: StructId, out: &mut std::collection
         }
         Core::BytesCompact { operand }
         | Core::StrFromBytes { bytes: operand, .. }
+        | Core::StrToBytes { string: operand }
         | Core::Convert { operand, .. }
         | Core::Not { operand }
         | Core::ListLen { operand }
@@ -1068,7 +1069,8 @@ fn collect_call_callees_at(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
             collect_call_callees(db, len, out);
         }
         crate::core::Core::BytesCompact { operand }
-        | crate::core::Core::StrFromBytes { bytes: operand, .. } => {
+        | crate::core::Core::StrFromBytes { bytes: operand, .. }
+        | crate::core::Core::StrToBytes { string: operand } => {
             collect_call_callees(db, operand, out)
         }
         crate::core::Core::Convert { operand, .. } | crate::core::Core::Not { operand } => {

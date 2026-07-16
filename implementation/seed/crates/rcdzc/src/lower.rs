@@ -18478,8 +18478,10 @@ fn lower_str_slice(
 /// Lower `(String.to-bytes s)` — the UTF-8 encoding `String → Bytes`. FOLD a constant string to a
 /// `Core::BytesOf` whose elements are its UTF-8 bytes, each a fresh `UInt8` `Leaf::Int` synthesized into
 /// the arena (the same shape `Bytes.of` of a byte-list builds — so it bakes at escape / consumes through
-/// `Bytes.len`/`Bytes.at` identically, no string heap). A runtime string declines (the byte-rope
-/// materialization arrives with the runtime string heap). A poison operand propagates.
+/// `Bytes.len`/`Bytes.at` identically, no string heap). A RUNTIME string emits `Core::StrToBytes` — the
+/// encoding is TOTAL (a String IS a UTF-8 Bytes leaf), so it needs no conversion or validation, only a
+/// flatten of the byte-rope to a canonical leaf (the runtime `bytes-compact` op), the exact inverse of the
+/// runtime `str-from-bytes` decode. A poison operand propagates.
 fn lower_str_to_bytes(db: &mut Db, string: StructId) -> Core {
     match core_of(db, string) {
         Core::ConstStr(s) => {
@@ -18497,9 +18499,7 @@ fn lower_str_to_bytes(db: &mut Db, string: StructId) -> Core {
             Core::BytesOf { elems }
         }
         Core::Poison(r) => Core::Poison(r),
-        _ => Core::Poison(Reject::decline(
-            "String.to-bytes of a runtime string is not yet computed (constant strings only)",
-        )),
+        _ => Core::StrToBytes { string },
     }
 }
 

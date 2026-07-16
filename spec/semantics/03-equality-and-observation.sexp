@@ -8,6 +8,33 @@
   (input  (= 3 3))
   (output (: true Bool)))
 
+; Equality of a RUNTIME boolean against a boolean LITERAL: `(= b true)` is `b`, `(= b false)` is `¬b`.
+; A Bool has exactly two values, so comparing one to a constant is a boolean coercion (whether the
+; compiler folds it to the operand / a negation or emits an i32 compare, the VALUE is the operand or its
+; negation). The operand here is a RUNTIME comparison result (`(< a b)`), so this exercises emitted code —
+; a value-parity pin across both backends, the equality-against-literal companion of the `(if c false
+; true)`→¬c boolean-coercion folds (02-binding-and-control).
+
+(case "equality of a runtime boolean against the true literal is the boolean"
+  (doc    "`(= (< a b) true)` equals `(< a b)`: comparing a Bool to `true` yields the Bool itself.
+           a=1,b=2 → `1<2`=true → true; a=2,b=1 → false → false. Pins `(= bexpr true)` = bexpr on a
+           runtime boolean operand, both backends.")
+  (input  (do (def (main (: a Int64) (: b Int64)) (= (< a b) true)) (export main)))
+  (call   main (: 1 Int64) (: 2 Int64))
+  (output (: true Bool))
+  (call   main (: 2 Int64) (: 1 Int64))
+  (output (: false Bool)))
+
+(case "equality of a runtime boolean against the false literal negates it"
+  (doc    "The dual: `(= (< a b) false)` equals `¬(< a b)` — comparing a Bool to `false` negates it.
+           a=1,b=2 → `1<2`=true, `= false` → false; a=2,b=1 → false, `= false` → true. Pins `(= bexpr
+           false)` = ¬bexpr on a runtime boolean, both backends.")
+  (input  (do (def (main (: a Int64) (: b Int64)) (= (< a b) false)) (export main)))
+  (call   main (: 1 Int64) (: 2 Int64))
+  (output (: false Bool))
+  (call   main (: 2 Int64) (: 1 Int64))
+  (output (: true Bool)))
+
 (case "negative zero is not equal to positive zero"
   (doc    "Witnesses core-semantics.md #Floating-Point Equality Follows The Canonical Byte Form:
            -0.0 and 0.0 have distinct canonical byte forms, so they are not equal.")

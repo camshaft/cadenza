@@ -795,6 +795,23 @@ pub(crate) fn validate_type_position(
                         && !n.starts_with(|c: char| c.is_ascii_lowercase())
                 })
         })
+        // A genuinely-unknown UPPERCASE type name here (a variant payload / nested payload type — `(type
+        // Box (Mk Widget))`) gets the BARE "unbound name `Widget`" from `type_errors`, which does not
+        // convey that a TYPE is missing. Rewrite it to the same "unknown type `Widget` — declare it with
+        // `(type Widget …)`" the annotation sites give (`infer::unknown_type_reject`), so a payload type
+        // position reads like an annotation one. Only a BARE unbound name (no ` — did you mean …` suffix)
+        // is rewritten: a typo of a real type already carries the more useful did-you-mean, which we keep.
+        .map(
+            |f| match (f.code, f.at, unbacktick(&f.message).map(str::to_string)) {
+                (Some(Code::Unbound), Some(at), Some(name))
+                    if name.starts_with(|c: char| c.is_ascii_uppercase())
+                        && !f.message.contains("did you mean") =>
+                {
+                    crate::infer::unknown_type_reject(&name, at, what)
+                }
+                _ => f,
+            },
+        )
         .collect();
     if !kept.is_empty() {
         out.extend(kept);
@@ -3583,6 +3600,8 @@ fn collect_reached_poisons_at(db: &mut Db, id: StructId, out: &mut Vec<Reject>) 
         Core::BytesCompact { operand } => collect_reached_poisons(db, operand, out),
         // `String.from-bytes` unconditionally evaluates its bytes operand (the runtime op reads it) — descend.
         Core::StrFromBytes { bytes, .. } => collect_reached_poisons(db, bytes, out),
+        // `String.to-bytes` unconditionally evaluates its string operand (the runtime flatten reads it) — descend.
+        Core::StrToBytes { string } => collect_reached_poisons(db, string, out),
         // A map construction's entry keys AND values are all unconditionally part of the value — descend
         // into each `(key, value)` pair.
         Core::MapNew { entries, .. } => {

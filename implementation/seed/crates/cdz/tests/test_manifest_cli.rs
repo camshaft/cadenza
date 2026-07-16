@@ -764,4 +764,25 @@ fn a_list_parameter_test_is_property_tested_by_a_synthesized_generator() {
         stdout.contains("PASS two-gen (8 trials)"),
         "a multi-param @test (compound + scalar) is property-tested via a synthesized wrapper: {stdout}"
     );
+
+    // G9: a `Float64`/`Float32` leaf is generated when COMPOUND — a `(List Float64)` param is
+    // property-tested (each element `Float64.of-int(Test.gen)`, an integer-valued float that shrinks with
+    // the int pool). Before G9 a compound float declined at the boundary. A LONE float already crosses the
+    // boundary (the runner generates the scalar), so that path is unchanged — this pins the NESTED case.
+    let floats = write(
+        &d,
+        "floats.cdz",
+        "@test def flen(xs: List(Float64)) = if List.len(xs) >= 0 then unit else trap(\"f\")\n\
+         @test def tfloat(p: Tuple(Float32, Int64)) = if p.1 == p.1 then unit else trap(\"t\")\n",
+    );
+    let (ok, stdout, stderr) = run(&["test", &floats, "--trials", "8"]);
+    assert!(
+        ok,
+        "a List(Float64) + Tuple(Float32,_) property passes: {stdout}{stderr}"
+    );
+    assert!(
+        stdout.contains("PASS flen-gen (8 trials)")
+            && stdout.contains("PASS tfloat-gen (8 trials)"),
+        "a compound Float param is property-tested via the synthesized wrapper: {stdout}"
+    );
 }

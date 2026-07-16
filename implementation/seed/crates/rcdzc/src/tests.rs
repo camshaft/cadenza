@@ -1790,6 +1790,51 @@ fn a_runtime_string_from_bytes_leaks_no_more_than_the_twin_option_builder() {
     }
 }
 
+/// `String.to-bytes` on a RUNTIME `String` (one the compiler cannot fold to a constant) lowers to the
+/// runtime encoding rather than declining. A String IS a UTF-8 Bytes leaf (byte-identical), so the
+/// encoding is TOTAL and needs no conversion — it only flattens the string's byte-rope into a canonical
+/// flat Bytes leaf via the runtime `bytes-compact` op (the exact inverse of `str-from-bytes`), consuming
+/// the string handle. The string is built through a tail-recursive appender so it stays opaque to the
+/// fold (`(rep "" 3)` = "aaa", genuinely runtime), then `Bytes.len` measures the encoding. Pins the
+/// runtime `String.to-bytes` path the compiler-in-Cadenza codec ENCODER rests on (was declining
+/// "constant strings only"). Companion to the constant-fold `to-bytes` corpus cases + the runtime
+/// `String.from-bytes` decode test.
+#[test]
+fn a_runtime_string_to_bytes_encodes_a_recursively_built_string() {
+    use crate::testkit::parse;
+    // "aaa" is 3 ASCII bytes; a multibyte "é" (2 bytes) appended once more would be 4 — keep it ASCII so
+    // the byte count is unambiguous. `rep` recurses so the string is genuinely runtime (opaque to the fold).
+    let src = "(module m \
+                 (def (rep (: acc String) (: n Int64)) \
+                    (if (= n 0) acc (rep (String.concat acc \"a\") (- n 1)))) \
+                 (def (main) (Bytes.len (String.to-bytes (rep \"\" 3)))) \
+                 (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    assert!(
+        cdz_run::required_runtime(&bytes).expect("valid").is_some(),
+        "a runtime String.to-bytes must build on the byte-rope heap (import the runtime)"
+    );
+    let Some(runtime) = find_runtime_wasm() else {
+        eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
+        return;
+    };
+    let opts = cdz_run::RunOpts {
+        export: Some("main".to_string()),
+        args: vec![],
+        runtime: Some(runtime),
+        runtime_cache_dir: None,
+        host_responses: Vec::new(),
+    };
+    match cdz_run::run(&bytes, &opts).expect("run") {
+        cdz_run::Outcome::Value(s) => {
+            assert_eq!(s, "3", "three 'a's encode to 3 UTF-8 bytes")
+        }
+        cdz_run::Outcome::Trap(t) => {
+            panic!("runtime String.to-bytes trapped (a total encoding must never trap): {t}")
+        }
+    }
+}
+
 /// A FIELD read on a RUNTIME record (one whose value is not a compile-time-visible literal) projects
 /// like a tuple element: a record at run time IS a positional heap array in SORTED-KEY order, so
 /// `(. rec field)` is an `arr-get` at the field's sorted index. The record is written OUT of sorted
@@ -24571,6 +24616,39 @@ mod match_engine {
     }
 
     #[test]
+    fn set_contains_and_map_lookup_over_an_owned_temporary_reclaim_the_collection() {
+        // The last READ-op faces: `Set.contains`/`Map.lookup` over an owned-temporary collection must
+        // reclaim it. ⚠ Map.lookup is DELICATE — the looked-up value is borrowed from the map and dup'd in
+        // the Some arm, so the owned-map drop must come AFTER that dup (not right after map-lookup, which
+        // would free the value → UAF). Both drive a stress loop building a fresh collection each iteration:
+        // if the collection leaked or was double-freed, the value would drift or the run would trap.
+        // set-contains: build {0,1,2} 300×, each contains(…,1)=true → sum 300.
+        let set_stress = "(module m \
+               (def (build i n s) (if (< i n) (build (+ i 1) n ((. Set insert) s i)) s)) \
+               (def (drive j m tot) (if (< j m) \
+                   (drive (+ j 1) m (+ tot (if ((. Set contains) (build 0 3 ((. Set of) (list))) 1) 1 0))) tot)) \
+               (def (main) (drive 0 300 0)) (export main))";
+        if let Some(out) = run_on_heap(set_stress) {
+            assert_eq!(
+                out, "300",
+                "300 owned-temporary Set.contains must each reclaim the set (no leak/UAF drift)"
+            );
+        }
+        // map-lookup Some path, 300×: build {0:0,1:10,2:20}, lookup 1 → 10 each → sum 3000.
+        let map_stress = "(module m \
+               (def (build i n mp) (if (< i n) (build (+ i 1) n ((. Map insert) mp i (* i 10))) mp)) \
+               (def (drive j m tot) (if (< j m) \
+                   (drive (+ j 1) m (+ tot ((. Option expect) ((. Map lookup) (build 0 3 (map)) 1) \"v\"))) tot)) \
+               (def (main) (drive 0 300 0)) (export main))";
+        if let Some(out) = run_on_heap(map_stress) {
+            assert_eq!(
+                out, "3000",
+                "300 owned-temporary Map.lookup(Some) must each reclaim the map AFTER the value-dup (no UAF)"
+            );
+        }
+    }
+
+    #[test]
     fn a_projected_list_consumed_then_reprojected_is_retained_not_mutated() {
         // The PROJECTION face of the still-live-binding retain (repeated-proj-of-let-consumed-then-read): the
         // shared value is a nested-compound PROJECTION `(. t 0)` of a `let`-bound tuple, not the binding
@@ -33678,7 +33756,9 @@ mod match_engine {
         // unknown name resolved to nothing and `A` was mis-typed as NULLARY, its payload dropped). Now the
         // declaration-site check rejects it CDZ0101, the same as an unknown type in a param/value
         // annotation. Nested in a `(List …)`/`(Tuple …)`, INSIDE a record field, and a record nested in a
-        // tuple are all caught (the record-aware position walk validates each field's type).
+        // tuple are all caught (the record-aware position walk validates each field's type). The message
+        // now NAMES the missing type ("unknown type `Nonesuch` — … declare it with `(type Nonesuch …)`")
+        // rather than the terse "unbound name", matching the annotation sites (`unknown_type_reject`).
         for src in [
             "(module m (type C (A Nonesuch)) (def (main) 0) (export main))",
             "(module m (type C (A (List Nonesuch))) (def (main) 0) (export main))",
@@ -33690,11 +33770,23 @@ mod match_engine {
                 .expect_err("an unknown type in a variant payload must be rejected");
             assert_eq!(err.code.as_deref(), Some("CDZ0101"), "got: {}", err.message);
             assert!(
-                err.message.contains("Nonesuch"),
-                "names the unknown payload type: {}",
+                err.message.contains("unknown type `Nonesuch`")
+                    && err.message.contains("(type Nonesuch …)"),
+                "names the missing payload type + the declare fix: {}",
                 err.message
             );
         }
+        // A NEAR typo of a real type in a payload keeps its did-you-mean (the enrichment is gated on no
+        // near suggestion, exactly as the annotation sites are).
+        let typo = compile_component(&crate::codec::encode(&parse(
+            "(module m (type C (A Strng)) (def (main) 0) (export main))",
+        )))
+        .expect_err("a payload type typo is rejected");
+        assert!(
+            typo.message.contains("did you mean `String`?"),
+            "a near payload-type typo keeps the did-you-mean: {}",
+            typo.message
+        );
         // A payload that is a well-formed NON-type (a literal) → the "requires a type" reject.
         let lit = compile_component(&crate::codec::encode(&parse(
             "(module m (type C (A 5)) (def (main) 0) (export main))",

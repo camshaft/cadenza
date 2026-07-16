@@ -1,0 +1,124 @@
+/// deadlet.cdz — DEAD-LET ELIMINATION over a pure expression language with LET bindings: drop
+/// `let x = e in body` when `x` does not occur free in `body` (the binding is dead), replacing it with
+/// `body`. This is the DCE transform that removes unused bindings a compiler's earlier passes leave behind
+/// (e.g. after constant propagation inlines every use of a binding, the `let` itself is dead). Sound only
+/// because the language is PURE — dropping `e` is safe when it cannot trap or have effects (the port's
+/// arithmetic `Ex` has no division/effects); a language with a trapping RHS would keep the binding as a
+/// discarding statement.
+///
+/// The free-occurrence check `occurs` respects SHADOWING: inside `let y = … in body`, an occurrence of `x`
+/// in `body` counts only if `y != x` (an inner `let x` rebinds, so the outer `x` is not free past it).
+/// Complements `constprop.cdz` (which inlines constant bindings) — run const-prop then dead-let and a
+/// fully-constant `let`-chain collapses to a single value with no residual bindings.
+///
+/// Meaning-preservation contract: `eval(dle(e)) == eval(e)` for every closed expression (checked against a
+/// reference evaluator), and a dead binding is provably gone (the result is not a `Let` on it).
+
+type Ex =
+  | Num(Int64)
+  | Var(String)
+  | Add(Ex, Ex)
+  | Mul(Ex, Ex)
+  | Let(String, Ex, Ex)
+
+/// Does `x` occur FREE in `e`? A `Let y = rhs in body` shadows: `x` in `body` counts only if `y != x`
+/// (an inner `let x` rebinds it); `x` in the RHS always counts (the RHS is in the outer scope).
+def occurs(x: String, e: Ex) = match e with
+  | Ex.Num(_) => false
+  | Ex.Var(y) => x == y
+  | Ex.Add(l, r) => occurs(x, l) or occurs(x, r)
+  | Ex.Mul(l, r) => occurs(x, l) or occurs(x, r)
+  | Ex.Let(y, rhs, body) => occurs(x, rhs) or (if x == y then false else occurs(x, body))
+
+/// Eliminate dead lets bottom-up. A `let x = rhs in body` whose `x` is unused in the (already-cleaned)
+/// body becomes just the body; the rhs is dropped (pure language).
+def dle(e: Ex) = match e with
+  | Ex.Num(n) => Ex.Num(n)
+  | Ex.Var(v) => Ex.Var(v)
+  | Ex.Add(l, r) => Ex.Add(dle(l), dle(r))
+  | Ex.Mul(l, r) => Ex.Mul(dle(l), dle(r))
+  | Ex.Let(x, rhs, body) =>
+    let body2 = dle(body) in
+    (if occurs(x, body2) then Ex.Let(x, dle(rhs), body2) else body2)
+
+/// Reference evaluator (closed expressions; a free var reads -1).
+def eval-env(env: Map(String, Int64), e: Ex) = match e with
+  | Ex.Num(n) => n
+  | Ex.Var(x) => (match Map.lookup(env, x) with | Option.Some(v) => v | Option.None(_) => 0 - 1)
+  | Ex.Add(l, r) => eval-env(env, l) + eval-env(env, r)
+  | Ex.Mul(l, r) => eval-env(env, l) * eval-env(env, r)
+  | Ex.Let(x, rhs, body) => eval-env(Map.insert(env, x, eval-env(env, rhs)), body)
+
+def eval(e: Ex) = eval-env(Map.empty, e)
+
+def is-let(e: Ex) = match e with | Ex.Let(_, _, _) => true | _ => false
+
+/// Count the `Let` nodes remaining (a structural probe of how many bindings survived).
+def let-count(e: Ex) = match e with
+  | Ex.Add(l, r) => let-count(l) + let-count(r)
+  | Ex.Mul(l, r) => let-count(l) + let-count(r)
+  | Ex.Let(_, rhs, body) => 1 + let-count(rhs) + let-count(body)
+  | _ => 0
+
+@test
+def dl-drops-dead() =
+  // let x = 5 in 3 → x unused → dropped → Num 3 (no Let).
+  let e = Ex.Let("x", Ex.Num(5), Ex.Num(3)) in
+  if is-let(dle(e)) then trap("dead let dropped") else (if eval(dle(e)) == 3 then unit else trap("value 3 preserved"))
+
+@test
+def dl-keeps-used() =
+  // let x = 5 in x + 1 → x used → kept, value 6.
+  let e = Ex.Let("x", Ex.Num(5), Ex.Add(Ex.Var("x"), Ex.Num(1))) in
+  if is-let(dle(e)) then (if eval(dle(e)) == 6 then unit else trap("value 6")) else trap("used let kept")
+
+@test
+def dl-preserves-value() =
+  // Meaning preserved for a mixed expr: let a = 2 in let b = 99 in a + 3  (b dead) → 5.
+  let e = Ex.Let("a", Ex.Num(2), Ex.Let("b", Ex.Num(99), Ex.Add(Ex.Var("a"), Ex.Num(3)))) in
+  if eval(dle(e)) == eval(e) then (if eval(dle(e)) == 5 then unit else trap("value 5")) else trap("meaning preserved")
+
+@test
+def dl-drops-only-dead-of-two() =
+  // let a=2 in let b=99 in a+3: b is dead, a is used → exactly 1 Let survives (the a-binding).
+  let e = Ex.Let("a", Ex.Num(2), Ex.Let("b", Ex.Num(99), Ex.Add(Ex.Var("a"), Ex.Num(3)))) in
+  if let-count(dle(e)) == 1 then unit else trap("only the used binding survives")
+
+@test
+def dl-drops-all-dead() =
+  // let a=1 in let b=2 in let c=3 in 7  — all dead → collapse to Num 7 (0 Lets).
+  let e = Ex.Let("a", Ex.Num(1), Ex.Let("b", Ex.Num(2), Ex.Let("c", Ex.Num(3), Ex.Num(7)))) in
+  if let-count(dle(e)) == 0 then (if eval(dle(e)) == 7 then unit else trap("value 7")) else trap("all dead lets dropped")
+
+@test
+def dl-shadowing-outer-dead() =
+  // let x = 1 in let x = 2 in x → the OUTER x is shadowed (not used in its body past the inner rebind),
+  // so it is DEAD and dropped; the inner x is used → one Let survives, value 2.
+  let e = Ex.Let("x", Ex.Num(1), Ex.Let("x", Ex.Num(2), Ex.Var("x"))) in
+  if let-count(dle(e)) == 1 then (if eval(dle(e)) == 2 then unit else trap("value 2")) else trap("shadowed outer x is dead")
+
+@test
+def dl-use-in-rhs-counts() =
+  // let a = 1 in let b = a + 1 in 9 — b is dead (not in the body 9), so b drops; but a IS used (in b's
+  // rhs)... after b drops, a is no longer used → a also drops → Num 9. Meaning preserved (9).
+  let e = Ex.Let("a", Ex.Num(1), Ex.Let("b", Ex.Add(Ex.Var("a"), Ex.Num(1)), Ex.Num(9))) in
+  if eval(dle(e)) == 9 then (if let-count(dle(e)) == 0 then unit else trap("both dead after b drops")) else trap("value 9")
+
+@test
+def dl-nested-in-add() =
+  // (let x=5 in 2) + (let y=3 in y) → left let dead (drops to 2), right let used (kept) → value 2 + 3 = 5.
+  let e = Ex.Add(Ex.Let("x", Ex.Num(5), Ex.Num(2)), Ex.Let("y", Ex.Num(3), Ex.Var("y"))) in
+  if eval(dle(e)) == 5 then (if let-count(dle(e)) == 1 then unit else trap("only the used let survives")) else trap("value 5")
+
+@test
+def dl-no-let-unchanged() =
+  // A binding-free expression is unchanged in value.
+  let e = Ex.Mul(Ex.Add(Ex.Num(2), Ex.Num(3)), Ex.Num(4)) in
+  if eval(dle(e)) == 20 then (if let-count(dle(e)) == 0 then unit else trap("no lets")) else trap("value 20")
+
+@test
+def dl-idempotent() =
+  let e = Ex.Let("a", Ex.Num(2), Ex.Let("b", Ex.Num(99), Ex.Add(Ex.Var("a"), Ex.Num(3)))) in
+  if let-count(dle(e)) == let-count(dle(dle(e))) then unit else trap("dle is idempotent")
+
+export { dle, eval, occurs }
