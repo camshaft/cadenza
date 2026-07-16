@@ -249,6 +249,11 @@ pub enum FleetCmd {
     /// Print the board: each agent's role/model/status, whether its tmux window is live, its inbox
     /// depth, the work-queue depth, and how far `trunk` is ahead of / behind `origin/main`.
     Status,
+    /// (Re)install the fleet's git hooks into the hub's shared hooks dir, WITHOUT a full `up`. `up`
+    /// installs them too, but this lets the operator/concierge deploy (or refresh) them on demand —
+    /// e.g. to activate the trunk-clobber logger immediately without restarting the fleet. Idempotent
+    /// and safe (never clobbers a foreign hook). See `install_git_hooks`.
+    InstallHooks,
     /// Register a new agent, create its worktree off `trunk`, optionally seed a work item into its
     /// inbox, and bring it up. This is what the corpus-bugfix PM calls to mint a per-issue `fix`
     /// agent, and what the concierge calls to spin up a vertical on the operator's behalf.
@@ -502,6 +507,7 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
         FleetCmd::Up => up(&fleet),
         FleetCmd::Down => down(&fleet),
         FleetCmd::Status => status(&fleet),
+        FleetCmd::InstallHooks => install_git_hooks(&fleet),
         FleetCmd::Add {
             name,
             role,
@@ -710,6 +716,11 @@ fn install_git_hooks(fleet: &Fleet) {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&hook_path, std::fs::Permissions::from_mode(0o755));
     }
+    println!(
+        "fleet: installed the fail-open trunk-clobber logger at {} (logs backward trunk moves to {}).",
+        hook_path.display(),
+        log_path.display()
+    );
 }
 
 fn register_merge_drivers(fleet: &Fleet) {
