@@ -33132,6 +33132,43 @@ mod match_engine {
     }
 
     #[test]
+    fn a_mixed_scale_combine_converts_a_computed_quantity_operand() {
+        // The mixed-scale converters (convert_operand_ast{,_bigint,_rational}) read the operand's magnitude
+        // via `qty_magnitude_occ` — a literal `Qty.of`'s value occurrence, else `(Qty.value operand)`. So a
+        // COMPUTED quantity operand (a `*`-scaled one, here `(Qty n km) * 2N`), not only a literal `Qty.of`,
+        // combines across scales. Previously the literal-only `qty_value_occ` declined it ("runtime
+        // mixed-unit BigInt combine over a non-Qty.of operand not yet emitted"). (Qty n km * 2N) + 500 m,
+        // n=3 → 3·1000·2 + 500 = 6500. Uses the FULL runtime; skips if absent (the corpus gate covers e2e).
+        let src = "(do \
+                   (def (main (: n Int64)) \
+                     ((. Qty value) (+ (* ((. Qty of) ((. BigInt of) n) \
+                                             ((. Unit prefix) kilo ((. Unit base) #\"meter\"))) \
+                                          ((. BigInt of) 2)) \
+                                       ((. Qty of) ((. BigInt of) 500) ((. Unit base) #\"meter\"))))) \
+                   (export main))";
+        let bytes = crate::codec::encode(&parse(src));
+        let comp = compile_component(&bytes)
+            .expect("a mixed-scale combine over a computed BigInt quantity operand compiles (was a decline)");
+        let Some(runtime) = super::find_runtime_wasm() else {
+            return; // no runtime store — the corpus gate is the e2e witness
+        };
+        let opts = cdz_run::RunOpts {
+            export: None,
+            args: vec!["3".to_string()],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run(&comp, &opts).expect("run") {
+            cdz_run::Outcome::Value(s) => assert!(
+                s.contains("6500"),
+                "(n km * 2N) + 500 m, n=3 → 6500 (computed operand combines across scales): {s}"
+            ),
+            cdz_run::Outcome::Trap(t) => panic!("computed-operand combine trapped: {t}"),
+        }
+    }
+
+    #[test]
     fn a_bigint_or_rational_inner_quantity_comparison_folds_to_the_exact_compare() {
         // Companion to the bigint-quantity arithmetic fix: a `(Qty BigInt/Rational u)` COMPARISON must
         // route to the exact bigint/rational compare, not decline as a "compound value needs a heap walk".

@@ -1496,6 +1496,8 @@ pass	a runtime list of lists escapes with its nested element type
 pass	a runtime list parameter consumed by push in a self-recursive call's sibling operand is unchanged
 pass	a runtime magnitude unwraps through a unit conversion
 pass	a runtime map shared across two recursive-call operands is not mutated by an insert in one
+pass	a runtime mixed-scale combine converts a COMPUTED BigInt quantity operand
+pass	a runtime mixed-scale combine converts a COMPUTED Float quantity operand
 pass	a runtime mixed-unit sum emits the scale conversion (Int)
 pass	a runtime modulo of the minimum integer by -1 is zero on every backend
 pass	a runtime multiplication that overflows traps

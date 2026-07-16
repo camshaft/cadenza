@@ -12710,11 +12710,31 @@ fn lower_runtime_combine(
     core_of(db, app)
 }
 
+/// The erased magnitude of a quantity `operand` as a reusable arena node. A directly-written `(Qty.of x
+/// u)` yields its value occurrence `x` (`qty_value_occ`); ANY OTHER quantity expression — a `*`/`/`-
+/// computed quantity, a let-bound one — is not a literal `Qty.of`, so fall back to `(Qty.value operand)`,
+/// the explicit unwrap that re-lowers `operand` and erases the unit. Both are the erased inner numeric.
+/// This is the shared fallback the mixed-scale `convert_operand_ast*` helpers and `lower_qty_pow` use so
+/// a runtime combine/conversion works over a COMPUTED quantity operand, not only a literal `Qty.of` (the
+/// literal-only `qty_value_occ` alone declined those — e.g. `(+ (* (Qty n km) 2N) (Qty 500 m))`). Total:
+/// a non-quantity operand still resolves through `Qty.value`'s own lowering (which faults if inapt).
+fn qty_magnitude_occ(db: &mut Db, operand: StructId) -> StructId {
+    match crate::eval::qty_value_occ(db, operand) {
+        Some(v) => v,
+        None => {
+            let dot = db.push_name(".");
+            let qty = db.push_name("Qty");
+            let value_key = db.push_name("value");
+            let qty_value_head = db.push_list(vec![dot, qty, value_key]);
+            db.push_list(vec![qty_value_head, operand])
+        }
+    }
+}
+
 /// Synthesize an arena node for a quantity operand's magnitude CONVERTED to the reference: `value * num
 /// / den`, using the ordinary numeric operators (float `*.`/`/.` for a float inner, int `*`/`/`
-/// otherwise). `value` is the quantity's `Qty.of` value occurrence (reused, not re-synthesized). When
-/// the scale is 1/1 the value passes through unconverted. `None` if the operand has no reusable value
-/// occurrence (not a literal `Qty.of`).
+/// otherwise). `value` is the quantity's magnitude (`qty_magnitude_occ` — a literal `Qty.of`'s value
+/// occurrence, else `(Qty.value operand)`). When the scale is 1/1 the value passes through unconverted.
 fn convert_operand_ast(
     db: &mut Db,
     operand: StructId,
@@ -12722,7 +12742,7 @@ fn convert_operand_ast(
     den: i128,
     is_float: bool,
 ) -> Option<StructId> {
-    let value = crate::eval::qty_value_occ(db, operand)?;
+    let value = qty_magnitude_occ(db, operand);
     // Scale 1/1 — no conversion, use the value as-is.
     if num == 1 && den == 1 {
         return Some(value);
@@ -12757,7 +12777,7 @@ fn convert_operand_ast_bigint(
     num: i128,
     den: i128,
 ) -> Option<StructId> {
-    let value = crate::eval::qty_value_occ(db, operand)?;
+    let value = qty_magnitude_occ(db, operand);
     // `(BigInt.of <n>)` — a bigint scale literal. `BigInt.of` is member access `(. BigInt of)`.
     let bigint_of = |db: &mut Db, n: i128| -> StructId {
         let dot = db.push_name(".");
@@ -12796,7 +12816,7 @@ fn convert_operand_ast_rational(
     num: i128,
     den: i128,
 ) -> Option<StructId> {
-    let value = crate::eval::qty_value_occ(db, operand)?;
+    let value = qty_magnitude_occ(db, operand);
     if num == 1 && den == 1 {
         return Some(value);
     }
@@ -13085,20 +13105,11 @@ fn lower_qty_pow(db: &mut Db, q: StructId, exp: StructId) -> Core {
         let one = inner_one(db);
         return core_of(db, one);
     }
-    // The erased magnitude to raise: a directly-written `(Qty.of x u)` operand yields its value occurrence
-    // `x` (`qty_value_occ`); ANY OTHER quantity expression (a `/`-computed velocity, a let-bound quantity)
-    // is not a literal `Qty.of`, so fall back to `(Qty.value q)` — the explicit unwrap of q's magnitude,
-    // which re-lowers q and erases the unit. Both are the erased inner numeric; `Qty.pow` raises that.
-    let value = match crate::eval::qty_value_occ(db, q) {
-        Some(v) => v,
-        None => {
-            let dot = db.push_name(".");
-            let qty = db.push_name("Qty");
-            let value_key = db.push_name("value");
-            let qty_value_head = db.push_list(vec![dot, qty, value_key]);
-            db.push_list(vec![qty_value_head, q])
-        }
-    };
+    // The erased magnitude to raise: a literal `(Qty.of x u)` yields its value occurrence `x`, ANY OTHER
+    // quantity expression (a `/`-computed velocity, a let-bound quantity) falls back to `(Qty.value q)`
+    // (`qty_magnitude_occ` — the shared literal-or-unwrap the mixed-scale converters also use). Both are
+    // the erased inner numeric; `Qty.pow` raises that.
+    let value = qty_magnitude_occ(db, q);
     // Build `value^|n|` = `(* (* … value value) value)` — `|n|` copies, left-nested — with the ONE
     // multiply operator `*`; a float `value` routes it to float arithmetic by the operand type at
     // lowering (no distinct `*.`), so the spelling is inner-type-independent.
