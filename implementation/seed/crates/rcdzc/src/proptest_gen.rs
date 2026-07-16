@@ -33,8 +33,8 @@
 //! runner detects the wrapper (it pulls `Test.gen` ints), runs `--trials` trials, and shrinks over the
 //! int pool — no ABI change, no runner change. Increments so far cover G1 `List<Int>`, G2 `List<Bool>` +
 //! element recursion, G3 `Tuple` + nesting, G4 `Record`, G5 user `sum` (bounded — a recursive sum
-//! declines), G6 `Set`/`Map`, and G7 variable-length lists; still to come are `Float`/`Char`,
-//! multi-parameter tests, and a lone single-form file (which currently needs a `do`-block root).
+//! declines), G6 `Set`/`Map`, and G7 variable-length lists; still to come are `Float`/`Char` leaves
+//! and a lone single-form file (which currently needs a `do`-block root).
 //!
 //! Runs at load BEFORE `strip_annotations`/`scan_top_level`, so the synthesized `(effect …)` and
 //! `(@ test (def …))` flow through the ordinary effect-synthesis + test-hoist + resolve/infer/lower with
@@ -124,17 +124,17 @@ pub fn synthesize(ast: &mut Arenas) {
 }
 
 /// A `@test` def that needs a generator wrapper: its position in the top-level list, the inner `(def …)`
-/// node (the `@test` unwrapped), the def name (the wrapper calls `(NAME arg)`), and the `GenTy` for the
-/// single parameter (which drives the `<gen:T>` the wrapper builds and passes).
+/// node (the `@test` unwrapped), the def name (the wrapper calls `(NAME arg…)`), and the `GenTy` for EACH
+/// parameter (the wrapper builds + passes one `<gen:T>` per param, in order).
 struct TestPlan {
     item_idx: usize,
     inner_def: StructId,
-    /// The def's name as text (e.g. `"p"`) — the wrapper calls `(p <gen-arg>)`.
+    /// The def's name as text (e.g. `"p"`) — the wrapper calls `(p <gen-arg>…)`.
     def_name: String,
     /// The synthesized wrapper's name (`"<def_name>-gen"`).
     wrapper_name: String,
-    /// The parameter's generatable type — decides the `<gen:T>` expression the wrapper builds + passes.
-    gen_ty: GenTy,
+    /// The generatable type of EACH parameter, in signature order — one `<gen:T>` per param.
+    gen_tys: Vec<GenTy>,
 }
 
 /// A type this pass can GENERATE, and the recursive shape of its `<gen:T>` expression (each built from
@@ -193,20 +193,26 @@ fn plan_for_item(
     };
     let (&name_head, params) = sig_items.split_first()?;
     let def_name = ast.as_name(name_head)?.to_string();
-    // EXACTLY ONE parameter, annotated `(: PARAM (List ELEM))` with ELEM an integer type. (Multi-param
-    // and richer element types are later increments; a single `List <Int>` is G1.)
-    if params.len() != 1 {
+    // At least one parameter (a nullary test needs no generation). Classify EVERY parameter; if ANY is
+    // not generatable, decline the whole test (the boundary declines it as before). Then synthesize a
+    // wrapper only if AT LEAST ONE param is COMPOUND — an all-scalar signature is handled by the existing
+    // boundary-arg route (the runner generates each scalar + passes it as `--arg`, no wrapper needed).
+    if params.is_empty() {
         return None;
     }
-    let ann_param = ast.as_form(params[0], ":")?; // `(: name TYPE)`
-    let &ty = ann_param.get(1)?;
-    // The parameter must be a COMPOUND type this pass generates (`(List …)`/`(Tuple …)`/`(Record …)` — a
-    // bare scalar is left to the existing boundary-arg route, which needs no wrapper). Classify
-    // recursively; `None` (a non-generatable or bare-scalar type) declines the synthesis, leaving the def
-    // as-is.
-    let gen_ty = classify_ty(ast, ty, items)?;
-    if matches!(gen_ty, GenTy::Int | GenTy::Bool) {
-        return None; // a scalar param — the boundary-arg route handles it; no wrapper needed
+    let mut gen_tys = Vec::with_capacity(params.len());
+    let mut any_compound = false;
+    for &p in params {
+        let ann_param = ast.as_form(p, ":")?; // `(: name TYPE)`
+        let &ty = ann_param.get(1)?;
+        let gt = classify_ty(ast, ty, items)?;
+        if !matches!(gt, GenTy::Int | GenTy::Bool) {
+            any_compound = true;
+        }
+        gen_tys.push(gt);
+    }
+    if !any_compound {
+        return None; // all-scalar signature — the boundary-arg route handles it; no wrapper
     }
     Some(TestPlan {
         item_idx,
@@ -217,7 +223,7 @@ fn plan_for_item(
         // `cdz test` reports, so the name stays readable (`p` → `p-gen`).
         wrapper_name: format!("{def_name}-gen"),
         def_name,
-        gen_ty,
+        gen_tys,
     })
 }
 
@@ -425,11 +431,18 @@ fn build_wrapper(ast: &mut Arenas, plan: &TestPlan) -> StructId {
     // whereas a `let`-bound one is fine. So each leaf becomes `gk`, bound to its gen expression, and the
     // constructors reference the bound names.
     let mut binds: Vec<(StructId, StructId)> = Vec::new();
-    let gen_arg = build_gen(ast, &plan.gen_ty, &mut binds);
-    // `(NAME <gen-arg>)` — call the original test with the generated value.
+    // Build one `<gen:T>` per parameter, in signature order (each hoists its own `Test.gen`s into `binds`).
+    let gen_args: Vec<StructId> = plan
+        .gen_tys
+        .iter()
+        .map(|gt| build_gen(ast, gt, &mut binds))
+        .collect();
+    // `(NAME <gen-arg>…)` — call the original test with the generated arguments.
     let call = {
         let callee = name(ast, &plan.def_name);
-        push_list(ast, vec![callee, gen_arg])
+        let mut children = vec![callee];
+        children.extend(gen_args);
+        push_list(ast, children)
     };
     // Wrap the call in nested `let`s (innermost = the call), one per hoisted gen binding, in REVERSE so
     // the first-generated binding is the OUTERMOST `let` (evaluated first → pulls the first pool int).
@@ -945,6 +958,40 @@ mod tests {
                 "{def}: expected wrapper {wrapper}, got {names:?}"
             );
         }
+    }
+
+    /// A MULTI-parameter `@test` with at least one compound param gains a wrapper that generates ALL its
+    /// args (in signature order). A test whose params are ALL scalars gets NO wrapper (the existing
+    /// boundary-arg route generates each scalar), and a nullary test is untouched.
+    #[test]
+    fn multi_parameter_tests_synthesize_when_any_param_is_compound() {
+        // (List Int64, Int64) — one compound + one scalar → wrapper generating both.
+        let db = Db::load(crate::testkit::parse(
+            "(do (@ test (def (p (: xs (List Int64)) (: n Int64)) 0)) (def (o) 1))",
+        ));
+        let names: Vec<String> = db
+            .test_defs()
+            .into_iter()
+            .map(|i| db.defs[i].name.clone())
+            .collect();
+        assert!(
+            names.iter().any(|n| n == "p-gen") && !names.iter().any(|n| n == "p"),
+            "a multi-param test with a compound param gains a wrapper: {names:?}"
+        );
+
+        // (Int64, Bool) — ALL scalars → NO wrapper (boundary-arg route runs the original directly).
+        let db2 = Db::load(crate::testkit::parse(
+            "(do (@ test (def (q (: a Int64) (: b Bool)) 0)) (def (o) 1))",
+        ));
+        let names2: Vec<String> = db2
+            .test_defs()
+            .into_iter()
+            .map(|i| db2.defs[i].name.clone())
+            .collect();
+        assert!(
+            names2.iter().any(|n| n == "q") && !names2.iter().any(|n| n == "q-gen"),
+            "an all-scalar multi-param test gets no wrapper: {names2:?}"
+        );
     }
 
     /// A RECURSIVE sum (`Tree = Leaf Int64 | Node (Tuple Tree Tree)`) must DECLINE, not recurse forever
