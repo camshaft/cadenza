@@ -5462,6 +5462,32 @@ fn lower_match_list(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructI
                 }
             }
             None => {
+                // The arm is neither a `(list …)` element pattern nor a bare binder. The COMMON way to
+                // reach here is a constructor-shaped head over a LIST scrutinee — `(Zorp x)`, `(List.Cons
+                // h t)` — i.e. a name used as a pattern ctor that a list scrutinee has no ctors for. When
+                // that head is a name resolving to a CODED poison (an UNBOUND name → CDZ0101, a `List.Cons`
+                // non-member → CDZ0201), propagate that coded fault instead of the generic UNCODED decline
+                // — the LIST twin of the sum matcher's `variant_disc_of`-miss path (7582), which propagates
+                // `core_of(head)`'s coded member-fold poison rather than an uncoded "not a variant ctor".
+                // A coded poison is surfaced for EVERY body by `type_errors`' `match_pattern_fault` accessor
+                // (which returns only CODED faults), closing the "check missed a lowering-only decline on a
+                // parameterized / recursive body" hole (`cdz check` was silent while `cdz compile` declined
+                // — the same gap M81 closed for variant-typo pattern heads). A head that is NOT an
+                // unbound/non-member name (a literal, a bound name resolving cleanly, a tuple/map pattern)
+                // yields no coded poison, so this keeps the honest uncoded decline for a genuinely
+                // not-yet-lowerable list-arm shape — no false alarm.
+                // `pat` here is the arm pattern already PEELED of any `(guard …)` wrapper (above), so its
+                // first child is the constructor head directly.
+                let ctor_head = match db.ast.get(pat) {
+                    crate::ast::Struct::List(children) => children.first().copied(),
+                    _ => None,
+                };
+                if let Some(head) = ctor_head
+                    && let Core::Poison(reject) = core_of(db, head)
+                    && reject.code.is_some()
+                {
+                    return Core::Poison(reject);
+                }
                 return Core::Poison(Reject::decline(
                     "a list match arm that is not an element pattern or a binder is not yet supported",
                 ));

@@ -9473,3 +9473,21 @@
             (export main)))
   (call   main (: 7 Int64))
   (output (: 14 Int64)))
+
+(case "a list-scrutinee match arm whose head is an unbound name is rejected in a recursive body (CDZ0101)"
+  (doc    "A `(list …)` scrutinee has NO user constructors (a list is an intrinsic, not a sum), so a match
+           arm whose head is a NAME used as a pattern constructor — `((Zorp x) …)` — can never be a valid
+           list pattern. Its head resolves to an unbound name (CDZ0101). The rejection is well-formedness
+           and MUST hold whether or not the enclosing definition is reached — here `go` is self-RECURSIVE
+           (emitted once, never inlined into an exported body), the exact shape that used to slip past the
+           check path: the arm reached `lower_match_list`'s generic UNCODED 'not an element pattern or a
+           binder is not yet supported' decline, which only the emit-path lowering walk over nullary-
+           exported bodies produced — so `cdz check` was SILENT (exit 0) while `cdz compile` declined. The
+           list matcher now propagates the head's own CODED poison (the LIST twin of the sum matcher's
+           unknown-variant-head path), so `check` surfaces the CDZ0101 with the unbound name. A generation
+           that skipped this would let a mistyped list-pattern head compile-error only at the emit stage,
+           hiding it from the fast diagnostics path.")
+  (input  (do (def (go (: rest (List Int64)))
+                (match rest ((Zorp x) (go (list x))) (_ 0)))
+              (export go)))
+  (error CDZ0101))
