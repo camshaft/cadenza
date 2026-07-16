@@ -93,10 +93,7 @@ pub fn cedar_authorizer(
     context_json: String,
 ) -> impl Fn(String) -> i64 {
     move |action: String| {
-        // Wrap the bare tag into a Cedar action UID: `Action::"<tag>"`. A `"`/`\` in the tag is escaped
-        // so it can't terminate the string early (a malformed UID then simply fails to parse → deny).
-        let escaped = action.replace('\\', "\\\\").replace('"', "\\\"");
-        let action_uid = format!("Action::\"{escaped}\"");
+        let action_uid = action_uid(&action);
         match cedar::authorize(&policies, &principal, &action_uid, &resource, &context_json) {
             Ok(d) if d.is_allow() => 1,
             // Deny on an explicit Deny AND on any error (fail-closed: a malformed policy/action must
@@ -104,6 +101,43 @@ pub fn cedar_authorizer(
             _ => 0,
         }
     }
+}
+
+/// Build an ON-BEHALF-OF `authorize` closure: an agent acting for a user is allowed a tool action iff
+/// BOTH the agent's OWN policies AND the user's DELEGATION grant allow it (the intersection — the
+/// narrower bound wins; DESIGN §4.2). Same bare-tag → `Action::"<tag>"` wrapping + fail-closed as
+/// [`cedar_authorizer`]. The `context_json` should carry `on_behalf_of` so the user's grant (which
+/// conditions on it) applies — e.g. `{"on_behalf_of":"user:cameron"}`. This is how the harness enforces
+/// "grant an agent to work on behalf of a user, scoped by policy" (the operator's explicit ask).
+pub fn cedar_delegated_authorizer(
+    agent_policies: String,
+    user_delegation: String,
+    principal: String,
+    resource: String,
+    context_json: String,
+) -> impl Fn(String) -> i64 {
+    move |action: String| {
+        let action_uid = action_uid(&action);
+        match cedar::authorize_on_behalf_of(
+            &agent_policies,
+            &user_delegation,
+            &principal,
+            &action_uid,
+            &resource,
+            &context_json,
+        ) {
+            Ok(d) if d.is_allow() => 1,
+            _ => 0, // fail-closed
+        }
+    }
+}
+
+/// Wrap a bare tool-action TAG into a Cedar action UID `Action::"<tag>"`. A `"`/`\` in the tag is escaped
+/// so it can't terminate the string early (a malformed UID then simply fails to parse → deny, never a
+/// parse that grants). Shared by the plain + delegated authorizer builders.
+fn action_uid(tag: &str) -> String {
+    let escaped = tag.replace('\\', "\\\\").replace('"', "\\\"");
+    format!("Action::\"{escaped}\"")
 }
 
 /// A real Amazon Bedrock model call: `InvokeModel` with the Anthropic Messages request shape, returning
