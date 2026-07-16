@@ -45,4 +45,33 @@ def fv-empty() = if name-count(Ast.List([])) == 0 then unit else trap("empty = 0
 def fv-contains() = match free-vars(Ast.List([Ast.Name("foo")])) with
   | s => if Set.contains(s, "foo") then unit else trap("should contain foo")
 
+@test
+def fv-dedup-across-depths() =
+  // the SAME name at different nesting depths still counts once: (a (b (a c))) → {a, b, c} = 3
+  // (a appears at depth 1 and depth 3; the Set union dedups across branches/levels).
+  let tree = Ast.List([Ast.Name("a"), Ast.List([Ast.Name("b"), Ast.List([Ast.Name("a"), Ast.Name("c")])])]) in
+  if name-count(tree) == 3 then unit else trap("a dedups across depths → {a,b,c} = 3")
+
+@test
+def fv-set-contents-exact() =
+  // verify the actual set MEMBERS, not just the count: {f, x, y} all present, and a NON-member absent.
+  let s = free-vars(Ast.List([Ast.Name("f"), Ast.List([Ast.Name("x"), Ast.Name("y")]), Ast.Int(0)])) in
+  if Set.contains(s, "f") then
+    (if Set.contains(s, "x") then
+      (if Set.contains(s, "y") then
+        (if Set.contains(s, "z") then trap("z is not free here") else unit)
+      else trap("y present")) else trap("x present")) else trap("f present")
+
+@test
+def fv-ignores-non-name-leaves() =
+  // Int/Str/Bool leaves contribute no names: (foo 1 2 3) → just {foo}.
+  let tree = Ast.List([Ast.Name("foo"), Ast.Int(1), Ast.Int(2), Ast.Int(3)]) in
+  if name-count(tree) == 1 then (if Set.contains(free-vars(tree), "foo") then unit else trap("foo present")) else trap("only foo counts")
+
+@test
+def fv-many-distinct() =
+  // five distinct names → 5, exercising a bigger union than the earlier cases.
+  let tree = Ast.List([Ast.Name("a"), Ast.Name("b"), Ast.Name("c"), Ast.Name("d"), Ast.Name("e")]) in
+  if name-count(tree) == 5 then unit else trap("five distinct names = 5")
+
 export { free-vars, name-count }
