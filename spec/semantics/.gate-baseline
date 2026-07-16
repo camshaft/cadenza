@@ -1705,6 +1705,7 @@ pass	a sum variant carrying a String payload matches and reads the string
 pass	a sum variant's list payload split across empty and rest arms is exhaustive and dispatches
 pass	a sum whose variants are named after target-language keywords constructs and matches
 pass	a sum with FOUR type parameters instantiates and matches each at a distinct type
+pass	a sum-match payload's heap child consumed while the scrutinee is live is retained
 pass	a sum-match recursion that accumulates a built-in list returns a list
 pass	a sum-payload-wrapped self-application is rejected in bounded time, not a compiler stack overflow
 pass	a sum-type value is constructed through a variant

@@ -344,6 +344,13 @@ fn is_heap_type(ty: &Ty) -> bool {
         // a `Ty::Qty` should not reach selection. Defensively classify it by its inner type — a quantity
         // over a heap numeric would be heap, but Layer 1's numerics are all scalars (int/float).
         Ty::Qty { inner, .. } => is_heap_type(inner),
+        // A NOMINAL tag "adds nothing to the value's runtime representation" (type-system.md §156) — at run
+        // time a `Ty::Nominal` IS its `inner` shape (a single-variant newtype like `(type Box (B (List T)))`
+        // ERASES to the bare list handle). So a nominal binder wrapping a heap shape (`bx : Box` = a list) is
+        // a heap value and MUST be a Perceus RETAIN candidate — else `bx` threaded past a consuming use of
+        // its erased payload gets no `dup` and the shared handle is FBIP-mutated while still referenced
+        // (drift). Classify by the erased inner shape, exactly like `Qty`.
+        Ty::Nominal { inner, .. } => is_heap_type(inner),
         _ => false,
     }
 }
@@ -970,6 +977,24 @@ fn proj_chain_roots_at_binder(db: &mut Db, id: StructId, binder: StructId) -> bo
     }
 }
 
+/// Whether `id` is a chain of BORROWING heap-child extractions (`Core::Proj` `arr-get` OR `Core::SumPayload`
+/// `sum-payload`/`arr-get`, in any mix) ultimately rooted at `binder`. Each intermediate step is a BORROW
+/// that returns a handle to a cell living INSIDE `binder` (no rc++), so the extracted leaf aliases `binder`'s
+/// storage under its single refcount. A consuming op on the leaf would FBIP-mutate it while `binder` still
+/// owns it — the [`Core::SumPayload`]/[`Core::Proj`] child-retain sites in [`mark_binder_dups_inner`] use
+/// this to decide a `dup`. The `SumPayload` analogue of [`proj_chain_roots_at_binder`]; bottoms out at the
+/// `LocalRef`/`Param` for `binder`.
+fn payload_or_proj_chain_roots_at_binder(db: &mut Db, id: StructId, binder: StructId) -> bool {
+    match core_of(db, id) {
+        Core::LocalRef { binder: b } | Core::Param { binder: b } => b == binder,
+        Core::Proj { operand, .. }
+        | Core::SumPayload {
+            scrutinee: operand, ..
+        } => payload_or_proj_chain_roots_at_binder(db, operand, binder),
+        _ => false,
+    }
+}
+
 /// The worker of [`mark_binder_dups`]. `in_proj_operand` is set ONLY when `id` is the aggregate operand of
 /// an enclosing `Core::Proj` (an `arr-get`-borrowed intermediate) — used to suppress a redundant child-dup
 /// mark on a nested projection in a chain (only the OUTERMOST consuming projection dups its child). Every
@@ -1091,9 +1116,43 @@ fn mark_binder_dups_inner(
         Core::SetLen { set } => borrow(db, set, live_after, sites),
         Core::SetToList { set, .. } => borrow(db, set, live_after, sites),
         Core::MapToList { map, .. } => borrow(db, map, live_after, sites),
-        Core::SumPayload { scrutinee, .. } | Core::SumExpect { scrutinee, .. } => {
-            borrow(db, scrutinee, live_after, sites)
+        Core::SumPayload { scrutinee, .. } => {
+            // A sum-match payload binder lowers to `Core::SumPayload` at EACH use (lower.rs), and
+            // `sum-payload`/`arr-get` BORROW the scrutinee's payload (no rc++). A payload that is a COMPOUND
+            // heap child (`get_op` None — the leaf is a handle, not an unboxed scalar) in a CONSUMING position,
+            // whose scrutinee `binder` is STILL LIVE afterward, needs a `dup` of the CHILD — exactly like the
+            // nested-compound `Proj` case above (and the `RestFrom` step's dup). Without it, a consuming op
+            // (`List.push`/`Bytes.concat`/…) FBIP-mutates the child at rc==1 while the still-live scrutinee
+            // (matched again, or threaded to a self-call) still references it → the scrutinee reads the grown
+            // value (drift). `proj_chain_roots_at_binder`'s SumPayload analogue confirms the scrutinee resolves
+            // to the live `binder` through a chain of borrowing payload/proj extractions. A scalar payload
+            // COPIES out (no alias) so it never dups — the FBIP fast path and scalar reads stay untouched.
+            // Marked at THIS node's id; the emit `dup`s the extracted child.
+            let scalar_leaf = matches!(get_op(db, id), Ok(Some(_)));
+            // A path ending in `RestFrom` is a list-tail slice (`vec-drop`) — the emit's `RestFrom` step
+            // ALREADY dups the scrutinee before consuming (see the emit), so this node must NOT also mark a
+            // child-dup (a double-dup + a slot conflict). Only a `Payload`/`Elem` COMPOUND leaf extraction
+            // (a borrowing `sum-payload`/`arr-get` returning a handle) needs this retain.
+            let ends_in_rest = matches!(
+                core_of(db, id),
+                Core::SumPayload { path, .. }
+                    if matches!(path.last(), Some(crate::core::PathStep::RestFrom(_)))
+            );
+            if consuming
+                && !scalar_leaf
+                && !ends_in_rest
+                && !in_proj_operand
+                && live_after
+                && payload_or_proj_chain_roots_at_binder(db, scrutinee, binder)
+            {
+                sites.insert(id);
+            }
+            // Recurse for BINDER-marking on the scrutinee (borrowed), flagging it as a projection operand so a
+            // nested payload/proj there does not re-mark a redundant child-dup (only the outermost consuming
+            // extraction dups).
+            mark_binder_dups_inner(db, scrutinee, binder, false, live_after, true, sites)
         }
+        Core::SumExpect { scrutinee, .. } => borrow(db, scrutinee, live_after, sites),
         // `List.at`/`Bytes.at` BORROW the sequence; the index is a scalar (consume position, no heap).
         Core::ListAt { list, index, .. } => {
             seq(db, &[(list, true), (index, false)], live_after, sites)
@@ -7287,6 +7346,26 @@ fn emit(
             // A scalar leaf unboxes; a compound handle is used as-is; a UNIT payload binder drops the
             // inline-unit sentinel the walk landed on (a `Unit` binder holds no machine value).
             let unboxed = get_op(db, id)?;
+            // PERCEUS RETAIN of the extracted COMPOUND CHILD (`collect_dup_sites`/`mark_binder_dups` marked
+            // this consuming payload extraction of a still-live scrutinee — the `SumPayload` arm there): the
+            // `sum-payload`/`arr-get` walk returned the child as a BORROW (no rc++), so its rc is 1 (only the
+            // scrutinee's cell refs it). A consuming op (`List.push`/…) would FBIP-mutate it in place,
+            // corrupting the still-live scrutinee (matched again / threaded to a self-call). `dup` the child
+            // (rc++ → 2) so the consumer takes the persistent copy path and the scrutinee's payload stays
+            // intact; the consumer's own drop reclaims the extra reference. Only a COMPOUND leaf (`unboxed`
+            // None — a handle) aliases; a scalar `unboxed` COPIES out and is never a marked site. `dup` POPS
+            // its arg and returns nothing, so tee the child, dup the copy, leave the original for the consumer.
+            if unboxed.is_none() && out.dup_sites.contains(&id) {
+                let child_slot = base;
+                if child_slot + 1 > *high {
+                    *high = child_slot + 1;
+                }
+                scratch_ty.insert(child_slot, ValType::I32);
+                out.push(Lir::LocalTee(child_slot)); // [child], child_slot = child
+                out.push(Lir::LocalGet(child_slot)); // [child, child]
+                out.push(Lir::CallImport(OP_DUP)); // pops the 2nd copy, rc++ → [child]
+                return Ok(());
+            }
             emit_heap_read_tail(db, id, unboxed, out); // → [scalar | handle | nothing]
             Ok(())
         }

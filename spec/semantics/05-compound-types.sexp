@@ -1597,6 +1597,32 @@
   (call   main (: 3 Int64)) (output (: 9 Int64))
   (call   main (: 4 Int64)) (output (: 12 Int64)))
 
+(case "a sum-match payload's heap child consumed while the scrutinee is live is retained"
+  (doc    "The SUM-PAYLOAD face of the still-live-binding family: a sum-match payload binder lowers to a
+           `Core::SumPayload` = a BORROW of the scrutinee's payload (`sum-payload`/`arr-get`, no rc++).
+           Consuming that heap child (`List.push`) WHILE the scrutinee `bx` is STILL LIVE — matched again in
+           the same expression, and threaded UNCHANGED to the self-recursive call — FBIP-mutates it in place
+           at rc==1, so the still-live scrutinee reads the grown value (drift). `bx` carries [0,1]; each
+           iteration reads `(List.len (List.push (match bx ((B xs) xs)) 99))` = 3, so total = 3*m. Before the
+           fix per-iteration length drifted 3,4,5,6 (m=2 → 7 not 6, m=4 → 18 not 12). The RestFrom step
+           already `dup`s the scrutinee for this reason; the Payload/Elem-extracted-child case did not. Fix:
+           the `SumPayload` arm of `mark_binder_dups` marks a child-`dup` site (mirroring the nested-compound
+           `Proj` arm), and `is_heap_type` counts a `Ty::Nominal` (a single-variant newtype ERASES to its
+           heap inner, so `bx : Box` is a retain candidate). A path ending in `RestFrom` is excluded (the
+           emit's own dup handles it). `mb` makes the payload a genuine runtime list (no fold).")
+  (input  (do
+            (type Box (B (List Int64)))
+            (def (mb (: i Int64) (: n Int64) (: acc (List Int64)))
+              (if (< i n) (mb (+ i 1) n (List.push acc i)) acc))
+            (def (loop (: j Int64) (: m Int64) (: bx Box) (: tot Int64))
+              (if (< j m) (loop (+ j 1) m bx (+ tot (List.len (List.push (match bx ((B xs) xs)) 99)))) tot))
+            (def (main (: m Int64)) (loop 0 m (B (mb 0 2 (list))) 0))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 3 Int64))
+  (call   main (: 2 Int64)) (output (: 6 Int64))
+  (call   main (: 3 Int64)) (output (: 9 Int64))
+  (call   main (: 4 Int64)) (output (: 12 Int64)))
+
 ; The mutual-recursion companion of the still-live-binding family above: the IDIOMATIC homoiconic-AST
 ; walker shape — a `fc` (per-node) / `fl` (per-child-list) mutual pair over a recursive `Ast` sum. Here
 ; `fc` matches a `List` node binding its child list `elems`, reads the head OUT OF `elems` directly
