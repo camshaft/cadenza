@@ -1507,6 +1507,11 @@ struct DoctorArgs {
     /// `cdz` binary (`<target>/cadenza-store`) — the same default `cdz run`/`cdz test` resolve.
     #[arg(long)]
     store: Option<PathBuf>,
+    /// Emit the health report as a machine-readable JSON object instead of human lines — for CI/setup
+    /// scripts (the `cdz metadata`/`cdz check --json` shape). The exit code is unchanged (non-zero iff a
+    /// run/test-breaking component is missing).
+    #[arg(long)]
+    json: bool,
 }
 
 /// `cdz doctor` — a preflight health check of the `cdz` TOOLCHAIN environment (the `cargo`-doctor
@@ -1519,53 +1524,84 @@ struct DoctorArgs {
 /// runtime by content address (a scalar/const program still runs without the store, and the note says so).
 /// A missing `cdz-run` or runtime is an ERROR (rc≠0) so a setup/CI script can gate on `cdz doctor`.
 fn run_doctor(args: &DoctorArgs) -> ExitCode {
-    let mut ok = true;
+    // Compute the three checks into structured `(status, detail)` values FIRST, so the human and `--json`
+    // outputs are the same facts rendered two ways (they can't drift). `status` is "ok" for a healthy
+    // component or a distinct problem label ("missing"/"stale") a consumer can branch on.
+    let exe = std::env::current_exe()
+        .ok()
+        .map(|p| p.display().to_string());
 
-    // 1. cdz itself — version + path (always available).
-    let exe = std::env::current_exe().ok();
-    println!("cdz {}", env!("CARGO_PKG_VERSION"));
-    match &exe {
-        Some(p) => println!("  path: {}", p.display()),
-        None => println!("  path: <unknown>"),
-    }
+    // cdz-run runner.
+    let cdz_run = locate_cdz_run().map(|p| p.display().to_string());
 
-    // 2. The sibling `cdz-run` runner — required by `cdz run`/`cdz test` (this bin has no wasm engine).
-    match locate_cdz_run() {
-        Some(p) => println!("  cdz-run: ok ({})", p.display()),
-        None => {
-            println!(
-                "  cdz-run: MISSING — build it (`cargo build --bin cdz-run`) beside `cdz`; \
-                 `cdz run`/`cdz test` need it"
-            );
-            ok = false;
-        }
-    }
-
-    // 3. The value-heap runtime store — needs the runtime `cdz` compiles against, by content address.
+    // Runtime store.
     let store = args.store.clone().unwrap_or_else(default_store);
     let required = rcdzc::backend::wasm::runtime_abi::REQUIRED_RUNTIME_HASH;
-    let runtime_wasm = store.join(format!("{required}.wasm"));
-    if !store.is_dir() {
-        println!(
+    let store_status = if !store.is_dir() {
+        "missing"
+    } else if store.join(format!("{required}.wasm")).is_file() {
+        "ok"
+    } else {
+        "stale"
+    };
+    // A missing `cdz-run` OR a not-ok store is a run/test-breaking problem.
+    let ok = cdz_run.is_some() && store_status == "ok";
+
+    if args.json {
+        use cadenza_syntax::query::json;
+        let mut obj = json::Object::new();
+        obj.string("version", env!("CARGO_PKG_VERSION"));
+        match &exe {
+            Some(p) => obj.string("path", p),
+            None => obj.raw("path", "null"),
+        }
+        let mut cr = json::Object::new();
+        cr.raw("ok", if cdz_run.is_some() { "true" } else { "false" });
+        match &cdz_run {
+            Some(p) => cr.string("path", p),
+            None => cr.raw("path", "null"),
+        }
+        obj.raw("cdz_run", &cr.finish());
+        let mut st = json::Object::new();
+        st.string("status", store_status); // "ok" | "missing" | "stale"
+        st.string("path", &store.to_string_lossy());
+        st.string("required_runtime", required);
+        obj.raw("runtime_store", &st.finish());
+        obj.raw("ok", if ok { "true" } else { "false" });
+        println!("{}", obj.finish());
+        return if ok {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::FAILURE
+        };
+    }
+
+    // Human report: the same facts as lines.
+    println!("cdz {}", env!("CARGO_PKG_VERSION"));
+    println!("  path: {}", exe.as_deref().unwrap_or("<unknown>"));
+    match &cdz_run {
+        Some(p) => println!("  cdz-run: ok ({p})"),
+        None => println!(
+            "  cdz-run: MISSING — build it (`cargo build --bin cdz-run`) beside `cdz`; \
+             `cdz run`/`cdz test` need it"
+        ),
+    }
+    let short = &required[..12.min(required.len())];
+    match store_status {
+        "ok" => println!(
+            "  runtime store: ok ({}) — has the required runtime {short}",
+            store.display()
+        ),
+        "missing" => println!(
             "  runtime store: MISSING ({}) — build it (`cargo xtask build`); required to run a program \
              that builds heap values (a scalar/const program still runs without it)",
             store.display()
-        );
-        ok = false;
-    } else if runtime_wasm.is_file() {
-        println!(
-            "  runtime store: ok ({}) — has the required runtime {}",
-            store.display(),
-            &required[..12.min(required.len())]
-        );
-    } else {
-        println!(
-            "  runtime store: STALE ({}) — present but missing the required runtime {}.wasm; rebuild \
+        ),
+        _ => println!(
+            "  runtime store: STALE ({}) — present but missing the required runtime {short}.wasm; rebuild \
              (`cargo xtask build`)",
-            store.display(),
-            &required[..12.min(required.len())]
-        );
-        ok = false;
+            store.display()
+        ),
     }
 
     if ok {

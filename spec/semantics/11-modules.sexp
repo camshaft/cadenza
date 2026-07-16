@@ -1202,3 +1202,42 @@
     (do (type C (A Int64)) (def (mk) (C.A 5)) (export C) (export mk)))
   (input  (do (import "lib" (C mk)) (def (main) (match (mk) ((C.A n) n))) (export main)))
   (error  CDZ0214))
+
+; --- TRANSITIVE re-export across a module chain (entry <- mid <- base) --------------------------------
+; A module may RE-EXPORT a binding it imported from another module: `mid` imports `f` from `base` and lists
+; `f` in its own export clause, so an entry importing from `mid` reaches `base`'s `f` transitively — the
+; general-module analogue of the verification kernel's re-export chain (Inc-18). Encapsulation must hold
+; across the chain: a base member NOT re-exported by `mid` stays unreachable from the entry (the explicit-
+; visibility rule composes transitively). These are TODO on the rust backend like every multi-module case
+; (a known rust gap — the wasm path pins the linking semantics).
+
+(case "a transitive re-export reaches the base module's function through the middle module"
+  (doc    "`mid` imports `f` from `base` and re-exports it (`f` in mid's export clause); the entry imports
+           `f` from `mid` and calls it. The re-exported binding resolves through the chain to base's `f`:
+           `(f 4)` = 4*10 = 40. Pins that a module can re-export an imported binding and an importer reaches
+           the original definition transitively (entry <- mid <- base).")
+  (module "base" (do (def (f (: n Int64)) (* n 10)) (export f)))
+  (module "mid" (do (import "base" (f)) (export f)))
+  (input  (do (import "mid" (f)) (def (main) (f 4)) (export main)))
+  (output (: 40 Int64)))
+
+(case "a base member not re-exported by the middle module is unreachable from the entry"
+  (doc    "Encapsulation composes across the chain: `base` exports only `pub`, keeping `secret` private, and
+           `mid` re-exports only `pub`. The entry importing `secret` from `mid` names a binding neither base
+           exported nor mid re-exported — rejected CDZ0201. Pins that the explicit-visibility rule holds
+           transitively: a re-export cannot widen access to a member the origin kept private, and an
+           importer cannot reach past mid's export clause to base's private members.")
+  (module "base" (do (def (secret) 99) (def (pub (: n Int64)) (+ n 1)) (export pub)))
+  (module "mid" (do (import "base" (pub)) (export pub)))
+  (input  (do (import "mid" (secret)) (def (main) (secret)) (export main)))
+  (error  CDZ0201))
+
+(case "a middle module re-exports a base function and also uses it in its own exported function"
+  (doc    "`mid` both RE-EXPORTS base's `f` AND defines its own `g` that calls `f`; the entry imports both.
+           `(f 2)` = 20 (reached transitively) and `(g 3)` = `(f 3)+1` = 31, summing to 51. Pins that a
+           re-exported binding and a mid-defined binding that consumes it coexist — the re-export does not
+           shadow or duplicate the binding mid uses internally, and both cross the boundary to the entry.")
+  (module "base" (do (def (f (: n Int64)) (* n 10)) (export f)))
+  (module "mid" (do (import "base" (f)) (def (g (: n Int64)) (+ (f n) 1)) (export f) (export g)))
+  (input  (do (import "mid" (f g)) (def (main) (+ (f 2) (g 3))) (export main)))
+  (output (: 51 Int64)))

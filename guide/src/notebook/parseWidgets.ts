@@ -37,18 +37,38 @@ export interface ParsedWidgets {
   errors: WidgetError[];
 }
 
-const IDENT_RE = /^[A-Za-z_][A-Za-z0-9_.-]*$/;
+/// A valid widget NAME — a simple Cadenza binding identifier. A widget name flows through `bindingFor`
+/// into emitted `def <name> = …` source, so it must be a name the compiler accepts: a letter/`_` start,
+/// then letters/digits/`_`, with single `-` kebab separators ONLY BETWEEN alphanumerics (no `.` member
+/// paths, no leading/trailing/doubled `-`). `def a--b`, `def rate-`, `def a.b` are all invalid Cadenza,
+/// so this must reject them (PR #474). Kebab segments: `[A-Za-z_][A-Za-z0-9_]*` joined by single `-`.
+const IDENT_RE = /^[A-Za-z_][A-Za-z0-9_]*(-[A-Za-z0-9_]+)*$/;
+/// A named-arg KEY (`step:`, `default:`) — a plain identifier; no kebab needed here, but reuse the same
+/// binding-name rule so it's equally strict.
+const KEY_RE = IDENT_RE;
 const TYPES: WidgetType[] = ["Float64", "Int64", "Bool", "String"];
 
-/// Split a control's argument list on top-level commas (commas NOT inside quotes). The DSL args are
-/// simple (numbers, quoted strings, `key: value`), so a quote-aware split suffices — no nesting.
+/// Split a control's argument list on top-level commas (commas NOT inside quotes). Escape-aware: a
+/// backslash inside a `"..."` string escapes the next char (so `dropdown("a \"q\" opt", "b")` splits
+/// into two args, not four). The DSL args are simple (numbers, quoted strings, `key: value`), no nesting.
 function splitArgs(inner: string): string[] {
   const args: string[] = [];
   let buf = "";
   let inStr = false;
   for (let i = 0; i < inner.length; i++) {
     const ch = inner[i];
-    if (ch === '"') inStr = !inStr;
+    if (inStr && ch === "\\" && i + 1 < inner.length) {
+      // Keep the escape sequence verbatim in the token (asString unescapes later); consume both chars
+      // so an escaped `"` does NOT toggle out of the string.
+      buf += ch + inner[i + 1];
+      i++;
+      continue;
+    }
+    if (ch === '"') {
+      inStr = !inStr;
+      buf += ch;
+      continue;
+    }
     if (ch === "," && !inStr) {
       args.push(buf.trim());
       buf = "";
@@ -67,15 +87,18 @@ function parseArg(tok: string): { key?: string; value: string } {
   // part before `:` to be a bare identifier.
   if (colon > 0) {
     const key = tok.slice(0, colon).trim();
-    if (IDENT_RE.test(key)) return { key, value: tok.slice(colon + 1).trim() };
+    if (KEY_RE.test(key)) return { key, value: tok.slice(colon + 1).trim() };
   }
   return { value: tok.trim() };
 }
 
-/// Strip surrounding double-quotes from a string literal token (the DSL uses `"..."`). Returns null if
-/// the token isn't a quoted string.
+/// Strip surrounding double-quotes from a string literal token (the DSL uses `"..."`) and UNESCAPE its
+/// content (`\"` → `"`, `\\` → `\`), so a quoted default containing quotes/backslashes round-trips.
+/// Returns null if the token isn't a quoted string.
 function asString(tok: string): string | null {
-  if (tok.length >= 2 && tok.startsWith('"') && tok.endsWith('"')) return tok.slice(1, -1);
+  if (tok.length >= 2 && tok.startsWith('"') && tok.endsWith('"')) {
+    return tok.slice(1, -1).replace(/\\(["\\])/g, "$1");
+  }
   return null;
 }
 

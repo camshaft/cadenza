@@ -5710,6 +5710,42 @@ fn an_effectful_helper_reading_a_driver_param_in_a_selfcall_arg_folds() {
     }
 }
 
+/// The residual sub-case of the effectful-helper-in-a-self-call-arg family: an inlined helper whose perform
+/// sits UNDER A CONDITIONAL (`if`/`match`) — either in a branch (`if c then acc + B.b x else acc`) or in the
+/// condition (`if B.b x == 1 then …`). The deep-fresh-copy fixes fold a helper that performs on its
+/// unconditional spine, but a CONDITIONAL perform threads branch-state-locally and leaked the internal
+/// `f#ctx$s0` state-param in a confusing CDZ0101. It now DECLINES CLEANLY ("not yet reducible") — pinned so a
+/// future change either folds it (clearing this) or keeps the clean decline, never regressing to the `$s0`
+/// leak. (v-agent-harness Inc-3 residual; the non-conditional effectful-helper family folds — see the two
+/// `_folds` tests above.)
+#[test]
+fn an_effectful_helper_with_a_conditional_perform_in_a_selfcall_arg_declines_cleanly() {
+    use crate::testkit::parse;
+    for src in [
+        // perform in a BRANCH of the inlined helper's if
+        "(do (effect B (op b (-> Int64 Int64)) (op done (-> Int64 Int64))) \
+         (def (turn (: x Int64) (: acc Int64)) (if (= x 1) (+ acc (B.b x)) acc)) \
+         (def (run (: fuel Int64) (: acc Int64)) \
+           (if (= fuel 0) (B.done acc) (run (- fuel 1) (turn fuel acc)))) \
+         (def (main) (handle B 0 ((b (x) s (resume x x)) (done (x) s (resume x x))) (run 4 0))) (export main))",
+        // perform in the CONDITION of the inlined helper's if
+        "(do (effect B (op b (-> Int64 Int64)) (op done (-> Int64 Int64))) \
+         (def (turn (: x Int64) (: acc Int64)) (if (= (B.b x) 1) (+ acc 1) acc)) \
+         (def (run (: fuel Int64) (: acc Int64)) \
+           (if (= fuel 0) (B.done acc) (run (- fuel 1) (turn fuel acc)))) \
+         (def (main) (handle B 0 ((b (x) s (resume x x)) (done (x) s (resume x x))) (run 4 0))) (export main))",
+    ] {
+        let err = compile_component(&crate::codec::encode(&parse(src))).expect_err(
+            "an inlined helper with a conditional perform in a self-call arg must decline",
+        );
+        assert!(
+            !err.message.contains("#eff") && !err.message.contains("$s"),
+            "the decline must be clean (no leaked internal state-param name), got: {}",
+            err.message
+        );
+    }
+}
+
 // --- HOST-COMPOSITION INVARIANT boundary (§4.4: a reified/duplicated continuation must NOT span a host
 // call or an outer handler's effect). These are documented in 14-effects-and-handlers.sexp as a "clean
 // decline" but were not pinned by any test — so a future fold change that admitted the multi-shot /
@@ -23445,6 +23481,74 @@ mod match_engine {
             .iter()
             .any(|d| d.message.contains("is not a unit")),
             "a well-formed Qty unit is not flagged"
+        );
+    }
+
+    #[test]
+    fn a_bare_name_in_a_unit_builder_names_the_symbol_and_offers_the_hash_quote_fix() {
+        use crate::testkit::parse;
+        // The value-expression twin of the bare-name-in-a-`(Qty T u)`-position slip: a bare identifier in
+        // the SYMBOL-NAME argument of a unit builder — `(Unit.base foot)`, `(Unit.of foot)`,
+        // `(Unit.define furlong …)` — is the author writing the unit's name as an identifier where a
+        // `#"…"` SYMBOL belongs. It used to resolve as a MISLEADING "unbound name `foot`" (with a
+        // did-you-mean to some near value); it now names the symbol requirement + carries the `#"foot"`
+        // quote fix. `enrich_unbound` redirects it (the `eval`-form sibling).
+        let find = |src: &str| {
+            crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.message.contains("is not a unit name here"))
+        };
+        for (src, name) in [
+            (
+                "(module m (def (main) (Qty.of 1.0 (Unit.base foot))) (export main))",
+                "foot",
+            ),
+            (
+                "(module m (def (main) (Qty.of 1.0 (Unit.of foot))) (export main))",
+                "foot",
+            ),
+            (
+                "(module m (def (main) (Qty.of 1.0 (Unit.define furlong (Unit.base #\"m\") 201 1))) \
+                 (export main))",
+                "furlong",
+            ),
+        ] {
+            let d = find(src).unwrap_or_else(|| panic!("expected a unit-name fault for {src}"));
+            assert_eq!(d.code.as_deref(), Some("CDZ0201"), "{src}: {}", d.message);
+            assert!(
+                d.message.contains("names its unit with a SYMBOL"),
+                "names the symbol requirement: {}",
+                d.message
+            );
+            let f = d.fix.as_ref().expect("carries a #\"…\" quote fix");
+            assert_eq!(f.kind, crate::abi::FixKind::Replace);
+            assert_eq!(
+                f.replacement,
+                format!("#\"{name}\""),
+                "the fix quotes the name as a symbol: {}",
+                f.replacement
+            );
+        }
+        // NO false positive: a correct `#"…"` symbol argument, an ordinary unbound name (not a unit-builder
+        // arg), and a `Unit.^` integer-exponent operand (not a name slot) are unaffected.
+        for clean in [
+            "(module m (def (main) (Qty.of 1.0 (Unit.base #\"foot\"))) (export main))",
+            "(module m (def (main) (Qty.of 1.0 (Unit.of #\"foot\"))) (export main))",
+        ] {
+            assert!(
+                find(clean).is_none(),
+                "a correct symbol unit builder is not flagged: {clean}"
+            );
+        }
+        // An ordinary unbound name keeps the plain "unbound name" message (not the unit-builder redirect).
+        assert!(
+            crate::diagnostics(&mut crate::db::Db::load(parse(
+                "(module m (def (main) (bar 5)) (export main))"
+            )))
+            .iter()
+            .any(|d| d.message.contains("unbound name `bar`")
+                && !d.message.contains("not a unit name here")),
+            "an ordinary unbound name is not redirected to the unit message"
         );
     }
 
@@ -69566,6 +69670,104 @@ mod cross_component_oracle {
             cdz_run::Outcome::Trap(t) => {
                 panic!("mixed-ownership peer-rebuild run trapped (double-free?): {t}")
             }
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // PL46 — the REAL agent-return shape (v-agent-harness's reported multi-peer result-escape): an
+    // entrypoint reaching THREE distinct peer interfaces (Cedar authz + Inbox + Model) whose String RESULT
+    // escapes, guarded by an `if`. Cedar.authorize gates; on allow, main RETURNS Model.converse(Inbox.next)
+    // — a String from peer Model that ESCAPES, while the body also reaches peers Cedar + Inbox. This is the
+    // g=3 fused with-methods envelope (PL44 was g=2); it exercises the full "agent returns its answer from a
+    // multi-peer loop" shape v-agent-harness flagged. (Their report predated the multi-`g` widening b4aa60129;
+    // it works now — this pins it so it can't regress.) Cedar→1 (allow), Inbox→"hi", Model→"R:"++prompt;
+    // main = converse(next()) = "R:hi" → escapes.
+    // ------------------------------------------------------------------------------------------------
+    #[test]
+    fn the_agent_return_shape_three_peers_with_an_escaping_string_result() {
+        use crate::testkit::parse;
+        let cedar = compile_provider(
+            "(do (def (authorize (: _s String)) 1) (export authorize))",
+            "cadenza:cedar/api",
+        );
+        let inbox = compile_provider(
+            "(do (def (next) (String.concat \"h\" \"i\")) (export next))",
+            "cadenza:inbox/api",
+        );
+        let model = compile_provider(
+            "(do (def (converse (: p String)) (String.concat \"R:\" p)) (export converse))",
+            "cadenza:model/api",
+        );
+        for (bytes, who) in [(&cedar, "cedar"), (&inbox, "inbox"), (&model, "model")] {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(bytes)
+                .unwrap_or_else(|e| panic!("provider {who} validates: {e}"));
+        }
+        // v-agent-harness's exact reported shape: 3 peers, a Cedar-gated if, a String result escaping.
+        let src = "(do \
+            (effect Inbox (op next (-> Unit String))) \
+            (effect Model (op converse (-> String String))) \
+            (effect Cedar (op authorize (-> String Int64))) \
+            (bind Inbox \"cadenza:inbox/api\") (bind Model \"cadenza:model/api\") (bind Cedar \"cadenza:cedar/api\") \
+            (def (main) \
+              (if (= (host (Cedar) (Cedar.authorize \"tool:chat\")) 1) \
+                  (host (Model) (Model.converse (host (Inbox) (Inbox.next)))) \
+                  \"denied\")) \
+            (export main))";
+        let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .unwrap_or_else(|d| {
+                panic!(
+                    "agent-return 3-peer consumer compiles: {} [{:?}]",
+                    d.message, d.code
+                )
+            });
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&consumer)
+                .expect("the 3-peer agent-return consumer validates");
+        }
+        let text = String::from_utf8_lossy(&consumer);
+        assert!(
+            text.contains("cadenza:cedar/api")
+                && text.contains("cadenza:inbox/api")
+                && text.contains("cadenza:model/api"),
+            "the fused consumer imports all THREE peer interfaces"
+        );
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("[PL46] runtime wasm not found; skipping");
+            return;
+        };
+        let peers = vec![
+            cdz_run::Peer {
+                bytes: cedar,
+                interface: "cadenza:cedar/api".to_string(),
+            },
+            cdz_run::Peer {
+                bytes: inbox,
+                interface: "cadenza:inbox/api".to_string(),
+            },
+            cdz_run::Peer {
+                bytes: model,
+                interface: "cadenza:model/api".to_string(),
+            },
+        ];
+        let opts = cdz_run::RunOpts {
+            export: None,
+            args: Vec::new(),
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run_with_peers(&consumer, &peers, &opts)
+            .expect("the 3-peer agent-return shape crosses + escapes a String result")
+        {
+            // Cedar.authorize→1 (allow); Inbox.next→"hi"; Model.converse("hi")→"R:hi"; main RETURNS it →
+            // escapes as its String value form. THREE distinct peers reached, one String result escaping.
+            cdz_run::Outcome::Value(s) => assert_eq!(
+                s, "(: \"R:hi\" String)",
+                "the agent-return shape: 3 peers reached, the model's String answer escapes the entrypoint"
+            ),
+            cdz_run::Outcome::Trap(t) => panic!("agent-return 3-peer run trapped: {t}"),
         }
     }
 

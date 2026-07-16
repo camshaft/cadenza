@@ -74,18 +74,28 @@ pub fn print_flat(arenas: &Arenas) -> String {
     out
 }
 
-fn node(a: &Arenas, id: StructId, depth: usize, out: &mut String) {
-    for _ in 0..depth {
-        out.push_str("  ");
-    }
-    match a.get(id) {
-        Struct::Atom(leaf_id) => {
-            out.push_str(&format!("#{} Atom {}\n", id.0, leaf(a.leaf(*leaf_id))));
+/// Emit the pre-order tree, one occurrence per line indented by depth. Uses an EXPLICIT stack rather
+/// than native recursion: `codec::decode` accepts arbitrarily-deep valid-tree arenas (it builds flat
+/// and validates tree-ness with its own explicit stack — no depth cap), so a legitimately-decoded
+/// arena can nest deeper than the native call stack survives. A recursive walk here overflowed the
+/// stack (SIGABRT) on such input, which would crash the process on a debug view of an untrusted binary
+/// AST — the crate's readers/printers must stay total. The stack holds `(id, depth)`; children are
+/// pushed in REVERSE so they pop left-to-right, preserving source order.
+fn node(a: &Arenas, root: StructId, depth: usize, out: &mut String) {
+    let mut stack: Vec<(StructId, usize)> = vec![(root, depth)];
+    while let Some((id, depth)) = stack.pop() {
+        for _ in 0..depth {
+            out.push_str("  ");
         }
-        Struct::List(children) => {
-            out.push_str(&format!("#{} List\n", id.0));
-            for &child in children {
-                node(a, child, depth + 1, out);
+        match a.get(id) {
+            Struct::Atom(leaf_id) => {
+                out.push_str(&format!("#{} Atom {}\n", id.0, leaf(a.leaf(*leaf_id))));
+            }
+            Struct::List(children) => {
+                out.push_str(&format!("#{} List\n", id.0));
+                for &child in children.iter().rev() {
+                    stack.push((child, depth + 1));
+                }
             }
         }
     }
@@ -128,6 +138,50 @@ mod tests {
     use crate::ast::{Builder, Decimal, SuffixBody, SuffixKind};
     use crate::sexpr;
     use num_bigint::BigInt;
+
+    /// Build an `n`-deep single-child `List` chain wrapping one atom — a minimal-width, maximal-depth
+    /// arena (the shape a crafted-but-valid binary AST uses to attack a recursive walker).
+    fn deep_chain(n: usize) -> Arenas {
+        let mut b = Builder::new();
+        let mut cur = b.atom_leaf(Leaf::Name("x".to_string()));
+        for _ in 0..n {
+            cur = b.list(vec![cur]);
+        }
+        b.finish(cur)
+    }
+
+    #[test]
+    fn print_tree_is_iterative_not_recursive() {
+        // `print`'s tree walk must be ITERATIVE. Before the fix it recursed natively — one frame per
+        // level — and OVERFLOWED the stack (SIGABRT) on a deep arena. `codec::decode` accepts
+        // arbitrarily-deep valid trees (no depth cap, unlike the s-expr reader's MAX_NESTING_DEPTH), so a
+        // debug view of an untrusted binary AST could crash the process. Use a depth (12k) well past the
+        // native recursion limit the old code died at, but modest enough that the tree view's inherently
+        // QUADRATIC output (cumulative indent, ~depth²/2 chars) stays bounded. Completing at all is the
+        // assertion — a recursive walker never returns here.
+        let depth = 12_000usize;
+        let tree = print(&deep_chain(depth)); // recursive code overflowed; iterative completes
+        assert!(tree.contains("Atom Name x"), "the deep leaf is rendered");
+        // The deepest atom carries the full indent (2 spaces × depth).
+        assert!(
+            tree.contains(&format!("{}#", "  ".repeat(depth))),
+            "the deepest node carries its full indent"
+        );
+    }
+
+    #[test]
+    fn print_flat_stays_total_on_a_very_deep_arena() {
+        // `print_flat` is O(n) (no cumulative indent), so it takes an even deeper chain — the realistic
+        // "dump a decoded untrusted arena" path. 200k levels, far past any native-stack limit; it is
+        // already iterative (a flat loop over the structure vector) and must render leaf + root.
+        let a = deep_chain(200_000);
+        let flat = print_flat(&a);
+        assert!(flat.contains("Name x"), "the leaf pool holds the atom");
+        assert!(
+            flat.contains(&format!("root: S{}", a.root.0)),
+            "the root line is present"
+        );
+    }
 
     #[test]
     fn every_leaf_kind_renders_distinctly() {

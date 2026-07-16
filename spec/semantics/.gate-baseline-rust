@@ -45,6 +45,7 @@ pass	Set.to-list length is the set's cardinality (deduped)
 pass	Set.to-list of a runtime-empty but element-typed set is the empty list
 pass	Set.to-list over a RUNTIME-built set yields canonical order (first element is the minimum)
 pass	Set.to-list over a runtime set sums its distinct elements
+pass	String.concat with an empty operand is the identity on a RUNTIME string (the emit path, not the fold)
 pass	String.from-bytes accepts a two-byte sequence split across a concat seam
 pass	String.from-bytes decodes a RUNTIME byte sequence built by a recursive appender
 pass	String.from-bytes decodes a multibyte RUNTIME Bytes ROPE, flattening before validation
@@ -60,6 +61,8 @@ pass	TRANS chained three deep accumulates every operand's hypotheses
 pass	TRANS unions the hypotheses of BOTH operands when each carries a distinct assumption
 pass	TWO performs in an if condition both fold on the strict-first spine
 pass	Type.eq branches on a type-valued parameter, monomorphized per passed type
+pass	Type.eq compares a RECORD type-value structurally, by field types
+pass	Type.eq compares a TUPLE type-value structurally, by element types
 pass	Type.eq compares a reflected type against a written type
 pass	Type.eq compares two type-valued parameters to each other
 pass	Type.eq distinguishes a constructed generic sum by its type argument
@@ -95,6 +98,8 @@ pass	a BigInt factorial accumulator computes 25! exactly
 pass	a BigInt is usable as a map key, matched by its arbitrary-precision value
 pass	a BigInt is usable as a set element, deduplicated by its arbitrary-precision value
 pass	a BigInt operation does not silently promote a fixed-width operand
+pass	a BigInt-inner quantity grows past Int64.max without trapping
+pass	a BigInt-inner quantity scales by a bare BigInt on the bigint path
 pass	a Bool argument to a parameter used in integer addition is rejected
 pass	a Bool generator derived from the seed is reproducible (same seed, same Bool)
 pass	a Bool match with its arms in either order is exhaustive
@@ -467,6 +472,7 @@ pass	a float annotation reaches the 32-bit width
 pass	a float in integer-width position is rejected
 pass	a float width from runtime data is rejected, like an integer width
 pass	a float width outside the admitted set is rejected
+pass	a float-form literal with the N (BigInt) suffix is rejected with a swap-to-R fix
 pass	a floating-point literal
 pass	a four-level nested-constructor pattern with a generic user sum in the middle matches
 pass	a fresh-id supply threads state across two sibling recursive calls in one arm
@@ -1048,6 +1054,8 @@ pass	a quantity annotation at an in-range narrow width grounds and accepts
 pass	a quantity annotation range-checks the inner width — an out-of-range magnitude is rejected
 pass	a quantity annotation rejects a negative magnitude at an unsigned inner width
 pass	a quantity built from an extracted unit is dimensionally checked
+pass	a quantity over a BigInt magnitude compares by its exact value
+pass	a quantity over a BigInt magnitude runs unbounded arithmetic on the erased handles
 pass	a quantity over a Rational magnitude compares by its exact value
 pass	a quantity raised to the zeroth power is a dimensionless one
 pass	a quantity's erased value is the identical numeric value the bare literal has
@@ -1076,6 +1084,7 @@ pass	a radix literal with an empty body is a malformed literal, not an unbound n
 pass	a rate derived by division mixes with a named rate unit of the same dimension
 pass	a rational is normalized to lowest terms on construction
 pass	a rational operation does not silently promote an integer operand
+pass	a rational with near-Int64 numerator and denominator normalizes by gcd exactly
 pass	a rational with numerator and denominator both negative normalizes to positive
 pass	a rational's sign is normalized onto the numerator
 pass	a rational-magnitude quantity erases to its exact rational value
@@ -1272,6 +1281,7 @@ pass	a runtime list of lists escapes with its nested element type
 pass	a runtime list parameter consumed by push in a self-recursive call's sibling operand is unchanged
 pass	a runtime magnitude unwraps through a unit conversion
 pass	a runtime map shared across two recursive-call operands is not mutated by an insert in one
+pass	a runtime mixed-scale combine converts a COMPUTED BigInt quantity operand
 pass	a runtime mixed-scale combine converts a COMPUTED Float quantity operand
 pass	a runtime mixed-unit sum emits the scale conversion (Int)
 pass	a runtime modulo of the minimum integer by -1 is zero on every backend
@@ -2840,8 +2850,6 @@ todo	a 32-bit-integer closure crosses the host boundary
 todo	a 64-bit-unsigned closure crosses the host boundary
 todo	a BOOL-field Tuple closure ARG flattens + rebuilds (box-bool imported)
 todo	a BOOL-field Tuple closure ARG, false discriminant
-todo	a BigInt-inner quantity grows past Int64.max without trapping
-todo	a BigInt-inner quantity scales by a bare BigInt on the bigint path
 todo	a Bytes-returning closure alongside a plain export — the closure runs
 todo	a Bytes-returning closure alongside a plain export — the plain runs
 todo	a Bytes-returning closure on a different argument
@@ -3051,8 +3059,6 @@ todo	a program that makes a host call has that call in its observable behavior
 todo	a program uses a response-returning delegated host function's return value
 todo	a purely-logical composed proof over a quantified proposition: DISCH then MP
 todo	a quantity is constructed from a numeric value and a unit
-todo	a quantity over a BigInt magnitude compares by its exact value
-todo	a quantity over a BigInt magnitude runs unbounded arithmetic on the erased handles
 todo	a quantity over an exact rational magnitude divides exactly and derives its dimension
 todo	a re-declared same-name theorem type in another module is a distinct type a kernel value does not satisfy
 todo	a record-returning closure alongside a parameterized plain export — the closure
@@ -3090,7 +3096,6 @@ todo	a runtime division of the minimum integer by -1 overflows and traps
 todo	a runtime final rest segment binds the empty tail when the scrutinee is only the header
 todo	a runtime fixed-width segment is emitted big-endian and read back by index
 todo	a runtime float leaf in a tuple compares by the canonical byte form
-todo	a runtime mixed-scale combine converts a COMPUTED BigInt quantity operand
 todo	a runtime nibble truncation keeps the low four bits
 todo	a runtime out-of-bounds list update traps rather than aliasing a valid slot
 todo	a runtime signed little-endian segment lays the low byte first
@@ -3110,6 +3115,8 @@ todo	a sum TYPE and its constructors are imported by a wildcard and constructed 
 todo	a sum variant's list payload split across empty and rest arms is exhaustive and dispatches
 todo	a symbol is constructed from a string
 todo	a three-argument closure exported to the host is called with all three
+todo	a transitive import (app <- lib <- kernel) can use a theorem through re-exported kernel functions
+todo	a transitive import cannot forge a theorem — the kernel's private constructor is unreachable from the app
 todo	a truncating conversion to an unusual width keeps that width's low bits
 todo	a tuple-returning closure alongside a plain export — the closure
 todo	a tuple-returning closure alongside a plain export — the plain
