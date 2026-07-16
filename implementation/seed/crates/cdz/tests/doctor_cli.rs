@@ -3,8 +3,9 @@
 //! `cdz doctor` reports the `cdz` version + path, whether the sibling `cdz-run` runner is present, and
 //! whether the value-heap runtime store holds the runtime `cdz` compiles against. It exits non-zero if a
 //! component that would break `cdz run`/`cdz test` is missing — so a setup/CI script can gate on it.
-//! Drives the built binary. (The `cdz-run` sibling is built alongside `cdz` in the test target, so the
-//! runner check is `ok` here; the store checks drive the `--store` override.)
+//! Drives the built binary. The `cdz-run`/store presence is ENVIRONMENT-dependent (built locally, absent
+//! on CI's bare `cargo test`), so the always-on tests assert the doctor REPORTS its checks (not a specific
+//! verdict); the verdict-under-a-controlled-input tests drive an explicit `--store <missing>` override.
 
 use std::process::Command;
 
@@ -82,24 +83,25 @@ fn doctor_flags_a_store_without_the_required_runtime() {
 
 #[test]
 fn doctor_json_emits_a_machine_readable_health_object() {
-    // `--json` emits one JSON object (version/path/cdz_run/runtime_store/ok) — the CI/setup shape. Here the
-    // toolchain is healthy (cdz-run built beside cdz), so `ok` is true and the store status is "ok".
-    let (ok, out, _err) = run(&["doctor", "--json"]);
-    assert!(ok, "healthy toolchain → success: {out}");
-    // Well-formed single-line-ish object with the expected keys.
+    // `--json` emits one JSON object with the version/path/cdz_run/runtime_store/ok keys — the CI/setup
+    // shape. Assert the OBJECT SHAPE (keys present, well-formed), NOT the `ok` verdict: whether the
+    // toolchain is healthy is ENVIRONMENT-dependent — a local `cargo test` after a full build has cdz-run
+    // beside cdz + a store (→ ok:true), but CI's bare `cargo test --workspace` builds neither (→ ok:false,
+    // non-zero exit). The verdict-under-a-controlled-input is covered by the `--store <missing>` test below.
+    let (_ok, out, _err) = run(&["doctor", "--json"]);
     assert!(
         out.trim_start().starts_with('{'),
         "emits a JSON object: {out}"
     );
-    for key in [
-        "\"version\"",
-        "\"cdz_run\"",
-        "\"runtime_store\"",
-        "\"ok\":true",
-    ] {
+    for key in ["\"version\"", "\"cdz_run\"", "\"runtime_store\"", "\"ok\":"] {
         assert!(out.contains(key), "json has {key}: {out}");
     }
-    assert!(out.contains("\"ok\":true"), "healthy → ok:true: {out}");
+    // `ok` is a boolean (true when the env is fully built, false on a bare checkout) — pin only that the
+    // field is a well-formed bool, not which value this environment produces.
+    assert!(
+        out.contains("\"ok\":true") || out.contains("\"ok\":false"),
+        "json has a boolean ok verdict: {out}"
+    );
 }
 
 #[test]
