@@ -33,8 +33,9 @@
 //! runner detects the wrapper (it pulls `Test.gen` ints), runs `--trials` trials, and shrinks over the
 //! int pool — no ABI change, no runner change. Increments so far cover G1 `List<Int>`, G2 `List<Bool>` +
 //! element recursion, G3 `Tuple` + nesting, G4 `Record`, G5 user `sum` (bounded — a recursive sum
-//! declines), G6 `Set`/`Map`, and G7 variable-length lists; still to come are `Float`/`Char` leaves
-//! and a lone single-form file (which currently needs a `do`-block root).
+//! declines), G6 `Set`/`Map`, G7 variable-length lists, G8 multi-parameter, and G9 `Float32`/`Float64`
+//! leaves (integer-valued via `float-of-int`); still to come is a `Char` leaf and a lone single-form file
+//! (which currently needs a `do`-block root).
 //!
 //! Runs at load BEFORE `strip_annotations`/`scan_top_level`, so the synthesized `(effect …)` and
 //! `(@ test (def …))` flow through the ordinary effect-synthesis + test-hoist + resolve/infer/lower with
@@ -140,14 +141,19 @@ struct TestPlan {
 /// A type this pass can GENERATE, and the recursive shape of its `<gen:T>` expression (each built from
 /// one or more `Test.gen` ints). This is the compiler-directed "Arbitrary-like" derivation over the type
 /// structure: a scalar consumes one gen int; a `List`/`Tuple` recurses into its element/slot types. A
-/// type outside this set (`Float`/`Char`, record, sum, `Set`/`Map`, a bare/unresolved type) is not (yet)
-/// generatable — `classify_ty` returns `None`, so the `@test` declines at the boundary as before.
+/// type outside this set (`Char`, a bare/unresolved type) is not (yet) generatable — `classify_ty` returns
+/// `None`, so the `@test` declines at the boundary as before.
 #[derive(Clone)]
 enum GenTy {
     /// An integer type (`Int8`…`UInt64`): `<gen>` = `((. Test gen))` (the int at the element width).
     Int,
     /// `Bool`: `<gen>` = `(= (% ((. Test gen)) 2) 0)` (the gen int's parity → a ~50/50 boolean).
     Bool,
+    /// A float type (`Float32`/`Float64`), carrying its width: `<gen>` = `((. FloatWIDTH of-int) <gen-int>)`
+    /// — an integer-valued float from a fresh `Test.gen` int (the TOTAL `float-of-int` conversion, realized
+    /// in both backends). A LONE float parameter already crosses the boundary (the runner generates it), so
+    /// this variant only matters NESTED under a `List`/`Tuple`/… where no boundary representation exists.
+    Float(u32),
     /// `(List ELEM)`: `<gen>` = a fixed-length `(list <gen:ELEM> …)` of `G1_LIST_LEN` elements.
     List(Box<GenTy>),
     /// `(Tuple T…)`: `<gen>` = `(tuple <gen:T> …)`, one generated value per slot.
@@ -206,7 +212,10 @@ fn plan_for_item(
         let ann_param = ast.as_form(p, ":")?; // `(: name TYPE)`
         let &ty = ann_param.get(1)?;
         let gt = classify_ty(ast, ty, items)?;
-        if !matches!(gt, GenTy::Int | GenTy::Bool) {
+        // A SCALAR param (`Int`/`Bool`/`Float`) has a component-boundary representation, so the runner
+        // generates it directly (the boundary-arg route) — no wrapper needed. Only a COMPOUND param
+        // (a collection/tuple/record/sum, which has no boundary form) forces the synthesized wrapper.
+        if !matches!(gt, GenTy::Int | GenTy::Bool | GenTy::Float(_)) {
             any_compound = true;
         }
         gen_tys.push(gt);
@@ -229,8 +238,8 @@ fn plan_for_item(
 
 /// Recursively classify a parameter TYPE occurrence into the [`GenTy`] whose `<gen:T>` this pass builds,
 /// or `None` if it is not (yet) generatable. Handles integer scalars, `Bool`, `(List ELEM)`, `(Tuple T…)`,
-/// `(Record (f T)…)`, and a bare-name USER SUM (resolved against the program's `(type …)` declarations in
-/// `items`). A `Float`/`Char`, `Set`/`Map`, or an unresolvable name is `None` — the caller then declines
+/// `(Record (f T)…)`, `Float32`/`Float64`, and a bare-name USER SUM (resolved against the program's
+/// `(type …)` declarations in `items`). A `Char` or an unresolvable name is `None` — the caller then declines
 /// the synthesis. `items` is the top-level form list, so a bare type name can find its declaration.
 fn classify_ty(ast: &Arenas, ty: StructId, items: &[StructId]) -> Option<GenTy> {
     classify_ty_at(ast, ty, items, 0)
@@ -255,6 +264,8 @@ fn classify_ty_at(ast: &Arenas, ty: StructId, items: &[StructId], depth: usize) 
                 Some(GenTy::Int)
             }
             "Bool" => Some(GenTy::Bool),
+            "Float32" => Some(GenTy::Float(32)),
+            "Float64" => Some(GenTy::Float(64)),
             // A bare name that is neither a scalar nor `Bool` MAY be a user `(type NAME …)` sum.
             other => classify_sum(ast, other, items, depth),
         };
@@ -509,6 +520,23 @@ fn build_gen(ast: &mut Arenas, ty: &GenTy, binds: &mut Vec<(StructId, StructId)>
             );
             push_list(ast, vec![eq, parity, zero])
         }),
+        // A float: hoist `gk = ((. FloatWIDTH of-int) ((. Test gen)))` — the TOTAL integer→float conversion
+        // of a fresh gen int, yielding an integer-valued float (…, -1.0, 0.0, 1.0, …). Not every float bit
+        // pattern (no fractional/subnormal/NaN draws), but it exercises the sign + magnitude of the seeded
+        // int pool AND shrinks with it, which is what a property test over a float collection needs.
+        GenTy::Float(width) => {
+            let w = *width;
+            hoist_scalar(ast, binds, move |ast| {
+                let g = gen_call(ast);
+                let of_int = {
+                    let dot = name(ast, ".");
+                    let fmod = name(ast, if w == 32 { "Float32" } else { "Float64" });
+                    let of = name(ast, "of-int");
+                    push_list(ast, vec![dot, fmod, of])
+                };
+                push_list(ast, vec![of_int, g])
+            })
+        }
         // A VARIABLE-length list in `0..=G1_LIST_LEN`: generate `G1_LIST_LEN` candidate elements + a
         // hoisted count `c = (% Test.gen (LEN+1))`, then an `if`-chain picking the length-`c` prefix
         // (`(list)` / `(list e0)` / `(list e0 e1)` / …). This exercises the EMPTY list + short lists (the
@@ -1015,13 +1043,13 @@ mod tests {
         );
     }
 
-    /// A `@test` over a genuinely NON-generatable element (`(List Float64)` — floats are not yet
-    /// generated) is left alone: no wrapper, so it declines at the boundary as before. (Nested
-    /// `List`/`Tuple` over int/Bool leaves ARE generatable now — the non-generatable leaf is what stops it.)
+    /// A `@test` over a genuinely NON-generatable element (`(List Char)` — `Char` is not yet generated) is
+    /// left alone: no wrapper, so it declines at the boundary as before. (Nested `List`/`Tuple` over
+    /// int/Bool/float leaves ARE generatable now — the non-generatable leaf is what stops it.)
     #[test]
     fn leaves_a_nongeneratable_element_alone() {
         let ast = crate::testkit::parse(
-            "(do (@ test (def (r (: xs (List Float64))) (List.len xs))) (def (other) 1))",
+            "(do (@ test (def (r (: xs (List Char))) (List.len xs))) (def (other) 1))",
         );
         let db = Db::load(ast);
         let test_names: Vec<String> = db
@@ -1031,7 +1059,51 @@ mod tests {
             .collect();
         assert!(
             !test_names.iter().any(|n| n == "r-gen"),
-            "a non-generatable (Float) element gets no wrapper: {test_names:?}"
+            "a non-generatable (Char) element gets no wrapper: {test_names:?}"
+        );
+    }
+
+    /// G9: a `Float32`/`Float64` leaf is generatable when COMPOUND (nested under a collection/tuple/…),
+    /// gaining a wrapper (`((. FloatN of-int) <gen-int>)`). A LONE float param stays on the boundary-arg
+    /// route (the runner generates the scalar directly) — NO wrapper, like a lone `Int`/`Bool`.
+    #[test]
+    fn synthesizes_a_generator_wrapper_for_float_leaves() {
+        // Compound floats → wrapper.
+        for (src, def, wrapper) in [
+            (
+                "(do (@ test (def (lf (: xs (List Float64))) (List.len xs))) (def (o) 1))",
+                "lf",
+                "lf-gen",
+            ),
+            (
+                "(do (@ test (def (tf (: p (Tuple Float32 Int64))) 0)) (def (o) 1))",
+                "tf",
+                "tf-gen",
+            ),
+        ] {
+            let db = Db::load(crate::testkit::parse(src));
+            let names: Vec<String> = db
+                .test_defs()
+                .into_iter()
+                .map(|i| db.defs[i].name.clone())
+                .collect();
+            assert!(
+                names.iter().any(|n| n == wrapper) && !names.iter().any(|n| n == def),
+                "{def}: expected wrapper {wrapper}, got {names:?}"
+            );
+        }
+        // A LONE Float64 param is a scalar → boundary-arg route, NO wrapper (same as lone Int/Bool).
+        let db = Db::load(crate::testkit::parse(
+            "(do (@ test (def (sf (: x Float64)) unit)) (def (o) 1))",
+        ));
+        let names: Vec<String> = db
+            .test_defs()
+            .into_iter()
+            .map(|i| db.defs[i].name.clone())
+            .collect();
+        assert!(
+            names.iter().any(|n| n == "sf") && !names.iter().any(|n| n == "sf-gen"),
+            "a lone float param gets no wrapper (boundary route): {names:?}"
         );
     }
 
