@@ -4872,6 +4872,58 @@ mod tests {
             assert_eq!(classes.len(), 1);
             assert_eq!(classes[0].sites.len(), 3);
         }
+
+        #[test]
+        fn clone_detection_never_panics_and_holds_invariants_on_arbitrary_trees() {
+            // `find_clones` / `find_near_clones` run over arbitrary parsed trees (the `cdz clones` codemod
+            // on any program), with subtree hashing, maximal-clone filtering, and near-clone metavar
+            // inference — none of which may PANIC, at any `min_size`. Fuzz over SplitMix64-generated
+            // s-expr trees and assert the structural invariants each result must hold:
+            //   * every clone class has ≥2 sites (the definition of a clone), a positive size, and (for
+            //     exact clones) an exemplar that RE-READS to a tree (the printer emitted valid s-expr);
+            //   * a near-clone class's inferred `,mK`-metavariable pattern likewise re-reads.
+            use crate::query::clones::{Source, find_near_clones};
+            let alphabet: Vec<char> = "() abcfgh0123".chars().collect();
+            let mut rng = super::super::tests::SplitMix64(0x0c10_e5f0_0d1c_a5f1);
+            for len in 0..=40usize {
+                for _ in 0..80 {
+                    let s: String = (0..len)
+                        .map(|_| alphabet[(rng.next() as usize) % alphabet.len()])
+                        .collect();
+                    // Only well-formed trees — clone detection consumes a parsed tree, not raw text.
+                    let Ok(arena) = crate::sexpr::read(&s) else {
+                        continue;
+                    };
+                    let tree = crate::query::Tree::of(&arena);
+                    for min_size in [1usize, 2, 3] {
+                        // Exact clones: never panic; each class is a real (≥2-site, sized) class whose
+                        // exemplar is valid s-expr.
+                        for class in find_clones(&tree, min_size, None) {
+                            assert!(class.sites.len() >= 2, "a clone class has ≥2 sites");
+                            assert!(class.size >= min_size, "a clone respects min_size");
+                            assert!(
+                                crate::sexpr::read(&class.exemplar).is_ok(),
+                                "exemplar re-reads: {:?}",
+                                class.exemplar
+                            );
+                        }
+                        // Near clones: never panic; the inferred pattern is valid s-expr.
+                        let src = Source {
+                            tree: &tree,
+                            spans: None,
+                            file: None,
+                        };
+                        for nc in find_near_clones(std::slice::from_ref(&src), min_size) {
+                            assert!(
+                                crate::sexpr::read(&nc.pattern).is_ok(),
+                                "near-clone pattern re-reads: {:?}",
+                                nc.pattern
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 
     mod antiunify_tests {
