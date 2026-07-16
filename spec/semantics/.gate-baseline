@@ -1818,6 +1818,8 @@ pass	a trapping shared payload before the differing position must not preempt a 
 pass	a truncating conversion keeps the low bits rather than trapping
 pass	a truncating conversion of a negative value uses two's complement
 pass	a truncating conversion to an unusual width keeps that width's low bits
+pass	a tuple = whose Bool element derives from a const-divisor rem is emitted as valid wasm
+pass	a tuple = with differing const-divisor Bool elements compares unequal
 pass	a tuple access out of arity on a function-returned tuple is a type error, not a trap
 pass	a tuple annotated as a scalar type is rejected
 pass	a tuple annotated with the wrong arity is rejected

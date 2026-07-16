@@ -7973,6 +7973,32 @@ mod runtime_ops {
     }
 
     #[test]
+    fn a_tuple_eq_with_a_const_divisor_bool_element_emits_valid_wasm() {
+        // MISCOMPILE (invalid wasm): a compound (tuple) `=` whose Bool element derives from a CONST-DIVISOR
+        // `%`/`/` — `(= (tuple 5 (= (% s 2) 0)) (tuple 5 (= (% s 2) 0)))` — emitted an invalid module
+        // (`type mismatch: expected i32, found i64`). The two identical Bool elements are `core_eq`, so the
+        // non-loop CSE pass materialized the shared `(% s 2)` into an i64 slot but did NOT advance the scratch
+        // floor past the const-divisor strength-reduction's transient i64 dividend scratch — so the i32 Bool
+        // slot of `(= … 0)` reused that i64 slot (one wasm local, two widths). Fix: the CSE materialization
+        // raises `body_base` past `high` after emitting the rep (+ `emit_div_rem` reserves its scratch above
+        // `*high`). `component` compiles + validates the module (it `.expect("compile")`s and the backend
+        // validates), so a bare call is the regression guard. NOT modulo-specific — const-`/` reproduces.
+        let valid = |src: &str| {
+            compile_component(&crate::codec::encode(&crate::testkit::parse(src))).expect("compile")
+        };
+        let _ = valid(
+            "(module m (def (main (: s Int64)) (= (tuple 5 (= (% s 2) 0)) (tuple 5 (= (% s 2) 0)))) (export main))",
+        );
+        let _ = valid(
+            "(module m (def (main (: s Int64)) (= (tuple 5 (= (/ s 2) 1)) (tuple 5 (= (/ s 2) 1)))) (export main))",
+        );
+        // Differing const divisors (two distinct `%` subexpressions) must each emit valid wasm too.
+        let _ = valid(
+            "(module m (def (main (: s Int64)) (= (tuple 5 (= (% s 2) 0)) (tuple 5 (= (% s 3) 0)))) (export main))",
+        );
+    }
+
+    #[test]
     fn a_narrow_signed_division_by_a_non_neg_one_divisor_elides_its_range_check() {
         use crate::backend::wasm::lir::Lir;
         use crate::db::Db;

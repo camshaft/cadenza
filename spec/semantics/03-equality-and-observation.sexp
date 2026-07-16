@@ -1273,3 +1273,34 @@
   (output (: 0 Int64))
   (call   main (: 0 Int64) (: -0.0 Float64) (: 0.0 Float64))
   (output (: 1 Int64)))
+
+(case "a tuple = whose Bool element derives from a const-divisor rem is emitted as valid wasm"
+  (doc    "MISCOMPILE (invalid wasm, wasm-only): a compound (tuple) `=` whose Bool element is derived from a
+           CONST-DIVISOR `%` or `/` — `(= (tuple 5 (= (% s 2) 0)) (tuple 5 (= (% s 2) 0)))` — emitted an
+           invalid component (`func failed to validate: type mismatch: expected i32, found i64`). ROOT: the
+           two identical `(= (% s 2) 0)` elements are `core_eq`, so the non-loop CSE pass materializes the
+           shared `(% s 2)` into an i64 slot ONCE — but it did NOT advance the scratch floor past the
+           const-divisor strength-reduction's own transient i64 dividend scratch, so the next allocation (the
+           i32 Bool slot of the `= … 0`) reused that i64 slot → one wasm local declared at two widths. Fix:
+           the CSE materialization raises `body_base` past `high` after emitting the representative (mirroring
+           the LICM-hoist arm) so a later slot never reuses the rep's transient scratch at a different width;
+           `emit_div_rem` also reserves its dividend scratch above `*high`. NOT modulo-specific — const-`/`
+           reproduces identically. A tuple equals itself → `true`; a `%2==0` vs `%3==0` element differs at
+           s=4 → the tuples differ → `false`.")
+  (input  (do
+            (def (main (: s Int64))
+              (= (tuple 5 (= (% s 2) 0)) (tuple 5 (= (% s 2) 0))))
+            (export main)))
+  (call   main (: 4 Int64)) (output (: true Bool))
+  (call   main (: 5 Int64)) (output (: true Bool)))
+
+(case "a tuple = with differing const-divisor Bool elements compares unequal"
+  (doc    "The discriminating companion: the two tuple elements derive from DIFFERENT const divisors
+           (`% s 2` vs `% s 3`), so at s = 4 the first Bool is `4%2==0` = true and the second `4%3==0` = false
+           — the tuples differ, `=` is false. Pins that the fix computes the real element values (not a
+           degenerate always-equal), and that the two distinct `%` subexpressions each emit valid wasm.")
+  (input  (do
+            (def (main (: s Int64))
+              (= (tuple 5 (= (% s 2) 0)) (tuple 5 (= (% s 3) 0))))
+            (export main)))
+  (call   main (: 4 Int64)) (output (: false Bool)))
