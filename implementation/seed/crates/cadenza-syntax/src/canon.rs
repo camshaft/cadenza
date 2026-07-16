@@ -264,6 +264,66 @@ mod tests {
     }
 
     #[test]
+    fn canonicalize_with_map_id_map_is_total_and_occurrence_preserving() {
+        // The `id_map` (old StructId -> new) a span remap keys off must be well-formed: it is exactly
+        // as long as the source structure vector, every REACHABLE old id maps to a `Some` new id in
+        // range, and each new id denotes the SAME node kind/leaf as its old id — including DISTINCT
+        // occurrences of a shared leaf (`(+ x x)`: two `x` atom occurrences share ONE leaf but are two
+        // structure ids, and each must map to its own new atom that is still an `x`).
+        let a = sexpr::read("(+ x x)").unwrap();
+        let (canon, id_map) = super::canonicalize_with_map(&a);
+        assert_eq!(
+            id_map.len(),
+            a.structure.len(),
+            "id_map is 1:1-shaped with the source structure vector"
+        );
+        // Every node reachable from the root has a mapping; the root maps to the canonical root.
+        fn walk_check(src: &Arenas, id: StructId, id_map: &[Option<StructId>], canon: &Arenas) {
+            let new = id_map[id.0 as usize].expect("a reachable node maps to Some new id");
+            assert!((new.0 as usize) < canon.structure.len(), "new id in range");
+            // The mapped node has the same kind; for an atom, the same leaf value.
+            match (src.get(id), canon.get(new)) {
+                (Struct::Atom(l), Struct::Atom(nl)) => {
+                    assert_eq!(src.leaf(*l), canon.leaf(*nl), "atom leaf preserved")
+                }
+                (Struct::List(a), Struct::List(b)) => {
+                    assert_eq!(a.len(), b.len(), "list arity preserved");
+                    for &ch in a {
+                        walk_check(src, ch, id_map, canon);
+                    }
+                }
+                _ => panic!("node kind changed under canonicalization"),
+            }
+        }
+        walk_check(&a, a.root, &id_map, &canon);
+        assert_eq!(
+            id_map[a.root.0 as usize],
+            Some(canon.root),
+            "root maps to canonical root"
+        );
+
+        // The two `x` operands: distinct old occurrence ids, distinct new ids, both still `x` atoms.
+        let Struct::List(kids) = a.get(a.root) else {
+            panic!("root is a list");
+        };
+        assert_eq!(kids.len(), 3, "(+ x x) has head + two operands");
+        let (x1_old, x2_old) = (kids[1], kids[2]);
+        assert_ne!(x1_old, x2_old, "the two x occurrences are distinct old ids");
+        let (x1_new, x2_new) = (
+            id_map[x1_old.0 as usize].unwrap(),
+            id_map[x2_old.0 as usize].unwrap(),
+        );
+        assert_ne!(
+            x1_new, x2_new,
+            "distinct occurrences map to distinct new ids"
+        );
+        assert_eq!(canon.as_name(x1_new), Some("x"));
+        assert_eq!(canon.as_name(x2_new), Some("x"));
+        // The shared leaf is interned once in the canonical arena (dedup preserved: `+` and `x`).
+        assert_eq!(canon.leaves.len(), 2, "one leaf each for `+` and `x`");
+    }
+
+    #[test]
     fn sexpr_and_ml_agree_after_canon() {
         // The bug this fixes: an infix expression via the two surfaces.
         let src = "(let ((x 1) (y (+ x 1))) y)";
