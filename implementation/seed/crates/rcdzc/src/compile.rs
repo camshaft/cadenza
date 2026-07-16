@@ -2336,6 +2336,45 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
                 );
                 continue;
             }
+            // A `String`/`Bytes` in an ARGUMENT position of a peer-bound op. A String/Bytes RESULT crosses
+            // fine (the peer builds the rope handle + returns it), but an inbound String/Bytes ARGUMENT is
+            // not yet emittable: it lowers as a component `string` (a `canon lower` needing a `mem` option)
+            // instead of a runtime handle, and the peer envelope supplies no `mem` — so the emitted CONSUMER
+            // is an INVALID component ("missing module instantiation argument named `mem`"), a silent
+            // invalid-component miscompile. Reject at the binding (report-don't-miscompile) until the
+            // inbound-rope-handle emit is wired. Only PARAMETER positions (arrow elements before the last,
+            // the result) are checked, so a String/Bytes RESULT is not flagged.
+            let mut string_arg = false;
+            for e in db.effect_decls.iter().filter(|e| e.name == name) {
+                for op in &e.ops {
+                    let Some(ty) = op.ty else { continue };
+                    let Some(arrow) = db.ast.as_form(ty, "->") else {
+                        continue;
+                    };
+                    // `(-> P0 … Pn R)` — the LAST element is the result; the rest are parameters.
+                    if arrow.len() >= 2 {
+                        for &pos in &arrow[..arrow.len() - 1] {
+                            if matches!(db.ast.as_name(pos), Some("String") | Some("Bytes")) {
+                                string_arg = true;
+                                break;
+                            }
+                        }
+                    }
+                    if string_arg {
+                        break;
+                    }
+                }
+                if string_arg {
+                    break;
+                }
+            }
+            if string_arg {
+                faults.push(
+                    Reject::coded(Code::Malformed, crate::diag::STRING_ARG_ACROSS_PEER_MESSAGE)
+                        .at(name_occ),
+                );
+                continue;
+            }
         }
         // A DUPLICATE `(bind E …)` — the same effect bound to a peer TWICE in source. `scan_effect_bindings`
         // silently keeps the FIRST (`.or_insert_with`), so a second directive is a dead, ambiguous line: the

@@ -735,6 +735,19 @@ pub const CLOSURE_ACROSS_PEER_MESSAGE: &str = "a peer-bound effect operation can
      CLOSURE — peers exchange value-heap handles (a tuple/record/sum/list/map/string/…), and a closure \
      has no peer-boundary form (a closure crosses the HOST boundary as a resource, not a peer); give the \
      operation a value type, or handle the effect in-program instead of binding it to a peer";
+
+/// A peer-bound effect op with a `String`/`Bytes` in an ARGUMENT position. A String/Bytes RESULT from a
+/// peer crosses fine (the peer builds the rope handle and returns it), but an inbound String/Bytes
+/// ARGUMENT is not yet emittable: the arg lowers as a component `string` (a `canon lower` needing a
+/// `mem` canonical option) rather than a runtime handle, and the peer envelope supplies no `mem` — so
+/// the emitted CONSUMER component is INVALID ("missing module instantiation argument named `mem`"), a
+/// silent invalid-component miscompile. Reject it at the binding until the inbound-rope-handle emit is
+/// wired, so no invalid component is produced. (A String/Bytes RESULT is unaffected; only a parameter.)
+pub const STRING_ARG_ACROSS_PEER_MESSAGE: &str = "a peer-bound effect operation cannot yet take a \
+     String or Bytes ARGUMENT — an inbound rope crosses to a peer as a runtime handle, which is not yet \
+     emitted (the argument would lower as a component `string` the peer envelope cannot satisfy, \
+     producing an invalid component). A String/Bytes RESULT from a peer works; for an argument, pass \
+     the data another way (e.g. a scalar, or a tuple/record of scalars) or handle the effect in-program";
 /// A stable SUBSTRING unique to the coded CDZ0201 resume-value/result-type mismatch (`a handler resumes
 /// with a value of type X but the operation's result type is Y`). An ill-typed resume ALSO makes the
 /// handler unfoldable, so `lower` emits the uncoded [`HANDLER_NOT_REDUCIBLE_DECLINE`] alongside — a

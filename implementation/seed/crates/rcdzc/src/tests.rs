@@ -65182,6 +65182,42 @@ mod cross_component_oracle {
             "a closure-typed op on a NON-peer-bound effect must NOT be flagged: {:?}",
             d13.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
+        // (i) a peer-bound op with a STRING ARGUMENT is CDZ0201 — an inbound rope to a peer lowers as a
+        // component `string` the peer envelope cannot satisfy (no `mem`), which emitted an INVALID
+        // component ("missing module instantiation argument named `mem`") — a silent invalid-component
+        // miscompile. Now a clean compile-time decline (report-don't-miscompile).
+        let str_arg = "(do (effect S (op blen (-> String Int64))) (bind S \"cadenza:str/api\") \
+                       (def (main) 0) (export main))";
+        let d14 = crate::diagnostics(&mut crate::db::Db::load(parse(str_arg)));
+        assert!(
+            d14.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
+                && d.message
+                    .contains("cannot yet take a String or Bytes ARGUMENT")),
+            "a peer-bound op with a String ARGUMENT is CDZ0201, not a silent invalid component: {:?}",
+            d14.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        // A Bytes argument is caught the same way.
+        let bytes_arg = "(do (effect S (op f (-> Bytes Int64))) (bind S \"cadenza:str/api\") \
+                         (def (main) 0) (export main))";
+        let d15 = crate::diagnostics(&mut crate::db::Db::load(parse(bytes_arg)));
+        assert!(
+            d15.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
+                && d.message.contains("String or Bytes ARGUMENT")),
+            "a peer-bound op with a Bytes ARGUMENT is CDZ0201: {:?}",
+            d15.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        // NO FALSE POSITIVE: a String/Bytes RESULT (not an argument) crosses fine — the peer builds the
+        // rope handle + returns it — so it must NOT be flagged. (`(-> Int64 String)`: the String is the
+        // RESULT, the last arrow element.)
+        let str_result = "(do (effect G (op greet (-> Int64 String))) (bind G \"cadenza:g/api\") \
+                          (def (main) 0) (export main))";
+        let d16 = crate::diagnostics(&mut crate::db::Db::load(parse(str_result)));
+        assert!(
+            !d16.iter()
+                .any(|d| d.message.contains("String or Bytes ARGUMENT")),
+            "a peer-bound op with a String RESULT must NOT be flagged (only an argument is): {:?}",
+            d16.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
     }
 
     // ------------------------------------------------------------------------------------------------
