@@ -28,8 +28,24 @@ use crate::diag::Reject;
 pub fn emit_enum_decls(db: &mut Db) -> String {
     let mut out = String::new();
     let n = db.type_decls.len();
+    // DEDUP by emitted enum IDENTIFIER: a LINKED multi-module program can carry two declarations that emit
+    // the SAME Rust enum name — e.g. a library and the entry each `(type Box (W a) (E))`. In Cadenza these
+    // are DISTINCT nominal types (identity = fully-qualified name, per-module namespace), but the rust
+    // backend names both `Box`, so emitting both is a duplicate `enum Box` (rustc E0428). When the two
+    // emit BYTE-IDENTICAL source (same variants, same payloads — the composing case, where a value of one
+    // is matched as the other), keep the FIRST and skip the rest: one `enum Box` serves both. Guard on
+    // byte-identity so a genuine same-name/different-shape collision (unsupported) still emits twice and
+    // fails loudly rather than silently dropping a distinct type.
+    let mut emitted: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     for i in 0..n {
         if let Ok(decl_src) = emit_one_enum(db, i) {
+            let ident = types::sum_ident(&db.type_decls[i].name);
+            match emitted.get(&ident) {
+                // A same-ident decl already emitted with identical source — skip (dedup the linked twin).
+                Some(prev) if *prev == decl_src => continue,
+                _ => {}
+            }
+            emitted.insert(ident, decl_src.clone());
             out.push('\n');
             out.push_str(&decl_src);
         }

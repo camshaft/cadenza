@@ -503,6 +503,31 @@ fn body_has_tail_call_to(db: &mut Db, id: StructId, members: &[usize]) -> bool {
 /// context width (`1u8`), exactly as the wasm backend's `emit_operand`/`emit_branch` normalize a bare
 /// literal to the op/branch machine width. A NON-literal node already carries its own definite type, so
 /// it emits unchanged.
+/// Emit element/payload node `id`, GROUNDING an empty-list value to a target `List(elem)` type. An empty
+/// `(list)` node's own `type_of` often leaves its element unsolved (`List ?`), so `Core::ListNew` emits a
+/// bare `vec![]` rustc cannot infer in a construction slot (E0282 "type annotations needed for `Vec<_>`").
+/// When the element sits in a slot whose SOLVED type is a representable `List(elem)` — a tuple element, a
+/// record field, a sum payload — annotate `Vec::<elem>::new()`. `target` is that slot's declared type
+/// (`None` when unknown → emit unchanged). Only rewrites the exact bare `vec![]`; a non-empty or
+/// already-typed emit passes through byte-identical.
+fn emit_elem_grounding_empty_list(
+    db: &mut Db,
+    id: StructId,
+    target: Option<&Ty>,
+    env: &Env,
+    ctx: &Ctx,
+) -> Result<String, Reject> {
+    let a = emit(db, id, env, ctx)?;
+    if a == "vec![]"
+        && let Some(t) = target
+        && let Ty::List(elem) = t.strip_nominal()
+        && let Some(rust_elem) = types::rust_type(elem)
+    {
+        return Ok(format!("Vec::<{rust_elem}>::new()"));
+    }
+    Ok(a)
+}
+
 fn emit_grounded(
     db: &mut Db,
     id: StructId,
@@ -981,9 +1006,23 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         // heap handle (unlike the wasm backend's `arr-alloc`). A 1-tuple needs the trailing comma
         // `(e,)` to be a tuple rather than a parenthesized expression.
         Core::Tuple { elems } => {
+            // The tuple's SOLVED element types — used to GROUND an empty-list element whose own `type_of`
+            // left its element unsolved (`List ?` → a bare `vec![]` rustc can't infer, E0282). A tuple's own
+            // type is resolved from context (e.g. an erased-newtype payload `(Seq (List Term) Term)` emits as
+            // a plain tuple whose type is `(Vec<Term>, Term)`), so the element type IS spellable here.
+            let elem_tys: Vec<Option<Ty>> = match type_of(db, id).strip_nominal() {
+                Ty::Tuple(ts) if ts.len() == elems.len() => ts.iter().cloned().map(Some).collect(),
+                _ => vec![None; elems.len()],
+            };
             let mut parts = Vec::with_capacity(elems.len());
-            for &e in &elems {
-                parts.push(emit(db, e, env, ctx)?);
+            for (k, &e) in elems.iter().enumerate() {
+                parts.push(emit_elem_grounding_empty_list(
+                    db,
+                    e,
+                    elem_tys.get(k).and_then(|o| o.as_ref()),
+                    env,
+                    ctx,
+                )?);
             }
             let trailing = if parts.len() == 1 { "," } else { "" };
             Ok(format!("({}{trailing})", parts.join(", ")))
@@ -995,11 +1034,25 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         // the boundary render. A field read is a `Core::Proj` at the sorted index (handled below), so
         // this only builds. (Nominal records → a named Rust struct is a future refinement.)
         Core::Record { fields } => {
+            // The record's SOLVED field types in sorted-key order (its Rust tuple positions) — to ground an
+            // empty-list field to `Vec::<T>::new()` (see `emit_elem_grounding_empty_list`).
+            let field_tys: Vec<Option<Ty>> = match type_of(db, id).strip_nominal() {
+                Ty::Record(ts) if ts.len() == fields.len() => {
+                    ts.values().cloned().map(Some).collect()
+                }
+                _ => vec![None; fields.len()],
+            };
             let mut parts = Vec::with_capacity(fields.len());
             // `fields` (a `BTreeMap`) iterates in sorted key order — its values in order are the tuple
             // elements, matching the sorted-field positions `Ty::Record`/`Core::Proj` use.
-            for &v in fields.values() {
-                parts.push(emit(db, v, env, ctx)?);
+            for (k, &v) in fields.values().enumerate() {
+                parts.push(emit_elem_grounding_empty_list(
+                    db,
+                    v,
+                    field_tys.get(k).and_then(|o| o.as_ref()),
+                    env,
+                    ctx,
+                )?);
             }
             let trailing = if parts.len() == 1 { "," } else { "" };
             Ok(format!("({}{trailing})", parts.join(", ")))
@@ -1028,6 +1081,20 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         // `Vec<T>` signature fixes). A NEW `Vec` per construction — matching Cadenza's persistent
         // list value semantics.
         Core::ListNew { elems } => {
+            // An EMPTY list `vec![]` has no element to infer its type from, so in a position that does not
+            // fix the type (a sum/tuple payload whose structure is erased at the Rust level — e.g. a `(list)`
+            // as the `Thm.Seq` hypothesis field) rustc reports E0282 "type annotations needed for `Vec<_>`".
+            // Annotate the element type from the node's SOLVED `Ty::List(elem)` when it is representable —
+            // `Vec::<T>::new()`. A non-empty list infers its element from the first element, so it stays the
+            // bare `vec![…]` (byte-identical to before). An empty list whose element type is NOT representable
+            // (a free var, a fn) emits the bare `vec![]` and relies on downstream inference as before (no
+            // regression — the annotation is a pure ADD when we can spell the type).
+            if elems.is_empty()
+                && let Ty::List(elem) = type_of(db, id).strip_nominal()
+                && let Some(rust_elem) = types::rust_type(elem)
+            {
+                return Ok(format!("Vec::<{rust_elem}>::new()"));
+            }
             let mut parts = Vec::with_capacity(elems.len());
             for &e in &elems {
                 parts.push(emit(db, e, env, ctx)?);
@@ -1431,9 +1498,27 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         // emitted `enum <Enum> { <Variant>(T…), … }`.
         Core::SumNew { disc, payloads } => {
             let path = sum_variant_path(db, id, disc)?;
+            // The variant's DECLARED payload types (single → the type; multi → the tuple's elements), used
+            // to GROUND an empty-list payload whose own `type_of` left its element unsolved (`List ?`). In a
+            // sum payload slot the element type IS known from the declaration, so annotate `Vec::<T>::new()`
+            // rather than the bare `vec![]` rustc can't infer (E0282 "type annotations needed for Vec<_>").
+            let sum_ty = type_of(db, id);
+            let payload_decl_tys: Vec<Option<Ty>> = match variant_payload_ty(db, &sum_ty, disc) {
+                Some(Ty::Tuple(elems)) if elems.len() == payloads.len() => {
+                    elems.iter().cloned().map(Some).collect()
+                }
+                Some(t) if payloads.len() == 1 => vec![Some(t)],
+                _ => vec![None; payloads.len()],
+            };
             let mut args = Vec::with_capacity(payloads.len());
-            for &p in &payloads {
-                args.push(emit(db, p, env, ctx)?);
+            for (k, &p) in payloads.iter().enumerate() {
+                args.push(emit_elem_grounding_empty_list(
+                    db,
+                    p,
+                    payload_decl_tys.get(k).and_then(|o| o.as_ref()),
+                    env,
+                    ctx,
+                )?);
             }
             // A RECURSIVE variant's payload field is a `Box<…>` (the enum boxes it to stay finite), so its
             // payload value is wrapped `Box::new(…)` — the deref twin at the match site reads `*__pay`.
