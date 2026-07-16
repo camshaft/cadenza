@@ -1096,6 +1096,8 @@ pass	a nested tuple list element is bound over a runtime list and folded across 
 pass	a nested tuple pattern of the wrong arity is a type error
 pass	a nested tuple-arity mismatch in equality is a type error
 pass	a nested tuple-pattern parameter destructures a runtime tuple
+pass	a nested unquote pattern matches a Float sub-AST by shape
+pass	a nested unquote pattern matches a Str sub-AST by shape
 pass	a nested unquote pattern matches a sub-AST by shape
 pass	a nested-let chain that reuses each binding folds to one value
 pass	a neutral and-true keeps both the trap and the value of its left operand
@@ -1227,6 +1229,7 @@ pass	a quote pattern is equivalent to the Ast.* constructor pattern
 pass	a quote pattern matches a fixed arity
 pass	a quote pattern used to recognize a compiler form reads as that form
 pass	a quote-built and constructor-built AST of the same tree encode to identical bytes
+pass	a quote-built and constructor-built FLOAT AST encode to identical bytes
 pass	a quote-pattern match with no catch-all is non-exhaustive
 pass	a quoted boolean equals the same node built by the Ast.Bool constructor
 pass	a quoted compound form containing a boolean reifies with an Ast.Bool element
@@ -2431,6 +2434,7 @@ pass	negative zero is distinct in the canonical value form
 pass	negative zero is not equal to positive zero
 pass	nested patterns deconstruct recursively
 pass	nested patterns with literals
+pass	nested quasiquote embeds a FLOAT via the inner unquote
 pass	nullary constructor patterns are uniform with unary
 pass	one effect's result flows as the ARGUMENT to a DIFFERENT effect's op under nested handlers
 pass	one entrypoint's host authority is not reachable by another that does not delegate it

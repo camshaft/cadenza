@@ -780,6 +780,14 @@
   (input  (= (Ast.encode (quote 42)) (Ast.encode (Ast.Int 42))))
   (output (: true Bool)))
 
+(case "a quote-built and constructor-built FLOAT AST encode to identical bytes"
+  (doc    "The float companion of the byte-identity case: `(quote 1.5)` and `(Ast.Float 1.5)` are the same
+           AST value, so their encodings MUST be byte-identical (ast-encoding.md #The Encoding Is A
+           Bijection With One Canonical Byte Form). Pins that the `Ast.Float` leaf's canonical bytes (the
+           f64 bit pattern) are the same however the value is constructed.")
+  (input  (= (Ast.encode (quote 1.5)) (Ast.encode (Ast.Float 1.5))))
+  (output (: true Bool)))
+
 (case "unquote-splicing splices list elements into parent"
   (doc    "Witnesses metaprogramming.md #Quasiquote Constructs AST With Selective Evaluation:
            ,@<list-expr> evaluates <list-expr> to a list and splices its elements into the parent,
@@ -827,6 +835,17 @@
   (output (: (Ast.List (list (Ast.Name "quasiquote")
                              (Ast.List (list (Ast.Name "+")
                                            (Ast.List (list (Ast.Name "unquote") (Ast.Int 2)))))))
+             Ast)))
+
+(case "nested quasiquote embeds a FLOAT via the inner unquote"
+  (doc    "The float companion of nested-quasiquote: `` ``(+ ,,x) `` with x=2.5 evaluates the inner `,` and
+           embeds the float, producing the AST of `` `(+ ,2.5) ``. The lifted value is an `(Ast.Float 2.5)`
+           node inside the inert `unquote` structure. Pins that the active-unquote float lift composes with
+           quasiquote NESTING (depth tracking) — the inner `,` fires at depth 1 as it does for an integer.")
+  (input  (let ((x 2.5)) ``(+ ,,x)))
+  (output (: (Ast.List (list (Ast.Name "quasiquote")
+                             (Ast.List (list (Ast.Name "+")
+                                           (Ast.List (list (Ast.Name "unquote") (Ast.Float 2.5)))))))
              Ast)))
 
 (case "unquote outside quasiquote is a syntax error"
@@ -1010,6 +1029,32 @@
             (`(+ ,(Ast.Int n) ,b) n)
             (other                0)))
   (output (: 7 Int64)))
+
+; A nested unquote pattern matches ANY Ast leaf variant, not just Int — the Float and Str variants (the
+; leaves this vertical realized) destructure by shape exactly as `Ast.Int` does. These pin the interaction
+; between the quote-pattern surface and the Float/Str leaves: a `,(Ast.Float n)` matches only a float
+; operand and binds its value; a `,(Ast.Str s)` matches only a string operand. A change to either the
+; quote-pattern lowering or a leaf variant that broke this cross-feature match would flip these.
+
+(case "a nested unquote pattern matches a Float sub-AST by shape"
+  (doc    "`` `(f ,(Ast.Float n)) `` matches only a compound headed `f` whose operand is a FLOAT literal,
+           binding its value. Against `(quote (f 2.5))` the operand `(Ast.Float 2.5)` matches `(Ast.Float
+           n)` binding n=2.5, and `= n 2.5` is true. Pins that a quote pattern destructures the `Ast.Float`
+           leaf (the float companion of the Int nested-unquote-pattern case above).")
+  (input  (match (quote (f 2.5))
+            (`(f ,(Ast.Float n)) (= n 2.5))
+            (other               false)))
+  (output (: true Bool)))
+
+(case "a nested unquote pattern matches a Str sub-AST by shape"
+  (doc    "The string companion: `` `(f ,(Ast.Str s)) `` matches only a compound headed `f` whose operand
+           is a STRING literal, binding it. Against `(quote (f \"hi\"))` the operand `(Ast.Str \"hi\")`
+           matches, and `String.byte-len s` is 2. Pins that a quote pattern destructures the `Ast.Str` leaf
+           (distinct from `Ast.Name` — a string operand, not an identifier).")
+  (input  (match (quote (f "hi"))
+            (`(f ,(Ast.Str s)) (String.byte-len s))
+            (other             0)))
+  (output (: 2 Int64)))
 
 (case "a final unquote-splice binds the remaining elements as a list"
   (doc    "A final `,@<name>` binds the remaining list elements as a LIST (never a single element), the
