@@ -1063,7 +1063,6 @@ pass	a multi-payload variant with a scalar AND two recursive payloads escapes fl
 pass	a multi-segment bin concatenates mixed-width signed and unsigned segments in order
 pass	a multi-step kernel derivation composes several primitive rules into one theorem
 pass	a multi-variant abstract proof type's constructor match outside the kernel is a withheld-constructor rejection
-pass	a single-variant abstract type's constructor match outside its module is rejected CDZ0214 (withheld-ctor)
 pass	a multi-variant constructor nested in a tuple let-binder is refutable and rejected
 pass	a multi-variant-sum binding pattern is refutable and rejected
 pass	a multi-way string-head dispatch resolves an operator name to its operation
@@ -1160,6 +1159,7 @@ pass	a nested element pattern dispatches on a MIDDLE-variant list payload
 pass	a nested element pattern dispatches on a NON-variant-0 list payload
 pass	a nested if of a common constructor builds it once and dispatches to each arm
 pass	a nested if on the same condition collapses the inner test to the known branch
+pass	a nested inner handler that re-threads its own state folds (merged-context seed from init)
 pass	a nested lambda captures+applies a closure-typed def PARAMETER (inline lambda argument)
 pass	a nested list element composes over a runtime list of lists
 pass	a nested literal pattern of the wrong type is a type error
@@ -1264,8 +1264,8 @@ pass	a pattern that binds the same name across nested sub-patterns is rejected
 pass	a pattern that binds the same name twice is rejected
 pass	a payload-in-payload nested list pattern dispatches through two recorded types
 pass	a peephole rewrite rule reads in the shape of the code it rewrites
-pass	a peer op whose compound RESULT escapes the entrypoint declines (resource-escape lacks the peer import)
 pass	a peer op whose SUM RESULT escapes the entrypoint declines (the recursive-sum resource path)
+pass	a peer op whose compound RESULT escapes the entrypoint declines (resource-escape lacks the peer import)
 pass	a peer-bound operation cannot take or return a closure
 pass	a peer-bound operation takes a String argument (it crosses as a runtime handle)
 pass	a perform BETWEEN two sibling recursive calls threads the intervening state
@@ -1737,6 +1737,7 @@ pass	a signed segment reads the sign-bit-only byte as the minimum, not its magni
 pass	a signed-byte entrypoint returns its runtime argument
 pass	a single-form body admits a sequence by holding a do block
 pass	a single-variant NEWTYPE escapes with its tag ERASED, only the type header naming it
+pass	a single-variant abstract type's constructor match outside its module is rejected CDZ0214 (withheld-ctor)
 pass	a single-variant newtype over a COMPOUND escapes the bare compound under its type header
 pass	a single-variant open sum with an open-tail arm dispatches its named variant
 pass	a single-variant-sum binding pattern destructures a multi-payload constructor positionally
@@ -2527,9 +2528,9 @@ pass	extending a record adds a new field
 pass	extending a record with an already-present field is rejected
 pass	extracting a high byte composes shift and mask
 pass	false is less than true
+pass	first-match-wins holds with a duplicate string-literal arm
 pass	float <= is NOT (< or =): they diverge on NaN because canonical-byte equality says nan = nan
 pass	float >= is NOT (> or =): the same NaN divergence mirrors on the greater-or-equal side
-pass	first-match-wins holds with a duplicate string-literal arm
 pass	float division rounds under the fixed mode
 pass	float division that does not divide evenly rounds to nearest
 pass	float multiplication uses the arithmetic operator
@@ -2751,6 +2752,7 @@ pass	quasiquote makes AST construction readable
 pass	quasiquote nests with inner unquote evaluated
 pass	quasiquotes unquoting a runtime variable and a literal build equal ASTs
 pass	quote of a let reifies as an Ast.List with a let head and round-trips
+pass	quote of a nested quote form is inert — the inner quote is not evaluated
 pass	quote produces an AST value without evaluating
 pass	quote reifies a grammar-keyword head as an ordinary Ast.Name
 pass	quote-built and constructor-built equal trees encode byte-identically
@@ -3208,4 +3210,3 @@ pass	α-equivalence handles nesting and distinguishes a bound variable from a sa
 todo	SUM ARG + LIST RESULT declines cleanly (Option arg, List result)
 todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
-pass	a nested inner handler that re-threads its own state folds (merged-context seed from init)

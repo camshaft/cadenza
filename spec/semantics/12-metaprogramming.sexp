@@ -1624,6 +1624,19 @@
             (_                                    -1)))
   (output (: 2 Int64)))
 
+(case "quote of a nested quote form is inert — the inner quote is not evaluated"
+  (doc    "The self-referential head-agnostic edge: `(quote (quote x))` reifies to `(Ast.List (Ast.Name
+           \"quote\") (Ast.Name \"x\"))` — `quote` treats the metaprogramming keyword `quote` as an ORDINARY
+           head and does NOT recursively evaluate or special-case the inner quote; it stays inert structure.
+           The match confirms head = `\"quote\"` and binds the inner `x` (a bare `Ast.Name`, byte-len 1). Pins
+           that a plain quote evaluates NOTHING in its body (core-semantics.md — quote produces the AST
+           without evaluating), even when the body is itself quote/metaprogramming syntax.")
+  (input  (match (quote (quote x))
+            ((Ast.List (list (Ast.Name h) (Ast.Name inner)))
+             (if (= h "quote") (String.byte-len inner) -2))
+            (_ -1)))
+  (output (: 1 Int64)))
+
 ; The CONSTRUCTION side of the eval-of-a-control-form cases: quoting a binder-introducing form (`let`) is
 ; head-agnostic like any compound — it reifies to an `Ast.List` whose head is `(Ast.Name "let")` and whose
 ; binding group + body are ordinary reified sub-trees — and it round-trips through the byte codec. Pairs with
