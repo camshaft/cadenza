@@ -1611,6 +1611,36 @@
   (call   main (: 0 Int64))
   (output (: 18446744073709551614 BigInt)))
 
+(case "a BigInt-inner quantity ADDITION past Int64.max stays exact through the wrapper"
+  (doc    "The additive companion of the multiplicative grow-past-Int64.max case above: `(+ (Qty.of
+           (BigInt.of Int64.max) meter) (Qty.of (BigInt.of Int64.max) meter))` = 2·(2^63-1) = 2^64-2, a
+           magnitude past every fixnum. `Qty.value` reads back the exact `18446744073709551614 : BigInt`.
+           Pins that a same-unit `+` over two BigInt-inner quantities runs the unbounded bigint add through
+           the quantity wrapper (not a checked fixnum add that would trap), exactly as the `*` case does.")
+  (input  (do
+            (def (main (: n Int64))
+              (= (Qty.value (+ (Qty.of (BigInt.of n) (Unit.base #"meter"))
+                               (Qty.of (BigInt.of n) (Unit.base #"meter"))))
+                 (: 18446744073709551614 BigInt)))
+            (export main)))
+  (call   main (: 9223372036854775807 Int64))
+  (output (: true Bool)))
+
+(case "a squared BigInt-inner quantity added to a linear one is a dimension mismatch"
+  (doc    "The same-base power dimension distinction, through a BigInt inner: `(+ (Qty.pow (Qty.of (BigInt.of
+           n) meter) 2) (Qty.of (BigInt.of n) meter))` adds meter² (from the pow) to a plain meter — DIFFERENT
+           dimensions (exponent 2 vs 1) — so it rejects CDZ0501, exactly as the Float64-magnitude power-dim
+           cases do. Pins that the dimension check composes the exponent correctly OVER a BigInt magnitude
+           (the dimension is on the unit, independent of the inner numeric type), not just over Float64 —
+           the intersection of the power-dimension distinction and the BigInt-inner quantity.")
+  (input  (do
+            (def (main (: n Int64))
+              (Qty.value (+ (Qty.pow (Qty.of (BigInt.of n) (Unit.base #"meter")) 2)
+                            (Qty.of (BigInt.of n) (Unit.base #"meter")))))
+            (export main)))
+  (call   main (: 5 Int64))
+  (error  CDZ0501))
+
 (case "a Rational-inner quantity addition stays exact through the quantity wrapper"
   (doc    "`(+ (Qty.of 1/3 meter) (Qty.of 1/6 meter))` → `Qty.value` reads back 1/2 : Rational — the
            pre-existing `quantity_inner_is_rational` predicate's happy path, pinned as the control

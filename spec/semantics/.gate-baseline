@@ -211,6 +211,7 @@ pass	a BigInt factorial accumulator computes 25! exactly
 pass	a BigInt is usable as a map key, matched by its arbitrary-precision value
 pass	a BigInt is usable as a set element, deduplicated by its arbitrary-precision value
 pass	a BigInt operation does not silently promote a fixed-width operand
+pass	a BigInt-inner quantity ADDITION past Int64.max stays exact through the wrapper
 pass	a BigInt-inner quantity grows past Int64.max without trapping
 pass	a BigInt-inner quantity scales by a bare BigInt on the bigint path
 pass	a Bool argument to a parameter used in integer addition is rejected
@@ -1834,6 +1835,7 @@ pass	a sparse three-arm match's terminal pair dispatches branchlessly — the mi
 pass	a specific constructor export exposes one variant and keeps the rest private
 pass	a spliced boolean drives an evaluated conditional through the lifted leaf
 pass	a spliced string participates in an evaluated equality
+pass	a squared BigInt-inner quantity added to a linear one is a dimension mismatch
 pass	a squared quantity does not add to a linear quantity
 pass	a stateful handler threads its counter across a function boundary
 pass	a straight-line tuple built from callee params is projected in the caller
