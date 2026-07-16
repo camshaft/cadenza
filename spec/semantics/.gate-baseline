@@ -1138,6 +1138,7 @@ pass	a nested tuple pattern of the wrong arity is a type error
 pass	a nested tuple-arity mismatch in equality is a type error
 pass	a nested tuple-pattern parameter destructures a runtime tuple
 pass	a nested unquote Bool pattern does not match a non-boolean operand
+pass	a nested unquote pattern binds an Ast.Name operand's identifier
 pass	a nested unquote pattern matches a Bool sub-AST by shape
 pass	a nested unquote pattern matches a Float sub-AST by shape
 pass	a nested unquote pattern matches a Str sub-AST by shape

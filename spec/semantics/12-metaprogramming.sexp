@@ -1132,12 +1132,13 @@
             (other                0)))
   (output (: 7 Int64)))
 
-; A nested unquote pattern matches ANY Ast leaf variant, not just Int — the Float, Str, and Bool variants
-; (the leaves this vertical realized) destructure by shape exactly as `Ast.Int` does. These pin the
-; interaction between the quote-pattern surface and those leaves: a `,(Ast.Float n)` matches only a float
-; operand and binds its value; a `,(Ast.Str s)` matches only a string operand; a `,(Ast.Bool b)` matches
-; only a boolean operand. A change to either the quote-pattern lowering or a leaf variant that broke this
-; cross-feature match would flip these.
+; A nested unquote pattern matches ANY Ast leaf variant, not just Int — the Float, Str, Bool, and Name
+; variants (the leaves this vertical realized) destructure by shape exactly as `Ast.Int` does. These pin
+; the interaction between the quote-pattern surface and those leaves: a `,(Ast.Float n)` matches only a
+; float operand and binds its value; a `,(Ast.Str s)` matches only a string operand; a `,(Ast.Bool b)`
+; matches only a boolean operand; a `,(Ast.Name n)` matches only an identifier operand and binds its
+; spelling. A change to either the quote-pattern lowering or a leaf variant that broke this cross-feature
+; match would flip these.
 
 (case "a nested unquote pattern matches a Float sub-AST by shape"
   (doc    "`` `(f ,(Ast.Float n)) `` matches only a compound headed `f` whose operand is a FLOAT literal,
@@ -1179,6 +1180,18 @@
             (`(f ,(Ast.Bool b)) 1)
             (other              0)))
   (output (: 0 Int64)))
+
+(case "a nested unquote pattern binds an Ast.Name operand's identifier"
+  (doc    "The Name companion, completing the leaf set (Int/Float/Str/Bool/Name): `` `(f ,(Ast.Name n)) ``
+           matches only a compound headed `f` whose OPERAND is an identifier, binding its spelling to `n`.
+           Against `(quote (f g))` the operand `(Ast.Name \"g\")` matches `(Ast.Name n)` binding n=\"g\", so
+           `String.byte-len n` is 1. Distinct from the head-by-equality cases (which match a LITERAL name
+           `(Ast.Name \"+\")`): here the unquote BINDS the operand name's string. Pins that a quote pattern
+           destructures the `Ast.Name` leaf in operand position.")
+  (input  (match (quote (f g))
+            (`(f ,(Ast.Name n)) (String.byte-len n))
+            (other              0)))
+  (output (: 1 Int64)))
 
 (case "a final unquote-splice binds the remaining elements as a list"
   (doc    "A final `,@<name>` binds the remaining list elements as a LIST (never a single element), the
