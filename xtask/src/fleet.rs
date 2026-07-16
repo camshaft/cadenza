@@ -397,6 +397,17 @@ pub enum FleetCmd {
         #[arg(long)]
         strict: bool,
     },
+    /// Reconcile the `inbox/unknown/` graveyard: replies that got addressed to `to=unknown` (the
+    /// send-side identity bug — a merge-request arrived `from=unknown`, so pr-sync's reply went to
+    /// `unknown`, which NOBODY drains). Each carries its real recipient in the subject
+    /// (`<kind>: fleet/<agent>`). This re-routes each such message to that agent's inbox as a `note`
+    /// (so it's clearly a reconciliation, not a live reply the sender might act on twice), skipping any
+    /// whose recipient can't be derived. `--dry-run` reports what would move without moving it.
+    RerouteUnknown {
+        /// Report what would be re-routed without moving anything.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Self-heal the fleet, in two passes. RE-ARM: any ACTIVE agent whose `/loop` has stalled — each
     /// agent stamps a heartbeat touch-file (`.claude/fleet/heartbeat/<agent>`) at the top of every
     /// tick; if that file is older than `min(--stale-mult × interval, --stale-cap)`, its loop is
@@ -503,6 +514,7 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
             body,
         } => ack(&fleet, &request, &outcome, &r#ref, &body),
         FleetCmd::Audit { verbose, strict } => audit(&fleet, verbose, strict),
+        FleetCmd::RerouteUnknown { dry_run } => reroute_unknown(&fleet, dry_run),
     }
 }
 
@@ -1122,6 +1134,77 @@ fn read_messages(dir: &Path) -> Vec<Message> {
         .collect()
 }
 
+/// Reconcile the `inbox/unknown/` graveyard — re-route each dead-lettered reply to the recipient named
+/// in its subject (`<kind>: fleet/<agent>`). See the `RerouteUnknown` doc. Each moved message is
+/// re-delivered to `<agent>` as a `note` (so it reads as a reconciliation, not a fresh live reply the
+/// sender might double-act-on), preserving the original kind + ref + body in the note text. The source
+/// file is removed on a successful re-route (moved into the target inbox), so re-running is idempotent.
+fn reroute_unknown(fleet: &Fleet, dry_run: bool) {
+    let graveyard = fleet.inbox("unknown");
+    let Ok(rd) = std::fs::read_dir(&graveyard) else {
+        println!("fleet reroute-unknown: no inbox/unknown/ dir — nothing to reconcile.");
+        return;
+    };
+    let mut routed = 0usize;
+    let mut skipped = 0usize;
+    let mut total = 0usize;
+    for entry in rd.filter_map(Result::ok) {
+        let p = entry.path();
+        if p.extension().is_none_or(|x| x != "json") {
+            continue;
+        }
+        total += 1;
+        let Ok(text) = std::fs::read_to_string(&p) else {
+            continue;
+        };
+        let Ok(msg) = serde_json::from_str::<Message>(&text) else {
+            skipped += 1;
+            continue;
+        };
+        let Some(agent) = recipient_from_subject(&msg.subject) else {
+            skipped += 1;
+            if dry_run {
+                println!("  ? skip (no fleet/<agent> in subject): {:?}", msg.subject);
+            }
+            continue;
+        };
+        if dry_run {
+            println!(
+                "  → would route to '{agent}': [{}] {:?}",
+                msg.kind, msg.subject
+            );
+            routed += 1;
+            continue;
+        }
+        // Re-deliver as a NOTE to the derived recipient, folding the original reply into the body so
+        // the agent sees what happened without it looking like a fresh merged/reject to act on twice.
+        deliver(
+            fleet,
+            &Message {
+                from: "fleet-reroute".to_string(),
+                to: agent.clone(),
+                kind: "note".to_string(),
+                subject: format!("[reconciled from unknown/] {}", msg.subject),
+                r#ref: msg.r#ref.clone(),
+                body: format!(
+                    "A reply pr-sync addressed to `unknown` (the send-side identity bug) was re-routed \
+                     to you from inbox/unknown/. Original kind: `{}`. ref: `{}`.\n\n{}",
+                    msg.kind, msg.r#ref, msg.body
+                ),
+                seq: next_seq(),
+                in_reply_to: msg.in_reply_to.clone(),
+            },
+        );
+        // Remove the graveyard copy now that it's re-delivered (idempotent re-runs).
+        std::fs::remove_file(&p).ok();
+        routed += 1;
+    }
+    println!(
+        "fleet reroute-unknown: {}{routed} re-routed, {skipped} un-derivable, {total} total in unknown/.",
+        if dry_run { "DRY-RUN: " } else { "" }
+    );
+}
+
 /// Why a delivery did or didn't wake the recipient.
 enum WakeOutcome {
     /// The recipient's window was nudged into an immediate tick.
@@ -1680,18 +1763,35 @@ fn ensure_inbox(fleet: &Fleet, name: &str) {
 /// Deliver a message: write it to a temp file then rename into the recipient's inbox, so a reader
 /// never observes a partial file. The filename sorts in send order (`<seq>-<pid>-<kind>.json`).
 fn deliver(fleet: &Fleet, msg: &Message) {
+    // Rescue a reply addressed to `unknown`: pr-sync (and others) write the recipient into the SUBJECT
+    // as `<kind>: fleet/<agent>` even when the incoming `to`/`from` was `unknown` (the send-side
+    // identity bug — now fixed, but ~160 replies already dead-lettered into inbox/unknown/, which
+    // nobody drains, so senders never saw their merged/reject). At the single delivery chokepoint,
+    // if `to == "unknown"` and the subject names a `fleet/<agent>`, route there instead. This fixes
+    // future stragglers structurally regardless of the caller's routing logic.
+    let to: String = if msg.to == "unknown" {
+        match recipient_from_subject(&msg.subject) {
+            Some(real) => {
+                eprintln!(
+                    "fleet deliver: rescued a `to=unknown` message → routing to '{real}' (from subject {:?})",
+                    msg.subject
+                );
+                real
+            }
+            None => msg.to.clone(),
+        }
+    } else {
+        msg.to.clone()
+    };
     // Path-traversal guard: the recipient name becomes a path component (`inbox/<to>`). An unchecked
     // name like `..` / `../../x` would write OUTSIDE the inbox tree. Names are our own controlled
     // identifiers (registry rows / CLI), but a bridge that forwards an external sender's name (the
     // Slack bridge) makes this a real write primitive — so validate at the single write chokepoint.
-    if let Err(why) = validate_agent_name(&msg.to) {
-        eprintln!(
-            "fleet: refusing to deliver to invalid agent name {:?}: {why}",
-            msg.to
-        );
+    if let Err(why) = validate_agent_name(&to) {
+        eprintln!("fleet: refusing to deliver to invalid agent name {to:?}: {why}");
         std::process::exit(1);
     }
-    let inbox = fleet.inbox(&msg.to);
+    let inbox = fleet.inbox(&to);
     std::fs::create_dir_all(&inbox).expect("create recipient inbox");
     let fname = format!("{:012}-{}-{}.json", msg.seq, std::process::id(), msg.kind);
     let json = serde_json::to_string_pretty(msg).expect("serialize message");
@@ -1779,6 +1879,27 @@ fn sender_from_branch(fleet: &Fleet) -> Option<String> {
         Some("pr-sync".to_string())
     } else {
         None
+    }
+}
+
+/// Derive the intended recipient from a reply's subject. pr-sync writes `<kind>: fleet/<agent>` (e.g.
+/// `merged: fleet/v-diagnostics`, `reject: fleet/breaker`), so a reply that got addressed to `unknown`
+/// still names its real recipient there. Returns `<agent>` if the subject contains a `fleet/<agent>`
+/// token whose `<agent>` is a valid agent name, else `None`. Used by `deliver` (rescue a live
+/// `to=unknown`) and `reroute-unknown` (reconcile the graveyard).
+fn recipient_from_subject(subject: &str) -> Option<String> {
+    // Find a `fleet/<agent>` token anywhere in the subject; take the chars up to the first whitespace
+    // or end. `<agent>` must pass the agent-name charset (so we never route to a garbage path).
+    let idx = subject.find("fleet/")?;
+    let rest = &subject[idx + "fleet/".len()..];
+    let agent: String = rest
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
+        .collect();
+    if agent.is_empty() || validate_agent_name(&agent).is_err() {
+        None
+    } else {
+        Some(agent)
     }
 }
 
@@ -2024,6 +2145,28 @@ mod tests {
         ] {
             assert!(validate_agent_name(ok).is_ok(), "should accept {ok:?}");
         }
+    }
+
+    #[test]
+    fn recipient_from_subject_derives_the_agent() {
+        // pr-sync's reply subjects — the recipient is recoverable even when to=unknown.
+        assert_eq!(
+            recipient_from_subject("merged: fleet/v-diagnostics").as_deref(),
+            Some("v-diagnostics")
+        );
+        assert_eq!(
+            recipient_from_subject("reject: fleet/fix-host-closure-declines").as_deref(),
+            Some("fix-host-closure-declines")
+        );
+        // A branch token mid-sentence still resolves; trailing text after the agent stops at whitespace.
+        assert_eq!(
+            recipient_from_subject("integrated fleet/breaker onto trunk").as_deref(),
+            Some("breaker")
+        );
+        // No fleet/<agent> → None (don't misroute).
+        assert!(recipient_from_subject("some unrelated subject").is_none());
+        // A traversal-y agent token is rejected by the name charset → None (never route to garbage).
+        assert!(recipient_from_subject("merged: fleet/../etc").is_none());
     }
 
     #[test]
