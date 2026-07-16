@@ -180,27 +180,15 @@ pub(super) fn ty_is_ord(db: &mut Db, ty: &Ty) -> bool {
     match ty {
         // A float is `PartialOrd` but NOT `Ord` — the one scalar that cannot key a `BTree*`.
         Ty::Float(_) => false,
-        // Compounds are `Ord` iff every ordered component is. Recurse so a float ANYWHERE inside is caught.
-        Ty::Tuple(elems) => {
-            let elems = elems.clone();
-            elems.iter().all(|e| ty_is_ord(db, e))
-        }
-        Ty::Record(fields) => {
-            let vals: Vec<Ty> = fields.values().cloned().collect();
-            vals.iter().all(|t| ty_is_ord(db, t))
-        }
-        Ty::Nominal { inner, .. } => {
-            let inner = (**inner).clone();
-            ty_is_ord(db, &inner)
-        }
-        Ty::List(e) | Ty::Set(e) => {
-            let e = (**e).clone();
-            ty_is_ord(db, &e)
-        }
-        Ty::Map(k, v) => {
-            let (k, v) = ((**k).clone(), (**v).clone());
-            ty_is_ord(db, &k) && ty_is_ord(db, &v)
-        }
+        // Compounds are `Ord` iff every ordered component is. Recurse over BORROWS directly — `db: &mut Db`
+        // and the element borrows (which come from `ty`, not `db`) don't conflict, so no clone is needed
+        // (the earlier `.clone()`s were over-defensive; this mirrors `enums::ty_derives_eq`'s
+        // allocation-free walk over the same shapes). PR#460 (Copilot) cleanup.
+        Ty::Tuple(elems) => elems.iter().all(|e| ty_is_ord(db, e)),
+        Ty::Record(fields) => fields.values().all(|t| ty_is_ord(db, t)),
+        Ty::Nominal { inner, .. } => ty_is_ord(db, inner),
+        Ty::List(e) | Ty::Set(e) => ty_is_ord(db, e),
+        Ty::Map(k, v) => ty_is_ord(db, k) && ty_is_ord(db, v),
         // A SUM/NOMINAL is orderable iff its enum derives `Ord` = iff it derives `Eq` — the Db-aware check
         // that closes the float-carrying-sum hole (the whole point of this fix).
         Ty::Sum { .. } => crate::backend::rust::enums::ty_derives_eq(
