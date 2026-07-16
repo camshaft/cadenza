@@ -755,6 +755,7 @@ pass	a genuinely-narrow op with a wrapped-down if-operand yields the exact value
 pass	a grafted template is structurally equal to the directly-quoted tree
 pass	a guard combines the payload binder with the rest binder
 pass	a guard compares two distinct sum payloads from one tuple
+pass	a guard composes with a string-literal arm
 pass	a guard on a ctor list element reads the constructor's payload binder
 pass	a guard on a literal-element list pattern reads an enclosing let binding through inlining
 pass	a guard on a nested-list-in-list element reads the inner list's binder
@@ -1288,6 +1289,7 @@ pass	a plural family-unit spelling names the same unit as its singular
 pass	a positional tuple access out of the tuple's static arity is a type error
 pass	a post-order effectful walk draws each node's id AFTER both children (SSA reg-alloc shape)
 pass	a predicate closure returning Bool drives an early-exit recursive HOF
+pass	a prefix literal does not shadow a longer string arm
 pass	a prefixed quantity displays scaled to its reference unit (Float)
 pass	a prefixed unit combines with its base by converting to the reference (Float)
 pass	a prelude Option value crosses a module boundary as an export result
@@ -2524,6 +2526,7 @@ pass	extracting a high byte composes shift and mask
 pass	false is less than true
 pass	float <= is NOT (< or =): they diverge on NaN because canonical-byte equality says nan = nan
 pass	float >= is NOT (> or =): the same NaN divergence mirrors on the greater-or-equal side
+pass	first-match-wins holds with a duplicate string-literal arm
 pass	float division rounds under the fixed mode
 pass	float division that does not divide evenly rounds to nearest
 pass	float multiplication uses the arithmetic operator
@@ -2939,6 +2942,7 @@ pass	the empty byte sequence has length zero
 pass	the empty reader literal is the empty symbol
 pass	the empty set is equal to the empty set
 pass	the empty string has length zero
+pass	the empty string is a matchable literal
 pass	the empty symbol converts to the empty string
 pass	the empty symbol equals itself
 pass	the entrypoint adds one to its runtime argument
