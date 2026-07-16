@@ -8042,11 +8042,13 @@ fn check_application(
                     // them with `:`, so it reads as an application of a non-function. This is the
                     // value-position twin of the parameter-position `(a Float64)` → `(: a Float64)` slice,
                     // and the argument-position counterpart of `(Int64 5)`'s "a type appears in an
-                    // annotation `(: value Int64)`, not in call position". Name the real repair. When BOTH
-                    // the head and the type are simple atoms (a name or an int/float literal — the common
-                    // `(5 Int64)` case) the rewrite `(<value> <Type>)` → `(: <value> <Type>)` is a
-                    // deterministic rule, so the fix is VERIFIED and carries the exact spelling; a compound
-                    // type or a non-atom head keeps the message alone (no single spelling to splice). Only
+                    // annotation `(: value Int64)`, not in call position". Name the real repair. When the
+                    // head is a simple atom `atom_surface` can spell (a NAME or an INT literal — see its
+                    // doc; a float/string/compound head yields no spelling) AND the type is a bare name,
+                    // carry a HEURISTIC fix with the exact `(<value> <Type>)` → `(: <value> <Type>)`
+                    // rewrite; otherwise the message alone routes the repair. The fix is heuristic, NOT
+                    // verified — adding the `:` is the certain structural repair, but the resulting
+                    // annotation may itself not hold (see the inner comment on the `(5 Bool)` case). Only
                     // in the `(None, None)` arm — a type/effect head or a nullary def keeps its own message.
                     let colon_annotation = if name_category.is_none()
                         && nullary_fn.is_none()

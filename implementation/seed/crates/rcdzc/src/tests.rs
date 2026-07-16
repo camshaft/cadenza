@@ -64608,12 +64608,31 @@ mod cross_component_oracle {
         // value-heap handles; a closure has no peer-boundary form. Both faces (result + arg):
         let clo_result = "(do (effect F (op mk (-> Int64 (-> Int64 Int64)))) (bind F \"cadenza:f/api\") \
                           (def (main) 0) (export main))";
-        let d11 = crate::diagnostics(&mut crate::db::Db::load(parse(clo_result)));
-        assert!(
-            d11.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
-                && d.message.contains("cannot take or return a CLOSURE")),
-            "a peer-bound op RETURNING a closure is CDZ0201 with the clear reason: {:?}",
-            d11.iter().map(|d| &d.message).collect::<Vec<_>>()
+        let mut clo_db = crate::db::Db::load(parse(clo_result));
+        let d11 = crate::diagnostics(&mut clo_db);
+        let clo_d = d11
+            .iter()
+            .find(|d| {
+                d.code.as_deref() == Some("CDZ0201")
+                    && d.message.contains("cannot take or return a CLOSURE")
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "a peer-bound op RETURNING a closure is CDZ0201 with the clear reason: {:?}",
+                    d11.iter().map(|d| &d.message).collect::<Vec<_>>()
+                )
+            });
+        // The diagnostic is anchored at the `(bind F …)` directive's effect NAME — the ACTIONABLE locus the
+        // author edits (change the route, or give the op a value type) — NOT the nested `(-> Int64 Int64)`
+        // arrow fragment that merely detected the closure (Copilot PR #418). The compiler is span-free, so
+        // assert on the anchored NODE: it resolves to the bare name `F` (the bind name), not an arrow list.
+        let anchor = clo_d
+            .node
+            .expect("the closure-across-peer reject is anchored");
+        assert_eq!(
+            clo_db.ast.as_name(crate::ast::StructId(anchor)),
+            Some("F"),
+            "the reject anchors at the bind name `F`, not the inner `(-> …)` arrow (node {anchor})"
         );
         let clo_arg = "(do (effect F (op run (-> (-> Int64 Int64) Int64))) (bind F \"cadenza:f/api\") \
                        (def (main) 0) (export main))";
