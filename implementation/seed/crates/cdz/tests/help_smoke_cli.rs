@@ -104,6 +104,19 @@ fn top_level_help_and_version_succeed() {
 }
 
 #[test]
+fn top_level_long_help_describes_the_project_workflow() {
+    // `cdz --help` should make the cargo-analogue PROJECT workflow discoverable — a user shouldn't have to
+    // already know `new`/`build`/`run`/`test` exist. The long_about names the project lifecycle.
+    let (ok, out, err) = run(&["--help"]);
+    assert!(ok, "cdz --help failed: {err}");
+    // The long_about mentions the project verbs so `--help` surfaces the workflow, not just a flat list.
+    assert!(
+        out.contains("Project.cdz") && out.contains("scaffold"),
+        "long help describes the project workflow (Project.cdz + scaffold): {out}"
+    );
+}
+
+#[test]
 fn an_unknown_subcommand_fails() {
     // A bogus subcommand is a usage error: non-zero exit, a clap error on stderr. Guards that the tree
     // actually rejects garbage rather than silently doing nothing.

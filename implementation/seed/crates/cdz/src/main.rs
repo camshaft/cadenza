@@ -55,10 +55,17 @@ const PROG: &str = "cdz";
     // A real toolchain reports its version — `cdz --version`/`-V` prints the crate version, so a bug
     // report or a script can pin which build it is talking to. (Pulled from `CARGO_PKG_VERSION`.)
     version,
-    about = "The Cadenza toolchain: convert, query, compile, and inspect a program — one tool.",
-    long_about = "cdz unifies the front-end (convert + structural codemod) and the compiler \
-                  (compile/emit + semantic queries) over one program. `type` and `uses` are \
-                  span-mapped compiler queries only a single process holding both can answer."
+    about = "The Cadenza toolchain: scaffold, build, run, test, and inspect a project — one tool.",
+    long_about = "cdz is the Cadenza toolchain in one binary — the cargo-analogue project workflow \
+                  plus the front-end and compiler.\n\n\
+                  PROJECT (over a Project.cdz manifest; each finds the nearest one upward when given no \
+                  argument): `new`/`init` scaffold a project, `build` compiles it, `run` builds + runs it, \
+                  `test` runs its @test suite, `check` reports diagnostics, `metadata` prints it as JSON, \
+                  `clean` removes build artifacts.\n\n\
+                  PROGRAM: `compile`/`run` a single file, `convert` between surfaces, `fmt`/`query`/\
+                  `rewrite`/`lint` the structure, and the span-mapped compiler queries (`type`, `uses`, \
+                  `check`, `def`, …) only a single process holding both the front-end and compiler can \
+                  answer. Also `calc` (the exact calculator REPL) and `completions` (shell completions)."
 )]
 struct Cli {
     #[command(subcommand)]
