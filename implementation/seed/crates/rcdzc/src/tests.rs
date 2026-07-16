@@ -33880,6 +33880,49 @@ mod match_engine {
             .is_none(),
             "an active splice of a constant Int list flattens its elements into the surrounding form"
         );
+        // The splice-lift is TYPE-DIRECTED across the scalar leaves, not Int-only: each constant element is
+        // wrapped in the `Ast` leaf its kind denotes (Float64→`Ast.Float`, Bool→`Ast.Bool`, String→
+        // `Ast.Str`), matching the active-unquote `ast-lift` leaf set. Each equality pins the lifted shape
+        // against the longhand quote of the same elements — a wrong-tagged leaf (e.g. the old unconditional
+        // `Ast.Int` wrap) would make the equality false, and a decline would surface as a non-None reject.
+        for (src, kind) in [
+            (
+                "(module m (def (main) \
+                   (let ((xs (list 1.5 2.5))) (= (quasiquote (f (unquote-splicing xs))) \
+                                                 (quote (f 1.5 2.5))))) (export main))",
+                "float",
+            ),
+            (
+                "(module m (def (main) \
+                   (let ((xs (list true false))) (= (quasiquote (f (unquote-splicing xs))) \
+                                                    (quote (f true false))))) (export main))",
+                "bool",
+            ),
+            (
+                "(module m (def (main) \
+                   (let ((xs (list \"a\" \"bb\"))) (= (quasiquote (f (unquote-splicing xs))) \
+                                                   (quote (f \"a\" \"bb\"))))) (export main))",
+                "string",
+            ),
+        ] {
+            assert!(
+                reject_code(src).is_none(),
+                "an active splice of a constant {kind} list lifts each element to its matching Ast leaf"
+            );
+        }
+        // A NESTED-list element has no scalar value leaf this increment, so the splice DECLINES (a Todo, the
+        // runtime splice map is unbuilt) rather than mis-lifting — reject-don't-miscompile. It is not a
+        // CDZ0201 non-list error (the operand IS a list); it simply cannot fold yet.
+        assert_eq!(
+            reject_code(
+                "(module m (def (main) \
+                   (let ((xs (list (list 1) (list 2)))) (quasiquote (f (unquote-splicing xs)))) ) \
+                 (export main))"
+            )
+            .as_deref(),
+            None,
+            "splicing a list of nested lists declines (Ast unbuilt), it is not a CDZ0201 non-list error"
+        );
         // The operand of `,@` MUST be a list: `provably_not_list` types (an Int64 literal or a let-bound
         // Int64) have no elements to splice → CDZ0201, matching the pre-desugar reject. The message is the
         // `ast-splice-lift` operand check, not the generic apply-arity path.

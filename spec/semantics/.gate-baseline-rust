@@ -2808,6 +2808,10 @@ pass	unit is the empty tuple
 pass	unquote in quasiquote evaluates normally and embeds
 pass	unquote outside quasiquote is a syntax error
 pass	unquote with more than one operand inside a quasiquote is malformed
+pass	unquote-splicing a list of nested lists declines — no scalar leaf to lift into
+pass	unquote-splicing lifts a boolean list to Ast.Bool leaves
+pass	unquote-splicing lifts a float list to Ast.Float leaves
+pass	unquote-splicing lifts a string list to Ast.Str leaves
 pass	unquote-splicing splices list elements into parent
 pass	unsigned 8-bit addition that overflows its width is rejected at compile time
 pass	unsigned comparison orders by magnitude, not by signed interpretation

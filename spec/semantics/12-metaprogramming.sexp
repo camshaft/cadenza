@@ -1186,6 +1186,45 @@
             (= `(f ,@x) `(f 1 2))))
   (output (: true Bool)))
 
+; --- Splice-lift is type-directed across the scalar leaves (not Int-only) -------------------
+; `,@<list>` lifts each element of a compile-time-constant list into the `Ast` leaf its value kind
+; denotes — Int64→`Ast.Int`, Float64→`Ast.Float`, Bool→`Ast.Bool`, String→`Ast.Str`. Earlier the
+; splice fold wrapped every element in `Ast.Int` unconditionally, so a non-Int constant list declined
+; ("needs a compile-time-constant Int64 list"). These pin that the lift now dispatches by element kind
+; (the constant companion of the active-unquote `ast-lift`, which agrees on the same leaf set), so a
+; Float/Bool/String list splices to the correctly-tagged nodes. A non-scalar element (a nested list)
+; still declines rather than mis-lifting — reject-don't-miscompile.
+
+(case "unquote-splicing lifts a float list to Ast.Float leaves"
+  (doc    "The float companion of the Int splice: `,@` of a constant `(List Float64)` lifts each
+           element to an `Ast.Float` node (not `Ast.Int`), so `(f ,@xs)` with xs=(list 1.5 2.5)
+           reifies to `(Ast.List (Ast.Name f) (Ast.Float 1.5) (Ast.Float 2.5))`. Pins the type-directed
+           splice-lift over Float64 — this declined before the lift dispatched by element kind.")
+  (input  (let ((xs (list 1.5 2.5))) `(f ,@xs)))
+  (output (: (Ast.List (list (Ast.Name "f") (Ast.Float 1.5) (Ast.Float 2.5))) Ast)))
+
+(case "unquote-splicing lifts a boolean list to Ast.Bool leaves"
+  (doc    "The boolean companion: `,@` of a constant `(List Bool)` lifts each element to an `Ast.Bool`
+           node, so `(f ,@xs)` with xs=(list true false) reifies to `(Ast.List (Ast.Name f)
+           (Ast.Bool true) (Ast.Bool false))`. Pins the Bool arm of the type-directed splice-lift.")
+  (input  (let ((xs (list true false))) `(f ,@xs)))
+  (output (: (Ast.List (list (Ast.Name "f") (Ast.Bool true) (Ast.Bool false))) Ast)))
+
+(case "unquote-splicing lifts a string list to Ast.Str leaves"
+  (doc    "The string companion: `,@` of a constant `(List String)` lifts each element to an `Ast.Str`
+           node (a string LITERAL leaf, distinct from a Name), so `(f ,@xs)` with xs=(list \"a\" \"bb\")
+           reifies to `(Ast.List (Ast.Name f) (Ast.Str \"a\") (Ast.Str \"bb\"))`. Pins the Str arm.")
+  (input  (let ((xs (list "a" "bb"))) `(f ,@xs)))
+  (output (: (Ast.List (list (Ast.Name "f") (Ast.Str "a") (Ast.Str "bb"))) Ast)))
+
+(case "unquote-splicing a list of nested lists declines — no scalar leaf to lift into"
+  (doc    "The splice-lift wraps a scalar element in its matching `Ast` leaf; a NESTED-list element has
+           no scalar value leaf this increment, so the splice declines (the runtime splice map is not
+           yet built) rather than building a wrong-typed node — reject-don't-miscompile. `(f ,@xs)` with
+           xs=(list (list 1) (list 2)) is a `(List (List Int64))`, outside the scalar leaf set.")
+  (input  (let ((xs (list (list 1) (list 2)))) `(f ,@xs)))
+  (declines))
+
 ; --- Splicing requires a list --------------------------------------------------------------
 ; metaprogramming.md #Quasiquote Constructs AST With Selective Evaluation (witnessed above): `,@`
 ; "evaluates <list-expr> to a LIST and splices its elements into the parent." So splicing a value
