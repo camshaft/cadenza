@@ -2279,7 +2279,6 @@ pass	eval of a quoted boolean executes it to the boolean value
 pass	eval of a quoted conditional reduces its comparison condition first
 pass	eval of a quoted conditional takes the branch its boolean literal selects
 pass	eval of a quoted float executes it to the float value
-pass	eval of a quoted float executes it to the float value
 pass	eval of a quoted float feeds ordinary float arithmetic
 pass	eval of a quoted string executes it to the string value
 pass	eval on malformed AST traps
