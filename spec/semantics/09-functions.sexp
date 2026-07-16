@@ -3603,6 +3603,38 @@
   (call   main (: 5 Int64)) (output (: 5 Int64))
   (call   main (: 10 Int64)) (output (: 5 Int64)))
 
+; A recursive-generic PRODUCER applied to a list whose ELEMENTS are themselves results of the SAME
+; producer — `(from-list (list (inner) (inner)))` where `(inner) = (from-list (list 1 2)) : Iter Int64`,
+; so the outer call is `from-list` at element type `Iter Int64` (a self-nested `Iter (Iter Int64)`). This
+; DECLINES (CDZ0201, a `todo`), NOT a miscompile: typing the outer arg re-enters `from-list`'s OWN
+; scheme/param solve (still on the stack), so the re-entry guard types the element `(inner)` as `Any` → the
+; list is `List Any` → `∀a. List a -> Iter a` binds `a=Any` → result `Iter Any`, undetermined → the
+; monomorphizer declines. The re-entry guard is load-bearing (it prevents scheme-solve loops + cache
+; poisoning), so the fix is a deeper fixpoint/deferral, not a guard relaxation — a tracked inference
+; follow-up (v-inference; the root of v-iterators' scan/flatten nested-generic residual). A CONCRETE-element
+; list (`(list 1 2)`, `(list (five) (five))` for a non-generic `five`) is unaffected — only an element whose
+; type transitively needs the producer's in-flight scheme collapses. Pinned as a DECLINE so the boundary is
+; executable and flips to a run (icount → 2) when the re-entrancy fix lands; today an honest decline.
+
+(case "a recursive-generic producer over a list of its own generic-producer results declines pending the scheme re-entrancy fix"
+  (doc    "`(from-list (list (inner) (inner)))` where `(inner) = (from-list (list 1 2)) : Iter Int64` applies
+           `from-list` at element type `Iter Int64` (a self-nested `Iter (Iter Int64)`). Typing the outer
+           arg re-enters `from-list`'s own in-flight scheme solve, so the element `(inner)` types `Any` and
+           the result element is undetermined — the monomorphizer DECLINES (CDZ0201), an honest decline (not
+           a miscompile). Contrast the producer over a CONCRETE-element list above (which composes): the gap
+           is only an element whose type transitively needs the producer's not-yet-cached scheme. Intended
+           value when the re-entrancy fix lands: `icount` of the doubly-nested iter (2 outer elements) = 2.")
+  (input  (do
+            (type Iter (Nil) (Cons a (Iter a)))
+            (def (from-list xs)
+              (match xs ((list) (Iter.Nil)) ((list h .. t) (Iter.Cons h (from-list t)))))
+            (def (inner) (from-list (list 1 2)))
+            (def (icount it)
+              (match it ((Iter.Nil) 0) ((Iter.Cons h rest) (+ 1 (icount rest)))))
+            (def (main) (icount (from-list (list (inner) (inner)))))
+            (export main)))
+  (error  CDZ0201))
+
 ; The COMPLEMENT of the producer tie above — a recursive-generic TRANSFORMER that threads a CLOSURE:
 ; `(gmap it f) = (Cons (f h) (gmap rest f))` maps `f` over each element, principal type
 ; `∀a b. (Iter a) → (a → b) → (Iter b)` with the closure DOMAIN `a` tied to the element `it` carries. The

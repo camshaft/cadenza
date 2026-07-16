@@ -1116,6 +1116,7 @@ pass	a recursive walk consulting a node's own and its child's String key compute
 pass	a recursive walk threads THREE nested handlers' states at once
 pass	a recursive walk threads TWO effects at once — a fresh-index counter and a running total
 pass	a recursive-generic producer composes at two element types (the tied result var)
+pass	a recursive-generic producer over a list of its own generic-producer results declines pending the scheme re-entrancy fix
 pass	a recursive-generic producer wrapping elements in a user sum is consumed at one type
 pass	a recursive-generic producer's element is usable at each instantiation
 pass	a recursive-generic transformer threading an IDENTITY closure at TWO types declines pending the multi-instantiation result tie
