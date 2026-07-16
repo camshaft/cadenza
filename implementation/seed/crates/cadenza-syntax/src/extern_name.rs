@@ -33,12 +33,16 @@
 /// digits, `_` and `-`. A Cadenza identifier may contain NON-ASCII letters (the ML lexer's
 /// `is_ident_start` admits `c.is_alphabetic()` and any `!c.is_ascii() && !c.is_whitespace()` char — so
 /// `π`, `café`, `ναμε` are valid identifiers). Such a char is NOT `[a-z0-9-]`, so this function passes it
-/// through verbatim and the result FAILS [`is_kebab_word`] — which `wasmtime` rejects at load with no
-/// diagnostic (the recurring invalid-component miscompile). This is a KNOWN GAP: a non-ASCII export name
-/// must be handled at the compile boundary (reject-with-diagnostic, or a deterministic transliteration)
-/// — a cross-crate contract decision tracked with the compiler/peer-linking owner, NOT resolved here.
-/// The tripwire test `non_ascii_names_are_the_known_unhandled_gap` pins the current behavior so a fix has
-/// a baseline. Callers that only ever pass ASCII-letter-led identifiers are unaffected.
+/// through VERBATIM and the result FAILS [`is_kebab_word`]. This function is UNCHANGED by that fact — it
+/// is a pure text mapping — and the invalid extern name it would produce for a non-ASCII name is caught
+/// UPSTREAM, at the compile boundary: `rcdzc`'s `invalid_kebab_export_name` (backend/wasm/mod.rs) runs
+/// this function + `is_kebab_word` over every export and REJECTS a non-kebab result BEFORE emit with a
+/// cause-specific diagnostic (naming the offending non-ASCII char + an ASCII-kebab-rename hint, e.g.
+/// `π` → `pi`). So a non-ASCII export name is a clean compile-time error, NOT a silent unloadable
+/// component. (This resolved a bug I mis-filed as a "silent miscompile" — the consumer-side guard already
+/// existed; the real fix was diagnostic wording. See the `non_ascii_names_pass_through_verbatim` test.)
+/// Callers that pass ASCII-letter-led identifiers are unaffected; callers with a possibly-non-ASCII name
+/// MUST validate via that boundary guard (or `is_kebab_word` on the result) rather than assume validity.
 pub fn kebab_extern_name(name: &str) -> String {
     let mut out = String::with_capacity(name.len() + 4);
     for c in name.chars() {
@@ -236,23 +240,24 @@ mod tests {
     }
 
     #[test]
-    fn non_ascii_names_are_the_known_unhandled_gap() {
-        // TRIPWIRE for a KNOWN latent miscompile (reported to the compiler/peer-linking owner, not fixed
-        // here — it's a cross-crate contract call: reject-with-diagnostic vs deterministic transliterate).
-        // A Cadenza identifier may contain NON-ASCII letters (the ML lexer's `is_ident_start` admits
-        // `c.is_alphabetic()` and any `!c.is_ascii() && !c.is_whitespace()` char), so `def π() = 0;
-        // export { π }` is a valid program whose export name reaches `kebab_extern_name`. Today it passes
-        // the non-ASCII char through verbatim, yielding a string `wasmtime` rejects at load (no
-        // diagnostic). This test PINS that current behavior — NOT an endorsement of it — so that when the
-        // real fix lands (at the compile boundary), THIS test flips and flags the fixed sites. The
-        // ASCII-letter-led guarantee is the exhaustive sweep above; this documents its precise boundary.
+    fn non_ascii_names_pass_through_verbatim_and_are_caught_at_the_compile_boundary() {
+        // `kebab_extern_name` is a PURE TEXT MAPPING: a non-ASCII letter (a valid Cadenza identifier char —
+        // the ML lexer's `is_ident_start` admits `c.is_alphabetic()` / any `!c.is_ascii() &&
+        // !c.is_whitespace()` char) is NOT in the kebab alphabet `[a-z0-9-]`, so it passes through
+        // VERBATIM and the result is NOT a valid kebab word. This is BY DESIGN, not a gap: the invalid
+        // name is caught UPSTREAM at the compile boundary — `rcdzc`'s `invalid_kebab_export_name`
+        // (backend/wasm/mod.rs) runs this fn + `is_kebab_word` over every export and REJECTS a non-kebab
+        // result pre-emit with a cause-specific diagnostic (names the offending char + an ASCII-rename
+        // hint). So this asserts the STABLE pure-mapping contract this fn owns; the reject behavior is
+        // tested on rcdzc's side. (Earlier framing here called it a "known gap that will flip when fixed"
+        // — WRONG: the fix was a consumer-side reject, so this fn is unchanged and this test does not flip.)
         for name in ["café", "π", "ναμε", "myFünc"] {
             let k = kebab_extern_name(name);
             assert!(
                 !is_kebab_word(&k),
-                "GOOD NEWS — `{name}` now normalizes to the valid kebab word `{k}`. The non-ASCII \
-                 extern-name gap has been FIXED at the boundary; update this tripwire test (and the \
-                 precondition note on `kebab_extern_name`) to assert the new guarantee."
+                "`{name}` should pass through verbatim to the non-kebab `{k}` (the compile-boundary guard \
+                 `invalid_kebab_export_name` is what rejects it, not this pure mapping). If this fn were \
+                 changed to transliterate, update this test AND the precondition doc + the boundary guard."
             );
         }
         // The ASCII precondition still holds unconditionally: an ASCII-letter-led name is always valid.
