@@ -586,6 +586,17 @@
   (input  (- (Symbol.of "a") (Symbol.of "b")))
   (error  CDZ0201))
 
+(case "remainder on two strings is rejected — the whole family, including %"
+  (doc    "`(% \"ab\" \"cd\")` — `%` (remainder) is integer arithmetic like `+`/`-`/`*`/`/`, so a String
+           operand is rejected (CDZ0201, 'arithmetic is not defined on String') exactly as `(- \"ab\"
+           \"cd\")` is. `%` was the LAST arithmetic operator to be brought into the non-numeric-operand
+           message family (it had been omitted from the cross-kind operand lists, so a String `%` leaked a
+           phantom `Int64`-and-String clash instead); this pins that `%` now names the numeric requirement
+           like its siblings. The modulo completion of the whole-family rule the `-`-on-strings case
+           introduces.")
+  (input  (% "ab" "cd"))
+  (error  CDZ0201))
+
 ; --- Arithmetic on a MISMATCHED non-numeric pair names BOTH real types -----------------------
 ; The cases above add two operands of the SAME non-numeric type. When the two operands are DIFFERENT
 ; non-numeric types — `(+ "ab" (list 1 2))`, a String and a List — the diagnostic names BOTH real types
