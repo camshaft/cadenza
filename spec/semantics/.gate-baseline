@@ -186,6 +186,7 @@ pass	Type.eq of a type-valued parameter against itself is always true
 pass	Type.eq on a constructed generic sum compares the full instantiated type
 pass	Type.eq on a type-valued parameter against a COMPOUND type is structural
 pass	Type.of carries a quantity's unit into a same-type annotation
+pass	Type.of grounds a function stored inside a compound value's element
 pass	Type.of on a bare nullary variant reflects its element as UNDETERMINED
 pass	Type.of reflects a RETURNED function's body-solved domain, at every currying level
 pass	Type.of reflects a function's BODY-SOLVED domain, distinguishing different parameter types
