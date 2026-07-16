@@ -432,4 +432,43 @@ mod tests {
         }
         assert!(count >= 4000, "swept a meaningful space, got {count}");
     }
+
+    #[test]
+    fn canon_gives_cross_surface_byte_identity_over_generated_programs() {
+        // The RAISON D'ÊTRE of canon, swept: the s-expr reader and the ML parser build the SAME tree in
+        // DIFFERENT occurrence orders (the s-expr reader head-first, the ML parser operand-before-head),
+        // so their raw arenas encode to different bytes — but after `canonicalize` they must be
+        // BYTE-IDENTICAL. Only ONE hand-picked input (`sexpr_and_ml_agree_after_canon`) pinned this; the
+        // s-expr-only sweep above never crosses the ML surface. Round-trip each generated program
+        // s-expr → arena → ML print → ML parse → arena, and assert canonical bytes match. Also assert the
+        // s-expr-side arena is ALREADY canonical (Borrowed fast-path) while the ML-side canonical form
+        // agrees — the asymmetry the whole pass exists to erase.
+        let mut rng = Rng(0x5eed_ca11_1dea_c0de);
+        let mut crossed = 0usize;
+        for _ in 0..4000 {
+            let depth = 1 + rng.below(4);
+            let src = format!("(def (main) {})", gen_prog(&mut rng, depth));
+            let from_sexpr = sexpr::read(&src).expect("generated s-expr reads");
+            // Route the SAME program through the ML surface: print to ML text, reparse.
+            let ml = crate::printer::print(&from_sexpr, 100);
+            let from_ml = parser::read_ml(&ml).arenas;
+
+            let sexpr_canon = codec::encode(&canonicalize(&from_sexpr));
+            let ml_canon = codec::encode(&canonicalize(&from_ml));
+            assert_eq!(
+                sexpr_canon, ml_canon,
+                "cross-surface canon bytes differ for {src}\n  ml-text: {ml}"
+            );
+            // The two RAW arenas denote the same tree even before canon.
+            assert!(
+                from_sexpr.structurally_eq(&from_ml),
+                "the two surfaces disagree on the tree for {src}"
+            );
+            crossed += 1;
+        }
+        assert!(
+            crossed >= 4000,
+            "swept a meaningful cross-surface space, got {crossed}"
+        );
+    }
 }

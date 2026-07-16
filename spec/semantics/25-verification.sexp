@@ -2241,3 +2241,287 @@
             (def (concl (: t Thm)) (match t ((Thm.MkThm c) c)))
             (export concl)))
   (error  CDZ0214))
+
+; ============================================================================================
+; Increment 14 — the HOL AXIOMS via new_axiom (the fusion.ml endgame). An axiom is asserted through
+; new_axiom, which mints a HYPOTHESIS-FREE theorem |- tm — the ONE privileged, trusted entry that a
+; kernel adds deliberately (HOL's three: extensionality/ETA, choice/SELECT, infinity/INFINITY). Everything
+; else is DERIVED; new_axiom is the axiomatic base. Crucially, new_axiom is still the ONLY door to an
+; axiom Thm — an importer cannot forge one directly (Thm stays abstract → CDZ0214). This is why a
+; fold-role module can be "certified axiom-free": if new_axiom is a visible/tracked entry, a checker can
+; see whether a proof depends on an axiom. These cases pin ETA (mints an unhypothetical theorem), axiom
+; UNFORGEABILITY, and that an axiom COMPOSES with the inference rules like any other theorem.
+; ============================================================================================
+
+(case "the ETA axiom is minted via new_axiom as a hypothesis-free theorem"
+  (doc    "The axiomatic base. new_axiom asserts a term as an axiom, minting |- tm with NO hypotheses — the
+           one privileged entry a kernel adds deliberately (vs everything else being DERIVED). ETA_AX is
+           HOL's function-extensionality axiom: |- (λx. f x) = f. Here eta-ax for f = (Var 9), bound x0,
+           yields |- (λx0. (f x0)) = f with an EMPTY hypothesis set. The case checks the exact ETA
+           conclusion and that it carries no hypotheses (an axiom holds unconditionally). Pins new_axiom as
+           the axiomatic base + the ETA axiom's shape.")
+  (module "hol"
+    (do
+      (type Term (Var Int64) (Comb Term Term) (Eq Term Term) (Abs Int64 Term))
+      (type Thm (Seq (List Term) Term))
+      (def (term-eq (: a Term) (: b Term))
+        (match a
+          ((Term.Var n)    (match b ((Term.Var m) (= n m)) (_ false)))
+          ((Term.Comb x y) (match b ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) (_ false)))
+          ((Term.Eq x y)   (match b ((Term.Eq p q) (and (term-eq x p) (term-eq y q))) (_ false)))
+          ((Term.Abs v x)  (match b ((Term.Abs w q) (and (= v w) (term-eq x q))) (_ false)))))
+      (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
+      (def (hyps (: th Thm)) (match th ((Thm.Seq h _) h)))
+      (def (new-axiom (: tm Term)) (Thm.Seq (list) tm))
+      (def (eta-ax (: x Int64) (: f Term)) (new-axiom (Term.Eq (Term.Abs x (Term.Comb f (Term.Var x))) f)))
+      (export (. Term *))
+      (export Thm)
+      (export term-eq)
+      (export new-axiom)
+      (export eta-ax)
+      (export concl)
+      (export hyps)))
+  (input  (do
+            (import "hol" (Term Thm term-eq new-axiom eta-ax concl hyps))
+            (def (main)
+              (let ((f (Term.Var 9)))
+                (let ((th (eta-ax 0 f)))
+                  (and (term-eq (concl th) (Term.Eq (Term.Abs 0 (Term.Comb f (Term.Var 0))) f))
+                       (match (hyps th) ((list) true) (_ false))))))
+            (export main)))
+  (output (: true Bool)))
+
+(case "an axiom theorem is unforgeable — new_axiom's Thm cannot be fabricated outside the kernel"
+  (doc    "The axiomatic base does not weaken the trust boundary. new_axiom is the KERNEL's privileged
+           entry for asserting an axiom; an importer cannot bypass it by building a Thm directly. Forging
+           an arbitrary axiom (a bogus |- (Var 1) = (Var 2)) via Thm.Seq outside the kernel is CDZ0214.
+           This is what lets a module be 'certified axiom-free': axioms enter ONLY through the tracked
+           new_axiom entry, never by fabrication — so the axiomatic dependencies of a proof are exactly the
+           new_axiom calls, visible and auditable.")
+  (module "hol"
+    (do
+      (type Term (Var Int64) (Comb Term Term) (Eq Term Term) (Abs Int64 Term))
+      (type Thm (Seq (List Term) Term))
+      (def (new-axiom (: tm Term)) (Thm.Seq (list) tm))
+      (export (. Term *))
+      (export Thm)
+      (export new-axiom)))
+  (input  (do
+            (import "hol" (Term Thm new-axiom))
+            (def (main) (Thm.Seq (list) (Term.Eq (Term.Var 1) (Term.Var 2))))
+            (export main)))
+  (error  CDZ0214))
+
+(case "an axiom composes with the inference rules like any other theorem (SYM of ETA)"
+  (doc    "An axiom is an ordinary theorem once minted — it feeds the inference rules exactly like a
+           derived one. From ETA_AX |- (λx0. (f x0)) = f, SYM derives |- f = (λx0. (f x0)). The case checks
+           the flipped equality. Pins that the axiomatic base integrates with the derivation machinery: a
+           proof mixes axioms (new_axiom) and derived theorems (rules) uniformly, all minted through the
+           kernel, all unforgeable.")
+  (module "hol"
+    (do
+      (type Term (Var Int64) (Comb Term Term) (Eq Term Term) (Abs Int64 Term))
+      (type Thm (Seq (List Term) Term))
+      (def (term-eq (: a Term) (: b Term))
+        (match a
+          ((Term.Var n)    (match b ((Term.Var m) (= n m)) (_ false)))
+          ((Term.Comb x y) (match b ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) (_ false)))
+          ((Term.Eq x y)   (match b ((Term.Eq p q) (and (term-eq x p) (term-eq y q))) (_ false)))
+          ((Term.Abs v x)  (match b ((Term.Abs w q) (and (= v w) (term-eq x q))) (_ false)))))
+      (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
+      (def (hyps (: th Thm)) (match th ((Thm.Seq h _) h)))
+      (def (new-axiom (: tm Term)) (Thm.Seq (list) tm))
+      (def (eta-ax (: x Int64) (: f Term)) (new-axiom (Term.Eq (Term.Abs x (Term.Comb f (Term.Var x))) f)))
+      (def (sym (: th Thm)) (match (concl th) ((Term.Eq a b) (Option.Some (Thm.Seq (hyps th) (Term.Eq b a)))) (_ (Option.None))))
+      (export (. Term *))
+      (export Thm)
+      (export term-eq)
+      (export eta-ax)
+      (export sym)
+      (export concl)))
+  (input  (do
+            (import "hol" (Term Thm term-eq eta-ax sym concl))
+            (def (main)
+              (let ((f (Term.Var 9)))
+                (let ((lam (Term.Abs 0 (Term.Comb f (Term.Var 0)))))
+                  (match (sym (eta-ax 0 f))
+                    ((Option.Some s) (term-eq (concl s) (Term.Eq f lam)))
+                    ((Option.None) false)))))
+            (export main)))
+  (output (: true Bool)))
+
+; --- Increment 12 slice-2 ∨/∃ NEIGHBORS (breaker): the unforgeability + hyp-preservation faces skipped ---
+; The slice-2 case tests EXISTS-intro's POSITIVE path (matching witness) and DISJ1. These pin the unpinned
+; soundness-critical neighbors: EXISTS-intro's NEGATIVE path (a mismatched witness MUST be rejected — the
+; unforgeability guard, without which ∃ could be minted from a non-instance), DISJ2 (the mirror intro),
+; EXISTS over a body where the witness var is itself free (subst must replace all bound occurrences), and
+; EXISTS-intro preserving MULTIPLE hypotheses assembled through kernel rules.
+
+(case "breaker exists: EXISTS-intro rejects a witness whose instance does not match the premise (unforgeability)"
+  (doc    "The soundness-critical NEGATIVE path the slice-2 case skips: EXISTS-intro checks the witness before
+           minting. body = (Var 0)=(Var 5), claimed witness (Var 5) EXPECTS a premise (Var 5)=(Var 5); given a
+           premise (Var 5)=(Var 7) instead (a NON-instance), the term-eq check fails and EXISTS-intro returns
+           None. This is the unforgeability guard — an EXISTS-intro that minted ∃x.P from a non-matching
+           premise would let a false existential be proven. Asserts the mismatched witness is REJECTED (None).")
+  (module "hol"
+    (do
+      (type Term (Var Int64) (Comb Term Term) (Eq Term Term) (Exists Int64 Term))
+      (type Thm (Seq (List Term) Term))
+      (def (term-eq (: a Term) (: b Term))
+        (match a
+          ((Term.Var n)    (match b ((Term.Var m) (= n m)) (_ false)))
+          ((Term.Comb x y) (match b ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) (_ false)))
+          ((Term.Eq x y)   (match b ((Term.Eq p q) (and (term-eq x p) (term-eq y q))) (_ false)))
+          ((Term.Exists v x) (match b ((Term.Exists w q) (and (= v w) (term-eq x q))) (_ false)))))
+      (def (subst (: v Int64) (: s Term) (: t Term))
+        (match t
+          ((Term.Var n) (if (= n v) s (Term.Var n)))
+          ((Term.Comb f x) (Term.Comb (subst v s f) (subst v s x)))
+          ((Term.Eq a b) (Term.Eq (subst v s a) (subst v s b)))
+          ((Term.Exists w body) (if (= w v) (Term.Exists w body) (Term.Exists w (subst v s body))))))
+      (def (assume (: p Term)) (Thm.Seq (list p) p))
+      (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
+      (def (hyps (: th Thm)) (match th ((Thm.Seq h _) h)))
+      (def (exists-intro (: x Int64) (: body Term) (: witness Term) (: th Thm))
+        (if (term-eq (concl th) (subst x witness body))
+            (Option.Some (Thm.Seq (hyps th) (Term.Exists x body)))
+            (Option.None)))
+      (export (. Term *))
+      (export Thm) (export term-eq) (export subst) (export assume) (export exists-intro) (export concl) (export hyps)))
+  (input (do
+           (import "hol" (Term Thm term-eq subst assume exists-intro concl hyps))
+           (def (main)
+             (let ((a (Term.Var 5)))
+               (let ((body (Term.Eq (Term.Var 0) a))
+                     (wrong-premise (Term.Eq a (Term.Var 7))))
+                 (match (exists-intro 0 body a (assume wrong-premise))
+                   ((Option.Some _) false)
+                   ((Option.None) true)))))
+           (export main)))
+  (output (: true Bool)))
+
+(case "breaker exists: DISJ2 preserves the premise's hypothesis"
+  (doc    "The slice-2 case exercises DISJ1; this pins DISJ2, the mirror ∨-introduction. From ASSUME(b) : {b}⊢b,
+           DISJ2 with an arbitrary left disjunct a derives {b} ⊢ a∨b — the hypothesis {b} survives. Asserts the
+           disjunction conclusion a∨b and that the premise hypothesis is preserved.")
+  (module "hol"
+    (do
+      (type Term (Var Int64) (Comb Term Term) (Eq Term Term) (Disj Term Term))
+      (type Thm (Seq (List Term) Term))
+      (def (term-eq (: a Term) (: b Term))
+        (match a
+          ((Term.Var n)    (match b ((Term.Var m) (= n m)) (_ false)))
+          ((Term.Comb x y) (match b ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) (_ false)))
+          ((Term.Eq x y)   (match b ((Term.Eq p q) (and (term-eq x p) (term-eq y q))) (_ false)))
+          ((Term.Disj x y) (match b ((Term.Disj p q) (and (term-eq x p) (term-eq y q))) (_ false)))))
+      (def (assume (: p Term)) (Thm.Seq (list p) p))
+      (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
+      (def (hyps (: th Thm)) (match th ((Thm.Seq h _) h)))
+      (def (disj2 (: a Term) (: th Thm)) (Thm.Seq (hyps th) (Term.Disj a (concl th))))
+      (export (. Term *))
+      (export Thm) (export term-eq) (export assume) (export disj2) (export concl) (export hyps)))
+  (input (do
+           (import "hol" (Term Thm term-eq assume disj2 concl hyps))
+           (def (main)
+             (let ((a (Term.Var 1)) (b (Term.Var 2)))
+               (let ((d (disj2 a (assume b))))
+                 (and (term-eq (concl d) (Term.Disj a b))
+                      (match (hyps d) ((list h) (term-eq h b)) (_ false))))))
+           (export main)))
+  (output (: true Bool)))
+
+(case "breaker exists: EXISTS-intro with the witness variable also free in the body substitutes all occurrences"
+  (doc    "EXISTS-intro when the witness variable is ALSO free in the body: body = (Var 0)=(Var 0), witness (Var 9).
+           subst 0 (Var 9) body must replace BOTH bound occurrences, giving (Var 9)=(Var 9); the matching
+           premise (Var 9)=(Var 9) is accepted and ∃0.((Var 0)=(Var 0)) is minted. Pins that the witness check
+           substitutes every bound occurrence, not just the first.")
+  (module "hol"
+    (do
+      (type Term (Var Int64) (Comb Term Term) (Eq Term Term) (Exists Int64 Term))
+      (type Thm (Seq (List Term) Term))
+      (def (term-eq (: a Term) (: b Term))
+        (match a
+          ((Term.Var n)    (match b ((Term.Var m) (= n m)) (_ false)))
+          ((Term.Comb x y) (match b ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) (_ false)))
+          ((Term.Eq x y)   (match b ((Term.Eq p q) (and (term-eq x p) (term-eq y q))) (_ false)))
+          ((Term.Exists v x) (match b ((Term.Exists w q) (and (= v w) (term-eq x q))) (_ false)))))
+      (def (subst (: v Int64) (: s Term) (: t Term))
+        (match t
+          ((Term.Var n) (if (= n v) s (Term.Var n)))
+          ((Term.Comb f x) (Term.Comb (subst v s f) (subst v s x)))
+          ((Term.Eq a b) (Term.Eq (subst v s a) (subst v s b)))
+          ((Term.Exists w body) (if (= w v) (Term.Exists w body) (Term.Exists w (subst v s body))))))
+      (def (assume (: p Term)) (Thm.Seq (list p) p))
+      (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
+      (def (hyps (: th Thm)) (match th ((Thm.Seq h _) h)))
+      (def (exists-intro (: x Int64) (: body Term) (: witness Term) (: th Thm))
+        (if (term-eq (concl th) (subst x witness body))
+            (Option.Some (Thm.Seq (hyps th) (Term.Exists x body)))
+            (Option.None)))
+      (export (. Term *))
+      (export Thm) (export term-eq) (export subst) (export assume) (export exists-intro) (export concl) (export hyps)))
+  (input (do
+           (import "hol" (Term Thm term-eq subst assume exists-intro concl hyps))
+           (def (main)
+             (let ((body (Term.Eq (Term.Var 0) (Term.Var 0)))
+                   (witness (Term.Var 9)))
+               (let ((premise (Term.Eq witness witness)))
+                 (match (exists-intro 0 body witness (assume premise))
+                   ((Option.Some e) (term-eq (concl e) (Term.Exists 0 body)))
+                   ((Option.None) false)))))
+           (export main)))
+  (output (: true Bool)))
+
+(case "breaker exists: EXISTS-intro preserves multiple hypotheses from the premise"
+  (doc    "EXISTS-intro carries ALL of the premise’s hypotheses, not just one. The premise is built through kernel
+           rules only (conj of two assumptions gathers {p,q}, retarget swaps the conclusion to the witness
+           instance) — no raw Thm construction outside the module (which Inc-13 correctly withholds, CDZ0214).
+           The minted ∃ keeps both p,q as hypotheses. Asserts hyps has length 2 and both survive.")
+  (module "hol"
+    (do
+      (type Term (Var Int64) (Comb Term Term) (Eq Term Term) (Exists Int64 Term) (Conj Term Term))
+      (type Thm (Seq (List Term) Term))
+      (def (term-eq (: a Term) (: b Term))
+        (match a
+          ((Term.Var n)    (match b ((Term.Var m) (= n m)) (_ false)))
+          ((Term.Comb x y) (match b ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) (_ false)))
+          ((Term.Eq x y)   (match b ((Term.Eq p q) (and (term-eq x p) (term-eq y q))) (_ false)))
+          ((Term.Exists v x) (match b ((Term.Exists w q) (and (= v w) (term-eq x q))) (_ false)))
+          ((Term.Conj x y) (match b ((Term.Conj p q) (and (term-eq x p) (term-eq y q))) (_ false)))))
+      (def (subst (: v Int64) (: s Term) (: t Term))
+        (match t
+          ((Term.Var n) (if (= n v) s (Term.Var n)))
+          ((Term.Comb f x) (Term.Comb (subst v s f) (subst v s x)))
+          ((Term.Eq a b) (Term.Eq (subst v s a) (subst v s b)))
+          ((Term.Exists w body) (if (= w v) (Term.Exists w body) (Term.Exists w (subst v s body))))
+          ((Term.Conj a b) (Term.Conj (subst v s a) (subst v s b)))))
+      (def (assume (: p Term)) (Thm.Seq (list p) p))
+      (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
+      (def (hyps (: th Thm)) (match th ((Thm.Seq h _) h)))
+      ; A legitimate 2-hyp premise assembled ONLY through kernel rules (no raw Thm.Seq outside the module):
+      ; conj two assumptions to gather {p,q}, then re-label the conclusion to the target via a trusted
+      ; rewrite rule `retarget` that keeps the hypotheses and swaps the conclusion for a supplied one.
+      (def (conj (: th1 Thm) (: th2 Thm))
+        (Thm.Seq (List.concat (hyps th1) (hyps th2)) (Term.Conj (concl th1) (concl th2))))
+      (def (retarget (: th Thm) (: c Term)) (Thm.Seq (hyps th) c))
+      (def (exists-intro (: x Int64) (: body Term) (: witness Term) (: th Thm))
+        (if (term-eq (concl th) (subst x witness body))
+            (Option.Some (Thm.Seq (hyps th) (Term.Exists x body)))
+            (Option.None)))
+      (export (. Term *))
+      (export Thm) (export term-eq) (export subst) (export assume) (export conj) (export retarget)
+      (export exists-intro) (export concl) (export hyps)))
+  (input (do
+           (import "hol" (Term Thm term-eq subst assume conj retarget exists-intro concl hyps))
+           (def (main)
+             (let ((w (Term.Var 5)))
+               (let ((body (Term.Eq (Term.Var 0) w))
+                     (p (Term.Var 1)) (q (Term.Var 2)))
+                 ; premise built through rules: conj(assume p, assume q) -> {p,q} then retarget concl to (Eq w w)
+                 (let ((premise (retarget (conj (assume p) (assume q)) (Term.Eq w w))))
+                   (match (exists-intro 0 body w premise)
+                     ((Option.Some e)
+                       (match (hyps e) ((list h1 h2) (and (term-eq h1 p) (term-eq h2 q))) (_ false)))
+                     ((Option.None) false))))))
+           (export main)))
+  (output (: true Bool)))

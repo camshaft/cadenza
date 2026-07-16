@@ -1207,6 +1207,50 @@ mod tests {
         assert!(total >= 2000, "swept a meaningful space, got {total}");
     }
 
+    #[test]
+    fn markdown_survives_the_binary_codec_over_generated_and_embedded_program_documents() {
+        // json/toml/cedar each pin a to-binary round-trip; markdown did NOT — yet it is the riskiest
+        // surface for the codec because an embedded ```cdz/```ml/```sexp fence body is a REAL arena
+        // subtree (not opaque text), so a codec defect around nested program trees would surface here
+        // first. Assert: read(md) → codec::encode → codec::decode reproduces a structurally-equal arena,
+        // AND printing the decoded arena re-reads to the same tree (the full paper-trail json_to_binary
+        // checks). Swept over the generator (plain markdown) plus explicit embedded-program fences the
+        // generator doesn't emit.
+        fn assert_binary_round_trip(md: &str) {
+            let a1 = read(md); // infallible
+            let bin = crate::codec::encode(&a1);
+            let a2 = crate::codec::decode(&bin)
+                .unwrap_or_else(|| panic!("decode returned None for {md:?}"));
+            assert!(
+                a1.structurally_eq(&a2),
+                "arena not preserved through the binary codec for {md:?}"
+            );
+            // Printing the decoded arena re-reads to the same tree.
+            let printed = print(&a2, 100);
+            let a3 = read(&printed);
+            assert!(
+                a1.structurally_eq(&a3),
+                "decoded→print→read diverged for {md:?}\n--- reprint ---\n{printed}"
+            );
+        }
+        // Generated plain-markdown documents.
+        let mut rng = Rng(0xb1a5_5eed_face_ce01);
+        for _ in 0..2000 {
+            assert_binary_round_trip(&gen_md(&mut rng));
+        }
+        // Embedded-program fences (cdz/ml/sexp) — the fence body is a nested arena subtree, the part the
+        // generator never exercises and the part most likely to trip the codec.
+        for md in [
+            "```cdz\nlet x = 1 in x\n```\n",
+            "text\n\n```ml\ndef f() = 42\n```\n\nmore\n",
+            "```sexp\n(def (main) (+ 1 2))\n```\n",
+            "# H\n\n```cdz\nmatch xs with\n| [] -> 0\n| x :: _ -> x\n```\n\n> after\n",
+            "```cdz\n(\"list\" 1 2 3)\n```\n",
+        ] {
+            assert_binary_round_trip(md);
+        }
+    }
+
     /// `read`/`read_spanned` are INFALLIBLE (CommonMark always parses to SOME document), so there is no
     /// error path to catch a defect — the invariant is that they never PANIC and always produce a
     /// well-formed document with a TOTAL span table: a non-empty arena, root id in range, `spans` exactly

@@ -853,6 +853,7 @@ pass	a host delegating a value definition rather than an effect is rejected
 pass	a host delegating the same effect twice is rejected
 pass	a host effect with a non-kebab NAME crosses under a normalized interface extern name
 pass	a host effect with a non-kebab OPERATION name crosses under a normalized func extern name
+pass	a host op with a String parameter composes with the value-heap runtime
 pass	a host-called closure applied to a different argument tracks the input
 pass	a host-called closure with a different body dispatches the right code
 pass	a kernel may deliberately export its rule as a first-class value
@@ -1720,6 +1721,7 @@ pass	a same-type sum match is accepted and binds the payload (the control)
 pass	a same-unit quantity join flows and its magnitude reads back
 pass	a scalar BETWEEN two Tuple args with a LIST result
 pass	a scalar element is projected DIRECTLY from a named function's runtime tuple result
+pass	a scalar element is projected directly from a fn-return tuple with runtime content
 pass	a scalar element is projected directly from a function's runtime tuple result
 pass	a scalar element is projected from a let-bound runtime tuple
 pass	a scalar-payload sum looked up from a map, returned via a ctor, is matched in the caller
@@ -2124,6 +2126,8 @@ pass	an arm re-performing its own effect with no outer handler has no home
 pass	an arm resuming with a re-perform of its OWN effect forwards to an outer handler of that effect
 pass	an arm that binds its resume in a lambda and applies it immediately folds
 pass	an association list is searched by key with a tuple-carrying Option match
+pass	an axiom composes with the inference rules like any other theorem (SYM of ETA)
+pass	an axiom theorem is unforgeable — new_axiom's Thm cannot be fabricated outside the kernel
 pass	an earlier literal arm is chosen over a later name-binding arm for a runtime scrutinee
 pass	an effect discharged by a handler does not escape to the manifest
 pass	an effect operation declared with no name is rejected
@@ -2345,11 +2349,16 @@ pass	bitwise XOR of an integer and a float does not silently promote
 pass	bitwise XOR toggles bits
 pass	bitwise XOR with negative one is the bitwise complement
 pass	bitwise XOR with zero is the operand (identity)
+pass	both elements of a runtime-content fn-return tuple are projected directly and combined
 pass	both sibling args consume the same binding independently
 pass	boxed closures of two fn types in one sum: the unbuilt variant's dispatch is dead
 pass	branches performing DIFFERENT counts each thread their own post-state to the continuation
 pass	breaker capsubst: a non-capturing substitution takes the plain path
 pass	breaker capsubst: the fresh binder clears the body's ids, not only s's
+pass	breaker exists: DISJ2 preserves the premise's hypothesis
+pass	breaker exists: EXISTS-intro preserves multiple hypotheses from the premise
+pass	breaker exists: EXISTS-intro rejects a witness whose instance does not match the premise (unforgeability)
+pass	breaker exists: EXISTS-intro with the witness variable also free in the body substitutes all occurrences
 pass	breaker holsubst: a free occurrence beside a shadow substitutes selectively
 pass	breaker holsubst: a shadowing binder blocks substitution
 pass	breaker holsubst: the naive subst's documented capture hazard
@@ -2977,6 +2986,7 @@ pass	symbols interned from different strings are unequal
 pass	textually-identical performs are DISTINCT state-advancing reads, not a common subexpression
 pass	the AST is a sum type deconstructible by pattern matching
 pass	the Bool generator covers both values across seeds (it is not a constant)
+pass	the ETA axiom is minted via new_axiom as a hypothesis-free theorem
 pass	the Float codec round-trips a negative value
 pass	the Int codec round-trips i64::MIN — the two's-complement boundary
 pass	the LEB128 byte composition runs on a runtime operand
@@ -3031,7 +3041,7 @@ pass	the heap list a handle BUILDS escapes the handle and is consumed outside it
 pass	the identity function applied to a boolean returns the boolean
 pass	the identity function applied to an integer returns the integer
 pass	the implication-extended kernel Thm stays unforgeable — Thm.Seq of a bogus implication outside is CDZ0214
-pass	the int-to-float generator is order-preserving (a < b implies of a < of b)
+pass	the int-to-float generator is order-preserving (a < b implies of a <= of b — NON-decreasing)
 pass	the intersection contains the elements in both sets
 pass	the intersection of disjoint sets is empty
 pass	the kernel defines T (truth) as a constant and DERIVES |- T through the rules
@@ -3102,6 +3112,7 @@ pass	the same program with a different response gives a different deterministic 
 pass	the same-core-shape sibling dispatches ITS body, not the first
 pass	the scalar length of a runtime multi-byte string counts scalars, not bytes
 pass	the second distinct-signature closure export returns its own type
+pass	the second element of a runtime-content fn-return tuple is projected directly
 pass	the selected operand decides a hoisted comparison
 pass	the selected operand decides a hoisted float equality
 pass	the sequent-shaped kernel Thm is unforgeable — building Thm.Seq outside the kernel is CDZ0214
@@ -3279,4 +3290,3 @@ pass	α-equivalence handles nesting and distinguishes a bound variable from a sa
 todo	SUM ARG + LIST RESULT declines cleanly (Option arg, List result)
 todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
-pass	a host op with a String parameter composes with the value-heap runtime

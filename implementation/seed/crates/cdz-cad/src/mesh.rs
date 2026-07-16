@@ -124,6 +124,23 @@ mod tests {
     }
 
     #[test]
+    fn a_negative_dimension_cube_meshes_to_empty() {
+        // Cross-surface consistency guard: the exact model (exact.cdz) normalizes a negative-dimension box to a
+        // well-formed ABSOLUTE extent, and manifold documents that any negative (or all-zero) dimension yields
+        // an EMPTY manifold — so a negative-size Cuber meshes to NOTHING here (never garbage/degenerate geometry
+        // that could crash a downstream STL/glTF writer). Pins that the native driver agrees with manifold's
+        // documented negative-dimension behavior. (A model would `simplify-r`/normalize upstream; this is the
+        // driver's own safety net.)
+        let s = parse_solid("(: (Cuber (: (tuple -2.0 2.0 2.0) Vec3r)) Solidr)").unwrap();
+        let m = mesh(&s);
+        assert!(
+            m.is_empty(),
+            "a negative-dimension cube must mesh to empty, not degenerate geometry"
+        );
+        assert_eq!(m.triangle_count(), 0);
+    }
+
+    #[test]
     fn a_difference_produces_a_watertight_hole() {
         // cube minus a sphere → more triangles than the bare cube (the boolean carved a cavity).
         let s = parse_solid(

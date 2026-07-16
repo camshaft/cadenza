@@ -1509,7 +1509,21 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         // runtime widen.)
         Core::BigIntOfI64 { value } => {
             let v = emit(db, value, env, ctx)?;
-            Ok(format!("cdz_num::Big::from_i64(({v}) as i64)"))
+            // `BigInt.of` is `∀a. (Int a) -> BigInt`, so the operand may be UNSIGNED. `Big::from_i64((v) as
+            // i64)` REINTERPRETS a `u64 >= 2^63` as NEGATIVE — a silent VALUE miscompile (Copilot PR#464).
+            // Widen BY VALUE through `i128`: every fixed-width int (signed or unsigned, ≤64 bits) fits an
+            // `i128` LOSSLESSLY and keeps its true sign (`u64::MAX as i128` = +18446744073709551615, not -1).
+            // `Big` has no public `from_i128`/`from_u64`, but it has the canonical byte path:
+            // `i128_to_sign_magnitude_bytes_into` writes `[sign][LE magnitude]` (≤17 bytes for any i128),
+            // and `from_sign_magnitude_bytes` rebuilds the `Big`. This is correct for BOTH a signed negative
+            // and a large unsigned — one uniform path, no signedness branch needed. (`__buf`/`__n` are
+            // block-local so nesting is fine; the buffer is 17 = 1 sign + 16 magnitude bytes.)
+            Ok(format!(
+                "{{ let mut __buf = [0u8; 17]; \
+                 let __n = cdz_num::Big::i128_to_sign_magnitude_bytes_into(({v}) as i128, &mut __buf) \
+                 .expect(\"i128 fits 17 bytes\"); \
+                 cdz_num::Big::from_sign_magnitude_bytes(&__buf[..__n]) }}"
+            ))
         }
         // `Int64.of b` on a runtime `Big` — the checked narrowing back to i64, which TRAPS out of range at
         // run time (matching the wasm `bigint-to-i64-checked`). `to_i64_checked` returns `Option<i64>`.

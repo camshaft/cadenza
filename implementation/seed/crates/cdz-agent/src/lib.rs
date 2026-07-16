@@ -126,38 +126,73 @@ fn json_escape(s: &str) -> String {
 fn first_text_block(body: &str) -> Option<String> {
     let key = "\"text\":\"";
     let start = body.find(key)? + key.len();
-    let bytes = body.as_bytes();
-    let mut i = start;
+    // Iterate the value by CHAR, not byte: a Bedrock completion is UTF-8 and routinely non-ASCII
+    // (accents / CJK / emoji), so a byte-by-byte `b as char` would map each UTF-8 byte to a Latin-1
+    // codepoint — corrupting every multi-byte char into mojibake. All JSON escapes (`\" \\ \/ \n \r \t
+    // \uXXXX`) are ASCII, so escape handling reads cleanly char-by-char; the literal path pushes the
+    // whole char intact. `\uXXXX` peeks four hex chars (all ASCII) via `by_ref().take(4)`.
+    let mut chars = body[start..].chars();
     let mut out = String::new();
-    while i < bytes.len() {
-        match bytes[i] {
-            b'\\' if i + 1 < bytes.len() => {
-                i += 1;
-                match bytes[i] {
-                    b'"' => out.push('"'),
-                    b'\\' => out.push('\\'),
-                    b'/' => out.push('/'),
-                    b'n' => out.push('\n'),
-                    b'r' => out.push('\r'),
-                    b't' => out.push('\t'),
-                    // A `\uXXXX` escape: copy the four hex digits' scalar (BMP only — sufficient for
-                    // model text; a surrogate pair would need more, but Bedrock rarely emits them here).
-                    b'u' if i + 4 < bytes.len() => {
-                        let hex = &body[i + 1..i + 5];
-                        if let Ok(cp) = u32::from_str_radix(hex, 16) {
-                            if let Some(ch) = char::from_u32(cp) {
-                                out.push(ch);
-                            }
-                        }
-                        i += 4;
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => match chars.next() {
+                Some('"') => out.push('"'),
+                Some('\\') => out.push('\\'),
+                Some('/') => out.push('/'),
+                Some('n') => out.push('\n'),
+                Some('r') => out.push('\r'),
+                Some('t') => out.push('\t'),
+                // A `\uXXXX` escape: the four hex digits' scalar (BMP only — sufficient for model text; a
+                // surrogate pair would need more, but Bedrock rarely emits them here). A malformed/short
+                // escape is skipped (best-effort decode, like the rest of this minimal reader).
+                Some('u') => {
+                    let hex: String = chars.by_ref().take(4).collect();
+                    if let Some(ch) = u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32) {
+                        out.push(ch);
                     }
-                    other => out.push(other as char),
                 }
-            }
-            b'"' => return Some(out),
-            b => out.push(b as char),
+                // An unknown escape (or a trailing backslash): push the escaped char verbatim, or stop.
+                Some(other) => out.push(other),
+                None => return Some(out),
+            },
+            '"' => return Some(out),
+            c => out.push(c),
         }
-        i += 1;
     }
     None
+}
+
+#[cfg(all(test, feature = "bedrock"))]
+mod bedrock_tests {
+    use super::*;
+
+    #[test]
+    fn first_text_block_preserves_multibyte_utf8() {
+        // A Bedrock completion is UTF-8 and routinely non-ASCII. The decode must round-trip a multi-byte
+        // char (accents / CJK / emoji) INTACT — the pr465 bug pushed each UTF-8 byte as a Latin-1 char,
+        // producing mojibake and desyncing the scan.
+        let body = r#"{"content":[{"type":"text","text":"café 日本語 🎉"}]}"#;
+        assert_eq!(
+            first_text_block(body).as_deref(),
+            Some("café 日本語 🎉"),
+            "a multi-byte completion must round-trip intact, not as mojibake"
+        );
+    }
+
+    #[test]
+    fn first_text_block_decodes_escapes_and_stops_at_the_closing_quote() {
+        // JSON escapes (all ASCII) decode; the value ends at the first unescaped quote (trailing JSON
+        // after it is ignored). A `\uXXXX` BMP escape becomes its char.
+        let body = r#"{"text":"a\tb\n\"q\" é end","more":"ignored"}"#;
+        assert_eq!(
+            first_text_block(body).as_deref(),
+            Some("a\tb\n\"q\" é end"),
+            "escapes decode and the scan stops at the closing quote"
+        );
+    }
+
+    #[test]
+    fn first_text_block_none_when_absent() {
+        assert_eq!(first_text_block(r#"{"content":[]}"#), None);
+    }
 }

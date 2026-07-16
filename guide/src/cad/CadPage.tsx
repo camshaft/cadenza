@@ -6,24 +6,41 @@
 /// THE SPLIT (confirmed with v-cad): this vertical owns the route + shell + the react-three-fiber canvas
 /// + the 3 npm deps (three, @react-three/fiber, manifold-3d) — all code-split behind this lazy route so
 /// they never touch the guide's first paint. v-cad owns `guide/src/cad/index.ts` (`meshFromSolid`: parse
-/// the run worker's Solid s-expr → manifold-3d CSG → triangle buffers). Today it's a stub returning a
-/// unit cube; v-cad drops in the real parser/driver as a pure module swap, no changes here.
+/// a rendered Solidr S-EXPR → manifold-3d CSG → triangle buffers).
+///
+/// SURFACE (why /cad is s-expr, not the global surface): `meshFromSolid` parses the RENDERED value as an
+/// s-expr `(: (Differencer …) Solidr)`. The value is therefore always RUN + rendered in s-expr
+/// (`runComponent(component, "sexpr")`) regardless of the editing surface — the driver consumes a
+/// canonical machine form, not the display surface (an ML render uses commas + backtick-rationals the
+/// s-expr parser can't read). The starter program is s-expr too: the equivalent ML program currently
+/// trips a front-end parse divergence in the browser guide-wasm compiler (a nested multi-arg ctor in an
+/// ML type-def block — filed to v-syntax; native `cdz` accepts it). Once that lands, an ML starter can
+/// follow. Self-contained by design (inline `type` defs + `def main`): the CAD library modules aren't
+/// resolvable in the browser compiler, and the driver only needs the rendered Solidr value.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { compile } from "../compiler/client.ts";
 import { run as runComponent } from "../runner/client.ts";
-import { useSyntax } from "../syntax/SyntaxContext.tsx";
 import { wrapModule } from "../components/wrapModule.ts";
 import { meshFromSolid, type MeshResult } from "./index.ts";
 import { MeshView } from "./MeshView.tsx";
 
-/// A starter Solid model per surface. Kept tiny — the point is the live 3D loop, not CAD depth. v-cad's
-/// real models (Rational/Qty-exact) will supply richer examples once the parser lands.
-const STARTER: Record<string, string> = {
-  ml: "cube(2.0)",
-  sexpr: "(cube 2.0)",
-};
+/// The /cad editing surface is fixed to s-expr (see the header: the ML equivalent trips a browser
+/// front-end parse divergence, and the driver parses the s-expr render anyway).
+const CAD_SURFACE = "sexpr" as const;
+
+/// The starter Solid model — a 4mm cube with a spherical dent (the classic CSG difference), verified by
+/// v-cad to compile → render → mesh to 560 triangles end-to-end. Self-contained (inline `type` defs +
+/// `def main`): the CAD library modules aren't resolvable in the browser compiler, so the program
+/// defines its own `Vec3r`/`Solidr` and returns a `Solidr` value that renders to exactly the grammar
+/// `meshFromSolid` parses. Rationals are `(Rational.of n d)` — a bare `n/d` in source is Int64 division.
+const STARTER = `(do
+  (type Vec3r (V3r Rational Rational Rational))
+  (type Solidr (Cuber Vec3r) (Spherer Rational) (Differencer Solidr Solidr))
+  (def (r (: n Int64)) ((. Rational of) n 1))
+  (def (main) ((. Solidr Differencer) ((. Solidr Cuber) ((. Vec3r V3r) (r 4) (r 4) (r 4))) ((. Solidr Spherer) ((. Rational of) 5 2))))
+  (export main))`;
 
 type Status =
   | { phase: "idle" }
@@ -32,8 +49,7 @@ type Status =
   | { phase: "error"; message: string };
 
 export default function CadPage() {
-  const { surface } = useSyntax();
-  const [source, setSource] = useState(STARTER[surface] ?? STARTER.ml);
+  const [source, setSource] = useState(STARTER);
   const [status, setStatus] = useState<Status>({ phase: "idle" });
   const runningRef = useRef(false);
 
@@ -42,14 +58,16 @@ export default function CadPage() {
     runningRef.current = true;
     setStatus({ phase: "running" });
     try {
-      const program = wrapModule(source, surface);
-      const out = await compile(program, surface);
+      const program = wrapModule(source, CAD_SURFACE);
+      const out = await compile(program, CAD_SURFACE);
       if (!out.component) {
         const d = out.diagnostics.find((x) => x.error) ?? out.diagnostics[0];
         setStatus({ phase: "error", message: d ? `${d.code} ${d.message}` : "compile declined" });
         return;
       }
-      const result = await runComponent(out.component, surface);
+      // Render the value in s-expr regardless of display surface — meshFromSolid parses the canonical
+      // s-expr Solidr grammar (an ML render's commas/backtick-rationals aren't parseable by the driver).
+      const result = await runComponent(out.component, CAD_SURFACE);
       if (result.kind !== "value") {
         const msg =
           result.kind === "trap" ? `trap: ${result.message}`
@@ -58,7 +76,7 @@ export default function CadPage() {
         setStatus({ phase: "error", message: msg });
         return;
       }
-      // Hand the rendered Solid value text to v-cad's mesh driver (stub today).
+      // Hand the rendered s-expr Solidr value to v-cad's mesh driver → manifold-3d CSG → triangles.
       const mesh = await meshFromSolid(result.text);
       if (!mesh.ok) {
         setStatus({ phase: "error", message: mesh.error });
@@ -70,7 +88,7 @@ export default function CadPage() {
     } finally {
       runningRef.current = false;
     }
-  }, [source, surface]);
+  }, [source]);
 
   // Auto-run once on mount so the reader sees a shape immediately.
   useEffect(() => {
