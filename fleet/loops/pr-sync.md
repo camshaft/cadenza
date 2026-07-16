@@ -58,6 +58,23 @@ ALL integration. Two disciplines keep that from ever happening — follow BOTH e
       it's red, `git reset --hard trunk@{1}` (undo the merge) and `fleet ack <request> --outcome
       reject --body "<SHORT fail-summary: the failing step + fail-set delta + the log path>"` — a
       concise summary the sender can act on, NOT the full gate output. The sender fixes and resends.
+   b′. **Frozen-hash MRs need a CLEAN-ENV codegen check.** If the merged diff touches
+      `REQUIRED_RUNTIME_HASH` / `runtime_abi.rs` / `cdz-runtime/**` / `wit/runtime.wit`, your normal
+      `codegen --check` is NOT enough: it hashes the runtime built in your AMBIENT `target/`, so a hash
+      computed against a stale/dirty runtime build is self-consistent in YOUR env yet DIFFERENT for
+      every clean builder + CI — a fleet-wide `codegen --check` RED that your gate (and the author's)
+      sailed past (this happened: `cf1ebb20e` → revert #459). So for THOSE MRs, re-run `codegen --check`
+      against a CLEAN runtime build first. ⚠ `cdz-runtime` is workspace-EXCLUDED (a standalone crate
+      built via `cargo component build` inside its own dir), so `cargo clean -p cdz-runtime` from the
+      workspace root is a NO-OP (`package ID … did not match any packages`) — it would clean NOTHING and
+      the check would silently run against the same warm build. Clean the runtime's OWN build dir:
+      `(cd implementation/seed/crates/cdz-runtime && cargo clean)` (or
+      `rm -rf implementation/seed/crates/cdz-runtime/target/wasm32-unknown-unknown/release/` — the wasm
+      the hash is computed from), THEN `cargo xtask build` + `cargo xtask codegen --check`. Red → reject
+      (the committed hash doesn't reproduce clean). Only a clean-env pass proves the frozen hash is what
+      CI will compute. (Backstop, until this is proven habitual: the frozen-hash owner **v-runtime**
+      should also independently verify such an MR in its own env before it lands — `note` v-runtime on a
+      frozen-hash MR so it double-checks the hash.)
    c. Green → the merge stays. `trunk` has advanced. Resolve with `fleet ack <request> --outcome
       merged --ref <new-trunk-sha> --body "<gate summary>"` (this replies `merged` to the sender AND
       archives the request; the sender will `fleet remove` itself if it was a one-shot `fix` agent).
