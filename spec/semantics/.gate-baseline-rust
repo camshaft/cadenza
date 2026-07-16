@@ -2,10 +2,14 @@
 pass	Ast.decode converts bytes to an AST sum type value
 pass	Ast.decode decodes bytes that arrive as a function argument
 pass	Ast.encode and Ast.decode round-trip
+pass	BigInt.of a UInt32 at its high bit is a positive BigInt (narrow zero-extend, not sign)
 pass	BigInt.of a UInt64 at 2^63 - 1 is positive (the sub-high-bit control)
 pass	BigInt.of a UInt64 at 2^63 is a positive BigInt, not a wrong negative
+pass	BigInt.of a UInt64 at its high bit still works (the full-width control)
 pass	BigInt.of a UInt64 at u64::MAX is a positive BigInt
 pass	BigInt.of a UInt64 widens to the exact value (round-trips back through Int64.of where it fits)
+pass	BigInt.of a UInt8 at its high bit widens to the exact value (smallest-width zero-extend)
+pass	BigInt.of a signed Int32 is a positive BigInt (the narrow path breaks regardless of sign)
 pass	DOMINATOR CSE does not reuse a condition's perform-product in the taken branch
 pass	Int64.min crosses the parameter boundary and back unchanged
 pass	Int64.min crossing the boundary is still negative
@@ -58,16 +62,13 @@ pass	TWO performs in an if condition both fold on the strict-first spine
 pass	Type.eq branches on a type-valued parameter, monomorphized per passed type
 pass	Type.eq compares a reflected type against a written type
 pass	Type.eq compares two type-valued parameters to each other
-pass	Type.eq distinguishes quantities by their unit
-pass	Type.eq is false for values of different types
-pass	Type.eq is true for two values of the same type
-pass	Type.eq of a type-valued parameter against itself is always true
-pass	Type.eq on a type-valued parameter against a COMPOUND type is structural
 pass	Type.eq distinguishes a constructed generic sum by its type argument
 pass	Type.eq distinguishes quantities by their unit
 pass	Type.eq is false for values of different types
 pass	Type.eq is true for two values of the same type
+pass	Type.eq of a type-valued parameter against itself is always true
 pass	Type.eq on a constructed generic sum compares the full instantiated type
+pass	Type.eq on a type-valued parameter against a COMPOUND type is structural
 pass	Type.of carries a quantity's unit into a same-type annotation
 pass	Type.of reflects a runtime parameter's type at compile time
 pass	Type.of reflects a value's type for use as an annotation
@@ -470,6 +471,8 @@ pass	a floating-point literal
 pass	a four-level nested-constructor pattern with a generic user sum in the middle matches
 pass	a fresh-id supply threads state across two sibling recursive calls in one arm
 pass	a fresh-id walk over a THREE-constructor sum threads state across mixed-arity arms
+pass	a full-string String.slice byte-len equals the whole string's byte-len
+pass	a full-string String.slice recovers the whole string's length by both measures
 pass	a function applied to an argument
 pass	a function argument is applied through a recursive higher-order function
 pass	a function binding the same parameter name twice is rejected
@@ -1776,6 +1779,10 @@ pass	an effect-built heap list bound in a let is USED TWICE and retained across 
 pass	an effect-performing helper called inside a recursive self-call's argument folds
 pass	an effectful condition is performed exactly once under the operator hoist
 pass	an effectful condition of a same-constructor if is performed exactly once
+pass	an effectful helper called twice (nested) in a self-call arg folds each inline independently
+pass	an effectful helper reading TWO driver parameters folds in a self-call arg
+pass	an effectful helper that also reads an outer/driver parameter folds in a self-call arg
+pass	an effectful helper whose own parameter name shadows a driver parameter folds in a self-call arg
 pass	an effectful init before a failing `?` performs exactly once
 pass	an effectful match scrutinee is performed exactly once across a two-position sink
 pass	an effectful shared operand performs after the condition, exactly once
@@ -1792,6 +1799,7 @@ pass	an empty quote is rejected, not a crash
 pass	an empty scrutinee matches an empty bin pattern
 pass	an empty string is unequal to a non-empty string
 pass	an empty-range slice of a non-empty string is Some of the empty string
+pass	an empty-span String.slice at a multi-byte position has scalar-len zero
 pass	an empty-string Ast.Str round-trips through encode and decode
 pass	an empty-string Ast.Str round-trips through print and read
 pass	an encode-decode round-trip preserves an ASCII string's byte length
@@ -2477,6 +2485,7 @@ pass	the byte codec round-trips a keyword-spelled Ast.Name that the text path wo
 pass	the byte length of a run-time multibyte string exceeds its scalar length
 pass	the byte length of a run-time-selected string reads the actual handle
 pass	the byte length of a runtime string equals the length of its encoded bytes
+pass	the byte-len of a multi-byte String.slice exceeds its scalar-len (the two measures diverge)
 pass	the decode error's kind is matchable
 pass	the default-integer pragma is definition-site scoped, not use-site
 pass	the difference contains the elements not in the second set
@@ -2881,14 +2890,6 @@ todo	a RECORD closure ARG with a LIST result
 todo	a RECORD closure ARG with a narrow Bool field, among scalars
 todo	a RECORD with a nested TUPLE field crosses the direct-call boundary
 todo	a REFL tactic closes a reflexivity goal by driving the kernel, and cannot close a false goal
-todo	a RUNTIME-built Rational is usable as a map key, matched by its exact value
-todo	a RUNTIME-built Rational set deduplicates by exact value
-todo	a Rational accumulator threaded through recursion sums exactly
-todo	a Rational is usable as a map key, matched by its exact value
-todo	a Rational set deduplicates by exact value regardless of how each was written
-todo	a Rational-annotated literal composes with exact rational arithmetic
-todo	a Rational-inner quantity addition stays exact through the quantity wrapper
-todo	a Rational-payload sum value escapes across the boundary in its canonical form
 todo	a SELECT-axiom theorem is unforgeable — its Thm cannot be fabricated outside the kernel
 todo	a SOLE RECORD closure ARG crosses the direct-call boundary
 todo	a SYM tactic reduces a goal to a subgoal plus a kernel justification (backward proof)
@@ -3033,8 +3034,6 @@ todo	a mutually-recursive AST walker reads a node's child list without corruptin
 todo	a mutually-recursive decoder returns a heap value and cursor and its heap slot is dispatched
 todo	a naive (non-renaming) substitution captures a free variable — the bug capture-avoidance prevents
 todo	a negative power is the reciprocal, deriving an inverse unit
-todo	a negative power over a Rational magnitude is the EXACT reciprocal
-todo	a negative-power SI prefix is an exact rational scale
 todo	a nested conjunction accumulates all three operand hypotheses
 todo	a nested element pattern dispatches on a NON-variant-0 list payload
 todo	a nested tuple list element is bound over a runtime list and folded across the rest
@@ -3121,6 +3120,7 @@ todo	adding two quantities of the same dimension keeps that dimension
 todo	adding two units of one dimension converts to the reference unit exactly
 todo	an 8-bit-integer closure crosses the host boundary
 todo	an IEC-prefixed quantity displays scaled to its reference over Int64
+todo	an INFINITY-axiom theorem is unforgeable — its Thm cannot be fabricated outside the kernel
 todo	an abortive handler abandons a host call in the path it discards
 todo	an abstract theorem is obtained only through the kernel's exported inference rule and accessor
 todo	an abstract theorem type cannot be forged by constructing its rule constructor outside the kernel
@@ -3163,7 +3163,6 @@ todo	compound equality over a runtime Rational leaf compares by the normalized f
 todo	conjunction elimination CONJUNCT2 preserves both operand hypotheses
 todo	conjunction elimination keeps BOTH operand hypotheses, not just the projected conjunct's
 todo	conjunction of two theorems sharing a hypothesis concatenates without dedup
-todo	converting a unit to another unit of the same dimension is an exact rational scale
 todo	dimensional equality is decided by canonical exponent map, not written form
 todo	distinct signatures sharing a core valtype shape dispatch distinct bodies
 todo	distinct-sig byte-rope closure alongside a plain export — the closure
@@ -3292,11 +3291,16 @@ todo	round-trip: a scalar consumer and a byte-rope consumer of the same closure 
 todo	round-trip: a scalar consumer and a byte-rope consumer of the same closure — the scalar one
 todo	round-trip: an UNANNOTATED inner closure with a List param via the context arrow
 todo	scaling a quantity by a dimensionless quantity keeps its dimension
+todo	scan emits the seed plus one accumulator per element (n+1 outputs)
+todo	scan over an empty iterator emits just the seed
+todo	scan threads its accumulator left-to-right (an order-sensitive folder)
+todo	scan's kth emitted accumulator is the running fold of the first k elements
 todo	take-while composed after a map threads both transformers' closures
 todo	take-while excludes the failing element and everything after it (content, not just count)
 todo	take-while where every element satisfies the predicate keeps the whole run
 todo	take-while where the first element fails the predicate returns the empty run
 todo	the ETA axiom is minted via new_axiom as a hypothesis-free theorem
+todo	the INFINITY axiom is minted via new_axiom (an infinite type exists)
 todo	the SELECT (choice) axiom is minted via new_axiom as a hypothesis-free theorem
 todo	the empty and None arms of a list-payload split dispatch to their own values
 todo	the implication-extended kernel Thm stays unforgeable — Thm.Seq of a bogus implication outside is CDZ0214
