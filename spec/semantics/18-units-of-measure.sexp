@@ -667,6 +667,31 @@
              (Qty Float64 (Unit.base #"meter"))))
   (error  CDZ0501))
 
+; An annotation checks the DIMENSION, not the scale — a unit is construction sugar for a magnitude at
+; the dimension's reference (units-of-measure.md; DESIGN §Interaction With Annotations: "accept any unit
+; of the right dimension; scale is construction sugar"). So annotating a quantity at a SAME-DIMENSION
+; DIFFERENT-unit type is accepted, and the annotated value KEEPS ITS OWN SCALE — the annotation checks
+; the dimension, it does NOT normalize/coerce the value to its unit. A cross-DIMENSION annotation is
+; still CDZ0501; a same-dimension annotation whose INNER NUMERIC type differs is still CDZ0203.
+
+(case "annotating a quantity at a same-dimension DIFFERENT unit is accepted (dimension checked, not scale)"
+  (doc    "`(: (Qty.of 1 kilometer) (Qty Int64 meter))` annotates a kilometer quantity at meter — the SAME
+           dimension (length) at a different scale. The annotation checks the DIMENSION, not the unit's
+           scale (a unit is construction sugar), so it is ACCEPTED, and the value KEEPS ITS OWN SCALE: it
+           stays 1 km, so `Qty.value` reads back 1 (the km magnitude), NOT a coerced-to-meter 1000. The
+           annotation constrains the dimension without normalizing the value to its unit.")
+  (input  (Qty.value (: (Qty.of 1 (Unit.prefix kilo (Unit.base #"meter"))) (Qty Int64 (Unit.base #"meter")))))
+  (output (: 1 Int64)))
+
+(case "a same-dimension quantity annotation whose inner numeric type differs is still an error"
+  (doc    "`(: (Qty.of 1 kilometer) (Qty Float64 meter))` shares the dimension (length) but the value's
+           inner numeric type is Int64 while the annotation says Float64 — a genuine numeric-type conflict,
+           CDZ0203. The dimension agreeing does NOT excuse a numeric mismatch: an annotation is an
+           additional constraint on the WHOLE type, and the inner numeric types must still unify (the same
+           no-silent-promotion the bare `(: 5 Float64)` enforces), even when the units share a dimension.")
+  (input  (Qty.value (: (Qty.of 1 (Unit.prefix kilo (Unit.base #"meter"))) (Qty Float64 (Unit.base #"meter")))))
+  (error  CDZ0203))
+
 ; ============================================================================================
 ; Erasure — a quantity is byte-identical to its underlying numeric (the numeric core is untouched)
 ; ============================================================================================

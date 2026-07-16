@@ -10761,24 +10761,58 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 ) = (&annot_ty, &type_of(db, expr))
                     && au != eu
                 {
-                    // A DIMENSIONAL annotation conflict — the value derives one dimension but the
-                    // annotation asserts another (`(: (* (Qty 2 meter) (Qty 3 meter)) (Qty Float64
-                    // meter))` — the product is meter², annotated meter). This is the dimensional
-                    // specialization of the annotation conflict: CDZ0501, not the CDZ0203 the generic
-                    // unify below would give (units-of-measure.md §A Dimensional Mismatch Is An Error;
-                    // the erasure fence's dimensional case). The inner types are irrelevant when the
-                    // units already disagree — the dimension is the conflict.
-                    let _ = (ai, ei);
-                    trace!(target: "rcdzc::infer", node = id.0, "fault: annotation at a dimension the expression does not derive (CDZ0501)");
-                    out.push(Reject::coded(
-                        Code::DimensionMismatch,
-                        format!(
-                            "this expression has dimension {} but is annotated {} — the annotation \
-                             must match the dimension the expression derives",
-                            eu.render_human(),
-                            au.render_human(),
-                        ),
-                    ));
+                    // Two quantity types whose units are not IDENTICAL. A quantity annotation checks the
+                    // DIMENSION, not the scale — a unit is construction sugar for a magnitude at the
+                    // dimension's reference (DESIGN-quantity-reference-normalized-unwrap.md §Interaction
+                    // With Annotations: "accept any unit of the right dimension; scale is construction
+                    // sugar"), so the two cases split:
+                    if !au.same_dimension(eu) {
+                        // DIFFERENT DIMENSION — the value derives one dimension but the annotation asserts
+                        // another (`(: (* (Qty 2 meter) (Qty 3 meter)) (Qty Float64 meter))` — the product
+                        // is meter², annotated meter; or meter vs second). A genuine dimensional conflict:
+                        // CDZ0501 (units-of-measure.md §A Dimensional Mismatch Is An Error), not the CDZ0203
+                        // the generic unify would give. The inner types are irrelevant when the DIMENSIONS
+                        // disagree — the dimension is the conflict. The two units render distinguishably
+                        // (different base names / exponents), so the message reads correctly.
+                        let _ = (ai, ei);
+                        trace!(target: "rcdzc::infer", node = id.0, "fault: annotation at a dimension the expression does not derive (CDZ0501)");
+                        out.push(Reject::coded(
+                            Code::DimensionMismatch,
+                            format!(
+                                "this expression has dimension {} but is annotated {} — the annotation \
+                                 must match the dimension the expression derives",
+                                eu.render_human(),
+                                au.render_human(),
+                            ),
+                        ));
+                    } else {
+                        // SAME DIMENSION, DIFFERENT SCALE (`(: (Qty.of 1 kilometer) (Qty Int64 meter))` —
+                        // km and meter are both length). The annotation is SATISFIED dimensionally: it
+                        // checks the dimension, and the annotated value KEEPS ITS OWN SCALE (1 km stays
+                        // 1 km — the annotation does NOT normalize/coerce to its unit). Do NOT fall through
+                        // to the generic unify (it unifies the FULL `Ty::Qty`, which differ in scale → a
+                        // spurious CDZ0203 that ALSO misrenders, both units printing as the reference name).
+                        // Still unify the INNER numeric types, so a genuine inner mismatch — an Int64 value
+                        // annotated `(Qty Float64 meter)` — is caught (CDZ0203), exactly as a bare numeric
+                        // annotation mismatch is: the dimension agreeing does not excuse a numeric-type clash.
+                        let mut subst = Subst::new();
+                        if crate::unify::unify(&mut subst, ai, ei).is_err() {
+                            trace!(target: "rcdzc::infer", node = id.0, annot_inner = %ai.render_name(), expr_inner = %ei.render_name(), "fault: same-dimension quantity annotation with a mismatched INNER numeric type (CDZ0203)");
+                            out.push(Reject::coded(
+                                Code::TypeMismatch,
+                                format!(
+                                    "annotation type {} does not match value type {} — the units share a \
+                                     dimension, but the underlying numeric types differ",
+                                    annot_ty.render_name(),
+                                    type_of(db, expr).render_name(),
+                                ),
+                            ));
+                        } else {
+                            trace!(target: "rcdzc::infer", node = id.0, "same-dimension quantity annotation at a different scale — accepted (dimension checked, value keeps its own scale)");
+                        }
+                        // Descend for the expression's own faults (the generic `else` also does this).
+                        collect(db, expr, out);
+                    }
                 } else {
                     // A non-literal value has a real type that must AGREE with the annotation — unify,
                     // and report a genuine conflict (`(: true Int64)`) as CDZ0203. The annotation is an
