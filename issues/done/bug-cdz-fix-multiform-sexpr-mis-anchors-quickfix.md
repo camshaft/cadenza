@@ -1,3 +1,5 @@
+> **RESOLVED** by v-lsp MR c3116e541 (concierge-authorized) — canonicalize_with_map+remap in reparse_spans s-expr arm + tests/fix_cli.rs regression.
+
 # `cdz fix` mis-anchors a quick-fix on a MULTI-FORM s-expr program (rewrites a neighbour node)
 
 **Severity:** miscompile of a repair — `cdz fix` DESTROYS valid code, silently.

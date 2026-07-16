@@ -41,14 +41,20 @@ def node-count(e: Ex) = match e with
   | Ex.Mul(l, r) => 1 + node-count(l) + node-count(r)
 
 /// Accumulate the hash of every subterm (this node and all descendants) into `seen`.
+/// Bottom-up in ONE traversal: returns `(hash of e, seen ∪ {every subterm hash})`. Each node's hash is
+/// computed once from its CHILDREN's already-computed hashes (`mix(tag, hl, hr)`), never by re-traversing
+/// the subtree — so the whole analysis is O(n), not O(n²). (A prior version called `hash(e)` at every
+/// node, and `hash` re-walks the subtree → quadratic; Copilot PR #441.)
 def collect(e: Ex, seen: Set(Int64)) = match e with
-  | Ex.Num(_) => Set.insert(seen, hash(e))
-  | Ex.Var(_) => Set.insert(seen, hash(e))
-  | Ex.Add(l, r) => collect(r, collect(l, Set.insert(seen, hash(e))))
-  | Ex.Mul(l, r) => collect(r, collect(l, Set.insert(seen, hash(e))))
+  | Ex.Num(m) => (let h = mix(1, m) in (h, Set.insert(seen, h)))
+  | Ex.Var(id) => (let h = mix(2, id) in (h, Set.insert(seen, h)))
+  | Ex.Add(l, r) => (match collect(l, seen) with | (hl, s1) =>
+    (match collect(r, s1) with | (hr, s2) => (let h = mix(mix(3, hl), hr) in (h, Set.insert(s2, h)))))
+  | Ex.Mul(l, r) => (match collect(l, seen) with | (hl, s1) =>
+    (match collect(r, s1) with | (hr, s2) => (let h = mix(mix(5, hl), hr) in (h, Set.insert(s2, h)))))
 
 /// The number of structurally-DISTINCT subterms — the size of the hash-consed DAG.
-def distinct-count(e: Ex) = Set.len(collect(e, Set.of([])))
+def distinct-count(e: Ex) = match collect(e, Set.of([])) with | (_, seen) => Set.len(seen)
 
 /// How many nodes CSE eliminates by sharing equal subterms (total − distinct).
 def savings(e: Ex) = node-count(e) - distinct-count(e)

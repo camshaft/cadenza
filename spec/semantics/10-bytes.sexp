@@ -960,7 +960,7 @@
            nested-tuple-key case above).")
   (input  (do
             (def (rep (: b Bytes) (: n Int64)) (if (< n 1) b (rep (Bytes.concat b (Bytes.of (list 120))) (- n 1))))
-            (def (main) (Option.expect (Map.lookup (Map.insert (Map.empty) (Bytes.of (list 104 120)) 42) (rep (Bytes.of (list 104)) 1)) "found")) (export main)))
+            (def (main) (Option.expect (Map.lookup (Map.insert Map.empty (Bytes.of (list 104 120)) 42) (rep (Bytes.of (list 104)) 1)) "found")) (export main)))
   (call   main)
   (output (: 42 Int64)))
 

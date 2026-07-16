@@ -154,6 +154,18 @@
   (input  (eval (Ast.List (list))))
   (trap   "unreachable"))
 
+(case "quoting an empty compound produces an empty Ast.List"
+  (doc    "`(quote ())` reifies the empty compound `()` to an EMPTY `Ast.List` — the reifier maps a
+           parenthesized form to `Ast.List` of its reified elements, and zero elements give an empty list
+           (NOT a reify error, and NOT a leaf). `List.len` of its elements is 0. The source-level companion
+           of the constructor-built `(Ast.List (list))`: this is the very value the eval-malformed case
+           above traps on, so it pins where that empty list COMES FROM — a quoted empty compound is a
+           well-formed (if operator-less) Ast, distinct from a leaf or a rejected form.")
+  (input  (match (quote ())
+            ((Ast.List es) (List.len es))
+            (_             -1)))
+  (output (: 0 Int64)))
+
 (case "quasiquote constructs AST with selective evaluation"
   (doc    "Witnesses metaprogramming.md #Quasiquote Constructs AST With Selective Evaluation:
            `<template> quotes like quote, but ,<expr> evaluates <expr> normally and inserts result

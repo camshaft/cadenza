@@ -42,13 +42,18 @@ def live-in(prog: List(Stmt), live-out: Set(Int64)) = match prog with
 def is-dead-store(s: Stmt, live-out: Set(Int64)) = match s with
   | Stmt.Assign(d, _) => Set.contains(live-out, d) == false
 
-/// Count the dead stores in `prog` given the program-end live-out. Walks forward but needs each stmt's
-/// OWN live-out, which is the live-in of the suffix after it — so it recomputes that suffix liveness.
-def dead-store-count(prog: List(Stmt), end-out: Set(Int64)) = match prog with
-  | [] => 0
-  | [s, .. rest] =>
-    let out-here = live-in(rest, end-out) in
-    (if is-dead-store(s, out-here) then 1 else 0) + dead-store-count(rest, end-out)
+/// One backward pass computing BOTH the live-in of `prog` and its dead-store count: returns
+/// `(live-in, dead-count)`. Each statement's live-out is `out-here` — the live-in of the suffix, computed
+/// ONCE by the recursion — so liveness is not recomputed per prefix. O(n) over the statement list.
+/// (A prior `dead-store-count` called `live-in(rest, …)` at every prefix → O(n²); Copilot PR #442.)
+def scan(prog: List(Stmt), end-out: Set(Int64)) = match prog with
+  | [] => (end-out, 0)
+  | [s, .. rest] => (match scan(rest, end-out) with | (out-here, dc-rest) =>
+    (step(s, out-here), (if is-dead-store(s, out-here) then 1 else 0) + dc-rest))
+
+/// Count the dead stores in `prog` given the program-end live-out (reads the count off the single `scan`).
+def dead-store-count(prog: List(Stmt), end-out: Set(Int64)) = match scan(prog, end-out) with
+  | (_, dc) => dc
 
 /// Builders.
 def asg(d: Int64, us: List(Int64)) = Stmt.Assign(d, us)

@@ -467,6 +467,11 @@ impl Server {
                     },
                 );
                 self.publish(&uri)?;
+                // Opening a LIBRARY that other open docs import must refresh their diagnostics too (its
+                // live buffer now overlays the on-disk version in their package analysis).
+                if let Some(path) = uri_to_path(&uri) {
+                    self.republish_importers_of(&path)?;
+                }
             }
             DidChangeTextDocument::METHOD => {
                 let params: DidChangeTextDocumentParams = extract_note(note)?;
@@ -482,6 +487,11 @@ impl Server {
                         },
                     );
                     self.publish(&uri)?;
+                    // Reverse-dependency invalidation: if the edited doc is a LIBRARY, re-lint every open
+                    // importer so its cross-file diagnostics track the live edit (not just the lib itself).
+                    if let Some(path) = uri_to_path(&uri) {
+                        self.republish_importers_of(&path)?;
+                    }
                 }
             }
             DidCloseTextDocument::METHOD => {
@@ -491,6 +501,11 @@ impl Server {
                 // Clear the document's diagnostics on close (an empty list), so a client does not keep
                 // showing stale errors for a file no longer open.
                 self.send_diagnostics(&uri, Vec::new())?;
+                // Closing a LIBRARY reverts its importers to the ON-DISK version (the overlay is gone), so
+                // re-lint any open importer whose analysis was using this buffer's live text.
+                if let Some(path) = uri_to_path(&uri) {
+                    self.republish_importers_of(&path)?;
+                }
             }
             _ => {}
         }
@@ -533,6 +548,46 @@ impl Server {
             }
             Err(_) => false,
         }
+    }
+
+    /// Re-publish every OTHER open document whose import closure includes `changed` — so editing an open
+    /// LIBRARY refreshes its IMPORTERS' diagnostics live (reverse-dependency invalidation). Without this,
+    /// a `didChange` to a library re-lints only the library itself, leaving a stale squiggle (or a
+    /// stale-clean) on an importer until the importer is itself touched. `changed` is the just-edited
+    /// document's on-disk path; an open doc imports it iff one of its declared `(import …)` paths resolves
+    /// (as a sibling in that doc's own directory) to `changed`. Best-effort + total: an open doc that does
+    /// not parse, has no path, or declares no matching import is skipped.
+    fn republish_importers_of(
+        &mut self,
+        changed: &std::path::Path,
+    ) -> Result<(), Box<dyn std::error::Error + Sync + Send>> {
+        // Collect the importer URIs first (an immutable borrow of `docs`), then publish (a mutable
+        // borrow), so the two borrows don't overlap.
+        let importers: Vec<Uri> =
+            self.docs
+                .iter()
+                .filter_map(|(uri, doc)| {
+                    let path = uri_to_path(uri)?;
+                    if path == changed {
+                        return None; // the changed doc itself is already (re)published by the caller
+                    }
+                    let dir = path.parent()?;
+                    let (arenas, _spans, _errs) = parse_surface(&doc.text, doc.is_ml).ok()?;
+                    // Does any declared import resolve (as a sibling in this importer's dir) to `changed`?
+                    let imports_changed = crate::closure::declared_import_paths(&arenas)
+                        .iter()
+                        .any(|name| {
+                            crate::closure::resolve_import_file(dir, name)
+                                .map(|p| std::path::Path::new(&p) == changed)
+                                .unwrap_or(false)
+                        });
+                    imports_changed.then(|| uri.clone())
+                })
+                .collect();
+        for uri in importers {
+            self.publish(&uri)?;
+        }
+        Ok(())
     }
 
     /// The closure's source-overlay resolver: given an imported file's path, return an OPEN buffer's
