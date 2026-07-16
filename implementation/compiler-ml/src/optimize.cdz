@@ -1,0 +1,148 @@
+/// optimize.cdz — the OPTIMIZER CAPSTONE: compose the port's optimization passes into one `optimize`
+/// entry over a single expression language (`Num`/`Var`/`Add`/`Mul`/`Let`). It runs constant propagation
+/// (inline a `let x = <const>`), algebraic simplification (`e+0`→`e`, `e*1`→`e`, `e*0`→`0`, and fold two
+/// constant operands), and dead-let elimination (drop a `let` whose binding is unused) — the pipeline a
+/// real compiler runs before codegen. Composing them collapses a fully-constant program to a single `Num`
+/// with no residual bindings: `let x = 2 in let unused = 99 in (x*1 + 0) + x*3` → `8`.
+///
+/// The individual passes each have their own module (`cfold` folds constant subtrees + identities,
+/// `constprop` inlines constant lets, `deadlet` drops unused lets); this brings them together over one
+/// `Ex` and pins that the COMPOSITION is meaning-preserving and maximally reducing. The smart `add`/`mul`
+/// constructors carry the identities so propagation and folding happen in one downward pass, then `dle`
+/// sweeps the now-dead bindings.
+
+type Ex =
+  | Num(Int64)
+  | Var(String)
+  | Add(Ex, Ex)
+  | Mul(Ex, Ex)
+  | Let(String, Ex, Ex)
+
+/// Smart `+`: `0 + e` → `e`, `e + 0` → `e`, two constants fold.
+def add(l: Ex, r: Ex) = match l with
+  | Ex.Num(0) => r
+  | Ex.Num(a) => (match r with | Ex.Num(b) => Ex.Num(a + b) | _ => Ex.Add(l, r))
+  | _ => (match r with | Ex.Num(0) => l | _ => Ex.Add(l, r))
+
+/// Smart `*`: `0 * e` → `0`, `1 * e` → `e`, `e * 1` → `e`, `e * 0` → `0`, two constants fold.
+def mul(l: Ex, r: Ex) = match l with
+  | Ex.Num(0) => Ex.Num(0)
+  | Ex.Num(1) => r
+  | Ex.Num(a) => (match r with | Ex.Num(b) => Ex.Num(a * b) | _ => Ex.Mul(l, r))
+  | _ => (match r with | Ex.Num(0) => Ex.Num(0) | Ex.Num(1) => l | _ => Ex.Mul(l, r))
+
+/// Constant-propagate + simplify under `env` (name → known constant).
+def cp(env: Map(String, Int64), e: Ex) = match e with
+  | Ex.Num(n) => Ex.Num(n)
+  | Ex.Var(x) => (match Map.lookup(env, x) with | Option.Some(v) => Ex.Num(v) | Option.None(_) => Ex.Var(x))
+  | Ex.Add(l, r) => add(cp(env, l), cp(env, r))
+  | Ex.Mul(l, r) => mul(cp(env, l), cp(env, r))
+  | Ex.Let(x, rhs, body) =>
+    let r2 = cp(env, rhs) in
+    (match r2 with
+      | Ex.Num(v) => cp(Map.insert(env, x, v), body)
+      | _ => Ex.Let(x, r2, cp(env, body)))
+
+/// Free-occurrence (shadowing-aware), for dead-let elimination.
+def occurs(x: String, e: Ex) = match e with
+  | Ex.Num(_) => false
+  | Ex.Var(y) => x == y
+  | Ex.Add(l, r) => occurs(x, l) or occurs(x, r)
+  | Ex.Mul(l, r) => occurs(x, l) or occurs(x, r)
+  | Ex.Let(y, rhs, body) => occurs(x, rhs) or (if x == y then false else occurs(x, body))
+
+/// Dead-let elimination (bottom-up; pure language, so an unused binding's rhs is safe to drop).
+def dle(e: Ex) = match e with
+  | Ex.Add(l, r) => Ex.Add(dle(l), dle(r))
+  | Ex.Mul(l, r) => Ex.Mul(dle(l), dle(r))
+  | Ex.Let(x, rhs, body) => (let b2 = dle(body) in if occurs(x, b2) then Ex.Let(x, dle(rhs), b2) else b2)
+  | _ => e
+
+/// The composed optimizer: propagate + simplify, then sweep dead bindings.
+def optimize(e: Ex) = dle(cp(Map.empty, e))
+
+/// Reference evaluator.
+def eval-env(env: Map(String, Int64), e: Ex) = match e with
+  | Ex.Num(n) => n
+  | Ex.Var(x) => (match Map.lookup(env, x) with | Option.Some(v) => v | Option.None(_) => 0 - 1)
+  | Ex.Add(l, r) => eval-env(env, l) + eval-env(env, r)
+  | Ex.Mul(l, r) => eval-env(env, l) * eval-env(env, r)
+  | Ex.Let(x, rhs, body) => eval-env(Map.insert(env, x, eval-env(env, rhs)), body)
+
+def eval(e: Ex) = eval-env(Map.empty, e)
+
+def is-num(e: Ex) = match e with | Ex.Num(_) => true | _ => false
+def let-count(e: Ex) = match e with
+  | Ex.Add(l, r) => let-count(l) + let-count(r)
+  | Ex.Mul(l, r) => let-count(l) + let-count(r)
+  | Ex.Let(_, rhs, body) => 1 + let-count(rhs) + let-count(body)
+  | _ => 0
+
+/// Builders.
+def lt(x: String, rhs: Ex, body: Ex) = Ex.Let(x, rhs, body)
+def v(x: String) = Ex.Var(x)
+def n(k: Int64) = Ex.Num(k)
+
+@test
+def opt-full-collapse() =
+  // let x=2 in let unused=99 in (x*1 + 0) + x*3 → 8, and fully collapsed (a single Num, no lets).
+  let prog = lt("x", n(2), lt("unused", n(99), Ex.Add(Ex.Add(Ex.Mul(v("x"), n(1)), n(0)), Ex.Mul(v("x"), n(3))))) in
+  let o = optimize(prog) in
+  if is-num(o) then (if eval(o) == 8 then (if let-count(o) == 0 then unit else trap("no residual lets")) else trap("value 8")) else trap("collapses to a Num")
+
+@test
+def opt-preserves-meaning() =
+  let prog = lt("x", n(2), lt("unused", n(99), Ex.Add(Ex.Mul(v("x"), n(3)), n(4)))) in
+  if eval(optimize(prog)) == eval(prog) then unit else trap("optimize preserves meaning")
+
+@test
+def opt-identity-plus-zero() =
+  // x + 0 with x free → simplifies to x (Var), value reads -1 but the SHAPE is just Var x (no Add).
+  match optimize(Ex.Add(v("x"), n(0))) with
+    | Ex.Var(_) => unit
+    | _ => trap("x + 0 simplifies to x")
+
+@test
+def opt-identity-times-one() =
+  match optimize(Ex.Mul(n(1), v("y"))) with
+    | Ex.Var(_) => unit
+    | _ => trap("1 * y simplifies to y")
+
+@test
+def opt-annihilator-times-zero() =
+  // e * 0 → 0 even when e is not constant (a free var): collapses to Num 0.
+  match optimize(Ex.Mul(v("z"), n(0))) with
+    | Ex.Num(k) => (if k == 0 then unit else trap("value 0"))
+    | _ => trap("z * 0 → 0")
+
+@test
+def opt-keeps-nonconstant-let() =
+  // let x = w in x + x (w free) → x is not constant, so the let survives; body simplified to x + x.
+  let prog = lt("x", v("w"), Ex.Add(v("x"), v("x"))) in
+  if let-count(optimize(prog)) == 1 then unit else trap("non-constant let is kept")
+
+@test
+def opt-drops-dead-after-prop() =
+  // let x = 5 in 3 → x propagates (unused) → dead → dropped → Num 3, 0 lets.
+  let prog = lt("x", n(5), n(3)) in
+  if let-count(optimize(prog)) == 0 then (if eval(optimize(prog)) == 3 then unit else trap("value 3")) else trap("dead let dropped")
+
+@test
+def opt-nested-arithmetic() =
+  // let a=3 in let b=4 in a*b + a → 3*4 + 3 = 15, collapsed.
+  let prog = lt("a", n(3), lt("b", n(4), Ex.Add(Ex.Mul(v("a"), v("b")), v("a")))) in
+  if eval(optimize(prog)) == 15 then (if is-num(optimize(prog)) then unit else trap("collapses")) else trap("value 15")
+
+@test
+def opt-idempotent() =
+  let prog = lt("x", n(2), Ex.Add(Ex.Mul(v("x"), n(1)), n(0))) in
+  let o = optimize(prog) in
+  if eval(o) == eval(optimize(o)) then (if let-count(o) == let-count(optimize(o)) then unit else trap("shape stable")) else trap("optimize idempotent")
+
+@test
+def opt-shadowing-correct() =
+  // let x = 1 in (let x = 10 in x) + x → (10) + 1 = 11 (shadowing threaded correctly), collapsed to Num.
+  let prog = lt("x", n(1), Ex.Add(lt("x", n(10), v("x")), v("x"))) in
+  if eval(optimize(prog)) == 11 then (if is-num(optimize(prog)) then unit else trap("collapses to 11")) else trap("shadowing = 11")
+
+export { optimize, eval }
