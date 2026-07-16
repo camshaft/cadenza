@@ -284,6 +284,7 @@ pass	a Sign match missing two of three variants is non-exhaustive
 pass	a Some carrying a bare None type-checks under a whole-expression annotation
 pass	a Some carrying an inner-annotated None matches its arm (the control)
 pass	a String compound export under a non-main name crosses to the host
+pass	a String param threaded through a self-recursive loop and concatenated each step is retained
 pass	a String-returning closure alongside a parameterized plain export
 pass	a String-returning closure alongside a parameterized plain export — the plain runs
 pass	a THREE-argument closure round-trips — flat arrow spelling

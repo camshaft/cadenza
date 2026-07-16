@@ -331,6 +331,14 @@ fn is_heap_type(ty: &Ty) -> bool {
         | Ty::List(_)
         | Ty::Map(_, _)
         | Ty::Set(_)
+        // A String / Symbol is a heap ROPE at run time exactly as Bytes is (see `elem_needs_rope_
+        // compaction`, which treats all three alike). It MUST count as heap here so a String/Symbol
+        // binder/param threaded past a consuming use (`String.concat(acc, s)` where `s` is also passed to
+        // a self-recursive call) is a Perceus RETAIN candidate — else no `dup` is emitted, the shared rope
+        // is freed while still referenced, and the rope walk reads OUT OF BOUNDS past a depth threshold (a
+        // wasm trap). Omitting String/Symbol here was the gap the List ops did not hit (List was included).
+        | Ty::String
+        | Ty::Symbol
         | Ty::Bytes => true,
         // A quantity ERASES to its inner numeric type before the backend (`lower` strips the `Qty`), so
         // a `Ty::Qty` should not reach selection. Defensively classify it by its inner type — a quantity
