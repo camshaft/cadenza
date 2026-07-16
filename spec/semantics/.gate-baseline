@@ -2765,6 +2765,9 @@ pass	round-trip: a scalar consumer + a compound consumer of the same closure —
 pass	round-trip: a scalar consumer and a byte-rope consumer of the same closure — the byte-rope one
 pass	round-trip: a scalar consumer and a byte-rope consumer of the same closure — the scalar one
 pass	round-trip: an UNANNOTATED inner closure with a List param via the context arrow
+pass	runtime < on a self operand is false for finite AND NaN (irreflexive, stays false)
+pass	runtime <= on a self operand is true for finite but FALSE for NaN (no reflexivity fold)
+pass	runtime >= and > on a self operand mirror <= and < including the NaN self case
 pass	runtime BigInt addition runs on the arbitrary-precision runtime
 pass	runtime BigInt equality holds for values reached by different arithmetic
 pass	runtime BigInt remainder runs on the arbitrary-precision runtime

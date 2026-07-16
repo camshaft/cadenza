@@ -289,6 +289,42 @@
   (input  (do (def (run) (if (< Float64.nan 1.0) 1 0)) (export run)))
   (output (: 0 Int64)))
 
+; --- Self-comparison (`x ⋈ x`) is the adversarial fold boundary: reflexivity is NOT universal under NaN --
+; An optimizer that knows a relation's algebra is tempted to fold a self-comparison to a constant: `x <= x`
+; → true (reflexive), `x < x` → false (irreflexive). That fold is a MISCOMPILE for float: NaN is unordered,
+; so `nan <= nan` is FALSE — the `<=`/`>=` self-fold to `true` gives the wrong answer, and even `<`/`>`
+; (which DO fold to false universally) must stay false for NaN, not accidentally become the reflexive-true
+; sibling. These pin all four operators on a runtime self-operand at both a finite value (reflexivity holds)
+; and NaN (reflexivity BREAKS), on BOTH backends, so no backend-independent algebraic pass may replace an
+; `x ⋈ x` with a constant. The author's ordering cases above pin `<`/`<=` on DISTINCT operands + NaN; these
+; pin the SELF case (same SSA value both sides) and the `>`/`>=` runtime mirror the arithmetic cases omit.
+(case "runtime <= on a self operand is true for finite but FALSE for NaN (no reflexivity fold)"
+  (doc    "`run(x) = if (<= x x) 1 0`: x=1.5 → 1 (reflexive on a finite float), x=nan → 0 (NaN is unordered,
+           so `nan <= nan` is FALSE). Pins that a self-comparison `x <= x` must NOT fold to the constant
+           `true` — the reflexivity that holds for finite floats BREAKS for NaN, and the ordering evaluates
+           to false rather than declining. Same value on both sides, so it also guards a CSE that dedups the
+           operands then mis-concludes equality-ergo-reflexive.")
+  (input  (do (def (run (: x Float64)) (if (<= x x) 1 0)) (export run)))
+  (call   run (: 1.5 Float64)) (output (: 1 Int64))
+  (call   run (: nan Float64)) (output (: 0 Int64)))
+
+(case "runtime < on a self operand is false for finite AND NaN (irreflexive, stays false)"
+  (doc    "`run(x) = if (< x x) 1 0`: x=1.5 → 0 (strict order is irreflexive) and x=nan → 0 (unordered).
+           `x < x` DOES fold to false universally — but pin it so a pass that flips a self-`<` into its
+           reflexive-`<=` sibling (which would give 1 on the finite case) is caught. Both inputs → 0.")
+  (input  (do (def (run (: x Float64)) (if (< x x) 1 0)) (export run)))
+  (call   run (: 1.5 Float64)) (output (: 0 Int64))
+  (call   run (: nan Float64)) (output (: 0 Int64)))
+
+(case "runtime >= and > on a self operand mirror <= and < including the NaN self case"
+  (doc    "The `>=`/`>` mirror of the two self-operand cases — the ordering cases above only exercised
+           `<`/`<=`. `run(x) = 10*(if (>= x x) 1 0) + (if (> x x) 1 0)`: x=1.5 → 10 (>= reflexive true, >
+           irreflexive false), x=nan → 0 (both false, NaN unordered). Pins `>=` does NOT self-fold to true
+           and `>` stays false, on both backends.")
+  (input  (do (def (ge (: x Float64)) (if (>= x x) 1 0)) (def (gt (: x Float64)) (if (> x x) 1 0)) (def (run (: x Float64)) (+ (* 10 (ge x)) (gt x))) (export run)))
+  (call   run (: 1.5 Float64)) (output (: 10 Int64))
+  (call   run (: nan Float64)) (output (: 0 Int64)))
+
 ; --- Float equality follows the canonical byte form RECURSIVELY, inside compound values --
 ; #Equality Is Structural: "Two values MUST be equal when they have the same type and their contents
 ; are equal component-wise" — and each float COMPONENT is compared by #Floating-Point Equality Follows

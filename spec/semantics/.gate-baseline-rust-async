@@ -104,6 +104,7 @@ pass	a NON-tail-resumptive arm projects a tuple parameter twice in its pure one-
 pass	a NaN nested in a list compares equal under the canonical byte form
 pass	a NaN nested in a sum payload compares equal under the canonical byte form
 pass	a NaN nested in a tuple compares equal under the canonical byte form
+pass	a NaN operand makes every runtime float ordering relation false (unordered)
 pass	a PARTIALLY-applied multi-payload constructor is a first-class function value
 pass	a RECURSIVE effectful walk accumulates into a list-state handler
 pass	a RESULT-returning effect op is matched on Ok / Err — the fallible-step idiom
@@ -277,6 +278,7 @@ pass	a const collection recursively folded is rejected, not compiled to an infin
 pass	a const parameter rejects an argument that depends on runtime data
 pass	a const-key entry is found beside a distinct runtime-keyed entry
 pass	a constant argument out of a narrow parameter's range is rejected, not laundered
+pass	a constant float ordering with a NaN operand folds to false, not a decline
 pass	a constant integer widens to BigInt and narrows back through Int64 unchanged
 pass	a constant left shift of -1 by 63 is exactly the minimum integer
 pass	a constant left shift of 1 by 63 overflows and is rejected
@@ -2107,6 +2109,7 @@ pass	quasiquote makes AST construction readable
 pass	quasiquote nests with inner unquote evaluated
 pass	quasiquotes unquoting a runtime variable and a literal build equal ASTs
 pass	quote produces an AST value without evaluating
+pass	quote reifies a grammar-keyword head as an ordinary Ast.Name
 pass	quote-built and constructor-built equal trees encode byte-identically
 pass	quote-vs-constructor AST equality holds regardless of operand order
 pass	quoting an empty compound produces an empty Ast.List
@@ -2144,9 +2147,14 @@ pass	resolving a head against a prelude symbol rejects a length-mismatched prefi
 pass	resolving a name in a shadowing environment returns the innermost binding's slot
 pass	resuming with a value of the wrong type for the operation's result is a type error
 pass	resuming with a wrong-type value for a compound result type is a type error
+pass	runtime < on a self operand is false for finite AND NaN (irreflexive, stays false)
+pass	runtime <= on a self operand is true for finite but FALSE for NaN (no reflexivity fold)
+pass	runtime >= and > on a self operand mirror <= and < including the NaN self case
 pass	runtime Bytes value-equality distinguishes different content
 pass	runtime float equality compares by canonical byte form
 pass	runtime float inequality compares by canonical byte form
+pass	runtime float ordering is a strict/non-strict partial order over finite values
+pass	runtime float ordering treats negative and positive zero as equal, unlike equality
 pass	runtime structural equality over a GENERIC RECURSIVE sum walks the whole tree
 pass	runtime structural equality over a payload-carrying sum agrees on both backends
 pass	runtime tuple concatenation preserves element order across the seam
