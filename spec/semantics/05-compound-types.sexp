@@ -384,6 +384,44 @@
                (def (main)  (fst (tuple 7 8))) (export main)))
   (output    (: 7 Int64)))
 
+; ── Projecting a compound BUILT AT THE PROJECTION SITE from RUNTIME elements folds to the element ─────
+; `(. (tuple a b) 0)` where the tuple is constructed right where it is projected folds to the element
+; occurrence `a` — a compile-time-visible constructor's projection reduces to the element directly in
+; `lower` (core.rs: a projection of a compile-time-visible tuple "folds to the element … leaving no
+; Tuple"/`Proj`). The tuple is NEVER built on the heap. Distinct from the cases above (constant elements,
+; or a whole tuple arriving as a PARAMETER): here the elements are RUNTIME parameters, so the fold must
+; THREAD each runtime value into the projection rather than bake a constant — and the UNPROJECTED sibling
+; is not evaluated (its trap is shielded, since building the tuple is elided). Both backends inherit the fold.
+
+(case "projecting a tuple built from runtime elements folds to the projected element"
+  (doc    "`(. (tuple a b) 0)` and `(. (tuple a b) 1)` over runtime parameters fold to `a` / `b` directly
+           — the tuple is built at the projection site, so `lower` reduces the projection to the element
+           occurrence, building no heap tuple. `(f 7 9)` projecting index 0 → 7, index 1 → 9 (checked via a
+           tuple of both projections). Pins that the projection-of-just-built-compound fold threads the
+           RUNTIME element value (not a constant), on both backends.")
+  (input  (do (def (main (: a Int64) (: b Int64)) (tuple (. (tuple a b) 0) (. (tuple a b) 1))) (export main)))
+  (call   main (: 7 Int64) (: 9 Int64))
+  (output (: (tuple 7 9) (Tuple Int64 Int64))))
+
+(case "reading a field of a record built from runtime elements folds to the field"
+  (doc    "The record companion: `(. (record (a x) (b (+ x 1))) b)` folds to the field initializer
+           `(+ x 1)` directly — the record is built at the access site, so the projection reduces to the
+           field's occurrence (no heap record). `(main 5)` → 6. Pins the field-of-just-built-record fold
+           threads the runtime field value, both backends.")
+  (input  (do (def (main (: x Int64)) (. (record (a x) (b (+ x 1))) b)) (export main)))
+  (call   main (: 5 Int64))
+  (output (: 6 Int64)))
+
+(case "projecting a just-built tuple does not evaluate the unprojected sibling's trap"
+  (doc    "`(. (tuple a (/ 1 z)) 0)` with z = 0 projects element 0 (`a`), so the sibling `(/ 1 z)` — a
+           divide-by-zero — is NEVER evaluated: the fold reduces to `a` and building the tuple is elided,
+           so the sibling's trap does not occur. `(f 7 0)` → 7, not a trap. The runtime-element,
+           built-at-site companion of the un-projected-tuple-element shielding (§an un-projected tuple
+           element is not evaluated): here the tuple is built from runtime operands at the projection.")
+  (input  (do (def (main (: a Int64) (: z Int64)) (. (tuple a (/ 1 z)) 0)) (export main)))
+  (call   main (: 7 Int64) (: 0 Int64))
+  (output (: 7 Int64)))
+
 (case "member access of a missing field is a type error"
   (doc    "Witnesses core-semantics.md #Member Access Projects A Record Field (3rd sentence):
            projecting a field the record does not contain has no defined result. A record's field
@@ -2998,6 +3036,24 @@
             (def (main) (f (tuple 3 4))) (export main)))
   (output (: 7 Int64)))
 
+(case "a guard on a nested-list-in-list element reads the inner list's binder"
+  (doc    "A user `(guard …)` on a list arm whose leading element is a NESTED LIST, whose guard cond reads the
+           INNER list's element binder — `(guard (list (list a .. r1) .. r2) (> a 3))`. `a` must be in scope
+           for the guard. Regression (same class as the ctor-list-element guard): the nested-list desugar
+           (Inc-14) replaces the nested-list element with a fresh binder + an inner-LENGTH guard + a body
+           re-match that binds `a`; the user cond, ANDed at the outer level, saw `a` unbound → false CDZ0101.
+           The fix evaluates the user cond inside a match on the fresh binder that binds the inner pattern
+           (`(and <len_test> (match __ne (<nested-pat> <user-cond>) (_ false)))`), so `a` is in scope. `f
+           [[5]]`: inner element a = 5, (> 5 3) holds → 5.")
+  (input  (do
+            (def (f (: xs (List (List Int64))))
+              (match xs
+                ((guard (list (list a .. r1) .. r2) (> a 3)) a)
+                (_                                           -1)))
+            (def (mk (: k Int64)) (list (list k)))
+            (def (main) (f (mk 5))) (export main)))
+  (output (: 5 Int64)))
+
 (case "a nullary variant list element dispatches by its discriminant"
   (doc    "A NULLARY variant is a refutable ctor list element too — `(list C.Red .. r)` matches only a list
            whose first element is `C.Red`, dispatching by the head's tag exactly as an applied ctor
@@ -4247,6 +4303,52 @@
             (export main)))
   (call   main)
   (output (: 6 Int64)))
+
+; --- A partial constructor stashed in a COMPOUND LITERAL, projected + applied, completes ---------------
+; A partially-applied ctor `(T.Mk 10)` held as a TUPLE element or RECORD field of a compile-time-visible
+; compound, then PROJECTED and APPLIED (`((. (tuple (T.Mk 10) 0) 0) 5)`), completes to the flat variant.
+; The projection is followed at compile time (`peel_ref_annot` reduces `(. tuple i)` / `(. record f)` into
+; the visible compound to the element occurrence), so the ctor spine reaches full arity and builds a flat
+; `(T.Mk 10 5)` — no runtime closure. Before this, the projected partial ctor was lowered as a MALFORMED
+; `SumNew` (too-few payloads) and the application `call_indirect`'d a sum handle as a closure → INVALID
+; WASM. Companion of the let-bound / HOF partial-ctor cases above (a ref / call boundary); this is the
+; compound-element boundary. (A partial ctor whose value is NOT statically visible — a runtime list
+; element — needs a genuine runtime eta-closure lift, not yet built; it declines cleanly, not miscompiles.)
+(case "a partial constructor projected from a tuple literal completes when applied"
+  (doc    "`((. (tuple (T.Mk 10) 0) 0) 5)` — element 0 of the inline tuple is the partial ctor `(T.Mk 10)`;
+           projecting it and applying `5` completes the 2-payload variant `(T.Mk 10 5)`, so `(+ a b)` = 15.
+           Pins that a partial ctor in a compound LITERAL is followed through the projection to the ctor
+           spine and flattened (was invalid wasm — a malformed sum applied as a closure).")
+  (input  (do
+            (type T (Mk Int64 Int64))
+            (def (main) (match ((. (tuple (T.Mk 10) 0) 0) 5) ((T.Mk a b) (+ a b))))
+            (export main)))
+  (call   main)
+  (output (: 15 Int64)))
+
+(case "a partial constructor bound in a let-tuple completes when applied to a runtime arg"
+  (doc    "`(let ((p (tuple (T.Mk 10) 0))) ((. p 0) x))` binds a tuple whose element 0 is `(T.Mk 10)`, then
+           projects + applies the RUNTIME arg `x`. The projection follows through the let-bound tuple literal
+           to the partial ctor, completing to `(T.Mk 10 x)`; x=5 → 15, x=2 → 12. Pins the let-bound compound
+           form with a runtime completing argument.")
+  (input  (do
+            (type T (Mk Int64 Int64))
+            (def (main (: x Int64)) (let ((p (tuple (T.Mk 10) 0))) (match ((. p 0) x) ((T.Mk a b) (+ a b)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 15 Int64))
+  (call   main (: 2 Int64)) (output (: 12 Int64)))
+
+(case "a partial constructor stored in a record field completes when applied"
+  (doc    "The record-field companion: `(let ((r (record (f (T.Mk 7)) (g 0)))) ((. r f) 3))` — field `f`
+           holds the partial ctor `(T.Mk 7)`; accessing it and applying `3` completes `(T.Mk 7 3)`, so
+           `(+ a b)` = 10. Pins that a record-field member access (not only a tuple projection) is followed
+           into the visible record to the ctor spine.")
+  (input  (do
+            (type T (Mk Int64 Int64))
+            (def (main) (let ((r (record (f (T.Mk 7)) (g 0)))) (match ((. r f) 3) ((T.Mk a b) (+ a b)))))
+            (export main)))
+  (call   main)
+  (output (: 10 Int64)))
 
 ; --- A compound bound from a sum payload, extracted ACROSS A FUNCTION BOUNDARY, then projected ---
 ; A value bound out of a sum payload carries its shape WITHIN THE MATCH ARM (the payload-bound cases
@@ -9041,3 +9143,76 @@
             (export main)))
   (call   main (: 0 Int64))
   (output (: 1 Int64)))
+
+(case "three same-variant literal arms fall through in order"
+  (doc    "`(Add 0) -> 100, (Add 1) -> 200, (Add n) -> n` over single-element lists: input `(Add 1)`
+           falls PAST the 0-arm to the 1-arm (200), input `(Add 7)` past both literals to the binder
+           (7) -> 207. The chain face of the literal-refinement guard: each literal guard must refine
+           by ITS payload (a payload-wildcarding guard sends every Add to arm one; a first-literal
+           latch sends (Add 1) to the removed trap).")
+  (input  (do
+            (type Op (Add Int64) (Mul Int64) (Neg Unit))
+            (def (f (: xs (List Op)))
+              (match xs
+                ((list (Op.Add 0) .. r) 100)
+                ((list (Op.Add 1) .. r) 200)
+                ((list (Op.Add n) .. r) n)
+                (_ -1)))
+            (def (main (: v Int64))
+              (+ (f (List.push (list) (Op.Add 1))) (f (List.push (list) (Op.Add v)))))
+            (export main)))
+  (call   main (: 7 Int64))
+  (output (: 207 Int64)))
+
+(case "literal payload refinement works in a non-head element position"
+  (doc    "The refined element sits at index 1: [Neg, Add 0] -> 100, [Neg, Add 9] -> 9 -> 109. The
+           desugar guards each element separately; the payload refinement must survive at every
+           index, not only the head the fall-through pin covers.")
+  (input  (do
+            (type Op (Add Int64) (Mul Int64) (Neg Unit))
+            (def (f (: xs (List Op)))
+              (match xs
+                ((list _ (Op.Add 0) .. r) 100)
+                ((list _ (Op.Add n) .. r) n)
+                (_ -1)))
+            (def (main (: v Int64))
+              (+ (f (List.push (List.push (list) (Op.Neg unit)) (Op.Add 0)))
+                 (f (List.push (List.push (list) (Op.Neg unit)) (Op.Add v)))))
+            (export main)))
+  (call   main (: 9 Int64))
+  (output (: 109 Int64)))
+
+(case "literal refinement on two elements of one list pattern"
+  (doc    "BOTH elements carry same-variant ctors, the second refined by literal vs binder: input
+           [Add 0, Add 4] takes the binder arm -> 4. A per-arm guard built from only the FIRST
+           refutable element passes arm one on the shared prefix and traps in its body re-match.")
+  (input  (do
+            (type Op (Add Int64) (Mul Int64) (Neg Unit))
+            (def (f (: xs (List Op)))
+              (match xs
+                ((list (Op.Add 0) (Op.Add 0) .. r) 1)
+                ((list (Op.Add 0) (Op.Add n) .. r) n)
+                (_ -1)))
+            (def (main (: v Int64))
+              (f (List.push (List.push (list) (Op.Add 0)) (Op.Add v))))
+            (export main)))
+  (call   main (: 4 Int64))
+  (output (: 4 Int64)))
+
+(case "a string literal payload refines a ctor list element"
+  (doc    "`(Tag \"a\")` -> 1 vs `(Tag s)` -> byte-len s: the literal is a HEAP payload compared by
+           content — [Tag \"a\"] takes the literal arm, [Tag \"bc\"] falls through and binds (2) ->
+           3. The heap-literal face of the payload-refinement guard (a discriminant-only guard passes
+           \"bc\" into the \"a\" arm's body re-match; a physical-byte compare misfires on a rope).")
+  (input  (do
+            (type T (Tag String) (Other Unit))
+            (def (f (: xs (List T)))
+              (match xs
+                ((list (T.Tag "a") .. r) 1)
+                ((list (T.Tag s) .. r) (String.byte-len s))
+                (_ -1)))
+            (def (main (: d Int64))
+              (+ (f (List.push (list) (T.Tag "a"))) (f (List.push (list) (T.Tag "bc")))))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 3 Int64)))

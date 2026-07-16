@@ -30,3 +30,9 @@ manifold-csg = "0.3.3"
 [lib]
 name = "cdz_cad"
 path = "src/lib.rs"
+
+# The native CAD CLI (G2c): read a rendered Solid (file or stdin) → parse → mesh → write STL. A SEPARATE
+# binary (not a seed `cdz` subcommand) so the manifold C++/cmake build stays in this excluded crate.
+[[bin]]
+name = "cdz-cad"
+path = "src/main.rs"

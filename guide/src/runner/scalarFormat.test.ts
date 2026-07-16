@@ -34,6 +34,20 @@ test("unknown / missing type leaves the value unchanged", () => {
   assert.equal(formatScalarByType("5", ""), "5");
 });
 
+test("a padded value is trimmed before the .0 is appended (no preserved whitespace)", () => {
+  assert.equal(formatScalarByType(" 5", "Float64"), "5.0");
+  assert.equal(formatScalarByType("5 ", "Float64"), "5.0");
+});
+
+test("isFloatType is ANCHORED — a type merely CONTAINING Float* is not a float scalar", () => {
+  // The bare export types are what fire the .0…
+  assert.equal(formatScalarByType("5", " Float64 "), "5.0"); // tab-padded from the query split
+  // …but a compound type string that only CONTAINS Float64 must NOT (it renders via the compound path
+  // anyway, but the type check should be honest).
+  assert.equal(formatScalarByType("5", "(Tuple Float64 Int64)"), "5");
+  assert.equal(formatScalarByType("5", "Float64Thing"), "5"); // not the exact type
+});
+
 test("resultTypeOf prefers main, else the sole export, else null", () => {
   assert.equal(resultTypeOf("main\tFloat64\n"), "Float64");
   assert.equal(resultTypeOf("helper\tInt64\nmain\tFloat32\n"), "Float32"); // main wins

@@ -710,6 +710,26 @@ fn literal_width_fault(db: &mut Db, value: StructId, ty_expr: StructId) -> Optio
     None
 }
 
+/// The CDZ0302 message for an ILL-FORMED integer width (`crate::eval::IntWidthFault`), shared by the value-
+/// and parameter-annotation checks so both phrase it identically. An OVER-CEILING/zero width names the
+/// WRITTEN width (`(UInt 65)` → "`UInt65` is not a valid integer type …"); a MALFORMED (negative /
+/// non-natural) width has NO width number to name, so it states the constraint the width violated (a width
+/// must be a compile-time NATURAL in 1..=64) — the case that used to slip past `cdz check` entirely.
+fn ill_formed_int_width_message(fault: &crate::eval::IntWidthFault) -> String {
+    match *fault {
+        crate::eval::IntWidthFault::OverCeiling { signed, width } => format!(
+            "`{}{width}` is not a valid integer type: a width must be in 1..=64 (a fixed-size integer \
+             wider than 64 bits is reserved to the big-integer layer, and 0 is not a width)",
+            if signed { "Int" } else { "UInt" }
+        ),
+        crate::eval::IntWidthFault::Malformed { signed } => format!(
+            "an integer type's width must be a compile-time natural number in 1..=64 — this `{}` type's \
+             width is not a natural number (a negative, fractional, or non-numeric width is not a width)",
+            if signed { "Int" } else { "UInt" }
+        ),
+    }
+}
+
 /// The CDZ0302 out-of-range range-check EXTENDED through a COMPOUND value's payload/elements. The scalar
 /// `literal_width_fault` above catches a top-level `(: 999 Int8)`, but a NESTED narrow-width literal — the
 /// payload of `(: (Some 999) (Option Int8))`, an element of `(: (tuple 999) (Tuple Int8))`, a list element
@@ -1576,19 +1596,10 @@ pub fn param_annotation_faults(db: &mut Db, param: StructId, out: &mut Vec<Rejec
     // outside the admitted range (1..=64) is rejected at compile time, never accepted or trapped at run.
     //= spec/capabilities/numeric-model.md#an-integer-type-is-indexed-by-a-compile-time-width
     //# A bit width that is outside the range the numeric model admits MUST be rejected at compile time with the machine-readable diagnostic for the unsatisfied width constraint, rather than accepted or trapped at runtime.
-    if let Some((signed, w)) = crate::eval::out_of_range_int_width(db, ty_expr) {
-        trace!(target: "rcdzc::infer", param = param.0, signed, width = w, "fault: over-ceiling integer width in a parameter annotation (CDZ0302)");
+    if let Some(fault) = crate::eval::int_width_fault(db, ty_expr) {
+        trace!(target: "rcdzc::infer", param = param.0, "fault: ill-formed integer width in a parameter annotation (CDZ0302)");
         out.push(
-            Reject::coded(
-                Code::IntOutOfRange,
-                format!(
-                    "`{}{w}` is not a valid integer type: a width must be in 1..=64 (a fixed-size \
-                     integer wider than 64 bits is reserved to the big-integer layer, and 0 is not a \
-                     width)",
-                    if signed { "Int" } else { "UInt" }
-                ),
-            )
-            .at(ty_expr),
+            Reject::coded(Code::IntOutOfRange, ill_formed_int_width_message(&fault)).at(ty_expr),
         );
         return;
     }
@@ -3669,6 +3680,10 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
     // is still required to share q's DIMENSION (`check_application`, CDZ0501); here we fill the
     // value-column type with q's INNER numeric type. If the target unit doesn't reduce, or q isn't a
     // quantity, fall through (→ Any, faulted elsewhere).
+    //= spec/capabilities/units-of-measure.md#an-explicit-conversion-unwraps-to-a-bare-number
+    //# An explicit conversion of a quantity into a chosen unit — the `as`/`in` operation — MUST yield the dimensionless number counting how many of the chosen unit the quantity is, with the quantity wrapper removed, so that a conversion is the deliberate exit from the dimensional layer rather than a re-expression that stays dimensioned.
+    //= spec/capabilities/units-of-measure.md#an-explicit-conversion-unwraps-to-a-bare-number
+    //# The result of an explicit conversion MUST be an ordinary number of the quantity's underlying numeric type, subject to ordinary numeric rules and no longer dimension-checked, so that once a program has asked "how many of this unit is it?" it holds the answer as a plain number and may combine it freely.
     if crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::UnitIn)
         && args.len() == 2
         && let (Some(_target), Ty::Qty { inner, .. }) =
@@ -6212,6 +6227,21 @@ pub(crate) fn check_unknown_units(db: &mut Db, out: &mut Vec<Reject>) {
     }
 }
 
+/// The SURFACE spelling of a simple leaf `Atom` — a name or an integer literal — for splicing into a
+/// fix replacement (`(: <value> <Type>)`). Returns `None` for a compound node or any other leaf
+/// (a float, whose faithful re-spelling needs `Decimal` reconstruction; a string/char, which needs
+/// quoting/escaping), so a fix's replacement is only ever emitted when its exact text is trivially
+/// reconstructible; the caller then carries the message alone, no fix.
+fn atom_surface(db: &Db, id: StructId) -> Option<String> {
+    if let Some(name) = db.ast.as_name(id) {
+        return Some(name.to_string());
+    }
+    if let Some(int) = db.ast.as_int(id) {
+        return Some(int.to_decimal_string());
+    }
+    None
+}
+
 fn check_application(
     db: &mut Db,
     app: StructId,
@@ -6297,6 +6327,8 @@ fn check_application(
     // kilometers, not meters to seconds). A cross-dimension conversion is CDZ0501 (units-of-measure.md
     // §A Dimensional Mismatch Is An Error). Read the target unit + q's unit; descend into q for its own
     // faults, then return (skip the generic scheme-unify — `Unit.in` has no HM scheme).
+    //= spec/capabilities/units-of-measure.md#an-explicit-conversion-unwraps-to-a-bare-number
+    //# The chosen unit MUST share the quantity's dimension, so that a conversion across dimensions — a length into a duration — remains an error rather than silently producing a number.
     if args.len() == 2
         && crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::UnitIn)
     {
@@ -7971,6 +8003,50 @@ fn check_application(
                                 .then(|| n.to_string())
                         });
                     trace!(target: "rcdzc::infer", head = head.0, ty = %ht.render_name(), "fault: applying a non-function value (CDZ0201)");
+                    // A MISSING-COLON VALUE ANNOTATION — `(5 Int64)` written where `(: 5 Int64)` was
+                    // meant. When a plain value head is applied to EXACTLY ONE argument that resolves as a
+                    // TYPE (`typeval_of`), the author juxtaposed a value with its type instead of heading
+                    // them with `:`, so it reads as an application of a non-function. This is the
+                    // value-position twin of the parameter-position `(a Float64)` → `(: a Float64)` slice,
+                    // and the argument-position counterpart of `(Int64 5)`'s "a type appears in an
+                    // annotation `(: value Int64)`, not in call position". Name the real repair. When BOTH
+                    // the head and the type are simple atoms (a name or an int/float literal — the common
+                    // `(5 Int64)` case) the rewrite `(<value> <Type>)` → `(: <value> <Type>)` is a
+                    // deterministic rule, so the fix is VERIFIED and carries the exact spelling; a compound
+                    // type or a non-atom head keeps the message alone (no single spelling to splice). Only
+                    // in the `(None, None)` arm — a type/effect head or a nullary def keeps its own message.
+                    let colon_annotation = if name_category.is_none()
+                        && nullary_fn.is_none()
+                        && args.len() == 1
+                        && crate::eval::typeval_of(db, args[0]).is_some()
+                    {
+                        let value_text = atom_surface(db, head);
+                        let type_text = db.ast.as_name(args[0]).map(str::to_string);
+                        Some((value_text, type_text))
+                    } else {
+                        None
+                    };
+                    if let Some((value_text, type_text)) = colon_annotation {
+                        let mut reject = Reject::coded(
+                            Code::Malformed,
+                            "a value is annotated `(: <value> <Type>)`, with a leading `:` — this value \
+                             is juxtaposed with a type, so it reads as applying a non-function; add the \
+                             `:` to annotate it",
+                        )
+                        .at(app);
+                        if let (Some(v), Some(t)) = (&value_text, &type_text) {
+                            // HEURISTIC, not Verified: adding the `:` is the certain STRUCTURAL repair,
+                            // but the resulting annotation may itself not hold — `(5 Bool)` → `(: 5 Bool)`
+                            // trades the CDZ0201 for a CDZ0203 (`Bool` does not match `Int64`). A Verified
+                            // fix must CLEAR the diagnostic by construction; this one clears it only when
+                            // the value's type satisfies the annotation, which the compiler has not proved
+                            // here, so it stays a heuristic an agent confirms.
+                            reject = reject
+                                .with_fix(Fix::replace_heuristic(app, format!("(: {v} {t})")));
+                        }
+                        out.push(reject);
+                        return;
+                    }
                     let message = match (name_category, nullary_fn) {
                         (Some((name, cat)), _) => {
                             format!(
@@ -10431,16 +10507,11 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 // misleading clamped `UInt0`; catch it HERE by reading the ORIGINAL width, so a NON-literal
                 // value (`(: x (UInt 65))`) is rejected too and the message names the written width. Same
                 // CDZ0302 + wording as the parameter-annotation path (`param_annotation_faults`).
-                if let Some((signed, w)) = crate::eval::out_of_range_int_width(db, ty_expr) {
-                    trace!(target: "rcdzc::infer", node = id.0, signed, width = w, "fault: over-ceiling integer width in a value annotation (CDZ0302)");
+                if let Some(fault) = crate::eval::int_width_fault(db, ty_expr) {
+                    trace!(target: "rcdzc::infer", node = id.0, "fault: ill-formed integer width in a value annotation (CDZ0302)");
                     out.push(Reject::coded(
                         Code::IntOutOfRange,
-                        format!(
-                            "`{}{w}` is not a valid integer type: a width must be in 1..=64 (a fixed-size \
-                             integer wider than 64 bits is reserved to the big-integer layer, and 0 is not \
-                             a width)",
-                            if signed { "Int" } else { "UInt" }
-                        ),
+                        ill_formed_int_width_message(&fault),
                     ));
                 }
                 // A bare integer LITERAL annotated with an integer type is a GROUNDING, not a

@@ -538,10 +538,27 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         // A parameter or kept-let reference — read the identifier its binder maps to. A binder with no
         // environment entry is a compiler bug (a ref whose binding was not brought into scope), so
         // decline rather than emit a dangling name.
-        Core::Param { binder } | Core::LocalRef { binder } => env
-            .get(&binder)
-            .cloned()
-            .ok_or_else(|| Reject::decline("reference has no bound Rust identifier")),
+        Core::Param { binder } | Core::LocalRef { binder } => {
+            let name = env
+                .get(&binder)
+                .cloned()
+                .ok_or_else(|| Reject::decline("reference has no bound Rust identifier"))?;
+            // A NON-COPY binding (a `Vec` list — the native strategy's first move-only type) may be read in
+            // more than one position; Rust would MOVE it on the first by-value use and reject the rest
+            // (E0382). Cadenza values are persistent/shareable, so `.clone()` every non-Copy binding read —
+            // the value-level analogue of the wasm backend's Perceus dup (a clone is always sound; the
+            // rust backend is a correctness oracle, not a perf target, so over-cloning is acceptable). A
+            // COPY binding (a scalar, an all-scalar tuple/record, a non-payload-heavy enum) is read as-is —
+            // Rust copies it implicitly, and a spurious `.clone()` there is a needless-clone lint under
+            // `-D warnings`. `needs_clone_on_read` is conservative: it clones only a type that is provably
+            // non-Copy in the emitted Rust (a `Vec`, i.e. a `List`), leaving every existing Copy case
+            // byte-identical.
+            if needs_clone_on_read(db, id) {
+                Ok(format!("{name}.clone()"))
+            } else {
+                Ok(name)
+            }
+        }
         // An `if` → Rust's `if cond { then } else { else }`. Rust's `if` is an expression, so it yields
         // the branch value directly — the structured target expresses the core's `If` as itself. Both
         // branches must produce the `if`'s RESULT type; a bare-literal branch is GROUNDED to that width
@@ -774,7 +791,16 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         // valid Rust field. Parenthesize the operand so a compound operand expression binds correctly.
         Core::Proj { operand, index } => {
             let t = emit(db, operand, env, ctx)?;
-            Ok(format!("({t}).{index}"))
+            // A projection reads a FIELD by reference-into-place; if that field's type is NON-COPY (a `Vec`,
+            // or a compound holding one) and the projection result is used in more than one position, Rust
+            // would MOVE the field out on the first by-value use and reject the rest (E0382) — the same
+            // reason a non-Copy binding read clones. So clone a non-Copy projection result too (a Copy
+            // field — the common scalar case — is read in place, byte-identical to before).
+            if needs_clone_on_read(db, id) {
+                Ok(format!("({t}).{index}.clone()"))
+            } else {
+                Ok(format!("({t}).{index}"))
+            }
         }
         // A runtime LIST construction `(list e0 e1 …)` → the Rust `vec![e0, e1, …]` macro (an owned
         // `Vec<T>`, the native map for `List T`). Elements are lowered on demand; a homogeneous element
@@ -788,6 +814,53 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                 parts.push(emit(db, e, env, ctx)?);
             }
             Ok(format!("vec![{}]", parts.join(", ")))
+        }
+        // `List.len` → `<list>.len() as i64` (the result is an Int64). `.len()` is a `usize`; cast to the
+        // machine `i64` a Cadenza length crosses as. Parenthesize the operand so a compound expression binds.
+        Core::ListLen { operand } => {
+            let v = emit(db, operand, env, ctx)?;
+            Ok(format!("(({v}).len() as i64)"))
+        }
+        // `List.push` → append `elem`, returning the NEW list (Cadenza lists are persistent; a `Vec` is
+        // owned, so consume the operand into a `mut` local, push, and yield it — value semantics agree).
+        Core::ListPush { list, elem } => {
+            let l = emit(db, list, env, ctx)?;
+            let e = emit(db, elem, env, ctx)?;
+            Ok(format!("{{ let mut __v = {l}; __v.push({e}); __v }}"))
+        }
+        // `List.concat` → the two lists joined in order (`lhs` then `rhs`). Consume `lhs` into a `mut`
+        // local and `extend` it with `rhs`, returning it — one new `Vec`, order-preserving.
+        Core::ListConcat { lhs, rhs } => {
+            let a = emit(db, lhs, env, ctx)?;
+            let b = emit(db, rhs, env, ctx)?;
+            Ok(format!("{{ let mut __v = {a}; __v.extend({b}); __v }}"))
+        }
+        // `List.update` → replace the element at `index`, returning the NEW list; an out-of-bounds index
+        // TRAPS (Cadenza `List.update` traps OOB, `value-heap-runtime.md`). The index is an Int64 occurrence
+        // cast to `usize` (a negative index wraps to a huge `usize` → still `>= len` → the OOB panic, whose
+        // "index out of bounds" reason the gate's `trap_kind` maps to `out-of-bounds`, matching the wasm
+        // trap). An explicit bound check so the panic reason is stable and matches the corpus vocabulary.
+        Core::ListUpdate { list, index, elem } => {
+            let l = emit(db, list, env, ctx)?;
+            let i = emit(db, index, env, ctx)?;
+            let e = emit(db, elem, env, ctx)?;
+            Ok(format!(
+                "{{ let mut __v = {l}; let __i = ({i}) as usize; \
+                 if __i >= __v.len() {{ panic!(\"index out of bounds\") }} __v[__i] = {e}; __v }}"
+            ))
+        }
+        // `List.at` → the FALLIBLE indexed read, yielding a built-in `Option` (which maps to Rust's OWN
+        // `Option<T>` — the harness renders it). In range → `Some(<element>.clone())` (the runtime `vec-get`
+        // BORROWS, so the `Some` payload owns an independent clone), else `None`. The index is a scalar cast
+        // to `usize` (a negative index wraps huge → `>= len` → `None`, never a panic — `List.at` is total).
+        // `disc_some`/`disc_none` are the wasm discriminants, irrelevant on the native-`Option` rust path.
+        Core::ListAt { list, index, .. } => {
+            let l = emit(db, list, env, ctx)?;
+            let i = emit(db, index, env, ctx)?;
+            Ok(format!(
+                "{{ let __v = {l}; let __i = ({i}) as usize; \
+                 if __i < __v.len() {{ Some(__v[__i].clone()) }} else {{ None }} }}"
+            ))
         }
         // A SUM VALUE CONSTRUCTION → the Rust enum variant `<Enum>::<Variant>(payloads…)`. The enum +
         // variant names come from the node's solved `Ty::Sum` declaration at the disc's index (the
@@ -861,12 +934,7 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         // panic carrying its own op-named reason, not `Core::Trap`, so this literal is only the non-
         // arithmetic explicit trap, whose canonical kind IS `unreachable`.)
         Core::Trap => Ok("panic!(\"unreachable\")".to_string()),
-        Core::ListLen { .. }
-        | Core::ListPush { .. }
-        | Core::ListConcat { .. }
-        | Core::ListUpdate { .. }
-        | Core::ListAt { .. }
-        | Core::MatchList { .. }
+        Core::MatchList { .. }
         | Core::ConstStr(_)
         | Core::ConstChar(_)
         | Core::ConstFloatNan
@@ -1335,6 +1403,41 @@ fn compare_sym(op: Prim) -> Option<&'static str> {
         Prim::Eq => "==",
         _ => return None,
     })
+}
+
+/// Whether a binding of the node's type must be `.clone()`d when READ, because its emitted Rust type is
+/// NON-COPY (move-only) and a second by-value use would be an E0382 move error. Only a `List` (→ `Vec<T>`)
+/// and a compound that CONTAINS a list are non-Copy in the types this backend emits today; every scalar,
+/// `Bool`, `Unit`, all-scalar tuple/record, and enum whose payloads are all Copy is `Copy`/read-as-is.
+/// Conservative by construction: it returns `true` ONLY for a type provably non-Copy, so every pre-list
+/// Copy case stays byte-identical (no spurious `.clone()` → no needless-clone lint under `-D warnings`).
+/// A `Nominal` newtype erases to its inner type; a `Sum`/`Tuple`/`Record` is non-Copy iff any component is.
+fn needs_clone_on_read(db: &mut Db, id: StructId) -> bool {
+    ty_is_non_copy(&type_of(db, id))
+}
+
+/// Whether `ty`'s emitted Rust representation is non-Copy (move-only). A `List` maps to `Vec` (non-Copy);
+/// a compound is non-Copy iff any element/field/payload is. Everything else this backend emits is Copy.
+fn ty_is_non_copy(ty: &Ty) -> bool {
+    match ty {
+        // A `Vec<T>` is the only leaf non-Copy type the backend emits today.
+        Ty::List(_) => true,
+        // A compound is non-Copy iff any component is (a tuple/record of scalars stays Copy).
+        Ty::Tuple(elems) => elems.iter().any(ty_is_non_copy),
+        Ty::Record(fields) => fields.values().any(ty_is_non_copy),
+        // A newtype erases to its inner type — inherit its Copy-ness.
+        Ty::Nominal { inner, .. } => ty_is_non_copy(inner),
+        // A sum's emitted enum `#[derive(Clone)]`s but is NEVER `#[derive(Copy)]` (the derive list adds
+        // only Clone/PartialEq/Eq — see `enums::emit_one_enum`), so an enum VALUE is move-only in Rust
+        // regardless of whether its payloads happen to be Copy. Reading a sum binding therefore clones it,
+        // so a value used in more than one position (e.g. matched twice, or matched then passed) does not
+        // E0382-move. This also correctly covers a sum whose payload CONTAINS a `Vec` (a non-generic
+        // `(KCall (Tuple Int64 (List Core)))`), which the type-args check alone would miss. Over-cloning a
+        // single-use enum is sound; the emitted enums carry `#[allow(clippy::all)]` so no needless-clone
+        // lint fires.
+        Ty::Sum { .. } => true,
+        _ => false,
+    }
 }
 
 /// A human op name for a trap panic message.
@@ -1884,7 +1987,7 @@ fn fold_const_sum_path(
 
 fn emit_sum_payload(
     db: &mut Db,
-    _id: StructId,
+    id: StructId,
     scrutinee: StructId,
     path: &[crate::core::PathStep],
     env: &Env,
@@ -1963,7 +2066,12 @@ fn emit_sum_payload(
             // is `Clone`). A `Copy` scalar field's `.clone()` is a plain copy; a recursive field's is a deep
             // copy — both avoid the move. Only a BOXED bind needs this: a non-boxed bind reads a `Copy`
             // scalar / a value already bound by the match pattern, which does not move out of a box.
-            if b.boxed {
+            // A BOXED bind ALWAYS clones (a `(*name).i` extraction moves out of the box). A non-boxed bind
+            // clones only when the READ value's type is NON-COPY (a `Vec` payload field, or a tuple field
+            // that is a list): reading such a field by value moves it, so a payload used in more than one
+            // position (a list field passed to a call AND measured with `.len()`) would E0382. A Copy field
+            // (the common scalar case) reads in place with no clone — byte-identical to before.
+            if b.boxed || needs_clone_on_read(db, id) {
                 expr = format!("({expr}).clone()");
             }
             return Ok(expr);

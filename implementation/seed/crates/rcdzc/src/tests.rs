@@ -21846,6 +21846,71 @@ mod match_engine {
     }
 
     #[test]
+    fn a_value_juxtaposed_with_a_type_names_the_missing_colon_annotation() {
+        // `(5 Int64)` — a value annotation written WITHOUT the colon (the correct form is `(: 5 Int64)`).
+        // A plain value head applied to exactly one argument that resolves as a TYPE reads as applying a
+        // non-function; previously the generic "cannot apply a value of type Int64 — it is not a function"
+        // hid the real cause. It is the value-position twin of the parameter slice `(a Float64)` → `(: a
+        // Float64)` and the argument-position counterpart of `(Int64 5)`'s "a type appears in an
+        // annotation" message. Now it names the missing-colon repair and carries a HEURISTIC fix with the
+        // exact `(: 5 Int64)` spelling (heuristic — the `:` is the certain structural repair, but the
+        // annotation may itself not hold, e.g. `(5 Bool)` → a CDZ0203; a Verified fix must clear the
+        // diagnostic by construction, which this does only when the value's type satisfies the annotation).
+        let d = reject_full("(module m (def (main) (5 Int64)) (export main))")
+            .expect("a colon-less value annotation is rejected");
+        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+        assert!(
+            d.message.contains("`(: <value> <Type>)`")
+                && d.message.contains("leading `:`")
+                && d.message.contains("juxtaposed with a type"),
+            "names the missing-colon repair: {}",
+            d.message
+        );
+        let fix = d.fix.as_ref().expect("carries an add-`:` fix");
+        assert!(
+            !fix.verified,
+            "heuristic — the annotation is not proven to hold"
+        );
+        assert_eq!(fix.replacement, "(: 5 Int64)", "the exact repair spelling");
+
+        // A COMPOUND type argument (`(List Int64)`) has no single name atom to splice — the message still
+        // names the shape but carries NO fix.
+        let dc = reject_full("(module m (def (main) (5 (List Int64))) (export main))")
+            .expect("a compound-type colon-less annotation is rejected");
+        assert!(
+            dc.message.contains("juxtaposed with a type"),
+            "compound-type case still names the shape: {}",
+            dc.message
+        );
+        assert!(
+            dc.fix.is_none(),
+            "no fix when the type is compound: {:?}",
+            dc.fix
+        );
+
+        // NO false positive: a two-value application `(5 6)` — the argument is NOT a type — keeps the
+        // generic "not a function" message (it is a genuine malformed application, not a missing colon).
+        let d2 = reject_full("(module m (def (main) (5 6)) (export main))")
+            .expect("applying a value to a value is rejected");
+        assert!(
+            d2.message.contains("cannot apply a value of type")
+                && !d2.message.contains("juxtaposed"),
+            "a non-type argument is not hijacked as a missing-colon annotation: {}",
+            d2.message
+        );
+
+        // NO false positive: the type-in-HEAD form `(Int64 5)` keeps its own category message (a sibling
+        // test pins it), and this slice must not shadow it.
+        let d3 = reject_full("(module m (def (main) (Int64 5)) (export main))")
+            .expect("applying a type name is rejected");
+        assert!(
+            d3.message.contains("`Int64` is a type, not a function"),
+            "type-in-head is unaffected: {}",
+            d3.message
+        );
+    }
+
+    #[test]
     fn applying_a_monomorphic_sum_type_to_arguments_says_it_takes_no_type_parameters() {
         // The common sum-annotation slip: `(: t (T Int64))` where `(type T (Leaf Int64) …)` is MONOMORPHIC
         // (takes no type parameters). The reader parses `(T Int64)` as applying `T` to `Int64`; since `T`
@@ -24223,6 +24288,51 @@ mod match_engine {
     }
 
     #[test]
+    fn map_len_and_set_len_over_an_owned_temporary_reclaim_it_but_a_borrowed_collection_is_kept() {
+        // The Map/Set siblings of the List.len owned-temporary reclaim: `map-size`/`set-size` BORROW the
+        // collection + return a scalar count, so an OWNED-TEMPORARY (`Map.len (build …)`) must be dropped
+        // after the borrow or it leaks a heap cell (same class as List.len/Bytes.len, fixed prior).
+        let map_owned = "(module m \
+               (def (build i n m) (if (< i n) (build (+ i 1) n ((. Map insert) m i i)) m)) \
+               (def (main) ((. Map len) (build 0 3 (map)))) (export main))";
+        assert!(
+            component_imports_op(&component(map_owned), "drop"),
+            "Map.len over an owned-temporary map must import `drop` (reclaim — leak fix)"
+        );
+        if let Some(out) = run_on_heap(map_owned) {
+            assert_eq!(
+                out, "3",
+                "Map.len value unchanged by the reclaim (leak-only)"
+            );
+        }
+        let set_owned = "(module m \
+               (def (build i n s) (if (< i n) (build (+ i 1) n ((. Set insert) s i)) s)) \
+               (def (main) ((. Set len) (build 0 3 ((. Set of) (list))))) (export main))";
+        assert!(
+            component_imports_op(&component(set_owned), "drop"),
+            "Set.len over an owned-temporary set must import `drop` (reclaim — leak fix)"
+        );
+        if let Some(out) = run_on_heap(set_owned) {
+            assert_eq!(
+                out, "3",
+                "Set.len value unchanged by the reclaim (leak-only)"
+            );
+        }
+        // A BORROWED map — bound and read TWICE (len + a later insert) — must NOT be freed by the len
+        // (would double-free before the later use). Value: len m (3) + len(insert) (4) = 7.
+        let map_borrowed = "(module m \
+               (def (build i n m) (if (< i n) (build (+ i 1) n ((. Map insert) m i i)) m)) \
+               (def (main) (let ((m (build 0 3 (map)))) \
+                             (+ ((. Map len) m) ((. Map len) ((. Map insert) m 99 99))))) (export main))";
+        if let Some(out) = run_on_heap(map_borrowed) {
+            assert_eq!(
+                out, "7",
+                "a borrowed map read by Map.len must not be freed early (owner reclaims)"
+            );
+        }
+    }
+
+    #[test]
     fn a_projected_list_consumed_then_reprojected_is_retained_not_mutated() {
         // The PROJECTION face of the still-live-binding retain (repeated-proj-of-let-consumed-then-read): the
         // shared value is a nested-compound PROJECTION `(. t 0)` of a `let`-bound tuple, not the binding
@@ -26049,6 +26159,44 @@ mod match_engine {
             .unwrap(),
             "7",
             "the tuple guard reads a NESTED ctor payload binder n plus the element binder m: 3+4=7 > 5 → 7"
+        );
+    }
+
+    #[test]
+    fn a_guard_on_a_nested_list_in_list_element_reads_the_inner_binder() {
+        // REGRESSION (false CDZ0101): a user `(guard …)` on a list arm whose leading element is a NESTED LIST,
+        // whose guard cond reads the INNER list's element binder — `(guard (list (list a .. r1) .. r2) (> a
+        // 3))` — falsely reported CDZ0101 unbound `a`. ROOT (same class as Inc-34): `desugar_refutable_nested_
+        // list_elements` (Inc-14) replaces the nested-list element with a fresh binder + an inner-LENGTH guard
+        // + a BODY re-match that binds `a`/`r1`; the user cond was ANDed at the OUTER level where `a` isn't in
+        // scope. FIX: evaluate the user cond inside a match on the fresh binder that binds the inner pattern —
+        // `(and <len_test> (match __ne (<nested-pat> <user-cond>) (_ false)))` — so `a` is in scope.
+        let Some(v) = run_heap_value(
+            "(module m (def (f (: xs (List (List Int64)))) \
+               (match xs ((guard (list (list a .. r1) .. r2) (> a 3)) a) (_ -1))) \
+             (def (mk (: k Int64)) (list (list k))) \
+             (def (main (: k Int64)) (f (mk k))) (export main))",
+            vec!["5".to_string()],
+        ) else {
+            eprintln!("runtime wasm not found; skipping nested-list-guard run");
+            return;
+        };
+        assert_eq!(
+            v, "5",
+            "the guard reads the inner list's element a=5; (> 5 3) holds → a"
+        );
+        // Guard FALSE → falls through to the catch-all.
+        assert_eq!(
+            run_heap_value(
+                "(module m (def (f (: xs (List (List Int64)))) \
+                   (match xs ((guard (list (list a .. r1) .. r2) (> a 3)) a) (_ -1))) \
+                 (def (mk (: k Int64)) (list (list k))) \
+                 (def (main (: k Int64)) (f (mk k))) (export main))",
+                vec!["2".to_string()],
+            )
+            .unwrap(),
+            "-1",
+            "a=2 → (> 2 3) false → falls through to the catch-all"
         );
     }
 
@@ -32380,6 +32528,29 @@ mod match_engine {
         assert!(
             rendered.contains("2500"),
             "2 km + 500 m (BigInt, mixed scale) converts to the reference → 2500: {rendered}"
+        );
+    }
+
+    #[test]
+    fn a_mixed_scale_rational_quantity_combine_converts_exactly() {
+        // `lower_quantity_combine`'s Rational arm gained a runtime path: a MIXED-SCALE combine over a
+        // Rational inner converts each operand to the reference by an EXACT rational multiply then combines
+        // — previously it declined ("runtime mixed-unit Rational combine not yet emitted"), folding only a
+        // constant pair. THE exact-mixing case at runtime: (v inch + 1 mm) with v runtime = 127/5000 +
+        // 1/1000 = 33/1250 m EXACTLY (a fractional scale, no rounding — the point of Rational). Uses the
+        // FULL runtime; skips if absent (the corpus gate covers it e2e).
+        let src = "(do \
+                   (def (rt) ((. Rational of-int) ((. Int64 of) ((. BigInt of) 1)))) \
+                   (def (main) \
+                     ((. Qty value) (+ ((. Qty of) (rt) ((. Unit of) #\"inch\")) \
+                                       ((. Qty of) ((. Rational of) 1 1) ((. Unit of) #\"millimeter\"))))) \
+                   (export main))";
+        let Some(rendered) = run_heap_value_escape(src) else {
+            return; // no runtime store — the corpus gate is the e2e witness
+        };
+        assert!(
+            rendered.contains("33/1250"),
+            "1 inch + 1 mm (Rational, mixed scale) = 33/1250 exactly: {rendered}"
         );
     }
 
@@ -40835,8 +41006,11 @@ mod stage1 {
         // A NON-NATURAL width — negative, or a bool/float/type-value in width position — must be
         // rejected (CDZ0302), NOT silently dropped so the literal keeps its default Int64. The width
         // reader used to narrow with `u32::try_from`, whose `None` was ignored: `(: 5 (Int -8))` then
-        // ran to 5. Each of these now reduces to the invalid sentinel width 0 and the fit-check
-        // rejects it, exactly as an explicit `(UInt 0)` is rejected.
+        // ran to 5. Now `int_width_fault` classifies it `Malformed` and the value-/param-annotation
+        // well-formedness check REJECTS it at `cdz check` (CDZ0302) — earlier than the backend selection
+        // that used to be the sole catcher, with a message that states the constraint (a width must be a
+        // compile-time natural in 1..=64) rather than the misleading "does not fit its width" a
+        // clamped-to-sentinel-0 fit-check gave.
         for body in [
             "(: 5 (Int -8))",
             "(: 5 (UInt -1))",
@@ -40845,9 +41019,11 @@ mod stage1 {
             "(: 300 (Int 8.0))", // a float in width position
             "(: 300 (Int Int64))", // a type-value in width position
         ] {
+            let msg = expect_decline(body);
             assert!(
-                expect_decline(body).contains("does not fit"),
-                "malformed width must be rejected CDZ0302: {body}"
+                msg.contains("width must be a compile-time natural number")
+                    || msg.contains("not a natural number"),
+                "malformed width must be rejected CDZ0302 with the natural-width message: {body} → {msg}"
             );
         }
         // A valid width is unaffected — `(Int 64)` still builds and `5` fits (crosses as s64).
@@ -49684,6 +49860,48 @@ mod stage1 {
             run_main("(let ((f (fn (a b c) (+ (+ a b) c)))) (let ((g (f 1))) (g 2 3)))"),
             6
         );
+    }
+
+    #[test]
+    fn a_partial_constructor_in_a_compound_literal_completes_when_projected_and_applied() {
+        // A partially-applied constructor `(T.Mk 10)` (a 2-payload ctor given 1 arg) stashed in a
+        // compile-time-visible COMPOUND (a tuple element / record field), then PROJECTED and APPLIED,
+        // completes to the flat variant — `peel_ref_annot` follows the projection into the visible compound
+        // to the ctor spine, which reaches full arity and builds a flat `(T.Mk 10 5)`. Before this, the
+        // projected partial ctor lowered to a MALFORMED `SumNew` (too-few payloads) and the application
+        // `call_indirect`'d a sum handle as a closure → INVALID WASM (a real miscompile). The compound-
+        // element boundary companion of the let-ref / HOF partial-ctor completion.
+        let cases: &[(&str, i64)] = &[
+            // Inline tuple: element 0 is (T.Mk 10); (. tuple 0) then applied to 5 → T.Mk(10,5) → 15.
+            (
+                "(module m (type T (Mk Int64 Int64)) \
+                   (def (main) (match ((. (tuple (T.Mk 10) 0) 0) 5) ((T.Mk a b) (+ a b)))) (export main))",
+                15,
+            ),
+            // let-bound tuple, runtime completing arg.
+            (
+                "(module m (type T (Mk Int64 Int64)) \
+                   (def (main) (let ((p (tuple (T.Mk 10) 0))) (match ((. p 0) 5) ((T.Mk a b) (+ a b))))) \
+                 (export main))",
+                15,
+            ),
+            // Record field holding the partial ctor.
+            (
+                "(module m (type T (Mk Int64 Int64)) \
+                   (def (main) (let ((r (record (f (T.Mk 7)) (g 0)))) (match ((. r f) 3) ((T.Mk a b) (+ a b))))) \
+                 (export main))",
+                10,
+            ),
+        ];
+        for (src, want) in cases {
+            let bytes = compile_component(&crate::codec::encode(&parse(src)))
+                .unwrap_or_else(|e| panic!("compile partial-ctor-in-compound: {e:?} for `{src}`"));
+            assert_eq!(
+                run_returns::<i64>(&bytes, "main"),
+                *want,
+                "a partial ctor projected from a compound literal must complete to the flat variant: `{src}`"
+            );
+        }
     }
 
     #[test]
@@ -64171,6 +64389,40 @@ mod cross_component_oracle {
             "a well-formed versioned interface name must not be flagged: {:?}",
             d10.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
+        // (h) a peer-bound op whose signature involves a CLOSURE (a `(-> …)` in an arg or result) is
+        // CDZ0201 with the clear "cannot take or return a CLOSURE" reason — NOT the opaque lower-time
+        // "value is not applyable" a peer-returned closure used to hit on application. Peers exchange
+        // value-heap handles; a closure has no peer-boundary form. Both faces (result + arg):
+        let clo_result = "(do (effect F (op mk (-> Int64 (-> Int64 Int64)))) (bind F \"cadenza:f/api\") \
+                          (def (main) 0) (export main))";
+        let d11 = crate::diagnostics(&mut crate::db::Db::load(parse(clo_result)));
+        assert!(
+            d11.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
+                && d.message.contains("cannot take or return a CLOSURE")),
+            "a peer-bound op RETURNING a closure is CDZ0201 with the clear reason: {:?}",
+            d11.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        let clo_arg = "(do (effect F (op run (-> (-> Int64 Int64) Int64))) (bind F \"cadenza:f/api\") \
+                       (def (main) 0) (export main))";
+        let d12 = crate::diagnostics(&mut crate::db::Db::load(parse(clo_arg)));
+        assert!(
+            d12.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
+                && d.message.contains("cannot take or return a CLOSURE")),
+            "a peer-bound op TAKING a closure is CDZ0201 with the clear reason: {:?}",
+            d12.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        // NO FALSE POSITIVE: the SAME closure-typed op WITHOUT a `(bind …)` (a plain effect, handled or
+        // host-delegated) is NOT flagged by this check — a closure crosses the HOST boundary as a resource;
+        // only a PEER binding lacks a form for it.
+        let clo_nopeer =
+            "(do (effect F (op mk (-> Int64 (-> Int64 Int64)))) (def (main) 0) (export main))";
+        let d13 = crate::diagnostics(&mut crate::db::Db::load(parse(clo_nopeer)));
+        assert!(
+            !d13.iter()
+                .any(|d| d.message.contains("cannot take or return a CLOSURE")),
+            "a closure-typed op on a NON-peer-bound effect must NOT be flagged: {:?}",
+            d13.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
     }
 
     // ------------------------------------------------------------------------------------------------
@@ -65907,6 +66159,61 @@ mod cross_component_oracle {
                 "a compound argument crosses to a peer as a shared handle and is read there"
             ),
             cdz_run::Outcome::Trap(t) => panic!("compound-argument run trapped: {t}"),
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // PL17 — TWO compound arguments cross to a peer in one op. U16 pins a SINGLE compound arg; this pins
+    // that MULTIPLE compound args each cross as their own handle in the same call (the inbound
+    // multi-handle case). A peer op `add4 : (Tuple, Tuple) -> Int64` reads both tuples; the consumer
+    // passes two freshly-built tuples. main(5) = add4((5,5),(5,5)) = 20 — both handles crossed + read.
+    // ------------------------------------------------------------------------------------------------
+    #[test]
+    fn two_compound_arguments_cross_to_a_peer_in_one_op() {
+        use crate::testkit::parse;
+        // PROVIDER: add4 takes TWO tuples, sums all four elements.
+        let provider = compile_provider(
+            "(do (def (add4 (: a (Tuple Int64 Int64)) (: b (Tuple Int64 Int64))) \
+             (+ (+ (. a 0) (. a 1)) (+ (. b 0) (. b 1)))) (export add4))",
+            "cadenza:s/api",
+        );
+        // CONSUMER: builds two tuples and passes BOTH into the peer op.
+        let src = "(do \
+            (effect S (op add4 (-> (Tuple Int64 Int64) (Tuple Int64 Int64) Int64))) \
+            (bind S \"cadenza:s/api\") \
+            (def (main (: x Int64)) (host (S) (S.add4 (tuple x x) (tuple x x)))) \
+            (export main))";
+        let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .unwrap_or_else(|d| {
+                panic!(
+                    "two-compound-arg consumer compiles: {} [{:?}]",
+                    d.message, d.code
+                )
+            });
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("[PL17] runtime wasm not found; skipping");
+            return;
+        };
+        let peers = vec![cdz_run::Peer {
+            bytes: provider,
+            interface: "cadenza:s/api".to_string(),
+        }];
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec!["5".to_string()],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run_with_peers(&consumer, &peers, &opts)
+            .expect("two compound arguments cross to a peer")
+        {
+            // add4((5,5),(5,5)) = 5+5+5+5 = 20. Both tuple handles crossed the boundary + were read.
+            cdz_run::Outcome::Value(s) => assert_eq!(
+                s, "20",
+                "two compound arguments each cross as their own handle in one peer call"
+            ),
+            cdz_run::Outcome::Trap(t) => panic!("two-compound-argument run trapped: {t}"),
         }
     }
 

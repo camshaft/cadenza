@@ -4959,8 +4959,25 @@ fn desugar_refutable_nested_list_elements(
         let guard_cond = match existing_guard {
             None => len_test,
             Some(g) => {
+                // 🩸 The user guard cond `g` may read the INNER list's binders (`(guard (list (list a .. r1)
+                // .. r2) (> a 3))` reads `a`). Those bind only in the BODY re-match (below), NOT at the outer
+                // guard level — so ANDing `g` here left `a` unbound (a false CDZ0101). FIX (mirrors Inc-34's
+                // ctor-element guard): evaluate `g` INSIDE a match on the fresh binder `__ne` that binds the
+                // inner pattern — `(match __ne (<nested-pat> g) (_ false))` — so the inner binders are in
+                // scope for `g`; the `_ → false` is dead (the length test already gated it) but keeps the
+                // inner match well-formed and returns a bool. Conjoin with the length test:
+                // `(and <len_test> (match __ne (<nested-pat> g) (_ false)))`. A CLONE of the nested pattern is
+                // used (the body re-match reuses the original; a node has one parent).
+                let g_scrut = db.push_name(&name);
+                let nested_clone = clone_refutable_payload(db, nested_pat);
+                let g_true_arm = db.push_list(vec![nested_clone, g]);
+                let g_wild = db.push_name("_");
+                let g_false = db.push_atom(crate::ast::Leaf::Bool(false));
+                let g_false_arm = db.push_list(vec![g_wild, g_false]);
+                let g_match_head = db.push_name("match");
+                let g_in_scope = db.push_list(vec![g_match_head, g_scrut, g_true_arm, g_false_arm]);
                 let and_head = db.push_name("and");
-                db.push_list(vec![and_head, g, len_test])
+                db.push_list(vec![and_head, len_test, g_in_scope])
             }
         };
         let guard_head = db.push_name("guard");
@@ -9082,6 +9099,33 @@ fn peel_ref_annot(db: &mut Db, id: StructId) -> StructId {
         match resolved_of(db, cur) {
             Resolved::Ref { value } => cur = value,
             Resolved::Annot { expr, .. } => cur = expr,
+            // A tuple PROJECTION `(. c i)` whose operand `c` reduces to a compile-time-visible tuple
+            // follows to that element's occurrence — so a partial ctor stashed in a COMPOUND LITERAL and
+            // then projected + applied (`((. (tuple (T.Mk 10) 0) 0) 5)`, or the `let`-bound
+            // `(let ((p (tuple (T.Mk 10) 0))) ((. p 0) 5))`) reaches the constructor spine and COMPLETES to
+            // a flat `(T.Mk 10 5)` construction — the compound analogue of the `let`-ref follow, so a
+            // partial ctor in a static tuple flattens like the inline `((T.Mk 10) 5)`. Without this the
+            // projected partial ctor was lowered as a MALFORMED `SumNew` (too-few payloads) and the
+            // application `call_indirect`'d it as a closure → INVALID WASM. Only a STATICALLY-VISIBLE
+            // operand tuple folds here; a runtime tuple (a param / kept binding) has no visible element,
+            // so `reduce_to_tuple_elems` returns `None` and the projection stays a runtime `Core::Proj`
+            // (the genuine runtime-closure case, handled elsewhere / declines).
+            Resolved::Proj { operand, index } => {
+                match crate::eval::reduce_to_tuple_elems(db, operand) {
+                    Some(elems) if index < elems.len() => cur = elems[index],
+                    _ => break,
+                }
+            }
+            // A record field access `(. r f)` whose operand `r` is a compile-time-visible record follows to
+            // the field's value occurrence — the record-field analogue of the tuple-projection follow above,
+            // so a partial ctor stashed in a record field (`(record (f (T.Mk 7)))` then `((. r f) 3)`) also
+            // reaches the ctor spine and completes. `member_value` returns the field value occurrence for a
+            // visible record (a runtime record has none → `None` → the access stays a runtime read).
+            Resolved::Member { operand, key } => match crate::eval::member_value(db, operand, &key)
+            {
+                crate::eval::Member::Field(field) => cur = field,
+                _ => break,
+            },
             _ => break,
         }
     }
@@ -12302,9 +12346,29 @@ fn lower_quantity_combine(
                 _ => Core::Poison(Reject::decline("mixed-unit rational: unsupported operator")),
             };
         }
-        return Core::Poison(Reject::decline(
-            "runtime mixed-unit Rational combine (not yet emitted)",
-        ));
+        // RUNTIME — convert each operand to the reference by `value * (Rational.of num den)` (an EXACT
+        // rational multiply, no rounding) via `convert_operand_ast_rational`, then run the combine op on
+        // the two converted Rationals (which lowers through the runtime `rational-*` ops). Mirrors the
+        // BigInt runtime arm below; the exact-rational analogue of the Int/BigInt runtime scale multiply.
+        let lconv = match convert_operand_ast_rational(db, lhs, ln, ld) {
+            Some(n) => n,
+            None => {
+                return Core::Poison(Reject::decline(
+                    "runtime mixed-unit Rational combine over a non-Qty.of operand (not yet emitted)",
+                ));
+            }
+        };
+        let rconv = match convert_operand_ast_rational(db, rhs, rn, rd) {
+            Some(n) => n,
+            None => {
+                return Core::Poison(Reject::decline(
+                    "runtime mixed-unit Rational combine over a non-Qty.of operand (not yet emitted)",
+                ));
+            }
+        };
+        let head = db.push_name(combine_op_name(op));
+        let app = db.push_list(vec![head, lconv, rconv]);
+        return core_of(db, app);
     }
     // BIGINT inner: convert each operand to the reference by `value * num / den` in UNBOUNDED bigint
     // arithmetic (the heap-handle magnitudes can't take the i128 fold below — that path is for fixnum
@@ -17119,6 +17183,25 @@ fn lower_sum_new(db: &mut Db, head: StructId, args: &[StructId]) -> Core {
             disc,
             payloads: Vec::new(),
         };
+    }
+    // A PARTIALLY-APPLIED constructor — FEWER args than the payload arity — reaching here is a first-class
+    // FUNCTION value (the curried residual `(-> …remaining… Sum)`), NOT a constructed sum. Building a
+    // `SumNew` with the short payload list MISCOMPILES: the node's type is an ARROW, but a downstream site
+    // that projects + applies this value would `call_indirect` a malformed sum handle → INVALID WASM (the
+    // list-element case `(list (T.Mk 10))` + `List.at` + apply). A partial ctor held in a COMPILE-TIME
+    // -VISIBLE compound (a tuple/record literal, projected + applied in scope) is COMPLETED at compile time
+    // — `peel_ref_annot` now follows the projection to the ctor spine, so those reach `lower_sum_new` at
+    // FULL arity and never hit this guard. The genuine RUNTIME case (a partial ctor stored where its value
+    // is not statically visible — a list element, a runtime param) needs a runtime eta-closure lift (not
+    // yet built — the naive synthesis miscompiles through the reducer's half-inline); until then DECLINE
+    // cleanly (reject-don't-miscompile) rather than emit the malformed sum.
+    if let Some(arity) = crate::eval::variant_payload_arity(db, head)
+        && args.len() < arity
+    {
+        trace!(target: "rcdzc::lower", head = head.0, n_args = args.len(), arity, "sum-new: partial constructor as a runtime value — declines (eta-closure lift not yet built)");
+        return Core::Poison(Reject::decline(
+            "a partially-applied constructor as a runtime value is not yet lowered to a runtime closure",
+        ));
     }
     Core::SumNew {
         disc,

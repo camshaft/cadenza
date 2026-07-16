@@ -311,6 +311,8 @@ pass	a Unit projected from a function-returned tuple (owned-reclaim path)
 pass	a Unit projected out of a multi-payload sum and bound to a name
 pass	a Unit record field beside an Int64 field, the Int64 read
 pass	a `?` in a CALLED (inlined, non-exported) helper finds its boundary
+pass	a `?` inside a match-arm resolves against the enclosing function boundary
+pass	a `?` inside an if-branch resolves against the enclosing function boundary
 pass	a `?` on a String operand is a type error
 pass	a `?` on a non-fallible operand is a type error
 pass	a `?` result is usable mid-body, not only in tail position
@@ -381,7 +383,6 @@ pass	a build-time delegated effect whose result a returned closure captures does
 pass	a built map renders its entries in canonical key order
 pass	a built-in Ast constructor applied to a wrong-type payload is a type error
 pass	a built-in Ast.Bool constructor applied to a wrong-type payload is a type error
-pass	a built-in Ast.Float constructor applied to a wrong-type payload is a type error
 pass	a built-in Ast.Float constructor applied to a wrong-type payload is a type error
 pass	a built-in Ast.Str constructor applied to a wrong-type payload is a type error
 pass	a built-in Option is unwrapped by a helper that binds its payload
@@ -627,6 +628,7 @@ pass	a factory RETURNS a closure capturing the def's SCALAR parameter
 pass	a factory RETURNS a closure that captures a let-bound inner closure
 pass	a failing guard falls through to a later arm
 pass	a failing payload-binder guard falls to a later arm re-binding the payload
+pass	a failure `?` short-circuits BEFORE later computation runs
 pass	a fallible parser threads a Result((value,cursor),String) through mutual recursion, short-circuiting on Err
 pass	a false variant guard shields its arm's trapping body
 pass	a family quantity displays scaled exactly to its reference (Rational)
@@ -703,6 +705,7 @@ pass	a genuinely-narrow op with a wrapped-down if-operand yields the exact value
 pass	a guard combines the payload binder with the rest binder
 pass	a guard on a ctor list element reads the constructor's payload binder
 pass	a guard on a literal-element list pattern reads an enclosing let binding through inlining
+pass	a guard on a nested-list-in-list element reads the inner list's binder
 pass	a guard on a tuple arm reads the tuple's element binders
 pass	a guard over a variant pattern gates on the payload
 pass	a guard reads a binding from the enclosing scope, not only its pattern's
@@ -886,6 +889,7 @@ pass	a loop-invariant trapping expression is not evaluated when the loop runs ze
 pass	a lowercase-named type cross-references another lowercase-named type in a field
 pass	a lowercase-named type is referenceable in a field (types are values, not gated by case)
 pass	a magic header and a length-prefixed chunk parse together
+pass	a malformed integer width — negative or non-natural — is rejected at compile time
 pass	a many-arm match consumed in non-tail position yields into the enclosing expression
 pass	a many-arm match let-bound then consumed yields into the enclosing expression
 pass	a many-arm scalar match in tail position selects each arm by a runtime scrutinee
@@ -931,7 +935,6 @@ pass	a match arm reading two elements of a boxed payload tuple shares the sum-pa
 pass	a match arm's DESTRUCTURED payload is the argument to a perform in that arm's body
 pass	a match binder over a narrow scrutinee returns the bound value
 pass	a match binds an Ast.Bool payload
-pass	a match binds an Ast.Float payload
 pass	a match binds an Ast.Float payload
 pass	a match binds an Ast.Str payload
 pass	a match building one Some per arm sinks to a single Some around a payload match
@@ -1096,6 +1099,8 @@ pass	a nested tuple list element is bound over a runtime list and folded across 
 pass	a nested tuple pattern of the wrong arity is a type error
 pass	a nested tuple-arity mismatch in equality is a type error
 pass	a nested tuple-pattern parameter destructures a runtime tuple
+pass	a nested unquote pattern matches a Float sub-AST by shape
+pass	a nested unquote pattern matches a Str sub-AST by shape
 pass	a nested unquote pattern matches a sub-AST by shape
 pass	a nested-let chain that reuses each binding folds to one value
 pass	a neutral and-true keeps both the trap and the value of its left operand
@@ -1161,7 +1166,10 @@ pass	a parameterized plain export alongside a closure export applies its argumen
 pass	a parameterized plain export alongside a closure export — the closure captures and applies
 pass	a partial application persists its capture across two applications
 pass	a partial constructor bound in a let completes when applied
+pass	a partial constructor bound in a let-tuple completes when applied to a runtime arg
 pass	a partial constructor passed to a higher-order function completes the variant
+pass	a partial constructor projected from a tuple literal completes when applied
+pass	a partial constructor stored in a record field completes when applied
 pass	a partially-applied function escapes as a value and runs through a recursive HOF
 pass	a pattern binds a name scoped to its branch
 pass	a pattern that binds the same name across nested sub-patterns is rejected
@@ -1224,14 +1232,13 @@ pass	a quote pattern is equivalent to the Ast.* constructor pattern
 pass	a quote pattern matches a fixed arity
 pass	a quote pattern used to recognize a compiler form reads as that form
 pass	a quote-built and constructor-built AST of the same tree encode to identical bytes
+pass	a quote-built and constructor-built FLOAT AST encode to identical bytes
 pass	a quote-pattern match with no catch-all is non-exhaustive
 pass	a quoted boolean equals the same node built by the Ast.Bool constructor
 pass	a quoted compound form containing a boolean reifies with an Ast.Bool element
 pass	a quoted compound form containing a string reifies with an Ast.Str element
 pass	a quoted compound form equals the same AST built by the Ast.List constructor
 pass	a quoted float equals the same node built by the Ast.Float constructor
-pass	a quoted float equals the same node built by the Ast.Float constructor
-pass	a quoted float is distinct from the same magnitude quoted as an integer
 pass	a quoted float is distinct from the same magnitude quoted as an integer
 pass	a quoted form's head reifies as a Name while its string argument is a Str
 pass	a quoted integer equals the same node built by the Ast.Int constructor
@@ -1379,6 +1386,7 @@ pass	a runtime BigInt remainder takes the dividend's sign
 pass	a runtime List built past 32 elements reads correctly by index across the RRB leaf-to-trie boundary
 pass	a runtime MIXED-SCALE BigInt comparison converts to the reference before comparing
 pass	a runtime MIXED-SCALE BigInt-magnitude sum converts to the reference in unbounded arithmetic
+pass	a runtime MIXED-SCALE Rational-magnitude sum converts to the reference EXACTLY
 pass	a runtime Option carrying a user sum is matched by a nested constructor pattern
 pass	a runtime Rational built from a parameter compares by its exact value
 pass	a runtime Rational comparison of a parameter is false when it should be
@@ -1409,6 +1417,7 @@ pass	a runtime division by zero traps
 pass	a runtime division of the minimum integer by -1 overflows and traps
 pass	a runtime division truncates toward zero
 pass	a runtime element collapses against a constant one at build
+pass	a runtime exact mixing of inch and millimeter keeps the fractional scale
 pass	a runtime final rest segment binds the empty tail when the scrutinee is only the header
 pass	a runtime fixed-width segment is emitted big-endian and read back by index
 pass	a runtime float addition emits the machine add
@@ -1512,6 +1521,7 @@ pass	a runtime-index list read yields the element at that index
 pass	a runtime-index read of a runtime-built list
 pass	a runtime-index update leaves the other elements unchanged
 pass	a runtime-index update replaces exactly that element, read back at the same index
+pass	a runtime-keyed map entry enumerates as its key-value tuple
 pass	a runtime-magnitude product multiplies the erased magnitudes
 pass	a runtime-magnitude quantity raised to a negative power emits the reciprocal
 pass	a runtime-magnitude quantity raised to a power emits the repeated multiply
@@ -1602,6 +1612,7 @@ pass	a string compared to a symbol is a type error
 pass	a string equality on an inlined match operand
 pass	a string literal
 pass	a string literal is normalized to the canonical text form
+pass	a string literal payload refines a ctor list element
 pass	a string passed to a function as a runtime argument is measured by its byte length
 pass	a string spelled like a keyword round-trips as an Ast.Str, not an Ast.Bool or Ast.Name
 pass	a string-literal pattern in a match selects by string equality, distinguishing Unicode
@@ -1802,6 +1813,7 @@ pass	addition of two records is rejected — a record is not a number
 pass	addition of two sets is rejected — a set is not a number
 pass	addition of two strings is rejected — text is not a number
 pass	addition of two symbols is rejected — a symbol is not a number
+pass	all four leaf kinds in one quoted form dispatch their own tags
 pass	all-nullary enum equality compares discriminants
 pass	an 8-bit-integer closure crosses the host boundary
 pass	an AST from quasiquoting a runtime value equals the same AST built by quote
@@ -1846,9 +1858,7 @@ pass	an absurd runtime width is rejected, not silently ignored
 pass	an active unquote of a boolean literal lifts to an Ast.Bool node
 pass	an active unquote of a computed boolean expression lifts to Ast.Bool
 pass	an active unquote of a float literal lifts to an Ast.Float node
-pass	an active unquote of a float literal lifts to an Ast.Float node
 pass	an active unquote of a let-bound boolean lifts to Ast.Bool by inferred type
-pass	an active unquote of a let-bound float lifts to Ast.Float by inferred type
 pass	an active unquote of a let-bound float lifts to Ast.Float by inferred type
 pass	an active unquote of a let-bound integer still lifts to Ast.Int
 pass	an active unquote of a let-bound string lifts to Ast.Str by inferred type
@@ -2251,7 +2261,6 @@ pass	encoding and decoding a constructor-built AST round-trips to an equal value
 pass	encoding and decoding a constructor-built compound AST round-trips
 pass	encoding and decoding an Ast.Bool round-trips to an equal value
 pass	encoding and decoding an Ast.Float round-trips to an equal value
-pass	encoding and decoding an Ast.Float round-trips to an equal value
 pass	encoding and decoding an Ast.Str round-trips to an equal value
 pass	equality across incompatible dimensions is a compile-time error
 pass	equality across types is rejected regardless of operand order
@@ -2270,7 +2279,7 @@ pass	eval of a quoted boolean executes it to the boolean value
 pass	eval of a quoted conditional reduces its comparison condition first
 pass	eval of a quoted conditional takes the branch its boolean literal selects
 pass	eval of a quoted float executes it to the float value
-pass	eval of a quoted float executes it to the float value
+pass	eval of a quoted float feeds ordinary float arithmetic
 pass	eval of a quoted string executes it to the string value
 pass	eval on malformed AST traps
 pass	every not-a-number value is equal to every not-a-number value
@@ -2317,6 +2326,7 @@ pass	indexing a runtime string past its last scalar yields None
 pass	indexing a slice is relative to the slice's start
 pass	indexing an empty list yields None
 pass	inline-always on a recursive definition is rejected
+pass	insert-order does not leak into Set.to-list enumeration order
 pass	inserting a key already present replaces its value, not the size
 pass	inserting a key of a different type into a map is a type error
 pass	inserting a present element is a no-op value
@@ -2343,6 +2353,8 @@ pass	less-than-or-equal of an integer and a float is rejected
 pass	let bindings' initializers are evaluated in binding order
 pass	list concatenation is associative by content
 pass	lists are equal by elements in order
+pass	literal payload refinement works in a non-head element position
+pass	literal refinement on two elements of one list pattern
 pass	looking up an absent key yields None
 pass	map equality is independent of insertion order
 pass	match on a Result returned by a fallible function
@@ -2428,6 +2440,7 @@ pass	negative zero is distinct in the canonical value form
 pass	negative zero is not equal to positive zero
 pass	nested patterns deconstruct recursively
 pass	nested patterns with literals
+pass	nested quasiquote embeds a FLOAT via the inner unquote
 pass	nullary constructor patterns are uniform with unary
 pass	one effect's result flows as the ARGUMENT to a DIFFERENT effect's op under nested handlers
 pass	one entrypoint's host authority is not reachable by another that does not delegate it
@@ -2467,15 +2480,15 @@ pass	popping a tuple yields element zero and the remaining tuple
 pass	popping an absent field is rejected
 pass	print of an Ast.Bool renders the bare word and read inverts it
 pass	print of an Ast.Float renders a re-readable decimal and read inverts it
-pass	print of an Ast.Float renders a re-readable decimal and read inverts it
 pass	print of an Ast.Str renders a quoted literal with escapes and read inverts it
-pass	print of an integer-valued Ast.Float keeps its float form through read
 pass	print of an integer-valued Ast.Float keeps its float form through read
 pass	projecting a field is independent of the order fields are written
 pass	projecting a field of a non-compound argument is rejected at the call site
+pass	projecting a just-built tuple does not evaluate the unprojected sibling's trap
 pass	projecting a record onto an absent field is rejected
 pass	projecting a record restricts it to the named fields
 pass	projecting a record with a duplicate label is rejected
+pass	projecting a tuple built from runtime elements folds to the projected element
 pass	projecting a tuple passed as a function parameter yields the element, never an invalid component
 pass	projecting an if-of-tuples does not evaluate the untaken branch's unprojected sibling
 pass	projecting an if-of-tuples evaluates the taken branch's projected element, so its trap occurs
@@ -2493,6 +2506,7 @@ pass	raising a BigInt-magnitude quantity to a power runs the unbounded multiply
 pass	raising a quantity to a compile-time power composes the unit and the magnitude
 pass	reaching an effect neither handled nor delegated is rejected at compile time
 pass	reading a byte from a sequence built with a RUNTIME element widens it to the Option payload
+pass	reading a field of a record built from runtime elements folds to the field
 pass	reading a member from an if-of-records resolves each branch's field by its own sorted order
 pass	reading a string's scalar addresses scalar values, not bytes
 pass	reading a string's scalar in bounds yields Some of the char
@@ -2667,6 +2681,7 @@ pass	the entrypoint returns its runtime argument unchanged
 pass	the entrypoint returns its runtime boolean argument
 pass	the entrypoint sums its two runtime arguments
 pass	the exponent marker is case-insensitive
+pass	the first failing `?` short-circuits; a later `?` never runs
 pass	the generated-set convergence property has discriminating power — two different generated sets are NOT equal
 pass	the generator is a deterministic function of its seed (same seed, same value) — folds
 pass	the generator reproduces its stream from a runtime seed (same seed, same value) — runs
@@ -2761,6 +2776,7 @@ pass	the wrapping additive and multiplicative identities preserve a boundary ope
 pass	three closures with a SHARED signature cross as two resource types
 pass	three distinct closure signatures cross as three resource types
 pass	three leaf variants in one quoted form each dispatch their own tag
+pass	three same-variant literal arms fall through in order
 pass	triple negation of a runtime boolean is a single negation
 pass	true is greater than false
 pass	true is not less than false

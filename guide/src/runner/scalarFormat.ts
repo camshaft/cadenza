@@ -6,10 +6,12 @@
 /// can, which `cdz-wasm::export_types` now exposes. This applies that type to the stringified value.
 
 /// Whether a rendered type string names a floating-point type (Float32/Float64). We match the type
-/// HEAD so a parameterized/annotated form (`Float64`, `(: … Float64)`, `Float32`) still counts, while
-/// `Int*`, `UInt*`, `Qty`, `Bool`, etc. do not.
+/// Whether a rendered type string IS a floating-point scalar type. Anchored: the type must be exactly
+/// `Float32`/`Float64` (optionally whitespace-padded), NOT merely CONTAIN it — so a compound type like
+/// `(Tuple Float64 Int64)` doesn't count (that result renders through the compound path, not the scalar
+/// one, but anchoring keeps the check honest to its "is this a float scalar" intent).
 function isFloatType(resultType: string): boolean {
-  return /\bFloat(32|64)\b/.test(resultType);
+  return /^\s*Float(32|64)\s*$/.test(resultType);
 }
 
 /// Format the stringified scalar `value` for display, given its static `resultType` (or null/unknown).
@@ -18,8 +20,10 @@ function isFloatType(resultType: string): boolean {
 /// a `.`/`e` (e.g. `4.5`, `1e-9`) is left alone, as is any non-float type (Int/UInt/Qty/Bool) — so a
 /// sized int `2` or a `Qty.value` `3000` is never wrongly decorated. Unknown type → value unchanged.
 export function formatScalarByType(value: string, resultType: string | null | undefined): string {
-  if (resultType && isFloatType(resultType) && /^-?\d+$/.test(value.trim())) {
-    return `${value}.0`;
+  const trimmed = value.trim();
+  if (resultType && isFloatType(resultType) && /^-?\d+$/.test(trimmed)) {
+    // Append to the TRIMMED value (the regex tested `trimmed`), so `" 5"` → `"5.0"` not `" 5.0"`.
+    return `${trimmed}.0`;
   }
   return value;
 }

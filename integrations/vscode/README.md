@@ -2,10 +2,16 @@
 
 A thin LSP client that launches **`cdz lsp`** (the compiler's own Language Server) and gives VS Code:
 
-- **diagnostics** as you type (type errors, unbound names, unused bindings, …),
-- **hover** — the inferred type at the cursor,
-- **semantic highlighting** — colour by what a name *means* (type vs constructor vs local vs unbound),
-- **go-to-definition** and **find-references**.
+- **diagnostics** as you type (type errors, unbound names, unused bindings, …) — *project-aware*: a
+  file's `(import …)` closure is followed, so cross-file references resolve (open the importer and its
+  library and edits flow between them);
+- **hover** — the inferred type at the cursor;
+- **semantic highlighting** — colour by what a name *means* (type vs constructor vs local vs unbound);
+- **go-to-definition** and **find-references**;
+- **completion** — names in scope (locals with their types + the module's top-level declarations);
+- **document outline** — the symbol tree / breadcrumb (Ctrl-Shift-O);
+- **quick-fixes** — the compiler's own structured repairs (the same ones `cdz fix` applies), one click
+  from the lightbulb.
 
 All of it comes from the one compiler behind `cdz lsp`; the extension itself does no analysis.
 

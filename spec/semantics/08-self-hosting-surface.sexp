@@ -1,8 +1,11 @@
-; Self-hosting surface — witnesses the behavioral requirements of self-hosting-surface.md that a
-; later generation realizes when the reader/printer are authored in Cadenza. The seed provides the
-; reader/printer natively and does NOT realize the Cadenza-authored surface
-; (options/realized-capability-set/), so it declines these cases; the generation
-; that authors the reader/printer in Cadenza runs them. See spec/capabilities/self-hosting-surface.md.
+; Self-hosting surface — witnesses the behavioral requirements of self-hosting-surface.md. The seed
+; provides the reader/printer NATIVELY and const-folds `read`/`print`/`quote`, so a round-trip like
+; `read(print(v)) = v` RUNS and PASSES today (it is a compile-time-known value). What a later generation
+; realizes is the CADENZA-AUTHORED reader/printer — the same behavior re-implemented in Cadenza source,
+; consuming a runtime-constructed AST — which the seed does not yet build (options/realized-capability-
+; set/). So these cases pin the observable read/print/round-trip CONTRACT the Cadenza-authored surface
+; must also meet; the ones the seed already folds pass now, and the runtime-authored versions land later.
+; See spec/capabilities/self-hosting-surface.md.
 ;
 ; Note: there is no `eval` case. The compiler the bootstrap targets needs AST *construction and
 ; analysis*, not AST *execution* — `eval` (meta-interpretation of a runtime-constructed AST) is an

@@ -165,3 +165,37 @@
             (def (main) (f))
             (export main)))
   (output (: (Some 10) (Option Int64))))
+
+; ── T1a gate pins (round 2): the short-circuit SKIPS subsequent work + `?` under if/match ────────────
+; Added by v-try-operator after adversarial probing of the BRICK 3a constant-failure fold. All PASS.
+
+(case "a failure `?` short-circuits BEFORE later computation runs"
+  (doc    "`(let ((x (try (None unit)))) (let ((y 100)) (Some (+ x y))))` — the FIRST binding's `?` sees a
+           `None`, so the `let` short-circuits to `None` and the inner `let` + `(+ x y)` NEVER run. Pins
+           that the short-circuit abandons the continuation (not just unwraps): the `(+ x y)` using the
+           unbound-on-failure `x` is skipped, so the result is `(None unit)`, never a use of a missing
+           payload.")
+  (input  (do (def (main) (let ((x (try (None unit)))) (let ((y 100)) (Some (+ x y))))) (export main)))
+  (output (: (None unit) (Option Int64))))
+
+(case "the first failing `?` short-circuits; a later `?` never runs"
+  (doc    "`(let ((x (try (None unit)))) (let ((y (try (Some 7)))) (Some (+ x y))))` — the FIRST `?`
+           fails, so the boundary short-circuits to `None` and the SECOND `?` (`(try (Some 7))`) is never
+           evaluated. Pins left-to-right short-circuit order across multiple `?`s: the first failure wins.")
+  (input  (do (def (main) (let ((x (try (None unit)))) (let ((y (try (Some 7)))) (Some (+ x y))))) (export main)))
+  (output (: (None unit) (Option Int64))))
+
+(case "a `?` inside an if-branch resolves against the enclosing function boundary"
+  (doc    "`(if true (let ((x (try (Some 5)))) (Some (+ x 1))) (None unit))` — the `?` in the THEN branch
+           finds its boundary through the enclosing `if` up to `main`'s `Option` result (the if's branches
+           are both `Option`). The taken branch unwraps `x` = 5 → `(Some 6)`. Pins that a `?` nested in a
+           conditional still resolves the enclosing function as its boundary.")
+  (input  (do (def (main) (if true (let ((x (try (Some 5)))) (Some (+ x 1))) (None unit))) (export main)))
+  (output (: (Some 6) (Option Int64))))
+
+(case "a `?` inside a match-arm resolves against the enclosing function boundary"
+  (doc    "`(match 0 (0 (let ((x (try (Some 9)))) (Some x))) (_ (None unit)))` — the `?` in the first arm
+           finds `main`'s `Option` boundary through the enclosing `match`. Arm 0 is selected, `x` = 9 →
+           `(Some 9)`. The match-arm companion of the if-branch case.")
+  (input  (do (def (main) (match 0 (0 (let ((x (try (Some 9)))) (Some x))) (_ (None unit)))) (export main)))
+  (output (: (Some 9) (Option Int64))))

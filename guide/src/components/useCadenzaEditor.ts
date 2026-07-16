@@ -123,14 +123,16 @@ export function useCadenzaEditor(
     switch (result.kind) {
       case "value": {
         // A scalar Float that jco lowered to a whole JS number lost its `.0` (String(5) === "5"); the
-        // static export type restores it. Safe for compounds too: their rendered text isn't a bare
-        // integer, and their export type isn't Float*, so `formatScalarByType` leaves them unchanged.
-        // Best-effort — if the type lookup fails, show the value as-is.
+        // static export type restores it. Only an INTEGER-LOOKING render could need the `.0`, so gate
+        // the export-type lookup on that — a compound/fractional/non-numeric result skips the extra
+        // query entirely (the common case). Best-effort — if the lookup fails, show the value as-is.
         let text = result.text;
-        try {
-          text = formatScalarByType(result.text, resultTypeOf(await exportTypes(program, shownSurface.current)));
-        } catch {
-          /* keep result.text */
+        if (/^-?\d+$/.test(result.text.trim())) {
+          try {
+            text = formatScalarByType(result.text, resultTypeOf(await exportTypes(program, shownSurface.current)));
+          } catch {
+            /* keep result.text */
+          }
         }
         return { kind: "value", text };
       }

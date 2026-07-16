@@ -329,7 +329,7 @@ fn run_compile(args: compiler_cli::CompileArgs) -> ExitCode {
     // `cdz compile src/ --entry app` compiles a whole package tree without naming each file. A plain
     // file, a `kind:name=path` artifact spec, and `-` (stdin) pass through untouched. Done here at the
     // host boundary — the pure `compile` never sees a path (`compile.rs` §NO I/O).
-    let specs = match expand_input_specs(args.input_specs()) {
+    let mut specs = match expand_input_specs(args.input_specs()) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("{PROG}: {e}");
@@ -341,6 +341,34 @@ fn run_compile(args: compiler_cli::CompileArgs) -> ExitCode {
     // `specs` here equals the original args, so `run(args)` sees the same inputs.)
     if !specs.iter().any(|s| is_source_file(s)) {
         return compiler_cli::run(args, PROG);
+    }
+
+    // FOLLOW A SINGLE FILE'S IMPORT CLOSURE — the same resolution `cdz check`/`cdz test` do. A lone
+    // source file that `(import …)`s a sibling was compiled ALONE, so the compiler hit the import as an
+    // unmodeled module form AND the bare imported name fell back to a BUILT-IN (e.g. `Ast` → the
+    // metaprog Ast), yielding a misleading cascade (a match over the imported sum reported the built-in's
+    // variants "not covered"). So `cdz compile app.cdz` FLIPPED a program's meaning vs `cdz check app.cdz`
+    // (v-compiler-ml stress finding). When the SOLE input is a source file with NO explicit `--entry` and
+    // it declares imports, expand it to its transitive import closure (entry = that file) and compile the
+    // package — resolving the import exactly as check does. A file with no imports, a `--entry` already
+    // given, or multiple inputs is untouched (byte-identical to before).
+    let mut entry_from_closure: Option<String> = None;
+    if args.entry().is_none() {
+        let sources: Vec<&String> = specs.iter().filter(|s| is_source_file(s)).collect();
+        if let [only] = sources.as_slice() {
+            match load_import_closure_with(only, &|_| None) {
+                Ok(files) if !declared_import_paths(&files[0].arenas).is_empty() => {
+                    // The entry names the package boundary; the closure files (entry first) become the
+                    // compile inputs, replacing the lone spec.
+                    entry_from_closure = Some(files[0].name.clone());
+                    specs = files.into_iter().map(|f| f.path).collect();
+                }
+                // No imports (or the closure loaded only the entry with none declared) → leave `specs`
+                // as-is: the single-file path below, unchanged. A load error here is non-fatal — the
+                // per-spec parse below reports it with the same message.
+                Ok(_) | Err(_) => {}
+            }
+        }
     }
 
     // A source-file compile ALWAYS contributes a `spans` input alongside its `ast`, not only when a
@@ -388,8 +416,11 @@ fn run_compile(args: compiler_cli::CompileArgs) -> ExitCode {
         }
     }
     // A `--entry <NAME>` names the package entry (a multi-file package needs it) — inject the
-    // `KIND_ENTRY` artifact, exactly as the artifacts-in `run` path does.
+    // `KIND_ENTRY` artifact, exactly as the artifacts-in `run` path does. When no `--entry` was given but
+    // a single file's import closure was followed (above), that file is the entry.
     if let Some(entry) = args.entry() {
+        inputs.push(compiler_cli::entry_artifact(entry));
+    } else if let Some(entry) = &entry_from_closure {
         inputs.push(compiler_cli::entry_artifact(entry));
     }
     // A `--component-name <INTERFACE>` names the interface a cross-component PROVIDER publishes its exports

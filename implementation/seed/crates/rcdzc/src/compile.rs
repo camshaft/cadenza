@@ -2244,6 +2244,48 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
             faults.push(reject);
             continue;
         }
+        // A CLOSURE in a peer-bound operation's signature. Peers exchange VALUE-HEAP HANDLES, and a closure
+        // is not a value-heap value — it has no peer-boundary form (a closure crosses the HOST boundary as a
+        // resource, not a peer). Without this, `(op mk (-> Int64 (-> Int64 Int64)))` bound to a peer
+        // type-checks, then APPLYING the peer-returned closure declines at lower time with the opaque "value
+        // is not applyable". Detect it SYNTACTICALLY at the binding: each op's declared type is a `(-> A B
+        // …)` arrow, and a boundary position that is ITSELF a `(-> …)` list is a closure. Reported at the
+        // bind name with the real reason. (Diagnostic-only — the emit path already declines; this just names
+        // it. A closure crossing the HOST boundary via `(host …)` is unaffected — this fires only for a
+        // peer-BOUND effect.)
+        {
+            // The declared operation types for this effect. (`effect_decl_by_name` yields the SYNTH-record
+            // occ, not the declaration occ `effect_decl_by_occ` keys on — so match the decl by NAME field.)
+            let op_tys: Vec<StructId> = db
+                .effect_decls
+                .iter()
+                .find(|e| e.name == name)
+                .map(|e| e.ops.iter().filter_map(|o| o.ty).collect())
+                .unwrap_or_default();
+            let mut closure_op: Option<StructId> = None;
+            for ty in op_tys {
+                // The op type is `(-> Arg… Result)`; each element after the `->` head is a boundary
+                // position. A position that is a list headed by `->` is a closure (function-typed).
+                if let Some(arrow) = db.ast.as_form(ty, "->") {
+                    for &pos in arrow {
+                        if db.ast.as_form(pos, "->").is_some() {
+                            closure_op = Some(pos);
+                            break;
+                        }
+                    }
+                }
+                if closure_op.is_some() {
+                    break;
+                }
+            }
+            if let Some(pos) = closure_op {
+                faults.push(
+                    Reject::coded(Code::Malformed, crate::diag::CLOSURE_ACROSS_PEER_MESSAGE)
+                        .at(pos),
+                );
+                continue;
+            }
+        }
         // A DUPLICATE `(bind E …)` — the same effect bound to a peer TWICE in source. `scan_effect_bindings`
         // silently keeps the FIRST (`.or_insert_with`), so a second directive is a dead, ambiguous line: the
         // author wrote two different routes for one effect and only one takes. This is the same fixed-set

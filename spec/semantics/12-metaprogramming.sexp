@@ -573,99 +573,6 @@
                (Ast.List (list (Ast.Name "f") (Ast.Float 4.5))))))
   (output (: true Bool)))
 
-; --- The Ast.Float leaf variant (completes the spec's Ast variant set) ----------------------------
-; A FLOAT is the last of the six syntactic forms the `Ast` sum carries (type-system.md #The Abstract
-; Syntax Tree Type Is An Ordinary Sum Type: "an integer, a FLOAT, a string, a boolean, a name, and a
-; list"), so `(quote 1.5)` is `(Ast.Float 1.5)`. It carries a `Float64` payload, DISTINCT from `Ast.Int`
-; (`(quote 3.0)` ≠ `(quote 3)`). The leaf constructs, destructures by match, round-trips through
-; `Ast.encode`/`Ast.decode` (the 8-byte f64 bit pattern — a stable canonical form) and `print`/`read`
-; (the shortest round-tripping decimal, always carrying a `.` so it re-reads as a float not an int), lifts
-; through an active unquote (literal AND runtime), and `eval` executes it (a float form evaluates to
-; itself). With this variant the `Ast` sum realizes the COMPLETE spec set.
-
-(case "a quoted float equals the same node built by the Ast.Float constructor"
-  (doc    "`(quote 1.5)` is the `Ast` sum value `(Ast.Float 1.5)` (metaprogramming.md #Quote Produces An
-           AST Value; type-system.md #The Abstract Syntax Tree Type Is An Ordinary Sum Type — a float is a
-           syntactic form). `(= (quote 1.5) (Ast.Float 1.5))` MUST be true, the float companion of the
-           Int/Bool/Str equality cases.")
-  (input  (= (quote 1.5) (Ast.Float 1.5)))
-  (output (: true Bool)))
-
-(case "a quoted float is distinct from the same magnitude quoted as an integer"
-  (doc    "`Ast.Float` (a Float64 payload) and `Ast.Int` (an Int64 payload) are different variants:
-           `(quote 3.0)` is `(Ast.Float 3.0)`, NOT `(Ast.Int 3)`, so comparing them is FALSE. Pins that a
-           float literal is not collapsed to an integer — they are distinct syntactic forms with distinct
-           payload types.")
-  (input  (= (quote 3.0) (Ast.Int 3)))
-  (output (: false Bool)))
-
-(case "a match binds an Ast.Float payload"
-  (doc    "The `Ast` sum is deconstructible by pattern matching, so a match over `(quote 2.5)` binds the
-           `Ast.Float` payload — the Float64 — and comparing it to `2.5` is true. The catch-all covers the
-           other variants.")
-  (input  (match (quote 2.5)
-            ((Ast.Float f) (= f 2.5))
-            (_             false)))
-  (output (: true Bool)))
-
-(case "a built-in Ast.Float constructor applied to a wrong-type payload is a type error"
-  (doc    "`Ast.Float`'s payload type is Float64, so `(Ast.Float \"x\")` applies it to a String — a type
-           mismatch the compiler MUST reject (CDZ0201), exactly as `(Ast.Int \"x\")` and `(Ast.Bool 5)` are.
-           Pins that the built-in `Ast.Float` constructor type-checks its declared payload like any sum
-           variant.")
-  (input  (Ast.Float "x"))
-  (error  CDZ0201))
-
-(case "eval of a quoted float executes it to the float value"
-  (doc    "eval executes an AST value as code; a float form evaluates to itself, so `(eval (quote 1.5))`
-           runs to `1.5`. The float companion of `(eval (quote true))` — `eval` reconstructs the source the
-           `Ast.Float` denotes (the float literal) and folds it.")
-  (input  (do (def (main) (eval (quote 1.5))) (export main)))
-  (output (: 1.5 Float64)))
-
-(case "encoding and decoding an Ast.Float round-trips to an equal value"
-  (doc    "`(Ast.Float 1.5)` is an AST value; encoding (the f64 bit pattern) then decoding it MUST yield an
-           equal AST (ast-encoding.md #The Encoding Is A Bijection — decode(encode t) is t), exactly as the
-           Int/Bool/Str/Name/List round-trips do. `Ast.decode` is total, so the round-trip matches the `Ok`
-           arm.")
-  (input  (match (Ast.decode (Ast.encode (Ast.Float 1.5)))
-            ((Ok a)  (= a (Ast.Float 1.5)))
-            ((Err _) false)))
-  (output (: true Bool)))
-
-(case "print of an Ast.Float renders a re-readable decimal and read inverts it"
-  (doc    "`print : Ast → String` renders an `Ast.Float` as the shortest round-tripping decimal — always
-           carrying a `.` (or `e`) so it re-reads as a float, not an integer — and `read : String → Ast`
-           parses it back, so `read(print v) == v`. Here `1.5` round-trips exactly (the shortest decimal
-           re-parses to the same double).")
-  (input  (= (read (print (Ast.Float 1.5))) (Ast.Float 1.5)))
-  (output (: true Bool)))
-
-(case "print of an integer-valued Ast.Float keeps its float form through read"
-  (doc    "🔑 The int-vs-float rendering pin: an integer-VALUED float `3.0` prints with an explicit `.0`
-           (not the bare `3` an integer prints), so `read` parses it back as an `Ast.Float`, NOT an
-           `Ast.Int`. `read(print (Ast.Float 3.0)) == (Ast.Float 3.0)`. Guards the print/read boundary
-           between a whole-valued float and an integer.")
-  (input  (= (read (print (Ast.Float 3.0))) (Ast.Float 3.0)))
-  (output (: true Bool)))
-
-(case "an active unquote of a float literal lifts to an Ast.Float node"
-  (doc    "`` `(f ,2.5) `` embeds the float literal `2.5` as the `Ast.Float` leaf its value denotes — the
-           same node `(quote (f 2.5))` builds — so it equals `(Ast.List (list (Ast.Name \"f\") (Ast.Float
-           2.5)))`. The float companion of the literal Int/Bool/Str active-unquote cases.")
-  (input  (= (quasiquote (f (unquote 2.5)))
-             (Ast.List (list (Ast.Name "f") (Ast.Float 2.5)))))
-  (output (: true Bool)))
-
-(case "an active unquote of a let-bound float lifts to Ast.Float by inferred type"
-  (doc    "A RUNTIME float operand lifts by its inferred type: `x : Float64` → `Ast.Float`. `(let ((x 4.5))
-           `(f ,x))` builds `(Ast.List (list (Ast.Name \"f\") (Ast.Float 4.5)))`. Pins the runtime-Float
-           inferred-type lift (the literal case is above; this exercises the `ast-lift` path at lower).")
-  (input  (let ((x 4.5))
-            (= (quasiquote (f (unquote x)))
-               (Ast.List (list (Ast.Name "f") (Ast.Float 4.5))))))
-  (output (: true Bool)))
-
 (case "a quoted compound form equals the same AST built by the Ast.List constructor"
   (doc    "The list companion, and the sharpest case: `(quote (+ 1 2))` is
            `(Ast.List (list (Ast.Name \"+\") (Ast.Int 1) (Ast.Int 2)))` — the very value form the FIRST
@@ -780,6 +687,14 @@
   (input  (= (Ast.encode (quote 42)) (Ast.encode (Ast.Int 42))))
   (output (: true Bool)))
 
+(case "a quote-built and constructor-built FLOAT AST encode to identical bytes"
+  (doc    "The float companion of the byte-identity case: `(quote 1.5)` and `(Ast.Float 1.5)` are the same
+           AST value, so their encodings MUST be byte-identical (ast-encoding.md #The Encoding Is A
+           Bijection With One Canonical Byte Form). Pins that the `Ast.Float` leaf's canonical bytes (the
+           f64 bit pattern) are the same however the value is constructed.")
+  (input  (= (Ast.encode (quote 1.5)) (Ast.encode (Ast.Float 1.5))))
+  (output (: true Bool)))
+
 (case "unquote-splicing splices list elements into parent"
   (doc    "Witnesses metaprogramming.md #Quasiquote Constructs AST With Selective Evaluation:
            ,@<list-expr> evaluates <list-expr> to a list and splices its elements into the parent,
@@ -827,6 +742,17 @@
   (output (: (Ast.List (list (Ast.Name "quasiquote")
                              (Ast.List (list (Ast.Name "+")
                                            (Ast.List (list (Ast.Name "unquote") (Ast.Int 2)))))))
+             Ast)))
+
+(case "nested quasiquote embeds a FLOAT via the inner unquote"
+  (doc    "The float companion of nested-quasiquote: `` ``(+ ,,x) `` with x=2.5 evaluates the inner `,` and
+           embeds the float, producing the AST of `` `(+ ,2.5) ``. The lifted value is an `(Ast.Float 2.5)`
+           node inside the inert `unquote` structure. Pins that the active-unquote float lift composes with
+           quasiquote NESTING (depth tracking) — the inner `,` fires at depth 1 as it does for an integer.")
+  (input  (let ((x 2.5)) ``(+ ,,x)))
+  (output (: (Ast.List (list (Ast.Name "quasiquote")
+                             (Ast.List (list (Ast.Name "+")
+                                           (Ast.List (list (Ast.Name "unquote") (Ast.Float 2.5)))))))
              Ast)))
 
 (case "unquote outside quasiquote is a syntax error"
@@ -1010,6 +936,32 @@
             (`(+ ,(Ast.Int n) ,b) n)
             (other                0)))
   (output (: 7 Int64)))
+
+; A nested unquote pattern matches ANY Ast leaf variant, not just Int — the Float and Str variants (the
+; leaves this vertical realized) destructure by shape exactly as `Ast.Int` does. These pin the interaction
+; between the quote-pattern surface and the Float/Str leaves: a `,(Ast.Float n)` matches only a float
+; operand and binds its value; a `,(Ast.Str s)` matches only a string operand. A change to either the
+; quote-pattern lowering or a leaf variant that broke this cross-feature match would flip these.
+
+(case "a nested unquote pattern matches a Float sub-AST by shape"
+  (doc    "`` `(f ,(Ast.Float n)) `` matches only a compound headed `f` whose operand is a FLOAT literal,
+           binding its value. Against `(quote (f 2.5))` the operand `(Ast.Float 2.5)` matches `(Ast.Float
+           n)` binding n=2.5, and `= n 2.5` is true. Pins that a quote pattern destructures the `Ast.Float`
+           leaf (the float companion of the Int nested-unquote-pattern case above).")
+  (input  (match (quote (f 2.5))
+            (`(f ,(Ast.Float n)) (= n 2.5))
+            (other               false)))
+  (output (: true Bool)))
+
+(case "a nested unquote pattern matches a Str sub-AST by shape"
+  (doc    "The string companion: `` `(f ,(Ast.Str s)) `` matches only a compound headed `f` whose operand
+           is a STRING literal, binding it. Against `(quote (f \"hi\"))` the operand `(Ast.Str \"hi\")`
+           matches, and `String.byte-len s` is 2. Pins that a quote pattern destructures the `Ast.Str` leaf
+           (distinct from `Ast.Name` — a string operand, not an identifier).")
+  (input  (match (quote (f "hi"))
+            (`(f ,(Ast.Str s)) (String.byte-len s))
+            (other             0)))
+  (output (: 2 Int64)))
 
 (case "a final unquote-splice binds the remaining elements as a list"
   (doc    "A final `,@<name>` binds the remaining list elements as a LIST (never a single element), the
@@ -1207,3 +1159,29 @@
             (export main)))
   (call   main (: 0 Int64))
   (output (: 7 Int64)))
+
+(case "eval of a quoted float feeds ordinary float arithmetic"
+  (doc    "`(* (eval (quote 2.5)) 2.0)` = 5.0 — the reconstructed float literal is a first-class
+           Float64 in downstream arithmetic (a payload mis-read as the i64 bit pattern computes
+           garbage). The arithmetic-consumption companion of the eval-to-value case above.")
+  (input  (do
+            (def (main (: d Int64))
+              (* (eval (quote 2.5)) 2.0))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 5.0 Float64)))
+
+(case "all four leaf kinds in one quoted form dispatch their own tags"
+  (doc    "`(quote (\"s\" 5 true 2.5))` — Str, Int, Bool, and Float leaves in ONE reified list, each
+           classified by a shared match: 1·1000 + 2·100 + 3·10 + 4 = 1234. The full-leaf-set
+           integration pin: any mis-tagged element shifts one digit, naming the culprit.")
+  (input  (do
+            (def (kind (: a Ast))
+              (match a ((Ast.Str _) 1) ((Ast.Int _) 2) ((Ast.Bool _) 3) ((Ast.Float _) 4) (_ 9)))
+            (def (main (: d Int64))
+              (match (quote ("s" 5 true 2.5))
+                ((Ast.List (list a b c e)) (+ (+ (+ (* 1000 (kind a)) (* 100 (kind b))) (* 10 (kind c))) (kind e)))
+                (_ -1)))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 1234 Int64)))

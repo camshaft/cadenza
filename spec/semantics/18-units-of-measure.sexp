@@ -935,6 +935,34 @@
   (call   main (: 2 Int64)) (output (: 1 Int64))
   (call   main (: 6 Int64)) (output (: 0 Int64)))
 
+(case "a runtime MIXED-SCALE Rational-magnitude sum converts to the reference EXACTLY"
+  (doc    "`(+ (Qty.of (Rational.of v 1) kilometer) (Qty.of (Rational.of 500 1) meter))` with a RUNTIME
+           `v`: a mixed-scale combine (km + m) over a Rational inner converts each operand to the
+           reference `meter` by an EXACT rational multiply (v km × 1000/1) then adds — v=2 → 2500/1. Pins
+           the runtime Rational arm of `lower_quantity_combine` (it previously declined 'runtime mixed-unit
+           Rational combine not yet emitted', folding only a constant pair). The Rational companion of the
+           runtime mixed-scale BigInt/Int sums; exact, no rounding.")
+  (input  (do
+            (def (main (: v Int64))
+              (Qty.value (+ (Qty.of (Rational.of v 1) (Unit.prefix kilo (Unit.base #"meter")))
+                            (Qty.of (Rational.of 500 1) (Unit.base #"meter")))))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 2500/1 Rational)))
+
+(case "a runtime exact mixing of inch and millimeter keeps the fractional scale"
+  (doc    "THE exact-mixing case at RUNTIME: `(+ (Qty.of (Rational.of v 1) inch) (Qty.of (Rational.of 1 1)
+           millimeter))` — v inch + 1 mm — converts each to the reference meter by its exact fractional
+           scale (inch = 127/5000, mm = 1/1000) and adds EXACTLY. v=1 → 127/5000 + 1/1000 = 132/5000 =
+           33/1250 m, no rounding. Pins that the runtime Rational mixed-scale combine keeps a FRACTIONAL
+           scale exact (the whole reason exact rationals are load-bearing for units) — the runtime analogue
+           of the constant `1 inch + 1 mm` mixing case.")
+  (input  (do
+            (def (main (: v Int64))
+              (Qty.value (+ (Qty.of (Rational.of v 1) (Unit.of #"inch"))
+                            (Qty.of (Rational.of 1 1) (Unit.of #"millimeter")))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 33/1250 Rational)))
+
 (case "a runtime Unit.in conversion emits the scale multiply (Int)"
   (doc    "`(Unit.in meter (Qty.of v kilometer))` with `v` a runtime Int64: converts v km to meters by
            *1000 at run time, so v=3 → 3000 m. The explicit-conversion companion of the runtime mixed

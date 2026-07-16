@@ -723,6 +723,18 @@ pub const MALFORMED_INTERFACE_NAME_MESSAGE: &str = "a peer interface name must b
      `namespace:package/interface` in kebab-case (lowercase package, e.g. `cadenza:math/api`, with an \
      optional `@version`) — this string is not a valid component interface name, so the emitted \
      component would fail to load";
+
+/// A peer-bound effect (`(bind E "iface")`) whose operation signature involves a CLOSURE — a function
+/// type `(-> …)` in an argument or result position. Peers exchange VALUE-HEAP HANDLES (a tuple/record/
+/// sum/list/map/string/…), and a closure is not a value-heap value, so it has no peer-boundary form.
+/// (A closure crosses the HOST boundary as a component-model RESOURCE — `closures-across-host` — but the
+/// peer/shared-runtime path does not carry one.) Without this check the op type-checks, then APPLYING a
+/// peer-returned closure declines at lower time with the opaque "value is not applyable"; reject it at
+/// the binding with the real reason. Reported at the `(bind …)` name.
+pub const CLOSURE_ACROSS_PEER_MESSAGE: &str = "a peer-bound effect operation cannot take or return a \
+     CLOSURE — peers exchange value-heap handles (a tuple/record/sum/list/map/string/…), and a closure \
+     has no peer-boundary form (a closure crosses the HOST boundary as a resource, not a peer); give the \
+     operation a value type, or handle the effect in-program instead of binding it to a peer";
 /// A stable SUBSTRING unique to the coded CDZ0201 resume-value/result-type mismatch (`a handler resumes
 /// with a value of type X but the operation's result type is Y`). An ill-typed resume ALSO makes the
 /// handler unfoldable, so `lower` emits the uncoded [`HANDLER_NOT_REDUCIBLE_DECLINE`] alongside — a

@@ -41,3 +41,5 @@ validity of every shape) can miss it; a `cdz run` catches it.
 Built `cdz` + runtime at current trunk (`f5fc1e30e`); ran the shape above → `wasm[0]::function[3]`
 invalid component. Confirmed the repro is NOT in the fleet queue. Distinct from FACE A (an internal
 error, not invalid wasm) — the v-runtime issue file covers both faces.
+
+<!-- RE-SCOPED 2026-07-16: COMPILE-TIME FACE FIXED on trunk (v-runtime b6fc8e6f9) — a partial ctor in a let-bound/literal tuple/record element, projected+applied, now completes to a flat construction (verified: (let ((p (tuple (T.Mk 10) 0))) (match ((. p 0) 5) ((T.Mk a b) (+ a b)))) → 15, was invalid wasm function[3]; + a defense-in-depth lower_sum_new short-payload-SumNew reject). REMAINING = only the RUNTIME sub-face: a partial ctor in a runtime LIST element (not statically visible) needs the eta-closure lift — v-runtime disclosed + OWNS it. Do NOT re-do the landed compile-time fix. -->

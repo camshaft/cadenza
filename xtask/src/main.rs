@@ -2613,7 +2613,15 @@ fn baseline_path(paths: &Paths, target: GateTarget) -> PathBuf {
 /// Write the current verdicts as the baseline: one `verdict\tdescription` line per case, sorted by
 /// description so the file is stable and a diff is meaningful.
 fn save_baseline(paths: &Paths, verdicts: &[(String, Verdict)], target: GateTarget) {
-    let mut lines: Vec<String> = verdicts
+    // De-dupe by description before writing: a run's verdicts shouldn't contain dup descriptions, but
+    // writing a canonical (sorted, unique-by-description) file means a `gate --save` also CLEANS UP any
+    // duplicate lines a `merge=union` merge introduced into the committed baseline. Last verdict wins
+    // per description (matches the map-load in `check_baseline`).
+    let mut by_desc: std::collections::BTreeMap<&str, Verdict> = std::collections::BTreeMap::new();
+    for (d, v) in verdicts {
+        by_desc.insert(d.as_str(), *v);
+    }
+    let mut lines: Vec<String> = by_desc
         .iter()
         .map(|(d, v)| format!("{}\t{d}", v.tag()))
         .collect();
@@ -2640,16 +2648,39 @@ fn check_baseline(paths: &Paths, verdicts: &[(String, Verdict)], target: GateTar
             return 2;
         }
     };
+    // Parse into a description→verdict map, but DETECT duplicate descriptions as we go. The baseline
+    // is keyed by description (a map), so two lines with the same description silently collapse —
+    // last-parsed wins — which can MASK a real verdict (e.g. a `todo` line hiding a `pass` line for the
+    // same case, or vice-versa). Duplicates are easy to introduce now that these files are `merge=union`
+    // (both sides of a merge append their copy). Fail loudly on any duplicate rather than let it hide a
+    // verdict silently. (`gate --save` re-sorts + de-dupes, so the fix is to regenerate the baseline.)
     let mut base: std::collections::HashMap<String, Verdict> = std::collections::HashMap::new();
+    let mut dup_descs: Vec<String> = Vec::new();
     for line in text.lines() {
         if line.starts_with('#') || line.is_empty() {
             continue;
         }
         if let Some((v, d)) = line.split_once('\t')
             && let Some(verdict) = Verdict::parse(v)
+            && base.insert(d.to_string(), verdict).is_some()
         {
-            base.insert(d.to_string(), verdict);
+            dup_descs.push(d.to_string());
         }
+    }
+    if !dup_descs.is_empty() {
+        dup_descs.sort();
+        dup_descs.dedup();
+        eprintln!(
+            "xtask gate --check: {} DUPLICATE case description(s) in {} — a map-keyed baseline collapses \
+             these to one verdict (last wins), silently masking a real verdict. Regenerate the baseline \
+             with `cargo xtask gate --save` (it de-dupes). Duplicates:",
+            dup_descs.len(),
+            path.display()
+        );
+        for d in &dup_descs {
+            eprintln!("  •  {d}");
+        }
+        return 3;
     }
 
     let now: std::collections::HashMap<&str, Verdict> =

@@ -13,7 +13,7 @@
 //! test is purely "does the ML print→parse round-trip preserve the tree". Seeds are fixed, so a failure
 //! reproduces exactly; the failing s-expr is printed for triage.
 
-use cadenza_syntax::{parser, printer, sexpr};
+use cadenza_syntax::{codec, parser, printer, sexpr};
 
 const WIDTH: usize = 100;
 
@@ -168,6 +168,79 @@ fn ml_surface_round_trips_generated_programs() {
                 printer::print(&reparsed.arenas, WIDTH),
                 ml,
                 "ML print is not idempotent\n  s-expr: {program}\n  ml: {ml}"
+            );
+            total += 1;
+        }
+    }
+    assert!(total >= 6000, "swept a meaningful space, got {total}");
+}
+
+#[test]
+fn binary_and_all_surface_round_trip_generated_programs() {
+    // The same generated programs, through the BINARY codec and the CROSS-surface paths. For each:
+    //   * codec::decode(encode(oracle)) is structurally equal to the oracle (the bijection), and encode
+    //     is a canonical fixed point (encode∘decode∘encode == encode);
+    //   * ml→binary→ml is lossless (print ML, read it, encode, decode, print ML again — byte-identical,
+    //     and structurally equal to the oracle);
+    //   * sexpr→binary→sexpr reproduces the canonical s-expr text.
+    // This complements `corpus_roundtrip.rs`'s binary/all-surface guards (fixed corpus) by exercising
+    // the codec + conversion seams over generated shapes/nestings the corpus never contains. Distinct
+    // seeds from the ML test so the two explore different programs.
+    let seeds: [u64; 4] = [
+        0x2468_ace0_1357_9bdf,
+        0xdead_beef_0bad_c0de,
+        0xcafe_babe_feed_face,
+        0x9abc_5678_1234_5eed,
+    ];
+    let mut total = 0usize;
+    for &seed in &seeds {
+        let mut rng = Rng(seed);
+        for _ in 0..1500 {
+            let depth = 1 + rng.below(5);
+            let src = gen_expr(&mut rng, depth);
+            let program = format!("(def (main) {src})");
+            let oracle = match sexpr::read(&program) {
+                Ok(a) => a,
+                Err(e) => panic!(
+                    "generator produced an unreadable s-expr: {program}\n  {}",
+                    e.0
+                ),
+            };
+
+            // Binary: decode(encode) is structurally equal + encode is a canonical fixed point.
+            let bytes = codec::encode(&oracle);
+            let back = codec::decode(&bytes).expect("generated program's encoding decodes");
+            assert!(
+                back.structurally_eq(&oracle),
+                "binary round-trip changed the tree\n  s-expr: {program}",
+            );
+            assert_eq!(
+                codec::encode(&back),
+                bytes,
+                "encode is not a canonical fixed point\n  s-expr: {program}",
+            );
+
+            // sexpr → binary → sexpr reproduces the canonical s-expr text.
+            let sx = sexpr::print(&oracle);
+            let sx_back = codec::decode(&codec::encode(&oracle)).expect("decode");
+            assert_eq!(
+                sexpr::print(&sx_back),
+                sx,
+                "sexpr→binary→sexpr changed the text\n  s-expr: {program}",
+            );
+
+            // ml → binary → ml is lossless (and structurally equal to the oracle).
+            let ml = printer::print(&oracle, WIDTH);
+            let via_bin = codec::decode(&codec::encode(&parser::read_ml(&ml).arenas))
+                .expect("ml→binary decodes");
+            assert_eq!(
+                printer::print(&via_bin, WIDTH),
+                ml,
+                "ml→binary→ml changed the ML\n  s-expr: {program}\n  ml: {ml}",
+            );
+            assert!(
+                via_bin.structurally_eq(&oracle),
+                "ml→binary→ml changed the tree\n  s-expr: {program}\n  ml: {ml}",
             );
             total += 1;
         }
