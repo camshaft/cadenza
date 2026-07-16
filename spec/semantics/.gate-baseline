@@ -1494,6 +1494,8 @@ pass	a runtime exact mixing of inch and millimeter keeps the fractional scale
 pass	a runtime final rest segment binds the empty tail when the scrutinee is only the header
 pass	a runtime fixed-width segment is emitted big-endian and read back by index
 pass	a runtime float addition emits the machine add
+pass	a runtime float addition with nan propagates the nan
+pass	a runtime float divide by zero yields a non-trapping infinity
 pass	a runtime float division rounds under the fixed mode
 pass	a runtime float equality feeds the true-literal boolean coercion
 pass	a runtime float equality negated by the false-literal coercion
@@ -1522,6 +1524,7 @@ pass	a runtime mixed-scale combine converts a COMPUTED Float quantity operand
 pass	a runtime mixed-unit sum emits the scale conversion (Int)
 pass	a runtime modulo of the minimum integer by -1 is zero on every backend
 pass	a runtime multiplication that overflows traps
+pass	a runtime nan minus nan is nan, not zero
 pass	a runtime negative dividend divided by a constant power of two truncates toward zero
 pass	a runtime negative dividend mod a constant power of two takes the dividend's sign
 pass	a runtime negative zero is not equal to positive zero
