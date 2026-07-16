@@ -52,6 +52,11 @@ function ChartView({ chart, series }: { chart: "line" | "bar" | "scatter"; serie
   const sx = (x: number) => PAD + ((x - minX) / spanX) * (W - 2 * PAD);
   const sy = (y: number) => H - PAD - ((y - minY) / spanY) * (H - 2 * PAD);
 
+  // Shared bar-column width: derived ONCE from the widest series' point count, so grouped bars align
+  // across series that have different point counts (PR #489). Used by the `chart === "bar"` branch below.
+  const maxPoints = Math.max(1, ...series.map((s) => s.points.length));
+  const barSlot = ((W - 2 * PAD) / maxPoints) * 0.7;
+
   return (
     <svg viewBox={`0 0 ${W} ${H}`} className="w-full max-w-2xl" role="img" aria-label="chart">
       {/* axes */}
@@ -61,9 +66,11 @@ function ChartView({ chart, series }: { chart: "line" | "bar" | "scatter"; serie
         const hue = HUES[si % HUES.length];
         if (chart === "bar") {
           // Group the series' bars side-by-side within each x slot so multiple series don't overlap.
-          // The full slot is `slot` wide; each of `series.length` series gets an equal sub-column. Keys
-          // are series-unique (`${si}-${i}`) so React keys never collide across series.
-          const slot = ((W - 2 * PAD) / Math.max(1, s.points.length)) * 0.7;
+          // `slot` (the per-x column width) is SHARED across series — derived from the widest series'
+          // point count, NOT this series' own `s.points.length`. Per-series slot would misalign bars
+          // when series have different point counts (extractChart skips non-numeric y cells) — PR #489.
+          // Each of `series.length` series gets an equal `bw` sub-column; keys are series-unique.
+          const slot = barSlot;
           const bw = Math.max(1, slot / series.length);
           const off = si * bw - slot / 2;
           return (
