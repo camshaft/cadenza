@@ -7209,6 +7209,67 @@ fn check_unit_composition(db: &mut Db, id: crate::ast::StructId, out: &mut Vec<R
             }
             false
         }
+        // A `Unit.*`/`Unit./`/`Unit.^` at the WRONG ARITY — `(Unit.^ u)` (one arg), `(Unit.* u)` — falls
+        // through the `args.len() == 2` arms above to here. `unit_of` declined it (an under/over-applied
+        // builder is not a unit), and the M227 partial-builtin-arity check does NOT fire because the form is
+        // CONSUMED (its parent is the `Qty.of`/composition that fed it), so it leaked past `cdz check` →
+        // opaque "no machine representation" at compile. Name the arity (PR#506 Copilot finding).
+        Prim::UnitMul | Prim::UnitDiv | Prim::UnitPow => {
+            let (op, n) = match prim {
+                Prim::UnitDiv => ("Unit./", 2),
+                Prim::UnitPow => ("Unit.^", 2),
+                _ => ("Unit.*", 2),
+            };
+            let shape = if op == "Unit.^" {
+                format!("`({op} <unit> <integer>)`")
+            } else {
+                format!("`({op} <unit> <unit>)`")
+            };
+            out.push(
+                Reject::coded(
+                    Code::Malformed,
+                    format!(
+                        "`{op}` takes {n} operands, but {} were given — write {shape}",
+                        args.len(),
+                    ),
+                )
+                .at(id),
+            );
+            true
+        }
+        // A `Unit.of`/`Unit.base` whose unit-NAME argument is not a SYMBOL — `(Unit.of 42)`, `(Unit.base
+        // (tuple 1 2))`. A unit builder names its unit with a `#"…"` symbol (`unit_of` declined, so the arg
+        // is not a symbol); a bare-NAME arg is caught with a `#"name"` fix in the unbound-name handler, but
+        // a non-name non-symbol (an integer/string/compound) reached NEITHER that nor `check_unit_composition`
+        // and leaked. Name it. (Wrong arity — `(Unit.of)` / `(Unit.of a b)` — also lands here since the arg
+        // read below finds no single symbol; the message names the symbol requirement, the actionable fix.)
+        Prim::UnitOf | Prim::UnitBase
+            // A single bare-NAME arg (`(Unit.of foot)`) is DELIBERATELY left to the unbound-name handler,
+            // which names it with a `#"foot"` replace fix — richer than this generic message. Only a
+            // non-name non-symbol arg (an integer/string/compound), or a wrong arity, reaches here.
+            if !(args.len() == 1 && db.ast.as_name(args[0]).is_some()) =>
+        {
+            let op = if prim == Prim::UnitBase {
+                "Unit.base"
+            } else {
+                "Unit.of"
+            };
+            let arg_desc = match args.first() {
+                Some(&a) => type_of(db, a).render_name(),
+                None => "nothing".to_string(),
+            };
+            out.push(
+                Reject::coded(
+                    Code::Malformed,
+                    format!(
+                        "`{op}` names its unit with a SYMBOL, but this is a {arg_desc} value — write a \
+                         `#\"…\"` symbol literal, e.g. `({op} #\"meter\")`"
+                    ),
+                )
+                .at(args.first().copied().unwrap_or(id)),
+            );
+            true
+        }
         _ => false,
     }
 }

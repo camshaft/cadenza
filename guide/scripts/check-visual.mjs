@@ -53,7 +53,7 @@ const ROUTES = [
     // canvas — exactly the first-load break this route was added to catch. Desktop-only (the 3D preview
     // isn't a mobile-overflow surface, and the heavy three+manifold chunk is slow to double-run).
     path: "/cad",
-    waitFor: "textarea",
+    waitFor: "button", // the ▶ Run button is always present; the editor is a lazy CodeMirror (no <textarea>)
     label: "cad (s-expr)",
     surface: "sexpr",
     onlyViewports: ["desktop-1280"],
@@ -62,13 +62,18 @@ const ROUTES = [
       // Auto-run on mount meshes the starter; wait up to 30s for the canvas (compile+run+lazy 3D chunk).
       await page.waitForSelector("canvas", { timeout: 30000 }).catch(() => {});
     },
+    async assert(page, check, label) {
+      // The editor must be the shared CodeMirror IDE component (highlighting), not a plain textarea.
+      const cm = await page.locator(".cm-editor").count();
+      check(cm > 0, `${label}: source editor is the CodeMirror IDE component (Cadenza highlighting)`);
+    },
   },
   {
     // Same route in the ML surface — /cad respects the global surface toggle and ships a per-surface
     // starter, so BOTH must compile→render→mesh on first load (the ML starter was verified to render to
     // the same canonical Solidr as the s-expr one). Guards the ML editing path from regressing.
     path: "/cad",
-    waitFor: "textarea",
+    waitFor: "button",
     label: "cad (ml)",
     surface: "ml",
     onlyViewports: ["desktop-1280"],

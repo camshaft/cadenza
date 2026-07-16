@@ -7,11 +7,11 @@
 /// the design's D3 "hand-roll first, add a dep only when the subset can't carry it" stance.
 ///
 /// SUPPORTED (block): ATX headings `#`..`######`, unordered lists (`-`/`*`), ordered lists (`1.`),
-/// blockquotes (`>`), and paragraphs. (Code fences never reach here — `parseDocument` already split them
-/// into code cells.) SUPPORTED (inline, within a block's text): `**bold**`, `*italic*`/`_italic_`,
-/// `` `code` ``, and `[label](url)` links. NOT supported (documented gaps, extend when a notebook needs
-/// them): tables, images, nested lists, reference links, HTML passthrough. A construct we don't parse
-/// renders as literal text — never throws.
+/// blockquotes (`>`), GFM pipe tables (`| a | b |` + a `|---|` delimiter row), and paragraphs. (Code
+/// fences never reach here — `parseDocument` already split them into code cells.) SUPPORTED (inline,
+/// within a block's text): `**bold**`, `*italic*`/`_italic_`, `` `code` ``, and `[label](url)` links.
+/// NOT supported (documented gaps, extend when a notebook needs them): images, nested lists, reference
+/// links, HTML passthrough. A construct we don't parse renders as literal text — never throws.
 ///
 /// PURE (no React) — returns a data model (blocks + inline spans) the prose component maps to Prose.tsx
 /// elements. Unit-testable under `node --test`.

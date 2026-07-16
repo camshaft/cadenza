@@ -130,6 +130,7 @@ pass	a Bool generator derived from the seed is reproducible (same seed, same Boo
 pass	a Bool match with its arms in either order is exhaustive
 pass	a Bool match with only the true arm is non-exhaustive
 pass	a Bytes entry argument is marshalled as a Vec<u8>
+pass	a CALL-returned single-variant newtype with a literal-payload arm spills at the right width
 pass	a CAPTURING closure carried in a sum payload keeps its capture through the match binder
 pass	a CBOR atom decodes each scalar major type to its value
 pass	a CBOR head decodes its major type and big-endian argument from the input bytes
@@ -218,6 +219,9 @@ pass	a Unit payload expected from a still-live sum at a dup-site drops the senti
 pass	a Unit projected from a function-returned tuple (owned-reclaim path)
 pass	a Unit projected out of a multi-payload sum and bound to a name
 pass	a Unit record field beside an Int64 field, the Int64 read
+pass	a Unit.* at the wrong arity is rejected
+pass	a Unit.^ at the wrong arity is rejected
+pass	a Unit.of named with a non-symbol value is rejected
 pass	a `?` in a CALLED (inlined, non-exported) helper finds its boundary
 pass	a `?` inside a match-arm resolves against the enclosing function boundary
 pass	a `?` inside an if-branch resolves against the enclosing function boundary
@@ -312,6 +316,9 @@ pass	a byte-decode loop advancing by a tuple projection while accumulating sum n
 pass	a byte-string literal equals the explicit byte sequence it desugars to
 pass	a byte-string literal with escapes equals its explicit byte sequence
 pass	a bytes value chosen by a runtime if is length-measured with valid wasm
+pass	a call-returned Bool newtype literal-payload arm spills correctly
+pass	a call-returned Int32 newtype literal-payload arm spills at the narrow width
+pass	a call-returned UInt8 newtype literal-payload arm spills at the narrow width
 pass	a capture-free de Bruijn beta-reduction over a nameless term sum reduces correctly
 pass	a captured pre-shadow value survives the re-binding
 pass	a capturing closure is applied through a recursive higher-order function
@@ -498,6 +505,8 @@ pass	a dotted nullary arm whose body nests a same-type sum match dispatches corr
 pass	a double same-dimension annotation preserves the original scale
 pass	a double-negated condition unwinds to the original selection
 pass	a double-negated float compare unwinds to the compare, preserving NaN-false
+pass	a double-nominal narrow newtype (newtype of a newtype of UInt8) boxed in a list refines by value
+pass	a doubly-call-returned narrow newtype spills correctly through two calls
 pass	a doubly-nested strength-reduced multiply chains shift into shift
 pass	a doubly-nested tuple map key containing a rope is found by its flat twin
 pass	a duplicate NESTED-CONSTRUCTOR arm is dead code but the program still runs
@@ -654,6 +663,8 @@ pass	a handler whose STATE is a sum destructures it in the arm
 pass	a header of packed nibbles and a length-prefixed body round-trips
 pass	a heap arg threaded UNCHANGED to a self-recursive call while a sibling arg consumes it is retained
 pass	a heap capture persists across two applications of a curried closure
+pass	a heap list conditionally escaping into a Some in one branch is still usable after the join
+pass	a heap list consumed in only one if-branch stays live for a use after the if
 pass	a helper decodes bytes to a string and consumes the fallible result
 pass	a helper projects a record parameter constrained by its argument
 pass	a helper projects a tuple parameter constrained by its argument
@@ -939,6 +950,10 @@ pass	a narrow-body arithmetic on an in-range constant arg overflows the paramete
 pass	a narrow-width Int quantity add that fits the inner width runs normally
 pass	a narrow-width Int quantity add that overflows the inner width traps at compile time
 pass	a narrow-width accumulator that never changes threads through the recursion
+pass	a narrow-width newtype boxed as a list element matches by its literal payload
+pass	a narrow-width newtype boxed as a sum payload matches by its literal payload
+pass	a narrow-width newtype boxed as a tuple element falls through on a non-matching payload
+pass	a narrow-width newtype boxed as a tuple element matches by its literal payload
 pass	a narrow-width parameter compared to a bare literal computes at the parameter width
 pass	a narrow-width parameter plus a bare literal computes at the parameter width
 pass	a narrow-width parameter plus a bare literal computes inside a helper function
@@ -1571,10 +1586,18 @@ pass	a signed segment reads the sign-bit-only byte as the minimum, not its magni
 pass	a signed-byte entrypoint returns its runtime argument
 pass	a single-form body admits a sequence by holding a do block
 pass	a single-scalar String.slice equals the String.at of the same index (the two scalar-addressing paths agree)
+pass	a single-variant Int32 newtype literal-payload arm compiles at the payload width
+pass	a single-variant Int64 newtype literal-payload arm still compiles (the wide control)
 pass	a single-variant NEWTYPE escapes with its tag ERASED, only the type header naming it
+pass	a single-variant UInt8 newtype literal-payload arm compiles at the payload width
+pass	a single-variant UInt8 newtype literal-payload arm falls through to the binding arm on a miss
+pass	a single-variant newtype BOOL literal-payload arm falls through on false
+pass	a single-variant newtype BOOL literal-payload arm is reached, not silently dead
 pass	a single-variant newtype list element falls through on a non-matching payload
 pass	a single-variant newtype list element with a binder payload stays irrefutable
 pass	a single-variant newtype list element with a literal payload matches by value
+pass	a single-variant newtype literal-payload arm falls through to the binding arm on a miss
+pass	a single-variant newtype literal-payload arm is selected when the payload matches
 pass	a single-variant newtype over a COMPOUND escapes the bare compound under its type header
 pass	a single-variant open sum with an open-tail arm dispatches its named variant
 pass	a single-variant-sum binding pattern destructures a multi-payload constructor positionally
@@ -2100,6 +2123,7 @@ pass	an underscore-letter identifier binds and resolves
 pass	an underscore-prefixed function parameter binds its argument
 pass	an underscore-prefixed token is an identifier, not an integer
 pass	an ungranted effect hidden in a closure passed to a HOF is still rejected
+pass	an unknown member name is rejected with a did-you-mean (CDZ0201)
 pass	an unproductive self-recursion is declined, not a compiler crash
 pass	an unquote nested inside a plain quote is a syntax error, not an active unquote
 pass	an unquote of an expression with an unbound name is rejected, not quoted
@@ -2813,6 +2837,8 @@ pass	the runtime UTF-8 encoding of a string equals its exact byte literal
 pass	the runtime-if list takes its else branch and measures that length
 pass	the runtime-list version of a tail fold compiles and folds correctly
 pass	the same function called under two handlers is discharged by each in turn
+pass	the same list is still live after the if when the consuming branch is not taken
+pass	the same list not escaped (the None branch) is still usable after the join
 pass	the same literal-payload refinement on a MULTI-variant sum works (the boxed control)
 pass	the same mixed-scale comparison is EXACT over Rational (keeps the fractional scale)
 pass	the same nullary variant constrained to different concrete types reflects different types
@@ -3108,7 +3134,6 @@ todo	a BOOL-field Tuple closure ARG, false discriminant
 todo	a Bytes-returning closure alongside a plain export — the closure runs
 todo	a Bytes-returning closure alongside a plain export — the plain runs
 todo	a Bytes-returning closure on a different argument
-todo	a CALL-returned single-variant newtype with a literal-payload arm spills at the right width
 todo	a CAPTURING closure returning a List
 todo	a CAPTURING closure returning a tuple
 todo	a CAPTURING closure taking TWO Tuple args
@@ -3174,9 +3199,6 @@ todo	a bottom-up fold matches a tuple of its recursive results with constructor 
 todo	a build-time delegated effect whose result a returned closure captures does not escape
 todo	a built-in comparison on an abstract theorem value outside the kernel is rejected
 todo	a built-in comparison on an abstract type's value is rejected outside its module
-todo	a call-returned Bool newtype literal-payload arm spills correctly
-todo	a call-returned Int32 newtype literal-payload arm spills at the narrow width
-todo	a call-returned UInt8 newtype literal-payload arm spills at the narrow width
 todo	a camelCase round-trip resolves through kebab boundary-name normalization
 todo	a camelCase same-signature multi-export normalizes each make-<name>
 todo	a capturing 32-bit-integer closure crosses and is called
@@ -3255,8 +3277,6 @@ todo	a distinct-signature round-trip alongside a plain export — the plain expo
 todo	a distinct-signature round-trip applies the Int64->Bool closure
 todo	a distinct-signature round-trip applies the Int64->Int64 closure
 todo	a distinct-signature round-trip's Bool closure on a nonzero input
-todo	a double-nominal narrow newtype (newtype of a newtype of UInt8) boxed in a list refines by value
-todo	a doubly-call-returned narrow newtype spills correctly through two calls
 todo	a fixed-shape Tuple ARG with a Bytes RESULT crosses the direct-call boundary
 todo	a fixed-shape Tuple ARG with a List RESULT crosses the direct-call boundary
 todo	a fixed-shape Tuple ARG with a Map RESULT crosses the direct-call boundary
@@ -3295,10 +3315,6 @@ todo	a mutual AST walker re-extracts a node's payload in a sibling operand while
 todo	a mutually-recursive AST walker reads a node's child list without corrupting a sibling head-read
 todo	a mutually-recursive decoder returns a heap value and cursor and its heap slot is dispatched
 todo	a naive (non-renaming) substitution captures a free variable — the bug capture-avoidance prevents
-todo	a narrow-width newtype boxed as a list element matches by its literal payload
-todo	a narrow-width newtype boxed as a sum payload matches by its literal payload
-todo	a narrow-width newtype boxed as a tuple element falls through on a non-matching payload
-todo	a narrow-width newtype boxed as a tuple element matches by its literal payload
 todo	a nested conjunction accumulates all three operand hypotheses
 todo	a nested element pattern dispatches on a NON-variant-0 list payload
 todo	a nested tuple list element is bound over a runtime list and folded across the rest
@@ -3361,16 +3377,8 @@ todo	a runtime value is constructed into a fixed-width segment and its length re
 todo	a runtime value narrowed to the segment width constructs without trapping
 todo	a scalar BETWEEN two Tuple args with a LIST result
 todo	a second same-signature closure export shares the one call method
-todo	a single-variant Int32 newtype literal-payload arm compiles at the payload width
-todo	a single-variant Int64 newtype literal-payload arm still compiles (the wide control)
-todo	a single-variant UInt8 newtype literal-payload arm compiles at the payload width
-todo	a single-variant UInt8 newtype literal-payload arm falls through to the binding arm on a miss
 todo	a single-variant abstract theorem's constructor match outside the kernel is a withheld-constructor rejection (CDZ0214)
 todo	a single-variant abstract type's constructor match outside its module is rejected CDZ0214 (withheld-ctor)
-todo	a single-variant newtype BOOL literal-payload arm falls through on false
-todo	a single-variant newtype BOOL literal-payload arm is reached, not silently dead
-todo	a single-variant newtype literal-payload arm falls through to the binding arm on a miss
-todo	a single-variant newtype literal-payload arm is selected when the payload matches
 todo	a specific constructor export exposes one variant and keeps the rest private
 todo	a sum TYPE and its constructors are imported by a wildcard and constructed in the entry
 todo	a sum variant's list payload split across empty and rest arms is exhaustive and dispatches
