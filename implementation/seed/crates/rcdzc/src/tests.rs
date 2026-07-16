@@ -69440,6 +69440,89 @@ mod cross_component_oracle {
     }
 
     // ------------------------------------------------------------------------------------------------
+    // PL35 — a peer op's COMPOUND RESULT escapes the entrypoint (the resource-escape × peer-extern envelope
+    // FUSION, task #6). PL18/PL19/PL23 read a peer's compound INTO A SCALAR (len/element/lookup); this pins
+    // the case that used to DECLINE — `main` RETURNS the raw tuple the peer produced, so the entrypoint's
+    // OWN result escapes as a runtime resource AND a peer op is reached in that body. That needs a component
+    // that BOTH imports the peer interface AND publishes the resource — neither `assemble_runtime_resource`
+    // (runtime only) nor `assemble_extern_runtime` (no resource) did both; the fused
+    // `assemble_extern_runtime_resource` + the peer-aware `runtime_resource_core_module_form_ex2` compose
+    // them (peer instance 0, runtime instance 1, core funcs peer `0..p` / runtime `p..p+k` / resource
+    // intrinsics after). Provider `mkpair(x) = (x, x+1)`; main(9) returns mkpair(9) = (9,10), escaping to
+    // the host as the value form `(: (tuple 9 10) (Tuple Int64 Int64))`. Flips the PL33 decline to a run.
+    // ------------------------------------------------------------------------------------------------
+    #[test]
+    fn a_peer_compound_result_escapes_the_entrypoint_via_the_fused_envelope() {
+        use crate::backend::wasm::runtime_abi::{REQUIRED_RUNTIME_HASH, RUNTIME_IFACE};
+        use crate::testkit::parse;
+        let import_name = format!("{RUNTIME_IFACE}@0.0.0+{REQUIRED_RUNTIME_HASH}");
+        // PROVIDER: mkpair(x) builds a runtime tuple (x, x+1).
+        let provider = compile_provider(
+            "(do (def (mkpair (: x Int64)) (tuple x (+ x 1))) (export mkpair))",
+            "cadenza:p/api",
+        );
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&provider)
+                .expect("the compound-result provider validates");
+        }
+        // CONSUMER: main RETURNS the raw tuple the peer produced — the entrypoint result escapes as a
+        // resource while a peer op is reached in the body (the fused envelope's shape).
+        let src = "(do \
+            (effect P (op mkpair (-> Int64 (Tuple Int64 Int64)))) \
+            (bind P \"cadenza:p/api\") \
+            (def (main (: x Int64)) (host (P) (P.mkpair x))) \
+            (export main))";
+        let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .unwrap_or_else(|d| {
+                panic!(
+                    "fused peer-compound-result consumer compiles: {} [{:?}]",
+                    d.message, d.code
+                )
+            });
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&consumer)
+                .expect("the fused peer+resource consumer validates");
+        }
+        // The fused component imports BOTH the peer interface AND the value-heap runtime.
+        let text = String::from_utf8_lossy(&consumer);
+        assert!(
+            text.contains("cadenza:p/api"),
+            "the fused consumer imports the peer interface"
+        );
+        assert!(
+            text.contains(&import_name),
+            "the fused consumer imports the value-heap runtime (it publishes the escaped compound)"
+        );
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("[PL35] runtime wasm not found; skipping");
+            return;
+        };
+        let peers = vec![cdz_run::Peer {
+            bytes: provider,
+            interface: "cadenza:p/api".to_string(),
+        }];
+        let opts = cdz_run::RunOpts {
+            export: None, // a resource-escape program exports no bare func — the host takes the escape path
+            args: vec!["9".to_string()],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run_with_peers(&consumer, &peers, &opts)
+            .expect("a peer compound result escapes the entrypoint via the fused envelope")
+        {
+            // main(9) returned the peer's (9,10); it escaped to the host as the canonical value form.
+            cdz_run::Outcome::Value(s) => assert_eq!(
+                s, "(: (tuple 9 10) (Tuple Int64 Int64))",
+                "the peer-produced tuple escapes the entrypoint as a resource and decodes to its value form"
+            ),
+            cdz_run::Outcome::Trap(t) => panic!("fused peer-compound-result run trapped: {t}"),
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------------
     // PL18 — a peer op returning a LIST (a variable-length collection) crosses + the consumer reads its
     // LENGTH. The rich-interface north star names lists crossing the peer boundary; the List RESULT read
     // was untested e2e (U5d built a list peer but did not run a source consumer reading it). A List

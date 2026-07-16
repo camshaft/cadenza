@@ -1141,15 +1141,50 @@ pub fn runtime_resource_core_module_form_ex(
     make_param_vts: &[ValType],
     make_core_slots: &[MakeCoreSlot],
 ) -> Result<Vec<u8>, String> {
+    runtime_resource_core_module_form_ex2(
+        funcs,
+        imports,
+        &[],
+        export_abs,
+        form,
+        methods,
+        make_param_vts,
+        make_core_slots,
+    )
+}
+
+/// [`runtime_resource_core_module_form_ex`] plus a leading CROSS-COMPONENT (peer) extern-import set
+/// (`extern_fns`, from module `"peer"`) — the resource-escape × peer-extern FUSION. A peer-bound op reached
+/// in a body whose ENTRYPOINT RESULT escapes as a runtime resource needs its peer import carried into the
+/// resource core module, exactly as `core_module_impl` does for the ordinary path. Peer ops occupy core-func
+/// indices `0..e` (so `Lir::CallExternImport(i)` = `call i` resolves), then the runtime ops shift to
+/// `e..e+k`, resource-new/rep to `e+k`/`e+k+1`, defined funcs from `e+k+2`. `extern_fns` EMPTY = byte-
+/// identical to `runtime_resource_core_module_form_ex` (every `e`-term drops to 0).
+#[allow(clippy::too_many_arguments)]
+pub fn runtime_resource_core_module_form_ex2(
+    funcs: &[SelectedFunc],
+    imports: &[&RtOp],
+    extern_fns: &[crate::backend::wasm::host::ExternImport],
+    export_abs: u32,
+    form: EscapeForm,
+    methods: &[CoreMethod],
+    make_param_vts: &[ValType],
+    make_core_slots: &[MakeCoreSlot],
+) -> Result<Vec<u8>, String> {
     use crate::backend::wasm::wasm_abi::op;
+    let e = extern_fns.len();
     let k = imports.len();
     let n = funcs.len();
 
     // ── Type section ──
-    // Import functypes 0..k (the runtime ops), then resource-new/resource-rep (both `(i32)->i32`), then
-    // one functype per defined body, then the three synthesized-func types (make `()->i32`, encode
-    // `(i32)->i32`, cabi_realloc `(i32×4)->i32`).
+    // EXTERN peer functypes 0..e FIRST (matching the import order → `CallExternImport(i)=call i`), then the
+    // runtime-op functypes `e..e+k`, then resource-new/resource-rep (both `(i32)->i32`), then one functype
+    // per defined body, then the three synthesized-func types (make `()->i32`, encode `(i32)->i32`,
+    // cabi_realloc `(i32×4)->i32`). (`e = 0` for the ordinary non-peer resource escape.)
     let mut type_items = Vec::new();
+    for f in extern_fns {
+        type_items.extend_from_slice(&extern_import_functype(f));
+    }
     for o in imports {
         type_items.extend_from_slice(&import_functype(o));
     }
@@ -1159,9 +1194,9 @@ pub fn runtime_resource_core_module_form_ex(
         t.extend_from_slice(&wasm_vec(1, &[wasm_abi::CORE_I32]));
         t
     };
-    type_items.extend_from_slice(&i32_to_i32); // resource-new type (index k)
-    type_items.extend_from_slice(&i32_to_i32); // resource-rep type (index k+1)
-    let defined_type_base = k + 2;
+    type_items.extend_from_slice(&i32_to_i32); // resource-new type (index e+k)
+    type_items.extend_from_slice(&i32_to_i32); // resource-rep type (index e+k+1)
+    let defined_type_base = e + k + 2;
     for f in funcs {
         type_items.extend_from_slice(&functype(f)?);
     }
@@ -1197,19 +1232,25 @@ pub fn runtime_resource_core_module_form_ex(
     let total_types = defined_type_base + n + 3 + methods.len();
     let type_sec = section(wasm_abi::CORE_SEC_TYPE, &wasm_vec(total_types, &type_items));
 
-    // ── Import section ── k ops + resource-new + resource-rep, all from "heap". Also builds the
-    // `import_index` a `CallImport` resolves against (op name → its `0..k` index).
+    // ── Import section ── e PEER ops (from "peer", indices `0..e`, so `CallExternImport(i)=call i`), then
+    // k runtime ops (from "heap", `e..e+k`) + resource-new + resource-rep (`e+k`, `e+k+1`). Builds the
+    // `import_index` a runtime `CallImport` resolves against (op name → its `e+i` index — the shift by `e`
+    // is automatic wherever a `CallImport` looks up its op by name). (`e = 0` for the ordinary escape.)
     let mut import_index: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
     let mut import_items = Vec::new();
-    for (i, o) in imports.iter().enumerate() {
-        import_items.extend_from_slice(&import_item(o.name, i as u32));
-        import_index.insert(o.name, i as u32);
+    for (i, f) in extern_fns.iter().enumerate() {
+        import_items.extend_from_slice(&extern_import_item(&f.op, i as u32));
     }
-    import_items.extend_from_slice(&import_item("resource-new", k as u32));
-    import_items.extend_from_slice(&import_item("resource-rep", (k + 1) as u32));
-    let import_sec = section(2, &wasm_vec(k + 2, &import_items));
-    let f_rnew = k as u32;
-    let f_rrep = (k + 1) as u32;
+    for (j, o) in imports.iter().enumerate() {
+        let ti = (e + j) as u32;
+        import_items.extend_from_slice(&import_item(o.name, ti));
+        import_index.insert(o.name, ti);
+    }
+    import_items.extend_from_slice(&import_item("resource-new", (e + k) as u32));
+    import_items.extend_from_slice(&import_item("resource-rep", (e + k + 1) as u32));
+    let import_sec = section(2, &wasm_vec(e + k + 2, &import_items));
+    let f_rnew = (e + k) as u32;
+    let f_rrep = (e + k + 1) as u32;
 
     // ── Function section ── defined bodies use their functype (`defined_type_base + i`), then the three
     // synthesized funcs. Defined func indices: `k+2 .. k+2+n`; make = `k+2+n`, encode = `k+3+n`,

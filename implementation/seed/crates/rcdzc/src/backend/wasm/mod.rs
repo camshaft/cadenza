@@ -1905,10 +1905,67 @@ fn emit_runtime_resource(
         })
         .collect::<Result<_, _>>()?;
 
-    // Defined funcs' absolute indices are shifted past the `k` ops + the two resource intrinsics
-    // (`resource-new`, `resource-rep`), so `import_base = k + 2`.
+    // PEER-IN-RESOURCE-ESCAPE (task #6): a peer-BOUND effect op reached by a reachable body (`main` RETURNS
+    // the compound the peer produced) must have its extern import carried into the resource component —
+    // exactly as the ordinary `emit` path does. Collect the host imports over the reachable bodies, split
+    // the peer-bound ones (retargeted to their interface) into `extern_imports`, and — when present —
+    // thread `extern_order` so `layout.extern_index` resolves + shift `import_base` past the `p` peer ops.
+    // A single peer interface is supported (the fused envelope's scope); a compound arg to such an op, or a
+    // second peer interface, or a HOST effect alongside, still declines below.
+    let mut host_imports: Vec<host::HostImport> = Vec::new();
+    for &def in &layout.order {
+        let body = def_body(db, def)?;
+        host::collect_host_imports(db, body, &mut host_imports);
+    }
+    let mut extern_imports: Vec<host::ExternImport> = Vec::new();
+    if !db.effect_bindings.is_empty() {
+        let bindings = db.effect_bindings.clone();
+        host_imports.retain(|h| {
+            if let Some(iface) = bindings.get(&h.effect) {
+                extern_imports.push(host::ExternImport {
+                    interface: iface.clone(),
+                    op: h.op.clone(),
+                    params: h.params.iter().filter_map(host_param_abi).collect(),
+                    result: h.result,
+                });
+                false
+            } else {
+                true
+            }
+        });
+    }
+    // A HOST effect delegated from a resource-escaping entrypoint is a further fusion (host+resource); only
+    // a PEER effect is handled here. A non-peer host import reaching this path declines cleanly.
+    if !host_imports.is_empty() {
+        return Err(Reject::decline(
+            "a host-delegated effect in an entrypoint whose result escapes as a runtime resource is not \
+             yet emitted (only a peer-bound effect is); consume the host op's result into a scalar the \
+             entrypoint returns",
+        ));
+    }
+    // A SINGLE peer interface is supported by the fused envelope. Two distinct interfaces decline.
+    let peer_ifaces: std::collections::BTreeSet<&str> = extern_imports
+        .iter()
+        .map(|e| e.interface.as_str())
+        .collect();
+    if peer_ifaces.len() > 1 {
+        return Err(Reject::decline(
+            "a resource-escaping entrypoint reaching TWO distinct peer interfaces is not yet emitted \
+             (the fused resource envelope supports a single peer interface)",
+        ));
+    }
+    let p = extern_imports.len() as u32;
+    let extern_order: Vec<(String, String)> = extern_imports
+        .iter()
+        .map(|e| (e.interface.clone(), e.op.clone()))
+        .collect();
+
+    // Defined funcs' absolute indices are shifted past the `p` peer ops + `k` runtime ops + the two
+    // resource intrinsics (`resource-new`, `resource-rep`), so `import_base = p + k + 2`.
     let k = imports.len() as u32;
-    let layout = layout.with_import_base(k + 2);
+    let layout = layout
+        .with_import_base(p + k + 2)
+        .with_extern_order(extern_order);
     let layout = &layout;
 
     // Select every reachable body (the export + its call-graph). The export body returns the compound's
@@ -1929,11 +1986,13 @@ fn emit_runtime_resource(
         .abs(export_def)
         .ok_or_else(|| Reject::decline("the escaping export is not in the emission order"))?;
 
-    let mut main_core = serialize::runtime_resource_core_module(
+    let mut main_core = serialize::runtime_resource_core_module_form_ex2(
         &funcs,
         &imports,
+        &extern_imports,
         export_abs,
-        tpl,
+        serialize::EscapeForm::Flat(tpl),
+        &[],
         &make_params.leaf_vts,
         &make_params.core_slots(),
     )
@@ -1948,11 +2007,34 @@ fn emit_runtime_resource(
     // stub — its handle is a genuine heap allocation the host must reclaim.
     let dtor_core = serialize::resource_dtor_module_with_drop();
     let import_name = runtime_import_name();
-    Ok(envelope::assemble_runtime_resource(
+    if extern_imports.is_empty() {
+        // The ordinary (no-peer) runtime-resource escape — byte-identical to before.
+        return Ok(envelope::assemble_runtime_resource(
+            &main_core,
+            &dtor_core,
+            &imports,
+            &import_name,
+            &make_params.boundary_slots(),
+        ));
+    }
+    // The FUSED resource-escape × peer-extern envelope (task #6): the component imports the peer interface
+    // AND publishes the resource. Single interface (checked above).
+    let peer_iface = extern_imports[0].interface.clone();
+    let peer_fns: Vec<envelope::HostFn> = extern_imports
+        .iter()
+        .map(|e| envelope::HostFn {
+            op: e.op.clone(),
+            comp_functype: extern_op_comp_functype(e),
+            core_functype: Vec::new(),
+        })
+        .collect();
+    Ok(envelope::assemble_extern_runtime_resource(
         &main_core,
         &dtor_core,
         &imports,
         &import_name,
+        &peer_fns,
+        &peer_iface,
         &make_params.boundary_slots(),
     ))
 }
