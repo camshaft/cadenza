@@ -18,13 +18,21 @@
 type Vec3r =
   | V3r(Rational, Rational, Rational)
 
-/// The exact CSG tree (a minimal shape for the bounding-box proof — primitives + union + translate). R2
-/// merges this with the full `Solid` variant set once the model migrates.
+/// The exact CSG tree — the FULL model (R3): primitives (Empty/Cube/Sphere/Cylinder), the three booleans,
+/// and the affine transforms that stay exact over Rational (Translate, per-axis Scale). NOTE: no `Rotate` —
+/// a general rotation needs sin/cos, which have no exact Rational form; rotation, if needed, is applied by
+/// the mesh driver at the f64 manifold leaf, keeping the model tree exact. The Float64 `Solid` (solid.cdz)
+/// is the legacy model; this exact `Solidr` is what the drivers/examples move onto.
 type Solidr =
-  | Cuber(Vec3r)              // an axis-aligned box of the given (w, d, h), centred at the origin
-  | Spherer(Rational)        // a sphere of the given radius, centred at the origin
+  | Emptyr                        // the identity of union / absorbing element of intersection
+  | Cuber(Vec3r)                  // an axis-aligned box of the given (w, d, h), centred at the origin
+  | Spherer(Rational)             // a sphere of the given radius, centred at the origin
+  | Cylinderr(Rational, Rational) // a cylinder (height, radius), centred on the origin along +z
   | Unionr(Solidr, Solidr)
+  | Differencer(Solidr, Solidr)
+  | Intersectionr(Solidr, Solidr)
   | Translater(Vec3r, Solidr)
+  | Scaler(Vec3r, Solidr)         // per-axis exact scale (Rational factors)
 
 /// An exact axis-aligned bounding box: the min and max corners (both `Vec3r`).
 type Aabbr =
@@ -76,21 +84,47 @@ def aabbr-union(p: Aabbr, q: Aabbr) =
     (match q with | Aabbr.Boxr(qlo, qhi) =>
       Aabbr.Boxr(v3r-min(plo, qlo), v3r-max(phi, qhi)))
 
+/// The box of an INTERSECTION — the overlap of the two boxes (max of the mins, min of the maxes). The
+/// result may be "inverted" (lo > hi) if the boxes don't overlap; that denotes an empty intersection, which
+/// a mesh driver treats as no geometry. Exact.
+def aabbr-intersect(p: Aabbr, q: Aabbr) =
+  match p with | Aabbr.Boxr(plo, phi) =>
+    (match q with | Aabbr.Boxr(qlo, qhi) =>
+      Aabbr.Boxr(v3r-max(plo, qlo), v3r-min(phi, qhi)))
+
+/// Component-wise exact vector multiply (for per-axis scale).
+def v3r-mul(a: Vec3r, b: Vec3r) =
+  match a with | Vec3r.V3r(ax, ay, az) =>
+    (match b with | Vec3r.V3r(bx, by, bz) =>
+      Vec3r.V3r(ax * bx, ay * by, az * bz))
+
+/// A degenerate zero box at the origin — the bound of an empty solid (no geometry).
+def aabbr-empty() = Aabbr.Boxr(v3r(rzero(), rzero(), rzero()), v3r(rzero(), rzero(), rzero()))
+
 /// The EXACT axis-aligned bounding box of an exact CSG tree — the recursive fold that was BLOCKED over
 /// Float64 (it needs `<`/`>` per node) and is expressible here because Rational has a total order. A cube
 /// of size (w,d,h) centred at the origin spans [-w, w]×… (the model's `Cuber` size is the half-not-assumed
 /// full extent kept simple for the proof: min = -size, max = +size); a sphere of radius r spans [-r, r]³;
 /// a union encloses both children; a translate shifts both corners.
 def bounding-box(s: Solidr) = match s with
+  | Solidr.Emptyr => aabbr-empty()
   | Solidr.Cuber(sz) =>
     (match sz with | Vec3r.V3r(w, d, h) =>
       Aabbr.Boxr(Vec3r.V3r(rzero() - w, rzero() - d, rzero() - h), Vec3r.V3r(w, d, h)))
   | Solidr.Spherer(r) =>
     Aabbr.Boxr(Vec3r.V3r(rzero() - r, rzero() - r, rzero() - r), Vec3r.V3r(r, r, r))
+  | Solidr.Cylinderr(h, r) =>
+    Aabbr.Boxr(Vec3r.V3r(rzero() - r, rzero() - r, rzero() - h), Vec3r.V3r(r, r, h))
   | Solidr.Unionr(a, b) => aabbr-union(bounding-box(a), bounding-box(b))
+  // subtracting a tool never grows the base → the base's box bounds the difference.
+  | Solidr.Differencer(a, _) => bounding-box(a)
+  | Solidr.Intersectionr(a, b) => aabbr-intersect(bounding-box(a), bounding-box(b))
   | Solidr.Translater(by, of) =>
     (match bounding-box(of) with
       | Aabbr.Boxr(lo, hi) => Aabbr.Boxr(v3r-add(lo, by), v3r-add(hi, by)))
+  | Solidr.Scaler(by, of) =>
+    (match bounding-box(of) with
+      | Aabbr.Boxr(lo, hi) => Aabbr.Boxr(v3r-mul(lo, by), v3r-mul(hi, by)))
 
 /// The exact size (max − min) of a bounding box — the "how big" answer, exact.
 def aabbr-size(b: Aabbr) =
@@ -151,5 +185,48 @@ def exact_arithmetic_has_no_rounding() =
   let third = Rational.of(1, 3) in
   if (third + third + third) == Rational.of(1, 1) then unit else trap("1/3+1/3+1/3 = 1 exactly")
 
-export { Vec3r.*, Solidr.*, Aabbr.*, rmin, rmax, rzero, v3r, v3r-x, v3r-y, v3r-z, v3r-add, v3r-min, v3r-max,
-         v3r-eq, aabbr-union, bounding-box, aabbr-size }
+@test
+def empty-has-a-degenerate-box() =
+  // an Empty solid bounds to a zero box at the origin.
+  let b = bounding-box(Solidr.Emptyr) in
+  match b with | Aabbr.Boxr(lo, hi) =>
+    (if v3r-eq(lo, v3r(rzero(), rzero(), rzero())) then
+      (if v3r-eq(hi, v3r(rzero(), rzero(), rzero())) then unit else trap("hi zero")) else trap("lo zero"))
+
+@test
+def cylinder-box-is-diameter-by-height() =
+  // a cylinder (h, r) spans [-r,r]×[-r,r]×[-h,h] → size (2r, 2r, 2h), exact.
+  let h = Rational.of(5, 2) in let r = Rational.of(3, 2) in
+  let sz = aabbr-size(bounding-box(Solidr.Cylinderr(h, r))) in
+  if v3r-eq(sz, v3r(Rational.of(3, 1), Rational.of(3, 1), Rational.of(5, 1))) then unit
+  else trap("cylinder box size (2r,2r,2h) = (3,3,5) exact")
+
+@test
+def difference-is-bounded-by-the-base() =
+  // subtracting a tool doesn't grow the base → the difference's box is the base's box.
+  let one = Rational.of(1, 1) in
+  let base = Solidr.Cuber(v3r(one, one, one)) in
+  let d = Solidr.Differencer(base, Solidr.Spherer(Rational.of(1, 2))) in
+  if v3r-eq(aabbr-size(bounding-box(d)), aabbr-size(bounding-box(base))) then unit
+  else trap("difference box = base box")
+
+@test
+def scale-multiplies-the-box() =
+  // scale a unit cube (box [-1,1]³) by (2,3,4) → box [-2,2]×[-3,3]×[-4,4], size (4,6,8), exact.
+  let one = Rational.of(1, 1) in
+  let scaled = Solidr.Scaler(v3r(Rational.of(2,1), Rational.of(3,1), Rational.of(4,1)), Solidr.Cuber(v3r(one, one, one))) in
+  let sz = aabbr-size(bounding-box(scaled)) in
+  if v3r-eq(sz, v3r(Rational.of(4,1), Rational.of(6,1), Rational.of(8,1))) then unit
+  else trap("scaled box size (4,6,8) exact")
+
+@test
+def intersection-of-two-cubes-is-the-overlap() =
+  // two unit cubes, one translated +1 in x: boxes [-1,1] and [0,2] → intersection box x in [0,1].
+  let one = Rational.of(1, 1) in
+  let a = Solidr.Cuber(v3r(one, one, one)) in
+  let b = Solidr.Translater(v3r(one, rzero(), rzero()), Solidr.Cuber(v3r(one, one, one))) in
+  match bounding-box(Solidr.Intersectionr(a, b)) with | Aabbr.Boxr(lo, hi) =>
+    (if v3r-x(lo) == rzero() then (if v3r-x(hi) == one then unit else trap("hi.x = 1")) else trap("lo.x = 0"))
+
+export { Vec3r.*, Solidr.*, Aabbr.*, rmin, rmax, rzero, v3r, v3r-x, v3r-y, v3r-z, v3r-add, v3r-mul, v3r-min,
+         v3r-max, v3r-eq, aabbr-union, aabbr-intersect, aabbr-empty, bounding-box, aabbr-size }

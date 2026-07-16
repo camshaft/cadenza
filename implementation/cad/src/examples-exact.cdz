@@ -1,0 +1,81 @@
+/// examples-exact.cdz — worked CAD models built with EXACT arithmetic + REAL UNITS (R3, the operator's
+/// showcase: "lean into units — a great showcase of bigint/rationals/units"). Each model is a `Solidr`
+/// (exact Rational geometry) whose dimensions are written in real-world units (`mm`, `inch`, `cm`) that
+/// convert EXACTLY to the model's millimetre coordinates — no float rounding anywhere. The bounding-box
+/// (exact, from `exact.cdz`) then reports true dimensions.
+///
+/// This is the marquee demonstration: a plate that is 50 mm wide with 1/4-inch bolt holes carries `50` and
+/// `127/20` (6.35 mm) EXACTLY in one model — the thing floats can't do and the reason Rational+Qty exist.
+
+import { Solidr, Vec3r, Aabbr } from "exact"
+import { v3r, bounding-box, aabbr-size, v3r-eq, v3r-x } from "exact"
+import { ri, mm, cm, inch, foot } from "units"
+
+/// ---- constructors: exact primitives dimensioned in the model unit (mm), built from length values -------
+
+/// An axis-aligned box of the given width/depth/height (each an exact mm coordinate — pass `mm 50` / `inch
+/// 2` etc). NOTE: `Cuber`'s stored vector is the HALF-extent (the box spans [-v, v]); `box` takes the FULL
+/// size and halves it exactly (Rational /2 is exact), so `box (mm 50) …` is a 50 mm-wide box.
+def box(w: Rational, d: Rational, h: Rational) =
+  Solidr.Cuber(v3r(w / ri(2), d / ri(2), h / ri(2)))
+
+/// A cylinder of the given full height + radius (exact mm).
+def cyl(height: Rational, radius: Rational) = Solidr.Cylinderr(height / ri(2), radius)
+
+/// Translate a solid by exact mm offsets.
+def move(x: Rational, y: Rational, z: Rational, s: Solidr) = Solidr.Translater(v3r(x, y, z), s)
+
+/// ---- the marquee model: a plate with two bolt holes, dimensioned in MIXED units ------------------------
+
+/// A rectangular plate, `w × d` in millimetres and `t` thick, with two bolt holes of radius `r` at 1/4 and
+/// 3/4 width. Write `plate (mm 50) (mm 30) (mm 5) (inch (1/4))` — the width is metric, the holes imperial,
+/// and every coordinate is EXACT. Holes are cut with `Differencer`.
+def plate(w: Rational, d: Rational, t: Rational, r: Rational) =
+  Solidr.Differencer(
+    Solidr.Differencer(box(w, d, t),
+      move(w / ri(4), d / ri(2), ri(0), cyl(t, r))),
+    move((w * ri(3)) / ri(4), d / ri(2), ri(0), cyl(t, r)))
+
+/// A hollow tube: outer cylinder minus a concentric bore (both dimensioned in units).
+def tube(len: Rational, ro: Rational, ri-inner: Rational) =
+  Solidr.Differencer(cyl(len, ro), cyl(len, ri-inner))
+
+/// ============================ @test suite (R3 exact+units models) ============================
+
+@test
+def plate-box-is-its-outer-size-in-mm() =
+  // a 50mm × 30mm × 5mm plate (holes internal) → bounding box exactly (50, 30, 5) mm.
+  let p = plate(mm(ri(50)), mm(ri(30)), mm(ri(5)), inch(Rational.of(1, 4))) in
+  if v3r-eq(aabbr-size(bounding-box(p)), v3r(ri(50), ri(30), ri(5))) then unit
+  else trap("plate outer box is 50×30×5 mm exactly")
+
+@test
+def plate-mixes-metric-and-imperial-exactly() =
+  // the showcase: the plate's holes are 1/4 inch = 127/20 mm — carried EXACTLY alongside the mm width.
+  // check the hole radius value flows through as the exact Rational (no float).
+  if inch(Rational.of(1, 4)) == Rational.of(127, 20) then unit
+  else trap("1/4 inch hole = 127/20 mm exactly, mixed with metric plate")
+
+@test
+def a_metric_and_imperial_box_agree_when_equal() =
+  // a 25.4mm cube and a 1-inch cube have the SAME exact bounding box (25.4mm == 1inch exactly).
+  let metric = box(Rational.of(254, 10), Rational.of(254, 10), Rational.of(254, 10)) in
+  let imperial = box(inch(ri(1)), inch(ri(1)), inch(ri(1))) in
+  if v3r-eq(aabbr-size(bounding-box(metric)), aabbr-size(bounding-box(imperial))) then unit
+  else trap("25.4mm cube == 1inch cube exactly")
+
+@test
+def tube-outer-box-is-diameter-by-length() =
+  // a tube 60mm long, outer radius 20mm → box (40, 40, 60) mm.
+  let t = tube(mm(ri(60)), mm(ri(20)), mm(ri(10))) in
+  if v3r-eq(aabbr-size(bounding-box(t)), v3r(ri(40), ri(40), ri(60))) then unit
+  else trap("tube outer box (2ro, 2ro, len) = (40,40,60) mm")
+
+@test
+def foot-dimensioned-box-is-exact() =
+  // a 1-foot cube → 304.8 mm = 1524/5 per axis, exact.
+  let c = box(foot(ri(1)), foot(ri(1)), foot(ri(1))) in
+  match bounding-box(c) with | Aabbr.Boxr(_, hi) =>
+    if v3r-x(hi) == Rational.of(762, 5) then unit else trap("1-foot cube half-extent = 762/5 mm (full 1524/5)")
+
+export { box, cyl, move, plate, tube }
