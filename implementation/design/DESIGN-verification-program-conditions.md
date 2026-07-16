@@ -1,6 +1,7 @@
 # DESIGN: Program verification — pre/post-conditions on Cadenza programs, with proofs that feed the optimizer
 
-Status: **Increment (b) DESIGN — proposed, forks open to the operator.** Follows the LCF kernel
+Status: **Increment (b) DESIGN — proposed; opt-seam (fork #3) SETTLED with v-core-opt; forks 2/3/4 open to
+the operator.** Follows the LCF kernel
 ([DESIGN-verification-hol-kernel.md](DESIGN-verification-hol-kernel.md), CHARTER DELIVERED: a working,
 unforgeable `Thm` on trunk). Vertical `v-verification`, subsystem `rcdzc`. Operator greenlight
 (2026-07-16, via concierge, verbatim intent): *"Adding pre/post-conditions would be amazing … keep in
@@ -112,44 +113,58 @@ react to rather than block.
 ## 3. The proof→optimization interface — how a discharge reaches the optimizer (fork #3, the novel bit)
 
 The operator's headline: *proven no-overflow → elide the check entirely.* Design so a discharged
-obligation is a fact the optimizer QUERIES, keyed to the IR node whose guard it licenses.
+obligation is a fact the optimizer QUERIES, keyed to the node whose guard it licenses.
+
+**Keying + tier (SETTLED with v-core-opt, 2026-07-16).** Key the obligation by the **stable Core-level
+`Id`** (the same `Id` space `lower::core_of` uses), NOT a MIR/Lir node, and run the elision as a **`CorePass`
+at the CORE tier**. Two reasons, both from v-core-opt: (1) eliding high in the pipeline means BOTH backends
+(wasm + rust) inherit ONE elision, rather than each backend re-eliding at its own emit — this also matches
+the operator's explicit "higher is better" optimization steer; (2) a MIR/Lir-keyed annotation would be
+backend-specific and would not survive node regeneration. So the obligation is `no-overflow@<core-Id>` and
+the elision is a Core pass that, for each checked-arith Core node, queries the proof oracle by that `Id`.
 
 ### The seam
-- The compiler emits checked arithmetic (an overflow trap) at a Core/MIR node. Call the guard it emits
-  `overflow-check@N` for node `N`.
-- Verification produces, for some nodes, a `Thm` whose conclusion is exactly the obligation that guard
-  exists to enforce — e.g. `⊢ ∀ inputs. P(inputs) ⇒ (a + b does not overflow Int64)` at node `N`.
-- The optimizer, at the point it would emit `overflow-check@N`, asks a **proof oracle**: *is there a
-  discharged `Thm` whose conclusion matches `no-overflow@N` under this node's context?* If yes → emit the
-  unchecked op; if no → emit the check as today. **Default is always the check** — elision is opt-in on a
-  present proof, never on absence of a disproof.
+- The compiler emits checked arithmetic (an overflow trap) at a Core node with stable `Id`. Call the guard
+  `overflow-check@Id`.
+- Verification produces, for some `Id`s, a `Thm` whose conclusion is exactly the obligation that guard
+  exists to enforce — e.g. `⊢ ∀ inputs. P(inputs) ⇒ (a + b does not overflow Int64)` at `Id`.
+- The Core elision pass, for each checked-arith node, asks a **proof oracle** — a PURE query
+  `Id → Option<discharged-Thm-handle>`: is there a discharged `Thm` whose conclusion matches
+  `no-overflow@Id`? If `Some` → install an unchecked-op override for that `Id`; if `None` → the check
+  stays. **Default is always the check** — elision is opt-in on a present proof, never on absence of a
+  disproof.
 
-### Shape of the interface (design options)
-- **3A. Proof-carrying IR annotation.** Verification attaches the discharged obligation (or a stable key
-  into a proof table) to the Core/MIR node as an attribute. The optimizer reads the attribute — a local,
-  O(1) query, no cross-module lookup at opt time. RECOMMENDED: it keeps the optimizer's trusted check
-  tiny (match a conclusion) and localizes the seam.
-- **3B. A side table the optimizer queries by node identity.** A `Map<NodeId, Thm>` the verification pass
-  populates and the opt pass reads. Equivalent power; slightly looser coupling.
-- **3C. The optimizer calls the kernel on demand.** The opt pass itself asks "prove `no-overflow@N`?" —
-  rejected: it puts proof search on the compile-time hot path and inverts the trust story (search should
-  be untrusted and precomputed).
+### Shape of the interface — 3A, refined with v-core-opt's mechanism
+- **3A. Proof-carrying annotation as a PURE ORACLE QUERY (SETTLED).** The discharge does NOT thread through
+  passes as mutable state. Instead the elision `CorePass` calls the oracle (`Id → Option<Thm-handle>`, a
+  pure function that leaks no kernel internals) and, on `Some`, installs an unchecked-op **override** via
+  v-core-opt's core-override layer. This cleanly separates the two trusted/untrusted concerns: **I own the
+  oracle + the match predicate** (does this `Thm` license `no-overflow@Id`); **v-core-opt owns the override
+  mechanism** (`core_of` consults an override table a `PassManager` populates — their "slice 1", landing
+  first). The obligation is stated in the corpus keyed by a placeholder Core-`Id` so it already speaks the
+  `Id` language before the mechanism exists.
+- **3B. A side table the opt pass reads** (`Map<Id, Thm>`) — subsumed by 3A's oracle query; equivalent
+  power, kept as a note.
+- **3C. The optimizer calls the kernel on demand** — rejected: puts proof search on the compile-time hot
+  path and inverts the trust story (search is untrusted and precomputed; the oracle only looks up a
+  already-discharged result).
 
-**Recommendation (fork #3): 3A — proof-carrying annotation, with the optimizer's trusted action being a
-single conclusion-match against a real `Thm`.** This is the design that makes an unsound elision
-*impossible by construction*: the opt pass cannot elide without a `Thm` in hand, and it cannot forge one
-(Inc-a unforgeability). The elision target is the overflow-trap emit (the codebase already has the guard;
-`opt.rs` is the Core-IR opt framework where the query lands). **Coordinate with v-core-opt** — the
-concierge has told them to expect proof-guided elision; I'll send them this design and co-own the seam
-(they own `opt.rs`; I own the `Thm`-shaped obligation + the match predicate).
+**Recommendation (fork #3): 3A as refined — a pure oracle query keyed by stable Core-`Id`, the elision a
+`CorePass`, the optimizer's trusted action a single conclusion-match against a real `Thm`.** This makes an
+unsound elision *impossible by construction*: the pass cannot install an unchecked override without a `Thm`
+in hand, and it cannot forge one (Inc-a unforgeability). The elision target is the overflow-trap emit; the
+mechanism is v-core-opt's core-override layer. **Seam SETTLED with v-core-opt** (their
+`DESIGN-tiered-optimization-levels-rcdzc.md` §9.2 carries the identical default=check invariant); we sync
+at my b2 (match predicate + toy prototype) ↔ their slice-2 (real passes), by which point their slice-1
+override seam exists so the prototype is a real `CorePass`.
 
 ### What the optimizer must trust (and what it must NOT)
 - **Trusted:** the kernel `Thm` type (unforgeable), and the *predicate* "this `Thm`'s conclusion is the
-  obligation that `overflow-check@N` discharges." That predicate must itself be audited — a sloppy match
+  obligation that `overflow-check@Id` discharges." That predicate must itself be audited — a sloppy match
   (e.g. ignoring the node's precondition context, or matching a `Thm` proven under different bindings)
   would license an unsound elision. **This match predicate is the new trusted surface of Inc-b** and gets
   the same adversarial pinning the kernel boundary got (breaker: "supply a `Thm` that looks like it
-  licenses `@N` but was proven under different assumptions — does the elision wrongly fire?").
+  licenses `@Id` but was proven under different assumptions — does the elision wrongly fire?").
 - **Untrusted:** annotation elaboration, denotation, VC generation, tactic search. All can be buggy
   without unsoundness — a bug there yields "no `Thm`" or "wrong `Thm`," and either way the match fails and
   the check stays.
@@ -178,15 +193,19 @@ Front-load the design validation BEFORE any compiler change, exactly as Inc-a di
   denotation (§1A) for the pure arithmetic fragment on paper; encode 6–10 obligations as kernel `verify`
   cases (§2A) in a NEW `spec/semantics/26-program-conditions.sexp`: e.g. "for `0 ≤ x ≤ 100`, `x + 1` does
   not overflow Int64" discharged by the kernel; and the dual "for unconstrained `x`, the no-overflow
-  obligation is NOT provable" (the check must stay). Ships with its `.gate-baseline`. This validates the
+  obligation is NOT provable" (the check must stay). Obligations keyed by a placeholder Core-`Id` so the
+  corpus already speaks v-core-opt's `Id` language. Ships with its `.gate-baseline`. Validates the
   denotation + discharge end-to-end with zero risk.
-- **b2 — the match predicate + a discharge→elision PROTOTYPE (behind a flag, corpus-only).** Implement the
-  trusted "does this `Thm` license `no-overflow@N`" predicate; prototype the optimizer querying it on a
-  toy node. Adversarially pinned (breaker) BEFORE it can gate anything real. Coordinate v-core-opt.
-- **b3 — proof-guided elision on the real overflow guard (opt-in, proven cases only).** Wire b2 into
-  `opt.rs`'s overflow-check emit: a node with a matching discharged `Thm` emits unchecked; all others
-  unchanged. Differential-gate BOTH backends (wasm + rust) — a proven-safe add must compute the same value
-  unchecked as checked, and an UNproven add must still trap. This is the operator's headline deliverable.
+- **b2 — the match predicate + a discharge→elision PROTOTYPE (real `CorePass`, corpus-only).** Implement the
+  trusted "does this `Thm` license `no-overflow@Id`" predicate + the pure oracle (`Id → Option<Thm-handle>`);
+  prototype the Core elision pass installing an unchecked-op override on `Some`. By now v-core-opt's slice-1
+  core-override seam exists, so this is a real `CorePass`, not a toy. Adversarially pinned (breaker) BEFORE
+  it gates anything real. Sync point ↔ v-core-opt slice-2.
+- **b3 — proof-guided elision on the real overflow guard (opt-in, proven cases only).** Wire b2's oracle
+  into the Core-tier checked-arith emit: a node with a matching discharged `Thm` installs an unchecked
+  override; all others unchanged. Elision fires at the CORE tier so BOTH backends inherit it — differential-
+  gate wasm + rust: a proven-safe add computes the same value unchecked as checked, and an UNproven add
+  must still trap. This is the operator's headline deliverable.
 - **b4+ — the annotation SURFACE (2B, `@requires`/`@ensures`), pending operator syntax ruling; then wider
   obligations (bounds checks, exhaustiveness), then effect-ful conditions (1B) if wanted.**
 
@@ -202,23 +221,27 @@ operator redirects:
    proceeding.)
 2. **Annotation surface: pipeline under `verify`-blocks (2A) first; `@requires`/`@ensures` (2B) as the
    shipping surface.** ⟵ EXACT SYNTAX is product taste — routed to operator; I'll draft a strawman.
-3. **Proof→opt interface: proof-carrying annotation (3A), optimizer's trusted action = a single
-   conclusion-match against a real `Thm`.** ⟵ novel bit — routed to operator for confirmation; co-owned
-   with v-core-opt.
+3. **Proof→opt interface: pure oracle query `Id → Option<Thm-handle>` keyed by stable Core-`Id`, elision a
+   `CorePass` at the Core tier (both backends inherit), optimizer's trusted action = a single
+   conclusion-match against a real `Thm`.** ⟵ novel bit — SEAM SETTLED with v-core-opt (§3); routed to
+   operator for confirmation of the shape.
 4. **Ownership: stays under v-verification through b1–b3; revisit a co-scoped vertical at the 2B surface.**
    ⟵ routed to operator for timing.
 
 ## 7. Coordination
 
-- **v-core-opt** — the proof-guided-elision seam (§3, fork #3). The concierge has told them to expect it.
-  Send this design; co-own: they own `opt.rs` + the overflow-check emit; I own the `Thm`-shaped obligation
-  + the trusted match predicate. Agree the node-keying (3A) and the "default is always the check" invariant.
+- **v-core-opt** — the proof-guided-elision seam (§3, fork #3) is **SETTLED** (2026-07-16, both notes
+  exchanged): key by stable Core-`Id`, elision a `CorePass` at the Core tier (both backends inherit), oracle
+  a pure `Id → Option<Thm-handle>` query. Division of labor: they own the core-override mechanism (`core_of`
+  consults an override table a `PassManager` populates — their slice-1, landing first) + the checked-arith
+  emit; I own the oracle + the trusted match predicate. Sync ↔ my b2 / their slice-2. Their
+  `DESIGN-tiered-optimization-levels-rcdzc.md` §9.2 carries the identical default=check invariant.
 - **v-metaprogramming** — the denotation `Ast → Term` (§1) lives on their reflected `Ast`. Expect gaps →
   REPORT/FIX. Confirm the `Ast` exposes every construct the arithmetic fragment needs.
 - **v-syntax** — the annotation surface (2B) is their territory (annotations are a language concept, cf.
   `@property`/`@tag`/`@cite`). No action until the operator rules on fork #2.
 - **breaker** — from b2 on, adversarial cases against the NEW trusted surface: the match predicate. "Supply
-  a `Thm` proven under different assumptions that superficially matches `@N` — does the elision wrongly
+  a `Thm` proven under different assumptions that superficially matches `@Id` — does the elision wrongly
   fire?" This is Inc-b's soundness boundary, the analogue of the §3 forge vectors.
 - **v-agent-harness** — a downstream consumer (Inc-a §7): a self-modification carrying a `Thm` that it
   preserves an invariant is exactly a program-condition discharge. The b-track machinery is what states
