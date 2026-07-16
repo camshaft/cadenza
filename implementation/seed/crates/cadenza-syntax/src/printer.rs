@@ -3042,6 +3042,34 @@ mod tests {
     }
 
     #[test]
+    fn member_call_with_a_symbol_operand_round_trips() {
+        // The surface `Record.with r #field v` relies on (already has): a member-access application
+        // whose args include a `#symbol` field-selector. Pin that it round-trips on BOTH surfaces so the
+        // feature's SURFACE half stays supported independently of the rcdzc `record-with` special-form
+        // arm (the crux the impl issue named "novel #symbol-operand parse/print" already works — this
+        // guards against a regression). ML `#field` prints as the `#name` sugar; the s-expr oracle uses
+        // the canonical `#"field"`.
+        assert_eq!(
+            assert_roundtrip("Record.with(rec, #price, 9)", 80),
+            "Record.with(rec, #price, 9)"
+        );
+        // The canonical s-expr form (member-access head + `#"price"` symbol operand) prints to the ML
+        // surface with the `#price` sugar — the two surfaces agree on the shape rcdzc receives.
+        assert_eq!(
+            print(
+                &sexpr::read(r#"((. Record with) rec #"price" 9)"#).unwrap(),
+                80
+            ),
+            "Record.with(rec, #price, 9)"
+        );
+        // A non-identifier field name keeps the explicit `#"…"` operand (the sugar would not re-lex).
+        assert_eq!(
+            assert_roundtrip(r#"Record.with(rec, #"has space", 9)"#, 80),
+            "Record.with(rec, #\"has space\", 9)"
+        );
+    }
+
+    #[test]
     fn quantity_literal_round_trips() {
         // A quantity literal `(Qty.of <num> (Unit.of #"name"))` renders as the concise `<num> name`
         // surface and re-parses to the same arena — the inverse of `maybe_quantity_literal`.
