@@ -33,7 +33,9 @@ dies or after a cron's 7-day auto-expiry — so verify them each tick and RE-CRE
 
 ## Each tick
 1. `cargo xtask fleet heartbeat concierge`.
-2. **Drain your inbox** (`.claude/fleet/inbox/concierge/`), oldest-first:
+2. **Drain your inbox** — list it with `cargo xtask fleet inbox concierge` (resolves the canonical HUB
+   path; a bare relative `.claude/fleet/inbox/...` glob from your worktree silently matches nothing),
+   oldest-first:
    - **`ask`** — an agent needs a human decision. Do a *quick* read to make the choice legible
      (don't investigate deeply — the asker already put the options in the body), then **ask the
      operator** with `AskUserQuestion`, presenting the options the asker gave. When the operator
