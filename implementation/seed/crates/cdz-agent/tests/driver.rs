@@ -3,6 +3,15 @@
 //! `CARGO_BIN_EXE_cdz-agent`) against a temp inbox + the authz-model-consumer fixture, with the
 //! permit-all default policy + the mock model — no AWS creds/network. Skips if the value-heap runtime
 //! store isn't present (the driver needs it to run the consumer; a runtime bump can stale the fixture).
+//!
+//! MOCK-ONLY: these assertions pin the mock backend's DETERMINISTIC output (uppercase completions, exact
+//! byte-lengths). Under `--features bedrock` the built binary is the REAL Bedrock backend, whose output
+//! is a live model answer (creds present) or an error marker (no creds) — neither matches these fixed
+//! expectations. So the whole file is compiled out of the bedrock build; the `bedrock` feature's own
+//! coverage is the lib's response-decode unit tests (no network), which `cargo test --features bedrock`
+//! still runs. (Without this gate, CI's `cargo test --features bedrock` reran these subprocess tests
+//! against the bedrock binary and they could never pass — a latent job failure.)
+#![cfg(not(feature = "bedrock"))]
 
 use std::path::PathBuf;
 
@@ -294,5 +303,143 @@ fn the_driver_acks_processed_messages_with_the_ack_flag() {
     assert!(
         stdout2.contains("is empty"),
         "after ack, a re-run finds the inbox empty — at-most-once drain: {stdout2}"
+    );
+}
+
+#[test]
+fn the_driver_replies_to_the_sender_with_the_model_completion() {
+    // With --reply-to, the model's answer is written back to the SENDER as a fleet-format reply message
+    // (kind "answer", addressed `to` the source `from`, `body` = the completion). This closes the hive
+    // loop: a peer sends a task and gets the agent's answer back. The return-consumer's main RETURNS the
+    // completion string, and the mock uppercases — so a body of "do the task" yields a reply body of
+    // "DO THE TASK". Pins: the reply exists, is addressed to the sender, is kind "answer", and carries the
+    // actual (uppercased) completion.
+    let Some(fixture) =
+        consumer_and_runtime_or_skip("tests/fixtures/inbox-model-return-consumer.wasm")
+    else {
+        eprintln!("[cdz-agent driver] runtime absent; skipping");
+        return;
+    };
+    let dir = std::env::temp_dir().join(format!("cdz-agent-reply-{}", std::process::id()));
+    let replies = std::env::temp_dir().join(format!("cdz-agent-replyout-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&replies);
+    std::fs::create_dir_all(&dir).expect("mkdir inbox");
+    std::fs::write(
+        dir.join("001-msg.json"),
+        r#"{"from":"v-peer","to":"cdz-agent","kind":"note","subject":"s","body":"do the task"}"#,
+    )
+    .unwrap();
+
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_cdz-agent"))
+        .args([
+            "--consumer",
+            fixture.to_str().unwrap(),
+            "--inbox",
+            dir.to_str().unwrap(),
+            "--reply-to",
+            replies.to_str().unwrap(),
+        ])
+        .output()
+        .expect("spawn");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert!(
+        out.status.success(),
+        "the driver must exit 0: stdout=<{stdout}> stderr=<{stderr}>"
+    );
+    assert!(
+        stdout.contains("replied to v-peer"),
+        "the driver reports replying to the sender: {stdout}"
+    );
+    // The reply file is `reply-<source>` in the reply dir.
+    let reply_path = replies.join("reply-001-msg.json");
+    let reply = std::fs::read_to_string(&reply_path).expect("the reply message was written");
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&replies);
+
+    assert!(
+        reply.contains(r#""to":"v-peer""#),
+        "the reply is addressed back to the sender: {reply}"
+    );
+    assert!(
+        reply.contains(r#""kind":"answer""#),
+        "the reply is an `answer` message: {reply}"
+    );
+    assert!(
+        reply.contains(r#""from":"cdz-agent""#),
+        "the reply names the driver as sender: {reply}"
+    );
+    assert!(
+        reply.contains(r#""body":"DO THE TASK""#),
+        "the reply body is the model's ACTUAL completion (mock uppercases): {reply}"
+    );
+}
+
+#[test]
+fn the_driver_does_not_reply_when_the_model_was_denied() {
+    // A Cedar-DENIED run never calls the model, so there is nothing to answer — no reply is written even
+    // with --reply-to. The authz consumer returns byte-len on allow / 0 on deny; drive it with a
+    // permit-NOTHING policy so authorize denies → the model is never called → no reply. (The default
+    // policy is permit-all, so we must supply a deny policy explicitly.)
+    let Some(fixture) = consumer_and_runtime_or_skip("tests/fixtures/authz-model-consumer.wasm")
+    else {
+        eprintln!("[cdz-agent driver] runtime absent; skipping");
+        return;
+    };
+    let dir = std::env::temp_dir().join(format!("cdz-agent-noreply-{}", std::process::id()));
+    let replies = std::env::temp_dir().join(format!("cdz-agent-noreplyout-{}", std::process::id()));
+    let policy =
+        std::env::temp_dir().join(format!("cdz-agent-denypol-{}.cedar", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&replies);
+    std::fs::create_dir_all(&dir).expect("mkdir inbox");
+    std::fs::write(
+        dir.join("001-msg.json"),
+        r#"{"from":"v-peer","to":"cdz-agent","kind":"note","subject":"s","body":"do the task"}"#,
+    )
+    .unwrap();
+    // Permit only a DIFFERENT action, so "tool:chat" (what the consumer authorizes) has no permit → deny.
+    std::fs::write(
+        &policy,
+        r#"permit(principal, action == Action::"tool:other", resource);"#,
+    )
+    .unwrap();
+
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_cdz-agent"))
+        .args([
+            "--consumer",
+            fixture.to_str().unwrap(),
+            "--inbox",
+            dir.to_str().unwrap(),
+            "--policy",
+            policy.to_str().unwrap(),
+            "--reply-to",
+            replies.to_str().unwrap(),
+        ])
+        .output()
+        .expect("spawn");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_file(&policy);
+
+    assert!(
+        out.status.success(),
+        "the driver must exit 0 even when denied: stdout=<{stdout}> stderr=<{stderr}>"
+    );
+    // The reply dir exists (created up front) but holds NO reply file — the denied run had no completion.
+    let any_reply = std::fs::read_dir(&replies)
+        .map(|rd| rd.filter_map(|e| e.ok()).any(|e| e.path().is_file()))
+        .unwrap_or(false);
+    let _ = std::fs::remove_dir_all(&replies);
+    assert!(
+        !any_reply,
+        "a denied run makes no model call → no reply is written: stderr=<{stderr}>"
+    );
+    assert!(
+        stderr.contains("not replying"),
+        "the driver explains it isn't replying (denied/failed): {stderr}"
     );
 }

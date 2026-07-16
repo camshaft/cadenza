@@ -10,13 +10,18 @@
 //!
 //! Usage:
 //!   cdz-agent --consumer <loop.wasm> --inbox <dir> [--policy <cedar-file>] [--model <id>] [--limit N]
-//!            [--ack]
+//!            [--ack] [--reply-to <dir>]
 //!
 //! `--ack` moves each driven message into `<inbox>/processed/` (the fleet's ack convention) so a re-run
 //! doesn't re-process it — turning repeated runs into a durable, at-most-once drain. Without it the
-//! driver is read-only (prints outcomes, leaves the inbox untouched — useful for a dry run). Writing a
-//! REPLY back to a sender is a further follow-on; the end-to-end path (real message → the pure-Cadenza
-//! authorized loop → a model, driven once) runs.
+//! driver is read-only (prints outcomes, leaves the inbox untouched — useful for a dry run).
+//!
+//! `--reply-to <dir>` closes the hive loop: after a message is driven, the model's completion is written
+//! back as a reply message JSON (`{from,to,kind:"answer",subject,body}`, the fleet's own format) into
+//! `<dir>` — addressed `to` the source message's `from`. So a peer sends a task and gets the agent's
+//! answer back. A reply is written only for a message that actually reached the model (a Cedar-DENIED
+//! run made no model call, so there is nothing to answer) whose sender is known; a bare tick without
+//! `--reply-to` still just prints outcomes.
 
 use anyhow::{anyhow, Result};
 use std::path::{Path, PathBuf};
@@ -37,6 +42,7 @@ struct Args {
     model: Option<String>,
     limit: usize,
     ack: bool,
+    reply_to: Option<PathBuf>,
 }
 
 fn parse_args() -> Result<Args> {
@@ -46,6 +52,7 @@ fn parse_args() -> Result<Args> {
     let mut model = None;
     let mut limit = usize::MAX;
     let mut ack = false;
+    let mut reply_to = None;
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -59,6 +66,7 @@ fn parse_args() -> Result<Args> {
                     .map_err(|e| anyhow!("--limit not a number: {e}"))?
             }
             "--ack" => ack = true,
+            "--reply-to" => reply_to = Some(PathBuf::from(next(&mut it, "--reply-to")?)),
             other => {
                 return Err(anyhow!(
                     "unknown arg `{other}` (see the usage in the module docs)"
@@ -73,6 +81,7 @@ fn parse_args() -> Result<Args> {
         model,
         limit,
         ack,
+        reply_to,
     })
 }
 
@@ -111,7 +120,7 @@ fn run() -> Result<()> {
 
     // Collect the inbox messages (oldest-first by filename, the fleet's delivery-sequence order).
     let mut msgs = read_inbox(&args.inbox)?;
-    msgs.sort_by(|a, b| a.0.cmp(&b.0));
+    msgs.sort_by(|a, b| a.name.cmp(&b.name));
     if msgs.is_empty() {
         println!("cdz-agent: inbox {} is empty", args.inbox.display());
         return Ok(());
@@ -124,17 +133,47 @@ fn run() -> Result<()> {
         std::fs::create_dir_all(&processed_dir)
             .map_err(|e| anyhow!("mkdir {}: {e}", processed_dir.display()))?;
     }
+    // With --reply-to, the model's answer is written back as a reply message into this dir. Create it once.
+    if let Some(dir) = &args.reply_to {
+        std::fs::create_dir_all(dir).map_err(|e| anyhow!("mkdir {}: {e}", dir.display()))?;
+    }
 
     let mut processed = 0usize;
-    for (name, body) in msgs.into_iter().take(args.limit) {
-        let outcome = drive_one(&consumer, &runtime, &policies, &body, args.model.clone())?;
-        println!("cdz-agent: {name} -> {outcome}");
+    for msg in msgs.into_iter().take(args.limit) {
+        let result = drive_one(
+            &consumer,
+            &runtime,
+            &policies,
+            &msg.body,
+            args.model.clone(),
+        )?;
+        println!("cdz-agent: {} -> {}", msg.name, result.report);
+        // REPLY: close the hive loop by writing the model's answer back to the sender. Only when
+        // --reply-to is given, the model actually answered (a denied/failed run has no completion), and
+        // the source names a sender to address. A write failure is surfaced, not swallowed.
+        if let Some(dir) = &args.reply_to {
+            match (&result.completion, msg.from.is_empty()) {
+                (Some(answer), false) => {
+                    let path = write_reply(dir, &msg.name, &msg.from, answer)?;
+                    println!("cdz-agent: replied to {} -> {}", msg.from, path.display());
+                }
+                (Some(_), true) => eprintln!(
+                    "cdz-agent: {} has no `from`; not replying (nobody to address)",
+                    msg.name
+                ),
+                (None, _) => eprintln!(
+                    "cdz-agent: {} produced no model answer (denied/failed); not replying",
+                    msg.name
+                ),
+            }
+        }
         // ACK: move the message into processed/ so it is driven exactly once across runs. A rename
         // failure is surfaced (not swallowed) — a message that "processed" but wasn't acked would be
-        // re-driven, which the operator should see rather than have silently happen.
+        // re-driven, which the operator should see rather than have silently happen. Ack AFTER the reply
+        // so a failed reply-write leaves the message un-acked (re-drivable), never lost.
         if args.ack {
-            let from = args.inbox.join(&name);
-            let to = processed_dir.join(&name);
+            let from = args.inbox.join(&msg.name);
+            let to = processed_dir.join(&msg.name);
             std::fs::rename(&from, &to)
                 .map_err(|e| anyhow!("ack (move) {} -> {}: {e}", from.display(), to.display()))?;
         }
@@ -142,6 +181,36 @@ fn run() -> Result<()> {
     }
     println!("cdz-agent: processed {processed} message(s)");
     Ok(())
+}
+
+/// Write a reply message back to the sender: a fleet-format JSON (`{from,to,kind:"answer",subject,body}`)
+/// naming this driver as `from`, the source message's sender as `to`, and the model's completion as the
+/// `body`. The filename is derived deterministically from the source message name (`reply-<source>`) so
+/// runs are reproducible and a re-drive overwrites its own prior reply rather than piling up duplicates
+/// (the toolchain forbids wall-clock, and reusing the hub's durable delivery-seq would couple this leaf
+/// binary to the hub's counter file). Returns the written path.
+fn write_reply(dir: &Path, source_name: &str, to: &str, answer: &str) -> Result<PathBuf> {
+    let subject = format!("re: {source_name}");
+    // Assemble the JSON by hand (no serde dep in this leaf binary), escaping every string field so a
+    // completion containing quotes/newlines/control chars can't break the message or inject fields.
+    let json = format!(
+        r#"{{"from":"cdz-agent","to":"{}","kind":"answer","subject":"{}","body":"{}"}}"#,
+        cdz_agent::json_escape(to),
+        cdz_agent::json_escape(&subject),
+        cdz_agent::json_escape(answer)
+    );
+    let path = dir.join(format!("reply-{source_name}"));
+    std::fs::write(&path, json).map_err(|e| anyhow!("write reply {}: {e}", path.display()))?;
+    Ok(path)
+}
+
+/// The result of driving one message: a human-readable `report` (printed per-message) and, when the
+/// model was actually called and returned a real (non-error) completion, that `completion` — the text a
+/// `--reply-to` reply carries back to the sender. `completion` is None for a Cedar-DENIED run (no model
+/// call was made) or a model failure (nothing trustworthy to answer with).
+struct DriveResult {
+    report: String,
+    completion: Option<String>,
 }
 
 /// Drive ONE message through the full hive-agent loop: the loop reads the message body via `Inbox.next`
@@ -154,7 +223,7 @@ fn drive_one(
     policies: &str,
     msg_body: &str,
     _model: Option<String>,
-) -> Result<String> {
+) -> Result<DriveResult> {
     let opts = cdz_run::RunOpts {
         export: Some("main".to_string()),
         args: Vec::new(),
@@ -173,19 +242,24 @@ fn drive_one(
     let body = msg_body.to_string();
     let next_message = move || body.clone();
 
-    // Observe model FAILURES: a backend encodes a failed call as a `MODEL_ERROR_PREFIX` completion (the
-    // converse contract is `String -> String`, so it can't return a Result). Wrap the backend to raise a
-    // shared flag whenever it returns that marker, so the loop's outcome is reported as a FAILURE rather
-    // than a normal completion — a Bedrock error never silently becomes an answer the agent acts on.
+    // Observe model calls: (1) raise a shared flag on a FAILURE — a backend encodes a failed call as a
+    // `MODEL_ERROR_PREFIX` completion (the converse contract is `String -> String`, so it can't return a
+    // Result), so the loop's outcome is reported as a FAILURE rather than a normal completion; a Bedrock
+    // error never silently becomes an answer the agent acts on. (2) Capture the LAST real completion, so
+    // a `--reply-to` reply can carry the model's actual answer back to the sender.
     use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
     let model_errored = Arc::new(AtomicBool::new(false));
+    let last_completion: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let observe = {
         let flag = Arc::clone(&model_errored);
+        let last = Arc::clone(&last_completion);
         move |completion: String| {
             if cdz_agent::is_model_error(&completion) {
                 flag.store(true, Ordering::SeqCst);
                 eprintln!("cdz-agent: model call failed: {completion}");
+            } else {
+                *last.lock().unwrap() = Some(completion.clone());
             }
             completion
         }
@@ -209,20 +283,35 @@ fn drive_one(
         }
     };
     // A model failure during the run is a FAILURE outcome, even if the loop returned a value (the marker
-    // completion would otherwise render as a normal `value …`).
+    // completion would otherwise render as a normal `value …`). No completion is trustworthy to reply with.
     if model_errored.load(Ordering::SeqCst) {
-        return Ok("model-error (see stderr)".to_string());
+        return Ok(DriveResult {
+            report: "model-error (see stderr)".to_string(),
+            completion: None,
+        });
     }
-    Ok(match outcome {
+    // The reply body is the model's actual completion — but only if the model was CALLED (a Cedar-denied
+    // run never performs `Model.converse`, so `last_completion` stays None → nothing to reply with).
+    let completion = last_completion.lock().unwrap().take();
+    let report = match outcome {
         cdz_run::Outcome::Value(s) => format!("value {s}"),
         cdz_run::Outcome::Trap(t) => format!("trap {t}"),
-    })
+    };
+    Ok(DriveResult { report, completion })
 }
 
-/// Read every `*.json` message directly in `dir` (not recursing into `processed/`), returning
-/// `(filename, body-field)` pairs. The `body` field is extracted with a minimal JSON string reader (no
-/// serde dep); a message with no `body` yields an empty string.
-fn read_inbox(dir: &Path) -> Result<Vec<(String, String)>> {
+/// One inbox message the driver acts on: the source filename, the `body` (what reaches the model), and
+/// the `from` sender (so a reply can be addressed back). Both fields default to empty when absent.
+struct Msg {
+    name: String,
+    body: String,
+    from: String,
+}
+
+/// Read every `*.json` message directly in `dir` (not recursing into `processed/`), returning one [`Msg`]
+/// each. The `body`/`from` fields are extracted with a minimal JSON string reader (no serde dep); a
+/// message missing either yields an empty string for it.
+fn read_inbox(dir: &Path) -> Result<Vec<Msg>> {
     let mut out = Vec::new();
     let entries =
         std::fs::read_dir(dir).map_err(|e| anyhow!("read inbox dir {}: {e}", dir.display()))?;
@@ -239,7 +328,11 @@ fn read_inbox(dir: &Path) -> Result<Vec<(String, String)>> {
             .and_then(|n| n.to_str())
             .unwrap_or("?")
             .to_string();
-        out.push((name, json_string_field(&text, "body").unwrap_or_default()));
+        out.push(Msg {
+            name,
+            body: json_string_field(&text, "body").unwrap_or_default(),
+            from: json_string_field(&text, "from").unwrap_or_default(),
+        });
     }
     Ok(out)
 }
