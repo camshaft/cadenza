@@ -1288,6 +1288,7 @@ pass	a same-dimension quantity annotation whose inner numeric type differs is st
 pass	a same-type sum match is accepted and binds the payload (the control)
 pass	a same-unit quantity join flows and its magnitude reads back
 pass	a scalar element is projected DIRECTLY from a named function's runtime tuple result
+pass	a scalar element is projected directly from a fn-return tuple with runtime content
 pass	a scalar element is projected directly from a function's runtime tuple result
 pass	a scalar element is projected from a let-bound runtime tuple
 pass	a scalar-payload sum looked up from a map, returned via a ctor, is matched in the caller
@@ -1846,6 +1847,7 @@ pass	bitwise XOR of an integer and a float does not silently promote
 pass	bitwise XOR toggles bits
 pass	bitwise XOR with negative one is the bitwise complement
 pass	bitwise XOR with zero is the operand (identity)
+pass	both elements of a runtime-content fn-return tuple are projected directly and combined
 pass	both sibling args consume the same binding independently
 pass	branches performing DIFFERENT counts each thread their own post-state to the continuation
 pass	breaker capsubst: a non-capturing substitution takes the plain path
@@ -2444,6 +2446,7 @@ pass	the runtime-list version of a tail fold compiles and folds correctly
 pass	the same function called under two handlers is discharged by each in turn
 pass	the same mixed-scale comparison is EXACT over Rational (keeps the fractional scale)
 pass	the scalar length of a runtime multi-byte string counts scalars, not bytes
+pass	the second element of a runtime-content fn-return tuple is projected directly
 pass	the selected operand decides a hoisted comparison
 pass	the selected operand decides a hoisted float equality
 pass	the shrinking search terminates via its fuel bound rather than searching unboundedly
@@ -2910,9 +2913,6 @@ todo	a function argument is applied through a recursive higher-order function
 todo	a function deriving a velocity from a distance and a time
 todo	a function stored in a record field of a sum payload is called after a match
 todo	a generated value with a BIGINT leaf is reproducible (compound = walks the bignum)
-todo	a genuinely-runtime left-shift count beyond the bit width traps rather than masking to a small count
-todo	a genuinely-runtime left-shift count equal to the bit width traps rather than masking
-todo	a genuinely-runtime negative right-shift count traps rather than masking
 todo	a higher-order left fold applies its combiner, not a fixed operator
 todo	a higher-order left fold over a built-in list with an annotated callback
 todo	a higher-order left fold over a built-in list with an annotated fn parameter
@@ -3071,6 +3071,8 @@ todo	an abstract theorem is obtained only through the kernel's exported inferenc
 todo	an abstract theorem type cannot be forged by constructing its rule constructor outside the kernel
 todo	an abstract type is used through the module's exported constructor and accessor
 todo	an abstract type's constructor is not reachable outside its module
+todo	an axiom composes with the inference rules like any other theorem (SYM of ETA)
+todo	an axiom theorem is unforgeable — new_axiom's Thm cannot be fabricated outside the kernel
 todo	an entrypoint delegation lets a program reach its host function
 todo	an entrypoint delegation reaches an effect performed in a recursive callee
 todo	an erased-newtype's list payload split across empty and rest arms dispatches with vec-get
@@ -3102,6 +3104,10 @@ todo	and short-circuit does not perform the right operand's effect
 todo	arithmetic on a bound Rational payload computes and escapes exactly
 todo	binary operator operands are evaluated left to right
 todo	boxed closures of two fn types in one sum: the unbuilt variant's dispatch is dead
+todo	breaker exists: DISJ2 preserves the premise's hypothesis
+todo	breaker exists: EXISTS-intro preserves multiple hypotheses from the premise
+todo	breaker exists: EXISTS-intro rejects a witness whose instance does not match the premise (unforgeability)
+todo	breaker exists: EXISTS-intro with the witness variable also free in the body substitutes all occurrences
 todo	capture-avoiding substitution renames a binder so the substituted term's free variable is not captured
 todo	compound equality over a Rational leaf respects normalization (1/2 = 2/4)
 todo	compound equality over a runtime Rational leaf compares by the normalized form
@@ -3237,6 +3243,7 @@ todo	round-trip: a scalar consumer and a byte-rope consumer of the same closure 
 todo	round-trip: an UNANNOTATED inner closure with a List param via the context arrow
 todo	runtime Rational arithmetic adds two parameter-built fractions exactly
 todo	scaling a quantity by a dimensionless quantity keeps its dimension
+todo	the ETA axiom is minted via new_axiom as a hypothesis-free theorem
 todo	the built variant is the multi-arg one, the unbuilt arm still gets its call type
 todo	the empty and None arms of a list-payload split dispatch to their own values
 todo	the implication-extended kernel Thm stays unforgeable — Thm.Seq of a bogus implication outside is CDZ0214
