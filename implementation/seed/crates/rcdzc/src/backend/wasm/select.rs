@@ -2698,14 +2698,17 @@ fn collect_cont_ops_rec(
             match probe {
                 crate::core::Probe::Int(_) => out.insert(OP_GET_INT),
                 crate::core::Probe::Bool(_) => out.insert(OP_GET_BOOL),
-                // A string-literal probe reaches only the CONSTANT-scrutinee fold (top-level scalar match);
-                // the sum decision-tree does not classify a `Resolved::Str` payload pattern, and a runtime
-                // string scrutinee declines at `is_scalar` — so no `Probe::Str` is ever emitted to a
-                // runtime `LitTest`. (A runtime string-equality probe is a later increment.)
+                // A string-literal probe over a RUNTIME payload emits a `value-eq` content compare against a
+                // freshly-built literal byte-leaf (`bytes-alloc`+`bytes-set`), after `bytes-compact`ing the
+                // leaf handle to canonical flat form and dropping the owned literal — so import all four (the
+                // emit arm's ops). A CONSTANT string sub-value still folds in `build_tree` and never reaches
+                // here; this covers the runtime case (`(Ast.Name "+")` over a runtime Ast).
                 crate::core::Probe::Str(_) => {
-                    unreachable!(
-                        "a string-literal probe folds; it is never emitted to a runtime LitTest"
-                    )
+                    out.insert(OP_BYTES_COMPACT);
+                    out.insert(OP_BYTES_ALLOC);
+                    out.insert(OP_BYTES_SET);
+                    out.insert(OP_VALUE_EQ);
+                    out.insert(OP_DROP)
                 }
                 // A `ListLen` probe over a runtime list payload reads `vec-len` of the sub-list handle to
                 // gate the arm (a constant list folds instead, never reaching here).
@@ -10762,13 +10765,45 @@ fn emit_sum_cont(
                     out.push(Lir::ConstI32(if *b { 1 } else { 0 }));
                     out.push(Lir::I32Eq); // [bool]
                 }
-                crate::core::Probe::Str(_) => {
-                    // The sum decision-tree does not classify a string-literal payload pattern (a
-                    // `Resolved::Str` is not a recognized `LitTest` probe there), so no `Probe::Str`
-                    // reaches this sum-payload literal-test emit. A string-literal probe folds instead.
-                    return Err(Reject::decline(
-                        "a string-literal payload pattern is not yet emitted at run time",
-                    ));
+                crate::core::Probe::Str(s) => {
+                    // A string-literal payload over a RUNTIME value (`(Ast.Name "+")` matched on a runtime
+                    // Ast, a `(k "lit")` map-value pattern): compare the leaf String handle against the
+                    // literal by CONTENT — the same `value-eq` (`champ_eq`) physical-byte compare
+                    // `Core::ValueEq` uses on two strings. The path walk above left the leaf String HANDLE on
+                    // the stack — a BORROWED payload (`sum-payload`/`arr-get`/`vec-get` all borrow).
+                    // Canonicalize it with `bytes-compact` (rope→flat, refcount-NEUTRAL: flattens in place,
+                    // returns the SAME handle, so the borrow is neither consumed nor a fresh mint) so a rope
+                    // payload and its flat twin compare equal — exactly as the `Core::ValueEq` emit does for a
+                    // borrowed String operand. Save the compacted leaf handle in a slot, build the literal as a
+                    // fresh OWNED `ConstStr` byte-leaf (canonical UTF-8, NFC by the reader — the same build the
+                    // `Core::ConstStr` emit lays down, so `value-eq` compares two canonical leaves), `value-eq`
+                    // (borrows + pops both → bool), then DROP the owned literal (the borrowed leaf is left to
+                    // its owner — no drop, matching the `Core::ValueEq` borrowed-operand rule).
+                    out.push(Lir::CallImport(OP_BYTES_COMPACT)); // [leaf'] — canonical flat leaf, same handle
+                    let leaf_slot = *high;
+                    let lit_slot = *high + 1;
+                    *high += 2;
+                    scratch_ty.insert(leaf_slot, ValType::I32);
+                    scratch_ty.insert(lit_slot, ValType::I32);
+                    out.push(Lir::LocalSet(leaf_slot)); // stash the borrowed leaf handle
+                    // Build the literal string as a fresh flat UTF-8 byte-leaf (mirrors `Core::ConstStr`).
+                    let bytes = s.as_bytes();
+                    out.push(Lir::ConstI32(bytes.len() as i32));
+                    out.push(Lir::CallImport(OP_BYTES_ALLOC)); // [buf]
+                    for (i, &byte) in bytes.iter().enumerate() {
+                        out.push(Lir::ConstI32(i as i32));
+                        out.push(Lir::ConstI32(byte as i32));
+                        out.push(Lir::CallImport(OP_BYTES_SET)); // [buf]
+                    }
+                    out.push(Lir::LocalTee(lit_slot)); // [lit] — keep the owned literal handle for the drop
+                    out.push(Lir::LocalGet(leaf_slot)); // [lit, leaf]
+                    out.push(Lir::CallImport(OP_VALUE_EQ)); // pops both (borrowed) → [bool]
+                    // DROP the owned literal (a fresh leaf we minted); the leaf handle is a borrowed payload,
+                    // left to its owner. The bool result stays on the stack for the `if` below.
+                    out.push(Lir::LocalGet(lit_slot));
+                    out.push(Lir::CallImport(OP_DROP));
+                    // `value-eq` left [bool] then we pushed/dropped the literal — the drop consumed its own
+                    // arg, so the stack is back to [bool]. Fall through to the shared `if`.
                 }
                 crate::core::Probe::ListLen { len, at_least } => {
                     // A list-pattern payload over a RUNTIME list: the path walked to the sub-value's LIST

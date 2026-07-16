@@ -2893,13 +2893,27 @@ fn selfcall_under_conditional(db: &mut Db, node: StructId, callee_def: usize) ->
 /// the unconditional strict spine). Returns `false` if any leaf has such a gated self-call.
 fn multivalue_leaves_threadable(db: &mut Db, body: StructId, callee_def: usize) -> bool {
     match resolved_of(db, body) {
-        Resolved::If { then_, else_, .. } => {
-            multivalue_leaves_threadable(db, then_, callee_def)
+        // An `if`/`match` DISPATCH: `thread_returning_tuple` descends each branch/arm body (its own tail) AND
+        // threads the CONDITION/SCRUTINEE with `thread_bounded`, then `drain_and_wrap` wraps any pending
+        // self-call temps from the cond/scrutinee AROUND the whole `if`/`match`. Hoisting a temp out is sound
+        // ONLY when the self-call is on the cond/scrutinee's UNCONDITIONAL strict spine — the cond always
+        // evaluates, so a self-call directly in it always runs and lifting its binding changes nothing. But a
+        // self-call GATED behind a NESTED conditional/short-circuit inside the cond (`(if (if g (walk …) 0)
+        // …)`) runs only on some paths; hoisting its temp makes it run UNCONDITIONALLY and thread state as if
+        // always taken — an eval-order MISCOMPILE (PR #456, Copilot). So the cond/scrutinee must have no
+        // self-call under a conditional. (A self-call directly on the cond's strict spine, e.g. `(< (walk …)
+        // 100)`, is fine — `selfcall_under_conditional` returns false for it.)
+        Resolved::If { cond, then_, else_ } => {
+            !selfcall_under_conditional(db, cond, callee_def)
+                && multivalue_leaves_threadable(db, then_, callee_def)
                 && multivalue_leaves_threadable(db, else_, callee_def)
         }
-        Resolved::Match { arms, .. } => arms
-            .iter()
-            .all(|&(_, arm_body)| multivalue_leaves_threadable(db, arm_body, callee_def)),
+        Resolved::Match { scrutinee, arms } => {
+            !selfcall_under_conditional(db, scrutinee, callee_def)
+                && arms
+                    .iter()
+                    .all(|&(_, arm_body)| multivalue_leaves_threadable(db, arm_body, callee_def))
+        }
         _ => !selfcall_under_conditional(db, body, callee_def),
     }
 }

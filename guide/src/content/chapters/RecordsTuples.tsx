@@ -27,15 +27,15 @@ export default function RecordsTuples() {
       <H2>Updating a field</H2>
       <P>
         Records are immutable, so you never <em>change</em> a field — you produce a new record that
-        differs in one place. <C>Record.with</C> does exactly that: give it a record and a{" "}
-        <C>(field value)</C> pair, and it hands back a copy with that field replaced. Here a price of{" "}
-        <C>2</C> becomes <C>9</C>:
+        differs in one place. <C>Record.with</C> does exactly that: give it a record, a <C>#field</C>{" "}
+        selector naming which field, and the new value, and it hands back a copy with that field replaced.
+        Here a price of <C>2</C> becomes <C>9</C>:
       </P>
       <Runnable source={`(. (Record.with (record (item 1) (price 2)) #"price" 9) price)`} />
       <Note>
-        The field is named with a <C>#"price"</C> field-selector — <C>(Record.with rec #"price" 9)</C> —
-        a record, the field to replace, and the new value. (A copy with one field replaced; the original
-        is unchanged.)
+        The field is named with a <C>#</C> selector — <C>#"price"</C> in the s-expr surface,{" "}
+        <C>#price</C> in the ML surface (flip the syntax toggle to see it). It's a symbol picking the
+        field by name, not a value; the record and the new value are the other two operands.
       </Note>
       <P>
         "Hands back a copy" is the important part — the original is untouched. Bind a record, make an

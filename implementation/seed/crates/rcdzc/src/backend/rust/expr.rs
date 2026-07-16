@@ -1042,7 +1042,8 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             // Check the first entry's KEY node type (concrete here); an EMPTY map has no key to inspect
             // and only fails once an entry is inserted — caught by the `MapInsert` guard.
             if let Some(&(k0, _)) = entries.first()
-                && !types::ty_is_ord(&type_of(db, k0))
+                && let kt = type_of(db, k0)
+                && !types::ty_is_ord(db, &kt)
             {
                 return Err(Reject::decline(
                     "a Map with a non-Ord (float) key has no BTreeMap rep on the Rust backend",
@@ -1075,7 +1076,8 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         Core::MapInsert { map, key, val, .. } => {
             // `BTreeMap<K,V>` needs `K: Ord` — a float key declines (the key node type is concrete even
             // when the base map is empty, the Map twin of the empty-Set float-insert case).
-            if !types::ty_is_ord(&type_of(db, key)) {
+            let kt = type_of(db, key);
+            if !types::ty_is_ord(db, &kt) {
                 return Err(Reject::decline(
                     "a Map with a non-Ord (float) key has no BTreeMap rep on the Rust backend",
                 ));
@@ -1122,7 +1124,8 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             // EMPTY `Set.of (list)` has no element to inspect, and only fails once something is inserted —
             // caught by the `SetInsert` guard below.
             if let Some(&e0) = elems.first()
-                && !types::ty_is_ord(&type_of(db, e0))
+                && let et = type_of(db, e0)
+                && !types::ty_is_ord(db, &et)
             {
                 return Err(Reject::decline(
                     "a Set with a non-Ord (float) element has no BTreeSet rep on the Rust backend",
@@ -1158,7 +1161,8 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             // element's type is concrete here even when the base set is empty (the `Set.of (list)` /
             // float-insert miscompile: an empty base's element type is an unsolved var, but the insert
             // fixes it to the float). Check the element node type.
-            if !types::ty_is_ord(&type_of(db, elem)) {
+            let et = type_of(db, elem);
+            if !types::ty_is_ord(db, &et) {
                 return Err(Reject::decline(
                     "a Set with a non-Ord (float) element has no BTreeSet rep on the Rust backend",
                 ));

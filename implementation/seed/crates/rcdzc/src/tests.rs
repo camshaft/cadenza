@@ -5542,6 +5542,44 @@ fn an_if_condition_selfcall_then_branch_perform_folds_via_multivalue_return() {
     }
 }
 
+/// A self-call GATED behind a NESTED conditional INSIDE an `if` condition (or a `match` scrutinee) must
+/// DECLINE the multi-value path — never hoist. `thread_returning_tuple` threads the condition and
+/// `drain_and_wrap` lifts any condition-level self-call pending temp AROUND the whole `if`. That is sound
+/// only for a self-call on the condition's UNCONDITIONAL strict spine; a self-call under a nested `if`/
+/// `and`/`or` in the condition runs only on some paths, so hoisting its temp makes it run UNCONDITIONALLY
+/// and thread state as if always taken — an eval-order MISCOMPILE (PR #456, Copilot). The mode gate
+/// `multivalue_leaves_threadable` now rejects a self-call under a conditional in the cond/scrutinee, so
+/// these decline cleanly (a "not yet reducible" todo) rather than miscompile or leak an internal `#eff`
+/// name. The DIRECT-in-condition shape (`(< (walk …) 100)`, no nested gate) still folds — see the test
+/// above — so this is a precise decline, not a blanket one.
+#[test]
+fn a_selfcall_gated_in_an_if_condition_declines_not_hoisted() {
+    use crate::testkit::parse;
+    for src in [
+        // gated behind a nested `if` in the outer `if`'s CONDITION
+        "(do (effect Ctr (op tick (-> Unit Int64))) \
+         (def (walk (: n Int64)) (if (= n 0) 0 (+ (if (> n 5) (walk (- n 1)) 0) (Ctr.tick)))) \
+         (def (main) (handle Ctr 0 ((tick (u) s (resume s (+ s 1)))) (walk 3))) (export main))",
+        // gated behind a nested `if` in a `match` SCRUTINEE
+        "(do (effect Ctr (op tick (-> Unit Int64))) \
+         (def (walk (: n Int64)) (if (= n 0) 0 (+ (match (if (> n 5) (walk (- n 1)) 0) (_ 0)) (Ctr.tick)))) \
+         (def (main) (handle Ctr 0 ((tick (u) s (resume s (+ s 1)))) (walk 3))) (export main))",
+        // gated behind an `and` SHORT-CIRCUIT in the condition
+        "(do (effect Ctr (op tick (-> Unit Int64))) \
+         (def (walk (: n Int64)) (if (= n 0) 0 (+ (if (and (> n 5) (< (walk (- n 1)) 100)) 1 0) (Ctr.tick)))) \
+         (def (main) (handle Ctr 0 ((tick (u) s (resume s (+ s 1)))) (walk 3))) (export main))",
+    ] {
+        let err = compile_component(&crate::codec::encode(&parse(src))).expect_err(
+            "a self-call gated behind a nested conditional in a cond/scrutinee must decline",
+        );
+        assert!(
+            !err.message.contains("#eff") && !err.message.contains("has no body"),
+            "the decline must be clean (no leaked internal name, no orphan bodyless spec), got: {}",
+            err.message
+        );
+    }
+}
+
 // --- HOST-COMPOSITION INVARIANT boundary (§4.4: a reified/duplicated continuation must NOT span a host
 // call or an outer handler's effect). These are documented in 14-effects-and-handlers.sexp as a "clean
 // decline" but were not pinned by any test — so a future fold change that admitted the multi-shot /
@@ -14478,6 +14516,74 @@ mod match_engine {
     }
 
     #[test]
+    fn a_runtime_string_pattern_dispatches_by_content() {
+        // These asserts run heap values; skip when the value-heap runtime store is absent (CI's bare
+        // `cargo test` builds no store), matching the established heap-test pattern — else the
+        // `run_heap_value(...).unwrap()` panics `None` storeless (staging-sync-loop-harness-trap).
+        if super::find_runtime_wasm().is_none() {
+            eprintln!(
+                "runtime wasm not found (run `cargo xtask build`); skipping heap-run assertions"
+            );
+            return;
+        }
+        // Runtime STRING patterns: `(match s ("ab" 1) ("cd" 2) (_ 0))` over a RUNTIME String value now
+        // emits a `value-eq` content compare (the `Str`-probe LitTest), where before it DECLINED ("a string
+        // pattern over a runtime payload is not yet supported"). The scrutinee is built with `String.concat`
+        // so it is a genuine runtime ROPE (not a constant that folds) — the emit `bytes-compact`s the leaf
+        // to canonical flat form before `value-eq`, so a rope and its flat twin compare equal. Unblocks
+        // matching an `Ast.Name`'s head symbol over a runtime Ast (the quasiquote head-dispatch idiom).
+        assert_eq!(
+            run_heap_value(
+                "(do (def (classify (: s String)) (match s (\"ab\" 1) (\"cd\" 2) (_ 0))) \
+                     (def (main) (classify (String.concat \"a\" \"b\"))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "1",
+            "String.concat \"a\" \"b\" = \"ab\" matches the first arm by CONTENT (rope compacted before value-eq)"
+        );
+        // A different runtime rope selects the second arm — confirms genuine content dispatch, not a
+        // constant fold to arm 1.
+        assert_eq!(
+            run_heap_value(
+                "(do (def (classify (: s String)) (match s (\"ab\" 1) (\"cd\" 2) (_ 0))) \
+                     (def (main) (classify (String.concat \"c\" \"d\"))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "2",
+            "String.concat \"c\" \"d\" = \"cd\" selects the second arm"
+        );
+        // A non-matching rope falls through to the wildcard.
+        assert_eq!(
+            run_heap_value(
+                "(do (def (classify (: s String)) (match s (\"ab\" 1) (\"cd\" 2) (_ 0))) \
+                     (def (main) (classify (String.concat \"x\" \"y\"))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "0",
+            "\"xy\" matches neither literal → the wildcard → 0"
+        );
+        // The QUASIQUOTE head-dispatch this unblocks: an `Ast.Name` head symbol matched over a runtime Ast
+        // (`` `(+ ,x ,y) `` vs `` `(* ,x ,y) ``) — dispatches on the string `"+"`/`"*"` at run time. The
+        // runtime Ast is built via `Ast.List`/`Ast.Name`/`Ast.Int` so it is not a constant.
+        assert_eq!(
+            run_heap_value(
+                "(do (def (op (: a Ast)) (match a \
+                        ((quasiquote (+ (unquote x) (unquote y))) 100) \
+                        ((quasiquote (* (unquote x) (unquote y))) 200) (_ 0))) \
+                     (def (main) (op (Ast.List (list (Ast.Name (String.concat \"+\" \"\")) (Ast.Int 1) (Ast.Int 2))))) \
+                     (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "100",
+            "a quasiquote pattern dispatches on the `+` head symbol of a runtime Ast (content string compare)"
+        );
+    }
+
+    #[test]
     fn a_tail_loop_threading_a_projected_boxed_sum_accumulator_decodes_correctly() {
         // A tuple-projected boxed sum threaded through a self-tail loop must SURVIVE the loop step. `one`
         // returns `(tuple (W.Atom <byte>) (+ pos 1))`; `loop` threads `(. r 0)` (the nested-compound boxed
@@ -20283,6 +20389,24 @@ mod match_engine {
             assert!(
                 bad.is_none(),
                 "a well-formed program must not be flagged: {ok} -> {bad:?}"
+            );
+        }
+        // (d) NAMELESS signature — `(def () <body>)` (empty sig list) / `(def (5 x) …)` (non-name head)
+        // register a def with an EMPTY name (unreachable, unexportable) and were SILENTLY ACCEPTED (the
+        // arity is well-formed, so the body-count check passed; nothing checked the name). Now CDZ0201.
+        for src in [
+            "(module m (def () 1) (def (main) 0) (export main))",
+            "(module m (def (5 x) 1) (def (main) 0) (export main))",
+        ] {
+            let d = crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.message.contains("has no name"))
+                .unwrap_or_else(|| panic!("a nameless definition must be rejected: {src}"));
+            assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+            assert!(
+                d.message.contains("must name it"),
+                "the nameless-def message names the fix: {}",
+                d.message
             );
         }
     }
@@ -54090,6 +54214,36 @@ mod stage1 {
             "the hint names the concrete Result type to annotate: {}",
             d.message
         );
+        // The backticks in the hint must be BALANCED (Copilot PR #453: the generic fallback used to smuggle
+        // its own backticks through a template-wrapped `{suggested}`, so the code spans could render oddly).
+        // Every arm — the concrete Result/Option forms AND the generic fallback — is now self-wrapped, so
+        // the message always has an even number of backticks.
+        assert_eq!(
+            d.message.matches('`').count() % 2,
+            0,
+            "the ?-boundary hint has balanced backticks: {}",
+            d.message
+        );
+        // The GENERIC fallback (operand kind not yet definite) names BOTH forms, each its own balanced code
+        // span — `(Result _ e)` or `(Option _)` — not a backtick-smuggling single string.
+        let fallback = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def (f x) (+ 1 (try x))) (export f))",
+        )))
+        .into_iter()
+        .find(|d| d.code.as_deref() == Some("CDZ0230"))
+        .expect("the ?-boundary fallback is CDZ0230");
+        assert!(
+            fallback.message.contains("`(Result _ e)`")
+                && fallback.message.contains("`(Option _)`"),
+            "the generic ?-boundary fallback names both forms as balanced spans: {}",
+            fallback.message
+        );
+        assert_eq!(
+            fallback.message.matches('`').count() % 2,
+            0,
+            "the fallback hint has balanced backticks too: {}",
+            fallback.message
+        );
     }
 
     #[test]
@@ -67776,6 +67930,86 @@ mod cross_component_oracle {
     }
 
     // ------------------------------------------------------------------------------------------------
+    // U8 — a STRING ARGUMENT crosses to a peer-bound effect (the mirror of U7's result). This completes
+    // the model-call `converse(prompt) -> completion : String` boundary the agent HARNESS Route-B
+    // bring-up needs (`DESIGN-agent-harness.md` §2.1a): the PROMPT crosses IN as a peer String arg (a
+    // runtime rope handle, not a component `string`) and the COMPLETION comes back as the String RESULT
+    // (U7). This cell was DECLINED until v-peer-linking wired the inbound-rope-handle emit (the
+    // `string-crossing-matrix` issue's cell #2); pin it now that it passes so a transport regression
+    // that reverted to the decline (or miscompiled the arg as a component `string` → invalid component)
+    // is caught fleet-wide. Provider ECHOES its String arg back, so the result's byte-len reflects the
+    // ARG that actually crossed. The entrypoint returns a scalar (byte-len), sidestepping the still-open
+    // result-escape cell #3 (v-peer-linking task #6); the prompt is an in-program literal, sidestepping
+    // the still-open String-entrypoint-param cell #7 — which the real loop does anyway (it builds the
+    // prompt from context, never takes it as an export param).
+    // ------------------------------------------------------------------------------------------------
+    #[test]
+    fn u8_a_string_argument_crosses_to_a_peer() {
+        use crate::backend::wasm::runtime_abi::{REQUIRED_RUNTIME_HASH, RUNTIME_IFACE};
+        use crate::testkit::parse;
+        let import_name = format!("{RUNTIME_IFACE}@0.0.0+{REQUIRED_RUNTIME_HASH}");
+        // PROVIDER (source): `converse(prompt)` CONCATS the prompt with itself — it BUILDS a new rope FROM
+        // the crossed arg (so it imports the value-heap runtime, and the doubled length proves the arg both
+        // crossed AND was consumed, not merely echoed as an untouched handle). Takes a String arg AND
+        // returns a String, both as rope handles over the shared runtime.
+        let provider = compile_provider(
+            "(do (def (converse (: prompt String)) (String.concat prompt prompt)) (export converse))",
+            "cadenza:model/api",
+        );
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&provider)
+                .expect("string-arg echo provider validates");
+        }
+        // CONSUMER (source): a peer-bound effect M `(-> String String)`; main passes an in-program literal
+        // prompt "hello" and reads the doubled completion's byte-len — proving the ARG crossed (a broken
+        // arg emit would trap or mis-length). Entrypoint returns Int64 (scalar), so nothing escapes as a
+        // resource.
+        let src = "(do \
+            (effect M (op converse (-> String String))) \
+            (bind M \"cadenza:model/api\") \
+            (def (main) (String.byte-len (host (M) (M.converse \"hello\")))) \
+            (export main))";
+        let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .unwrap_or_else(|d| panic!("consumer compiles: {} [{:?}]", d.message, d.code));
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&consumer).expect("consumer validates");
+        }
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("[U8] runtime wasm not found; skipping");
+            return;
+        };
+        assert!(
+            String::from_utf8_lossy(&provider).contains(&import_name),
+            "the source provider imports the value-heap runtime (it handles a String rope)"
+        );
+        let peers = vec![cdz_run::Peer {
+            bytes: provider,
+            interface: "cadenza:model/api".to_string(),
+        }];
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: Vec::new(),
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run_with_peers(&consumer, &peers, &opts)
+            .expect("a String argument crosses to a peer-bound effect")
+        {
+            // main passed "hello" (5 bytes) as the peer arg; the provider concatenated it with itself →
+            // "hellohello" (10 bytes). byte-len = 10 proves the String arg crossed INTO the peer as a rope
+            // handle and was consumed — the mirror of U7's result crossing.
+            cdz_run::Outcome::Value(s) => assert_eq!(
+                s, "10",
+                "the doubled prompt's byte-len proves the String arg crossed + was consumed by the peer"
+            ),
+            cdz_run::Outcome::Trap(t) => panic!("string-arg peer run trapped: {t}"),
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------------
     // PL4 — a NON-KEBAB peer OP NAME agrees across the consumer + provider and RUNS. The op name is a
     // component-boundary extern name (the interface func); a camelCase source op (`addTwo`) must
     // kebab-normalize to the SAME `add-two` on BOTH sides — the consumer's `(bind)`/`host` import AND
@@ -68947,6 +69181,149 @@ mod cross_component_oracle {
                 "a mixed String+scalar argument list crosses to a peer, each in its own ABI lane"
             ),
             cdz_run::Outcome::Trap(t) => panic!("mixed-argument run trapped: {t}"),
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // PL31 — a RECORD-of-(String, scalar) argument crosses to a peer (the Bedrock REQUEST-STRUCT idiom).
+    // A real model call bundles its inputs as a request record — `{ prompt: String, max-tokens: Int64 }` —
+    // not as loose positional args. PL30 pins loose String+scalar args; u16 pins a scalar-only compound;
+    // PL31 pins that a compound carrying a STRING FIELD crosses as ONE handle and the peer reads both a
+    // rope-leaf field AND a scalar field out of it. This is the nested-rope-in-compound arg path (the
+    // tuple's String element is itself a heap handle stored in the tuple), distinct from PL30's flat args.
+    // Provider `req : (Tuple String Int64) -> Int64` = byte-len(prompt) + max-tokens. Consumer builds
+    // `("hi", 4)` → 2 + 4 = 6 — the request struct crossed as a handle, both fields read on the peer side.
+    // ------------------------------------------------------------------------------------------------
+    #[test]
+    fn a_record_of_string_and_scalar_argument_crosses_to_a_peer() {
+        use crate::backend::wasm::runtime_abi::{REQUIRED_RUNTIME_HASH, RUNTIME_IFACE};
+        use crate::testkit::parse;
+        let import_name = format!("{RUNTIME_IFACE}@0.0.0+{REQUIRED_RUNTIME_HASH}");
+        // PROVIDER: reads BOTH the String field (byte-len) and the scalar field of a single tuple arg.
+        let provider = compile_provider(
+            "(do (def (req (: t (Tuple String Int64))) (+ (String.byte-len (. t 0)) (. t 1))) (export req))",
+            "cadenza:req/api",
+        );
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&provider)
+                .expect("the request-struct provider validates");
+        }
+        // CONSUMER: builds a request tuple `("hi", 4)` — a String field + a scalar field — and passes it
+        // as ONE handle into the peer op.
+        let src = "(do \
+            (effect S (op req (-> (Tuple String Int64) Int64))) \
+            (bind S \"cadenza:req/api\") \
+            (def (main) (host (S) (S.req (tuple \"hi\" 4)))) \
+            (export main))";
+        let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .unwrap_or_else(|d| {
+                panic!(
+                    "request-struct consumer compiles: {} [{:?}]",
+                    d.message, d.code
+                )
+            });
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&consumer)
+                .expect("request-struct consumer validates");
+        }
+        assert!(
+            String::from_utf8_lossy(&consumer).contains(&import_name),
+            "a request-struct peer consumer imports the value-heap runtime (it builds the tuple + rope)"
+        );
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("[PL31] runtime wasm not found; skipping");
+            return;
+        };
+        let peers = vec![cdz_run::Peer {
+            bytes: provider,
+            interface: "cadenza:req/api".to_string(),
+        }];
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: Vec::new(),
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run_with_peers(&consumer, &peers, &opts)
+            .expect("a request-struct argument crosses to a peer")
+        {
+            // byte-len("hi") + 4 = 2 + 4 = 6. A compound carrying a String field crossed as ONE handle;
+            // the peer projected both the rope-leaf field and the scalar field out of it.
+            cdz_run::Outcome::Value(s) => assert_eq!(
+                s, "6",
+                "a record-of-(String,scalar) argument crosses to a peer as one handle, both fields read"
+            ),
+            cdz_run::Outcome::Trap(t) => panic!("request-struct run trapped: {t}"),
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // PL32 — a String ARGUMENT handle passed to a peer is REUSED locally after the call (refcount/borrow
+    // correctness). PL28-31 pin that a String arg CROSSES; this pins that passing the handle to the peer
+    // does NOT consume it — the consumer reads the SAME rope again in-program after the peer call. If the
+    // peer-arg emit treated the handle as OWNED (moved/dropped by the call) rather than BORROWED, the
+    // second local `String.byte-len s` would be a use-after-free on a reclaimed rope: a runtime trap or a
+    // garbage length, NOT a clean answer — and it would still VALIDATE (byte-valid ≠ refcount-correct, the
+    // "probe the type not one read" lesson). Running it e2e proves the handle stays live across the
+    // boundary. `s = "abcde"` (concat, so a runtime rope); main = S.blen(s) + byte-len(s) = 5 + 5 = 10.
+    // ------------------------------------------------------------------------------------------------
+    #[test]
+    fn a_string_argument_handle_survives_the_peer_call_and_is_reused_locally() {
+        use crate::testkit::parse;
+        let provider = compile_provider(
+            "(do (def (blen (: s String)) (String.byte-len s)) (export blen))",
+            "cadenza:reuse/api",
+        );
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&provider)
+                .expect("the reuse provider validates");
+        }
+        // The rope is let-bound, passed to the peer, THEN read again locally in the same expression — the
+        // peer call must BORROW (not consume) the handle, or the second read hits a freed rope.
+        let src = "(do \
+            (effect S (op blen (-> String Int64))) \
+            (bind S \"cadenza:reuse/api\") \
+            (def (main) \
+              (let ((s (String.concat \"ab\" \"cde\"))) \
+                (host (S) (+ (S.blen s) (String.byte-len s))))) \
+            (export main))";
+        let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .unwrap_or_else(|d| panic!("reuse consumer compiles: {} [{:?}]", d.message, d.code));
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&consumer).expect("reuse consumer validates");
+        }
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("[PL32] runtime wasm not found; skipping");
+            return;
+        };
+        let peers = vec![cdz_run::Peer {
+            bytes: provider,
+            interface: "cadenza:reuse/api".to_string(),
+        }];
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: Vec::new(),
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run_with_peers(&consumer, &peers, &opts)
+            .expect("a reused string-arg handle survives the peer call")
+        {
+            // S.blen("abcde") + byte-len("abcde") = 5 + 5 = 10. The handle passed to the peer stayed LIVE
+            // for the subsequent local read — the peer arg BORROWS, it does not consume + free.
+            cdz_run::Outcome::Value(s) => assert_eq!(
+                s, "10",
+                "a String arg handle passed to a peer stays live for a later local read (borrow, not move)"
+            ),
+            cdz_run::Outcome::Trap(t) => {
+                panic!("reused string-arg run trapped (use-after-free?): {t}")
+            }
         }
     }
 

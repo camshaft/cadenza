@@ -2,8 +2,9 @@
 /// into an `Ast` value (the `Int`/`Name`/`List` prelude sum), and `quasiquote` with an Int-valued
 /// `unquote` splices a computed number into the template. This module walks the reified tree (count
 /// nodes, sum Int leaves) and compares quoted forms by structural equality — the shape a macro / a
-/// staged-compilation layer manipulates. (The built-in `Ast` has exactly three variants — `Int Int64`,
-/// `Name String`, `List (List Ast)` — so a quoted `(+ 1 2)` is `List[Name "+", Int 1, Int 2]`.)
+/// staged-compilation layer manipulates. (The built-in `Ast` has six variants — `Int Int64`, `Name String`,
+/// `List (List Ast)`, `Str String`, `Bool Bool`, `Float Float64`; this module walks all of them — so a
+/// quoted `(+ 1 2)` is `List[Name "+", Int 1, Int 2]`.)
 ///
 /// `unquote` lifts an Int64-valued operand (`wrap` below) AND splices an already-`Ast` value (`wrap-ast`)
 /// — the latter is the sub-expression splicing at the heart of a macro. Ast-valued unquote once declined

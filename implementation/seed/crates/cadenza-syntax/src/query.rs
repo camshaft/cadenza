@@ -3514,6 +3514,47 @@ mod tests {
         }
     }
 
+    #[test]
+    fn apply_rewrite_never_panics_on_arbitrary_pattern_template_pairs() {
+        // The FULL rewrite transaction on arbitrary (pattern, template) pairs — the loop the pattern-
+        // compile fuzz above does not exercise: compile both → build a RuleSet → `driver::apply_rewrite`
+        // over a fixed target (match → instantiate the template from the bindings → re-parse-VALIDATE →
+        // project). Every stage must be TOTAL: `apply_rewrite` returns Ok/Err (a rewrite that produces
+        // ill-formed text is a clean `Err`, never a panic), never crashes. This guards the instantiate +
+        // validated-transaction path against a metavar/splice-arity or projection edge on odd inputs.
+        let (target, _) = driver::load(
+            b"(f (g 1) (h a b) (+ x 0) 2)",
+            crate::convert::Format::Sexpr,
+        )
+        .unwrap();
+        let alphabet: Vec<char> = "(),@_ x0123456789+*-fgh".chars().collect();
+        let mut rng = SplitMix64(0x71e_5ec0_de0f_a5f1);
+        for len in 0..=20usize {
+            for _ in 0..100 {
+                let ps: String = (0..len)
+                    .map(|_| alphabet[(rng.next() as usize) % alphabet.len()])
+                    .collect();
+                let ts: String = (0..len)
+                    .map(|_| alphabet[(rng.next() as usize) % alphabet.len()])
+                    .collect();
+                if let (Ok(p), Ok(t)) = (Pattern::compile(&ps), Template::compile(&ts)) {
+                    let rules = RuleSet::new(vec![Rule::new(p, t)]);
+                    // Must not panic — Ok(outcome) or Err(reject message), at a few widths + fixpoint.
+                    for fixpoint in [false, true] {
+                        let _ = driver::apply_rewrite(
+                            &rules,
+                            Strategy::BottomUp,
+                            &target,
+                            crate::convert::Format::Sexpr,
+                            40,
+                            fixpoint,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     // ---- matching ----
 
     #[test]

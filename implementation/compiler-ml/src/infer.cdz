@@ -1,0 +1,169 @@
+/// infer.cdz — HINDLEY-MILNER TYPE INFERENCE (Algorithm W core) over a lambda calculus. Given an
+/// unannotated term, reconstruct its most general type by threading a fresh-type-variable counter and a
+/// SUBSTITUTION, unifying at every application. This is the type-checker's inference engine — the piece
+/// that makes `\x. x` come out as `a → a` and `(\f. \x. f x)` as `(a → b) → a → b` with NO annotations.
+///
+/// This shape (a recursive `infer` that threads `(type, subst, counter)` through the environment and calls
+/// a `Result`-returning `unify`) was BLOCKED for a long time by a borrow-ownership gap
+/// (`mlrepro-blocked-infer-cross-file-hm-borrow`, now RESOLVED), so it is written here in its natural form:
+///   infer : env × Ex × subst × counter → Result((Ty, subst, counter), err)
+/// The `App` rule is where inference happens — infer the function and argument, then unify the function's
+/// type with `argT → freshResult` and read the result back through the updated substitution.
+///
+/// Monomorphic (no let-generalization): a `Lam` parameter gets ONE fresh type var, so a term used at two
+/// types unifies them (as HM-without-generalization does). Exports `infer`, `principal-type` (the inferred
+/// type with the final substitution applied), and `well-typed`. `Ty` probes (`arrows`, `is-int`) let the
+/// tests inspect the inferred shape.
+
+type Ty =
+  | TVar(Int64)
+  | TArrow(Ty, Ty)
+  | TInt
+
+type Ex =
+  | Lit(Int64)
+  | Var(Int64)
+  | Lam(Int64, Ex)
+  | App(Ex, Ex)
+
+/// Apply substitution `s` to `t`, following chains (a var mapped to another var resolves transitively).
+def apply(s: Map(Int64, Ty), t: Ty) = match t with
+  | Ty.TVar(v) => (match Map.lookup(s, v) with | Option.Some(u) => apply(s, u) | Option.None(_) => Ty.TVar(v))
+  | Ty.TArrow(a, b) => Ty.TArrow(apply(s, a), apply(s, b))
+  | Ty.TInt => Ty.TInt
+
+/// Does type var `v` occur in `t`? (the occurs check that keeps unification from building an infinite type.)
+def occurs(v: Int64, t: Ty) = match t with
+  | Ty.TVar(w) => v == w
+  | Ty.TArrow(a, b) => occurs(v, a) or occurs(v, b)
+  | Ty.TInt => false
+
+/// Unify `a` and `b` under `s` → `Result(subst, errcode)`. Error codes: 1 occurs-check, 2 Int≠Arrow,
+/// 3 Arrow≠Int. Binds a free type var to the other side (with an occurs check).
+def unify(s: Map(Int64, Ty), a: Ty, b: Ty) =
+  let ra = apply(s, a) in
+  let rb = apply(s, b) in
+  (match ra with
+    | Ty.TVar(v) => (match rb with
+      | Ty.TVar(w) => (if v == w then Result.Ok(s) else Result.Ok(Map.insert(s, v, rb)))
+      | _ => (if occurs(v, rb) then Result.Err(1) else Result.Ok(Map.insert(s, v, rb))))
+    | Ty.TInt => (match rb with
+      | Ty.TInt => Result.Ok(s)
+      | Ty.TVar(w) => Result.Ok(Map.insert(s, w, ra))
+      | _ => Result.Err(2))
+    | Ty.TArrow(a1, a2) => (match rb with
+      | Ty.TArrow(b1, b2) => (match unify(s, a1, b1) with | Result.Ok(s1) => unify(s1, a2, b2) | Result.Err(e) => Result.Err(e))
+      | Ty.TVar(w) => (if occurs(w, ra) then Result.Err(1) else Result.Ok(Map.insert(s, w, ra)))
+      | _ => Result.Err(3)))
+
+/// Algorithm W: `infer env e s k` → `Result((inferredTy, subst', counter'), err)`. `env` maps a bound
+/// variable id to its type; `k` is the next fresh type-var id.
+def infer(env: Map(Int64, Ty), e: Ex, s: Map(Int64, Ty), k: Int64) = match e with
+  | Ex.Lit(_) => Result.Ok((Ty.TInt, s, k))
+  | Ex.Var(x) => (match Map.lookup(env, x) with
+    | Option.Some(t) => Result.Ok((t, s, k))
+    | Option.None(_) => Result.Err(9))
+  | Ex.Lam(p, body) =>
+    let pv = Ty.TVar(k) in
+    (match infer(Map.insert(env, p, pv), body, s, k + 1) with
+      | Result.Ok(r) => (match r with | (bt, s1, k1) => Result.Ok((Ty.TArrow(apply(s1, pv), bt), s1, k1)))
+      | Result.Err(e) => Result.Err(e))
+  | Ex.App(f, a) =>
+    (match infer(env, f, s, k) with
+      | Result.Ok(rf) => (match rf with | (ft, sf, kf) =>
+        (match infer(env, a, sf, kf) with
+          | Result.Ok(ra) => (match ra with | (at, sa, ka) =>
+            let rv = Ty.TVar(ka) in
+            (match unify(sa, ft, Ty.TArrow(at, rv)) with
+              | Result.Ok(s2) => Result.Ok((apply(s2, rv), s2, ka + 1))
+              | Result.Err(e) => Result.Err(e)))
+          | Result.Err(e) => Result.Err(e)))
+      | Result.Err(e) => Result.Err(e))
+
+/// The principal type of a closed term, with the final substitution applied (`TInt` on a type error — use
+/// `well-typed` to distinguish). A fresh run starts with the empty env/subst and counter 0.
+def principal-type(e: Ex) = match infer(Map.empty, e, Map.empty, 0) with
+  | Result.Ok(r) => (match r with | (t, s, _) => apply(s, t))
+  | Result.Err(_) => Ty.TInt
+
+/// Does `e` type-check (inference succeeds)?
+def well-typed(e: Ex) = match infer(Map.empty, e, Map.empty, 0) with
+  | Result.Ok(_) => true
+  | Result.Err(_) => false
+
+/// Number of `TArrow` nodes in a type (a structural probe).
+def arrows(t: Ty) = match t with
+  | Ty.TArrow(a, b) => 1 + arrows(a) + arrows(b)
+  | _ => 0
+
+def is-int(t: Ty) = match t with | Ty.TInt => true | _ => false
+def is-arrow(t: Ty) = match t with | Ty.TArrow(_, _) => true | _ => false
+
+/// Is a type's domain and codomain the SAME (as in `a → a`)? Compares by structural arrow-shape equality.
+def ty-eq(a: Ty, b: Ty) = match a with
+  | Ty.TInt => is-int(b)
+  | Ty.TVar(v) => (match b with | Ty.TVar(w) => v == w | _ => false)
+  | Ty.TArrow(a1, a2) => (match b with | Ty.TArrow(b1, b2) => ty-eq(a1, b1) and ty-eq(a2, b2) | _ => false)
+
+/// Builders.
+def v(x: Int64) = Ex.Var(x)
+def lam(p: Int64, b: Ex) = Ex.Lam(p, b)
+def app(f: Ex, a: Ex) = Ex.App(f, a)
+
+@test
+def hm-literal-is-int() =
+  // 5 : Int
+  if is-int(principal-type(Ex.Lit(5))) then unit else trap("a literal is Int")
+
+@test
+def hm-identity-is-arrow() =
+  // \x. x : a → a (one arrow, and the domain equals the codomain).
+  let t = principal-type(lam(0, v(0))) in
+  if is-arrow(t) then (if arrows(t) == 1 then (match t with | Ty.TArrow(d, c) => (if ty-eq(d, c) then unit else trap("a → a: domain = codomain")) | _ => trap("arrow")) else trap("one arrow")) else trap("identity is an arrow")
+
+@test
+def hm-apply-identity-to-int() =
+  // (\x. x) 5 : Int — application unifies the param with Int.
+  if is-int(principal-type(app(lam(0, v(0)), Ex.Lit(5)))) then unit else trap("id applied to 5 is Int")
+
+@test
+def hm-const-function() =
+  // \x. \y. x : a → b → a (two arrows).
+  let t = principal-type(lam(0, lam(1, v(0)))) in
+  if arrows(t) == 2 then unit else trap("const has two arrows")
+
+@test
+def hm-apply-const() =
+  // ((\x. \y. x) 5) : b → Int (one arrow, codomain Int) — the first arg fixed x=Int, result is \y. Int.
+  let t = principal-type(app(lam(0, lam(1, v(0))), Ex.Lit(5))) in
+  if is-arrow(t) then (match t with | Ty.TArrow(_, c) => (if is-int(c) then unit else trap("codomain Int")) | _ => trap("arrow")) else trap("const applied is an arrow")
+
+@test
+def hm-apply-both-args() =
+  // (\x. \y. x) 5 6 : Int — both args applied, result is x = Int.
+  if is-int(principal-type(app(app(lam(0, lam(1, v(0))), Ex.Lit(5)), Ex.Lit(6)))) then unit else trap("const 5 6 is Int")
+
+@test
+def hm-unbound-var-fails() =
+  // a free variable (no env binding) → inference fails.
+  if well-typed(v(7)) then trap("an unbound var is not well-typed") else unit
+
+@test
+def hm-apply-int-to-arg-fails() =
+  // 5 applied to 6 — applying a non-function (Int) → occurs/mismatch → type error.
+  if well-typed(app(Ex.Lit(5), Ex.Lit(6))) then trap("applying an Int is a type error") else unit
+
+@test
+def hm-argument-forces-param() =
+  // \x. (x 5) : (Int → b) → b — using x as a function applied to 5 forces x : Int → b, so the whole thing
+  // is an arrow whose domain is itself an arrow. arrows: (Int→b) is 1, plus the outer = 2.
+  let t = principal-type(lam(0, app(v(0), Ex.Lit(5)))) in
+  if arrows(t) == 2 then (match t with | Ty.TArrow(d, _) => (if is-arrow(d) then unit else trap("domain is Int→b")) | _ => trap("arrow")) else trap("two arrows")
+
+@test
+def hm-apply-function-composition-shape() =
+  // \f. \x. (f x) : (a → b) → a → b — arrows: (a→b) domain=1, then two more for the outer two arrows = 3.
+  let t = principal-type(lam(0, lam(1, app(v(0), v(1))))) in
+  if arrows(t) == 3 then unit else trap("f x has three arrows")
+
+export { infer, principal-type, well-typed, apply, unify, arrows }

@@ -404,6 +404,44 @@
   (call   run (: 1.5 Float64)) (output (: 10 Int64))
   (call   run (: nan Float64)) (output (: 0 Int64)))
 
+; --- `<=` is NOT `(< or =)` for FLOAT: the two relations DIVERGE on NaN, so the derivation MISCOMPILES --
+; The sharpest trap at the intersection of the two float relations pinned above. A tempting algebraic
+; identity — `a <= b` ⟺ `a < b ∨ a = b` — HOLDS for integers (total order) but FAILS for float, because
+; the `=` on the right is the CANONICAL-BYTE equality (nan = nan is TRUE, the cases below) while `<=` is
+; the IEEE ordering (nan <= nan is FALSE, unordered). So for a NaN self-pair: `<=` gives FALSE, but
+; `(< ∨ =)` gives `(false ∨ TRUE)` = TRUE — they disagree. A Core pass that rewrote `<=`/`>=` into a
+; disjunction of `<`/`>` with `=` (a plausible simplification, e.g. to reuse one comparison primitive)
+; would MISCOMPILE every NaN case. These pin the divergence explicitly — `<=` and `(< or =)` computed
+; SIDE BY SIDE in one program, differing on NaN — so no lowering may substitute one for the other, both
+; backends. (Ordering `<=` treats -0.0 ==ord +0.0 too, a second divergence from canonical-byte `=`.)
+(case "float <= is NOT (< or =): they diverge on NaN because canonical-byte equality says nan = nan"
+  (doc    "`run(a,b) = 10*(if (<= a b) 1 0) + (if (or (< a b) (= a b)) 1 0)` computes the ordering `<=` and
+           the derived `(< ∨ =)` side by side. Finite equal (1.5,1.5): both true → 11. Finite ordered
+           (1.0,2.0): `1<=2` true, `1<2 ∨ 1=2` true → 11. The NaN pair (nan,nan): `nan<=nan` is FALSE
+           (unordered) but `nan<nan ∨ nan=nan` = `false ∨ TRUE` = TRUE → 1 (le=0, oreq=1). Pins that `<=`
+           must NOT be rewritten to `(< or =)` — they disagree on NaN — both backends.")
+  (input  (do
+            (def (le (: a Float64) (: b Float64)) (if (<= a b) 1 0))
+            (def (oreq (: a Float64) (: b Float64)) (if (or (< a b) (= a b)) 1 0))
+            (def (run (: a Float64) (: b Float64)) (+ (* 10 (le a b)) (oreq a b)))
+            (export run)))
+  (call   run (: 1.5 Float64) (: 1.5 Float64)) (output (: 11 Int64))
+  (call   run (: 1.0 Float64) (: 2.0 Float64)) (output (: 11 Int64))
+  (call   run (: nan Float64) (: nan Float64)) (output (: 1 Int64)))
+
+(case "float >= is NOT (> or =): the same NaN divergence mirrors on the greater-or-equal side"
+  (doc    "The `>=` mirror: `run(a,b) = 10*(if (>= a b) 1 0) + (if (or (> a b) (= a b)) 1 0)`. Finite equal
+           (2.0,2.0): both true → 11. The NaN pair (nan,nan): `nan>=nan` FALSE (unordered) but
+           `nan>nan ∨ nan=nan` = `false ∨ TRUE` = TRUE → 1. Pins `>=` must not be rewritten to `(> or =)`,
+           both backends.")
+  (input  (do
+            (def (ge (: a Float64) (: b Float64)) (if (>= a b) 1 0))
+            (def (oreq (: a Float64) (: b Float64)) (if (or (> a b) (= a b)) 1 0))
+            (def (run (: a Float64) (: b Float64)) (+ (* 10 (ge a b)) (oreq a b)))
+            (export run)))
+  (call   run (: 2.0 Float64) (: 2.0 Float64)) (output (: 11 Int64))
+  (call   run (: nan Float64) (: nan Float64)) (output (: 1 Int64)))
+
 ; --- Float equality follows the canonical byte form RECURSIVELY, inside compound values --
 ; #Equality Is Structural: "Two values MUST be equal when they have the same type and their contents
 ; are equal component-wise" — and each float COMPONENT is compared by #Floating-Point Equality Follows

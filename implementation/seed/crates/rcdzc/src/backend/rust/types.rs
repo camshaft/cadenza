@@ -15,6 +15,7 @@
 //! also maps to `None` in this scalar slice (compounds arrive with the native-aggregate strategy in a
 //! later increment).
 
+use crate::backend::Db;
 use crate::ty::{IntTy, Sign, Ty, Width};
 
 /// The native Rust type for a solved Cadenza type, or `None` if this backend has no native
@@ -116,24 +117,22 @@ pub fn rust_type(ty: &Ty) -> Option<String> {
         // `HashMap`) because it ITERATES IN SORTED KEY ORDER, which is exactly the CANONICAL order Cadenza's
         // `Map.to-list` yields — so enumeration matches the runtime for free (a `HashMap` would need an
         // explicit sort). Keys compare BY VALUE (`BTreeMap` uses `Ord`), matching the language's by-value
-        // key semantics. `K` must be `Ord`: a scalar/tuple/record/`String`/`Vec` key is — but a FLOAT is
-        // NOT `Ord` in Rust (only `PartialOrd`), so a float-keyed `BTreeMap` fails to compile (E0277). The
-        // runtime orders a float key by its canonical bytes, so the wasm backend supports it; the Rust
-        // backend cannot, so a float (or float-containing) KEY DECLINES here. Key/value map recursively;
-        // either unmapped (or a non-`Ord` key) declines the whole map.
-        Ty::Map(k, v) if ty_is_ord(k) => Some(format!(
+        // key semantics. `K` must be `Ord` — but a FLOAT (or a float-containing tuple/record/SUM) is only
+        // `PartialOrd`, so a float-keyed `BTreeMap` fails to compile (E0277). The Ord CHECK is NOT here:
+        // `rust_type` is pure (no `Db`), so it cannot resolve whether a `Ty::Sum` KEY's enum derives `Ord`
+        // (that needs the sum's payloads). The decline is enforced by the `Db`-aware `enums::ty_ord_key_ok`
+        // gate at the emit boundary (`sum_representable` for a param/result Map/Set TYPE; the construction
+        // ops `MapNew`/`MapInsert`/`SetOf`/`SetInsert` in `expr.rs` for a VALUE). So this arm just maps the
+        // shape; a non-Ord key/element is caught before it can emit an uncompilable `BTreeMap`/`BTreeSet`.
+        Ty::Map(k, v) => Some(format!(
             "std::collections::BTreeMap<{}, {}>",
             rust_type(k)?,
             rust_type(v)?
         )),
         // A SET is a persistent collection of unique elements — Rust's ordered `BTreeSet<T>` (sorted
         // iteration = the canonical `Set.to-list` order; `Ord` element compares by value, dedup at insert).
-        // Like a Map key, the element must be `Ord`: a FLOAT element is only `PartialOrd`, so a
-        // `BTreeSet<f64>` fails to compile (E0277) — the runtime orders it by canonical bytes (wasm
-        // supports it), the Rust backend cannot, so a float (or float-containing) element DECLINES.
-        Ty::Set(elem) if ty_is_ord(elem) => {
-            Some(format!("std::collections::BTreeSet<{}>", rust_type(elem)?))
-        }
+        // The Ord-element decline is enforced by the `Db`-aware gates (see the `Ty::Map` note), not here.
+        Ty::Set(elem) => Some(format!("std::collections::BTreeSet<{}>", rust_type(elem)?)),
         // A BYTES value is a raw byte sequence — Rust's owned `Vec<u8>`. Non-Copy (owned heap buffer) →
         // clone-on-read covers a shared bytes value. (Cadenza's `Bytes` is a persistent rope at run time;
         // the native rep is a flat `Vec<u8>`, and every emitted bytes op produces a NEW `Vec` — the
@@ -151,32 +150,59 @@ pub fn rust_type(ty: &Ty) -> Option<String> {
 
 /// Whether `ty` maps to a Rust type that implements `Ord` — the bound `BTreeSet<T>`/`BTreeMap<K,_>`
 /// requires of its element/key. Every scalar/text/compound the backend represents IS `Ord` EXCEPT a
-/// FLOAT: Rust's `f64`/`f32` are `PartialOrd` but NOT `Ord` (NaN breaks totality), so a float in an
-/// ordered position (the Set element or Map key, or nested inside a tuple/record/list/set/map used
-/// there) makes the `BTree*` uninstantiable (E0277). This is the ORDERED-position twin of
-/// `enums::ty_derives_eq`'s `Ty::Float => false` — the runtime orders a float by its canonical bytes
-/// (so wasm supports a float key/element), but the Rust backend has no total float order, so it
-/// DECLINES rather than emit an uncompilable `BTreeSet<f64>`.
+/// FLOAT (and anything CONTAINING one): Rust's `f64`/`f32` are `PartialOrd` but NOT `Ord` (NaN breaks
+/// totality), so a float in an ordered position (the Set element or Map key, or nested inside a
+/// tuple/record/list/set/map/SUM used there) makes the `BTree*` uninstantiable (E0277). The runtime
+/// orders a float by its canonical bytes (so wasm supports a float key/element), but the Rust backend
+/// has no total float order, so it DECLINES rather than emit an uncompilable `BTreeSet<f64>`.
 ///
-/// Pure (no `Db`) — floats are detected structurally. A `Sum`/`Nominal` is treated as `Ord` here
-/// (its emitted enum derives `Ord` when its payloads are `Eq`-derivable, which already excludes a
-/// float payload; a float-carrying sum used as a key is not exercised and would be caught by the
-/// enum-derive path, not here). A `Fn`/`Var`/other type has no native rep and never reaches an
-/// ordered position through `rust_type` (it declines earlier).
-pub(super) fn ty_is_ord(ty: &Ty) -> bool {
+/// A `Ty::Sum`/`Ty::Nominal` is orderable iff its emitted enum derives `Ord` — which is iff it derives
+/// `Eq` (see `enums::emit_one_enum`: both gate on `sum_derives_eq`, since Rust's `Ord` derive composes
+/// over the SAME payload fields `Eq` does). So the SUM case delegates to the `Db`-aware
+/// `enums::ty_derives_eq`. This CLOSES the float-carrying-sum hole (Copilot PR#455): the old version
+/// returned `true` for EVERY `Ty::Sum`, so a `Set`/`Map` keyed by a sum whose enum canNOT derive `Ord`
+/// (a float / non-`Eq` payload) slipped past and the backend emitted an uncompilable
+/// `BTreeSet<Enum>`/`BTreeMap<Enum,_>` — the exact failure the float-key decline prevents, one shape over.
+///
+/// NOT a blanket delegation to `ty_derives_eq`, because Ord ≠ current-Eq for the NUMERIC types: a
+/// `BigInt`/`Rational` has a total order (usable as a `BTree*` key — the CHAMP orders it by canonical
+/// bytes on wasm; a rust `cdz_num::Big` has a total `cmp`) even though it is not yet native-`Eq`-derivable
+/// on the rust backend. Treating those as non-Ord would REGRESS the passing BigInt-keyed set/map cases.
+/// So keep the structural walk (with the sum case now Db-aware) rather than reusing the Eq predicate.
+pub(super) fn ty_is_ord(db: &mut Db, ty: &Ty) -> bool {
     match ty {
         // A float is `PartialOrd` but NOT `Ord` — the one scalar that cannot key a `BTree*`.
         Ty::Float(_) => false,
-        // Compounds are `Ord` iff every ordered component is (a tuple/record derives `Ord` element-
-        // wise; a `Vec`/`BTreeSet`/`BTreeMap` is `Ord` iff its element/key(+value) are). Recurse so a
-        // float ANYWHERE inside an ordered key/element is caught (e.g. `Set (Tuple Int64 Float64)`).
-        Ty::Tuple(elems) => elems.iter().all(ty_is_ord),
-        Ty::Record(fields) => fields.values().all(ty_is_ord),
-        Ty::Nominal { inner, .. } => ty_is_ord(inner),
-        Ty::List(e) | Ty::Set(e) => ty_is_ord(e),
-        Ty::Map(k, v) => ty_is_ord(k) && ty_is_ord(v),
-        // Every other representable type (Int/Bool/Unit/Char/String/Bytes/Sum) maps to an `Ord` Rust
-        // type. A non-representable type (`Fn`, free `Var`) declines in `rust_type` before this matters.
+        // Compounds are `Ord` iff every ordered component is. Recurse so a float ANYWHERE inside is caught.
+        Ty::Tuple(elems) => {
+            let elems = elems.clone();
+            elems.iter().all(|e| ty_is_ord(db, e))
+        }
+        Ty::Record(fields) => {
+            let vals: Vec<Ty> = fields.values().cloned().collect();
+            vals.iter().all(|t| ty_is_ord(db, t))
+        }
+        Ty::Nominal { inner, .. } => {
+            let inner = (**inner).clone();
+            ty_is_ord(db, &inner)
+        }
+        Ty::List(e) | Ty::Set(e) => {
+            let e = (**e).clone();
+            ty_is_ord(db, &e)
+        }
+        Ty::Map(k, v) => {
+            let (k, v) = ((**k).clone(), (**v).clone());
+            ty_is_ord(db, &k) && ty_is_ord(db, &v)
+        }
+        // A SUM/NOMINAL is orderable iff its enum derives `Ord` = iff it derives `Eq` — the Db-aware check
+        // that closes the float-carrying-sum hole (the whole point of this fix).
+        Ty::Sum { .. } => crate::backend::rust::enums::ty_derives_eq(
+            db,
+            ty,
+            &mut std::collections::HashSet::new(),
+        ),
+        // Every other representable type (Int/Bool/Unit/Char/String/Bytes and the NUMERIC BigInt/Rational,
+        // which have a total order) maps to an `Ord` Rust type. A non-representable type declines earlier.
         _ => true,
     }
 }

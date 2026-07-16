@@ -1,0 +1,136 @@
+/// type-scheme.cdz — TYPE SCHEMES and let-polymorphism: GENERALIZATION and INSTANTIATION, the two
+/// operations that turn Hindley-Milner (monomorphic `infer.cdz`) into let-POLYMORPHIC HM. A `let`-bound
+/// value's inferred type is GENERALIZED into a scheme `∀ā. τ` (quantifying the type vars free in `τ` but
+/// NOT in the environment), and each USE of that binding INSTANTIATES the scheme with FRESH type vars — so
+/// `let id = \x. x in (id id)` type-checks: each `id` use gets its own `a → a`, and the two don't get
+/// wrongly unified.
+///
+///   generalize(envFtv, τ)      = ∀(ftv(τ) \ envFtv). τ    -- quantify what's not fixed by the environment
+///   instantiate(∀ā.τ, k)       = τ[ā ↦ fresh_k…]           -- rename the quantified vars to fresh ones
+///
+/// The KEY property (what monomorphic inference can't do): two instantiations of the same scheme are
+/// INDEPENDENT — they share no type variable, so unifying one at `Int` leaves the other free. A scheme
+/// with NO quantified vars (a monotype) instantiates to itself.
+///
+///   - `ftv τ`                  — the free type variables of a type.
+///   - `generalize envFtv τ`    — the scheme quantifying τ's env-free vars.
+///   - `instantiate sch k`      — `(freshType, nextCounter)`.
+///   - `quantified-count sch`   — how many variables the scheme is polymorphic in.
+
+type Ty =
+  | TVar(Int64)
+  | TArrow(Ty, Ty)
+  | TInt
+
+type Scheme =
+  | Forall(List(Int64), Ty)     // quantified type-var ids + the body type
+
+/// The free type variables of `t`.
+def ftv(t: Ty, acc: Set(Int64)) = match t with
+  | Ty.TVar(v) => Set.insert(acc, v)
+  | Ty.TArrow(a, b) => ftv(b, ftv(a, acc))
+  | Ty.TInt => acc
+
+def free-vars(t: Ty) = ftv(t, Set.of([]))
+
+/// Generalize `t` w.r.t. the environment's free vars: quantify every var free in `t` but NOT in `envFtv`.
+def generalize(env-ftv: Set(Int64), t: Ty) =
+  Scheme.Forall(Set.to-list(Set.difference(free-vars(t), env-ftv)), t)
+
+/// How many variables the scheme quantifies (its polymorphic arity).
+def quantified-count(sch: Scheme) = match sch with | Scheme.Forall(qs, _) => List.len(qs)
+
+/// Build a renaming map assigning each quantified var a fresh id starting at `k`; returns `(map, nextK)`.
+def rename-map(qs: List(Int64), k: Int64, m: Map(Int64, Int64)) = match qs with
+  | [] => (m, k)
+  | [q, .. rest] => rename-map(rest, k + 1, Map.insert(m, q, k))
+
+/// Apply a var-renaming to a type (only mapped vars change).
+def subst-vars(t: Ty, m: Map(Int64, Int64)) = match t with
+  | Ty.TVar(v) => (match Map.lookup(m, v) with | Option.Some(nv) => Ty.TVar(nv) | Option.None(_) => Ty.TVar(v))
+  | Ty.TArrow(a, b) => Ty.TArrow(subst-vars(a, m), subst-vars(b, m))
+  | Ty.TInt => Ty.TInt
+
+/// Instantiate `sch` with fresh type vars starting at `k` → `(freshBody, nextK)`.
+def instantiate(sch: Scheme, k: Int64) = match sch with
+  | Scheme.Forall(qs, body) => (match rename-map(qs, k, Map.empty) with | (m, k2) => (subst-vars(body, m), k2))
+
+/// A structural probe.
+def arrows(t: Ty) = match t with | Ty.TArrow(a, b) => 1 + arrows(a) + arrows(b) | _ => 0
+
+/// Do two types share ANY type variable? (used to witness that two instantiations are independent.)
+def shares-var(a: Ty, b: Ty) = Set.len(Set.intersection(free-vars(a), free-vars(b))) > 0
+
+/// Builders.
+def tv(v: Int64) = Ty.TVar(v)
+def arr(a: Ty, b: Ty) = Ty.TArrow(a, b)
+
+@test
+def ts-ftv() =
+  // ftv(a -> (b -> a)) = {a, b} = 2 distinct.
+  if Set.len(free-vars(arr(tv(0), arr(tv(1), tv(0))))) == 2 then unit else trap("ftv = {a,b}")
+
+@test
+def ts-generalize-all-free() =
+  // env free = {} → generalize(a -> a) quantifies {a} → arity 1.
+  let sch = generalize(Set.of([]), arr(tv(0), tv(0))) in
+  if quantified-count(sch) == 1 then unit else trap("∀a. a→a has arity 1")
+
+@test
+def ts-generalize-excludes-env() =
+  // env free = {a} (a is monomorphic in scope) → generalize(a -> b) quantifies only {b} → arity 1.
+  let sch = generalize(Set.of([0]), arr(tv(0), tv(1))) in
+  if quantified-count(sch) == 1 then unit else trap("env-fixed var not quantified")
+
+@test
+def ts-generalize-nothing-when-all-in-env() =
+  // env free = {a, b} → generalize(a -> b) quantifies nothing → arity 0 (a monotype scheme).
+  let sch = generalize(Set.of([0, 1]), arr(tv(0), tv(1))) in
+  if quantified-count(sch) == 0 then unit else trap("all env-fixed → monotype")
+
+@test
+def ts-instantiate-renames() =
+  // ∀a. a→a instantiated at k=3 → (3→3), next counter 4.
+  let sch = Scheme.Forall([0], arr(tv(0), tv(0))) in
+  (match instantiate(sch, 3) with | (t, k2) => (match t with
+    | Ty.TArrow(Ty.TVar(a), Ty.TVar(b)) => (if a == 3 then (if b == 3 then (if k2 == 4 then unit else trap("next k 4")) else trap("both 3")) else trap("renamed to 3"))
+    | _ => trap("stays an arrow")))
+
+@test
+def ts-instantiate-monotype-unchanged() =
+  // a scheme with no quantified vars (Int) instantiates to itself, counter unchanged.
+  let sch = Scheme.Forall([], Ty.TInt) in
+  (match instantiate(sch, 7) with | (t, k2) => (match t with | Ty.TInt => (if k2 == 7 then unit else trap("k unchanged")) | _ => trap("still Int")))
+
+@test
+def ts-two-instantiations-independent() =
+  // THE let-polymorphism property: instantiating ∀a. a→a twice gives type vars that DON'T overlap, so
+  // one can unify at Int without touching the other. inst at 0 → (0→0); inst at 1 → (1→1); no shared var.
+  let sch = Scheme.Forall([0], arr(tv(0), tv(0))) in
+  (match instantiate(sch, 0) with | (t1, k1) =>
+    (match instantiate(sch, k1) with | (t2, _) =>
+      if shares-var(t1, t2) then trap("two instantiations must be independent") else unit))
+
+@test
+def ts-instantiate-preserves-shape() =
+  // instantiation preserves the arrow shape: ∀a b. (a → b) → a instantiated is still 2 arrows.
+  let sch = Scheme.Forall([0, 1], arr(arr(tv(0), tv(1)), tv(0))) in
+  (match instantiate(sch, 10) with | (t, _) => (if arrows(t) == 2 then unit else trap("shape preserved: 2 arrows")))
+
+@test
+def ts-free-var-in-body-not-quantified-stays() =
+  // ∀a. (a → b) where b is FREE (not quantified): instantiating renames a but LEAVES b. inst at 5 →
+  // (5 → b). the b (id 1) must survive unchanged.
+  let sch = Scheme.Forall([0], arr(tv(0), tv(1))) in
+  (match instantiate(sch, 5) with | (t, _) => (match t with
+    | Ty.TArrow(Ty.TVar(a), Ty.TVar(b)) => (if a == 5 then (if b == 1 then unit else trap("free b stays 1")) else trap("a renamed to 5"))
+    | _ => trap("arrow")))
+
+@test
+def ts-generalize-then-instantiate-roundtrip-arity() =
+  // generalize(a→a) then instantiate: the instantiated type still has the same arrow arity (1), with fresh
+  // vars. This is the let-binding lifecycle: infer τ, generalize, instantiate per use.
+  let sch = generalize(Set.of([]), arr(tv(0), tv(0))) in
+  (match instantiate(sch, 100) with | (t, _) => (if arrows(t) == 1 then unit else trap("one arrow after the roundtrip")))
+
+export { free-vars, generalize, instantiate, quantified-count, shares-var }

@@ -1586,3 +1586,27 @@
             (export main)))
   (call   main (: 6 Int64))
   (output (: 24 Int64)))
+
+(case "a runtime string pattern dispatches by content (value-eq compare)"
+  (doc    "A match with STRING-LITERAL arms over a RUNTIME String value dispatches by CONTENT — the
+           `Str`-probe LitTest emits a `value-eq` (`champ_eq`) compare against the literal, `bytes-compact`ing
+           the leaf to canonical flat form first so a rope and its flat twin compare equal. Before, a runtime
+           string pattern DECLINED ('a string pattern over a runtime payload is not yet supported (only a
+           constant folds)'). The scrutinee is a `String.concat` result — a genuine runtime ROPE, not a
+           constant that folds — so this exercises the runtime path. `classify (\"a\"+\"b\") = \"ab\"` selects the
+           first arm → 1. A generation that skipped this would decline every runtime string match (an
+           interpreter dispatching on a keyword, a lexer classifying a token).")
+  (input  (do (def (classify (: s String)) (match s ("ab" 1) ("cd" 2) (_ 0)))
+              (def (main) (classify (String.concat "a" "b")))
+              (export main)))
+  (output (: 1 Int64)))
+
+(case "a runtime string pattern falls through to the wildcard when no literal matches"
+  (doc    "The non-match dual of the runtime string dispatch: a rope `\"xy\"` matching neither `\"ab\"` nor
+           `\"cd\"` falls through to the wildcard → 0. Confirms each `value-eq` arm genuinely runs (a real
+           content compare that can FAIL), not a blind first-arm fold. Paired with the positive case, pins
+           that a runtime string match is a correct content-dispatch, not a decline and not a mis-match.")
+  (input  (do (def (classify (: s String)) (match s ("ab" 1) ("cd" 2) (_ 0)))
+              (def (main) (classify (String.concat "x" "y")))
+              (export main)))
+  (output (: 0 Int64)))

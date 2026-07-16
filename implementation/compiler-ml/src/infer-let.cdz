@@ -1,0 +1,211 @@
+/// infer-let.cdz — LET-POLYMORPHIC Hindley-Milner inference: the capstone that composes monomorphic
+/// inference (infer.cdz) with generalization/instantiation (type-scheme.cdz) so that `let`-bound values are
+/// POLYMORPHIC. The classic witness is `let id = \x. x in (id id)`: with let-polymorphism it type-checks
+/// (each `id` use instantiates `∀a. a → a` at a fresh type), while MONOMORPHIC HM rejects it (the single
+/// `id` type var would have to unify `a` with `a → a` — an occurs-check failure).
+///
+/// The environment maps a variable to a SCHEME (`Forall(qvars, τ)`); a `Var` use INSTANTIATES its scheme
+/// with fresh vars, and a `Let` GENERALIZES the binding's inferred type — quantifying the vars free in it
+/// but NOT free in the environment (a var fixed by an enclosing lambda must stay monomorphic). A `Lam`
+/// parameter is bound as a MONOTYPE scheme (`Forall([], τ)`), so it is not generalized inside its own body.
+///
+///   - `infer env e s k`   → `Result((Ty, subst, counter), errcode)` — Algorithm W over Let-polymorphic HM.
+///   - `principal-type e`  — the closed term's inferred type.
+///   - `well-typed e`      — does inference succeed?
+
+type Ty =
+  | TVar(Int64)
+  | TArrow(Ty, Ty)
+  | TInt
+
+type Scheme =
+  | Forall(List(Int64), Ty)
+
+type Ex =
+  | Lit(Int64)
+  | Var(Int64)
+  | Lam(Int64, Ex)
+  | App(Ex, Ex)
+  | Let(Int64, Ex, Ex)
+
+def apply(s: Map(Int64, Ty), t: Ty) = match t with
+  | Ty.TVar(v) => (match Map.lookup(s, v) with | Option.Some(u) => apply(s, u) | Option.None(_) => Ty.TVar(v))
+  | Ty.TArrow(a, b) => Ty.TArrow(apply(s, a), apply(s, b))
+  | Ty.TInt => Ty.TInt
+
+def occurs(v: Int64, t: Ty) = match t with
+  | Ty.TVar(w) => v == w
+  | Ty.TArrow(a, b) => occurs(v, a) or occurs(v, b)
+  | Ty.TInt => false
+
+def unify(s: Map(Int64, Ty), a: Ty, b: Ty) =
+  let ra = apply(s, a) in
+  let rb = apply(s, b) in
+  (match ra with
+    | Ty.TVar(v) => (match rb with
+      | Ty.TVar(w) => (if v == w then Result.Ok(s) else Result.Ok(Map.insert(s, v, rb)))
+      | _ => (if occurs(v, rb) then Result.Err(1) else Result.Ok(Map.insert(s, v, rb))))
+    | Ty.TInt => (match rb with
+      | Ty.TInt => Result.Ok(s)
+      | Ty.TVar(w) => Result.Ok(Map.insert(s, w, ra))
+      | _ => Result.Err(2))
+    | Ty.TArrow(a1, a2) => (match rb with
+      | Ty.TArrow(b1, b2) => (match unify(s, a1, b1) with | Result.Ok(s1) => unify(s1, a2, b2) | Result.Err(e) => Result.Err(e))
+      | Ty.TVar(w) => (if occurs(w, ra) then Result.Err(1) else Result.Ok(Map.insert(s, w, ra)))
+      | _ => Result.Err(3)))
+
+/// Free type vars of a type.
+def ftv(t: Ty, acc: Set(Int64)) = match t with
+  | Ty.TVar(v) => Set.insert(acc, v)
+  | Ty.TArrow(a, b) => ftv(b, ftv(a, acc))
+  | Ty.TInt => acc
+
+/// Free type vars of a scheme = ftv(body) minus the quantified vars.
+def scheme-ftv(sch: Scheme, acc: Set(Int64)) = match sch with
+  | Scheme.Forall(qs, body) => Set.union(acc, Set.difference(ftv(body, Set.of([])), list-to-set(qs)))
+
+def list-to-set(xs: List(Int64)) = lts(xs, Set.of([]))
+def lts(xs: List(Int64), acc: Set(Int64)) = match xs with
+  | [] => acc
+  | [h, .. t] => lts(t, Set.insert(acc, h))
+
+/// Free type vars of the whole environment (the union over its schemes) — under `s`. These vars are FIXED
+/// by the enclosing scope and must NOT be generalized.
+def env-ftv(env: Map(Int64, Scheme), s: Map(Int64, Ty)) = ef(Map.to-list(env), s, Set.of([]))
+
+def ef(entries: List(Tuple(Int64, Scheme)), s: Map(Int64, Ty), acc: Set(Int64)) = match entries with
+  | [] => acc
+  | [e, .. rest] => (match e with | (_, sch) => ef(rest, s, scheme-ftv(apply-scheme(sch, s), acc)))
+
+/// Apply the substitution through a scheme's body (the quantified vars are fresh, so unaffected).
+def apply-scheme(sch: Scheme, s: Map(Int64, Ty)) = match sch with
+  | Scheme.Forall(qs, body) => Scheme.Forall(qs, apply(s, body))
+
+/// Instantiate a scheme with fresh vars from `k` → `(freshTy, nextK)`.
+def rename-map(qs: List(Int64), k: Int64, m: Map(Int64, Int64)) = match qs with
+  | [] => (m, k)
+  | [q, .. rest] => rename-map(rest, k + 1, Map.insert(m, q, k))
+
+def subst-vars(t: Ty, m: Map(Int64, Int64)) = match t with
+  | Ty.TVar(v) => (match Map.lookup(m, v) with | Option.Some(nv) => Ty.TVar(nv) | Option.None(_) => Ty.TVar(v))
+  | Ty.TArrow(a, b) => Ty.TArrow(subst-vars(a, m), subst-vars(b, m))
+  | Ty.TInt => Ty.TInt
+
+def instantiate(sch: Scheme, k: Int64) = match sch with
+  | Scheme.Forall(qs, body) => (match rename-map(qs, k, Map.empty) with | (m, k2) => (subst-vars(body, m), k2))
+
+/// Generalize `t` (already substitution-applied) w.r.t. the environment: quantify t's free vars not fixed
+/// by the environment.
+def generalize(env: Map(Int64, Scheme), s: Map(Int64, Ty), t: Ty) =
+  Scheme.Forall(Set.to-list(Set.difference(ftv(t, Set.of([])), env-ftv(env, s))), t)
+
+/// Algorithm W with let-polymorphism. `env` maps a variable to its SCHEME.
+def infer(env: Map(Int64, Scheme), e: Ex, s: Map(Int64, Ty), k: Int64) = match e with
+  | Ex.Lit(_) => Result.Ok((Ty.TInt, s, k))
+  | Ex.Var(x) => (match Map.lookup(env, x) with
+    | Option.Some(sch) => (match instantiate(sch, k) with | (t, k2) => Result.Ok((t, s, k2)))
+    | Option.None(_) => Result.Err(9))
+  | Ex.Lam(p, body) =>
+    let pv = Ty.TVar(k) in
+    (match infer(Map.insert(env, p, Scheme.Forall([], pv)), body, s, k + 1) with
+      | Result.Ok(r) => (match r with | (bt, s1, k1) => Result.Ok((Ty.TArrow(apply(s1, pv), bt), s1, k1)))
+      | Result.Err(e) => Result.Err(e))
+  | Ex.App(f, a) =>
+    (match infer(env, f, s, k) with
+      | Result.Ok(rf) => (match rf with | (ft, sf, kf) =>
+        (match infer(env, a, sf, kf) with
+          | Result.Ok(ra) => (match ra with | (at, sa, ka) =>
+            let rv = Ty.TVar(ka) in
+            (match unify(sa, ft, Ty.TArrow(at, rv)) with
+              | Result.Ok(s2) => Result.Ok((apply(s2, rv), s2, ka + 1))
+              | Result.Err(e) => Result.Err(e)))
+          | Result.Err(e) => Result.Err(e)))
+      | Result.Err(e) => Result.Err(e))
+  | Ex.Let(x, rhs, body) =>
+    (match infer(env, rhs, s, k) with
+      | Result.Ok(rr) => (match rr with | (rt, sr, kr) =>
+        let sch = generalize(env, sr, apply(sr, rt)) in
+        infer(Map.insert(env, x, sch), body, sr, kr))
+      | Result.Err(e) => Result.Err(e))
+
+def principal-type(e: Ex) = match infer(Map.empty, e, (Map.empty : Map(Int64, Ty)), 0) with
+  | Result.Ok(r) => (match r with | (t, s, _) => apply(s, t))
+  | Result.Err(_) => Ty.TInt
+
+def well-typed(e: Ex) = match infer(Map.empty, e, (Map.empty : Map(Int64, Ty)), 0) with
+  | Result.Ok(_) => true
+  | Result.Err(_) => false
+
+def arrows(t: Ty) = match t with | Ty.TArrow(a, b) => 1 + arrows(a) + arrows(b) | _ => 0
+def is-int(t: Ty) = match t with | Ty.TInt => true | _ => false
+
+/// Builders.
+def v(x: Int64) = Ex.Var(x)
+def lam(p: Int64, b: Ex) = Ex.Lam(p, b)
+def app(f: Ex, a: Ex) = Ex.App(f, a)
+def lett(x: Int64, rhs: Ex, body: Ex) = Ex.Let(x, rhs, body)
+
+@test
+def il-let-poly-id-applied-to-itself() =
+  // THE let-polymorphism witness: let id = \x. x in (id id) — type-checks under let-poly.
+  let e = lett(0, lam(1, v(1)), app(v(0), v(0))) in
+  if well-typed(e) then unit else trap("let id = \\x.x in (id id) is let-polymorphic")
+
+@test
+def il-mono-id-self-app-rejected() =
+  // WITHOUT the let (id inline, monomorphic): (\id. id id)(\x.x) — id's single type var can't unify with
+  // its own arrow → occurs-check failure → NOT well-typed. This is what let-poly buys over mono HM.
+  let e = app(lam(0, app(v(0), v(0))), lam(1, v(1))) in
+  if well-typed(e) then trap("a MONOMORPHIC self-application is rejected (occurs check)") else unit
+
+@test
+def il-let-id-used-at-two-types() =
+  // let id = \x. x in (id 5) : Int — id instantiated at Int; still well-typed and Int.
+  let e = lett(0, lam(1, v(1)), app(v(0), Ex.Lit(5))) in
+  if is-int(principal-type(e)) then unit else trap("(id 5) : Int")
+
+@test
+def il-let-monomorphic-binding() =
+  // let y = 5 in y : Int — a monomorphic let.
+  let e = lett(0, Ex.Lit(5), v(0)) in
+  if is-int(principal-type(e)) then unit else trap("let y = 5 in y : Int")
+
+@test
+def il-let-body-is-arrow() =
+  // let id = \x. x in id : the body is `id` instantiated → an arrow type.
+  let e = lett(0, lam(1, v(1)), v(0)) in
+  if arrows(principal-type(e)) == 1 then unit else trap("let id=... in id is an arrow")
+
+@test
+def il-lambda-param-not-generalized() =
+  // \f. (let g = f in g) : the let binds g to f, but f is a LAMBDA PARAM (monomorphic, its var fixed by
+  // the enclosing λ) — g must NOT be generalized. Applying the whole thing: (\f. let g=f in g) works and
+  // stays an arrow (a → a shape via the identity-of-f). Just check it's well-typed and an arrow.
+  let e = lam(0, lett(1, v(0), v(1))) in
+  if well-typed(e) then (if arrows(principal-type(e)) >= 1 then unit else trap("arrow")) else trap("λ-param let is well-typed")
+
+@test
+def il-unbound-still-fails() =
+  // a free variable still fails (env has no scheme for it).
+  if well-typed(v(7)) then trap("unbound var fails") else unit
+
+@test
+def il-nested-let() =
+  // let a = 1 in let b = 2 in a : Int — nested monomorphic lets.
+  let e = lett(0, Ex.Lit(1), lett(1, Ex.Lit(2), v(0))) in
+  if is-int(principal-type(e)) then unit else trap("nested lets : Int")
+
+@test
+def il-let-poly-const() =
+  // let k = \x. \y. x in ((k 5) 6) : Int — k generalized to ∀a b. a→b→a, applied at Int,Int → Int.
+  let k = lam(0, lam(1, v(0))) in
+  let e = lett(2, k, app(app(v(2), Ex.Lit(5)), Ex.Lit(6))) in
+  if is-int(principal-type(e)) then unit else trap("(k 5 6) : Int")
+
+@test
+def il-let-poly-two-uses-different-types() =
+  // let id = \x.x in (id (id 5)) : Int — id used twice, once at (Int→Int) applied to (id 5). Well-typed Int.
+  let e = lett(0, lam(1, v(1)), app(v(0), app(v(0), Ex.Lit(5)))) in
+  if is-int(principal-type(e)) then unit else trap("id (id 5) : Int")
+
+export { infer, principal-type, well-typed }

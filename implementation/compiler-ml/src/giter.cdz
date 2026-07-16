@@ -19,11 +19,12 @@
 /// `next` is still the pull interface (`GIter(a) -> Option((a, GIter(a)))`), total (never traps) and pure
 /// (re-stepping yields the same element); the cons-cell IS the reified rest, so `next` just projects it.
 ///
-/// SCOPE (slices 1–2, all CLOSURE-FREE — the shape Part C directly unblocks). Element-carrying producers
+/// SCOPE (slices 1–3, all CLOSURE-FREE — the shape Part C directly unblocks). Element-carrying producers
 /// (`from-list`, `singleton`), the `next` pull interface, closure-free consumers (`count`, `collect`, `nth`,
-/// `last`), and closure-free transformers (`chain`, `take`, `drop`). Every function here is self-recursive
-/// and threads NO closure, so each monomorphizes independently per element type (composes at Int64 AND
-/// String in one program — the tests pin this).
+/// `last`), and closure-free transformers (`chain`, `take`, `drop`, `zip`). Every function here is
+/// self-recursive and threads NO closure, so each monomorphizes independently per element type (composes at
+/// Int64 AND String in one program — the tests pin this). `zip` even CHANGES the element type (to a tuple)
+/// without a `∀`-annotation, because the tuple element is inferred, not written.
 ///
 /// NOT YET (gated on inference gaps, filed + routed to v-inference; land the tick they merge):
 ///   - CLOSURE-STORING transformers (`map`/`filter`): a recursive-generic function that threads a CLOSURE
@@ -131,6 +132,17 @@ def take(it, n) = if n <= 0 then GIter.Nil(unit) else (match it with
 def drop(it, n) = match it with
   | GIter.Nil(_) => GIter.Nil(unit)
   | GIter.Cons(h, rest) => if n <= 0 then GIter.Cons(h, rest) else drop(rest, n - 1)
+
+/// `zip(a, b)` — pair the two iterators element-wise into a `GIter((a, b))`, stopping at the SHORTER one.
+/// Closure-free; the result element is a tuple, so this composes at two element types AND changes the
+/// element type WITHOUT needing a `∀`-annotation (the tuple element is inferred, not written). A generic
+/// zip is the closure-free building block a future `zip-with` (closure-storing) will wrap once the
+/// transformer closure-tie lands.
+def zip(a, b) = match a with
+  | GIter.Nil(_) => GIter.Nil(unit)
+  | GIter.Cons(ha, ra) => (match b with
+    | GIter.Nil(_) => GIter.Nil(unit)
+    | GIter.Cons(hb, rb) => GIter.Cons((ha, hb), zip(ra, rb)))
 
 /// TESTS ----------------------------------------------------------------------------------------------
 
@@ -261,5 +273,30 @@ def last-strings() =
 def take-drop-chain-compose() =
   if int-list-eq(collect(take(drop(chain(from-list([1, 2]), from-list([3, 4, 5, 6])), 1), 3)), [2, 3, 4])
   then unit else trap("take(drop(chain)) composition")
+
+/// SLICE-3: `zip` — closure-free, element-CHANGING (to a tuple), pinned at two source element types.
+
+@test
+def zip-stops-at-shorter-ints() =
+  if count(zip(from-list([1, 2, 3]), from-list([10, 20]))) == 2
+  then unit else trap("zip stops at shorter (ints)")
+
+@test
+def zip-mixed-element-types() =
+  if count(zip(from-list(["a", "b"]), from-list([1, 2, 3]))) == 2
+  then unit else trap("zip String with Int64")
+
+@test
+def zip-pairs-carry-both-elements() =
+  match next(zip(from-list([7, 8]), from-list(["x", "y"]))) with
+  | Option.None(_) => trap("zip of non-empty must yield")
+  | Option.Some(p) => (match p with | (pair, _rest) =>
+    (match pair with | (l, r) =>
+      if l == 7 then (if r == "x" then unit else trap("zip right elem")) else trap("zip left elem")))
+
+@test
+def zip-empty-left-is-empty() =
+  if count(zip(take(from-list([1]), 0), from-list([9, 9, 9]))) == 0
+  then unit else trap("zip with empty left is empty")
 
 export { GIter.* }

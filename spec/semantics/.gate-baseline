@@ -2,6 +2,7 @@
 pass	Ast.decode converts bytes to an AST sum type value
 pass	Ast.decode decodes bytes that arrive as a function argument
 pass	Ast.encode and Ast.decode round-trip
+pass	BETA over the capture-avoiding substitution still proves the identity theorem (no regression)
 pass	COMPOUND RESULT PAYLOAD: (Result (Tuple Int64 Int64) (Tuple Int64 Int64)) — BOTH sides compound
 pass	COMPOUND RESULT PAYLOAD: (Result (Tuple Int64 Int64) Int64) arg, drive Err (scalar side)
 pass	COMPOUND RESULT PAYLOAD: (Result (Tuple Int64 Int64) Int64) arg, drive Ok (tuple side)
@@ -732,6 +733,7 @@ pass	a function's return type contradicting the body is rejected
 pass	a function-typed parameter annotation is not silently discarded in the body
 pass	a function-typed parameter annotation's result type is checked against the argument
 pass	a function-typed parameter with a matching Bool-returning argument is accepted
+pass	a generated value with a BIGINT leaf is reproducible (compound = walks the bignum)
 pass	a generic definition takes the type as a type-valued parameter
 pass	a generic recursive sum references itself bare and carries its own type parameter
 pass	a generic recursive sum with a bare self-reference nested in a list parameter
@@ -1073,6 +1075,7 @@ pass	a mutually-recursive group threads two nested handlers' states at once
 pass	a mutually-recursive group with the perform in a DIFFERENT branch from the mutual call folds
 pass	a mutually-recursive pair fully named by the export clause resolves
 pass	a mutually-recursive parser projects a return tuple and rebuilds one with a boxed sum across the edge
+pass	a naive (non-renaming) substitution captures a free variable — the bug capture-avoidance prevents
 pass	a name bound to a string keys a map by its value, not the literal name
 pass	a name pattern binds the runtime scrutinee when no literal arm matches
 pass	a name resolves to the nearest enclosing binding
@@ -1156,6 +1159,7 @@ pass	a nested map pattern with a malformed rest names the shape, not an unbound 
 pass	a nested match missing an inner variant under a DISC-≥1 variant is non-exhaustive
 pass	a nested match on a recursive sum falls through when the inner variant differs (known outer disc)
 pass	a nested match on a recursive sum with a KNOWN outer discriminant reads the right payload depth
+pass	a general recursive-sum recursion (Nil|Cons count) reads the right payload through the fold
 pass	a nested match on a runtime scrutinee
 pass	a nested module's function export is applied through the projection chain
 pass	a nested option value annotated with the wrong inner payload type is rejected
@@ -1275,6 +1279,7 @@ pass	a plain quote does not evaluate a quasiquote's unquote nested inside it
 pass	a plain record compared to a nominal record of the same shape is a type error
 pass	a plural family-unit spelling names the same unit as its singular
 pass	a positional tuple access out of the tuple's static arity is a type error
+pass	a post-order effectful walk draws each node's id AFTER both children (SSA reg-alloc shape)
 pass	a predicate closure returning Bool drives an early-exit recursive HOF
 pass	a prefixed quantity displays scaled to its reference unit (Float)
 pass	a prefixed unit combines with its base by converting to the reference (Float)
@@ -1381,6 +1386,7 @@ pass	a recursive effectful walk BUILDS a list as its return value, one fresh ele
 pass	a recursive effectful walk accumulates into a STRING-state handler
 pass	a recursive effectful walk under a state-threading handler compiles without leaking an internal name
 pass	a recursive emitter dispatches on a sum's variants to build bytes per node
+pass	a recursive evaluator destructures a built Ast by quote patterns and recurses
 pass	a recursive fold infers a callback applied to the RECURSIVE-CALL RESULT
 pass	a recursive fold of a cons-list to bytes is the whole program result
 pass	a recursive fold over a sum list infers its unannotated callback parameter
@@ -1574,6 +1580,7 @@ pass	a runtime record nested in a tuple compares component-wise
 pass	a runtime record whose field is a runtime tuple escapes to the host
 pass	a runtime remainder takes the dividend's sign
 pass	a runtime right shift by the bit width or more traps
+pass	a runtime scrutinee keeps the full switch and nested dispatch
 pass	a runtime scrutinee matching no arm traps
 pass	a runtime scrutinee of one sum type rejects a foreign sum's pattern
 pass	a runtime scrutinee selects a non-first literal arm
@@ -1588,6 +1595,8 @@ pass	a runtime string compared against a literal folds against the literal side
 pass	a runtime string equality selects a branch by comparing a parameter to a literal
 pass	a runtime string is indexed by scalar and the extracted scalar is returned
 pass	a runtime string is sliced by scalar offsets
+pass	a runtime string pattern dispatches by content (value-eq compare)
+pass	a runtime string pattern falls through to the wildcard when no literal matches
 pass	a runtime string returned across the run boundary renders as its quoted text
 pass	a runtime string rope compared through a borrowed operand
 pass	a runtime string rope compares equal to its flat twin
@@ -1704,6 +1713,7 @@ pass	a shared trapping operand traps under a trap-free condition
 pass	a shared trapping second operand does not preempt a trapping condition
 pass	a short-circuit connective threads a branch perform to the continuation
 pass	a shorter string that is a prefix of a longer one compares Less
+pass	a sibling-recursive walk threads a HEAP list accumulator across the siblings
 pass	a signed i8 segment encodes as two's complement
 pass	a signed narrow if-branch opposite a bare literal computes at the narrow width
 pass	a signed narrow match binder returns the bound value
@@ -1799,6 +1809,7 @@ pass	a threaded String param consumed as the right concat operand survives the l
 pass	a threaded String param consumed twice per step survives the loop
 pass	a three-argument closure exported to the host is called with all three
 pass	a three-arm match consumed as an operand yields into the enclosing expression
+pass	a three-deep known-disc nested match reads the right payload at every level
 pass	a three-deep tuple projection chain retains the innermost consumed child
 pass	a three-element runtime tuple is returned as a result
 pass	a three-level curried spine applies through both intermediate closures
@@ -2278,6 +2289,7 @@ pass	byte length agrees with the length of the encoded bytes
 pass	byte length counts the normalized form, not the source spelling
 pass	byte length is the UTF-8 byte count
 pass	byte sequences are equal by their bytes in order
+pass	capture-avoiding substitution renames a binder so the substituted term's free variable is not captured
 pass	chained guards of the same variant are tried in order
 pass	char to-int and from-int round-trip through the scalar value
 pass	checked addition yields None on overflow instead of trapping
@@ -2473,6 +2485,7 @@ pass	eval of a partially-exported type's WITHHELD constructor is rejected
 pass	eval of a quasiquote splicing a compile-time-known value
 pass	eval of a quasiquote splicing a string works through String ops
 pass	eval of a quasiquote-built form with a float unquote folds
+pass	eval of a quoted boolean connective short-circuits
 pass	eval of a quoted boolean executes it to the boolean value
 pass	eval of a quoted conditional reduces its comparison condition first
 pass	eval of a quoted conditional takes the branch its boolean literal selects
@@ -2481,6 +2494,7 @@ pass	eval of a quoted float feeds ordinary float arithmetic
 pass	eval of a quoted lambda application folds
 pass	eval of a quoted let-binding form folds
 pass	eval of a quoted match form folds to the selected arm
+pass	eval of a quoted ordering comparison drives the branch
 pass	eval of a quoted private constructor is withheld exactly as a direct reference — no forge
 pass	eval of a quoted proof-variant match cannot destructure an abstract proof outside the kernel
 pass	eval of a quoted string executes it to the string value
@@ -2500,6 +2514,8 @@ pass	extending a record adds a new field
 pass	extending a record with an already-present field is rejected
 pass	extracting a high byte composes shift and mask
 pass	false is less than true
+pass	float <= is NOT (< or =): they diverge on NaN because canonical-byte equality says nan = nan
+pass	float >= is NOT (> or =): the same NaN divergence mirrors on the greater-or-equal side
 pass	float division rounds under the fixed mode
 pass	float division that does not divide evenly rounds to nearest
 pass	float multiplication uses the arithmetic operator
@@ -2942,7 +2958,10 @@ pass	the int-to-float generator is order-preserving (a < b implies of a < of b)
 pass	the intersection contains the elements in both sets
 pass	the intersection of disjoint sets is empty
 pass	the kernel proves reflexivity end-to-end: refl t yields a theorem whose conclusion is (t = t)
+pass	the kernel proves the identity theorem ⊢ (λx.x) y = y via BETA — the first-theorem milestone
+pass	the kernel's ABS rule lifts an equation under a binder: from |- t=u derive |- (λx.t)=(λx.u)
 pass	the kernel's ASSUME rule yields the sequent {p} |- p
+pass	the kernel's BETA rule reduces an application of a lambda: (λv.body) arg = body[arg/v]
 pass	the kernel's DEDUCT_ANTISYM rule: from A |- p and B |- q derive (A-q)++(B-p) |- p=q
 pass	the kernel's EQ_MP rule: from |- p=q and G |- p derive G |- q (hypotheses unioned)
 pass	the kernel's MK_COMB rule: equals applied to equals are equal — from f=g and x=y derive (f x)=(g y)
@@ -3032,6 +3051,7 @@ pass	the widening carries a full-width magnitude through BigInt
 pass	the width-indexed and aliased annotations of one value do not conflict
 pass	the width-indexed and aliased float annotations of one value do not conflict
 pass	the wrapping additive and multiplicative identities preserve a boundary operand exactly
+pass	the λ-extended kernel Thm stays unforgeable — Thm.Seq with an Abs term outside is CDZ0214
 pass	three closures with a SHARED signature cross as two resource types
 pass	three distinct closure signatures cross as three resource types
 pass	three leaf variants in one quoted form each dispatch their own tag
@@ -3171,5 +3191,3 @@ pass	wrapping-sub wraps a boundary-crossing runtime Int64 at the min boundary
 todo	SUM ARG + LIST RESULT declines cleanly (Option arg, List result)
 todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
-pass	a sibling-recursive walk threads a HEAP list accumulator across the siblings
-pass	a post-order effectful walk draws each node's id AFTER both children (SSA reg-alloc shape)

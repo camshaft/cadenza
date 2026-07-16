@@ -8560,17 +8560,14 @@ fn build_lit_test(
     path_types: &mut PathTypes,
     fallthrough: Option<&std::rc::Rc<crate::core::SumCont>>,
 ) -> Result<crate::core::SumCont, Reject> {
-    // A `Str` probe that did NOT fold (the payload is a RUNTIME value, not a constant `Core::ConstStr`)
-    // needs a runtime string-equality test the backend does not emit — decline so the match is a Todo. A
-    // `ListLen` probe over a RUNTIME list payload IS emitted now: the backend reads `vec-len` of the
-    // sub-list handle at `lit_path` and compares it (`== len` fixed / `>= len` rest) — the runtime twin of
-    // the length-fold, so a `(Node.Call (list x .. rest))` matched over a runtime node dispatches by its
-    // child list's length. The CONSTANT case folded in `build_tree` and never reaches here.
-    if matches!(probe, crate::core::Probe::Str(_)) {
-        return Err(Reject::decline(
-            "a string pattern over a runtime payload is not yet supported (only a constant folds)",
-        ));
-    }
+    // A `Str` probe that did NOT fold (the payload is a RUNTIME value, not a constant `Core::ConstStr`) is
+    // emitted as a runtime STRING-EQUALITY test: the backend walks `lit_path` to the leaf String handle,
+    // `bytes-compact`s it (rope→canonical flat, refcount-neutral — the borrowed payload is not consumed),
+    // builds the literal as a fresh `ConstStr` leaf, and `value-eq`s them (the same `champ_eq` physical-byte
+    // compare `Core::ValueEq` uses on two strings) — dispatching an `Ast.Name "+"` / a `(k "lit")` map value
+    // over a runtime value by its content. Like the `ListLen` runtime test, it is NON-refining (a string is
+    // an open type — its else is the rest of the matrix verbatim), so it shares the fall-through the same
+    // way. The CONSTANT case still folds in `build_tree` and never reaches here.
     // BOOL is a FINITE 2-value type: testing `Bool(b)` at `lit_path` means the ELSE branch is exactly the
     // world where that sub-value is `!b`. So in `else_rows`, refine every row's lit-test at `lit_path`
     // AGAINST the known `!b`: a row testing `Bool(!b)` there has its test SATISFIED (drop it — the arm now

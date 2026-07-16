@@ -994,6 +994,40 @@ mod tests {
     }
 
     #[test]
+    fn a_cdz_fence_with_a_malformed_body_falls_back_to_raw_only() {
+        // Graceful degradation: a ```cdz fence whose body does NOT parse cleanly must NOT embed a
+        // broken/error subtree (only a clean body earns the 4th subtree child) and must NOT fail the
+        // whole document parse — the doc is data, so bad code in a fence is just kept as raw text (a
+        // README with a work-in-progress snippet still reads as a document). The `raw` is preserved
+        // verbatim so it round-trips byte-exact.
+        let md = "```cdz\ndef f() =\n```\n"; // `def f() =` has no body → a parse error
+        let a = read(md);
+        let cb = (0..a.structure.len() as u32)
+            .map(StructId)
+            .find(|&id| a.head_name(id) == Some("code-block"))
+            .expect("a code-block node");
+        let items = list_items(&a, cb);
+        assert_eq!(
+            items.len(),
+            3,
+            "a malformed cdz fence is raw-only (head + info + raw, NO subtree)"
+        );
+        assert_eq!(str_leaf(&a, items[1]).as_deref(), Some("cdz"));
+        assert_eq!(
+            str_leaf(&a, items[2]).as_deref(),
+            Some("def f() ="),
+            "raw body kept verbatim"
+        );
+        // Arena-idempotent, and the raw body survives byte-exact through a print→read (fences are the
+        // one part of a markdown doc that IS byte-exact — the printer emits the stored `raw`).
+        assert_idempotent(md);
+        assert!(
+            print(&a, 100).contains("def f() ="),
+            "malformed body printed verbatim"
+        );
+    }
+
+    #[test]
     fn nested_list_and_tight_items() {
         // A tight list (inline text directly under `item`) and a nested list must both round-trip.
         assert_idempotent("- one\n- two\n\n  nested paragraph\n- three\n");

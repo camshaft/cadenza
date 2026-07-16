@@ -249,6 +249,11 @@ pub enum FleetCmd {
     /// Print the board: each agent's role/model/status, whether its tmux window is live, its inbox
     /// depth, the work-queue depth, and how far `trunk` is ahead of / behind `origin/main`.
     Status,
+    /// (Re)install the fleet's git hooks into the hub's shared hooks dir, WITHOUT a full `up`. `up`
+    /// installs them too, but this lets the operator/concierge deploy (or refresh) them on demand —
+    /// e.g. to activate the trunk-clobber logger immediately without restarting the fleet. Idempotent
+    /// and safe (never clobbers a foreign hook). See `install_git_hooks`.
+    InstallHooks,
     /// Register a new agent, create its worktree off `trunk`, optionally seed a work item into its
     /// inbox, and bring it up. This is what the corpus-bugfix PM calls to mint a per-issue `fix`
     /// agent, and what the concierge calls to spin up a vertical on the operator's behalf.
@@ -502,6 +507,7 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
         FleetCmd::Up => up(&fleet),
         FleetCmd::Down => down(&fleet),
         FleetCmd::Status => status(&fleet),
+        FleetCmd::InstallHooks => install_git_hooks(&fleet),
         FleetCmd::Add {
             name,
             role,
@@ -710,6 +716,11 @@ fn install_git_hooks(fleet: &Fleet) {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&hook_path, std::fs::Permissions::from_mode(0o755));
     }
+    println!(
+        "fleet: installed the fail-open trunk-clobber logger at {} (logs backward trunk moves to {}).",
+        hook_path.display(),
+        log_path.display()
+    );
 }
 
 fn register_merge_drivers(fleet: &Fleet) {
@@ -2270,8 +2281,11 @@ fn next_delivery_seq(fleet: &Fleet) -> u64 {
     ));
     if std::fs::write(&tmp, format!("{next}\n")).is_ok() {
         // rename is atomic on the same filesystem; a losing racer's rename simply wins-last with an
-        // equal-or-higher value, never a partial file.
-        let _ = std::fs::rename(&tmp, &path);
+        // equal-or-higher value, never a partial file. If the rename itself FAILS (transient perm/IO),
+        // clean up the temp so it doesn't linger (PR #457) — the write succeeded but the swap didn't.
+        if std::fs::rename(&tmp, &path).is_err() {
+            let _ = std::fs::remove_file(&tmp);
+        }
     } else {
         // Best-effort cleanup if the write half-failed, so a stray temp doesn't linger.
         let _ = std::fs::remove_file(&tmp);
@@ -2603,9 +2617,19 @@ fn count_dir(dir: &Path, keep: impl Fn(&str) -> bool) -> usize {
 /// can SURFACE the violation instead of it being silently self-healed. `None` if the reflog is
 /// unreadable; `Some(n)` with the count of clobbers seen in the window (0 = clean).
 fn trunk_clobber_count(repo: &Path, window: usize) -> Option<usize> {
+    // Bound the read at the source with `-n <window>` (PR #456): `git reflog show` is otherwise
+    // unbounded, so a large trunk reflog would be read + parsed in full each call just to look at the
+    // most recent `window` entries. The in-process `.take(window)` stays as a belt-and-suspenders cap.
     let out = Command::new("git")
         .current_dir(repo)
-        .args(["reflog", "show", "trunk", "--format=%gs"])
+        .args([
+            "reflog",
+            "show",
+            "-n",
+            &window.to_string(),
+            "trunk",
+            "--format=%gs",
+        ])
         .output()
         .ok()?;
     if !out.status.success() {
