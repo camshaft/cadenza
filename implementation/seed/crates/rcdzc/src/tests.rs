@@ -45232,6 +45232,15 @@ mod stage1 {
             "(module m (def (f \"x\") 1) (export f))",
             // A literal amid valid params is still caught (anchored at the literal, not the whole list).
             "(module m (def (f x 5 y) 1) (export f))",
+            // A `(fn (<param>…) <body>)` LAMBDA parameter is the SAME binder position, held to the same
+            // rule — a literal `fn` param used to be SILENTLY ACCEPTED (the def-param scan reads only
+            // `db.defs`, and a lambda's params are never registered there), an asymmetry between the two
+            // binder forms now closed. The `fn` twins of the three def literals above.
+            "(module m (def (f) ((fn (5) 3) 1)) (export f))",
+            "(module m (def (f) ((fn (true) 3) 1)) (export f))",
+            "(module m (def (f) ((fn (\"x\") 3) 1)) (export f))",
+            // A literal amid valid `fn` params, anchored at the literal.
+            "(module m (def (f) ((fn (x 5 y) 3) 1 2 3)) (export f))",
         ] {
             assert_eq!(
                 d(src).code.as_deref(),
@@ -45242,12 +45251,24 @@ mod stage1 {
         }
         // NO false positive: a name, a wildcard `_`, an annotated binder, a destructuring pattern, and a
         // nullary def all stay clear of THIS fault (a `_`/name may still get the separate ambiguous-boundary
-        // fault when exported, which is unrelated).
+        // fault when exported, which is unrelated). The `fn` binder form is held to the same clear cases.
         for ok in [
             "(module m (def (f (: x Int64)) (+ x 1)) (export f))",
             "(module m (def (g _) 1) (def (main) (g 5)) (export main))",
             "(module m (def (f (: (tuple a b) (Tuple Int64 Int64))) (+ a b)) (export f))",
             "(module m (def (main) 1) (export main))",
+            // A `fn` with a name, a wildcard, and an annotated binder is clear of THIS fault.
+            "(module m (def (f) ((fn (x) x) 1)) (export f))",
+            "(module m (def (f) ((fn (_) 3) 1)) (export f))",
+            "(module m (def (f) ((fn ((: x Int64)) x) 1)) (export f))",
+            // A sum VARIANT named `fn` (a Rust keyword, a legal Cadenza identifier) reifies to a
+            // `(fn <payload>)` synth node that the fn-param scan MUST NOT mistake for a lambda — the scan
+            // requires a lambda's `[params, body]` (tail length ≥ 2), and this synth is bodyless. This
+            // pins the regression the naive arena-wide `(fn …)` scan caused (false "literal binds nothing"
+            // on the `fn`-named variant's payload occurrence).
+            "(do (type W (fn Int64) (struct Int64) (enum)) (def (f (: w W)) \
+             (match w ((W.fn n) n) ((W.struct n) (* n 2)) ((W.enum) 0))) \
+             (def (main) (f (W.fn 5))) (export main))",
         ] {
             assert!(
                 !crate::diagnostics(&mut crate::db::Db::load(parse(ok)))

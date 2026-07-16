@@ -1878,10 +1878,38 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
     // and `param_name_occ` just returns the literal node). Reject a bare-atom parameter that is not a name
     // (CDZ0201): a parameter must name something. A COMPOUND (list) parameter is a destructuring pattern —
     // left to the binding-pattern path, which rejects a refutable/ill-formed one with its own coded fault.
+    // A `(fn (<param>…) <body>)` LAMBDA parameter is the SAME binder position as a def parameter, so the
+    // same rule holds: a bare LITERAL parameter binds nothing. But the def-param scan above reads only
+    // `db.defs` (top-level definitions), and a lambda's parameters are never registered there — so
+    // `(fn (5) …)` / `(fn (true) …)` was SILENTLY ACCEPTED while the def twin `(def (f 5) …)` is rejected,
+    // an asymmetry between the two binder forms. `resolve_lambda` validates the param LIST's shape (it must
+    // be a list, the body must be present) but not that each element is a binder. Scan every `(fn …)` form
+    // in the arena and apply the identical predicate (a bare atom that is not a name), so the two binder
+    // positions reject a literal parameter identically. A COMPOUND param is a destructuring pattern (left to
+    // the binding-pattern path); `_` and a `(: name T)` binder `as_name`/list out exactly as for a def.
     let malformed_params: Vec<StructId> = db
         .defs
         .iter()
         .flat_map(|d| d.params.clone())
+        .chain(
+            (0..db.ast.structure.len() as u32)
+                .map(StructId)
+                // A GENUINE user lambda is `(fn (<param>…) <body>)` — its tail is `[params, body]`, length
+                // ≥ 2. Requiring a BODY (`tail.len() >= 2`) is what distinguishes a real lambda from a
+                // SYNTHESIZED `(fn …)` node: `modules::synthesize` / the type-record synthesis wrap a
+                // declaration in a `(fn …)`-headed record whose "params" position holds member/variant
+                // occurrences, NOT lambda binders — and a type-record synth is `(fn <record>)` (tail length
+                // 1, no body). Scanning those would false-flag a variant NAMED `fn` (it collides with the
+                // lambda keyword and reifies to a non-name atom). A bodyless user `(fn (5))` is caught by
+                // `resolve_lambda`'s own "no body" reject, so requiring a body loses no real diagnostic.
+                .filter(|&id| db.ast.as_form(id, "fn").is_some_and(|t| t.len() >= 2))
+                .filter_map(|id| db.ast.as_form(id, "fn").and_then(|t| t.first().copied()))
+                .filter_map(|params_occ| match db.ast.get(params_occ) {
+                    crate::ast::Struct::List(ps) => Some(ps.clone()),
+                    _ => None, // a non-list fn param position is `resolve_lambda`'s shape reject
+                })
+                .flatten(),
+        )
         .filter(|&p| {
             matches!(db.ast.get(p), crate::ast::Struct::Atom(_)) && db.ast.as_name(p).is_none()
         })
