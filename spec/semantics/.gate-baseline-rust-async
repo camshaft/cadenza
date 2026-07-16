@@ -254,6 +254,7 @@ pass	a bit-field value that needs more bits than its width does not fit its segm
 pass	a bit-field wider than a byte packs across the byte boundary big-endian
 pass	a bit-field width that is not a compile-time constant is ill-formed
 pass	a bits pattern segment reads sub-byte fields back into integers
+pass	a bitwise operator on a boolean operand names the integer requirement
 pass	a bool match missing the false arm is non-exhaustive
 pass	a bool match missing the true arm is non-exhaustive
 pass	a bool match on a constant scrutinee is non-exhaustive even when the constant hits the sole arm
@@ -1475,6 +1476,7 @@ pass	a shared trapping operand before the differing one does not preempt a trapp
 pass	a shared trapping operand before the differing one does not preempt a trapping condition (compare head)
 pass	a shared trapping operand traps under a trap-free condition
 pass	a shared trapping second operand does not preempt a trapping condition
+pass	a shift by a non-numeric count names the integer requirement
 pass	a short-circuit connective threads a branch perform to the continuation
 pass	a shorter string that is a prefix of a longer one compares Less
 pass	a sibling-recursive walk threads a HEAP list accumulator across the siblings

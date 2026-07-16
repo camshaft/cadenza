@@ -41,6 +41,18 @@ test("dropdown default falls back to the first option when the declared default 
   assert.equal(w.default, "a");
 });
 
+test("radio parses like dropdown — same String single-choice shape, control: radio", () => {
+  assert.deepEqual(parseWidgets('pick : String = radio("x", "y", default: "y")').widgets[0], {
+    name: "pick", type: "String", control: "radio", options: ["x", "y"], default: "y",
+  });
+  // default falls back to the first option when not one of the options
+  const w = parseWidgets('r : String = radio("a", "b", default: "z")').widgets[0] as Extract<Widget, { control: "radio" }>;
+  assert.equal(w.default, "a");
+  // a non-String type is rejected with a radio-specific message
+  const err = parseWidgets("bad : Int64 = radio(\"a\")").errors[0];
+  assert.match(err.message, /radio\(\.\.\.\) produces a String/);
+});
+
 test("multiple widgets in one cell parse in order; comments + blanks are skipped", () => {
   const src = [
     "-- inputs",

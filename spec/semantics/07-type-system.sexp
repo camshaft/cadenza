@@ -1347,6 +1347,38 @@
             (export main)))
   (output (: 100 Int64)))
 
+(case "Type.of grounds a function stored in a RECORD FIELD"
+  (doc    "The record-field position of the function-domain reflection family (coverage companion to the
+           reflected_ty domain-grounding fixes). A function in a record field `(record (fld f))` is grounded
+           from its body like a tuple/list element: `f x = x + 1` is `(-> Int64 Int64)` and `g b = if b 0 1`
+           is `(-> Bool Int64)`, so `(record (fld f))` reflects `(Record (fld (-> Int64 Int64)))` and
+           `(record (fld g))` reflects `(Record (fld (-> Bool Int64)))` — distinct → `Type.eq` false; but
+           `(record (fld f))` vs `(record (fld f2))` (both `(-> Int64 Int64)`) is true. `0 + 100 = 100`.")
+  (input  (do
+            (def (f x) (+ x 1))
+            (def (f2 z) (+ z 9))
+            (def (g b) (if b 0 1))
+            (def (main) (+ (if (Type.eq (Type.of (record (fld f))) (Type.of (record (fld g)))) 1 0)
+                           (if (Type.eq (Type.of (record (fld f))) (Type.of (record (fld f2)))) 100 0)))
+            (export main)))
+  (output (: 100 Int64)))
+
+(case "Type.of reflects equal for the SAME function stored as a MAP VALUE"
+  (doc    "The map-value position (coverage companion to the reflected_ty domain-grounding fixes) — the
+           SAME-function half, which is CORRECT today: `Map.insert(Map.empty, 1, f)` and the same with `f2`
+           (both `(-> Int64 Int64)`) reflect the SAME map type, so `Type.eq` is true. `main` returns 1.
+           NOTE: the DIFFERENT-domain map-value/key case is a KNOWN reflected_ty leak (a fn stored in a `Map`
+           has its domain left `Any`, so distinct-domain map fns wrongly reflect equal); it is routed to
+           v-inference and its graded case is held until the fix lands. This same-fn case is the safe,
+           already-correct companion, pinned now.")
+  (input  (do
+            (def (f x) (+ x 1))
+            (def (f2 z) (+ z 9))
+            (def (main) (if (Type.eq (Type.of (Map.insert Map.empty 1 f))
+                                     (Type.of (Map.insert Map.empty 1 f2))) 1 0))
+            (export main)))
+  (output (: 1 Int64)))
+
 (case "an if on Type.eq selects a branch at compile time"
   (doc    "The headline of compile-time reflection: `(if (Type.eq (Type.of 5) Int64) 100 200)` folds the
            condition to the constant `true`, so the whole `if` is `100`. A program BRANCHES on types at

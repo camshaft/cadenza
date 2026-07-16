@@ -50,16 +50,18 @@ def run(fuel: Int64, acc: Int64) =
 
 /// Run under a MOCK model + tools handled in-program. The mock model always answers "go" (never "stop",
 /// so the loop runs to fuel exhaustion), each `dispatch` of a named tool folds in 1 (counting the tools
-/// the loop routed), and `done` returns the accumulator. `Model` needs no state (threaded unchanged);
-/// `Tools` likewise here since the running count lives in `run`'s `acc`. So `run-mock(n)` dispatches n
-/// tools → n.
+/// the loop routed), and `done` returns the accumulator. Neither effect carries state (the running count
+/// lives in `run`'s `acc`), so every handler resumes with a FRESH constant `0` state — never re-threading
+/// the bound `s` — to match that intent and avoid any accidental dependence on the state thread. (The
+/// RESUMED VALUE — `"go"`, `1`, the final `a` — is what the loop consumes; the trailing state is inert.)
+/// So `run-mock(n)` dispatches n tools → n.
 def run-mock(fuel: Int64) =
   handle Model(0) with
-    | converse(q, s) => resume("go", s)
+    | converse(q, s) => resume("go", 0)
   in
   handle Tools(0) with
-    | dispatch(a, s) => resume(1, s)
-    | done(a, s) => resume(a, s)
+    | dispatch(a, s) => resume(1, 0)
+    | done(a, s) => resume(a, 0)
   in
   run(fuel, 0)
 
@@ -78,11 +80,11 @@ def string-loop-counts-dispatched-tools() =
 @test
 def string-loop-stops-on-stop-completion() =
   let stopped = handle Model(0) with
-      | converse(q, s) => resume("stop", s)
+      | converse(q, s) => resume("stop", 0)
     in
     handle Tools(0) with
-      | dispatch(a, s) => resume(1, s)
-      | done(a, s) => resume(a, s)
+      | dispatch(a, s) => resume(1, 0)
+      | done(a, s) => resume(a, 0)
     in
     run(5, 0) in
   if stopped == 0 then unit else trap("a completion of \"stop\" ends the loop with no dispatch")
@@ -90,11 +92,11 @@ def string-loop-stops-on-stop-completion() =
 @test
 def string-loop-dispatch-routes-on-tool-name() =
   let scored = handle Model(0) with
-      | converse(q, s) => resume("search", s)
+      | converse(q, s) => resume("search", 0)
     in
     handle Tools(0) with
-      | dispatch(a, s) => resume(if a == "search" then 10 else 1, s)
-      | done(a, s) => resume(a, s)
+      | dispatch(a, s) => resume(if a == "search" then 10 else 1, 0)
+      | done(a, s) => resume(a, 0)
     in
     run(3, 0) in
   if scored == 30 then unit else trap("dispatch routes on the tool name: 3 * search(10) = 30")

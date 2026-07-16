@@ -101,5 +101,23 @@ function Control({
           ))}
         </select>
       );
+    case "radio":
+      return (
+        <span className="flex flex-wrap items-center gap-3" data-testid={`widget-${widget.name}`}>
+          {widget.options.map((opt) => (
+            <label key={opt} className="flex items-center gap-1 text-sm text-slate-300">
+              <input
+                type="radio"
+                name={widget.name}
+                value={opt}
+                checked={String(value) === opt}
+                onChange={() => onChange(opt)}
+                className="accent-cadenza-500"
+              />
+              {opt}
+            </label>
+          ))}
+        </span>
+      );
   }
 }

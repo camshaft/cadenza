@@ -22,7 +22,8 @@ export type Widget =
   | { name: string; type: WidgetType; control: "number"; min?: number; max?: number; step?: number; default: number }
   | { name: string; type: "String"; control: "text"; default: string }
   | { name: string; type: "Bool"; control: "checkbox"; default: boolean }
-  | { name: string; type: "String"; control: "dropdown"; options: string[]; default: string };
+  | { name: string; type: "String"; control: "dropdown"; options: string[]; default: string }
+  | { name: string; type: "String"; control: "radio"; options: string[]; default: string };
 
 /// A parse error for one widget line — carries the (1-based) line number + the offending source + why,
 /// so the notebook can show an actionable inline message rather than silently dropping a control.
@@ -160,16 +161,19 @@ function parseLine(raw: string): Widget | string {
       const def = (named.get("default") ?? "false") === "true";
       return { name, type: "Bool", control: "checkbox", default: def };
     }
-    case "dropdown": {
-      if (type !== "String") return "dropdown(...) produces a String; declare the widget `: String`";
+    // dropdown + radio are the same shape (a String single-choice over quoted-string options); they
+    // differ only in how WidgetControls renders them (a <select> vs a radio-button group).
+    case "dropdown":
+    case "radio": {
+      if (type !== "String") return `${control}(...) produces a String; declare the widget \`: String\``;
       const options = positional.map(asString).filter((s): s is string => s !== null);
-      if (options.length === 0) return 'dropdown needs quoted string options: `dropdown("a", "b", ...)`';
+      if (options.length === 0) return `${control} needs quoted string options: \`${control}("a", "b", ...)\``;
       const declaredDefault = named.get("default") !== undefined ? asString(named.get("default")!) : null;
       const def = declaredDefault !== null && options.includes(declaredDefault) ? declaredDefault : options[0];
-      return { name, type: "String", control: "dropdown", options, default: def };
+      return { name, type: "String", control, options, default: def };
     }
     default:
-      return `unknown control \`${control}\` — expected slider / number / text / checkbox / dropdown`;
+      return `unknown control \`${control}\` — expected slider / number / text / checkbox / dropdown / radio`;
   }
 }
 
