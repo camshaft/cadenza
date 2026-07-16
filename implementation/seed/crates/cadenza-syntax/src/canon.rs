@@ -152,22 +152,58 @@ impl Canon<'_> {
     /// Visit an occurrence, emitting it (and its subtree) into the new arena, and return its new id.
     /// Children are visited before the parent is appended, so the parent's `StructId` is always
     /// greater than its children's — a post-order layout, deterministic from the tree shape alone.
-    fn visit(&mut self, old: StructId) -> StructId {
-        let new = match self.src.get(old) {
-            Struct::Atom(old_leaf) => {
-                let leaf = self.intern(*old_leaf);
-                self.push(Struct::Atom(leaf))
-            }
-            Struct::List(children) => {
-                let kids: Vec<StructId> = children.iter().map(|&ch| self.visit(ch)).collect();
-                self.push(Struct::List(kids))
-            }
-        };
-        // Record old→new for a span-table remap (only when tracking; `canonicalize` leaves it empty).
-        if let Some(slot) = self.id_map.get_mut(old.0 as usize) {
-            *slot = Some(new);
+    ///
+    /// EXPLICIT stack, not native recursion: canonicalize runs on arenas from ANY source — a decoded
+    /// binary AST in particular, which `codec::decode` accepts at ARBITRARY nesting depth (no cap,
+    /// unlike the reader's `MAX_NESTING_DEPTH`). It runs on essentially EVERY decode (the compiler's
+    /// load path, and cdz-wasm's `parse_spanned` → `canonicalize_with_map`), so a recursive walk would
+    /// overflow the native stack (SIGABRT) on a deep-but-valid tree — crashing the process. A `Job`
+    /// work-stack plus a `results` stack preserves the recursive version's EXACT observable order (leaf
+    /// interning in pre-order left-to-right; structure push in post-order; id_map recorded per node), so
+    /// the canonical bytes are byte-identical — which `is_canonical`'s replay-walk depends on.
+    fn visit(&mut self, root: StructId) -> StructId {
+        enum Job {
+            Visit(StructId),
+            // Emit a `List` for `old` once its `n` children's new ids sit atop `results`.
+            EmitList(StructId, usize),
         }
-        new
+        let mut jobs: Vec<Job> = vec![Job::Visit(root)];
+        let mut results: Vec<StructId> = Vec::new();
+        while let Some(job) = jobs.pop() {
+            match job {
+                Job::Visit(old) => match self.src.get(old) {
+                    Struct::Atom(old_leaf) => {
+                        // Atom: intern (first-encounter order) + push + record + result — immediately.
+                        let leaf = self.intern(*old_leaf);
+                        let new = self.push(Struct::Atom(leaf));
+                        if let Some(slot) = self.id_map.get_mut(old.0 as usize) {
+                            *slot = Some(new);
+                        }
+                        results.push(new);
+                    }
+                    Struct::List(children) => {
+                        // Defer the parent's emit until after its children; push children in REVERSE so
+                        // they pop (and thus intern/emit) left-to-right — matching the recursive order.
+                        jobs.push(Job::EmitList(old, children.len()));
+                        for &ch in children.iter().rev() {
+                            jobs.push(Job::Visit(ch));
+                        }
+                    }
+                },
+                Job::EmitList(old, n) => {
+                    // The n child results sit on top in reverse (last child deepest-pushed pops last →
+                    // ends up last in `results`); split them off and they are already in source order.
+                    let kids = results.split_off(results.len() - n);
+                    let new = self.push(Struct::List(kids));
+                    if let Some(slot) = self.id_map.get_mut(old.0 as usize) {
+                        *slot = Some(new);
+                    }
+                    results.push(new);
+                }
+            }
+        }
+        // Exactly the root's new id remains.
+        results.pop().expect("visit leaves the root's new id")
     }
 
     /// Intern a leaf by first-encounter order during the walk.
@@ -193,6 +229,53 @@ mod tests {
     use super::*;
     use crate::ast::Builder;
     use crate::{codec, parser, sexpr};
+
+    #[test]
+    fn canonicalize_is_iterative_not_recursive_on_a_deep_arena() {
+        // canonicalize runs on essentially EVERY decode (the compiler load path, cdz-wasm's
+        // parse_spanned → canonicalize_with_map), and codec::decode accepts arbitrarily-deep valid-tree
+        // arenas (no cap, unlike the reader's MAX_NESTING_DEPTH). Its `visit` walk must be iterative — a
+        // native-recursive rebuild overflowed the stack (SIGABRT) on a deep tree, crashing the process on
+        // decode of a deep binary AST. Build a 100k-deep chain DIRECTLY (past any native-stack limit) and
+        // assert both entry points complete without overflow and produce a sound canonical result.
+        // (Correctness is compared via `codec::encode`, itself a flat non-recursive loop — NOT
+        // `structurally_eq`, whose `node_eq` is separately still recursive; filed as the next follow-up.)
+        let depth = 100_000usize;
+        let mut b = Builder::new();
+        let mut cur = b.name("x");
+        for _ in 0..depth {
+            cur = b.list(vec![cur]);
+        }
+        let a = b.finish(cur);
+        let a_bytes = codec::encode(&a); // the input is already canonical (pre-order, first-encounter)
+
+        // `canonicalize` (the Cow path): must not overflow (`is_canonical`'s replay walk is iterative);
+        // encodes to the same canonical bytes.
+        let canon = canonicalize(&a);
+        assert_eq!(
+            codec::encode(&canon),
+            a_bytes,
+            "deep canonicalize is byte-stable"
+        );
+
+        // `canonicalize_with_map` (ALWAYS the owned rebuild — the path this fix targets): must not
+        // overflow, encode identically, and carry a total id_map over the (all-reachable) chain nodes.
+        let (rebuilt, id_map) = canonicalize_with_map(&a);
+        assert_eq!(
+            codec::encode(&rebuilt),
+            a_bytes,
+            "deep rebuild encodes canonically"
+        );
+        assert_eq!(
+            id_map.len(),
+            a.structure.len(),
+            "id_map covers every old id"
+        );
+        assert!(
+            id_map.iter().all(|slot| slot.is_some()),
+            "every reachable node (all of them, in a chain) maps to a new id"
+        );
+    }
 
     /// Two arenas built in DIFFERENT occurrence order but denoting the same tree encode to the same
     /// bytes (because `codec::encode` canonicalizes). Their canonical structure arenas are equal.
