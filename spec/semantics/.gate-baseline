@@ -2637,6 +2637,7 @@ pass	print of an integer-valued Ast.Float keeps its float form through read
 pass	print renders a nested compound with a string leaf as its exact canonical text
 pass	print renders a template that splices an Ast value — the non-executing path works
 pass	print renders an empty Ast.List as the empty-parens form
+pass	print then read of a digit-led Ast.Name reclassifies it per the number/identifier boundary
 pass	projecting a field is independent of the order fields are written
 pass	projecting a field of a non-compound argument is rejected at the call site
 pass	projecting a just-built tuple does not evaluate the unprojected sibling's trap
@@ -2824,6 +2825,7 @@ pass	the boolean literals
 pass	the built variant is the multi-arg one, the unbuilt arm still gets its call type
 pass	the built-in Ast is transformed as an ordinary value
 pass	the built-in list is folded by an element-with-rest pattern
+pass	the byte codec round-trips a digit-led Ast.Name that the text path would reclassify
 pass	the byte length of a run-time multibyte string exceeds its scalar length
 pass	the byte length of a run-time-selected string reads the actual handle
 pass	the byte length of a runtime string equals the length of its encoded bytes

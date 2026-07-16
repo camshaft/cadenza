@@ -554,6 +554,41 @@
             ((Err _) false)))
   (output (: true Bool)))
 
+; --- The Name text round-trip is scoped to grammatically-valid identifiers; the byte codec is total ---
+; `print` renders an `Ast.Name` as its bare word, and `read` classifies a bare token by the language's
+; number/identifier boundary: a DIGIT-LED token is a NUMBER (spec/learnings — a digit-led token is a
+; number, never an identifier). So an `Ast.Name` whose spelling is digit-led (`"1.5"`, `"123"`) — a name
+; that CANNOT arise from parsing real source, since no valid identifier starts with a digit — prints as
+; that numeric text and reads back as `Ast.Float`/`Ast.Int`, not the original `Name`. This is the correct
+; grammar behavior, not a bug: the TEXT round-trip `read(print v) == v` holds for well-formed names (a valid
+; identifier). The BYTE codec is total over ANY name string — its tag delimits the payload — so a digit-led
+; name still round-trips through `encode`/`decode`. These pin the boundary so it can't silently change and
+; so the two interchange paths' differing domains are explicit. (Found bug-hunting; the printer docstring
+; was corrected from an unconditional round-trip claim to this scoped one.)
+
+(case "the byte codec round-trips a digit-led Ast.Name that the text path would reclassify"
+  (doc    "`Ast.encode`/`Ast.decode` is total over any `Name` string: `(Ast.Name \"1.5\")` — a name spelled
+           like a float — round-trips to an EQUAL `Ast.Name` through the byte path, because the Name tag
+           delimits its payload (no re-lexing). Contrast the text path below, which reclassifies it. Pins
+           that the codec's domain is every name, digit-led or not.")
+  (input  (match (Ast.decode (Ast.encode (Ast.Name "1.5")))
+            ((Ok a)  (= a (Ast.Name "1.5")))
+            ((Err _) false)))
+  (output (: true Bool)))
+
+(case "print then read of a digit-led Ast.Name reclassifies it per the number/identifier boundary"
+  (doc    "The TEXT round-trip is scoped to grammatically-valid identifiers. `print (Ast.Name \"1.5\")`
+           renders the bare word `1.5`, and `read` classifies a digit-led token as a NUMBER (the language's
+           number/identifier boundary — no valid identifier is digit-led), so it comes back as an
+           `Ast.Float`, not the original `Ast.Name`. This is correct grammar behavior, NOT a round-trip bug:
+           `Ast.Name \"1.5\"` is a name that could never be parsed from source. Pins the boundary (matched
+           via the Float arm) so a future printer/reader change is a deliberate decision, not an accident.")
+  (input  (match (read (print (Ast.Name "1.5")))
+            ((Ast.Float _) 1)
+            ((Ast.Name _)  2)
+            (_             0)))
+  (output (: 1 Int64)))
+
 (case "print of an Ast.Str renders a quoted literal with escapes and read inverts it"
   (doc    "`print : Ast → String` renders an `Ast.Str` as a `\"…\"` literal, escaping the closed set
            (`\\n \\t \\r \\\\ \\\"`) — the canonical re-readable spelling — and `read : String → Ast`
