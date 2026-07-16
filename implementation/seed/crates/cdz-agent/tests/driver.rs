@@ -149,3 +149,89 @@ fn the_driver_returns_the_actual_model_completion() {
         "the driver reports the model's actual completion text: {stdout}"
     );
 }
+
+/// A model-consumer fixture (any of the three shapes) whose runtime is present, or None to skip.
+fn consumer_and_runtime_or_skip(rel: &str) -> Option<PathBuf> {
+    let fixture: PathBuf = [env!("CARGO_MANIFEST_DIR"), rel].iter().collect();
+    let consumer = std::fs::read(&fixture).ok()?;
+    let hash = cdz_run::required_runtime(&consumer).ok()??.hash;
+    find_runtime_present(&hash).then_some(fixture)
+}
+
+#[test]
+fn the_driver_reports_an_empty_inbox_cleanly() {
+    // A driver run over an inbox with NO messages must exit 0 with a clear "empty" report — not error,
+    // not hang. (The consumer/runtime need not even be exercised; but resolve them so the run reaches the
+    // inbox scan.) Robustness: a real hive inbox is often empty between messages.
+    let Some(fixture) = consumer_and_runtime_or_skip("tests/fixtures/inbox-model-consumer.wasm")
+    else {
+        eprintln!("[cdz-agent driver] runtime absent; skipping");
+        return;
+    };
+    let dir = std::env::temp_dir().join(format!("cdz-agent-empty-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_cdz-agent"))
+        .args([
+            "--consumer",
+            fixture.to_str().unwrap(),
+            "--inbox",
+            dir.to_str().unwrap(),
+        ])
+        .output()
+        .expect("spawn");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        out.status.success(),
+        "an empty inbox is not an error: {stdout}"
+    );
+    assert!(
+        stdout.contains("is empty"),
+        "the driver reports an empty inbox: {stdout}"
+    );
+}
+
+#[test]
+fn the_driver_tolerates_a_bodyless_message_and_ignores_non_json() {
+    // Robustness: a JSON message with NO `body` field drives the loop with an empty body (no panic — the
+    // reader defaults to ""), and a non-`.json` file in the inbox is IGNORED (not parsed as a message).
+    // A real fleet inbox dir also holds a `processed/` subdir + assorted files; the driver must only act
+    // on `*.json` message files.
+    let Some(fixture) = consumer_and_runtime_or_skip("tests/fixtures/inbox-model-consumer.wasm")
+    else {
+        eprintln!("[cdz-agent driver] runtime absent; skipping");
+        return;
+    };
+    let dir = std::env::temp_dir().join(format!("cdz-agent-bad-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    // A message with no `body` → empty body → the loop runs; byte-len of "" (uppercased) = 0.
+    std::fs::write(dir.join("001.json"), r#"{"from":"t","subject":"no body"}"#).unwrap();
+    // A non-json file that must be ignored (not parsed, not counted).
+    std::fs::write(dir.join("notes.txt"), "not a message").unwrap();
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_cdz-agent"))
+        .args([
+            "--consumer",
+            fixture.to_str().unwrap(),
+            "--inbox",
+            dir.to_str().unwrap(),
+        ])
+        .output()
+        .expect("spawn");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        out.status.success(),
+        "a bodyless message must not error: stdout=<{stdout}> stderr=<{stderr}>"
+    );
+    assert!(
+        stdout.contains("001.json -> value 0"),
+        "a no-body message drives the loop with an empty body (byte-len 0), no panic: {stdout}"
+    );
+    assert!(
+        stdout.contains("processed 1 message(s)"),
+        "only the ONE .json message is processed; the .txt is ignored: {stdout}"
+    );
+}
