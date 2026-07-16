@@ -8,3 +8,8 @@ either (a) leading-rest binding IS refutable → CDZ0210 + revise the Inc-2 irre
 irrefutable-by-design → the trap is wrong and it should bind (fill missing with...?) — a genuine design
 fork. OPERATOR/SPEC-OWNER call, not a mid-tick fix. breaker pinned the sound MATCH-arm refutability as
 coverage. ESCALATED to concierge 2026-07-16 (was memory-only, kept getting re-discovered).
+
+## UPDATE 2026-07-16: concierge routed (a)/(b) to OPERATOR w/ (a) lean. HOLD impl + Inc-2 revision until ruled.
+(a) → v-patterns adds CDZ0210 compile-reject + corpus-bugfix REVISES the Inc-2 def-head/drop2 irrefutable cases to refutable-reject.
+(b) → v-patterns fixes the runtime trap to bind-whats-present + Inc-2 cases STAY + §139 carve-out.
+Memory-safe (traps), no rush. Route impl to v-patterns + handle corpus side when operator picks.
