@@ -678,6 +678,7 @@ pass	a fixpoint that re-seeds a fresh list each round via a helper returns a lis
 pass	a flat string map key is found by a runtime rope twin
 pass	a float annotation reaches the 32-bit width
 pass	a float in integer-width position is rejected
+pass	a float width from runtime data is rejected, like an integer width
 pass	a float width outside the admitted set is rejected
 pass	a floating-point literal
 pass	a four-level nested-constructor pattern with a generic user sum in the middle matches

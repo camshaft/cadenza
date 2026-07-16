@@ -10651,11 +10651,15 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
             // width must be non-dependent regardless of how it happens to be called.
             let runtime_width = crate::eval::is_runtime_width_type(db, ty_expr);
             if runtime_width {
-                trace!(target: "rcdzc::infer", node = id.0, "fault: integer width from runtime data (CDZ0302)");
-                out.push(Reject::coded(
-                    Code::IntOutOfRange,
-                    "an integer width must be a compile-time natural, not runtime data",
-                ));
+                trace!(target: "rcdzc::infer", node = id.0, "fault: numeric width from runtime data (CDZ0302)");
+                // `(Float n)` and `(Int n)`/`(UInt n)` both forbid a runtime width; name the axis the
+                // written type actually uses so the message is not misleadingly integer-only for a float.
+                let msg = if crate::eval::is_float_ctor_type(db, ty_expr) {
+                    "a floating-point width must be a compile-time admitted width (32 or 64), not runtime data"
+                } else {
+                    "an integer width must be a compile-time natural, not runtime data"
+                };
+                out.push(Reject::coded(Code::IntOutOfRange, msg));
             }
             // A TYPE CONSTRUCTOR applied at the WRONG arity in the annotation position — a prelude `(: 5
             // (List Int64 Int64))` or a user generic sum `(: b (Box Int64 Bool))`. Checked FIRST, before
