@@ -657,23 +657,28 @@ fn reference_transaction_hook_body(log_path: &str) -> String {
          \tcase \"$old\" in *[!0]*) : ;; *) continue ;; esac\n\
          \tcase \"$new\" in *[!0]*) : ;; *) continue ;; esac\n\
          \t# A backward/sideways move: new is NOT a descendant of old (a fast-forward would be).\n\
-         \tif ! git merge-base --is-ancestor \"$old\" \"$new\" 2>/dev/null; then\n\
-         \t\tts=\"$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)\"\n\
-         \t\t# (Target is always trunk since we scoped to it — don't resolve $new, it is a SHA — PR #459.)\n\
-         \t\techo \"$ts trunk NON-FF move ${{old:0:12}} -> ${{new:0:12}} pid=$$ ppid=$PPID\" >> {q} 2>/dev/null || true\n\
-         \t\t# The clobber writer is SUB-SECOND, so external `ps` post-mortem can't trace it. Capture\n\
-         \t\t# the ancestry INLINE now — the hook runs SYNCHRONOUSLY in the writer's own process, so\n\
-         \t\t# its parent chain is still alive. Walk up from PPID ~5 levels, logging each command line;\n\
-         \t\t# that argv (the parent shell's `-c <script>`, the cron, …) NAMES the source.\n\
-         \t\tp=$PPID\n\
-         \t\tfor _ in 1 2 3 4 5; do\n\
-         \t\t\t{{ [ -n \"$p\" ] && [ \"$p\" != 0 ] && [ \"$p\" != 1 ]; }} || break\n\
-         \t\t\tline=$(ps -o ppid=,args= -p \"$p\" 2>/dev/null)\n\
-         \t\t\t[ -n \"$line\" ] || break\n\
-         \t\t\techo \"  ^ pid=$p $line\" >> {q} 2>/dev/null || true\n\
-         \t\t\tp=$(echo \"$line\" | awk '{{print $1}}')\n\
-         \t\tdone\n\
-         \tfi\n\
+         \tgit merge-base --is-ancestor \"$old\" \"$new\" 2>/dev/null && continue\n\
+         \t# Only the CLOBBER signature — a reset to origin/main — is worth logging. pr-sync's own\n\
+         \t# legit history rewrites (git commit --amend, a rebase) are also non-FF moves but are NOT\n\
+         \t# clobbers; logging them makes the operator's signal noisy (the 07:56 --amend false-positive).\n\
+         \t# So require new == origin/main (resolve it fresh; skip if it can't be resolved).\n\
+         \tom=$(git rev-parse --verify -q origin/main 2>/dev/null) || continue\n\
+         \t[ \"$new\" = \"$om\" ] || continue\n\
+         \tts=\"$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)\"\n\
+         \t# (Target is always trunk since we scoped to it — don't resolve $new, it is a SHA — PR #459.)\n\
+         \techo \"$ts trunk NON-FF move ${{old:0:12}} -> ${{new:0:12}} (-> origin/main) pid=$$ ppid=$PPID\" >> {q} 2>/dev/null || true\n\
+         \t# The clobber writer is SUB-SECOND, so external `ps` post-mortem can't trace it. Capture\n\
+         \t# the ancestry INLINE now — the hook runs SYNCHRONOUSLY in the writer's own process, so\n\
+         \t# its parent chain is still alive. Walk up from PPID ~5 levels, logging each command line;\n\
+         \t# that argv (the parent shell's `-c <script>`, the cron, …) NAMES the source.\n\
+         \tp=$PPID\n\
+         \tfor _ in 1 2 3 4 5; do\n\
+         \t\t{{ [ -n \"$p\" ] && [ \"$p\" != 0 ] && [ \"$p\" != 1 ]; }} || break\n\
+         \t\tline=$(ps -o ppid=,args= -p \"$p\" 2>/dev/null)\n\
+         \t\t[ -n \"$line\" ] || break\n\
+         \t\techo \"  ^ pid=$p $line\" >> {q} 2>/dev/null || true\n\
+         \t\tp=$(echo \"$line\" | awk '{{print $1}}')\n\
+         \tdone\n\
          done\n\
          exit 0\n"
     )
@@ -3438,5 +3443,10 @@ mod tests {
         // Captures the parent-command-line ancestry INLINE (the enabler for naming the clobber source).
         assert!(body.contains("ps -o ppid=,args= -p"));
         assert!(body.contains("ppid=$PPID"));
+        // Tightened to the CLOBBER SIGNATURE only: logs a non-FF move ONLY when the target is
+        // origin/main — so pr-sync's legit --amend/rebase history rewrites (also non-FF) don't spam
+        // the log with false positives. Requires `new == origin/main`.
+        assert!(body.contains("rev-parse --verify -q origin/main"));
+        assert!(body.contains("[ \"$new\" = \"$om\" ] || continue"));
     }
 }
