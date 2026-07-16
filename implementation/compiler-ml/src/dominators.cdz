@@ -1,0 +1,162 @@
+/// dominators.cdz — DOMINATOR analysis over a control-flow graph. Block `D` DOMINATES block `N` if EVERY
+/// path from the entry to `N` passes through `D`. Dominators are the backbone of loop detection (a back
+/// edge targets a block that dominates its source), SSA φ-placement (the dominance frontier), and code
+/// motion (LICM hoists to a block that dominates the loop). The entry dominates every reachable block;
+/// every block dominates itself.
+///
+/// This computes dominance by DEFINITION, reusing the CFG reachability idea: `D` dominates `N` (with
+/// `D ≠ N`, `N` reachable) IFF removing `D` from the graph makes `N` UNREACHABLE from the entry — because
+/// if some entry→N path avoided `D`, `N` would still be reachable without it. `reach-avoiding` is the
+/// worklist traversal that treats one block as deleted; it terminates on cycles (each id seen once).
+///
+///   - `dominates entry d n`  — does `d` dominate `n`?
+///   - `dominators entry n`   — the set of all blocks that dominate `n` (its dominator set).
+///   - `strictly-dominates`   — dominance with `d ≠ n`.
+///   - `idom entry n`         — the IMMEDIATE dominator of `n`: the unique strict dominator that is itself
+///     dominated by every other strict dominator (the closest one). `-1` for the entry / an unreachable
+///     block (no immediate dominator).
+
+type Term =
+  | Return
+  | Jump(Int64)
+  | CondJump(Int64, Int64)
+
+type Block =
+  | Blk(Int64, Term)
+
+def succs(t: Term) = match t with
+  | Term.Return => []
+  | Term.Jump(a) => [a]
+  | Term.CondJump(a, b) => [a, b]
+
+def find-block(bs: List(Block), id: Int64) = match bs with
+  | [] => Option.None(unit)
+  | [b, .. r] => (match b with | Block.Blk(i, t) => if i == id then Option.Some(t) else find-block(r, id))
+
+/// Reachability from the entry that treats `avoid` as REMOVED (never entered). `avoid = -1` removes
+/// nothing (plain reachability). Worklist over `Set(Int64)`; terminates because each id is marked once.
+def reach-avoiding(bs: List(Block), avoid: Int64, work: List(Int64), seen: Set(Int64)) = match work with
+  | [] => seen
+  | [id, .. rest] =>
+    if id == avoid then reach-avoiding(bs, avoid, rest, seen)
+    else (if Set.contains(seen, id) then reach-avoiding(bs, avoid, rest, seen)
+      else (match find-block(bs, id) with
+        | Option.None(_) => reach-avoiding(bs, avoid, rest, Set.insert(seen, id))
+        | Option.Some(t) => reach-avoiding(bs, avoid, List.concat(succs(t), rest), Set.insert(seen, id))))
+
+/// All ids reachable from `entry` (nothing removed).
+def reachable(bs: List(Block), entry: Int64) = reach-avoiding(bs, 0 - 1, [entry], Set.of([]))
+
+/// Does `d` dominate `n`? Every block dominates itself; otherwise `d` dominates a reachable `n` iff
+/// removing `d` makes `n` unreachable. An unreachable `n` is dominated by nothing (returns false for d≠n).
+def dominates(bs: List(Block), entry: Int64, d: Int64, n: Int64) =
+  if d == n then true
+  else (if Set.contains(reachable(bs, entry), n) == false then false
+    else Set.contains(reach-avoiding(bs, d, [entry], Set.of([])), n) == false)
+
+/// Strict dominance: `d` dominates `n` and `d ≠ n`.
+def strictly-dominates(bs: List(Block), entry: Int64, d: Int64, n: Int64) =
+  (d == n) == false and dominates(bs, entry, d, n)
+
+/// The set of all blocks that dominate `n` (scanning every block id in the graph).
+def dominators(bs: List(Block), entry: Int64, n: Int64) = doms-from(bs, bs, entry, n, Set.of([]))
+
+def doms-from(all: List(Block), rest: List(Block), entry: Int64, n: Int64, acc: Set(Int64)) = match rest with
+  | [] => acc
+  | [b, .. more] => (match b with | Block.Blk(id, _) =>
+    doms-from(all, more, entry, n, (if dominates(all, entry, id, n) then Set.insert(acc, id) else acc)))
+
+/// The immediate dominator of `n`: the strict dominator that every OTHER strict dominator dominates (the
+/// closest one). Returns -1 if `n` has no strict dominator (the entry, or unreachable). Found by scanning
+/// the strict dominators for the one that is strictly dominated by no other strict dominator.
+def idom(bs: List(Block), entry: Int64, n: Int64) = idom-scan(bs, bs, entry, n, 0 - 1)
+
+def idom-scan(all: List(Block), rest: List(Block), entry: Int64, n: Int64, best: Int64) = match rest with
+  | [] => best
+  | [b, .. more] => (match b with | Block.Blk(id, _) =>
+    if strictly-dominates(all, entry, id, n) and is-closest(all, entry, id, n)
+    then idom-scan(all, more, entry, n, id)
+    else idom-scan(all, more, entry, n, best))
+
+/// Is strict dominator `d` of `n` the CLOSEST — i.e. every OTHER strict dominator of `n` also strictly
+/// dominates `d`? (The immediate dominator is dominated by all the others.)
+def is-closest(all: List(Block), entry: Int64, d: Int64, n: Int64) = closest-check(all, all, entry, d, n)
+
+def closest-check(all: List(Block), rest: List(Block), entry: Int64, d: Int64, n: Int64) = match rest with
+  | [] => true
+  | [b, .. more] => (match b with | Block.Blk(id, _) =>
+    // any OTHER strict dominator of n that does NOT strictly dominate d disqualifies d as immediate
+    if strictly-dominates(all, entry, id, n) and ((id == d) == false) and (strictly-dominates(all, entry, id, d) == false)
+    then false
+    else closest-check(all, more, entry, d, n))
+
+/// Builders.
+def blk(id: Int64, t: Term) = Block.Blk(id, t)
+
+@test
+def dom-entry-dominates-all() =
+  // linear 0→1→2: 0 dominates 1 and 2; 1 dominates 2.
+  let bs = [blk(0, Term.Jump(1)), blk(1, Term.Jump(2)), blk(2, Term.Return)] in
+  if dominates(bs, 0, 0, 2) then (if dominates(bs, 0, 1, 2) then unit else trap("1 dom 2")) else trap("0 dom 2")
+
+@test
+def dom-self() =
+  // every block dominates itself.
+  let bs = [blk(0, Term.Jump(1)), blk(1, Term.Return)] in
+  if dominates(bs, 0, 1, 1) then unit else trap("1 dominates itself")
+
+@test
+def dom-diamond-merge-only-entry() =
+  // diamond 0→cond(1,2); 1→3; 2→3; 3→ret. Neither 1 nor 2 dominates the merge 3 (other path exists); 0 does.
+  let bs = [blk(0, Term.CondJump(1, 2)), blk(1, Term.Jump(3)), blk(2, Term.Jump(3)), blk(3, Term.Return)] in
+  if dominates(bs, 0, 0, 3) then
+    (if dominates(bs, 0, 1, 3) then trap("1 does NOT dominate the merge") else
+      (if dominates(bs, 0, 2, 3) then trap("2 does NOT dominate the merge") else unit))
+  else trap("0 dominates the merge")
+
+@test
+def dom-branch-arm-dominated-by-entry-only() =
+  // in the diamond, arm 1 is dominated by {0, 1} exactly.
+  let bs = [blk(0, Term.CondJump(1, 2)), blk(1, Term.Jump(3)), blk(2, Term.Jump(3)), blk(3, Term.Return)] in
+  let d1 = dominators(bs, 0, 1) in
+  if Set.len(d1) == 2 then (if Set.contains(d1, 0) then (if Set.contains(d1, 1) then unit else trap("1 self")) else trap("0 doms 1")) else trap("arm 1 dominated by exactly {0,1}")
+
+@test
+def dom-set-of-merge() =
+  // the merge 3 is dominated by exactly {0, 3} (not 1 or 2).
+  let bs = [blk(0, Term.CondJump(1, 2)), blk(1, Term.Jump(3)), blk(2, Term.Jump(3)), blk(3, Term.Return)] in
+  let d3 = dominators(bs, 0, 3) in
+  if Set.len(d3) == 2 then (if Set.contains(d3, 0) then (if Set.contains(d3, 3) then unit else trap("3 self")) else trap("0 doms 3")) else trap("merge dominated by {0,3}")
+
+@test
+def dom-strict-excludes-self() =
+  // strictly-dominates(0,0,0) is false; strictly-dominates(0,0,2) true in a chain.
+  let bs = [blk(0, Term.Jump(1)), blk(1, Term.Jump(2)), blk(2, Term.Return)] in
+  if strictly-dominates(bs, 0, 0, 0) then trap("not strict on self") else (if strictly-dominates(bs, 0, 0, 2) then unit else trap("0 strictly dom 2"))
+
+@test
+def dom-idom-linear() =
+  // linear 0→1→2: idom(2) = 1 (closest strict dominator), idom(1) = 0, idom(0) = -1 (entry).
+  let bs = [blk(0, Term.Jump(1)), blk(1, Term.Jump(2)), blk(2, Term.Return)] in
+  if idom(bs, 0, 2) == 1 then (if idom(bs, 0, 1) == 0 then (if idom(bs, 0, 0) == 0 - 1 then unit else trap("entry idom -1")) else trap("idom 1 = 0")) else trap("idom 2 = 1")
+
+@test
+def dom-idom-diamond-merge() =
+  // diamond: idom(3) = 0 (the merge's immediate dominator is the entry, since neither arm dominates it).
+  let bs = [blk(0, Term.CondJump(1, 2)), blk(1, Term.Jump(3)), blk(2, Term.Jump(3)), blk(3, Term.Return)] in
+  if idom(bs, 0, 3) == 0 then (if idom(bs, 0, 1) == 0 then unit else trap("idom arm = 0")) else trap("idom merge = 0")
+
+@test
+def dom-cycle-terminates() =
+  // loop 0→1; 1→cond(1,2); 2→ret. 0 dominates 1 and 2; 1 dominates 2 (all paths to 2 go through 1).
+  let bs = [blk(0, Term.Jump(1)), blk(1, Term.CondJump(1, 2)), blk(2, Term.Return)] in
+  if dominates(bs, 0, 1, 2) then (if dominates(bs, 0, 0, 2) then (if idom(bs, 0, 2) == 1 then unit else trap("idom 2 = 1")) else trap("0 dom 2")) else trap("1 dom 2 through the loop header")
+
+@test
+def dom-unreachable-dominated-by-nothing() =
+  // block 2 is unreachable from 0: dominates(0, 0, 2) is false (0 does not dominate an unreachable node),
+  // and idom(2) = -1.
+  let bs = [blk(0, Term.Jump(1)), blk(1, Term.Return), blk(2, Term.Return)] in
+  if dominates(bs, 0, 0, 2) then trap("nothing dominates an unreachable block") else (if idom(bs, 0, 2) == 0 - 1 then unit else trap("idom unreachable = -1"))
+
+export { dominates, strictly-dominates, dominators, idom, reachable }
