@@ -1687,6 +1687,52 @@
   (call   main (: 3 Int64)) (output (: 9 Int64))
   (call   main (: 4 Int64)) (output (: 12 Int64)))
 
+; The cases above retain a heap value across SIMULTANEOUS liveness (threaded to a recursive call while a
+; sibling consumes it). These pin the BRANCH-JOIN axis: a heap value consumed in only ONE arm of an
+; if/match must stay live for a use AFTER the join — the dup/drop must BALANCE across branches, dropping
+; the value exactly once regardless of which arm ran. A branch that dropped the value in its arm (or the
+; join that dropped a still-live value) would free it before the after-use (a use-after-free / wrong value);
+; a branch that failed to drop an escaped copy would leak. Covers a conditional CONSUME (List.len in one
+; arm) and a conditional ESCAPE (the value wrapped into `Some` in one arm), each still used after the join.
+
+(case "a heap list consumed in only one if-branch stays live for a use after the if"
+  (doc    "`(let ((xs (list 1 2 3))) (let ((n (if b (List.len xs) 0))) (+ n (List.len xs))))`: `xs` is
+           consumed by `List.len` in the THEN branch only (the else uses `0`), then `List.len xs` again
+           AFTER the if. `xs` must survive to the after-use on BOTH paths — the branch-join dup/drop must
+           balance so the value is dropped exactly once, not freed inside the taken branch. b=true → 3 + 3 =
+           6. Pins that a consume in one arm does not free a binding still live past the join.")
+  (input  (do (def (main (: b Bool)) (let ((xs (list 1 2 3))) (let ((n (if b (List.len xs) 0))) (+ n (List.len xs))))) (export main)))
+  (call   main (: true Bool))
+  (output (: 6 Int64)))
+
+(case "the same list is still live after the if when the consuming branch is not taken"
+  (doc    "The other path: b=false takes the else (`0`, not consuming `xs`), then `List.len xs` after the if
+           → 0 + 3 = 3. Pins that the NOT-taken branch's balance does not over-drop `xs` (nor leak it) — the
+           value survives to the after-use whether or not the consuming arm ran. The b=false companion of
+           the case above; together they pin the join is balanced on both paths.")
+  (input  (do (def (main (: b Bool)) (let ((xs (list 1 2 3))) (let ((n (if b (List.len xs) 0))) (+ n (List.len xs))))) (export main)))
+  (call   main (: false Bool))
+  (output (: 3 Int64)))
+
+(case "a heap list conditionally escaping into a Some in one branch is still usable after the join"
+  (doc    "The conditional-ESCAPE face: `(if b (Some xs) (None unit))` moves `xs` into `Some`'s payload in
+           the THEN branch (an escape), while `xs` is ALSO `List.len`'d after the if AND through the matched
+           `Some`. b=true → `List.len xs` (3) + `List.len ys` (the escaped copy, 3) = 6. The escaping branch
+           must dup `xs` (so both the escaped copy and the after-use are live); a move-without-dup would free
+           it under the after-use. Pins the branch-join balance holds when one arm ESCAPES the value.")
+  (input  (do (def (main (: b Bool)) (let ((xs (list 1 2 3))) (let ((opt (if b (Some xs) (None unit)))) (+ (List.len xs) (match opt ((Some ys) (List.len ys)) ((None _) 0)))))) (export main)))
+  (call   main (: true Bool))
+  (output (: 6 Int64)))
+
+(case "the same list not escaped (the None branch) is still usable after the join"
+  (doc    "The non-escape path: b=false takes `(None unit)` (no escape), then `List.len xs` (3) after, and
+           the `None` arm contributes 0 → 3. Pins the None branch neither leaks `xs` (which it did not
+           escape) nor over-drops it before the after-use — the escape-branch dup does not leave the
+           non-escape path unbalanced. The b=false companion of the conditional-escape case.")
+  (input  (do (def (main (: b Bool)) (let ((xs (list 1 2 3))) (let ((opt (if b (Some xs) (None unit)))) (+ (List.len xs) (match opt ((Some ys) (List.len ys)) ((None _) 0)))))) (export main)))
+  (call   main (: false Bool))
+  (output (: 3 Int64)))
+
 (case "an Option.expect payload consumed per iteration while the option is threaded accumulates stably"
   (doc    "The `SumExpect` (`Option.expect`/`Result.expect`) twin of the sum-payload case above — the shape
            the compiler-in-ML port hits threading an env Option through its AST walkers. `Option.expect s`
