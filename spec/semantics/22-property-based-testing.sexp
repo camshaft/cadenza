@@ -339,3 +339,33 @@
               (def (main (: s1 Int64) (: s2 Int64)) (= (gen-bool s1) (gen-bool s2)))
               (export main)))
   (call   main (: 1 Int64) (: 2 Int64)) (output (: false Bool)))
+
+; --- §Shrinking Converges To A Minimal Failing Input (end-to-end: find THEN shrink) ------------------
+; The two spec halves — a property RUN that surfaces a failing input, and a SHRINK that minimizes it —
+; composed into the full harness loop. `find` draws byte-masked values from the seed stream until one
+; VIOLATES the property `p x = x < 50` (i.e. the first `x >= 50` the stream produces), fuel-bounded so
+; the search is total; `shrink` then walks UP from 0 to the SMALLEST value that still violates `p`
+; (again fuel-bounded), which is exactly 50 regardless of which counterexample `find` surfaced. This is
+; the §Shrinking Converges guarantee end-to-end: a run finds SOME failing input, and shrinking converges
+; to the minimal one — independent of the seed that started it. Runs at the RUNTIME boundary (a `seed`
+; parameter) so it exercises the emitted generate-check-shrink machinery, not a compile-time fold.
+
+(case "end-to-end: a property run finds a failing input, then the shrinker converges to the minimal failing value"
+  (doc    "Witnesses §Shrinking Converges To A Minimal Failing Input composed with the property RUN:
+           `find` scans the seed stream for the first byte-masked draw that VIOLATES `p x = x < 50`
+           (a value >= 50), fuel-bounded to 200 draws so it is total; `shrink` then searches UPWARD from
+           0 for the smallest value still violating `p`, converging to 50. The minimal failing input (50)
+           does NOT depend on WHICH counterexample `find` surfaced — every failing run shrinks to the
+           same minimum — which is the defining property of a convergent shrinker. A runtime `seed`
+           parameter keeps it off the folding path, so the emitted find→shrink loop actually runs.")
+  (input  (do (def (next (: s Int64)) (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
+              (def (p (: x Int64)) (< x 50))
+              (def (find (: s Int64) (: n Int64))
+                (if (= n 0) -1 (let ((v (& (next s) 255))) (if (p v) (find (next s) (- n 1)) v))))
+              (def (shrink (: cand Int64) (: fuel Int64))
+                (if (= fuel 0) cand (if (p cand) (shrink (+ cand 1) (- fuel 1)) cand)))
+              (def (main (: seed Int64))
+                (let ((cx (find seed 200)))
+                  (if (>= cx 50) (shrink 0 100) -1)))
+              (export main)))
+  (call   main (: 12345 Int64)) (output (: 50 Int64)))

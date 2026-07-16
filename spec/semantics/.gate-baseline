@@ -2329,6 +2329,7 @@ pass	encoding and decoding a constructor-built compound AST round-trips
 pass	encoding and decoding an Ast.Bool round-trips to an equal value
 pass	encoding and decoding an Ast.Float round-trips to an equal value
 pass	encoding and decoding an Ast.Str round-trips to an equal value
+pass	end-to-end: a property run finds a failing input, then the shrinker converges to the minimal failing value
 pass	equality across incompatible dimensions is a compile-time error
 pass	equality across types is rejected regardless of operand order
 pass	equality against zero answers by value in both operand orders
