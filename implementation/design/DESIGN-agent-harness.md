@@ -280,6 +280,14 @@ eval-core recursion-guard is a known open there — see `[[metaprogramming-verti
 These are the real forks this design can't unilaterally resolve; each has concrete options so the
 concierge can route a one-line decision:
 
+> **RESOLVED (2026-07-16, all 4 concierge-confirmed):** (1) Bedrock — shipped as **option (c)** the
+> embedder (a third route: a naive peer/host String op couldn't answer the handle-crossing boundary; see
+> §7), with Route A the durable end-state. (2) Cedar — **(A)** host op over `cedar-policy` (shipped);
+> (B) the Cadenza-native evaluator is a later v-verification flagship. (3) Crate home — **in-tree**
+> (`implementation/seed/crates/cdz-agent`, workspace-excluded). (4) Scope — **subprocess-only** first
+> (replace the `claude` subprocess; keep hivemind's daemon/log/tools). Q1 (start Inc-4 now) + Q3
+> (proven-self-mod in the first cut) remain with the operator.
+
 1. **Bedrock binding route (§2.3):** (A) widen the host-result ABI to String/compound in `rcdzc` —
    clean/general/durable, non-trivial ABI change, needs v-peer-linking; (B) model Bedrock as a Cadenza
    peer via a tiny non-Cadenza SigV4 shim — zero compiler change, ships now, leaves a non-Cadenza edge;
@@ -301,23 +309,39 @@ concierge can route a one-line decision:
 
 ## 7. Increment sequence
 
-- **Inc 0 — this design doc.** ✅ (this tick). Route forks §6 to the concierge.
-- **Inc 1 — Bedrock bring-up (Route B):** a `cadenza:bedrock/api` peer shim (SigV4 + reqwest, non-
-  Cadenza) + a Cadenza program that `(bind Bedrock …)` and does a single `converse` round-trip against a
-  real model. Gate: a corpus case that binds the effect + an e2e run. FIRST forcing test of the peer
-  String-result path for a real model.
-- **Inc 1′ (parallel, coordinated with v-peer-linking) — Route A:** widen the host-result ABI to
-  String/compound. Gate: a host op returning a String no longer declines; a `.sexp` case pins it.
-- **Inc 2 — the loop:** inbox-peek → build-context → converse → parse-tool-calls → dispatch (as an
-  effect) → append-events → reply-then-ack, in Cadenza. Gate: a scripted inbox drives one full cycle
-  against a mocked handler (in-program `(handle …)` = the test override, free from v-peer-linking's U2).
-- **Inc 3 — Cedar authorize (4.3-A):** every tool dispatch is a Cedar decision; delegation grant model
-  (§4.2). Gate: a permit + a forbid + an on-behalf-of intersection case.
-- **Inc 4 — self-modification / evolvable toolchains (§5):** install a tool handler at runtime; the
-  compile-repair loop; Cedar-gated self-mod; v-verification partnership. Gate: add-a-tool-at-runtime e2e.
+> **STATUS (2026-07-16): Inc 0–3 SHIPPED + hardened; Inc 4 held on the operator.** The Bedrock binding
+> shipped as a THIRD route the fork below didn't list — **option (c): a custom cdz-run EMBEDDER** — not
+> the peer shim (Route B) originally planned here. Why: a Cadenza String peer op crosses as a `u32`
+> runtime HANDLE and the provider imports the value-heap runtime, so a naive WASI `converse(string)->string`
+> peer can't answer it; instead the embedder binds `cadenza:model/api`.converse to a Rust HOST CLOSURE
+> over the shared runtime (reads the prompt rope with `str-get`, calls the model, mints the completion
+> with `str-new`). This keeps the agent loop pure Cadenza with the model call as the only non-Cadenza
+> edge; when the host-String-result ABI (Route A) lands it can collapse to a cleaner host binding.
+
+- **Inc 0 — this design doc.** ✅ Landed. Forks §6 routed + all 4 concierge-confirmed (see §6 status).
+- **Inc 1 / 1b — Bedrock-direct.** ✅ Landed as **option (c)**: `cdz_run::run_agent` (the embedder
+  runner, binds `converse` to a host closure over the shared runtime) + the `implementation/seed/crates/
+  cdz-agent` crate (`mock_converse` for tests; `bedrock_converse` behind `--features bedrock`, real
+  `aws-sdk-bedrockruntime` InvokeModel). rcdzc `u7`/`u8` pin the String peer boundary; cdz-agent's CI
+  job runs the embedder e2e. Route A (host-String-result ABI) remains the durable end-state (v-peer-
+  linking's task), which would let (c) collapse to a host binding.
+- **Inc 2 — the loop.** ✅ Landed: `implementation/agent-harness/` (a Cadenza package — `loop.cdz`, the
+  `Model`/`Tools`-effect recursive loop) + the `cdz-agent` DRIVER binary that reads a real fleet inbox
+  and drives each message through the loop (reading the body via an `Inbox.next` effect, reporting the
+  model's actual completion). Generic `run_agent_hosted` binds N host ops (inbox + model + cedar).
+- **Inc 3 — Cedar authorize (4.3-A).** ✅ Landed: `cdz-agent/src/cedar.rs` (the real `cedar-policy`
+  evaluator) + `authz-loop.cdz` (every tool dispatch performs `Cedar.authorize` and dispatches only on
+  allow) + `cedar_authorizer`/`cedar_delegated_authorizer` (fail-closed; on-behalf-of = agent ∩ user
+  delegation intersection). Pinned e2e: permit, forbid, on-behalf-of both directions, malformed→deny.
+- **Inc 4 — self-modification / evolvable toolchains (§5).** ⏸️ HELD pending the operator (whether to
+  pull it forward, and whether proven-self-mod is in the first cut — routed via the concierge). When it
+  starts: add `rcdzc` as a `cdz-agent` dep (concierge pre-cleared) for runtime compile-a-new-tool +
+  the compile-repair loop; Cedar-gate every self-mod; v-verification for the proven form.
 
 Each increment reports language gaps it hits (REPORT/FIX, not work-around) and lands with gate coverage
-that pins its invariant.
+that pins its invariant. (This vertical's probes drove several v-effects + v-peer-linking fixes: the
+peer String argument/result-escape emit, multi-peer fused resource envelope, and the effectful-helper-
+in-a-recursive-self-call specialization family.)
 
 ---
 
