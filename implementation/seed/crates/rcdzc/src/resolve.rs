@@ -4478,10 +4478,23 @@ fn resolve_let(db: &Db, id: StructId) -> Resolved {
     };
     let pairs = binding_pairs(db, bindings_occ);
     if pairs.is_empty() {
-        return Resolved::Poison(Reject::coded(
-            Code::Malformed,
-            format!("this let's bindings are malformed — each must be `(<name> <init>)`. {SHAPE}"),
-        ));
+        // Distinguish an EMPTY binding list `(let () <body>)` from a MALFORMED one `(let ((a 1 2)) …)`.
+        // Both leave `pairs` empty, but the former has no binding to be "malformed" — its real issue is
+        // that it binds nothing, so the `let` is pointless (the body can be written directly). Name THAT
+        // instead of the misleading "each must be `(<name> <init>)`" (which implies a broken binding that
+        // isn't there). A `bindings_occ` that is an empty List is the `()` case; anything else (a non-list,
+        // or a list whose children are all non-`(<name> <init>)`) is genuinely malformed.
+        let is_empty_list =
+            matches!(db.ast.get(bindings_occ), Struct::List(items) if items.is_empty());
+        let message = if is_empty_list {
+            format!(
+                "this let binds nothing — an empty `()` binding list has no effect; write the body \
+                 directly, or add a `(<name> <init>)` binding. {SHAPE}"
+            )
+        } else {
+            format!("this let's bindings are malformed — each must be `(<name> <init>)`. {SHAPE}")
+        };
+        return Resolved::Poison(Reject::coded(Code::Malformed, message));
     }
     // TOO MANY operands — `(let (binds) body extra)`. A let is exactly `(let ((<name> <init>)…) <body>)`
     // with ONE body; a surplus operand after the body was SILENTLY IGNORED (the resolver read only
