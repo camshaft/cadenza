@@ -2102,6 +2102,40 @@ pub fn solved_lambda_arrow(db: &mut Db, params: &[StructId], body: StructId) -> 
 /// the compound-element facet of the function-domain reflection miscompile). A non-function, non-compound
 /// value takes the plain `type_of` (unchanged). Element joins/products mirror `type_of`'s own compound
 /// arms exactly, so a value with no fn element reflects byte-identically to before.
+/// Whether `reflected_ty` would ground a fn DOMAIN inside `id` that the bottom-up `type_of` leaves `Any`
+/// — i.e. `id` is (syntactically, without reducing) a FUNCTION VALUE or a COMPOUND LITERAL that can hold a
+/// fn element. A caller uses this to choose `reflected_ty` (the grounded arrow) over `type_of` ONLY when
+/// grounding can matter, so a plain `let`/call/scalar keeps its exact `type_of` behaviour — notably the
+/// annotation-agreement check, where reflecting a `(let …)`/call expr would trigger a speculative
+/// reduction with side effects that suppress a sibling reject (the `?`-error-type soundness pin). Checked
+/// on the RESOLVED shape (a `(fn …)` lambda / a def-ref to one, or a compound-value ctor `Apply` / the
+/// symbol-headed compound node), never by reducing.
+pub fn reflection_may_ground(db: &mut Db, id: StructId) -> bool {
+    use crate::resolved::Prim;
+    // A function value — a bare/named lambda whose bottom-up type is an arrow (an unannotated param leaks
+    // `Any`). `type_of` is memoized, so this is cheap and does not reduce.
+    if matches!(type_of(db, id), Ty::Fn(_, _)) {
+        return true;
+    }
+    // A compound-value LITERAL — the name-alias `Apply(TupleNew/ListNew/RecordNew/MapNew)` or the
+    // symbol-headed `Resolved::Tuple`/`List`/`Record`/`Map` — or a variant CONSTRUCTOR application (a
+    // payload may be a fn). These are the shapes `reflected_ty` recurses; anything else (a `let`, a call,
+    // a scalar, a bare variant) it hands straight to `type_of`, so gating on them changes nothing.
+    match resolved_of(db, id) {
+        Resolved::Tuple { .. }
+        | Resolved::List { .. }
+        | Resolved::Record { .. }
+        | Resolved::Map { .. } => true,
+        Resolved::Apply { head, .. } => {
+            matches!(
+                crate::eval::meta_apply_of(db, head),
+                Some(Prim::TupleNew | Prim::ListNew | Prim::RecordNew | Prim::MapNew)
+            ) || crate::eval::variant_disc_of(db, head).is_some()
+        }
+        _ => false,
+    }
+}
+
 pub fn reflected_ty(db: &mut Db, id: StructId) -> Ty {
     use crate::resolved::Prim;
     // A FUNCTION value — bare `(fn …)`, a named def-ref, an annotated/`let`-wrapped lambda — grounds via
@@ -11968,28 +12002,28 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                     // arrow. The `type_of` Lambda arm leaves an UNANNOTATED parameter `Any` (`h x = x + 1`
                     // types `(-> Any Int64)`), and `Any` UNIFIES WITH ANYTHING — so a CONTRADICTORY arrow
                     // annotation `(: h (-> Bool Int64))` / `(: h (-> String Int64))` unified against `(-> Any
-                    // Int64)` and SUCCEEDED, silently accepting a mismatch the check exists to reject (an
-                    // annotated-domain fn `(: (: x Int64) …)` or a RESULT contradiction was caught — only the
-                    // un-annotated DOMAIN slipped, via the `Any`). `solved_lambda_arrow` grounds each param
-                    // from the body (the same solve reflection + lowering use), so the domain is its real
-                    // type and the contradiction is caught. A genuinely-unconstrained param stays `Any` (a
-                    // polymorphic `(fn (x) x)`), which still unifies — honest, no false reject. GATE on the
-                    // bottom-up type ALREADY being a `Ty::Fn`: `lambda_params_and_body` follows a `let`/`apply`
-                    // through to an inner body (its `lambda_of` peels `Resolved::Let`/`Apply`), so a
-                    // NON-function annotated expr like `(: (let ((y …)) (Ok y)) (Result …))` would otherwise
-                    // wrongly enter the fn-grounding path and mis-solve. Only re-solve when `type_of` already
-                    // says it IS a function (then `solved_lambda_arrow` grounds its `Any` domains); every
-                    // other expr keeps its plain `type_of`.
-                    let base_ty = type_of(db, expr);
-                    let expr_ty = if matches!(base_ty, Ty::Fn(_, _)) {
-                        match crate::eval::lambda_params_and_body(db, expr) {
-                            Some((params, body)) => {
-                                solved_lambda_arrow(db, &params, body).unwrap_or(base_ty)
-                            }
-                            None => base_ty,
-                        }
+                    // Int64)` and SUCCEEDED, silently accepting a mismatch the check exists to reject. The
+                    // SAME leak reaches a fn stored INSIDE a compound/sum being annotated — `(: (tuple h 0)
+                    // (Tuple (-> Bool Int64) Int64))` / `(: (Some h) (Option (-> Bool Int64)))` — because the
+                    // compound's bottom-up `type_of` renders its fn element as `(-> Any …)`, so the domain
+                    // contradiction is masked (a RESULT contradiction was caught, since the codomain is
+                    // concrete). `reflected_ty` grounds a fn's domain from its body for a BARE fn AND
+                    // recursively through tuple/list/record/map elements + sum-variant payloads (the same
+                    // grounding `Type.of` uses), so the annotation check sees each fn's real domain wherever
+                    // it sits. It falls back to the plain `type_of` for a non-function, non-compound value —
+                    // including a `(let …)`/call whose result is not itself a fn, so the error-type reject of
+                    // `(: (let ((y (try (Err true)))) (Ok y)) (Result …))` is unaffected (`reflected_ty`'s fn
+                    // check needs the value to REDUCE to a lambda, which a `(Ok y)` body does not). A
+                    // genuinely-unconstrained param stays `Any` (polymorphic `(fn (x) x)`) and still unifies —
+                    // honest, no false reject. GATED by `reflection_may_ground`: only a fn value or a
+                    // compound/variant LITERAL takes the grounded `reflected_ty`; a plain `let`/call/scalar
+                    // keeps its exact `type_of`, so reflecting a `(: (let ((y (try (Err …)))) (Ok y)) (Result
+                    // …))` — which would speculatively reduce and suppress the `?`-error-type soundness reject
+                    // — is avoided (that expr is a `let`, not a fn/compound literal).
+                    let expr_ty = if reflection_may_ground(db, expr) {
+                        reflected_ty(db, expr)
                     } else {
-                        base_ty
+                        type_of(db, expr)
                     };
                     let mut subst = Subst::new();
                     if crate::unify::unify(&mut subst, &annot_ty, &expr_ty).is_err() {
