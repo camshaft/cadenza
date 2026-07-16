@@ -2194,6 +2194,10 @@ pass	converting a surrogate code point to a char yields None
 pass	converting a unit to another unit of the same dimension is an exact rational scale
 pass	converting an out-of-range integer to a char yields None
 pass	declaring a unit with a conversion conflicting with a built-in is an error
+pass	decode of a Float tag with a non-finite (NaN) bit pattern yields the error case
+pass	decode of a Str tag with an oversized length yields the error case
+pass	decode of a truncated Float tag yields the error case, not a trap
+pass	decode of an unknown tag byte yields the error case
 pass	decoding a four-byte sequence for a code point above U+10FFFF yields none
 pass	decoding a runtime ROPE Bytes as UTF-8 flattens before validating (well-formed)
 pass	decoding a runtime ROPE Bytes that is ill-formed yields none
