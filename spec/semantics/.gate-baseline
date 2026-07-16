@@ -2347,6 +2347,7 @@ pass	char to-int and from-int round-trip through the scalar value
 pass	checked addition yields None on overflow instead of trapping
 pass	checked addition yields Some of the sum when it fits
 pass	checked multiplication reports overflow as None
+pass	checked multiplication reports the Int64.min * -1 overflow as None (the checked companion of the trapping *)
 pass	checked multiplication yields Some when it fits
 pass	checked subtraction yields None on underflow instead of trapping
 pass	checked subtraction yields Some of the difference when it fits

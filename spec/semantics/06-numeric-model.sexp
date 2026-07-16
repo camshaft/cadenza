@@ -1804,6 +1804,18 @@
   (input  (Int64.checked-mul Int64.max 2))
   (output (: (None unit) (Option Int64))))
 
+(case "checked multiplication reports the Int64.min * -1 overflow as None (the checked companion of the trapping *)"
+  (doc    "`(Int64.checked-mul Int64.min -1)` = `(None unit)`: the product +2^63 is one past Int64.max, so
+           checked mul reports overflow — the SAME edge the trapping `(* Int64.min -1)` proves and TRAPS on
+           (the a=-1×MIN case the overflow case above names but does not itself exercise). This is the
+           subtlest checked-mul overflow: the `r/a != b` check must catch a signed product that overflows to
+           a value whose division back by `a` does not recover `b`, distinct from the `max*2` magnitude
+           overflow. Checked mul and trapping `*` MUST agree on the verdict here (one via None, one via
+           trap) — a fold that reused a magnitude-only bound, or diverged the checked overflow proof from
+           the trapping one, would get this edge wrong. Folds at compile time on every backend.")
+  (input  (Int64.checked-mul Int64.min -1))
+  (output (: (None unit) (Option Int64))))
+
 (case "checked multiplication yields Some when it fits"
   (doc    "`(Int64.checked-mul 6 7)` = `(Some 42)`: the in-range companion the overflow case above needs
            — a correct check must NOT report overflow here (a decline or a wrong `r/a` check would).")
