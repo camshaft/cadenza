@@ -117,6 +117,7 @@ pass	OR-saturation to a full-width mask on an unsigned runtime value
 pass	OR-then-mask absorption does not discard a trapping runtime operand
 pass	OR-then-mask absorption folds to the mask constant on a runtime operand
 pass	Ok carrying a Some keeps both variant tags
+pass	Qty.pow and repeated multiplication produce the same dimension for a matching add
 pass	Qty.unit recovers a derived unit
 pass	Qty.unit recovers a quantity's unit to build another quantity of the same unit
 pass	Qty.unit recovers the unit of a quantity whose magnitude is a runtime value
@@ -2039,10 +2040,13 @@ pass	a zero-bit integer width is rejected
 pass	a zero-length slice is the empty byte sequence
 pass	accessing through an empty-side split-at is usable, like the equivalent literal
 pass	accumulator introduction threads a transformed extra parameter through a multi-parameter recursion
+pass	adding a cubed length to a squared length is a dimension mismatch
+pass	adding a squared length to a plain length is a dimension mismatch
 pass	adding quantities of incompatible dimension is a compile-time error
 pass	adding rational-magnitude quantities of incompatible dimension is still a compile-time error
 pass	adding two named family units of one dimension converts to the reference (Float)
 pass	adding two quantities of the same dimension keeps that dimension
+pass	adding two squared-length quantities is well-dimensioned
 pass	adding two units of one dimension converts to the reference unit exactly
 pass	addition of a string and a byte sequence names both text types
 pass	addition of a string and a list names both non-numeric types
