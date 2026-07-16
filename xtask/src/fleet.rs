@@ -2209,13 +2209,27 @@ fn watchdog(
         );
         if let Some(line) = summary {
             let log = fleet.root.join("watchdog.log");
-            if let Ok(mut f) = std::fs::OpenOptions::new()
+            // Surface an IO failure rather than swallowing it (PR #492 Copilot): this log IS the
+            // operator's durable liveness signal, so a read-only / full FS silently dropping the append
+            // would make the record stop with no warning. Warn on BOTH open and write failure.
+            use std::io::Write;
+            match std::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
                 .open(&log)
             {
-                use std::io::Write;
-                let _ = writeln!(f, "{line}");
+                Ok(mut f) => {
+                    if let Err(e) = writeln!(f, "{line}") {
+                        eprintln!(
+                            "  ! watchdog: could not WRITE the health-log line to {} ({e}) — record not appended",
+                            log.display()
+                        );
+                    }
+                }
+                Err(e) => eprintln!(
+                    "  ! watchdog: could not OPEN the health log {} ({e}) — findings not persisted this run",
+                    log.display()
+                ),
             }
         }
     }
