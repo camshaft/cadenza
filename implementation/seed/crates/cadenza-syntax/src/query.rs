@@ -3446,6 +3446,74 @@ mod tests {
         Template::compile(src).unwrap_or_else(|e| panic!("template {src:?}: {e}"))
     }
 
+    /// A tiny deterministic PRNG (SplitMix64) — reproducible fuzz without a dependency, matching the
+    /// lexer/parser/sexpr house style (the crate stays "plain").
+    struct SplitMix64(u64);
+    impl SplitMix64 {
+        fn next(&mut self) -> u64 {
+            self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+            z ^ (z >> 31)
+        }
+    }
+
+    #[test]
+    fn pattern_compile_and_match_never_panic_on_arbitrary_input() {
+        // `Pattern`/`Template`/`RuleSet::compile` parse UNTRUSTED text (`cdz query PATTERN`, `--rule …`,
+        // `--rules FILE`), so they must return a diagnostic, never panic — on any string, including
+        // metavariable/splice/guard soup (`,x`, `,@xs`, `,_`, `,(x GUARD)`), unbalanced parens, and the
+        // adjacent-splice/misplaced-splice/bad-guard cases these compilers explicitly reject. And a
+        // pattern that DOES compile must MATCH against a subject without panicking (the match walk over
+        // an arbitrary compiled pattern + a fixed subject). No result is asserted — the point is total,
+        // panic-free compile + match, mirroring the reader/printer robustness fuzzes.
+        let subject = subj("(f (g 1) (h a b) (nested (deep x)) 2 3)");
+        let alphabet: Vec<char> = "(),@_ x0123456789+*-.\"#abchisltrue-literalhead-is`|:"
+            .chars()
+            .collect();
+        let mut rng = SplitMix64(0x9e3d_71a5_c0de_0f3e);
+        for len in 0..=28usize {
+            for _ in 0..120 {
+                let s: String = (0..len)
+                    .map(|_| alphabet[(rng.next() as usize) % alphabet.len()])
+                    .collect();
+                // Each compiler must return Ok/Err, never panic.
+                if let Ok(p) = Pattern::compile(&s) {
+                    // A compiled pattern must match without panicking (result unimportant).
+                    let mut binds = Bindings::default();
+                    let _ = p.matches(&subject, &mut binds);
+                }
+                let _ = Template::compile(&s);
+                let _ = RuleSet::compile(&s);
+            }
+        }
+        // Structural edge cases these compilers specifically reason about — all must be Err/Ok, no panic.
+        for s in [
+            ",",
+            ",,",
+            ",@",
+            ",@,@",
+            "(,@a ,@b)",
+            "( ,@x )",
+            ",()",
+            ",(x)",
+            ",(x bad-guard)",
+            ",(x (head-is))",
+            ",( )",
+            "()",
+            "(())",
+            "((((",
+            ",_",
+            ",@_",
+            "(a ,@x ,@y b)",
+        ] {
+            let _ = Pattern::compile(s);
+            let _ = Template::compile(s);
+            let _ = RuleSet::compile(s);
+        }
+    }
+
     // ---- matching ----
 
     #[test]
