@@ -559,6 +559,10 @@ pub fn emit(
     // body (co-locating a pure entrypoint with an effectful one grants the pure one nothing).
     //= spec/capabilities/capabilities-and-effects.md#a-component-is-bound-against-the-union-of-its-entrypoints-rows
     //# The set of host operations a component imports MUST be the union of the escaping rows its entrypoints acknowledge, so that a component instantiated once carries a single import surface serving every entrypoint it exports, as the component model requires.
+    //= spec/capabilities/capabilities-and-effects.md#a-component-is-bound-against-the-union-of-its-entrypoints-rows
+    //# The host grant required to instantiate a component MUST be that union, so that provisioning is per-component even though acknowledgment is per-entrypoint, and an entrypoint that reaches fewer effects than its neighbors is still hosted in a component provisioned for all of them.
+    //= spec/capabilities/capabilities-and-effects.md#each-entrypoint-acknowledges-its-own-escaping-row
+    //# Each entrypoint MUST acknowledge, at itself, the effects it delegates to the host, so that the authority a given entrypoint is permitted to reach is a property of that entrypoint and not of the module or component that contains it, and an entrypoint that delegates nothing is pure regardless of what its neighbors delegate.
     //= spec/capabilities/capabilities-and-effects.md#each-entrypoint-acknowledges-its-own-escaping-row
     //# The authority an entrypoint reaches MUST be determined by the operations reachable from its own body under its own delegations, so that co-locating a pure entrypoint with an effectful one in the same component does not grant the pure entrypoint any authority.
     //= spec/capabilities/capabilities-and-effects.md#the-program-manifest-is-the-union-of-its-entrypoints-delegations

@@ -1183,6 +1183,10 @@ fn check_no_home_walk(
             handled.truncate(before);
         }
         // A `host` — its listed effects are DELEGATED for the body. Push each delegated effect's decl.
+        // The `host` clause is where the entrypoint ENUMERATES, at the entrypoint itself, the effects it
+        // grants to the boundary — authority enters here, not from any effect's declaration.
+        //= spec/capabilities/capabilities-and-effects.md#an-entrypoint-delegates-the-capabilities-it-grants-to-the-host
+        //# An entrypoint MUST enumerate, at the entrypoint itself, every effect whose operations it delegates to the host, so that granting a capability is a decision made where authority enters the program rather than a property an effect's declaration carries.
         Resolved::Host { effects, body } => {
             let added: Vec<(StructId, u32)> = effects
                 .iter()
