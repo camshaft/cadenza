@@ -124,8 +124,10 @@ fn new_escapes_the_project_name_in_the_manifest() {
 
 #[test]
 fn new_scaffolds_a_gitignore_covering_the_build_artifacts() {
-    // `cdz new` writes a `.gitignore` (the `cargo new`→`/target` convention) covering the build OUTPUTS a
-    // build/run produces — the same set `cdz clean` removes — so a fresh project doesn't git-track them.
+    // `cdz new` writes a `.gitignore` (the `cargo new`→`/target` convention) covering the EXACT build
+    // outputs of the scaffolded entry (which exports `main` → `main.{wasm,rs,dwarf}`) + `link-map.txt` +
+    // the run temp — NOT broad `*.wasm`/`*.rs` globs (which would git-ignore a user's hand-written Rust
+    // helper; the same over-broad extension assumption that made `cdz clean` a data-loss risk, PR #454).
     let root = scratch("gitignore");
     let (ok, _o, err) = run_in(&root, &["new", "app"]);
     assert!(ok, "cdz new failed: {err}");
@@ -133,16 +135,23 @@ fn new_scaffolds_a_gitignore_covering_the_build_artifacts() {
     assert!(gi.is_file(), "a .gitignore is scaffolded");
     let body = std::fs::read_to_string(&gi).unwrap();
     for pat in [
-        "*.wasm",
-        "*.rs",
-        "*.dwarf",
+        "main.wasm",
+        "main.rs",
+        "main.dwarf",
         "link-map.txt",
         ".cdz-run-*.wasm",
     ] {
         assert!(
             body.contains(pat),
-            "the .gitignore covers `{pat}` (a `cdz clean` artifact): {body}"
+            "the .gitignore ignores the exact output `{pat}`: {body}"
         );
     }
+    // It must NOT use a broad extension glob as its OWN line — a user's hand-written `helper.rs` should
+    // not be ignored. (Checked per-line so the legitimate `.cdz-run-*.wasm` temp pattern doesn't trip it.)
+    let lines: Vec<&str> = body.lines().map(str::trim).collect();
+    assert!(
+        !lines.contains(&"*.rs") && !lines.contains(&"*.wasm") && !lines.contains(&"*.dwarf"),
+        "the .gitignore does not use a broad extension glob line (would ignore user files): {body}"
+    );
     let _ = std::fs::remove_dir_all(&root);
 }

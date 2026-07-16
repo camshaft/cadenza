@@ -1848,6 +1848,11 @@ fn symbol_kind_to_completion_kind(kind: &str) -> CompletionItemKind {
 
 // ── the analysis: source text → LSP code lenses (monomorphizations), via the `Instantiations` query ──
 
+/// The command id the instantiation CodeLens carries. LSP requires a `Command.command` to be NON-EMPTY
+/// (some clients drop a lens with an empty id), so the lens names this stable, namespaced id — the
+/// editor extension registers it as a NO-OP so the lens is a valid, non-actionable informational label.
+const LENS_INSTANTIATIONS_COMMAND: &str = "cadenza.showInstantiations";
+
 /// Compute the CodeLenses for `text` — one lens above each generic/ad-hoc-polymorphic top-level
 /// definition that the compiler SPECIALIZED, titled with its concrete monomorphizations (the
 /// `Instantiations` query — a fact no other tool surfaces, e.g. `loopn` → `[n: Int64, x: Int64]`,
@@ -1922,14 +1927,16 @@ fn code_lenses_for(text: &str, is_ml: bool) -> Vec<CodeLens> {
         else {
             continue;
         };
-        // The title IS the information (the monomorphizations); a `Command` with an empty command id is
-        // a conventional label-only lens (clients render `command.title` inline, no click action). A
-        // future increment could add a "jump to instance" command.
+        // The title IS the information (the monomorphizations). A `Command` needs a NON-EMPTY `command`
+        // id per LSP (some clients drop/reject an empty-id lens), so we name a stable, NAMESPACED id the
+        // editor extension registers as a NO-OP handler (`cadenza.showInstantiations`) — clicking the lens
+        // does nothing, which is the intended "informational label" behavior, but the lens is now valid
+        // and renders everywhere. A future increment could make the handler jump to an instance.
         out.push(CodeLens {
             range,
             command: Some(lsp_types::Command {
                 title,
-                command: String::new(),
+                command: LENS_INSTANTIATIONS_COMMAND.to_string(),
                 arguments: None,
             }),
             data: None,
@@ -3043,6 +3050,14 @@ mod tests {
         );
         // The lens sits on `loopn`'s name occurrence (line 0).
         assert_eq!(lenses[0].range.start.line, 0);
+        // The command id must be NON-EMPTY (LSP requirement; an empty id makes some clients drop the
+        // lens) — it names the extension's no-op handler so the label lens is valid + non-actionable.
+        assert_eq!(
+            lenses[0].command.as_ref().map(|c| c.command.as_str()),
+            Some("cadenza.showInstantiations"),
+            "the lens must carry a non-empty command id: {:?}",
+            lenses[0].command
+        );
     }
 
     #[test]

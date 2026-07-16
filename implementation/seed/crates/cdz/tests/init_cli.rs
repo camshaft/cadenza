@@ -137,9 +137,10 @@ fn init_writes_a_gitignore_when_absent() {
     assert!(ok, "cdz init failed: {err}");
     let gi = dir.join(".gitignore");
     assert!(gi.is_file(), "a .gitignore is written");
+    let body = std::fs::read_to_string(&gi).unwrap();
     assert!(
-        std::fs::read_to_string(&gi).unwrap().contains("*.wasm"),
-        "the .gitignore covers build artifacts"
+        body.contains("main.wasm") && body.contains("link-map.txt"),
+        "the .gitignore covers the exact build artifacts: {body}"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }

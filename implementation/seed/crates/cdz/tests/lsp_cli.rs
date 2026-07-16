@@ -474,6 +474,15 @@ fn lsp_code_lens_lists_a_specialized_generics_instances() {
         title.contains("x: Int64") && title.contains("x: String"),
         "the lens title should name both monomorphizations, got {title:?}"
     );
+    // The command id must be non-empty (LSP requirement; some clients drop an empty-id lens).
+    assert_eq!(
+        lenses[0]
+            .pointer("/command/command")
+            .and_then(|v| v.as_str()),
+        Some("cadenza.showInstantiations"),
+        "the lens must carry a non-empty command id: {:?}",
+        lenses[0].pointer("/command")
+    );
 }
 
 #[test]

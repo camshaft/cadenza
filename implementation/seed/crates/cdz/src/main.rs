@@ -1241,15 +1241,26 @@ fn scaffold_project(dir: &std::path::Path, sexpr: bool, created: bool) -> ExitCo
     // the project is already scaffolded + buildable, so warn and continue rather than fail the command.
     let gitignore = dir.join(".gitignore");
     if !gitignore.exists() {
-        // Kept in sync with `run_clean`'s sweep: the component/rust/dwarf outputs, the link-map, and a
-        // `cdz run` temp component. One entry per line, newline-terminated.
-        let body = "# Cadenza build artifacts (see `cdz clean`)\n\
-                    *.wasm\n\
-                    *.rs\n\
-                    *.dwarf\n\
-                    link-map.txt\n\
-                    .cdz-run-*.wasm\n";
-        if let Err(e) = std::fs::write(&gitignore, body) {
+        // Ignore the EXACT outputs a build of the scaffolded entry emits — the entry exports `main`, so a
+        // build writes `main.{wasm,rs,dwarf}` — plus `link-map.txt` and the `.cdz-run-*.wasm` run temp.
+        // NOT the broad `*.wasm`/`*.rs`/`*.dwarf` globs a first version used: `*.rs` would git-ignore a
+        // user's hand-written Rust helper, and `*.wasm` a checked-in asset — the same over-broad
+        // extension assumption that made `cdz clean` a data-loss risk (both narrowed to exact names). The
+        // entry stem is fixed at scaffold time (`main`), so these names are stable for the fresh project;
+        // if the author renames the export/adds targets, they edit `.gitignore` like any project file.
+        let stem = entry_file
+            .rsplit_once('.')
+            .map(|(s, _)| s)
+            .unwrap_or("main");
+        let body = format!(
+            "# Cadenza build artifacts (see `cdz clean`)\n\
+             {stem}.wasm\n\
+             {stem}.rs\n\
+             {stem}.dwarf\n\
+             link-map.txt\n\
+             .cdz-run-*.wasm\n"
+        );
+        if let Err(e) = std::fs::write(&gitignore, &body) {
             eprintln!(
                 "{PROG}: warning: could not write {}: {e}",
                 gitignore.display()

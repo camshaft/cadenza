@@ -14383,6 +14383,66 @@ mod match_engine {
     }
 
     #[test]
+    fn a_nested_match_on_a_recursive_sum_with_a_known_outer_disc_reads_the_right_payload_depth() {
+        // These asserts run heap values; skip when the value-heap runtime store is absent (CI's bare
+        // `cargo test` builds no store), matching the established heap-test pattern — else the
+        // `run_heap_value(...).unwrap()` panics `None` storeless (staging-sync-loop-harness-trap).
+        if super::find_runtime_wasm().is_none() {
+            eprintln!(
+                "runtime wasm not found (run `cargo xtask build`); skipping heap-run assertions"
+            );
+            return;
+        }
+        // REGRESSION (silent MISCOMPILE): a match nesting a variant of the SAME recursive sum, when the
+        // scrutinee's OUTER discriminant is STATICALLY KNOWN (a constant/inlined `SumNew`), matched the
+        // WRONG branch. `(type T (I Int64) (W T))`, `(match t ((W (I 7)) 1) (_ 0))` on `t = (W (I 7))` →
+        // returned 0, must be 1. ROOT: the `known_disc` fold (build_tree) drops the outer `W` switch, so the
+        // emit never records W's payload type at `[Payload]`; the inner `(I 7)` lit-test's payload-type walk
+        // then FELL BACK to variant 0 (`I`'s payload `Int64`), so the SECOND `Payload` step (into `I`'s
+        // payload) saw `cur = Int64` (not a Sum) and was ERASED as a nominal no-op — `get-int` read at
+        // `[Payload]`, not `[Payload, Payload]` → garbage. FIX (emit layer): `payload_step_ty_of` recovers
+        // the entered variant from the scrutinee's CONSTANT value (`const_disc_at`) when the fold left
+        // `sum_path_types` unseeded, instead of falling back to variant 0. This is the shape EVERY recursive-
+        // AST / tree walk takes (`(Ast.List (list (Ast.Name …) …))`), latent under any inlined/const scrutinee.
+        assert_eq!(
+            run_heap_value(
+                "(module m (type T (I Int64) (W T)) \
+                   (def (f (: t T)) (match t ((W (I 7)) 1) (_ 0))) \
+                   (def (main) (f (W (I 7)))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "1",
+            "(W (I 7)) matches ((W (I 7)) 1) → 1 — the inner I payload is read at [Payload, Payload], not [Payload]"
+        );
+        // The NON-match dual: `(W (W (I 7)))` — inner is `W`, not `I` — must fall through to `_` → 0. Confirms
+        // the inner disc test genuinely runs (not blindly matched) even with the outer disc folded.
+        assert_eq!(
+            run_heap_value(
+                "(module m (type T (I Int64) (W T)) \
+                   (def (f (: t T)) (match t ((W (I 7)) 1) (_ 0))) \
+                   (def (main) (f (W (W (I 7))))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "0",
+            "(W (W (I 7))) — inner is W, not I — falls through to the wildcard → 0"
+        );
+        // The LITERAL refinement is genuinely tested: `(W (I 8))` (payload 8 ≠ 7) falls through → 0.
+        assert_eq!(
+            run_heap_value(
+                "(module m (type T (I Int64) (W T)) \
+                   (def (f (: t T)) (match t ((W (I 7)) 1) (_ 0))) \
+                   (def (main) (f (W (I 8)))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "0",
+            "(W (I 8)) — inner payload 8 ≠ 7 — falls through to the wildcard → 0 (the [Payload,Payload] leaf is read + compared)"
+        );
+    }
+
+    #[test]
     fn a_tail_loop_threading_a_projected_boxed_sum_accumulator_decodes_correctly() {
         // A tuple-projected boxed sum threaded through a self-tail loop must SURVIVE the loop step. `one`
         // returns `(tuple (W.Atom <byte>) (+ pos 1))`; `loop` threads `(. r 0)` (the nested-compound boxed
@@ -67511,6 +67571,85 @@ mod cross_component_oracle {
                 "both sides from source exchange a compound over the effects surface"
             ),
             cdz_run::Outcome::Trap(t) => panic!("both-sides-from-source run trapped: {t}"),
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // U7 — a STRING RESULT crosses a peer-bound effect and is consumed IN-PROGRAM (byte-len + equality).
+    // This pins the foundation the native AGENT HARNESS (v-agent-harness) builds on: a model call is
+    // `(prompt -> completion : String)`, and the Bedrock-as-a-peer bring-up (Route B in
+    // `implementation/design/DESIGN-agent-harness.md`) returns the completion as a peer op's String
+    // RESULT — which crosses as a shared-runtime rope handle (`extern_abi_val_type(String) = U32`), and
+    // the consumer inspects it WITHOUT it ever leaving the entrypoint as a resource (it returns a scalar,
+    // sidestepping the resource-escape gap in `issues/string-crossing-matrix-blocks-model-call-shape.md`).
+    // A regression in the runtime-handle transport (a peer String result crossing, or `byte-len`/`=` over
+    // a runtime rope) would break the harness's whole tool-call-dispatch model — so pin it here even though
+    // it passes today. The String ARGUMENT direction is the separate, still-open cell v-peer-linking owns.
+    // ------------------------------------------------------------------------------------------------
+    #[test]
+    fn u7_a_string_result_crosses_a_peer_and_is_consumed_in_program() {
+        use crate::backend::wasm::runtime_abi::{REQUIRED_RUNTIME_HASH, RUNTIME_IFACE};
+        use crate::testkit::parse;
+        let import_name = format!("{RUNTIME_IFACE}@0.0.0+{REQUIRED_RUNTIME_HASH}");
+        // PROVIDER (source): a String-returning op — the mock "model" — published as `cadenza:model/api`.
+        // `reply(seed)` ignores its scalar arg (String ARG can't cross yet — the open cell) and returns a
+        // runtime String, so it takes the provider+runtime envelope and mints a rope handle.
+        let provider = compile_provider(
+            "(do (def (reply (: seed Int64)) \"ok\") (export reply))",
+            "cadenza:model/api",
+        );
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&provider)
+                .expect("string-result provider validates");
+        }
+        // CONSUMER (source): a peer-bound effect M returning a String; main performs it, then EQUALITY-
+        // dispatches on the completion (`= "ok"`) and returns its byte-len — the coarse tool-call dispatch
+        // the agent loop uses. All three ops (peer String result, `=` over a runtime rope, `byte-len`) run
+        // today; the entrypoint returns Int64 so nothing escapes as a resource.
+        let src = "(do \
+            (effect M (op reply (-> Int64 String))) \
+            (bind M \"cadenza:model/api\") \
+            (def (main (: seed Int64)) \
+                (if (= (host (M) (M.reply seed)) \"ok\") \
+                    (String.byte-len (host (M) (M.reply seed))) \
+                    0)) \
+            (export main))";
+        let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .unwrap_or_else(|d| panic!("consumer compiles: {} [{:?}]", d.message, d.code));
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&consumer).expect("consumer validates");
+        }
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("[U7] runtime wasm not found; skipping");
+            return;
+        };
+        assert!(
+            String::from_utf8_lossy(&provider).contains(&import_name),
+            "the source provider imports the value-heap runtime (it builds a String rope)"
+        );
+        let peers = vec![cdz_run::Peer {
+            bytes: provider,
+            interface: "cadenza:model/api".to_string(),
+        }];
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec!["1".to_string()],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run_with_peers(&consumer, &peers, &opts)
+            .expect("a String result crosses a peer-bound effect")
+        {
+            // reply(1) returned "ok" as a shared-runtime rope handle; the consumer matched `= "ok"` → true
+            // and read its byte-len → 2. A STRING crossed a peer boundary and was inspected in-program.
+            cdz_run::Outcome::Value(s) => assert_eq!(
+                s, "2",
+                "a peer String result is equality-matched + byte-len'd in-program"
+            ),
+            cdz_run::Outcome::Trap(t) => panic!("string-result peer run trapped: {t}"),
         }
     }
 

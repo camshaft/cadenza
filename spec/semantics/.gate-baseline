@@ -570,6 +570,8 @@ pass	a constructor selected at RUNTIME is a first-class value that is then appli
 pass	a constructor whose payload is a constructor keeps the outer variant tag
 pass	a constructor with an all-irrefutable payload shadows a later refining arm of the same variant
 pass	a consumed and a borrowed read of one loop invariant coexist per iteration
+pass	a nested match on a recursive sum with a KNOWN outer discriminant reads the right payload depth
+pass	a nested match on a recursive sum falls through when the inner variant differs (known outer disc)
 pass	a consumed bare None type-checks without annotation (ambiguity is escape-only)
 pass	a consumed empty list type-checks without annotation (ambiguity is escape-only)
 pass	a consumer applies TWO handed-back closures
@@ -2456,6 +2458,7 @@ pass	eval does not see through a splice whose operand is itself an Ast value
 pass	eval is optional for macros and interactive use
 pass	eval of a partially-exported type's EXPORTED constructor works
 pass	eval of a partially-exported type's WITHHELD constructor is rejected
+pass	eval of a fully-concrete imported constructor is legal from outside
 pass	eval of a quasiquote splicing a compile-time-known value
 pass	eval of a quasiquote splicing a string works through String ops
 pass	eval of a quasiquote-built form with a float unquote folds
@@ -2464,6 +2467,9 @@ pass	eval of a quoted conditional reduces its comparison condition first
 pass	eval of a quoted conditional takes the branch its boolean literal selects
 pass	eval of a quoted float executes it to the float value
 pass	eval of a quoted float feeds ordinary float arithmetic
+pass	eval of a quoted lambda application folds
+pass	eval of a quoted let-binding form folds
+pass	eval of a quoted match form folds to the selected arm
 pass	eval of a quoted private constructor is withheld exactly as a direct reference — no forge
 pass	eval of a quoted proof-variant match cannot destructure an abstract proof outside the kernel
 pass	eval of a quoted string executes it to the string value

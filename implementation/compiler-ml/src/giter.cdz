@@ -19,24 +19,34 @@
 /// `next` is still the pull interface (`GIter(a) -> Option((a, GIter(a)))`), total (never traps) and pure
 /// (re-stepping yields the same element); the cons-cell IS the reified rest, so `next` just projects it.
 ///
-/// SCOPE (slice 1). This first generic slice lands the ELEMENT-CARRYING producers (`from-list`,
-/// `singleton`) + `next` + the closure-free generic consumers (`count`, `collect`). Transformers that store
-/// a closure over the element (`map`/`filter`) are a FOLLOW-UP slice. Element-CHANGING
-/// `map : GIter(a) -> (a -> b) -> GIter(b)` is deferred: the second type variable `b` cannot be written in
-/// an annotation (the ML surface has no `∀`-binder in a type annotation —
-/// `mlrepro-reject-user-generic-type-var-in-annotation`), so it needs an unannotated spelling that infers
-/// `b` or an explicit `Type` parameter; scoped as follow-up.
+/// SCOPE (slices 1–2, all CLOSURE-FREE — the shape Part C directly unblocks). Element-carrying producers
+/// (`from-list`, `singleton`), the `next` pull interface, closure-free consumers (`count`, `collect`, `nth`,
+/// `last`), and closure-free transformers (`chain`, `take`, `drop`). Every function here is self-recursive
+/// and threads NO closure, so each monomorphizes independently per element type (composes at Int64 AND
+/// String in one program — the tests pin this).
 ///
-/// TWO KNOWN GAPS this slice deliberately steers around (both filed, both NOT Part C):
-///   - NULLARY generic producer (`empty : Unit -> GIter(a)`): its element is never tied to anything, so a
-///     use that does not constrain `a` (e.g. `count(empty())`) declines CDZ0201 — and, worse, an
-///     unconstrained `from-list([])` COMPILES but MISCOMPILES at run time. See
-///     `mlrepro-nullary-generic-producer-element-undetermined.cdz` (queue). So this module offers NO
-///     `empty`/`is-empty` yet; a real caller fixes the element in context (`chain(empty(), from-list([1]))`)
-///     — that sound usage lands with `chain` in a follow-up once the nullary gap is addressed.
+/// NOT YET (gated on inference gaps, filed + routed to v-inference; land the tick they merge):
+///   - CLOSURE-STORING transformers (`map`/`filter`): a recursive-generic function that threads a CLOSURE
+///     through its recursion declines CDZ0201 at ≥2 element types — the direct Part C follow-up, filed
+///     `mlrepro-decline-generic-recursive-transformer-threads-closure.cdz`, root-caused by v-inference in
+///     `type_specialize` (solves the bare-closure arg in isolation, not against the callee's instantiated
+///     param); fix in progress.
+///   - Element-CHANGING `map : GIter(a) -> (a -> b) -> GIter(b)`: the second type variable `b` cannot be
+///     written in an annotation (the ML surface has no `∀`-binder in a type annotation —
+///     `mlrepro-reject-user-generic-type-var-in-annotation`); needs an unannotated spelling that infers `b`
+///     or an explicit `Type` parameter.
+///
+/// KNOWN EDGE this module steers around (NOT Part C, NOT a miscompile):
+///   - NULLARY generic producer (`empty : Unit -> GIter(a)`) has NO argument to tie its element to, so a use
+///     that does not otherwise constrain `a` (e.g. `count(empty())`) declines CDZ0201 — correct-to-reject
+///     (the program is genuinely ambiguous in `a`), though the message misleadingly blames the argument-tie
+///     when there is no argument (a diagnostic-wording nit, routed to v-inference). A `from-list([])` whose
+///     element IS fixed by context runs correctly. So this module offers no `empty`/`is-empty` yet; a real
+///     caller fixes the element in context (`chain(empty(), from-list([1]))`), which lands once `empty` has
+///     a determinable element (e.g. an explicit `Type` param) in a follow-up.
 ///   - MUTUALLY-recursive generic producer GROUP still declines (no shared substitution across the group —
-///     v-inference's stated caveat). Every producer/consumer here is SELF-recursive, the shape Part C
-///     fixed. Do not add a mutually-recursive generic producer pair without re-checking with v-inference.
+///     v-inference's caveat). Every function here is SELF-recursive, the shape Part C fixed. Do not add a
+///     mutually-recursive generic producer pair without re-checking with v-inference.
 
 /// The generic pull-iterator as a recursive cons cell.
 ///   - `Nil`         — exhausted (the empty iterator).
@@ -82,6 +92,45 @@ def count(it) = match it with
 def collect(it) = match it with
   | GIter.Nil(_) => []
   | GIter.Cons(h, rest) => List.concat([h], collect(rest))
+
+/// `nth(it, n)` — the `n`-th element (0-based), `None` if the iterator is shorter. Closure-free consumer
+/// returning `Option(a)`; drives the pull `n` steps. Generic in the element.
+def nth(it, n) = match it with
+  | GIter.Nil(_) => Option.None(unit)
+  | GIter.Cons(h, rest) => if n <= 0 then Option.Some(h) else nth(rest, n - 1)
+
+/// `last(it)` — the final element, `None` for an empty iterator. Closure-free; recurses to the last cons.
+def last(it) = match it with
+  | GIter.Nil(_) => Option.None(unit)
+  | GIter.Cons(h, rest) => (match rest with
+    | GIter.Nil(_) => Option.Some(h)
+    | GIter.Cons(_, _) => last(rest))
+
+/// CLOSURE-FREE TRANSFORMERS (build a new `GIter(a)`; no closure threaded — the Part C shape) -----------
+/// These need NO closure, so they compose per element type today. Transformers that thread a closure
+/// (`map`/`filter`) are gated on a SEPARATE inference gap — a recursive-generic function threading a
+/// CLOSURE through its recursion still declines at ≥2 element types (filed
+/// `mlrepro-decline-generic-recursive-transformer-threads-closure.cdz`, root-caused by v-inference in
+/// `type_specialize`; the fix is in progress). They land the tick it merges.
+
+/// `chain(a, b)` — concatenate two iterators: yield all of `a`, then all of `b`. Self-recursive over `a`;
+/// the `Nil` base returns `b` (same element type), so the result element ties to the inputs'.
+def chain(a, b) = match a with
+  | GIter.Nil(_) => b
+  | GIter.Cons(h, rest) => GIter.Cons(h, chain(rest, b))
+
+/// `take(it, n)` — an iterator over the first `n` elements (fewer if `it` is shorter). Closure-free; builds
+/// a truncated `GIter(a)`.
+def take(it, n) = if n <= 0 then GIter.Nil(unit) else (match it with
+  | GIter.Nil(_) => GIter.Nil(unit)
+  | GIter.Cons(h, rest) => GIter.Cons(h, take(rest, n - 1)))
+
+/// `drop(it, n)` — an iterator with the first `n` elements skipped. Closure-free. Written MATCH-FIRST (not
+/// an early `if n <= 0 then it`): returning the bare argument iterator in a guard interacts badly with the
+/// element tie and declines CDZ0201, whereas rebuilding the head cell (`Cons(h, rest)`) composes cleanly.
+def drop(it, n) = match it with
+  | GIter.Nil(_) => GIter.Nil(unit)
+  | GIter.Cons(h, rest) => if n <= 0 then GIter.Cons(h, rest) else drop(rest, n - 1)
 
 /// TESTS ----------------------------------------------------------------------------------------------
 
@@ -144,5 +193,73 @@ def next-yields-head-then-rest() =
   | Option.None(_) => trap("next of non-empty must be Some")
   | Option.Some(p) => (match p with | (h, rest) =>
     if h == 42 then (if count(rest) == 1 then unit else trap("rest length")) else trap("head value"))
+
+/// SLICE-2 closure-free combinators, each pinned at TWO element types in one program.
+
+@test
+def chain-concatenates-ints() =
+  if int-list-eq(collect(chain(from-list([1, 2]), from-list([3, 4, 5]))), [1, 2, 3, 4, 5])
+  then unit else trap("chain ints")
+
+@test
+def chain-concatenates-strings() =
+  if str-list-eq(collect(chain(from-list(["a"]), from-list(["b", "c"]))), ["a", "b", "c"])
+  then unit else trap("chain strings")
+
+@test
+def take-prefix-ints() =
+  if int-list-eq(collect(take(from-list([1, 2, 3, 4, 5]), 3)), [1, 2, 3])
+  then unit else trap("take ints")
+
+@test
+def take-prefix-strings-and-over-length() =
+  if str-list-eq(collect(take(from-list(["a", "b"]), 5)), ["a", "b"])
+  then unit else trap("take past end yields all")
+
+@test
+def drop-suffix-ints() =
+  if int-list-eq(collect(drop(from-list([1, 2, 3, 4, 5]), 2)), [3, 4, 5])
+  then unit else trap("drop ints")
+
+@test
+def drop-suffix-strings() =
+  if str-list-eq(collect(drop(from-list(["a", "b", "c"]), 1)), ["b", "c"])
+  then unit else trap("drop strings")
+
+@test
+def nth-ints() =
+  match nth(from-list([10, 20, 30]), 1) with
+  | Option.None(_) => trap("nth in bounds must be Some")
+  | Option.Some(v) => if v == 20 then unit else trap("nth value")
+
+@test
+def nth-out-of-bounds-is-none() =
+  match nth(from-list([10, 20]), 5) with
+  | Option.None(_) => unit
+  | Option.Some(_) => trap("nth past end must be None")
+
+@test
+def nth-strings() =
+  match nth(from-list(["a", "b", "c"]), 2) with
+  | Option.None(_) => trap("nth str in bounds")
+  | Option.Some(v) => if v == "c" then unit else trap("nth str value")
+
+@test
+def last-ints() =
+  match last(from-list([1, 2, 3])) with
+  | Option.None(_) => trap("last of non-empty")
+  | Option.Some(v) => if v == 3 then unit else trap("last int value")
+
+@test
+def last-strings() =
+  match last(from-list(["x", "y"])) with
+  | Option.None(_) => trap("last str of non-empty")
+  | Option.Some(v) => if v == "y" then unit else trap("last str value")
+
+/// Compose slice-2 combinators: take + drop + chain in one expression, at Int64.
+@test
+def take-drop-chain-compose() =
+  if int-list-eq(collect(take(drop(chain(from-list([1, 2]), from-list([3, 4, 5, 6])), 1), 3)), [2, 3, 4])
+  then unit else trap("take(drop(chain)) composition")
 
 export { GIter.* }

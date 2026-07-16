@@ -2163,10 +2163,26 @@ fn next_delivery_seq(fleet: &Fleet) -> u64 {
         .and_then(|s| s.trim().parse::<u64>().ok())
         .unwrap_or(0);
     let next = cur.saturating_add(1);
-    // temp+rename so a concurrent reader never sees a torn write.
-    let tmp = fleet.root.join(".delivery-seq.tmp");
+    // temp+rename so a concurrent reader never sees a torn write. The temp name must be UNIQUE per
+    // writer (PR #453): many agents run `fleet send` at once, and a FIXED `.delivery-seq.tmp` would let
+    // two processes open/truncate/write the SAME temp concurrently → a torn/clobbered write or a
+    // half-file surviving the rename. pid + a process-local counter makes it distinct across processes
+    // AND across a single process's concurrent calls. (The read-modify-write of the counter itself is
+    // still not locked, so two racers can compute the same `next` — a benign DUPLICATE that the `<pid>`
+    // field in the message filename disambiguates; what this prevents is the far worse CORRUPTION of the
+    // counter file from a shared temp.)
+    let tmp = fleet.root.join(format!(
+        ".delivery-seq.{}.{}.tmp",
+        std::process::id(),
+        next_seq()
+    ));
     if std::fs::write(&tmp, format!("{next}\n")).is_ok() {
+        // rename is atomic on the same filesystem; a losing racer's rename simply wins-last with an
+        // equal-or-higher value, never a partial file.
         let _ = std::fs::rename(&tmp, &path);
+    } else {
+        // Best-effort cleanup if the write half-failed, so a stray temp doesn't linger.
+        let _ = std::fs::remove_file(&tmp);
     }
     next
 }
@@ -3219,6 +3235,20 @@ mod tests {
         // A corrupt/garbage counter file recovers to 1 (never panics, never a bogus huge number).
         std::fs::write(root.join(".delivery-seq"), "not-a-number").unwrap();
         assert_eq!(next_delivery_seq(&fleet), 1);
+
+        // PR #453: the per-writer temp file is renamed away (or cleaned on failure), so no stray
+        // `.delivery-seq.*.tmp` lingers after a bump — and the temp name is UNIQUE per call, never the
+        // shared fixed name two concurrent writers could clobber.
+        let leftover_tmps: Vec<_> = std::fs::read_dir(&root)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|n| n.starts_with(".delivery-seq.") && n.ends_with(".tmp"))
+            .collect();
+        assert!(
+            leftover_tmps.is_empty(),
+            "no stray delivery-seq temp should remain, found: {leftover_tmps:?}"
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }

@@ -76,8 +76,9 @@ export default function AdHocPolymorphism() {
       <Note>
         The specialization is normally invisible, but the toolchain can show it:{" "}
         <C>cdz instantiations len some-file.cdz</C> lists the concrete types <C>len</C> was compiled at,
-        each with its source location. It's the one place you can <em>see</em> that a single generic{" "}
-        <C>len</C> became several machine functions.
+        each with its source location — and in an editor, the language server shows the same information as
+        a small label (a <em>CodeLens</em>) right above the definition. It's the one place you can{" "}
+        <em>see</em> that a single generic <C>len</C> became several machine functions.
       </Note>
 
       <H2>What Cadenza deliberately does not have</H2>

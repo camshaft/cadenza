@@ -9,7 +9,7 @@
 
 const path = require("node:path");
 const fs = require("node:fs");
-const { workspace, window } = require("vscode");
+const { workspace, window, commands } = require("vscode");
 const { LanguageClient, TransportKind } = require("vscode-languageclient/node");
 
 let client;
@@ -39,6 +39,14 @@ function resolveServerCommand() {
 
 function activate(context) {
   const command = resolveServerCommand();
+
+  // The instantiation CodeLens (a lens above a specialized generic def listing its monomorphizations)
+  // carries this command id — LSP requires a non-empty `Command.command`. The lens is purely
+  // informational (a label), so register a NO-OP handler: clicking it does nothing rather than raising
+  // VS Code's "command not found". A future increment could make it jump to a chosen instance.
+  context.subscriptions.push(
+    commands.registerCommand("cadenza.showInstantiations", () => {})
+  );
 
   // `cdz lsp` speaks LSP over stdio. Same command for run + debug (there is no separate debug build).
   const serverOptions = {
