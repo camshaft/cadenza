@@ -59,15 +59,11 @@ def v3-add(a: Vec3, b: Vec3) = Vec3.V3(vx(a) + vx(b), vy(a) + vy(b), vz(a) + vz(
 /// Component-wise vector multiplication — the core of composing scales.
 def v3-mul(a: Vec3, b: Vec3) = Vec3.V3(vx(a) * vx(b), vy(a) * vy(b), vz(a) * vz(b))
 
-/// Exact component-wise vector equality. Destructures each operand with a SINGLE `match` binding all three
-/// components — deliberately NOT `vx(a) == vx(b) and …`, because re-projecting the same compound binding
-/// twice trips a backend comparison-misclassification bug (filed as
-/// `mlrepro-decline-scalar-eq-misclassified-after-compound-binding-reused.cdz`). Bind-once-then-compare is
-/// the workaround and reads fine anyway.
-def v3-eq(a: Vec3, b: Vec3) =
-  match a with | Vec3.V3(ax, ay, az) =>
-    (match b with | Vec3.V3(bx, by, bz) =>
-      ax == bx and ay == by and az == bz)
+/// Exact structural vector equality — direct value `==` (two Vec3s are equal iff their components are).
+/// (Historically this was a verbose single-`match` destructure to work around an unimplemented runtime
+/// compound-float-`==`; that landed on trunk — `e6017d04b`, "admit Ty::Float in ty_heap_walkable" — so
+/// whole-value `a == b` over a float-leaf compound now works, and this reduces to the obvious one-liner.)
+def v3-eq(a: Vec3, b: Vec3) = a == b
 
 /// ---- Primitive constructors ---------------------------------------------------------------------
 
