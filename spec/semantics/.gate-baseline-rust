@@ -592,6 +592,7 @@ pass	a function-typed parameter annotation's result type is checked against the 
 pass	a function-typed parameter with a matching Bool-returning argument is accepted
 pass	a general recursive-sum recursion (Nil|Cons count) reads the right payload through the fold
 pass	a generated value with a BIGINT leaf is reproducible (compound = walks the bignum)
+pass	a generated value with a FLOAT leaf is reproducible (compound = over the canonical float byte form)
 pass	a generic definition takes the type as a type-valued parameter
 pass	a generic recursive sum references itself bare and carries its own type parameter
 pass	a generic recursive sum with a bare self-reference nested in a list parameter
