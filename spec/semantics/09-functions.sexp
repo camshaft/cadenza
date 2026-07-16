@@ -4124,3 +4124,41 @@
             (export main)))
   (call   main (: 0 Int64))
   (output (: 4 Int64)))
+
+; --- Recursive-generic transformer closure-tie: the element-change and self-compose faces -----------
+; 7b67724e5 ties a recursive-generic transformer's closure domain to the mapped element (its pins
+; cover map/filter composed at two types). These pin the faces its pins don't, promoted from passing
+; breaker probes.
+
+(case "a recursive-generic transformer with an element-CHANGING closure ties domain to codomain"
+  (doc    "`gmap (fn s → String.byte-len s) [\"abc\"]` → [3]: the closure maps String → Int64, so the
+           tie is between DIFFERENT types — `f`'s domain to the input element (String) and the result
+           list's element to `f`'s codomain (Int64). The fix's own pins keep the element type fixed
+           (Int→Int, String→String); this pins the type-CHANGING map, where a severed tie leaves both
+           the domain and the result element undetermined.")
+  (input  (do
+            (def (gmap f xs)
+              (match xs
+                ((list) (list))
+                ((list h .. t) (List.concat (List.push (list) (f h)) (gmap f t)))))
+            (def (main (: d Int64))
+              (Option.expect (List.at (gmap (fn (s) (String.byte-len s)) (list "abc")) 0) "i"))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 3 Int64)))
+
+(case "a recursive-generic transformer composes with itself"
+  (doc    "`gmap (*2) (gmap (+1) [3])` = [(3+1)·2] = [8]: the inner map's RESULT element must tie to
+           the outer map's closure domain across the composition seam (both Int64 here, but the tie
+           is what lets the outer instantiation resolve its element from the inner's result rather
+           than a free var). The transformer analogue of the producer self-composition pin.")
+  (input  (do
+            (def (gmap f xs)
+              (match xs
+                ((list) (list))
+                ((list h .. t) (List.concat (List.push (list) (f h)) (gmap f t)))))
+            (def (main (: d Int64))
+              (Option.expect (List.at (gmap (fn (x) (* x 2)) (gmap (fn (x) (+ x 1)) (list 3))) 0) "i"))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 8 Int64)))
