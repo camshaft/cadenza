@@ -64,10 +64,20 @@ Every firing of your `/loop`, in order:
    changed since last tick, act on the NEW instructions.
 2. **Refresh presence.** `cargo xtask fleet heartbeat <you>` (stamps `lastTick` in the registry).
    If a stop-file exists for you (`cargo xtask fleet remove` sets it), STOP cleanly and do nothing.
-3. **Drain your inbox FIRST.** Read every JSON file in `.claude/fleet/inbox/<you>/` oldest-first;
-   act on each; then move it to `.claude/fleet/inbox/<you>/processed/`. Answering peers takes
-   priority over starting new work (a `reject` from pr-sync means your last merge needs a fix —
-   handle it before anything else).
+3. **Drain your inbox FIRST.** List it with **`cargo xtask fleet inbox <you>`** — this resolves your
+   inbox at the canonical HUB path and prints it, so you can't be fooled by the trap below. Then read
+   every JSON file it lists oldest-first, act on each, and move it to the inbox's `processed/`.
+   Answering peers takes priority over starting new work (a `reject` from pr-sync means your last merge
+   needs a fix — handle it before anything else).
+   - **🪤 Your inbox is at the HUB, not your worktree.** The runtime inbox lives at the MAIN repo's
+     `<hub>/.claude/fleet/inbox/<you>/` (`.claude/` is gitignored and exists only at the hub, shared by
+     every worktree via the common git dir). If you `ls`/glob a *worktree-relative* `.claude/fleet/
+     inbox/<you>/`, you are looking at a path that DOES NOT EXIST in your worktree — it silently
+     matches NOTHING, so you'll see an empty inbox EVERY tick and wrongly conclude "idle" while real
+     messages (an `assign`, a `reject`) pile up unread. This silently stalled an agent for ~8 ticks.
+     ALWAYS locate your inbox via `cargo xtask fleet inbox <you>` (or the absolute hub path it prints),
+     never a bare relative `.claude/...` glob. A genuinely-empty inbox and a wrong-path inbox both look
+     like "0 files" to `ls` — only the canonical resolver tells them apart.
 4. **Sync your base — at tick START, before you commit/send this tick's work.** Run **`cargo xtask
    fleet sync`** from your worktree — the safe base-sync. It `fetch`es, resets onto `trunk`, then
    cherry-picks back ONLY your commits that are not yet upstream BY PATCH-ID, so it lands you on the

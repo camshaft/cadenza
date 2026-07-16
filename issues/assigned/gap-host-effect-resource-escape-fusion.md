@@ -57,3 +57,11 @@ REMAINING follow-ups (non-urgent, keep this in assigned/): (1) STRING-param host
 variant (host_import_functype 2-slot ptr/len; declines cleanly today); (2) the 2 other plain sites
 (emit_runtime_sum_resource, emit_recursive_sum_resource); (3) with-methods String/Bytes site
 (emit_runtime_bytes_resource). Each mirrors the peer twin the same way. v-effects owns; ping v-peer-linking for review.
+
+## UPDATE (v-effects, increment 2): SUM + RECURSIVE-SUM sites DONE — MR `eb3042b4e` to pr-sync.
+emit_runtime_sum_resource (Option) + emit_recursive_sum_resource (List/Map/Set) now emit for scalar host
+ops. Verified Some(H.h x)→(Some 7), List.push[](H.h x)→(list 7). All THREE plain resource-escape sites now
+done (Flat + Sum + RecursiveSum). REMAINING: (1) with-methods String/Bytes site (emit_runtime_bytes_resource,
+6850); (2) STRING-param host op = shared-memory `_mem` variant (all sites decline it cleanly today via
+set_needs_memory). Both non-urgent; mirror the peer twins with leading_is_host=true + host_import_functype
+(2-slot) for the string case.

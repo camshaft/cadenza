@@ -76,12 +76,19 @@ pub struct RunArgs {
 /// Run a component per `args`, printing the value to stdout (host calls to stderr) and returning the
 /// process exit code. `prog` names the tool in diagnostics (`cdz-run` for the standalone bin, `cdz` for
 /// the unified one), so an error message points at the command the user actually typed.
+///
+/// Exit-code contract (consistent with the rest of the `cdz` toolchain): an OPERATIONAL failure — a
+/// missing/unreadable component, an unresolvable runtime, an invalid component, or a run-time trap — is
+/// `1`. A CLI-USAGE error (an unknown flag, a missing required argument) is `2`, but clap emits THAT
+/// before `run` is ever called, so `run`'s own error path is always an operational `1`. This distinction
+/// lets a script tell "you invoked it wrong" (2) from "it ran and failed" (1) — previously an operational
+/// error here returned `2`, colliding with the usage signal (and inconsistent with a trap, which is `1`).
 pub fn run(args: &RunArgs, prog: &str) -> ExitCode {
     match real_run(args, prog) {
         Ok(code) => code,
         Err(e) => {
             eprintln!("{prog}: {e:#}");
-            ExitCode::from(2)
+            ExitCode::FAILURE // operational failure → 1 (usage errors are clap's own 2, before this)
         }
     }
 }

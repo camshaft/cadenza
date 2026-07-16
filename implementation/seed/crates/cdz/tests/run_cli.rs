@@ -17,6 +17,18 @@ fn run(args: &[&str]) -> (bool, String, String) {
     )
 }
 
+/// Run `cdz <args…>`, returning the numeric EXIT CODE (for pinning the operational-vs-usage code
+/// distinction). `None` if the process was killed by a signal (no code) — never expected here.
+fn run_code(args: &[&str]) -> Option<i32> {
+    let exe = env!("CARGO_BIN_EXE_cdz");
+    Command::new(exe)
+        .args(args)
+        .output()
+        .expect("spawn cdz")
+        .status
+        .code()
+}
+
 /// A unique temp dir for one test.
 fn temp_dir(tag: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("cdz-run-cli-{tag}-{}", std::process::id()));
@@ -117,6 +129,25 @@ fn cdz_run_on_a_missing_file_errors_with_the_cdz_prog_name() {
     assert!(
         err.contains("cdz:") && err.to_lowercase().contains("read"),
         "error names `cdz` and mentions the read failure: {err}"
+    );
+}
+
+#[test]
+fn cdz_run_exit_codes_distinguish_operational_from_usage_errors() {
+    // The exit-code contract: an OPERATIONAL failure (a missing/unreadable component) is `1` — the same
+    // code a run-time trap returns and the same code every other `cdz` subcommand uses for a real failure.
+    // A CLI-USAGE error (an unknown flag) is `2` (clap's convention). This lets a script tell "you invoked
+    // it wrong" (2) from "it ran and failed" (1). Regression: an operational error here previously returned
+    // `2`, colliding with the usage signal (and inconsistent with a trap's `1`).
+    assert_eq!(
+        run_code(&["run", "/no/such/component.wasm"]),
+        Some(1),
+        "a missing component is an OPERATIONAL error → exit 1 (not the usage code 2)"
+    );
+    assert_eq!(
+        run_code(&["run", "--definitely-not-a-flag"]),
+        Some(2),
+        "an unknown flag is a USAGE error → clap's exit 2"
     );
 }
 

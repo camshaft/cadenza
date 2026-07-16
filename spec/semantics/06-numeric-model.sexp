@@ -2255,6 +2255,40 @@
   (call   main (: 70000 Int64))
   (output (: 4464 UInt16)))
 
+; The wrap cases above use mid-range/max values (-56, 127, 70000). These pin the EXACT boundaries where an
+; off-by-one in the truncation width would surface: Int8.wrap at the signed sign-bit (128 = 0x80 → -128, the
+; MOST-negative Int8, and 255 = 0xFF → -1), and UInt16.wrap at exactly 2^16 (65536 → 0) and one past (65537
+; → 1). The signed narrow wrap sign-EXTENDS the low bits; the unsigned wrap keeps them; both at the width's
+; exact edge.
+
+(case "Int8.wrap at the sign-bit boundary is the most-negative Int8"
+  (doc    "`(Int8.wrap 128)` = -128: 128 = 0x80 has only bit 7 set, and Int8.wrap sign-extends the low 8
+           bits, so bit 7 is the SIGN → -128 (Int8.min), not +128 (which Int8 cannot hold). The exact
+           sign-bit boundary of the signed truncation — one below (127) fits as itself, 128 flips to the
+           most-negative. Pins that Int8.wrap sign-extends at 0x80, the signed companion of UInt8.wrap 256→0.")
+  (input  (Int8.wrap 128))
+  (output (: -128 Int8)))
+
+(case "Int8.wrap of all-ones-byte is negative one"
+  (doc    "`(Int8.wrap 255)` = -1: 0xFF (low 8 bits all set) sign-extends to -1 under Int8's two's
+           complement — the same bits UInt8.wrap reads as 255 read as -1 at the SIGNED width. Pins the
+           signedness of the truncation: identical low bits, opposite sign interpretation by target type.")
+  (input  (Int8.wrap 255))
+  (output (: -1 Int8)))
+
+(case "UInt16.wrap at exactly two-to-the-sixteenth is zero"
+  (doc    "`(UInt16.wrap 65536)` = 0: 65536 = 0x10000 has no bits in the low 16, so truncating to 16 bits
+           yields 0 — the exact 2^16 boundary (the 16-bit analogue of UInt8.wrap 256→0). A truncation that
+           kept 17 bits or was off-by-one at the boundary would leak the carry bit; this pins the exact edge.")
+  (input  (UInt16.wrap 65536))
+  (output (: 0 UInt16)))
+
+(case "UInt16.wrap one past two-to-the-sixteenth is one"
+  (doc    "`(UInt16.wrap 65537)` = 1: 0x10001's low 16 bits are 0x0001 = 1. The boundary+1 companion,
+           pinning that the low 16 bits are kept exactly across the 2^16 wrap (not shifted or off-by-one).")
+  (input  (UInt16.wrap 65537))
+  (output (: 1 UInt16)))
+
 (case "greater-than comparison"
   (doc    "The compiler uses > for bounds checking and conditional logic.")
   (input  (> 5 3))

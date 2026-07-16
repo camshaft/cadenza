@@ -349,6 +349,18 @@ pub enum FleetCmd {
         /// The agent to describe.
         name: String,
     },
+    /// List an agent's queued inbox messages (oldest-first) at the canonical HUB path. This is the
+    /// SAFE way for an agent to drain its inbox: the inbox lives at the MAIN repo's
+    /// `.claude/fleet/inbox/<agent>/` (the hub), NOT the agent's worktree — an `ls`/glob of a RELATIVE
+    /// `.claude/fleet/inbox/...` from the worktree cwd silently finds NOTHING, so the agent sees an
+    /// empty inbox every tick and concludes "idle" while real messages (an `assign`, a `reject`) pile
+    /// up unread (this cost v-try-operator ~8 ticks). `fleet inbox <me>` resolves the hub path the same
+    /// way `send`/`heartbeat` do, so it can never mis-resolve, and it prints the resolved PATH + a LOUD
+    /// `0 messages` line when empty (so a mis-set path shows as a visible anomaly, not silent idle).
+    Inbox {
+        /// The agent whose inbox to list.
+        name: String,
+    },
     /// Mirror the live gitignored work queue (`.claude/fleet/queue/`) into the TRACKED `issues/`
     /// archive at the repo root, so these hard-won reproducers are preserved in git history rather
     /// than living only in agent-local state. Copies every queue file into `issues/`, removes tracked
@@ -553,6 +565,7 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
         } => send(&fleet, &to, &kind, &subject, &r#ref, &body, from, no_wake),
         FleetCmd::Heartbeat { name } => heartbeat(&fleet, &name),
         FleetCmd::Describe { name } => describe(&fleet, &name),
+        FleetCmd::Inbox { name } => inbox_list(&fleet, &name),
         FleetCmd::Archive { no_commit } => archive(&fleet, no_commit),
         FleetCmd::Sync { force } => sync(&fleet, force),
         FleetCmd::Watchdog {
@@ -2864,6 +2877,57 @@ fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
+/// List an agent's queued inbox messages at the canonical HUB path, oldest-first. See the `Inbox`
+/// command doc for WHY this exists (the silent relative-path drain-stall). Prints the resolved
+/// absolute path so a mis-set path is visible, and prints a LOUD `0 messages` line when empty (rather
+/// than nothing) so "empty inbox" can't be silently confused with "couldn't find the inbox". For each
+/// message, prints its filename (leading field = the durable delivery seq, so filename sort == arrival
+/// order), sender, and kind — enough to drain oldest-first.
+fn inbox_list(fleet: &Fleet, name: &str) {
+    let dir = fleet.inbox(name);
+    let mut names: Vec<String> = std::fs::read_dir(&dir)
+        .map(|rd| {
+            rd.filter_map(Result::ok)
+                .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
+                .map(|e| e.file_name().to_string_lossy().to_string())
+                .filter(|n| n.ends_with(".json"))
+                .collect()
+        })
+        .unwrap_or_default();
+    sort_inbox_filenames(&mut names);
+    // ALWAYS print the resolved hub path — a wrong path is the whole failure mode we're guarding, so
+    // make it visible every time, not just on error.
+    println!(
+        "inbox for '{name}' at {} ({} message(s)):",
+        dir.display(),
+        names.len()
+    );
+    if names.is_empty() {
+        // LOUD zero: distinct, explicit line so "0 messages" reads as a real state, not a silent no-op.
+        println!(
+            "  0 messages — nothing to drain (if you EXPECTED mail, verify this is the HUB path, \
+                  not a worktree-relative `.claude/...`)."
+        );
+        return;
+    }
+    for n in &names {
+        // Cheap peek at from/kind without a hard serde dependency on every field being present.
+        let (from, kind) = std::fs::read_to_string(dir.join(n))
+            .ok()
+            .and_then(|t| serde_json::from_str::<Message>(&t).ok())
+            .map(|m| (m.from, m.kind))
+            .unwrap_or_else(|| ("?".to_string(), "?".to_string()));
+        println!("  {n}  [{kind}] from {from}");
+    }
+}
+
+/// Sort inbox message filenames into delivery order. Filenames lead with the zero-padded durable
+/// delivery-seq (`next_delivery_seq`), so a plain lexicographic sort == oldest-first arrival order.
+/// Pure so the ordering contract is unit-testable (and so a future filename-scheme change is caught).
+fn sort_inbox_filenames(names: &mut [String]) {
+    names.sort();
+}
+
 fn inbox_depth(fleet: &Fleet, name: &str) -> String {
     let inbox = fleet.inbox(name);
     let n = count_dir(&inbox, |f| f.ends_with(".json"));
@@ -3886,6 +3950,31 @@ mod tests {
         );
         // A `+ <sha> <subject>` form (some git configs append the subject) keeps just the sha.
         assert_eq!(commits_to_replay("+ 9999 wip: something"), vec!["9999"]);
+    }
+
+    #[test]
+    fn sort_inbox_filenames_is_oldest_first_by_delivery_seq() {
+        // Leading field = zero-padded durable delivery seq, so lexicographic sort == arrival order.
+        let mut names = vec![
+            "000000000897-1947941-merged.json".to_string(),
+            "000000000889-1947120-merged.json".to_string(),
+            "000000001018-2538926-merge-request.json".to_string(),
+            "000000000897-100-note.json".to_string(),
+        ];
+        sort_inbox_filenames(&mut names);
+        assert_eq!(
+            names,
+            vec![
+                "000000000889-1947120-merged.json".to_string(),
+                "000000000897-100-note.json".to_string(),
+                "000000000897-1947941-merged.json".to_string(),
+                "000000001018-2538926-merge-request.json".to_string(),
+            ]
+        );
+        // Idempotent + total on empty/singleton.
+        let mut empty: Vec<String> = vec![];
+        sort_inbox_filenames(&mut empty);
+        assert!(empty.is_empty());
     }
 
     #[test]

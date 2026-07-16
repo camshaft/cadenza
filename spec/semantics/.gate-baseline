@@ -58,6 +58,8 @@ pass	DISTINCT-SIG: two-Tuple-arg closures of different signatures ALONGSIDE a pl
 pass	DOMINATOR CSE does not reuse a condition's perform-product in the taken branch
 pass	Int64.min crosses the parameter boundary and back unchanged
 pass	Int64.min crossing the boundary is still negative
+pass	Int8.wrap at the sign-bit boundary is the most-negative Int8
+pass	Int8.wrap of all-ones-byte is negative one
 pass	List.len of a concat of call-site lists with runtime elements folds to the summed arity
 pass	List.len of a list built at the call site from runtime elements folds to the arity
 pass	MIXED among-scalars: a scalar-then-Tuple closure ALONGSIDE a plain export — driving the closure
@@ -184,6 +186,8 @@ pass	Type.of carries a quantity's unit into a same-type annotation
 pass	Type.of on a bare nullary variant reflects its element as UNDETERMINED
 pass	Type.of reflects a runtime parameter's type at compile time
 pass	Type.of reflects a value's type for use as an annotation
+pass	UInt16.wrap at exactly two-to-the-sixteenth is zero
+pass	UInt16.wrap one past two-to-the-sixteenth is one
 pass	UInt64.max crosses the parameter boundary and back unchanged
 pass	UInt64.max crossing the boundary compares as a large unsigned, not -1
 pass	Unit.in converts a quantity to a chosen larger unit (Float)
@@ -711,6 +715,7 @@ pass	a duplicate export clause for the same name is rejected
 pass	a duplicate export of the entry is rejected
 pass	a duplicate field in a variant's record-type payload is a type error
 pass	a duplicate match arm is dead code but the program still runs
+pass	a duplicate module declaration in one scope is rejected
 pass	a factorial that overflows the integer type traps through the recursion
 pass	a factory RETURNS a closure capturing the def's SCALAR parameter
 pass	a factory RETURNS a closure that captures a let-bound inner closure
@@ -3282,6 +3287,7 @@ pass	two differing runtime Ok values of a multi-parameter sum compare unequal by
 pass	two differing runtime sum values compare unequal by a heap walk
 pass	two distinct map-keys are distinct entries
 pass	two distinct names bound to the same value key the same map entry
+pass	two distinct-named modules in one scope coexist
 pass	two do-local function declarations are mutually recursive
 pass	two effects declared with the same name are distinct, not one merged effect
 pass	two effects each declaring a same-named operation do not collide

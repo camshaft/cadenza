@@ -17,6 +17,9 @@ const CalculatorPage = lazy(() => import("./calculator/CalculatorPage.tsx"));
 // The CAD 3D preview pulls in the HEAVY three.js + manifold-3d stack — MUST be lazy so those deps
 // code-split behind /cad and never touch the guide's first paint (operator-accepted weight, gated here).
 const CadPage = lazy(() => import("./cad/CadPage.tsx"));
+// The notebook is a full-screen route that pulls in the compile + run workers (like /calculator) — lazy
+// so it code-splits behind /notebook and stays off the guide's first paint.
+const NotebookPage = lazy(() => import("./notebook/NotebookPage.tsx"));
 
 // Root layout: `ScrollRestoration` scrolls a new navigation to the top and RESTORES the previous
 // scroll position on back/forward (a per-history-entry memory). The playground manages its own
@@ -67,6 +70,14 @@ const router = createBrowserRouter(
           element: (
             <Suspense fallback={<div className="p-6 text-slate-500">Loading CAD preview…</div>}>
               <CadPage />
+            </Suspense>
+          ),
+        },
+        {
+          path: "/notebook",
+          element: (
+            <Suspense fallback={<div className="p-6 text-slate-500">Loading notebook…</div>}>
+              <NotebookPage />
             </Suspense>
           ),
         },

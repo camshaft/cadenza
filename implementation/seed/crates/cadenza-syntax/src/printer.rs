@@ -60,6 +60,7 @@ fn print_mode(arenas: &Arenas, width: usize, display: bool) -> String {
         shadowed_ctors: shadowed_ctors(arenas),
         delimit_body: false,
         display,
+        depth: 0,
     };
     // In display mode, an outer `(: value type)` result annotation is stripped — a rendered value
     // shows the value, not its type. Only at the ROOT (a nested ascription is a real program form).
@@ -108,7 +109,23 @@ struct Printer<'a> {
     /// `<value> <unit>` surface, and a base unit prints as its bare name — none of which round-trips,
     /// but all of which reads better as a result. `false` is the canonical, re-readable printer.
     display: bool,
+    /// Current nesting depth of the `expr` recursion — incremented on entry, decremented on exit. The
+    /// ML printer is a MUTUALLY-RECURSIVE machine (`expr`→`list`→the shape helpers→`expr`), one native
+    /// frame per level, and `print` runs on arenas from ANY source — a decoded binary AST in particular,
+    /// which `codec::decode` accepts at ARBITRARY depth (no cap, unlike the reader's `MAX_NESTING_DEPTH`).
+    /// A recursive walk overflowed the native stack (SIGABRT) on a deep tree. Rather than rewrite the
+    /// whole mutually-recursive printer to an explicit stack (large + output-risky), guard the ONE
+    /// recursion hub (`expr`) with [`MAX_PRINT_DEPTH`] and elide past it. See `expr`.
+    depth: u32,
 }
+
+/// The `expr`-recursion depth ceiling for the ML printer. Set FAR above the reader's
+/// [`crate::sexpr::MAX_NESTING_DEPTH`] (1024) so NO reader-parseable program is ever affected (every
+/// such program nests ≤ 1024), while still bounding native-stack use below the ~tens-of-thousands of
+/// frames that overflow a default worker stack. Past this depth the printer emits an elision (`…`)
+/// instead of recursing — keeping the printer TOTAL on a pathological decode-only arena (which cannot
+/// round-trip through the depth-capped reader anyway) rather than aborting the process.
+const MAX_PRINT_DEPTH: u32 = 4096;
 
 /// The four compound-value constructors that have a `{…}`/`(…)`/`[…]`/`#{…}` surface literal AND a
 /// shadowable prelude-alias name. A NAME-headed form of one sugars to its literal only when the name
@@ -248,8 +265,19 @@ impl<'a> Printer<'a> {
                 self.leaf(&leaf);
             }
             Struct::List(items) => {
+                // Depth guard: `expr` is the printer's single recursion hub (every mutually-recursive
+                // shape helper reaches a child through it). Only a `List` descends, so guard HERE. Past
+                // MAX_PRINT_DEPTH (far above any reader-parseable nesting) emit an elision instead of
+                // recursing — keeps the printer total on a pathological decode-only arena rather than
+                // overflowing the native stack. Atoms never recurse, so they are always rendered.
+                if self.depth >= MAX_PRINT_DEPTH {
+                    self.doc.word("…");
+                    return;
+                }
+                self.depth += 1;
                 let items = items.clone();
                 self.list(&items, parent_prec);
+                self.depth -= 1;
             }
         }
     }
@@ -2772,7 +2800,55 @@ fn name_is_bare_safe(s: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ast::Builder;
     use crate::{parser, sexpr};
+
+    #[test]
+    fn ml_print_is_depth_guarded_not_a_stack_overflow_on_a_deep_arena() {
+        // The ML printer is a mutually-recursive machine (`expr`→`list`→shape helpers→`expr`), one native
+        // frame per level; `print` runs on arenas from ANY source, including a decoded binary AST that
+        // `codec::decode` accepts at ARBITRARY depth (no cap, unlike the reader's MAX_NESTING_DEPTH). A
+        // deep tree overflowed the native stack (SIGABRT) on `cdz convert binary → ml`. Unlike the s-expr
+        // printers (rewritten to explicit stacks), the ML printer is too mutually-recursive to iterativize
+        // cheaply, so `expr` is DEPTH-GUARDED at MAX_PRINT_DEPTH (elides past it). A chain far deeper than
+        // the guard must render — bounded, no overflow, with the elision sentinel present. Run on a big
+        // stack because even MAX_PRINT_DEPTH (4096) frames exceed a default test worker (the guard bounds
+        // native use to a fixed ceiling; the compiler's own deep walks use the same 64 MB-sized stack).
+        let h = std::thread::Builder::new()
+            .stack_size(64 * 1024 * 1024)
+            .spawn(|| {
+                let depth = (MAX_PRINT_DEPTH as usize) + 5_000; // well past the guard
+                let mut b = Builder::new();
+                let mut cur = b.name("x");
+                for _ in 0..depth {
+                    cur = b.list(vec![cur]);
+                }
+                let a = b.finish(cur);
+                let out = print(&a, 80); // must NOT overflow — the guard bounds recursion
+                assert!(
+                    out.contains('…'),
+                    "past MAX_PRINT_DEPTH the printer elides with `…`"
+                );
+                // A chain JUST under the guard renders fully (no elision) — the guard doesn't fire early.
+                let shallow_depth = (MAX_PRINT_DEPTH as usize) - 10;
+                let mut b2 = Builder::new();
+                let mut cur2 = b2.name("y");
+                for _ in 0..shallow_depth {
+                    cur2 = b2.list(vec![cur2]);
+                }
+                let a2 = b2.finish(cur2);
+                let out2 = print(&a2, 80);
+                assert!(!out2.contains('…'), "under the guard, nothing is elided");
+                assert!(
+                    out2.contains('y'),
+                    "the deep-but-under-guard leaf is rendered"
+                );
+            })
+            .expect("spawn big-stack printer worker");
+        if let Err(p) = h.join() {
+            std::panic::resume_unwind(p);
+        }
+    }
 
     /// Parse ML, print it, re-parse — the printed form must yield a structurally-equal arena, and
     /// printing again must be byte-identical (idempotence).
