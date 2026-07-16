@@ -38,21 +38,22 @@ use lsp_types::notification::{
     PublishDiagnostics,
 };
 use lsp_types::request::{
-    CodeActionRequest, Completion, DocumentSymbolRequest, GotoDefinition, HoverRequest, References,
-    Request as _, SemanticTokensFullRequest, Shutdown,
+    CodeActionRequest, CodeLensRequest, Completion, DocumentSymbolRequest, GotoDefinition,
+    HoverRequest, References, Request as _, SemanticTokensFullRequest, Shutdown,
 };
 use lsp_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionParams, CodeActionResponse,
-    CompletionItem, CompletionItemKind, CompletionOptions, CompletionParams, CompletionResponse,
-    Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
-    DidOpenTextDocumentParams, DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams,
-    GotoDefinitionResponse, Hover, HoverContents, HoverParams, HoverProviderCapability,
-    InitializeParams, InitializeResult, Location, MarkedString, Position, PublishDiagnosticsParams,
-    Range, ReferenceParams, SemanticToken, SemanticTokenType, SemanticTokens,
-    SemanticTokensFullOptions, SemanticTokensLegend, SemanticTokensOptions, SemanticTokensParams,
-    SemanticTokensResult, SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo,
-    SymbolKind, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri,
-    WorkDoneProgressOptions, WorkspaceEdit,
+    CodeLens, CodeLensOptions, CodeLensParams, CompletionItem, CompletionItemKind,
+    CompletionOptions, CompletionParams, CompletionResponse, Diagnostic, DiagnosticSeverity,
+    DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
+    DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams, GotoDefinitionResponse,
+    Hover, HoverContents, HoverParams, HoverProviderCapability, InitializeParams, InitializeResult,
+    Location, MarkedString, Position, PublishDiagnosticsParams, Range, ReferenceParams,
+    SemanticToken, SemanticTokenType, SemanticTokens, SemanticTokensFullOptions,
+    SemanticTokensLegend, SemanticTokensOptions, SemanticTokensParams, SemanticTokensResult,
+    SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo, SymbolKind,
+    TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri, WorkDoneProgressOptions,
+    WorkspaceEdit,
 };
 
 /// Run the stdio LSP server to completion: perform the initialize handshake, then loop over incoming
@@ -111,6 +112,13 @@ fn capabilities() -> ServerCapabilities {
         // Quick-fixes from the diagnostic fix columns — all 4 kinds (replace/wrap/insert/delete) via the
         // shared `crate::fix::fix_edits`, so a `cdz lsp` quick-fix applies IDENTICALLY to `cdz fix`.
         code_action_provider: Some(lsp_types::CodeActionProviderCapability::Simple(true)),
+        // CodeLens above each generic/ad-hoc-polymorphic def, showing its concrete monomorphizations
+        // (the `Instantiations` query — a fact NO other tool surfaces). Computed once per document (the
+        // whole-program monomorphization is too costly to run per-hover), no resolve step (the query
+        // yields the full title up front).
+        code_lens_provider: Some(CodeLensOptions {
+            resolve_provider: Some(false),
+        }),
         semantic_tokens_provider: Some(SemanticTokensServerCapabilities::SemanticTokensOptions(
             SemanticTokensOptions {
                 work_done_progress_options: WorkDoneProgressOptions::default(),
@@ -284,6 +292,11 @@ impl Server {
                 let result = self.code_action(&params);
                 self.send_response(Response::new_ok(id, result))
             }
+            CodeLensRequest::METHOD => {
+                let (id, params) = cast_request::<CodeLensRequest>(req)?;
+                let result = self.code_lens(&params);
+                self.send_response(Response::new_ok(id, result))
+            }
             _ => {
                 let resp = Response::new_err(
                     req.id.clone(),
@@ -446,6 +459,14 @@ impl Server {
         let uri = &params.text_document.uri;
         let doc = self.docs.get(uri)?;
         Some(code_actions_at(&doc.text, doc.is_ml, uri, params.range))
+    }
+
+    /// Answer a `textDocument/codeLens`: a lens above each generic/ad-hoc-polymorphic definition showing
+    /// its concrete monomorphizations (the `Instantiations` query). `None` when the document is not open;
+    /// an empty list when the program has no specialized def — total.
+    fn code_lens(&self, params: &CodeLensParams) -> Option<Vec<CodeLens>> {
+        let doc = self.docs.get(&params.text_document.uri)?;
+        Some(code_lenses_for(&doc.text, doc.is_ml))
     }
 
     /// Dispatch a client NOTIFICATION — the document-sync lifecycle. Each open/change recomputes and
@@ -1824,6 +1845,134 @@ fn symbol_kind_to_completion_kind(kind: &str) -> CompletionItemKind {
     }
 }
 
+// ── the analysis: source text → LSP code lenses (monomorphizations), via the `Instantiations` query ──
+
+/// Compute the CodeLenses for `text` — one lens above each generic/ad-hoc-polymorphic top-level
+/// definition that the compiler SPECIALIZED, titled with its concrete monomorphizations (the
+/// `Instantiations` query — a fact no other tool surfaces, e.g. `loopn` → `[n: Int64, x: Int64]`,
+/// `[n: Int64, x: String]`). A def that is not specialized (a plain monomorphic function, or a generic
+/// inlined at every call) gets NO lens. TOTAL: an un-analyzable buffer yields no lenses, never a panic.
+///
+/// Cost: the `Instantiations` query forces WHOLE-PROGRAM monomorphization, so all defs' queries are
+/// batched into ONE compile (each answer rides its own `KIND_INSTANTIATIONS` artifact, disambiguated by
+/// the artifact's `name` = the queried def name) — monomorphization runs once, not once per def. This is
+/// why the feature is a per-document CodeLens, not a per-cursor hover.
+fn code_lenses_for(text: &str, is_ml: bool) -> Vec<CodeLens> {
+    let Ok((arenas, spans, _errors)) = parse_surface(text, is_ml) else {
+        return Vec::new();
+    };
+    // The top-level declaration names + their name-node ids (for lens placement) — the `Symbols` query.
+    let Some(symbols) = run_query_text(
+        &arenas,
+        rcdzc::sidecar::Query::Symbols,
+        rcdzc::sidecar::KIND_SYMBOLS,
+    ) else {
+        return Vec::new();
+    };
+    let names: Vec<(String, u32)> = symbols
+        .lines()
+        .filter_map(|line| {
+            let mut cols = line.splitn(3, '\t');
+            let (name, _kind, node) = (cols.next()?, cols.next()?, cols.next()?);
+            Some((name.to_string(), node.trim().parse::<u32>().ok()?))
+        })
+        .collect();
+    if names.is_empty() {
+        return Vec::new();
+    }
+
+    // Batch an `Instantiations` query for EVERY top-level name into one compile (monomorphization is
+    // whole-program, so it runs once); each answer is a distinct `KIND_INSTANTIATIONS` artifact keyed by
+    // its `name`.
+    let ast_bytes = cadenza_syntax::codec::encode(&arenas);
+    let requests: Vec<rcdzc::Request> = names
+        .iter()
+        .map(|(name, _)| {
+            rcdzc::Request::Query(rcdzc::sidecar::Query::Instantiations { name: name.clone() })
+        })
+        .collect();
+    let inputs = vec![
+        rcdzc::Artifact::new(rcdzc::Artifact::KIND_AST, "main", ast_bytes),
+        rcdzc::Artifact::new(
+            rcdzc::sidecar::KIND_SIDECAR,
+            "drive",
+            rcdzc::sidecar::encode(&requests),
+        ),
+    ];
+    let compiled = rcdzc::run_with_compiler_stack(|| rcdzc::compile(&inputs, &[]));
+
+    let mut out = Vec::new();
+    for (name, node) in &names {
+        // The `Instantiations` answer for THIS name (matched by the artifact's `name` field).
+        let Some(answer) = compiled
+            .artifacts
+            .iter()
+            .find(|a| a.kind == rcdzc::sidecar::KIND_INSTANTIATIONS && &a.name == name)
+            .map(|a| String::from_utf8_lossy(&a.bytes).into_owned())
+        else {
+            continue;
+        };
+        let Some(title) = instantiations_lens_title(&answer) else {
+            continue; // not specialized → no lens
+        };
+        let Some(range) = spans
+            .get(cadenza_syntax::StructId(*node))
+            .map(|s| byte_range_to_range(text, s.start, s.end))
+        else {
+            continue;
+        };
+        // The title IS the information (the monomorphizations); a `Command` with an empty command id is
+        // a conventional label-only lens (clients render `command.title` inline, no click action). A
+        // future increment could add a "jump to instance" command.
+        out.push(CodeLens {
+            range,
+            command: Some(lsp_types::Command {
+                title,
+                command: String::new(),
+                arguments: None,
+            }),
+            data: None,
+        });
+    }
+    out
+}
+
+/// Build a CodeLens title from an `Instantiations` query answer, or `None` if the def is not SPECIALIZED
+/// (no lens then). The answer is TSV: a `disp\t<node>\t<dispositions>` line then one
+/// `inst\t<spec_name>\t<node>\t<arg;arg;…>` line per monomorphization. Only a `specialized` disposition
+/// with ≥1 instance yields a title like `2 instances: [n: Int64, x: Int64] · [n: Int64, x: String]`.
+fn instantiations_lens_title(answer: &str) -> Option<String> {
+    let mut specialized = false;
+    let mut instances: Vec<String> = Vec::new();
+    for line in answer.lines() {
+        let mut cols = line.split('\t');
+        match cols.next() {
+            Some("disp") => {
+                // `disp\t<node>\t<dispositions>` — dispositions joined by `+`; look for `specialized`.
+                let _node = cols.next();
+                if let Some(disp) = cols.next() {
+                    specialized = disp.split('+').any(|d| d == "specialized");
+                }
+            }
+            Some("inst") => {
+                // `inst\t<spec_name>\t<node>\t<arg;arg;…>` — render the args as `[a, b]`.
+                let (_spec, _node, args) = (cols.next(), cols.next(), cols.next());
+                if let Some(args) = args {
+                    let pretty = args.split(';').collect::<Vec<_>>().join(", ");
+                    instances.push(format!("[{pretty}]"));
+                }
+            }
+            _ => {}
+        }
+    }
+    if !specialized || instances.is_empty() {
+        return None;
+    }
+    let n = instances.len();
+    let noun = if n == 1 { "instance" } else { "instances" };
+    Some(format!("{n} {noun}: {}", instances.join(" · ")))
+}
+
 // ── the analysis: source text → LSP document symbols (the outline), via the `Symbols` query ──────────
 
 /// Compute the document outline for `text` — every TOP-LEVEL declaration (value/function/type/effect/
@@ -2864,6 +3013,60 @@ mod tests {
         // A buffer that does not parse yields a defined (possibly empty) outline, never a panic.
         let _ = document_symbols_for("def (f x = (", true);
         let _ = document_symbols_for("", true);
+    }
+
+    #[test]
+    fn code_lens_reports_a_specialized_generics_monomorphizations() {
+        // `loopn` is a recursive generic specialized at `x: Int64` and `x: String` — a lens above it lists
+        // both concrete instances (the `Instantiations` query surfaced in the editor).
+        let text = "(do (def (loopn (: n Int64) x) (if (= n 0) x (loopn (- n 1) x))) \
+                    (def (main (: a Int64)) (+ (loopn 3 a) (String.scalar-len (loopn 2 \"hi\")))))";
+        let lenses = code_lenses_for(text, false);
+        assert_eq!(
+            lenses.len(),
+            1,
+            "one lens (on the specialized `loopn`), got {lenses:?}"
+        );
+        let title = lenses[0]
+            .command
+            .as_ref()
+            .map(|c| c.title.as_str())
+            .unwrap_or("");
+        assert!(
+            title.starts_with("2 instances:"),
+            "title should count instances: {title:?}"
+        );
+        assert!(
+            title.contains("x: Int64") && title.contains("x: String"),
+            "title should name both monomorphizations: {title:?}"
+        );
+        // The lens sits on `loopn`'s name occurrence (line 0).
+        assert_eq!(lenses[0].range.start.line, 0);
+    }
+
+    #[test]
+    fn code_lens_is_empty_for_a_non_generic_program_and_total_on_malformed() {
+        // A plain monomorphic program has nothing to specialize → no lenses.
+        assert!(code_lenses_for("def double(x: Int64) -> Int64 = x + x", true).is_empty());
+        // A buffer that does not parse yields no lenses, never a panic.
+        let _ = code_lenses_for("def (f x = (", true);
+        let _ = code_lenses_for("", true);
+    }
+
+    #[test]
+    fn instantiations_lens_title_only_titles_specialized_defs() {
+        // Not specialized (emitted/inlined) → no title.
+        assert_eq!(instantiations_lens_title("disp\t2\temitted\n"), None);
+        assert_eq!(instantiations_lens_title("disp\t2\tinlined\n"), None);
+        // Specialized with instances → a counted, bracketed title.
+        let answer =
+            "disp\t2\tspecialized\ninst\tf#mono2\t2\tx: Int64\ninst\tf#mono3\t2\tx: String\n";
+        assert_eq!(
+            instantiations_lens_title(answer).as_deref(),
+            Some("2 instances: [x: Int64] · [x: String]")
+        );
+        // `specialized` disposition but no `inst` lines (defensive) → no title.
+        assert_eq!(instantiations_lens_title("disp\t2\tspecialized\n"), None);
     }
 
     /// The single code action's (title, edits), or panic.
