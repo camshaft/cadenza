@@ -37052,6 +37052,54 @@ mod diagnostics {
         );
     }
 
+    /// A LIST-scrutinee match arm whose head is a NAME used as a pattern constructor — `(Zorp x)` (unbound)
+    /// or `(List.Cons h t)` (`List` has no such member) — is a CODED fault surfaced by `cdz check` in EVERY
+    /// body, including a PARAMETERIZED / self-RECURSIVE one. A list scrutinee has no user constructors, so
+    /// such a head can never be a valid list pattern; it used to reach `lower_match_list`'s generic UNCODED
+    /// "a list match arm that is not an element pattern or a binder is not yet supported" decline. That
+    /// uncoded decline is produced ONLY by the emit-path lowering walk (`collect_reached_poisons`), which
+    /// runs on nullary-EXPORTED bodies alone (a recursive function is emitted once, never inlined into an
+    /// exported body's reduction), so `cdz check` was SILENT (exit 0) while `cdz compile` declined — a
+    /// check≡compile discrepancy, and the very "did you mean?" message hidden from the fast path. The list
+    /// matcher now propagates the head's OWN coded poison (CDZ0101 unbound / CDZ0201 non-member) — the LIST
+    /// twin of the sum matcher's `variant_disc_of`-miss path — so `type_errors`' `match_pattern_fault`
+    /// accessor surfaces it. `diags_of` runs the exact `crate::diagnostics` (check) path.
+    #[test]
+    fn a_list_arm_ctor_head_over_a_recursive_body_is_a_coded_fault_in_check() {
+        // Self-recursive `go` over a `(List Int64)` scrutinee, arm head `Zorp` — an unbound name. `check`
+        // (diagnostics) must report the CDZ0101, not pass clean.
+        let unbound = "(module m (def (go (: rest (List Int64))) \
+                       (match rest ((Zorp x) (go (list x))) (_ 0))) (export go))";
+        let all = diags_of(unbound);
+        assert!(
+            all.iter()
+                .any(|d| d.code.as_deref() == Some("CDZ0101") && d.message.contains("Zorp")),
+            "check reports the unbound arm-head as CDZ0101 (was silent, exit 0): {all:?}"
+        );
+        // `List.Cons`/`List.Nil` arm heads over a recursive body — `List` is an intrinsic MODULE, not a sum
+        // type, so these are non-members → CDZ0201, again surfaced by `check`.
+        let member = "(module m (def (go (: rest (List Int64))) \
+                      (match rest (((. List Nil) _) 0) (((. List Cons) h t) (go rest)))) (export go))";
+        let all = diags_of(member);
+        assert!(
+            all.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
+                && d.message.contains("List")
+                && d.message.contains("member")),
+            "check reports the non-member list arm head as CDZ0201: {all:?}"
+        );
+        // NO false alarm: a WELL-FORMED recursive list fold (element + rest binder patterns) stays clean —
+        // this path fires only on a ctor-shaped head, never a legitimate `(list …)` pattern or a binder.
+        let ok = "(module m (def (go (: acc Int64) (: rest (List Int64))) \
+                  (match rest ((list) acc) ((list h .. t) (go (+ acc h) t)))) (export go))";
+        assert!(
+            diags_of(ok)
+                .iter()
+                .all(|d| d.severity != crate::abi::Severity::Error),
+            "a well-formed recursive list fold still checks clean: {:?}",
+            diags_of(ok)
+        );
+    }
+
     /// A malformed match PATTERN's CDZ0201 anchors at the OFFENDING PATTERN node (`(tuple a b c)`,
     /// `(list … .. …)`), not the enclosing `(match …)`. The pattern-shape rejects in `pattern_constraints`
     /// / `lower_match_list` carry the faulting `pat` node explicitly (`.at(pat)`); without it,

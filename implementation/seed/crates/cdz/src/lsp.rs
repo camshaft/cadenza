@@ -993,32 +993,52 @@ fn hover_at(text: &str, is_ml: bool, pos: Position) -> Option<Hover> {
     let byte = position_to_byte(text, pos);
     let node = spans.node_at_offset(byte)?;
 
+    // Read the TYPE (`TypeAt`) and the DOCSTRING (`DocAt`) of the node in ONE compile — a hover shows both
+    // (rust-analyzer-style: the signature, then its doc prose). Distinct query kinds → distinct artifacts.
     let ast_bytes = cadenza_syntax::codec::encode(&arenas);
-    let sidecar_bytes =
-        rcdzc::sidecar::encode(&[rcdzc::Request::Query(rcdzc::sidecar::Query::TypeAt {
-            node: node.0,
-        })]);
+    let sidecar_bytes = rcdzc::sidecar::encode(&[
+        rcdzc::Request::Query(rcdzc::sidecar::Query::TypeAt { node: node.0 }),
+        rcdzc::Request::Query(rcdzc::sidecar::Query::DocAt { node: node.0 }),
+    ]);
     let inputs = vec![
         rcdzc::Artifact::new(rcdzc::Artifact::KIND_AST, "main", ast_bytes),
         rcdzc::Artifact::new(rcdzc::sidecar::KIND_SIDECAR, "drive", sidecar_bytes),
     ];
     let compiled = rcdzc::run_with_compiler_stack(|| rcdzc::compile(&inputs, &[]));
-    let bytes = compiled.artifact(rcdzc::sidecar::KIND_TYPE_AT)?;
-    let ty = String::from_utf8_lossy(bytes);
-    let ty = ty.trim();
+    let ty = compiled
+        .artifact(rcdzc::sidecar::KIND_TYPE_AT)
+        .map(|b| String::from_utf8_lossy(b).trim().to_string())
+        .unwrap_or_default();
     // A total-but-uninformative answer ("unknown", or empty) is not worth a hover popup — return None so
     // the editor shows nothing rather than a meaningless box.
     if ty.is_empty() || ty == "unknown" {
         return None;
     }
+    let doc = compiled
+        .artifact(rcdzc::sidecar::KIND_DOC)
+        .map(|b| String::from_utf8_lossy(b).trim().to_string())
+        .filter(|d| !d.is_empty());
     // The hovered node's source range, so the editor underlines exactly the sub-expression it typed.
     let range = spans
         .get(node)
         .map(|s| byte_range_to_range(text, s.start, s.end));
     Some(Hover {
-        contents: HoverContents::Scalar(MarkedString::String(ty.to_string())),
+        contents: hover_contents(&ty, doc.as_deref()),
         range,
     })
+}
+
+/// Assemble a hover's contents from the type and an optional docstring. With a doc, render Markdown — the
+/// type as a Cadenza code fence, then the doc prose below a rule (rust-analyzer's shape). Without a doc,
+/// keep the plain type string (a `MarkedString`), so a bare hover is unchanged.
+fn hover_contents(ty: &str, doc: Option<&str>) -> HoverContents {
+    match doc {
+        Some(doc) => HoverContents::Markup(lsp_types::MarkupContent {
+            kind: lsp_types::MarkupKind::Markdown,
+            value: format!("```cadenza\n{ty}\n```\n\n---\n\n{doc}"),
+        }),
+        None => HoverContents::Scalar(MarkedString::String(ty.to_string())),
+    }
 }
 
 // ── the analysis: cursor → definition / references, via the `ResolveOf` / `UsesOf` queries ───────────
@@ -1172,24 +1192,31 @@ fn package_hover_at(
     inputs.push(rcdzc::Artifact::new(
         rcdzc::sidecar::KIND_SIDECAR,
         "drive",
-        rcdzc::sidecar::encode(&[rcdzc::Request::Query(rcdzc::sidecar::Query::TypeAt {
-            node: cursor.0, // entry-local == global (entry is base 0)
-        })]),
+        // TYPE + DOCSTRING of the cursor node in one linked compile (entry-local == global at base 0).
+        rcdzc::sidecar::encode(&[
+            rcdzc::Request::Query(rcdzc::sidecar::Query::TypeAt { node: cursor.0 }),
+            rcdzc::Request::Query(rcdzc::sidecar::Query::DocAt { node: cursor.0 }),
+        ]),
     ));
     inputs.push(rcdzc::cli::entry_artifact(&files[0].name));
     let compiled = rcdzc::run_with_compiler_stack(|| rcdzc::compile(&inputs, &[]));
-    let bytes = compiled.artifact(rcdzc::sidecar::KIND_TYPE_AT)?;
-    let ty = String::from_utf8_lossy(bytes);
-    let ty = ty.trim();
+    let ty = compiled
+        .artifact(rcdzc::sidecar::KIND_TYPE_AT)
+        .map(|b| String::from_utf8_lossy(b).trim().to_string())
+        .unwrap_or_default();
     if ty.is_empty() || ty == "unknown" {
         return None; // let the single-buffer path try (or show nothing)
     }
+    let doc = compiled
+        .artifact(rcdzc::sidecar::KIND_DOC)
+        .map(|b| String::from_utf8_lossy(b).trim().to_string())
+        .filter(|d| !d.is_empty());
     // Hover range = the cursor node's span in the ENTRY file (base 0, so the entry spans apply directly).
     let range = entry_spans
         .get(cursor)
         .map(|s| byte_range_to_range(entry_text, s.start, s.end));
     Some(Hover {
-        contents: HoverContents::Scalar(MarkedString::String(ty.to_string())),
+        contents: hover_contents(&ty, doc.as_deref()),
         range,
     })
 }
@@ -2136,6 +2163,43 @@ mod tests {
         let _ = hover_at(text, true, Position::new(50, 50));
         // On leading whitespace of an empty-ish buffer.
         assert!(hover_at("   ", true, Position::new(0, 1)).is_none());
+    }
+
+    #[test]
+    fn hover_on_a_documented_def_shows_the_type_and_the_docstring() {
+        // Hovering a use of a DOCUMENTED definition shows both its type (`TypeAt`) and its doc prose
+        // (`DocAt`) as Markdown — the `///` doc comment is surfaced in the hover popup.
+        let text = "/// Doubles its argument.\ndef double(x: Int64) -> Int64 = x + x\ndef use = double(21)";
+        // Cursor on the `double` USE in the last line (col 10 of `def use = double(21)`).
+        let h = hover_at(text, true, Position::new(2, 10)).expect("a hover");
+        let rendered = match &h.contents {
+            HoverContents::Markup(m) => m.value.clone(),
+            other => panic!("expected Markdown hover with a doc, got: {other:?}"),
+        };
+        assert!(
+            rendered.contains("Doubles its argument."),
+            "the hover should include the docstring, got: {rendered}"
+        );
+        assert!(
+            rendered.contains("->") || rendered.contains("Int"),
+            "the hover should still include the type, got: {rendered}"
+        );
+    }
+
+    #[test]
+    fn hover_contents_without_a_doc_stays_a_plain_type_string() {
+        // No docstring → the hover keeps the plain type `MarkedString` (bare hover unchanged, no Markdown).
+        match hover_contents("Int64", None) {
+            HoverContents::Scalar(MarkedString::String(s)) => assert_eq!(s, "Int64"),
+            other => panic!("expected a plain scalar type, got: {other:?}"),
+        }
+        // With a doc → Markdown carrying both.
+        match hover_contents("Int64", Some("The answer.")) {
+            HoverContents::Markup(m) => {
+                assert!(m.value.contains("Int64") && m.value.contains("The answer."));
+            }
+            other => panic!("expected Markdown, got: {other:?}"),
+        }
     }
 
     #[test]

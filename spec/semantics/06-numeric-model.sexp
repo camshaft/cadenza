@@ -925,6 +925,27 @@
   (call   main (: 1.0 Float64) (: 3.0 Float64))
   (output (: 0.3333333333333333 Float64)))
 
+(case "a runtime float subtraction emits the machine sub"
+  (doc    "`(- a b)` over runtime Float64 operands emits `f64.sub`; `(0.3, 0.1)` = 0.19999999999999998
+           (the non-exact IEEE difference — 0.3 and 0.1 are not exactly representable). Completes the
+           runtime Float64 arithmetic set (add/mul/div above) with subtraction — a distinct machine op,
+           not derivable from the others. Pins the emitted float-subtract path on both backends.")
+  (input  (do (def (main (: a Float64) (: b Float64)) (- a b)) (export main)))
+  (call   main (: 0.3 Float64) (: 0.1 Float64))
+  (output (: 0.19999999999999998 Float64)))
+
+(case "a runtime Float32 addition emits the f32 machine add"
+  (doc    "`(+ a b)` over runtime FLOAT32 operands emits `f32.add` — the NARROW float machine op, distinct
+           from the f64 path above (binary32 arithmetic + rounding, not binary64). `(1.5, 2.25)` = 3.75
+           (exactly representable in binary32). Pins runtime Float32 arithmetic — the corpus covers runtime
+           Float64 add/mul/div and the Float32 promote conversion, but not a Float32 arithmetic op emitted
+           at its own width; a lowering that computed in f64 and narrowed, or reused f64.add, would still
+           give 3.75 here but the op MUST be the f32 instruction (the width is Float32 end-to-end). Both
+           backends.")
+  (input  (do (def (main (: a Float32) (: b Float32)) (+ a b)) (export main)))
+  (call   main (: 1.5 Float32) (: 2.25 Float32))
+  (output (: 3.75 Float32)))
+
 (case "a runtime integer converts to a float with the machine convert"
   (doc    "`(Float64.of-int n)` over a runtime Int64 `n` emits `f64.convert_i64_s`; `(of-int 42)` = 42.0.
            The explicit int→float conversion (numeric-model.md #A Conversion Involving A Floating-Point
