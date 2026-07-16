@@ -15,10 +15,9 @@
 // change (a nearer in-program handler wins — the free test override).
 //
 // Single-shot tail-resumptive, fuel-bounded, the dispatch count threaded through run's own `count`
-// PARAMETER (handler state inert Int64, resumed fresh `0`). The mock authorizes/denies a LITERAL action
-// per test rather than a parameterized `run-with(fuel, action)` — the v-effects merged-nested-context
-// capture limit (ACKED + owned) drops an outer-param capture when two effects are both reached by the
-// recursive driver; a literal per test avoids it and still covers allow + deny end-to-end.
+// PARAMETER (handler state inert Int64, resumed fresh `0`). One `run-with(fuel, action)` drives any
+// action (the action flows as a `run` parameter to the authorize gate), so allow + deny are two calls
+// with different action arguments rather than two near-identical mock functions.
 // The authorization effect: given a tool's ACTION NAME, return 1 (allow) or 0 (deny). Performed before
 // every dispatch; the real embedder binds this to the cedar-policy engine over the same name.
 effect Cedar =
@@ -48,9 +47,11 @@ def run(fuel: Int64, action: String, count: Int64) =
     else
       Tools.done(count)
 
-// Run `fuel` turns authorizing "tool:search" (permitted) → all fuel turns dispatch → count = fuel. The
-// mock Cedar consults `permits`; handler state is inert (the count lives in `run`'s `count`), fresh `0`.
-def run-allowed(fuel: Int64) =
+// Run `fuel` turns authorizing `action` (the model's chosen tool name) under the `permits` policy. A
+// permitted action dispatches every turn (count = fuel); a denied one ends the loop immediately with
+// count 0, the tool never run. Handler state is inert (the count lives in `run`'s `count`), fresh `0`. So
+// `run-with(fuel, "tool:search")` = fuel (allowed), `run-with(fuel, "tool:delete")` = 0 (denied).
+def run-with(fuel: Int64, action: String) =
   handle Cedar(0) with
     | authorize(a, s) => resume(permits(a), 0)
   in
@@ -58,20 +59,7 @@ def run-allowed(fuel: Int64) =
     | dispatch(a, s) => resume(1, 0)
     | done(a, s) => resume(a, 0)
   in
-  run(fuel, "tool:search", 0)
-
-// Run `fuel` turns on a DENIED action ("tool:delete" is not permitted) → the first turn's authorize
-// returns 0 → the loop ends immediately with count 0, the tool NEVER dispatched. Proves the gate is
-// load-bearing: a denied action's tool does not run.
-def run-denied(fuel: Int64) =
-  handle Cedar(0) with
-    | authorize(a, s) => resume(permits(a), 0)
-  in
-  handle Tools(0) with
-    | dispatch(a, s) => resume(1, 0)
-    | done(a, s) => resume(a, 0)
-  in
-  run(fuel, "tool:delete", 0)
+  run(fuel, action, 0)
 
 @test
 def permits-allows-known-denies-unknown() =
@@ -82,16 +70,22 @@ def permits-allows-known-denies-unknown() =
 
 @test
 def authz-allowed-action-dispatches-every-turn() =
-  if run-allowed(3) == 3 then unit else trap("an allowed action dispatches every turn, count = 3")
+  if run-with(3, "tool:search") == 3 then
+    unit
+  else
+    trap("an allowed action dispatches every turn, count = 3")
 
 @test
 def authz-denied-action-never-dispatches() =
-  if run-denied(5) == 0 then unit else trap("a denied action never dispatches, count = 0")
+  if run-with(5, "tool:delete") == 0 then
+    unit
+  else
+    trap("a denied action never dispatches, count = 0")
 
 @test
 def authz-zero-fuel-dispatches-nothing() =
-  if run-allowed(0) == 0 then unit else trap("zero fuel dispatches nothing")
+  if run-with(0, "tool:search") == 0 then unit else trap("zero fuel dispatches nothing")
 
 @test
 def authz-allowed-count-matches-fuel() =
-  if run-allowed(7) == 7 then unit else trap("seven allowed turns dispatch seven tools")
+  if run-with(7, "tool:search") == 7 then unit else trap("seven allowed turns dispatch seven tools")
