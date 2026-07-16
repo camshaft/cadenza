@@ -174,3 +174,112 @@ fn cdz_run_binds_multiple_path_dependencies() {
     );
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn two_deps_with_the_same_interface_fail_with_a_clear_diagnostic() {
+    // REGRESSION (Copilot PR #511): two deps publishing the SAME `cadenza:<name>/api` (same `def name`)
+    // collided with an opaque wasmtime-linker error at compose. Now it's caught early with a clear message
+    // naming the clashing dep + the shared name, before building/composing.
+    let root = std::env::temp_dir().join(format!("cdz-pathdep-dupiface-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    // Two deps that BOTH declare `name = "dup"` → both would publish `cadenza:dup/api`.
+    for dir in ["a", "b"] {
+        std::fs::create_dir_all(root.join(dir)).unwrap();
+        std::fs::write(
+            root.join(dir).join("Project.cdz"),
+            "def name = \"dup\"\ndef entry = \"l.sexp\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join(dir).join("l.sexp"),
+            "(do (def (f (: x Int64)) x) (export f))",
+        )
+        .unwrap();
+    }
+    std::fs::create_dir_all(root.join("app")).unwrap();
+    std::fs::write(
+        root.join("app/Project.cdz"),
+        "def name = \"app\"\ndef entry = \"main.sexp\"\ndef deps = [\"../a\", \"../b\"]\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("app/main.sexp"),
+        "(do (def (main (: x Int64)) x) (export main))",
+    )
+    .unwrap();
+    let (ok, _o, err) = run_in(&root.join("app"), &["run", "--call", "main", "--arg", "5"]);
+    assert!(!ok, "two deps with the same interface must fail (non-zero)");
+    assert!(
+        err.contains("same interface `cadenza:dup/api`") && err.contains("distinct `def name`"),
+        "the collision is diagnosed early, naming the shared interface + the fix: {err}"
+    );
+    // And no temp dep component is left behind (the first dep built before the collision was detected).
+    let leaked: Vec<_> = std::fs::read_dir(root.join("a"))
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().starts_with(".cdz-run-dep-"))
+        .collect();
+    assert!(
+        leaked.is_empty(),
+        "no temp dep component leaked on the failure: {leaked:?}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_dep_build_failure_leaves_no_temp_dep_components_behind() {
+    // REGRESSION (Copilot PR #511): when a LATER dep fails to build, the temp components of EARLIER deps
+    // (already written) were leaked — only the consumer's own temp was cleaned. Now `build_path_deps`
+    // cleans every temp it wrote on any error. Here dep `a` builds fine but dep `b` has an unbound name,
+    // so the run fails — and NO `.cdz-run-dep-*` may remain in `a` (nor `b`).
+    let root = std::env::temp_dir().join(format!("cdz-pathdep-leak-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("a")).unwrap();
+    std::fs::write(
+        root.join("a/Project.cdz"),
+        "def name = \"aa\"\ndef entry = \"l.sexp\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("a/l.sexp"),
+        "(do (def (f (: x Int64)) x) (export f))",
+    )
+    .unwrap();
+    std::fs::create_dir_all(root.join("b")).unwrap();
+    std::fs::write(
+        root.join("b/Project.cdz"),
+        "def name = \"bb\"\ndef entry = \"l.sexp\"\n",
+    )
+    .unwrap();
+    // `b` references an unbound name → its build fails after `a` already built.
+    std::fs::write(
+        root.join("b/l.sexp"),
+        "(do (def (broken (: x Int64)) zzz_undefined_marker) (export broken))",
+    )
+    .unwrap();
+    std::fs::create_dir_all(root.join("app")).unwrap();
+    std::fs::write(
+        root.join("app/Project.cdz"),
+        "def name = \"app\"\ndef entry = \"main.sexp\"\ndef deps = [\"../a\", \"../b\"]\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("app/main.sexp"),
+        "(do (def (main (: x Int64)) x) (export main))",
+    )
+    .unwrap();
+    let (ok, _o, _e) = run_in(&root.join("app"), &["run", "--call", "main", "--arg", "5"]);
+    assert!(!ok, "a dep build failure fails the run");
+    for dir in ["a", "b"] {
+        let leaked: Vec<_> = std::fs::read_dir(root.join(dir))
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().starts_with(".cdz-run-dep-"))
+            .collect();
+        assert!(
+            leaked.is_empty(),
+            "no temp dep component leaked in {dir} after the mid-loop build failure: {leaked:?}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
