@@ -4696,6 +4696,19 @@ fn load_program_spanned_counted(
              (e.g. `{file}/main.cdz`)"
         ));
     }
+    // A bare `-` (the stdin marker) reaches here only for a command that does NOT read stdin — the query
+    // commands (`type`/`doc`/`check`/`…`) take a named FILE, whose extension picks the surface. Without a
+    // guard, `read_to_string("-")` leaks `reading -: No such file or directory (os error 2)` (it looks for
+    // a file literally named `-`). Give a clean message pointing at the commands that DO consume stdin
+    // (`cdz fmt -`, `cdz convert -`, `cdz compile -`/`cdz run -`, which take an explicit `--from`/surface).
+    if file == "-" {
+        return Err(
+            "reading a program from stdin (`-`) is not supported by this command; pass a FILE \
+             (its extension picks the surface). The commands that read stdin are `cdz fmt -`, \
+             `cdz convert -`, and the `cdz compile -`/`cdz run -` pipe"
+                .to_string(),
+        );
+    }
     let source = std::fs::read_to_string(file).map_err(|e| format!("reading {file}: {e}"))?;
     parse_program_spanned_counted(file, source)
 }
