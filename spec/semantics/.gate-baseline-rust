@@ -1157,6 +1157,9 @@ pass	a quote pattern binds an unquoted operand of a compound form
 pass	a quote pattern is equivalent to the Ast.* constructor pattern
 pass	a quote pattern matches a fixed arity
 pass	a quote pattern used to recognize a compiler form reads as that form
+pass	a quote pattern's Int literal does not match a Float literal of the same value
+pass	a quote pattern's literal operand is position-sensitive
+pass	a quote pattern's literal operand matches only the exact literal
 pass	a quote-built and constructor-built AST of the same tree encode to identical bytes
 pass	a quote-built and constructor-built FLOAT AST encode to identical bytes
 pass	a quote-pattern match with no catch-all is non-exhaustive
