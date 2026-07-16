@@ -232,9 +232,10 @@ fn cdz_run_a_directory_without_a_manifest_errors() {
 }
 
 #[test]
-fn cdz_run_a_project_stdout_is_only_the_value() {
-    // The build notice ("wrote …") must go to STDERR, so `cdz run <project>` stdout is JUST the value —
-    // it composes in a pipe like the direct-component run.
+fn cdz_run_a_project_stdout_is_only_the_value_and_stderr_is_quiet() {
+    // `cdz run <project>` stdout is JUST the value (composes in a pipe), AND stderr is QUIET on success —
+    // the in-memory build emits no `cdz: wrote <temp>.wasm` notice, so a project run doesn't leak its
+    // internal temp-artifact path (the `cargo run` convention: don't announce where the binary went).
     let dir = scalar_project("proj-stdout");
     let exe = env!("CARGO_BIN_EXE_cdz");
     let out = Command::new(exe)
@@ -254,7 +255,12 @@ fn cdz_run_a_project_stdout_is_only_the_value() {
     assert_eq!(
         String::from_utf8_lossy(&out.stdout).trim(),
         "3",
-        "stdout is only the value; the build notice is on stderr"
+        "stdout is only the value"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.trim().is_empty() && !stderr.contains("wrote"),
+        "stderr is quiet on a successful project run (no build/temp-path notice): [{stderr}]"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
