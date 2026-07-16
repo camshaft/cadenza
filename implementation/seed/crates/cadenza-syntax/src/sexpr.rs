@@ -260,52 +260,78 @@ pub fn print_pretty_from(arenas: &Arenas, id: StructId, width: usize) -> String 
 /// nested child, so a `(do …)` used as a function body deeper in the tree keeps its statements
 /// tightly single-broken. A `module` blank-separates its members at ANY depth (a module body is
 /// always a declaration list).
-fn pretty_node(a: &Arenas, id: StructId, doc: &mut Doc, top: bool) {
-    match a.get(id) {
-        Struct::Atom(l) => {
-            let mut s = String::new();
-            print_leaf(a.leaf(*l), &mut s);
-            doc.word(s);
-        }
-        Struct::List(items) => {
-            // The reader never produces an empty list; render defensively as `()`.
-            if items.is_empty() {
-                doc.word("()");
-                return;
+fn pretty_node(a: &Arenas, root: StructId, doc: &mut Doc, root_top: bool) {
+    // An EXPLICIT work stack, not native recursion: `pretty_node` BUILDS the Oppen `Doc` token stream by
+    // walking the arena — one frame per nesting level in the recursive form — and `print_pretty` runs on
+    // arenas from ANY source, including a decoded binary AST that `codec::decode` accepts at ARBITRARY
+    // depth (no cap, unlike the reader's `MAX_NESTING_DEPTH`). A recursive build overflowed the native
+    // stack (SIGABRT) on a deep tree, crashing `cdz convert binary → sexpr` (pretty is the default). The
+    // token stream this emits is byte-identical to the recursive version's — only the driver differs.
+    enum Work {
+        // Render an occurrence (its subtree). `top` carries the `(do …)` root-sequence flag down.
+        Node(StructId, bool),
+        // Deferred literal Doc ops, queued AFTER a list's opening `(` + head so they fire in order.
+        OpenSpace,
+        OpenBlank,
+        CloseParen, // emits `word(")")` then `end()` — the box closer paired with each `cbox`+`(`.
+    }
+    let mut stack: Vec<Work> = vec![Work::Node(root, root_top)];
+    while let Some(w) = stack.pop() {
+        match w {
+            Work::OpenSpace => doc.space(),
+            Work::OpenBlank => blank_line(doc),
+            Work::CloseParen => {
+                doc.word(")");
+                doc.end();
             }
-            // RESUGAR a desugared type-suffix `(: <suffixed> BigInt|Rational)` to the bare `100N` atom
-            // (same rule as the single-line printer, so both round-trip identically).
-            if let Some(atom) = suffixed_annotation_atom(a, items) {
-                pretty_node(a, atom, doc, false);
-                return;
-            }
-            // A consistent box: `(head child…)` stays flat when it fits `width`, else EVERY inter-
-            // child break fires, so each child lands on its own line indented one level under the
-            // head. The head hugs the `(`; the closing `)` hugs the last child (no dangling paren).
-            doc.cbox(INDENT);
-            doc.word("(");
-            pretty_node(a, items[0], doc, false);
-            // The MEMBERS of a top-level form sequence (`do`) or a `module` are definitions — a
-            // single break between them reads as a crammed wall. Separate them with a BLANK line
-            // (which only materializes when the box breaks; a small sequence that fits stays on one
-            // line with plain single spaces). The `do`/`module` HEAD, and a module's NAME, still
-            // attach with an ordinary break — only definition-to-definition gets the blank line. A
-            // nested `do` (top cleared) is a statement block, so it stays tightly single-broken.
-            let blank_sep_from = match a.head_name(id) {
-                Some("do") if top => 1, // root statement sequence: blank between statements
-                Some("module") => 2,    // (module name member1 …): blank between the members
-                _ => usize::MAX,        // any other form: ordinary single-break separation
-            };
-            for (i, &child) in items.iter().enumerate().skip(1) {
-                if i > blank_sep_from {
-                    blank_line(doc);
-                } else {
-                    doc.space();
+            Work::Node(id, top) => match a.get(id) {
+                Struct::Atom(l) => {
+                    let mut s = String::new();
+                    print_leaf(a.leaf(*l), &mut s);
+                    doc.word(s);
                 }
-                pretty_node(a, child, doc, false);
-            }
-            doc.word(")");
-            doc.end();
+                Struct::List(items) => {
+                    // The reader never produces an empty list; render defensively as `()`.
+                    if items.is_empty() {
+                        doc.word("()");
+                        continue;
+                    }
+                    // RESUGAR a desugared type-suffix `(: <suffixed> BigInt|Rational)` to the bare `100N`
+                    // atom (same rule as the single-line printer, so both round-trip identically).
+                    if let Some(atom) = suffixed_annotation_atom(a, items) {
+                        stack.push(Work::Node(atom, false));
+                        continue;
+                    }
+                    // A consistent box: `(head child…)` stays flat when it fits `width`, else EVERY inter-
+                    // child break fires, so each child lands on its own line indented one level under the
+                    // head. The head hugs the `(`; the closing `)` hugs the last child (no dangling paren).
+                    // Emit the opener NOW; queue the closer + children (reversed) to run in source order.
+                    doc.cbox(INDENT);
+                    doc.word("(");
+                    // The MEMBERS of a top-level form sequence (`do`) or a `module` are definitions — a
+                    // single break between them reads as a crammed wall. Separate them with a BLANK line
+                    // (materializes only when the box breaks; a fitting sequence stays one line with plain
+                    // spaces). The `do`/`module` HEAD, and a module's NAME, still attach with an ordinary
+                    // break — only definition-to-definition gets the blank line. A nested `do` (top
+                    // cleared) is a statement block, so it stays tightly single-broken.
+                    let blank_sep_from = match a.head_name(id) {
+                        Some("do") if top => 1,
+                        Some("module") => 2,
+                        _ => usize::MAX,
+                    };
+                    // Push in REVERSE so the stack pops head, sep, child1, sep, child2, …, ) in order.
+                    stack.push(Work::CloseParen);
+                    for (i, &child) in items.iter().enumerate().skip(1).rev() {
+                        stack.push(Work::Node(child, false));
+                        stack.push(if i > blank_sep_from {
+                            Work::OpenBlank
+                        } else {
+                            Work::OpenSpace
+                        });
+                    }
+                    stack.push(Work::Node(items[0], false));
+                }
+            },
         }
     }
 }
@@ -973,6 +999,26 @@ mod tests {
         // asserted here: `read` is intentionally depth-capped at MAX_NESTING_DEPTH=1024, so a 12k-deep
         // form is not round-trippable through the READER — that cap is the reader's own guarantee, tested
         // in `deeply_nested_input_is_diagnosed_not_crashed`. THIS test pins the PRINTER's totality.)
+        assert_eq!(out, format!("{}x{}", "(".repeat(depth), ")".repeat(depth)));
+    }
+
+    #[test]
+    fn print_pretty_is_iterative_not_recursive_on_a_deep_arena() {
+        // Companion to `print_is_iterative_…`: the PRETTY s-expr printer (`print_pretty`, the default
+        // multi-line rendering) walks the arena via `pretty_node` to BUILD the Oppen `Doc` token stream —
+        // that build is itself a tree walk, one frame per level, so a deep arena overflowed it (SIGABRT)
+        // just like the single-line printer, before this fix. Same reachability: `cdz convert binary →
+        // sexpr` pretty-prints a decoded (uncapped-depth) AST. Assert a 12k-deep chain pretty-prints
+        // without overflow. A single-child chain always fits any width, so it renders flat — identical to
+        // the single-line form (`(((…x…)))`), which lets us pin the exact output too.
+        let depth = 12_000usize;
+        let mut b = Builder::new();
+        let mut cur = b.name("x");
+        for _ in 0..depth {
+            cur = b.list(vec![cur]);
+        }
+        let a = b.finish(cur);
+        let out = print_pretty(&a); // must NOT overflow
         assert_eq!(out, format!("{}x{}", "(".repeat(depth), ")".repeat(depth)));
     }
 
