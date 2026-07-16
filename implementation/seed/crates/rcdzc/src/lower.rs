@@ -17644,17 +17644,23 @@ fn ty_heap_walkable(db: &mut Db, ty: &crate::ty::Ty, seen: &mut Vec<StructId>) -
         // is the SAME rarer case the String story leaves (`key_needs_compaction` compacts a direct key, not
         // a rope buried inside a compound key); it is vanishingly rare and shared with String, not a new gap.
         Ty::Bytes => true,
+        // A BIGINT leaf is CANONICAL by construction: the runtime `box_bigint` serializes to the canonical
+        // sign-magnitude bytes (`to_sign_magnitude_bytes`, byte-identical inline-or-heap), the SOLE producer,
+        // so a runtime BigInt in a compound has one byte form and `champ_eq`'s physical byte-walk compares it
+        // EXACTLY. A RATIONAL is a NORMALIZED 2-BigInt-handle node (lowest terms, sign on the numerator —
+        // runtime `box_rational_normalized`, 06-numeric-model "one canonical byte form"), so `champ_eq`
+        // descends its two canonical BigInt children and compares by value. Both admissions mirror the Float
+        // one (`04f206e90`/`e6017d04b`): canonical-by-construction → the raw walk is sound. This unblocks a
+        // whole-compound `=` over a Rational/BigInt leaf (a `V3r(Rational,Rational,Rational)`, a
+        // BigInt-keyed/valued map) — was a decline forcing componentwise comparison (the CAD Rational
+        // redirect's blocker). A DIRECT scalar BigInt/Rational `=` already folds/compares; this is the
+        // NESTED-leaf face.
+        Ty::BigInt | Ty::Rational => true,
         // A collection / char / function / type-value / unresolved leaf is NOT walkable here (its canonical
         // form needs machinery this increment does not emit, or it is not a runtime value that reaches a
         // compound equality — `Ty::Type`/`Ty::Any`/`Ty::Fn` never cross `=`). A `Char` has no runtime
-        // machine rep yet (its equality folds at compile time). A `BigInt` will be canonical-byte-form-
-        // walkable once its runtime leaf exists (B3) — B0 adds the type only and constructs none, so it
-        // declines here for now (a constant `BigInt` `=` folds in the compiler at B1; a runtime `BigInt` `=`
-        // is wired with the runtime limb library). A `Rational` likewise: a constant `Rational` `=` folds in
-        // the compiler (B4-1), a runtime rational compound walk is a later B4 slice — declines here for now.
-        Ty::List(_) | Ty::Char | Ty::BigInt | Ty::Rational | Ty::Fn(_, _) | Ty::Type | Ty::Any => {
-            false
-        }
+        // machine rep yet (its equality folds at compile time).
+        Ty::List(_) | Ty::Char | Ty::Fn(_, _) | Ty::Type | Ty::Any => false,
     }
 }
 
