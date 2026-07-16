@@ -13,6 +13,7 @@ text** (the B1 "render-tree-as-data" seam). `cdz-cad` consumes that text:
 ```
 cdz run model.cdz | cdz-cad - -o out.stl        # from stdin (the run surface's pipe)
 cdz-cad model.sexp -o out.glb --segments 64     # from a file
+cdz-cad model.sexp --info                        # inspect only: triangle/vertex counts + bounds, no file
 ```
 
 1. **parse** the rendered `Solid` s-expr into a CSG tree ([`parse_solid`](src/lib.rs));

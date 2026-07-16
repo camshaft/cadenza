@@ -1,9 +1,10 @@
 /// depth.cdz — pure structural METRICS over an `Ast`: nesting depth, leaf count, and internal-node
-/// count. Every function returns a SCALAR (`Int64`/`Bool`) and never carries a heap value across a call
-/// boundary, so this pass sidesteps the `Map.lookup`/matched-payload borrow-ownership gap that blocks
-/// the resolver (`mlrepro-decline-borrow-scope-resolver-test-emit-threshold.cdz` (queue)) — a deliberately
-/// scalar-only complement that RUNS. Useful in a real compiler for cost heuristics (inline budget by
-/// subtree size) and recursion-limit / stack-depth guards.
+/// count. Every function returns a SCALAR (`Int64`/`Bool`). This was originally written scalar-only to
+/// dodge the `Map.lookup`/matched-payload borrow-ownership gap that blocked the resolver — now FIXED
+/// (`mlrepro-decline-borrow-scope-resolver-test-emit-threshold` is resolved; `scopecheck.cdz` runs the
+/// heap-carrying resolver fine), so the scalar-only shape is simply this pass's natural form, not a
+/// workaround. Useful in a real compiler for cost heuristics (inline budget by subtree size) and
+/// recursion-limit / stack-depth guards.
 import { Ast } from "ast"
 
 /// The maximum nesting depth: a leaf is 1, a list is 1 + the deepest child.

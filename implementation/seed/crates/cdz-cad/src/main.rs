@@ -6,9 +6,10 @@
 //! manifold, and writes the mesh to a file.
 //!
 //! Usage:
-//!   cdz-cad <input.sexp> -o <out.stl>     read a rendered Solid from a file
-//!   cdz-run … | cdz-cad - -o out.stl      read it from stdin (the pipe from the run surface)
+//!   cdz-cad <input.sexp> -o <out.stl>     read a rendered Solid from a file, write STL
+//!   cdz-run … | cdz-cad - -o out.glb      read it from stdin (the pipe from the run surface), write glTF
 //!   cdz-cad in.sexp -o out.stl --segments 64
+//!   cdz-cad in.sexp --info                inspect only: report triangle/vertex counts + bounds, write nothing
 //!
 //! It is deliberately a SEPARATE binary (in the workspace-excluded cdz-cad crate) rather than a subcommand
 //! of the seed `cdz`: that keeps the C++/cmake `manifold-csg` build out of the seed workspace + gate. A
@@ -50,8 +51,8 @@ impl Format {
 }
 
 struct Args {
-    input: String, // a path, or "-" for stdin
-    output: PathBuf,
+    input: String,           // a path, or "-" for stdin
+    output: Option<PathBuf>, // None in --info mode (inspect only, write nothing)
     segments: i32,
 }
 
@@ -60,7 +61,7 @@ fn main() -> ExitCode {
         Ok(a) => a,
         Err(msg) => {
             eprintln!(
-                "cdz-cad: {msg}\n\nusage: cdz-cad <input.sexp|-> -o <out.stl|out.glb> [--segments N]"
+                "cdz-cad: {msg}\n\nusage: cdz-cad <input.sexp|-> (-o <out.stl|out.glb> | --info) [--segments N]"
             );
             return ExitCode::FAILURE;
         }
@@ -84,33 +85,50 @@ fn main() -> ExitCode {
         }
     };
 
-    // Resolve the output format from the extension BEFORE meshing (fail fast on a bad -o).
-    let format = match Format::from_path(&args.output) {
-        Ok(f) => f,
-        Err(e) => {
-            eprintln!("cdz-cad: {e}");
-            return ExitCode::FAILURE;
-        }
+    // Resolve the output format from the extension BEFORE meshing (fail fast on a bad -o). Skipped in
+    // --info mode (no file to write).
+    let format = match &args.output {
+        Some(path) => match Format::from_path(path) {
+            Ok(f) => Some(f),
+            Err(e) => {
+                eprintln!("cdz-cad: {e}");
+                return ExitCode::FAILURE;
+            }
+        },
+        None => None,
     };
 
-    // 3. Mesh it with manifold, then 4. serialize to the chosen format and write.
+    // 3. Mesh it with manifold.
     let m = mesh_with_segments(&solid, args.segments);
-    let bytes = match format {
-        Format::Stl => stl::to_binary_stl(&m),
-        Format::Glb => gltf::to_glb(&m),
-    };
-    if let Err(e) = std::fs::write(&args.output, &bytes) {
-        eprintln!("cdz-cad: writing `{}`: {e}", args.output.display());
-        return ExitCode::FAILURE;
-    }
 
-    eprintln!(
-        "cdz-cad: wrote {} ({} triangles, {} vertices) to {}",
-        human_bytes(bytes.len()),
-        m.triangle_count(),
-        m.vertex_count(),
-        args.output.display()
-    );
+    // 4. Write the mesh file (unless --info: inspect only).
+    match (&args.output, format) {
+        (Some(path), Some(fmt)) => {
+            let bytes = match fmt {
+                Format::Stl => stl::to_binary_stl(&m),
+                Format::Glb => gltf::to_glb(&m),
+            };
+            if let Err(e) = std::fs::write(path, &bytes) {
+                eprintln!("cdz-cad: writing `{}`: {e}", path.display());
+                return ExitCode::FAILURE;
+            }
+            eprintln!(
+                "cdz-cad: wrote {} ({} triangles, {} vertices) to {}",
+                human_bytes(bytes.len()),
+                m.triangle_count(),
+                m.vertex_count(),
+                path.display()
+            );
+        }
+        _ => {
+            // --info mode: report the mesh size without writing.
+            eprintln!(
+                "cdz-cad: {} triangles, {} vertices",
+                m.triangle_count(),
+                m.vertex_count()
+            );
+        }
+    }
 
     // Report the model's bounding box (extents / size / center) — the "how big is it / does it fit the bed?"
     // answer a printer workflow wants. Computed by manifold from the evaluated geometry (rotations + booleans
@@ -135,6 +153,7 @@ fn main() -> ExitCode {
 fn parse_args() -> Result<Args, String> {
     let mut input: Option<String> = None;
     let mut output: Option<PathBuf> = None;
+    let mut info = false;
     let mut segments: i32 = cdz_cad::DEFAULT_SEGMENTS;
 
     let mut it = std::env::args().skip(1);
@@ -143,6 +162,8 @@ fn parse_args() -> Result<Args, String> {
             "-o" | "--output" => {
                 output = Some(PathBuf::from(it.next().ok_or("`-o` needs a file path")?));
             }
+            // `--info`: mesh + report bounds/counts, but write NO file (inspect a model).
+            "--info" => info = true,
             "--segments" => {
                 let s = it.next().ok_or("`--segments` needs a number")?;
                 segments = s
@@ -165,9 +186,20 @@ fn parse_args() -> Result<Args, String> {
         }
     }
 
+    // Exactly one of `-o <file>` or `--info` is required (write a mesh, or just inspect).
+    match (info, &output) {
+        (true, Some(_)) => return Err("`--info` inspects only — don't also pass `-o`".to_string()),
+        (false, None) => {
+            return Err(
+                "no output (`-o <out.stl|out.glb>`), or pass `--info` to inspect".to_string(),
+            )
+        }
+        _ => {}
+    }
+
     Ok(Args {
         input: input.ok_or("no input (a file path, or `-` for stdin)")?,
-        output: output.ok_or("no output (`-o <out.stl>`)")?,
+        output,
         segments,
     })
 }

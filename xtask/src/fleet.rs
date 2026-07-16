@@ -408,6 +408,18 @@ pub enum FleetCmd {
         #[arg(long)]
         dry_run: bool,
     },
+    /// git MERGE DRIVER for `.duvet/coverage-floor.json` (registered by `fleet up`; not run by hand).
+    /// The floor is a single monotonic counter every citation-adding agent bumps, so concurrent slices
+    /// textually CONFLICT on it (`cited` 644 vs 645). This resolves such a conflict by taking the MAX
+    /// of each field across the two sides — the floor only ever moves UP, so max(ours,theirs) is always
+    /// the correct merged floor, and no citation slice ever conflicts on it again. git invokes it as
+    /// `merge-floor <ours> <theirs>`: it reads both JSONs and OVERWRITES <ours> with the field-wise max.
+    MergeFloor {
+        /// `%A` — our side (the current branch's floor); the merged result is written back here.
+        ours: PathBuf,
+        /// `%B` — their side (the incoming floor).
+        theirs: PathBuf,
+    },
     /// Self-heal the fleet, in two passes. RE-ARM: any ACTIVE agent whose `/loop` has stalled — each
     /// agent stamps a heartbeat touch-file (`.claude/fleet/heartbeat/<agent>`) at the top of every
     /// tick; if that file is older than `min(--stale-mult × interval, --stale-cap)`, its loop is
@@ -518,6 +530,7 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
         } => ack(&fleet, &request, &outcome, &r#ref, &body),
         FleetCmd::Audit { verbose, strict } => audit(&fleet, verbose, strict),
         FleetCmd::RerouteUnknown { dry_run } => reroute_unknown(&fleet, dry_run),
+        FleetCmd::MergeFloor { ours, theirs } => merge_floor(&ours, &theirs),
     }
 }
 
@@ -531,6 +544,7 @@ fn up(fleet: &Fleet) {
     // This is what makes the fleet reproducible — a fresh clone's `fleet up` seeds every standing
     // agent from the committed roster. Ephemeral fix/design agents live only in the registry.
     fleet.materialize_source();
+    register_merge_drivers(fleet);
     let mut reg = fleet.load();
     let roster = fleet.load_roster();
     let mut added = 0usize;
@@ -572,6 +586,33 @@ fn up(fleet: &Fleet) {
         reg.agents.iter().filter(|a| a.status == "active").count()
     );
     println!("  (windows already present were left running; re-run any time — it is idempotent.)");
+}
+
+/// Register the fleet's custom git merge drivers in the HUB's `.git/config` (idempotent). A custom
+/// driver named in `.gitattributes` (`merge=fleet-maxfloor`) only activates if `merge.<name>.driver`
+/// is configured, and that config is machine-local (not committed) — so `fleet up` sets it, the same
+/// way it materializes other runtime state. The hub is single-machine, so one registration covers all
+/// worktrees (they share the common `.git`). The `fleet-maxfloor` driver resolves a
+/// `.duvet/coverage-floor.json` conflict by taking the field-wise MAX (via `xtask fleet merge-floor`),
+/// so concurrent citation-floor bumps stop conflicting. `%A` = ours (result), `%B` = theirs.
+fn register_merge_drivers(fleet: &Fleet) {
+    // Resolve the xtask binary path so the driver invokes the SAME toolchain.
+    let xtask = std::env::current_exe()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| "cargo xtask".to_string());
+    let driver = format!("{xtask} fleet merge-floor %A %B");
+    let set = |key: &str, val: &str| {
+        Command::new("git")
+            .current_dir(&fleet.repo)
+            .args(["config", key, val])
+            .status()
+            .ok();
+    };
+    set(
+        "merge.fleet-maxfloor.name",
+        "max of the two coverage floors",
+    );
+    set("merge.fleet-maxfloor.driver", &driver);
 }
 
 /// Build a runtime [`Agent`] from a tracked [`RosterEntry`], deriving the runtime-only fields (branch,
@@ -1222,6 +1263,48 @@ fn reroute_unknown(fleet: &Fleet, dry_run: bool) {
         "fleet reroute-unknown: {}{routed} re-routed, {skipped} un-derivable, {total} total in unknown/.",
         if dry_run { "DRY-RUN: " } else { "" }
     );
+}
+
+/// git merge driver for `.duvet/coverage-floor.json` (see the `MergeFloor` doc). Resolve a floor
+/// conflict by writing the field-wise MAX of `ours` and `theirs` back to `ours`. The floor is monotone
+/// (it only moves up as coverage grows), so max is always the correct merged value — two agents each
+/// bumping `cited` merge to the higher, with zero conflict. Exits 0 on success (git then treats the
+/// merge as resolved); non-zero tells git the driver failed (falls back to a conflict, the old behavior
+/// — safe). A `_note`/other fields on either side are preserved from `ours`.
+fn merge_floor(ours: &Path, theirs: &Path) {
+    // Parse `cited`/`total` from a floor file; missing/garbage → 0 so the other side wins.
+    let field = |v: &serde_json::Value, k: &str| v.get(k).and_then(|n| n.as_u64()).unwrap_or(0);
+    let load = |p: &Path| -> Option<serde_json::Value> {
+        serde_json::from_str(&std::fs::read_to_string(p).ok()?).ok()
+    };
+    let (Some(mut o), Some(t)) = (load(ours), load(theirs)) else {
+        eprintln!(
+            "fleet merge-floor: could not parse both floor files — leaving the conflict for a human"
+        );
+        std::process::exit(1);
+    };
+    let merged_cited = field(&o, "cited").max(field(&t, "cited"));
+    let merged_total = field(&o, "total").max(field(&t, "total"));
+    // Overwrite the two counters on OUR object (keeps ours' `_note` etc.), then rewrite the file.
+    if let Some(map) = o.as_object_mut() {
+        map.insert("cited".to_string(), serde_json::json!(merged_cited));
+        map.insert("total".to_string(), serde_json::json!(merged_total));
+    }
+    match serde_json::to_string_pretty(&o) {
+        Ok(s) => {
+            if std::fs::write(ours, format!("{s}\n")).is_err() {
+                eprintln!(
+                    "fleet merge-floor: could not write merged floor to {}",
+                    ours.display()
+                );
+                std::process::exit(1);
+            }
+            eprintln!(
+                "fleet merge-floor: resolved coverage-floor conflict → cited={merged_cited}, total={merged_total} (field-wise max)"
+            );
+        }
+        Err(_) => std::process::exit(1),
+    }
 }
 
 /// Why a delivery did or didn't wake the recipient.

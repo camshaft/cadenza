@@ -3884,6 +3884,54 @@ fn set_to_list_of_an_empty_set_runs_to_the_empty_list() {
     );
 }
 
+/// The MAP twin of the empty-set fold: `Map.to-list` of an empty `Map.empty` (key/value types
+/// undetermined) folds to the empty `Core::ListNew` — no ordering descriptor needed. Before this fold the
+/// type-checker ACCEPTED `Map.to-list(Map.empty)` while the backend DECLINED at emit ("Map.to-list
+/// key/value shape has no orderable descriptor") — a check/compile divergence (the Set-half fix left the
+/// Map half open). An empty map enumerates to `[]` regardless of key/value type. The whole expression
+/// const-folds to `0`, so no runtime store is needed (`run_returns`, not `#[ignore]`).
+#[test]
+fn map_to_list_of_an_empty_map_folds_to_the_empty_list() {
+    use crate::core::Core;
+    use crate::db::Db;
+    use crate::lower::core_of;
+    let fold = |body: &str| -> Core {
+        let src = format!("(module m (def (main) {body}) (export main))");
+        let mut db = Db::load(crate::testkit::parse(&src));
+        let d = db.def_by_name("main").expect("def main");
+        let m_body = db.defs[d].body.expect("main has a body");
+        core_of(&mut db, m_body)
+    };
+    // FOLD unit: `(Map.to-list Map.empty)` — key/value types undetermined — folds to the empty ListNew
+    // (NOT a `MapToList` needing a descriptor, NOT a decline).
+    match fold("(Map.to-list Map.empty)") {
+        Core::ListNew { elems } => assert!(
+            elems.is_empty(),
+            "an empty map's to-list must fold to the EMPTY list, got {} elements",
+            elems.len()
+        ),
+        other => panic!(
+            "Map.to-list of an empty map must fold to an empty ListNew (no descriptor needed), got {other:?}"
+        ),
+    }
+    // A NON-empty constant map still emits the runtime op (canonical key order).
+    match fold("(Map.to-list (Map.insert Map.empty 1 10))") {
+        Core::MapToList { .. } => {}
+        other => panic!("a non-empty Map.to-list must emit the runtime op, got {other:?}"),
+    }
+    // The fold sees through an inlined nullary `(def (em) Map.empty)` — the exact seed shape; the whole
+    // expression const-folds to 0, so no runtime is imported.
+    let src = "(module m (def (em) Map.empty) \
+               (def (main) (List.len (Map.to-list (em)))) (export main))";
+    let comp = compile_component(&crate::codec::encode(&crate::testkit::parse(src)))
+        .expect("empty Map.to-list compiles");
+    assert_eq!(
+        run_returns::<i64>(&comp, "main"),
+        0,
+        "Map.to-list of an empty map is the empty list — length 0"
+    );
+}
+
 /// `Map.to-list` enumerates a map's entries as a `List (Tuple k v)` in CANONICAL KEY order — the map
 /// companion of `Set.to-list`, realizing collections-and-text.md §A Map Renders As Its Entries In
 /// Canonical Key Order. Runs under wasmtime: the first entry's KEY is the smallest (canonical, not

@@ -12,7 +12,7 @@
 //! runtime. Each message is dispatched by method name; a document's diagnostics are recomputed and
 //! published whenever it opens or changes (the "diagnostics as you type" primitive).
 //!
-//! Capabilities implemented so far: the `initialize`/`shutdown` handshake, full-document sync
+//! Capabilities: the `initialize`/`shutdown` handshake, full-document sync
 //! (`didOpen`/`didChange`/`didClose`), `textDocument/publishDiagnostics` (← the `Diagnostics` query),
 //! `textDocument/hover` (← the `TypeAt` query), `textDocument/semanticTokens/full` (← the `Highlight`
 //! query), `textDocument/definition` (← `ResolveOf`), `textDocument/references` (← `UsesOf`),
@@ -20,6 +20,12 @@
 //! `Symbols`), and `textDocument/codeAction` (quick-fixes ← the `Diagnostics` fix columns, applied via
 //! the shared `crate::fix::fix_edits` so they match `cdz fix`). Each capability is a read of a column
 //! the query engine already exposes, wired to its LSP request.
+//!
+//! PROJECT-AWARE: for a `file://` document that declares `(import …)`, the position/analysis features
+//! (diagnostics, hover, definition, references, completion) follow the import CLOSURE — `crate::closure`
+//! loads the transitive package (with an open-buffer overlay for unsaved edits) and the query runs over
+//! the linked program — so a cross-file (imported) name resolves in-editor exactly as `cdz check` sees
+//! it. A non-`file` URI (an untitled buffer) or a buffer with no imports takes the single-buffer path.
 
 use std::collections::HashMap;
 
@@ -222,16 +228,18 @@ impl Server {
                     self.handle_request(req)?;
                 }
                 Message::Notification(note) => self.handle_notification(note)?,
-                // A response to a request WE sent — increment 1 sends none, so nothing to correlate.
+                // A response to a request WE sent — the server initiates none, so nothing to correlate.
                 Message::Response(_) => {}
             }
         }
         Ok(())
     }
 
-    /// Dispatch a client REQUEST. `hover` is answered from the `TypeAt` query; other feature requests
-    /// (definition/references/completion) are the next increments and get a `MethodNotFound` error so the
-    /// client is not left waiting. `shutdown` is handled in `serve` via `handle_shutdown`.
+    /// Dispatch a client REQUEST to the matching feature analysis, each backed by a sidecar query:
+    /// `hover` (`TypeAt`), `semanticTokens/full` (`Highlight`), `definition` (`ResolveOf`), `references`
+    /// (`UsesOf`), `completion` (`ScopeAt`+`Symbols`), `documentSymbol` (`Symbols`), and `codeAction`
+    /// (the `Diagnostics` fix columns). An unrecognized method gets a `MethodNotFound` error so the client
+    /// is not left waiting. `shutdown` is handled in `serve` via `handle_shutdown`.
     fn handle_request(
         &mut self,
         req: Request,
@@ -280,10 +288,7 @@ impl Server {
                 let resp = Response::new_err(
                     req.id.clone(),
                     lsp_server::ErrorCode::MethodNotFound as i32,
-                    format!(
-                        "cdz lsp: unsupported request `{}` (not yet implemented)",
-                        req.method
-                    ),
+                    format!("cdz lsp: unsupported request `{}`", req.method),
                 );
                 self.send_response(resp)
             }

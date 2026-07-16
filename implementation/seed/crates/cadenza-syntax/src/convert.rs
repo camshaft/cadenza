@@ -337,6 +337,33 @@ mod tests {
     }
 
     #[test]
+    fn locate_byte_in_message_edge_cases() {
+        let src = "ab\ncde\nf"; // line starts: 0, 3, 7; len 8
+        // Offset 0 is line 1, col 1.
+        assert_eq!(locate_byte_in_message("oops at byte 0", src), "oops at 1:1");
+        // An offset PAST end-of-input is clamped to the last position (no panic, no out-of-bounds) —
+        // `line_col` does `byte.min(src.len())`. byte 8 == len → line 3, col 2 (after `f`).
+        assert_eq!(
+            locate_byte_in_message("truncated at byte 999", src),
+            "truncated at 3:2",
+            "a past-EOF offset clamps to the end rather than panicking"
+        );
+        // "last marker wins": an earlier " at byte " inside PROSE is left alone; only the final
+        // position marker's digits are rewritten. (byte 3 = line 2, col 1.)
+        assert_eq!(
+            locate_byte_in_message("expected a byte literal at byte 3", src),
+            "expected a byte literal at 2:1",
+            "an earlier 'byte' word in prose is not the position marker"
+        );
+        // The marker with no digits at all (a bare `at byte ` then non-digit) is untouched — the parse
+        // of an empty digit run fails, so the message is returned verbatim.
+        assert_eq!(
+            locate_byte_in_message("dangling at byte ", src),
+            "dangling at byte "
+        );
+    }
+
+    #[test]
     fn a_multi_line_sexpr_parse_error_reports_line_col() {
         // End-to-end through `read`: trailing input on line 4 reports 4:3, not a byte offset.
         let err = read("(module m)\n\n\n  )))".as_bytes(), Format::Sexpr).unwrap_err();
