@@ -1247,6 +1247,29 @@ fn rust_ident(name: &str) -> String {
 /// Anything else (a `list`/sum/`Some`/`Ok` arg, or a value shape not yet needed) passes through verbatim —
 /// no regression: those constructs decline at the BACKEND today (list/sum results have no native Rust form),
 /// so no trial reaches here relying on them, and a genuinely unhandled shape fails rustc exactly as before.
+/// A `cdz_num::Big` constructor expression for an `i128` BigInt entry-arg value — mirrors the backend's
+/// `const_big_expr`: in-i64 range → `Big::from_i64`, else `from_sign_magnitude_bytes(&[sign, LE-bytes…])`
+/// (the runtime's canonical sign-magnitude leaf, little-endian). Keeps the driver's BigInt arg byte-identical
+/// to the value the library body constructs, so the two compare equal.
+fn big_arg_expr(n: i128) -> String {
+    if let Ok(n64) = i64::try_from(n) {
+        return format!("cdz_num::Big::from_i64({n64})");
+    }
+    let sign = if n < 0 { 1u8 } else { 0u8 };
+    let mag = n.unsigned_abs();
+    // Little-endian magnitude bytes, trimmed of trailing zeros (a canonical minimal form).
+    let mut bytes = vec![sign];
+    let le = mag.to_le_bytes();
+    let last = le.iter().rposition(|&b| b != 0).map(|i| i + 1).unwrap_or(0);
+    bytes.extend_from_slice(&le[..last]);
+    let elems = bytes
+        .iter()
+        .map(|b| b.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("cdz_num::Big::from_sign_magnitude_bytes(&[{elems}])")
+}
+
 fn rust_call_arg(val: &str) -> String {
     let v = val.trim();
     // A FLOAT SPECIAL-VALUE literal (`nan`/`inf`/`-inf`) is not a Rust value token — map it to the `f64`
@@ -1269,13 +1292,83 @@ fn rust_call_arg(val: &str) -> String {
     if v.starts_with('"') && v.ends_with('"') && v.len() >= 2 {
         return format!("{v}.to_string()");
     }
+    // A NON-SCALAR entry arg must cross via the SAME construction form the emitted LIBRARY body uses for
+    // that type — the corpus writes the RAW Cadenza literal/expr text (`100N`, `1R`, `((. Bytes of) …)`),
+    // none of which is valid Rust, so the rust gate DRIVER's arg-emit must lower it (breaker-found CLUSTER;
+    // the exported-entry non-scalar-arg surface was wholly untested — every String/BigInt/… input case built
+    // the value INSIDE the program). Each form below mirrors `cdz_num`/the Vec builder the backend emits.
+    //
+    // A BIGINT literal is `<digits>N` (the `N` suffix). Cross as `cdz_num::Big` — `from_i64` for an in-i64
+    // magnitude, else `from_sign_magnitude_bytes(&[sign, LE-bytes…])` (the same two-way split `const_big_expr`
+    // uses). The digits are parsed to an `i128` first (covers well beyond i64); a magnitude past i128 would
+    // need the byte form from the raw digits — no corpus arg reaches that, so parse-to-i128 suffices.
+    if let Some(digits) = v.strip_suffix('N')
+        && !digits.is_empty()
+        && digits.bytes().all(|b| b.is_ascii_digit() || b == b'-')
+        && let Ok(n) = digits.parse::<i128>()
+    {
+        return big_arg_expr(n);
+    }
+    // A RATIONAL literal is `<int>R` (an integer rational `n/1`) or `<n>/<d>` (a fraction). Cross as
+    // `cdz_num::Rational::new(Big::from_i64(n), Big::from_i64(d))` — the same form the body emits for
+    // `Rational.of`. `Rational::new` normalizes, so any equivalent spelling is fine.
+    if let Some(int) = v.strip_suffix('R')
+        && !int.is_empty()
+        && int.bytes().all(|b| b.is_ascii_digit() || b == b'-')
+        && let Ok(n) = int.parse::<i64>()
+    {
+        return format!(
+            "cdz_num::Rational::new(cdz_num::Big::from_i64({n}), cdz_num::Big::from_i64(1))"
+        );
+    }
+    if let Some((ns, ds)) = v.split_once('/')
+        && let (Ok(n), Ok(d)) = (ns.trim().parse::<i64>(), ds.trim().parse::<i64>())
+    {
+        return format!(
+            "cdz_num::Rational::new(cdz_num::Big::from_i64({n}), cdz_num::Big::from_i64({d}))"
+        );
+    }
     // A compound is a parenthesized head form; a bare token is a scalar literal → verbatim.
     let inner = match v.strip_prefix('(').and_then(|s| s.strip_suffix(')')) {
         Some(inner) => inner.trim(),
         None => return v.to_string(),
     };
+    // A BYTES value crosses as `((. Bytes of) (list <byte>…))` — the dotted `Bytes.of` member-access head.
+    // Emit the same `Vec<u8>` the library body builds: `vec![<b>u8, …]`. Detect the dotted head before the
+    // whitespace split (which would mis-tokenize the `(. Bytes of)` sub-form).
+    if let Some(after) = inner.strip_prefix("(. Bytes of)") {
+        let list = after.trim();
+        let elems = list
+            .strip_prefix('(')
+            .and_then(|s| s.strip_suffix(')'))
+            .and_then(|s| s.trim().strip_prefix("list"))
+            .map(|s| {
+                split_top_level(s.trim())
+                    .iter()
+                    .map(|b| format!("{}u8", b.trim()))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .unwrap_or_default();
+        return format!("vec![{elems}]");
+    }
     let (head, rest) = inner.split_once(char::is_whitespace).unwrap_or((inner, ""));
     match head {
+        // A LIST value `(list e0 e1 …)` → Rust's `vec![<e0>, <e1>, …]` (the `Vec<T>` the library uses). Each
+        // element is marshalled recursively (a list of tuples/sums composes). An empty `(list)` → `vec![]`.
+        "list" => {
+            let elems: Vec<String> = split_top_level(rest)
+                .iter()
+                .map(|e| rust_call_arg(e))
+                .collect();
+            format!("vec![{}]", elems.join(", "))
+        }
+        // A built-in Option/Result variant → Rust's own `Option`/`Result` (what the library emits). A
+        // payload is marshalled recursively; `None` is nullary. Matches the backend's `SumNew` rendering.
+        "Some" => format!("Some({})", rust_call_arg(rest)),
+        "None" => "None".to_string(),
+        "Ok" => format!("Ok({})", rust_call_arg(rest)),
+        "Err" => format!("Err({})", rust_call_arg(rest)),
         "tuple" => {
             let elems: Vec<String> = split_top_level(rest)
                 .iter()
@@ -4071,13 +4164,41 @@ mod trap_grading_tests {
         // A ONE-element tuple/record needs a trailing comma so Rust reads it as a 1-tuple, not a paren-scalar.
         assert_eq!(rust_call_arg("(tuple 4)"), "(4,)");
         assert_eq!(rust_call_arg("(record (x 4))"), "(4,)");
-        // An unhandled head passes through verbatim (declines at the backend if unsupported).
-        assert_eq!(rust_call_arg("(list 1 2 3)"), "(list 1 2 3)");
         // A FLOAT SPECIAL-VALUE arg (`nan`/`inf`/`-inf`) is not a Rust value token → the `f64` constant.
         assert_eq!(rust_call_arg("nan"), "f64::NAN");
         assert_eq!(rust_call_arg("inf"), "f64::INFINITY");
         assert_eq!(rust_call_arg("-inf"), "f64::NEG_INFINITY");
         // A finite float literal is already valid Rust — passes through.
         assert_eq!(rust_call_arg("1.5"), "1.5");
+        // NON-SCALAR entry args are marshalled through each type's own construction form (matching the
+        // emitted library body), NOT the raw Cadenza text — the exported-entry non-scalar-arg class fix.
+        // String → owned String.
+        assert_eq!(rust_call_arg("\"abc\""), "\"abc\".to_string()");
+        // BigInt `<digits>N` → `cdz_num::Big::from_i64` (in-i64).
+        assert_eq!(rust_call_arg("100N"), "cdz_num::Big::from_i64(100)");
+        // Rational `<int>R` → `Rational::new(n, 1)`; `<n>/<d>` → `Rational::new(n, d)`.
+        assert_eq!(
+            rust_call_arg("1R"),
+            "cdz_num::Rational::new(cdz_num::Big::from_i64(1), cdz_num::Big::from_i64(1))"
+        );
+        assert_eq!(
+            rust_call_arg("3/4"),
+            "cdz_num::Rational::new(cdz_num::Big::from_i64(3), cdz_num::Big::from_i64(4))"
+        );
+        // Bytes `((. Bytes of) (list …))` → `vec![…u8]`.
+        assert_eq!(
+            rust_call_arg("((. Bytes of) (list 1 2 3))"),
+            "vec![1u8, 2u8, 3u8]"
+        );
+        // List `(list …)` → `vec![…]`; Option/Result variants → the native enum.
+        assert_eq!(rust_call_arg("(list 1 2 3)"), "vec![1, 2, 3]");
+        assert_eq!(rust_call_arg("(Some 5)"), "Some(5)");
+        assert_eq!(rust_call_arg("(None unit)"), "None"); // nullary — payload ignored
+        assert_eq!(rust_call_arg("(Ok 7)"), "Ok(7)");
+        // A list of tuples composes recursively.
+        assert_eq!(
+            rust_call_arg("(list (tuple 1 2) (tuple 3 4))"),
+            "vec![(1, 2), (3, 4)]"
+        );
     }
 }

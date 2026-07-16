@@ -3577,6 +3577,11 @@ pass	wrapping-sub wraps a boundary-crossing runtime Int64 at the min boundary
 pass	α-equivalence (aconv) recognizes (λx.x) and (λy.y) as the same term up to bound-variable renaming
 pass	α-equivalence handles nesting and distinguishes a bound variable from a same-numbered free variable
 todo	SUM ARG + LIST RESULT declines cleanly (Option arg, List result)
+todo	a BigInt entry argument is marshalled through the value's own constructor
+todo	a Bytes entry argument is marshalled as a Vec<u8>
+todo	a List entry argument is marshalled as a vec!
+todo	a Rational entry argument is marshalled through Rational::new
+todo	an Option (sum) entry argument is marshalled as a native Option
 todo	an exported entry with a String parameter is called with a string argument
 todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
