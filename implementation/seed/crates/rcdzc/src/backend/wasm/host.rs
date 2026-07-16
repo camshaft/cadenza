@@ -393,6 +393,7 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
         Core::Break { value } => collect_host_imports(db, value, out),
         Core::Arith { lhs, rhs, .. }
         | Core::Compare { lhs, rhs, .. }
+        | Core::FloatCompare { lhs, rhs, .. }
         | Core::ValueEq { lhs, rhs }
         | Core::And { lhs, rhs, .. }
         | Core::ListConcat { lhs, rhs }

@@ -73,6 +73,54 @@
   (input  (= Float32.nan (: 1.5 Float64)))
   (error  CDZ0301))
 
+; --- RUNTIME scalar float equality (not a constant fold) — the canonical-byte BIT compare -----------
+; The scalar cases above are CONSTANT operands (they fold in `lower`). These pin the RUNTIME path: two
+; Float64/Float32 BOUNDARY PARAMETERS compared with `=`, which cannot fold and must emit the runtime
+; compare. The seed does NOT emit IEEE `f64.eq` (which says `nan ≠ nan` and `-0.0 = 0.0` — the OPPOSITE
+; of the canonical byte form); it emits a NaN-CANONICALIZING BIT compare — `canon(x) = select(x != x,
+; CANON_NAN_BITS, reinterpret_int(x))` then integer `eq` — so `nan == nan` is TRUE and `-0.0 ≠ +0.0` at
+; run time, matching the fold. A bare float parameter can carry a non-canonical NaN across the boundary,
+; so the canonicalize is load-bearing. Equality only — float ordering (`<`/`>`) awaits a separate ruling.
+;= spec/capabilities/core-semantics.md#floating-point-equality-follows-the-canonical-byte-form
+
+(case "a runtime Float64 equality compares by the canonical byte form"
+  (doc    "`def run(x, y) = if (= x y) 1 else 0` over two Float64 boundary parameters — the operands are
+           runtime values, so the compare cannot fold and emits the runtime canonical-byte bit compare
+           (NOT IEEE `f64.eq`). Equal operands → 1; unequal → 0. Pins that runtime scalar float equality
+           is realized (was a decline: 'comparison of a compound value needs a heap walk'), the root of
+           the long-standing scalar-Float-`==` gap.")
+  (input  (do (def (run (: x Float64) (: y Float64)) (if (= x y) 1 0)) (export run)))
+  (call   run (: 1.5 Float64) (: 1.5 Float64)) (output (: 1 Int64))
+  (call   run (: 1.5 Float64) (: 2.5 Float64)) (output (: 0 Int64)))
+
+(case "a runtime negative zero is not equal to positive zero"
+  (doc    "The runtime companion of `(= -0.0 0.0)` = false: with `-0.0` and `0.0` arriving as runtime
+           Float64 parameters, the canonical-byte bit compare keeps their sign bits distinct → NOT equal
+           (0). An IEEE `f64.eq` emit would wrongly answer equal (1) — this pins the runtime path uses the
+           canonical byte form, not the machine float-equal. `0.0` vs `0.0` → equal (1), the control.")
+  (input  (do (def (run (: x Float64) (: y Float64)) (if (= x y) 1 0)) (export run)))
+  (call   run (: -0.0 Float64) (: 0.0 Float64)) (output (: 0 Int64))
+  (call   run (: 0.0 Float64) (: 0.0 Float64)) (output (: 1 Int64)))
+
+(case "a runtime NaN equals a runtime NaN under the canonical byte form"
+  (doc    "The sharpest runtime case: two `Float64.nan` values through boundary parameters compare EQUAL
+           (1) — every NaN shares one canonical byte form. An IEEE `f64.eq` emit answers the OPPOSITE
+           (`nan ≠ nan` → 0), so this pins that the runtime compare canonicalizes the NaN before the bit
+           compare rather than emitting the machine float-equal. The runtime analogue of `(= Float64.nan
+           Float64.nan)` = true.")
+  (input  (do (def (run (: x Float64) (: y Float64)) (if (= x y) 1 0)) (export run)))
+  (call   run (: nan Float64) (: nan Float64)) (output (: 1 Int64))
+  (call   run (: nan Float64) (: 1.5 Float64)) (output (: 0 Int64)))
+
+(case "a runtime Float32 equality compares by the canonical byte form"
+  (doc    "The Float32 companion: the runtime compare canonicalizes at binary32 (an `i32.reinterpret_f32`
+           bit compare with the Float32 canonical NaN), so `nan == nan` is true and `-0.0 ≠ +0.0` at the
+           narrower width too. Pins the runtime float compare is width-correct (F32 uses i32 ops, not the
+           f64 path).")
+  (input  (do (def (run (: x Float32) (: y Float32)) (if (= x y) 1 0)) (export run)))
+  (call   run (: 1.5 Float32) (: 1.5 Float32)) (output (: 1 Int64))
+  (call   run (: -0.0 Float32) (: 0.0 Float32)) (output (: 0 Int64)))
+
 ; --- Float equality follows the canonical byte form RECURSIVELY, inside compound values --
 ; #Equality Is Structural: "Two values MUST be equal when they have the same type and their contents
 ; are equal component-wise" — and each float COMPONENT is compared by #Floating-Point Equality Follows

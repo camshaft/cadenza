@@ -3516,6 +3516,7 @@ fn collect_reached_poisons_at(db: &mut Db, id: StructId, out: &mut Vec<Reject>) 
         // unconditionally evaluated.
         Core::Arith { lhs, rhs, .. }
         | Core::Compare { lhs, rhs, .. }
+        | Core::FloatCompare { lhs, rhs, .. }
         | Core::ValueEq { lhs, rhs } => {
             collect_reached_poisons(db, lhs, out);
             collect_reached_poisons(db, rhs, out);

@@ -234,6 +234,10 @@ fn main() -> ExitCode {
         // the `spans` artifact too — rather than requiring a pre-built binary AST.
         Cmd::Compile(a) => run_compile(a),
         // `cdz run` — mounted from the `cdz-run` lib; the same code the standalone `cdz-run` bin runs.
+        // When the `component` arg is a PROJECT (a `Project.cdz` or a directory holding one), `cdz`
+        // BUILDS the manifest's entry first (the `cargo run` analogue), then runs the produced component;
+        // otherwise it runs the given `.wasm`/stdin component directly.
+        Cmd::Run(a) if run_target_is_project(&a.component) => run_project(&a),
         Cmd::Run(a) => cdz_run::cli::run(&a, PROG),
         // `cdz corpus` — mounted from the `cdz-corpus` lib; the same code the standalone bin runs.
         Cmd::Corpus(a) => cdz_corpus::cli::run(&a, PROG),
@@ -519,10 +523,106 @@ fn compile_source_specs(
 /// the manifest dir — the same resolution `cdz test` gives `tests`. `entry` is required (there is no
 /// component without a boundary file); `modules` are the libraries it may `(import …)`.
 fn run_build(args: &BuildArgs) -> ExitCode {
-    // Resolve the manifest, mirroring `cdz test`'s cases: an explicit `Project.cdz`, a directory holding
-    // one, or (no arg) an upward search from the cwd.
-    let target: String = match &args.dir {
-        Some(d) => d.clone(),
+    let project = match resolve_project_specs(args.dir.as_deref(), "cdz build") {
+        Ok(p) => p,
+        Err(code) => return code,
+    };
+    // Resolve the optimization tier by PRECEDENCE (v-core-opt design §7): an explicit `--opt-level` wins;
+    // else the manifest's `def opt-level`; else `--release` (`O2`); else the default (`O1`). A bad string
+    // (flag or manifest) is a clear error naming the valid set rather than a silent fallback.
+    let opt_level =
+        match resolve_build_opt_level(args, project.m.opt_level.as_deref(), &project.mpath) {
+            Ok(l) => l,
+            Err(e) => {
+                eprintln!("{PROG}: {e}");
+                return ExitCode::FAILURE;
+            }
+        };
+    let targets = [rcdzc::Target::from(args.target)];
+    compile_source_specs(
+        &project.specs,
+        Some(&project.entry_name),
+        args.out.clone(),
+        &targets,
+        opt_level,
+    )
+}
+
+/// Is `cdz run`'s `component` argument a PROJECT (rather than a pre-built component)? True when it names
+/// a `Project.cdz` (the file itself) or a DIRECTORY — the forms `cdz build`/`cdz test` treat as a project.
+/// A `.wasm` path, or `-` (stdin), is NOT a project → the direct run path. (No `component`-omitted case:
+/// clap requires the arg; a bare `cdz run` in a project dir is a future no-arg-upward enhancement.)
+fn run_target_is_project(component: &std::path::Path) -> bool {
+    component.is_dir() || component.file_name().and_then(|n| n.to_str()) == Some(MANIFEST_NAME)
+}
+
+/// `cdz run <project>` — BUILD the project's manifest entry, then RUN the produced component (the `cargo
+/// run` analogue). Resolves the same `Project.cdz` as `cdz build` (via [`resolve_project_specs`]),
+/// compiles the entry (+ modules) to a temp `.wasm` in the manifest dir, then delegates to the same
+/// `cdz-run` code path the direct `cdz run <file>` uses — passing through `--call`/`--arg`/`--store`/
+/// `--host-response`/`--peer` unchanged. The temp component is removed after the run.
+fn run_project(args: &cdz_run::cli::RunArgs) -> ExitCode {
+    let target = args.component.to_string_lossy().into_owned();
+    let project = match resolve_project_specs(Some(&target), "cdz run") {
+        Ok(p) => p,
+        Err(code) => return code,
+    };
+    // Compile the entry (+ modules) into a temp component beside the manifest, at the default tier (`cdz
+    // run` is the dev-loop command; a release run is `cdz build --release` then `cdz run <file>`). Use a
+    // pid-stamped name in the manifest dir so concurrent runs don't collide and the artifact is written
+    // where the sources resolve.
+    let out_dir = project
+        .mpath
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let out_wasm = out_dir.join(format!(
+        ".cdz-run-{}-{}.wasm",
+        project.entry_name,
+        std::process::id()
+    ));
+    let build_code = compile_source_specs(
+        &project.specs,
+        Some(&project.entry_name),
+        Some(out_wasm.clone()),
+        &[rcdzc::Target::Wasm],
+        rcdzc::OptLevel::default(),
+    );
+    if build_code != ExitCode::SUCCESS {
+        let _ = std::fs::remove_file(&out_wasm);
+        return build_code;
+    }
+    // Run the freshly-built component through the SAME `cdz-run` path as a direct `cdz run <file>`: clone
+    // the parsed args, but point `component` at the built wasm (the other flags pass through unchanged).
+    let mut run_args = args.clone();
+    run_args.component = out_wasm.clone();
+    let code = cdz_run::cli::run(&run_args, PROG);
+    let _ = std::fs::remove_file(&out_wasm); // best-effort cleanup of the temp artifact
+    code
+}
+
+/// A project resolved from its `Project.cdz`: the manifest (`m`) + its path (`mpath`), plus the compile
+/// inputs — the entry package NAME and the full `specs` list (entry file first, then modules, deduped).
+struct ProjectSpecs {
+    mpath: PathBuf,
+    m: Manifest,
+    entry_name: String,
+    specs: Vec<String>,
+}
+
+/// Resolve a project's `Project.cdz` and its compile inputs — the shared front half of `cdz build` and
+/// `cdz run <project>`. `target_arg` is the command's DIR argument (a manifest path, a directory holding
+/// one, or `None` → an upward search from the cwd, like `cargo build` finding `Cargo.toml`). `cmd` names
+/// the invoking command in the "not a project" hint. On any resolution failure this PRINTS the diagnostic
+/// and returns `Err(ExitCode::FAILURE)`, so a caller just propagates it. On success returns the manifest
+/// and the deduped `specs` (entry file first, then `modules`, glob-expanded + `exclude`-filtered), with
+/// `entry_name` = the resolved entry file's stem (NOT the possibly-glob pattern — a `*` name would fail
+/// package linking). The entry must resolve to EXACTLY ONE file (a component has one boundary).
+fn resolve_project_specs(target_arg: Option<&str>, cmd: &str) -> Result<ProjectSpecs, ExitCode> {
+    // Resolve the manifest: an explicit `Project.cdz`, a directory holding one, or (no arg) an upward
+    // search from the cwd (mirrors `cdz test`).
+    let target: String = match target_arg {
+        Some(d) => d.to_string(),
         None => match find_manifest_upward() {
             Some(p) => p.to_string_lossy().into_owned(),
             None => {
@@ -530,7 +630,7 @@ fn run_build(args: &BuildArgs) -> ExitCode {
                     "{PROG}: no `{MANIFEST_NAME}` found in the current directory or any ancestor \
                      (name a project dir/manifest, or add a `{MANIFEST_NAME}`)"
                 );
-                return ExitCode::FAILURE;
+                return Err(ExitCode::FAILURE);
             }
         },
     };
@@ -541,7 +641,7 @@ fn run_build(args: &BuildArgs) -> ExitCode {
     // `Project.cdz` in <parent>" (naming the dir, not the file the user typed). Fail with "no such file".
     if is_manifest_arg && !path.is_file() {
         eprintln!("{PROG}: {target}: no such file");
-        return ExitCode::FAILURE;
+        return Err(ExitCode::FAILURE);
     }
     let dir = if is_manifest_arg {
         match path.parent() {
@@ -553,19 +653,19 @@ fn run_build(args: &BuildArgs) -> ExitCode {
     } else {
         eprintln!(
             "{PROG}: `{target}` is not a `{MANIFEST_NAME}` or a directory holding one \
-             (`cdz build` builds a project; use `cdz compile <file>` for a single file)"
+             (`{cmd}` acts on a project; use `cdz compile <file>` for a single file)"
         );
-        return ExitCode::FAILURE;
+        return Err(ExitCode::FAILURE);
     };
     let (mpath, m) = match load_manifest(&dir) {
         Ok(Some(v)) => v,
         Ok(None) => {
             eprintln!("{PROG}: no `{MANIFEST_NAME}` in {}", dir.display());
-            return ExitCode::FAILURE;
+            return Err(ExitCode::FAILURE);
         }
         Err(e) => {
             eprintln!("{PROG}: {e}");
-            return ExitCode::FAILURE;
+            return Err(ExitCode::FAILURE);
         }
     };
     // `entry` names the component boundary file — required to build (no entry, no component).
@@ -575,7 +675,7 @@ fn run_build(args: &BuildArgs) -> ExitCode {
              component's boundary file)",
             mpath.display()
         );
-        return ExitCode::FAILURE;
+        return Err(ExitCode::FAILURE);
     };
     // Resolve the entry to its FILE, glob-expanded (path-sorted, exclude-filtered) relative to the dir —
     // the same resolution `cdz test` uses for `tests`. The entry names the component's single boundary,
@@ -589,7 +689,7 @@ fn run_build(args: &BuildArgs) -> ExitCode {
                 "{PROG}: {}: `entry` (`{entry_spec}`) matched no file",
                 mpath.display()
             );
-            return ExitCode::FAILURE;
+            return Err(ExitCode::FAILURE);
         }
         [one] => one.clone(),
         many => {
@@ -603,7 +703,7 @@ fn run_build(args: &BuildArgs) -> ExitCode {
                     .collect::<Vec<_>>()
                     .join(", ")
             );
-            return ExitCode::FAILURE;
+            return Err(ExitCode::FAILURE);
         }
     };
     // The package entry NAME is the RESOLVED entry file's stem (`app.cdz` → `app`), NOT the (possibly
@@ -615,24 +715,12 @@ fn run_build(args: &BuildArgs) -> ExitCode {
     // Dedup (a module glob may also match the entry) while preserving order (entry stays first).
     let mut seen = std::collections::HashSet::new();
     specs.retain(|s| seen.insert(s.clone()));
-    // Resolve the optimization tier by PRECEDENCE (v-core-opt design §7): an explicit `--opt-level` wins;
-    // else the manifest's `def opt-level`; else `--release` (`O2`); else the default (`O1`). A bad string
-    // (flag or manifest) is a clear error naming the valid set rather than a silent fallback.
-    let opt_level = match resolve_build_opt_level(args, m.opt_level.as_deref(), &mpath) {
-        Ok(l) => l,
-        Err(e) => {
-            eprintln!("{PROG}: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
-    let targets = [rcdzc::Target::from(args.target)];
-    compile_source_specs(
-        &specs,
-        Some(&entry_name),
-        args.out.clone(),
-        &targets,
-        opt_level,
-    )
+    Ok(ProjectSpecs {
+        mpath,
+        m,
+        entry_name,
+        specs,
+    })
 }
 
 /// Resolve `cdz build`'s optimization tier by precedence (v-core-opt design §7 — the canonical mapping):

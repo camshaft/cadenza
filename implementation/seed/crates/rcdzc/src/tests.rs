@@ -1205,6 +1205,62 @@ fn a_common_comparison_hoists_out_of_both_if_arms() {
     );
 }
 
+/// The common-operator hoist also covers a FLOAT equality (`Core::FloatCompare`): `(if c (= a k) (= b k))`
+/// over `Float64` operands → `(= (if c a b) k)` — ONE canonical-byte compare over the selected operand, not
+/// two. `FloatCompare` canonicalizes each operand's NaN then compares the bit patterns (`i64.eq` at width
+/// 64), and is TOTAL (never traps on its own), so the hoist is value-safe exactly like the integer
+/// comparison above. Both arms share the operator and the WIDTH (the `wt == we` guard). Value parity in
+/// both directions proves the single canon-and-compare over the selected operand reproduces the per-arm
+/// compares. (`k` is a distinct param so the compare stays runtime — a constant fold would erase it.)
+#[test]
+fn a_common_float_equality_hoists_out_of_both_if_arms() {
+    use crate::testkit::parse;
+    let src = "(module m \
+                 (def (main (: c Bool) (: a Float64) (: b Float64) (: k Float64)) \
+                   (if (if c (= a k) (= b k)) 1 0)) \
+                 (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    // Exactly one equality survives (the differing operand is a select, not a second canon-and-compare).
+    let eqs = count_opcode(&bytes, |op| matches!(op, wasmparser::Operator::I64Eq));
+    assert_eq!(
+        eqs, 1,
+        "the common-float-equality hoist compares once over the selected operand, got {eqs} compares"
+    );
+    use wasmtime::component::Val;
+    let run = |c: bool, a: f64, b: f64, k: f64| -> i64 {
+        run_returns_with::<i64>(
+            &bytes,
+            "main",
+            &[
+                Val::Bool(c),
+                Val::Float64(a),
+                Val::Float64(b),
+                Val::Float64(k),
+            ],
+        )
+    };
+    assert_eq!(
+        run(true, 1.0, 9.0, 1.0),
+        1,
+        "c=true → (= a k) = (= 1.0 1.0) = true → 1"
+    );
+    assert_eq!(
+        run(false, 1.0, 9.0, 1.0),
+        0,
+        "c=false → (= b k) = (= 9.0 1.0) = false → 0"
+    );
+    assert_eq!(
+        run(false, 1.0, 2.0, 2.0),
+        1,
+        "c=false → (= b k) = (= 2.0 2.0) = true → 1"
+    );
+    assert_eq!(
+        run(true, 9.0, 2.0, 2.0),
+        0,
+        "c=true → (= a k) = (= 9.0 2.0) = false → 0"
+    );
+}
+
 /// The common-constructor hoist also fires for a RECORD: `(if c (record (a x) (b 1)) (record (a y) (b
 /// 1)))` builds the record ONCE and pushes the DIFFERING field `a` into a branchless `(if c x y)` select
 /// while the SHARED field `b` (the constant `1`) is emitted once — instead of duplicating the whole
@@ -24835,6 +24891,46 @@ mod match_engine {
     }
 
     #[test]
+    fn a_loop_invariant_heap_projection_consumed_in_the_body_is_not_licm_hoisted() {
+        // MISCOMPILE (found + fixed 2026-07-16, v-memory-safety): LICM hoists a loop-invariant subexpression
+        // ONCE into a persistent slot read back each iteration. That is sound for a SCALAR (a count/index),
+        // but a heap-HANDLE hoist root emits its retain ONCE in the prologue while the body CONSUMES it once
+        // PER ITERATION — so a single hoisted dup covers only the first consume; the next iteration consumes a
+        // shared handle at rc==1 and FBIP-mutates it in place → the loop-carried value DRIFTS. Here `pr` is a
+        // TUPLE threaded unchanged, carrying the list; `(. pr 0)` is loop-invariant, and the body consumes it
+        // with `List.push`. Want len 3 each of m iterations → 3*m. Before the fix the projection was hoisted
+        // with one dup → per-iter len drifted 3,3,4,5,… (m=3 → 10 not 9, m=4 → 15 not 12). Fix: LICM does not
+        // hoist a heap-TYPED root (`is_heap_type` guard in `collect_hoistable`) — a heap invariant only
+        // BORROWED in the body still hoists as the enclosing SCALAR read, so only the dangerous handle-alone
+        // hoist is refused.
+        let carrier = "(module m \
+               (def (mb i n acc) (if (< i n) (mb (+ i 1) n ((. List push) acc i)) acc)) \
+               (def (loop j lim pr tot) \
+                 (if (< j lim) (loop (+ j 1) lim pr (+ tot ((. List len) ((. List push) (. pr 0) 99)))) tot)) \
+               (def (main) (loop 0 4 (tuple (mb 0 2 (list)) 0) 0)) (export main))";
+        if let Some(out) = run_on_heap(carrier) {
+            assert_eq!(
+                out, "12",
+                "a threaded tuple's projected list consumed per-iteration must not drift (4 iters × len 3)"
+            );
+        }
+        // A SCALAR loop-invariant read whose OPERAND is heap (`List.len xs` in an index loop) must STILL be
+        // hoisted — the guard only refuses a heap-TYPED root, not a scalar read over a heap operand. The
+        // hoisted `vec-len` runs once, so the component imports `vec-len` and the sum is correct.
+        let idx_loop = "(module m \
+               (def (mb i n acc) (if (< i n) (mb (+ i 1) n ((. List push) acc i)) acc)) \
+               (def (loop i xs acc) \
+                 (if (< i ((. List len) xs)) (loop (+ i 1) xs (+ acc ((. Option expect) ((. List at) xs i) \"v\"))) acc)) \
+               (def (main) (loop 0 (mb 0 3 (list)) 0)) (export main))";
+        if let Some(out) = run_on_heap(idx_loop) {
+            assert_eq!(
+                out, "3",
+                "index-loop over a hoisted List.len must be correct (0+1+2)"
+            );
+        }
+    }
+
+    #[test]
     fn a_string_param_threaded_and_concatenated_in_a_selfrec_loop_is_retained_not_freed() {
         // REGRESSION (OOB TRAP): a String PARAM threaded UNCHANGED through a self-recursive loop AND consumed
         // by `String.concat` each step — `build(s, n, acc) = build(s, n-1, String.concat(acc, s))` — trapped
@@ -41759,6 +41855,26 @@ mod stage1 {
                     && m.contains("not a type variable")
                     && m.contains("UNANNOTATED"),
                 "the lowercase-type-var hint points at the unannotated-generic route: {m}"
+            );
+        }
+        // At a PARAMETER site (where a generic function is being written), the hint ALSO names the explicit
+        // `Type`-parameter idiom — the composable route for a documenting user-generic signature `(: it (Iter
+        // a))`. The value/let-binder sites (no parameter list) do NOT, keeping only the drop / concrete-type
+        // guidance. (Generics are type-valued parameters — spec §"Generics Are Type-Valued Parameters".)
+        let param_hint =
+            unbound_hint("(module m (def (id (: x a)) x) (def (main) (id 1)) (export main))");
+        assert!(
+            param_hint.contains("`Type` parameter") && param_hint.contains("(: t Type)"),
+            "a parameter-site lowercase type-var also names the Type-parameter route: {param_hint}"
+        );
+        for value_site in [
+            "(module m (def (main) (: 5 a)) (export main))",
+            "(module m (def (main) (let (((: y a) 5)) y)) (export main))",
+        ] {
+            let m = unbound_hint(value_site);
+            assert!(
+                !m.contains("`Type` parameter"),
+                "a value/binder-site hint does NOT name the Type-parameter route (no param list): {m}"
             );
         }
         // NESTED type-var positions get the SAME rich guidance (was the terse "unbound name `b`"): a var

@@ -147,3 +147,114 @@ fn cdz_run_on_a_trap_prefixes_the_message_with_the_prog_name() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ── `cdz run <project>` — the cargo-run analogue: build the manifest entry, then run it ─────────────
+
+/// A scalar (runtime-free) project: `Project.cdz` naming `app.cdz` with an `add` export. Scalar so the
+/// run needs NO value-heap runtime store — the test is hermetic. Returns the project dir.
+fn scalar_project(tag: &str) -> std::path::PathBuf {
+    let dir = temp_dir(tag);
+    std::fs::write(
+        dir.join("Project.cdz"),
+        "def name = \"demo\"\ndef entry = \"app.cdz\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("app.cdz"),
+        "def add(a: Int64, b: Int64) -> Int64 = a + b\nexport { add }\n",
+    )
+    .unwrap();
+    dir
+}
+
+#[test]
+fn cdz_run_a_project_directory_builds_then_runs() {
+    // `cdz run <dir>` builds the manifest's entry and runs it — the `cargo run` analogue — printing the
+    // export's value with a success exit.
+    let dir = scalar_project("proj-dir");
+    let (ok, out, err) = run(&[
+        "run",
+        dir.to_str().unwrap(),
+        "--call",
+        "add",
+        "--arg",
+        "2",
+        "--arg",
+        "40",
+    ]);
+    assert!(ok, "cdz run <project dir> failed: {err}");
+    assert_eq!(out.trim(), "42", "printed the built export's value: {out}");
+    // The temp build artifact is cleaned up (no `.cdz-run-*.wasm` left behind).
+    let leftovers: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().starts_with(".cdz-run-"))
+        .collect();
+    assert!(
+        leftovers.is_empty(),
+        "the temp build component is cleaned up after the run"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn cdz_run_a_manifest_path_builds_then_runs() {
+    // `cdz run path/to/Project.cdz` also works (the manifest-file form of the project target).
+    let dir = scalar_project("proj-manifest");
+    let manifest = dir.join("Project.cdz");
+    let (ok, out, err) = run(&[
+        "run",
+        manifest.to_str().unwrap(),
+        "--call",
+        "add",
+        "--arg",
+        "20",
+        "--arg",
+        "22",
+    ]);
+    assert!(ok, "cdz run <Project.cdz> failed: {err}");
+    assert_eq!(out.trim(), "42", "printed value: {out}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn cdz_run_a_directory_without_a_manifest_errors() {
+    // `cdz run <dir>` where the directory has NO `Project.cdz` is a clear project-resolution error (not a
+    // confusing component-read failure).
+    let dir = temp_dir("proj-nomani");
+    let (ok, _out, err) = run(&["run", dir.to_str().unwrap()]);
+    assert!(!ok, "a dir with no manifest must fail");
+    assert!(
+        err.contains("cdz:") && err.contains("Project.cdz"),
+        "error names the missing manifest: {err}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn cdz_run_a_project_stdout_is_only_the_value() {
+    // The build notice ("wrote …") must go to STDERR, so `cdz run <project>` stdout is JUST the value —
+    // it composes in a pipe like the direct-component run.
+    let dir = scalar_project("proj-stdout");
+    let exe = env!("CARGO_BIN_EXE_cdz");
+    let out = Command::new(exe)
+        .args([
+            "run",
+            dir.to_str().unwrap(),
+            "--call",
+            "add",
+            "--arg",
+            "1",
+            "--arg",
+            "2",
+        ])
+        .output()
+        .expect("spawn cdz");
+    assert!(out.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        "3",
+        "stdout is only the value; the build notice is on stderr"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -1360,14 +1360,31 @@ fn validate_non_type_annotation(db: &mut Db, ty_expr: StructId, lead: &str, out:
 /// route to the polymorphism the author wanted: leave the parameter UNANNOTATED. Shared by the top-level
 /// bare-name case and the NESTED-position walk (`enrich_nested_lowercase_type_vars`), so `(: x a)` and
 /// `(: x (List b))` read identically. `lead` names the site ("a parameter's annotation", etc.).
+///
+/// At a PARAMETER site the message additionally names the explicit-`Type`-parameter idiom — `(def (f (: t
+/// Type) (: x (List t))) …)` — because a lowercase name in a USER-GENERIC signature (`(: it (Iter a))`) is
+/// exactly the case where a documenting annotation is wanted and dropping it is unsatisfying: generics are
+/// type-valued parameters (spec §"Generics Are Type-Valued Parameters"), so binding the element type as a
+/// preceding `(: t Type)` parameter gives the annotated generic signature with no `∀`-binder. Keyed off
+/// `lead` naming a parameter; the value/let-binder sites (where there is no parameter list to add a `Type`
+/// binder to) keep the drop-the-annotation / concrete-type guidance only.
 fn lowercase_type_var_reject(name: &str, at: StructId, lead: &str) -> Reject {
+    // A parameter annotation can be made generic BOTH ways — drop it, or bind the type as an explicit
+    // preceding `(: t Type)` parameter (the composable idiom for a user-generic signature). A value/binder
+    // annotation has no parameter list, so only the drop / concrete-type routes apply.
+    let type_param_route = if lead.contains("parameter") {
+        " — or take the type as an explicit `Type` parameter, `(def (f (: t Type) (: x (List t))) …)`, \
+         which keeps a documenting generic signature"
+    } else {
+        ""
+    };
     Reject::coded(
         Code::Unbound,
         format!(
             "unbound name `{name}` — a lowercase name in a type position is not a type variable here \
              ({lead} names an existing type). Cadenza has no `∀`-binder in an annotation; write a \
              GENERIC parameter by leaving it UNANNOTATED — `(def (f x) …)` is already polymorphic in `x` \
-             — or annotate a concrete type"
+             — or annotate a concrete type{type_param_route}"
         ),
     )
     .at(at)

@@ -489,6 +489,17 @@
             ((Err _) false)))
   (output (: true Bool)))
 
+(case "a multibyte-UTF-8 Ast.Str round-trips through encode and decode"
+  (doc    "The byte-path companion of the multibyte print/read case: `\"héllo☃\"` (6 scalars, 10 UTF-8
+           bytes) encodes and decodes back equal. The Str encoding is a length-prefix over the UTF-8 BYTES,
+           so this pins that the prefix counts BYTES, not characters — every existing encode/decode Str case
+           is ASCII (`\"\"`, `\"hi\"`, `\"x\"`) where byte-len == char-count and cannot distinguish the two.
+           A codec that wrote a char-count length would pass those yet truncate or over-read this string.")
+  (input  (match (Ast.decode (Ast.encode (Ast.Str "héllo☃")))
+            ((Ok a)  (= a (Ast.Str "héllo☃")))
+            ((Err _) false)))
+  (output (: true Bool)))
+
 (case "a multibyte-UTF-8 Ast.Str round-trips through print and read"
   (doc    "A string with non-ASCII scalars (`héllo☃` — 2- and 3-byte UTF-8) round-trips: the escape set
            touches only ASCII, so a multibyte scalar passes through and reads back intact. Pins the
@@ -626,6 +637,40 @@
            `Ast.Int`. `read(print (Ast.Float 3.0)) == (Ast.Float 3.0)`.")
   (input  (= (read (print (Ast.Float 3.0))) (Ast.Float 3.0)))
   (output (: true Bool)))
+
+; --- `read` is TOTAL over its input: malformed text DECLINES, never traps or panics ------------------
+; `read : String → Ast` parses the s-expression subset `print` emits (`lower_read`/`SexprReader`). The
+; round-trip cases above only feed it WELL-FORMED text (`read(print v)`); none exercises the failure
+; paths. `read` must be total the way the reader/lexer are "never panic" (syntax-vertical invariant) and
+; the way `Ast.decode` is total over adversarial bytes — but `read` fails at COMPILE time (a constant-only
+; fold), so a malformed input is a clean DECLINE (`Reject::decline`), not a runtime `Err` and never a
+; trap/panic. These pin the three distinct decline arms in `lower_read`: text that is not a well-formed
+; s-expression (the parser returns nothing), text with TRAILING content after the first node (the
+; `at_end` check — a valid prefix must NOT be silently accepted), and an empty string. A reader change
+; that panicked on unbalanced input, or that silently took the first node and dropped a trailing token,
+; would break these. All → `(declines)`.
+
+(case "read of text that is not a well-formed s-expression declines"
+  (doc    "`(read \"(((\")` — unbalanced open parens are not a well-formed s-expression over the Ast
+           subset, so `read` DECLINES (`lower_read`'s parse-failure arm) rather than trapping or fabricating
+           a partial AST. Pins that the reader is total on malformed input — the `read` companion of the
+           adversarial-bytes `Ast.decode` totality cases, and of the parser/lexer never-panic invariant.")
+  (input  (read "((("))
+  (declines))
+
+(case "read of text with trailing content after the first s-expression declines"
+  (doc    "`(read \"1 2\")` — a valid first node (`1`) FOLLOWED by more input (`2`). `read` must consume the
+           WHOLE string (the `r.at_end()` check in `lower_read`), so trailing content declines rather than
+           silently reading `1` and dropping `2`. The `read` parallel of the decode case where canonical
+           bytes plus a trailing byte yield `Err`: a valid prefix is not a valid whole.")
+  (input  (read "1 2"))
+  (declines))
+
+(case "read of the empty string declines"
+  (doc    "`(read \"\")` — no s-expression at all. The empty string parses to no node, so `read` declines
+           (never a trap or an empty/garbage AST). Pins the zero-input edge of the reader's totality.")
+  (input  (read ""))
+  (declines))
 
 (case "an active unquote of a float literal lifts to an Ast.Float node"
   (doc    "`` `(f ,2.5) `` embeds the float literal `2.5` as the `Ast.Float` leaf its value denotes — the

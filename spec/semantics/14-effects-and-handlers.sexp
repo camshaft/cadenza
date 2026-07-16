@@ -2916,6 +2916,38 @@
             (def (main (: x Int64)) (host (Math) (Math.add x))) (export main)))
   (error  CDZ0201))
 
+(case "a peer-bound operation cannot take or return a closure"
+  (doc    "Peers exchange VALUE-HEAP HANDLES (a tuple/record/sum/list/map/string/…); a closure is not a
+           value-heap value, so it has no peer-boundary form (a closure crosses the HOST boundary as a
+           component-model resource, per closures-across-host, NOT a peer). Without a compile-time check a
+           peer-bound op whose signature involves a function type — `(op mk (-> Int64 (-> Int64 Int64)))`
+           bound to a peer — type-checks, then APPLYING the peer-returned closure declines deep in lowering
+           with an opaque `value is not applyable`. Reject it at the binding (CDZ0201) with the real reason
+           — the `(-> …)` in the operation's signature is the tell. Detected SYNTACTICALLY: a boundary
+           position of the op's `(-> …)` arrow that is ITSELF a `(-> …)` list. Fires only for a peer-BOUND
+           effect (a closure crossing the HOST boundary via `(host …)` is unaffected).")
+  (input  (do
+            (effect F (op mk (-> Int64 (-> Int64 Int64))))
+            (bind F "cadenza:f/api")
+            (def (main) 0) (export main)))
+  (error  CDZ0201))
+
+(case "a peer-bound operation cannot take a String argument"
+  (doc    "A String/Bytes RESULT from a peer crosses fine (the peer builds the rope handle and returns
+           it), but an inbound String/Bytes ARGUMENT is not yet emittable: it lowers as a component
+           `string` (a canonical `lower` needing a `mem` option) rather than a runtime handle, and the
+           peer envelope supplies no `mem` — so emitting the consumer produced an INVALID component
+           (`missing module instantiation argument named mem`) with NO diagnostic, a silent
+           invalid-component miscompile. Reject it at the binding (CDZ0201) — a String/Bytes in a PARAMETER
+           position of a peer-bound op — until the inbound-rope-handle emit is wired (report-don't-
+           miscompile). Only parameters are checked, so a String/Bytes RESULT is not flagged; a compound
+           (tuple/record) argument, which crosses as a handle, is likewise unaffected.")
+  (input  (do
+            (effect S (op blen (-> String Int64)))
+            (bind S "cadenza:str/api")
+            (def (main) 0) (export main)))
+  (error  CDZ0201))
+
 (case "a handle whose head names a value rather than an effect is rejected"
   (doc    "A `handle`'s HEAD names the effect the handler discharges, and its arms ARE that effect's
            operations (capabilities-and-effects.md #A Handler Arm Names An Operation Its Effect Declares).

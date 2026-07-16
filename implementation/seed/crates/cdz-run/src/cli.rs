@@ -14,7 +14,9 @@ use crate::{
 };
 
 /// The arguments to `cdz run` / `cdz-run` — run a finished Cadenza wasm component and print its result.
-#[derive(clap::Args)]
+/// `Clone` so a caller (e.g. `cdz run <project>`, which builds first) can re-target `component` at a
+/// freshly-built component while passing every other flag through unchanged.
+#[derive(clap::Args, Clone)]
 pub struct RunArgs {
     /// The component `.wasm` to run, or `-` to read it from stdin (so it composes in a pipe:
     /// `cdz compile - -o - | cdz run -`).

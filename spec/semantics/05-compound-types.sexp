@@ -1572,6 +1572,31 @@
   (call   main (: 3 Int64)) (output (: 9 Int64))
   (call   main (: 4 Int64)) (output (: 12 Int64)))
 
+(case "a loop-invariant heap projection consumed in the loop body is not LICM-hoisted"
+  (doc    "The LOOP-INVARIANT-CODE-MOTION face of the still-live-binding family: LICM hoists a loop-invariant
+           subexpression ONCE into a persistent slot read back each iteration. Sound for a SCALAR (a
+           count/index — copying it is rc-neutral), but a heap-HANDLE hoist root emits its retain ONCE in the
+           prologue while the body CONSUMES it once PER ITERATION — so a single hoisted `dup` covers only the
+           first consume; the next iteration consumes a shared handle at rc==1 and FBIP-mutates it in place,
+           and the loop-carried value DRIFTS. `pr` is a TUPLE threaded UNCHANGED carrying the list; `(. pr 0)`
+           is loop-invariant and the body consumes it with `(List.push (. pr 0) 99)`. Want `(List.len …)` = 3
+           each of `m` iterations, so total = 3*m. Before the fix the projection was hoisted with one `dup` →
+           per-iteration length drifted 3,3,4,5,… (m=3 → 10 not 9, m=4 → 15 not 12). Fix: LICM refuses to
+           hoist a heap-TYPED root — a heap invariant only BORROWED in the body still hoists as its enclosing
+           SCALAR read (`List.len (. pr 0)`), so only the dangerous handle-alone hoist is declined. `mb` makes
+           the inner list a genuine runtime value (no fold).")
+  (input  (do
+            (def (mb (: i Int64) (: n Int64) (: acc (List Int64)))
+              (if (< i n) (mb (+ i 1) n (List.push acc i)) acc))
+            (def (loop (: j Int64) (: m Int64) (: pr (Tuple (List Int64) Int64)) (: tot Int64))
+              (if (< j m) (loop (+ j 1) m pr (+ tot (List.len (List.push (. pr 0) 99)))) tot))
+            (def (main (: m Int64)) (loop 0 m (tuple (mb 0 2 (list)) 0) 0))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 3 Int64))
+  (call   main (: 2 Int64)) (output (: 6 Int64))
+  (call   main (: 3 Int64)) (output (: 9 Int64))
+  (call   main (: 4 Int64)) (output (: 12 Int64)))
+
 ; The mutual-recursion companion of the still-live-binding family above: the IDIOMATIC homoiconic-AST
 ; walker shape — a `fc` (per-node) / `fl` (per-child-list) mutual pair over a recursive `Ast` sum. Here
 ; `fc` matches a `List` node binding its child list `elems`, reads the head OUT OF `elems` directly
@@ -9564,3 +9589,18 @@
                 (match mp ((map (1 v)) v) ((Zorp x) (go mp)) (_ 0)))
               (export go)))
   (error CDZ0101))
+
+(case "a curried newtype constructor applies to completion"
+  (doc    "`((T.Mk 10) 20)` over the two-payload newtype `(type T (Mk Int64 Int64))` — the partial
+           `(T.Mk 10)` is an arrow value applied to its remaining payload at the call site: the
+           completed value matches to 10 + 20 = 30. The working-composition companion of the
+           partial-ctor-of-a-newtype decline (f6811116f ordered the arity guard before newtype
+           erasure — the erasure arm read a 1-arg partial as the bare payload, emitting invalid
+           wasm; the DIRECT curried apply must keep working while the stored-partial face declines).")
+  (input  (do
+            (type T (Mk Int64 Int64))
+            (def (main (: d Int64))
+              (match ((T.Mk 10) 20) ((T.Mk a b) (+ a b))))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 30 Int64)))

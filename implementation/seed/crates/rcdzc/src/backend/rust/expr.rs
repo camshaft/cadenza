@@ -733,6 +733,32 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                 }
             }
         }
+        // RUNTIME FLOAT EQUALITY under the CANONICAL BYTE FORM — `nan == nan` TRUE, `-0.0 != +0.0`, all
+        // NaN equal (core-semantics.md §Floating-Point Equality Follows The Canonical Byte Form). NOT
+        // Rust's `==` on floats (IEEE: `nan != nan`, `-0.0 == 0.0` — a miscompile). Canonicalize each
+        // operand to its integer bit pattern with NaN folded to one canonical form
+        // (`if x.is_nan() { CANON_NAN_BITS } else { x.to_bits() }`), then compare the bit patterns with
+        // integer `==`. Must be byte-identical to the wasm backend's `select`-based bit compare (the
+        // differential sweep checks this). Equality only — float ordering is a separate ruling.
+        Core::FloatCompare { lhs, rhs, width, .. } => {
+            // Both operands share the op's float type (equality unifies their widths), so they emit as-is
+            // — the same as float arithmetic (`emit_arith`'s `is_float_arith` path), no width grounding.
+            let l = emit(db, lhs, env, ctx)?;
+            let r = emit(db, rhs, env, ctx)?;
+            let (canon_nan, bits_ty) = if width == 32 {
+                ("0x7FC0_0000u32", "u32")
+            } else {
+                ("0x7FF8_0000_0000_0000u64", "u64")
+            };
+            // A closure per operand canonicalizes then the two `{bits_ty}` compare. Written inline so no
+            // helper fn is required in the emitted module.
+            let canon = |v: &str| {
+                format!(
+                    "({{ let __f = {v}; if __f.is_nan() {{ {canon_nan} }} else {{ __f.to_bits() as {bits_ty} }} }})"
+                )
+            };
+            Ok(format!("({} == {})", canon(&l), canon(&r)))
+        }
         // A runtime arithmetic op.
         Core::Arith { op, lhs, rhs } => emit_arith(db, id, op, lhs, rhs, env, ctx),
         // A float CONSTANT → a Rust float literal at the node's width. Emitted via `f64::from_bits`/
@@ -980,20 +1006,17 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                 let ve = emit(db, *v, env, ctx)?;
                 lines.push_str(&format!("__m.insert({ke}, {ve}); "));
             }
-            // An EMPTY map (no inserts, no surrounding constraint — e.g. the `rest` of a map pattern that
-            // matched every entry) can't infer its `BTreeMap<K,V>` type params, so ANNOTATE `__m` with the
-            // node's solved map type (rustc E0282 otherwise). A non-empty map infers K/V from its inserts,
-            // so the annotation is optional there. If the map's own type does NOT map (a key/value type the
-            // backend can't represent — a `String` key, a float value), an EMPTY map has nothing to infer
-            // from and no `dyn`/annotation to give → DECLINE (a non-empty such map already declined at its
-            // first insert's key/value emit, so this only catches the empty case).
+            // ANNOTATE `__m` with the node's solved `BTreeMap<K,V>` type WHEN it maps concretely. When it
+            // does NOT — an `Map.empty` whose K/V are still unsolved VARS at this node (its type is fixed
+            // only by DOWNSTREAM use, e.g. threaded into a `(Map Int64 Int64)` param) — emit a BARE
+            // `BTreeMap::new()` and let RUST infer K/V from that use (verified: a bare `new()` threaded into
+            // a typed callee compiles). An annotation would be ideal but we have no concrete type to spell;
+            // the bare form is correct wherever the surrounding context pins the type. A genuinely
+            // uninferrable standalone empty map is an E0282 (a real BadArtifact) — but such a value never
+            // escapes/crosses anywhere, so it does not arise in practice. (Was a FALSE DECLINE: a
+            // context-typed empty map — the common map-accumulator seed — declined though Rust could infer.)
             let ann = match types::rust_type(&type_of(db, id)) {
                 Some(t) => format!(": {t}"),
-                None if entries.is_empty() => {
-                    return Err(Reject::decline(
-                        "an empty map whose type is not representable in Rust has no inferable element type",
-                    ));
-                }
                 None => String::new(),
             };
             Ok(format!(
@@ -1042,16 +1065,12 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                 let ee = emit(db, *e, env, ctx)?;
                 lines.push_str(&format!("__s.insert({ee}); "));
             }
-            // An EMPTY set can't infer its `BTreeSet<T>` element type — annotate with the node's solved
-            // set type (E0282 otherwise; harmless when non-empty). If the set type doesn't map (an
-            // unrepresentable element) and it is empty, DECLINE (a non-empty one declined at its insert).
+            // ANNOTATE `__s` with the node's solved `BTreeSet<T>` type when it maps concretely; when the
+            // element type is still an unsolved VAR at this node (fixed only by downstream use), emit a
+            // BARE `BTreeSet::new()` and let Rust infer it from that use — the twin of the empty-map case
+            // (was a FALSE DECLINE for a context-typed empty set — the set-accumulator seed).
             let ann = match types::rust_type(&type_of(db, id)) {
                 Some(t) => format!(": {t}"),
-                None if elems.is_empty() => {
-                    return Err(Reject::decline(
-                        "an empty set whose type is not representable in Rust has no inferable element type",
-                    ));
-                }
                 None => String::new(),
             };
             Ok(format!(
@@ -1148,7 +1167,11 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         }
         // `Bytes.slice` → the fallible sub-range read → native `Option`. Guard `start >= 0 && len >= 0`
         // on the RAW i64 values BEFORE the `usize` cast (a negative would wrap to a huge `usize`), then
-        // `start + len <= bytes-len`; in range → `Some(v[start..start+len].to_vec())`, else `None`.
+        // `start + len <= bytes-len` via a CHECKED add — `(start as usize) + (len as usize)` can OVERFLOW
+        // usize (wrap to a small sum in release) for two near-`i64::MAX` operands, which would pass the
+        // guard and then PANIC on the out-of-range index; `Bytes.slice` must be TOTAL (return `None`), so
+        // `checked_add` maps the overflow to `None`. The computed `__end` is reused for the slice so it is
+        // evaluated once and the range is exactly the guarded one.
         Core::BytesSlice {
             bytes, start, len, ..
         } => {
@@ -1157,8 +1180,12 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             let l = emit(db, len, env, ctx)?;
             Ok(format!(
                 "{{ let __v = {v}; let __start = {s}; let __len = {l}; \
-                 if __start >= 0 && __len >= 0 && (__start as usize) + (__len as usize) <= __v.len() \
-                 {{ Some(__v[(__start as usize)..(__start as usize) + (__len as usize)].to_vec()) }} else {{ None }} }}"
+                 if __start >= 0 && __len >= 0 {{ \
+                     match (__start as usize).checked_add(__len as usize) {{ \
+                         Some(__end) if __end <= __v.len() => Some(__v[(__start as usize)..__end].to_vec()), \
+                         _ => None, \
+                     }} \
+                 }} else {{ None }} }}"
             ))
         }
         // `Bytes.compact` → a content-equal sequence with independent storage. A `Vec<u8>` is already flat
