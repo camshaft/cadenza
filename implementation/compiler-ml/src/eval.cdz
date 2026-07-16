@@ -64,4 +64,40 @@ def eval-big() =
   else
     trap("1e9*1e9 (needs BigInt)")
 
+@test
+def eval-beyond-int64() =
+  // 1e18 * 1e18 = 1e36 — FAR beyond Int64::MAX (~9.2e18). This can only be right if eval uses TRUE
+  // arbitrary-precision BigInt (a wide-but-fixed integer would wrap). Compare against the BigInt product.
+  let big = Ast.List([Ast.Name("*"), Ast.Int(1000000000000000000), Ast.Int(1000000000000000000)]) in
+  let expected = BigInt.of(1000000000000000000) * BigInt.of(1000000000000000000) in
+  if eval(big) == expected then
+    // sanity that it did NOT collapse to the operand (i.e. it's really 1e36, not 1e18)
+    (if eval(big) == BigInt.of(1000000000000000000) then trap("1e36 must not equal 1e18") else unit)
+  else
+    trap("1e18 * 1e18 needs arbitrary-precision BigInt")
+
+@test
+def eval-deep-left-nest() =
+  // (+ (+ (+ 1 2) 3) 4) = 10 — a deep LEFT-nested chain (recursion depth 3), each inner form evaluated
+  // before the outer op. Guards the recursion + evaluation order over a taller tree than eval-nested.
+  let e = Ast.List([Ast.Name("+"),
+            Ast.List([Ast.Name("+"),
+              Ast.List([Ast.Name("+"), Ast.Int(1), Ast.Int(2)]), Ast.Int(3)]), Ast.Int(4)] ) in
+  if evals-to(e, BigInt.of(10)) then unit else trap("(+ (+ (+ 1 2) 3) 4) = 10")
+
+@test
+def eval-right-nest-subtraction-order() =
+  // (- 100 (- 30 5)) = 100 - 25 = 75 — a RIGHT-nested subtraction: the inner (- 30 5) must be evaluated
+  // as the SECOND operand, not folded left. Guards operand-position correctness for a non-commutative op.
+  let e = Ast.List([Ast.Name("-"), Ast.Int(100), Ast.List([Ast.Name("-"), Ast.Int(30), Ast.Int(5)])]) in
+  if evals-to(e, BigInt.of(75)) then unit else trap("(- 100 (- 30 5)) = 75")
+
+@test
+def eval-mixed-ops-deep() =
+  // (* (+ 2 3) (- 10 4)) = 5 * 6 = 30 — both operands are compound forms with DIFFERENT ops.
+  let e = Ast.List([Ast.Name("*"),
+            Ast.List([Ast.Name("+"), Ast.Int(2), Ast.Int(3)]),
+            Ast.List([Ast.Name("-"), Ast.Int(10), Ast.Int(4)])]) in
+  if evals-to(e, BigInt.of(30)) then unit else trap("(* (+ 2 3) (- 10 4)) = 30")
+
 export { eval }

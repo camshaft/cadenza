@@ -442,6 +442,26 @@
   (call   run (: 2.0 Float64) (: 2.0 Float64)) (output (: 11 Int64))
   (call   run (: nan Float64) (: nan Float64)) (output (: 1 Int64)))
 
+; --- Float ordering is NOT TRANSITIVE through a NaN: a chained `a < b < c` can't fold to `a < c` --------
+; Another algebraic identity that holds for a total order but fails for the float PARTIAL order:
+; TRANSITIVITY. For integers `(a < b) ∧ (b < c)` ⟹ `a < c`, so a pass could drop the middle test or fold
+; the chain to the endpoints. For float this is UNSOUND: if the MIDDLE operand `b` is NaN, both `a < b`
+; and `b < c` are FALSE (unordered), so the conjunction is false — but `a < c` over the finite endpoints
+; may be TRUE. So `(and (< a b) (< b c))` and `(< a c)` disagree when `b` is NaN (e.g. a=1, b=nan, c=3:
+; the chain is false, `1 < 3` is true). A Core pass that folded a chained ordering by transitivity — or
+; dropped the `b` comparison as "implied" — would MISCOMPILE. This pins the chain must evaluate BOTH links
+; (the middle operand's NaN-ness is observable), both backends.
+(case "a chained float ordering is not foldable by transitivity — a NaN middle breaks the chain"
+  (doc    "`run(a,b,c) = if (and (< a b) (< b c)) 1 0` — a chained `a < b < c`. Fully ordered (1,2,3): both
+           links true → 1. A NaN MIDDLE (1,nan,3): `1<nan` FALSE and `nan<3` FALSE → the conjunction is 0,
+           even though the finite endpoints satisfy `1 < 3` — so the chain must NOT be folded to `(< a c)`
+           (which would give 1). Descending (3,2,1): `3<2` false → 0. Pins float ordering is not transitive
+           through a NaN, so both links are evaluated, both backends.")
+  (input  (do (def (run (: a Float64) (: b Float64) (: c Float64)) (if (and (< a b) (< b c)) 1 0)) (export run)))
+  (call   run (: 1.0 Float64) (: 2.0 Float64) (: 3.0 Float64)) (output (: 1 Int64))
+  (call   run (: 1.0 Float64) (: nan Float64) (: 3.0 Float64)) (output (: 0 Int64))
+  (call   run (: 3.0 Float64) (: 2.0 Float64) (: 1.0 Float64)) (output (: 0 Int64)))
+
 ; --- Float equality follows the canonical byte form RECURSIVELY, inside compound values --
 ; #Equality Is Structural: "Two values MUST be equal when they have the same type and their contents
 ; are equal component-wise" — and each float COMPONENT is compared by #Floating-Point Equality Follows

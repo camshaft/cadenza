@@ -178,10 +178,13 @@ class Parser {
   }
 
   /// A RATIONAL number leaf `n/d` → the JS number n/d (division at the leaf; the model stays exact). A bare
-  /// integer or float is accepted defensively; `NaN` maps to NaN; a zero denominator errs.
+  /// integer or float is accepted defensively; a `nan` atom maps to NaN; a zero denominator errs.
   private parseRational(): number {
     const a = this.expectAtom();
-    if (a === "NaN") return NaN;
+    // Cadenza renders a NaN float as the LOWERCASE atom `nan` (the compiler's `Prim::FloatNan`), so match
+    // case-insensitively — an uppercase-only check missed a real `nan` value and threw. This MUST stay before
+    // the `Number(a)` fallthrough below: `Number("nan")` is NaN, which `Number.isFinite` then rejects → throw.
+    if (a.toLowerCase() === "nan") return NaN;
     const slash = a.indexOf("/");
     if (slash >= 0) {
       const n = Number(a.slice(0, slash));
@@ -212,7 +215,10 @@ type ManifoldObj = InstanceType<ManifoldStatic>;
 function toManifold(M: ManifoldStatic, s: Solid): ManifoldObj {
   switch (s.t) {
     case "empty":
-      // a degenerate/empty solid — a zero-size cube (manifold has no bare empty ctor in the encapsulated API)
+      // An empty solid → manifold's canonical EMPTY (no geometry), matching the Rust cdz-cad driver's
+      // `Manifold::empty()`. The encapsulated API has no bare empty ctor, so use a zero-size cube — which
+      // manifold documents (and we verified: `isEmpty()===true`, 0 triangles) as returning an empty Manifold,
+      // NOT degenerate geometry. This composes correctly when nested (an empty arm of a union/difference).
       return M.cube([0, 0, 0], true);
     case "cube":
       return M.cube(s.s, true); // FULL size, centred (matches Cuber semantics)

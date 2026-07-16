@@ -60,3 +60,19 @@ test("empty input is a typed error (not a throw)", async () => {
   const r = await meshFromSolid("");
   assert.equal(r.ok, false);
 });
+
+test("a lowercase `nan` radius parses to NaN, not a parse error (Cadenza renders NaN lowercase)", async () => {
+  // Cadenza's value form spells a NaN float `nan` (lowercase); the parser must accept it (case-insensitively),
+  // not throw "expected a rational" — PR#459 regression guard. A NaN dimension is pathological but must not
+  // crash the parse: it flows to manifold as NaN (which produces empty/degenerate geometry, handled downstream).
+  const r = await meshFromSolid("(: (Spherer nan) Solidr)");
+  assert.equal(r.ok, true, "a `nan` radius must parse (not a typed parse error)");
+});
+
+test("an empty solid meshes to zero triangles (matches the native Manifold::empty())", async () => {
+  // Emptyr → no geometry, mirroring the Rust cdz-cad driver. Pins that the browser path agrees (0 triangles),
+  // not degenerate geometry from the zero-size-cube empty idiom.
+  const r = await meshFromSolid("(: (Emptyr unit) Solidr)");
+  assert.equal(r.ok, true);
+  if (r.ok) assert.equal(r.indices.length, 0, "an empty solid has no triangles");
+});

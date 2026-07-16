@@ -65,4 +65,42 @@ def subst-nested-shape() =
   else
     trap("nested outer len 1")
 
+@test
+def subst-replaces-deep-in-nested-list() =
+  // the earlier nested test only checked the OUTER length; this verifies the x DEEP inside is replaced:
+  // subst {x->42} into [[x]] → [[42]]. Reach element 0 of element 0.
+  match subst(env1(), Ast.List([Ast.List([Ast.Name("x")])])) with
+    | Ast.List(outer) => (match List.at(outer, 0) with
+      | Option.Some(Ast.List(inner)) => (if is-int(Option.expect(List.at(inner, 0), "d"), 42) then unit else trap("deep x -> 42"))
+      | _ => trap("inner is a list"))
+    | _ => trap("outer is a list")
+
+@test
+def subst-simultaneous-multi-var() =
+  // env {x->1, y->z}: subst into [x, y, x] → [1, z, 1] — both vars replaced in ONE pass, x twice.
+  match subst(env2(), Ast.List([Ast.Name("x"), Ast.Name("y"), Ast.Name("x")])) with
+    | Ast.List(es) =>
+      (if is-int(Option.expect(List.at(es, 0), "a"), 1) then
+        (if is-name(Option.expect(List.at(es, 1), "b"), "z") then
+          (if is-int(Option.expect(List.at(es, 2), "c"), 1) then unit else trap("third x -> 1"))
+        else trap("y -> z")) else trap("first x -> 1"))
+    | _ => trap("still a list")
+
+@test
+def subst-empty-env-is-identity() =
+  // an empty env substitutes nothing — a Name stays a Name, structure unchanged.
+  let e = Ast.List([Ast.Name("x"), Ast.Int(9)]) in
+  match subst(#{}, e) with
+    | Ast.List(es) => (if is-name(Option.expect(List.at(es, 0), "a"), "x") then (if is-int(Option.expect(List.at(es, 1), "b"), 9) then unit else trap("int kept")) else trap("x kept as Name under empty env"))
+    | _ => trap("still a list")
+
+@test
+def subst-replacement-not-re-substituted() =
+  // env {x -> z}: subst into [x] → [z]; the replacement z must NOT itself be looked up again (no env entry
+  // for z anyway, but this pins single-pass substitution — z stays z, not re-substituted).
+  let envxz = Map.insert(#{}, "x", Ast.Name("z")) in
+  match subst(envxz, Ast.List([Ast.Name("x")])) with
+    | Ast.List(es) => (if is-name(Option.expect(List.at(es, 0), "a"), "z") then unit else trap("x -> z (single pass)"))
+    | _ => trap("still a list")
+
 export { subst }

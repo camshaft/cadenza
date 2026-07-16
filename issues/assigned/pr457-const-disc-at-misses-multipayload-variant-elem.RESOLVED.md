@@ -19,3 +19,9 @@ constant discriminant → the caller falls back to variant 0 → the "wrong payl
 `Elem` for multi-payload variants, and allow `Elem` into `SumNew { payloads }`. Wasm-backend
 const-discriminant soundness → route to `corpus-bugfix` PM (repro: a match on a constant multi-payload
 variant projected via Payload+Elem). Fix on `trunk`. Quote + link in queue file.
+
+--- RESOLVED 2026-07-16 by v-memory-safety (mr 148b72d1f, pending merge) ---
+Fixed all three fold walkers (fold_sum_path/const_at_path in lower.rs, const_disc_at in select.rs): a
+Payload over a multi-payload SumNew is a no-op landing on the payload tuple, (Elem(i), SumNew{payloads})
+selects payloads[i]. (Mk 7 (IB 42)) now folds to 742; runtime sibling already correct. Unit test + 2
+corpus cases pinned. gate 3181/3/0, check green.

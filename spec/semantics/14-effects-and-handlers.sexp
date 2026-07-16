@@ -2954,6 +2954,42 @@
   (output (: 100 Int64))
   (host-calls))
 
+(case "a peer op whose compound RESULT escapes the entrypoint declines (resource-escape lacks the peer import)"
+  (doc    "The inbound arg direction to a peer is fully emitted (String/compound args cross as handles), and
+           a peer op's compound RESULT read INTO A SCALAR works (`Map.len`/`List.at`→match→scalar). But when
+           the entrypoint's OWN RESULT is the raw compound the peer produced — `main` RETURNS the peer's
+           `(List Int64)`/`(Option …)`/`(Map …)` unconsumed — the export escapes via the resource-escape
+           boundary (`emit_runtime_resource`/`emit_recursive_sum_resource`), which does NOT yet thread the
+           peer extern-import set: it collects only the value-heap runtime ops, so the peer op has no import
+           to call and emit DECLINES codelessly (a safe compile error, NOT a bad component). The fix is a
+           resource-escape × peer-extern envelope FUSION (a component that BOTH imports a peer interface AND
+           publishes a resource — neither existing byte assembler does both); until it lands, the actionable
+           workaround the diagnostic names is to consume the peer's value into a scalar the entrypoint returns
+           (read a field/element/length) or handle the effect in-program. Pins the boundary as a clean decline
+           so an accidental future emit of an INVALID component here is caught. (KNOWINGLY FLIP to a run when
+           the fusion lands — queue/peerbug-list-at-of-peer-returned-list-declines-not-in-extern-set.md.)")
+  (input  (do
+            (effect L (op mklist (-> Int64 (List Int64))))
+            (bind L "cadenza:l/api")
+            (def (main (: x Int64)) (host (L) (L.mklist x))) (export main)))
+  (declines))
+
+(case "a peer op whose SUM RESULT escapes the entrypoint declines (the recursive-sum resource path)"
+  (doc    "The companion to the List case above, guarding the OTHER resource-escape emit path: a peer op
+           returning a SUM/Option whose value IS the entrypoint's result escapes via
+           `emit_recursive_sum_resource` (the sum-shaped resource walker), NOT `emit_runtime_resource` (the
+           flat-collection walker the List case exercises). Both paths share the SAME gap — neither threads
+           the peer extern-import set — but they are DISTINCT code, so each needs its own witness: a fix (or
+           a regression) touching one path must not silently leave the other mis-graded. `main` RETURNS the
+           raw `(Option Int64)` the peer produced, so it declines codelessly (a safe compile error, not a bad
+           component), same as List/Map. To be KNOWINGLY FLIPPED to a run alongside the List case when the
+           resource-escape × peer-extern envelope FUSION lands (increment 2 covers the sum path).")
+  (input  (do
+            (effect O (op opt (-> Int64 (Option Int64))))
+            (bind O "cadenza:o/api")
+            (def (main (: x Int64)) (host (O) (O.opt x))) (export main)))
+  (declines))
+
 (case "a handle whose head names a value rather than an effect is rejected"
   (doc    "A `handle`'s HEAD names the effect the handler discharges, and its arms ARE that effect's
            operations (capabilities-and-effects.md #A Handler Arm Names An Operation Its Effect Declares).
@@ -3362,3 +3398,28 @@
                 (lower (Bin (Lit 1) (Bin (Lit 2) (Lit 3))))))
             (export main)))
   (output (: 4 Int64)))
+
+(case "a nested inner handler that re-threads its own state folds (merged-context seed from init)"
+  (doc    "Two NESTED handlers over a cross-function recursive loop that performs BOTH effects — the
+           merged-context signature. The INNER handler `Tools` re-threads its OWN bound state in the arm
+           `(step (a) s (resume a s))` — the resume's next-state is the state BINDER `s`, not a fresh
+           value. `type_of` of a bare state binder alone is `Any` (its type is the seed's), so deriving
+           the merged inner slot's type from the arms' next-states ALONE yielded `Any` and DECLINED the
+           merge — while the SAME handler standalone folded (single-handler `reduce_handle` seeds the slot
+           type from the init). The merged path now seeds identically from the inner `init` (`Tools 0` →
+           Int64), so a stateful inner handler re-threading `s` folds. `loop 3 0` draws step ids handing
+           back the accumulator each turn: 3, then 2, then 1 → stop(6) → 6. (Reported by v-agent-harness
+           Inc-2; the fix mirrors the single-handler init-seeded state-type derivation.)")
+  (input  (do
+            (effect Model (op ask (-> Int64 Int64)))
+            (effect Tools (op step (-> Int64 Int64)) (op stop (-> Int64 Int64)))
+            (def (loop (: i Int64) (: acc Int64))
+              (if (= (Model.ask i) 0)
+                  (Tools.stop acc)
+                  (loop (- i 1) (Tools.step (+ acc i)))))
+            (def (main)
+              (handle Model 0 ((ask (q) s (resume q q)))
+                (handle Tools 0 ((step (a) s (resume a s)) (stop (a) s (resume a s)))
+                  (loop 3 0))))
+            (export main)))
+  (output (: 6 Int64)))

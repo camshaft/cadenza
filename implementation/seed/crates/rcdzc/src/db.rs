@@ -3377,6 +3377,25 @@ impl Db {
         out
     }
 
+    /// Each top-level DECLARATION-keyword form with ZERO operands — a bare `(def)` / `(type)` / `(effect)`
+    /// — as `(keyword, form_occ)`. Such a form declares NOTHING (no name, no body/variants/ops) yet was
+    /// SILENTLY ACCEPTED: it registers no `Def`/`TypeDecl`/`EffectDecl` (nothing to key on), so the
+    /// per-declaration validation walks never see it, and `unknown_top_forms` skips it (its head IS a known
+    /// keyword). The `(export)` empty case is handled by `malformed_exports`; this is its
+    /// `def`/`type`/`effect` sibling. Returned for `collect_faults` to reject CDZ0201, each anchored at the
+    /// bare form.
+    pub fn empty_declaration_forms(&self) -> Vec<(&'static str, StructId)> {
+        let mut out = Vec::new();
+        for item in top_items(&self.ast) {
+            for kw in ["def", "type", "effect"] {
+                if self.ast.as_form(item, kw).is_some_and(<[_]>::is_empty) {
+                    out.push((kw, item));
+                }
+            }
+        }
+        out
+    }
+
     /// Each well-formed-SHAPE constructor-export element `(. T A)` / `(. T *)` in a top-level `(export …)`
     /// clause, as `(element_occ, type_name_occ, ctor_name_occ)`. `element_occ` anchors a diagnostic at the
     /// `(. …)` element; `type_name_occ`/`ctor_name_occ` are the `T`/`A` atoms (the ctor is the reserved `*`

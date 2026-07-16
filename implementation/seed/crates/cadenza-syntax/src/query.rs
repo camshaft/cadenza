@@ -4647,6 +4647,50 @@ mod tests {
         }
 
         #[test]
+        fn lint_set_compile_and_run_never_panic_on_arbitrary_input() {
+            // `LintSet::compile` parses UNTRUSTED lint-rule text (`cdz lint --rule '…'` / `--rules FILE`)
+            // — like Pattern/Template/RuleSet::compile it must return a diagnostic, never panic, on any
+            // string: `(lint …)` soup, wrong arity, a non-string message, a bad severity name, a bad
+            // pattern, unbalanced parens. And a set that DOES compile must RUN (lint_report) over a
+            // subject without panicking. Mirrors the reader/query-compiler robustness fuzzes.
+            let subject = "g(deprecated(), (todo x), 1)";
+            let (target, _) =
+                crate::query::driver::load(subject.as_bytes(), crate::convert::Format::Ml).unwrap();
+            let alphabet: Vec<char> = "(lint ),@_\"xdeprecatedtoerrwान warnnote0123."
+                .chars()
+                .collect();
+            let mut rng = super::SplitMix64(0x11_7ea5_c0de_0f3e);
+            for len in 0..=28usize {
+                for _ in 0..120 {
+                    let s: String = (0..len)
+                        .map(|_| alphabet[(rng.next() as usize) % alphabet.len()])
+                        .collect();
+                    if let Ok(set) = LintSet::compile(&s) {
+                        // A compiled set must run without panicking (report + json paths).
+                        let _ = crate::query::driver::lint_report(&set, &target, subject, "in.ml");
+                        let _ =
+                            crate::query::driver::lint_json(&set, &target, subject, Some("in.ml"));
+                    }
+                }
+            }
+            // Targeted structural edges — each must be Err/Ok, never panic.
+            for s in [
+                "(lint)",                            // no pattern/message
+                "(lint (x))",                        // missing message
+                "(lint (x) 5)",                      // non-string message
+                "(lint (x) \"m\" bogus)",            // unknown severity
+                "(lint (x) \"m\" error extra)",      // too many operands
+                "(lint (,@a ,@b) \"m\")",            // adjacent splices in the pattern
+                "(lint (x) \"m\" \"notaname\")",     // severity not a bare name
+                "(not-lint (x) \"m\")",              // wrong head
+                "((((",                              // unbalanced
+                "(lint (x) \"a\") (lint (y) \"b\")", // two rules
+            ] {
+                let _ = LintSet::compile(s);
+            }
+        }
+
+        #[test]
         fn compile_reads_pattern_message_and_severity() {
             let set = LintSet::compile("(lint (deprecated ,@_) \"do not use\" error)").unwrap();
             assert_eq!(set.rules.len(), 1);
@@ -4827,6 +4871,58 @@ mod tests {
             let classes = find_clones(&s, 2, None);
             assert_eq!(classes.len(), 1);
             assert_eq!(classes[0].sites.len(), 3);
+        }
+
+        #[test]
+        fn clone_detection_never_panics_and_holds_invariants_on_arbitrary_trees() {
+            // `find_clones` / `find_near_clones` run over arbitrary parsed trees (the `cdz clones` codemod
+            // on any program), with subtree hashing, maximal-clone filtering, and near-clone metavar
+            // inference — none of which may PANIC, at any `min_size`. Fuzz over SplitMix64-generated
+            // s-expr trees and assert the structural invariants each result must hold:
+            //   * every clone class has ≥2 sites (the definition of a clone), a positive size, and (for
+            //     exact clones) an exemplar that RE-READS to a tree (the printer emitted valid s-expr);
+            //   * a near-clone class's inferred `,mK`-metavariable pattern likewise re-reads.
+            use crate::query::clones::{Source, find_near_clones};
+            let alphabet: Vec<char> = "() abcfgh0123".chars().collect();
+            let mut rng = super::super::tests::SplitMix64(0x0c10_e5f0_0d1c_a5f1);
+            for len in 0..=40usize {
+                for _ in 0..80 {
+                    let s: String = (0..len)
+                        .map(|_| alphabet[(rng.next() as usize) % alphabet.len()])
+                        .collect();
+                    // Only well-formed trees — clone detection consumes a parsed tree, not raw text.
+                    let Ok(arena) = crate::sexpr::read(&s) else {
+                        continue;
+                    };
+                    let tree = crate::query::Tree::of(&arena);
+                    for min_size in [1usize, 2, 3] {
+                        // Exact clones: never panic; each class is a real (≥2-site, sized) class whose
+                        // exemplar is valid s-expr.
+                        for class in find_clones(&tree, min_size, None) {
+                            assert!(class.sites.len() >= 2, "a clone class has ≥2 sites");
+                            assert!(class.size >= min_size, "a clone respects min_size");
+                            assert!(
+                                crate::sexpr::read(&class.exemplar).is_ok(),
+                                "exemplar re-reads: {:?}",
+                                class.exemplar
+                            );
+                        }
+                        // Near clones: never panic; the inferred pattern is valid s-expr.
+                        let src = Source {
+                            tree: &tree,
+                            spans: None,
+                            file: None,
+                        };
+                        for nc in find_near_clones(std::slice::from_ref(&src), min_size) {
+                            assert!(
+                                crate::sexpr::read(&nc.pattern).is_ok(),
+                                "near-clone pattern re-reads: {:?}",
+                                nc.pattern
+                            );
+                        }
+                    }
+                }
+            }
         }
     }
 

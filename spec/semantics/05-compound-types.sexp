@@ -2360,6 +2360,46 @@
   (call   main)
   (output (: 97 Int64)))
 
+(case "a constant multi-payload variant match reaches each payload and dispatches a nested variant"
+  (doc    "MISCOMPILE (wrong-payload-depth, wasm-only, Copilot PR#457): matching a CONSTANT MULTI-payload
+           variant `(Mk 7 (IB 42))` reaching its 2nd payload `(IB 42)` — a NESTED sum — lost the constant
+           discriminant. The path into a multi-payload variant's payload is `Payload` THEN `Elem(i)`, but the
+           constant-fold walkers (`fold_sum_path`/`const_at_path` in lower, `const_disc_at` in the wasm
+           backend) handled only `(Payload, SumNew)` for a SINGLE payload (`len == 1`, unwrap) and `(Elem,
+           Tuple|ListNew)` — they had NO arm for `Elem` into a multi-payload `SumNew`'s payload list. So the
+           path fell through, the constant disc was lost, and the backend defaulted to variant 0, reading the
+           nested payload at the WRONG depth. Fix: a `Payload` over a multi-payload `SumNew` is a no-op (lands
+           on the payload tuple) and the following `Elem(i)` selects `payloads[i]` — the constant twin of the
+           runtime `sum-payload` + `arr-get i`. Now the whole thing folds: `Mk 7 (IB 42)` → the `IB` arm →
+           `7*100 + 42` = 742. Reaching the 1st payload (`a` = 7) and the `IA` arm (`7 + x`) verify the other
+           depths/variants. A constant fold, so it needs no value-heap runtime.")
+  (input  (do
+            (type Inner (IA Int64) (IB Int64))
+            (type T (Mk Int64 Inner) (Other Int64))
+            (def (main)
+              (match (Mk 7 (IB 42))
+                ((Mk a (IA x)) (+ a x))
+                ((Mk a (IB y)) (+ (* a 100) y))
+                ((Other z) z)))
+            (export main)))
+  (output (: 742 Int64)))
+
+(case "a constant multi-payload variant match on the IA-variant nested payload folds to the right depth"
+  (doc    "The sibling of the case above reaching the OTHER nested variant: `(Mk 7 (IA 42))` selects the `IA`
+           arm → `7 + 42` = 49. Together they pin that the multi-payload `Payload`+`Elem` fold resolves BOTH
+           the payload position (1st vs 2nd) AND the nested variant discriminant correctly — the wrong-depth
+           miscompile mis-read one or the other.")
+  (input  (do
+            (type Inner (IA Int64) (IB Int64))
+            (type T (Mk Int64 Inner) (Other Int64))
+            (def (main)
+              (match (Mk 7 (IA 42))
+                ((Mk a (IA x)) (+ a x))
+                ((Mk a (IB y)) (+ (* a 100) y))
+                ((Other z) z)))
+            (export main)))
+  (output (: 49 Int64)))
+
 (case "a variant carrying a Symbol payload constructs, matches, and binds it"
   (doc    "The Symbol companion: `(type T (Mk Symbol) (No))` carries a `Symbol` payload. Constructing
            `(T.Mk (Symbol.of \"hi\"))` and matching binds the symbol to `s`, and `(Symbol.to-string s)`

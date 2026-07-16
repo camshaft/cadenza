@@ -3007,7 +3007,11 @@ fn check(paths: &Paths, profile: &str) {
         .join("cdz")
         .display()
         .to_string();
-    for suite in ["implementation/cad", "implementation/compiler-ml"] {
+    for suite in [
+        "implementation/cad",
+        "implementation/compiler-ml",
+        "implementation/agent-harness",
+    ] {
         log.step(
             &format!("cdz-test {suite}"),
             &format!("{cdz} test {suite}"),

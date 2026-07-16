@@ -174,6 +174,31 @@ export default function Effects() {
         does.
       </Note>
 
+      <H2>Why this matters: mock now, real later</H2>
+      <P>
+        Here's the payoff for real programs. Because the performer doesn't know who answers, the{" "}
+        <em>same</em> code runs against a test mock or a real external service just by choosing a different
+        handler. Picture a step of an agent loop — <C>turn</C> performs <C>Model.converse</C>, a call to a
+        language model. It names what it needs; it doesn't reach out itself. Run it under a{" "}
+        <em>mock</em> handler that echoes the query back, and under a <em>different</em> handler that
+        answers differently — same <C>turn</C>, two behaviours:
+      </P>
+      <Runnable
+        source={`(effect Model (op converse (-> Int64 Int64)))
+(def (turn) (Model.converse 5))
+(def (main)
+  (+ (handle Model 0 ((converse (q) s (resume q s))) (turn))
+     (handle Model 0 ((converse (q) s (resume (* q 10) s))) (turn))))`}
+      />
+      <P>
+        The first handler resumes with the query unchanged (<C>5</C>), the second with ten times it{" "}
+        (<C>50</C>), so the sum is <C>55</C> — from one unchanged <C>turn</C>. In a real program the mock
+        is your unit test and the "different" handler is the one wired to the actual model at the edge; the
+        loop's logic never mentions either. That's effects as an I/O <em>boundary</em>: the body performs,
+        and swapping the handler swaps the whole outside world — no dependency injection, no mocking
+        framework, just a different <C>handle</C>.
+      </P>
+
       <H2>Your turn</H2>
       <Exercise
         id="effects:1"

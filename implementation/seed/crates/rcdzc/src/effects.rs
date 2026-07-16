@@ -511,6 +511,7 @@ impl HandlerCtx {
 /// not reach a recursive callee performing an outer effect (an ordinary nested handler — inside-out).
 fn merged_nested_ctx(
     db: &mut Db,
+    inner_init: StructId,
     inner_arms: &[HandleArm],
     inner_body: StructId,
     outer: &HandlerCtx,
@@ -543,8 +544,17 @@ fn merged_nested_ctx(
             state_ty: s.state_ty.clone(),
         })
         .collect();
-    // The inner slot's state type — from the inner handle's arms' resume next-states.
-    let inner_state_ty = inner_state_ty_from_arms(db, inner_arms);
+    // The inner slot's state type — seeded by the inner handle's INIT type and joined with each arm's
+    // resume next-state type. Using the INIT as the seed is load-bearing: an arm that RE-THREADS its bound
+    // state `resume(v, s)` has `next-state = s`, and `type_of` of the bare state binder alone is `Ty::Any`
+    // (the binder carries no standalone type — its type is the seed's). Deriving the slot type from the
+    // arms' next-states ONLY (the old `inner_state_ty_from_arms`) then yielded `Any` and DECLINED the merge,
+    // so a stateful inner handler under a nested context (`handle Model … in handle Tools(0) … | step(a,s)
+    // => resume(a, s)`) failed to fold while the same handler STANDALONE folded (single-handler
+    // `reduce_handle` already seeds from the init via `state_ty_of_arms`). Reusing `state_ty_of_arms` here
+    // makes the merged path seed identically — the init `Tools(0)` pins the slot to `Int64` regardless of
+    // whether an arm re-threads `s` or hands back a fresh value. (Reported by v-agent-harness Inc-2.)
+    let inner_state_ty = state_ty_of_arms(db, inner_init, inner_arms);
     slots.push(StateSlot {
         decl: inner_decl,
         state_ty: inner_state_ty,
@@ -624,26 +634,6 @@ fn callee_reaches_outer_effect(
             .iter()
             .any(|&c| callee_reaches_outer_effect(db, c, inner_decl, merged, depth)),
         Struct::Atom(_) => false,
-    }
-}
-
-/// The inner handler's state type from its arms alone (the join of its tail arms' next-state types). Used
-/// to annotate the merged context's inner slot. `None` if undetermined (blocks a recursive specialization
-/// on that slot, a clean decline).
-fn inner_state_ty_from_arms(db: &mut Db, arms: &[HandleArm]) -> Option<crate::ty::Ty> {
-    let mut t: Option<crate::ty::Ty> = None;
-    for arm in arms {
-        if let Some(next) = tail_resume_next_state_of(db, arm.body) {
-            let nt = crate::infer::type_of(db, next);
-            t = Some(match t {
-                Some(prev) => prev.join(&nt),
-                None => nt,
-            });
-        }
-    }
-    match t {
-        Some(ty) if !matches!(ty, crate::ty::Ty::Any) => Some(ty),
-        _ => None,
     }
 }
 
@@ -3526,7 +3516,7 @@ fn thread_bounded(
             arms: inner_arms,
             body: inner_body,
         } => {
-            if let Some(merged) = merged_nested_ctx(db, &inner_arms, inner_body, ctx) {
+            if let Some(merged) = merged_nested_ctx(db, inner_init, &inner_arms, inner_body, ctx) {
                 // Thread the inner body under the merged context, with the inner slot seeded by its init
                 // (appended after the outer states). The merged vector = outer states ++ [inner init].
                 let mut merged_states = states.clone();

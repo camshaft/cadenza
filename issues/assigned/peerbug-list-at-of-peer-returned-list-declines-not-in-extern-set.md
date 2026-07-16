@@ -115,3 +115,67 @@ or assert the consumer VALIDATES + imports both. Est. size: ~150-250 lines acros
 
 v-peer-linking owns the peer surface; the reclamation dup/drop seam (v-memory-safety) is NOT involved
 (confirmed 2026-07-16 — this is the extern-import/envelope path, distinct from List.at reclaim).
+
+## PRECISE INDEX-SHIFT DERIVATION (2026-07-16, v-peer-linking — turnkey for a dedicated build)
+The fused assembler `assemble_extern_runtime_resource` = `assemble_runtime_resource` with `p` peer ops
+prepended (single peer interface, `g=1`, first cut). Let `p = peer_fns.len()`, `k = imports.len()` (runtime
+ops incl. `drop`). Every runtime/resource index in `assemble_runtime_resource` shifts by `p` (core funcs)
+and the component-type/instance numbering gains the peer's slots. Concretely, relative to the current
+`assemble_runtime_resource`:
+
+CORE FUNCS: peer ops lowered → `0..p`; runtime ops lowered → `p..p+k` (were `0..k`); dtor `t-dtor` alias
+→ `p+k` (was `k`); `resource.new` → `p+k+1`, `resource.rep` → `p+k+2` (were `k+1`,`k+2`); program
+`make` → `p+k+3`, `t-encode` → `p+k+4`, `cabi_realloc` → `p+k+5` (were `k+3..k+5`).
+COMPONENT TYPES: peer instance-type → type 0; runtime import instance-type → type 1 (was 0); resource
+type `t` → type 2 (was 1); minted make tuple types → `3..3+shift`; `own<t>` → `3+shift` (was `2+shift`);
+make-ft → `4+shift`; borrow-ft/list/encode-ft → `5..7+shift` (each +1 vs today, +`shift`).
+COMPONENT INSTANCES: imported peer instance → comp instance 0; imported runtime instance → comp instance
+1 (was 0); the inner re-export instantiation → comp instance 2 (was 1) → the final `export_instance_item`
+references instance 2.
+CORE INSTANCES: peer core-instance (lowered peer ops under their op names) → core instance 0; dtor's
+`heap-dtor` source instance → 1; dtor instance → 2; `heap` export instance (runtime ops + resource
+intrinsics) → 3; program instance (module instantiated with `peer`=inst0 AND `heap`=inst3) → 4. (All +1..+2
+vs today; the program instantiation gains a second module-arg `PEER_MODULE`=core instance 0 alongside
+`HEAP_MODULE`=core instance 3.)
+CANON-LOWER: `p+k` lowers (peer ops `0..p` then runtime `p..p+k`), mirroring `assemble_extern_runtime`'s
+`op_alias_sec`/`lower_sec` (which already lays peer-then-runtime in this exact order — COPY that block).
+
+CORE MODULE: needs a new `serialize::runtime_resource_core_module` variant that imports BOTH `"peer"`
+(p ops) and `"heap"` (k ops + 2 intrinsics) — today it imports only `"heap"`. The program core's
+`CallExternImport(i)` resolves peer op `i` to imported func `i` (peer block first), and `CallImport`
+resolves runtime op to `p+i`; so `import_base = p + k + 2`. `emit_runtime_resource` must
+`collect_host_imports`→split peer ops into `extern_imports`→`layout.with_extern_order(...)`
++`with_import_base(p+k+2)` (mirror the main `emit` at mod.rs:581-660), and pass `peer_fns` (built like the
+main path's `extern_op_comp_functype`) to the new assembler.
+VALIDATION: build the smallest shape first — 1 peer op returning a `(Tuple Int64 Int64)`, main returns it
+raw → `emit_runtime_resource`. `wasm-tools validate` the consumer, then `run_with_peers` (expect the
+projected value). Add `emit_recursive_sum_resource` (Option/sum result) as a SECOND increment. Est. still
+~200 lines + a byte oracle; ~2-3 ticks; NOT green-partial-able (a wrong index = invalid component).
+
+## RESOLUTION SEAM CONFIRMED (2026-07-16, v-peer-linking — the last unknown, now closed)
+Traced how a peer op's call resolves inside the resource core module, the one piece that could have made
+the fusion intractable. It does NOT: `Lir::CallExternImport(index)` (serialize.rs:237) emits `call
+<index>` DIRECTLY, where `index` is the op's position in the extern set (`layout.extern_index`), and the
+serializer lays peer imports FIRST (`0..e`) by convention (X5 extern-first, mirrored by
+`core_module_impl` serialize.rs:610-656 which ALREADY threads extern_fns+host_fns+runtime in one fixed
+order). So the body-emit needs NO change — IF the resource core module lays peer imports at `0..e` and
+`emit_runtime_resource` calls `layout.with_extern_order(...)` so `extern_index` returns the right `0..e`.
+
+CONSEQUENCE — the fusion is purely MECHANICAL index arithmetic, no new body logic:
+- `runtime_resource_core_module_form_ex` (serialize.rs:1135): prepend `e` extern functypes/imports; runtime
+  ops shift `0..k` → `e..e+k`; `resource-new`/`resource-rep` → `e+k`/`e+k+1`; `defined_type_base` → `e+k+2`;
+  rebuild `import_index` so a runtime `CallImport` resolves to `e+i`; `import_base = e+k+2`.
+- The envelope `assemble_extern_runtime_resource`: COPY `assemble_extern_runtime`'s peer sections
+  (instance-type 0, import → comp inst 0, alias → comp funcs `0..e`, canon-lower → core funcs `0..e`, peer
+  core-instance) BEFORE `assemble_runtime_resource`'s runtime+resource sections, shifting each `k+N` core
+  func by `e`, each comp type by 1 (+`shift`), each comp instance by 1, and threading `PEER_MODULE`=peer
+  core-instance into the program instantiation alongside `HEAP_MODULE`.
+- `emit_runtime_resource` (mod.rs:1864): `collect_host_imports`→split peer ops into `extern_imports`
+  (mirror mod.rs:581-600)→`layout.with_extern_order(...)`→pass `peer_fns` (built via `extern_op_comp_functype`)
+  to the new assembler; same for `emit_recursive_sum_resource` (Option/sum result, increment 2).
+
+DE-RISKED: the CORE-MODULE layer already supports extern+runtime (`core_module_impl`); the resource core
+is the only builder lacking it, and the gap is index math, not new control flow. Est. holds at ~200 lines
++ one byte oracle across 2-3 ticks; STILL not green-partial-able (a wrong shift = invalid component, no
+intermediate lands). Build smallest-first: 1 peer op → `(Tuple Int64 Int64)` result, `wasm-tools validate`
++ `run_with_peers` each step.

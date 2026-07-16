@@ -1610,3 +1610,50 @@
               (def (main) (classify (String.concat "x" "y")))
               (export main)))
   (output (: 0 Int64)))
+
+; --- Runtime string patterns: the order, boundary, and composition faces ----------------------------
+; 155cfa329 emits string-literal match arms by content (value-eq); its pins cover dispatch +
+; wildcard fall-through. These pin the semantics a probe-chain desugar could scramble, promoted
+; from passing breaker probes.
+
+(case "first-match-wins holds with a duplicate string-literal arm"
+  (doc    "`(match s (\"e\" 40) (\"k5\" 50) (\"e\" 99) (_ -1))` on a runtime \"e\" → 40 — the FIRST
+           duplicate wins and the later one is dead (the string analogue of the scalar
+           duplicate-literal order pins; a chain built from a keyed set instead of source order
+           answers 99 or nondeterministically).")
+  (input  (do (def (classify (: s String)) (match s ("e" 40) ("k5" 50) ("e" 99) (_ -1)))
+              (def (main) (classify (String.concat "e" "")))
+              (export main)))
+  (output (: 40 Int64)))
+
+(case "the empty string is a matchable literal"
+  (doc    "`(\"\" 10)` matches a runtime-built empty string (concat of two empties) → 10. The
+           zero-length boundary of the content compare (a probe that tests a first byte before the
+           length check reads out of bounds or falls through).")
+  (input  (do (def (classify (: s String)) (match s ("" 10) ("x" 20) (_ -1)))
+              (def (main) (classify (String.concat "" "")))
+              (export main)))
+  (output (: 10 Int64)))
+
+(case "a prefix literal does not shadow a longer string arm"
+  (doc    "Arms `\"ab\"` then `\"abc\"` on a runtime \"abc\": content equality is whole-string (length
+           + bytes), so the prefix arm does NOT match and the exact arm fires → 2. A prefix-compare
+           probe (memcmp without the length gate) answers 1.")
+  (input  (do (def (classify (: s String)) (match s ("ab" 1) ("abc" 2) (_ -1)))
+              (def (main) (classify (String.concat "ab" "c")))
+              (export main)))
+  (output (: 2 Int64)))
+
+(case "a guard composes with a string-literal arm"
+  (doc    "`((guard \"ab\" (> k 3)) 1) (\"ab\" 2)` — the SAME literal guarded then bare: k = 5 passes
+           the guard → 1; k = 1 fails and falls to the bare twin → 2. Pins guard fall-through
+           through the string content-probe chain (the desugar must AND the guard onto the first
+           probe without consuming the literal for the second).")
+  (input  (do (def (classify (: s String) (: k Int64))
+                (match s ((guard "ab" (> k 3)) 1) ("ab" 2) (_ -1)))
+              (def (main (: k Int64)) (classify (String.concat "a" "b") k))
+              (export main)))
+  (call   main (: 5 Int64))
+  (output (: 1 Int64))
+  (call   main (: 1 Int64))
+  (output (: 2 Int64)))

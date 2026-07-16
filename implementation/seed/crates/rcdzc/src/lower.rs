@@ -6389,6 +6389,21 @@ fn fold_sum_path(db: &mut Db, root: StructId, steps: &[crate::core::PathStep]) -
             ty = (**inner).clone();
             continue;
         }
+        // A `Payload` step over a MULTI-payload `SumNew` is a no-op landing on the payload TUPLE; the
+        // following `Elem(i)` indexes `payloads[i]` (the `(Elem, SumNew)` arm below) — mirrors the runtime
+        // `sum-payload` + `arr-get i`. Without it a constant multi-payload variant match (`(match (Mk 3 4)
+        // ((Mk a b) …))`) never folded (fell to `None`, emitted a runtime build+disc-walk), and the wasm
+        // `const_disc_at` twin lost the disc → wrong-payload-depth (Copilot PR#457). Single-payload is
+        // `[Payload]` with no following `Elem`, so it still unwraps in the arm below.
+        if matches!(step, PathStep::Payload)
+            && let Core::SumNew { payloads, .. } = core_of(db, cur)
+            && payloads.len() > 1
+        {
+            // Keep `cur` at the SumNew; re-sync the type cursor to the entered variant's payload tuple so a
+            // following `Elem` step's type is correct.
+            ty = crate::infer::type_of(db, cur);
+            continue;
+        }
         cur = match (step, core_of(db, cur)) {
             (PathStep::Payload, Core::SumNew { payloads, .. }) if payloads.len() == 1 => {
                 payloads[0]
@@ -6397,6 +6412,14 @@ fn fold_sum_path(db: &mut Db, root: StructId, steps: &[crate::core::PathStep]) -
             // A list-pattern element binder reads position `i` of a CONSTANT list — the same `Elem` step a
             // tuple element uses, over a `Core::ListNew`. A runtime list has no `Core::ListNew` here.
             (PathStep::Elem(i), Core::ListNew { elems }) => *elems.get(*i)?,
+            // A MULTI-payload variant's payloads: after the `Payload` no-op above, `cur` is the `SumNew` and
+            // `Elem(i)` selects the i-th payload — the constant twin of `sum-payload` + `arr-get i`.
+            (
+                PathStep::Elem(i),
+                Core::SumNew {
+                    payloads: elems, ..
+                },
+            ) => *elems.get(*i)?,
             // A list-pattern REST binder over a CONSTANT list folds to a fresh `Core::ListNew` of the tail
             // elements (from index `k`) — a synthesized node so the tail sublist is itself constant.
             (PathStep::RestFrom(k), Core::ListNew { elems }) => {
@@ -7669,6 +7692,21 @@ fn pattern_constraints(
     } = ty
     {
         if crate::eval::variant_owner_decl(db, head) != Some(*scrut_decl) {
+            // A WITHHELD constructor (`C.A` where `C`'s handle is imported but its ctor `A` is not exported
+            // to this file) has its member-fold poison carry the precise CDZ0214 "constructor is withheld"
+            // code — the SAME diagnostic a MULTI-variant match (the `variant_disc_of`-miss path below) and a
+            // CONSTRUCTION site emit. A single-variant sum NEWTYPE-ERASES to `Ty::Nominal`, so its withheld
+            // match reaches HERE (not the `Ty::Sum` path), where the bare `variant_owner_decl != scrut_decl`
+            // check reported the generic CDZ0203 "not a variant of the matched type" instead of the
+            // actionable withheld-ctor CDZ0214 (v-verification: exactly the HOL-kernel `Thm`/`Term` newtype
+            // shape). Propagate the head's coded poison FIRST (the newtype twin of the Sum branch's
+            // `core_of(head)` propagation), so a withheld single-variant ctor match names the real cause;
+            // fall to the generic CDZ0203 only when the head has no coded poison (a genuine other-type ctor).
+            if let Core::Poison(reject) = core_of(db, head)
+                && reject.code.is_some()
+            {
+                return Err(enrich_pattern_head_suggestion(db, head, ty, reject));
+            }
             // The pattern names a variant of a DIFFERENT type than the newtype scrutinee. Enrich with the
             // same "did you mean?" / closest-variants suggestion the boxed-sum path gets (the scrutinee's
             // own — single — variant is the candidate the author likely reached for), carrying a replace
@@ -9078,6 +9116,14 @@ fn const_at_path(db: &mut Db, scrutinee: StructId, path: &[crate::core::PathStep
         if matches!(step, PathStep::Payload) && crate::infer::type_is_nominal(db, cur) {
             continue;
         }
+        // A `Payload` over a MULTI-payload `SumNew` is a no-op landing on the payload tuple; the following
+        // `Elem(i)` indexes `payloads[i]` (see `fold_sum_path`/`const_disc_at` — Copilot PR#457).
+        if matches!(step, PathStep::Payload)
+            && let Core::SumNew { payloads, .. } = core_of(db, cur)
+            && payloads.len() > 1
+        {
+            continue;
+        }
         cur = match (step, core_of(db, cur)) {
             (PathStep::Payload, Core::SumNew { payloads, .. }) if payloads.len() == 1 => {
                 payloads[0]
@@ -9086,6 +9132,13 @@ fn const_at_path(db: &mut Db, scrutinee: StructId, path: &[crate::core::PathStep
             // A list-pattern element binder reads position `i` of a CONSTANT list — the same `Elem` step a
             // tuple element uses, over a `Core::ListNew`. A runtime list has no `Core::ListNew` here.
             (PathStep::Elem(i), Core::ListNew { elems }) => *elems.get(*i)?,
+            // A MULTI-payload variant's payloads: `Elem(i)` after the `Payload` no-op selects payload `i`.
+            (
+                PathStep::Elem(i),
+                Core::SumNew {
+                    payloads: elems, ..
+                },
+            ) => *elems.get(*i)?,
             // A list-pattern REST binder over a CONSTANT list folds to a fresh `Core::ListNew` of the tail
             // elements (from index `k`) — a synthesized node so the tail sublist is itself constant.
             (PathStep::RestFrom(k), Core::ListNew { elems }) => {
@@ -10023,13 +10076,22 @@ fn emit_call_or_specialize(db: &mut Db, head: StructId, callee: usize, args: &[S
                 let message = if callee_has_const {
                     "an argument to a `const` parameter must be compile-time-known — it depends on runtime data"
                 } else {
-                    // The recursive-generic (producer) case: name the real cause + the workarounds an
-                    // author can act on now (the tie fix is a tracked inference follow-up).
-                    "this generic function's type variable is undetermined at this call — a recursive-generic \
-                     function whose RESULT type is not tied to its argument (e.g. a producer `List a -> Iter a` \
-                     whose element type is only inferred) cannot be monomorphized at more than one type in one \
-                     program. Use it at a single element type, annotate the result type, or make the type \
-                     concrete (a monomorphic definition)"
+                    // The recursive-generic case: a type variable in the callee's scheme is not tied to any
+                    // argument, so the monomorphizer has no concrete type to bind it to at this call. TWO
+                    // known shapes hit this (both tracked inference follow-ups): a PRODUCER whose RESULT
+                    // element is inferred free of its argument (`List a -> Iter a` used at ≥2 element types),
+                    // and a recursive TRANSFORMER threading a CLOSURE whose parameter type is not tied to the
+                    // element it maps (`(map it f) = Cons (f h) (map rest f)` — the scheme leaves `f`'s
+                    // domain a free variable, so it declines even at a SINGLE element type). Name the real
+                    // cause + the workarounds an author can act on now; do NOT claim "more than one type"
+                    // (the closure case fails at one), and do NOT blame `const` (this callee declares none).
+                    "this generic function has a type variable this call cannot determine — a recursive-generic \
+                     function whose scheme leaves a type variable untied to any argument cannot be \
+                     monomorphized here. This happens with a PRODUCER whose result element is inferred free of \
+                     its argument (`List a -> Iter a` used at more than one element type) and with a recursive \
+                     TRANSFORMER threading a closure whose parameter type is not tied to the element it maps \
+                     (declines even at a single element type). Annotate the result or the closure's parameter \
+                     type, use a single concrete element type, or make the definition monomorphic"
                 };
                 Core::Poison(Reject::coded(Code::Malformed, message))
             }
@@ -19054,11 +19116,12 @@ fn lower_record_merge(db: &mut Db, id: StructId, a: StructId, b: StructId) -> Co
     }
 }
 
-/// Lower `(Record.extend r (z v))` / `(Record.with r (z v))` — INSERT field `z ↦ v` into a constant
+/// Lower `(Record.extend r #z v)` / `(Record.with r #z v)` — INSERT field `z ↦ v` into a constant
 /// `Core::Record` (extend adds an absent field, with replaces a present one; the presence/absence
-/// CDZ0211/0212 is `infer`'s, so the fold is one insert for both). The `(z v)` pair's value occurrence
-/// carries into the new field. A poison operand propagates; a non-constant/non-record operand, or a
-/// malformed pair, declines/rejects.
+/// CDZ0211/0212 is `infer`'s, so the fold is one insert for both). Three operands
+/// (DESIGN-record-update-syntax.md): the record, a `#z` field LABEL (`label_node`, read statically by
+/// `read_label`), and the value `v` (its value occurrence carries into the new field). A poison operand
+/// propagates; a non-constant/non-record operand, or a malformed `#field` label, declines/rejects.
 fn lower_record_insert(
     db: &mut Db,
     id: StructId,

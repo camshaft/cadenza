@@ -564,6 +564,56 @@ fn run_build(args: &BuildArgs) -> ExitCode {
     )
 }
 
+/// Compile a project's `specs` (entry-first) into the wasm COMPONENT BYTES in-memory — the quiet build
+/// `cdz run <project>` uses. Unlike [`compile_source_specs`] (which writes the artifact to a file and
+/// prints `cdz: wrote <path>`), this returns the component bytes with NO file + NO notice, so a project
+/// run doesn't leak its internal temp-artifact path to stderr (`cargo run` doesn't announce where it put
+/// the binary). Diagnostics are still reported on failure. `Err` = a load/compile failure (already
+/// printed); `Ok(None)` = compiled but produced no `component` artifact (e.g. a diagnostic-only run).
+fn compile_project_component_bytes(
+    specs: &[String],
+    entry: &str,
+    opt_level: rcdzc::OptLevel,
+) -> Result<Option<Vec<u8>>, ()> {
+    let mut inputs: Vec<rcdzc::Artifact> = Vec::new();
+    for spec in specs {
+        let (source, arenas, spantable) = match load_program_spanned(spec) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("{PROG}: {e}");
+                return Err(());
+            }
+        };
+        let name = program_name(spec);
+        inputs.push(rcdzc::Artifact::new(
+            rcdzc::Artifact::KIND_AST,
+            name.clone(),
+            cadenza_syntax::codec::encode(&arenas),
+        ));
+        let span_data = span_data_of(spec, &source, &spantable);
+        inputs.push(rcdzc::Artifact::new(
+            rcdzc::spans::KIND_SPANS,
+            name,
+            rcdzc::spans::encode(&span_data),
+        ));
+    }
+    inputs.push(compiler_cli::entry_artifact(entry));
+    // Compile on the compiler-stack worker (deep-recursion guard), same as `check_one`/`run_prepared`.
+    let out = rcdzc::run_with_compiler_stack(|| {
+        rcdzc::compile_with_opt(&inputs, &[rcdzc::Target::Wasm], opt_level)
+    });
+    if out.has_error() {
+        report_errors(&out);
+        return Err(());
+    }
+    // The produced WebAssembly component is the artifact of `kind == "component"`.
+    Ok(out
+        .artifacts
+        .into_iter()
+        .find(|a| a.kind == "component")
+        .map(|a| a.bytes))
+}
+
 /// Is `cdz run`'s `component` argument a PROJECT (rather than a pre-built component)? True when it is
 /// OMITTED (a bare `cdz run` → build+run the nearest `Project.cdz` upward, like `cargo run`), or names a
 /// `Project.cdz` (the file itself) or a DIRECTORY — the forms `cdz build`/`cdz test` treat as a project.
@@ -577,9 +627,10 @@ fn run_target_is_project(component: Option<&std::path::Path>) -> bool {
 
 /// `cdz run <project>` — BUILD the project's manifest entry, then RUN the produced component (the `cargo
 /// run` analogue). Resolves the same `Project.cdz` as `cdz build` (via [`resolve_project_specs`]),
-/// compiles the entry (+ modules) to a temp `.wasm` in the manifest dir, then delegates to the same
-/// `cdz-run` code path the direct `cdz run <file>` uses — passing through `--call`/`--arg`/`--store`/
-/// `--host-response`/`--peer` unchanged. The temp component is removed after the run.
+/// compiles the entry (+ modules) to component bytes IN-MEMORY (quiet — no `cdz: wrote …` notice, so a
+/// project run doesn't leak its internal temp path), writes them to a temp `.wasm` in the manifest dir for
+/// the runner, then delegates to the same `cdz-run` code path the direct `cdz run <file>` uses — passing
+/// through `--call`/`--arg`/`--store`/`--host-response`/`--peer` unchanged. The temp is removed after.
 fn run_project(args: &cdz_run::cli::RunArgs) -> ExitCode {
     // The project target: the given `Project.cdz`/directory, or `None` (a bare `cdz run`) → an upward
     // search from the cwd, exactly as `resolve_project_specs` handles a `None` argument.
@@ -606,8 +657,26 @@ fn run_project(args: &cdz_run::cli::RunArgs) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    // Compile the entry (+ modules) into a temp component beside the manifest. Use a pid-stamped name in
-    // the manifest dir so concurrent runs don't collide and the artifact is written where sources resolve.
+    // Build the component IN-MEMORY (quiet — no `cdz: wrote <path>` notice; `cargo run` doesn't announce
+    // where it put the binary, and the temp path is an internal detail). On a build failure the diagnostics
+    // are already reported.
+    let bytes = match compile_project_component_bytes(
+        &project.specs,
+        &project.entry_name,
+        opt_level,
+    ) {
+        Ok(Some(b)) => b,
+        Ok(None) => {
+            eprintln!(
+                "{PROG}: the project built no runnable component (entry `{}` produced no component output)",
+                project.entry_name
+            );
+            return ExitCode::FAILURE;
+        }
+        Err(()) => return ExitCode::FAILURE,
+    };
+    // The runner needs a component to instantiate; write the bytes to a temp file beside the manifest
+    // (pid-stamped so concurrent runs don't collide), run it, then remove it. The write itself is silent.
     let out_dir = project
         .mpath
         .parent()
@@ -618,16 +687,9 @@ fn run_project(args: &cdz_run::cli::RunArgs) -> ExitCode {
         project.entry_name,
         std::process::id()
     ));
-    let build_code = compile_source_specs(
-        &project.specs,
-        Some(&project.entry_name),
-        Some(out_wasm.clone()),
-        &[rcdzc::Target::Wasm],
-        opt_level,
-    );
-    if build_code != ExitCode::SUCCESS {
-        let _ = std::fs::remove_file(&out_wasm);
-        return build_code;
+    if let Err(e) = std::fs::write(&out_wasm, &bytes) {
+        eprintln!("{PROG}: writing {}: {e}", out_wasm.display());
+        return ExitCode::FAILURE;
     }
     // Run the freshly-built component through the SAME `cdz-run` path as a direct `cdz run <file>`: clone
     // the parsed args, but point `component` at the built wasm (the other flags pass through unchanged).

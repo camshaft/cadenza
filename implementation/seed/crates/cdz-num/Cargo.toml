@@ -1,0 +1,22 @@
+# cdz-num — the Cadenza bignum for the RUST BACKEND (Rational/Quantity wrappers later).
+#
+# `Big` is NOT re-implemented here: src/lib.rs `include!`s cdz-runtime/src/bigint.rs VERBATIM, so the
+# rust backend and the wasm runtime share ONE source. The crate is a plain `rlib` in the native
+# workspace (like cdz-rt) so the corpus gate links it via `rustc --extern`. Crucially it is a SEPARATE
+# crate from cdz-runtime — it is NOT a dependency of cdz-runtime — so it never enters the runtime's
+# cross-crate-LTO set (that split is what broke the frozen-hash reproducibility in #459); cdz-runtime
+# keeps bigint.rs as its own module and its wasm hash is unaffected.
+[package]
+name = "cdz-num"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["rlib"]
+
+[dev-dependencies]
+# The differential oracle for the included limb library — the `#[cfg(test)] mod tests` inside bigint.rs
+# compares `Big` against num-bigint. Native tests only; not a build dependency.
+num-bigint = "0.4"
+num-traits = "0.2"

@@ -5268,6 +5268,19 @@ fn const_disc_at(db: &mut Db, scrutinee: StructId, path: &[crate::core::PathStep
         {
             continue;
         }
+        // A `Payload` step over a MULTI-payload `SumNew` is a NO-OP that lands on the payload TUPLE — the
+        // following `Elem(i)` then indexes `payloads[i]` (the `(Elem, SumNew)` arm below). This mirrors the
+        // RUNTIME walk (`sum-payload` yields the payload array, `arr-get i` indexes it). Without this a path
+        // into a multi-payload variant's payload (`Payload` THEN `Elem`) hit the single-payload `len == 1`
+        // guard, fell through to `None`, LOST the constant discriminant, and the caller defaulted to variant
+        // 0 → a wrong-payload-depth miscompile (Copilot PR#457). A single-payload variant's path is just
+        // `[Payload]` (no following `Elem`), so it still unwraps to `payloads[0]` in the arm below.
+        if matches!(step, crate::core::PathStep::Payload)
+            && let Core::SumNew { payloads, .. } = core_of(db, cur)
+            && payloads.len() > 1
+        {
+            continue;
+        }
         cur = match (step, core_of(db, cur)) {
             (crate::core::PathStep::Payload, Core::SumNew { payloads, .. })
                 if payloads.len() == 1 =>
@@ -5275,7 +5288,10 @@ fn const_disc_at(db: &mut Db, scrutinee: StructId, path: &[crate::core::PathStep
                 payloads[0]
             }
             (crate::core::PathStep::Elem(i), Core::Tuple { elems })
-            | (crate::core::PathStep::Elem(i), Core::ListNew { elems }) => *elems.get(*i)?,
+            | (crate::core::PathStep::Elem(i), Core::ListNew { elems })
+            // A multi-payload variant's payloads: after the `Payload` no-op above, `cur` is the `SumNew`
+            // and `Elem(i)` selects the i-th payload — the constant twin of `sum-payload` + `arr-get i`.
+            | (crate::core::PathStep::Elem(i), Core::SumNew { payloads: elems, .. }) => *elems.get(*i)?,
             _ => return None,
         };
     }

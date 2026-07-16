@@ -2798,6 +2798,53 @@ fn a_multi_use_constant_tuple_folds_away_with_no_heap() {
     assert_eq!(run_returns::<i64>(&bytes, "main"), 30);
 }
 
+/// MISCOMPILE (Copilot PR#457): a CONSTANT MULTI-payload variant match reaching a payload past the first —
+/// `(match (Mk 7 (IB 42)) ((Mk a (IB y)) …))` — lost its discriminant. The path into a multi-payload
+/// variant's payload is `Payload` THEN `Elem(i)`, but the constant-fold walkers (`fold_sum_path`/
+/// `const_at_path`/`const_disc_at`) had no `(Elem, SumNew{payloads})` arm — only single-payload unwrap and
+/// `(Elem, Tuple|ListNew)`. So the constant match never folded (built a runtime disc-walk) and the wasm
+/// backend defaulted to variant 0, reading the nested payload at the WRONG depth. With the fix — `Payload`
+/// over a multi-payload `SumNew` is a no-op landing on the payload tuple, `Elem(i)` selects `payloads[i]` —
+/// the whole match FOLDS to a constant (no heap runtime), proving both the payload position and the nested
+/// variant discriminant resolve correctly.
+#[test]
+fn a_constant_multi_payload_variant_match_folds_at_the_right_depth() {
+    use crate::testkit::parse;
+    let fold = |src: &str| -> i64 {
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        // Folds to a scalar — NO value-heap runtime imported (a runtime disc-walk would import one).
+        assert!(
+            cdz_run::required_runtime(&bytes).expect("valid").is_none(),
+            "a constant multi-payload variant match must fold, importing no runtime op"
+        );
+        run_returns::<i64>(&bytes, "main")
+    };
+    // 2nd payload is a NESTED sum; the IB arm reads `7*100 + 42` = 742. (Before the fix: wrong depth.)
+    assert_eq!(
+        fold(
+            "(module m (type Inner (IA Int64) (IB Int64)) (type T (Mk Int64 Inner) (Other Int64)) \
+             (def (main) (match (Mk 7 (IB 42)) ((Mk a (IA x)) (+ a x)) ((Mk a (IB y)) (+ (* a 100) y)) ((Other z) z))) (export main))"
+        ),
+        742
+    );
+    // The IA nested variant + the 1st payload position: `7 + 42` = 49.
+    assert_eq!(
+        fold(
+            "(module m (type Inner (IA Int64) (IB Int64)) (type T (Mk Int64 Inner) (Other Int64)) \
+             (def (main) (match (Mk 7 (IA 42)) ((Mk a (IA x)) (+ a x)) ((Mk a (IB y)) (+ (* a 100) y)) ((Other z) z))) (export main))"
+        ),
+        49
+    );
+    // A plain multi-payload variant (no nesting) reaching each of its two payloads.
+    assert_eq!(
+        fold(
+            "(module m (type T (Mk Int64 Int64) (Other Int64)) \
+             (def (main) (match (Mk 3 4) ((Mk a b) (+ (* a 10) b)) ((Other x) x))) (export main))"
+        ),
+        34
+    );
+}
+
 /// The routing pin: a projection-only tuple LITERAL folds whether or not its elements are runtime —
 /// what a projection reads is the element's own computation, not a heap cell. `(let ((t (tuple 10 a)))
 /// (+ (. t 0) (. t 1)))` folds to `(+ 10 a)`: no heap, no runtime import, even though `a` is a runtime
@@ -5577,6 +5624,34 @@ fn a_selfcall_gated_in_an_if_condition_declines_not_hoisted() {
             "the decline must be clean (no leaked internal name, no orphan bodyless spec), got: {}",
             err.message
         );
+    }
+}
+
+/// A NESTED inner handler whose arm RE-THREADS its own bound state — `(step (a) s (resume a s))`, the
+/// resume's next-state is the state BINDER `s`, not a fresh value — under a merged nested context must
+/// FOLD, not decline. `type_of` of a bare state binder alone is `Any` (its type is the seed's), so the
+/// merged path once derived the inner slot's type from the arms' next-states ALONE, got `Any`, and DECLINED
+/// the merge — while the SAME handler standalone folded (single-handler `reduce_handle` seeds the slot type
+/// from the init via `state_ty_of_arms`). `merged_nested_ctx` now seeds identically from the inner `init`,
+/// so a stateful inner handler re-threading `s` folds. `loop 3 0` performing `Tools.step` (hands back the
+/// accumulator each turn) under nested `Model`/`Tools` → 3+2+1 = 6. (Reported by v-agent-harness Inc-2.)
+#[test]
+fn a_nested_inner_handler_rethreading_its_state_folds() {
+    use crate::testkit::parse;
+    let src = "(do \
+        (effect Model (op ask (-> Int64 Int64))) \
+        (effect Tools (op step (-> Int64 Int64)) (op stop (-> Int64 Int64))) \
+        (def (loop (: i Int64) (: acc Int64)) \
+          (if (= (Model.ask i) 0) (Tools.stop acc) (loop (- i 1) (Tools.step (+ acc i))))) \
+        (def (main) \
+          (handle Model 0 ((ask (q) s (resume q q))) \
+            (handle Tools 0 ((step (a) s (resume a s)) (stop (a) s (resume a s))) \
+              (loop 3 0)))) (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect(
+        "a nested inner handler re-threading its bound state folds (merged-context init seed)",
+    );
+    if let Some(v) = run_linked(&bytes, "main") {
+        assert_eq!(v, "6");
     }
 }
 
@@ -16001,6 +16076,43 @@ mod match_engine {
                 d.fix.is_none(),
                 "a malformed ctor-export offers no bogus `.` fix: {:?}",
                 d.fix
+            );
+        }
+    }
+
+    #[test]
+    fn a_bare_declaration_keyword_form_declares_nothing_is_rejected() {
+        // A bare zero-operand declaration form — `(def)` / `(type)` / `(effect)` — declares nothing (no
+        // name, no body/variants/ops) and was SILENTLY ACCEPTED (it registers no Def/TypeDecl/EffectDecl,
+        // so the per-declaration walks never see it, and `unknown_top_forms` skips it — its head IS a known
+        // keyword). The `(export)` empty case has its own reject; this is the def/type/effect sibling.
+        for (src, kw) in [
+            ("(module m (def) (def (main) 0) (export main))", "def"),
+            ("(module m (type) (def (main) 0) (export main))", "type"),
+            ("(module m (effect) (def (main) 0) (export main))", "effect"),
+        ] {
+            let d = crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.message.contains("declares nothing"))
+                .unwrap_or_else(|| panic!("a bare `({kw})` must be rejected: {src}"));
+            assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+            assert!(
+                d.message.contains(&format!("`({kw})`")),
+                "the message names the bare form `({kw})`: {}",
+                d.message
+            );
+        }
+        // NO false positive: a well-formed def / type / effect declares something and is not flagged.
+        for ok in [
+            "(module m (def answer 42) (def (main) answer) (export main))",
+            "(module m (type C (A) (B)) (def (f (: c C)) 0) (export f))",
+            "(module m (effect E (op get (-> Int64))) (def (main) 0) (export main))",
+        ] {
+            assert!(
+                !crate::diagnostics(&mut crate::db::Db::load(parse(ok)))
+                    .iter()
+                    .any(|d| d.message.contains("declares nothing")),
+                "a well-formed declaration is not flagged: {ok}"
             );
         }
     }
@@ -69324,6 +69436,89 @@ mod cross_component_oracle {
             cdz_run::Outcome::Trap(t) => {
                 panic!("reused string-arg run trapped (use-after-free?): {t}")
             }
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // PL35 — a peer op's COMPOUND RESULT escapes the entrypoint (the resource-escape × peer-extern envelope
+    // FUSION, task #6). PL18/PL19/PL23 read a peer's compound INTO A SCALAR (len/element/lookup); this pins
+    // the case that used to DECLINE — `main` RETURNS the raw tuple the peer produced, so the entrypoint's
+    // OWN result escapes as a runtime resource AND a peer op is reached in that body. That needs a component
+    // that BOTH imports the peer interface AND publishes the resource — neither `assemble_runtime_resource`
+    // (runtime only) nor `assemble_extern_runtime` (no resource) did both; the fused
+    // `assemble_extern_runtime_resource` + the peer-aware `runtime_resource_core_module_form_ex2` compose
+    // them (peer instance 0, runtime instance 1, core funcs peer `0..p` / runtime `p..p+k` / resource
+    // intrinsics after). Provider `mkpair(x) = (x, x+1)`; main(9) returns mkpair(9) = (9,10), escaping to
+    // the host as the value form `(: (tuple 9 10) (Tuple Int64 Int64))`. Flips the PL33 decline to a run.
+    // ------------------------------------------------------------------------------------------------
+    #[test]
+    fn a_peer_compound_result_escapes_the_entrypoint_via_the_fused_envelope() {
+        use crate::backend::wasm::runtime_abi::{REQUIRED_RUNTIME_HASH, RUNTIME_IFACE};
+        use crate::testkit::parse;
+        let import_name = format!("{RUNTIME_IFACE}@0.0.0+{REQUIRED_RUNTIME_HASH}");
+        // PROVIDER: mkpair(x) builds a runtime tuple (x, x+1).
+        let provider = compile_provider(
+            "(do (def (mkpair (: x Int64)) (tuple x (+ x 1))) (export mkpair))",
+            "cadenza:p/api",
+        );
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&provider)
+                .expect("the compound-result provider validates");
+        }
+        // CONSUMER: main RETURNS the raw tuple the peer produced — the entrypoint result escapes as a
+        // resource while a peer op is reached in the body (the fused envelope's shape).
+        let src = "(do \
+            (effect P (op mkpair (-> Int64 (Tuple Int64 Int64)))) \
+            (bind P \"cadenza:p/api\") \
+            (def (main (: x Int64)) (host (P) (P.mkpair x))) \
+            (export main))";
+        let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .unwrap_or_else(|d| {
+                panic!(
+                    "fused peer-compound-result consumer compiles: {} [{:?}]",
+                    d.message, d.code
+                )
+            });
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&consumer)
+                .expect("the fused peer+resource consumer validates");
+        }
+        // The fused component imports BOTH the peer interface AND the value-heap runtime.
+        let text = String::from_utf8_lossy(&consumer);
+        assert!(
+            text.contains("cadenza:p/api"),
+            "the fused consumer imports the peer interface"
+        );
+        assert!(
+            text.contains(&import_name),
+            "the fused consumer imports the value-heap runtime (it publishes the escaped compound)"
+        );
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("[PL35] runtime wasm not found; skipping");
+            return;
+        };
+        let peers = vec![cdz_run::Peer {
+            bytes: provider,
+            interface: "cadenza:p/api".to_string(),
+        }];
+        let opts = cdz_run::RunOpts {
+            export: None, // a resource-escape program exports no bare func — the host takes the escape path
+            args: vec!["9".to_string()],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run_with_peers(&consumer, &peers, &opts)
+            .expect("a peer compound result escapes the entrypoint via the fused envelope")
+        {
+            // main(9) returned the peer's (9,10); it escaped to the host as the canonical value form.
+            cdz_run::Outcome::Value(s) => assert_eq!(
+                s, "(: (tuple 9 10) (Tuple Int64 Int64))",
+                "the peer-produced tuple escapes the entrypoint as a resource and decodes to its value form"
+            ),
+            cdz_run::Outcome::Trap(t) => panic!("fused peer-compound-result run trapped: {t}"),
         }
     }
 
