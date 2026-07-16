@@ -64,19 +64,19 @@ def let-count(e: Ex) = match e with
 def dl-drops-dead() =
   // let x = 5 in 3 → x unused → dropped → Num 3 (no Let).
   let e = Ex.Let("x", Ex.Num(5), Ex.Num(3)) in
-  if is-let(dle(e)) then trap("dead let dropped") else (if eval(dle(e)) == 3 then unit else trap("value 3 preserved"))
+  if is-let(dle(e)) then trap("dead let was NOT dropped") else (if eval(dle(e)) == 3 then unit else trap("value 3 not preserved"))
 
 @test
 def dl-keeps-used() =
   // let x = 5 in x + 1 → x used → kept, value 6.
   let e = Ex.Let("x", Ex.Num(5), Ex.Add(Ex.Var("x"), Ex.Num(1))) in
-  if is-let(dle(e)) then (if eval(dle(e)) == 6 then unit else trap("value 6")) else trap("used let kept")
+  if is-let(dle(e)) then (if eval(dle(e)) == 6 then unit else trap("value 6 not preserved")) else trap("used let was WRONGLY dropped")
 
 @test
 def dl-preserves-value() =
   // Meaning preserved for a mixed expr: let a = 2 in let b = 99 in a + 3  (b dead) → 5.
   let e = Ex.Let("a", Ex.Num(2), Ex.Let("b", Ex.Num(99), Ex.Add(Ex.Var("a"), Ex.Num(3)))) in
-  if eval(dle(e)) == eval(e) then (if eval(dle(e)) == 5 then unit else trap("value 5")) else trap("meaning preserved")
+  if eval(dle(e)) == eval(e) then (if eval(dle(e)) == 5 then unit else trap("value 5 not preserved")) else trap("meaning NOT preserved")
 
 @test
 def dl-drops-only-dead-of-two() =
@@ -88,14 +88,14 @@ def dl-drops-only-dead-of-two() =
 def dl-drops-all-dead() =
   // let a=1 in let b=2 in let c=3 in 7  — all dead → collapse to Num 7 (0 Lets).
   let e = Ex.Let("a", Ex.Num(1), Ex.Let("b", Ex.Num(2), Ex.Let("c", Ex.Num(3), Ex.Num(7)))) in
-  if let-count(dle(e)) == 0 then (if eval(dle(e)) == 7 then unit else trap("value 7")) else trap("all dead lets dropped")
+  if let-count(dle(e)) == 0 then (if eval(dle(e)) == 7 then unit else trap("value 7 not preserved")) else trap("not all dead lets were dropped")
 
 @test
 def dl-shadowing-outer-dead() =
   // let x = 1 in let x = 2 in x → the OUTER x is shadowed (not used in its body past the inner rebind),
   // so it is DEAD and dropped; the inner x is used → one Let survives, value 2.
   let e = Ex.Let("x", Ex.Num(1), Ex.Let("x", Ex.Num(2), Ex.Var("x"))) in
-  if let-count(dle(e)) == 1 then (if eval(dle(e)) == 2 then unit else trap("value 2")) else trap("shadowed outer x is dead")
+  if let-count(dle(e)) == 1 then (if eval(dle(e)) == 2 then unit else trap("value 2 not preserved")) else trap("shadowed outer x was NOT eliminated (wrong let-count)")
 
 @test
 def dl-use-in-rhs-counts() =
@@ -119,6 +119,6 @@ def dl-no-let-unchanged() =
 @test
 def dl-idempotent() =
   let e = Ex.Let("a", Ex.Num(2), Ex.Let("b", Ex.Num(99), Ex.Add(Ex.Var("a"), Ex.Num(3)))) in
-  if let-count(dle(e)) == let-count(dle(dle(e))) then unit else trap("dle is idempotent")
+  if let-count(dle(e)) == let-count(dle(dle(e))) then unit else trap("dle is NOT idempotent")
 
 export { dle, eval, occurs }
