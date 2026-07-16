@@ -33756,7 +33756,9 @@ mod match_engine {
         // unknown name resolved to nothing and `A` was mis-typed as NULLARY, its payload dropped). Now the
         // declaration-site check rejects it CDZ0101, the same as an unknown type in a param/value
         // annotation. Nested in a `(List …)`/`(Tuple …)`, INSIDE a record field, and a record nested in a
-        // tuple are all caught (the record-aware position walk validates each field's type).
+        // tuple are all caught (the record-aware position walk validates each field's type). The message
+        // now NAMES the missing type ("unknown type `Nonesuch` — … declare it with `(type Nonesuch …)`")
+        // rather than the terse "unbound name", matching the annotation sites (`unknown_type_reject`).
         for src in [
             "(module m (type C (A Nonesuch)) (def (main) 0) (export main))",
             "(module m (type C (A (List Nonesuch))) (def (main) 0) (export main))",
@@ -33768,11 +33770,23 @@ mod match_engine {
                 .expect_err("an unknown type in a variant payload must be rejected");
             assert_eq!(err.code.as_deref(), Some("CDZ0101"), "got: {}", err.message);
             assert!(
-                err.message.contains("Nonesuch"),
-                "names the unknown payload type: {}",
+                err.message.contains("unknown type `Nonesuch`")
+                    && err.message.contains("(type Nonesuch …)"),
+                "names the missing payload type + the declare fix: {}",
                 err.message
             );
         }
+        // A NEAR typo of a real type in a payload keeps its did-you-mean (the enrichment is gated on no
+        // near suggestion, exactly as the annotation sites are).
+        let typo = compile_component(&crate::codec::encode(&parse(
+            "(module m (type C (A Strng)) (def (main) 0) (export main))",
+        )))
+        .expect_err("a payload type typo is rejected");
+        assert!(
+            typo.message.contains("did you mean `String`?"),
+            "a near payload-type typo keeps the did-you-mean: {}",
+            typo.message
+        );
         // A payload that is a well-formed NON-type (a literal) → the "requires a type" reject.
         let lit = compile_component(&crate::codec::encode(&parse(
             "(module m (type C (A 5)) (def (main) 0) (export main))",

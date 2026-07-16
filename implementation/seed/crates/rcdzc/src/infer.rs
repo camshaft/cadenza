@@ -1363,7 +1363,7 @@ fn lowercase_type_var_reject(name: &str, at: StructId, lead: &str) -> Reject {
 /// NESTED-position walk so `(: x Widget)` and `(: x (List Widget))` read identically — the uppercase twin
 /// of [`lowercase_type_var_reject`]. Callers GATE on there being no near suggestion (a typo of a real type
 /// keeps its did-you-mean); this helper just builds the message. `lead` names the site.
-fn unknown_type_reject(name: &str, at: StructId, lead: &str) -> Reject {
+pub(crate) fn unknown_type_reject(name: &str, at: StructId, lead: &str) -> Reject {
     Reject::coded(
         Code::Unbound,
         format!(
