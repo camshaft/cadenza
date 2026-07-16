@@ -2954,6 +2954,26 @@
   (output (: 100 Int64))
   (host-calls))
 
+(case "a peer op whose compound RESULT escapes the entrypoint declines (resource-escape lacks the peer import)"
+  (doc    "The inbound arg direction to a peer is fully emitted (String/compound args cross as handles), and
+           a peer op's compound RESULT read INTO A SCALAR works (`Map.len`/`List.at`→match→scalar). But when
+           the entrypoint's OWN RESULT is the raw compound the peer produced — `main` RETURNS the peer's
+           `(List Int64)`/`(Option …)`/`(Map …)` unconsumed — the export escapes via the resource-escape
+           boundary (`emit_runtime_resource`/`emit_recursive_sum_resource`), which does NOT yet thread the
+           peer extern-import set: it collects only the value-heap runtime ops, so the peer op has no import
+           to call and emit DECLINES codelessly (a safe compile error, NOT a bad component). The fix is a
+           resource-escape × peer-extern envelope FUSION (a component that BOTH imports a peer interface AND
+           publishes a resource — neither existing byte assembler does both); until it lands, the actionable
+           workaround the diagnostic names is to consume the peer's value into a scalar the entrypoint returns
+           (read a field/element/length) or handle the effect in-program. Pins the boundary as a clean decline
+           so an accidental future emit of an INVALID component here is caught. (KNOWINGLY FLIP to a run when
+           the fusion lands — queue/peerbug-list-at-of-peer-returned-list-declines-not-in-extern-set.md.)")
+  (input  (do
+            (effect L (op mklist (-> Int64 (List Int64))))
+            (bind L "cadenza:l/api")
+            (def (main (: x Int64)) (host (L) (L.mklist x))) (export main)))
+  (declines))
+
 (case "a handle whose head names a value rather than an effect is rejected"
   (doc    "A `handle`'s HEAD names the effect the handler discharges, and its arms ARE that effect's
            operations (capabilities-and-effects.md #A Handler Arm Names An Operation Its Effect Declares).
