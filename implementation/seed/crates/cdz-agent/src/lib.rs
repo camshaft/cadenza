@@ -39,10 +39,71 @@ where
     cdz_run::run_agent(consumer_bytes, MODEL_IFACE, MODEL_OP, opts, converse)
 }
 
+/// The interface + op a Cadenza agent loop binds its authorization check to (`(bind Cedar
+/// "cadenza:cedar/api")`, `Cedar.authorize : String -> Int64`, 1 allow / 0 deny). Performed before every
+/// tool dispatch — the "no ambient authority" choke point (DESIGN §4).
+pub const CEDAR_IFACE: &str = "cadenza:cedar/api";
+pub const CEDAR_OP: &str = "authorize";
+
+/// Run a compiled Cadenza agent-loop `consumer` that performs BOTH `Model.converse` (the model call) and
+/// `Cedar.authorize` (the pre-dispatch authorization gate), answering each with a host closure — the full
+/// authorized-agent shape. `converse` is the model backend (mock or Bedrock); `authorize` maps a tool's
+/// action string to a decision (1 allow / 0 deny), backed by [`cedar::authorize`] over a policy set. A
+/// thin wrapper over [`cdz_run::run_agent_authorized`] fixing the interface/op names.
+pub fn run_authorized_agent_loop<F, A>(
+    consumer_bytes: &[u8],
+    opts: &RunOpts,
+    converse: F,
+    authorize: A,
+) -> Result<Outcome>
+where
+    F: Fn(String) -> String + Send + Sync + 'static,
+    A: Fn(String) -> i64 + Send + Sync + 'static,
+{
+    cdz_run::run_agent_authorized(
+        consumer_bytes,
+        MODEL_IFACE,
+        MODEL_OP,
+        CEDAR_IFACE,
+        CEDAR_OP,
+        opts,
+        converse,
+        authorize,
+    )
+}
+
 /// A deterministic MOCK model: uppercase the prompt. Stands in for a real model in tests + offline runs
 /// (same `String -> String` seam the real backend fills), so the loop can be exercised with no network.
 pub fn mock_converse(prompt: String) -> String {
     prompt.to_uppercase()
+}
+
+/// Build an `authorize` closure (a bare tool-action TAG `String` -> 1 allow / 0 deny) from a Cedar
+/// `policies` text + a fixed `principal`/`resource`/`context` — the action varies per tool call. The
+/// loop performs `Cedar.authorize` with a BARE tag (`tool:write-file`), which this wraps into the Cedar
+/// action UID `Action::"<tag>"` before evaluating against the policy set via [`cedar::authorize`]; a
+/// policy/parse error denies (fail-closed — a broken policy must never silently allow). This is the
+/// bridge from the loop's `Cedar.authorize(action)` to the real `cedar-policy` engine. The tag is JSON/
+/// Cedar-string-escaped defensively so an odd tag can't break the UID syntax (it just fails to match →
+/// deny, never a parse that grants).
+pub fn cedar_authorizer(
+    policies: String,
+    principal: String,
+    resource: String,
+    context_json: String,
+) -> impl Fn(String) -> i64 {
+    move |action: String| {
+        // Wrap the bare tag into a Cedar action UID: `Action::"<tag>"`. A `"`/`\` in the tag is escaped
+        // so it can't terminate the string early (a malformed UID then simply fails to parse → deny).
+        let escaped = action.replace('\\', "\\\\").replace('"', "\\\"");
+        let action_uid = format!("Action::\"{escaped}\"");
+        match cedar::authorize(&policies, &principal, &action_uid, &resource, &context_json) {
+            Ok(d) if d.is_allow() => 1,
+            // Deny on an explicit Deny AND on any error (fail-closed: a malformed policy/action must
+            // never grant authority).
+            _ => 0,
+        }
+    }
 }
 
 /// A real Amazon Bedrock model call: `InvokeModel` with the Anthropic Messages request shape, returning

@@ -567,6 +567,191 @@ where
     run_export(&engine, &consumer, &mut store, &linker, opts)
 }
 
+/// Like [`run_agent`], but ALSO binds an AUTHORIZATION op — the full agent-harness shape where the
+/// Cadenza loop performs `Cedar.authorize(action) -> Int64` (1 allow / 0 deny) before every tool
+/// dispatch and dispatches only on allow (the "no ambient authority" property). The model op is
+/// `(String) -> String` (`converse`, u32→u32 handles); the authz op is `(String) -> Int64`
+/// (`authorize`, a u32 action-rope handle → an s64 decision — a String ARG like converse, but a SCALAR
+/// result, so it reads the action rope with `str-get` and writes `Val::S64` directly, no `str-new`).
+/// Both are answered by HOST CLOSURES over the ONE shared runtime — `converse` by a Bedrock-backed
+/// closure, `authorize` by a `cedar-policy`-backed one — keeping the agent loop pure Cadenza.
+#[allow(clippy::too_many_arguments)]
+pub fn run_agent_authorized<F, A>(
+    consumer_bytes: &[u8],
+    model_iface: &str,
+    model_op: &str,
+    authz_iface: &str,
+    authz_op: &str,
+    opts: &RunOpts,
+    converse: F,
+    authorize: A,
+) -> Result<Outcome>
+where
+    F: Fn(String) -> String + Send + Sync + 'static,
+    A: Fn(String) -> i64 + Send + Sync + 'static,
+{
+    use std::sync::Arc;
+    let engine = engine();
+    let consumer = Component::new(&engine, consumer_bytes)
+        .map_err(|e| anyhow!("invalid consumer component: {e}"))?;
+    let mut store = Store::new(&engine, ());
+    let mut linker: Linker<()> = Linker::new(&engine);
+
+    // Shape-check both ops up front (clear message on a mis-shaped op, not an opaque trap in the closure).
+    check_model_op_shape(&engine, &consumer, model_iface, model_op)?;
+    check_authz_op_shape(&engine, &consumer, authz_iface, authz_op)?;
+
+    // One shared value-heap runtime serves the consumer + both host-op closures (the action/prompt cross
+    // as rope handles into it).
+    let req = find_runtime_req(&engine, &consumer).ok_or_else(|| {
+        anyhow!(
+            "run_agent_authorized requires the consumer to import the value-heap runtime (String \
+             prompt/action cross as rope handles), but it declares no runtime import"
+        )
+    })?;
+    let (rt_instance, heap_names) = instantiate_runtime(&engine, &mut store, &req, opts)?;
+    bind_runtime_into(
+        &engine,
+        &mut store,
+        &mut linker,
+        &req.import_name,
+        &rt_instance,
+        &heap_names,
+    )?;
+
+    let heap_idx = rt_instance
+        .get_export_index(&mut store, None, RUNTIME_IFACE)
+        .ok_or_else(|| anyhow!("runtime does not export {RUNTIME_IFACE}"))?;
+    let get_func_named =
+        |store: &mut Store<()>, fname: &str| -> Result<wasmtime::component::Func> {
+            let fidx = rt_instance
+                .get_export_index(&mut *store, Some(&heap_idx), fname)
+                .ok_or_else(|| anyhow!("runtime missing `{fname}`"))?;
+            rt_instance
+                .get_func(&mut *store, fidx)
+                .ok_or_else(|| anyhow!("runtime export `{fname}` is not a func"))
+        };
+    let str_get = get_func_named(&mut store, "str-get")?;
+    let str_new = get_func_named(&mut store, "str-new")?;
+
+    // Bind the model op `(u32) -> u32`: read the prompt rope, call converse, mint the completion rope.
+    {
+        let converse = Arc::new(converse);
+        let mut iface = linker
+            .instance(model_iface)
+            .map_err(|e| anyhow!("linker instance {model_iface}: {e}"))?;
+        let converse_cl = Arc::clone(&converse);
+        let op_label = model_op.to_string();
+        let (sg, sn) = (str_get, str_new);
+        iface.func_new(model_op, move |mut ctx, params, results| {
+            let h = match params.first() {
+                Some(Val::U32(h)) => *h,
+                other => {
+                    return Err(anyhow!(
+                        "model op `{op_label}` expected a u32 prompt handle, got {other:?}"
+                    ));
+                }
+            };
+            let mut got = [Val::Bool(false)];
+            sg.call(&mut ctx, &[Val::U32(h)], &mut got)?;
+            sg.post_return(&mut ctx)?;
+            let prompt = match &got[0] {
+                Val::String(s) => s.to_string(),
+                other => return Err(anyhow!("str-get returned a non-string: {other:?}")),
+            };
+            let completion = converse_cl(prompt);
+            let mut made = [Val::Bool(false)];
+            sn.call(&mut ctx, &[Val::String(completion)], &mut made)?;
+            sn.post_return(&mut ctx)?;
+            let slot = results
+                .first_mut()
+                .ok_or_else(|| anyhow!("model op `{op_label}` returned no result slot"))?;
+            *slot = made[0].clone();
+            Ok(())
+        })?;
+    }
+
+    // Bind the authz op `(u32) -> s64`: read the action rope, call authorize, write the s64 decision
+    // (a SCALAR result — no str-new). Deny (the safe default) if the runner ever sees a mis-typed slot.
+    {
+        let authorize = Arc::new(authorize);
+        let mut iface = linker
+            .instance(authz_iface)
+            .map_err(|e| anyhow!("linker instance {authz_iface}: {e}"))?;
+        let authorize_cl = Arc::clone(&authorize);
+        let op_label = authz_op.to_string();
+        let sg = str_get;
+        iface.func_new(authz_op, move |mut ctx, params, results| {
+            let h = match params.first() {
+                Some(Val::U32(h)) => *h,
+                other => {
+                    return Err(anyhow!(
+                        "authz op `{op_label}` expected a u32 action handle, got {other:?}"
+                    ));
+                }
+            };
+            let mut got = [Val::Bool(false)];
+            sg.call(&mut ctx, &[Val::U32(h)], &mut got)?;
+            sg.post_return(&mut ctx)?;
+            let action = match &got[0] {
+                Val::String(s) => s.to_string(),
+                other => return Err(anyhow!("str-get returned a non-string: {other:?}")),
+            };
+            let decision = authorize_cl(action);
+            let slot = results
+                .first_mut()
+                .ok_or_else(|| anyhow!("authz op `{op_label}` returned no result slot"))?;
+            *slot = Val::S64(decision);
+            Ok(())
+        })?;
+    }
+
+    run_export(&engine, &consumer, &mut store, &linker, opts)
+}
+
+/// Verify a consumer's imported authz op `authz_iface`.`authz_op` has the `(u32) -> s64` boundary shape
+/// [`run_agent_authorized`] binds (a String action crosses as a rope HANDLE `u32`; the decision is a
+/// scalar `Int64` = `s64`). Same up-front-clear-error discipline as [`check_model_op_shape`]; Ok if the
+/// op/interface isn't imported (the linker reports an unknown import clearly).
+fn check_authz_op_shape(
+    engine: &Engine,
+    consumer: &Component,
+    authz_iface: &str,
+    authz_op: &str,
+) -> Result<()> {
+    let Some(sigs) = consumer
+        .component_type()
+        .imports(engine)
+        .find(|(n, _)| *n == authz_iface)
+        .and_then(|(_, item)| iface_func_sigs(engine, &item))
+    else {
+        return Ok(());
+    };
+    let Some((_, params, results)) = sigs.iter().find(|(n, _, _)| n == authz_op) else {
+        return Ok(());
+    };
+    let ok = params.len() == 1
+        && matches!(params[0], Type::U32)
+        && results.len() == 1
+        && matches!(results[0], Type::S64);
+    if !ok {
+        let shape = |ts: &[Type]| {
+            ts.iter()
+                .map(|t| format!("{t:?}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        return Err(anyhow!(
+            "the authz op `{authz_iface}`.`{authz_op}` must be `(u32) -> s64` (a String action crosses \
+             as a rope handle; the decision is an Int64), but the consumer imports it as `({}) -> ({})` \
+             — a `String -> Int64` authz op lowers to one u32 arg and one s64 result",
+            shape(params),
+            shape(results),
+        ));
+    }
+    Ok(())
+}
+
 /// Instantiate the linked component and invoke its chosen export (or the resource-escape path), returning
 /// the rendered outcome. Split out of [`run_capturing`] so the host-call observation wraps it.
 fn run_export(
