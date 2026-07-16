@@ -2489,6 +2489,30 @@ mod tests {
         assert!(definition_at(text, true, Position::new(9, 9), &test_uri()).is_none());
     }
 
+    #[test]
+    fn definition_and_references_are_total_on_malformed_mid_edit_source() {
+        // "Queries over incomplete source are TOTAL" (tooling-and-lsp.md): the editor fires
+        // definition/references CONSTANTLY as the user types, so both must return (never panic) on a
+        // half-typed / unparseable buffer, on BOTH surfaces and at an out-of-range cursor. These are the
+        // node-id-keyed queries most exposed to a mid-edit arena — the other analyses have such a test,
+        // these two did not.
+        let cases: &[(&str, bool)] = &[
+            ("def (f x = (", true), // ML: unbalanced, recovered arena
+            ("def f(x:", true),     // ML: truncated signature mid-type
+            ("(def (f x", false),   // s-expr: unclosed forms
+            ("(do (import", false), // s-expr: truncated import
+            ("", true),             // empty
+            ("   ", false),         // whitespace-only
+        ];
+        for &(text, is_ml) in cases {
+            // In-range and out-of-range cursors; include_declaration both ways. Just must not panic.
+            let _ = definition_at(text, is_ml, Position::new(0, 3), &test_uri());
+            let _ = definition_at(text, is_ml, Position::new(9, 9), &test_uri());
+            let _ = references_at(text, is_ml, Position::new(0, 3), &test_uri(), true);
+            let _ = references_at(text, is_ml, Position::new(0, 3), &test_uri(), false);
+        }
+    }
+
     // ── s-expr surface (is_ml = false) — the OTHER reader/canonicalization path ──────────────────────
     // Almost every single-buffer unit test drives the ML surface; `parse_surface`'s s-expr branch is a
     // DISTINCT reader (`sexpr::read_spanned` with a `read_all_spanned` multi-form fallback, no `canon`

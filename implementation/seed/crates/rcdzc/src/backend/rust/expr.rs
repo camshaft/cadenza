@@ -781,20 +781,22 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                 Ok(format!("f64::from_bits({}u64)", d.to_f64_bits()))
             }
         }
-        // A constant NaN float (`Float64.nan`/`(. Float64 nan)`) → Rust's `f64::NAN`/`f32::NAN` by width.
-        // A NaN is a valid float value (the render path handles it: `is_nan()` → the `NaN` text form), so
-        // this is the NaN sibling of the `ConstFloat` bit-emit above. Rust's `NAN` is a QUIET NaN with the
-        // canonical bit pattern, matching the runtime's canonical-byte NaN — so a `(= nan nan)` canonical
-        // bit-compare agrees across backends. (Width from the node's solved type, like `ConstFloat`.)
+        // A constant NaN float (`Float64.nan`/`(. Float64 nan)`) → the EXPLICIT CANONICAL NaN via
+        // `from_bits`, NOT `f64::NAN`. Rust's `f64::NAN` happens to be `0x7FF8…` on every current target,
+        // but its exact payload is platform-defined; the fleet's float-eq work canonicalizes NaN to a
+        // FIXED byte form (`CANON_NAN_BITS` = `0x7FF8_0000_0000_0000` / `0x7FC0_0000`, the same constants the
+        // `FloatCompare` canonicalizer + the wasm backend use), so emitting those exact bits makes the
+        // ConstFloatNan value byte-identical to the canonical NaN across backends regardless of the
+        // platform payload — no reliance on `f64::NAN`'s payload. (Width from the node's solved type.)
         Core::ConstFloatNan => {
             let width = match type_of(db, id) {
                 Ty::Float(ft) => ft.ground_width(),
                 _ => crate::ty::DEFAULT_FLOAT_WIDTH,
             };
             Ok(if width == 32 {
-                "f32::NAN".to_string()
+                "f32::from_bits(0x7FC0_0000u32)".to_string()
             } else {
-                "f64::NAN".to_string()
+                "f64::from_bits(0x7FF8_0000_0000_0000u64)".to_string()
             })
         }
         // A runtime `.wrap` conversion → an `as` cast to the target Rust type. Rust's `as` between
@@ -2002,11 +2004,12 @@ fn rust_string_literal(s: &str) -> String {
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
-            // A control / non-printable scalar → an explicit `\u{..}` escape (valid in a Rust string
-            // literal). A printable char (ASCII or a higher UTF-8 scalar) is emitted verbatim.
-            c if (c as u32) < 0x20 || c == '\u{7f}' => {
-                out.push_str(&format!("\\u{{{:x}}}", c as u32))
-            }
+            // A CONTROL scalar → an explicit `\u{..}` escape (valid in a Rust string literal). `is_control`
+            // covers C0 (0x00-0x1F), DEL (0x7F), AND C1 (0x80-0x9F) — the earlier `< 0x20 || == 0x7f` guard
+            // missed the C1 range, emitting a raw control byte into the literal. Matches
+            // `cadenza-syntax::render_char`'s `is_control` branch. A printable char (ASCII or a higher
+            // UTF-8 scalar like `é`) is emitted verbatim — valid in a UTF-8 Rust literal.
+            c if c.is_control() => out.push_str(&format!("\\u{{{:x}}}", c as u32)),
             c => out.push(c),
         }
     }
@@ -2024,7 +2027,9 @@ fn rust_char_literal(c: char) -> String {
         '\n' => "'\\n'".to_string(),
         '\r' => "'\\r'".to_string(),
         '\t' => "'\\t'".to_string(),
-        c if (c as u32) < 0x20 || c == '\u{7f}' => format!("'\\u{{{:x}}}'", c as u32),
+        // `is_control` covers C0 + DEL + C1 (0x80-0x9F) — the earlier `< 0x20 || == 0x7f` missed C1,
+        // emitting a raw control char into the Rust char literal. Matches `cadenza-syntax::render_char`.
+        c if c.is_control() => format!("'\\u{{{:x}}}'", c as u32),
         c => format!("'{c}'"),
     }
 }

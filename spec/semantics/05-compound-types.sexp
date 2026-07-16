@@ -9728,3 +9728,69 @@
                 (match w ((Wrap (map (1 v) .. r (2 x))) v) (_ 0)))
               (export f)))
   (error CDZ0201))
+
+; --- Consumed loop-invariant heap extractions: the per-kind family ----------------------------------
+; Two same-day fixes closed this family (aac1b72bc: LICM refuses a heap-typed Proj hoist root;
+; 50f64b3ae: a consumed sum-payload child retains while its scrutinee lives — my filed SumExpect
+; drift). These pin the family across every extraction kind, promoted from breaker probes that
+; found the second bug: each loop threads an invariant compound and CONSUMES an extracted heap
+; child per iteration — every iteration must see the pristine child (a hoist-with-one-dup or a
+; missing child retain drifts 3,4,5,6…).
+
+(case "a tuple-projected loop invariant consumed per iteration accumulates stably"
+  (doc    "`go(pr, n, acc) = go(pr, n-1, acc + List.len(List.push((. pr 0), 9)))` over `([7,8], 0)` —
+           the projected list is consumed each iteration; four iterations of len 3 → 12 (drift gives
+           18). The Proj face (the aac1b72bc fix's own shape, pinned here as part of the family).")
+  (input  (do
+            (def (go (: pr (Tuple (List Int64) Int64)) (: n Int64) (: acc Int64))
+              (if (= n 0) acc
+                  (go pr (- n 1) (+ acc (List.len (List.push (. pr 0) 9))))))
+            (def (main (: d Int64))
+              (go (tuple (List.push (List.push (list) d) 8) 0) 4 0))
+            (export main)))
+  (call   main (: 7 Int64))
+  (output (: 12 Int64)))
+
+(case "a record-field loop invariant consumed per iteration accumulates stably"
+  (doc    "The record-extraction face: `(. r f)` consumed per iteration over a threaded record →
+           4 × 3 = 12. A hoist guard or child retain keyed to positional projections misses the
+           field-keyed extraction.")
+  (input  (do
+            (def (go (: r (Record (f (List Int64)))) (: n Int64) (: acc Int64))
+              (if (= n 0) acc
+                  (go r (- n 1) (+ acc (List.len (List.push (. r f) 9))))))
+            (def (main (: d Int64))
+              (go (record (f (List.push (List.push (list) d) 8))) 4 0))
+            (export main)))
+  (call   main (: 7 Int64))
+  (output (: 12 Int64)))
+
+(case "a sum-payload loop invariant consumed per iteration accumulates stably"
+  (doc    "`(Option.expect s \"v\")` consumed per iteration over a threaded Option → 4 × 3 = 12. THE
+           face that drifted (18 = 3+4+5+6) after the Proj fix landed: the LICM guard keyed on the
+           extraction HEAD covered Proj but not SumExpect, and the payload child lacked its consume
+           retain — both halves now pinned (adv-licm-hoists-consumed-sum-payload-expect-drift,
+           RESOLVED by 50f64b3ae). The wasm/rust backends agreed only after the fix.")
+  (input  (do
+            (def (go (: s (Option (List Int64))) (: n Int64) (: acc Int64))
+              (if (= n 0) acc
+                  (go s (- n 1) (+ acc (List.len (List.push (Option.expect s "v") 9))))))
+            (def (main (: d Int64))
+              (go (Option.Some (List.push (List.push (list) d) 8)) 4 0))
+            (export main)))
+  (call   main (: 7 Int64))
+  (output (: 12 Int64)))
+
+(case "a consumed and a borrowed read of one loop invariant coexist per iteration"
+  (doc    "Each iteration BOTH consumes the projected child (push → len 3) AND borrows it (len → 2):
+           4 × 5 = 20. Pins the mixed face — the consume's retain must not starve the sibling borrow,
+           and the borrow must read the pristine child even after the same-iteration consume.")
+  (input  (do
+            (def (go (: pr (Tuple (List Int64) Int64)) (: n Int64) (: acc Int64))
+              (if (= n 0) acc
+                  (go pr (- n 1) (+ acc (+ (List.len (List.push (. pr 0) 9)) (List.len (. pr 0)))))))
+            (def (main (: d Int64))
+              (go (tuple (List.push (List.push (list) d) 8) 0) 4 0))
+            (export main)))
+  (call   main (: 7 Int64))
+  (output (: 20 Int64)))

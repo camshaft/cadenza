@@ -2335,12 +2335,16 @@ fn rustc_roundtrip_float_arithmetic_and_of_int() {
 
 #[test]
 fn rustc_roundtrip_const_float_nan_emits_and_compares_by_canonical_bits() {
-    // A constant NaN float (`Float64.nan`/`(. Float64 nan)`) → `f64::NAN` (was declined). The emit is the
-    // NaN sibling of the ConstFloat bit-emit.
+    // A constant NaN float (`Float64.nan`/`(. Float64 nan)`) → the EXPLICIT canonical NaN bits (not
+    // `f64::NAN`, whose payload is platform-defined) — matching the runtime/wasm `CANON_NAN_BITS` so the
+    // value is byte-identical to the canonical NaN the float-eq compare folds to.
     let nan = compile_rust(
         "(module m (def (f (: n Int64)) (if (= n 0) (Float64.nan) (f (+ n -1)))) (def (mk) (f 1)) (export mk))",
     );
-    assert!(nan.contains("f64::NAN"), "Float64.nan → f64::NAN:\n{nan}");
+    assert!(
+        nan.contains("f64::from_bits(0x7FF8_0000_0000_0000u64)"),
+        "Float64.nan → canonical NaN from_bits:\n{nan}"
+    );
     // e2e: the NaN result renders as the canonical `NaN` text (the driver's Float render handles is_nan()).
     let driver = "fn main(){ let r = prog::mk(); if r.is_nan() { println!(\"NaN\"); } else { println!(\"{}\", r); } }";
     if let Some(out) = rustc_run_driver(&nan, driver) {
