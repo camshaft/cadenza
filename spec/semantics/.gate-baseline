@@ -677,6 +677,7 @@ pass	a contradictory ARROW annotation on a function value is rejected
 pass	a contradictory arrow annotation on a function INSIDE a compound is rejected
 pass	a contradictory arrow annotation on a function in a SUM payload is rejected
 pass	a contradictory arrow annotation on a function in a runtime Map value is rejected
+pass	a contradictory arrow annotation on a function stored as a Map KEY is rejected
 pass	a correctly-annotated function parameter is accepted
 pass	a cross-type variant pattern whose payload width differs is rejected, not miscompiled
 pass	a crossing text-literal arm is rejected even beside a same-kind sibling arm

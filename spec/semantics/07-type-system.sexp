@@ -51,6 +51,18 @@
   (input  (do (def (h x) (+ x 1)) (def (main) (: (Some h) (Option (-> Bool Int64)))) (export main)))
   (error  CDZ0203))
 
+(case "a contradictory arrow annotation on a function stored as a Map KEY is rejected"
+  (doc    "The Map-key companion (annotation-check companion to the fn-domain reflection cases): a function
+           is a reachable Map key, so a contradictory arrow annotation on the KEY must also be caught.
+           `(: (Map.insert Map.empty h 1) (Map (-> Bool Int64) Int64))` with `h : Int64 -> Int64` annotates
+           the key function's domain as `Bool` — a contradiction. The grounded annotation check grounds the
+           key fn's domain too (both k and v via the same `Prim::MapInsert` gate + reflected_ty grounding),
+           so it rejects. CDZ0203.")
+  (input  (do (def (h x) (+ x 1))
+              (def (main) (: (Map.insert Map.empty h 1) (Map (-> Bool Int64) Int64)))
+              (export main)))
+  (error  CDZ0203))
+
 (case "a contradictory arrow annotation on a function in a runtime Map value is rejected"
   (doc    "The runtime-Map-builder sibling of the compound/sum annotation-check cases: `(: (Map.insert
            Map.empty 1 h) (Map Int64 (-> Bool Int64)))` with `h : Int64 -> Int64` is a contradiction — the
