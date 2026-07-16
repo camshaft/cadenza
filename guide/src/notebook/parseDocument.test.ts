@@ -114,3 +114,24 @@ test("indented fences are recognized (leading whitespace before the fence chars)
   assert.equal(cells.length, 1);
   assert.equal(cells[0].kind, "code");
 });
+
+test("CRLF (and lone CR) line endings are normalized — no stray \\r in code-cell source (PR #471)", () => {
+  // A Windows \r\n document must not leave a trailing \r on the code cell's source — that \r would ride
+  // into the downstream Cadenza compile and break it.
+  const crlf = ["intro", "```cadenza", "def main() = 1 + 2", "```", "outro"].join("\r\n");
+  const cells = parseDocument(crlf);
+  assert.equal(cells.length, 3);
+  assert.deepEqual(cells[1], { kind: "code", source: "def main() = 1 + 2", directive: { kind: "none" } });
+  // The code source has NO carriage returns anywhere.
+  assert.equal((cells[1] as Extract<Cell, { kind: "code" }>).source.includes("\r"), false);
+  // A multi-line code cell under CRLF keeps clean \n joins, no \r.
+  const multi = ["```cadenza", "def a = 1", "def main() = a + a", "```"].join("\r\n");
+  assert.deepEqual(parseDocument(multi), [
+    { kind: "code", source: "def a = 1\ndef main() = a + a", directive: { kind: "none" } },
+  ]);
+  // Lone classic-Mac \r is normalized too.
+  const cr = "```cadenza\rdef main() = 7\r```";
+  assert.deepEqual(parseDocument(cr), [
+    { kind: "code", source: "def main() = 7", directive: { kind: "none" } },
+  ]);
+});
