@@ -10386,3 +10386,71 @@
               (def (main) (f (P (P (I 1) 2) 100)))
               (export main)))
   (output (: 0 Int64)))
+
+; ============================================================================================
+; A NARROW sum-payload literal-refinement match whose arms unify to a WIDER (Int64) result — the arms
+; `((A 0) 100)` [Int64 literal] and `((A x) x)`/`((B y) y)` [narrow payload] unify to Int64, so the result
+; is Int64 and the narrow payload is DISPLAY-widened. Regression guard for the rust-emit E0308 fix (thread
+; the match's result width through the sum decision tree so every Leaf body is grounded to it — a narrow
+; binding arm widens, the default-Int64 literal arm narrows, keeping all branches + the fn return at ONE
+; width). breaker-found differential (wasm computed the value, rust emitted mismatched-width Rust). Driven
+; across the NARROW widths (UInt8/Int8/Int16/Int32) — the axis where this family's siblings keep regressing.
+
+(case "a UInt8 sum-payload literal-match hits the literal arm, result widens to Int64"
+  (doc    "`(match (A 0) ((A 0) 100) ((A x) x) ((B y) y))` over `(type Box (A UInt8) (B UInt8))`: the payload
+           0 hits the `(A 0)` literal arm → 100. The arms 100 (Int64) and x/y (UInt8) unify to Int64.")
+  (input  (do (type Box (A UInt8) (B UInt8))
+              (def (f (: b Box)) (match b ((A 0) 100) ((A x) x) ((B y) y)))
+              (def (main (: n UInt8)) (f (A n)))
+              (export main)))
+  (call   main (: 0 UInt8))
+  (output (: 100 Int64)))
+
+(case "a UInt8 sum-payload literal-match misses, binds the payload widened to Int64"
+  (doc    "The miss companion: n=5 misses `(A 0)` and binds `(A x)` → the UInt8 payload 5 widened to the
+           match's Int64 result → 5. Both arms emit at the unified Int64 width (the narrow binding widened).")
+  (input  (do (type Box (A UInt8) (B UInt8))
+              (def (f (: b Box)) (match b ((A 0) 100) ((A x) x) ((B y) y)))
+              (def (main (: n UInt8)) (f (A n)))
+              (export main)))
+  (call   main (: 5 UInt8))
+  (output (: 5 Int64)))
+
+(case "an Int8 sum-payload literal-match misses, binds the payload widened to Int64"
+  (doc    "The width sibling at Int8 (signed narrow): n=5 binds `(A x)` widened to Int64 → 5. The width axis
+           is where the family's siblings regress, so each narrow width is driven.")
+  (input  (do (type Box (A Int8) (B Int8))
+              (def (f (: b Box)) (match b ((A 0) 100) ((A x) x) ((B y) y)))
+              (def (main (: n Int8)) (f (A n)))
+              (export main)))
+  (call   main (: 5 Int8))
+  (output (: 5 Int64)))
+
+(case "an Int16 sum-payload literal-match hits the literal arm, result widens to Int64"
+  (doc    "Int16 width sibling, hit: payload 0 → the `(A 0)` arm → 100, arms unified to Int64.")
+  (input  (do (type Box (A Int16) (B Int16))
+              (def (f (: b Box)) (match b ((A 0) 100) ((A x) x) ((B y) y)))
+              (def (main (: n Int16)) (f (A n)))
+              (export main)))
+  (call   main (: 0 Int16))
+  (output (: 100 Int64)))
+
+(case "an Int32 sum-payload literal-match misses, binds the payload widened to Int64"
+  (doc    "Int32 width sibling, miss: n=7 binds `(A x)` widened to Int64 → 7.")
+  (input  (do (type Box (A Int32) (B Int32))
+              (def (f (: b Box)) (match b ((A 0) 100) ((A x) x) ((B y) y)))
+              (def (main (: n Int32)) (f (A n)))
+              (export main)))
+  (call   main (: 7 Int32))
+  (output (: 7 Int64)))
+
+(case "an Int64 sum-payload literal-match needs no widening (width control)"
+  (doc    "The control that passes on BOTH backends unchanged: an Int64 payload needs no widening (arms
+           already Int64) → 100 on hit. Pins the fix is the NARROW-payload widening, not sum literal-match
+           in general.")
+  (input  (do (type Box (Wrap Int64) (Other Int64))
+              (def (f (: b Box)) (match b ((Wrap 0) 100) ((Wrap x) x) ((Other y) y)))
+              (def (main (: n Int64)) (f (Wrap n)))
+              (export main)))
+  (call   main (: 0 Int64))
+  (output (: 100 Int64)))

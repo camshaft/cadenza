@@ -380,6 +380,8 @@ pass	a UInt32 addition that overflows the 32-bit width is rejected at compile ti
 pass	a UInt32 holds a wasm section size at the width boundary
 pass	a UInt64 closure round-trips through a consumer export
 pass	a UInt64 holds a value above the signed 64-bit maximum
+pass	a UInt8 sum-payload literal-match hits the literal arm, result widens to Int64
+pass	a UInt8 sum-payload literal-match misses, binds the payload widened to Int64
 pass	a Unit element between two Int64s in a tuple, a later element read
 pass	a Unit element in a multi-payload sum variant compiles to valid wasm
 pass	a Unit payload MATCH-bound from a still-live sum at a dup-site drops the sentinel
@@ -2207,6 +2209,10 @@ pass	an IEC-prefixed quantity displays scaled to its reference over Int64
 pass	an INFINITY-axiom theorem is unforgeable — its Thm cannot be fabricated outside the kernel
 pass	an Int argument to a Bool-annotated parameter is rejected
 pass	an Int argument to a parameter used as a Bool condition is rejected
+pass	an Int16 sum-payload literal-match hits the literal arm, result widens to Int64
+pass	an Int32 sum-payload literal-match misses, binds the payload widened to Int64
+pass	an Int64 sum-payload literal-match needs no widening (width control)
+pass	an Int8 sum-payload literal-match misses, binds the payload widened to Int64
 pass	an N suffix lets a huge literal need no annotation
 pass	an N-suffixed integer literal is a BigInt
 pass	an Ok and an Err decode compose through one shared handler
