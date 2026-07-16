@@ -2915,6 +2915,7 @@ pass	the entrypoint sums its two runtime arguments
 pass	the expander rewrites a directly-written node even when chunks != holes+1 (no re-check)
 pass	the expander threads the hole list to the tag even with zero chunks and zero holes
 pass	the exponent marker is case-insensitive
+pass	the false-literal coercion negates a float ordering compare, turning an unordered pair true
 pass	the first failing `?` short-circuits; a later `?` never runs
 pass	the generated-set convergence property has discriminating power — two different generated sets are NOT equal
 pass	the generator is a deterministic function of its seed (same seed, same value) — folds
@@ -2996,6 +2997,7 @@ pass	the three-way comparison orders chars by scalar value — Equal
 pass	the three-way comparison orders chars by scalar value — Greater
 pass	the three-way comparison orders chars by scalar value — Less
 pass	the three-way comparison orders strings lexicographically
+pass	the true-literal coercion of a float ordering compare returns the compare, NaN stays false
 pass	the two variants of Result compare unequal
 pass	the underlying numeric type obeys the numeric core — no silent promotion under a unit
 pass	the union contains the elements of either set

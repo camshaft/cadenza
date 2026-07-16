@@ -61,6 +61,40 @@
   (call   main (: 1.5 Float64) (: 2.5 Float64))
   (output (: true Bool)))
 
+; The same boolean-coercion also composes over a float ORDERING compare (`<`) — DISTINCT from the float
+; `=` above. Float ordering is the IEEE PARTIAL order: a NaN operand makes `(< a b)` FALSE (unordered),
+; so the inner Bool is not classically-complete. The `= true` coercion returns that Bool unchanged; the
+; `= false` coercion NEGATES it — and negating an UNORDERED-false yields TRUE, the adversarial case. A
+; fold that reused an equality-style canonical-bit path for the negation, or assumed the ordering compare
+; partitions the space (so `¬(a<b)` ⟺ `a>=b`), would MISCOMPILE the NaN pair (where BOTH `a<b` and `a>=b`
+; are false, yet `= false` must still flip the false to true). These pin the coercion over a float
+; ORDERING operand (the earlier float cases used `=`; the Int cases used a total order), both backends.
+
+(case "the true-literal coercion of a float ordering compare returns the compare, NaN stays false"
+  (doc    "`(= (< a b) true)` over Float64 params returns the ordering Bool unchanged: (1.0,2.0) → `1<2`
+           true → true; the unordered (nan,1.0) → `nan<1` FALSE → false. Pins `(= bexpr true)` = bexpr
+           composing over a float PARTIAL-order compare (not the total-order Int or the float `=` above),
+           both backends.")
+  (input  (do (def (main (: a Float64) (: b Float64)) (= (< a b) true)) (export main)))
+  (call   main (: 1.0 Float64) (: 2.0 Float64))
+  (output (: true Bool))
+  (call   main (: nan Float64) (: 1.0 Float64))
+  (output (: false Bool)))
+
+(case "the false-literal coercion negates a float ordering compare, turning an unordered pair true"
+  (doc    "The dual and the adversarial case: `(= (< a b) false)` = `¬(< a b)`. Finite ordered (1.0,2.0):
+           `1<2` true, `= false` → false. The UNORDERED (nan,1.0): `nan<1` is FALSE, `= false` → TRUE —
+           negating an unordered-false. Reversed finite (2.0,1.0): `2<1` false, `= false` → true. Pins that
+           the negation acts on the Bool VALUE, not on an assumed `¬(a<b) ⟺ a>=b` (which fails for NaN,
+           where both are false); both backends.")
+  (input  (do (def (main (: a Float64) (: b Float64)) (= (< a b) false)) (export main)))
+  (call   main (: 1.0 Float64) (: 2.0 Float64))
+  (output (: false Bool))
+  (call   main (: nan Float64) (: 1.0 Float64))
+  (output (: true Bool))
+  (call   main (: 2.0 Float64) (: 1.0 Float64))
+  (output (: true Bool)))
+
 (case "negative zero is not equal to positive zero"
   (doc    "Witnesses core-semantics.md #Floating-Point Equality Follows The Canonical Byte Form:
            -0.0 and 0.0 have distinct canonical byte forms, so they are not equal.")
