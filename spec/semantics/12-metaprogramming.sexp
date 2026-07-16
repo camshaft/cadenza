@@ -489,6 +489,17 @@
             ((Err _) false)))
   (output (: true Bool)))
 
+(case "a multibyte-UTF-8 Ast.Str round-trips through encode and decode"
+  (doc    "The byte-path companion of the multibyte print/read case: `\"héllo☃\"` (6 scalars, 10 UTF-8
+           bytes) encodes and decodes back equal. The Str encoding is a length-prefix over the UTF-8 BYTES,
+           so this pins that the prefix counts BYTES, not characters — every existing encode/decode Str case
+           is ASCII (`\"\"`, `\"hi\"`, `\"x\"`) where byte-len == char-count and cannot distinguish the two.
+           A codec that wrote a char-count length would pass those yet truncate or over-read this string.")
+  (input  (match (Ast.decode (Ast.encode (Ast.Str "héllo☃")))
+            ((Ok a)  (= a (Ast.Str "héllo☃")))
+            ((Err _) false)))
+  (output (: true Bool)))
+
 (case "a multibyte-UTF-8 Ast.Str round-trips through print and read"
   (doc    "A string with non-ASCII scalars (`héllo☃` — 2- and 3-byte UTF-8) round-trips: the escape set
            touches only ASCII, so a multibyte scalar passes through and reads back intact. Pins the
