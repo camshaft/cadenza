@@ -395,6 +395,17 @@ fn int_type(it: IntTy) -> Option<&'static str> {
     })
 }
 
+/// Whether an integer type is SIGNED — a fixed unsigned sign is `false`; a fixed signed, or a
+/// deferred/variable sign (which grounds to signed, matching `int_type`'s default), is `true`. Used by the
+/// division emit to decide whether to guard the `MIN / -1` overflow trap (a signed-only case — an unsigned
+/// `/` never overflows, and a `-1` divisor would not even type-check for an unsigned operand).
+pub(super) fn int_type_is_signed(it: IntTy) -> bool {
+    match it.sign {
+        Sign::Fixed(s) => s,
+        Sign::Deferred | Sign::Var(_) => true,
+    }
+}
+
 /// The UNSIGNED Rust integer type whose bit width matches an integer type's slot — the type a constant
 /// bit-pattern literal is written in before casting to the signed/target type (mirroring the wasm
 /// backend's `to_i64_bits`/`to_i32_bits`, which emit the two's-complement bit pattern). Used by the

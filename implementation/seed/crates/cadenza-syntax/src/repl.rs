@@ -379,4 +379,114 @@ mod tests {
             "the buffer's module shell is unwrapped, not re-nested: {rendered}"
         );
     }
+
+    /// A tiny deterministic PRNG (SplitMix64) — reproducible generation without a dependency (mirrors
+    /// the unit-test PRNGs in `codec.rs`/`lexer.rs`).
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+            z ^ (z >> 31)
+        }
+        fn below(&mut self, n: usize) -> usize {
+            (self.next() % n as u64) as usize
+        }
+    }
+
+    /// A random s-expr EXPRESSION (bounded by `depth`) — atoms, infix, calls, `let`, `if`.
+    fn gen_expr(rng: &mut Rng, depth: usize) -> String {
+        let names = ["a", "b", "x", "f", "+", "g"];
+        if depth == 0 || rng.below(3) == 0 {
+            return match rng.below(3) {
+                0 => names[rng.below(names.len())].to_string(),
+                1 => rng.below(50).to_string(),
+                _ => "x".to_string(),
+            };
+        }
+        // Bind each sub-expression to its own `let` (sequential borrows) — evaluating two `gen_expr(rng,
+        // …)` calls as adjacent format args would borrow `rng` mutably twice in one expression.
+        let choice = rng.below(4);
+        let a = gen_expr(rng, depth - 1);
+        let b = gen_expr(rng, depth - 1);
+        match choice {
+            0 => format!("(+ {a} {b})"),
+            1 => format!("(f {a} {b})"),
+            2 => {
+                let c = gen_expr(rng, depth - 1);
+                format!("(if {a} {b} {c})")
+            }
+            _ => format!("(let ((x {a})) {b})"),
+        }
+    }
+
+    /// A random BUFFER program: a shell (`do`/`module`/bare) holding 0..=3 defs + maybe an export —
+    /// the shapes `buffer_items` must unwrap (drop the shell + exports, keep the defs).
+    fn gen_buffer(rng: &mut Rng) -> String {
+        let ndefs = rng.below(4);
+        let mut defs: Vec<String> = (0..ndefs)
+            .map(|i| format!("(def (h{i} x) {})", gen_expr(rng, 2)))
+            .collect();
+        if rng.below(2) == 0 && !defs.is_empty() {
+            defs.push("(export h0)".to_string()); // an export the assembler must drop
+        }
+        match rng.below(3) {
+            // A `(do …)` shell (the guide wrap).
+            0 => format!("(do {})", defs.join(" ")),
+            // A `(module M …)` shell (a hand-written program).
+            1 => format!("(module M {})", defs.join(" ")),
+            // A bare single def (no shell) — or a bare expression when there are no defs.
+            _ => {
+                if defs.is_empty() {
+                    gen_expr(rng, 2)
+                } else {
+                    defs.into_iter().next().unwrap()
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn assemble_never_panics_and_round_trips_over_generated_buffers_and_exprs() {
+        // `assemble_repl_program`/`_exact` is the SHARED REPL assembler behind `cdz calc` AND cdz-wasm's
+        // `repl_eval` — so it must be total + produce a well-formed, codec-safe program over arbitrary
+        // buffer/expr shapes, not just the hand-picked cases. For random (buffer, expr) pairs, both modes
+        // must: (a) NOT PANIC; (b) round-trip through the binary codec (encode→decode structurally-equal —
+        // it is built via `Builder`, so a clean tree); and (c) carry the synthesized nullary entry + its
+        // export (the invariant both consumers rely on to have a runnable entry). Exercises `buffer_items`
+        // shell-unwrap + export-drop + `copy_subtree` over do/module/bare buffers at varied nesting.
+        let mut rng = Rng(0x5eed_c0de_5eed_c0de);
+        for _ in 0..4000 {
+            let buf = crate::sexpr::read(&gen_buffer(&mut rng)).expect("generated buffer reads");
+            let expr_depth = 1 + rng.below(3);
+            let expr =
+                crate::sexpr::read(&gen_expr(&mut rng, expr_depth)).expect("generated expr reads");
+            for exact in [false, true] {
+                let assembled = if exact {
+                    assemble_repl_program_exact(&buf, &expr)
+                } else {
+                    assemble_repl_program(&buf, &expr)
+                };
+                // (b) codec round-trip: the assembled arena is a clean tree that survives encode/decode.
+                let bytes = crate::codec::encode(&assembled);
+                let decoded = crate::codec::decode(&bytes).expect("assembled program decodes");
+                assert!(
+                    assembled.structurally_eq(&decoded),
+                    "assembled REPL program did not survive the codec (exact={exact})"
+                );
+                // (c) the entry + its export are present (both consumers need a runnable entry).
+                let rendered = crate::query::Tree::of(&assembled).to_sexpr();
+                assert!(
+                    rendered.contains(&format!("(def ({REPL_ENTRY})")),
+                    "no synthesized entry (exact={exact}): {rendered}"
+                );
+                assert!(
+                    rendered.contains(&format!("(export {REPL_ENTRY})")),
+                    "entry not exported (exact={exact}): {rendered}"
+                );
+            }
+        }
+    }
 }

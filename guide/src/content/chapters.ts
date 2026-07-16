@@ -247,7 +247,7 @@ export const CHAPTERS: Chapter[] = [
     title: "Metaprogramming",
     blurb: "Code is data: quote a program to an AST value, take it apart, build it up, eval it.",
     section: "What makes Cadenza different",
-    exercises: 2,
+    exercises: 3,
     Component: lazy(() => import("./chapters/Metaprogramming.tsx")),
   },
   {

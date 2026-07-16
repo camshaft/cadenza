@@ -175,6 +175,30 @@ export default function Metaprogramming() {
         spot the value <C>x</C> drops into. Template with holes, holes filled by values.
       </P>
 
+      <H2>Splicing a whole list of elements</H2>
+      <P>
+        Where an unquote drops in <em>one</em> value, an <em>unquote-splicing</em> drops in a whole list of
+        them — each element becomes its own node in the surrounding form. In the conventional surface it's
+        the <C>{"`,@"}</C> marker; here we write it <C>(unquote-splicing xs)</C>. The lift is
+        type-directed: a list of integers splices to <C>Ast.Int</C> leaves, floats to <C>Ast.Float</C>,
+        booleans to <C>Ast.Bool</C>, strings to <C>Ast.Str</C> — the leaf matches the element. Splice a list
+        of floats into a call and the resulting <C>Ast.List</C> has the head plus one node per element —
+        here <C>f</C> and two floats, so <C>3</C> children:
+      </P>
+      <Runnable
+        source={`(def (main)
+  (match (quasiquote (f (unquote-splicing (list 1.5 2.5))))
+    ((Ast.List es) (List.len es))
+    (_ 0)))`}
+      />
+      <P>
+        The two floats became two <C>Ast.Float</C> nodes alongside the <C>Ast.Name</C> for <C>f</C>. One
+        rule to remember: the spliced list must be a <em>compile-time-constant</em> list of scalars — the
+        splice is resolved when the tree is built, not at run time. A list computed from runtime data, or a
+        list whose elements are themselves lists, isn't liftable this way (that's a later capability); the
+        constant-scalar case is what builds a form from a known set of arguments.
+      </P>
+
       <H2>Matching a tree by shape</H2>
       <P>
         Construction has a dual: taking a tree apart by matching its shape. Because a compound form is an{" "}
@@ -280,6 +304,31 @@ export default function Metaprogramming() {
             The argument is the integer <C>14</C> as an AST node — an <C>Ast.Int</C>, the same kind{" "}
             <C>(quote 14)</C> would give. So the hole is <C>(Ast.Int 14)</C>, and <C>eval</C> then runs{" "}
             <C>(triple 14)</C>.
+          </>
+        }
+      />
+
+      <Exercise
+        id="metaprogramming:3"
+        prompt={
+          <>
+            <C>unquote-splicing</C> drops each element of a list in as its own node. Splice a three-element
+            list into <C>(g …)</C> and count the children of the resulting <C>Ast.List</C> — the operator{" "}
+            <C>g</C> plus the three spliced nodes. Fill the list so the count is <C>4</C>.
+          </>
+        }
+        starter={`(match (quasiquote (g (unquote-splicing (list 10 20 ?))))
+  ((Ast.List es) (List.len es))
+  (_             0))`}
+        solution={`(match (quasiquote (g (unquote-splicing (list 10 20 30))))
+  ((Ast.List es) (List.len es))
+  (_             0))`}
+        expected="4"
+        hint={
+          <>
+            Three spliced elements plus the head <C>g</C> is <C>4</C> children, so the list needs three
+            elements — add a third integer like <C>30</C>. Each becomes its own <C>Ast.Int</C> node next to
+            the <C>Ast.Name</C> for <C>g</C>.
           </>
         }
       />

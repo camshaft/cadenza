@@ -493,6 +493,10 @@ pub enum FleetCmd {
     /// that would gate to empty merges) — and surfaces them. This lives here because the audit's value
     /// is inspecting LIVE hub state, which only exists on the fleet machine (a gitignored `.claude/
     /// fleet` means it can't run in CI). It only SURFACES them; pr-sync owns rejecting its own MRs.
+    /// HEALTH LOG: on a real run (not `--dry-run`), a sweep that flagged ANYTHING (re-armed/reaped/
+    /// drain-stall/saturated/queued-but-landed) appends one timestamped tab-separated summary line to
+    /// `.claude/fleet/watchdog.log`, so a finding isn't lost when the terminal scrolls — the operator
+    /// can `grep`/tail it to see recurrence. A clean sweep writes nothing (the log records anomalies).
     /// Meant to run from a
     /// short cron (~every 4 min); one pass then exit. This is the fleet's reliability backbone — a
     /// fleet-wide `/loop` stall froze every agent once, and stopped windows otherwise pile up.
@@ -1884,6 +1888,8 @@ fn watchdog(
 
     let mut rearmed = 0usize;
     let mut checked = 0usize;
+    let mut drain_stalls = 0usize;
+    let mut saturated = 0usize;
     for a in &reg.agents {
         // Only ACTIVE agents with no stop-file are candidates — a stopped/removed agent SHOULD be idle.
         if a.status != "active" || fleet.stopfile(&a.name).exists() {
@@ -1950,6 +1956,7 @@ fn watchdog(
         let pane_idle = hb_age.is_some() && !pane_working;
         let drain_stall = is_probable_drain_stall(&a.role, hub_inbox_depth, pane_idle);
         if drain_stall {
+            drain_stalls += 1;
             eprintln!(
                 "  ⚠ '{}' is IDLE at prompt with {hub_inbox_depth} UNCONSUMED message(s) in its hub \
                  inbox ({}) — probable DRAIN-STALL (loop alive, heartbeat fresh, but not draining; \
@@ -1995,6 +2002,7 @@ fn watchdog(
         // `/compact` proactively while it still submits, or route an operator restart. Report-only, like
         // the other watchdog signals.
         if context_saturation_warning(ctx_pct, CTX_SATURATION_THRESHOLD) {
+            saturated += 1;
             let pct = ctx_pct.unwrap_or(0);
             let tail = if pct >= 100 {
                 "UNRECOVERABLE (/compact can't submit); needs an operator restart"
@@ -2183,6 +2191,55 @@ fn watchdog(
         if dry_run { "DRY-RUN: " } else { "" },
         landed_queued.len()
     );
+
+    // Persist a health record. The signals above go to stdout/stderr, which SCROLLS OFF the terminal —
+    // so a drain-stall/saturation/no-op finding is lost once the pane advances, and the operator can't
+    // review recurrence ("was anything at 100% an hour ago?"). Append a one-line timestamped summary to
+    // `.claude/fleet/watchdog.log` (the trunk-clobber logger set the append-only-log precedent), but
+    // ONLY on a real run (not --dry-run, which is a preview) and ONLY when something is notable — a
+    // clean sweep writes nothing, so the log is a greppable record of ANOMALIES, not noise.
+    if !dry_run {
+        let summary = watchdog_log_line(
+            now,
+            rearmed,
+            reaped,
+            drain_stalls,
+            saturated,
+            landed_queued.len(),
+        );
+        if let Some(line) = summary {
+            let log = fleet.root.join("watchdog.log");
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&log)
+            {
+                use std::io::Write;
+                let _ = writeln!(f, "{line}");
+            }
+        }
+    }
+}
+
+/// Format a watchdog health-sweep summary for the append-only `watchdog.log`, or `None` when the sweep
+/// was CLEAN (nothing re-armed/reaped/flagged) — a clean run writes no line, so the log stays a record
+/// of ANOMALIES only. Pure so the "notable?" gate + format are unit-testable. `now` is epoch seconds
+/// (stamped by the caller; the log is a host-tooling artifact, not compiled-program state).
+fn watchdog_log_line(
+    now: u64,
+    rearmed: usize,
+    reaped: usize,
+    drain_stalls: usize,
+    saturated: usize,
+    queued_but_landed: usize,
+) -> Option<String> {
+    if rearmed == 0 && reaped == 0 && drain_stalls == 0 && saturated == 0 && queued_but_landed == 0
+    {
+        return None;
+    }
+    Some(format!(
+        "{now}\trearmed={rearmed}\treaped={reaped}\tdrain_stalls={drain_stalls}\tsaturated={saturated}\tqueued_but_landed={queued_but_landed}"
+    ))
 }
 
 /// Seconds since the epoch, from the wall clock. (Unlike the Cadenza toolchain, xtask may read the
@@ -4282,6 +4339,24 @@ mod tests {
         assert!(!context_saturation_warning(Some(84), 85)); // just below → quiet
         assert!(!context_saturation_warning(Some(0), 85));
         assert!(!context_saturation_warning(None, 85)); // no marker → never warn
+    }
+
+    #[test]
+    fn watchdog_log_line_writes_only_when_notable() {
+        // A fully clean sweep → None (no log line; the log records anomalies only).
+        assert_eq!(watchdog_log_line(1000, 0, 0, 0, 0, 0), None);
+        // ANY nonzero counter → a tab-separated summary stamped with `now`.
+        assert_eq!(
+            watchdog_log_line(1700000000, 2, 1, 0, 3, 5),
+            Some(
+                "1700000000\trearmed=2\treaped=1\tdrain_stalls=0\tsaturated=3\tqueued_but_landed=5"
+                    .to_string()
+            )
+        );
+        // A single drain-stall is notable on its own.
+        assert!(watchdog_log_line(1, 0, 0, 1, 0, 0).is_some());
+        // A single saturated agent is notable on its own.
+        assert!(watchdog_log_line(1, 0, 0, 0, 1, 0).is_some());
     }
 
     #[test]

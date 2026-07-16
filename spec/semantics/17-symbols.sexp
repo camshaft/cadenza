@@ -397,6 +397,85 @@
   (input  (match "x" (#"add" 1) (_ 0)))
   (error  CDZ0201))
 
+; The scalar boundary above pins the top-level text-literal pattern. The type comes from the PATTERN's
+; kind, so the same CDZ0201 must fire wherever a text-literal pattern sits — a NESTED sum-payload sub-
+; pattern, a SIBLING arm in an otherwise same-kind match, and a TUPLE-element sub-pattern — not only the
+; top-level scalar position. (The scalar fix keyed `pat_ty` on the pattern's origin; these pin that the
+; nested-payload and tuple-element positions do the same, and that a per-arm mix does not let one crossing
+; arm slip through because a sibling arm is same-kind.) A same-kind control alongside each proves the
+; boundary check does not over-reject the legitimate case.
+
+(case "a string-literal pattern in a Symbol sum payload is a type error"
+  (doc    "The NESTED-payload face of the boundary: `(type W (Mk Symbol))` matched with a STRING-literal
+           payload sub-pattern `(Mk \"add\")` over a Symbol payload crosses the nominal boundary → CDZ0201,
+           the sum-payload twin of the top-level `\"add\"`-over-Symbol case. Pins the payload sub-pattern
+           keys its expected type on the PATTERN kind (String) too, not the Symbol payload type — the same
+           discipline as `pattern_constraints` for the nested position.")
+  (input  (do
+            (type W (Mk Symbol))
+            (def (f (: w W)) (match w ((Mk "add") 1) ((Mk _) 0)))
+            (def (main) (f (Mk (Symbol.of "add")))) (export main)))
+  (error  CDZ0201))
+
+(case "a symbol-literal pattern in a String sum payload is a type error"
+  (doc    "The order-flipped nested companion: `(type W (Mk String))` with a SYMBOL-literal payload sub-
+           pattern `(Mk #\"add\")` over a String payload → CDZ0201. Pins the nested-payload boundary holds
+           whichever kind the pattern carries, the payload twin of the flipped top-level case.")
+  (input  (do
+            (type W (Mk String))
+            (def (f (: w W)) (match w ((Mk #"add") 1) ((Mk _) 0)))
+            (def (main) (f (Mk (String.concat "ad" "d")))) (export main)))
+  (error  CDZ0201))
+
+(case "a same-kind symbol-literal payload sub-pattern still dispatches (nested control)"
+  (doc    "The nested control that must NOT over-reject: `(Mk #\"add\")` over a Symbol payload is same-kind,
+           so it dispatches — `f (Mk #\"add\")` → 1. Pins the nested-payload boundary check rejects only the
+           crossing case, not the legitimate same-kind one, alongside the two nested rejects above.")
+  (input  (do
+            (type W (Mk Symbol))
+            (def (f (: w W)) (match w ((Mk #"add") 1) ((Mk _) 0)))
+            (def (main) (f (Mk (Symbol.of "add")))) (export main)))
+  (output (: 1 Int64)))
+
+(case "a crossing text-literal arm is rejected even beside a same-kind sibling arm"
+  (doc    "The per-arm face: a Symbol scrutinee with a same-kind first arm `#\"add\"` AND a crossing STRING
+           sibling arm `\"sub\"` — `(match s (#\"add\" 1) (\"sub\" 2) (_ 0))` — still faults CDZ0201. Pins
+           the expected type is keyed per-arm on each pattern's origin (`probe_pats[i]`), so a legitimate
+           same-kind arm does not let a crossing sibling arm slip through — a whole-match check that keyed on
+           the scrutinee, or only the first arm, would miss this.")
+  (input  (do
+            (def (classify (: s Symbol)) (match s (#"add" 1) ("sub" 2) (_ 0)))
+            (def (main) (classify (Symbol.of "add"))) (export main)))
+  (error  CDZ0201))
+
+(case "the mirror per-arm mix — a crossing #sym sibling over a String scrutinee — is rejected"
+  (doc    "The flipped per-arm case: a String scrutinee with a same-kind `\"add\"` arm and a crossing SYMBOL
+           sibling arm `#\"sub\"` → CDZ0201. Pins the per-arm boundary check fires whichever kind the
+           crossing arm carries, the mirror of the case above.")
+  (input  (do
+            (def (classify (: s String)) (match s ("add" 1) (#"sub" 2) (_ 0)))
+            (def (main) (classify (String.concat "ad" "d"))) (export main)))
+  (error  CDZ0201))
+
+(case "a string-literal sub-pattern in a Symbol tuple element is a type error"
+  (doc    "The TUPLE-element face: `(: p (Tuple Symbol Int64))` matched with `(tuple \"add\" n)` — a STRING
+           literal over the Symbol element — crosses the boundary → CDZ0201. Pins the tuple-element position
+           keys its expected type on the PATTERN kind too, the positional twin of the sum-payload nested
+           cases.")
+  (input  (do
+            (def (f (: p (Tuple Symbol Int64))) (match p ((tuple "add" n) n) ((tuple _ n) 0)))
+            (def (main) (f (tuple (Symbol.of "add") 5))) (export main)))
+  (error  CDZ0201))
+
+(case "a same-kind symbol-literal tuple sub-pattern still dispatches (tuple control)"
+  (doc    "The tuple control: `(tuple #\"add\" n)` over a Symbol element is same-kind, so it dispatches —
+           `f (tuple #\"add\" 5)` binds n=5 → 5. Pins the tuple-element boundary check rejects only the
+           crossing case, the same-kind companion of the tuple reject above.")
+  (input  (do
+            (def (f (: p (Tuple Symbol Int64))) (match p ((tuple #"add" n) n) ((tuple _ n) 0)))
+            (def (main) (f (tuple (Symbol.of "add") 5))) (export main)))
+  (output (: 5 Int64)))
+
 ; ============================================================================================
 ; The reader literal — #"<text>" reads to (Symbol.of "<text>")
 ; ============================================================================================

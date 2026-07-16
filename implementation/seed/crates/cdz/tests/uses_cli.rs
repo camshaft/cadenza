@@ -4,8 +4,9 @@
 //! COMPILER's resolution AND the front-end's span table in ONE process — the cross-process CLI throws
 //! the spans away). The sidecar's reference-finding logic is unit-tested in rcdzc; what is pinned HERE
 //! is the CLI-RENDERING layer only `cdz` does: mapping each referencing node id back to a source
-//! `file:line:col` through the span table, one line per reference, and the empty-result contract. It had
-//! ZERO dedicated integration coverage before this. Drives the built binary over a temp `.sexp` file.
+//! `file:line:col` through the span table, one line per reference (or, under `--json`, one structured
+//! object per reference for an editor's find-all-references), and the empty-result contract. Drives the
+//! built binary over a temp `.sexp` file.
 
 use std::process::Command;
 
@@ -57,6 +58,29 @@ fn uses_reports_each_reference_as_file_line_col() {
             cols.len() == 2 && cols[0].parse::<u32>().is_ok() && cols[1].parse::<u32>().is_ok(),
             "reference renders as file:LINE:COL with numeric line+col: {l}"
         );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn uses_json_emits_one_structured_object_per_reference() {
+    // `--json` emits one machine-readable object per reference — {file,line,col} — the shape an editor
+    // consumes for a find-all-references result without re-parsing the `file:line:col` text. Both output
+    // shapes are computed from the SAME resolved reference ids, so they keep row parity.
+    let (dir, file) = temp_src("json", PROG);
+    let (ok, out, err) = run(&["uses", "inc", &file, "--json"]);
+    assert!(ok, "cdz uses --json should succeed: {err}");
+    let rows: Vec<&str> = out.lines().filter(|l| !l.trim().is_empty()).collect();
+    // `inc` is called three times — three JSON objects, matching the human row count.
+    assert_eq!(rows.len(), 3, "one JSON object per reference: {out}");
+    for row in &rows {
+        assert!(
+            row.trim_start().starts_with('{') && row.trim_end().ends_with('}'),
+            "each row is a JSON object: {row}"
+        );
+        for key in ["\"file\"", "\"line\"", "\"col\""] {
+            assert!(row.contains(key), "row has {key}: {row}");
+        }
     }
     let _ = std::fs::remove_dir_all(&dir);
 }

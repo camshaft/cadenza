@@ -1217,11 +1217,21 @@
   (input  (let ((xs (list "a" "bb"))) `(f ,@xs)))
   (output (: (Ast.List (list (Ast.Name "f") (Ast.Str "a") (Ast.Str "bb"))) Ast)))
 
+(case "unquote-splicing a list of Ast values splices by identity"
+  (doc    "An element already of type `Ast` needs no wrapping — it splices AS-IS (identity), the same
+           identity the active-unquote `ast-lift` gives an already-`Ast` operand. Splicing a list of
+           PRE-BUILT AST fragments `(list (Ast.Int 7) (Ast.Int 8))` into `(f ,@xs)` reifies to
+           `(Ast.List (Ast.Name f) (Ast.Int 7) (Ast.Int 8))` — the fragments appear unchanged, not
+           re-wrapped in another leaf. Pins the `(List Ast)` identity arm of the splice-lift.")
+  (input  (let ((xs (list (Ast.Int 7) (Ast.Int 8)))) `(f ,@xs)))
+  (output (: (Ast.List (list (Ast.Name "f") (Ast.Int 7) (Ast.Int 8))) Ast)))
+
 (case "unquote-splicing a list of nested lists declines — no scalar leaf to lift into"
-  (doc    "The splice-lift wraps a scalar element in its matching `Ast` leaf; a NESTED-list element has
-           no scalar value leaf this increment, so the splice declines (the runtime splice map is not
-           yet built) rather than building a wrong-typed node — reject-don't-miscompile. `(f ,@xs)` with
-           xs=(list (list 1) (list 2)) is a `(List (List Int64))`, outside the scalar leaf set.")
+  (doc    "The splice-lift wraps a scalar element in its matching `Ast` leaf (or splices an `Ast` element
+           by identity); a NESTED-list element is neither a scalar nor an `Ast`, so the splice declines
+           (the runtime splice map is not yet built) rather than building a wrong-typed node —
+           reject-don't-miscompile. `(f ,@xs)` with xs=(list (list 1) (list 2)) is a `(List (List
+           Int64))`, outside the liftable set.")
   (input  (let ((xs (list (list 1) (list 2)))) `(f ,@xs)))
   (declines))
 

@@ -650,6 +650,7 @@ pass	a consuming op on a still-live binding inside one match arm's payload keeps
 pass	a contradictory ARROW annotation on a function value is rejected
 pass	a correctly-annotated function parameter is accepted
 pass	a cross-type variant pattern whose payload width differs is rejected, not miscompiled
+pass	a crossing text-literal arm is rejected even beside a same-kind sibling arm
 pass	a ctor-in-tuple-slot match is expressible by binding the tuple then re-matching
 pass	a curried function can be partially applied
 pass	a curried function-type annotation checks its inner result type against the argument
@@ -1791,6 +1792,8 @@ pass	a runtime-selected trapping branch with a non-zero divisor computes normall
 pass	a same-dimension annotation is the identity under its own unit's conversion
 pass	a same-dimension annotation preserves the value's own scale through a conversion
 pass	a same-dimension quantity annotation whose inner numeric type differs is still an error
+pass	a same-kind symbol-literal payload sub-pattern still dispatches (nested control)
+pass	a same-kind symbol-literal tuple sub-pattern still dispatches (tuple control)
 pass	a same-type sum match is accepted and binds the payload (the control)
 pass	a same-unit quantity join flows and its magnitude reads back
 pass	a scalar BETWEEN two Tuple args with a LIST result
@@ -1888,8 +1891,10 @@ pass	a string literal is normalized to the canonical text form
 pass	a string literal payload refines a ctor list element
 pass	a string passed to a function as a runtime argument is measured by its byte length
 pass	a string spelled like a keyword round-trips as an Ast.Str, not an Ast.Bool or Ast.Name
+pass	a string-literal pattern in a Symbol sum payload is a type error
 pass	a string-literal pattern in a match selects by string equality, distinguishing Unicode
 pass	a string-literal pattern over a symbol scrutinee is a type error
+pass	a string-literal sub-pattern in a Symbol tuple element is a type error
 pass	a success `?` observes an earlier trapping let-init so the trap is not elided
 pass	a success `?` then a failure `?` short-circuits at the second
 pass	a suffixed BigInt literal annotated as Int64 is a type mismatch
@@ -1925,6 +1930,7 @@ pass	a symbol's identity is its content, not how the content was derived
 pass	a symbol-literal match agrees with its if-(= s lit) chain on the DEFAULT fall-through arm
 pass	a symbol-literal match agrees with the equivalent if-(= s lit) chain
 pass	a symbol-literal match reaches the second arm by content
+pass	a symbol-literal pattern in a String sum payload is a type error
 pass	a symbol-literal pattern nested in a variant payload matches by content
 pass	a symbol-literal pattern over a multi-byte symbol matches by content
 pass	a symbol-literal pattern over a string scrutinee is a type error
@@ -3225,6 +3231,7 @@ pass	the maximum valid scalar U+10FFFF round-trips through to-int
 pass	the minimum Int64 literal reads as an integer
 pass	the minimum integer scrutinee misses a zero-based jump table
 pass	the minimum signed 8-bit value is its per-width bound
+pass	the mirror per-arm mix — a crossing #sym sibling over a String scrutinee — is rejected
 pass	the mismatched-pair rejection is order-independent
 pass	the module entrypoint is the def named main regardless of its position
 pass	the multiply-by-zero annihilator does not discard a trapping runtime operand
@@ -3299,6 +3306,7 @@ pass	the widening carries a full-width magnitude through BigInt
 pass	the width-indexed and aliased annotations of one value do not conflict
 pass	the width-indexed and aliased float annotations of one value do not conflict
 pass	the wrapping additive and multiplicative identities preserve a boundary operand exactly
+pass	the wrapping identities preserve a runtime narrow UInt8 exactly (add 0, mul 1)
 pass	the λ-extended kernel Thm stays unforgeable — Thm.Seq with an Abs term outside is CDZ0214
 pass	the ∀-extended kernel Thm stays unforgeable — Thm.Seq of a bogus universal outside is CDZ0214
 pass	three closures with a SHARED signature cross as two resource types
@@ -3413,6 +3421,7 @@ pass	unit is the empty tuple
 pass	unquote in quasiquote evaluates normally and embeds
 pass	unquote outside quasiquote is a syntax error
 pass	unquote with more than one operand inside a quasiquote is malformed
+pass	unquote-splicing a list of Ast values splices by identity
 pass	unquote-splicing a list of nested lists declines — no scalar leaf to lift into
 pass	unquote-splicing lifts a boolean list to Ast.Bool leaves
 pass	unquote-splicing lifts a float list to Ast.Float leaves
