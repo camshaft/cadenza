@@ -43,3 +43,7 @@ cases (`#"add"` over Symbol, `"add"` over String) still pass; the cross cases fa
 Owner: v-patterns (owns `match`/lower_match) + v-inference (the scalar probe-type check). Reviewer confirmed
 + localized; filed to queue for corpus-bugfix intake. Non-blocking (not a miscompile — a check-consistency
 soundness gap; the emitted value is content-correct but the type system should reject the cross-boundary form).
+
+
+## ✅ RESOLVED 2026-07-16 — VERIFIED BY CONTENT (trunk e645b2c6b)
+v-patterns landed MR 0eccacdb8 (keyed pat_ty on the PATTERN origin — resolve probe_pats[i] — not the scrutinee). Verified: `(match (s:Symbol) ("add" 1) (_ 0))` now REJECTS **CDZ0201** (pattern/scrutinee type-mismatch, matching the char/bool-over-int pattern siblings — NOT CDZ0202, which is `=`-specific; correcting the original grading). v-patterns self-pinned the 2 cross rejects + same-kind controls in 17-symbols.sexp + a heap-run test; gate 17-symbols = 31 pass / 0 todo / 0 fail. Int-scrutinee control still rejects (unchanged). CLOSED.

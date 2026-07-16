@@ -24158,6 +24158,50 @@ mod match_engine {
     }
 
     #[test]
+    fn a_partial_builtin_operation_as_an_unconsumed_value_is_rejected_not_silently_shipped() {
+        use crate::testkit::parse;
+        // M227 (co-designed with v-inference): a BUILT-IN OPERATION applied at FEWER args than it takes —
+        // a partial application `(String.slice s 0)` (slice takes 3), `(String.at s)` (takes 2) — as an
+        // UNCONSUMED value (a dead/unexported def body, or an exported def returning the fn) reached
+        // NEITHER `collect_reached_poisons` (nullary+exported only) NOR the lower reject, so it shipped
+        // unflagged by BOTH `cdz check` and `cdz compile`. Now rejected in the all-bodies `type_errors`
+        // walk (a built-in operation needs a runtime closure to be partial — not yet built). The
+        // completion test is LOCAL (spine-top via the parent), so an inner partial an outer application
+        // saturates is NOT flagged.
+        let reject = |src: &str| {
+            crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.message.contains("applied at the wrong arity"))
+        };
+        for src in [
+            "(module m (def (f (: s String)) (String.slice s 0)) (def (main) 0) (export main))",
+            "(module m (def (f (: s String)) (String.at s)) (export f))",
+        ] {
+            assert!(
+                reject(src).is_some(),
+                "a partial built-in operation as an unconsumed value must reject: {src}"
+            );
+        }
+        // NO false positive — the tick-108 regression set + the sharp edges v-inference flagged, all must
+        // stay clean: a FULL builtin application; a curried CONSTRUCTOR spine that completes; user-function
+        // and module-member CURRYING (legitimate — a user fn is partially applicable); UNARY NEGATION
+        // (`Sub` at arity 1, the prefix-neg `lower` builds as `0 - e`); ordinary arithmetic.
+        for ok in [
+            "(module m (def (f (: s String)) (String.slice s 0 1)) (def (main) (f \"hi\")) (export main))",
+            "(module m (type P (Mk Int64 Int64)) (def (main) (match ((P.Mk 3) 4) ((P.Mk a b) (+ a b)))) (export main))",
+            "(module m (def (g (: x Int64) (: y Int64)) (+ x y)) (def (h) (g 1)) (def (main) 0) (export main))",
+            "(do (module lib (def (g (: x Int64) (: y Int64)) (+ x y)) (export g)) (def (h) ((. lib g) 1)) (def (main) 0) (export main))",
+            "(module m (def (f (: x Int64)) (- x)) (def (main) (f 5)) (export main))",
+            "(module m (def (main) (+ 1 2)) (export main))",
+        ] {
+            assert!(
+                reject(ok).is_none(),
+                "a completed / partial-applicable / unary-neg form must NOT be flagged: {ok}"
+            );
+        }
+    }
+
+    #[test]
     fn a_non_type_argument_in_a_type_constructor_names_the_position() {
         // A type-CONSTRUCTOR form with a well-formed NON-TYPE in a type-argument position — `(List 5)`,
         // `(Tuple Int64 5)`, `(-> Int64 5)`, `(Map 5 Int64)` — read as the flat "requires a type, but found

@@ -18,6 +18,18 @@
   (input  (: 42 Bool))
   (error  CDZ0203))
 
+(case "a contradictory ARROW annotation on a function value is rejected"
+  (doc    "The function-value facet of #Annotations Constrain, Never Contradict: `h x = x + 1` has type
+           `(-> Int64 Int64)` (the `+` body-solves the domain to `Int64`), so annotating it `(: h (-> Bool
+           Int64))` is a contradiction and rejects CDZ0203 — the domains disagree. This slipped through when
+           the annotation check read `h`'s type bottom-up as `(-> Any Int64)` (an unannotated parameter is
+           `Any`, and `Any` unifies with `Bool`, masking the mismatch); the check now body-solves the
+           function's domain (matching how the value lowers + reflects), so a contradictory domain is caught.
+           A result contradiction `(: h (-> Int64 Bool))` and an annotated-domain function were already
+           rejected — only the un-annotated DOMAIN slipped.")
+  (input  (do (def (h x) (+ x 1)) (def (main) (: h (-> Bool Int64))) (export main)))
+  (error  CDZ0203))
+
 ; The TYPE OPERAND of an annotation `(: expr T)` must itself DENOTE A TYPE — validating what stands in
 ; type position is the dual of checking it against the value. A non-type there (an unbound name, an
 ; integer/compound VALUE, an arbitrary expression, a non-constructor type applied to arguments) is

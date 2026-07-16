@@ -114,6 +114,18 @@ export default function NotebookPage() {
 
   // A widget change: debounce (a slider drag fires many events), then recompute only the dependent cells.
   const debounce = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // On unmount (navigating away from /notebook), clear any pending debounced recompute AND bump runToken
+  // so a run chain still in flight sees a stale token and stops calling setStates/setValues — otherwise a
+  // slow compile/run finishing after unmount triggers a React post-unmount state-update warning + leaked
+  // work (PR #483).
+  useEffect(() => {
+    return () => {
+      if (debounce.current) clearTimeout(debounce.current);
+      runToken.current++;
+    };
+  }, []);
+
   const onWidgetChange = useCallback(
     (name: string, value: number | boolean | string) => {
       // Commit the control's value immediately (the slider thumb tracks the drag). valuesRef keeps a live
