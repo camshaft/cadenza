@@ -201,3 +201,52 @@
            `(Some 9)`. The match-arm companion of the if-branch case.")
   (input  (do (def (main) (match 0 (0 (let ((x (try (Some 9)))) (Some x))) (_ (None unit)))) (export main)))
   (output (: (Some 9) (Option Int64))))
+
+; --- The strict spine around a short-circuiting `?`: effects, ordering, and the cut point ----------
+; The trapping-earlier-init pin above grades the compile-provable face (CDZ0304). These grade the
+; RUNTIME spine: an effectful init BEFORE a failing `?` is observed (performs exactly once), a
+; success-`?` then a failure-`?` cuts at the second, and an init AFTER the failing `?` — including a
+; provably-trapping one — never evaluates (the short-circuit is the spine's cut point; only earlier
+; inits are observed). Promoted from passing breaker probes.
+
+(case "an effectful init before a failing `?` performs exactly once"
+  (doc    "`(let ((a (Ctr.tick)) (x (try (None unit)))) (Some (+ a x)))` under a counter handler —
+           the tick sits on the strict spine BEFORE the `?`, so it performs (state advances 0→1)
+           and THEN the boundary short-circuits to None (→ -1); the trailing `(Ctr.tick)` reads 1 →
+           0. A fold that discarded the earlier effectful init answers 1·(-1) + 0 = -1; one that
+           duplicated it answers 1. The runtime-effect companion of the trapping-earlier-init
+           CDZ0304 pin.")
+  (input  (do
+            (effect Ctr (op tick (-> Unit Int64)))
+            (def (opt) (let ((a (Ctr.tick unit)) (x (try (None unit)))) (Some (+ a x))))
+            (def (main)
+              (handle Ctr 0 ((tick (_) s (resume s (+ s 1))))
+                (+ (match (opt) ((Some v) v) ((None _) -1))
+                   (Ctr.tick unit))))
+            (export main)))
+  (output (: 0 Int64)))
+
+(case "a success `?` then a failure `?` short-circuits at the second"
+  (doc    "`x = (try (Some 1))` unwraps (the happy path); the SECOND `?` sees None and cuts the
+           boundary → the caller matches None → -1. Pins the chain semantics: each `?` is its own cut
+           point, and a successful unwrap does not immunize the rest of the body (nor does the
+           short-circuit rewind the already-bound x).")
+  (input  (do
+            (def (opt) (let ((x (try (Some 1)))) (let ((y (try (None unit)))) (Some (+ x y)))))
+            (def (main)
+              (match (opt) ((Some v) v) ((None _) -1)))
+            (export main)))
+  (output (: -1 Int64)))
+
+(case "an init after the failing `?` never evaluates — even a provably-trapping one"
+  (doc    "`(let ((x (try (None unit)))) (let ((y (/ 1 0))) …))` — the `?` cuts the spine FIRST, so
+           the later `(/ 1 0)` init is genuinely unreachable: the function yields None → -1, no trap
+           and no CDZ0304 (contrast the EARLIER-init pin above, where the same ÷0 before the `?` must
+           fail the build). Together the two pins locate the cut point exactly: earlier inits are
+           observed, later inits are dead.")
+  (input  (do
+            (def (opt) (let ((x (try (None unit)))) (let ((y (/ 1 0))) (Some (+ x y)))))
+            (def (main)
+              (match (opt) ((Some v) v) ((None _) -1)))
+            (export main)))
+  (output (: -1 Int64)))

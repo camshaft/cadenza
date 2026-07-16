@@ -1617,6 +1617,7 @@ pass	a string literal payload refines a ctor list element
 pass	a string passed to a function as a runtime argument is measured by its byte length
 pass	a string spelled like a keyword round-trips as an Ast.Str, not an Ast.Bool or Ast.Name
 pass	a string-literal pattern in a match selects by string equality, distinguishing Unicode
+pass	a success `?` then a failure `?` short-circuits at the second
 pass	a suffixed BigInt literal annotated as Int64 is a type mismatch
 pass	a suffixed Rational literal annotated as Int64 is a type mismatch
 pass	a sum TYPE and its constructors are imported by a wildcard and constructed in the entry
@@ -1917,6 +1918,7 @@ pass	an effect-built NESTED-compound value escapes the handle and a nested proje
 pass	an effect-built heap list bound in a let is USED TWICE and retained across both uses
 pass	an effectful condition is performed exactly once under the operator hoist
 pass	an effectful condition of a same-constructor if is performed exactly once
+pass	an effectful init before a failing `?` performs exactly once
 pass	an effectful match scrutinee is performed exactly once across a two-position sink
 pass	an effectful shared operand performs after the condition, exactly once
 pass	an element is projected from a runtime-constructed tuple
@@ -1989,6 +1991,7 @@ pass	an in-program handler OVERRIDES an effect's peer binding (the test-mock, no
 pass	an in-range constant argument to a narrow parameter computes at the parameter width
 pass	an indexed read is not shared across a shadowing rebinding
 pass	an indexed read of an updated list is not shared with the original's
+pass	an init after the failing `?` never evaluates — even a provably-trapping one
 pass	an inline-never definition is emitted once and called
 pass	an inline-never definition with a const dictionary still monomorphizes the dictionary
 pass	an inlined multi-use checked-arith argument is shared and computed directly into its slot
