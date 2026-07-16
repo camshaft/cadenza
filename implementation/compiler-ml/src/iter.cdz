@@ -229,6 +229,34 @@ def iter-map-keys(m) = Iter.FromList(map-keys-list(Map.to-list(m)))
 /// Iterate a MAP's VALUES in CANONICAL key order (each value paired with its key's sort position).
 def iter-map-values(m) = Iter.FromList(map-vals-list(Map.to-list(m)))
 
+// ── EntryIter: a pull-iterator over a map's (key, value) ENTRIES ─────────────────────────────────
+// The main `Iter` is monomorphic over the Int64 ELEMENT; a map ENTRY is a `(Int64, Int64)` pair, a
+// distinct element shape. `EntryIter` is the small companion that carries pairs, so `iter-map-entries`
+// can walk key AND value together in one pass — which `iter-map-keys`/`iter-map-values` (Int64 halves)
+// cannot. Minimal on purpose (a `next` + the entry consumers below), NOT a full parallel transformer
+// API; the general pair/tuple-element iterator is the any-element-type follow-up (gated on the
+// recursive-generic tie fix). Entries come in CANONICAL KEY order (from `Map.to-list`).
+type EntryIter =
+  | EFromList(List(Tuple(Int64, Int64)))
+
+/// Step an `EntryIter`: yield `Option(((key, value), rest))`, `None` at exhaustion. Total and pure.
+def entry-next(it) = match it with
+  | EntryIter.EFromList(xs) => (match xs with
+    | [] => Option.None(unit)
+    | [h, .. t] => Option.Some((h, EntryIter.EFromList(t))))
+
+/// Iterate a MAP's ENTRIES as `(key, value)` pairs in CANONICAL key order.
+def iter-map-entries(m) = EntryIter.EFromList(Map.to-list(m))
+
+/// Left fold over entries: thread `acc` through `f(acc, key, value)` for every entry, in key order.
+def fold-entries(it, acc, f: Int64 -> Int64 -> Int64 -> Int64) = match entry-next(it) with
+  | Option.None(_) => acc
+  | Option.Some(p) => (match p with | (kv, rest) => (match kv with | (k, v) =>
+      fold-entries(rest, f(acc, k, v), f)))
+
+/// Number of entries the entry-iterator yields (the map's entry count).
+def entry-count(it) = fold-entries(it, 0, fn(a, _k, _v) => a + 1)
+
 // ── Transformers (lazy — build a wrapping step, force nothing) ──────────────────────────────────
 
 /// Map `f` over every element.
@@ -1209,5 +1237,42 @@ def is-empty-of-nonempty() = if is-empty(range(0, 3)) then trap("0..3 is not emp
 def is-empty-of-filtered-out() =
   // an iterator whose every element is filtered away is empty
   if is-empty(filter(range(0, 5), fn(x) => x > 100)) then unit else trap("all filtered -> empty")
+
+// ── iter-map-entries: walk (key, value) pairs together in one pass ───────────────────────────────
+
+@test
+def entries-fold-key-times-value() =
+  // {2:10, 3:100} -> sum of key*value = 2*10 + 3*100 = 320 (key AND value in one pass)
+  let m = Map.insert(Map.insert(Map.empty(), 2, 10), 3, 100) in
+  if fold-entries(iter-map-entries(m), 0, fn(acc, k, v) => acc + k * v) == 320 then unit else trap("320")
+
+@test
+def entries-count-is-entry-count() =
+  // {1:_,2:_,3:_} with a dup key -> 3 distinct entries
+  let m = Map.insert(Map.insert(Map.insert(Map.insert(Map.empty(), 1, 1), 2, 2), 3, 3), 1, 9) in
+  if entry-count(iter-map-entries(m)) == 3 then unit else trap("3 entries")
+
+@test
+def entries-canonical-key-order() =
+  // first entry (by entry-next) has the smallest key; fold that picks the first key = 2 of {5,2,8}
+  let m = Map.insert(Map.insert(Map.insert(Map.empty(), 5, 50), 2, 20), 8, 80) in
+  match entry-next(iter-map-entries(m)) with
+    | Option.None(_) => trap("nonempty")
+    | Option.Some(p) => (match p with | (kv, _) => (match kv with | (k, v) =>
+        if k == 2 then (if v == 20 then unit else trap("first value 20")) else trap("first key should be min 2")))
+
+@test
+def entries-of-empty-map() =
+  let m = Map.remove(Map.insert(Map.empty(), 1, 10), 1) in
+  if entry-count(iter-map-entries(m)) == 0 then unit else trap("empty map has no entries")
+
+@test
+def entries-sum-keys-matches-iter-map-keys() =
+  // fold-entries summing keys agrees with sum(iter-map-keys …) — the two map views are consistent
+  let m = Map.insert(Map.insert(Map.insert(Map.empty(), 4, 40), 6, 60), 2, 20) in
+  if fold-entries(iter-map-entries(m), 0, fn(acc, k, _v) => acc + k) == sum(iter-map-keys(m)) then
+    unit
+  else
+    trap("entry-key-sum ≠ iter-map-keys sum")
 
 export { Iter.* }
