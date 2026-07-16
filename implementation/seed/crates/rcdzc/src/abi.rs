@@ -19,6 +19,11 @@
 //# The build tool's derivation entry MUST take its inputs as a list of kinded artifacts, each a named kind paired with its bytes, so that the canonical source tree is one artifact among an open set and the input channel admits further inputs — additional source units of a multi-unit program, a build cache, or a previously derived dependency — without changing the entry's arity.
 //= spec/contracts/build-tool-interface.md#the-tool-s-inputs-are-a-kinded-artifact-list
 //# The kind of an artifact MUST identify how its bytes are interpreted, so that a consumer selects an input by kind rather than by position, and an input kind the tool does not recognize is reported as a diagnostic rather than silently ignored.
+// An `Artifact` carries only `bytes` (with a kind tag) across the tool boundary — the compiler's
+// derivation interface takes and returns BYTE SEQUENCES, never a live in-memory toolchain value, so no
+// internal representation crosses the boundary:
+//= spec/capabilities/self-hosting-surface.md#a-toolchain-s-internal-values-do-not-cross-the-boundary
+//# A compiler's derivation interface MUST accept its input and produce its output as byte sequences at the component boundary, so that a toolchain's internal values do not cross it.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Artifact {
     pub kind: String,
