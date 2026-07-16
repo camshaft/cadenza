@@ -95,7 +95,7 @@ function ChartView({ chart, series }: { chart: "line" | "bar" | "scatter"; serie
   // read with a scale instead of bare lines.
   const tick = (v: number) => (Number.isInteger(v) ? `${v}` : v.toFixed(2).replace(/\.?0+$/, ""));
 
-  return (
+  const svg = (
     <svg viewBox={`0 0 ${W} ${H}`} className="w-full max-w-2xl" role="img" aria-label="chart">
       {/* axes */}
       <line x1={PAD} y1={H - PAD} x2={W - PAD} y2={H - PAD} stroke="#475569" strokeWidth={1} />
@@ -138,6 +138,27 @@ function ChartView({ chart, series }: { chart: "line" | "bar" | "scatter"; serie
         );
       })}
     </svg>
+  );
+
+  // Legend: only meaningful when there's more than one NAMED series (a single series is unnamed). Shows a
+  // colored swatch per series so a reader can tell a multi-y / record-list chart's series apart.
+  const named = series.filter((s) => s.name !== "");
+  const legend = named.length > 1 && (
+    <div className="mt-1 flex flex-wrap gap-3 text-xs text-slate-400" data-testid="chart-legend">
+      {series.map((s, si) => (
+        <span key={si} className="inline-flex items-center gap-1">
+          <span className="inline-block h-2 w-3 rounded-sm" style={{ backgroundColor: HUES[si % HUES.length] }} />
+          {s.name}
+        </span>
+      ))}
+    </div>
+  );
+
+  return (
+    <div>
+      {svg}
+      {legend}
+    </div>
   );
 }
 
