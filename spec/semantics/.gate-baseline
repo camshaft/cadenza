@@ -1562,6 +1562,7 @@ pass	a recursive sum built then folded by a NESTED recursive call composes on ev
 pass	a recursive sum consumer whose arguments are recursive sum producers compiles
 pass	a recursive sum recurses THROUGH a record-typed payload
 pass	a recursive sum type works with pattern matching
+pass	a recursive tag function const-folds to a compile-time Ast
 pass	a recursive unifier distinguishes arrow components through the payload slots
 pass	a recursive user sum built in a lib is folded by the entry over the imported type
 pass	a recursive user sum type is built at run time and renders its variant names
@@ -2779,6 +2780,7 @@ pass	eval of a partially-exported type's WITHHELD constructor is rejected
 pass	eval of a quasiquote splicing a compile-time-known value
 pass	eval of a quasiquote splicing a string works through String ops
 pass	eval of a quasiquote-built form with a float unquote folds
+pass	eval of a quoted RECURSIVE call folds through the compile-time evaluator
 pass	eval of a quoted boolean connective short-circuits
 pass	eval of a quoted boolean executes it to the boolean value
 pass	eval of a quoted conditional reduces its comparison condition first
