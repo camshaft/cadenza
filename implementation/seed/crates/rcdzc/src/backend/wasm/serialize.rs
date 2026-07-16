@@ -1145,6 +1145,7 @@ pub fn runtime_resource_core_module_form_ex(
         funcs,
         imports,
         &[],
+        false, // no leading ops → module selector irrelevant (peer default)
         export_abs,
         form,
         methods,
@@ -1160,11 +1161,19 @@ pub fn runtime_resource_core_module_form_ex(
 /// indices `0..e` (so `Lir::CallExternImport(i)` = `call i` resolves), then the runtime ops shift to
 /// `e..e+k`, resource-new/rep to `e+k`/`e+k+1`, defined funcs from `e+k+2`. `extern_fns` EMPTY = byte-
 /// identical to `runtime_resource_core_module_form_ex` (every `e`-term drops to 0).
+///
+/// LEADING-MODULE SELECTOR: `leading_is_host` chooses the module the leading `e` ops import from — `"peer"`
+/// (the cross-component extern shape, default `false`) or `"host"` (the host-effect shape, the
+/// host-resource-escape fusion). The ONLY byte-difference is the import item's module STRING at each leading
+/// op; the core-func INDEX layout (leading ops `0..e`, runtime `e..e+k`, resource intrinsics, defined funcs)
+/// is IDENTICAL because a func import's index does not depend on its module name. So one builder serves both
+/// the peer-resource and host-resource fusions (the escape-form + method machinery stays shared).
 #[allow(clippy::too_many_arguments)]
 pub fn runtime_resource_core_module_form_ex2(
     funcs: &[SelectedFunc],
     imports: &[&RtOp],
     extern_fns: &[crate::backend::wasm::host::ExternImport],
+    leading_is_host: bool,
     export_abs: u32,
     form: EscapeForm,
     methods: &[CoreMethod],
@@ -1239,7 +1248,13 @@ pub fn runtime_resource_core_module_form_ex2(
     let mut import_index: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
     let mut import_items = Vec::new();
     for (i, f) in extern_fns.iter().enumerate() {
-        import_items.extend_from_slice(&extern_import_item(&f.op, i as u32));
+        // The leading ops import from `"host"` (host-effect fusion) or `"peer"` (cross-component extern) —
+        // same func-index `i`, module string is the only difference (see `leading_is_host`).
+        import_items.extend_from_slice(&if leading_is_host {
+            host_import_item(&f.op, i as u32)
+        } else {
+            extern_import_item(&f.op, i as u32)
+        });
     }
     for (j, o) in imports.iter().enumerate() {
         let ti = (e + j) as u32;

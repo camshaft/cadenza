@@ -48608,6 +48608,28 @@ mod stage1 {
     }
 
     #[test]
+    fn a_scalar_host_op_result_escaping_as_a_resource_emits_a_valid_component() {
+        // HOST-RESOURCE-ESCAPE FUSION (`envelope::assemble_host_runtime_resource`, the host-side mirror of
+        // `assemble_extern_runtime_resource`). A host-delegated effect (NOT peer-bound) reached in an
+        // entrypoint whose RESULT escapes as a runtime resource — `main(x) = host H in (tuple (H.h x) x)`,
+        // the `(tuple …)` leaving as a resource — previously declined ("a host-delegated effect in an
+        // entrypoint whose result escapes as a runtime resource is not yet emitted"). Now the core module
+        // lays the host ops as leading `"host"` imports (`runtime_resource_core_module_form_ex2` with
+        // `leading_is_host = true`) and the envelope composes the host interface + the runtime + the
+        // published resource. Emits a VALID component (wasmtime parses it); a live run threads the host
+        // response and returns `(tuple <resp> x)` as the escaped resource. SCOPE: scalar/unit host ops (a
+        // String-param host op takes the shared-memory `_mem` variant, a later increment). Routed by
+        // v-peer-linking + concierge (host-envelope seam); byte-reviewed by v-peer-linking.
+        let src = "(do (effect H (op h (-> Int64 Int64))) \
+                   (def (main (: x Int64)) (host (H) (\"tuple\" (H.h x) x))) (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src)))
+            .expect("a scalar host op result-escaping as a resource now emits");
+        let engine = wasmtime::Engine::default();
+        wasmtime::component::Component::from_binary(&engine, &bytes)
+            .expect("the composed host-resource-escape component must be valid");
+    }
+
+    #[test]
     fn two_performs_across_a_let_fold_via_the_one_shot_refold() {
         // E5 TWO-HOLE across a `let`: a hole in a let INIT and another in the BODY. The one-shot refold
         // (`leading_strict_hole` descends the `let`'s inits then body) folds it: leading flip in the INIT →
@@ -71023,27 +71045,45 @@ mod cross_component_oracle {
     }
 
     // ------------------------------------------------------------------------------------------------
-    // PL38 — the REMAINING fused-resource scope edge declines cleanly: a HOST-delegated effect (not
-    // peer-bound) from a resource-escaping entrypoint. The host+resource fusion is separate from the
-    // peer+resource one; this shape must DECLINE with an actionable message (consume to a scalar), NOT emit
-    // an invalid component. (The two-distinct-peer-interfaces edge is no longer a decline — PL43 runs it.)
+    // PL38 → NOW EMITS: a SCALAR host-delegated effect (not peer-bound) from a resource-escaping entrypoint
+    // is the host-side mirror of the peer+resource fusion, and now composes via
+    // `envelope::assemble_host_runtime_resource` (the core module lays the host ops as leading `"host"`
+    // imports via `runtime_resource_core_module_form_ex2(leading_is_host = true)`). Was a clean decline
+    // (PL38); now emits a VALID component. (A STRING-param host op still declines — the shared-memory `_mem`
+    // variant is a later increment; PL38b below pins that clean decline.)
     // ------------------------------------------------------------------------------------------------
     #[test]
-    fn a_host_effect_from_a_resource_escaping_entrypoint_declines_cleanly() {
+    fn a_scalar_host_effect_from_a_resource_escaping_entrypoint_emits() {
         use crate::testkit::parse;
-        // main RETURNS a tuple built from a HOST-delegated effect (H is NOT bound to a peer).
+        // main RETURNS a tuple built from a SCALAR HOST-delegated effect (H is NOT bound to a peer).
         let host_res = "(do \
             (effect H (op h (-> Int64 Int64))) \
             (def (main (: x Int64)) (host (H) (tuple (H.h x) x))) \
             (export main))";
-        let err2 = crate::compile::compile_component(&crate::codec::encode(&parse(host_res)))
-            .expect_err("a host-effect resource escape must DECLINE, not miscompile");
+        let bytes = crate::compile::compile_component(&crate::codec::encode(&parse(host_res)))
+            .expect(
+                "a scalar host-effect resource escape now emits (assemble_host_runtime_resource)",
+            );
+        let engine = wasmtime::Engine::default();
+        wasmtime::component::Component::from_binary(&engine, &bytes)
+            .expect("the host-resource-escape component must be valid");
+    }
+
+    // PL38b — a STRING-param host op from a resource-escaping entrypoint STILL declines cleanly (the
+    // shared-memory `_mem` variant is a later increment). The decline names the effect kind + the workaround.
+    #[test]
+    fn a_string_param_host_effect_from_a_resource_escaping_entrypoint_declines_cleanly() {
+        use crate::testkit::parse;
+        let host_res = "(do \
+            (effect H (op h (-> String Int64))) \
+            (def (main (: x Int64)) (host (H) (tuple (H.h \"k\") x))) \
+            (export main))";
+        let err = crate::compile::compile_component(&crate::codec::encode(&parse(host_res)))
+            .expect_err("a STRING-param host-effect resource escape must decline (the _mem variant is later)");
         assert!(
-            err2.message.contains("host-delegated effect")
-                && err2.message.contains("escapes as a runtime resource")
-                && err2.message.contains("scalar"),
-            "the host+resource decline must name the effect kind + workaround: {}",
-            err2.message
+            err.message.contains("STRING parameter") && err.message.contains("resource-escaping"),
+            "the string-host+resource decline must name the string param + the _mem increment: {}",
+            err.message
         );
     }
 
