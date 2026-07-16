@@ -10948,6 +10948,45 @@ mod runtime_ops {
     }
 
     #[test]
+    fn a_deep_list_push_chain_marks_dup_sites_in_bounded_time_not_exponential() {
+        // REGRESSION (perf): `mark_binder_dups`'s `seq` pre-pass used to detect a sibling's binder
+        // occurrence by calling `mark_binder_dups` itself (the full two-pass walk). Invoked from EVERY
+        // nested `seq` level, that re-walked a deeply-nested term's inner subtree once per enclosing level —
+        // EXPONENTIAL: a `push(push(push(xs)))` chain compiled in 12ms / 275ms / 30s+ TIMEOUT at depth
+        // 10/20/30. Fixed by using the cheap memoized `binder_occurs` scan in the pre-pass (marks no sites).
+        // Guard: COMPILE a depth-N push-chain over a runtime list param (returns `List.len` so it is a valid
+        // scalar-export component — the dup-marker still walks the whole chain). Paired N vs 2N timing, MIN
+        // ratio (cancels harness contention); an exponential blows the ratio past any linear bound.
+        fn push_chain(n: usize) -> String {
+            let opens: String = "((. List push) ".repeat(n);
+            let closes: String = (1..=n).map(|i| format!(" {i})")).collect();
+            format!(
+                "(module m (def (f (: xs (List Int64))) ((. List len) {opens}xs{closes})) \
+                 (def (main) (f (list))) (export main))"
+            )
+        }
+        fn compile_ms(src: &str) -> f64 {
+            let start = std::time::Instant::now();
+            let _ = crate::compile::compile_component(&crate::codec::encode(&parse(src)));
+            start.elapsed().as_secs_f64() * 1000.0
+        }
+        let (narrow, wide) = (push_chain(20), push_chain(40));
+        compile_ms(&narrow); // warm one-time init before the timed pairs
+        let mut best = f64::INFINITY;
+        for _ in 0..6 {
+            let t20 = compile_ms(&narrow);
+            let t40 = compile_ms(&wide);
+            best = best.min(t40 / t20.max(0.1));
+        }
+        assert!(
+            best < 4.0,
+            "a deep List.push chain's dup-site marking must not be exponential (was 2^depth via the \
+             `seq` pre-pass calling `mark_binder_dups`; now the memoized `binder_occurs` scan): depth \
+             20→40 grew {best:.1}× (min paired ratio); polynomial is a few×, exponential is astronomical"
+        );
+    }
+
+    #[test]
     fn a_wide_literal_match_builds_its_decision_tree_in_bounded_time() {
         // REGRESSION (perf): `lower::build_tree`'s lit-test arm compiles a wide literal match
         // (`(match t ((tuple 0 a) …) ((tuple 1 a) …) … (_ -1))`) as an N-DEEP chain of `LitTest` nodes.

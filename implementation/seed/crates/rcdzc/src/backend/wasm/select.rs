@@ -910,6 +910,33 @@ fn cont_child_ids(cont: &crate::core::SumCont, cs: &mut Vec<StructId>) {
 /// sees a later sibling's use); branches (`if`/`match` arms) are independent paths, each processed with
 /// the SAME incoming `live_after` (a use in a sibling arm is not "later" on this arm's path). The position
 /// (borrow-vs-consume) of each child mirrors [`binding_escapes`] exactly (its `tail_borrowed` = borrow).
+/// Does `binder` occur anywhere in the subtree at `id`? A CHEAP occurrence-only walk (a plain membership
+/// scan over `core_child_ids` — NO site marking, NO borrow/consume/liveness logic), used by `seq`'s
+/// pre-pass to decide whether a sibling references the binder. ⚠ It must NOT call `mark_binder_dups`: that
+/// full two-pass walk, invoked from every `seq` level's pre-pass, is EXPONENTIAL on a deeply-nested term
+/// (a `push(push(push(xs)))` chain re-walks its inner subtree once per enclosing level, 2^depth). This
+/// occurrence scan visits each node of the subtree ONCE per call (the enclosing `seq` levels make it
+/// O(depth × subtree) overall — polynomial, not exponential). Memoized via `cache` so a shared subterm
+/// (a DAG re-walk) is not re-scanned within one query.
+fn binder_occurs(
+    db: &mut Db,
+    id: StructId,
+    binder: StructId,
+    cache: &mut HashMap<StructId, bool>,
+) -> bool {
+    if let Some(&hit) = cache.get(&id) {
+        return hit;
+    }
+    let here = match core_of(db, id) {
+        Core::LocalRef { binder: b } | Core::Param { binder: b } => b == binder,
+        _ => core_child_ids(db, id)
+            .into_iter()
+            .any(|c| binder_occurs(db, c, binder, cache)),
+    };
+    cache.insert(id, here);
+    here
+}
+
 fn mark_binder_dups(
     db: &mut Db,
     id: StructId,
@@ -976,19 +1003,15 @@ fn mark_binder_dups_inner(
                la_in: bool,
                s: &mut HashSet<StructId>|
      -> bool {
-        // Pre-pass: does `binder` occur in each child? (probe into a throwaway site set — we only want the
-        // boolean; the real marking happens in the main pass with correct `live_after`).
+        // Pre-pass: does `binder` occur in each child? Use the CHEAP occurrence scan (`binder_occurs`), NOT
+        // `mark_binder_dups` — the latter's full two-pass walk, invoked from every nested `seq`'s pre-pass,
+        // is EXPONENTIAL on a deep term (a `push(push(push(xs)))` chain: each level re-walks its inner
+        // subtree, 2^depth — a real cdz-compile timeout at depth ~30). The occurrence scan is memoized and
+        // marks no sites; the real site marking happens in the main pass below with the correct `live_after`.
+        let mut occ_cache: HashMap<StructId, bool> = HashMap::new();
         let mut occurs: Vec<bool> = Vec::with_capacity(children.len());
         for &(c, _) in children.iter() {
-            let mut throwaway = HashSet::new();
-            occurs.push(mark_binder_dups(
-                db,
-                c,
-                binder,
-                false,
-                false,
-                &mut throwaway,
-            ));
+            occurs.push(binder_occurs(db, c, binder, &mut occ_cache));
         }
         let any = occurs.iter().any(|&o| o);
         // Main pass, right-to-left so a later sibling's use still flows into an earlier one's `live_after`;
