@@ -93,6 +93,12 @@ export default function SizedIntegers() {
         <C>Int8.wrap</C> gives you the low 8 bits. Same two choices, at every width.
       </Note>
 
+      <P>
+        Integers — checked, sized, never blurred — are only half the number line. Next, the other half:
+        the approximate, real-valued world of <em>floating-point numbers</em>, with its own operators and
+        its own honest tradeoff.
+      </P>
+
       <H2>Your turn</H2>
       <Exercise
         id="sized-integers:1"

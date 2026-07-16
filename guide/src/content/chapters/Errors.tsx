@@ -173,6 +173,15 @@ export default function Errors() {
         the same exhaustive <C>match</C>, now with a payload that explains the failure.
       </P>
 
+      <P>
+        <C>Option</C>, <C>Result</C>, and <C>?</C> all answer the same question — what happens when a step
+        might not deliver — by making the outcome a <em>value the caller must handle</em>. The next chapter
+        turns that inside out: with <em>effects &amp; handlers</em>, a function <em>performs</em> an
+        operation and lets whoever runs it decide what it means — the caller answers, instead of just
+        inspecting a returned value. It's the pivot from the fundamentals into what makes Cadenza its own
+        language.
+      </P>
+
       <H2>Your turn</H2>
       <Exercise
         id="errors:1"
