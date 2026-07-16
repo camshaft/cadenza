@@ -1531,6 +1531,235 @@ pub fn assemble_host_runtime(
     out
 }
 
+/// The HOST-STRING-PARAM + value-heap RUNTIME shape: [`assemble_host_runtime`] PLUS the shared-memory
+/// core module that [`assemble_host_mem`] adds, so a host op taking a `string` parameter composes with the
+/// runtime import space. The `(ptr,len)` a `string` lowers to is read from a memory both the program and
+/// each host op's canon-lower bind (a separate `shared_mem_module`, breaking the lower↔instance
+/// circularity), while the runtime ops lower memoryless (they carry scalar `u32` handles, not strings).
+///
+/// Delta over `assemble_host_runtime` (which embeds ONLY the program module and has 3 core instances):
+/// insert the mem module as core MODULE 0 (program becomes module 1) + its instance as core INSTANCE 0 +
+/// a `mem`.`mem` → core memory 0 alias; the host ops lower with `canon_lower_item_mem(_, 0)`; and the
+/// program instance is instantiated with `"mem"` (core instance 0) alongside `"host"` and `"heap"`.
+///
+/// Index spaces (`h`/`k`/`m` = host/runtime/export counts): core memory `0`; lowered HOST ops → core funcs
+/// `0..h`; lowered RUNTIME ops → core funcs `h..h+k`; boundary core-aliases → core funcs `h+k..h+k+m`.
+/// Component: host effect instance-type → type 0; runtime instance-type → type 1; boundary functypes →
+/// types `2..=1+m`; host op aliases → comp funcs `0..h`; runtime op aliases → comp funcs `h..h+k`; lifts →
+/// comp funcs `h+k..h+k+m`; imported effect instance → comp instance 0; imported runtime → comp instance 1.
+/// Core instances: mem `0`, host-ops `1`, heap-ops `2`, program `3`. Core modules: mem `0`, program `1`.
+///
+/// SCOPE: host + value-heap runtime, SINGLE effect, scalar/unit host RESULT, `string`-or-scalar host params.
+pub fn assemble_host_runtime_mem(
+    core: &[u8],
+    exports: &[BoundaryExport],
+    iface: &str,
+    host_fns: &[HostFn],
+    imports: &[&RtOp],
+    import_name: &str,
+) -> Vec<u8> {
+    let h = host_fns.len();
+    let k = imports.len();
+    let m = exports.len();
+
+    // sec 7: TWO instance-types — host effect (comp type 0) then runtime (comp type 1) — identical to the
+    // memoryless host+runtime shape (the shared memory is a CORE detail, invisible to the component types).
+    let type_sec = {
+        let host_it = {
+            let mut decls = Vec::new();
+            for (i, f) in host_fns.iter().enumerate() {
+                decls.push(0x01);
+                decls.extend_from_slice(&f.comp_functype);
+                decls.push(0x04);
+                decls.extend_from_slice(&extern_name(&super::kebab_extern_name(&f.op)));
+                decls.push(0x01);
+                uleb128(i as u64, &mut decls);
+            }
+            let mut it = vec![0x42];
+            it.extend_from_slice(&wasm_vec(2 * h, &decls));
+            it
+        };
+        let rt_it = {
+            let mut decls = Vec::new();
+            for (i, op) in imports.iter().enumerate() {
+                decls.push(0x01);
+                decls.extend_from_slice(&op_comp_functype(op));
+                decls.push(0x04);
+                decls.extend_from_slice(&extern_name(op.name));
+                decls.push(0x01);
+                uleb128(i as u64, &mut decls);
+            }
+            let mut it = vec![0x42];
+            it.extend_from_slice(&wasm_vec(2 * k, &decls));
+            it
+        };
+        let mut items = host_it;
+        items.extend_from_slice(&rt_it);
+        section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
+    };
+
+    // sec 10: import the effect interface (comp type 0, under the kebab effect name) THEN the runtime
+    // interface (comp type 1, under `import_name`) → component instances 0 and 1.
+    let import_sec = {
+        let mut items = Vec::new();
+        let mut eff = extern_name(&super::kebab_extern_name(iface));
+        eff.push(0x05); // ComponentTypeRef::Instance
+        uleb128(0, &mut eff);
+        items.extend_from_slice(&eff);
+        let mut rt = extern_name(import_name);
+        rt.push(0x05);
+        uleb128(1, &mut rt);
+        items.extend_from_slice(&rt);
+        section(sec::COMPONENT_IMPORT, &wasm_vec(2, &items))
+    };
+
+    // sec 6 (first): alias each host op out of comp instance 0 (→ comp funcs `0..h`), then each runtime op
+    // out of comp instance 1 (→ comp funcs `h..h+k`).
+    let op_alias_sec = {
+        let mut items = Vec::new();
+        for f in host_fns {
+            items.extend_from_slice(&comp_alias_item(0, &super::kebab_extern_name(&f.op)));
+        }
+        for op in imports {
+            items.extend_from_slice(&comp_alias_item(1, op.name));
+        }
+        section(sec::ALIAS, &wasm_vec(h + k, &items))
+    };
+
+    // sec 1 (first): the SHARED-MEMORY core module (module 0).
+    let mem_module_sec = core_module_section(&shared_mem_module());
+    // sec 2 (first): instantiate the mem module (no args) → core instance 0.
+    let mem_instance_sec = section(
+        sec::CORE_INSTANCE,
+        &wasm_vec(1, &core_instantiate_item(0, &[])),
+    );
+    // sec 6 (memory alias): alias `mem`.`mem` out of core instance 0 → core memory 0.
+    let mem_alias_sec = section(sec::ALIAS, &wasm_vec(1, &memory_alias_item(0, "mem")));
+
+    // sec 8 (first): canon-lower each aliased op → core funcs `0..h+k`. The HOST ops carry the MEMORY option
+    // (core memory 0 — their `string` params read from the shared memory); the RUNTIME ops lower memoryless
+    // (scalar `u32` handles, no string args).
+    let lower_sec = {
+        let mut items = Vec::new();
+        for i in 0..h {
+            items.extend_from_slice(&canon_lower_item_mem(i as u32, 0));
+        }
+        for i in h..(h + k) {
+            items.extend_from_slice(&canon_lower_item(i as u32));
+        }
+        section(sec::CANON, &wasm_vec(h + k, &items))
+    };
+
+    // sec 1 (second): the embedded program core module (module 1).
+    let prog_module_sec = core_module_section(core);
+
+    // sec 2 (second): THREE core instances — (1) lowered HOST ops as `"host"`, (2) lowered RUNTIME ops as
+    // `"heap"`, (3) the program instantiated with `"host"`=instance 1, `"heap"`=instance 2, `"mem"`=instance
+    // 0. (Core instance 0 is the mem instance emitted above.)
+    let prog_instance_sec = {
+        let mut items = Vec::new();
+        // instance 1: host ops (core funcs `0..h`) under their op names.
+        let mut host = vec![0x01];
+        let mut host_exports = Vec::new();
+        for (i, f) in host_fns.iter().enumerate() {
+            host_exports.extend_from_slice(&uleb_bytes(f.op.len() as u64));
+            host_exports.extend_from_slice(f.op.as_bytes());
+            host_exports.push(0x00); // ExportKind::Func
+            uleb128(i as u64, &mut host_exports);
+        }
+        host.extend_from_slice(&wasm_vec(h, &host_exports));
+        items.extend_from_slice(&host);
+        // instance 2: runtime ops (core funcs `h..h+k`) under their names.
+        let mut heap = vec![0x01];
+        let mut heap_exports = Vec::new();
+        for (j, op) in imports.iter().enumerate() {
+            heap_exports.extend_from_slice(&uleb_bytes(op.name.len() as u64));
+            heap_exports.extend_from_slice(op.name.as_bytes());
+            heap_exports.push(0x00);
+            uleb128((h + j) as u64, &mut heap_exports);
+        }
+        heap.extend_from_slice(&wasm_vec(k, &heap_exports));
+        items.extend_from_slice(&heap);
+        // instance 3: instantiate module 1 with `"host"`=instance 1, `"heap"`=instance 2, `"mem"`=instance 0.
+        let mut prog = vec![0x00]; // instantiate form
+        uleb128(1, &mut prog); // module index 1 (the program; module 0 is the mem module)
+        let mut args = Vec::new();
+        args.extend_from_slice(&uleb_bytes(HOST_MODULE.len() as u64));
+        args.extend_from_slice(HOST_MODULE.as_bytes());
+        args.push(0x12); // ModuleArg::Instance
+        uleb128(1, &mut args); // core instance 1
+        args.extend_from_slice(&uleb_bytes(HEAP_MODULE.len() as u64));
+        args.extend_from_slice(HEAP_MODULE.as_bytes());
+        args.push(0x12);
+        uleb128(2, &mut args); // core instance 2
+        args.extend_from_slice(&uleb_bytes("mem".len() as u64));
+        args.extend_from_slice(b"mem");
+        args.push(0x12);
+        uleb128(0, &mut args); // core instance 0 (the mem instance)
+        prog.extend_from_slice(&wasm_vec(3, &args));
+        items.extend_from_slice(&prog);
+        section(sec::CORE_INSTANCE, &wasm_vec(3, &items))
+    };
+
+    // sec 6 (boundary alias): alias each boundary func out of the PROGRAM instance (core instance 3) → core
+    // funcs `h+k..h+k+m`.
+    let boundary_alias_sec = {
+        let mut items = Vec::new();
+        for e in exports {
+            items.extend_from_slice(&core_alias_item(3, &e.name));
+        }
+        section(sec::ALIAS, &wasm_vec(m, &items))
+    };
+
+    // sec 7 (second): one component functype per boundary export → component types `2..=1+m`.
+    let boundary_type_sec = {
+        let mut items = Vec::new();
+        for e in exports {
+            debug_assert!(
+                e.result != BoundaryResult::Bytes,
+                "a list<u8> boundary result takes the resource path, not the host+runtime shape"
+            );
+            items.extend_from_slice(&comp_functype(e, 0));
+        }
+        section(sec::COMPONENT_TYPE, &wasm_vec(m, &items))
+    };
+
+    // sec 8 (second): lift each boundary core func (`h+k+j`) using its component type (`2+j`).
+    let lift_sec = {
+        let mut items = Vec::new();
+        for j in 0..m {
+            items.extend_from_slice(&canon_lift_item((h + k + j) as u32, (2 + j) as u32));
+        }
+        section(sec::CANON, &wasm_vec(m, &items))
+    };
+
+    // sec 11: export each lifted component func (`h+k+j`) under its verbatim boundary name.
+    let export_sec = {
+        let mut items = Vec::new();
+        for (j, e) in exports.iter().enumerate() {
+            items.extend_from_slice(&comp_export_item(&e.name, (h + k + j) as u32));
+        }
+        section(sec::COMPONENT_EXPORT, &wasm_vec(m, &items))
+    };
+
+    let mut out = Vec::new();
+    out.extend_from_slice(COMPONENT_MAGIC);
+    out.extend_from_slice(&type_sec); // 7: effect + runtime instance-types
+    out.extend_from_slice(&import_sec); // 10: import both interfaces
+    out.extend_from_slice(&op_alias_sec); // 6: alias host ops then runtime ops
+    out.extend_from_slice(&mem_module_sec); // 1: shared-memory module (module 0)
+    out.extend_from_slice(&mem_instance_sec); // 2: instantiate mem → core instance 0
+    out.extend_from_slice(&mem_alias_sec); // 6: alias mem.mem → core memory 0
+    out.extend_from_slice(&lower_sec); // 8: lower host ops (Memory option) then runtime ops
+    out.extend_from_slice(&prog_module_sec); // 1: embedded program (module 1)
+    out.extend_from_slice(&prog_instance_sec); // 2: host + heap + program instances
+    out.extend_from_slice(&boundary_alias_sec); // 6: alias boundary funcs off the program
+    out.extend_from_slice(&boundary_type_sec); // 7: boundary functypes
+    out.extend_from_slice(&lift_sec); // 8: lift boundary funcs
+    out.extend_from_slice(&export_sec); // 11: export
+    out
+}
+
 /// The core-module IMPORT module name the host-shape's lowered ops are threaded under (the twin of
 /// `"heap"` for the runtime shape). The program's core module imports each host op from `"host"`.
 const HOST_MODULE: &str = "host";

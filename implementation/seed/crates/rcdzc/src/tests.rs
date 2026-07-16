@@ -48208,6 +48208,29 @@ mod stage1 {
     }
 
     #[test]
+    fn a_host_string_param_op_composed_with_the_value_heap_runtime_emits_a_valid_component() {
+        // HOST-STRING-PARAM + RUNTIME COMPOSITION (`envelope::assemble_host_runtime_mem`). A host op with a
+        // `string` param (needs the shared-memory shape) delegated ALONGSIDE the value-heap runtime (a
+        // runtime `List`): previously declined ("a host op with a string parameter composed with the
+        // value-heap runtime is not yet emitted") while each half alone emitted (scalar host+runtime via
+        // `assemble_host_runtime`; string host alone via `assemble_host_mem`). The envelope now threads the
+        // shared-memory core module through the two-interface (host + heap) fusion — the `(ptr,len)` a
+        // `string` lowers to is read from a memory both the program and the op's canon-lower bind. Emits a
+        // VALID component (wasmtime parses it). Unblocks assert-with-message over a heap collection
+        // (v-property-testing). Reported/assigned via v-runtime; queue
+        // `host-string-param-value-heap-coemit-gap`.
+        let src = "(do (effect Note (op note (-> String Unit))) \
+                   (def (build (: n Int64)) (if (= n 0) (list) ((. List push) (build (- n 1)) n))) \
+                   (def (main) (host (Note) (let ((xs (build 3))) (do (Note.note \"built\") ((. List len) xs))))) \
+                   (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src)))
+            .expect("a host string-param op composed with the value-heap runtime now emits");
+        let engine = wasmtime::Engine::default();
+        wasmtime::component::Component::from_binary(&engine, &bytes)
+            .expect("the composed host-string+runtime component must be valid");
+    }
+
+    #[test]
     fn two_performs_across_a_let_fold_via_the_one_shot_refold() {
         // E5 TWO-HOLE across a `let`: a hole in a let INIT and another in the BODY. The one-shot refold
         // (`leading_strict_hole` descends the `let`'s inits then body) folds it: leading flip in the INIT →
