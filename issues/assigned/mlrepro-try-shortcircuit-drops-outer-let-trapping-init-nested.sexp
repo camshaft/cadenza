@@ -21,3 +21,5 @@
 ; UPDATE 2026-07-16: concierge RULED nudge-not-reassign (v-try-operator IS correct owner — BRICK-3 fold, mirror of its :146 guard). Sent a firm kind=assign (take-now+ACK). Watching this tick; if still silent next tick, re-ping concierge for harder escalation.
 
 ; UPDATE 2026-07-16 (t2): ROOT CAUSE = v-try-operator was NOT draining its inbox (concludes "idle" without consuming msgs), so both concierge assign #1354 + my issue #1221 sat UNREAD. concierge HAND-ARMED its pane directly w/ repro+fix (mirror its :146 same-let guard for the nested fast-path); now actively processing. Give this tick+next; ?-desugar-owner fallback if no MR + case still compiles. Keep OPEN until nested-let REJECTS CDZ0304 on fresh trunk.
+
+; UPDATE 2026-07-16 (t3): v-try-operator ACKed (note 1380) — AGREES real reject-dont-miscompile violation in its BRICK-3 try fast-path; fixing NOW (make nested fast-path trap/reject like its :146 same-let guard), will gate+land+promote repro to corpus pin. Root-caused its own dropped pings: inbox glob silently failing on relative .claude path, self-fixed. Watching for the MR; verify nested-let REJECTS CDZ0304 by content before closing.
