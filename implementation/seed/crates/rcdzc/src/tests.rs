@@ -58024,9 +58024,11 @@ mod sidecar_driven {
     }
 
     #[test]
-    fn a_doc_of_query_for_an_undocumented_or_unknown_name_is_total() {
-        // A def with no doc, and a name that names nothing, each yield a DEFINED "no documentation" line —
-        // never an error (the oracle contract: a query is total over every input).
+    fn a_doc_of_query_distinguishes_undocumented_from_unknown_and_is_total() {
+        // Both are DEFINED answers (never an error — the oracle contract: a query is total over every
+        // input), but with DISTINCT verdicts so a consumer can tell a real-but-undocumented name from a
+        // typo: `main` IS a def (no doc → "no documentation for"), `ghost` names NOTHING ("no such
+        // definition"). `cdz doc` maps the "no such definition" variant to a non-zero exit.
         let src = "(module m (def (main) 42) (export main))";
         let out = compile(
             &inputs(
@@ -58053,7 +58055,7 @@ mod sidecar_driven {
             docs,
             vec![
                 "no documentation for `main`".to_string(),
-                "no documentation for `ghost`".to_string(),
+                "no such definition `ghost`".to_string(),
             ]
         );
     }
