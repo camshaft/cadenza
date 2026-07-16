@@ -1465,7 +1465,7 @@ fn run_test_file(
                         // No failing case in the WHOLE enumerated domain → a proof over the domain, not a
                         // sample.
                         //= spec/capabilities/property-based-testing.md#exhaustive-coverage-is-a-proof-over-a-bounded-domain
-                        //# A property whose inputs range over a bounded finite domain MAY be checked by enumerating that entire domain, in which case a run that finds no failing input MUST be treated as a proof of the property over the domain rather than as a sample.
+                        //# When a property is checked by enumerating its entire bounded finite domain, a run that finds no failing input MUST be treated as a proof of the property over the domain rather than as a sample.
                         None => {
                             passed += 1;
                             println!("PASS {name} (exhaustive, {total} cases)");
