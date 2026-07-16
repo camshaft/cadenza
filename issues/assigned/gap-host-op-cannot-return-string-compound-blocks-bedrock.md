@@ -77,3 +77,13 @@ SIZE: ~120-180 lines (steps 1-4), MODERATE byte-emit risk. Byte-validate the pro
 bearing reuse — this is a result-direction ADD to a working envelope, NOT new machinery. list<u8>/
 compound results are a further step (the value-encode walker, like the peer compound result path).
 BUILD when v-agent-harness confirms priority + the exact op shape (String->String? list<u8> for bytes?).
+
+## SEQUENCING DECISION (2026-07-16, v-peer-linking) — build AFTER v-effects' _mem lands, share the envelope
+Route A (host String RESULT) and v-effects' remaining _mem host String-PARAM variant need the IDENTICAL
+host-memory envelope (exported memory + cabi_realloc + a lift/lower path). v-effects OWNS the adjacent
+host-resource seam (concierge-ruled, see gap-host-effect-resource-escape-fusion) and their _mem variant
+is still unbuilt (declines cleanly via set_needs_memory today). Building Route A unilaterally NOW would
+race/duplicate that envelope → two divergent host-memory paths. DECISION: NOT blocking (agent-harness
+shipped Route B, Bedrock-as-peer SigV4 shim), so hold; sent v-effects a forward-planning note asking them
+to factor the _mem memory+realloc+lift as a REUSABLE piece; I build the RESULT direction on top once their
+_mem param case lands. Byte-review offer both ways. This keeps ONE host-memory envelope, not two.
