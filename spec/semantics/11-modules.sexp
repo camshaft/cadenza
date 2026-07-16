@@ -1026,6 +1026,51 @@
             (export main)))
   (output (: 2 Int64)))
 
+; The forge fix is COMPLETE across two further axes, pinned so a regression can't reopen a sibling hole:
+; (a) a private ctor buried DEEP in an eval-reconstructed compound is gated too (the parent-walk reaches the
+; consumer file however deep the ctor ref sits), and (b) the DESTRUCTURE side — matching a private ctor from
+; outside — is withheld (unforgeability is both "can't build" AND "can't take apart" a value except through
+; the module's doors). Both were verified sound when the eval-forge fix landed (`Db::visibility_file_of`).
+
+(case "eval does not forge a private constructor NESTED in a compound"
+  (doc    "The deep-nesting companion of the eval-forge pin: `(eval (quote (id (Color.Green))))` — the
+           private `Color.Green` sits INSIDE a call to the exported `id`, not at the top of the
+           reconstructed form. It still rejects CDZ0214: `Db::visibility_file_of`'s parent-walk reaches the
+           consumer file however deeply the reconstructed ctor reference is nested, so the withheld-ctor gate
+           fires on it exactly as at the top level. Pins that the fix is not depth-limited (a shallow guard
+           would forge here).")
+  (module "lib"
+    (do
+      (type Color (Red) (Green) (Blue))
+      (def (mk) Color.Green)
+      (def (id c) c)
+      (export Color)
+      (export mk)
+      (export id)))
+  (input  (do
+            (import "lib" (Color mk id))
+            (def (main) (eval (quote (id (Color.Green)))))
+            (export main)))
+  (error  CDZ0214))
+
+(case "a private constructor cannot be MATCHED from outside its module either"
+  (doc    "The destructure side of unforgeability: `(match (mk) ((Color.Green) 1) (_ 0))` names the private
+           `Color.Green` in a PATTERN from outside `lib` — withheld CDZ0214, exactly as constructing it is. A
+           value of an abstract type is neither built NOR taken apart through a private constructor outside
+           the module (both directions gated by the same visibility check) — obtained + inspected only
+           through the exported doors (`mk`/`rank`). Pins that opacity guards match, not just construction.")
+  (module "lib"
+    (do
+      (type Color (Red) (Green) (Blue))
+      (def (mk) Color.Green)
+      (export Color)
+      (export mk)))
+  (input  (do
+            (import "lib" (Color mk))
+            (def (main) (match (mk) ((Color.Green) 1) (_ 0)))
+            (export main)))
+  (error  CDZ0214))
+
 (case "an abstract type is used through the module's exported constructor and accessor"
   (doc    "The companion of the reject above: the SAME abstract `lib` (handle `Color` + `mk` + `rank`, no
            constructor exported) used CORRECTLY. The entry never names a `Color` constructor — it obtains a
