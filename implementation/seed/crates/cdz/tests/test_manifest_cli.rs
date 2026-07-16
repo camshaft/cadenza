@@ -6,56 +6,15 @@
 //! manifest directly. The manifest is ordinary Cadenza — well-known top-level `def`s (`name`/`entry`/
 //! `modules`/`tests`) read straight from the arena, comments-and-all.
 //!
-//! Drives the built `cdz` binary (which shells to the sibling `cdz-run` to execute each test), over
-//! temp files, so it proves the whole compile→run→report path.
+//! Drives the built `cdz` binary, over temp files, so it proves the whole compile→run→report path. `cdz
+//! test` runs each test IN-PROCESS (wasmtime + the runner are linked into `cdz` via the `cdz-run`
+//! library), so — unlike the earlier subprocess design — NO sibling `cdz-run` binary needs to be built
+//! for these tests. That is exactly the one-binary win: a bare `cargo test --workspace` on a fresh
+//! checkout can run `cdz test` without first building any other workspace binary.
 
 use std::process::Command;
-use std::sync::OnceLock;
-
-/// `cdz test` shells out to the sibling `cdz-run` binary (kept separate — it carries wasmtime + the
-/// runtime store). `cargo test --workspace` builds the crate under test's OWN bin (`CARGO_BIN_EXE_cdz`)
-/// but NOT a sibling workspace bin, so `target/<profile>/cdz-run` may be absent under CI's bare
-/// `cargo test --workspace` (no artifact-dependency without nightly `-Z bindeps`). Build it ONCE, into
-/// the same directory as the `cdz` test binary, before the first spawn — idempotent and cheap when the
-/// binary is already current.
-fn ensure_cdz_run() {
-    static BUILT: OnceLock<()> = OnceLock::new();
-    BUILT.get_or_init(|| {
-        // `CARGO_BIN_EXE_cdz` = `<target>/<profile>/cdz`; its grandparent is `<target>`, the dir
-        // `cargo build` writes into. `cdz test`'s `locate_cdz_run` looks for `cdz-run` beside `cdz`.
-        let cdz = std::path::PathBuf::from(env!("CARGO_BIN_EXE_cdz"));
-        let profile_dir = cdz.parent().expect("cdz exe has a parent dir");
-        if profile_dir
-            .join(if cfg!(windows) {
-                "cdz-run.exe"
-            } else {
-                "cdz-run"
-            })
-            .exists()
-        {
-            return;
-        }
-        let profile = profile_dir
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("debug");
-        // `-p cdz-run`: the test's working directory is the `cdz` crate, so an unqualified
-        // `--bin cdz-run` looks for the bin in `cdz` (not found). Select the owning package explicitly.
-        let mut cmd = Command::new(env!("CARGO"));
-        cmd.args(["build", "-p", "cdz-run", "--bin", "cdz-run"]);
-        if profile == "release" {
-            cmd.arg("--release");
-        }
-        let status = cmd.status().expect("spawn cargo build -p cdz-run");
-        assert!(
-            status.success(),
-            "building the sibling cdz-run binary failed"
-        );
-    });
-}
 
 fn run(args: &[&str]) -> (bool, String, String) {
-    ensure_cdz_run();
     let exe = env!("CARGO_BIN_EXE_cdz");
     let out = Command::new(exe).args(args).output().expect("spawn cdz");
     (
@@ -86,7 +45,6 @@ fn store_present() -> bool {
 /// Run `cdz <args…>` with the process's working directory set to `cwd` — for exercising the no-argument
 /// "search up for Project.cdz" path, which is relative to the current directory.
 fn run_in(cwd: &std::path::Path, args: &[&str]) -> (bool, String, String) {
-    ensure_cdz_run();
     let exe = env!("CARGO_BIN_EXE_cdz");
     let out = Command::new(exe)
         .args(args)
@@ -134,6 +92,38 @@ fn a_single_file_runs_its_tests() {
     assert!(ok, "all tests pass → success: {stdout}");
     assert!(stdout.contains("PASS one_is_one"), "{stdout}");
     assert!(stdout.contains("2 passed, 0 failed"), "{stdout}");
+}
+
+#[test]
+fn cdz_test_runs_in_process_with_no_sibling_runner_on_path() {
+    // The one-binary guarantee for `cdz test`: it runs each test IN-PROCESS (wasmtime linked in via the
+    // `cdz-run` library), so it must work with NO `cdz-run` binary discoverable — not beside `cdz`, not on
+    // `PATH`. Drive `cdz` with an EMPTIED `PATH` from a scratch cwd: were it still shelling out to a
+    // sibling `cdz-run`, the spawn would fail to locate it and the run would error. A scalar test (no heap
+    // value) needs no runtime store, so this holds even on a storeless bare checkout.
+    let d = dir("in-process");
+    let f = write(
+        &d,
+        "m.cdz",
+        "@test def scalar_ok() = if 1 + 1 == 2 then unit else trap(\"math\")\n",
+    );
+    let exe = env!("CARGO_BIN_EXE_cdz");
+    let out = Command::new(exe)
+        .args(["test", &f])
+        .env("PATH", "") // no `cdz-run` findable anywhere — proves in-process execution
+        .current_dir(&d)
+        .output()
+        .expect("spawn cdz");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "cdz test runs in-process with no cdz-run on PATH: {stdout}{stderr}"
+    );
+    assert!(
+        stdout.contains("PASS scalar_ok") && stdout.contains("1 passed, 0 failed"),
+        "the in-process run reports the test result: {stdout}"
+    );
 }
 
 #[test]
