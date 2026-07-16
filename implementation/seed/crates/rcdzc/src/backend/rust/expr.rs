@@ -2074,6 +2074,24 @@ fn emit_arith(
     let r = emit_grounded(db, rhs, it, env, ctx)?;
     match op {
         Prim::Add | Prim::Sub | Prim::Mul => {
+            // GUARD ELISION — Core-tier parity with the wasm backend's `select.rs:12542` fast path. When
+            // interval arithmetic proves the result stays in the type (the SAME `lower::arith_provably_in_range`
+            // predicate, defined in lower.rs at the CORE tier — so ONE decision drives BOTH backends), the
+            // overflow trap cannot fire, so emit the plain MODULAR op (`wrapping_*`, the analogue of the
+            // elided wasm path's bare `m.add()`) with NO `checked_*`/panic. SOUND: provably-in-range ⇒ the
+            // true result never leaves the type ⇒ the wrapping result IS the true result, byte-identical to
+            // the checked form on every in-range input, and never traps (exactly like the elided wasm path).
+            // Until this, the rust backend consulted the predicate NOWHERE, so a Core-tier elision (range
+            // analysis today, a discharged no-overflow proof next) was silently wasm-only.
+            if crate::lower::arith_provably_in_range(db, op, lhs, rhs, it) {
+                let wrapping = match op {
+                    Prim::Add => "wrapping_add",
+                    Prim::Sub => "wrapping_sub",
+                    Prim::Mul => "wrapping_mul",
+                    _ => unreachable!(),
+                };
+                return Ok(format!("({l}).{wrapping}({r})"));
+            }
             let method = match op {
                 Prim::Add => "checked_add",
                 Prim::Sub => "checked_sub",

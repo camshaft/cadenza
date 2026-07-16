@@ -115,6 +115,64 @@ fn rustc_roundtrip_narrow_literal_operand_computes_and_traps() {
 }
 
 #[test]
+fn a_provably_in_range_arith_op_elides_its_overflow_check_on_the_rust_backend() {
+    // BOTH-BACKEND PARITY (v-core-opt Slice-2): the rust backend now consults the SAME Core-tier
+    // `lower::arith_provably_in_range` predicate the wasm backend uses (`select.rs:12542`), so a
+    // provably-in-range op sheds its overflow trap on BOTH backends — one Core-tier decision, not a
+    // wasm-only elision. When the interval fits, emit the plain modular `wrapping_*` (never traps),
+    // NOT `checked_*().unwrap_or_else(panic)`.
+    //
+    // `(+ (& x 15) (& y 15))`: [0,15]+[0,15] = [0,30] ⊆ Int64 → wrapping_add, no panic.
+    let add = compile_rust(
+        "(module m (def (f (: x Int64) (: y Int64)) (+ (& x 15) (& y 15))) (export f))",
+    );
+    assert!(
+        add.contains("wrapping_add") && !add.contains("checked_add"),
+        "a provably-in-range add emits the plain modular op, no overflow panic:\n{add}"
+    );
+    // `(* (& x 15) 3)`: [0,15]×3 = [0,45] ⊆ Int64 → wrapping_mul.
+    let mul = compile_rust("(module m (def (f (: x Int64)) (* (& x 15) 3)) (export f))");
+    assert!(
+        mul.contains("wrapping_mul") && !mul.contains("checked_mul"),
+        "a provably-in-range mul emits the plain modular op:\n{mul}"
+    );
+    // A FULL-RANGE add (an unbounded operand) is NOT provable → KEEPS the checked op + trap. This is the
+    // dual that proves the elision is opt-in on a proof of safety, never on the absence of a disproof.
+    let kept = compile_rust("(module m (def (f (: x Int64) (: y Int64)) (+ x y)) (export f))");
+    assert!(
+        kept.contains("checked_add") && kept.contains("panic!"),
+        "a full-range add keeps its overflow trap:\n{kept}"
+    );
+}
+
+#[test]
+fn rustc_roundtrip_provably_in_range_elision_computes_identically_and_unproven_still_traps() {
+    // The elision is BEHAVIOR-PRESERVING end-to-end through rustc: a provably-in-range op computes the
+    // SAME value with the guard elided (wrapping) as it would checked, AND an unproven op still TRAPS on
+    // overflow — the correctness bar (an opt that changes observable behavior is a miscompile).
+    let elided = compile_rust(
+        "(module m (def (f (: x Int64) (: y Int64)) (+ (& x 15) (& y 15))) (export f))",
+    );
+    // x=15,y=15 → (15&15)+(15&15) = 30. Same value the checked form would compute; no trap.
+    if let Some(out) = rustc_run(&elided, "f(15, 15)") {
+        assert_eq!(
+            out, "30",
+            "provably-in-range add computes identically when elided"
+        );
+    }
+    // An UNPROVEN (full-range) add still traps on genuine overflow — Int64::MAX + 1.
+    let checked = compile_rust("(module m (def (f (: x Int64) (: y Int64)) (+ x y)) (export f))");
+    match rustc_run_traps(&checked, "f(9223372036854775807, 1)") {
+        TrapRun::Trapped(msg) => assert!(
+            msg.contains("overflow"),
+            "unproven add still traps on overflow, got: {msg}"
+        ),
+        TrapRun::RanOk(out) => panic!("MAX + 1 must TRAP (overflow), but ran → {out}"),
+        TrapRun::NoRustc => {}
+    }
+}
+
+#[test]
 fn a_narrow_op_with_a_control_flow_operand_wraps_it_down_to_the_op_width() {
     // REGRESSION (the rust-backend cross-backend miscompile): a narrow-annotated op whose operand is a
     // DEFERRED-WIDTH control-flow expression (`if`/`match` of bare literals, inferred Int64) emitted an
