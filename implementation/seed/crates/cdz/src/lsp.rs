@@ -330,8 +330,25 @@ impl Server {
     /// navigable reference, or the target has no source span (a prelude/built-in binding) — total.
     fn goto_definition(&self, params: &GotoDefinitionParams) -> Option<GotoDefinitionResponse> {
         let pos = &params.text_document_position_params;
-        let doc = self.docs.get(&pos.text_document.uri)?;
-        let loc = definition_at(&doc.text, doc.is_ml, pos.position, &pos.text_document.uri)?;
+        let uri = &pos.text_document.uri;
+        let doc = self.docs.get(uri)?;
+        // PACKAGE path: a `file://` doc that declares imports resolves cross-file — the target may live
+        // in an imported file, so `package_definition_at` returns a `Location` in THAT file. Otherwise
+        // (non-file URI, or no imports) the single-buffer `definition_at`.
+        let loc =
+            if let Some(entry_path) = uri_to_path(uri).filter(|_| self.doc_declares_import(doc)) {
+                let open = self.open_resolver();
+                package_definition_at(
+                    &entry_path.to_string_lossy(),
+                    &open,
+                    &doc.text,
+                    doc.is_ml,
+                    pos.position,
+                )
+                .or_else(|| definition_at(&doc.text, doc.is_ml, pos.position, uri))
+            } else {
+                definition_at(&doc.text, doc.is_ml, pos.position, uri)
+            }?;
         Some(GotoDefinitionResponse::Scalar(loc))
     }
 
@@ -442,28 +459,34 @@ impl Server {
     /// single-buffer `diagnostics_for`.
     fn compute_diagnostics(&self, uri: &Uri, doc: &Document) -> Vec<Diagnostic> {
         // Only a `file://` document with imports takes the package path; everything else is single-buffer.
-        let Some(entry_path) = uri_to_path(uri) else {
+        let Some(entry_path) = uri_to_path(uri).filter(|_| self.doc_declares_import(doc)) else {
             return diagnostics_for(&doc.text, doc.is_ml);
         };
-        let declares_import = match parse_surface(&doc.text, doc.is_ml) {
+        let open = self.open_resolver();
+        package_diagnostics_for(&entry_path.to_string_lossy(), &open)
+            // A closure-load failure (e.g. the entry path vanished) → the single-buffer path, still total.
+            .unwrap_or_else(|| diagnostics_for(&doc.text, doc.is_ml))
+    }
+
+    /// Whether `doc` declares any `(import …)` — the gate for the package (cross-file) analysis path.
+    fn doc_declares_import(&self, doc: &Document) -> bool {
+        match parse_surface(&doc.text, doc.is_ml) {
             Ok((arenas, _spans, _errs)) => {
                 !crate::closure::declared_import_paths(&arenas).is_empty()
             }
             Err(_) => false,
-        };
-        if !declares_import {
-            return diagnostics_for(&doc.text, doc.is_ml);
         }
-        // The overlay: an imported file that is OPEN in the editor contributes its LIVE buffer text (so
-        // unsaved edits to a library flow into its importer's diagnostics), else the closure reads disk.
-        let open = |p: &std::path::Path| -> Option<String> {
+    }
+
+    /// The closure's source-overlay resolver: given an imported file's path, return an OPEN buffer's
+    /// live (unsaved) text for it (matched by `uri_to_path`), else `None` → the closure reads disk. Lets
+    /// unsaved edits to a library flow into its importer's cross-file analysis.
+    fn open_resolver(&self) -> impl Fn(&std::path::Path) -> Option<String> + '_ {
+        move |p: &std::path::Path| {
             self.docs
                 .iter()
                 .find_map(|(u, d)| (uri_to_path(u).as_deref() == Some(p)).then(|| d.text.clone()))
-        };
-        package_diagnostics_for(&entry_path.to_string_lossy(), &open)
-            // A closure-load failure (e.g. the entry path vanished) → the single-buffer path, still total.
-            .unwrap_or_else(|| diagnostics_for(&doc.text, doc.is_ml))
+        }
     }
 
     /// Send a `textDocument/publishDiagnostics` notification for `uri`.
@@ -992,6 +1015,91 @@ fn definition_at(text: &str, is_ml: bool, pos: Position, uri: &Uri) -> Option<Lo
     // The `ResolveOf` answer is the defining occurrence's node id (empty = not a navigable reference).
     let target: u32 = answer.trim().parse().ok()?;
     node_location(text, &spans, uri, target)
+}
+
+/// Cross-file go-to-definition: resolve the cursor's reference across the entry's `(import …)` closure,
+/// so a use of an IMPORTED name jumps to its definition in the OTHER file. The entry is spliced FIRST
+/// (`crate::closure::load` returns it at `files[0]`), so it gets `struct_base == 0` — the cursor's
+/// entry-local node id IS the linked global query input, no offset needed. `ResolveOf` answers a global
+/// target node id, which we demux via the link-map to the owning file, then build a `Location` with
+/// THAT file's URI + span (a jump into an imported library). `None` when the closure can't load, the
+/// position is not a navigable reference, or the target has no source span — the caller falls back to
+/// the single-buffer `definition_at`.
+fn package_definition_at(
+    entry_path: &str,
+    open: &dyn Fn(&std::path::Path) -> Option<String>,
+    entry_text: &str,
+    entry_is_ml: bool,
+    pos: Position,
+) -> Option<Location> {
+    // The cursor node in the ENTRY file (base 0 in the linked program, so no rebasing of the input).
+    let (_entry_arenas, entry_spans, _e) = parse_surface(entry_text, entry_is_ml).ok()?;
+    let byte = position_to_byte(entry_text, pos);
+    let cursor = entry_spans.node_at_offset(byte)?;
+
+    let files = crate::closure::load(entry_path, open).ok()?;
+    let mut inputs: Vec<rcdzc::Artifact> = files
+        .iter()
+        .map(|f| {
+            rcdzc::Artifact::new(
+                rcdzc::Artifact::KIND_AST,
+                f.name.clone(),
+                cadenza_syntax::codec::encode(&f.arenas),
+            )
+        })
+        .collect();
+    inputs.push(rcdzc::Artifact::new(
+        rcdzc::sidecar::KIND_SIDECAR,
+        "drive",
+        rcdzc::sidecar::encode(&[rcdzc::Request::Query(rcdzc::sidecar::Query::ResolveOf {
+            node: cursor.0, // entry-local == global (entry is base 0)
+        })]),
+    ));
+    inputs.push(rcdzc::cli::entry_artifact(&files[0].name));
+    let compiled = rcdzc::run_with_compiler_stack(|| rcdzc::compile(&inputs, &[]));
+    let bytes = compiled.artifact(rcdzc::sidecar::KIND_RESOLVE)?;
+    let target: u32 = String::from_utf8_lossy(bytes).trim().parse().ok()?;
+
+    // Demux the global target to its owning file, then a Location in that file (its URI + local span).
+    let link_map = compiled
+        .artifact(rcdzc::link::KIND_LINK_MAP)
+        .map(rcdzc::link::decode_link_map)
+        .unwrap_or_default();
+    let (file_ix, local) = if link_map.is_empty() {
+        (0usize, target)
+    } else {
+        let fs = link_map
+            .iter()
+            .find(|fs| target >= fs.struct_base && target < fs.struct_base + fs.struct_count)?;
+        (
+            files.iter().position(|f| f.name == fs.path)?,
+            target - fs.struct_base,
+        )
+    };
+    let file = &files[file_ix];
+    let span = file.spans.get(cadenza_syntax::StructId(local))?;
+    Some(Location {
+        uri: path_to_uri(&file.path)?,
+        range: byte_range_to_range(&file.source, span.start, span.end),
+    })
+}
+
+/// A `file://` URI for a local filesystem path — the inverse of `uri_to_path`, for a cross-file
+/// `Location` that points into an imported file. Percent-encodes nothing beyond what a path needs (a
+/// space); the common ASCII path passes through. `None` for a non-absolute path (a `Location` needs a
+/// resolvable URI).
+fn path_to_uri(path: &str) -> Option<Uri> {
+    use std::str::FromStr;
+    // The closure stores each file's path as given to `load` (an absolute entry + resolved siblings);
+    // build `file://` + the path, percent-encoding a space (the one char that breaks a URI in practice).
+    let encoded = path.replace(' ', "%20");
+    let s = if encoded.starts_with('/') {
+        format!("file://{encoded}")
+    } else {
+        // A relative path (unusual for a closure file) — best-effort; prefix a slash so it's a valid URI.
+        format!("file:///{encoded}")
+    };
+    Uri::from_str(&s).ok()
 }
 
 /// Find-references: every occurrence that references the SAME definition as the NAME under `pos`
@@ -2052,6 +2160,20 @@ mod tests {
             uri_to_path(&uri("file:///home/u/my%20prog.cdz")),
             Some(std::path::PathBuf::from("/home/u/my prog.cdz"))
         );
+    }
+
+    #[test]
+    fn path_to_uri_round_trips_through_uri_to_path() {
+        // `path_to_uri` (cross-file Location) is the inverse of `uri_to_path`: an absolute path → a
+        // `file://` URI whose `uri_to_path` recovers the original (incl. a space via %20).
+        for p in ["/home/u/lib.sexp", "/tmp/pkg/main.cdz", "/a b/c.sexp"] {
+            let u = path_to_uri(p).expect("a file uri");
+            assert_eq!(
+                uri_to_path(&u).as_deref(),
+                Some(std::path::Path::new(p)),
+                "round-trip failed for {p}"
+            );
+        }
     }
 
     #[test]

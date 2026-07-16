@@ -384,3 +384,47 @@ fn lsp_follows_the_import_closure_for_a_multi_file_package() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn lsp_goto_definition_jumps_across_files_to_an_imported_def() {
+    // Cross-file go-to-definition: from the `helper` USE in main.sexp, jump to its DEFINITION in
+    // lib.sexp — the target Location is in the OTHER file. Before this increment definition was
+    // single-buffer and returned null for an imported name.
+    let dir = std::env::temp_dir().join(format!("cdz-lsp-xdef-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    std::fs::write(
+        dir.join("lib.sexp"),
+        "(module lib (def (helper x) (+ x 1)) (export helper))",
+    )
+    .expect("write lib");
+    let main_path = dir.join("main.sexp");
+    let main_text = "(do (import \"lib\" (helper)) (def (main) (helper 41)) (export main))";
+    std::fs::write(&main_path, main_text).expect("write main");
+    let main_uri = format!("file://{}", main_path.display());
+    // The `helper` USE in main is the second occurrence (the first is inside the import clause).
+    let use_char = main_text
+        .match_indices("helper")
+        .nth(1)
+        .map(|(i, _)| i)
+        .expect("a helper use") as i64;
+
+    let msgs = drive_messages(&[
+        serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{},"processId":null,"rootUri":null}}),
+        serde_json::json!({"jsonrpc":"2.0","method":"initialized","params":{}}),
+        serde_json::json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":main_uri,"languageId":"cadenza","version":1,"text":main_text}}}),
+        serde_json::json!({"jsonrpc":"2.0","id":10,"method":"textDocument/definition","params":{"textDocument":{"uri":main_uri},"position":{"line":0,"character":use_char}}}),
+        serde_json::json!({"jsonrpc":"2.0","id":99,"method":"shutdown","params":null}),
+        serde_json::json!({"jsonrpc":"2.0","method":"exit","params":null}),
+    ]);
+    let def = response(&msgs, 10).expect("a definition response");
+    let target_uri = def
+        .pointer("/result/uri")
+        .and_then(|v| v.as_str())
+        .expect("a definition Location with a uri");
+    assert!(
+        target_uri.ends_with("lib.sexp"),
+        "cross-file definition should jump into lib.sexp, got {target_uri}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
