@@ -239,3 +239,33 @@ fn the_embedder_gates_the_loop_on_an_on_behalf_of_delegation() {
         Err(e) => panic!("delegated deny errored: {e}"),
     }
 }
+
+#[test]
+fn the_embedder_rejects_a_mis_shaped_authz_op_clearly() {
+    // run_hive_agent_loop binds cadenza:cedar/api.authorize as (u32)->s64 (a String action → an Int64
+    // decision). A consumer whose authorize is (String)->String — i.e. (u32)->u32 — is MIS-SHAPED; the
+    // generic runner's check_host_op_shape must reject it UP FRONT with a clear message naming the op +
+    // required shape, not trap opaquely or write a bad result slot. (The shape check runs BEFORE the
+    // runtime is resolved, so this needs no store.)
+    let consumer = include_bytes!("fixtures/misshaped-authz-consumer.wasm");
+    let opts = cdz_run::RunOpts {
+        export: Some("main".to_string()),
+        args: Vec::new(),
+        runtime: None,
+        runtime_cache_dir: None,
+        host_responses: Vec::new(),
+    };
+    let err = cdz_agent::run_hive_agent_loop(
+        consumer,
+        &opts,
+        || "msg".to_string(),
+        cdz_agent::mock_converse,
+        |_action| 1,
+    )
+    .expect_err("a mis-shaped authz op must be REJECTED, not run");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("authorize") && msg.contains("must be `(U32) -> (S64)`") && msg.contains("(U32) -> (U32)"),
+        "the rejection names the authz op + its required (U32)->(S64) shape vs the imported (U32)->(U32): {msg}"
+    );
+}

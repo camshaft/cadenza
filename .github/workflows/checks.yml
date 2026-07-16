@@ -239,6 +239,10 @@ jobs:
             > /tmp/return-consumer.sexp
           ./target/release/cdz compile /tmp/return-consumer.sexp \
             -o implementation/seed/crates/cdz-agent/tests/fixtures/inbox-model-return-consumer.wasm
+          printf '%s' '(do (effect Inbox (op next (-> Unit String))) (effect Model (op converse (-> String String))) (effect Cedar (op authorize (-> String String))) (bind Inbox "cadenza:inbox/api") (bind Model "cadenza:model/api") (bind Cedar "cadenza:cedar/api") (def (main) (String.byte-len (host (Cedar) (Cedar.authorize (host (Inbox) (Inbox.next)))))) (export main))' \
+            > /tmp/misshape-consumer.sexp
+          ./target/release/cdz compile /tmp/misshape-consumer.sexp \
+            -o implementation/seed/crates/cdz-agent/tests/fixtures/misshaped-authz-consumer.wasm
       - name: Test + lint the cdz-agent crate (standalone workspace)
         working-directory: implementation/seed/crates/cdz-agent
         run: |
