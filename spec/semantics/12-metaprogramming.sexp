@@ -230,6 +230,42 @@
             (export main)))
   (output (: 3 Int64)))
 
+; --- The boundary of the OPTIONAL eval surface: eval does not see through an Ast-VALUE splice --------
+; `eval`'s desugar (eval_ast::reconstruct) reconstructs SOURCE statically by walking the reified template.
+; A splice whose operand is an ordinary VALUE (a literal, a bound scalar, a computed expression) reconstructs
+; to that operand as source and folds — the working macro idiom above (`(eval `(+ ,x 4))` → 7, and a runtime
+; `,n` → 7). But a splice whose operand is ITSELF an `Ast` value — `(unquote (quote (* 2 3)))`, or a
+; let-bound quoted subtree — reconstructs to `(+ <Ast-value> 1)`: an `Ast` in a numeric position, which is
+; the ordinary type error CDZ0201. Evaluating THAT would require the desugar to RECURSIVELY INTERPRET a
+; runtime `Ast` subtree as code — a nested RUNTIME eval, precisely the "execute an arbitrary runtime AST"
+; capability metaprogramming.md marks OPTIONAL (the seed ships a compile-time-FOLD eval, not a runtime
+; interpreter). So this is a SOUND decline, not a bug: the CONSTRUCTION splices the subtree fine (the case
+; above), and eval of the HAND-BUILT equal tree works — it is only the static source-reconstruction that
+; does not see through a spliced Ast value. Pinned (breaker-found, ruled a deliberate limit) so the boundary
+; can't silently flip: the value-splice keeps working, the Ast-value-splice keeps declining.
+
+(case "eval of a template splicing a runtime VALUE folds — the working side of the boundary"
+  (doc    "The positive face: a splice whose operand is an ordinary runtime value reconstructs as source and
+           folds. `(main n) = (eval `(+ ,n 1))` with runtime n=6 → 7 — the operand `n` is spliced as source,
+           not as an `Ast` node, so the reconstructed `(+ n 1)` evaluates. Contrast the Ast-value-splice
+           decline below.")
+  (input  (do
+            (def (main (: n Int64)) (eval (quasiquote (+ (unquote n) 1))))
+            (export main)))
+  (call   main (: 6 Int64))
+  (output (: 7 Int64)))
+
+(case "eval does not see through a splice whose operand is itself an Ast value"
+  (doc    "The boundary of the optional eval surface: `(eval `(+ ,(quote (* 2 3)) 1))` DECLINES. The
+           unquote operand `(quote (* 2 3))` is itself an `Ast` value, so eval's static source
+           reconstruction produces `(+ <Ast-value> 1)` — an `Ast` in a numeric position (CDZ0201).
+           Evaluating it would need a nested RUNTIME AST interpreter (metaprogramming.md marks runtime eval
+           OPTIONAL; the seed folds at compile time). Sound decline, NOT a bug — the construction splices the
+           subtree fine (case above) and eval of the hand-built equal tree works; only the static
+           reconstruction does not see through a spliced Ast value. Breaker-found; ruled a deliberate limit.")
+  (input  (eval (quasiquote (+ (unquote (quote (* 2 3))) 1))))
+  (declines))
+
 (case "an active unquote of a let-bound boolean lifts to Ast.Bool by inferred type"
   (doc    "A RUNTIME operand (a let-bound name) lifts by its inferred type: `b : Bool` → `Ast.Bool`.
            `(let ((b true)) `(f ,b))` builds `(Ast.List (list (Ast.Name \"f\") (Ast.Bool true)))`. Pins the
@@ -1535,4 +1571,31 @@
   (input  (match (Ast.decode (Ast.encode (quasiquote (f (unquote (+ 1 2))))))
             ((Ok a) (= a (quote (f 3))))
             ((Err _) false)))
+  (output (: true Bool)))
+
+; --- Ast-valued unquote splicing: the operand-binding faces -----------------------------------------
+; The ast-lift intrinsic splices a COMPUTED Ast subtree into a quasiquote template (the RESOLVED
+; splice gap; its pin covers a param-bound operand matched structurally). These pin the other
+; operand bindings and the identity contract, promoted from passing breaker probes.
+
+(case "a let-bound Ast splices into a template"
+  (doc    "`(let ((sub (quote (* 2 3)))) `(+ ,sub 1))` — the spliced operand is a LET binding (the
+           resolved pin covers a param). The grafted template is a 3-element list. Pins the splice
+           over a local binding (an ast-lift keyed to param slots misses the local).")
+  (input  (do
+            (def (main (: d Int64))
+              (let ((sub (quote (* 2 3))))
+                (match (quasiquote (+ (unquote sub) 1)) ((Ast.List es) (List.len es)) (_ -1))))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 3 Int64)))
+
+(case "a grafted template is structurally equal to the directly-quoted tree"
+  (doc    "`` `(+ ,(quote (* 2 3)) 1) `` = `(quote (+ (* 2 3) 1))` — the identity contract of the
+           splice: inserting an Ast RESULT means grafting the node AS-IS, so the assembled tree is
+           byte-for-byte the tree the plain quote builds (structural equality over the two). A
+           re-wrapping splice (the old Ast.Int(...) coercion) or a copy that perturbs the subtree
+           breaks the equality.")
+  (input  (= (quasiquote (+ (unquote (quote (* 2 3))) 1))
+             (quote (+ (* 2 3) 1))))
   (output (: true Bool)))

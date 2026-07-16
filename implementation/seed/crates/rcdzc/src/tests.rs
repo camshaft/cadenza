@@ -3815,6 +3815,61 @@ fn a_runtime_string_rope_map_key_is_found_and_adds_no_leak() {
     );
 }
 
+/// The BYTES twin of the rope-map-key test: a runtime `Bytes` ROPE used as a MAP KEY is canonicalized
+/// (`bytes-compact`) at the insert/lookup CHAMP sites (`key_needs_compaction` now includes Bytes), so a
+/// `Bytes.concat` rope key is found by its flat twin — the KEY face of the nested/keyed Bytes value-eq
+/// increment. Without the compact the `champ_hash`/`champ_eq` physical-byte compare MISSES (None → -1).
+///   (a) VALUE — insert under the rope key `(rep [104] 1)` = [104,120], look up with the flat literal
+///       `[104,120]` → the stored 42 (was -1/None: a champ physical-byte miss). THIS is the miscompile fix.
+///   (b) LEAK-NEUTRAL — the Bytes-key compaction adds NO leak vs the byte-identical flat-key baseline
+///       (rope-vs-flat cancels the shared map-temporary baseline, so it fails iff the compact leaks).
+/// `#[ignore]` — needs the debug-counters store (`cargo xtask build`).
+#[test]
+#[ignore]
+fn a_runtime_bytes_rope_map_key_is_found_and_adds_no_leak() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
+        eprintln!(
+            "[bytes-rope-key] debug-counters runtime not in the store; skipping balance probe"
+        );
+        return;
+    };
+    // Insert under an OWNED Bytes rope key `(rep [104] 1)` = [104,120]; look up with the flat `[104,120]`.
+    let rope_src = "(module m \
+                 (def (rep (: b Bytes) (: n Int64)) \
+                    (if (< n 1) b (rep (Bytes.concat b (Bytes.of (list 120))) (- n 1)))) \
+                 (def (main) \
+                    (match (Map.lookup (Map.insert (Map.empty) (rep (Bytes.of (list 104)) 1) 42) (Bytes.of (list 104 120))) \
+                       ((Some v) v) ((None) (- 0 1)))) (export main))";
+    let rope = compile_component(&crate::codec::encode(&parse(rope_src))).expect("compile");
+    let mut rt = ComposedRuntime::new(&rope, &runtime_bytes);
+    assert_eq!(
+        rt.call("main", &[]),
+        Val::S64(42),
+        "a runtime Bytes rope map key must be found by its flat twin (was -1/None — a champ_hash/champ_eq \
+         physical-byte miss before the compiler compacts the Bytes key at the insert/lookup sites)"
+    );
+    let rope_live = rt.live_objects();
+
+    // The byte-identical FLAT-key baseline (no rope, no compaction): both keys are the literal [104,120].
+    let flat_src = "(module m (def (main) \
+                    (match (Map.lookup (Map.insert (Map.empty) (Bytes.of (list 104 120)) 42) (Bytes.of (list 104 120))) \
+                       ((Some v) v) ((None) (- 0 1)))) (export main))";
+    let flat = compile_component(&crate::codec::encode(&parse(flat_src))).expect("compile");
+    let mut rt_flat = ComposedRuntime::new(&flat, &runtime_bytes);
+    assert_eq!(rt_flat.call("main", &[]), Val::S64(42));
+    let flat_live = rt_flat.live_objects();
+
+    assert_eq!(
+        rope_live, flat_live,
+        "bytes-rope-key leak: the rope-key program leaves {rope_live} live cells vs the flat-key \
+         baseline's {flat_live} — the Bytes key compaction must be leak-NEUTRAL, so any difference is a \
+         compact leak"
+    );
+}
+
 /// `Map.remove` BORROWS its key (the runtime `op_map_remove` reads it via `champ_hash`/`champ_eq` and
 /// drops only the map's OWN stored columns, never the passed-in key), so an OWNED-TEMPORARY key handle
 /// materialized at the emit — here a LARGE-int key that `op_box_int` heap-allocates (`!fixnum_fits`) —
@@ -42236,12 +42291,20 @@ mod stage1 {
         // `Type`-parameter idiom — the composable route for a documenting user-generic signature `(: it (Iter
         // a))`. The value/let-binder sites (no parameter list) do NOT, keeping only the drop / concrete-type
         // guidance. (Generics are type-valued parameters — spec §"Generics Are Type-Valued Parameters".)
-        let param_hint =
-            unbound_hint("(module m (def (id (: x a)) x) (def (main) (id 1)) (export main))");
-        assert!(
-            param_hint.contains("`Type` parameter") && param_hint.contains("(: t Type)"),
-            "a parameter-site lowercase type-var also names the Type-parameter route: {param_hint}"
-        );
+        // The parameter-ness is driven by an EXPLICIT flag threaded from the call site, NOT by sniffing the
+        // human-readable `lead` string (Copilot PR #438) — so these by-site assertions also guard that a
+        // future reword of `lead` cannot silently drop/add the Type-parameter route. Both the TOP-LEVEL and
+        // a NESTED `(List a)` parameter annotation carry it (the flag threads through the nested walk).
+        for param_site in [
+            "(module m (def (id (: x a)) x) (def (main) (id 1)) (export main))",
+            "(module m (def (id (: x (List a))) x) (def (main) (id (list))) (export main))",
+        ] {
+            let param_hint = unbound_hint(param_site);
+            assert!(
+                param_hint.contains("`Type` parameter") && param_hint.contains("(: t Type)"),
+                "a parameter-site lowercase type-var (top-level + nested) names the Type-parameter route: {param_hint}"
+            );
+        }
         for value_site in [
             "(module m (def (main) (: 5 a)) (export main))",
             "(module m (def (main) (let (((: y a) 5)) y)) (export main))",

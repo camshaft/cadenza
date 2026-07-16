@@ -1043,6 +1043,8 @@ mod tests {
         // `read` operates on UNTRUSTED text; it must return a diagnostic, never panic. Sweep random
         // byte-ish strings (drawn from JSON's structural chars + digits + escapes + unicode) plus
         // truncated/odd fragments. Any panic (OOB slice, unwrap, bad-UTF-8 boundary) fails this test.
+        // On a SUCCESSFUL read the arena must also be well-formed with a TOTAL span table (a broken
+        // table would silently corrupt a span-based edit) — see `assert_json_read_invariants`.
         let alphabet: Vec<char> = "{}[]\":,0123456789.-+eEtfn\\/ \tλ".chars().collect();
         let mut rng = Rng(0x1357_9bdf_2468_ace0);
         for len in 0..=32usize {
@@ -1050,7 +1052,7 @@ mod tests {
                 let s: String = (0..len)
                     .map(|_| alphabet[rng.below(alphabet.len())])
                     .collect();
-                let _ = read(&s); // must not panic (Ok or Err, never crash)
+                assert_json_read_invariants(&s);
             }
         }
         // A few deliberately truncated openers.
@@ -1067,7 +1069,43 @@ mod tests {
             "nul",
             "{\"a\":1,",
         ] {
-            let _ = read(s);
+            assert_json_read_invariants(s);
         }
+    }
+
+    /// `read` must not panic on arbitrary input, and on a SUCCESSFUL read the arena is well-formed with
+    /// a TOTAL span table: `read`/`read_spanned` agree structurally, the arena is non-empty with root in
+    /// range, `spans` is exactly 1:1 with the structure vector, and every reachable child id is in range.
+    /// A clean `ReadError` on malformed input is fine (the point is no crash + a sound arena when it does
+    /// parse). Mirrors the ML/s-expr/markdown reader fuzzes.
+    fn assert_json_read_invariants(src: &str) {
+        let plain = read(src); // must not panic
+        let Ok((a, spans)) = read_spanned(src) else {
+            assert!(plain.is_err(), "read_spanned Err but read Ok for {src:?}");
+            return;
+        };
+        assert!(
+            plain.is_ok_and(|p| p.structurally_eq(&a)),
+            "read and read_spanned disagree for {src:?}"
+        );
+        let n = a.structure.len();
+        assert!(
+            n > 0 && (a.root.0 as usize) < n,
+            "root id in range for {src:?}"
+        );
+        assert_eq!(spans.len(), n, "span table is total for {src:?}");
+        fn walk(a: &Arenas, id: StructId) {
+            if let crate::ast::Struct::List(kids) = a.get(id) {
+                for &c in kids {
+                    assert!(
+                        (c.0 as usize) < a.structure.len(),
+                        "child id {} in range",
+                        c.0
+                    );
+                    walk(a, c);
+                }
+            }
+        }
+        walk(&a, a.root);
     }
 }

@@ -726,6 +726,7 @@ pass	a generic unwrap helper consumes a fallible Bytes.at result
 pass	a genuinely-narrow op with a wrapped-down MATCH-operand yields the exact value
 pass	a genuinely-narrow op with a wrapped-down if-operand still traps on overflow
 pass	a genuinely-narrow op with a wrapped-down if-operand yields the exact value when in range
+pass	a grafted template is structurally equal to the directly-quoted tree
 pass	a guard combines the payload binder with the rest binder
 pass	a guard compares two distinct sum payloads from one tuple
 pass	a guard on a ctor list element reads the constructor's payload binder
@@ -835,6 +836,7 @@ pass	a let body of unit yields unit
 pass	a let shadowing a parameter whose initializer references that parameter computes
 pass	a let shadowing a parameter with a differently-typed value is not an invalid component
 pass	a let shadowing a parameter with a same-typed value runs, not miscompiles
+pass	a let-bound Ast splices into a template
 pass	a let-bound lambda passed to a returned-closure factory
 pass	a let-bound lambda whose body performs is applied in the handle body
 pass	a let-bound record produced by an if is read at both fields
@@ -1440,6 +1442,10 @@ pass	a runtime BigInt intermediate that overflows Int64 does not trap
 pass	a runtime BigInt operation does not silently promote a fixed-width operand
 pass	a runtime BigInt ordering compares by the arbitrary-precision value
 pass	a runtime BigInt remainder takes the dividend's sign
+pass	a runtime Bytes rope in a SUM payload compares equal to its flat twin
+pass	a runtime Bytes rope is found as a Set element by its flat twin
+pass	a runtime Bytes rope map key is looked up by its flat twin
+pass	a runtime Bytes rope nested in a tuple compares equal to its flat twin
 pass	a runtime FLOAT width nested in a compound annotation is rejected
 pass	a runtime Float32 addition emits the f32 machine add
 pass	a runtime Float32 division emits f32.div
@@ -2315,6 +2321,7 @@ pass	deeply nested pattern matching
 pass	demoting a Float64 to Float32 rounds to the nearest binary32
 pass	difference cardinality with a runtime-element subtrahend
 pass	difference over a runtime-element set removes exactly that element
+pass	different runtime Bytes nested in a tuple compare unequal
 pass	differing trapping operands trap by selection only under the arith hoist
 pass	dimensional equality is decided by canonical exponent map, not written form
 pass	disjunction is false exactly when both operands are false
@@ -2400,6 +2407,7 @@ pass	equality of two records with different field sets is a type error
 pass	equality of two tuples of different arity is a type error
 pass	equality over a partly-un-built sum with a free Err type compiles on every backend
 pass	equality over a runtime float in a SUM payload compares by the float leaf
+pass	eval does not see through a splice whose operand is itself an Ast value
 pass	eval is optional for macros and interactive use
 pass	eval of a quasiquote splicing a compile-time-known value
 pass	eval of a quasiquote splicing a string works through String ops
@@ -2410,6 +2418,7 @@ pass	eval of a quoted conditional takes the branch its boolean literal selects
 pass	eval of a quoted float executes it to the float value
 pass	eval of a quoted float feeds ordinary float arithmetic
 pass	eval of a quoted string executes it to the string value
+pass	eval of a template splicing a runtime VALUE folds — the working side of the boundary
 pass	eval on malformed AST traps
 pass	every not-a-number value is equal to every not-a-number value
 pass	exact rational arithmetic is exact and normalized

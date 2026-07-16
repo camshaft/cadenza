@@ -17570,24 +17570,28 @@ fn ty_heap_walkable(db: &mut Db, ty: &crate::ty::Ty, seen: &mut Vec<StructId>) -
         //= spec/capabilities/core-semantics.md#floating-point-equality-follows-the-canonical-byte-form
         //# A floating-point value MUST be equal to another floating-point value exactly when their canonical byte forms are identical, so that a negative zero is distinct from a positive zero and all not-a-number values are equal to one another.
         Ty::Float(_) => true,
-        // A collection / bytes-rope / char / function / type-value / unresolved leaf is NOT
-        // walkable here (its canonical form needs machinery this increment does not emit, or it is not a
-        // runtime value that reaches a compound equality — `Ty::Type`/`Ty::Any`/`Ty::Fn` never cross `=`).
-        // A `Char` has no runtime machine rep yet (its equality folds at compile time). `Bytes` can be a
-        // non-canonical rope (see the `String` note above), so it declines until `bytes-compact`-on-compare.
-        // A `BigInt` will be canonical-byte-form-walkable once its runtime leaf exists (B3) — B0 adds the
-        // type only and constructs none, so it declines here for now (a constant `BigInt` `=` folds in the
-        // compiler at B1; a runtime `BigInt` `=` is wired with the runtime limb library). A `Rational`
-        // likewise: a constant `Rational` `=` folds in the compiler (B4-1), a runtime rational compound
-        // walk is a later B4 slice — declines here for now.
-        Ty::List(_)
-        | Ty::Bytes
-        | Ty::Char
-        | Ty::BigInt
-        | Ty::Rational
-        | Ty::Fn(_, _)
-        | Ty::Type
-        | Ty::Any => false,
+        // A BYTES leaf is CANONICAL by construction wherever the walk can reach it: as a DIRECT compound
+        // element (tuple/list/record/sum payload) it is `bytes-compact`ed at the construction site
+        // (`elem_needs_rope_compaction` includes Bytes), and as a Map/Set KEY it is `bytes-compact`ed at
+        // the key site (`key_needs_compaction` now includes Bytes) — exactly as a `String` is. So a Bytes
+        // stored in any compound reaching `champ_eq` has the canonical flat byte form and the physical
+        // byte-walk compares it EXACTLY (a `Bytes.concat` rope equals its flat twin). This is the nested/
+        // keyed companion of the DIRECT-operand Bytes `=` (`Core::ValueEq` compacts a direct Bytes operand).
+        // The ONE residual deferred edge — a Bytes NESTED inside a compound that is itself a Map/Set KEY —
+        // is the SAME rarer case the String story leaves (`key_needs_compaction` compacts a direct key, not
+        // a rope buried inside a compound key); it is vanishingly rare and shared with String, not a new gap.
+        Ty::Bytes => true,
+        // A collection / char / function / type-value / unresolved leaf is NOT walkable here (its canonical
+        // form needs machinery this increment does not emit, or it is not a runtime value that reaches a
+        // compound equality — `Ty::Type`/`Ty::Any`/`Ty::Fn` never cross `=`). A `Char` has no runtime
+        // machine rep yet (its equality folds at compile time). A `BigInt` will be canonical-byte-form-
+        // walkable once its runtime leaf exists (B3) — B0 adds the type only and constructs none, so it
+        // declines here for now (a constant `BigInt` `=` folds in the compiler at B1; a runtime `BigInt` `=`
+        // is wired with the runtime limb library). A `Rational` likewise: a constant `Rational` `=` folds in
+        // the compiler (B4-1), a runtime rational compound walk is a later B4 slice — declines here for now.
+        Ty::List(_) | Ty::Char | Ty::BigInt | Ty::Rational | Ty::Fn(_, _) | Ty::Type | Ty::Any => {
+            false
+        }
     }
 }
 
