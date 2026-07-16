@@ -20991,6 +20991,57 @@ mod match_engine {
     }
 
     #[test]
+    fn a_mistyped_conversion_reports_one_error_not_a_shadowed_lowering_decline() {
+        // A checked/wrapping conversion on a WRONG-TYPED operand — `(Int8.wrap 3.5)`, `(UInt8.wrap "hi")`
+        // — is rejected by check_application with the coded CDZ0203 (`Int8.wrap expects an argument of type
+        // Int64, but a value of type Float64 was given`). The conversion's LOWERING then ALSO declined "a
+        // conversion of a non-scalar operand has no meaning" — the SAME wrong-operand defect surfacing at
+        // emit (anchored at the op node, so the node-keyed dedup missed it). `dedup_faults` now drops that
+        // decline when the conversion arg-type CDZ0203 is present, so a mis-typed conversion is ONE primary
+        // error, not a coded reject shadowed by an emit-path decline.
+        let one_error = |src: &str| {
+            let out = crate::compile::compile(
+                &[crate::abi::Artifact::new(
+                    crate::abi::Artifact::KIND_AST,
+                    "m",
+                    crate::codec::encode(&parse(src)),
+                )],
+                &[crate::backend::Target::Wasm],
+            );
+            let errors: Vec<crate::abi::Diagnostic> = out
+                .diagnostics
+                .iter()
+                .filter(|d| d.severity == crate::abi::Severity::Error)
+                .cloned()
+                .collect();
+            assert_eq!(
+                errors.len(),
+                1,
+                "a mistyped conversion = ONE error (the CDZ0203), no shadowing non-scalar decline: {} -> {:?}",
+                src,
+                out.diagnostics
+                    .iter()
+                    .map(|d| &d.message)
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(
+                errors[0].code.as_deref(),
+                Some("CDZ0203"),
+                "got: {}",
+                errors[0].message
+            );
+            assert!(
+                errors[0].message.contains("expects an argument of type")
+                    && !errors[0].message.contains("non-scalar operand"),
+                "the one error is the arg-type CDZ0203, not the non-scalar decline: {}",
+                errors[0].message
+            );
+        };
+        one_error("(module m (def x (Int8.wrap 3.5)) (export x))");
+        one_error("(module m (def x (UInt8.wrap \"hi\")) (export x))");
+    }
+
+    #[test]
     fn a_map_insert_type_clash_names_the_map_and_operand_types() {
         // The Map.insert twin of the map-literal heterogeneity message (M75): inserting a key/value whose
         // type differs from the map's names BOTH the map's type and the operand's type (was a generic "the

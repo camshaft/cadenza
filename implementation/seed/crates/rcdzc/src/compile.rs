@@ -3148,6 +3148,22 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>, has_bakeable_type_export: bool) ->
             {
                 return false;
             }
+            // Drop the conversion-lowering "a conversion of a non-scalar operand has no meaning" decline
+            // when a member-op wrong-arg-type CDZ0203 is present. A CHECKED/wrapping conversion applied to a
+            // non-scalar — `(Int8.wrap 3.5)`, `(UInt8.wrap "hi")` — is rejected by `check_application` with
+            // "`Int8.wrap` expects an argument of type Int64, but a value of type Float64 was given" (the
+            // same "expects an argument of type" family), and the conversion's LOWERING then ALSO declines
+            // "a conversion of a non-scalar operand has no meaning" — the identical wrong-operand defect
+            // surfacing at emit, anchored at the op node (not the arg), so the node-keyed dedup below misses
+            // it. Drop it by flag so a mis-typed conversion is ONE primary `error:` (the coded CDZ0203),
+            // not a coded reject shadowed by an emit-path decline (`reference-compiler.md` §Outcomes Are
+            // Ordered By Safety).
+            if has_member_op_arg_type_reject
+                && r.is_decline()
+                && r.message == "a conversion of a non-scalar operand has no meaning"
+            {
+                return false;
+            }
             // Drop the SPANLESS "a type value has no runtime form" decline when a coded Type-kind-boundary
             // reject (`(+ Color 1)` → CDZ0201) already names the real fault — the decline is the same
             // type-in-value-position defect surfacing at lowering, not an independent limitation. (Spanless,
