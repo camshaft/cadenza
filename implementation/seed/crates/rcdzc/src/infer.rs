@@ -7686,6 +7686,53 @@ fn check_application(
             }
             return;
         }
+        // A CHAR against a NUMBER in a COMPARISON / EQUALITY (`(< c 1)`, `(= c 5)`, `(> #\a 0)`) — the
+        // comparison/equality twin of the ARITHMETIC `(+ #\a 1)` case. Arithmetic flows to the numeric-
+        // coercion path, which offers the `(Char.to-int …)` wrap fix; comparison/equality instead falls to
+        // the generic scheme-unify → the opaque "type mismatch: Char and Int64 must be the same type here"
+        // (an internal-clash read), with NO repair. `Char.to-int : Char → Int64` is TOTAL, so the SAME wrap
+        // fits — name the kind boundary + carry the `(Char.to-int …)` fix on the CHAR operand, at parity
+        // with arithmetic. (`Bool` was handled above — a boolean has no numeric conversion; a `Char` does.)
+        let is_compare_or_eq = matches!(
+            crate::eval::meta_apply_of(db, head),
+            Some(
+                crate::resolved::Prim::Lt
+                    | crate::resolved::Prim::Gt
+                    | crate::resolved::Prim::Le
+                    | crate::resolved::Prim::Ge
+                    | crate::resolved::Prim::Eq
+                    | crate::resolved::Prim::Compare
+            )
+        );
+        let char_operand = if a == Ty::Char && matches!(b, Ty::Int(_) | Ty::Float(_)) {
+            Some(args[0])
+        } else if b == Ty::Char && matches!(a, Ty::Int(_) | Ty::Float(_)) {
+            Some(args[1])
+        } else {
+            None
+        };
+        if is_compare_or_eq && let Some(char_arg) = char_operand {
+            trace!(target: "rcdzc::infer", head = head.0, "fault: Char compared to a number — not comparable, offer Char.to-int (CDZ0203)");
+            out.push(
+                Reject::coded(
+                    Code::TypeMismatch,
+                    "a character and a number are not comparable directly — a `Char` is not a number; \
+                     convert it to its Int64 scalar value with `Char.to-int` first"
+                        .to_string(),
+                )
+                .at(char_arg)
+                .with_fix(Fix::wrap_heuristic(
+                    char_arg,
+                    "(Char.to-int ",
+                    ")",
+                    "convert the char to its Int64 scalar value with `Char.to-int`",
+                )),
+            );
+            for &arg in args {
+                collect(db, arg, out);
+            }
+            return;
+        }
     }
     // DIMENSIONAL check on a binary operator applied to QUANTITIES (units-of-measure.md §A Dimensional
     // Mismatch Is An Error). Fires BEFORE the generic scheme-unify (whose `∀a. (Int a) → …` scheme has no
