@@ -1460,15 +1460,25 @@ fn audit(fleet: &Fleet, verbose: bool, strict: bool) {
         } else {
             // No reply names this request. It's either a genuine orphan (silent drop) or was resolved
             // before `in_reply_to` existed / via a hand-`send`. We can't prove a reply for the latter,
-            // so classify conservatively: only flag as ORPHAN when the sender is a STILL-ACTIVE agent
-            // that would be stuck waiting (a stale one-shot fix agent's pre-audit request is noise).
-            if active.contains(&mr.from) {
+            // so classify conservatively: flag as ORPHAN only when the sender is a STILL-ACTIVE agent
+            // that would be stuck waiting (a stale one-shot fix agent's pre-audit request is noise) AND
+            // the request isn't a PRE-DURABLE-SEQ (`000000000001-…`) send. A long-lived vertical is
+            // always active, so its ancient pre-`ack` MRs (which can NEVER carry an `in_reply_to`
+            // correlation) would otherwise be flagged as "stuck waiting" every audit forever — 38 such
+            // permanent false orphans here, enough to drown a REAL recent drop. A recent drop carries a
+            // high monotonic delivery-seq, so excluding the `…0001` sentinel can't hide one.
+            if active.contains(&mr.from) && !is_pre_durable_seq_filename(&fname) {
                 orphans.push((fname.clone(), mr.from.clone()));
             } else {
                 unverifiable += 1;
                 if verbose {
+                    let why = if is_pre_durable_seq_filename(&fname) {
+                        "pre-durable-seq (predates in_reply_to; uncorrelatable)"
+                    } else {
+                        "sender not active (pre-audit / stale)"
+                    };
                     println!(
-                        "  ? {fname} (from {}) — no reply recorded; sender not active (pre-audit / stale) — unverifiable",
+                        "  ? {fname} (from {}) — no reply recorded; {why} — unverifiable",
                         mr.from
                     );
                 }
@@ -3483,6 +3493,18 @@ fn message_kind_is_actionable(kind: &str) -> bool {
 /// A kind added here becomes informational everywhere at once; everything else is actionable.
 const INFORMATIONAL_KINDS: &[&str] = &["note", "merged", "backlog", "status", "reply"];
 
+/// Does this bus filename carry the PRE-DURABLE-SEQ sentinel leading field (`000000000001`)? Before the
+/// hub-global `.delivery-seq` counter existed (see `next_delivery_seq`), the filename's leading field
+/// was the process-local `Message::seq`, which is always `1` for a one-shot `fleet send` — so a
+/// `000000000001-…` name provably predates durable-seq AND the `in_reply_to`/`ack` correlation that
+/// arrived with it. The audit uses this to avoid flagging such an ancient, inherently-uncorrelatable
+/// request as an active-sender "silent drop" forever (a long-lived vertical is always active, so its
+/// pre-`ack` MRs would be permanent false orphans that drown a REAL recent drop — which carries a high
+/// monotonic seq, so this check can never hide one).
+fn is_pre_durable_seq_filename(name: &str) -> bool {
+    name.starts_with("000000000001-")
+}
+
 /// The message `kind` of a bus filename `<seq>-<pid>-<kind>.json`, or `None` if it doesn't match that
 /// pattern (see `deliver`: `format!("{:012}-{}-{}.json", seq, pid, kind)`). The `kind` itself may
 /// contain a dash (`merge-request`, `merge-request`-style), so we CANNOT just take the last
@@ -4732,6 +4754,24 @@ mod tests {
         );
         // Not a .json at all → None (never counted).
         assert_eq!(message_kind_from_filename("not-a-message.txt"), None);
+    }
+
+    #[test]
+    fn pre_durable_seq_filename_detects_the_sentinel_leading_field() {
+        // Pre-durable-seq: leading field is the process-local seq, always 1 → `000000000001-…`.
+        assert!(is_pre_durable_seq_filename(
+            "000000000001-2450601-merge-request.json"
+        ));
+        assert!(is_pre_durable_seq_filename("000000000001-100-note.json"));
+        // A real durable-seq filename (any leading field other than the `…0001` sentinel) → not pre-seq,
+        // so a recent silent drop (high monotonic seq) is STILL eligible to be flagged as an orphan.
+        assert!(!is_pre_durable_seq_filename(
+            "000000002207-2976113-merge-request.json"
+        ));
+        // Guard the exact width: `…0001` must be the full 12-digit leading field, not a prefix of a
+        // larger number like `000000000010` or `000000000012`.
+        assert!(!is_pre_durable_seq_filename("000000000010-5-note.json"));
+        assert!(!is_pre_durable_seq_filename("000000000012-5-note.json"));
     }
 
     #[test]

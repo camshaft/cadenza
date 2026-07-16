@@ -1335,10 +1335,15 @@ fn rust_call_arg(val: &str) -> String {
     };
     // A BYTES value crosses as `((. Bytes of) (list <byte>…))` — the dotted `Bytes.of` member-access head.
     // Emit the same `Vec<u8>` the library body builds: `vec![<b>u8, …]`. Detect the dotted head before the
-    // whitespace split (which would mis-tokenize the `(. Bytes of)` sub-form).
-    if let Some(after) = inner.strip_prefix("(. Bytes of)") {
-        let list = after.trim();
-        let elems = list
+    // whitespace split (which would mis-tokenize the `(. Bytes of)` sub-form). ONLY marshal when the inner
+    // `(list …)` shape is genuinely present — if it is absent (a malformed `((. Bytes of) …)`), FALL THROUGH
+    // to pass-through-verbatim below so rustc/the backend REJECTS it, rather than silently defaulting to an
+    // empty `vec![]` (which would compile a program with the WRONG argument value — a silent harness
+    // miscompile, Copilot PR#507). `and_then` (not `map(...).unwrap_or_default()`) keeps the `None` path
+    // falling through instead of collapsing to empty.
+    if let Some(after) = inner.strip_prefix("(. Bytes of)")
+        && let Some(elems) = after
+            .trim()
             .strip_prefix('(')
             .and_then(|s| s.strip_suffix(')'))
             .and_then(|s| s.trim().strip_prefix("list"))
@@ -1349,7 +1354,7 @@ fn rust_call_arg(val: &str) -> String {
                     .collect::<Vec<_>>()
                     .join(", ")
             })
-            .unwrap_or_default();
+    {
         return format!("vec![{elems}]");
     }
     let (head, rest) = inner.split_once(char::is_whitespace).unwrap_or((inner, ""));
@@ -4190,6 +4195,10 @@ mod trap_grading_tests {
             rust_call_arg("((. Bytes of) (list 1 2 3))"),
             "vec![1u8, 2u8, 3u8]"
         );
+        // A MALFORMED Bytes value (the `(list …)` shape absent) FALLS THROUGH to pass-through-verbatim —
+        // NOT a silent empty `vec![]` (which would compile the wrong value, a harness miscompile, PR#507).
+        // The raw text then reaches rustc/the backend, which rejects it (a loud error, not a wrong answer).
+        assert_eq!(rust_call_arg("((. Bytes of) 5)"), "((. Bytes of) 5)");
         // List `(list …)` → `vec![…]`; Option/Result variants → the native enum.
         assert_eq!(rust_call_arg("(list 1 2 3)"), "vec![1, 2, 3]");
         assert_eq!(rust_call_arg("(Some 5)"), "Some(5)");
