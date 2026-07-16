@@ -15,9 +15,14 @@ import { Ast } from "ast"
 /// A one-byte Bytes holding the low 8 bits of `x` (`UInt8.wrap` truncates to a byte).
 def b1(x: Int64) = Bytes.of([UInt8.wrap(x)])
 
-/// A length-prefixed string payload: `[byte-count, ...utf8 bytes]` (a name fits one length byte — a
-/// 255-byte cap is ample for a compiler symbol).
-def str-payload(s: String) = Bytes.concat(b1(String.byte-len(s)), String.to-bytes(s))
+/// A length-prefixed string payload: `[byte-count, ...utf8 bytes]`. The count is ONE byte, so the payload
+/// is capped at 255 bytes — ample for a compiler symbol. That cap is now ENFORCED: a longer string TRAPS
+/// rather than silently truncating its length via `UInt8.wrap` (which would corrupt the decode — the
+/// decoder would read the wrong byte-count). Copilot PR #433.
+def str-payload(s: String) =
+  let len = String.byte-len(s) in
+  if len > 255 then trap("codec: string payload exceeds the 255-byte length prefix")
+  else Bytes.concat(b1(len), String.to-bytes(s))
 
 /// Serialize `node` to its wire bytes.
 def encode(node: Ast) = match node with
@@ -38,7 +43,9 @@ def read-str(b: Bytes, pos: Int64) -> String =
   let count = Option.expect(Bytes.at(b, pos), "strlen") in
   match Bytes.slice(b, pos + 1, count) with
     | Option.Some(sub) => Option.expect(String.from-bytes(sub), "utf8")
-    | Option.None(_) => ""
+    // An out-of-bounds slice means the buffer is malformed/truncated — TRAP rather than silently
+    // returning "" (which would turn a partial buffer into a valid-looking empty Name/Str). Copilot PR #433.
+    | Option.None(_) => trap("codec: string payload slice out of bounds (malformed buffer)")
 
 def nsize(b: Bytes, pos: Int64) -> Int64 =
   let tag = Option.expect(Bytes.at(b, pos), "tag") in
@@ -196,5 +203,13 @@ def roundtrip-names-in-list() =
 def roundtrip-multibyte-name() =
   // A longer identifier round-trips — exercises the length prefix + slice at size.
   if top-name(round-trip(Ast.Name("identifier_x"))) == "identifier_x" then unit else trap("long name round-trips")
+
+@test
+def roundtrip-long-string-under-cap() =
+  // A well-under-cap multi-byte payload round-trips exactly, exercising the GUARDED str-payload
+  // (byte-len <= 255) on the valid side. The >255 trap and the OOB-slice trap (Copilot PR #433) harden
+  // the failure paths; this pins that hardening did not disturb an ordinary long string.
+  let s = String.concat(String.concat("the quick brown fox ", "jumps over the lazy dog "), "0123456789") in
+  if top-str(round-trip(Ast.Str(s))) == s then unit else trap("a long (under-cap) string round-trips exactly")
 
 export { encode, round-trip }

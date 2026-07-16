@@ -1297,22 +1297,32 @@ fn reroute_unknown(fleet: &Fleet, dry_run: bool) {
 /// merge as resolved); non-zero tells git the driver failed (falls back to a conflict, the old behavior
 /// — safe). A `_note`/other fields on either side are preserved from `ours`.
 /// The PURE core of the floor merge: given both parsed sides, return OUR object with `cited`/`total`
-/// replaced by the field-wise MAX. Missing/garbage counters read as 0 so the other side wins; all
-/// other keys on `ours` (e.g. `_note`) are preserved. Kept separate from `merge_floor`'s file I/O +
-/// `process::exit` so the max/preserve semantics are unit-testable without touching the filesystem.
+/// replaced by the field-wise MAX. Missing/garbage COUNTERS *inside* an object read as 0 so the other
+/// side wins; all other keys on `ours` (e.g. `_note`) are preserved.
+///
+/// Returns `None` if EITHER side is valid JSON but NOT an object (`null`, a number, an array). The
+/// driver contract is strictly `{"cited": u64, "total": u64, …}`; a non-object is a corrupt/wrong floor
+/// file, and rewriting it (or silently returning it unchanged) would "resolve" the conflict with an
+/// invalid floor (PR #430). `None` tells `merge_floor` to leave the conflict for a human instead. Kept
+/// separate from `merge_floor`'s file I/O + `process::exit` so the semantics are unit-testable.
 fn merged_floor_value(
     mut ours: serde_json::Value,
     theirs: &serde_json::Value,
-) -> serde_json::Value {
+) -> Option<serde_json::Value> {
+    // Both sides must be JSON objects — reject a valid-JSON-non-object rather than rewrite it.
+    if !ours.is_object() || !theirs.is_object() {
+        return None;
+    }
     let field = |v: &serde_json::Value, k: &str| v.get(k).and_then(|n| n.as_u64()).unwrap_or(0);
     let merged_cited = field(&ours, "cited").max(field(theirs, "cited"));
     let merged_total = field(&ours, "total").max(field(theirs, "total"));
-    // Overwrite the two counters on OUR object (keeps ours' `_note` etc.).
+    // Overwrite the two counters on OUR object (keeps ours' `_note` etc.). The is_object() guard above
+    // guarantees as_object_mut() succeeds.
     if let Some(map) = ours.as_object_mut() {
         map.insert("cited".to_string(), serde_json::json!(merged_cited));
         map.insert("total".to_string(), serde_json::json!(merged_total));
     }
-    ours
+    Some(ours)
 }
 
 fn merge_floor(ours: &Path, theirs: &Path) {
@@ -1325,7 +1335,12 @@ fn merge_floor(ours: &Path, theirs: &Path) {
         );
         std::process::exit(1);
     };
-    let o = merged_floor_value(o, &t);
+    let Some(o) = merged_floor_value(o, &t) else {
+        eprintln!(
+            "fleet merge-floor: a floor file is valid JSON but not a {{cited,total}} object — leaving the conflict for a human"
+        );
+        std::process::exit(1);
+    };
     let merged_cited = o.get("cited").and_then(|n| n.as_u64()).unwrap_or(0);
     let merged_total = o.get("total").and_then(|n| n.as_u64()).unwrap_or(0);
     match serde_json::to_string_pretty(&o) {
@@ -2580,7 +2595,7 @@ mod tests {
         // must be the field-wise MAX of both sides — never one side clobbering the other's higher count.
         let ours = serde_json::json!({"cited": 645, "total": 900});
         let theirs = serde_json::json!({"cited": 644, "total": 901});
-        let m = merged_floor_value(ours, &theirs);
+        let m = merged_floor_value(ours, &theirs).expect("two objects merge");
         assert_eq!(m.get("cited").and_then(|n| n.as_u64()), Some(645)); // ours higher
         assert_eq!(m.get("total").and_then(|n| n.as_u64()), Some(901)); // theirs higher
     }
@@ -2591,13 +2606,13 @@ mod tests {
         // side's extra keys survive) — and merging a value with itself is a no-op.
         let a = serde_json::json!({"cited": 10, "total": 20});
         let b = serde_json::json!({"cited": 30, "total": 15});
-        let ab = merged_floor_value(a.clone(), &b);
-        let ba = merged_floor_value(b.clone(), &a);
+        let ab = merged_floor_value(a.clone(), &b).expect("objects merge");
+        let ba = merged_floor_value(b.clone(), &a).expect("objects merge");
         assert_eq!(ab.get("cited"), ba.get("cited"));
         assert_eq!(ab.get("total"), ba.get("total"));
         assert_eq!(ab.get("cited").and_then(|n| n.as_u64()), Some(30));
         assert_eq!(ab.get("total").and_then(|n| n.as_u64()), Some(20));
-        let self_merged = merged_floor_value(a.clone(), &a);
+        let self_merged = merged_floor_value(a.clone(), &a).expect("objects merge");
         assert_eq!(self_merged.get("cited").and_then(|n| n.as_u64()), Some(10));
         assert_eq!(self_merged.get("total").and_then(|n| n.as_u64()), Some(20));
     }
@@ -2609,7 +2624,7 @@ mod tests {
         let ours =
             serde_json::json!({"cited": 1, "total": 2, "_note": "coverage floor — do not lower"});
         let theirs = serde_json::json!({"cited": 5, "total": 5});
-        let m = merged_floor_value(ours, &theirs);
+        let m = merged_floor_value(ours, &theirs).expect("objects merge");
         assert_eq!(
             m.get("_note").and_then(|s| s.as_str()),
             Some("coverage floor — do not lower")
@@ -2623,9 +2638,37 @@ mod tests {
         // merged floor to 0 or panicking. (A monotone floor should never regress to 0 by a bad merge.)
         let ours = serde_json::json!({"total": 900}); // no `cited`
         let theirs = serde_json::json!({"cited": 644, "total": "oops"}); // garbage `total`
-        let m = merged_floor_value(ours, &theirs);
+        let m = merged_floor_value(ours, &theirs).expect("objects merge (garbage counters ok)");
         assert_eq!(m.get("cited").and_then(|n| n.as_u64()), Some(644)); // theirs, ours missing→0
         assert_eq!(m.get("total").and_then(|n| n.as_u64()), Some(900)); // ours, theirs garbage→0
+    }
+
+    #[test]
+    fn merged_floor_rejects_a_valid_json_non_object() {
+        // PR #430: a floor file that is valid JSON but NOT an object (null, a number, an array, a
+        // string) is a corrupt/wrong floor. The driver must NOT "resolve" the conflict by rewriting it
+        // (or returning it unchanged) — it must decline (None) so merge_floor leaves the conflict for a
+        // human. Distinct from missing/garbage COUNTERS inside an object (those correctly read as 0).
+        let obj = serde_json::json!({"cited": 5, "total": 5});
+        for bad in [
+            serde_json::Value::Null,
+            serde_json::json!(42),
+            serde_json::json!("644"),
+            serde_json::json!([1, 2, 3]),
+            serde_json::json!(true),
+        ] {
+            // Either side being a non-object declines.
+            assert!(
+                merged_floor_value(bad.clone(), &obj).is_none(),
+                "ours={bad:?} must decline"
+            );
+            assert!(
+                merged_floor_value(obj.clone(), &bad).is_none(),
+                "theirs={bad:?} must decline"
+            );
+        }
+        // Two non-objects also decline (never rewrite).
+        assert!(merged_floor_value(serde_json::Value::Null, &serde_json::json!(0)).is_none());
     }
 
     #[test]

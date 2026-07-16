@@ -10,9 +10,13 @@
 ///
 /// SCOPE: the codec's Int leaf is ONE value byte (encode.cdz `b1`), so it round-trips small NON-NEGATIVE
 /// Ints (0..255) exactly — a negative or >255 Int wraps to its low 8 bits (`Int(-7)` → 249), a documented
-/// limitation of the compact wire format, not a codec identity. Widening the Int encoding to a signed
-/// varint is a possible future extension; the cases here stay within the 0..255 leaf range the format
-/// guarantees. (The Name/Str CONTENT round-trip — the point of this witness — is exact at any length.)
+/// limitation of the compact wire format, not a codec identity. Widening to a full 8-byte little-endian
+/// Int64 leaf is the natural fix (`byte0 | byte1<<8 | … | byte7<<56` on decode), but it is currently
+/// BLOCKED: reconstructing the high bits needs `byte7 << 56`, and `<<` traps CDZ0304 the moment a shift
+/// reaches bit 63 — even for the valid value `1 << 63` (= Int64.min), and inconsistently with `&`/`|`/`^`
+/// which set the sign bit freely. Filed as a language issue (queue: left-shift-traps-into-sign-bit); once
+/// `<<` shifts like the other bit ops the leaf can widen. The cases here stay within the 0..255 leaf range
+/// the format guarantees. (The Name/Str CONTENT round-trip — the point of this witness — is exact at any length.)
 
 import { round-trip } from "encode"
 import { ast-eq } from "ast-eq"

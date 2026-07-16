@@ -576,6 +576,65 @@ fn a_false_property_fails_with_a_shrunk_counterexample_and_a_seed() {
     );
 }
 
+/// F2 (`@exhaustive`): a property test marked `@exhaustive` is driven over its ENTIRE finite input domain
+/// (every combination of its bounded scalar parameters) rather than by random sampling — a pass is a PROOF
+/// over the domain, and a failure names the exact case. An UNBOUNDED domain (a wide int / float) declines
+/// with a narrow-the-type message. Scalar-only params, so no value-heap store is needed (like the sampled
+/// scalar property tests above — no `store_present` guard).
+#[test]
+fn an_exhaustive_property_is_driven_over_its_whole_domain() {
+    let d = dir("exhaustive");
+    // A TRUE property over Bool×Bool (4 cases) — `@exhaustive` reports the case count, not a trial count.
+    // (The body is trivially true over the whole domain, exercising the enumeration + report, not a bug.)
+    let ok_src = write(
+        &d,
+        "ok.cdz",
+        "@exhaustive def band(a: Bool, b: Bool) = if a then unit else unit\n\
+         @test def anchor() = if 1 == 1 then unit else trap(\"a\")\n",
+    );
+    let (ok, stdout, stderr) = run(&["test", &ok_src]);
+    assert!(
+        ok,
+        "a true exhaustive Bool×Bool property passes: {stdout}{stderr}"
+    );
+    assert!(
+        stdout.contains("PASS band (exhaustive, 4 cases)"),
+        "an @exhaustive Bool×Bool property reports its full 4-case domain: {stdout}"
+    );
+
+    // A FALSE property over UInt8 (256 cases) that traps for a specific value → FAIL naming the case.
+    // (Name avoids a digit-led kebab segment — `not_200` → `not-200` fails extern-name validation.)
+    let bad = write(
+        &d,
+        "bad.cdz",
+        "@exhaustive def avoids_ten(v: UInt8) = if v == 10 then trap(\"hit ten\") else unit\n\
+         @test def anchor2() = if 1 == 1 then unit else trap(\"a\")\n",
+    );
+    let (ok, stdout, _) = run(&["test", &bad]);
+    assert!(!ok, "a false exhaustive property → non-zero exit: {stdout}");
+    assert!(
+        stdout.contains("FAIL avoids_ten") && stdout.contains("avoids_ten(10)"),
+        "the exhaustive run names the exact failing case (10): {stdout}"
+    );
+
+    // An UNBOUNDED domain (Int64) cannot be exhaustively enumerated → FAIL with a narrow-the-type message.
+    let unbounded = write(
+        &d,
+        "unbounded.cdz",
+        "@exhaustive def wide(n: Int64) = if n == n then unit else trap(\"x\")\n\
+         @test def anchor3() = if 1 == 1 then unit else trap(\"a\")\n",
+    );
+    let (ok, stdout, _) = run(&["test", &unbounded]);
+    assert!(
+        !ok,
+        "an unbounded exhaustive domain → non-zero exit: {stdout}"
+    );
+    assert!(
+        stdout.contains("FAIL wide") && stdout.contains("BOUNDED input domain"),
+        "an unbounded @exhaustive domain declines with a narrow-the-type message: {stdout}"
+    );
+}
+
 /// F1 (compiler-directed collection generators): a `@test` whose parameter is a `(List Int64)` is
 /// property-tested by a COMPILER-SYNTHESIZED wrapper — the compiler builds a list from `Test.gen` and
 /// calls the test, so a property over a data structure runs over `--trials` generated inputs and shrinks

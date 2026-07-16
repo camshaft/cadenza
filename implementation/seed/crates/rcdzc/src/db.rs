@@ -1601,6 +1601,13 @@ pub struct Db {
     /// position is the application `(tag "string")`); `strip_annotations` reads that shape.
     pub(crate) tags: crate::fxhash::FxHashMap<StructId, Vec<String>>,
 
+    /// The `@exhaustive` set — property tests the `cdz test` runner drives over their ENTIRE finite input
+    /// domain (every combination of the scalar parameters), not by random sampling; keyed by BODY occ like
+    /// `tests`. A pass over the full domain is a PROOF for that property, the total-coverage counterpart to
+    /// sampled property testing (`property-based-testing.md` §Exhaustive). Read by `Db::is_exhaustive`. An
+    /// `@exhaustive` def is ALSO in `tests` (it is a test), so `test_defs` hoists it with no extra `@test`.
+    pub(crate) exhaustive: crate::fxhash::FxHashSet<StructId>,
+
     /// TRANSIENT flow-sensitive value-range REFINEMENTS, active only during wasm emit. A stack of
     /// frames, each mapping a variable's binder occurrence (a `Core::Param`/`LocalRef` `binder`) to a
     /// range `[lo, hi]` KNOWN to hold in the current control-flow branch (`hi = None` = unbounded above).
@@ -1674,6 +1681,7 @@ impl Db {
             inline_always,
             tests,
             tags,
+            exhaustive,
         } = strip_annotations(&mut ast);
         // The program's node count, captured BEFORE the prelude appends — the boundary between user
         // nodes (which the front-end's span table covers) and everything appended after. Ids `0..this`
@@ -2131,6 +2139,7 @@ impl Db {
             inline_always,
             tests,
             tags,
+            exhaustive,
             range_refinements: Vec::new(),
         };
         // NEWTYPE ERASURE: materialize, once, which declared sums are erasable NEWTYPES and their
@@ -2906,6 +2915,18 @@ impl Db {
             .and_then(|d| d.body)
             .and_then(|body| self.tags.get(&body))
             .map_or(NONE, Vec::as_slice)
+    }
+
+    /// Whether definition `def` is marked `@exhaustive` — a property test the runner drives over its ENTIRE
+    /// finite input domain rather than by random sampling (`property-based-testing.md` §Exhaustive). Keyed
+    /// by the def's BODY occurrence, the same identity `is_test`/`tags_of` use. Backs the `cdz test`
+    /// runner's choice of exhaustive enumeration vs sampled trials. `false` for a def out of range /
+    /// bodyless / not so annotated.
+    pub fn is_exhaustive(&self, def: usize) -> bool {
+        self.defs
+            .get(def)
+            .and_then(|d| d.body)
+            .is_some_and(|body| self.exhaustive.contains(&body))
     }
 
     /// The index in [`defs`] of the def whose SIGNATURE occurrence is `sig` — the O(1) reverse backing
@@ -3922,7 +3943,8 @@ fn strip_const_params(ast: &mut Arenas) -> crate::fxhash::FxHashSet<StructId> {
 /// annotations carry compiler SEMANTICS today". An annotation whose name is NOT one of these is still
 /// UNWRAPPED (the def takes effect) but recorded nowhere: a transparent, inert marker. So a future
 /// `@deprecated`/`@lint`/… works as a no-op the day it is written and gains meaning by joining this list.
-pub(crate) const KNOWN_ANNOTATIONS: &[&str] = &["inline-never", "inline-always", "test"];
+pub(crate) const KNOWN_ANNOTATIONS: &[&str] =
+    &["inline-never", "inline-always", "test", "exhaustive"];
 /// The strippable annotations a definition carries, each a set of the annotated defs' BODY occurrences.
 pub(crate) struct StrippedAnnotations {
     pub(crate) inline_never: crate::fxhash::FxHashSet<StructId>,
@@ -3935,6 +3957,12 @@ pub(crate) struct StrippedAnnotations {
     /// may carry several tags; they accumulate in annotation order. Read by `Db::tags_of` to back
     /// `cdz test --tag`. See the `Db::tags` field for the surface + semantics.
     pub(crate) tags: crate::fxhash::FxHashMap<StructId, Vec<String>>,
+    /// Definitions marked `@exhaustive` — a property test the `cdz test` runner drives over its ENTIRE
+    /// finite input domain (every combination of its scalar parameters) rather than by random sampling, so
+    /// a pass is a proof over the domain (`property-based-testing.md` §Exhaustive). Recorded by BODY occ
+    /// like `tests`; `Db::is_exhaustive` reads it. `@exhaustive` implies the def is a property test but is
+    /// recorded independently of `@test` (the runner treats an `@exhaustive` def as a test too).
+    pub(crate) exhaustive: crate::fxhash::FxHashSet<StructId>,
 }
 
 /// Unwrap EVERY `@`-ANNOTATION on a definition — `(@ inline-never (def …))`, `(@ inline-always (def …))`,
@@ -4026,6 +4054,7 @@ fn strip_annotations(ast: &mut Arenas) -> StrippedAnnotations {
     let mut tests: crate::fxhash::FxHashSet<StructId> = crate::fxhash::FxHashSet::default();
     let mut tags: crate::fxhash::FxHashMap<StructId, Vec<String>> =
         crate::fxhash::FxHashMap::default();
+    let mut exhaustive: crate::fxhash::FxHashSet<StructId> = crate::fxhash::FxHashSet::default();
     for i in 0..ast.structure.len() {
         let id = StructId(i as u32);
         // `(@ NAME INNER)` — the annotation head `@`, its name, and the annotated form. Only a known
@@ -4078,7 +4107,7 @@ fn strip_annotations(ast: &mut Arenas) -> StrippedAnnotations {
         debug_assert!(
             name.as_deref()
                 .is_none_or(|n| KNOWN_ANNOTATIONS.contains(&n)
-                    == matches!(n, "inline-never" | "inline-always" | "test")),
+                    == matches!(n, "inline-never" | "inline-always" | "test" | "exhaustive")),
             "KNOWN_ANNOTATIONS and the strip_annotations match arms disagree on `{name:?}`"
         );
         match name.as_deref() {
@@ -4089,6 +4118,13 @@ fn strip_annotations(ast: &mut Arenas) -> StrippedAnnotations {
                 inline_always.insert(body);
             }
             Some("test") => {
+                tests.insert(body);
+            }
+            // `@exhaustive` marks a property test to drive over its ENTIRE finite domain rather than by
+            // random sampling. It also makes the def a test (an `@exhaustive` def need not ALSO be
+            // `@test`-marked — recording it in `tests` too means `test_defs` hoists it), so record BOTH.
+            Some("exhaustive") => {
+                exhaustive.insert(body);
                 tests.insert(body);
             }
             // An unknown annotation name (or a non-name annotation head): unwrapped above, recorded in no
@@ -4108,6 +4144,7 @@ fn strip_annotations(ast: &mut Arenas) -> StrippedAnnotations {
         inline_always,
         tests,
         tags,
+        exhaustive,
     }
 }
 
@@ -4891,5 +4928,39 @@ mod tests {
         );
         // A def with `@test` but no `@tag` has no tags (a tag is independent metadata).
         assert!(tags("c").is_empty(), "an untagged def has no tags");
+    }
+
+    /// `@exhaustive` records its def in the exhaustive set (readable by `Db::is_exhaustive`) AND makes it a
+    /// test (so `test_defs` hoists it even without an explicit `@test`). A def not so annotated — a plain
+    /// `@test`, or an ordinary def — is NOT exhaustive. Pins the `strip_annotations` recognition + the
+    /// `Db::exhaustive` map that backs the `cdz test` exhaustive-enumeration path.
+    #[test]
+    fn exhaustive_annotation_marks_the_def_and_makes_it_a_test() {
+        let ast = crate::testkit::parse(
+            "(do \
+               (@ exhaustive (def (e (: a Bool)) unit)) \
+               (@ test (def (t) 1)) \
+               (def (plain) 2) \
+               (export plain))",
+        );
+        let db = Db::load(ast);
+        let idx = |name: &str| db.def_by_name(name).expect("def");
+        let tests = db.test_defs();
+        let is_test = |name: &str| tests.contains(&idx(name));
+        // The `@exhaustive` def is exhaustive AND a test.
+        assert!(db.is_exhaustive(idx("e")), "@exhaustive def is exhaustive");
+        assert!(is_test("e"), "@exhaustive def is also a test");
+        // A plain `@test` is a test but NOT exhaustive.
+        assert!(is_test("t"), "@test def is a test");
+        assert!(
+            !db.is_exhaustive(idx("t")),
+            "a plain @test is not exhaustive"
+        );
+        // An unannotated def is neither.
+        assert!(
+            !db.is_exhaustive(idx("plain")),
+            "an ordinary def is not exhaustive"
+        );
+        assert!(!is_test("plain"), "an ordinary def is not a test");
     }
 }

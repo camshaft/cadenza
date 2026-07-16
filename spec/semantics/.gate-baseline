@@ -1361,6 +1361,7 @@ pass	a recursive sum consumer whose arguments are recursive sum producers compil
 pass	a recursive sum recurses THROUGH a record-typed payload
 pass	a recursive sum type works with pattern matching
 pass	a recursive unifier distinguishes arrow components through the payload slots
+pass	a map-scrutinee match arm whose head is an unbound name is rejected in a recursive body (CDZ0101)
 pass	a recursive user sum built in a lib is folded by the entry over the imported type
 pass	a recursive user sum type is built at run time and renders its variant names
 pass	a recursive walk consulting a node's own and its child's String key computes correctly
@@ -2517,8 +2518,10 @@ pass	negating a runtime narrow integer traps at the width's own min, not the Int
 pass	negation inverts a boolean
 pass	negative integer to byte uses two's complement
 pass	negative zero crosses the parameter boundary preserving its sign
+pass	negative zero encodes to bytes distinct from positive zero
 pass	negative zero is distinct in the canonical value form
 pass	negative zero is not equal to positive zero
+pass	negative zero round-trips through the codec by byte identity
 pass	nested patterns deconstruct recursively
 pass	nested patterns with literals
 pass	nested quasiquote embeds a FLOAT via the inner unquote
@@ -2736,6 +2739,7 @@ pass	symbols interned from different strings are unequal
 pass	textually-identical performs are DISTINCT state-advancing reads, not a common subexpression
 pass	the AST is a sum type deconstructible by pattern matching
 pass	the Bool generator covers both values across seeds (it is not a constant)
+pass	the Float codec round-trips a negative value
 pass	the Int codec round-trips i64::MIN — the two's-complement boundary
 pass	the LEB128 byte composition runs on a runtime operand
 pass	the additive-zero identity preserves a boundary-crossing runtime operand

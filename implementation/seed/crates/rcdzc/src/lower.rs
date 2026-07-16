@@ -3520,6 +3520,25 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
                 probe_pats.push(inner_pat);
             }
             None => {
+                // A compound arm over a scrutinee that routed to the SCALAR path (a scalar scrutinee, or a
+                // List/Map scrutinee with NO structural `(list …)`/`(map …)` arm so it fell through here).
+                // The COMMON reach is a ctor-shaped head that is an UNBOUND name / non-member (`(Zorp x)`,
+                // `(List.Cons h t)`) — propagate its CODED poison (CDZ0101/CDZ0201) so `cdz check` surfaces
+                // it via `match_pattern_fault` on EVERY body, closing the same check≡compile hole the list
+                // (Inc 39) and map matchers had (the emit-path lowering walk that produces this decline
+                // runs on nullary-exported bodies alone). A genuinely not-yet-lowerable compound whose head
+                // resolves cleanly (or is not a name) yields no coded poison → the honest uncoded decline
+                // stands; no false alarm. `inner_pat` is already peeled of any `(guard …)` wrapper above.
+                let ctor_head = match db.ast.get(inner_pat) {
+                    crate::ast::Struct::List(children) => children.first().copied(),
+                    _ => None,
+                };
+                if let Some(head) = ctor_head
+                    && let Core::Poison(reject) = core_of(db, head)
+                    && reject.code.is_some()
+                {
+                    return Core::Poison(reject);
+                }
                 return Core::Poison(Reject::decline(
                     "a match pattern that is not a scalar literal or `_` is not yet supported",
                 ));
@@ -5971,6 +5990,25 @@ fn desugar_runtime_map_match(
             _ => pat,
         };
         let Some((entries, _rest)) = crate::resolve::map_pattern_of(db, inner) else {
+            // A non-`(map …)`, non-binder arm — the COMMON way to reach here is a ctor-shaped head over a
+            // MAP scrutinee (`((Zorp x) …)` unbound, `((. Map Foo) …)` non-member): a map has no user
+            // constructors. When that head resolves to a CODED poison (CDZ0101 unbound / CDZ0201
+            // non-member), propagate it instead of the generic UNCODED decline — the MAP twin of the
+            // list matcher's coded-head propagation (Inc 39), so `type_errors`' `match_pattern_fault`
+            // surfaces it in `cdz check` on EVERY body, not only the nullary-exported ones the emit-path
+            // lowering walk reaches (the check≡compile hole a recursive/parameterized body fell into). A
+            // head that is not an unbound/non-member name yields no coded poison → the honest uncoded
+            // decline stands for a genuinely not-yet-lowerable map-arm shape; no false alarm.
+            let ctor_head = match db.ast.get(inner) {
+                crate::ast::Struct::List(children) => children.first().copied(),
+                _ => None,
+            };
+            if let Some(head) = ctor_head
+                && let Core::Poison(reject) = core_of(db, head)
+                && reject.code.is_some()
+            {
+                return Some(Core::Poison(reject));
+            }
             return Some(Core::Poison(Reject::decline(
                 "a map match arm that is not a `(map …)` pattern or a binder is not yet supported",
             )));
@@ -6180,7 +6218,25 @@ fn lower_match_map(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId
             return core_of(db, body);
         }
         // A `(map (k p) … .. rest)` pattern: matches iff EVERY named key is present in the constant map.
-        let Some((pat_entries, _rest)) = crate::resolve::map_pattern_of(db, pat) else {
+        let map_inner = match db.ast.as_form(pat, "guard") {
+            Some(g) if g.len() == 2 => g[0],
+            _ => pat,
+        };
+        let Some((pat_entries, _rest)) = crate::resolve::map_pattern_of(db, map_inner) else {
+            // A ctor-shaped head over a (constant) MAP scrutinee — propagate the head's CODED poison
+            // (CDZ0101 unbound / CDZ0201 non-member) so `cdz check` surfaces it via `match_pattern_fault`,
+            // the const-map twin of the runtime-map path above (both the MAP analogue of the list
+            // matcher's Inc 39 coded-head propagation). A non-name head keeps the honest uncoded decline.
+            let ctor_head = match db.ast.get(map_inner) {
+                crate::ast::Struct::List(children) => children.first().copied(),
+                _ => None,
+            };
+            if let Some(head) = ctor_head
+                && let Core::Poison(reject) = core_of(db, head)
+                && reject.code.is_some()
+            {
+                return Core::Poison(reject);
+            }
             return Core::Poison(Reject::decline(
                 "a map match arm that is not a `(map …)` pattern or a binder is not yet supported",
             ));
