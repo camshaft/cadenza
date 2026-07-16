@@ -1274,6 +1274,68 @@ mod tests {
     }
 
     #[test]
+    fn collect_targets_recurses_a_dir_by_code_extension_and_excludes_docs_and_data() {
+        // The directory-sweep path (`cdz fmt <dir>` / a codemod over a tree) recurses subdirs and
+        // includes ONLY code surfaces (.cdz/.ml/.sexp/.sexpr/.bin/.cdzb), excluding markdown/json/toml/
+        // cedar (documents + data, not code to bulk-format) and unrelated files. Load-bearing now that
+        // `cdz` will feed project-resolved trees to fmt (FmtArgs::with_files). Build a tree + assert the
+        // collected set.
+        let dir = fmt_tmp("collect");
+        let sub = dir.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        // Code surfaces (included) — at the top level and one level down.
+        std::fs::write(dir.join("a.cdz"), "def f() = 1\n").unwrap();
+        std::fs::write(dir.join("b.sexp"), "(def (g) 2)\n").unwrap();
+        std::fs::write(sub.join("c.ml"), "def h() = 3\n").unwrap();
+        // Documents + data + noise (all EXCLUDED from a sweep).
+        std::fs::write(dir.join("README.md"), "# doc\n").unwrap();
+        std::fs::write(dir.join("data.json"), "{}\n").unwrap();
+        std::fs::write(dir.join("Config.toml"), "x = 1\n").unwrap();
+        std::fs::write(
+            dir.join("policy.cedar"),
+            "permit(principal,action,resource);\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join(".gitignore"), "*.tmp\n").unwrap();
+
+        let specs = collect_targets(&[dir.to_string_lossy().into_owned()], None).unwrap();
+        // Exactly the three code files, each inferring its own surface; sorted by path.
+        let names: Vec<String> = specs
+            .iter()
+            .map(|s| {
+                std::path::Path::new(s.path.as_ref().unwrap())
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        assert_eq!(
+            names,
+            vec!["a.cdz", "b.sexp", "c.ml"],
+            "code files only, recursed, sorted"
+        );
+        // Surfaces inferred from each extension (a dir sweep never forces one format).
+        let by_name = |n: &str| {
+            specs
+                .iter()
+                .find(|s| s.path.as_ref().unwrap().ends_with(n))
+                .unwrap()
+                .format
+        };
+        assert!(matches!(by_name("a.cdz"), Format::Ml));
+        assert!(matches!(by_name("b.sexp"), Format::Sexpr));
+        assert!(matches!(by_name("c.ml"), Format::Ml));
+        // An EXPLICITLY-named doc/data file still works (collect_targets honors any recognized ext) —
+        // only the SWEEP excludes them.
+        let md = dir.join("README.md").to_string_lossy().into_owned();
+        let explicit = collect_targets(&[md], None).unwrap();
+        assert_eq!(explicit.len(), 1, "an explicitly-named .md is honored");
+        assert!(matches!(explicit[0].format, Format::Markdown));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn resolve_to_prefers_flag_then_extension_then_sexpr() {
         // Explicit `--to` always wins (even when the file extension says otherwise).
         assert!(matches!(
