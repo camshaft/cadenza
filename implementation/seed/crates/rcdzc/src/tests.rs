@@ -53653,6 +53653,13 @@ mod stage1 {
             "message names the missing fallible boundary: {}",
             d.message
         );
+        // The hint names the CONCRETE fallible type the `?`'d value requires — `(try (Ok 1))` is a
+        // `Result Int64 _`, so the suggested annotation is `(Result Int64 _)`, not a generic `_`.
+        assert!(
+            d.message.contains("(Result Int64"),
+            "the hint names the concrete Result type to annotate: {}",
+            d.message
+        );
     }
 
     #[test]

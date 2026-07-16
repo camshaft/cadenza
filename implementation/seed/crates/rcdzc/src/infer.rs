@@ -9566,13 +9566,30 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                         match boundary_fallible {
                             None if boundary_definite => {
                                 trace!(target: "rcdzc::infer", node = id.0, ty = %bt.render_name(), "fault: `?` boundary not fallible (CDZ0230)");
+                                // Name the CONCRETE fallible result the operand's kind implies, so the
+                                // "annotate it as …" hint gives the exact type to write, not a generic
+                                // `_`. An `Option` operand → `(Option <payload>)`; a `Result` operand →
+                                // `(Result <payload> <err>)`. Falls back to the generic form when the
+                                // operand's fallible shape isn't (yet) definite.
+                                let suggested = match &operand_fallible {
+                                    Some((FallibleKind::Option, payload, _)) => {
+                                        format!("(Option {})", payload.render_name())
+                                    }
+                                    Some((FallibleKind::Result, payload, err)) => format!(
+                                        "(Result {} {})",
+                                        payload.render_name(),
+                                        err.as_ref().map_or("e".to_string(), |e| e.render_name())
+                                    ),
+                                    None => "(Result _ e)` / `(Option _)".to_string(),
+                                };
                                 out.push(
                                     Reject::coded(
                                         Code::TryNoBoundary,
                                         format!(
                                             "`?` has no fallible boundary — the enclosing function's \
                                              result type is `{}`, neither `Result` nor `Option`. \
-                                             Annotate it as `(Result _ e)` / `(Option _)`.",
+                                             Annotate it as `{suggested}` (the kind the `?`'d value \
+                                             requires), or wrap the expression in a `try {{ … }}` block.",
                                             bt.render_name()
                                         ),
                                     )
