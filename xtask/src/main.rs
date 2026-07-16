@@ -1595,6 +1595,13 @@ fn cdz_render_at(
     if ty == "BigInt" {
         return format!("({path}).to_decimal_string()");
     }
+    // A `Rational` value is the Rust `cdz_num::Rational` the backend emits — render it as cdz-run's `n/d`
+    // form (`1/2`, `5/1`, `-3/4`), via `Rational::to_display_string`. It is kept in lowest terms with the
+    // sign on the numerator + a positive denominator, so the string matches the oracle (an integer-valued
+    // rational still shows the explicit `/1`).
+    if ty == "Rational" {
+        return format!("({path}).to_display_string()");
+    }
     // A `String` value is the Rust `String` the backend emits — render it as cdz-run's canonical
     // `"<content>"` form: the RAW UTF-8 content wrapped in double quotes, with NO escaping (matching the
     // runtime's `Shape::Str => format!("\"{}\"", …)` — a raw passthrough). `{path}` is a `String`/`&String`;

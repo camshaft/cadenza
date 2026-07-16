@@ -41429,12 +41429,30 @@ mod stage1 {
         assert_eq!(run_main("0x2A"), 42);
         // A `N`-suffixed literal in FLOAT FORM (`0.5N`/`2.0N`/`1e3N`) — the common suffix slip — gets a
         // SPECIFIC message naming the cause (`N` = BigInt, spelled as a plain integer) + the fix (use the
-        // `R` Rational suffix), not the bare generic "malformed numeric literal".
+        // `R` Rational suffix), not the bare generic "malformed numeric literal". The named repair is ALSO
+        // carried as a structural replace fix (`{body}R`), so `cdz fix` applies it — fix-parity with the
+        // other prose-repair rejects.
         for (tok, fix) in [("0.5N", "0.5R"), ("2.0N", "2.0R"), ("1e3N", "1e3R")] {
             let msg = expect_decline(tok);
             assert!(
                 msg.contains("the `N` suffix means BigInt") && msg.contains(&format!("`{fix}`")),
                 "a float-form `N`-suffixed `{tok}` explains + suggests `{fix}`, got: {msg}"
+            );
+            // The suffix-swap repair is a structural fix, not prose only. A digit-led token is a bare leaf
+            // (a whole program), so it resolves as `main`'s body — `crate::diagnostics` surfaces its fix.
+            let src = format!("(module m (def (main) {tok}) (export main))");
+            let d = crate::diagnostics(&mut crate::db::Db::load(crate::testkit::parse(&src)))
+                .into_iter()
+                .find(|d| d.message.contains("the `N` suffix means BigInt"))
+                .unwrap_or_else(|| panic!("expected the N-suffix fault for {tok}"));
+            let f = d
+                .fix
+                .as_ref()
+                .expect("the N-suffix slip carries a replace fix");
+            assert_eq!(f.kind, crate::abi::FixKind::Replace);
+            assert_eq!(
+                f.replacement, fix,
+                "the fix swaps the `N` suffix for `R`: {tok}"
             );
         }
         // A genuinely garbled digit-led token that merely ENDS in `N` (not a float-form suffix slip) keeps

@@ -572,4 +572,80 @@ mod tests {
     fn bad_utf8_is_error() {
         assert!(read(&[0xff, 0xfe], Format::Sexpr).is_err());
     }
+
+    /// A tiny deterministic PRNG (SplitMix64) — reproducible generation without a dependency (mirrors
+    /// the unit-test PRNGs in `codec.rs`/`lexer.rs`/`canon.rs`).
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+            z ^ (z >> 31)
+        }
+        fn below(&mut self, n: usize) -> usize {
+            (self.next() % n as u64) as usize
+        }
+    }
+
+    /// Generate a random s-expr program string (bounded by `depth`) — a mix of atoms, infix, calls,
+    /// `let`, `if`, and list/tuple literals. Enough shape to exercise every code-surface conversion leg
+    /// (the ML printer's operator/precedence handling, the s-expr reader, the binary codec).
+    fn gen_prog(rng: &mut Rng, depth: usize) -> String {
+        let names = ["a", "b", "x", "y", "f", "+", "g"];
+        if depth == 0 || rng.below(3) == 0 {
+            return match rng.below(4) {
+                0 => names[rng.below(names.len())].to_string(),
+                1 => rng.below(50).to_string(),
+                2 => "true".to_string(),
+                _ => "x".to_string(),
+            };
+        }
+        let sub = |rng: &mut Rng| gen_prog(rng, depth - 1);
+        match rng.below(6) {
+            0 => format!("(+ {} {})", sub(rng), sub(rng)),
+            1 => format!("(f {} {})", sub(rng), sub(rng)),
+            2 => format!("(if {} {} {})", sub(rng), sub(rng), sub(rng)),
+            3 => format!("(let ((x {}) (y {})) {})", sub(rng), sub(rng), sub(rng)),
+            4 => format!("(\"list\" {} {})", sub(rng), sub(rng)),
+            _ => format!("(\"tuple\" {} {})", sub(rng), sub(rng)),
+        }
+    }
+
+    #[test]
+    fn code_surface_conversion_matrix_is_transitively_round_trip_consistent() {
+        // The public `convert::convert` matrix — the entry `cdz convert` and cdz-wasm ride — must be
+        // TRANSITIVELY round-trip-consistent across all three code surfaces: chaining every conversion
+        // leg (sexpr → binary → ml → binary → sexpr) preserves the program. `xtask roundtrip` sweeps
+        // binary→ONE surface→binary per corpus record; it never chains the cross-surface ML leg in one
+        // pass, so a printer/reader asymmetry that only shows when the ML text is re-read as the SOURCE
+        // of the next conversion isn't caught there. Here we drive the whole chain through the in-process
+        // `convert` API over random programs and assert the canonical binary is invariant end-to-end.
+        let mut rng = Rng(0x0bad_c0de_dead_beef);
+        for _ in 0..4000 {
+            let depth = 1 + rng.below(4);
+            let src = format!("(def (main) {})", gen_prog(&mut rng, depth));
+            // The canonical binary of the source (the fixed point every leg must return to).
+            let bin0 = convert(src.as_bytes(), Format::Sexpr, Format::Binary)
+                .expect("generated s-expr → binary");
+            // Chain across surfaces: binary → ml → binary → sexpr → binary.
+            let ml = convert(&bin0, Format::Binary, Format::Ml).expect("binary → ml");
+            let bin_via_ml = convert(&ml, Format::Ml, Format::Binary).expect("ml → binary");
+            assert_eq!(
+                bin0,
+                bin_via_ml,
+                "binary→ml→binary changed the program for {src}\n  ml: {}",
+                String::from_utf8_lossy(&ml)
+            );
+            let sexpr =
+                convert(&bin_via_ml, Format::Binary, Format::Sexpr).expect("binary → sexpr");
+            let bin_via_sexpr =
+                convert(&sexpr, Format::Sexpr, Format::Binary).expect("sexpr → binary");
+            assert_eq!(
+                bin0, bin_via_sexpr,
+                "binary→sexpr→binary changed the program for {src}"
+            );
+        }
+    }
 }

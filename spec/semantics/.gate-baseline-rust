@@ -2,6 +2,14 @@
 pass	Ast.decode converts bytes to an AST sum type value
 pass	Ast.decode decodes bytes that arrive as a function argument
 pass	Ast.encode and Ast.decode round-trip
+pass	BigInt.of a UInt32 at its high bit is a positive BigInt (narrow zero-extend, not sign)
+pass	BigInt.of a UInt64 at 2^63 - 1 is positive (the sub-high-bit control)
+pass	BigInt.of a UInt64 at 2^63 is a positive BigInt, not a wrong negative
+pass	BigInt.of a UInt64 at its high bit still works (the full-width control)
+pass	BigInt.of a UInt64 at u64::MAX is a positive BigInt
+pass	BigInt.of a UInt64 widens to the exact value (round-trips back through Int64.of where it fits)
+pass	BigInt.of a UInt8 at its high bit widens to the exact value (smallest-width zero-extend)
+pass	BigInt.of a signed Int32 is a positive BigInt (the narrow path breaks regardless of sign)
 pass	DOMINATOR CSE does not reuse a condition's perform-product in the taken branch
 pass	Int64.min crosses the parameter boundary and back unchanged
 pass	Int64.min crossing the boundary is still negative
@@ -20,6 +28,7 @@ pass	OR-saturation to a full-width mask on an unsigned runtime value
 pass	OR-then-mask absorption does not discard a trapping runtime operand
 pass	OR-then-mask absorption folds to the mask constant on a runtime operand
 pass	Ok carrying a Some keeps both variant tags
+pass	Qty.pow and repeated multiplication produce the same dimension for a matching add
 pass	Qty.unit recovers a derived unit
 pass	Qty.unit recovers the unit of a quantity whose magnitude is a runtime value
 pass	Qty.value recovers the underlying numeric value, discarding the unit
@@ -52,9 +61,14 @@ pass	TRANS unions the hypotheses of BOTH operands when each carries a distinct a
 pass	TWO performs in an if condition both fold on the strict-first spine
 pass	Type.eq branches on a type-valued parameter, monomorphized per passed type
 pass	Type.eq compares a reflected type against a written type
+pass	Type.eq compares two type-valued parameters to each other
+pass	Type.eq distinguishes a constructed generic sum by its type argument
 pass	Type.eq distinguishes quantities by their unit
 pass	Type.eq is false for values of different types
 pass	Type.eq is true for two values of the same type
+pass	Type.eq of a type-valued parameter against itself is always true
+pass	Type.eq on a constructed generic sum compares the full instantiated type
+pass	Type.eq on a type-valued parameter against a COMPOUND type is structural
 pass	Type.of carries a quantity's unit into a same-type annotation
 pass	Type.of reflects a runtime parameter's type at compile time
 pass	Type.of reflects a value's type for use as an annotation
@@ -64,6 +78,8 @@ pass	Unit.in converts a quantity to a chosen larger unit (Float)
 pass	Unit.in converts a quantity to a chosen smaller unit exactly (Int)
 pass	Unit.in over a BigInt quantity truncates a non-dividing ratio
 pass	Unit.in over a BigInt-magnitude quantity converts in unbounded arithmetic and unwraps
+pass	Unit.in over a runtime Rational quantity keeps a fractional scale exact
+pass	Unit.in over a runtime Rational-magnitude quantity converts exactly and unwraps
 pass	Unit.in to a unit of a different dimension is a compile-time error
 pass	XOR cancellation returns the original runtime value (constant key)
 pass	XOR cancellation returns the original value even when the key is a runtime value
@@ -125,6 +141,14 @@ pass	a RESULT-returning effect op is matched on Ok / Err — the fallible-step i
 pass	a RUNTIME guarded sum-match arm dispatches through its guard
 pass	a RUNTIME payload-literal refinement dispatches through its literal test
 pass	a RUNTIME string scrutinee matches string literals by equality
+pass	a RUNTIME-built Rational is usable as a map key, matched by its exact value
+pass	a RUNTIME-built Rational set deduplicates by exact value
+pass	a Rational accumulator threaded through recursion sums exactly
+pass	a Rational is usable as a map key, matched by its exact value
+pass	a Rational set deduplicates by exact value regardless of how each was written
+pass	a Rational-annotated literal composes with exact rational arithmetic
+pass	a Rational-inner quantity addition stays exact through the quantity wrapper
+pass	a Rational-payload sum value escapes across the boundary in its canonical form
 pass	a Result built by an if with the Err branch first type-checks
 pass	a Result carrying a Result is matched by a nested pattern to its inner value
 pass	a Result pipeline short-circuits on the first Err
@@ -357,6 +381,8 @@ pass	a curried-syntax application of a runtime closure flattens to one full-arit
 pass	a decimal integer literal
 pass	a decimal kilobyte and a binary kibibyte convert distinctly over Int64
 pass	a decimal literal annotated Rational equals its explicit constructor form
+pass	a decimal literal annotated Rational grounds to its exact fraction
+pass	a decimal literal annotated Rational is exact for a value no float rounds cleanly
 pass	a decimal token trailing letters is a malformed literal, not an unbound name
 pass	a declaration in a do block shadows an outer binding
 pass	a decoded length field re-encodes a length-prefixed frame end to end
@@ -375,6 +401,8 @@ pass	a deeply-nested generic-sum value type-checks and matches its outermost var
 pass	a def parameter may be a list rest pattern binding the head
 pass	a def-returning-lambda partial application passes through a HOF parameter
 pass	a default-fraction pragma fixes a type but adds no conversion — no-promotion still holds
+pass	a default-fraction pragma grounds a bare DECIMAL literal to its exact fraction
+pass	a default-fraction pragma makes a bare literal exact — 1/3 not 0
 pass	a default-fraction pragma naming a non-rational type is rejected
 pass	a default-integer pragma fixes a type but adds no conversion — no-promotion still holds
 pass	a default-integer pragma makes a bare literal take the declared integer type
@@ -443,6 +471,8 @@ pass	a floating-point literal
 pass	a four-level nested-constructor pattern with a generic user sum in the middle matches
 pass	a fresh-id supply threads state across two sibling recursive calls in one arm
 pass	a fresh-id walk over a THREE-constructor sum threads state across mixed-arity arms
+pass	a full-string String.slice byte-len equals the whole string's byte-len
+pass	a full-string String.slice recovers the whole string's length by both measures
 pass	a function applied to an argument
 pass	a function argument is applied through a recursive higher-order function
 pass	a function binding the same parameter name twice is rejected
@@ -830,12 +860,14 @@ pass	a negated zero equality composes with the negation fold
 pass	a negative and its positive twin encode to distinct bytes
 pass	a negative constant BigInt crosses the boundary with its sign
 pass	a negative constant argument to an unsigned parameter is rejected, not laundered
+pass	a negative decimal literal annotated Rational normalizes its sign onto the numerator
 pass	a negative exponent scales the mantissa down
 pass	a negative hexadecimal literal negates its value
 pass	a negative integer literal pattern matches a runtime scrutinee
 pass	a negative integer nested in a compound round-trips by byte identity
 pass	a negative integer width is rejected
 pass	a negative power over a BigInt magnitude truncates the reciprocal exactly
+pass	a negative power over a Rational magnitude is the EXACT reciprocal
 pass	a negative power over an integer magnitude truncates the reciprocal
 pass	a negative right-shift count traps rather than masking
 pass	a negative runtime BigInt result crosses the host boundary with its sign
@@ -846,6 +878,7 @@ pass	a negative width is not honored as a narrow type
 pass	a negative zero in a record field is distinct from positive zero
 pass	a negative zero nested in a tuple is distinct from positive zero
 pass	a negative-power SI prefix converts over Float
+pass	a negative-power SI prefix is an exact rational scale
 pass	a nested Ast.List match falls through when the inner leaf variant differs
 pass	a nested Ast.List match over a constant quote reads the deep leaf at the right depth
 pass	a nested OR by the same constant collapses to a single OR
@@ -947,6 +980,7 @@ pass	a parameterized export returns a list of lists built from its argument
 pass	a parameterized export returns a list of tuples built from its argument
 pass	a parameterized export returns a record computed from its argument
 pass	a parameterized export returns a runtime BigInt computed from its argument
+pass	a parameterized export returns a runtime Rational computed from its argument
 pass	a parameterized export returns a runtime-selected empty-or-nonempty list
 pass	a parameterized export returns a runtime-selected empty-or-nonempty map
 pass	a parameterized export returns a runtime-selected empty-or-nonempty set
@@ -1036,10 +1070,15 @@ pass	a quoted integer equals the same node built by the Ast.Int constructor
 pass	a quoted name equals the same node built by the Ast.Name constructor
 pass	a quoted string equals the same node built by the Ast.Str constructor
 pass	a quoted string is distinct from the same text quoted as a name
+pass	a radix literal carries the R (Rational) suffix
 pass	a radix literal with a bad digit is a malformed literal, not an unbound name
 pass	a radix literal with an empty body is a malformed literal, not an unbound name
 pass	a rate derived by division mixes with a named rate unit of the same dimension
+pass	a rational is normalized to lowest terms on construction
 pass	a rational operation does not silently promote an integer operand
+pass	a rational with numerator and denominator both negative normalizes to positive
+pass	a rational's sign is normalized onto the numerator
+pass	a rational-magnitude quantity erases to its exact rational value
 pass	a reader literal carries a qualified name with a dot
 pass	a recognized pragma with a malformed argument list is rejected
 pass	a recognized string escape denotes its one scalar value
@@ -1177,8 +1216,12 @@ pass	a runtime Float64 equality compares by the canonical byte form
 pass	a runtime List built past 32 elements reads correctly by index across the RRB leaf-to-trie boundary
 pass	a runtime MIXED-SCALE BigInt comparison converts to the reference before comparing
 pass	a runtime MIXED-SCALE BigInt-magnitude sum converts to the reference in unbounded arithmetic
+pass	a runtime MIXED-SCALE Rational-magnitude sum converts to the reference EXACTLY
 pass	a runtime NaN equals a runtime NaN under the canonical byte form
 pass	a runtime Option carrying a user sum is matched by a nested constructor pattern
+pass	a runtime Rational MAP KEY is found by a normalized-equal key
+pass	a runtime Rational built from a parameter compares by its exact value
+pass	a runtime Rational comparison of a parameter is false when it should be
 pass	a runtime Result carrying a String error is matched
 pass	a runtime Result constructed from a condition selects its Ok or Err arm
 pass	a runtime String match and its (= s literal) if-chain agree on the DEFAULT fall-through arm
@@ -1201,6 +1244,7 @@ pass	a runtime const-multiply one past its fitting boundary traps
 pass	a runtime division by zero traps
 pass	a runtime division truncates toward zero
 pass	a runtime element collapses against a constant one at build
+pass	a runtime exact mixing of inch and millimeter keeps the fractional scale
 pass	a runtime float absent from a Set is not found
 pass	a runtime float addition emits the machine add
 pass	a runtime float addition with nan propagates the nan
@@ -1302,6 +1346,7 @@ pass	a runtime-built generic user sum escapes with its parametric type frame
 pass	a runtime-built open-sum variant decodes through the schema
 pass	a runtime-built string crosses the boundary as its value form
 pass	a runtime-computed BigInt result crosses the host boundary
+pass	a runtime-computed Rational crosses the host boundary as its exact value
 pass	a runtime-element set compares equal to the constant set of the same elements
 pass	a runtime-element set equals itself
 pass	a runtime-element set's equality is independent of written order
@@ -1340,6 +1385,7 @@ pass	a scalar-payload sum looked up from a map, returned via a ctor, is matched 
 pass	a schema decode's Err result is handled as data on its own branch
 pass	a schema decode's Ok result is matched to recover the decoded payload
 pass	a scientific-notation float literal denotes the scaled value
+pass	a scientific-notation literal annotated Rational scales the numerator
 pass	a scrutinee of two to the sixty-fourth-adjacent magnitude misses a zero-based jump table
 pass	a self-applying term is declined at the reduction budget, not hung on
 pass	a self-comparison less-equal still traps on a zero divisor but folds true for a nonzero one
@@ -1560,6 +1606,7 @@ pass	a type stored in a compound result cannot cross the boundary
 pass	a type variable nested in a generic parameter annotation is an unbound name
 pass	a type-name-colliding variant construct coexists with the width type it collides with
 pass	a type-value in integer-width position is rejected
+pass	a type-valued parameter threaded through a second call reaches Type.eq with its type intact
 pass	a u16 segment encodes an integer big-endian by default
 pass	a u32 segment encodes four big-endian bytes
 pass	a u64 pattern segment reads eight big-endian bytes back into an integer
@@ -1599,6 +1646,7 @@ pass	a variant with an explicit EMPTY-TUPLE payload keeps its tuple form, distin
 pass	a variant-payload binder shadow is scoped to its arm, not the whole def
 pass	a variant-payload binder shadowing a param in a called def binds the payload
 pass	a well-formed annotation still checks and accepts a matching type (the control)
+pass	a whole rational carries a denominator of one
 pass	a wide fixed-size integer width is reserved, not yet a valid type
 pass	a wider runtime value in a fixed-width segment is a compile-time type error
 pass	a wildcard in a nested pattern position ignores that element
@@ -1612,9 +1660,12 @@ pass	a zero-bit integer width is rejected
 pass	a zero-length slice is the empty byte sequence
 pass	accessing through an empty-side split-at is usable, like the equivalent literal
 pass	accumulator introduction threads a transformed extra parameter through a multi-parameter recursion
+pass	adding a cubed length to a squared length is a dimension mismatch
+pass	adding a squared length to a plain length is a dimension mismatch
 pass	adding quantities of incompatible dimension is a compile-time error
 pass	adding rational-magnitude quantities of incompatible dimension is still a compile-time error
 pass	adding two named family units of one dimension converts to the reference (Float)
+pass	adding two squared-length quantities is well-dimensioned
 pass	addition of a string and a byte sequence names both text types
 pass	addition of a string and a list names both non-numeric types
 pass	addition of two lists is rejected — a list is not a number
@@ -1627,6 +1678,7 @@ pass	all-nullary enum equality compares discriminants
 pass	an AST from quasiquoting a runtime value equals the same AST built by quote
 pass	an Ast-value-spliced template round-trips through encode and decode
 pass	an IEC binary prefix converts exactly over Int64
+pass	an IEC binary prefix scales a unit by a power of two
 pass	an Int argument to a Bool-annotated parameter is rejected
 pass	an Int argument to a parameter used as a Bool condition is rejected
 pass	an N suffix lets a huge literal need no annotation
@@ -1639,6 +1691,10 @@ pass	an Option carrying a Result is matched across two different sum types
 pass	an Option pipeline short-circuits on the first None
 pass	an Option-producing recursive generic ties its payload to the list element
 pass	an Option.expect payload consumed per iteration while the option is threaded accumulates stably
+pass	an R-suffixed decimal literal is its exact fraction
+pass	an R-suffixed integer literal is that integer over one
+pass	an R-suffixed literal composes with exact rational arithmetic
+pass	an SI decimal prefix scales a unit by a power of ten
 pass	an abort abandons a pending borrowed map lookup and the map survives
 pass	an abort abandons a pending consuming op and the shared binding survives
 pass	an abortive handler arm never resumes, so its value becomes the handle's value
@@ -1720,8 +1776,13 @@ pass	an effect result drives the bound of a PURE recursive helper called in the 
 pass	an effect that declares an operation name twice is rejected
 pass	an effect-built NESTED-compound value escapes the handle and a nested projection reads through it
 pass	an effect-built heap list bound in a let is USED TWICE and retained across both uses
+pass	an effect-performing helper called inside a recursive self-call's argument folds
 pass	an effectful condition is performed exactly once under the operator hoist
 pass	an effectful condition of a same-constructor if is performed exactly once
+pass	an effectful helper called twice (nested) in a self-call arg folds each inline independently
+pass	an effectful helper reading TWO driver parameters folds in a self-call arg
+pass	an effectful helper that also reads an outer/driver parameter folds in a self-call arg
+pass	an effectful helper whose own parameter name shadows a driver parameter folds in a self-call arg
 pass	an effectful init before a failing `?` performs exactly once
 pass	an effectful match scrutinee is performed exactly once across a two-position sink
 pass	an effectful shared operand performs after the condition, exactly once
@@ -1738,6 +1799,7 @@ pass	an empty quote is rejected, not a crash
 pass	an empty scrutinee matches an empty bin pattern
 pass	an empty string is unequal to a non-empty string
 pass	an empty-range slice of a non-empty string is Some of the empty string
+pass	an empty-span String.slice at a multi-byte position has scalar-len zero
 pass	an empty-string Ast.Str round-trips through encode and decode
 pass	an empty-string Ast.Str round-trips through print and read
 pass	an encode-decode round-trip preserves an ASCII string's byte length
@@ -1804,6 +1866,7 @@ pass	an inner lambda captures an enclosing tuple-pattern binder and is applied
 pass	an inner runtime shadow defeats the outer constant fold
 pass	an int match on a constant scrutinee is non-exhaustive even when the constant hits the sole arm
 pass	an integer if condition is a type error, not a running conditional
+pass	an integer literal annotated Rational grounds to that integer over one
 pass	an integer literal in a type annotation's type position is rejected
 pass	an integer literal pattern against a boolean scrutinee is a type error
 pass	an integer literal pattern matches a runtime scrutinee
@@ -1880,6 +1943,7 @@ pass	applying a boolean is a type error
 pass	applying a float is a type error
 pass	applying a non-function is a type error
 pass	applying the result of a match whose arms return payload-capturing closures
+pass	arithmetic on a bound Rational payload computes and escapes exactly
 pass	arithmetic right shift
 pass	arithmetic right shift of negative one is negative one
 pass	arithmetic right shift preserves the sign bit for a negative operand
@@ -1990,6 +2054,7 @@ pass	converting a fixed-width integer to BigInt is explicit
 pass	converting a float to its own width is the identity
 pass	converting a scalar-valued integer to a char yields Some
 pass	converting a surrogate code point to a char yields None
+pass	converting a unit to another unit of the same dimension is an exact rational scale
 pass	converting an out-of-range integer to a char yields None
 pass	declaring a unit with a conversion conflicting with a built-in is an error
 pass	decode of a Float tag with a non-finite (NaN) bit pattern yields the error case
@@ -2067,6 +2132,8 @@ pass	eval of a quoted string executes it to the string value
 pass	eval of a template splicing a runtime VALUE folds — the working side of the boundary
 pass	eval on malformed AST traps
 pass	every not-a-number value is equal to every not-a-number value
+pass	exact rational arithmetic is exact and normalized
+pass	exact rational division is total and exact for a nonzero divisor
 pass	expect makes a checked-arithmetic result trap on overflow
 pass	expect on a RUNTIME-absent optional traps with the canonical unreachable kind
 pass	expect traps on the err case of a RUNTIME result
@@ -2327,6 +2394,7 @@ pass	runtime BigInt addition runs on the arbitrary-precision runtime
 pass	runtime BigInt equality holds for values reached by different arithmetic
 pass	runtime BigInt remainder runs on the arbitrary-precision runtime
 pass	runtime Bytes value-equality distinguishes different content
+pass	runtime Rational arithmetic adds two parameter-built fractions exactly
 pass	runtime float equality compares by canonical byte form
 pass	runtime float inequality compares by canonical byte form
 pass	runtime float ordering is a strict/non-strict partial order over finite values
@@ -2417,6 +2485,7 @@ pass	the byte codec round-trips a keyword-spelled Ast.Name that the text path wo
 pass	the byte length of a run-time multibyte string exceeds its scalar length
 pass	the byte length of a run-time-selected string reads the actual handle
 pass	the byte length of a runtime string equals the length of its encoded bytes
+pass	the byte-len of a multi-byte String.slice exceeds its scalar-len (the two measures diverge)
 pass	the decode error's kind is matchable
 pass	the default-integer pragma is definition-site scoped, not use-site
 pass	the difference contains the elements not in the second set
@@ -2617,6 +2686,7 @@ pass	unary negation of a nonzero float
 pass	unary negation of a parenthesized sum negates the whole expression
 pass	unary negation of a runtime integer parameter negates at run time
 pass	unary negation of an arbitrary-precision integer
+pass	unary negation of an exact rational negates the numerator
 pass	under-applying a unary constructor is a type error, not a fabricated unit payload
 pass	unequal-depth payload paths bind distinctly
 pass	union cardinality with a runtime-element operand
@@ -2764,8 +2834,6 @@ todo	TWO Tuple args with a fixed-shape COMPOUND result
 todo	TWO Tuple args with a scalar BETWEEN them (tuple, scalar, tuple)
 todo	TWO prefix scalars then a Tuple then a suffix scalar cross the direct-call boundary
 todo	Type is a first-class value
-todo	Unit.in over a runtime Rational quantity keeps a fractional scale exact
-todo	Unit.in over a runtime Rational-magnitude quantity converts exactly and unwraps
 todo	a 3-FIELD Tuple ARG among scalars crosses the direct-call boundary
 todo	a 32-bit-float closure crosses the host boundary
 todo	a 32-bit-integer closure crosses the host boundary
@@ -2822,14 +2890,7 @@ todo	a RECORD closure ARG with a LIST result
 todo	a RECORD closure ARG with a narrow Bool field, among scalars
 todo	a RECORD with a nested TUPLE field crosses the direct-call boundary
 todo	a REFL tactic closes a reflexivity goal by driving the kernel, and cannot close a false goal
-todo	a RUNTIME-built Rational is usable as a map key, matched by its exact value
-todo	a RUNTIME-built Rational set deduplicates by exact value
-todo	a Rational accumulator threaded through recursion sums exactly
-todo	a Rational is usable as a map key, matched by its exact value
-todo	a Rational set deduplicates by exact value regardless of how each was written
-todo	a Rational-annotated literal composes with exact rational arithmetic
-todo	a Rational-inner quantity addition stays exact through the quantity wrapper
-todo	a Rational-payload sum value escapes across the boundary in its canonical form
+todo	a SELECT-axiom theorem is unforgeable — its Thm cannot be fabricated outside the kernel
 todo	a SOLE RECORD closure ARG crosses the direct-call boundary
 todo	a SYM tactic reduces a goal to a subgoal plus a kernel justification (backward proof)
 todo	a String-returning closure alongside a parameterized plain export
@@ -2921,11 +2982,7 @@ todo	a consumer returns a different type than the closure it applies
 todo	a consumer takes the handed-back closure as its SECOND parameter
 todo	a cycle of module imports is rejected
 todo	a decimal kilobyte and a binary kibibyte are distinct units of one dimension
-todo	a decimal literal annotated Rational grounds to its exact fraction
-todo	a decimal literal annotated Rational is exact for a value no float rounds cleanly
 todo	a decoded field re-encodes into the same-width segment without an explicit narrow
-todo	a default-fraction pragma grounds a bare DECIMAL literal to its exact fraction
-todo	a default-fraction pragma makes a bare literal exact — 1/3 not 0
 todo	a delegated effect performed inside an intra-program handler
 todo	a delegated host effect composes with the value-heap runtime
 todo	a dimensionless quantity carries the group identity Unit.one
@@ -2976,17 +3033,13 @@ todo	a mutual AST walker re-extracts a node's payload in a sibling operand while
 todo	a mutually-recursive AST walker reads a node's child list without corrupting a sibling head-read
 todo	a mutually-recursive decoder returns a heap value and cursor and its heap slot is dispatched
 todo	a naive (non-renaming) substitution captures a free variable — the bug capture-avoidance prevents
-todo	a negative decimal literal annotated Rational normalizes its sign onto the numerator
 todo	a negative power is the reciprocal, deriving an inverse unit
-todo	a negative power over a Rational magnitude is the EXACT reciprocal
-todo	a negative-power SI prefix is an exact rational scale
 todo	a nested conjunction accumulates all three operand hypotheses
 todo	a nested element pattern dispatches on a NON-variant-0 list payload
 todo	a nested tuple list element is bound over a runtime list and folded across the rest
 todo	a non-byte-aligned bit-field width takes its exact arbitrary-width unsigned type
 todo	a parameterized export returning a capturing closure is made and called by the host
 todo	a parameterized export returning a multi-argument capturing closure
-todo	a parameterized export returns a runtime Rational computed from its argument
 todo	a parameterized plain export alongside a closure export applies its argument
 todo	a parameterized plain export alongside a closure export — the closure captures and applies
 todo	a pass-through closure that returns its arg via a trivial let composes at one element type
@@ -3001,11 +3054,6 @@ todo	a quantity is constructed from a numeric value and a unit
 todo	a quantity over a BigInt magnitude compares by its exact value
 todo	a quantity over a BigInt magnitude runs unbounded arithmetic on the erased handles
 todo	a quantity over an exact rational magnitude divides exactly and derives its dimension
-todo	a radix literal carries the R (Rational) suffix
-todo	a rational is normalized to lowest terms on construction
-todo	a rational with numerator and denominator both negative normalizes to positive
-todo	a rational's sign is normalized onto the numerator
-todo	a rational-magnitude quantity erases to its exact rational value
 todo	a re-declared same-name theorem type in another module is a distinct type a kernel value does not satisfy
 todo	a record-returning closure alongside a parameterized plain export — the closure
 todo	a record-returning closure alongside a parameterized plain export — the plain
@@ -3031,11 +3079,7 @@ todo	a round-trip consumer binds the applied closure through a let
 todo	a round-trip consumer takes the non-applying match arm
 todo	a round-trip consumer that does NOT apply the closure on the taken branch
 todo	a run's result is a deterministic function of a host call's recorded response
-todo	a runtime MIXED-SCALE Rational-magnitude sum converts to the reference EXACTLY
 todo	a runtime NaN leaf in a tuple compares equal, a runtime -0.0 leaf stays distinct
-todo	a runtime Rational MAP KEY is found by a normalized-equal key
-todo	a runtime Rational built from a parameter compares by its exact value
-todo	a runtime Rational comparison of a parameter is false when it should be
 todo	a runtime bin match binds the tail after a fixed header via a final rest segment
 todo	a runtime bin match dispatches on a literal tag across arms
 todo	a runtime bin pattern decodes a fixed-width segment from a runtime scrutinee
@@ -3043,7 +3087,6 @@ todo	a runtime bit-field packs a runtime value into a nibble
 todo	a runtime bit-field run spans two bytes and composes with an int segment
 todo	a runtime bytes value is spliced into a length-prefixed frame
 todo	a runtime division of the minimum integer by -1 overflows and traps
-todo	a runtime exact mixing of inch and millimeter keeps the fractional scale
 todo	a runtime final rest segment binds the empty tail when the scrutinee is only the header
 todo	a runtime fixed-width segment is emitted big-endian and read back by index
 todo	a runtime float leaf in a tuple compares by the canonical byte form
@@ -3054,9 +3097,7 @@ todo	a runtime signed little-endian segment lays the low byte first
 todo	a runtime signed little-endian segment round-trips a negative value
 todo	a runtime value is constructed into a fixed-width segment and its length read
 todo	a runtime value narrowed to the segment width constructs without trapping
-todo	a runtime-computed Rational crosses the host boundary as its exact value
 todo	a scalar BETWEEN two Tuple args with a LIST result
-todo	a scientific-notation literal annotated Rational scales the numerator
 todo	a second same-signature closure export shares the one call method
 todo	a set dedups NaN elements and keeps zero signs distinct
 todo	a set of negative zero and positive zero keeps both (distinct sign bits)
@@ -3074,17 +3115,12 @@ todo	a tuple-returning closure alongside a plain export — the closure
 todo	a tuple-returning closure alongside a plain export — the plain
 todo	a two-argument closure exported to the host is called with both arguments
 todo	a unit multiplied by its own inverse cancels to the dimensionless unit
-todo	a whole rational carries a denominator of one
 todo	a wildcard-exported variant whose name shadows a prelude type is constructible in an importer
 todo	adding two quantities of the same dimension keeps that dimension
 todo	adding two units of one dimension converts to the reference unit exactly
 todo	an 8-bit-integer closure crosses the host boundary
-todo	an IEC binary prefix scales a unit by a power of two
 todo	an IEC-prefixed quantity displays scaled to its reference over Int64
-todo	an R-suffixed decimal literal is its exact fraction
-todo	an R-suffixed integer literal is that integer over one
-todo	an R-suffixed literal composes with exact rational arithmetic
-todo	an SI decimal prefix scales a unit by a power of ten
+todo	an INFINITY-axiom theorem is unforgeable — its Thm cannot be fabricated outside the kernel
 todo	an abortive handler abandons a host call in the path it discards
 todo	an abstract theorem is obtained only through the kernel's exported inference rule and accessor
 todo	an abstract theorem type cannot be forged by constructing its rule constructor outside the kernel
@@ -3106,7 +3142,6 @@ todo	an identity closure composes through TWO chained recursive-generic maps at 
 todo	an identity closure threads through a recursive-generic HOF at one element type
 todo	an imported helper reaches its own file's private definition when inlined
 todo	an imported name resolves to a sibling file's exported definition
-todo	an integer literal annotated Rational grounds to that integer over one
 todo	an intra-program handler interposes on a delegated effect, counts it, and forwards to the boundary
 todo	an unannotated closure in a Some payload is typed from the Option's element arrow
 todo	an unannotated closure is inferred through an unannotated recursive HOF parameter
@@ -3117,7 +3152,6 @@ todo	an unimported sibling definition is not in scope
 todo	an unusual in-range width is a first-class type
 todo	and performs the right operand's effect when the left is true
 todo	and short-circuit does not perform the right operand's effect
-todo	arithmetic on a bound Rational payload computes and escapes exactly
 todo	binary operator operands are evaluated left to right
 todo	breaker exists: DISJ2 preserves the premise's hypothesis
 todo	breaker exists: EXISTS-intro preserves multiple hypotheses from the premise
@@ -3129,7 +3163,6 @@ todo	compound equality over a runtime Rational leaf compares by the normalized f
 todo	conjunction elimination CONJUNCT2 preserves both operand hypotheses
 todo	conjunction elimination keeps BOTH operand hypotheses, not just the projected conjunct's
 todo	conjunction of two theorems sharing a hypothesis concatenates without dedup
-todo	converting a unit to another unit of the same dimension is an exact rational scale
 todo	dimensional equality is decided by canonical exponent map, not written form
 todo	distinct signatures sharing a core valtype shape dispatch distinct bodies
 todo	distinct-sig byte-rope closure alongside a plain export — the closure
@@ -3190,8 +3223,6 @@ todo	eval of a quoted private constructor is withheld exactly as a direct refere
 todo	eval of a quoted proof-variant match cannot destructure an abstract proof outside the kernel
 todo	eval of a quoted theorem constructor cannot forge an abstract theorem outside the kernel
 todo	eval of an exported smart constructor still works — the forge fix does not over-reject
-todo	exact rational arithmetic is exact and normalized
-todo	exact rational division is total and exact for a nonzero divisor
 todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
 todo	four same-signature closure exports share one resource
@@ -3259,9 +3290,18 @@ todo	round-trip: a scalar consumer + a compound consumer of the same closure —
 todo	round-trip: a scalar consumer and a byte-rope consumer of the same closure — the byte-rope one
 todo	round-trip: a scalar consumer and a byte-rope consumer of the same closure — the scalar one
 todo	round-trip: an UNANNOTATED inner closure with a List param via the context arrow
-todo	runtime Rational arithmetic adds two parameter-built fractions exactly
 todo	scaling a quantity by a dimensionless quantity keeps its dimension
+todo	scan emits the seed plus one accumulator per element (n+1 outputs)
+todo	scan over an empty iterator emits just the seed
+todo	scan threads its accumulator left-to-right (an order-sensitive folder)
+todo	scan's kth emitted accumulator is the running fold of the first k elements
+todo	take-while composed after a map threads both transformers' closures
+todo	take-while excludes the failing element and everything after it (content, not just count)
+todo	take-while where every element satisfies the predicate keeps the whole run
+todo	take-while where the first element fails the predicate returns the empty run
 todo	the ETA axiom is minted via new_axiom as a hypothesis-free theorem
+todo	the INFINITY axiom is minted via new_axiom (an infinite type exists)
+todo	the SELECT (choice) axiom is minted via new_axiom as a hypothesis-free theorem
 todo	the empty and None arms of a list-payload split dispatch to their own values
 todo	the implication-extended kernel Thm stays unforgeable — Thm.Seq of a bogus implication outside is CDZ0214
 todo	the kernel defines T (truth) as a constant and DERIVES |- T through the rules
@@ -3304,6 +3344,5 @@ todo	two same-signature closures alongside a plain export all coexist
 todo	two same-signature closures alongside a plain export — the plain export runs
 todo	two sibling modules may each define a private helper of the same name
 todo	unary negation of a quantity preserves its unit
-todo	unary negation of an exact rational negates the numerator
 todo	α-equivalence (aconv) recognizes (λx.x) and (λy.y) as the same term up to bound-variable renaming
 todo	α-equivalence handles nesting and distinguishes a bound variable from a same-numbered free variable

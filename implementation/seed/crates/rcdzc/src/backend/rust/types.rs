@@ -46,6 +46,10 @@ pub fn rust_type(ty: &Ty) -> Option<String> {
         // clone-on-read discipline covers a shared BigInt (`ty_is_non_copy` includes it). The gate links
         // the `cdz-num` rlib via `--extern cdz_num`.
         Ty::BigInt => Some("cdz_num::Big".to_string()),
+        // An exact rational maps to `cdz_num::Rational` (a `Big` num/den pair in the runtime's canonical
+        // normalized form). Its ops mirror the wasm runtime's `rational-*` byte-for-byte, so a rust program
+        // computes the same rational value. Non-Copy (owns two limb `Vec`s) → clone-on-read.
+        Ty::Rational => Some("cdz_num::Rational".to_string()),
         // A CHAR is a single Unicode scalar value — Rust's native `char` (which IS a Unicode scalar,
         // exactly the Cadenza model). Copy, so no clone-on-read needed. Lets a `Char` cross as a sum
         // payload / tuple element (a `(Tok (Ch Char))` enum) and a `ConstChar` emit as a `'…'` literal.
