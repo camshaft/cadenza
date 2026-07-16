@@ -3309,3 +3309,4 @@ pass	α-equivalence handles nesting and distinguishes a bound variable from a sa
 todo	SUM ARG + LIST RESULT declines cleanly (Option arg, List result)
 todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
+pass	an effect-performing helper called inside a recursive self-call's argument folds

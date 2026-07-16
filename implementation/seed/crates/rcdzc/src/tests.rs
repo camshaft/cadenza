@@ -5655,6 +5655,34 @@ fn a_nested_inner_handler_rethreading_its_state_folds() {
     }
 }
 
+/// An effect-performing HELPER called inside a recursive SELF-CALL's ARGUMENT folds — `(run (- fuel 1) (+
+/// acc (turn fuel)))` where `turn a = Tools.dispatch a`. Threading the self-call arg inlines `turn` and
+/// threads its performing body; the inlined `Tools.dispatch` resumes `(a a)` (value AND next-state the SAME
+/// substituted-arg node, a RESOLVE-PINNED bare param occurrence). The ordinary copy SHARED that one node
+/// across the two splice positions — a single-parent-arena orphan surfacing the driver's own params as
+/// CDZ0101 `unbound name fuel`/`acc` (v-agent-harness Inc-3). A deep-fresh copy of the resume value/next-
+/// state gives each splice its own subtree, re-resolving against the specialized def's sig. `run 4 0`
+/// accumulates dispatch(4..1) = 4+3+2+1 → done(10) → 10. (An effectful helper referencing an OUTER/driver
+/// param inside its own body — `turn(a, acc) = acc + …` — is a further sub-case still declined; see the
+/// queued follow-up.)
+#[test]
+fn an_effectful_helper_in_a_selfcall_arg_folds() {
+    use crate::testkit::parse;
+    let src = "(do \
+        (effect Tools (op dispatch (-> Int64 Int64)) (op done (-> Int64 Int64))) \
+        (def (turn (: a Int64)) (Tools.dispatch a)) \
+        (def (run (: fuel Int64) (: acc Int64)) \
+          (if (= fuel 0) (Tools.done acc) (run (- fuel 1) (+ acc (turn fuel))))) \
+        (def (main) \
+          (handle Tools 0 ((dispatch (a) s (resume a a)) (done (a) s (resume a a))) \
+            (run 4 0))) (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src)))
+        .expect("an effectful helper in a recursive self-call arg folds (deep-fresh resume copy)");
+    if let Some(v) = run_linked(&bytes, "main") {
+        assert_eq!(v, "10");
+    }
+}
+
 // --- HOST-COMPOSITION INVARIANT boundary (§4.4: a reified/duplicated continuation must NOT span a host
 // call or an outer handler's effect). These are documented in 14-effects-and-handlers.sexp as a "clean
 // decline" but were not pinned by any test — so a future fold change that admitted the multi-shot /
