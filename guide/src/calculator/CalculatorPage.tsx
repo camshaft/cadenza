@@ -289,9 +289,12 @@ function TapeLine({ entry }: { entry: TapeEntry }) {
           <span aria-hidden className="select-none text-slate-600">
             ›
           </span>
-          {/* min-w-0 + break lets a long mono expression WRAP inside the tape instead of forcing the
-              whole page wider than a phone screen (the classic mobile horizontal-scroll break). */}
-          <code className="min-w-0 break-words text-slate-300">{input}</code>
+          {/* min-w-0 + break-all lets a long mono expression WRAP inside the tape instead of forcing the
+              whole page wider than a phone screen (the classic mobile horizontal-scroll break). Uses
+              break-all (not break-words): a calculator result/input is often a SINGLE unbroken token with
+              no spaces — a 100-digit bigint (`100!`) or a long exact fraction — which break-words (word
+              boundaries only) can't wrap; break-all breaks mid-token so it never overflows a phone width. */}
+          <code className="min-w-0 break-all text-slate-300">{input}</code>
         </div>
       )}
       <ResultLine result={result} />
@@ -301,15 +304,19 @@ function TapeLine({ entry }: { entry: TapeEntry }) {
 
 function ResultLine({ result }: { result: Eval }) {
   switch (result.kind) {
+    // A numeric RESULT (value/bound) is frequently a single unbroken token — a big-integer or a long
+    // exact fraction with no spaces — so it uses `break-all` (break mid-token) to wrap on a phone width;
+    // `break-words` (word boundaries only) would let a long digit-run overflow into horizontal scroll.
+    // Prose-y messages (trap/error) keep `break-words` since they have spaces to break on.
     case "value":
       return (
-        <div className="pl-4 text-emerald-300 break-words">
+        <div className="pl-4 text-emerald-300 break-all">
           = <code>{result.text}</code>
         </div>
       );
     case "bound":
       return (
-        <div className="pl-4 text-sky-300 break-words">
+        <div className="pl-4 text-sky-300 break-all">
           <code>{result.name}</code> = <code>{result.text}</code>
         </div>
       );
