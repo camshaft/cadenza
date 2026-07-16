@@ -64,11 +64,18 @@ const G1_LIST_LEN: usize = 3;
 /// program with no such test. Idempotent in practice (it only fires on a `(@ test (def …))` with a
 /// compound param, and after the rewrite that def is no longer `@test`-marked).
 pub fn synthesize(ast: &mut Arenas) {
-    // Only a top-level `(do …)` block can carry both the test defs and the appended effect/wrapper; a
-    // bare single-form program (or a `(module …)`) is left untouched by G1 (a compound-param `@test`
-    // there still declines, as before — G1 targets the common `(do …)` test file).
+    // The synthesis needs a top-level ITEM LIST to append the wrapper + effect to. A multi-form test file
+    // has a `(do …)` root (the common case). A LONE single-form file — one `@test def` with nothing else —
+    // parses as the bare `(@ test (def …))` AS the root (no enclosing `do`); treat it as a one-item list so
+    // a single-test file is handled too, rebuilding a `(do …)` root below. A `(module …)` root is left
+    // untouched (its own item list; not the `cdz test` file shape G1 targets).
     let root = ast.root;
-    let Some(items) = ast.as_form(root, "do").map(<[_]>::to_vec) else {
+    let items: Vec<StructId> = if let Some(do_items) = ast.as_form(root, "do").map(<[_]>::to_vec) {
+        do_items
+    } else if ast.as_form(root, "@").is_some() {
+        // A bare annotated def at the root — a lone single-form test file. Its one item is the root itself.
+        vec![root]
+    } else {
         return;
     };
 
@@ -1223,5 +1230,26 @@ mod tests {
                 "{src}: the synthesized wrapper is marked @exhaustive"
             );
         }
+    }
+
+    /// A LONE single-form test file — one `@test def` with a compound param and nothing else — parses as
+    /// the bare `(@ test (def…))` AS the root (no enclosing `(do …)`). The pass must still fire: treat the
+    /// root as a one-item list, synthesize the wrapper, and rebuild a `(do …)` root. Before this, such a
+    /// file declined at the compound param's boundary (the pass only handled a `(do …)` root).
+    #[test]
+    fn a_lone_single_form_compound_test_synthesizes() {
+        // No `(do …)` — the `(@ test …)` is the whole program.
+        let db = Db::load(crate::testkit::parse(
+            "(@ test (def (lp (: xs (List Int64))) (List.len xs)))",
+        ));
+        let names: Vec<String> = db
+            .test_defs()
+            .into_iter()
+            .map(|i| db.defs[i].name.clone())
+            .collect();
+        assert!(
+            names.iter().any(|n| n == "lp-gen") && !names.iter().any(|n| n == "lp"),
+            "a lone single-form compound test gains a wrapper (no do-block needed): {names:?}"
+        );
     }
 }

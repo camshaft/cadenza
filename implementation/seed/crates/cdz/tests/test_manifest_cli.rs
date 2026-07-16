@@ -868,4 +868,22 @@ fn a_list_parameter_test_is_property_tested_by_a_synthesized_generator() {
             && stdout.contains("PASS tfloat-gen (8 trials)"),
         "a compound Float param is property-tested via the synthesized wrapper: {stdout}"
     );
+
+    // A LONE single-form file — ONE @test def with a compound param and NOTHING else — has no enclosing
+    // `do`-block (it parses as the bare annotated def AS the root). The synthesis must still fire. Before
+    // this, such a file declined at the compound param's boundary (the pass only handled a `(do …)` root).
+    let lone = write(
+        &d,
+        "lone.cdz",
+        "@test def solo(xs: List(Int64)) = if List.len(xs) >= 0 then unit else trap(\"neg\")\n",
+    );
+    let (ok, stdout, stderr) = run(&["test", &lone, "--trials", "6"]);
+    assert!(
+        ok,
+        "a lone single-form compound test passes: {stdout}{stderr}"
+    );
+    assert!(
+        stdout.contains("PASS solo-gen (6 trials)"),
+        "a lone single-form file (no do-block) is property-tested via the synthesized wrapper: {stdout}"
+    );
 }
