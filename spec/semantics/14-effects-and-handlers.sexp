@@ -3229,3 +3229,86 @@
             (export main)))
   (call   main (: 0 Int64))
   (output (: 21 Int64)))
+
+(case "a fresh-id supply threads state across two sibling recursive calls in one arm"
+  (doc    "The natural effectful TREE WALK — `relabel(Node l r) = relabel(l) + relabel(r)` with the
+           `Fresh.next` gensym at the leaf. Two SIBLING self-recursive calls in one `match` arm: the
+           handler state the FIRST sibling advances must be visible to the SECOND (each leaf draws the
+           next id). Under a 0-based counter a 3-leaf tree draws 0, 1, 2 → 3. The single-return
+           specialization threaded only the INCOMING state to each self-call, so both siblings drew the
+           same id (a state-reset miscompile) and the shape was DECLINED; the multi-value-return
+           specialization (`f#ctx` yields `(value, out-state)`, each self-call let-bound and its out-state
+           threaded to the next sibling) folds it correctly. The canonical compiler-pass gensym over a
+           tree (node numbering, SSA names, type-variable ids).")
+  (input  (do
+            (effect Fresh (op next (-> Unit Int64)))
+            (type Tree (Leaf) (Node Tree Tree))
+            (def (relabel (: t Tree))
+              (match t
+                ((Leaf) (Fresh.next))
+                ((Node l r) (+ (relabel l) (relabel r)))))
+            (def (main)
+              (handle Fresh 0 ((next (u) s (resume s (+ s 1))))
+                (relabel (Node (Node (Leaf) (Leaf)) (Leaf)))))
+            (export main)))
+  (output (: 3 Int64)))
+
+(case "sibling-recursive effect threading is left-to-right (order-observing)"
+  (doc    "The same tree walk but with a NON-COMMUTATIVE combiner `(- (relabel l) (relabel r))`, so the
+           result witnesses the EVALUATION ORDER of the two siblings: the LEFT sibling draws first (the
+           smaller id). `(Node (Leaf) (Leaf))` → left id 0, right id 1 → 0 - 1 = -1. A right-first or
+           state-reset threading would give 0 - 0 = 0 or 1 - 0 = 1; -1 pins strict left-to-right
+           out-state threading between the siblings.")
+  (input  (do
+            (effect Fresh (op next (-> Unit Int64)))
+            (type Tree (Leaf) (Node Tree Tree))
+            (def (relabel (: t Tree))
+              (match t
+                ((Leaf) (Fresh.next))
+                ((Node l r) (- (relabel l) (relabel r)))))
+            (def (main)
+              (handle Fresh 0 ((next (u) s (resume s (+ s 1))))
+                (relabel (Node (Leaf) (Leaf)))))
+            (export main)))
+  (output (: -1 Int64)))
+
+(case "a perform BETWEEN two sibling recursive calls threads the intervening state"
+  (doc    "`relabel(Node l r) = (relabel l) + Fresh.next() + (relabel r)` — a discharged perform sits
+           BETWEEN the two sibling self-calls on the strict spine, so it draws the id the LEFT sibling
+           left and hands the advanced state to the RIGHT sibling. `(Node (Leaf) (Leaf))`: left draws 0,
+           the middle perform draws 1, right draws 2 → 0 + 1 + 2 = 3. Exercises the multi-value out-state
+           threading interleaved with an ordinary perform in one arm.")
+  (input  (do
+            (effect Fresh (op next (-> Unit Int64)))
+            (type Tree (Leaf) (Node Tree Tree))
+            (def (relabel (: t Tree))
+              (match t
+                ((Leaf) (Fresh.next))
+                ((Node l r) (+ (+ (relabel l) (Fresh.next)) (relabel r)))))
+            (def (main)
+              (handle Fresh 0 ((next (u) s (resume s (+ s 1))))
+                (relabel (Node (Leaf) (Leaf)))))
+            (export main)))
+  (output (: 3 Int64)))
+
+(case "sibling recursive calls sequenced through let bindings thread state"
+  (doc    "The `let`-sequenced form of the sibling walk — `(Node l r) => let a = relabel l in let b =
+           relabel r in a - b` — the shape a hand-written SSA linearizer uses (bind the left result, then
+           the right, threading the id counter through the RESULT). The second binding's init must thread
+           against the state the first advanced. `(Node (Leaf) (Leaf))` → a = 0, b = 1 → -1. Confirms the
+           multi-value out-state threads through `let` inits, not only bare operator operands.")
+  (input  (do
+            (effect Fresh (op next (-> Unit Int64)))
+            (type Tree (Leaf) (Node Tree Tree))
+            (def (relabel (: t Tree))
+              (match t
+                ((Leaf) (Fresh.next))
+                ((Node l r)
+                  (let ((a (relabel l)))
+                    (let ((b (relabel r)))
+                      (- a b))))))
+            (def (main)
+              (handle Fresh 0 ((next (u) s (resume s (+ s 1))))
+                (relabel (Node (Leaf) (Leaf)))))
+            (export main)))
+  (output (: -1 Int64)))

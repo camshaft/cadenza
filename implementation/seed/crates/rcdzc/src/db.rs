@@ -1501,6 +1501,14 @@ pub struct Db {
     /// index of the synthesized specialization, so the same call under the same context reuses one def.
     pub(crate) effect_specializations: crate::fxhash::FxHashMap<(StructId, String), usize>,
 
+    /// The synthesized specialization NAMES that use the MULTI-VALUE-RETURN calling convention (repro-1):
+    /// `f#ctx` returns `(value, out-state-per-slot)` instead of a bare value, so a later sibling self-call
+    /// can thread the recursion's advanced out-state. EVERY caller of such a spec — the recursive self-call
+    /// arm AND the top-level handle reduction — must project `.0` for the value (and, in the self-call arm,
+    /// `.{slot+1}` for each threaded state). A spec NOT in this set uses the ordinary single-return
+    /// convention (id-sum/countdown), unchanged. Populated by `specialize_recursive`.
+    pub(crate) multivalue_specs: std::collections::HashSet<String>,
+
     /// Memo of `effects::subtree_performs` — whether the subtree at a node reaches a discharged perform (a
     /// `resume`, or a call into a discharged effect) under a given handler context. Keyed by `(node,
     /// handler-context-key)` (the same resolved-identity string `effect_specializations` uses). The
@@ -2141,6 +2149,7 @@ impl Db {
             types: Column::new(),
             core: Column::new(),
             effect_specializations: crate::fxhash::FxHashMap::default(),
+            multivalue_specs: std::collections::HashSet::new(),
             subtree_performs_cache: crate::fxhash::FxHashMap::default(),
             reduced_callable_walked: crate::fxhash::FxHashSet::default(),
             type_specializations: crate::fxhash::FxHashMap::default(),

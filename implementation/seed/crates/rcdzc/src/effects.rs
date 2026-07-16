@@ -431,6 +431,13 @@ struct HandlerCtx {
     /// the UNCONDITIONAL strict abort (the perform is reached before its enclosing op completes); a
     /// conditional abort (inside an `if`/`match` branch) is a later increment.
     abort_value: std::cell::Cell<Option<StructId>>,
+    /// The self-call temps accumulated while threading a leaf TAIL expression in multi-value mode: each
+    /// `(temp-name, spec-call)` becomes a `(let ((temp spec-call)) …)` wrapping the tail's tuple, innermost
+    /// = last-pushed (so a later temp's init may read an earlier temp's `(. t 1)` out-state). Drained by
+    /// `thread_returning_tuple` at each leaf. Interior-mutable (the `&ctx` walk pushes to it).
+    pending: std::cell::RefCell<Vec<(String, StructId)>>,
+    /// A monotonic counter for fresh self-call temp names (`{spec}$t{k}`), unique within one specialization.
+    temp_ctr: std::cell::Cell<u32>,
 }
 
 /// One handler's state in a (possibly merged) [`HandlerCtx`]: the effect declaration whose operations
@@ -469,6 +476,8 @@ impl HandlerCtx {
             slots,
             abortive,
             abort_value: std::cell::Cell::new(None),
+            pending: std::cell::RefCell::new(Vec::new()),
+            temp_ctr: std::cell::Cell::new(0),
         }
     }
 
@@ -1745,7 +1754,13 @@ pub fn reduce_handle(
     if let Some(abort) = ctx.abort_value.get() {
         return Some(abort);
     }
-    Some(rewritten)
+    // MULTI-VALUE (repro-1): if the handle BODY was itself a self-call to a multi-value spec — `(handle …
+    // (relabel tree))` — the self-call arm pushed a pending temp and returned `(. t 0)` (the value
+    // projection); the temp is not yet bound. Drain any pending temps into wrapping `let`s so the handle
+    // value is `(let ((t (f#ctx … init))) (. t 0))`. (The self-call arm already discards each spec's
+    // OUT-state at the top level — the handle observes only the value.) Nothing pending → returns `rewritten`.
+    let wrapped = drain_and_wrap(db, &ctx, 0, rewritten);
+    Some(wrapped)
 }
 
 /// Reduce every NESTED inner `handle` found in `node` to its folded form, IN PLACE (returning a rewritten
@@ -2808,6 +2823,151 @@ fn tail_resume_next_state_of(db: &mut Db, node: StructId) -> Option<StructId> {
 /// operation in slot `k` reads/updates slot `k` (substituting slot `k`'s state into the arm's `state`
 /// binder), leaving the other slots unchanged. A single-handler context has one slot; a merged nested
 /// context has one per handler.
+/// Pop every pending self-call temp pushed at or above `mark` (LIFO) and wrap `inner` in one `(let ((temp
+/// call)) …)` per temp — LAST-pushed = INNERMOST, so a later temp's init (which may read an earlier temp's
+/// `(. t 1)` out-state) is in scope. Returns the wrapped node (just `inner` when nothing was pending).
+/// The multi-value counterpart of the ordinary let-init threading: a self-call's out-state is a RUNTIME
+/// value, so each self-call must be bound before its projections can be used.
+fn drain_and_wrap(db: &mut Db, ctx: &HandlerCtx, mark: usize, inner: StructId) -> StructId {
+    let entries: Vec<(String, StructId)> = ctx.pending.borrow_mut().split_off(mark);
+    let mut acc = inner;
+    for (name, init) in entries.into_iter().rev() {
+        let let_head = db.push_atom(Leaf::Name("let".to_string()));
+        let name_atom = db.push_atom(Leaf::Name(name));
+        let pair = db.push_list(vec![name_atom, init]);
+        let bindings = db.push_list(vec![pair]);
+        acc = db.push_list(vec![let_head, bindings, acc]);
+    }
+    acc
+}
+
+/// Package a leaf tail's `(value, out-states…)` as a tuple constructor `("tuple" value s0' s1' …)` — the
+/// multi-value return shape `f#ctx` yields so a caller's self-call can project the value (`.0`) and thread
+/// each slot's advanced out-state (`.{slot+1}`) forward.
+fn build_value_state_tuple(db: &mut Db, value: StructId, out_states: &[StructId]) -> StructId {
+    let head = db.push_atom(Leaf::Str("tuple".to_string()));
+    let mut children = vec![head, value];
+    children.extend_from_slice(out_states);
+    db.push_list(children)
+}
+
+/// Whether any self-call to `callee_def` in `node` sits UNDER a conditional (`if`/`match`/`and`/`or`) — a
+/// position `thread_returning_tuple`'s leaf threader cannot bind soundly (a self-call in a branch pushes a
+/// pending temp the branch-local `if`/`match` threading would not drain into that branch's scope). Such a
+/// leaf DECLINES (multi-value v1 handles self-calls only on the UNCONDITIONAL strict spine — operator
+/// operands, `let` inits/body, tuple/list/record elements, perform args). A self-call reached only through
+/// those strict forms is fine; one gated behind a conditional is not (yet).
+fn selfcall_under_conditional(db: &mut Db, node: StructId, callee_def: usize) -> bool {
+    match resolved_of(db, node) {
+        Resolved::If { cond, then_, else_ } => {
+            // A self-call in the CONDITION is still on the strict spine (evaluated unconditionally); one in
+            // a BRANCH is gated. Recurse the condition normally; flag a self-call anywhere in a branch.
+            selfcall_under_conditional(db, cond, callee_def)
+                || contains_self_call(db, then_, callee_def)
+                || contains_self_call(db, else_, callee_def)
+        }
+        Resolved::Match { scrutinee, arms } => {
+            selfcall_under_conditional(db, scrutinee, callee_def)
+                || arms
+                    .iter()
+                    .any(|&(_, body)| contains_self_call(db, body, callee_def))
+        }
+        Resolved::And { lhs, rhs, .. } => {
+            // `and`/`or` short-circuit: the rhs is conditional. A self-call in lhs is unconditional.
+            selfcall_under_conditional(db, lhs, callee_def)
+                || contains_self_call(db, rhs, callee_def)
+        }
+        _ => match db.ast.get(node).clone() {
+            Struct::List(children) => children
+                .iter()
+                .any(|&c| selfcall_under_conditional(db, c, callee_def)),
+            Struct::Atom(_) => false,
+        },
+    }
+}
+
+/// Whether `body` is threadable by `thread_returning_tuple` — a PRE-CHECK mirroring its structure so the
+/// mode decision can decline UP FRONT (before `specialize_recursive` reserves the def), avoiding an orphan
+/// bodyless spec. Descends `if`/`match` to their leaf tail expressions exactly as `thread_returning_tuple`
+/// does; at each LEAF, a self-call gated behind a conditional is unthreadable (v1 handles self-calls only on
+/// the unconditional strict spine). Returns `false` if any leaf has such a gated self-call.
+fn multivalue_leaves_threadable(db: &mut Db, body: StructId, callee_def: usize) -> bool {
+    match resolved_of(db, body) {
+        Resolved::If { then_, else_, .. } => {
+            multivalue_leaves_threadable(db, then_, callee_def)
+                && multivalue_leaves_threadable(db, else_, callee_def)
+        }
+        Resolved::Match { arms, .. } => arms
+            .iter()
+            .all(|&(_, arm_body)| multivalue_leaves_threadable(db, arm_body, callee_def)),
+        _ => !selfcall_under_conditional(db, body, callee_def),
+    }
+}
+
+/// Thread `body` in MULTI-VALUE mode (repro-1): the synthesized `f#ctx` returns `(value, out-state-per-slot)`
+/// at every tail, so a caller's self-call can thread the recursion's advanced state to a LATER sibling. The
+/// walk descends through `if`/`match` (each branch/arm body is its own tail, producing its own tuple under
+/// its own out-state); at a LEAF tail expression it threads with `thread_bounded` (self-calls there push
+/// pending temps via the multi-value self-call arm), then drains those temps into wrapping `let`s and
+/// packages `("tuple" value out-states…)`. Returns `None` (clean decline) for a leaf whose self-call sits
+/// under a conditional — a position v1 does not bind soundly. `ctx.multivalue` must be set by the caller.
+fn thread_returning_tuple(
+    db: &mut Db,
+    body: StructId,
+    states: Vec<StructId>,
+    ctx: &HandlerCtx,
+    callee_def: usize,
+) -> Option<StructId> {
+    match resolved_of(db, body) {
+        // An `if`: thread the CONDITION (a perform there threads state to both branches; a self-call there
+        // is unconditional and drained around the whole `if`), then each branch is its OWN tail — recurse,
+        // giving each a fresh copy of the post-condition state (single-parent-arena discipline, as the
+        // ordinary `if` thread arm does). Rebuild `(if rcond then-tuple else-tuple)`, wrapping any
+        // condition-level self-call temps around it.
+        Resolved::If { cond, then_, else_ } => {
+            let mark = ctx.pending.borrow().len();
+            let (rcond, cur) = thread_bounded(db, cond, states, ctx, 0)?;
+            let then_states: Vec<StructId> = cur.iter().map(|&s| copy_pure(db, s)).collect();
+            let else_states: Vec<StructId> = cur.iter().map(|&s| copy_pure(db, s)).collect();
+            let rthen = thread_returning_tuple(db, then_, then_states, ctx, callee_def)?;
+            let relse = thread_returning_tuple(db, else_, else_states, ctx, callee_def)?;
+            let if_head = db.push_atom(Leaf::Name("if".to_string()));
+            let if_node = db.push_list(vec![if_head, rcond, rthen, relse]);
+            Some(drain_and_wrap(db, ctx, mark, if_node))
+        }
+        // A `match`: thread the SCRUTINEE, then each arm BODY is its own tail — recurse under a fresh copy of
+        // the post-scrutinee state. The PATTERN is a binder position (copied structurally). Rebuild `(match
+        // rscrut (rpat body-tuple)…)`, wrapping any scrutinee-level self-call temps around it.
+        Resolved::Match { scrutinee, arms } => {
+            let mark = ctx.pending.borrow().len();
+            let (rscrut, cur) = thread_bounded(db, scrutinee, states, ctx, 0)?;
+            let match_head = db.push_atom(Leaf::Name("match".to_string()));
+            let mut children = vec![match_head, rscrut];
+            for (pat, arm_body) in arms {
+                let rpat = copy_pure(db, pat);
+                let arm_states: Vec<StructId> = cur.iter().map(|&s| copy_pure(db, s)).collect();
+                let rbody = thread_returning_tuple(db, arm_body, arm_states, ctx, callee_def)?;
+                children.push(db.push_list(vec![rpat, rbody]));
+            }
+            let match_node = db.push_list(children);
+            Some(drain_and_wrap(db, ctx, mark, match_node))
+        }
+        // A LEAF tail expression — an operator/operand spine, a `let`, a tuple/ctor, a bare value, or a
+        // perform. Thread it: any self-call on its unconditional strict spine pushes a pending temp (the
+        // multi-value self-call arm), and a later sibling threads against that temp's `(. t 1)` out-state.
+        // A self-call GATED behind a conditional here is unhandled in v1 — decline cleanly.
+        _ => {
+            if selfcall_under_conditional(db, body, callee_def) {
+                return None;
+            }
+            let mark = ctx.pending.borrow().len();
+            let (value, out_states) = thread_bounded(db, body, states, ctx, 0)?;
+            let tuple = build_value_state_tuple(db, value, &out_states);
+            Some(drain_and_wrap(db, ctx, mark, tuple))
+        }
+    }
+}
+
 fn thread(
     db: &mut Db,
     node: StructId,
@@ -3045,12 +3205,31 @@ fn thread_bounded(
             // Build the call `(<spec-name> args… state…)`. The specialized def is named, so a name atom
             // resolves to it (via `def_by_name`), and the ordinary recursive `Core::Call` + reachability
             // path emits it.
-            let name_atom = db.push_atom(Leaf::Name(spec));
+            let name_atom = db.push_atom(Leaf::Name(spec.clone()));
             let mut call = vec![name_atom];
             call.extend(rargs);
+            let call_node = db.push_list(call);
+            if db.multivalue_specs.contains(&spec) {
+                // MULTI-VALUE MODE (repro-1): `f#ctx` returns `(value, out-state-per-slot)`. The call's
+                // OUT-state is a RUNTIME value (not a symbolic expr of the incoming state, as a perform's
+                // is), so it must be LET-BOUND before it can be projected and threaded forward. Bind the
+                // call to a fresh temp `t`, register the binding in `ctx.pending` (a leaf tail-expr drains
+                // it into wrapping `let`s), and RETURN `(. t 0)` as the call's VALUE with `[(. t 1)…]` as
+                // the NEW state per slot. This is what makes a LATER sibling self-call / perform thread
+                // against THIS call's advanced out-state (`(. t 1)`), not the un-advanced incoming state.
+                let k = ctx.temp_ctr.get();
+                ctx.temp_ctr.set(k + 1);
+                let tname = format!("{spec}$t{k}");
+                ctx.pending.borrow_mut().push((tname.clone(), call_node));
+                let value = tuple_proj(db, &tname, 0);
+                let new_states: Vec<StructId> = (0..cur.len())
+                    .map(|slot| tuple_proj(db, &tname, (slot + 1) as u32))
+                    .collect();
+                return Some((value, new_states));
+            }
             // The call's VALUE is the specialized fn's result; the states after it are not observed (the
             // corpus never reads post-recursion state — the single-return shape).
-            Some((db.push_list(call), cur))
+            Some((call_node, cur))
         }
         // A CROSS-FUNCTION perform: `(f args…)` where `f` is a NON-RECURSIVE function whose body reaches
         // an operation this handler discharges (`DESIGN-effects-rcdzc.md` §3, the new inline trigger). The
@@ -3882,17 +4061,31 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
     if slot_tys.iter().any(ty_has_any) {
         return None;
     }
-    // OUT-STATE-OBSERVING SIBLING PERFORM: decline cleanly. The single-return specialization threads each
-    // perform against the INCOMING state, which is correct only when the perform is evaluated no later than
-    // the self-call on a strict spine. When a SELF-CALL operand PRECEDES a PERFORM operand (`(- (build …)
-    // (Idx.next))`, `((. List push) (build …) (Idx.next))`), the perform reads the recursion's OUT-state —
-    // which `f#ctx` does not return. Threading it produces a wrong-state body and a stray resume that leaks
-    // the internal `f#ctx$s0` name in a confusing CDZ0101. Declining here keeps the decline clean AND
-    // protects against the wrong-state miscompile (see
-    // `rcdzc-specialize-recursive-operand-nested-selfcall-state-ref-gap`). The associative `+`/`*` cases
-    // are rewritten to tail form by accumulator-introduction before the fold, so they never reach here.
-    if selfcall_precedes_perform_in_operands(db, orig_body, callee_def, ctx) {
-        return None;
+    // OUT-STATE-OBSERVING SIBLING PERFORM/SELF-CALL. The SINGLE-return specialization threads each perform
+    // against the INCOMING state, which is correct only when the perform is evaluated no later than the
+    // self-call on a strict spine. When a SELF-CALL operand PRECEDES a later PERFORM or SIBLING SELF-CALL
+    // (`(+ (relabel l) (relabel r))`, `(- (build …) (Idx.next))`), that later operand reads the recursion's
+    // OUT-state — which single-return does not return. MULTI-VALUE mode (repro-1) handles exactly this: it
+    // makes `f#ctx` return `(value, out-states…)` and LET-BINDS each self-call so a later operand threads
+    // against its `(. t 1)` out-state. So instead of declining outright, decide the mode:
+    //   * If the offending shape's self-calls all sit on the UNCONDITIONAL strict spine of their tail leaf
+    //     (the shape `thread_returning_tuple` can bind), take MULTI-VALUE mode.
+    //   * Otherwise (a self-call gated behind a conditional feeding a later reader, abortive, etc.) DECLINE
+    //     as before — the wrong-state miscompile protection stands.
+    // The associative `+`/`*` cases are rewritten to tail form by accumulator-introduction before the fold,
+    // so a bare `(+ (relabel l) (relabel r))` only reaches here when accumulator-intro could not linearize
+    // it (two DISTINCT recursive operands — the genuine tree walk).
+    // (The per-LEAF check that a self-call sits on the unconditional strict spine is done inside
+    // `thread_returning_tuple`, which cleanly declines a leaf it cannot bind — so the mode decision here only
+    // needs the offending shape + a non-abortive context. A top-level `match`/`if` DISPATCH whose arm bodies
+    // hold the sibling self-calls is exactly what `thread_returning_tuple` recurses into, so it must NOT be
+    // treated as "self-call under a conditional" at this level.)
+    let multivalue = selfcall_precedes_perform_in_operands(db, orig_body, callee_def, ctx)
+        && ctx.abortive.is_empty()
+        && multivalue_leaves_threadable(db, orig_body, callee_def);
+    if selfcall_precedes_perform_in_operands(db, orig_body, callee_def, ctx) && !multivalue {
+        return None; // an out-state-observing shape the multi-value path does not cover yet (abortive, or
+        // a self-call gated behind a conditional inside a leaf) — decline BEFORE reserving the def.
     }
 
     // MEMO: the same recursive def under the same handler context specializes ONCE. Keyed by the def's
@@ -3978,6 +4171,12 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
         internal: false,
     });
     db.effect_specializations.insert(memo_key, spec_index);
+    // Register the multi-value calling convention BEFORE threading the body, so the recursive self-call arm
+    // (which re-enters here, hits the memo, and reads `db.multivalue_specs`) knows THIS spec returns a
+    // `(value, out-states…)` tuple and rewrites its own self-calls to destructure + thread the out-state.
+    if multivalue {
+        db.multivalue_specs.insert(spec_name.clone());
+    }
 
     // Thread `orig_body` under `ctx`, with each slot's incoming state = a REFERENCE to its state param. A
     // perform's resume value references the arm's state binder, which `thread`'s perform arm substitutes
@@ -3988,7 +4187,16 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
         .iter()
         .map(|n| db.push_atom(Leaf::Name(n.clone())))
         .collect();
-    let (spec_body, _out) = thread(db, orig_body, state_refs, ctx)?;
+    // MULTI-VALUE mode: the body's every tail leaf yields `("tuple" value out-states…)`, and each self-call
+    // is let-bound (out-state projected + threaded). SINGLE-return mode: the ordinary `thread` (unchanged).
+    let spec_body = if multivalue {
+        ctx.temp_ctr.set(0);
+        ctx.pending.borrow_mut().clear();
+        thread_returning_tuple(db, orig_body, state_refs, ctx, callee_def)?
+    } else {
+        let (b, _out) = thread(db, orig_body, state_refs, ctx)?;
+        b
+    };
 
     // Wrap in a REAL `(def (spec params… (: s T)) spec_body)` arena node so the parent index links
     // param → sig → def: `is_param_occurrence` walks that chain to classify each param, and `binder_in`
@@ -4000,6 +4208,19 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
 
     db.fill_specialized_def(spec_index, spec_params, spec_body);
     Some(spec_name)
+}
+
+/// Build a tuple projection `(. <name> index)` — a fresh bare-name reference to `name` projected at
+/// `index`. Used by the multi-value self-call rewrite to read a let-bound self-call temp's value (`.0`)
+/// and each slot's out-state (`.{slot+1}`).
+fn tuple_proj(db: &mut Db, name: &str, index: u32) -> StructId {
+    let dot = db.push_atom(Leaf::Name(".".to_string()));
+    let name_atom = db.push_atom(Leaf::Name(name.to_string()));
+    let idx_atom = db.push_atom(Leaf::Int {
+        value: IntValue::from_i64(index as i64),
+        radix: Radix::Dec,
+    });
+    db.push_list(vec![dot, name_atom, idx_atom])
 }
 
 /// Thread `node` if it performs, else copy it (a head that is a pure function reference). Convenience for
