@@ -633,6 +633,30 @@ fn an_exhaustive_property_is_driven_over_its_whole_domain() {
         stdout.contains("FAIL wide") && stdout.contains("BOUNDED input domain"),
         "an unbounded @exhaustive domain declines with a narrow-the-type message: {stdout}"
     );
+
+    // A COMPOUND param under `@exhaustive` (a collection domain is unbounded) declines cleanly — and does
+    // NOT abort the whole file (the sibling `anchor` still runs). Before the fix, `@exhaustive` was not
+    // recognized by the generator-synthesis pass, so the compound param hit the export boundary and killed
+    // the entire compile.
+    let compound = write(
+        &d,
+        "compound.cdz",
+        "@exhaustive def clist(xs: List(Bool)) = if List.len(xs) >= 0 then unit else trap(\"x\")\n\
+         @test def anchor4() = if 1 == 1 then unit else trap(\"a\")\n",
+    );
+    let (ok, stdout, _) = run(&["test", &compound]);
+    assert!(
+        !ok,
+        "a compound @exhaustive domain → non-zero exit (declines): {stdout}"
+    );
+    assert!(
+        stdout.contains("FAIL clist-gen") && stdout.contains("BOUNDED input domain"),
+        "a compound @exhaustive declines with a bounded-domain message: {stdout}"
+    );
+    assert!(
+        stdout.contains("PASS anchor4"),
+        "a compound @exhaustive decline does NOT abort the file — the sibling test still runs: {stdout}"
+    );
 }
 
 /// F1 (compiler-directed collection generators): a `@test` whose parameter is a `(List Int64)` is
