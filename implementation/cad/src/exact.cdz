@@ -101,6 +101,12 @@ def v3r-mul(a: Vec3r, b: Vec3r) =
 /// A degenerate zero box at the origin — the bound of an empty solid (no geometry).
 def aabbr-empty() = Aabbr.Boxr(v3r(rzero(), rzero(), rzero()), v3r(rzero(), rzero(), rzero()))
 
+/// Build a WELL-FORMED box from two corners, component-wise (lo = min, hi = max). This is the guard against an
+/// INVERTED box: a primitive built from `±half-extent` corners, or a scaled/mirrored one, can have its nominal
+/// "lo" corner land ABOVE "hi" on an axis when a dimension/factor is NEGATIVE — which would make `aabbr-size`
+/// go negative and break the min/max-based union/intersect. Normalizing here keeps the box valid for any sign.
+def aabbr-of-corners(p: Vec3r, q: Vec3r) = Aabbr.Boxr(v3r-min(p, q), v3r-max(p, q))
+
 /// The EXACT axis-aligned bounding box of an exact CSG tree — the recursive fold that was BLOCKED over
 /// Float64 (it needs `<`/`>` per node) and is expressible here because Rational has a total order. A cube
 /// A `Cuber(w,d,h)` is the FULL size (matching `solid.cdz`'s `Cube`), centred at the origin → it spans
@@ -110,15 +116,17 @@ def aabbr-empty() = Aabbr.Boxr(v3r(rzero(), rzero(), rzero()), v3r(rzero(), rzer
 /// (re-normalized to stay well-formed under a NEGATIVE/mirror factor — see the `Scaler` arm).
 def bounding-box(s: Solidr) = match s with
   | Solidr.Emptyr => aabbr-empty()
+  // Each primitive builds its box from ±half-extent corners, normalized via `aabbr-of-corners` so a NEGATIVE
+  // dimension/radius yields a well-formed box (absolute extent) rather than an inverted one.
   | Solidr.Cuber(sz) =>
     (match sz with | Vec3r.V3r(w, d, h) =>
-      Aabbr.Boxr(Vec3r.V3r(rzero() - rhalf(w), rzero() - rhalf(d), rzero() - rhalf(h)),
-                 Vec3r.V3r(rhalf(w), rhalf(d), rhalf(h))))
+      aabbr-of-corners(Vec3r.V3r(rzero() - rhalf(w), rzero() - rhalf(d), rzero() - rhalf(h)),
+                       Vec3r.V3r(rhalf(w), rhalf(d), rhalf(h))))
   | Solidr.Spherer(r) =>
-    Aabbr.Boxr(Vec3r.V3r(rzero() - r, rzero() - r, rzero() - r), Vec3r.V3r(r, r, r))
+    aabbr-of-corners(Vec3r.V3r(rzero() - r, rzero() - r, rzero() - r), Vec3r.V3r(r, r, r))
   | Solidr.Cylinderr(height, r) =>
-    Aabbr.Boxr(Vec3r.V3r(rzero() - r, rzero() - r, rzero() - rhalf(height)),
-               Vec3r.V3r(r, r, rhalf(height)))
+    aabbr-of-corners(Vec3r.V3r(rzero() - r, rzero() - r, rzero() - rhalf(height)),
+                     Vec3r.V3r(r, r, rhalf(height)))
   | Solidr.Unionr(a, b) => aabbr-union(bounding-box(a), bounding-box(b))
   // subtracting a tool never grows the base → the base's box bounds the difference.
   | Solidr.Differencer(a, _) => bounding-box(a)
@@ -128,14 +136,10 @@ def bounding-box(s: Solidr) = match s with
       | Aabbr.Boxr(lo, hi) => Aabbr.Boxr(v3r-add(lo, by), v3r-add(hi, by)))
   | Solidr.Scaler(by, of) =>
     (match bounding-box(of) with
-      // A NEGATIVE scale factor (a mirror) flips a corner past the other on that axis, so `v3r-mul(lo,by)` may
-      // land ABOVE `v3r-mul(hi,by)` — an INVERTED box (lo > hi) whose `aabbr-size` would go negative and whose
-      // union/intersect would misbehave. Re-normalize component-wise (min of the scaled corners as lo, max as
-      // hi) so the box stays well-formed for ANY factor sign. For positive factors this is identity.
-      | Aabbr.Boxr(lo, hi) =>
-        let slo = v3r-mul(lo, by) in
-        let shi = v3r-mul(hi, by) in
-        Aabbr.Boxr(v3r-min(slo, shi), v3r-max(slo, shi)))
+      // A NEGATIVE scale factor (a mirror) flips a corner past the other on that axis, so the scaled corners can
+      // be inverted — `aabbr-of-corners` re-normalizes them (identity for a positive factor). Same guard the
+      // primitives use.
+      | Aabbr.Boxr(lo, hi) => aabbr-of-corners(v3r-mul(lo, by), v3r-mul(hi, by)))
 
 /// The exact size (max − min) of a bounding box — the "how big" answer, exact.
 def aabbr-size(b: Aabbr) =
@@ -299,6 +303,21 @@ def negative-scale-keeps-a-well-formed-box() =
      else trap("lo corner — box should be normalized, not inverted"))
 
 @test
+def negative-primitive-dimensions-keep-a-well-formed-box() =
+  // REGRESSION (sibling of the negative-scale fix): a PRIMITIVE with a NEGATIVE dimension builds its box from
+  // ±half-extent corners that would invert (lo > hi) if unnormalized → a negative aabbr-size. aabbr-of-corners
+  // normalizes all three primitive arms, so a negative size/radius yields the ABSOLUTE extent, well-formed.
+  let two = Rational.of(2, 1) in let three = Rational.of(3, 1) in
+  let neg-cube = Solidr.Cuber(v3r(rzero() - two, two, rzero() - two)) in       // |−2| on x and z
+  let neg-sphere = Solidr.Spherer(rzero() - Rational.of(3, 2)) in              // radius −3/2 → size 3
+  let neg-cyl = Solidr.Cylinderr(rzero() - Rational.of(5, 1), rzero() - two) in // −5 height, −2 radius
+  if v3r-eq(aabbr-size(bounding-box(neg-cube)), v3r(two, two, two)) then
+    (if v3r-eq(aabbr-size(bounding-box(neg-sphere)), v3r(three, three, three)) then
+      (if v3r-eq(aabbr-size(bounding-box(neg-cyl)), v3r(Rational.of(4,1), Rational.of(4,1), Rational.of(5,1)))
+       then unit else trap("neg cylinder size (2|r|,2|r|,|h|) = (4,4,5)"))
+     else trap("neg sphere size 2|r| = 3")) else trap("neg cube size |w|,|d|,|h| = (2,2,2)")
+
+@test
 def intersection-of-two-cubes-is-the-overlap() =
   // two full-size-2 cubes (box [-1,1]), one translated +1 in x (box [0,2]) → intersection box x in [0,1].
   let two = Rational.of(2, 1) in
@@ -423,5 +442,5 @@ def simplify-r-of-a-mixed-tree-drops-dead-branches-but-preserves-the-real-extent
   else trap("simplify-r must preserve the real cube's extent while dropping the dead branch")
 
 export { Vec3r.*, Solidr.*, Aabbr.*, rmin, rmax, rzero, v3r, v3r-x, v3r-y, v3r-z, v3r-add, v3r-mul, v3r-min,
-         v3r-max, v3r-eq, aabbr-union, aabbr-intersect, aabbr-empty, bounding-box, aabbr-size,
+         v3r-max, v3r-eq, aabbr-union, aabbr-intersect, aabbr-empty, aabbr-of-corners, bounding-box, aabbr-size,
          solidr-is-empty, simplify-r }
