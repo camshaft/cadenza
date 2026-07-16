@@ -2172,6 +2172,25 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
         }
         faults.push(reject);
     }
+    // A BARE zero-operand DECLARATION form — `(def)` / `(type)` / `(effect)` — declares nothing (no name,
+    // no body/variants/ops) yet was SILENTLY ACCEPTED: it registers no `Def`/`TypeDecl`/`EffectDecl`, so
+    // the per-declaration validation walks never see it, and `unknown_top_forms` skips it (its head IS a
+    // known keyword). The `(export)` empty case is caught above; this is its `def`/`type`/`effect` sibling.
+    // Reject each CDZ0201, naming the form's canonical shape.
+    for (kw, occ) in db.empty_declaration_forms() {
+        let shape = match kw {
+            "def" => "a definition is `(def <name> <value>)` or `(def (<name> <param>…) <body>)`",
+            "type" => "a type declaration is `(type <Name> (<Variant> <payload>…)…)`",
+            _ => "an effect declaration is `(effect <Name> (op <name> <type>)…)`",
+        };
+        faults.push(
+            Reject::coded(
+                Code::Malformed,
+                format!("this `({kw})` declares nothing — {shape}"),
+            )
+            .at(occ),
+        );
+    }
     // SEMANTIC validation of a CONSTRUCTOR-EXPORT `(export (. T A))` / `(export (. T *))` — the opaque-types
     // surface. `malformed_exports` (above) accepts its SHAPE, and the linker's `as_ctor_export` records the
     // (type, ctor) names WITHOUT checking they exist — so `(export (. T Nonesuch))` (a ctor `T` lacks),
