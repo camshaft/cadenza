@@ -1408,12 +1408,16 @@ fn scaffold_project(dir: &std::path::Path, sexpr: bool, created: bool) -> ExitCo
                 .and_then(|c| c.file_name().and_then(|n| n.to_str()).map(String::from))
         })
         .unwrap_or_else(|| "app".to_string());
+    // The scaffolded entry is written in its CANONICAL (`cdz fmt`) form, so a fresh project passes
+    // `cdz fmt --check` immediately (a CI that fmt-checks shouldn't fail on the scaffold). The ML printer
+    // puts a blank line between a top-level `def` and the `export` block — the previous single-line-gap
+    // template failed `cdz fmt --check` on a brand-new project.
     let (ext, entry_src) = if sexpr {
         ("sexp", "(do (def (main) 0) (export main))\n".to_string())
     } else {
         (
             "cdz",
-            "def main() -> Int64 = 0\nexport { main }\n".to_string(),
+            "def main() -> Int64 = 0\n\nexport { main }\n".to_string(),
         )
     };
     let entry_file = format!("main.{ext}");

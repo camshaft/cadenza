@@ -54,6 +54,32 @@ fn new_scaffolds_a_buildable_project() {
 }
 
 #[test]
+fn new_scaffolds_an_already_formatted_project() {
+    // A freshly-scaffolded project must pass `cdz fmt --check` (rc=0) out of the box — the entry is
+    // written in its canonical printer form. Regression: the ML template previously omitted the blank
+    // line the printer puts between a top-level `def` and the `export` block, so a brand-new project
+    // FAILED `cdz fmt --check` — surprising, and it would red a CI that fmt-checks the tree.
+    for extra in [&[][..], &["--sexpr"][..]] {
+        let root = scratch(if extra.is_empty() {
+            "fmt-ml"
+        } else {
+            "fmt-sexp"
+        });
+        let mut args = vec!["new", "app"];
+        args.extend_from_slice(extra);
+        let (ok, _o, err) = run_in(&root, &args);
+        assert!(ok, "cdz new failed: {err}");
+        let proj = root.join("app");
+        let (cok, cout, cerr) = run_in(&proj, &["fmt", "--check"]);
+        assert!(
+            cok,
+            "a fresh scaffold ({extra:?}) must be fmt-clean: {cout}{cerr}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[test]
 fn new_sexpr_scaffolds_the_s_expression_surface() {
     // `--sexpr` scaffolds a `.sexp` entry (and it builds too).
     let root = scratch("sexpr");
