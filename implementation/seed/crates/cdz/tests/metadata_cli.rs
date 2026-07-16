@@ -201,6 +201,38 @@ fn metadata_artifacts_is_empty_before_build_and_lists_outputs_after() {
 }
 
 #[test]
+fn metadata_artifacts_excludes_user_authored_rs_and_wasm_files() {
+    // The read-only twin of the `cdz clean` data-loss guarantee: `artifacts` reports EXACTLY what `cdz
+    // clean` would remove (via the shared `project_artifact_files`), so a user's hand-authored `helper.rs`
+    // or checked-in `asset.wasm` must NOT be listed — only the project's own `<export>.wasm` + `link-map`.
+    let dir = std::env::temp_dir().join(format!("cdz-metadata-userfiles-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("Project.cdz"), "def entry = \"app.cdz\"\n").unwrap();
+    std::fs::write(
+        dir.join("app.cdz"),
+        "def go() -> Int64 = 0\nexport { go }\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("helper.rs"), "fn h() {}\n").unwrap();
+    std::fs::write(dir.join("asset.wasm"), b"asset").unwrap();
+    let (bok, _bo, be) = run_in(&dir, &["build"]);
+    assert!(bok, "build failed: {be}");
+    let (ok, out, err) = run_in(&dir, &["metadata", "."]);
+    assert!(ok, "metadata failed: {err}");
+    let arts = json_array(&out, "artifacts").expect("artifacts present");
+    assert!(
+        arts.contains("go.wasm") && arts.contains("link-map.txt"),
+        "artifacts lists the project's own outputs: {arts}"
+    );
+    assert!(
+        !arts.contains("helper.rs") && !arts.contains("asset.wasm"),
+        "a user-authored helper.rs / asset.wasm is NOT reported as an artifact: {arts}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn metadata_reports_the_sexpr_surface_for_an_s_expression_entry() {
     // A `.sexp` entry reports the `sexpr` surface — so a consumer picks the s-expression parser.
     let dir = std::env::temp_dir().join(format!("cdz-metadata-sexpr-{}", std::process::id()));
