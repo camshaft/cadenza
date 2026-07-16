@@ -16284,10 +16284,13 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
                 trace!(target: "rcdzc::fold", op = intrinsic_name(op), result = r, "folded constant float equality (by canonical bits)");
                 Core::ConstBool(r)
             } else {
-                // IEEE PARTIAL order (operator ruling): an ordered pair gives the relation; an unordered
-                // pair (a NaN reaching here — e.g. a folded `(/ 0.0 0.0)`) yields false, NOT a decline.
-                // `partial_cmp` also treats `-0.0`/`+0.0` as EQUAL, so `(<= -0.0 0.0)` is true — the
-                // ordering's equal-case, which DISAGREES with the byte-form `=` above (there `-0.0 ≠ 0.0`).
+                // IEEE PARTIAL order (operator ruling): an ordered pair gives the relation. Both operands
+                // here are FINITE — a bare `nan` is `ConstFloatNan` (handled above) and constant float
+                // arithmetic DECLINES on a non-finite result (`fold_float_arith`), so a NaN never reaches
+                // this `(ConstFloat, ConstFloat)` arm; the `partial_cmp → None → false` branch is defensive
+                // completeness / parity with the runtime path, not a reachable const case. `partial_cmp`
+                // also treats `-0.0`/`+0.0` as EQUAL, so `(<= -0.0 0.0)` is true — the ordering's
+                // equal-case, which DISAGREES with the byte-form `=` above (there `-0.0 ≠ 0.0`).
                 let r = match f64::from_bits(ba).partial_cmp(&f64::from_bits(bb)) {
                     Some(ord) => compare_ord(op, ord),
                     None => false,
