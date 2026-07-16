@@ -75,6 +75,7 @@ pass	Type.eq of a type-valued parameter against itself is always true
 pass	Type.eq on a constructed generic sum compares the full instantiated type
 pass	Type.eq on a type-valued parameter against a COMPOUND type is structural
 pass	Type.of carries a quantity's unit into a same-type annotation
+pass	Type.of on a bare nullary variant reflects its element as UNDETERMINED
 pass	Type.of reflects a runtime parameter's type at compile time
 pass	Type.of reflects a value's type for use as an annotation
 pass	UInt64.max crosses the parameter boundary and back unchanged
@@ -2066,6 +2067,7 @@ pass	constructing a sized bytes segment whose value length differs from the size
 pass	constructing a u8 segment from a value above its range is rejected
 pass	constructing an unsigned segment from a negative value is rejected
 pass	constructor pattern binders capture the payload uniformly
+pass	context that constrains a nullary variant's element makes Type.of concrete
 pass	converting a BigInt back to a fixed width is checked and a compile-provable out-of-range narrowing is rejected
 pass	converting a char to its integer scalar value is total
 pass	converting a fixed-width integer to BigInt is explicit
