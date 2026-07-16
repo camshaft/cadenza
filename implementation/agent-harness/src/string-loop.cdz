@@ -1,0 +1,100 @@
+// string-loop.cdz — the agent loop conversing over STRINGS, authored in Cadenza (Increment 2b).
+//
+// `loop.cdz` models the spine with SCALAR (Int64) stand-ins so the control structure is gate-protected
+// independent of the String-crossing ABI. That file's header promised the real shape once String
+// crossing is proven: "`Model.converse` takes a `String` prompt and returns a `String` completion, and
+// `dispatch` parses the completion (equality-match a tool name — `String` `==` over a runtime rope
+// works today) instead of the scalar stand-in." That ABI is now proven + gated (rcdzc u7/u8: a String
+// crosses a peer as a runtime rope handle, both directions) and exercised end-to-end by the Rust driver
+// (`cdz-agent`, which crosses real message bodies to a model). THIS module is that promised shape,
+// authored in Cadenza: a loop whose model boundary is `String -> String` and whose termination +
+// tool-routing are decided by EQUALITY-MATCHING the completion string against tool-name literals.
+//
+// It composes three things that the scalar spine could not, in one real program:
+//   - the model EFFECT at a `String -> String` boundary (`Model.converse`),
+//   - a String result BOUND (`let reply = …`) and then USED TWICE — in a `==` test and as a `dispatch`
+//     ARGUMENT (the completion crosses back in, and back out to the tool),
+//   - `String` `==` `String` equality-DISPATCH over runtime rope handles (the terminal "stop" check and
+//     the tool-name routing a real harness does on the model's chosen tool).
+//
+// Like `loop.cdz` it is a single-shot TAIL-RESUMPTIVE recursion (the continuation never escapes the
+// handler), the fuel bounds the turns, and the running result is threaded through `run`'s own `acc`
+// PARAMETER — not handler state — so the known cross-function `resume(v, s)` re-threading limit
+// (v-effects, reported REPORT/FIX-style) is never hit. The in-program `handle … with` supplies the mock
+// model + tools; the SAME loop swaps to a real `cadenza:bedrock/api` peer + hive-inbox peer with no code
+// change once those shims land (a nearer handler wins over the peer binding — the free test-override).
+// The model effect at the real boundary: given a turn's prompt, return the model's completion — the
+// string the loop dispatches on. (Scalar `loop.cdz` used `Int64 -> Int64`; this is the shipped shape.)
+effect Model =
+  | converse : String -> String
+
+// The tools effect: `dispatch` runs the tool the model named (returns a scalar result the loop folds in
+// — a count/score stand-in for the tool's effect on the transcript); `done` stops the loop and hands
+// back the final accumulator. `dispatch` takes the chosen tool NAME as a `String`, so the completion
+// crosses back out to the tool exactly as a real dispatcher would forward the model's tool selection.
+effect Tools =
+  | dispatch : String -> Int64
+  | done : Int64 -> Int64
+
+/// One agent RUN over strings: drive up to `fuel` turns, threading `acc`. Each turn asks the model; the
+/// completion is BOUND so it can be inspected and forwarded. If the model says "stop" (the terminal
+/// tool-call stand-in — a real harness detects the model emitting a stop/again the same way, by matching
+/// the completion) the agent is finished; otherwise the loop dispatches the named tool and recurses with
+/// the tool's result folded in. `fuel` is the always-present max-turns guard.
+def run(fuel: Int64, acc: Int64) =
+  if fuel == 0 then
+    Tools.done(acc)
+  else
+    let reply = Model.converse("turn") in
+    if reply == "stop" then Tools.done(acc) else run(fuel - 1, acc + Tools.dispatch(reply))
+
+/// Run under a MOCK model + tools handled in-program. The mock model always answers "go" (never "stop",
+/// so the loop runs to fuel exhaustion), each `dispatch` of a named tool folds in 1 (counting the tools
+/// the loop routed), and `done` returns the accumulator. `Model` needs no state (threaded unchanged);
+/// `Tools` likewise here since the running count lives in `run`'s `acc`. So `run-mock(n)` dispatches n
+/// tools → n.
+def run-mock(fuel: Int64) =
+  handle Model(0) with
+    | converse(q, s) => resume("go", s)
+  in
+  handle Tools(0) with
+    | dispatch(a, s) => resume(1, s)
+    | done(a, s) => resume(a, s)
+  in
+  run(fuel, 0)
+
+@test
+def string-loop-zero-fuel-returns-seed() =
+  if run-mock(0) == 0 then unit else trap("zero fuel returns the seed accumulator")
+
+@test
+def string-loop-one-turn-dispatches-once() =
+  if run-mock(1) == 1 then unit else trap("one turn dispatches the named tool once, acc = 1")
+
+@test
+def string-loop-counts-dispatched-tools() =
+  if run-mock(4) == 4 then unit else trap("four non-stop turns dispatch four tools, acc = 4")
+
+@test
+def string-loop-stops-on-stop-completion() =
+  let stopped = handle Model(0) with
+      | converse(q, s) => resume("stop", s)
+    in
+    handle Tools(0) with
+      | dispatch(a, s) => resume(1, s)
+      | done(a, s) => resume(a, s)
+    in
+    run(5, 0) in
+  if stopped == 0 then unit else trap("a completion of \"stop\" ends the loop with no dispatch")
+
+@test
+def string-loop-dispatch-routes-on-tool-name() =
+  let scored = handle Model(0) with
+      | converse(q, s) => resume("search", s)
+    in
+    handle Tools(0) with
+      | dispatch(a, s) => resume(if a == "search" then 10 else 1, s)
+      | done(a, s) => resume(a, s)
+    in
+    run(3, 0) in
+  if scored == 30 then unit else trap("dispatch routes on the tool name: 3 * search(10) = 30")
