@@ -461,6 +461,7 @@ pass	a decimal literal annotated Rational grounds to its exact fraction
 pass	a decimal literal annotated Rational is exact for a value no float rounds cleanly
 pass	a decimal token trailing letters is a malformed literal, not an unbound name
 pass	a declaration in a do block shadows an outer binding
+pass	a decoded field re-encodes into the same-width segment without an explicit narrow
 pass	a decoded length field re-encodes a length-prefixed frame end to end
 pass	a decoded payload feeds ordinary arithmetic
 pass	a deep balanced tree is built and folded to a scalar, consuming both children
@@ -901,6 +902,7 @@ pass	a module's delegated capability is reachable as metadata, not as an export
 pass	a monomorphic user sum applied to a type argument in an annotation is rejected
 pass	a multi-arg constructor with mixed-kind payloads binds each by its own kind
 pass	a multi-argument call node is evaluated by iterating its payload arg list
+pass	a multi-byte runtime bit-field takes the matching wide unsigned type
 pass	a multi-field record with one param-named key survives the call
 pass	a multi-parameter closure keeps its captured environment distinct from its arguments
 pass	a multi-payload destructure binds the head and recurses on the tail
@@ -1369,10 +1371,16 @@ pass	a runtime String match and its (= s literal) if-chain agree on the DEFAULT 
 pass	a runtime String match on a hit arm agrees with its desugared (= s literal) if-chain
 pass	a runtime Unit.in conversion emits the scale multiply (Int)
 pass	a runtime arithmetic right shift preserves the sign
+pass	a runtime bin construction result compares equal to the Bytes it builds
+pass	a runtime bin construction result unequal to different content is false
+pass	a runtime bin match binds the tail after a fixed header via a final rest segment
+pass	a runtime bin match dispatches on a literal tag across arms
+pass	a runtime bin pattern decodes a fixed-width segment from a runtime scrutinee
 pass	a runtime bitwise AND masks bits
 pass	a runtime bitwise OR combines bits
 pass	a runtime bitwise XOR toggles bits
 pass	a runtime byte truncation of the sign extremes keeps exactly the low byte
+pass	a runtime bytes value is spliced into a length-prefixed frame
 pass	a runtime char reaches a later char-literal arm by scalar value
 pass	a runtime closure compares its argument to a captured value in a branch
 pass	a runtime closure whose body calls a recursive top-level function
@@ -1388,6 +1396,8 @@ pass	a runtime division of the minimum integer by -1 overflows and traps
 pass	a runtime division truncates toward zero
 pass	a runtime element collapses against a constant one at build
 pass	a runtime exact mixing of inch and millimeter keeps the fractional scale
+pass	a runtime final rest segment binds the empty tail when the scrutinee is only the header
+pass	a runtime fixed-width segment is emitted big-endian and read back by index
 pass	a runtime float absent from a Set is not found
 pass	a runtime float addition emits the machine add
 pass	a runtime float addition with nan propagates the nan
@@ -1443,6 +1453,8 @@ pass	a runtime set shared across two recursive-call operands is not mutated by a
 pass	a runtime set-difference result escapes to the host as its value form
 pass	a runtime set-union result escapes to the host as its value form
 pass	a runtime signed division by zero traps as divide-by-zero, not overflow
+pass	a runtime signed little-endian segment lays the low byte first
+pass	a runtime signed little-endian segment round-trips a negative value
 pass	a runtime square multiply traps exactly past the Int64 square-root boundary
 pass	a runtime string bound from a sum payload compares equal to a string parameter
 pass	a runtime string compared against a literal folds against the literal side
@@ -1487,6 +1499,8 @@ pass	a runtime unsigned-byte addition traps exactly past its width maximum
 pass	a runtime unsigned-byte addition traps on overflow of its width
 pass	a runtime unsigned-byte multiplication traps exactly past its width maximum
 pass	a runtime unsigned-byte subtraction traps below zero
+pass	a runtime value is constructed into a fixed-width segment and its length read
+pass	a runtime value narrowed to the segment width constructs without trapping
 pass	a runtime value under a const key binds through the map pattern
 pass	a runtime wider integer is truncated into a byte by wrap
 pass	a runtime width NESTED in a compound annotation is rejected
@@ -2026,6 +2040,7 @@ pass	an erased single-variant newtype wrapping a sum matches through the inner v
 pass	an escaped value with an unresolved payload type is rejected as ambiguous, not for its export shape
 pass	an escaping tuple evaluates its trapping element
 pass	an expect of a list index result is an integer usable in arithmetic
+pass	an explicit Bytes annotation on a runtime bin result compares the same
 pass	an explicit annotation overrides the default-fraction pragma
 pass	an explicit annotation overrides the default-integer pragma
 pass	an explicit conversion makes the operation well-typed
@@ -3281,7 +3296,6 @@ todo	a consumer applies the handed-back closure to an internal constant
 todo	a consumer returns a different type than the closure it applies
 todo	a consumer takes the handed-back closure as its SECOND parameter
 todo	a cycle of module imports is rejected
-todo	a decoded field re-encodes into the same-width segment without an explicit narrow
 todo	a delegated effect performed in a closure passed to a HOF is reached and fires
 todo	a delegated effect performed inside an intra-program handler
 todo	a delegated effect reached only through an if-branch is granted and fires when the branch is taken
@@ -3320,7 +3334,6 @@ todo	a multi-argument closure returning a COMPOUND round-trips — flat arrow sp
 todo	a multi-argument closure round-trips through a consumer
 todo	a multi-argument closure round-trips through a consumer — FLAT arrow spelling
 todo	a multi-argument closure with COMPOUND args round-trips — flat arrow spelling
-todo	a multi-byte runtime bit-field takes the matching wide unsigned type
 todo	a multi-export compound-result shared call is a repeatable (borrow<t>) callback
 todo	a multi-export set of parameterized capturing closures is driven per export
 todo	a multi-export shared call is a repeatable (borrow<t>) callback
@@ -3370,24 +3383,12 @@ todo	a round-trip consumer binds the applied closure through a let
 todo	a round-trip consumer takes the non-applying match arm
 todo	a round-trip consumer that does NOT apply the closure on the taken branch
 todo	a run's result is a deterministic function of a host call's recorded response
-todo	a runtime bin construction result compares equal to the Bytes it builds
-todo	a runtime bin construction result unequal to different content is false
-todo	a runtime bin match binds the tail after a fixed header via a final rest segment
-todo	a runtime bin match dispatches on a literal tag across arms
-todo	a runtime bin pattern decodes a fixed-width segment from a runtime scrutinee
 todo	a runtime bit-field packs a runtime value into a nibble
 todo	a runtime bit-field run spans two bytes and composes with an int segment
-todo	a runtime bytes value is spliced into a length-prefixed frame
-todo	a runtime final rest segment binds the empty tail when the scrutinee is only the header
-todo	a runtime fixed-width segment is emitted big-endian and read back by index
 todo	a runtime nibble truncation keeps the low four bits
 todo	a runtime out-of-bounds list update traps rather than aliasing a valid slot
-todo	a runtime signed little-endian segment lays the low byte first
-todo	a runtime signed little-endian segment round-trips a negative value
 todo	a runtime string interns to a symbol matched by content
 todo	a runtime symbol round-trips back to its string
-todo	a runtime value is constructed into a fixed-width segment and its length read
-todo	a runtime value narrowed to the segment width constructs without trapping
 todo	a scalar BETWEEN two Tuple args with a LIST result
 todo	a second same-signature closure export shares the one call method
 todo	a single-variant abstract theorem's constructor match outside the kernel is a withheld-constructor rejection (CDZ0214)
@@ -3421,7 +3422,6 @@ todo	an escaping closure captures two values and takes three arguments
 todo	an escaping closure whose body binds a multi-variable let
 todo	an escaping closure whose body is a match hits the literal arm
 todo	an escaping closure whose body is a match hits the wildcard arm
-todo	an explicit Bytes annotation on a runtime bin result compares the same
 todo	an export name with a digit-led kebab segment is rejected, not silently invalid
 todo	an identity closure composes at a single Int element type (not only String)
 todo	an identity closure composes over a COMPOUND (tuple) element at one element type
