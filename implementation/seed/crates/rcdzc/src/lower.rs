@@ -12476,8 +12476,30 @@ fn lower_quantity_combine(
                 ));
             }
         };
-        let _ = id;
-        return fold_int_combine(op, l, r);
+        // Fold the op over the two reference-converted magnitudes, THEN range-check an arithmetic
+        // result against the quantity's INNER integer width — exactly as `lower_arith` does for a bare
+        // `+`/`-`. `fold_int_combine` evaluates over i128, so a NARROW overflow whose true result still
+        // fits i128 (`100 + 100 = 200` over `(Qty Int8 u)`) folds to a valid `ConstInt` and would
+        // otherwise slip through to a backend CDZ0302 ("a literal that doesn't fit") — and, because that
+        // gate lives only in the backend, `cdz check` would MISS it entirely. It is a constant OPERATION
+        // whose defined outcome is a TRAP (the sum overflows the type), NOT an out-of-range literal, so it
+        // is CDZ0304 (`ConstTrap`) — the SAME code the bare `(+ (Int8.of 100) (Int8.of 100))` gets. The
+        // inner width is read off `id`'s solved `Ty::Qty { inner: Int … }` (a comparison result is a Bool,
+        // unaffected). Units are erased, so a quantity's arithmetic obeys the inner numeric type's rule.
+        let folded = fold_int_combine(op, l, r);
+        if let Core::ConstInt(ref r) = folded
+            && let crate::ty::Ty::Qty { inner, .. } = crate::infer::type_of(db, id)
+            && let crate::ty::Ty::Int(it) = *inner
+            && !r.fits_width(it.ground_signed(), it.ground_width())
+        {
+            trace!(target: "rcdzc::fold", node = id.0, "mixed/same-unit Int combine result overflows the inner narrow width → CDZ0304");
+            return Core::Poison(Reject::coded(
+                Code::ConstTrap,
+                "this constant arithmetic operation overflows its integer type (a \
+                 compile-provable overflow traps)",
+            ));
+        }
+        return folded;
     }
     // RUNTIME operand(s) — synthesize the scale conversion as real integer arithmetic and lower it.
     lower_runtime_combine(db, op, lhs, (ln, ld), rhs, (rn, rd), false)
@@ -13418,7 +13440,15 @@ fn lower_arith(db: &mut Db, id: StructId, op: Prim, args: &[StructId]) -> Core {
             // List.update-OOB path already follows. (A direct out-of-range LITERAL `(: 256 UInt8)` is
             // still CDZ0302 at its own annotation — it is a literal, not an operation result.)
             match fold_arith(op, a, b) {
-                Core::ConstInt(r) => match crate::infer::type_of(db, id) {
+                // Peel `Ty::Qty` before reading the width: a same-unit quantity `+`/`-`/`*`/`/` over a
+                // narrow-Int inner (`(Qty Int8 u)`) falls through to this generic arith path (its scales
+                // are equal, so it is NOT a mixed-unit combine), and its solved type is `Ty::Qty { inner:
+                // Int … }`, not a bare `Ty::Int`. Without the peel the width-check below never fired for a
+                // quantity, so an inner-narrow overflow (`100 + 100` over `(Qty Int8 u)`) slipped through to
+                // a backend CDZ0302 ("a literal that doesn't fit") — a wrong code (it is an OPERATION
+                // overflow, not a literal), and one `cdz check` MISSED (the gate lives only in the backend).
+                // Units are erased, so a quantity's arithmetic obeys the inner integer type's overflow rule.
+                Core::ConstInt(r) => match peel_qty_inner_ty(crate::infer::type_of(db, id)) {
                     crate::ty::Ty::Int(it)
                         if !r.fits_width(it.ground_signed(), it.ground_width()) =>
                     {
