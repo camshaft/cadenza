@@ -916,25 +916,26 @@ fn run_metadata(args: &MetadataArgs) -> ExitCode {
         &str_array(&expand_manifest_globs(&dir, &m.tests, &m.exclude)),
     );
     obj.raw("exclude", &str_array(&m.exclude));
-    // The build ARTIFACTS currently present in the manifest directory — the same output-extension set
-    // `cdz clean` removes (`.wasm`/`.rs`/`.dwarf` + `link-map.txt`), so a tool can answer "is this project
-    // built?" / "what would `cdz clean` remove?" without running a build. Paths are manifest-relative
-    // (just the file name, since the sweep is the manifest's own directory). Empty `[]` for an un-built
-    // project. Sorted for deterministic output.
-    let mut artifacts: Vec<String> = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(&dir) {
-        for e in entries.flatten() {
-            let name = e.file_name().to_string_lossy().into_owned();
-            let is_artifact = name.ends_with(".wasm")
-                || name.ends_with(".rs")
-                || name.ends_with(".dwarf")
-                || name == "link-map.txt";
-            if is_artifact && e.path().is_file() {
-                artifacts.push(name);
-            }
+    // The build ARTIFACTS currently present in the manifest directory — EXACTLY the set `cdz clean` would
+    // remove, via the SAME `project_artifact_files` helper `cdz clean` uses, so the two never diverge. That
+    // set is this project's own emitted outputs BY NAME (the entry's export-derived `<output>.{wasm,rs,
+    // dwarf}`) + `link-map.txt` + `.cdz-run-*` temps — NOT a blanket extension sweep, so a user-authored
+    // `helper.rs` / checked-in `asset.wasm` is never misreported as an artifact (the read-only twin of the
+    // `cdz clean` data-loss fix). A tool can answer "is this project built?" / "what would `cdz clean`
+    // remove?" without a build. Reported as bare file names (the sweep is the manifest's own dir), sorted.
+    // Empty `[]` for an un-built project (or if the dir can't be read). The entry's single resolved file
+    // names the outputs; a `None`/multi-glob entry contributes only the unambiguous `link-map`/temps.
+    let entry_file_for_artifacts = m.entry.as_ref().and_then(|e| {
+        match expand_manifest_globs(&dir, std::slice::from_ref(e), &m.exclude).as_slice() {
+            [one] => Some(one.clone()),
+            _ => None,
         }
-    }
-    artifacts.sort();
+    });
+    let artifacts: Vec<String> = project_artifact_files(entry_file_for_artifacts.as_deref(), &dir)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .collect();
     obj.raw("artifacts", &str_array(&artifacts));
     println!("{}", obj.finish());
     ExitCode::SUCCESS
