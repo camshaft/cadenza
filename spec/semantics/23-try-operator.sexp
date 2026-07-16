@@ -3,17 +3,18 @@
 ; (`Some a` / `Ok a` → `a`), and on the failure variant it SHORT-CIRCUITS the enclosing fallible boundary
 ; (the enclosing function's `Result`/`Option` result type), making the boundary's value the failure
 ; itself. It is NOT a monad — it desugars onto the effects system's within-function abortive lowering (a
-; synthesized `Mir::Block` + `Mir::Break`), so it adds no user-visible effect and nothing to the effect
-; row. See README.md for the case vocabulary.
+; `Core::Block` boundary + a `Core::Break` short-circuit), so it adds no user-visible effect and nothing to
+; the effect row. See README.md for the case vocabulary.
 ;
-; STAGE STATUS. T0a+T0b (landed): `(try e)` is carried first-class through resolve/infer — its type is
-; the operand's success payload; an operand that is not a fallible sum is CDZ0203; a wrong-arity `(try …)`
-; is CDZ0201; a `?` with no enclosing `Result`/`Option` function boundary is CDZ0230; and a `Result`-`?`
-; under an `Option` boundary (or vice-versa) is CDZ0203 (no coercion). The function-boundary DESUGAR (a
-; value executing through wasmtime, both the happy and the short-circuit path) is the next slice; until it
-; lands a well-formed `(try e)` DECLINES (scored *todo* by the gate, never a miscompile). The executing
-; cases below are the ones that matter most once T1 lands — a value must come out the far side, since `?`
-; is control.
+; STAGE STATUS (2026-07-16). LARGELY LANDED. Front-half: `(try e)` is carried first-class through
+; resolve/infer — its type is the operand's success payload; an operand that is not a fallible sum is
+; CDZ0203; a wrong-arity `(try …)` is CDZ0201; a `?` with no enclosing `Result`/`Option` function boundary
+; is CDZ0230; a `Result`-`?` under an `Option` boundary (or vice-versa) is CDZ0203 (no coercion). Lowering:
+; a CONSTANT `?` compiles and EXECUTES both paths — the success fold (BRICK 2a) and the constant-failure
+; short-circuit (BRICK 3a, via `Core::Block`/`Break` + the `lower_let` break-fold), so the executing Option
+; cases below PASS (a value comes out the far side). REMAINING: a RUNTIME `?` (a non-constant operand →
+; the `Core::MatchSum` / `block`-`br` emit, BRICK 3b) still DECLINES (scored *todo*); the ML postfix `?`
+; surface; the `try { }` block boundary (v2); and the T3 conversion-idiom prelude ops.
 
 ; ── T0a: rejections (these PASS today) ──────────────────────────────────────────────────────────────
 
@@ -67,11 +68,11 @@
   (input  (do (def (main) (let ((x (try (Ok 1)))) (Some x))) (export main)))
   (error  CDZ0203))
 
-; ── T1 target: executing cases (DECLINE → *todo* until the boundary desugar lands) ──────────────────
-; These are the operator's actual ask — the nested-`match`-collapse shapes, run through wasmtime. They
-; are recorded here now so the gate pins the intended VALUE; the current generation declines them (the
-; desugar is the next slice), which the differential gate scores as *todo*, not disagreement. When T1
-; lands they flip from todo to pass with no corpus edit.
+; ── T1 executing cases (the operator's actual ask — these PASS: a value comes out the far side) ───────
+; The nested-`match`-collapse shapes, executed through wasmtime. Both operands here fold at compile time
+; (a checked-arith over constants → `Some v` / `None`), so the constant `?` desugar selects the arm and
+; the whole program folds to its value — the happy path and the short-circuit path both produce a value.
+; (A RUNTIME `?` — a non-constant operand — is BRICK 3b, still todo.)
 
 (case "`?` on the success variant unwraps the payload (Option, happy path)"
   (doc    "`parse-pair`-shaped Option chain collapsed with `?`: both `?`s see a `Some`, so the boundary
@@ -201,3 +202,52 @@
            `(Some 9)`. The match-arm companion of the if-branch case.")
   (input  (do (def (main) (match 0 (0 (let ((x (try (Some 9)))) (Some x))) (_ (None unit)))) (export main)))
   (output (: (Some 9) (Option Int64))))
+
+; --- The strict spine around a short-circuiting `?`: effects, ordering, and the cut point ----------
+; The trapping-earlier-init pin above grades the compile-provable face (CDZ0304). These grade the
+; RUNTIME spine: an effectful init BEFORE a failing `?` is observed (performs exactly once), a
+; success-`?` then a failure-`?` cuts at the second, and an init AFTER the failing `?` — including a
+; provably-trapping one — never evaluates (the short-circuit is the spine's cut point; only earlier
+; inits are observed). Promoted from passing breaker probes.
+
+(case "an effectful init before a failing `?` performs exactly once"
+  (doc    "`(let ((a (Ctr.tick)) (x (try (None unit)))) (Some (+ a x)))` under a counter handler —
+           the tick sits on the strict spine BEFORE the `?`, so it performs (state advances 0→1)
+           and THEN the boundary short-circuits to None (→ -1); the trailing `(Ctr.tick)` reads 1 →
+           0. A fold that discarded the earlier effectful init answers 1·(-1) + 0 = -1; one that
+           duplicated it answers 1. The runtime-effect companion of the trapping-earlier-init
+           CDZ0304 pin.")
+  (input  (do
+            (effect Ctr (op tick (-> Unit Int64)))
+            (def (opt) (let ((a (Ctr.tick unit)) (x (try (None unit)))) (Some (+ a x))))
+            (def (main)
+              (handle Ctr 0 ((tick (_) s (resume s (+ s 1))))
+                (+ (match (opt) ((Some v) v) ((None _) -1))
+                   (Ctr.tick unit))))
+            (export main)))
+  (output (: 0 Int64)))
+
+(case "a success `?` then a failure `?` short-circuits at the second"
+  (doc    "`x = (try (Some 1))` unwraps (the happy path); the SECOND `?` sees None and cuts the
+           boundary → the caller matches None → -1. Pins the chain semantics: each `?` is its own cut
+           point, and a successful unwrap does not immunize the rest of the body (nor does the
+           short-circuit rewind the already-bound x).")
+  (input  (do
+            (def (opt) (let ((x (try (Some 1)))) (let ((y (try (None unit)))) (Some (+ x y)))))
+            (def (main)
+              (match (opt) ((Some v) v) ((None _) -1)))
+            (export main)))
+  (output (: -1 Int64)))
+
+(case "an init after the failing `?` never evaluates — even a provably-trapping one"
+  (doc    "`(let ((x (try (None unit)))) (let ((y (/ 1 0))) …))` — the `?` cuts the spine FIRST, so
+           the later `(/ 1 0)` init is genuinely unreachable: the function yields None → -1, no trap
+           and no CDZ0304 (contrast the EARLIER-init pin above, where the same ÷0 before the `?` must
+           fail the build). Together the two pins locate the cut point exactly: earlier inits are
+           observed, later inits are dead.")
+  (input  (do
+            (def (opt) (let ((x (try (None unit)))) (let ((y (/ 1 0))) (Some (+ x y)))))
+            (def (main)
+              (match (opt) ((Some v) v) ((None _) -1)))
+            (export main)))
+  (output (: -1 Int64)))

@@ -118,6 +118,13 @@ enum Cmd {
     /// path/to/Project.cdz` builds that project. For a single loose file, use `cdz compile <file>`.
     Build(BuildArgs),
 
+    // ── project scaffold ────────────────────────────────────────────────────────────────────────
+    /// Scaffold a new PROJECT (the `cargo new` analogue): create `<name>/` with a `Project.cdz`
+    /// manifest naming the entry, and a minimal buildable entry file. `cdz new my-app` then `cd my-app
+    /// && cdz build` compiles it. Refuses to overwrite a non-empty directory. `--sexpr` scaffolds the
+    /// s-expression surface instead of ML.
+    New(NewArgs),
+
     // ── shell completions ───────────────────────────────────────────────────────────────────────
     /// Print a shell COMPLETION script for `cdz` to stdout — `cdz completions <shell>` for bash, zsh,
     /// fish, elvish, or powershell. Generated from the actual command tree, so it always matches the
@@ -216,6 +223,7 @@ fn main() -> ExitCode {
         // `cdz calc` — mounted from the `cdz-calc` lib; the same code the standalone `cdz-calc` bin runs.
         Cmd::Calc(a) => cdz_calc::cli::run(&a, PROG),
         Cmd::Build(a) => run_build(&a),
+        Cmd::New(a) => run_new(&a),
         Cmd::Completions(a) => run_completions(&a),
         Cmd::Test(a) => run_test(&a),
         // The span-mapped semantic queries live here (they need both libraries in one process).
@@ -615,6 +623,74 @@ fn resolve_build_opt_level(
         return Ok(rcdzc::OptLevel::O2);
     }
     Ok(rcdzc::OptLevel::default())
+}
+
+// ── project scaffold ─────────────────────────────────────────────────────────────────────────────
+
+#[derive(clap::Args)]
+struct NewArgs {
+    /// The project directory to create (also the project name). Created fresh; refuses to clobber a
+    /// non-empty existing directory.
+    name: String,
+    /// Scaffold the s-expression surface (`.sexp`) instead of the default ML (`.cdz`).
+    #[arg(long)]
+    sexpr: bool,
+}
+
+/// `cdz new <name>` — scaffold a new project (the `cargo new` analogue): a `<name>/` directory with a
+/// `Project.cdz` manifest naming the entry, and a minimal BUILDABLE entry file, so `cd <name> && cdz
+/// build` works immediately. Refuses to overwrite a non-empty directory (never clobbers existing work).
+fn run_new(args: &NewArgs) -> ExitCode {
+    let dir = std::path::Path::new(&args.name);
+    // Refuse a non-empty target — never destroy existing files. A missing dir (the common case) or an
+    // empty one is fine.
+    if dir.exists() {
+        let non_empty = std::fs::read_dir(dir)
+            .map(|mut d| d.next().is_some())
+            .unwrap_or(true);
+        if non_empty {
+            eprintln!(
+                "{PROG}: `{}` already exists and is not empty — refusing to overwrite",
+                dir.display()
+            );
+            return ExitCode::FAILURE;
+        }
+    }
+    if let Err(e) = std::fs::create_dir_all(dir) {
+        eprintln!("{PROG}: creating {}: {e}", dir.display());
+        return ExitCode::FAILURE;
+    }
+    // The project name = the directory's final component (so `cdz new path/to/app` names it `app`).
+    let proj_name = dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(&args.name);
+    let (ext, entry_src) = if args.sexpr {
+        ("sexp", "(do (def (main) 0) (export main))\n".to_string())
+    } else {
+        (
+            "cdz",
+            "def main() -> Int64 = 0\nexport { main }\n".to_string(),
+        )
+    };
+    let entry_file = format!("main.{ext}");
+    let manifest_src = format!("def name = \"{proj_name}\"\ndef entry = \"{entry_file}\"\n");
+    // Write the manifest + entry. A write failure (permissions, a race) is a clean tool error.
+    for (rel, contents) in [
+        (MANIFEST_NAME, manifest_src),
+        (entry_file.as_str(), entry_src),
+    ] {
+        if let Err(e) = std::fs::write(dir.join(rel), contents) {
+            eprintln!("{PROG}: writing {}: {e}", dir.join(rel).display());
+            return ExitCode::FAILURE;
+        }
+    }
+    println!(
+        "created project `{proj_name}` in {} ({MANIFEST_NAME} + {entry_file})\n  next: cd {} && cdz build",
+        dir.display(),
+        dir.display()
+    );
+    ExitCode::SUCCESS
 }
 
 // ── shell completions ────────────────────────────────────────────────────────────────────────────

@@ -66294,6 +66294,66 @@ mod cross_component_oracle {
     }
 
     // ------------------------------------------------------------------------------------------------
+    // PL18 — a peer op returning a LIST (a variable-length collection) crosses + the consumer reads its
+    // LENGTH. The rich-interface north star names lists crossing the peer boundary; the List RESULT read
+    // was untested e2e (U5d built a list peer but did not run a source consumer reading it). A List
+    // crosses as its u32 handle; `List.len` reads it over the shared runtime. main(7) = len([7,7,7]) = 3.
+    //
+    // ⚠ KNOWN GAP (filed: queue/peerbug-list-at-of-peer-returned-list-declines…): reading an ELEMENT of
+    // a peer-returned list with `List.at` currently DECLINES ("peer-bound effect op is not in the
+    // extern-import set") — a safe compile error, not a miscompile, on the emit/reclamation seam. This
+    // test pins the WORKING half (length read) so the collection-result path has coverage while the
+    // element-read half is triaged; when that is fixed, add the `List.at` companion here.
+    // ------------------------------------------------------------------------------------------------
+    #[test]
+    fn a_peer_op_returning_a_list_crosses_and_its_length_is_read() {
+        use crate::testkit::parse;
+        // PROVIDER: dup returns a 3-element list.
+        let provider = compile_provider(
+            "(do (def (dup (: x Int64)) (list x x x)) (export dup))",
+            "cadenza:l/api",
+        );
+        // CONSUMER: binds it, reads the crossed list's length over the shared runtime.
+        let src = "(do \
+            (effect L (op dup (-> Int64 (List Int64)))) \
+            (bind L \"cadenza:l/api\") \
+            (def (main (: x Int64)) (host (L) (List.len (L.dup x)))) \
+            (export main))";
+        let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .unwrap_or_else(|d| {
+                panic!(
+                    "list-result consumer compiles: {} [{:?}]",
+                    d.message, d.code
+                )
+            });
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("[PL18] runtime wasm not found; skipping");
+            return;
+        };
+        let peers = vec![cdz_run::Peer {
+            bytes: provider,
+            interface: "cadenza:l/api".to_string(),
+        }];
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec!["7".to_string()],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run_with_peers(&consumer, &peers, &opts)
+            .expect("a peer op returning a list crosses")
+        {
+            // dup(7) = [7,7,7]; the consumer reads its length over the shared runtime → 3.
+            cdz_run::Outcome::Value(s) => assert_eq!(
+                s, "3",
+                "a peer-returned list crosses as a handle; List.len reads it over the shared runtime"
+            ),
+            cdz_run::Outcome::Trap(t) => panic!("list-result run trapped: {t}"),
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------------
     // U17 — HANDLE PASS-THROUGH: peer A produces a compound, the consumer passes it DIRECTLY to peer B
     // WITHOUT inspecting it. Composes U16 (compound arg in) with U5 (compound result out) across TWO
     // boundary crossings in one body, exercising ownership-transfer-on-argument: the handle A mints flows

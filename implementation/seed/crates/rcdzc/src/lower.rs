@@ -17492,12 +17492,15 @@ fn lower_set_contains(db: &mut Db, set: StructId, elem: StructId) -> Core {
 /// ("no orderable descriptor") though the type-checker accepted the program — a check/compile divergence.
 /// Folding it here (the element type is irrelevant to an empty enumeration) keeps the emit total.
 fn lower_set_to_list(db: &mut Db, set: StructId) -> Core {
-    if let Core::Poison(r) = core_of(db, set) {
-        return Core::Poison(r);
+    // Bind the operand's core ONCE — `core_of` is a non-trivial lowering pass, so the Poison check and
+    // the empty-`SetOf` check reuse the one result rather than re-lowering (Copilot PR #415).
+    let set_core = core_of(db, set);
+    if let Core::Poison(r) = &set_core {
+        return Core::Poison(r.clone());
     }
     // A compile-time-visible EMPTY constant set enumerates to the empty list — no descriptor, no element
     // type needed. (A non-empty `SetOf` must still run the runtime op to observe canonical order.)
-    if let Core::SetOf { elems, .. } = core_of(db, set)
+    if let Core::SetOf { elems, .. } = &set_core
         && elems.is_empty()
     {
         trace!(target: "rcdzc::fold", node = set.0, "Set.to-list folds an empty constant set to the empty list");

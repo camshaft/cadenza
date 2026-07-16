@@ -2654,33 +2654,59 @@ fn check_baseline(paths: &Paths, verdicts: &[(String, Verdict)], target: GateTar
     // same case, or vice-versa). Duplicates are easy to introduce now that these files are `merge=union`
     // (both sides of a merge append their copy). Fail loudly on any duplicate rather than let it hide a
     // verdict silently. (`gate --save` re-sorts + de-dupes, so the fix is to regenerate the baseline.)
+    // Classify duplicate descriptions. `merge=union` on this file re-injects a duplicate LINE whenever
+    // two branches append near the same region, so a BENIGN same-verdict dup (both copies agree) is a
+    // routine merge artifact — NOT a reason to hard-fail every agent's `gate --check`. Only a
+    // CONFLICTING dup (same description, DIFFERENT verdicts) is dangerous: the map-load's last-wins
+    // would silently mask a verdict. So: auto-dedup benign dups (rewrite the file clean + continue),
+    // and HARD-FAIL only on a conflicting dup.
     let mut base: std::collections::HashMap<String, Verdict> = std::collections::HashMap::new();
-    let mut dup_descs: Vec<String> = Vec::new();
+    let mut seen: std::collections::HashMap<String, Verdict> = std::collections::HashMap::new();
+    let mut benign_dups = 0usize;
+    let mut conflicting: Vec<String> = Vec::new();
     for line in text.lines() {
         if line.starts_with('#') || line.is_empty() {
             continue;
         }
         if let Some((v, d)) = line.split_once('\t')
             && let Some(verdict) = Verdict::parse(v)
-            && base.insert(d.to_string(), verdict).is_some()
         {
-            dup_descs.push(d.to_string());
+            base.insert(d.to_string(), verdict);
+            match seen.insert(d.to_string(), verdict) {
+                None => {}
+                Some(prev) if prev == verdict => benign_dups += 1,
+                Some(_) => conflicting.push(d.to_string()),
+            }
         }
     }
-    if !dup_descs.is_empty() {
-        dup_descs.sort();
-        dup_descs.dedup();
+    if !conflicting.is_empty() {
+        conflicting.sort();
+        conflicting.dedup();
         eprintln!(
-            "xtask gate --check: {} DUPLICATE case description(s) in {} — a map-keyed baseline collapses \
-             these to one verdict (last wins), silently masking a real verdict. Regenerate the baseline \
-             with `cargo xtask gate --save` (it de-dupes). Duplicates:",
-            dup_descs.len(),
+            "xtask gate --check: {} CONFLICTING duplicate case description(s) in {} — the same case \
+             appears with DIFFERENT verdicts, so the map-keyed baseline silently masks one (last wins). \
+             This is a real integrity error; regenerate with `cargo xtask gate --save` and check which \
+             verdict is correct. Conflicting:",
+            conflicting.len(),
             path.display()
         );
-        for d in &dup_descs {
+        for d in &conflicting {
             eprintln!("  •  {d}");
         }
         return 3;
+    }
+    if benign_dups > 0 {
+        // Benign same-verdict dups (a union-merge artifact) — auto-dedup the file in place and carry on,
+        // rather than hard-failing the fleet's gate over a harmless duplicate line. `save_baseline`'s
+        // canonical (sorted, unique) writer does the dedup; the verdict map is unchanged.
+        eprintln!(
+            "xtask gate --check: auto-deduped {benign_dups} benign (same-verdict) duplicate line(s) in \
+             {} — a merge=union artifact, harmless; rewrote the baseline clean.",
+            path.display()
+        );
+        let verdicts_now: Vec<(String, Verdict)> =
+            base.iter().map(|(d, v)| (d.clone(), *v)).collect();
+        save_baseline(paths, &verdicts_now, target);
     }
 
     let now: std::collections::HashMap<&str, Verdict> =

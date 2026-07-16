@@ -296,7 +296,23 @@ impl Server {
     /// maps to no node, or the node has no meaningful hover — total, never an error.
     fn hover(&self, params: &HoverParams) -> Option<Hover> {
         let pos = &params.text_document_position_params;
-        let doc = self.docs.get(&pos.text_document.uri)?;
+        let uri = &pos.text_document.uri;
+        let doc = self.docs.get(uri)?;
+        // PACKAGE path: a `file://` doc that declares imports types the cursor node against the whole
+        // linked package, so an IMPORTED name's type resolves (single-buffer it would read as unknown).
+        // Falls back to single-buffer when not a package or the package answer is empty.
+        if let Some(entry_path) = uri_to_path(uri).filter(|_| self.doc_declares_import(doc)) {
+            let open = self.open_resolver();
+            if let Some(h) = package_hover_at(
+                &entry_path.to_string_lossy(),
+                &open,
+                &doc.text,
+                doc.is_ml,
+                pos.position,
+            ) {
+                return Some(h);
+            }
+        }
         hover_at(&doc.text, doc.is_ml, pos.position)
     }
 
@@ -1081,6 +1097,59 @@ fn package_definition_at(
     Some(Location {
         uri: path_to_uri(&file.path)?,
         range: byte_range_to_range(&file.source, span.start, span.end),
+    })
+}
+
+/// Cross-file hover: type the cursor node against the whole `(import …)` closure, so an IMPORTED name's
+/// type resolves (single-buffer it reads as unknown). Like `package_definition_at`, the entry is spliced
+/// FIRST (base 0), so the cursor's entry-local node id is the linked `TypeAt` query input unchanged. The
+/// answer is a type STRING (no cross-file Location — a hover shows the type at the cursor's own range),
+/// so this only needs the query result + the entry's span for the hover range. `None` when the closure
+/// can't load or the answer is empty/`unknown` (the caller falls back to single-buffer hover).
+fn package_hover_at(
+    entry_path: &str,
+    open: &dyn Fn(&std::path::Path) -> Option<String>,
+    entry_text: &str,
+    entry_is_ml: bool,
+    pos: Position,
+) -> Option<Hover> {
+    let (_entry_arenas, entry_spans, _e) = parse_surface(entry_text, entry_is_ml).ok()?;
+    let byte = position_to_byte(entry_text, pos);
+    let cursor = entry_spans.node_at_offset(byte)?;
+
+    let files = crate::closure::load(entry_path, open).ok()?;
+    let mut inputs: Vec<rcdzc::Artifact> = files
+        .iter()
+        .map(|f| {
+            rcdzc::Artifact::new(
+                rcdzc::Artifact::KIND_AST,
+                f.name.clone(),
+                cadenza_syntax::codec::encode(&f.arenas),
+            )
+        })
+        .collect();
+    inputs.push(rcdzc::Artifact::new(
+        rcdzc::sidecar::KIND_SIDECAR,
+        "drive",
+        rcdzc::sidecar::encode(&[rcdzc::Request::Query(rcdzc::sidecar::Query::TypeAt {
+            node: cursor.0, // entry-local == global (entry is base 0)
+        })]),
+    ));
+    inputs.push(rcdzc::cli::entry_artifact(&files[0].name));
+    let compiled = rcdzc::run_with_compiler_stack(|| rcdzc::compile(&inputs, &[]));
+    let bytes = compiled.artifact(rcdzc::sidecar::KIND_TYPE_AT)?;
+    let ty = String::from_utf8_lossy(bytes);
+    let ty = ty.trim();
+    if ty.is_empty() || ty == "unknown" {
+        return None; // let the single-buffer path try (or show nothing)
+    }
+    // Hover range = the cursor node's span in the ENTRY file (base 0, so the entry spans apply directly).
+    let range = entry_spans
+        .get(cursor)
+        .map(|s| byte_range_to_range(entry_text, s.start, s.end));
+    Some(Hover {
+        contents: HoverContents::Scalar(MarkedString::String(ty.to_string())),
+        range,
     })
 }
 
