@@ -601,7 +601,11 @@ impl Reject {
 
     /// An uncoded decline: a construct the compiler does not yet realize. NOT a statement that the
     /// program is wrong — it is the compiler declining to compile it, the safe outcome
-    /// (`reference-compiler.md` §Outcomes Are Ordered By Safety).
+    /// (`reference-compiler.md` §Outcomes Are Ordered By Safety). This IS the mechanism by which an
+    /// incrementally-grown compiler declines an unsupported construct rather than emitting a component
+    /// whose behavior would diverge from the oracle:
+    //= spec/capabilities/self-hosting-and-bootstrap.md#an-unsupported-construct-is-declined-not-miscompiled
+    //# A generation whose compiler does not yet compile a construct a program uses MUST decline to derive a component for that program rather than emit a component whose observable behavior diverges from the oracle.
     pub fn decline(message: impl Into<String>) -> Reject {
         Reject {
             code: None,
