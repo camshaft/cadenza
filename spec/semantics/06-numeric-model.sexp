@@ -2681,6 +2681,19 @@
             (export main)))
   (error  CDZ0302))
 
+(case "a malformed integer width — negative or non-natural — is rejected at compile time"
+  (doc    "`(: 5 (Int -8))` names a NEGATIVE width. A bit width is a compile-time NATURAL number in
+           1..=64; a negative (or fractional, or non-numeric — a bool/type-value in width position) width
+           is not a natural number at all, so it is ill-formed and rejected CDZ0302 — the companion of the
+           over-ceiling case above (which names a natural width past 64). Well-formedness is TOTAL
+           (numeric-model.md: a bit width outside the range the model admits MUST be rejected at compile
+           time), so this is caught at the annotation in the shared front-end, not left for each backend to
+           catch independently at selection. Before, a non-natural width silently slipped past `cdz check`
+           (which exited 0) while the value ran with its default width — a check-vs-emit gap this closes.
+           Pins the LOWER/non-natural boundary of the width constraint.")
+  (input  (: 5 (Int -8)))
+  (error  CDZ0302))
+
 (case "a wide fixed-size integer width is reserved, not yet a valid type"
   (doc    "`(: 5 (UInt 128))` names a 128-bit integer — beyond the 1..=64 register-width ceiling, so it is
            rejected (CDZ0302) today rather than silently accepted. The notation is reserved: a later

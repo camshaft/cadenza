@@ -333,16 +333,19 @@ fn rustc_roundtrip_list_ops_compute_and_a_shared_list_does_not_move() {
 
 #[test]
 fn an_ill_formed_integer_width_is_rejected_not_declined() {
-    // An out-of-range integer WIDTH (negative → clamped `Int0`, or over-ceiling `(UInt 65)`) is an
-    // ILL-FORMED TYPE, not a target limitation — a boundary of that type must REJECT (CDZ0302), the SAME
-    // outcome the wasm target gives, not a codeless "no native Rust representation" decline (which the gate
-    // would read as an unimplemented-construct todo). The width `(Int -8)` reads as the sentinel `Int0`;
-    // the message names the WRITTEN width and cites the admitted 1..=64 range.
+    // An out-of-range integer WIDTH (negative/non-natural, or over-ceiling `(UInt 65)`) is an ILL-FORMED
+    // TYPE, not a target limitation — a boundary of that type must REJECT (CDZ0302), the SAME outcome the
+    // wasm target gives, not a codeless "no native Rust representation" decline (which the gate would read
+    // as an unimplemented-construct todo). As of the shared-front-end well-formedness fix (`int_width_fault`
+    // classifies `Malformed` vs `OverCeiling`), `cdz check` REJECTS a malformed width `(Int -8)` directly —
+    // both backends inherit it — with a message that cites the admitted 1..=64 range and that a width must
+    // be a compile-time natural number (an over-ceiling width still names the written width).
     let neg = try_compile_rust("(module m (def (main) (: 5 (Int -8))) (export main))")
         .expect_err("an ill-formed integer width must reject, not emit");
     assert!(
-        neg.iter()
-            .any(|d| d.contains("not a valid integer type") && d.contains("1..=64")),
+        neg.iter().any(|d| d.contains("1..=64")
+            && (d.contains("not a valid integer type")
+                || d.contains("width must be a compile-time natural number"))),
         "reject should cite the ill-formed width + admitted range: {neg:?}"
     );
     // The same in PARAMETER position (over-ceiling this time).

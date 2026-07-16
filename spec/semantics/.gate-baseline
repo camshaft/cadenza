@@ -889,6 +889,7 @@ pass	a loop-invariant trapping expression is not evaluated when the loop runs ze
 pass	a lowercase-named type cross-references another lowercase-named type in a field
 pass	a lowercase-named type is referenceable in a field (types are values, not gated by case)
 pass	a magic header and a length-prefixed chunk parse together
+pass	a malformed integer width — negative or non-natural — is rejected at compile time
 pass	a many-arm match consumed in non-tail position yields into the enclosing expression
 pass	a many-arm match let-bound then consumed yields into the enclosing expression
 pass	a many-arm scalar match in tail position selects each arm by a runtime scrutinee

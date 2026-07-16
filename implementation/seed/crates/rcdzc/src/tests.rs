@@ -40941,8 +40941,11 @@ mod stage1 {
         // A NON-NATURAL width — negative, or a bool/float/type-value in width position — must be
         // rejected (CDZ0302), NOT silently dropped so the literal keeps its default Int64. The width
         // reader used to narrow with `u32::try_from`, whose `None` was ignored: `(: 5 (Int -8))` then
-        // ran to 5. Each of these now reduces to the invalid sentinel width 0 and the fit-check
-        // rejects it, exactly as an explicit `(UInt 0)` is rejected.
+        // ran to 5. Now `int_width_fault` classifies it `Malformed` and the value-/param-annotation
+        // well-formedness check REJECTS it at `cdz check` (CDZ0302) — earlier than the backend selection
+        // that used to be the sole catcher, with a message that states the constraint (a width must be a
+        // compile-time natural in 1..=64) rather than the misleading "does not fit its width" a
+        // clamped-to-sentinel-0 fit-check gave.
         for body in [
             "(: 5 (Int -8))",
             "(: 5 (UInt -1))",
@@ -40951,9 +40954,11 @@ mod stage1 {
             "(: 300 (Int 8.0))", // a float in width position
             "(: 300 (Int Int64))", // a type-value in width position
         ] {
+            let msg = expect_decline(body);
             assert!(
-                expect_decline(body).contains("does not fit"),
-                "malformed width must be rejected CDZ0302: {body}"
+                msg.contains("width must be a compile-time natural number")
+                    || msg.contains("not a natural number"),
+                "malformed width must be rejected CDZ0302 with the natural-width message: {body} → {msg}"
             );
         }
         // A valid width is unaffected — `(Int 64)` still builds and `5` fits (crosses as s64).

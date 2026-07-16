@@ -710,6 +710,26 @@ fn literal_width_fault(db: &mut Db, value: StructId, ty_expr: StructId) -> Optio
     None
 }
 
+/// The CDZ0302 message for an ILL-FORMED integer width (`crate::eval::IntWidthFault`), shared by the value-
+/// and parameter-annotation checks so both phrase it identically. An OVER-CEILING/zero width names the
+/// WRITTEN width (`(UInt 65)` → "`UInt65` is not a valid integer type …"); a MALFORMED (negative /
+/// non-natural) width has NO width number to name, so it states the constraint the width violated (a width
+/// must be a compile-time NATURAL in 1..=64) — the case that used to slip past `cdz check` entirely.
+fn ill_formed_int_width_message(fault: &crate::eval::IntWidthFault) -> String {
+    match *fault {
+        crate::eval::IntWidthFault::OverCeiling { signed, width } => format!(
+            "`{}{width}` is not a valid integer type: a width must be in 1..=64 (a fixed-size integer \
+             wider than 64 bits is reserved to the big-integer layer, and 0 is not a width)",
+            if signed { "Int" } else { "UInt" }
+        ),
+        crate::eval::IntWidthFault::Malformed { signed } => format!(
+            "an integer type's width must be a compile-time natural number in 1..=64 — this `{}` type's \
+             width is not a natural number (a negative, fractional, or non-numeric width is not a width)",
+            if signed { "Int" } else { "UInt" }
+        ),
+    }
+}
+
 /// The CDZ0302 out-of-range range-check EXTENDED through a COMPOUND value's payload/elements. The scalar
 /// `literal_width_fault` above catches a top-level `(: 999 Int8)`, but a NESTED narrow-width literal — the
 /// payload of `(: (Some 999) (Option Int8))`, an element of `(: (tuple 999) (Tuple Int8))`, a list element
@@ -1576,19 +1596,10 @@ pub fn param_annotation_faults(db: &mut Db, param: StructId, out: &mut Vec<Rejec
     // outside the admitted range (1..=64) is rejected at compile time, never accepted or trapped at run.
     //= spec/capabilities/numeric-model.md#an-integer-type-is-indexed-by-a-compile-time-width
     //# A bit width that is outside the range the numeric model admits MUST be rejected at compile time with the machine-readable diagnostic for the unsatisfied width constraint, rather than accepted or trapped at runtime.
-    if let Some((signed, w)) = crate::eval::out_of_range_int_width(db, ty_expr) {
-        trace!(target: "rcdzc::infer", param = param.0, signed, width = w, "fault: over-ceiling integer width in a parameter annotation (CDZ0302)");
+    if let Some(fault) = crate::eval::int_width_fault(db, ty_expr) {
+        trace!(target: "rcdzc::infer", param = param.0, "fault: ill-formed integer width in a parameter annotation (CDZ0302)");
         out.push(
-            Reject::coded(
-                Code::IntOutOfRange,
-                format!(
-                    "`{}{w}` is not a valid integer type: a width must be in 1..=64 (a fixed-size \
-                     integer wider than 64 bits is reserved to the big-integer layer, and 0 is not a \
-                     width)",
-                    if signed { "Int" } else { "UInt" }
-                ),
-            )
-            .at(ty_expr),
+            Reject::coded(Code::IntOutOfRange, ill_formed_int_width_message(&fault)).at(ty_expr),
         );
         return;
     }
@@ -10437,16 +10448,11 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 // misleading clamped `UInt0`; catch it HERE by reading the ORIGINAL width, so a NON-literal
                 // value (`(: x (UInt 65))`) is rejected too and the message names the written width. Same
                 // CDZ0302 + wording as the parameter-annotation path (`param_annotation_faults`).
-                if let Some((signed, w)) = crate::eval::out_of_range_int_width(db, ty_expr) {
-                    trace!(target: "rcdzc::infer", node = id.0, signed, width = w, "fault: over-ceiling integer width in a value annotation (CDZ0302)");
+                if let Some(fault) = crate::eval::int_width_fault(db, ty_expr) {
+                    trace!(target: "rcdzc::infer", node = id.0, "fault: ill-formed integer width in a value annotation (CDZ0302)");
                     out.push(Reject::coded(
                         Code::IntOutOfRange,
-                        format!(
-                            "`{}{w}` is not a valid integer type: a width must be in 1..=64 (a fixed-size \
-                             integer wider than 64 bits is reserved to the big-integer layer, and 0 is not \
-                             a width)",
-                            if signed { "Int" } else { "UInt" }
-                        ),
+                        ill_formed_int_width_message(&fault),
                     ));
                 }
                 // A bare integer LITERAL annotated with an integer type is a GROUNDING, not a

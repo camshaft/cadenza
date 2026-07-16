@@ -2741,6 +2741,30 @@ fn width_is_runtime(db: &mut Db, id: StructId) -> bool {
 /// runtime parameter — those are diagnosed by scope / `is_runtime_width_type`), or a non-integer-ctor
 /// type. Keyed on the constructor prim + `read_width`, so no width literal is special-cased here.
 pub fn out_of_range_int_width(db: &mut Db, id: StructId) -> Option<(bool, u32)> {
+    match int_width_fault(db, id) {
+        Some(IntWidthFault::OverCeiling { signed, width }) => Some((signed, width)),
+        _ => None,
+    }
+}
+
+/// The ill-formed-width verdict for an integer type `(Int W)`/`(UInt W)` — the TOTAL classification the
+/// well-formedness checks need. `OverCeiling` is a concrete natural width outside `1..=64` (`(UInt 65)`,
+/// `(UInt 0)`) — it names the written width for the diagnostic. `Malformed` is a NON-NATURAL width: a
+/// NEGATIVE literal (`(Int -8)`), or a non-number in width position (a Bool `(Int true)`, a float, a
+/// type-value) — there is no width number to name, only the signedness. `read_width` already distinguishes
+/// these (`WidthRead::Fixed` vs `WidthRead::Malformed`); the old `out_of_range_int_width` collapsed the
+/// Malformed case to `None`, so a negative/non-natural width SLIPPED PAST `cdz check` (silently exit 0)
+/// while each backend caught it independently at selection — a check-vs-emit gap. Well-formedness is TOTAL
+/// (numeric-model.md §"A bit width outside the range the model admits MUST be rejected at compile time"),
+/// so both the value- and parameter-annotation checks route through this so `check` rejects it and BOTH
+/// backends inherit it. A NON-CONSTANT / runtime width (`WidthRead::NotConst`) is `None` here — handled by
+/// `is_runtime_width_type` / scope. Keyed on the ctor prim + `read_width`; no width literal special-cased.
+pub enum IntWidthFault {
+    OverCeiling { signed: bool, width: u32 },
+    Malformed { signed: bool },
+}
+
+pub fn int_width_fault(db: &mut Db, id: StructId) -> Option<IntWidthFault> {
     let Resolved::Apply { head, args } = resolved_of(db, id) else {
         return None;
     };
@@ -2753,8 +2777,13 @@ pub fn out_of_range_int_width(db: &mut Db, id: StructId) -> Option<(bool, u32)> 
         return None;
     }
     match read_width(db, args[0]) {
-        WidthRead::Fixed(w) if !(1..=64).contains(&w) => Some((signed, w)),
-        _ => None,
+        WidthRead::Fixed(w) if !(1..=64).contains(&w) => {
+            Some(IntWidthFault::OverCeiling { signed, width: w })
+        }
+        WidthRead::Malformed => Some(IntWidthFault::Malformed { signed }),
+        // An in-range fixed width, or a non-constant (runtime/unbound) width, is not an ill-formed width
+        // here (the latter is diagnosed by `is_runtime_width_type` / scope).
+        WidthRead::Fixed(_) | WidthRead::NotConst => None,
     }
 }
 
