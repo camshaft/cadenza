@@ -2301,6 +2301,13 @@ fn solve_recursive_params(db: &mut Db, def: usize) {
     // seed (not `Any`/`Var`) for a NON-generic position unifies; a generic position is left for per-call
     // monomorphization (its var must stay quantified). Unify is order-independent and only ADDS bindings a
     // hole would otherwise take from `fill_holes`, so a program that already solved is unaffected.
+    // SOUNDNESS: `unify` mutates `subst` IN PLACE as it binds vars during its recursive descent, so a
+    // partway-FAILING unify (some early sub-unifications bound, then a mismatch) would leave `subst`
+    // partially updated — later grounding would then read a binding from a unification that ultimately
+    // failed, an inconsistent substitution (PR#462 reviewer hazard). Unify against a TRIAL CLONE and COMMIT
+    // only on `Ok`, so a failed call-seed unify (the seed didn't constrain this param — a benign non-match)
+    // leaves `subst` untouched rather than half-bound. The success path is byte-identical to the old
+    // in-place unify; only the failure path is now clean.
     for (i, (_, var)) in param_binders.iter().enumerate() {
         if generic_positions.contains(&i) {
             continue;
@@ -2310,7 +2317,10 @@ fn solve_recursive_params(db: &mut Db, def: usize) {
             && let Some(Some(at)) = call_seed_arg_tys.get(i)
             && !matches!(at, Ty::Any | Ty::Var(_))
         {
-            let _ = crate::unify::unify(&mut subst, &cur, at);
+            let mut trial = subst.clone();
+            if crate::unify::unify(&mut trial, &cur, at).is_ok() {
+                subst = trial;
+            }
         }
     }
 
@@ -4382,7 +4392,7 @@ fn apply_scheme_to_args(db: &mut Db, scheme: &Scheme, args: &[StructId]) -> Ty {
     }
     let mut cur = crate::unify::instantiate(scheme, &mut fresh);
     let mut subst = Subst::new();
-    for at_raw in arg_tys {
+    for (i, at_raw) in arg_tys.into_iter().enumerate() {
         let applied = subst.apply(&cur);
         match applied {
             Ty::Fn(param, result) => {
@@ -4395,12 +4405,164 @@ fn apply_scheme_to_args(db: &mut Db, scheme: &Scheme, args: &[StructId]) -> Ty {
                     crate::unify::freshen_free(&at_raw, &mut fresh)
                 };
                 let _ = crate::unify::unify(&mut subst, &param, &at);
+                // A PASS-THROUGH CLOSURE argument — `(fn (s) s)` identity — types `(-> Any Any)` bottom-up,
+                // so unifying it into the param arrow pins the DOMAIN (from a sibling arg, e.g. `it`'s
+                // element) but leaves the RESULT a free var (the body cannot type `s` bottom-up). Once the
+                // param's domain is pinned in `subst`, RE-SOLVE the closure body under that domain
+                // (`solved_lambda_arrow_under`) so the identity result takes its domain's type, then unify
+                // the recovered arrow back into the param — tying the callee's result var (`gmap`'s `b`,
+                // hence its `Iter b` result) to the closure's now-concrete result. Only fires for a lambda
+                // arg whose bottom-up type still has a hole AND whose param-arrow domain is now concrete;
+                // a fully-typed closure or an unrecoverable one is untouched (byte-identical). This is the
+                // call-site half of the transformer closure tie — the domain tie (scheme solve) pins the
+                // domain, this pins the pass-through result.
+                if at.has_any()
+                    && let Some(node) = args.get(i).copied()
+                    && let (Some(lam_params), Some(lam_body)) = (
+                        crate::eval::lambda_params_of(db, node),
+                        crate::eval::lambda_body(db, node),
+                    )
+                {
+                    let pinned = subst.apply(&param);
+                    if let Ty::Fn(dom, _) = &pinned
+                        && !matches!(**dom, Ty::Any)
+                        && !dom.has_free_var()
+                        && let Some(solved) =
+                            solved_lambda_arrow_under(db, &lam_params, lam_body, &pinned)
+                        && !solved.has_any()
+                    {
+                        let _ = crate::unify::unify(&mut subst, &param, &solved);
+                    }
+                }
                 cur = *result;
             }
             _ => return Ty::Any,
         }
     }
     subst.apply(&cur)
+}
+
+/// The instantiated PARAMETER-ARROW type at position `pos` when `callee` is applied to `args` — the arrow
+/// the callee's scheme requires of the argument at `pos`, with the OTHER (determined) sibling arguments
+/// unified in so a scheme type variable shared across parameters is pinned. Used by `type_specialize` to
+/// recover a bare CLOSURE argument's expected arrow at a call site: a recursive-generic transformer
+/// `gmap : (Iter a) → (a → b) → (Iter b)` applied to a concrete `it : Iter String` pins `f`'s expected
+/// arrow to `(-> String ?b)`, so an IDENTITY closure `(fn (s) s)` — whose body cannot type `s` bottom-up —
+/// solves `s : String` from that domain and its identity body then determines `b = String`. The closure's
+/// OWN argument (at `pos`) is NOT unified in (its `(-> Any …)` type would re-introduce the hole the
+/// recovery exists to fill); every other DETERMINED argument is. Returns `None` when `callee` has no
+/// scheme, the arrow runs out before `pos`, or the recovered slot is not itself an arrow (nothing to
+/// recover). The domain MAY be concrete while the result stays a free var (the closure body solves it).
+pub(crate) fn instantiated_param_arrow(
+    db: &mut Db,
+    callee: usize,
+    args: &[StructId],
+    pos: usize,
+) -> Option<Ty> {
+    let scheme = def_scheme(db, callee)?;
+    let arg_tys: Vec<Ty> = args.iter().map(|&a| type_of(db, a)).collect();
+    let generic = !scheme.ty_vars.is_empty();
+    let mut fresh = Fresh::new();
+    if generic {
+        let mut arg_vars = Vec::new();
+        for t in &arg_tys {
+            t.collect_free_vars(&mut arg_vars);
+        }
+        if let Some(&max) = arg_vars.iter().max() {
+            fresh.reserve(max + 1);
+        }
+    }
+    let mut cur = crate::unify::instantiate(&scheme, &mut fresh);
+    let mut subst = Subst::new();
+    let mut recovered: Option<Ty> = None;
+    for (i, at_raw) in arg_tys.into_iter().enumerate() {
+        let applied = subst.apply(&cur);
+        let Ty::Fn(param, result) = applied else {
+            break;
+        };
+        if i == pos {
+            // The closure's own slot — capture the expected arrow AFTER the sibling unifications, but do
+            // NOT unify the closure's bare `(-> Any …)` type in (it would re-introduce the hole).
+            recovered = Some(*param);
+        } else {
+            let at = if generic {
+                at_raw
+            } else {
+                crate::unify::freshen_free(&at_raw, &mut fresh)
+            };
+            // Only a DETERMINED sibling pins the scheme's shared vars; an undetermined one adds nothing.
+            if !matches!(at, Ty::Any) && !at.has_free_var() {
+                let _ = crate::unify::unify(&mut subst, &param, &at);
+            }
+        }
+        cur = *result;
+    }
+    let arrow = subst.apply(&recovered?);
+    matches!(arrow, Ty::Fn(_, _)).then_some(arrow)
+}
+
+/// The fully-solved arrow of a bare lambda `(params, body)` when its parameters' EXPECTED types are known
+/// from the call context (the `expected` arrow, e.g. `(-> String ?b)` recovered by
+/// [`instantiated_param_arrow`]). Binds each param to the corresponding expected DOMAIN before typing the
+/// body, so a pass-through body (`(fn (s) s)` — identity) whose result the bottom-up solve cannot pin
+/// takes its result FROM the domain: `s : String` ⇒ body `s : String` ⇒ arrow `(-> String String)`. For a
+/// param the expected arrow does not determine (a hole at that slot), fall back to the body-only solve
+/// (`solve_lambda_param_ty`), so a genuinely-unconstrained param still declines rather than inventing a
+/// type. `None` if the counts do not line up as an arrow. This is the closure-body result←domain flow the
+/// plain `solved_lambda_arrow` omits (it solves each param from the body ALONE).
+pub fn solved_lambda_arrow_under(
+    db: &mut Db,
+    params: &[StructId],
+    body: StructId,
+    expected: &Ty,
+) -> Option<Ty> {
+    // Peel the expected arrow into per-parameter expected domains (as many as it provides).
+    let mut expected_doms: Vec<Ty> = Vec::new();
+    let mut cur = expected.clone();
+    for _ in 0..params.len() {
+        match cur {
+            Ty::Fn(p, r) => {
+                expected_doms.push(*p);
+                cur = *r;
+            }
+            _ => break,
+        }
+    }
+    // Bind each param to its expected domain (when concrete) in a local subst, so typing the body reads
+    // the param at that type. A param whose expected domain is a hole is left to the body-only solve.
+    let mut subst = Subst::new();
+    for (i, &p) in params.iter().enumerate() {
+        let occ = crate::eval::param_name_occ(db, p);
+        if let Some(dom) = expected_doms.get(i)
+            && !matches!(dom, Ty::Any)
+            && !dom.has_free_var()
+        {
+            let pv = type_of(db, occ);
+            // Unify the param's own (var/Any) type with the expected domain, so a body reference to it
+            // reads the concrete domain through the subst.
+            let _ = crate::unify::unify(&mut subst, &pv, dom);
+        }
+    }
+    // Type the body, then read the result + each param through the subst (a pass-through body's result is
+    // now the bound domain). Curry right-to-left, exactly like `solved_lambda_arrow`.
+    let result = subst.apply(&type_of(db, body));
+    Some(
+        params
+            .iter()
+            .enumerate()
+            .rev()
+            .fold(result, |acc, (i, &p)| {
+                let occ = crate::eval::param_name_occ(db, p);
+                let pt = match expected_doms.get(i) {
+                    Some(dom) if !matches!(dom, Ty::Any) && !dom.has_free_var() => dom.clone(),
+                    _ => match type_of(db, occ) {
+                        Ty::Any => solve_lambda_param_ty(db, occ, body),
+                        t => t,
+                    },
+                };
+                Ty::Fn(Box::new(pt), Box::new(acc))
+            }),
+    )
 }
 
 /// Which built-in fallible sum a type is, for the `?`/`try` operator (`DESIGN-try-operator-rcdzc.md`).

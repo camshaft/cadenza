@@ -1103,7 +1103,8 @@ pass	a recursive walk threads TWO effects at once — a fresh-index counter and 
 pass	a recursive-generic producer composes at two element types (the tied result var)
 pass	a recursive-generic producer wrapping elements in a user sum is consumed at one type
 pass	a recursive-generic producer's element is usable at each instantiation
-pass	a recursive-generic transformer threading an IDENTITY closure declines pending the result tie
+pass	a recursive-generic transformer threading an IDENTITY closure at TWO types declines pending the multi-instantiation result tie
+todo	a recursive-generic transformer threading an IDENTITY closure composes at a single element type
 pass	a recursive-sum payload projected more than once folds to a scalar
 pass	a recursively-built MULTI-PAYLOAD-variant list renders its spine FLAT
 pass	a recursively-built binary tree renders its full runtime structure

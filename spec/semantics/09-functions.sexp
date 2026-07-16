@@ -3658,14 +3658,33 @@
             (export main)))
   (output (: 3 Int64)))
 
-(case "a recursive-generic transformer threading an IDENTITY closure declines pending the result tie"
-  (doc    "The RESIDUAL closure-tie gap after the domain tie landed: a pure IDENTITY closure `(fn (s) s)`,
-           whose RESULT is determined only by its DOMAIN (not fixed by the body bottom-up), still leaves the
-           transformer's result element a free variable — so a use at TWO element types (Int64 with the
-           body-typed `(fn (x) (+ x 1))`, String with the identity `(fn (s) s)`) has no single result type
-           to bind and DECLINES (CDZ0201). Contrast the body-typed cases above (which now run): the missing
-           piece is the closure-body result←domain flow (identity propagation). A generation that makes that
-           flow runs this (3 + 2 = 5); until then it declines cleanly (no miscompile).")
+(case "a recursive-generic transformer threading an IDENTITY closure composes at a single element type"
+  (doc    "A pure IDENTITY closure `(fn (s) s)`, whose RESULT is determined only by its DOMAIN (not fixed by
+           the body bottom-up), now composes through a recursive-generic transformer at a single element
+           type: `gmap` maps `(fn (s) s)` over `[\"a\",\"b\"]` and `icount` of the result is 2. The
+           closure-body result←domain flow — solving the pass-through body UNDER the domain the closure tie
+           pins — is what carries the identity result to `gmap`'s `Iter b` result. Pins the identity/
+           pass-through closure case (the domain tie alone left the RESULT free; this adds the result flow).")
+  (input  (do
+            (type Iter (Nil) (Cons a (Iter a)))
+            (def (from-list xs)
+              (match xs ((list) (Iter.Nil)) ((list h .. t) (Iter.Cons h (from-list t)))))
+            (def (gmap it f)
+              (match it ((Iter.Nil) (Iter.Nil)) ((Iter.Cons h rest) (Iter.Cons (f h) (gmap rest f)))))
+            (def (icount it)
+              (match it ((Iter.Nil) 0) ((Iter.Cons h rest) (+ 1 (icount rest)))))
+            (def (main) (icount (gmap (from-list (list "a" "b")) (fn (s) s))))
+            (export main)))
+  (output (: 2 Int64)))
+
+(case "a recursive-generic transformer threading an IDENTITY closure at TWO types declines pending the multi-instantiation result tie"
+  (doc    "The RESIDUAL closure-tie gap: a pure IDENTITY closure `(fn (s) s)` composes at a SINGLE element
+           type (above), but MIXING it with another instantiation — Int64 `(fn (x) (+ x 1))` AND String
+           `(fn (s) s)` in one program — still DECLINES (CDZ0201). The per-call result flow pins each
+           instantiation's result, but the two coexisting monomorphizations of `gmap` do not yet both bind
+           their result element from their own closure (the multi-instantiation caller-side result tie). A
+           narrower not-yet-built follow-up; declines cleanly (no miscompile). A generation that ties each
+           instantiation's result runs this (3 + 2 = 5).")
   (input  (do
             (type Iter (Nil) (Cons a (Iter a)))
             (def (from-list xs)
