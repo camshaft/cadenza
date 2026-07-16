@@ -2998,6 +2998,10 @@ pass	subtraction of two symbols is rejected
 pass	sum type constructors are in scope after declaration
 pass	symbol identity follows String normalization
 pass	symbols interned from different strings are unequal
+pass	take-while composed after a map threads both transformers' closures
+pass	take-while excludes the failing element and everything after it (content, not just count)
+pass	take-while where every element satisfies the predicate keeps the whole run
+pass	take-while where the first element fails the predicate returns the empty run
 pass	textually-identical performs are DISTINCT state-advancing reads, not a common subexpression
 pass	the AST is a sum type deconstructible by pattern matching
 pass	the Bool generator covers both values across seeds (it is not a constant)

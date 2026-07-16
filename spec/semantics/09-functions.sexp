@@ -3683,6 +3683,91 @@
             (export main)))
   (output (: 4 Int64)))
 
+; take-while BEHAVIORAL edges (breaker): the case above pins the inference TIE (bare-Nil stop branch keeps
+; the result-element tie at ≥2 types); these pin the runtime BEHAVIOR the landed giter.cdz @tests (ints,
+; strings, one leading-run) don't cover as corpus: the whole-list case where NO element fails (the stop
+; branch is never taken before the natural Nil), the empty case where the FIRST element fails (the else
+; fires immediately), the CONTENT (a sum, not just a count — the failing element AND its tail must be
+; excluded, not merely counted out), and take-while composed AFTER a map (two closure-threading transformers).
+
+(case "take-while where every element satisfies the predicate keeps the whole run"
+  (doc    "The all-pass edge: when NO element fails `p`, take-while never takes its bare-Nil stop branch
+           before the natural end — it returns the whole list. `take-while [1,2,3] (< 100)` keeps all three,
+           icount 3. Pins that the stop branch is reached only on a genuine predicate failure, not spuriously.")
+  (input  (do
+            (type Iter (Nil) (Cons a (Iter a)))
+            (def (from-list xs)
+              (match xs ((list) (Iter.Nil)) ((list h .. t) (Iter.Cons h (from-list t)))))
+            (def (take-while it p)
+              (match it
+                ((Iter.Nil) (Iter.Nil))
+                ((Iter.Cons h rest) (if (p h) (Iter.Cons h (take-while rest p)) (Iter.Nil)))))
+            (def (icount it)
+              (match it ((Iter.Nil) 0) ((Iter.Cons h rest) (+ 1 (icount rest)))))
+            (def (main) (icount (take-while (from-list (list 1 2 3)) (fn (x) (< x 100)))))
+            (export main)))
+  (output (: 3 Int64)))
+
+(case "take-while where the first element fails the predicate returns the empty run"
+  (doc    "The immediate-stop edge: when the FIRST element fails `p`, the `else` bare-Nil branch fires at once
+           and take-while returns the empty iterator. `take-while [5,1,2] (< 3)` — 5 fails, so the run is
+           empty, icount 0. Pins that the first-element failure yields Nil (not the whole list, not a
+           one-element run) — the boundary the leading-run case above cannot witness.")
+  (input  (do
+            (type Iter (Nil) (Cons a (Iter a)))
+            (def (from-list xs)
+              (match xs ((list) (Iter.Nil)) ((list h .. t) (Iter.Cons h (from-list t)))))
+            (def (take-while it p)
+              (match it
+                ((Iter.Nil) (Iter.Nil))
+                ((Iter.Cons h rest) (if (p h) (Iter.Cons h (take-while rest p)) (Iter.Nil)))))
+            (def (icount it)
+              (match it ((Iter.Nil) 0) ((Iter.Cons h rest) (+ 1 (icount rest)))))
+            (def (main) (icount (take-while (from-list (list 5 1 2)) (fn (x) (< x 3)))))
+            (export main)))
+  (output (: 0 Int64)))
+
+(case "take-while excludes the failing element and everything after it (content, not just count)"
+  (doc    "The content edge: take-while must drop the first failing element AND its entire tail, not merely
+           count them out. `take-while [10,20,3,100,5] (> 5)` — 10,20 pass, 3 fails → the run is [10,20];
+           SUM = 30 (not 30+100+5, and not including 3). A stop branch that kept the tail, or off-by-one on
+           the failing element, would sum wrong. Pins the exact leading-run CONTENT via sum, which the
+           count-only landed @tests cannot distinguish from a wrong-but-same-length run.")
+  (input  (do
+            (type Iter (Nil) (Cons a (Iter a)))
+            (def (from-list xs)
+              (match xs ((list) (Iter.Nil)) ((list h .. t) (Iter.Cons h (from-list t)))))
+            (def (take-while it p)
+              (match it
+                ((Iter.Nil) (Iter.Nil))
+                ((Iter.Cons h rest) (if (p h) (Iter.Cons h (take-while rest p)) (Iter.Nil)))))
+            (def (isum it)
+              (match it ((Iter.Nil) 0) ((Iter.Cons h rest) (+ h (isum rest)))))
+            (def (main) (isum (take-while (from-list (list 10 20 3 100 5)) (fn (x) (> x 5)))))
+            (export main)))
+  (output (: 30 Int64)))
+
+(case "take-while composed after a map threads both transformers' closures"
+  (doc    "take-while consuming the output of another closure-threading transformer: map `(* 10)` over
+           [1,2,3,4] gives [10,20,30,40], then `take-while (< 35)` keeps [10,20,30] (40 fails); SUM = 60. Pins
+           that two recursive-generic transformers compose — the mapped iterator's element type flows into
+           take-while's predicate and result — a stronger tie than take-while over a bare from-list.")
+  (input  (do
+            (type Iter (Nil) (Cons a (Iter a)))
+            (def (from-list xs)
+              (match xs ((list) (Iter.Nil)) ((list h .. t) (Iter.Cons h (from-list t)))))
+            (def (imap it f)
+              (match it ((Iter.Nil) (Iter.Nil)) ((Iter.Cons h rest) (Iter.Cons (f h) (imap rest f)))))
+            (def (take-while it p)
+              (match it
+                ((Iter.Nil) (Iter.Nil))
+                ((Iter.Cons h rest) (if (p h) (Iter.Cons h (take-while rest p)) (Iter.Nil)))))
+            (def (isum it)
+              (match it ((Iter.Nil) 0) ((Iter.Cons h rest) (+ h (isum rest)))))
+            (def (main) (isum (take-while (imap (from-list (list 1 2 3 4)) (fn (x) (* x 10))) (fn (y) (< y 35)))))
+            (export main)))
+  (output (: 60 Int64)))
+
 (case "a recursive-generic transformer threading an IDENTITY closure composes at a single element type"
   (doc    "A pure IDENTITY closure `(fn (s) s)`, whose RESULT is determined only by its DOMAIN (not fixed by
            the body bottom-up), now composes through a recursive-generic transformer at a single element
