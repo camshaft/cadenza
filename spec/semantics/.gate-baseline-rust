@@ -524,6 +524,7 @@ pass	a function stored in a tuple element is called after extraction
 pass	a function takes a boolean parameter and branches on it
 pass	a function whose body always diverges has result type Never
 pass	a function whose name is capitalized is called, not treated as a constructor
+pass	a function's reflected CODOMAIN is body-solved, distinguishing an Int64 result from a Bool result
 pass	a function's reflected domain matches an equivalent explicitly-annotated signature
 pass	a function's return type ascription agreeing with the body is transparent
 pass	a function's return type contradicting the body is rejected
@@ -2068,6 +2069,7 @@ pass	comparing a Float32 nan to a Float64 nan is a cross-width type error
 pass	comparing a greater value to a lesser yields Greater
 pass	comparing a lesser value to a greater yields Less
 pass	comparing a map to a record is a type error
+pass	comparing an Int64 to a Bool with < is a type error
 pass	comparing an empty map to an empty record is a type error
 pass	comparing equal values yields Equal
 pass	comparing quantities of incompatible dimension is a compile-time error
@@ -2561,6 +2563,7 @@ pass	the AST is a sum type deconstructible by pattern matching
 pass	the Bool generator covers both values across seeds (it is not a constant)
 pass	the Float codec round-trips a negative value
 pass	the Int codec round-trips i64::MIN — the two's-complement boundary
+pass	the Int64 total order holds at its extremes
 pass	the LEB128 byte composition runs on a runtime operand
 pass	the additive-zero identity preserves a boundary-crossing runtime operand
 pass	the arithmetic operator rejects a float-first mixed operand pair
@@ -2568,6 +2571,7 @@ pass	the bitwise-AND-with-zero annihilator does not discard a trapping runtime o
 pass	the boolean less-than operator agrees with compare over Bool
 pass	the boolean less-than operator agrees with the three-way comparison
 pass	the boolean literals
+pass	the boolean-literal coercion composes over a runtime Symbol equality
 pass	the built variant is the multi-arg one, the unbuilt arm still gets its call type
 pass	the built-in Ast is transformed as an ordinary value
 pass	the built-in list is folded by an element-with-rest pattern
@@ -2656,6 +2660,7 @@ pass	the remainder takes the sign of the dividend for a negative divisor
 pass	the rest binder carries the unmatched runtime-keyed remainder
 pass	the retired Tuple.cat name is rejected with the Tuple.concat rename fix-it (CDZ0603)
 pass	the retired Tuple.pop name is rejected with the Tuple.remove rename fix-it (CDZ0603)
+pass	the reversed extreme ordering is false
 pass	the runtime UTF-8 encoding of a string equals its exact byte literal
 pass	the runtime-if list takes its else branch and measures that length
 pass	the runtime-list version of a tail fold compiles and folds correctly
@@ -2737,7 +2742,9 @@ pass	two equal chars compare equal
 pass	two expects of one bound optional share its resident handle
 pass	two fallible reads of one Bytes parameter share its resident handle slot
 pass	two fallible reads of one collection parameter share its resident handle slot
+pass	two functions both body-solved to Int64->Bool reflect equal arrows
 pass	two functions defined by mutual recursion compute a result
+pass	two functions with the same body-solved arrow but different bodies reflect equal types
 pass	two lists are concatenated into one flat list
 pass	two lists of different length are unequal, not a type error
 pass	two maps of different sizes are unequal, not a type error

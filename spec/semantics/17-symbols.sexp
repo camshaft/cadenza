@@ -74,6 +74,22 @@
   (input  (= (Symbol.of (String.concat "map" "-insert")) (Symbol.of "map-insert")))
   (output (: true Bool)))
 
+(case "the boolean-literal coercion composes over a runtime Symbol equality"
+  (doc    "The `(= bexpr true)` = bexpr / `(= bexpr false)` = ¬bexpr boolean coercion (03-equality) composes
+           over a Symbol content-equality operand, exactly as it does over an Int `<`, a float `=`, and a
+           String `=`. Over a runtime Symbol `s = #\"add\"` (built via `Symbol.of (String.concat …)` so it
+           is not a constant fold): the inner `(= s #\"add\")` is the runtime Symbol content-eq (true), the
+           outer `(= … true)` yields that Bool (→ then-arm 1) and `(= … false)` negates it (→ else-arm 0).
+           `10*t + f` = 10*1 + 0 = 10. Pins the bool-literal coercion over a runtime SYMBOL equality (the
+           symbol twin of the String/float `=` coercion cases), both backends.")
+  (input  (do
+            (def (t (: s Symbol)) (if (= (= s #"add") true) 1 0))
+            (def (f (: s Symbol)) (if (= (= s #"add") false) 1 0))
+            (def (main) (+ (* 10 (t (Symbol.of (String.concat "ad" "d"))))
+                           (f (Symbol.of (String.concat "ad" "d")))))
+            (export main)))
+  (output (: 10 Int64)))
+
 ; ============================================================================================
 ; Crossing back to text — Symbol.to-string recovers the interned content
 ; ============================================================================================
