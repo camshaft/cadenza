@@ -424,8 +424,13 @@ pub enum FleetCmd {
     /// agent stamps a heartbeat touch-file (`.claude/fleet/heartbeat/<agent>`) at the top of every
     /// tick; if that file is older than `min(--stale-mult × interval, --stale-cap)`, its loop is
     /// presumed dead and this nudges the window back to life (`tmux send-keys continue Enter` — makes
-    /// the idle agent run its next tick; NOT `/loop <interval>`, which the loop skill treats as an
-    /// empty-prompt no-op and never actually revives anything). The `--stale-cap` bound is what keeps a
+    /// the idle agent run its next tick; NOT a bare `/loop <interval>`, which the loop skill treats as
+    /// an empty-prompt no-op and never actually revives anything). ESCALATION: if an agent was ALREADY
+    /// re-armed once (past the grace window) and is STILL stale, a one-shot `continue` demonstrably
+    /// didn't establish a self-sustaining loop — the fresh-mint cold-start whose recurring cron never
+    /// armed (heartbeat stamped once, then frozen). So the second re-arm re-issues the FULL
+    /// `/loop <interval> <tick>` (with the same kickoff contract), which ARMS a cron instead of running
+    /// one inline tick — converting that stall from permanent to self-healing. The `--stale-cap` bound is what keeps a
     /// long-interval agent (e.g. 30m) from getting an hour-long dead window. Skips: agents with no live
     /// tmux window, agents mid-tick
     /// ("esc to interrupt" — real work in flight), agents re-armed within `--grace-secs` (anti-thrash),
@@ -1557,20 +1562,45 @@ fn watchdog(fleet: &Fleet, dry_run: bool, stale_mult: u32, stale_cap: u64, grace
         }
 
         if dry_run {
+            let how = match rearm_action(rearm_age_secs(fleet, &a.name, now).is_some()) {
+                RearmAction::NudgeContinue => "nudge `continue`",
+                RearmAction::ReissueLoop => "re-issue `/loop` (prior nudge didn't stick)",
+            };
             println!(
-                "  DRY-RUN would re-arm '{}' (idle {age}s > {stale_after}s stale window; interval {})",
+                "  DRY-RUN would re-arm '{}' via {how} (idle {age}s > {stale_after}s stale window; interval {})",
                 a.name, a.interval
             );
             rearmed += 1;
             continue;
         }
-        if rearm_window(&session, &a.name, &a.interval) {
+        // Choose the re-arm action. A cheap one-shot `continue` revives a loop whose recurring cron is
+        // intact but merely missed a tick. But a fresh mint whose cron NEVER armed (the residual
+        // cold-start stall: heartbeat stamped once at tick 1, then frozen — no recurring job) will tick
+        // ONCE on `continue` and stall right back. The tell: we ALREADY re-armed this agent and — by the
+        // grace check above — that nudge is past its grace window, yet it's STILL stale. So the one-shot
+        // demonstrably didn't establish a self-sustaining loop → escalate to re-issuing the full
+        // `/loop <interval> <tick>`, which ARMS a cron rather than running a single inline tick.
+        let action = rearm_action(rearm_age_secs(fleet, &a.name, now).is_some());
+        let sent = match action {
+            RearmAction::NudgeContinue => rearm_window(&session, &a.name, &a.interval),
+            RearmAction::ReissueLoop => {
+                let prompt = watchdog_tick_prompt(fleet, a);
+                reissue_loop(&session, &a.name, &a.interval, &prompt)
+            }
+        };
+        if sent {
             stamp_rearm(fleet, &a.name);
             rearmed += 1;
-            println!(
-                "  + re-armed '{}' (idle {age}s > {stale_after}s; nudged `continue` to run a tick)",
-                a.name
-            );
+            match action {
+                RearmAction::NudgeContinue => println!(
+                    "  + re-armed '{}' (idle {age}s > {stale_after}s; nudged `continue` to run a tick)",
+                    a.name
+                ),
+                RearmAction::ReissueLoop => println!(
+                    "  ++ re-armed '{}' (idle {age}s > {stale_after}s; prior nudge didn't stick → re-issued `/loop {}` to ARM a cron)",
+                    a.name, a.interval
+                ),
+            }
         } else {
             eprintln!("  ! failed to send-keys to '{}'", a.name);
         }
@@ -1753,6 +1783,84 @@ fn window_is_working(session: &str, agent: &str) -> bool {
 /// compatibility but no longer used to build the keystroke.
 fn rearm_window(session: &str, agent: &str, _interval: &str) -> bool {
     nudge_tick(session, agent)
+}
+
+/// How the watchdog should revive a stalled agent this pass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RearmAction {
+    /// One-shot keystroke: run one more tick now. Enough when the recurring `/loop` cron is intact and
+    /// merely missed a tick — the common case for a mature looping agent.
+    NudgeContinue,
+    /// Re-issue the full `/loop <interval> <tick>`: ARM a recurring cron. For a stall a prior one-shot
+    /// nudge failed to fix — the fresh-mint cold-start whose cron never armed, so `continue` ticks once
+    /// and freezes again. Re-issuing `/loop` establishes the self-sustaining loop the one-shot can't.
+    ReissueLoop,
+}
+
+/// Decide the re-arm action from whether we've re-armed this agent before. Pure so it's unit-tested.
+///
+/// At the watchdog's re-arm point the anti-thrash grace check has already fired, so a recorded prior
+/// re-arm (`already_rearmed`) means: we nudged this agent, waited PAST the grace window, and it's STILL
+/// stale. A one-shot `continue` therefore did not establish a self-sustaining loop (the no-cron
+/// fresh-mint signature) → escalate to re-issuing `/loop`. A first-time re-arm gets the cheap nudge.
+fn rearm_action(already_rearmed: bool) -> RearmAction {
+    if already_rearmed {
+        RearmAction::ReissueLoop
+    } else {
+        RearmAction::NudgeContinue
+    }
+}
+
+/// Build the recurring tick prompt the watchdog passes when it re-issues `/loop` for a stalled agent.
+/// Mirrors `window.sh`'s kickoff TICK recipe (heartbeat → drain inbox → one gated unit of work) so a
+/// watchdog-armed loop runs the SAME contract as a freshly-launched one — the point of the fix is that
+/// a never-looped mint ends up with a real recurring loop, not a degraded one. Paths resolve against
+/// the hub-anchored fleet state + the agent's own worktree, exactly like the launcher.
+fn watchdog_tick_prompt(fleet: &Fleet, a: &Agent) -> String {
+    let inbox = fleet.root.join("inbox").join(&a.name);
+    let role_body = format!("{}/fleet/loops/{}.md", a.worktree, a.role);
+    let vnote = if a.vertical.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " Your vertical is '{}' in subsystem '{}'.",
+            a.vertical,
+            if a.area.is_empty() { "rcdzc" } else { &a.area }
+        )
+    };
+    format!(
+        "Run one tick of your role ({role}){vnote}: (1) cargo xtask fleet heartbeat {name} (stop \
+         cleanly if a stop-file exists); (2) drain your inbox {inbox}/ oldest-first, acting on each \
+         message then moving it to processed/; (3) sync (git fetch && rebase trunk) and do ONE \
+         well-scoped unit of work per {role_body}, gating it green before sending pr-sync a \
+         merge-request. Coordinate with peers only via 'cargo xtask fleet send'; if you need a human \
+         decision, send the concierge an 'ask' and keep working — never wait for a reply.",
+        role = a.role,
+        name = a.name,
+        inbox = inbox.display(),
+    )
+}
+
+/// Re-issue a full `/loop <interval> <tick>` into an agent's tmux window to ARM a recurring cron (the
+/// escalation path — see [`RearmAction::ReissueLoop`]). Unlike [`nudge_tick`]'s one-shot `continue`,
+/// this types the whole `/loop` command so the loop skill schedules the recurring job AND runs the
+/// first tick. The prompt is sent with `-l` (literal) so no chars are interpreted as tmux key names.
+fn reissue_loop(session: &str, agent: &str, interval: &str, tick_prompt: &str) -> bool {
+    let target = format!("{session}:{agent}");
+    let line = format!("/loop {interval} {tick_prompt}");
+    let sent = Command::new("tmux")
+        .args(["send-keys", "-t", &target, "-l", &line])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !sent {
+        return false;
+    }
+    Command::new("tmux")
+        .args(["send-keys", "-t", &target, "Enter"])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 // ── archive ────────────────────────────────────────────────────────────────────────────────────
@@ -2544,6 +2652,76 @@ mod tests {
             cmd.contains("fleet merge-floor"),
             "driver must call the merge-floor subcommand"
         );
+    }
+
+    #[test]
+    fn rearm_escalates_only_after_a_prior_nudge_failed() {
+        // First re-arm (never nudged before) → cheap one-shot `continue`. This is the common case for a
+        // mature agent whose cron is intact and merely missed a tick.
+        assert_eq!(rearm_action(false), RearmAction::NudgeContinue);
+        // Already re-armed once and — since we only reach this point PAST the anti-thrash grace window —
+        // still stale ⇒ the one-shot didn't establish a self-sustaining loop (fresh-mint no-cron
+        // signature) ⇒ escalate to re-issuing `/loop` to ARM a cron.
+        assert_eq!(rearm_action(true), RearmAction::ReissueLoop);
+    }
+
+    #[test]
+    fn watchdog_tick_prompt_mirrors_the_kickoff_contract() {
+        // The re-issued loop must run the SAME contract as a freshly-launched window (heartbeat → drain
+        // inbox → one gated unit of work), addressed to THIS agent's name/role/worktree/inbox.
+        let fleet = Fleet {
+            root: PathBuf::from("/hub/.claude/fleet"),
+            worktrees: PathBuf::from("/hub/.claude/worktrees"),
+            repo: PathBuf::from("/hub"),
+            src: PathBuf::from("/wt/fleet"),
+        };
+        let a = Agent {
+            name: "fix-float-compare".into(),
+            role: "fix".into(),
+            vertical: String::new(),
+            area: String::new(),
+            worktree: "/wt/fix-float-compare".into(),
+            branch: "fleet/fix-float-compare".into(),
+            interval: "10m".into(),
+            model: "opus".into(),
+            effort: "high".into(),
+            status: "active".into(),
+            disallow_ask: true,
+        };
+        let p = watchdog_tick_prompt(&fleet, &a);
+        assert!(p.contains("cargo xtask fleet heartbeat fix-float-compare"));
+        assert!(p.contains("drain your inbox"));
+        assert!(p.contains("inbox/fix-float-compare/"));
+        assert!(p.contains("/wt/fix-float-compare/fleet/loops/fix.md"));
+        assert!(p.contains("never wait for a reply"));
+        // A role with no vertical must NOT emit the vertical clause.
+        assert!(!p.contains("Your vertical is"));
+    }
+
+    #[test]
+    fn watchdog_tick_prompt_includes_vertical_note_when_set() {
+        let fleet = Fleet {
+            root: PathBuf::from("/hub/.claude/fleet"),
+            worktrees: PathBuf::from("/hub/.claude/worktrees"),
+            repo: PathBuf::from("/hub"),
+            src: PathBuf::from("/wt/fleet"),
+        };
+        let a = Agent {
+            name: "v-iterators".into(),
+            role: "vertical".into(),
+            vertical: "iterators".into(),
+            area: "rcdzc".into(),
+            worktree: "/wt/v-iterators".into(),
+            branch: "fleet/v-iterators".into(),
+            interval: "10m".into(),
+            model: "opus".into(),
+            effort: "high".into(),
+            status: "active".into(),
+            disallow_ask: true,
+        };
+        let p = watchdog_tick_prompt(&fleet, &a);
+        assert!(p.contains("Your vertical is 'iterators' in subsystem 'rcdzc'."));
+        assert!(p.contains("per /wt/v-iterators/fleet/loops/vertical.md"));
     }
 
     #[test]
