@@ -14384,6 +14384,15 @@ mod match_engine {
 
     #[test]
     fn a_nested_match_on_a_recursive_sum_with_a_known_outer_disc_reads_the_right_payload_depth() {
+        // These asserts run heap values; skip when the value-heap runtime store is absent (CI's bare
+        // `cargo test` builds no store), matching the established heap-test pattern — else the
+        // `run_heap_value(...).unwrap()` panics `None` storeless (staging-sync-loop-harness-trap).
+        if super::find_runtime_wasm().is_none() {
+            eprintln!(
+                "runtime wasm not found (run `cargo xtask build`); skipping heap-run assertions"
+            );
+            return;
+        }
         // REGRESSION (silent MISCOMPILE): a match nesting a variant of the SAME recursive sum, when the
         // scrutinee's OUTER discriminant is STATICALLY KNOWN (a constant/inlined `SumNew`), matched the
         // WRONG branch. `(type T (I Int64) (W T))`, `(match t ((W (I 7)) 1) (_ 0))` on `t = (W (I 7))` →
