@@ -725,6 +725,53 @@ mod tests {
         assert_eq!(unescape_string("ab\\"), Ok("ab".to_string()));
     }
 
+    /// A tiny deterministic PRNG (SplitMix64) — reproducible generation without a dependency (mirrors
+    /// the unit-test PRNGs in `codec.rs`/`lexer.rs`).
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+            z ^ (z >> 31)
+        }
+    }
+
+    #[test]
+    fn escape_unescape_is_the_identity_over_generated_strings() {
+        // The inverse-pair CONTRACT `unescape_string(escape_string(s)) == s`, swept over random strings —
+        // the law all string round-tripping rests on (a printer emits `escape_string`, the reader applies
+        // `unescape_string`). The hand-picked cases above cover the obvious chars; this sweeps the whole
+        // space, weighted toward the escape-significant chars (`\n \t \r \\ "`) and the brace/quote/unicode
+        // neighbours where an escape-table asymmetry would hide, so a regression that made the two sides
+        // disagree on some char (e.g. an escape emitted but not recognized, or vice-versa) is caught as a
+        // non-identity round-trip. `escape_string` is TOTAL, so every generated string must round-trip.
+        // The alphabet includes chars that MUST escape, chars that must NOT, `{`/`}` (template-brace
+        // neighbours), control chars, and multi-byte unicode scalars.
+        let alphabet: &[char] = &[
+            '\n', '\t', '\r', '\\', '"', // the five that must escape
+            'a', 'Z', '0', ' ', '{', '}', '\'', '/', // must-not-escape neighbours
+            '\0', '\u{7f}', '\u{1b}', // control chars (stand for themselves in a string)
+            'λ', '中', '🎉', '\u{a0}', // multi-byte unicode scalars
+        ];
+        let mut rng = Rng(0xe5ca_9e5c_a9e5_ca01);
+        for _ in 0..50_000 {
+            let len = (rng.next() % 12) as usize; // 0..=11 chars
+            let s: String = (0..len)
+                .map(|_| alphabet[(rng.next() as usize) % alphabet.len()])
+                .collect();
+            let escaped = escape_string(&s);
+            let round = unescape_string(&escaped).unwrap_or_else(|c| {
+                panic!("escape_string({s:?})={escaped:?} failed to unescape at {c:?}")
+            });
+            assert_eq!(
+                round, s,
+                "escape→unescape not the identity for {s:?} (via {escaped:?})"
+            );
+        }
+    }
+
     #[test]
     fn int_render_parse_round_trips_across_radices_and_signs() {
         // `render_int` then `parse_int` preserves value AND radix (the radix is part of a leaf's
