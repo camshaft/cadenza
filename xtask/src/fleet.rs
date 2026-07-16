@@ -2281,8 +2281,11 @@ fn next_delivery_seq(fleet: &Fleet) -> u64 {
     ));
     if std::fs::write(&tmp, format!("{next}\n")).is_ok() {
         // rename is atomic on the same filesystem; a losing racer's rename simply wins-last with an
-        // equal-or-higher value, never a partial file.
-        let _ = std::fs::rename(&tmp, &path);
+        // equal-or-higher value, never a partial file. If the rename itself FAILS (transient perm/IO),
+        // clean up the temp so it doesn't linger (PR #457) — the write succeeded but the swap didn't.
+        if std::fs::rename(&tmp, &path).is_err() {
+            let _ = std::fs::remove_file(&tmp);
+        }
     } else {
         // Best-effort cleanup if the write half-failed, so a stray temp doesn't linger.
         let _ = std::fs::remove_file(&tmp);
@@ -2614,9 +2617,19 @@ fn count_dir(dir: &Path, keep: impl Fn(&str) -> bool) -> usize {
 /// can SURFACE the violation instead of it being silently self-healed. `None` if the reflog is
 /// unreadable; `Some(n)` with the count of clobbers seen in the window (0 = clean).
 fn trunk_clobber_count(repo: &Path, window: usize) -> Option<usize> {
+    // Bound the read at the source with `-n <window>` (PR #456): `git reflog show` is otherwise
+    // unbounded, so a large trunk reflog would be read + parsed in full each call just to look at the
+    // most recent `window` entries. The in-process `.take(window)` stays as a belt-and-suspenders cap.
     let out = Command::new("git")
         .current_dir(repo)
-        .args(["reflog", "show", "trunk", "--format=%gs"])
+        .args([
+            "reflog",
+            "show",
+            "-n",
+            &window.to_string(),
+            "trunk",
+            "--format=%gs",
+        ])
         .output()
         .ok()?;
     if !out.status.success() {
