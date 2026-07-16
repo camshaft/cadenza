@@ -569,6 +569,7 @@ pass	a cross-type variant pattern whose payload width differs is rejected, not m
 pass	a ctor-in-tuple-slot match is expressible by binding the tuple then re-matching
 pass	a curried function can be partially applied
 pass	a curried function-type annotation checks its inner result type against the argument
+pass	a curried newtype constructor applies to completion
 pass	a curried-syntax application of a multi-payload constructor reaches full arity and constructs
 pass	a curried-syntax application of a runtime closure flattens to one full-arity indirect call
 pass	a cycle of module imports is rejected
@@ -632,6 +633,7 @@ pass	a do-local function declaration is recursive
 pass	a do-local generic function is instantiated per type
 pass	a do-sequence of unit-returning performs runs each for effect, then yields the tail value
 pass	a dotted nullary arm whose body nests a same-type sum match dispatches correctly
+pass	a double same-dimension annotation preserves the original scale
 pass	a double-negated condition unwinds to the original selection
 pass	a doubly-nested strength-reduced multiply chains shift into shift
 pass	a doubly-nested tuple map key containing a rope is found by its flat twin
@@ -1947,6 +1949,7 @@ pass	an all-nullary enum reached through a tuple element inside a boxed sum surv
 pass	an all-owned-arms match operand compares correctly through the ownership join
 pass	an all-wildcard tuple arm is a catch-all that shadows a later refining arm
 pass	an annihilator identity folds to zero when its operand is trap-free
+pass	an annotated argument joins a callee-side quantity at its own scale
 pass	an annotated destructuring let binder
 pass	an annotated empty list escapes fine (the undetermined-empty-list control)
 pass	an annotated escaped None renders its canonical nullary-variant form (the control)

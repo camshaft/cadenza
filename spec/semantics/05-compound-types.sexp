@@ -9589,3 +9589,18 @@
                 (match mp ((map (1 v)) v) ((Zorp x) (go mp)) (_ 0)))
               (export go)))
   (error CDZ0101))
+
+(case "a curried newtype constructor applies to completion"
+  (doc    "`((T.Mk 10) 20)` over the two-payload newtype `(type T (Mk Int64 Int64))` — the partial
+           `(T.Mk 10)` is an arrow value applied to its remaining payload at the call site: the
+           completed value matches to 10 + 20 = 30. The working-composition companion of the
+           partial-ctor-of-a-newtype decline (f6811116f ordered the arity guard before newtype
+           erasure — the erasure arm read a 1-arg partial as the bare payload, emitting invalid
+           wasm; the DIRECT curried apply must keep working while the stored-partial face declines).")
+  (input  (do
+            (type T (Mk Int64 Int64))
+            (def (main (: d Int64))
+              (match ((T.Mk 10) 20) ((T.Mk a b) (+ a b))))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 30 Int64)))

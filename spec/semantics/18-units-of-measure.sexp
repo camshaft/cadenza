@@ -1537,3 +1537,32 @@
   (output (: 1000 Int64))
   (call   main (: 0 Int64))
   (output (: 1000 Int64)))
+
+; --- Annotation-scale preservation: the composition faces beyond the rebrand fix's pins ------------
+; ad4097530's pins grade the direct conversion/identity/join faces. These pin the compositions,
+; promoted from passing breaker probes.
+
+(case "an annotated argument joins a callee-side quantity at its own scale"
+  (doc    "`(f (: (Qty.of 2 kilometer) (Qty Int64 meter)))` where f adds one kilometer — the
+           annotation crosses a CALL boundary as the param's declared type, and the value still
+           carries its own km scale inside the callee: 2 km + 1 km = 3 km → 3000 m. The
+           param-annotation face of scale preservation (a rebrand at the call seam re-labels the
+           argument exactly as the fixed inline annotation did).")
+  (input  (do
+            (def (f (: q (Qty Int64 (Unit.of #"meter"))))
+              (+ q (Qty.of 1 (Unit.of #"kilometer"))))
+            (def (main (: d Int64))
+              (Unit.in (Unit.of #"meter") (f (: (Qty.of 2 (Unit.of #"kilometer")) (Qty Int64 (Unit.of #"meter"))))))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 3000 Int64)))
+
+(case "a double same-dimension annotation preserves the original scale"
+  (doc    "`(: (: (Qty.of 1 kilometer) (Qty Int64 meter)) (Qty Int64 centimeter))` — TWO stacked
+           same-dimension annotations at different units: each checks the dimension, neither touches
+           the scale, so the value is still one kilometer → 1000 m. Pins idempotence of the
+           check-not-coerce semantics under composition (a rebrand applied per-annotation would
+           yield 1 cm → 0 m... or 1 m depending on order).")
+  (input  (Unit.in (Unit.of #"meter")
+            (: (: (Qty.of 1 (Unit.of #"kilometer")) (Qty Int64 (Unit.of #"meter"))) (Qty Int64 (Unit.of #"centimeter")))))
+  (output (: 1000 Int64)))
