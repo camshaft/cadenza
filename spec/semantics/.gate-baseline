@@ -1691,6 +1691,8 @@ pass	a tail-recursive string accumulator builds a runtime string and its length 
 pass	a tautology comparison against a masked value's derived range still traps on the operand
 pass	a tautology comparison against the type minimum still traps on a div-by-zero operand
 pass	a tautology comparison still folds when its operand cannot trap
+pass	a threaded String param consumed as the right concat operand survives the loop
+pass	a threaded String param consumed twice per step survives the loop
 pass	a three-argument closure exported to the host is called with all three
 pass	a three-arm match consumed as an operand yields into the enclosing expression
 pass	a three-deep tuple projection chain retains the innermost consumed child
@@ -1899,6 +1901,7 @@ pass	an active unquote of a let-bound string lifts to Ast.Str by inferred type
 pass	an active unquote of a string literal lifts to an Ast.Str node
 pass	an active unquote of an Ast-valued expression splices the subtree as identity
 pass	an active-unquoted boolean literal equals the quoted form
+pass	an agreeing Result error type short-circuits through the boundary
 pass	an agreeing redeclaration compares the normalized ratio, not the literal numerator and denominator
 pass	an all-constant Set.of still folds membership with a constant query (control)
 pass	an all-escapes Ast.Str round-trips through print and read
