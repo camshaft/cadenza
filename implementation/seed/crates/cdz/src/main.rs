@@ -916,6 +916,26 @@ fn run_metadata(args: &MetadataArgs) -> ExitCode {
         &str_array(&expand_manifest_globs(&dir, &m.tests, &m.exclude)),
     );
     obj.raw("exclude", &str_array(&m.exclude));
+    // The build ARTIFACTS currently present in the manifest directory — the same output-extension set
+    // `cdz clean` removes (`.wasm`/`.rs`/`.dwarf` + `link-map.txt`), so a tool can answer "is this project
+    // built?" / "what would `cdz clean` remove?" without running a build. Paths are manifest-relative
+    // (just the file name, since the sweep is the manifest's own directory). Empty `[]` for an un-built
+    // project. Sorted for deterministic output.
+    let mut artifacts: Vec<String> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for e in entries.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let is_artifact = name.ends_with(".wasm")
+                || name.ends_with(".rs")
+                || name.ends_with(".dwarf")
+                || name == "link-map.txt";
+            if is_artifact && e.path().is_file() {
+                artifacts.push(name);
+            }
+        }
+    }
+    artifacts.sort();
+    obj.raw("artifacts", &str_array(&artifacts));
     println!("{}", obj.finish());
     ExitCode::SUCCESS
 }
