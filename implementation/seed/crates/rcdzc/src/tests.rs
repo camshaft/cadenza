@@ -70557,6 +70557,80 @@ mod cross_component_oracle {
     }
 
     // ------------------------------------------------------------------------------------------------
+    // PL42 — a peer op's BYTES result escapes the entrypoint (the binary-result sibling of the String
+    // path). A Bytes result crosses via the SAME with-methods fused envelope as a String (both are the
+    // byte-leaf heap rep — `emit_runtime_bytes_resource` — carrying len/is-empty/to-bytes), but decodes to
+    // a DIFFERENT value form (`(: b"…" Bytes)` vs `(: "…" String)`). This is the shape a model op returning
+    // a binary blob (an embedding, an image) takes. Pins that the Bytes value form renders correctly
+    // through the fused peer envelope, catching a String-vs-Bytes rendering regression on the shared path.
+    // Provider: mk = String.to-bytes "hi"; main RETURNS it → escapes as (: b"hi" Bytes).
+    // ------------------------------------------------------------------------------------------------
+    #[test]
+    fn a_peer_bytes_result_escapes_the_entrypoint_via_the_fused_envelope() {
+        use crate::backend::wasm::runtime_abi::{REQUIRED_RUNTIME_HASH, RUNTIME_IFACE};
+        use crate::testkit::parse;
+        let import_name = format!("{RUNTIME_IFACE}@0.0.0+{REQUIRED_RUNTIME_HASH}");
+        // PROVIDER: mk(x) builds a runtime Bytes value ("hi" as bytes) — ignores x.
+        let provider = compile_provider(
+            "(do (def (mk (: _x Int64)) (String.to-bytes \"hi\")) (export mk))",
+            "cadenza:blob/api",
+        );
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&provider)
+                .expect("the bytes-result provider validates");
+        }
+        // main RETURNS the raw Bytes the peer produced → escapes via the with-methods bytes resource.
+        let src = "(do \
+            (effect M (op mk (-> Int64 Bytes))) \
+            (bind M \"cadenza:blob/api\") \
+            (def (main (: x Int64)) (host (M) (M.mk x))) \
+            (export main))";
+        let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .unwrap_or_else(|d| {
+                panic!(
+                    "fused peer-bytes-result consumer compiles: {} [{:?}]",
+                    d.message, d.code
+                )
+            });
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&consumer)
+                .expect("the fused peer+bytes-resource consumer validates");
+        }
+        assert!(
+            String::from_utf8_lossy(&consumer).contains("cadenza:blob/api")
+                && String::from_utf8_lossy(&consumer).contains(&import_name),
+            "the fused bytes-result consumer imports BOTH the peer interface and the runtime"
+        );
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("[PL42] runtime wasm not found; skipping");
+            return;
+        };
+        let peers = vec![cdz_run::Peer {
+            bytes: provider,
+            interface: "cadenza:blob/api".to_string(),
+        }];
+        let opts = cdz_run::RunOpts {
+            export: None,
+            args: vec!["1".to_string()],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run_with_peers(&consumer, &peers, &opts)
+            .expect("a peer Bytes result escapes the entrypoint via the fused envelope")
+        {
+            // The peer's Bytes ("hi") escaped as the Bytes value form — b"hi", NOT the String form "hi".
+            cdz_run::Outcome::Value(s) => assert_eq!(
+                s, "(: b\"hi\" Bytes)",
+                "the peer-produced Bytes escapes the entrypoint as a resource + decodes to its Bytes value form"
+            ),
+            cdz_run::Outcome::Trap(t) => panic!("fused peer-bytes-result run trapped: {t}"),
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------------
     // U17 — HANDLE PASS-THROUGH: peer A produces a compound, the consumer passes it DIRECTLY to peer B
     // WITHOUT inspecting it. Composes U16 (compound arg in) with U5 (compound result out) across TWO
     // boundary crossings in one body, exercising ownership-transfer-on-argument: the handle A mints flows
