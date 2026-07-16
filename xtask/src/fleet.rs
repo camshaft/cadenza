@@ -425,12 +425,14 @@ pub enum FleetCmd {
     /// tick; if that file is older than `min(--stale-mult × interval, --stale-cap)`, its loop is
     /// presumed dead and this nudges the window back to life (`tmux send-keys continue Enter` — makes
     /// the idle agent run its next tick; NOT a bare `/loop <interval>`, which the loop skill treats as
-    /// an empty-prompt no-op and never actually revives anything). ESCALATION: if an agent was ALREADY
-    /// re-armed once (past the grace window) and is STILL stale, a one-shot `continue` demonstrably
-    /// didn't establish a self-sustaining loop — the fresh-mint cold-start whose recurring cron never
-    /// armed (heartbeat stamped once, then frozen). So the second re-arm re-issues the FULL
-    /// `/loop <interval> <tick>` (with the same kickoff contract), which ARMS a cron instead of running
-    /// one inline tick — converting that stall from permanent to self-healing. The `--stale-cap` bound is what keeps a
+    /// an empty-prompt no-op and never actually revives anything). ESCALATION: if an agent was re-armed
+    /// and has NOT heartbeated since (a one-shot `continue` demonstrably didn't establish a self-
+    /// sustaining loop — the fresh-mint cold-start whose recurring cron never armed: heartbeat stamped
+    /// once, then frozen), the next re-arm re-issues the FULL `/loop <interval> <tick>` (same kickoff
+    /// contract), which ARMS a cron instead of running one inline tick — converting that stall from
+    /// permanent to self-healing. (Keyed on "heartbeat since the last re-arm", NOT "ever re-armed": the
+    /// rearm marker is never cleared, so an agent nudged once long ago that recovered still has it, and
+    /// must not be escalated on a later slow tick.) The `--stale-cap` bound is what keeps a
     /// long-interval agent (e.g. 30m) from getting an hour-long dead window. Skips: agents with no live
     /// tmux window, agents mid-tick ("esc to interrupt" — real work in flight, but ONLY trusted for an
     /// agent that has EVER stamped a heartbeat; a never-heartbeated agent past the cold-start window
@@ -1590,7 +1592,7 @@ fn watchdog(fleet: &Fleet, dry_run: bool, stale_mult: u32, stale_cap: u64, grace
         }
 
         if dry_run {
-            let how = match rearm_action(rearm_age_secs(fleet, &a.name, now).is_some()) {
+            let how = match rearm_action(rearm_age_secs(fleet, &a.name, now), hb_age) {
                 RearmAction::NudgeContinue => "nudge `continue`",
                 RearmAction::ReissueLoop => "re-issue `/loop` (prior nudge didn't stick)",
             };
@@ -1601,14 +1603,12 @@ fn watchdog(fleet: &Fleet, dry_run: bool, stale_mult: u32, stale_cap: u64, grace
             rearmed += 1;
             continue;
         }
-        // Choose the re-arm action. A cheap one-shot `continue` revives a loop whose recurring cron is
-        // intact but merely missed a tick. But a fresh mint whose cron NEVER armed (the residual
-        // cold-start stall: heartbeat stamped once at tick 1, then frozen — no recurring job) will tick
-        // ONCE on `continue` and stall right back. The tell: we ALREADY re-armed this agent and — by the
-        // grace check above — that nudge is past its grace window, yet it's STILL stale. So the one-shot
-        // demonstrably didn't establish a self-sustaining loop → escalate to re-issuing the full
-        // `/loop <interval> <tick>`, which ARMS a cron rather than running a single inline tick.
-        let action = rearm_action(rearm_age_secs(fleet, &a.name, now).is_some());
+        // Choose the re-arm action (see `rearm_action`): cheap `continue` for a loop that merely missed
+        // a tick; escalate to re-issuing `/loop` only when a prior nudge didn't stick — i.e. we re-armed
+        // this agent and it has NOT heartbeated since (the no-cron fresh-mint signature). Passing
+        // `hb_age` (not just "ever re-armed") avoids mis-escalating a healthy agent that was nudged once
+        // long ago, recovered, and is now merely slow — its rearm marker is never cleared.
+        let action = rearm_action(rearm_age_secs(fleet, &a.name, now), hb_age);
         let sent = match action {
             RearmAction::NudgeContinue => rearm_window(&session, &a.name, &a.interval),
             RearmAction::ReissueLoop => {
@@ -1836,17 +1836,32 @@ enum RearmAction {
     ReissueLoop,
 }
 
-/// Decide the re-arm action from whether we've re-armed this agent before. Pure so it's unit-tested.
+/// Decide the re-arm action from the re-arm and heartbeat ages (both "seconds ago"; larger = older;
+/// `None` = never). Pure so it's unit-tested.
 ///
-/// At the watchdog's re-arm point the anti-thrash grace check has already fired, so a recorded prior
-/// re-arm (`already_rearmed`) means: we nudged this agent, waited PAST the grace window, and it's STILL
-/// stale. A one-shot `continue` therefore did not establish a self-sustaining loop (the no-cron
-/// fresh-mint signature) → escalate to re-issuing `/loop`. A first-time re-arm gets the cheap nudge.
-fn rearm_action(already_rearmed: bool) -> RearmAction {
-    if already_rearmed {
-        RearmAction::ReissueLoop
-    } else {
-        RearmAction::NudgeContinue
+/// A cheap one-shot `continue` revives a loop whose cron is intact but merely missed a tick. Escalate
+/// to re-issuing `/loop` (which ARMS a cron) ONLY when a prior nudge demonstrably didn't stick — i.e.
+/// we re-armed this agent AND it has NOT heartbeated since (the no-cron fresh-mint signature: the
+/// nudge ran one inline tick, then nothing).
+///
+/// The discriminator is "heartbeat since the last re-arm", NOT merely "ever re-armed": the `rearm`
+/// marker is never cleared, so an agent nudged once long ago (that then recovered and looped healthily
+/// for days) still has the marker. Keying escalation on "ever re-armed" would wrongly re-issue `/loop`
+/// into that healthy agent the next time it has a slow tick. So a re-armed agent that DID heartbeat
+/// after the re-arm (`hb_age < rearm_age`) is treated as healthy-but-currently-stale → cheap nudge;
+/// escalate only when `hb_age >= rearm_age` (no tick since) or it never heartbeated at all.
+fn rearm_action(rearm_age: Option<u64>, hb_age: Option<u64>) -> RearmAction {
+    match rearm_age {
+        // Never re-armed → first-time nudge.
+        None => RearmAction::NudgeContinue,
+        Some(ra) => match hb_age {
+            // Heartbeated more recently than the re-arm ⟹ the nudge worked + it looped since; a fresh
+            // stall is a genuine new one → cheap nudge.
+            Some(hb) if hb < ra => RearmAction::NudgeContinue,
+            // No heartbeat since the re-arm (older-or-equal), or never heartbeated → nudge didn't
+            // stick → escalate to arm a cron.
+            _ => RearmAction::ReissueLoop,
+        },
     }
 }
 
@@ -2784,14 +2799,26 @@ mod tests {
     }
 
     #[test]
-    fn rearm_escalates_only_after_a_prior_nudge_failed() {
-        // First re-arm (never nudged before) → cheap one-shot `continue`. This is the common case for a
-        // mature agent whose cron is intact and merely missed a tick.
-        assert_eq!(rearm_action(false), RearmAction::NudgeContinue);
-        // Already re-armed once and — since we only reach this point PAST the anti-thrash grace window —
-        // still stale ⇒ the one-shot didn't establish a self-sustaining loop (fresh-mint no-cron
-        // signature) ⇒ escalate to re-issuing `/loop` to ARM a cron.
-        assert_eq!(rearm_action(true), RearmAction::ReissueLoop);
+    fn rearm_escalates_only_when_a_prior_nudge_didnt_stick() {
+        use RearmAction::*;
+        // (rearm_age, hb_age) — both "seconds ago", larger = older, None = never.
+
+        // Never re-armed → first-time cheap nudge, regardless of heartbeat state.
+        assert_eq!(rearm_action(None, Some(900)), NudgeContinue);
+        assert_eq!(rearm_action(None, None), NudgeContinue);
+
+        // Re-armed, and NO heartbeat since (hb older-or-equal than the re-arm) → the nudge didn't stick
+        // → escalate to arm a cron. (hb_age 900 ≥ rearm_age 300 ⟹ last tick predates the re-arm.)
+        assert_eq!(rearm_action(Some(300), Some(900)), ReissueLoop);
+        // Re-armed and NEVER heartbeated → definitely didn't stick → escalate.
+        assert_eq!(rearm_action(Some(300), None), ReissueLoop);
+        // Equal ages (can't prove a tick landed after) → escalate (conservative).
+        assert_eq!(rearm_action(Some(300), Some(300)), ReissueLoop);
+
+        // THE BUG THIS GUARDS: an agent re-armed long ago that RECOVERED and has heartbeated SINCE
+        // (hb_age 60 < rearm_age 3600) must get a cheap nudge on a fresh stall — NOT a `/loop` re-issue.
+        // The rearm marker is never cleared, so keying on "ever re-armed" would wrongly escalate here.
+        assert_eq!(rearm_action(Some(3600), Some(60)), NudgeContinue);
     }
 
     #[test]
