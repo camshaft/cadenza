@@ -151,8 +151,9 @@ jobs:
     # separate wasm test component from each `@test` def, run it under wasmtime, PASS if it returns /
     # FAIL if it traps). These are NOT corpus cases, so the `gate` job above does NOT cover them; without
     # this job a peer could break the CAD library or the compiler-ml port and CI would stay green.
-    #   • implementation/cad         — the Solid CSG model library (v-cad, GH #400)
+    #   • implementation/cad          — the Solid CSG model library (v-cad, GH #400)
     #   • implementation/compiler-ml  — the self-hosted compiler port (previously ungated in CI)
+    #   • implementation/agent-harness — the native agent loop written in Cadenza (v-agent-harness, Inc-2)
     # `cdz test` shells to a sibling `cdz-run` to execute each test and resolves the value-heap runtime
     # by content address from the store, so this job (like `gate`) builds the store first and puts
     # `cdz`+`cdz-run` in the same release dir. aarch64 for the same runtime-hash reason as `gate`.
@@ -172,6 +173,8 @@ jobs:
         run: ./target/release/cdz test implementation/cad
       - name: Run the compiler-ml @test suite
         run: ./target/release/cdz test implementation/compiler-ml
+      - name: Run the agent-harness @test suite
+        run: ./target/release/cdz test implementation/agent-harness
 
   cdz-cad:
     # The NATIVE CAD mesh driver crate (implementation/seed/crates/cdz-cad, GH #400 increment G2). It is
