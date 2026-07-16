@@ -712,6 +712,7 @@ pass	a float width outside the admitted set is rejected
 pass	a floating-point literal
 pass	a four-level nested-constructor pattern with a generic user sum in the middle matches
 pass	a fresh-id supply threads state across two sibling recursive calls in one arm
+pass	a fresh-id walk over a THREE-constructor sum threads state across mixed-arity arms
 pass	a function applied to an argument
 pass	a function argument is applied through a recursive higher-order function
 pass	a function binding the same parameter name twice is rejected
@@ -1264,8 +1265,6 @@ pass	a pattern that binds the same name across nested sub-patterns is rejected
 pass	a pattern that binds the same name twice is rejected
 pass	a payload-in-payload nested list pattern dispatches through two recorded types
 pass	a peephole rewrite rule reads in the shape of the code it rewrites
-pass	a peer op whose SUM RESULT escapes the entrypoint declines (the recursive-sum resource path)
-pass	a peer op whose compound RESULT escapes the entrypoint declines (resource-escape lacks the peer import)
 pass	a peer-bound operation cannot take or return a closure
 pass	a peer-bound operation takes a String argument (it crosses as a runtime handle)
 pass	a perform BETWEEN two sibling recursive calls threads the intervening state
@@ -1290,6 +1289,7 @@ pass	a plain record compared to a nominal record of the same shape is a type err
 pass	a plural family-unit spelling names the same unit as its singular
 pass	a positional tuple access out of the tuple's static arity is a type error
 pass	a post-order effectful walk draws each node's id AFTER both children (SSA reg-alloc shape)
+pass	a post-order labeling walk returns a labeled tree (heap result, id drawn after children)
 pass	a predicate closure returning Bool drives an early-exit recursive HOF
 pass	a prefix literal does not shadow a longer string arm
 pass	a prefixed quantity displays scaled to its reference unit (Float)
@@ -1437,11 +1437,15 @@ pass	a recursive user sum type is built at run time and renders its variant name
 pass	a recursive walk consulting a node's own and its child's String key computes correctly
 pass	a recursive walk threads THREE nested handlers' states at once
 pass	a recursive walk threads TWO effects at once — a fresh-index counter and a running total
+pass	a recursive-generic filter threading a predicate closure composes at two element types
 pass	a recursive-generic producer composes at two element types (the tied result var)
 pass	a recursive-generic producer wrapping elements in a user sum is consumed at one type
 pass	a recursive-generic producer's element is usable at each instantiation
 pass	a recursive-generic producer's result is consumed by an element-typed consumer
-pass	a recursive-generic transformer threading a closure declines pending the closure-domain tie
+pass	a recursive-generic transformer composes with itself
+pass	a recursive-generic transformer threading a closure composes at two element types
+pass	a recursive-generic transformer threading an IDENTITY closure declines pending the result tie
+pass	a recursive-generic transformer with an element-CHANGING closure ties domain to codomain
 pass	a recursive-sum payload projected more than once folds to a scalar
 pass	a recursively-built MULTI-PAYLOAD-variant list renders its spine FLAT
 pass	a recursively-built binary tree renders its full runtime structure
@@ -1484,11 +1488,13 @@ pass	a round-trip consumer that does NOT apply the closure on the taken branch
 pass	a run's result is a deterministic function of a host call's recorded response
 pass	a run-time-index String.at result compares equal to the same character as a literal
 pass	a run-time-index scalar read is present in bounds and absent out of bounds
+pass	a runtime BigInt absent from a Set is not found
 pass	a runtime BigInt accumulator threaded through recursion grows past Int64
 pass	a runtime BigInt comparison sees an intermediate that overflows Int64
 pass	a runtime BigInt divide crosses the host boundary as its truncated quotient
 pass	a runtime BigInt in an Option payload crosses the host boundary
 pass	a runtime BigInt intermediate that overflows Int64 does not trap
+pass	a runtime BigInt is found as a Set element by value
 pass	a runtime BigInt operation does not silently promote a fixed-width operand
 pass	a runtime BigInt ordering compares by the arbitrary-precision value
 pass	a runtime BigInt remainder takes the dividend's sign
@@ -1512,10 +1518,13 @@ pass	a runtime MIXED-SCALE Rational-magnitude sum converts to the reference EXAC
 pass	a runtime NaN equals a runtime NaN under the canonical byte form
 pass	a runtime NaN leaf in a tuple compares equal, a runtime -0.0 leaf stays distinct
 pass	a runtime Option carrying a user sum is matched by a nested constructor pattern
+pass	a runtime Rational MAP KEY is found by a normalized-equal key
 pass	a runtime Rational built from a parameter compares by its exact value
 pass	a runtime Rational comparison of a parameter is false when it should be
 pass	a runtime Result carrying a String error is matched
 pass	a runtime Result constructed from a condition selects its Ok or Err arm
+pass	a runtime String match and its (= s literal) if-chain agree on the DEFAULT fall-through arm
+pass	a runtime String match on a hit arm agrees with its desugared (= s literal) if-chain
 pass	a runtime Unit.in conversion emits the scale multiply (Int)
 pass	a runtime arithmetic right shift preserves the sign
 pass	a runtime bin match binds the tail after a fixed header via a final rest segment
@@ -2487,6 +2496,7 @@ pass	equality of an integer and a float is rejected, not silently promoted
 pass	equality of an integer and a string is a type error
 pass	equality of two records with different field sets is a type error
 pass	equality of two tuples of different arity is a type error
+pass	equality over a Rational carried in a SUM payload respects normalization
 pass	equality over a compound mixing a float and a Bytes leaf walks both
 pass	equality over a partly-un-built sum with a free Err type compiles on every backend
 pass	equality over a runtime float in a SUM payload compares by the float leaf
@@ -2763,6 +2773,7 @@ pass	raising a COMPUTED (derived) quantity to a power squares its magnitude and 
 pass	raising a quantity to a compile-time power composes the unit and the magnitude
 pass	raising a runtime computed quantity to a power squares the runtime magnitude
 pass	reaching an effect neither handled nor delegated is rejected at compile time
+pass	read classifies a lone punctuation token as an Ast.Name and it round-trips
 pass	read of text that is not a well-formed s-expression declines
 pass	read of text with trailing content after the first s-expression declines
 pass	read of the empty string declines
@@ -2983,7 +2994,9 @@ pass	the kernel's ASSUME rule yields the sequent {p} |- p
 pass	the kernel's BETA rule reduces an application of a lambda: (λv.body) arg = body[arg/v]
 pass	the kernel's DEDUCT_ANTISYM rule: from A |- p and B |- q derive (A-q)++(B-p) |- p=q
 pass	the kernel's EQ_MP rule: from |- p=q and G |- p derive G |- q (hypotheses unioned)
+pass	the kernel's GEN (∀-introduction) enforces its free-variable side-condition
 pass	the kernel's MK_COMB rule: equals applied to equals are equal — from f=g and x=y derive (f x)=(g y)
+pass	the kernel's SPEC (∀-elimination) instantiates the quantified body with the witness
 pass	the kernel's modus ponens (⇒-elimination): from ⊢ p⇒q and ⊢ p derive ⊢ q
 pass	the largest factorial that fits the integer type computes exactly
 pass	the le modifier encodes a u16 little-endian
@@ -3072,6 +3085,7 @@ pass	the width-indexed and aliased annotations of one value do not conflict
 pass	the width-indexed and aliased float annotations of one value do not conflict
 pass	the wrapping additive and multiplicative identities preserve a boundary operand exactly
 pass	the λ-extended kernel Thm stays unforgeable — Thm.Seq with an Abs term outside is CDZ0214
+pass	the ∀-extended kernel Thm stays unforgeable — Thm.Seq of a bogus universal outside is CDZ0214
 pass	three closures with a SHARED signature cross as two resource types
 pass	three distinct closure signatures cross as three resource types
 pass	three leaf variants in one quoted form each dispatch their own tag

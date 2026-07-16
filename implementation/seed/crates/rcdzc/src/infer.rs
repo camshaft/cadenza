@@ -2288,6 +2288,32 @@ fn solve_recursive_params(db: &mut Db, def: usize) {
         .map(|b| generic_param_positions(db, def, b, &body_solved))
         .unwrap_or_default();
 
+    // CROSS-PARAM SEED UNIFY: before grounding each parameter in isolation, unify every NON-generic
+    // parameter's call-site argument type into the SHARED `subst`. A type variable the body SHARES across
+    // two parameters — `(gmap it f)` with `(match it … ((Iter.Cons h rest) (Iter.Cons (f h) …)))` solves
+    // `it : Iter ?e` and `f : (-> ?e ?r)`, the SAME `?e` — must be pinned CONSISTENTLY: the single call
+    // `(gmap (Iter.Cons 1 …) (fn (x) x))` fixes `it`'s element `?e = Int64` from its argument, and that
+    // must flow to `f`'s DOMAIN too. The per-param `fill_holes` below operates on each param's value in
+    // isolation, so it pinned `it`'s `?e` to Int64 while `f`'s `?e` stayed a free var → the emitted scheme
+    // was `(-> (Iter Int64) (-> (-> _ _) …))` (domain disconnected from the element) and monomorphization
+    // declined CDZ0201 even at a single element type (the recursive-transformer closure-tie gap). Unifying
+    // the call-seed into `subst` FIRST pins the shared var once, so both params read it. Only a DETERMINED
+    // seed (not `Any`/`Var`) for a NON-generic position unifies; a generic position is left for per-call
+    // monomorphization (its var must stay quantified). Unify is order-independent and only ADDS bindings a
+    // hole would otherwise take from `fill_holes`, so a program that already solved is unaffected.
+    for (i, (_, var)) in param_binders.iter().enumerate() {
+        if generic_positions.contains(&i) {
+            continue;
+        }
+        let cur = subst.apply(var);
+        if (cur.has_free_var() || cur.has_any())
+            && let Some(Some(at)) = call_seed_arg_tys.get(i)
+            && !matches!(at, Ty::Any | Ty::Var(_))
+        {
+            let _ = crate::unify::unify(&mut subst, &cur, at);
+        }
+    }
+
     // Ground each parameter: apply the substitution, FILL any remaining hole (`Any`/free `Var`) from the
     // call-site argument type — a plain unify cannot repair an `Any` (`Any` absorbs), so `fill_holes`
     // merges the determined call-site type into the open positions while keeping the body-pinned parts —

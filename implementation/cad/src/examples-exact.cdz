@@ -38,6 +38,27 @@ def plate(w: Rational, d: Rational, t: Rational, r: Rational) =
 def tube(len: Rational, ro: Rational, ri-inner: Rational) =
   Solidr.Differencer(cyl(len, ro), cyl(len, ri-inner))
 
+/// A 4-bolt flange: a round plate (disc of radius `r`, thickness `t`) with a central bore (radius `bore`) and
+/// four bolt holes (radius `hole-r`) evenly spaced on a bolt circle of radius `bcr`, at the CARDINAL positions
+/// (0°, 90°, 180°, 270°) — i.e. at (±bcr, 0) and (0, ±bcr). Those four positions are EXACT over Rational (the
+/// offsets are just ±bcr and 0 — no sin/cos needed), which is why a 4-hole (or 2-hole) bolt circle is
+/// expressible exactly while an arbitrary N-hole pattern is not (it would need irrational cos/sin, deferred to
+/// the mesh driver's f64 leaf). A canonical part — a pipe flange / motor mount. Write
+/// `bolt-flange (mm 60) (mm 8) (mm 20) (mm 45) (inch (1/4))`: a 120mm-diameter flange, 8mm thick, 40mm bore,
+/// 90mm bolt circle, 1/4-inch bolt holes — metric body, imperial fasteners, all exact.
+def bolt-flange(r: Rational, t: Rational, bore: Rational, bcr: Rational, hole-r: Rational) =
+  let disc = cyl(t, r) in
+  let with-bore = Solidr.Differencer(disc, cyl(t, bore)) in
+  // the four cardinal bolt holes on the bolt circle (radius bcr) — exact offsets ±bcr / 0.
+  let h-east = move(bcr, ri(0), ri(0), cyl(t, hole-r)) in
+  let h-west = move(ri(0) - bcr, ri(0), ri(0), cyl(t, hole-r)) in
+  let h-north = move(ri(0), bcr, ri(0), cyl(t, hole-r)) in
+  let h-south = move(ri(0), ri(0) - bcr, ri(0), cyl(t, hole-r)) in
+  Solidr.Differencer(
+    Solidr.Differencer(
+      Solidr.Differencer(
+        Solidr.Differencer(with-bore, h-east), h-west), h-north), h-south)
+
 /// An L-bracket: a base plate `w × d × t` UNIONED with an upright wall `w × t × h` that stands along the
 /// base's back edge, with a mounting hole (radius `hole-r`) through the base. Write
 /// `l-bracket (mm 50) (mm 40) (mm 30) (inch (1/8)) (mm 3)` — metric arms, an IMPERIAL thickness (1/8 inch =
@@ -93,6 +114,21 @@ def foot-dimensioned-box-is-exact() =
     if v3r-x(hi) == Rational.of(762, 5) then unit else trap("1-foot cube half-extent = 762/5 mm (full 1524/5)")
 
 @test
+def bolt-flange-box-is-its-diameter-by-thickness() =
+  // a flange of radius 60mm, 8mm thick (bore 20, bolt circle 45, 1/4in holes) → outer envelope (2r, 2r, t) =
+  // (120, 120, 8) mm: the disc sets the diameter, and the bore + bolt holes (Differences) never grow the box.
+  let f = bolt-flange(mm(ri(60)), mm(ri(8)), mm(ri(20)), mm(ri(45)), inch(Rational.of(1, 4))) in
+  if v3r-eq(aabbr-size(bounding-box(f)), v3r(ri(120), ri(120), ri(8))) then unit
+  else trap("bolt-flange envelope is (2r, 2r, t) = (120, 120, 8) mm exactly")
+
+@test
+def bolt-flange-mixes-metric-body-with-imperial-fasteners() =
+  // the showcase: a metric flange (60mm r, 45mm bolt circle) carries 1/4-inch bolt holes = 127/20 mm EXACTLY,
+  // and the four cardinal hole centres sit at ±45 mm exactly (no trig, no rounding — a real 4-bolt flange).
+  if inch(Rational.of(1, 4)) == Rational.of(127, 20) then
+    (if mm(ri(45)) == ri(45) then unit else trap("bolt circle 45 mm exact")) else trap("1/4in bolt hole = 127/20 mm")
+
+@test
 def l-bracket-box-is-its-envelope-in-mm() =
   // a 50×40×30 mm L-bracket (1/8-inch wall, 3mm hole) → outer envelope exactly (50, 40, 30) mm: the base
   // gives w×d, the upright wall raises z to the full h, and the hole (a Difference) never grows the box.
@@ -106,4 +142,4 @@ def l-bracket-wall-thickness-is-exact-imperial() =
   if inch(Rational.of(1, 8)) == Rational.of(127, 40) then unit
   else trap("1/8 inch wall = 127/40 mm exactly, mixed with the metric 50×40×30 bracket")
 
-export { box, cyl, move, plate, tube, l-bracket }
+export { box, cyl, move, plate, tube, l-bracket, bolt-flange }

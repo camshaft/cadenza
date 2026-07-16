@@ -6846,9 +6846,58 @@ fn emit_runtime_sum_resource(
         })
         .collect::<Result<_, _>>()?;
 
-    // Same index-space shift as the flat runtime resource: `k` ops + `resource-new` + `resource-rep`.
+    // PEER-IN-RESOURCE-ESCAPE (task #6, increment 2 — the non-recursive SUM path, e.g. an Option result).
+    // Same fusion as the flat/recursive-sum paths.
+    let mut host_imports: Vec<host::HostImport> = Vec::new();
+    for &def in &layout.order {
+        let body = def_body(db, def)?;
+        host::collect_host_imports(db, body, &mut host_imports);
+    }
+    let mut extern_imports: Vec<host::ExternImport> = Vec::new();
+    if !db.effect_bindings.is_empty() {
+        let bindings = db.effect_bindings.clone();
+        host_imports.retain(|h| {
+            if let Some(iface) = bindings.get(&h.effect) {
+                extern_imports.push(host::ExternImport {
+                    interface: iface.clone(),
+                    op: h.op.clone(),
+                    params: h.params.iter().filter_map(host_param_abi).collect(),
+                    result: h.result,
+                });
+                false
+            } else {
+                true
+            }
+        });
+    }
+    if !host_imports.is_empty() {
+        return Err(Reject::decline(
+            "a host-delegated effect in an entrypoint whose result escapes as a runtime resource is not \
+             yet emitted (only a peer-bound effect is); consume the host op's result into a scalar the \
+             entrypoint returns",
+        ));
+    }
+    let peer_ifaces: std::collections::BTreeSet<&str> = extern_imports
+        .iter()
+        .map(|e| e.interface.as_str())
+        .collect();
+    if peer_ifaces.len() > 1 {
+        return Err(Reject::decline(
+            "a resource-escaping entrypoint reaching TWO distinct peer interfaces is not yet emitted \
+             (the fused resource envelope supports a single peer interface)",
+        ));
+    }
+    let p = extern_imports.len() as u32;
+    let extern_order: Vec<(String, String)> = extern_imports
+        .iter()
+        .map(|e| (e.interface.clone(), e.op.clone()))
+        .collect();
+
+    // Same index-space shift as the flat runtime resource, plus the `p` peer ops: `import_base = p+k+2`.
     let k = imports.len() as u32;
-    let layout = layout.with_import_base(k + 2);
+    let layout = layout
+        .with_import_base(p + k + 2)
+        .with_extern_order(extern_order);
     let layout = &layout;
 
     let mut funcs: Vec<SelectedFunc> = Vec::new();
@@ -6871,11 +6920,13 @@ fn emit_runtime_sum_resource(
         .map(|_| serialize::MakeCoreSlot::Scalar)
         .collect();
 
-    let mut main_core = serialize::runtime_resource_core_module_form(
+    let mut main_core = serialize::runtime_resource_core_module_form_ex2(
         &funcs,
         &imports,
+        &extern_imports,
         export_abs,
         serialize::EscapeForm::Sum(tpl),
+        &[],
         &make_param_vts,
         &make_core_slots,
     )
@@ -6890,11 +6941,31 @@ fn emit_runtime_sum_resource(
         .iter()
         .map(|&b| envelope::ArgSlot::Scalar(b))
         .collect();
-    Ok(envelope::assemble_runtime_resource(
+    if extern_imports.is_empty() {
+        return Ok(envelope::assemble_runtime_resource(
+            &main_core,
+            &dtor_core,
+            &imports,
+            &import_name,
+            &make_slots,
+        ));
+    }
+    let peer_iface = extern_imports[0].interface.clone();
+    let peer_fns: Vec<envelope::HostFn> = extern_imports
+        .iter()
+        .map(|e| envelope::HostFn {
+            op: e.op.clone(),
+            comp_functype: extern_op_comp_functype(e),
+            core_functype: Vec::new(),
+        })
+        .collect();
+    Ok(envelope::assemble_extern_runtime_resource(
         &main_core,
         &dtor_core,
         &imports,
         &import_name,
+        &peer_fns,
+        &peer_iface,
         &make_slots,
     ))
 }
@@ -6949,8 +7020,58 @@ fn emit_recursive_sum_resource(
         })
         .collect::<Result<_, _>>()?;
 
+    // PEER-IN-RESOURCE-ESCAPE (task #6, increment 2 — the recursive-sum / List/Map/Set path). Same fusion
+    // as `emit_runtime_resource`: split peer-bound imports, thread `extern_order` + `import_base = p+k+2`,
+    // and dispatch to the fused assembler when a peer op is reached in a body whose result escapes here.
+    let mut host_imports: Vec<host::HostImport> = Vec::new();
+    for &def in &layout.order {
+        let body = def_body(db, def)?;
+        host::collect_host_imports(db, body, &mut host_imports);
+    }
+    let mut extern_imports: Vec<host::ExternImport> = Vec::new();
+    if !db.effect_bindings.is_empty() {
+        let bindings = db.effect_bindings.clone();
+        host_imports.retain(|h| {
+            if let Some(iface) = bindings.get(&h.effect) {
+                extern_imports.push(host::ExternImport {
+                    interface: iface.clone(),
+                    op: h.op.clone(),
+                    params: h.params.iter().filter_map(host_param_abi).collect(),
+                    result: h.result,
+                });
+                false
+            } else {
+                true
+            }
+        });
+    }
+    if !host_imports.is_empty() {
+        return Err(Reject::decline(
+            "a host-delegated effect in an entrypoint whose result escapes as a runtime resource is not \
+             yet emitted (only a peer-bound effect is); consume the host op's result into a scalar the \
+             entrypoint returns",
+        ));
+    }
+    let peer_ifaces: std::collections::BTreeSet<&str> = extern_imports
+        .iter()
+        .map(|e| e.interface.as_str())
+        .collect();
+    if peer_ifaces.len() > 1 {
+        return Err(Reject::decline(
+            "a resource-escaping entrypoint reaching TWO distinct peer interfaces is not yet emitted \
+             (the fused resource envelope supports a single peer interface)",
+        ));
+    }
+    let p = extern_imports.len() as u32;
+    let extern_order: Vec<(String, String)> = extern_imports
+        .iter()
+        .map(|e| (e.interface.clone(), e.op.clone()))
+        .collect();
+
     let k = imports.len() as u32;
-    let layout = layout.with_import_base(k + 2);
+    let layout = layout
+        .with_import_base(p + k + 2)
+        .with_extern_order(extern_order);
     let layout = &layout;
 
     let mut funcs: Vec<SelectedFunc> = Vec::new();
@@ -6966,11 +7087,13 @@ fn emit_recursive_sum_resource(
         Reject::decline("the escaping recursive-sum export is not in the emission order")
     })?;
 
-    let mut main_core = serialize::runtime_resource_core_module_form(
+    let mut main_core = serialize::runtime_resource_core_module_form_ex2(
         &funcs,
         &imports,
+        &extern_imports,
         export_abs,
         serialize::EscapeForm::RecursiveSum(descriptor),
+        &[],
         &make_params.leaf_vts,
         &make_params.core_slots(),
     )
@@ -6978,11 +7101,31 @@ fn emit_recursive_sum_resource(
     append_debug_sections(db, layout, &funcs, &imports, spans, &mut main_core);
     let dtor_core = serialize::resource_dtor_module_with_drop();
     let import_name = runtime_import_name();
-    Ok(envelope::assemble_runtime_resource(
+    if extern_imports.is_empty() {
+        return Ok(envelope::assemble_runtime_resource(
+            &main_core,
+            &dtor_core,
+            &imports,
+            &import_name,
+            &make_params.boundary_slots(),
+        ));
+    }
+    let peer_iface = extern_imports[0].interface.clone();
+    let peer_fns: Vec<envelope::HostFn> = extern_imports
+        .iter()
+        .map(|e| envelope::HostFn {
+            op: e.op.clone(),
+            comp_functype: extern_op_comp_functype(e),
+            core_functype: Vec::new(),
+        })
+        .collect();
+    Ok(envelope::assemble_extern_runtime_resource(
         &main_core,
         &dtor_core,
         &imports,
         &import_name,
+        &peer_fns,
+        &peer_iface,
         &make_params.boundary_slots(),
     ))
 }

@@ -16,3 +16,11 @@
   (def (build (: i Int64) (: n Int64) (: m (Map Int64 Int64))) (if (< i n) (build (+ i 1) n (Map.insert m i i)) m))
   (def (main (: n Int64)) (Map.len (build 0 n (map))))
   (export main))
+
+--- RESOLVED (already landed): the fix is ON TRUNK ---
+v-memory-safety closed the whole owned-temporary borrowing-op leak family end-to-end (ticks 27-29):
+MapSize/SetLen + List.at/Bytes.at + Set.contains/Map.lookup collection-operand reclaim, all gated on
+heap_operand_ownership==Owned (mirroring the ListLen precedent). Verify: select.rs map_owned/set_owned
+gates, corpus 'owned-temporary' pins (05-compound, 19-sets), units set_contains_and_map_lookup_over_an_
+owned_temporary_reclaim_the_collection + map_len_and_set_len_over_an_owned_temporary_reclaim_it. This
+.sexp was filed pre-fix and is stale. No work remaining.
