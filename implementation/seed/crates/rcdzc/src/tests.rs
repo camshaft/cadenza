@@ -70367,6 +70367,81 @@ mod cross_component_oracle {
     }
 
     // ------------------------------------------------------------------------------------------------
+    // PL40 — CHAINED peer String ops: the result of one peer op feeds as the String ARG of a SECOND op on
+    // the SAME interface, and the second op's String result escapes the entrypoint. The agentic-pipeline
+    // shape `tag(converse(prompt))` — a String flows peer→consumer→peer→escape, exercising a String value
+    // that is BOTH a peer result (handle out) AND a peer argument (handle in) in one body, then a
+    // resource escape. Composes PL39 (arg + result-escape) with the String-as-both-directions data flow.
+    // Provider: converse doubles, tag prefixes "T:". main = tag(converse("hi")) = tag("hihi") = "T:hihi".
+    // ------------------------------------------------------------------------------------------------
+    #[test]
+    fn chained_peer_string_ops_flow_result_into_arg_then_escape() {
+        use crate::backend::wasm::runtime_abi::{REQUIRED_RUNTIME_HASH, RUNTIME_IFACE};
+        use crate::testkit::parse;
+        let import_name = format!("{RUNTIME_IFACE}@0.0.0+{REQUIRED_RUNTIME_HASH}");
+        // PROVIDER: TWO String ops on one interface — converse doubles the prompt, tag prefixes "T:".
+        let provider = compile_provider(
+            "(do (def (converse (: p String)) (String.concat p p)) \
+                 (def (tag (: s String)) (String.concat \"T:\" s)) \
+                 (export converse) (export tag))",
+            "cadenza:model/api",
+        );
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&provider)
+                .expect("the two-op string provider validates");
+        }
+        // main chains them: converse's String result feeds tag's String arg; tag's result escapes.
+        let src = "(do \
+            (effect M (op converse (-> String String)) (op tag (-> String String))) \
+            (bind M \"cadenza:model/api\") \
+            (def (main) (host (M) (M.tag (M.converse \"hi\")))) \
+            (export main))";
+        let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .unwrap_or_else(|d| {
+                panic!(
+                    "chained-peer-string consumer compiles: {} [{:?}]",
+                    d.message, d.code
+                )
+            });
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&consumer)
+                .expect("the chained-peer-string consumer validates");
+        }
+        assert!(
+            String::from_utf8_lossy(&consumer).contains(&import_name),
+            "the chained consumer imports the value-heap runtime (String handles flow through it)"
+        );
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("[PL40] runtime wasm not found; skipping");
+            return;
+        };
+        let peers = vec![cdz_run::Peer {
+            bytes: provider,
+            interface: "cadenza:model/api".to_string(),
+        }];
+        let opts = cdz_run::RunOpts {
+            export: None,
+            args: Vec::new(),
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run_with_peers(&consumer, &peers, &opts)
+            .expect("chained peer string ops flow result into arg then escape")
+        {
+            // converse("hi") = "hihi"; tag("hihi") = "T:hihi"; main RETURNS it → escapes as its value form.
+            // A String crossed peer→consumer (result handle) then consumer→peer (arg handle) then escaped.
+            cdz_run::Outcome::Value(s) => assert_eq!(
+                s, "(: \"T:hihi\" String)",
+                "a String result of one peer op feeds the arg of a second, and the second's result escapes"
+            ),
+            cdz_run::Outcome::Trap(t) => panic!("chained-peer-string run trapped: {t}"),
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------------
     // U17 — HANDLE PASS-THROUGH: peer A produces a compound, the consumer passes it DIRECTLY to peer B
     // WITHOUT inspecting it. Composes U16 (compound arg in) with U5 (compound result out) across TWO
     // boundary crossings in one body, exercising ownership-transfer-on-argument: the handle A mints flows
