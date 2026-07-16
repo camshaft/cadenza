@@ -26247,6 +26247,36 @@ mod match_engine {
             "49",
             "runtime bit-field run then an int segment: (3<<4)|1 = 0x31 = 49"
         );
+        // A runtime `(bin …)` result IS a Bytes value (16-binary-matching: "`(bin …)` CONSTRUCTS a Bytes
+        // value"), so it must be `=`-comparable like any Bytes — `Core::BinBuild`/`BinBitsBuild` build a
+        // FRESH owned Bytes on the rope heap exactly as `Core::BytesOf` does. Before, a runtime bin result
+        // as a `value-eq` operand fell to the "ownership this backend cannot yet prove" decline (its Core
+        // node was absent from `heap_operand_ownership`'s Owned list), so `(= (bin …) b"…")` DECLINED even
+        // though a runtime `Bytes.of` of the same content compared fine. These pin it compares by content.
+        assert_eq!(
+            val(
+                "(module m (def (main (: v Int64)) (if (= (bin (u8 ((. UInt8 wrap) v))) ((. Bytes of) (list 5))) 1 0)) (export main))",
+                &["5"]
+            ),
+            "1",
+            "a runtime (bin (u8 …)) result compares equal to the Bytes it builds (BinBuild is Owned)"
+        );
+        assert_eq!(
+            val(
+                "(module m (def (main (: v Int64)) (if (= (bin (u8 ((. UInt8 wrap) v))) ((. Bytes of) (list 5))) 1 0)) (export main))",
+                &["9"]
+            ),
+            "0",
+            "a runtime bin result unequal to different content is false (genuine content compare)"
+        );
+        assert_eq!(
+            val(
+                "(module m (def (main (: v Int64)) (if (= (bin (bits ((. UInt8 wrap) v) 8)) ((. Bytes of) (list 5))) 1 0)) (export main))",
+                &["5"]
+            ),
+            "1",
+            "a runtime bit-field (bin (bits …)) result compares equal too (BinBitsBuild is Owned)"
+        );
     }
 
     #[test]

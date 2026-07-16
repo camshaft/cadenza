@@ -684,6 +684,53 @@
   (call   main (: 258 Int64))
   (output (: 1 Int64)))
 
+; A runtime `(bin …)` construction result IS a Bytes value (this file's opening: "expression position
+; `(bin …)` CONSTRUCTS a Bytes value"), so it must be `=`-comparable like any Bytes. It builds a FRESH
+; owned Bytes on the rope heap — exactly as `Bytes.of` does — so as an operand of the borrowing `=` it is
+; owned and reclaimed after the compare. A runtime bin result compared against the Bytes it builds is true;
+; against different content, false. The runtime `Bytes.of` control (same content, runtime) and the CONSTANT
+; bin control (folds to a comparable Bytes) both already compare — these pin the RUNTIME bin result joins
+; them. (The wasm backend runs these; the RUST backend does not yet render a runtime `(bin …)` value at all
+; — a broader rust gap — so on rust they decline, exactly as the runtime bin-MATCH cases below do.)
+
+(case "a runtime bin construction result compares equal to the Bytes it builds"
+  (doc    "`(= (bin (u8 (UInt8.wrap v))) (Bytes.of (list 5)))` with v=5: the runtime bin builds the one-byte
+           Bytes 0x05, equal to `(Bytes.of (list 5))` → true. A runtime `(bin …)` result is a Bytes value
+           (this file's opening), so it is `=`-comparable like any Bytes — it builds a fresh owned Bytes on
+           the rope heap exactly as `Bytes.of` does. Before, the runtime bin result as a `value-eq` operand
+           was not recognized as an owned heap producer, so `=` DECLINED (an aliasing-can't-prove reject,
+           not a miscompile) though a runtime `Bytes.of` of the same content compared fine. Pins the runtime
+           bin result compares by content.")
+  (input  (do (def (main (: v Int64)) (= (bin (u8 (UInt8.wrap v))) (Bytes.of (list 5)))) (export main)))
+  (call   main (: 5 Int64))
+  (output (: true Bool)))
+
+(case "a runtime bin construction result unequal to different content is false"
+  (doc    "The discriminator: the same `(= (bin (u8 (UInt8.wrap v))) (Bytes.of (list 5)))` with v=9 builds
+           the byte 0x09 ≠ 0x05 → false. Pins the runtime bin `=` is a genuine content compare, not a
+           blanket true — the companion of the equal case.")
+  (input  (do (def (main (: v Int64)) (= (bin (u8 (UInt8.wrap v))) (Bytes.of (list 5)))) (export main)))
+  (call   main (: 9 Int64))
+  (output (: false Bool)))
+
+(case "an explicit Bytes annotation on a runtime bin result compares the same"
+  (doc    "The annotated form: `(= (: (bin (u8 (UInt8.wrap v))) Bytes) (Bytes.of (list 5)))` with v=5 → true.
+           The annotation asserts the runtime bin's Bytes type explicitly; it compares exactly as the
+           unannotated case. Pins the gap was never type inference failing to see it as Bytes (the annotation
+           confirms Bytes) — the `=` lowering simply had to recognize the runtime bin result as an owned
+           Bytes producer, which it now does.")
+  (input  (do (def (main (: v Int64)) (= (: (bin (u8 (UInt8.wrap v))) Bytes) (Bytes.of (list 5)))) (export main)))
+  (call   main (: 5 Int64))
+  (output (: true Bool)))
+
+(case "a runtime Bytes.of value is equality-comparable (the runtime-Bytes control)"
+  (doc    "The control that always worked: `(= (Bytes.of (list (UInt8.wrap v))) (Bytes.of (list 5)))` with
+           v=5 → true. Runtime `Bytes.of` `=` is fine; pins the runtime bin case joins it (the gap was
+           specific to the runtime `bin` construction result, not runtime Bytes equality in general).")
+  (input  (do (def (main (: v Int64)) (= (Bytes.of (list (UInt8.wrap v))) (Bytes.of (list 5)))) (export main)))
+  (call   main (: 5 Int64))
+  (output (: true Bool)))
+
 (case "a runtime bin pattern decodes a fixed-width segment from a runtime scrutinee"
   (doc    "A `(bin …)` pattern matches a RUNTIME Bytes scrutinee: `(bin (u16 n))` is built from a runtime
            `UInt16` parameter, then matched back with `(bin (u16 m))`, binding `m = n = 258`. The decode
