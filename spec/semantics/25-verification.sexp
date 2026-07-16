@@ -2918,3 +2918,52 @@
                 (Term.Exists 0 (Term.Conj (Term.Comb (Term.Const 0) (Term.Var 0)) (Term.Neg (Term.Comb (Term.Const 1) (Term.Var 0)))))))
             (export main)))
   (error  CDZ0214))
+; Increment 18 — TRANSITIVE import chains: the kernel's unforgeability + usability hold across the
+; realistic deployment structure kernel ← library ← application (not just a single importer). A library
+; re-exports the kernel's Thm HANDLE + wrapper rules/accessors; an app imports the library. These cases pin
+; that (a) the app can OBTAIN and INSPECT a Thm through the library's re-exported kernel functions, and
+; (b) the app CANNOT forge a Thm — reaching the kernel's private constructor from the app is rejected. NB
+; the transitive forge is CDZ0101 (unbound), not CDZ0214 (withheld): the library never had the constructor
+; in scope to re-export, so at the app the name is genuinely unbound rather than visible-but-withheld. Both
+; are SOUND rejections (no Thm is forged); the pin guards that opacity composes through a re-export layer.
+; ============================================================================================
+
+(case "a transitive import (app <- lib <- kernel) can use a theorem through re-exported kernel functions"
+  (doc    "The realistic deployment: a kernel `hol`, a library `lib` that imports it and re-exports the Thm
+           handle + wrapper functions (mk2 building via the kernel's refl, concl re-exported), and an app
+           that imports only `lib`. The app obtains a Thm via mk2 and reads it via concl — `(concl (mk2 42))`
+           = 42 — never touching the kernel directly. Pins that a Thm composes through a re-export layer:
+           the library mediates the kernel, and the app uses theorems through the library's surface.")
+  (module "hol"
+    (do (type Thm (MkThm Int64))
+        (def (refl (: x Int64)) (Thm.MkThm x))
+        (def (concl (: t Thm)) (match t ((Thm.MkThm c) c)))
+        (export Thm) (export refl) (export concl)))
+  (module "lib"
+    (do (import "hol" (Thm refl concl))
+        (def (mk2 (: n Int64)) (refl n))
+        (export Thm) (export mk2) (export concl)))
+  (input  (do
+            (import "lib" (Thm mk2 concl))
+            (def (main) (concl (mk2 42)))
+            (export main)))
+  (output (: 42 Int64)))
+
+(case "a transitive import cannot forge a theorem — the kernel's private constructor is unreachable from the app"
+  (doc    "Unforgeability composes through the re-export layer. The app imports `lib` (which imports the
+           kernel `hol` and re-exports the Thm HANDLE but not its constructor MkThm — a library never gets a
+           withheld constructor to re-export). The app tries `(Thm.MkThm 99)` to fabricate a theorem →
+           rejected. NB the code here is CDZ0101 (unbound name), NOT CDZ0214 (withheld): at the app the
+           constructor is genuinely not in scope at all (the library never had it), so it is an ordinary
+           unbound-name rejection rather than the visible-but-withheld one a direct kernel importer gets.
+           Either way NO Thm is forged — the pin guards that a transitive importer, the normal app position
+           in a kernel←lib←app deployment, still cannot mint a theorem outside the kernel's rules.")
+  (module "hol"
+    (do (type Thm (MkThm Int64)) (def (refl (: x Int64)) (Thm.MkThm x)) (export Thm) (export refl)))
+  (module "lib"
+    (do (import "hol" (Thm refl)) (def (mk2 (: n Int64)) (refl n)) (export Thm) (export mk2)))
+  (input  (do
+            (import "lib" (Thm mk2))
+            (def (main) (Thm.MkThm 99))
+            (export main)))
+  (error  CDZ0101))
