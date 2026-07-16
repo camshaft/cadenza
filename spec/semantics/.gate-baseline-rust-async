@@ -478,6 +478,7 @@ pass	a failure `?` propagates through TWO nested fallible boundaries
 pass	a failure `?` short-circuits BEFORE later computation runs
 pass	a fallible parser threads a Result((value,cursor),String) through mutual recursion, short-circuiting on Err
 pass	a false variant guard shields its arm's trapping body
+pass	a family quantity displays scaled exactly to its reference (Rational)
 pass	a family quantity displays scaled to its reference over Int64, truncating a non-whole ratio
 pass	a far-miss segment kind keeps the plain unrecognized message
 pass	a field is projected from a record chosen across a call boundary by a runtime conditional
@@ -3152,7 +3153,6 @@ todo	a distinct-signature round-trip applies the Int64->Bool closure
 todo	a distinct-signature round-trip applies the Int64->Int64 closure
 todo	a distinct-signature round-trip's Bool closure on a nonzero input
 todo	a doubly-call-returned narrow newtype spills correctly through two calls
-todo	a family quantity displays scaled exactly to its reference (Rational)
 todo	a fixed-shape Tuple ARG with a Bytes RESULT crosses the direct-call boundary
 todo	a fixed-shape Tuple ARG with a List RESULT crosses the direct-call boundary
 todo	a fixed-shape Tuple ARG with a Map RESULT crosses the direct-call boundary

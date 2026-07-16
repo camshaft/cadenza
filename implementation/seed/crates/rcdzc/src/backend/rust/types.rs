@@ -401,12 +401,16 @@ fn int_type(it: IntTy) -> Option<&'static str> {
 
 /// Whether a NON-scale-1 quantity over inner type `inner` can DISPLAY-SCALE its magnitude on the Rust
 /// backend. The display multiplies the stored magnitude by the unit's `num/den` scale in the inner numeric
-/// type; supported for a FLOAT (`× num/den` as f64, rounds) or a fixed-width INT (`× num / den`, truncates)
-/// — the harness scales the boundary value directly. A RATIONAL/BigInt needs EXACT rational scaling
-/// (`5 mile` → `201168/25 meter`, no rounding), which is a later increment, so it still declines. Mirrors
-/// the wasm `const_value_ast_scaled` per-inner-type rule, restricted to the two arithmetic-simple inners.
+/// type; the harness scales the boundary value directly:
+///   - FLOAT — `× num/den` as f64 (IEEE rounds),
+///   - fixed-width INT — `× num / den` (truncates toward zero),
+///   - RATIONAL — EXACT: multiply by the scale as a `Rational` `num/den` (`Rational::mul` normalizes, no
+///     rounding — `5 mile` → `201168/25 meter`).
+///
+/// A BigInt still declines (an integer scaled by a non-integer ratio is not a BigInt — it would need a
+/// Rational result the type doesn't allow; no corpus case exercises it). Mirrors wasm `const_value_ast_scaled`.
 pub(super) fn qty_scale_supported(inner: &Ty) -> bool {
-    matches!(inner, Ty::Int(_) | Ty::Float(_))
+    matches!(inner, Ty::Int(_) | Ty::Float(_) | Ty::Rational)
 }
 
 /// Whether an integer type is SIGNED — a fixed unsigned sign is `false`; a fixed signed, or a
