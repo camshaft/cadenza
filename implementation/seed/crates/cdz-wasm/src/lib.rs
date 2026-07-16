@@ -323,6 +323,117 @@ pub fn compile(text: &str, from: &str) -> Result<CompileResult, JsError> {
     })
 }
 
+/// The result of a TEST compile: the component (its boundary laid out from the program's `@test` defs, not
+/// its `(export …)` clauses), the diagnostics, and the names of the discovered `@test` defs. Each name is
+/// an invocable boundary export in `component`; the browser test-runner calls each and reports pass/fail
+/// (a clean return = pass, a trap = fail). `nullary_test_names` is the subset with ZERO parameters — the
+/// ones the browser runs today; a parameterized `@test` is a PROPERTY test (or compiles to a `-gen`
+/// wrapper that performs `Test.gen`) whose generated-input driving is a follow-up, so it's listed
+/// separately in `param_test_names` and the runner defers it rather than mis-reporting it.
+#[wasm_bindgen(getter_with_clone)]
+pub struct TestCompileResult {
+    /// The emitted test component bytes, or `None` if the test compile failed / there were no `@test`s.
+    pub component: Option<Vec<u8>>,
+    /// Every diagnostic — errors (on failure, incl. "no `@test`") or warnings.
+    pub diagnostics: Vec<Diagnostic>,
+    /// Names of the discovered NULLARY `@test` defs — the ones the browser runs today (invoke → pass/fail).
+    pub nullary_test_names: Vec<String>,
+    /// Names of the discovered PARAMETERIZED `@test` defs (property/exhaustive) — deferred by the runner
+    /// (they need generated-input / `Test.gen` host-response driving; a follow-up), listed so the UI can
+    /// show "N property tests deferred" rather than silently dropping or mis-failing them.
+    pub param_test_names: Vec<String>,
+}
+
+/// Compile `text` in TEST-LAYOUT mode: the emitted component's boundary is laid out from the program's
+/// `@test` NULLARY defs (`rcdzc` `layout::compute_tests`, driven by a `Request::EmitTests` sidecar
+/// request) instead of its `(export …)` clauses — so every `@test` crosses as an invocable boundary
+/// export. This is what a `cdz test` build requests; the browser test-runner then invokes each `@test`
+/// export through the SAME run worker the playground uses (clean return = PASS, trap = FAIL), matching the
+/// local `cdz test` contract. Also enumerates the `@test` def names (split nullary vs parameterized, so
+/// the runner runs the nullary ones and defers the parameterized/property ones — see `TestCompileResult`).
+/// A program with no `@test` declines (an error diagnostic), matching `compute_tests`.
+#[wasm_bindgen]
+pub fn compile_tests(text: &str, from: &str) -> Result<TestCompileResult, JsError> {
+    let from = parse_format(from)?;
+
+    // Parse → canonical binary AST (+ spans for source-ranged diagnostics), exactly like `compile`.
+    let (ast_bytes, spans) = match parse_spanned(text, from) {
+        Ok(pair) => pair,
+        Err(msg) => {
+            let (from_b, to_b) = ml_parse_error_span(text, from).unwrap_or((0, 0));
+            return Ok(TestCompileResult {
+                component: None,
+                diagnostics: vec![Diagnostic {
+                    error: true,
+                    code: String::new(),
+                    message: msg,
+                    node: u32::MAX,
+                    from: from_b,
+                    to: to_b,
+                    fix_replacement: String::new(),
+                    fix_prefix: String::new(),
+                    fix_suffix: String::new(),
+                    fix_from: 0,
+                    fix_to: 0,
+                    fix_verified: false,
+                    fix_kind: String::new(),
+                }],
+                nullary_test_names: Vec::new(),
+                param_test_names: Vec::new(),
+            });
+        }
+    };
+
+    // Enumerate the `@test` defs from a `Db` built off the SAME AST — names + arity (nullary vs param), so
+    // the runner runs the nullary tests and defers the parameterized ones. (Mirrors `cdz test`'s
+    // `run_test_file`, which reads `db.test_defs()` → `db.defs[i].name`; a single-snippet browser has no
+    // entry-file filter, so every `@test` in the snippet is listed.)
+    let (mut nullary_test_names, mut param_test_names) = (Vec::new(), Vec::new());
+    if let Some(arenas) = rcdzc::codec::decode(&ast_bytes) {
+        let db = rcdzc::db::Db::load(arenas);
+        for i in db.test_defs() {
+            let def = &db.defs[i];
+            // A test is NULLARY (runs today: invoke → pass/fail) only if it has NO params AND its name is
+            // not a synthesized generator wrapper. A COMPOUND-param @test (e.g. `p(xs: List Int64)`) is
+            // neutralized and hoisted as a synthesized nullary wrapper `p-gen` — which has no params but
+            // PERFORMS `Test.gen`, so invoking it as a plain unit test errors. The `-gen` suffix is the
+            // stable signal for that wrapper (v-property-testing owns the suffix; a user can't collide).
+            // So: param/deferred = (params non-empty) OR (name ends `-gen`). The runtime Test.gen guard in
+            // the runner is the authoritative backstop; this keeps the classification honest too.
+            if def.params.is_empty() && !def.name.ends_with("-gen") {
+                nullary_test_names.push(def.name.clone());
+            } else {
+                param_test_names.push(def.name.clone());
+            }
+        }
+    }
+
+    // Compile with a `Request::EmitTests` sidecar request driving the emit (targets left empty — the
+    // request selects the test-layout emit). The component is produced under the "component" artifact,
+    // same as a normal wasm emit.
+    let inputs = vec![
+        rcdzc::Artifact::new(rcdzc::Artifact::KIND_AST, "main", ast_bytes),
+        rcdzc::Artifact::new(
+            rcdzc::sidecar::KIND_SIDECAR,
+            "drive",
+            rcdzc::sidecar::encode(&[rcdzc::Request::EmitTests]),
+        ),
+    ];
+    let out = rcdzc::compile(&inputs, &[]);
+    let diagnostics = out
+        .diagnostics
+        .iter()
+        .map(|d| to_js_diag(d, spans.as_ref(), from == Format::Ml))
+        .collect();
+    let component = out.artifact("component").map(|b| b.to_vec());
+    Ok(TestCompileResult {
+        component,
+        diagnostics,
+        nullary_test_names,
+        param_test_names,
+    })
+}
+
 /// The names of every top-level `def` the buffer declares — for the playground REPL's autocomplete.
 /// Parses the buffer (surface-aware) and reads each definition's bound name, in source order. A parse
 /// error yields an empty list (autocomplete is a nicety; a mid-edit unparseable buffer just offers
