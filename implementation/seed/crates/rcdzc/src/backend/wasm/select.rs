@@ -977,18 +977,24 @@ fn proj_chain_roots_at_binder(db: &mut Db, id: StructId, binder: StructId) -> bo
     }
 }
 
-/// Whether `id` is a chain of BORROWING heap-child extractions (`Core::Proj` `arr-get` OR `Core::SumPayload`
-/// `sum-payload`/`arr-get`, in any mix) ultimately rooted at `binder`. Each intermediate step is a BORROW
-/// that returns a handle to a cell living INSIDE `binder` (no rc++), so the extracted leaf aliases `binder`'s
-/// storage under its single refcount. A consuming op on the leaf would FBIP-mutate it while `binder` still
-/// owns it — the [`Core::SumPayload`]/[`Core::Proj`] child-retain sites in [`mark_binder_dups_inner`] use
-/// this to decide a `dup`. The `SumPayload` analogue of [`proj_chain_roots_at_binder`]; bottoms out at the
-/// `LocalRef`/`Param` for `binder`.
+/// Whether `id` is a chain of BORROWING heap-child extractions (`Core::Proj` `arr-get`, `Core::SumPayload`
+/// `sum-payload`/`arr-get`, OR `Core::SumExpect` `sum-payload`, in any mix) ultimately rooted at `binder`.
+/// Each intermediate step is a BORROW that returns a handle to a cell living INSIDE `binder` (no rc++), so
+/// the extracted leaf aliases `binder`'s storage under its single refcount. A consuming op on the leaf would
+/// FBIP-mutate it while `binder` still owns it — the [`Core::SumPayload`]/[`Core::SumExpect`]/[`Core::Proj`]
+/// child-retain sites in [`mark_binder_dups_inner`] use this to decide a `dup`. The `SumPayload`/`SumExpect`
+/// analogue of [`proj_chain_roots_at_binder`]; bottoms out at the `LocalRef`/`Param` for `binder`. Following
+/// `SumExpect` too is load-bearing for a CHAINED extraction — `(Option.expect (Option.expect s))` over a
+/// threaded `(Option (Option (List …)))`: the outer expect's scrutinee is the inner expect, which must
+/// resolve through to the root `s` so the consuming op on the leaf retains.
 fn payload_or_proj_chain_roots_at_binder(db: &mut Db, id: StructId, binder: StructId) -> bool {
     match core_of(db, id) {
         Core::LocalRef { binder: b } | Core::Param { binder: b } => b == binder,
         Core::Proj { operand, .. }
         | Core::SumPayload {
+            scrutinee: operand, ..
+        }
+        | Core::SumExpect {
             scrutinee: operand, ..
         } => payload_or_proj_chain_roots_at_binder(db, operand, binder),
         _ => false,

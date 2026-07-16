@@ -423,6 +423,7 @@ pass	a capturing closure stored in a tuple is extracted and applied
 pass	a capturing closure whose body uses the capture after an inner computation
 pass	a capturing closure with a let binding in its body
 pass	a capturing unannotated closure in a payload is typed from the declared arrow
+pass	a chained Option.expect(Option.expect s) payload consumed per iteration accumulates stably
 pass	a chained access through an if-of-records composes and shields the untaken branch's trap
 pass	a char literal naming a surrogate is a reader error
 pass	a char order agrees with its scalar value
