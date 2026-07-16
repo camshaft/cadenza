@@ -3306,6 +3306,35 @@
             (def (main) (classify (list 0 5 9))) (export main)))
   (output (: 5 Int64)))
 
+(case "a char literal list element dispatches a runtime list by its value"
+  (doc    "The CHAR companion of the scalar literal element above: a `#\\a` element is a refutable literal
+           that desugars to a `(= elem #\\a)` value test — char equality is a codepoint compare. `(list #\\a
+           .. r)` matches only a list whose head is `#\\a`. Here the head `#\\a` selects the arm → 1; a
+           different head falls to the wildcard → 0. Pins that a Char literal (a scalar-literal kind) is a
+           valid list element exactly as an Int/Bool/String literal is — the list-element face of char-literal
+           match support.")
+  (input  (do (def (f (: xs (List Char))) (match xs ((list #\a .. r) 1) (_ 0)))
+              (def (main) (f (list #\a #\b))) (export main)))
+  (output (: 1 Int64)))
+
+(case "a symbol literal list element dispatches a runtime list by its content"
+  (doc    "The SYMBOL companion: a `#\"go\"` element desugars to a `(= elem #\"go\")` content test (a symbol
+           shares the constant-string representation, so its `=` is a content compare). `(list #\"go\" .. r)`
+           matches only a list whose head is the symbol `#\"go\"` → 1; any other head falls to the wildcard →
+           0. Pins that a Symbol literal is a valid list element, the list-element face of symbol-literal
+           match support — the head-dispatch idiom over a list of interned names.")
+  (input  (do (def (f (: xs (List Symbol))) (match xs ((list #"go" .. r) 1) (_ 0)))
+              (def (main) (f (list (Symbol.of "go")))) (export main)))
+  (output (: 1 Int64)))
+
+(case "a char literal list element falls through on a non-matching head"
+  (doc    "The refutability: the same `((list #\\a .. r) 1)` arm against `(list #\\z #\\b)` — head `#\\z` ≠
+           `#\\a` — does NOT match and falls to the wildcard → 0. Pins the char-literal element is a genuine
+           value test, not a blanket match on length.")
+  (input  (do (def (f (: xs (List Char))) (match xs ((list #\a .. r) 1) (_ 0)))
+              (def (main) (f (list #\z #\b))) (export main)))
+  (output (: 0 Int64)))
+
 (case "a constructor list element dispatches a runtime list by its discriminant"
   (doc    "THE compiler tree-walk idiom: a list of TAGGED nodes matched by the head's DISCRIMINANT —
            `(match instrs ((list (Op.Add x) .. r) …) ((list (Op.Neg x) .. r) …) (_ …))`. A multi-variant

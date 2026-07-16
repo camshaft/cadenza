@@ -649,6 +649,61 @@
             ((. (. outer inner) f) 21)))
   (output (: 42 Int64)))
 
+; The direct `(. m secret)` private-reject and the nested EXPORTED-projection cases are pinned above. These
+; pin the encapsulation boundary at their intersection: a private member of a NESTED module must NOT be
+; reachable THROUGH the projection chain (each hop is an ordinary closed-record projection, so a member
+; absent from the inner export record is CDZ0201 just as at the top level), while the nested EXPORTED member
+; IS reachable. And, dually, encapsulation withholds a NAME, not a VALUE: a private helper's value escapes
+; legitimately when an EXPORTED member returns/calls it.
+
+(case "a private member of a nested module is not reachable through the projection chain"
+  (doc    "The nested-projection private-reject: `inner` exports only `pub`, so `secret` is absent from
+           inner's export record. `(. (. outer inner) secret)` projects a field the inner record does not
+           carry — the closed-record CDZ0201, exactly as a top-level `(. m secret)` is. Pins that the
+           member-access chain does not privilege access: each hop is an ordinary projection, so nesting does
+           not leak a private member (the negative companion of the nested EXPORTED-projection cases).")
+  (input  (do
+            (module outer
+              (module inner
+                (def (secret x) (+ x 1))
+                (def (pub x) (secret x))
+                (export pub))
+              (export inner))
+            (def (main) ((. (. outer inner) secret) 5))
+            (export main)))
+  (error  CDZ0201))
+
+(case "a nested module's exported member IS reachable through the chain despite a private sibling"
+  (doc    "The visible companion: the SAME nested `inner` — a private `secret` and an exported `pub` that
+           calls it — has `pub` reachable through the chain: `((. (. outer inner) pub) 5)` = secret(5) = 6.
+           Pins that hiding `secret` from the inner record does not withhold the named `pub` export nor break
+           `pub`'s internal call to its private sibling, through the nesting.")
+  (input  (do
+            (module outer
+              (module inner
+                (def (secret x) (+ x 1))
+                (def (pub x) (secret x))
+                (export pub))
+              (export inner))
+            (def (main) ((. (. outer inner) pub) 5))
+            (export main)))
+  (output (: 6 Int64)))
+
+(case "a private helper's value escapes legitimately when an exported member calls it"
+  (doc    "Encapsulation withholds a NAME, not a VALUE: `secret` is private (so `(. m secret)` is CDZ0201),
+           but the exported `pub` calls `secret` in its body, so `secret`'s COMPUTED RESULT flows out through
+           the public API — `((. m pub) 5)` = secret(5) = 105. Pins that the visibility filter hides the
+           private field from the record without severing the value's legitimate escape via an export — the
+           value-vs-name distinction of #Visibility Is Explicit.")
+  (input  (do
+            (module m
+              (def (secret x) (+ x 100))
+              (def (pub x) (secret x))
+              (export pub))
+            (def (main) ((. m pub) 5))
+            (export main)))
+  (output (: 105 Int64)))
+
 (case "two adjacent modules declared inside a function body compose"
   (doc    "A function body is a `(do …)` sequence that may hold BODY-LOCAL module declarations: `main`'s
            body declares `Inc` then `Scale` then uses both — `Scale.g(Inc.f(4))` = 50. Pins that two

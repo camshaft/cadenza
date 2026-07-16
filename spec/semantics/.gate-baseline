@@ -190,6 +190,7 @@ pass	Type.of grounds a RETURNED function's domain — a closure whose result is 
 pass	Type.of grounds a function nested TWO containers deep — a sum payload inside a list
 pass	Type.of grounds a function nested TWO containers deep — a tuple inside a sum payload
 pass	Type.of grounds a function stored in a RECORD FIELD
+pass	Type.of grounds a function stored as a runtime Map value
 pass	Type.of grounds a function stored inside a SUM VARIANT payload
 pass	Type.of grounds a function stored inside a compound value's element
 pass	Type.of on a bare nullary variant reflects its element as UNDETERMINED
@@ -505,6 +506,8 @@ pass	a capturing unannotated closure in a payload is typed from the declared arr
 pass	a chained Option.expect(Option.expect s) payload consumed per iteration accumulates stably
 pass	a chained access through an if-of-records composes and shields the untaken branch's trap
 pass	a chained float ordering is not foldable by transitivity — a NaN middle breaks the chain
+pass	a char literal list element dispatches a runtime list by its value
+pass	a char literal list element falls through on a non-matching head
 pass	a char literal naming a surrogate is a reader error
 pass	a char not among the literal arms falls through to the wildcard
 pass	a char order agrees with its scalar value
@@ -1279,6 +1282,7 @@ pass	a nested match missing an inner variant under a DISC-≥1 variant is non-ex
 pass	a nested match on a recursive sum falls through when the inner variant differs (known outer disc)
 pass	a nested match on a recursive sum with a KNOWN outer discriminant reads the right payload depth
 pass	a nested match on a runtime scrutinee
+pass	a nested module's exported member IS reachable through the chain despite a private sibling
 pass	a nested module's function export is applied through the projection chain
 pass	a nested non-exhaustive match names the uncovered inner variant (CDZ0210 not the generic message)
 pass	a nested option value annotated with the wrong inner payload type is rejected
@@ -1409,6 +1413,8 @@ pass	a prefixed quantity displays scaled to its reference unit (Float)
 pass	a prefixed unit combines with its base by converting to the reference (Float)
 pass	a prelude Option value crosses a module boundary as an export result
 pass	a private constructor cannot be MATCHED from outside its module either
+pass	a private helper's value escapes legitimately when an exported member calls it
+pass	a private member of a nested module is not reachable through the projection chain
 pass	a private module member is still visible to a sibling
 pass	a private module member participates in mutual recursion with an exported sibling
 pass	a private sibling defined after its exported caller still resolves
@@ -1973,6 +1979,7 @@ pass	a symbol compared to a number is a kind-boundary type error
 pass	a symbol compared to a string is a type error
 pass	a symbol converts back to its content string
 pass	a symbol is constructed from a string
+pass	a symbol literal list element dispatches a runtime list by its content
 pass	a symbol's identity is its content, not how the content was derived
 pass	a symbol-literal match agrees with its if-(= s lit) chain on the DEFAULT fall-through arm
 pass	a symbol-literal match agrees with the equivalent if-(= s lit) chain
@@ -2034,6 +2041,7 @@ pass	a transformation over the built-in Ast composes across a function call
 pass	a transitive import (app <- lib <- kernel) can use a theorem through re-exported kernel functions
 pass	a transitive import cannot forge a theorem — the kernel's private constructor is unreachable from the app
 pass	a transitive re-export reaches the base module's function through the middle module
+pass	a trap message that is not a String is rejected
 pass	a trapping condition of a same-constructor if traps before either arm
 pass	a trapping condition preempts the hoisted operator's trap
 pass	a trapping element in the taken arm of a same-length list if still traps

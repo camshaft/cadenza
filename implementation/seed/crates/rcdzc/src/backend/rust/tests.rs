@@ -2222,6 +2222,41 @@ fn rustc_roundtrip_user_sum_constructs_and_matches() {
 }
 
 #[test]
+fn rustc_roundtrip_narrow_sum_payload_literal_match_widens_to_the_unified_result() {
+    // A NARROW sum-payload literal-refinement match whose arms unify to a WIDER result — `(match b ((A 0)
+    // 100) ((A x) x) ((B y) y))` over `(type Box (A UInt8) (B UInt8))`: the `100` literal arm (Int64) and
+    // the `x`/`y` UInt8-payload arms unify to Int64, so the result is Int64. The sum-decision-tree emit
+    // (`emit_sum_cont`) did NOT ground its Leaf bodies to that result width, so it emitted `if payload==0
+    // { 100i64 } else { x_u8 }` — mismatched `if` arms + a wrong `-> u8` return → rustc E0308 (a DIFFERENTIAL
+    // miscompile: wasm computed 100/5 fine). Fixed by threading the match's `result_it` through
+    // `emit_sum_match`/`emit_sum_switch`/`emit_sum_cont` and grounding each Leaf via `emit_grounded` (the
+    // same reconciliation the scalar-`match` path already did). Both arms now emit at ONE width, no E0308.
+    // (corpus-bugfix's adv-rust-narrow-sum-payload-… reproducer, breaker-filed.)
+    let rs = compile_rust(
+        "(module m (type Box (A UInt8) (B UInt8)) \
+           (def (f (: b Box)) (match b ((A 0) 100) ((A x) x) ((B y) y))) \
+           (def (run (: n UInt8)) (f (A n))) (export run))",
+    );
+    // The emit must be internally consistent (no E0308): it compiles, and the `if` arms share a width — no
+    // bare `iN` opposite a bare `uM`. The value is what matters end-to-end:
+    if let Some(out) = rustc_run(&rs, "run(0)") {
+        assert_eq!(out, "100", "n=0 hits the (A 0) literal arm → 100");
+    }
+    if let Some(out) = rustc_run(&rs, "run(5)") {
+        assert_eq!(out, "5", "n=5 misses, binds the widened UInt8 payload → 5");
+    }
+    // CONTROL: an Int64-payload sum needs no widening — still works (the fix is narrow-payload-specific).
+    let wide = compile_rust(
+        "(module m (type W (Wrap Int64) (Other Int64)) \
+           (def (f (: b W)) (match b ((Wrap 0) 100) ((Wrap x) x) ((Other y) y))) \
+           (def (run (: n Int64)) (f (Wrap n))) (export run))",
+    );
+    if let Some(out) = rustc_run(&wide, "run(0)") {
+        assert_eq!(out, "100", "Int64 payload, no widening needed");
+    }
+}
+
+#[test]
 fn rustc_roundtrip_recursive_sum_folds() {
     // A RECURSIVE user sum (a cons-list) constructs and folds THROUGH RUSTC: the enum is `Box`ed
     // (`Cons(Box<(i64, L)>)`), construction `Box::new(…)`, match derefs `*p`. `sm` sums a runtime-passed

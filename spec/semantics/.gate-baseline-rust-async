@@ -81,6 +81,10 @@ pass	Type.eq of a type-valued parameter against itself is always true
 pass	Type.eq on a constructed generic sum compares the full instantiated type
 pass	Type.eq on a type-valued parameter against a COMPOUND type is structural
 pass	Type.of carries a quantity's unit into a same-type annotation
+pass	Type.of grounds a RETURNED function's domain — a closure whose result is a function
+pass	Type.of grounds a function nested TWO containers deep — a sum payload inside a list
+pass	Type.of grounds a function nested TWO containers deep — a tuple inside a sum payload
+pass	Type.of grounds a function stored as a runtime Map value
 pass	Type.of grounds a function stored inside a SUM VARIANT payload
 pass	Type.of grounds a function stored inside a compound value's element
 pass	Type.of on a bare nullary variant reflects its element as UNDETERMINED
@@ -949,6 +953,7 @@ pass	a nested match missing an inner variant under a DISC-≥1 variant is non-ex
 pass	a nested match on a recursive sum falls through when the inner variant differs (known outer disc)
 pass	a nested match on a recursive sum with a KNOWN outer discriminant reads the right payload depth
 pass	a nested match on a runtime scrutinee
+pass	a nested module's exported member IS reachable through the chain despite a private sibling
 pass	a nested module's function export is applied through the projection chain
 pass	a nested non-exhaustive match names the uncovered inner variant (CDZ0210 not the generic message)
 pass	a nested option value annotated with the wrong inner payload type is rejected
@@ -1067,6 +1072,8 @@ pass	a post-order labeling walk returns a labeled tree (heap result, id drawn af
 pass	a prefix literal does not shadow a longer string arm
 pass	a prefixed quantity displays scaled to its reference unit (Float)
 pass	a prefixed unit combines with its base by converting to the reference (Float)
+pass	a private helper's value escapes legitimately when an exported member calls it
+pass	a private member of a nested module is not reachable through the projection chain
 pass	a private module member is still visible to a sibling
 pass	a private module member participates in mutual recursion with an exported sibling
 pass	a private sibling defined after its exported caller still resolves
@@ -1492,6 +1499,9 @@ pass	a signed-byte entrypoint returns its runtime argument
 pass	a single-form body admits a sequence by holding a do block
 pass	a single-scalar String.slice equals the String.at of the same index (the two scalar-addressing paths agree)
 pass	a single-variant NEWTYPE escapes with its tag ERASED, only the type header naming it
+pass	a single-variant newtype list element falls through on a non-matching payload
+pass	a single-variant newtype list element with a binder payload stays irrefutable
+pass	a single-variant newtype list element with a literal payload matches by value
 pass	a single-variant newtype over a COMPOUND escapes the bare compound under its type header
 pass	a single-variant open sum with an open-tail arm dispatches its named variant
 pass	a single-variant-sum binding pattern destructures a multi-payload constructor positionally
@@ -1608,6 +1618,7 @@ pass	a trailing digit separator is a malformed literal, not the digits with it d
 pass	a transformation maps a syntax tree to a syntax tree and preserves meaning
 pass	a transformation observably rewrites the tree, not just its value
 pass	a transformation over the built-in Ast composes across a function call
+pass	a trap message that is not a String is rejected
 pass	a trapping condition of a same-constructor if traps before either arm
 pass	a trapping condition preempts the hoisted operator's trap
 pass	a trapping element in the taken arm of a same-length list if still traps
