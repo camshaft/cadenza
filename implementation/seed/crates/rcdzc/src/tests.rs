@@ -55104,24 +55104,31 @@ mod stage1 {
     }
 
     #[test]
-    fn a_trapping_earlier_let_init_is_not_dropped_by_a_try_short_circuit() {
-        // REGRESSION (PR #409): the constant-failure `?` fast-path (BRICK 3a) folds a `let` whose init is a
-        // `Core::Break` to the break value, discarding earlier bindings. It guarded only host-call-freedom,
-        // so a trapping earlier init `(a (/ 1 0))` was folded AWAY when short-circuiting — dropping a
-        // DEFINED trap that is OBSERVED before the `?` (§283/§285, dead-binding-drops-a-defined-trap). The
-        // fast path now also requires earlier inits to be `is_trap_free`. The `÷0` is compile-provable, so
-        // the program is rejected CDZ0304 (a compile-provable trap fails the build) rather than yielding
-        // `None`.
+    fn a_constant_failure_try_elides_an_earlier_trapping_let_init_it_discards() {
+        // OPERATOR §283 RULING (2026-07-16): "we don't emit the trap unless it's reachable; a detected
+        // unreachable trap is a WARNING." `(let ((a (/ 1 0)) (x (try (None unit)))) (Some (+ a x)))` — `a`
+        // traps (÷0) but is referenced only in `(+ a x)`, which the `?` short-circuits, so `a`'s value is
+        // UNOBSERVED → the trap ELIDES and the program COMPILES to `None` (with a §285 CDZ0305 warning),
+        // NOT CDZ0304. (Earlier this expected CDZ0304 via an over-strict is_trap_free guard the operator
+        // ruling reverted.) A host call, being observable, would still bail the fold.
         let src = "(module m (def (main) (let ((a (/ 1 0)) (x (try (None unit)))) (Some (+ a x)))) \
                    (export main))";
-        let d = compile_component(&crate::codec::encode(&parse(src))).expect_err(
-            "a trapping earlier init must not be dropped — the ÷0 is CDZ0304, not folded to None",
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_ok(),
+            "an unobserved trapping earlier init is ELIDED (folds to None), not CDZ0304-rejected"
         );
-        assert_eq!(
-            d.code.as_deref(),
-            Some("CDZ0304"),
-            "the trapping earlier init is a compile-provable trap (CDZ0304), got: {}",
-            d.message
+    }
+
+    #[test]
+    fn a_constant_failure_try_in_a_nested_let_elides_a_trapping_outer_init() {
+        // The nested-let companion of the §283 elide ruling: `(let ((a (/ 1 0))) (let ((x (try (None
+        // unit)))) (Some (+ a x))))` — `a` (outer let) is referenced only in the short-circuited `(+ a x)`,
+        // so its ÷0 is unobserved → elided → compiles to None. Observation, not the nesting, governs (§285).
+        let src = "(module m (def (main) (let ((a (/ 1 0))) (let ((x (try (None unit)))) (Some (+ a x))))) \
+                   (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_ok(),
+            "an unobserved trapping OUTER-let init is ELIDED by a nested `?` short-circuit, not rejected"
         );
     }
 
