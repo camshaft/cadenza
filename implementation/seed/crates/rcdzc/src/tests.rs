@@ -64296,6 +64296,40 @@ mod cross_component_oracle {
             "a well-formed versioned interface name must not be flagged: {:?}",
             d10.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
+        // (h) a peer-bound op whose signature involves a CLOSURE (a `(-> …)` in an arg or result) is
+        // CDZ0201 with the clear "cannot take or return a CLOSURE" reason — NOT the opaque lower-time
+        // "value is not applyable" a peer-returned closure used to hit on application. Peers exchange
+        // value-heap handles; a closure has no peer-boundary form. Both faces (result + arg):
+        let clo_result = "(do (effect F (op mk (-> Int64 (-> Int64 Int64)))) (bind F \"cadenza:f/api\") \
+                          (def (main) 0) (export main))";
+        let d11 = crate::diagnostics(&mut crate::db::Db::load(parse(clo_result)));
+        assert!(
+            d11.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
+                && d.message.contains("cannot take or return a CLOSURE")),
+            "a peer-bound op RETURNING a closure is CDZ0201 with the clear reason: {:?}",
+            d11.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        let clo_arg = "(do (effect F (op run (-> (-> Int64 Int64) Int64))) (bind F \"cadenza:f/api\") \
+                       (def (main) 0) (export main))";
+        let d12 = crate::diagnostics(&mut crate::db::Db::load(parse(clo_arg)));
+        assert!(
+            d12.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
+                && d.message.contains("cannot take or return a CLOSURE")),
+            "a peer-bound op TAKING a closure is CDZ0201 with the clear reason: {:?}",
+            d12.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        // NO FALSE POSITIVE: the SAME closure-typed op WITHOUT a `(bind …)` (a plain effect, handled or
+        // host-delegated) is NOT flagged by this check — a closure crosses the HOST boundary as a resource;
+        // only a PEER binding lacks a form for it.
+        let clo_nopeer =
+            "(do (effect F (op mk (-> Int64 (-> Int64 Int64)))) (def (main) 0) (export main))";
+        let d13 = crate::diagnostics(&mut crate::db::Db::load(parse(clo_nopeer)));
+        assert!(
+            !d13.iter()
+                .any(|d| d.message.contains("cannot take or return a CLOSURE")),
+            "a closure-typed op on a NON-peer-bound effect must NOT be flagged: {:?}",
+            d13.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
     }
 
     // ------------------------------------------------------------------------------------------------
