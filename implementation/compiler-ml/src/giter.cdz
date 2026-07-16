@@ -19,21 +19,19 @@
 /// `next` is still the pull interface (`GIter(a) -> Option((a, GIter(a)))`), total (never traps) and pure
 /// (re-stepping yields the same element); the cons-cell IS the reified rest, so `next` just projects it.
 ///
-/// SCOPE (slices 1–4). CLOSURE-FREE (Part C shape): producers (`from-list`, `singleton`), `next`, consumers
+/// SCOPE (slices 1–5). CLOSURE-FREE (Part C shape): producers (`from-list`, `singleton`), `next`, consumers
 /// (`count`, `collect`, `nth`, `last`), transformers (`chain`, `take`, `drop`, `zip`). CLOSURE-STORING
 /// (unblocked by the recursive-generic-transformer closure tie): `map`, `filter`, `drop-while`, `find`,
-/// `all`, `any` — each threads a closure and now monomorphizes per element type. Every function composes at
-/// Int64 AND String in one program (the tests pin this). `zip` even CHANGES the element type (to a tuple)
-/// without a `∀`-annotation, because the tuple element is inferred, not written.
+/// `all`, `any` — each threads a closure and monomorphizes per element type. Every function composes at
+/// Int64 AND String in one program (the tests pin this). ELEMENT-CHANGING is supported too: `zip` yields a
+/// tuple element, and `map` maps `a -> b` at a DIFFERENT result type (int→Bool, int→String — see the tests);
+/// no `∀`-annotation is needed because the new element type is INFERRED from the (unannotated) closure /
+/// tuple, never WRITTEN — so the "no-∀-binder-in-annotation" surface gap does not bite here.
 ///
 /// NOT YET (residual inference gaps, filed + routed to v-inference; land the tick they merge):
 ///   - `take-while`: its stop branch yields a bare `GIter.Nil(unit)` whose element is untied on that path,
 ///     which (with the threaded closure) still declines CDZ0201 — the nullary-producer edge intersecting the
 ///     closure tie. See the NOTE by the closure-storing block below.
-///   - Element-CHANGING `map : GIter(a) -> (a -> b) -> GIter(b)`: the second type variable `b` cannot be
-///     written in an annotation (the ML surface has no `∀`-binder in a type annotation —
-///     `mlrepro-reject-user-generic-type-var-in-annotation`); needs an unannotated spelling that infers `b`
-///     or an explicit `Type` parameter. (`map` here is the same-element `a -> a` form.)
 ///   - An UNUSED/identity closure (`fn (s) => s`) still declines (closure-body-result-from-domain gap,
 ///     v-inference); the closures here all USE their parameter, so this does not bite in practice.
 ///
@@ -147,12 +145,13 @@ def zip(a, b) = match a with
 /// CLOSURE-STORING TRANSFORMERS & CONSUMERS (thread a closure through the recursion) -------------------
 /// Unblocked by the recursive-generic-transformer closure tie (rcdzc "tie a recursive-generic transformer's
 /// closure domain to the mapped element"): a recursive-generic function that threads a closure now
-/// monomorphizes per element type, so these compose at ≥2 element types. `map` returns a same-element
-/// `GIter(a)` (the element-CHANGING `a -> b` map still needs the no-`∀`-annotation surface work — see
-/// header). The closure's parameter must be USED (an unused/identity closure like `fn (s) => s` still
-/// declines — the residual closure-body-result-from-domain gap v-inference noted).
+/// monomorphizes per element type, so these compose at ≥2 element types. The closure's parameter must be
+/// USED (an unused/identity closure like `fn (s) => s` still declines — the residual
+/// closure-body-result-from-domain gap v-inference noted).
 
-/// `map(it, f)` — apply `f : a -> a` to every element (same element type). Threads the closure `f`.
+/// `map(it, f)` — apply `f : a -> b` to every element, yielding a `GIter(b)`. Threads the closure `f`.
+/// ELEMENT-CHANGING: `b` may differ from `a` (int→Bool, int→String — see the tests); it is INFERRED from
+/// the unannotated closure, so no `∀`-annotation is needed. When `f : a -> a`, this is an in-place map.
 def map(it, f) = match it with
   | GIter.Nil(_) => GIter.Nil(unit)
   | GIter.Cons(h, rest) => GIter.Cons(f(h), map(rest, f))
@@ -204,6 +203,12 @@ def str-list-eq(xs, ys) = match xs with
   | [x, .. xr] => (match ys with
     | [] => false
     | [y, .. yr] => if x == y then str-list-eq(xr, yr) else false)
+
+def bool-list-eq(xs, ys) = match xs with
+  | [] => (match ys with | [] => true | _ => false)
+  | [x, .. xr] => (match ys with
+    | [] => false
+    | [y, .. yr] => if x == y then bool-list-eq(xr, yr) else false)
 
 /// THE headline test: a recursive-generic PRODUCER composed with a generic CONSUMER at TWO distinct
 /// element types in ONE program. This exact shape declined with CDZ0201 before the Part C fix.
@@ -415,5 +420,23 @@ def any-false-when-none-match() =
 def filter-map-compose() =
   if int-list-eq(collect(map(filter(from-list([1, 2, 3, 4]), fn(x) => x > 1), fn(x) => x * 2)), [4, 6, 8])
   then unit else trap("map(filter) composition")
+
+/// SLICE-5: `map` is ELEMENT-CHANGING (a -> b) — the new element type is inferred from the closure, no
+/// `∀`-annotation needed. Pinned at DIFFERENT result types, and at two source element types in one program.
+
+@test
+def map-int-to-bool() =
+  if bool-list-eq(collect(map(from-list([1, 2, 3]), fn(x) => x > 1)), [false, true, true])
+  then unit else trap("map int -> Bool")
+
+@test
+def map-int-to-string() =
+  if str-list-eq(collect(map(from-list([1, 2]), fn(x) => if x > 1 then "big" else "small")), ["small", "big"])
+  then unit else trap("map int -> String")
+
+@test
+def map-string-to-bool-second-source-type() =
+  if bool-list-eq(collect(map(from-list(["a", "bb"]), fn(s) => s == "bb")), [false, true])
+  then unit else trap("map String -> Bool (2nd source element type)")
 
 export { GIter.* }

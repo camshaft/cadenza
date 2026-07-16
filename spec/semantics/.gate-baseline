@@ -72,6 +72,8 @@ pass	MIXED: driving the PLAIN export alongside a two-Tuple-arg LIST closure
 pass	MIXED: driving the PLAIN export alongside a two-Tuple-arg closure
 pass	MIXED: driving the PLAIN export alongside an Option-arg closure
 pass	MK_COMB unions its operands' hypotheses — an assumption threaded through MK_COMB survives (soundness)
+pass	MP should match its antecedent up to α-equivalence: aconv-MP accepts an α-variant a structural equality rejects
+pass	MK_COMB unions the hypotheses of BOTH operands when each carries a distinct assumption
 pass	MULTI-EXPORT: THREE tuple args with a LIST result, shared `call`
 pass	MULTI-EXPORT: a nested-Tuple-arg closure with a LIST result
 pass	MULTI-EXPORT: among-scalars tuple arg with a BYTE-ROPE result
@@ -139,7 +141,11 @@ pass	String.to-bytes of a genuinely-runtime string yields its UTF-8 byte length
 pass	String.to-bytes of a runtime string threaded through recursion round-trips its bytes
 pass	THREE Tuple args cross the direct-call boundary
 pass	THREE Tuple args with a LIST result
+pass	TRANS should match its middle term up to α-equivalence: aconv-TRANS chains an α-variant a structural equality rejects
+pass	TRANS carries a hypothesis borne by the RIGHT operand only (mirror of the left-only pin)
+pass	TRANS chained three deep accumulates every operand's hypotheses
 pass	TRANS unions its operands' hypotheses — an assumption threaded through TRANS survives (soundness)
+pass	TRANS unions the hypotheses of BOTH operands when each carries a distinct assumption
 pass	TWO Record args cross the direct-call boundary
 pass	TWO Tuple args cross the direct-call boundary
 pass	TWO Tuple args with a BYTE-ROPE result
@@ -339,6 +345,7 @@ pass	a `?` inside a match-arm resolves against the enclosing function boundary
 pass	a `?` inside an if-branch resolves against the enclosing function boundary
 pass	a `?` on a String operand is a type error
 pass	a `?` on a non-fallible operand is a type error
+pass	a `?` on an ill-typed operand reports the operand's error, not a `?`-shape cascade
 pass	a `?` result is usable mid-body, not only in tail position
 pass	a `?` whose Result error type disagrees with the boundary's is rejected
 pass	a `?` with no fallible enclosing function boundary is rejected
@@ -1178,6 +1185,8 @@ pass	a nested map pattern with a malformed rest names the shape, not an unbound 
 pass	a nested match missing an inner variant under a DISC-≥1 variant is non-exhaustive
 pass	a nested match on a recursive sum falls through when the inner variant differs (known outer disc)
 pass	a nested match on a recursive sum with a KNOWN outer discriminant reads the right payload depth
+pass	a MULTI-PAYLOAD variant with a nested same-sum variant reads the right payload depth (known outer disc)
+pass	a multi-payload nested same-sum match falls through when the nested variant differs
 pass	a nested match on a runtime scrutinee
 pass	a nested module's function export is applied through the projection chain
 pass	a nested non-exhaustive match names the uncovered inner variant (CDZ0210 not the generic message)
@@ -1455,7 +1464,8 @@ pass	a recursive-generic producer's element is usable at each instantiation
 pass	a recursive-generic producer's result is consumed by an element-typed consumer
 pass	a recursive-generic transformer composes with itself
 pass	a recursive-generic transformer threading a closure composes at two element types
-pass	a recursive-generic transformer threading an IDENTITY closure declines pending the result tie
+pass	a recursive-generic transformer threading an IDENTITY closure at TWO types declines pending the multi-instantiation result tie
+pass	a recursive-generic transformer threading an IDENTITY closure composes at a single element type
 pass	a recursive-generic transformer with an element-CHANGING closure ties domain to codomain
 pass	a recursive-sum payload projected more than once folds to a scalar
 pass	a recursively-built MULTI-PAYLOAD-variant list renders its spine FLAT
@@ -2338,6 +2348,7 @@ pass	char to-int and from-int round-trip through the scalar value
 pass	checked addition yields None on overflow instead of trapping
 pass	checked addition yields Some of the sum when it fits
 pass	checked multiplication reports overflow as None
+pass	checked multiplication reports the Int64.min * -1 overflow as None (the checked companion of the trapping *)
 pass	checked multiplication yields Some when it fits
 pass	checked subtraction yields None on underflow instead of trapping
 pass	checked subtraction yields Some of the difference when it fits

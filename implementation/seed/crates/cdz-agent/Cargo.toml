@@ -1,0 +1,46 @@
+# cdz-agent — the native Cadenza AGENT HARNESS embedder (v-agent-harness, Inc-1b).
+#
+# The agent LOOP itself is authored in Cadenza (implementation/agent-harness/); this crate is the thin
+# non-Cadenza EMBEDDER that runs it and answers its one external interaction — the model call
+# `cadenza:model/api`.converse (`String -> String`) — with a real backend. It reuses
+# `cdz_run::run_agent` (which binds converse to a host closure over the shared value-heap runtime's
+# str-get/str-new), supplying two `converse` implementations:
+#   - default (no features): a deterministic MOCK converse (used by the gated integration test — no
+#     network, no creds, runs in CI).
+#   - `--features bedrock`: a real `aws-sdk-bedrockruntime` InvokeModel call (SigV4 + HTTPS handled by
+#     the SDK), the actual Bedrock wiring that replaces the headless `claude` CLI. The aws-sdk + tokio
+#     are behind this feature so the DEFAULT build/test carries NEITHER.
+#
+# cdz-agent is its OWN workspace (empty `[workspace]` table), NOT a member of the seed workspace, and the
+# root Cargo.toml `exclude`s this path — the SAME isolation cdz-cad/cdz-smith use. Reason: the `bedrock`
+# feature pulls the heavy async aws-sdk + tokio dependency tree, which a plain `cargo build --workspace`
+# and the corpus gate must never pay. It path-deps the seed's `cdz-run` (an excluded crate MAY path-dep a
+# seed member — cdz-smith path-deps rcdzc/cadenza-syntax the same way). A dedicated flow builds+tests it.
+[workspace]
+
+[package]
+name = "cdz-agent"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[features]
+# OFF by default: the real Bedrock backend (async aws-sdk + tokio). The default build is mock-only, so a
+# `cargo build`/`cargo test` here needs no AWS creds and no network — the CI-gated path.
+default = []
+bedrock = ["dep:aws-config", "dep:aws-sdk-bedrockruntime", "dep:tokio"]
+
+[dependencies]
+# The generic component runner + the `run_agent` embedder entry point (a seed-workspace crate; an
+# excluded crate may path-dep a member, as cdz-smith does with rcdzc).
+cdz-run = { path = "../cdz-run" }
+anyhow = "1"
+
+# The real Bedrock backend, behind the `bedrock` feature only (heavy async tree — kept out of default).
+aws-config = { version = "1", optional = true }
+aws-sdk-bedrockruntime = { version = "1", optional = true }
+tokio = { version = "1", features = ["rt", "rt-multi-thread"], optional = true }
+
+[lib]
+name = "cdz_agent"
+path = "src/lib.rs"

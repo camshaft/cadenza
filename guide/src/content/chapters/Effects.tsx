@@ -198,6 +198,32 @@ export default function Effects() {
         and swapping the handler swaps the whole outside world — no dependency injection, no mocking
         framework, just a different <C>handle</C>.
       </P>
+      <P>
+        And the whole <em>loop</em> is just this. A real agent runs turns until it's done: each turn asks the
+        model (<C>Model.converse</C>) and dispatches a tool (<C>Tools.dispatch</C>), accumulating a result,
+        bounded by a fuel counter so it terminates. Every one of those is a performed operation — the loop
+        itself is ordinary recursion, and the handlers supply the outside world. Here a three-step run
+        against mock handlers accumulates <C>3 + 2 + 1 = 6</C>:
+      </P>
+      <Runnable
+        source={`(effect Model (op converse (-> Int64 Int64)))
+(effect Tools (op dispatch (-> Int64 Int64)) (op done (-> Int64 Int64)))
+(def (run (: fuel Int64) (: acc Int64))
+  (if (= fuel 0) (Tools.done acc)
+    (if (= (Model.converse fuel) 0) (Tools.done acc)
+      (run (- fuel 1) (+ acc (Tools.dispatch fuel))))))
+(def (main)
+  (handle Model 0 ((converse (q) s (resume q s)))
+    (handle Tools 0 ((dispatch (a) s (resume a s)) (done (a) s (resume a s)))
+      (run 3 0))))`}
+      />
+      <P>
+        The <C>run</C> loop is pure Cadenza — no HTTP, no SDK, no knowledge of what a model or a tool{" "}
+        <em>is</em>. Point the two handlers at a real language model and a real tool dispatcher (the program
+        does this at its edge, where the effects show up in its manifest) and the identical loop drives a
+        live agent. That's the payoff: the logic you test with mocks is byte-for-byte the logic that runs in
+        production — the handler is the only thing that changed.
+      </P>
 
       <H2>Your turn</H2>
       <Exercise

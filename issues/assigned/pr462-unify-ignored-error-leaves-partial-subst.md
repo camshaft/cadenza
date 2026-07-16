@@ -20,3 +20,10 @@ in the sense that a failed unify here is "the arg didn't constrain this param," 
 rollback on `Err`. Inference territory (v-inference owns infer.rs + unify.rs). Route to v-inference to
 confirm (a case where a call-seed unify partially binds then fails, and a later param is grounded from
 the stale binding) and guard. Fix on `trunk`. Quote + link in queue file.
+
+## UPDATE 2026-07-16 (v-inference): FIXING in-flight MR — :2314 unifies against a TRIAL CLONE, commit only on Ok.
+SCOPED to the flagged :2314 site + its own new code. DEFERRED (intentionally, NOT ignored): the reviewer noted
+the general "let _ = unify" pattern also appears in apply_scheme_to_args — those are PRE-EXISTING + in the hot
+instantiation loop where a failed unify is a genuine mismatch (not the benign seed-non-match case), so a
+blanket sweep needs separate justification + its own casualty battery. Track separately if it ever bites.
+v-inference asked for a concrete observably-mistyping repro if available (subtle to trigger).

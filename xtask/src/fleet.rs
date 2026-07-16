@@ -3462,4 +3462,48 @@ mod tests {
         assert!(body.contains("rev-parse --verify -q origin/main"));
         assert!(body.contains("[ \"$new\" = \"$om\" ] || continue"));
     }
+
+    #[test]
+    fn default_model_resolves_to_a_known_alias_not_a_passthrough() {
+        // A roster entry with no `model` gets `default_model()`, which window.sh feeds through
+        // `resolve_model` → `claude --model`. So the default MUST be a KNOWN alias that resolves to a
+        // full 1M-context id — not a bare string that falls through as-is (which would hand `claude` a
+        // bogus model name). This pins the cross-fn contract: rename the alias in resolve_model and this
+        // fails until default_model agrees.
+        let d = default_model();
+        let resolved = resolve_model(&d);
+        assert_ne!(
+            resolved, d,
+            "default_model {d:?} must be an ALIAS resolve_model expands, not pass-through"
+        );
+        assert!(
+            resolved.starts_with("us.anthropic.claude-") && resolved.ends_with("[1m]"),
+            "default model resolves to a full 1M-context id, got {resolved:?}"
+        );
+    }
+
+    #[test]
+    fn inbox_depth_reports_empty_or_count() {
+        // The board's per-agent inbox column: "empty" when no live message, "<n> msg" otherwise. Counts
+        // only top-level .json (delegates to count_dir), so a processed/ archive doesn't inflate it.
+        let root = std::env::temp_dir().join(format!("cdz-inbox-depth-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let fleet = Fleet {
+            root: root.clone(),
+            worktrees: PathBuf::from("/hub/.claude/worktrees"),
+            repo: PathBuf::from("/hub"),
+            src: PathBuf::from("/wt/fleet"),
+        };
+        // No inbox dir yet → empty (never panics on a missing dir).
+        assert_eq!(inbox_depth(&fleet, "v-x"), "empty");
+        // One live message + a processed/ archive that must NOT be counted.
+        let ib = fleet.inbox("v-x");
+        std::fs::create_dir_all(ib.join("processed")).unwrap();
+        std::fs::write(ib.join("000000000001-1-note.json"), "{}").unwrap();
+        std::fs::write(ib.join("processed/000000000000-0-old.json"), "{}").unwrap();
+        assert_eq!(inbox_depth(&fleet, "v-x"), "1 msg");
+        std::fs::write(ib.join("000000000002-2-note.json"), "{}").unwrap();
+        assert_eq!(inbox_depth(&fleet, "v-x"), "2 msg");
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

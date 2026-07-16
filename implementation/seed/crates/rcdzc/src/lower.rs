@@ -10436,7 +10436,36 @@ fn type_specialize(db: &mut Db, callee: usize, args: &[StructId]) -> Option<(usi
             {
                 match crate::infer::solved_lambda_arrow(db, &lam_params, lam_body) {
                     Some(solved) if !solved.has_any() => t = solved,
-                    _ => return None,
+                    // The body-only solve left a hole — a PASS-THROUGH closure whose result is determined
+                    // only by its DOMAIN (`(fn (s) s)` identity). Recover the closure's expected arrow from
+                    // the callee's INSTANTIATED parameter type at this position (the domain tie pins it, e.g.
+                    // `gmap`'s `f` at a `Iter String` instantiation is `(-> String ?b)`), then solve the body
+                    // UNDER that domain so the pass-through result takes the domain's type. This is the
+                    // monomorphization-copy half of the transformer closure tie (the call-site half is in
+                    // `apply_scheme_to_args`); both are needed so the copy's closure annotation is concrete at
+                    // EACH instantiation. Only a fully-concrete recovered arrow is accepted; else decline.
+                    _ => {
+                        let recovered = args
+                            .iter()
+                            .position(|&x| x == a)
+                            .and_then(|pos| {
+                                crate::infer::instantiated_param_arrow(db, callee, args, pos)
+                            })
+                            .and_then(|arrow| {
+                                crate::infer::solved_lambda_arrow_under(
+                                    db,
+                                    &lam_params,
+                                    lam_body,
+                                    &arrow,
+                                )
+                            });
+                        match recovered {
+                            Some(solved) if !solved.has_any() && !solved.has_free_var() => {
+                                t = solved
+                            }
+                            _ => return None,
+                        }
+                    }
                 }
             }
             if matches!(t, crate::ty::Ty::Any) || t.has_free_var() {

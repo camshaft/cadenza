@@ -376,6 +376,28 @@ def simplify-r-preserves-a-real-tree-and-is-idempotent() =
      and v3r-eq(aabbr-size(bounding-box(s2)), aabbr-size(bounding-box(s1)))
   then unit else trap("simplify-r preserves a real tree + is idempotent")
 
+@test
+def simplify-r-of-a-mixed-tree-drops-dead-branches-but-preserves-the-real-extent() =
+  // THE correctness link between simplify-r and bounding-box a mesh driver relies on: pruning DEAD branches
+  // from a MIXED tree (real ∪ dead) must not change the surviving geometry's extent. Take a real cube shifted
+  // to +10 in x (box centred at x=10) UNIONED with a dead branch (a translated Emptyr, which raw bounding-box
+  // would fold in as a degenerate box at the ORIGIN — wrongly stretching the union's box from x=0 to x=10.5).
+  // simplify-r drops the dead branch first, so the simplified tree's box is EXACTLY the real cube's box — the
+  // pre-simplify box is larger (contaminated by the origin), proving the prune matters. All exact.
+  let one = Rational.of(1, 1) in
+  let ten = Rational.of(10, 1) in
+  let real = Solidr.Translater(v3r(ten, rzero(), rzero()), Solidr.Cuber(v3r(one, one, one))) in
+  let dead = Solidr.Translater(v3r(Rational.of(5, 1), rzero(), rzero()), Solidr.Emptyr) in
+  let mixed = Solidr.Unionr(real, dead) in
+  let simplified = simplify-r(mixed) in
+  // simplified extent == the real cube's extent (a 1×1×1 box → size (1,1,1)); and NOT empty.
+  if v3r-eq(aabbr-size(bounding-box(simplified)), v3r(one, one, one)) and (solidr-is-empty(simplified) == false)
+  then
+    // and confirm the prune actually mattered: the UN-simplified box is bigger (origin contamination).
+    (if v3r-eq(aabbr-size(bounding-box(mixed)), v3r(one, one, one)) then trap("expected the raw union box to be contaminated by the dead branch's origin box")
+     else unit)
+  else trap("simplify-r must preserve the real cube's extent while dropping the dead branch")
+
 export { Vec3r.*, Solidr.*, Aabbr.*, rmin, rmax, rzero, v3r, v3r-x, v3r-y, v3r-z, v3r-add, v3r-mul, v3r-min,
          v3r-max, v3r-eq, aabbr-union, aabbr-intersect, aabbr-empty, bounding-box, aabbr-size,
          solidr-is-empty, simplify-r }

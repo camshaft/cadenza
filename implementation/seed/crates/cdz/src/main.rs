@@ -4274,15 +4274,31 @@ fn parse_manifest(arenas: &cadenza_syntax::Arenas) -> Manifest {
 }
 
 /// Load + parse the `Project.cdz` manifest at `dir/Project.cdz`, if present. `Ok(None)` when there is no
-/// manifest there (the caller falls back to its non-manifest behavior); `Err` only when a manifest
-/// EXISTS but fails to parse (a genuine authoring error worth surfacing).
+/// manifest there (the caller falls back to its non-manifest behavior); `Err` when a manifest EXISTS but
+/// fails to parse (a genuine authoring error worth surfacing).
+///
+/// A MALFORMED manifest is a hard error for EVERY project command, not a silent empty manifest. The ML
+/// reader RECOVERS from a parse error (it prints each error, then hands back a truncated `<error>`-node
+/// arena), so `parse_manifest` over that recovered arena would yield an ALL-DEFAULT `Manifest` — making a
+/// broken `Project.cdz` look like a valid-but-empty one. `cdz build`/`check` happened to fail later (no
+/// `entry`), but `cdz test`/`metadata`/`clean` proceeded with rc=0 as if the manifest were empty. Use the
+/// COUNTED loader and reject a manifest with any recovered parse error, so all commands fail uniformly.
 fn load_manifest(dir: &std::path::Path) -> Result<Option<(std::path::PathBuf, Manifest)>, String> {
     let path = dir.join(MANIFEST_NAME);
     if !path.is_file() {
         return Ok(None);
     }
     let spec = path.to_string_lossy().into_owned();
-    let (_source, arenas) = load_program(&spec)?;
+    let (_source, arenas, _spans, parse_errors) = load_program_spanned_counted(&spec)?;
+    if parse_errors > 0 {
+        // The specific `file:line:col: error: …` lines were already printed by the loader; give a summary
+        // so the failure is unambiguous (and non-zero exit) rather than a silently-empty manifest.
+        return Err(format!(
+            "{}: the manifest does not parse ({parse_errors} error{})",
+            path.display(),
+            if parse_errors == 1 { "" } else { "s" }
+        ));
+    }
     Ok(Some((path, parse_manifest(&arenas))))
 }
 

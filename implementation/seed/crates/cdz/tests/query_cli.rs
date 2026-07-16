@@ -2482,6 +2482,13 @@ fn doc_by_name_reads_a_user_doc_a_builtin_and_a_keyword() {
         "the query is total — a defined line either way: {stdout}"
     );
     assert_eq!(stdout.trim(), "no such definition `ghost`");
+    // A typo that is a NEAR-MISS of a real def gets a "did you mean?" — `answr` → `answer`.
+    let (ok, stdout, _) = run(&["doc", "answr", path], "");
+    assert!(ok, "total: {stdout}");
+    assert_eq!(
+        stdout.trim(),
+        "no such definition `answr` — did you mean `answer`?"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 

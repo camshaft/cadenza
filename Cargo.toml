@@ -36,6 +36,13 @@ exclude = [
     # (nothing in the seed depends on it), built + tested on demand by a dedicated CI job. It builds
     # standalone (`cargo build`/`cargo test` from its own dir), with its own `[workspace]` table.
     "implementation/seed/crates/cdz-cad",
+    # `cdz-agent` (the native agent-harness embedder, v-agent-harness Inc-1b) is excluded because its
+    # `bedrock` feature pulls the heavy async `aws-sdk-bedrockruntime` + `tokio` dependency tree — which
+    # a plain `cargo build --workspace` and the corpus gate must never pay. It is a leaf crate (nothing
+    # in the seed depends on it) that path-deps `cdz-run` (an excluded crate may depend on a member, as
+    # cdz-smith does with rcdzc). Builds + tests standalone (`cargo test` from its own dir, mock-only by
+    # default — no AWS creds/network); a dedicated CI job runs it. Has its own `[workspace]` table.
+    "implementation/seed/crates/cdz-agent",
 ]
 
 [profile.dev]

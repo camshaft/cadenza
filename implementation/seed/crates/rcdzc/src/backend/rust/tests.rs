@@ -1278,6 +1278,23 @@ fn test_key(a: &str, b: &str) -> u64 {
     h
 }
 
+/// A GLOBALLY-UNIQUE temp-dir path for one round-trip invocation: `<prefix>-<pid>-<counter>`. The
+/// content-hash key alone is NOT enough to prevent the `Text file busy`/`ExecutableFileBusy` flake —
+/// two round-trips with IDENTICAL `(module, call)` content (a test that runs the same program twice, or
+/// two distinct tests whose emitted source coincides) hash to the SAME dir and, running in PARALLEL,
+/// race write-vs-exec on the one shared `prog` binary. A per-invocation `pid`+atomic-counter suffix
+/// gives EVERY call its own dir, so no two ever touch the same `prog`/`prog.rs` — the same fix the gate
+/// harness (`xtask`) applies to `run_program_rust`. (The `content_key` still seeds the name so a kept
+/// dir is recognizable; uniqueness is what the suffix guarantees.) See
+/// [[rust-backend-roundtrip-tests-flake-text-file-busy]].
+fn unique_tmp_dir(prefix: &str, content_key: u64) -> std::path::PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
+    std::env::temp_dir().join(format!("{prefix}-{content_key:016x}-{pid}-{n}"))
+}
+
 /// Compile the emitted Rust `module` plus a generated `main` that calls `export`(`args`) and prints
 /// the result, run it under the ambient `rustc`, and return the printed line. Returns `None` if
 /// `rustc` is not available (the test then skips its assertion rather than failing).
@@ -1286,11 +1303,13 @@ fn rustc_run(module: &str, call: &str) -> Option<String> {
     if Command::new("rustc").arg("--version").output().is_err() {
         return None; // no rustc — skip the round-trip.
     }
-    // A unique temp dir per (module, call), keyed by a content hash — tests run in PARALLEL, and two
-    // that compile a same-length module (e.g. two even/odd programs) would collide on one `prog` binary
-    // and race write-vs-exec ("text file busy"). The content hash keeps distinct programs on distinct
-    // paths. (No clock/rng in the core; the test bin may use the filesystem — it is the host boundary.)
-    let dir = std::env::temp_dir().join(format!("rcdzc-rust-rt-{:016x}", test_key(module, call)));
+    // A GLOBALLY-UNIQUE temp dir per INVOCATION (pid + atomic counter, seeded by the content hash) —
+    // tests run in PARALLEL, and two round-trips with IDENTICAL `(module, call)` content (the same
+    // program run twice, or two tests whose emitted source coincides) would otherwise share ONE dir and
+    // race write-vs-exec on the fixed `prog` binary ("Text file busy"). The content-hash-only key was
+    // NOT enough (identical content collides); the per-invocation suffix guarantees no two calls touch
+    // the same `prog`/`prog.rs`. (The test bin may use the filesystem — it is the host boundary.)
+    let dir = unique_tmp_dir("rcdzc-rust-rt", test_key(module, call));
     let _ = std::fs::create_dir_all(&dir);
     let src_path = dir.join("prog.rs");
     let bin_path = dir.join("prog");
@@ -1332,7 +1351,11 @@ fn rustc_run(module: &str, call: &str) -> Option<String> {
         "compiled prog did not run:\n{}",
         String::from_utf8_lossy(&run.stderr)
     );
-    Some(String::from_utf8_lossy(&run.stdout).trim().to_string())
+    let out = String::from_utf8_lossy(&run.stdout).trim().to_string();
+    // Success → remove the now-unique per-invocation dir so `/tmp` doesn't accumulate one per test call.
+    // (On an assert-panic above the dir is intentionally LEFT, as a debugging artifact — a rare failure.)
+    let _ = std::fs::remove_dir_all(&dir);
+    Some(out)
 }
 
 /// Compile the emitted `module` wrapped in `mod prog { … }` PLUS a caller-supplied `driver` (which
@@ -1344,8 +1367,9 @@ fn rustc_run_driver(module: &str, driver: &str) -> Option<String> {
     if Command::new("rustc").arg("--version").output().is_err() {
         return None;
     }
-    let dir =
-        std::env::temp_dir().join(format!("rcdzc-rust-drv-{:016x}", test_key(module, driver)));
+    // GLOBALLY-UNIQUE per invocation (see `unique_tmp_dir` / `rustc_run`): identical `(module, driver)`
+    // content across parallel round-trips must NOT share one `prog` binary, or they race write-vs-exec.
+    let dir = unique_tmp_dir("rcdzc-rust-drv", test_key(module, driver));
     let _ = std::fs::create_dir_all(&dir);
     let src_path = dir.join("prog.rs");
     let bin_path = dir.join("prog");
@@ -1379,7 +1403,10 @@ fn rustc_run_driver(module: &str, driver: &str) -> Option<String> {
         "compiled prog did not run:\n{}",
         String::from_utf8_lossy(&run.stderr)
     );
-    Some(String::from_utf8_lossy(&run.stdout).trim().to_string())
+    let out = String::from_utf8_lossy(&run.stdout).trim().to_string();
+    // Success → drop the unique per-invocation dir (see `rustc_run`); left on an assert-panic for debug.
+    let _ = std::fs::remove_dir_all(&dir);
+    Some(out)
 }
 
 /// Locate the built `cdz-rt` rlib (a dev-dependency, so present when `cargo test` runs) and the `-L`

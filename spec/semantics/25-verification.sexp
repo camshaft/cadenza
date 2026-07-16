@@ -1760,3 +1760,231 @@
                     ((Option.None) false)))))
             (export main)))
   (output (: true Bool)))
+
+; ============================================================================================
+; Increment 10 — the premise-matching rules should match up to α-EQUIVALENCE, not structural equality.
+; A rule like MP (match the antecedent) or TRANS (match the middle term) that compares premises with
+; structural `term-eq` is SOUND-BUT-INCOMPLETE: it REJECTS a premise that is an α-variant of what it
+; expects (e.g. (λx0.x0) vs (λx5.x5)) — never derives a false theorem, but misses valid inferences a real
+; HOL kernel accepts. Matching with `aconv` (Inc-6) is complete AND sound: a real HOL kernel matches
+; premises up to α. These cases pin BOTH faces — the structural version DECLINES the α-variant (the
+; incompleteness), the aconv version ACCEPTS it and derives the conclusion — so the completeness property
+; is gate-protected. (Not a soundness fix like Inc-11; a completeness + HOL-fidelity improvement.)
+; ============================================================================================
+
+(case "MP should match its antecedent up to α-equivalence: aconv-MP accepts an α-variant a structural equality rejects"
+  (doc    "Premise-matching completeness for MP. `imp` : ⊢ (λx0.x0) ⇒ (Var 100); `th` : ⊢ (λx5.x5) — the
+           antecedent (λx0.x0) and th's conclusion (λx5.x5) are α-EQUIVALENT (same function, renamed bound
+           var). A structural-`term-eq` MP DECLINES (0 ≠ 5) — sound but incomplete, blocking a valid step.
+           An `aconv`-matching MP ACCEPTS it and derives ⊢ (Var 100). The case pins both: mp-struct → None,
+           mp-aconv → Some with conclusion (Var 100). Pins that the correct premise-matching equality for a
+           HOL kernel is α-equivalence, not structural — the completeness a real kernel needs.")
+  (module "hol"
+    (do
+      (type Term (Var Int64) (Comb Term Term) (Eq Term Term) (Abs Int64 Term) (Imp Term Term))
+      (type Thm (Seq (List Term) Term))
+      (def (term-eq (: a Term) (: b Term))
+        (match a
+          ((Term.Var n)    (match b ((Term.Var m) (= n m)) (_ false)))
+          ((Term.Comb x y) (match b ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) (_ false)))
+          ((Term.Eq x y)   (match b ((Term.Eq p q) (and (term-eq x p) (term-eq y q))) (_ false)))
+          ((Term.Abs v x)  (match b ((Term.Abs w q) (and (= v w) (term-eq x q))) (_ false)))
+          ((Term.Imp x y)  (match b ((Term.Imp p q) (and (term-eq x p) (term-eq y q))) (_ false)))))
+      (def (depth-of (: v Int64) (: stack (List Int64)))
+        (match stack ((list) (- 0 1))
+          ((list top .. rest) (if (= top v) 0 (let ((d (depth-of v rest))) (if (< d 0) d (+ d 1)))))))
+      (def (aconv-env (: sa (List Int64)) (: sb (List Int64)) (: a Term) (: b Term))
+        (match a
+          ((Term.Var n) (match b ((Term.Var m) (let ((da (depth-of n sa)) (db (depth-of m sb))) (if (< da 0) (and (< db 0) (= n m)) (= da db)))) (_ false)))
+          ((Term.Comb f x) (match b ((Term.Comb g y) (and (aconv-env sa sb f g) (aconv-env sa sb x y))) (_ false)))
+          ((Term.Eq p q) (match b ((Term.Eq r s) (and (aconv-env sa sb p r) (aconv-env sa sb q s))) (_ false)))
+          ((Term.Abs v body) (match b ((Term.Abs w b2) (aconv-env (List.push sa v) (List.push sb w) body b2)) (_ false)))
+          ((Term.Imp p q) (match b ((Term.Imp r s) (and (aconv-env sa sb p r) (aconv-env sa sb q s))) (_ false)))))
+      (def (aconv (: a Term) (: b Term)) (aconv-env (list) (list) a b))
+      (def (assume (: p Term)) (Thm.Seq (list p) p))
+      (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
+      (def (mp-struct (: imp Thm) (: th Thm))
+        (match (concl imp) ((Term.Imp p q) (if (term-eq (concl th) p) (Option.Some (Thm.Seq (list) q)) (Option.None))) (_ (Option.None))))
+      (def (mp-aconv (: imp Thm) (: th Thm))
+        (match (concl imp) ((Term.Imp p q) (if (aconv (concl th) p) (Option.Some (Thm.Seq (list) q)) (Option.None))) (_ (Option.None))))
+      (export (. Term *))
+      (export Thm)
+      (export term-eq)
+      (export aconv)
+      (export assume)
+      (export mp-struct)
+      (export mp-aconv)
+      (export concl)))
+  (input  (do
+            (import "hol" (Term Thm term-eq aconv assume mp-struct mp-aconv concl))
+            (def (main)
+              (let ((ante (Term.Abs 0 (Term.Var 0)))
+                    (ante-variant (Term.Abs 5 (Term.Var 5)))
+                    (q (Term.Var 100)))
+                (let ((imp (assume (Term.Imp ante q)))
+                      (th (assume ante-variant)))
+                  (and
+                    (match (mp-struct imp th) ((Option.None) true) ((Option.Some _) false))
+                    (match (mp-aconv imp th) ((Option.Some r) (term-eq (concl r) q)) ((Option.None) false))))))
+            (export main)))
+  (output (: true Bool)))
+
+(case "TRANS should match its middle term up to α-equivalence: aconv-TRANS chains an α-variant a structural equality rejects"
+  (doc    "Premise-matching completeness for TRANS. t1 : ⊢ (Var 1) = (λx0.x0); t2 : ⊢ (λx5.x5) = (Var 2) —
+           the middle terms (λx0.x0) and (λx5.x5) are α-EQUIVALENT. A structural-`term-eq` TRANS DECLINES
+           (the middles differ syntactically) — sound but incomplete. An `aconv`-matching TRANS ACCEPTS and
+           derives ⊢ (Var 1) = (Var 2). The case pins both: trans-struct → None, trans-aconv → Some with
+           conclusion (Var 1) = (Var 2). Pins that TRANS (like MP) should match its connecting term up to
+           α-equivalence for a complete + HOL-faithful kernel.")
+  (module "hol"
+    (do
+      (type Term (Var Int64) (Comb Term Term) (Eq Term Term) (Abs Int64 Term))
+      (type Thm (Seq (List Term) Term))
+      (def (term-eq (: a Term) (: b Term))
+        (match a
+          ((Term.Var n)    (match b ((Term.Var m) (= n m)) (_ false)))
+          ((Term.Comb x y) (match b ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) (_ false)))
+          ((Term.Eq x y)   (match b ((Term.Eq p q) (and (term-eq x p) (term-eq y q))) (_ false)))
+          ((Term.Abs v x)  (match b ((Term.Abs w q) (and (= v w) (term-eq x q))) (_ false)))))
+      (def (depth-of (: v Int64) (: stack (List Int64)))
+        (match stack ((list) (- 0 1))
+          ((list top .. rest) (if (= top v) 0 (let ((d (depth-of v rest))) (if (< d 0) d (+ d 1)))))))
+      (def (aconv-env (: sa (List Int64)) (: sb (List Int64)) (: a Term) (: b Term))
+        (match a
+          ((Term.Var n) (match b ((Term.Var m) (let ((da (depth-of n sa)) (db (depth-of m sb))) (if (< da 0) (and (< db 0) (= n m)) (= da db)))) (_ false)))
+          ((Term.Comb f x) (match b ((Term.Comb g y) (and (aconv-env sa sb f g) (aconv-env sa sb x y))) (_ false)))
+          ((Term.Eq p q) (match b ((Term.Eq r s) (and (aconv-env sa sb p r) (aconv-env sa sb q s))) (_ false)))
+          ((Term.Abs v body) (match b ((Term.Abs w b2) (aconv-env (List.push sa v) (List.push sb w) body b2)) (_ false)))))
+      (def (aconv (: a Term) (: b Term)) (aconv-env (list) (list) a b))
+      (def (assume (: p Term)) (Thm.Seq (list p) p))
+      (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
+      (def (trans-struct (: t1 Thm) (: t2 Thm))
+        (match (concl t1) ((Term.Eq a b) (match (concl t2) ((Term.Eq b2 c) (if (term-eq b b2) (Option.Some (Thm.Seq (list) (Term.Eq a c))) (Option.None))) (_ (Option.None)))) (_ (Option.None))))
+      (def (trans-aconv (: t1 Thm) (: t2 Thm))
+        (match (concl t1) ((Term.Eq a b) (match (concl t2) ((Term.Eq b2 c) (if (aconv b b2) (Option.Some (Thm.Seq (list) (Term.Eq a c))) (Option.None))) (_ (Option.None)))) (_ (Option.None))))
+      (export (. Term *))
+      (export Thm)
+      (export term-eq)
+      (export aconv)
+      (export assume)
+      (export trans-struct)
+      (export trans-aconv)
+      (export concl)))
+  (input  (do
+            (import "hol" (Term Thm term-eq aconv assume trans-struct trans-aconv concl))
+            (def (main)
+              (let ((a (Term.Var 1))
+                    (mid1 (Term.Abs 0 (Term.Var 0)))
+                    (mid2 (Term.Abs 5 (Term.Var 5)))
+                    (c (Term.Var 2)))
+                (let ((t1 (assume (Term.Eq a mid1)))
+                      (t2 (assume (Term.Eq mid2 c))))
+                  (and
+                    (match (trans-struct t1 t2) ((Option.None) true) ((Option.Some _) false))
+                    (match (trans-aconv t1 t2) ((Option.Some r) (term-eq (concl r) (Term.Eq a c))) ((Option.None) false))))))
+            (export main)))
+  (output (: true Bool)))
+(case "TRANS unions the hypotheses of BOTH operands when each carries a distinct assumption"
+  (doc "The soundness fix (TRANS/MK_COMB union operand hypotheses) is pinned for the one-operand case; this pins the actual union — both operands carry a distinct assumption and the result must retain BOTH. A TRANS that kept only one operand's hypotheses (or emptied them) would silently discharge a live assumption, letting an unproven equation escape. trans({a=b}|-a=b, {b=c}|-b=c) = {a=b, b=c}|-a=c, so hyps has length 2.")
+  (input (do
+           (type Term (Var Int64) (Comb Term Term) (Eq Term Term))
+           (type Thm (Seq (List Term) Term))
+           (def (term-eq (: p Term) (: q Term))
+             (match p
+               ((Term.Var n) (match q ((Term.Var m) (= n m)) (_ false)))
+               ((Term.Comb a b) (match q ((Term.Comb c d) (and (term-eq a c) (term-eq b d))) (_ false)))
+               ((Term.Eq a b) (match q ((Term.Eq c d) (and (term-eq a c) (term-eq b d))) (_ false)))))
+           (def (assume (: t Term)) (Thm.Seq (List.push (list) t) t))
+           (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
+           (def (hyps (: th Thm)) (match th ((Thm.Seq h _) h)))
+           (def (trans (: t1 Thm) (: t2 Thm))
+             (match (concl t1)
+               ((Term.Eq a b) (match (concl t2)
+                                ((Term.Eq b2 c) (if (term-eq b b2) (Option.Some (Thm.Seq (List.concat (hyps t1) (hyps t2)) (Term.Eq a c))) (Option.None unit)))
+                                (_ (Option.None unit))))
+               (_ (Option.None unit))))
+           (def (main (: d Int64))
+             (match (trans (assume (Term.Eq (Term.Var 1) (Term.Var 2)))
+                           (assume (Term.Eq (Term.Var 2) (Term.Var 3))))
+               ((Option.Some r) (List.len (hyps r)))
+               ((Option.None _) -1)))
+           (export main)))
+  (call main (: 0 Int64)) (output (: 2 Int64)))
+
+(case "TRANS carries a hypothesis borne by the RIGHT operand only (mirror of the left-only pin)"
+  (doc "The landed pin threads an assumption through TRANS's LEFT operand (refl on the right). This mirrors it: the hypothesis lives on the RIGHT operand and refl (no hypotheses) is on the left. trans(refl a, {a=c}|-a=c) = {a=c}|-a=c, so hyps has length 1. A TRANS reading only the left operand's hypotheses would drop the assumption entirely.")
+  (input (do
+           (type Term (Var Int64) (Comb Term Term) (Eq Term Term))
+           (type Thm (Seq (List Term) Term))
+           (def (term-eq (: p Term) (: q Term))
+             (match p
+               ((Term.Var n) (match q ((Term.Var m) (= n m)) (_ false)))
+               ((Term.Comb a b) (match q ((Term.Comb c d) (and (term-eq a c) (term-eq b d))) (_ false)))
+               ((Term.Eq a b) (match q ((Term.Eq c d) (and (term-eq a c) (term-eq b d))) (_ false)))))
+           (def (assume (: t Term)) (Thm.Seq (List.push (list) t) t))
+           (def (refl (: t Term)) (Thm.Seq (list) (Term.Eq t t)))
+           (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
+           (def (hyps (: th Thm)) (match th ((Thm.Seq h _) h)))
+           (def (trans (: t1 Thm) (: t2 Thm))
+             (match (concl t1)
+               ((Term.Eq a b) (match (concl t2)
+                                ((Term.Eq b2 c) (if (term-eq b b2) (Option.Some (Thm.Seq (List.concat (hyps t1) (hyps t2)) (Term.Eq a c))) (Option.None unit)))
+                                (_ (Option.None unit))))
+               (_ (Option.None unit))))
+           (def (main (: d Int64))
+             (match (trans (refl (Term.Var 1))
+                           (assume (Term.Eq (Term.Var 1) (Term.Var 3))))
+               ((Option.Some r) (List.len (hyps r)))
+               ((Option.None _) -1)))
+           (export main)))
+  (call main (: 0 Int64)) (output (: 1 Int64)))
+
+(case "MK_COMB unions the hypotheses of BOTH operands when each carries a distinct assumption"
+  (doc "Companion to the TRANS two-operand union: MK_COMB combines {f=g} and {x=y} into (Comb f x)=(Comb g y), and the result must retain BOTH assumptions. mk-comb({f=g}|-f=g, {x=y}|-x=y) has hyps of length 2. An MK_COMB emitting an empty hypothesis set (the pre-fix bug) would let a congruence step launder away two live assumptions.")
+  (input (do
+           (type Term (Var Int64) (Comb Term Term) (Eq Term Term))
+           (type Thm (Seq (List Term) Term))
+           (def (assume (: t Term)) (Thm.Seq (List.push (list) t) t))
+           (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
+           (def (hyps (: th Thm)) (match th ((Thm.Seq h _) h)))
+           (def (mk-comb (: t1 Thm) (: t2 Thm))
+             (match (concl t1)
+               ((Term.Eq f g) (match (concl t2)
+                                ((Term.Eq x y) (Option.Some (Thm.Seq (List.concat (hyps t1) (hyps t2)) (Term.Eq (Term.Comb f x) (Term.Comb g y)))))
+                                (_ (Option.None unit))))
+               (_ (Option.None unit))))
+           (def (main (: d Int64))
+             (match (mk-comb (assume (Term.Eq (Term.Var 1) (Term.Var 2)))
+                             (assume (Term.Eq (Term.Var 3) (Term.Var 4))))
+               ((Option.Some r) (List.len (hyps r)))
+               ((Option.None _) -1)))
+           (export main)))
+  (call main (: 0 Int64)) (output (: 2 Int64)))
+
+(case "TRANS chained three deep accumulates every operand's hypotheses"
+  (doc "Assumptions must accumulate transitively, not just pairwise. Chaining trans(trans({a=b},{b=c}), {c=d}) yields {a=b,b=c,c=d}|-a=d, so hyps has length 3. This guards against a union that resets or caps at the most recent step — the accumulation across nested proof structure is where a subtle drop would hide.")
+  (input (do
+           (type Term (Var Int64) (Comb Term Term) (Eq Term Term))
+           (type Thm (Seq (List Term) Term))
+           (def (term-eq (: p Term) (: q Term))
+             (match p
+               ((Term.Var n) (match q ((Term.Var m) (= n m)) (_ false)))
+               ((Term.Comb a b) (match q ((Term.Comb c d) (and (term-eq a c) (term-eq b d))) (_ false)))
+               ((Term.Eq a b) (match q ((Term.Eq c d) (and (term-eq a c) (term-eq b d))) (_ false)))))
+           (def (assume (: t Term)) (Thm.Seq (List.push (list) t) t))
+           (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
+           (def (hyps (: th Thm)) (match th ((Thm.Seq h _) h)))
+           (def (trans (: t1 Thm) (: t2 Thm))
+             (match (concl t1)
+               ((Term.Eq a b) (match (concl t2)
+                                ((Term.Eq b2 c) (if (term-eq b b2) (Option.Some (Thm.Seq (List.concat (hyps t1) (hyps t2)) (Term.Eq a c))) (Option.None unit)))
+                                (_ (Option.None unit))))
+               (_ (Option.None unit))))
+           (def (main (: d Int64))
+             (match (trans (assume (Term.Eq (Term.Var 1) (Term.Var 2))) (assume (Term.Eq (Term.Var 2) (Term.Var 3))))
+               ((Option.Some r12) (match (trans r12 (assume (Term.Eq (Term.Var 3) (Term.Var 4))))
+                                    ((Option.Some r) (List.len (hyps r)))
+                                    ((Option.None _) -1)))
+               ((Option.None _) -2)))
+           (export main)))
+  (call main (: 0 Int64)) (output (: 3 Int64)))
