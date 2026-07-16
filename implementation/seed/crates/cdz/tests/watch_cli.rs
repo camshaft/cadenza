@@ -318,3 +318,59 @@ fn watch_run_executes_the_entry_on_the_initial_pass() {
         "the run's own build artifacts must NOT re-trigger the watch"
     );
 }
+
+#[test]
+fn watch_reruns_when_a_path_dependency_source_changes() {
+    // The multi-project edit loop: `cdz watch` on a project with `def deps = ["../mathlib"]` watches the
+    // DEP's directory too, so editing the dep's source re-triggers the run — not just editing the consumer.
+    // (Before this, only the consumer's dir was watched, so a dep edit was silently missed.) Uses the
+    // default `--exec check` — deterministic + fast; the WATCH TRIGGER (what's under test) fires the same
+    // for any exec, and check doesn't depend on the run succeeding (so no timing flakiness).
+    let root = std::env::temp_dir().join(format!("cdz-watch-dep-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("mathlib")).unwrap();
+    std::fs::write(
+        root.join("mathlib/Project.cdz"),
+        "def name = \"mathlib\"\ndef entry = \"lib.sexp\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("mathlib/lib.sexp"),
+        "(do (def (add (: x Int64) (: y Int64)) (+ x y)) (export add))",
+    )
+    .unwrap();
+    std::fs::create_dir_all(root.join("app")).unwrap();
+    std::fs::write(
+        root.join("app/Project.cdz"),
+        "def name = \"app\"\ndef entry = \"main.sexp\"\ndef deps = [\"../mathlib\"]\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("app/main.sexp"),
+        "(do (effect Math (op add (-> Int64 Int64 Int64))) (bind Math \"cadenza:mathlib/api\") \
+         (def (main (: x Int64)) (host (Math) (Math.add x 10))) (export main))",
+    )
+    .unwrap();
+
+    let (mut child, cap) = spawn_watch(&root.join("app"), &[], "dep");
+    assert!(
+        wait_for(&cap, "watching", Duration::from_secs(20)),
+        "startup banner: {}",
+        read_cap(&cap)
+    );
+
+    // Edit the DEPENDENCY's source (not the consumer's) — the watch must still re-run.
+    std::thread::sleep(Duration::from_millis(800));
+    std::fs::write(
+        root.join("mathlib/lib.sexp"),
+        "(do (def (add (: x Int64) (: y Int64)) (+ (+ x y) 100)) (export add))",
+    )
+    .expect("edit the dependency source");
+    let rer = wait_for(&cap, "change detected", Duration::from_secs(30));
+
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::remove_file(&cap);
+    assert!(rer, "editing a path-dependency's source re-runs the watch");
+}
