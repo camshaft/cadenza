@@ -7336,6 +7336,23 @@ fn pattern_constraints(
             .or_else(|| db.ast.as_ctor_form(pat, "tuple"))
             .unwrap_or(&[])
             .to_vec();
+        // A `..` REST MARKER in a tuple pattern — `(tuple a .. r)` — is meaningless: a tuple has FIXED
+        // arity, so there is no variable-length tail for `..` to spread. Without this check `..` was
+        // COUNTED AS A POSITIONAL ELEMENT (`[a, "..", r]` = 3 "elements") — so `(tuple a .. r)` silently
+        // matched a 3-tuple, binding `..`/`r` as ordinary sub-patterns, and only misfired the arity count
+        // on a differently-sized tuple. `..` (a rest/spread) belongs to a LIST pattern, whose length is
+        // unknown; name that. (Detected the same way the list-pattern arms find their rest — a bare `..`
+        // name among the elements. Anchored at the pattern; the message avoids every `dedup_faults` marker
+        // phrase — "were given"/"takes exactly"/"arguments to a function of arity"/"are different types".)
+        if elems.iter().any(|&e| db.ast.as_name(e) == Some("..")) {
+            return Err(Reject::coded(
+                Code::Malformed,
+                "a tuple pattern has fixed arity, so `..` (a rest/spread) has no place here — a `..` \
+                 matches the variable-length tail of a LIST, not a tuple. Name each element positionally, \
+                 e.g. `(tuple a b c)`; if the value is a list, match it with `(list a .. rest)`",
+            )
+            .at(pat));
+        }
         // The payload MUST be a tuple, and the pattern's ARITY must match it — a tuple pattern against a
         // non-tuple payload, or one naming the wrong number of elements (`(tuple a b c)` against a
         // 2-tuple), is an ill-typed destructure the compiler REJECTS (CDZ0201), never a silent match on a

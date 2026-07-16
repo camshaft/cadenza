@@ -42669,6 +42669,30 @@ mod stage1 {
             None
         );
         assert_eq!(code("(let (((tuple a _) (tuple 3 9))) a)"), None);
+        // A `..` REST MARKER in a tuple pattern is rejected CDZ0201 (was SILENTLY SWALLOWED — `..` counted
+        // as a positional element, so `(tuple a .. r)` matched a 3-tuple and bound `..`/`r` as ordinary
+        // sub-patterns). A tuple has fixed arity; `..` is a LIST construct. Both binding positions (`let`)
+        // and match arms are covered (the binding arm routes through the same `pattern_constraints`).
+        assert_eq!(
+            code("(let (((tuple a .. r) (tuple 1 2 3))) a)").as_deref(),
+            Some("CDZ0201"),
+            "a `..` in a let-binding tuple pattern is rejected"
+        );
+        let rest_msg = msg("(let (((tuple a .. r) (tuple 1 2 3))) a)").unwrap_or_default();
+        assert!(
+            rest_msg.contains("a tuple pattern has fixed arity")
+                && rest_msg.contains("`..`")
+                && rest_msg.contains("(list a .. rest)"),
+            "the `..`-in-tuple reject names the fixed-arity reason + the list alternative: {rest_msg}"
+        );
+        // NO false positive: a `..` in a nested LIST element of a tuple pattern is fine — only a `..` that
+        // is a DIRECT element of the tuple is rejected. (`(tuple (list a .. r1) …)`'s `..` belongs to the
+        // inner list, not the tuple.)
+        assert_eq!(
+            code("(let (((tuple (list a .. r1) c) (tuple (list 1 2) 3))) c)"),
+            None,
+            "a `..` inside a nested list element of a tuple pattern is valid"
+        );
     }
 
     #[test]
