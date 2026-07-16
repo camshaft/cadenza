@@ -737,6 +737,7 @@ pass	a function's return type contradicting the body is rejected
 pass	a function-typed parameter annotation is not silently discarded in the body
 pass	a function-typed parameter annotation's result type is checked against the argument
 pass	a function-typed parameter with a matching Bool-returning argument is accepted
+pass	a general recursive-sum recursion (Nil|Cons count) reads the right payload through the fold
 pass	a generated value with a BIGINT leaf is reproducible (compound = walks the bignum)
 pass	a generic definition takes the type as a type-valued parameter
 pass	a generic recursive sum references itself bare and carries its own type parameter
@@ -829,6 +830,7 @@ pass	a host effect with a non-kebab NAME crosses under a normalized interface ex
 pass	a host effect with a non-kebab OPERATION name crosses under a normalized func extern name
 pass	a host-called closure applied to a different argument tracks the input
 pass	a host-called closure with a different body dispatches the right code
+pass	a kernel rule using α-equivalence accepts an α-variant premise a structural equality would reject
 pass	a key-directed pattern matches a RUNTIME map by looking up its keys
 pass	a keyed lookup of an updated map is not shared with the original's
 pass	a known-constructor match selects the NON-first arm, eliding the other arms' bodies
@@ -1163,7 +1165,6 @@ pass	a nested map pattern with a malformed rest names the shape, not an unbound 
 pass	a nested match missing an inner variant under a DISC-≥1 variant is non-exhaustive
 pass	a nested match on a recursive sum falls through when the inner variant differs (known outer disc)
 pass	a nested match on a recursive sum with a KNOWN outer discriminant reads the right payload depth
-pass	a general recursive-sum recursion (Nil|Cons count) reads the right payload through the fold
 pass	a nested match on a runtime scrutinee
 pass	a nested module's function export is applied through the projection chain
 pass	a nested option value annotated with the wrong inner payload type is rejected
@@ -3194,6 +3195,8 @@ pass	wrapping-sub of a runtime value from itself is zero at every input
 pass	wrapping-sub on a runtime Int8 wraps at its signed min boundary
 pass	wrapping-sub on a runtime UInt8 wraps modulo 256
 pass	wrapping-sub wraps a boundary-crossing runtime Int64 at the min boundary
+pass	α-equivalence (aconv) recognizes (λx.x) and (λy.y) as the same term up to bound-variable renaming
+pass	α-equivalence handles nesting and distinguishes a bound variable from a same-numbered free variable
 todo	SUM ARG + LIST RESULT declines cleanly (Option arg, List result)
 todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional

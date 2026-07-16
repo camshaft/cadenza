@@ -793,3 +793,139 @@
                   (_ false))))
             (export main)))
   (output (: true Bool)))
+
+; ============================================================================================
+; Increment 6 — α-EQUIVALENCE (aconv): the term equality a real HOL kernel actually uses. The structural
+; term-eq of Inc-2/3 says (λx0.x0) and (λx1.x1) DIFFER (0 ≠ 1) — but they are the SAME function, differing
+; only in the bound variable's name. aconv is α-equivalence: two terms are equal up to consistent renaming
+; of BOUND variables (free variables must match exactly). It is implemented by a parallel walk carrying two
+; binder stacks; a variable is α-equal iff it is bound at the same depth on both sides, or both free and
+; numerically equal. This is the correct equality for a rule like EQ_MP (a premise may be an α-variant of
+; the expected term) — using structural equality there would spuriously reject sound proofs. These cases
+; pin aconv's positive/negative behavior, its subtle bound-vs-free edges, and its use inside a kernel rule.
+; ============================================================================================
+
+(case "α-equivalence (aconv) recognizes (λx.x) and (λy.y) as the same term up to bound-variable renaming"
+  (doc    "The core of α-equivalence. (λx0.x0) and (λx1.x1) are both the identity function — the same
+           term modulo the bound variable's name — so aconv is TRUE, even though structural term-eq (0≠1)
+           would say false. Conversely (λx0.x0) and (λx0.(Var 9)) are NOT α-equivalent (one binds its
+           variable, the other returns a free x9). Implemented by a parallel walk over two binder stacks
+           (List.push on Abs entry; depth-of lookup): a Var is α-equal iff bound at the same depth on both
+           sides, or both free and equal. Pins the term equality a real HOL kernel uses.")
+  (module "hol"
+    (do
+      (type Term (Var Int64) (Comb Term Term) (Eq Term Term) (Abs Int64 Term))
+      (def (depth-of (: v Int64) (: stack (List Int64)))
+        (match stack
+          ((list) (- 0 1))
+          ((list top .. rest) (if (= top v) 0 (let ((d (depth-of v rest))) (if (< d 0) d (+ d 1)))))))
+      (def (aconv-env (: sa (List Int64)) (: sb (List Int64)) (: a Term) (: b Term))
+        (match a
+          ((Term.Var n)
+            (match b ((Term.Var m)
+              (let ((da (depth-of n sa)) (db (depth-of m sb)))
+                (if (< da 0) (and (< db 0) (= n m)) (= da db)))) (_ false)))
+          ((Term.Comb f x) (match b ((Term.Comb g y) (and (aconv-env sa sb f g) (aconv-env sa sb x y))) (_ false)))
+          ((Term.Eq p q)   (match b ((Term.Eq r s) (and (aconv-env sa sb p r) (aconv-env sa sb q s))) (_ false)))
+          ((Term.Abs v body) (match b ((Term.Abs w body2) (aconv-env (List.push sa v) (List.push sb w) body body2)) (_ false)))))
+      (def (aconv (: a Term) (: b Term)) (aconv-env (list) (list) a b))
+      (export (. Term *))
+      (export aconv)))
+  (input  (do
+            (import "hol" (Term aconv))
+            (def (main)
+              (and (aconv (Term.Abs 0 (Term.Var 0)) (Term.Abs 1 (Term.Var 1)))
+                   (not (aconv (Term.Abs 0 (Term.Var 0)) (Term.Abs 0 (Term.Var 9))))))
+            (export main)))
+  (output (: true Bool)))
+
+(case "α-equivalence handles nesting and distinguishes a bound variable from a same-numbered free variable"
+  (doc    "The subtle correctness edges that make aconv a REAL α-equivalence, not a toy: (a) nested
+           binders rename consistently — (λx0.λx1. x0 x1) is α-equal to (λx7.λx3. x7 x3); (b) a FREE
+           variable must match EXACTLY — (λx0. x5) ≡ (λx9. x5) but not ≡ (λx9. x6); (c) crucially, a BOUND
+           variable is NOT α-equal to a same-numbered FREE variable — (λx0.x0) is not (λx0.(Var 5)) (the
+           second's body is a free x5, not the bound x0). Pins that aconv tracks binding depth, not raw
+           ids, so it neither conflates free vars nor treats a coincidental id match as α-equality.")
+  (module "hol"
+    (do
+      (type Term (Var Int64) (Comb Term Term) (Eq Term Term) (Abs Int64 Term))
+      (def (depth-of (: v Int64) (: stack (List Int64)))
+        (match stack
+          ((list) (- 0 1))
+          ((list top .. rest) (if (= top v) 0 (let ((d (depth-of v rest))) (if (< d 0) d (+ d 1)))))))
+      (def (aconv-env (: sa (List Int64)) (: sb (List Int64)) (: a Term) (: b Term))
+        (match a
+          ((Term.Var n)
+            (match b ((Term.Var m)
+              (let ((da (depth-of n sa)) (db (depth-of m sb)))
+                (if (< da 0) (and (< db 0) (= n m)) (= da db)))) (_ false)))
+          ((Term.Comb f x) (match b ((Term.Comb g y) (and (aconv-env sa sb f g) (aconv-env sa sb x y))) (_ false)))
+          ((Term.Eq p q)   (match b ((Term.Eq r s) (and (aconv-env sa sb p r) (aconv-env sa sb q s))) (_ false)))
+          ((Term.Abs v body) (match b ((Term.Abs w body2) (aconv-env (List.push sa v) (List.push sb w) body body2)) (_ false)))))
+      (def (aconv (: a Term) (: b Term)) (aconv-env (list) (list) a b))
+      (export (. Term *))
+      (export aconv)))
+  (input  (do
+            (import "hol" (Term aconv))
+            (def (main)
+              (and
+                (aconv (Term.Abs 0 (Term.Abs 1 (Term.Comb (Term.Var 0) (Term.Var 1))))
+                       (Term.Abs 7 (Term.Abs 3 (Term.Comb (Term.Var 7) (Term.Var 3)))))
+                (and (aconv (Term.Abs 0 (Term.Var 5)) (Term.Abs 9 (Term.Var 5)))
+                     (and (not (aconv (Term.Abs 0 (Term.Var 5)) (Term.Abs 9 (Term.Var 6))))
+                          (not (aconv (Term.Abs 0 (Term.Var 0)) (Term.Abs 0 (Term.Var 5))))))))
+            (export main)))
+  (output (: true Bool)))
+
+(case "a kernel rule using α-equivalence accepts an α-variant premise a structural equality would reject"
+  (doc    "Why the kernel NEEDS aconv, not structural term-eq: EQ_MP takes ⊢ p=q and a theorem whose
+           conclusion is p, deriving ⊢ q. If the second theorem's conclusion is an α-VARIANT of p — the
+           same term with a renamed bound variable — a sound kernel must accept it. Here p = (λx0.x0),
+           the premise theorem's conclusion is (λx5.x5) (α-equivalent to p), and EQ_MP checks the match
+           with aconv → succeeds, deriving ⊢ q = (Var 100). A structural-equality EQ_MP would spuriously
+           REJECT (0 ≠ 5), blocking sound proofs. Pins that α-equivalence is the correct premise-matching
+           equality for the inference rules. (eq/thm are built here via `assume` for a self-contained
+           witness; the α-matching in eq-mp is the point.)")
+  (module "hol"
+    (do
+      (type Term (Var Int64) (Comb Term Term) (Eq Term Term) (Abs Int64 Term))
+      (type Thm (Seq (List Term) Term))
+      (def (depth-of (: v Int64) (: stack (List Int64)))
+        (match stack
+          ((list) (- 0 1))
+          ((list top .. rest) (if (= top v) 0 (let ((d (depth-of v rest))) (if (< d 0) d (+ d 1)))))))
+      (def (aconv-env (: sa (List Int64)) (: sb (List Int64)) (: a Term) (: b Term))
+        (match a
+          ((Term.Var n)
+            (match b ((Term.Var m)
+              (let ((da (depth-of n sa)) (db (depth-of m sb)))
+                (if (< da 0) (and (< db 0) (= n m)) (= da db)))) (_ false)))
+          ((Term.Comb f x) (match b ((Term.Comb g y) (and (aconv-env sa sb f g) (aconv-env sa sb x y))) (_ false)))
+          ((Term.Eq p q)   (match b ((Term.Eq r s) (and (aconv-env sa sb p r) (aconv-env sa sb q s))) (_ false)))
+          ((Term.Abs v body) (match b ((Term.Abs w body2) (aconv-env (List.push sa v) (List.push sb w) body body2)) (_ false)))))
+      (def (aconv (: a Term) (: b Term)) (aconv-env (list) (list) a b))
+      (def (assume (: p Term)) (Thm.Seq (list p) p))
+      (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
+      (def (eq-mp (: eq Thm) (: thm Thm))
+        (match (concl eq)
+          ((Term.Eq p q) (if (aconv (concl thm) p) (Option.Some (Thm.Seq (list) q)) (Option.None)))
+          (_ (Option.None))))
+      (export (. Term *))
+      (export Thm)
+      (export aconv)
+      (export assume)
+      (export eq-mp)
+      (export concl)))
+  (input  (do
+            (import "hol" (Term Thm aconv assume eq-mp concl))
+            (def (main)
+              (let ((p (Term.Abs 0 (Term.Var 0)))
+                    (q (Term.Var 100))
+                    (p-variant (Term.Abs 5 (Term.Var 5))))
+                (let ((eq (assume (Term.Eq p q)))
+                      (thm (assume p-variant)))
+                  (match (eq-mp eq thm)
+                    ((Option.Some r) (match (concl r) ((Term.Var n) (= n 100)) (_ false)))
+                    ((Option.None) false)))))
+            (export main)))
+  (output (: true Bool)))
