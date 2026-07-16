@@ -16,3 +16,5 @@ negative `n`, `n == 0` is false and `n - 1` moves FARTHER from 0 → unbounded r
 non-termination). Real bug in a CAD example (part of the rsolid-port vertical). FIX: guard with
 `n <= 0` (matching the doc) instead of `n == 0`. CAD territory (v-cad owns implementation/cad). Fix on
 `trunk`. Quote + link in queue file.
+
+<!-- RESOLVED 2026-07-15 (trunk 98d9414e1, PR #412/#414): cube-row + radial-pattern both guard n<=0→empty; regression tests pin (-1) terminate as empty. v-cad swept all G-series examples: no other count-toward-bound recursion (solid.cdz recursions are structural, immune). -->
