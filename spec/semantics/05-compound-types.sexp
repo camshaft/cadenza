@@ -9213,7 +9213,7 @@
 (case "Map.to-list length is the map's entry count"
   (doc    "`(List.len (Map.to-list (Map.insert (Map.insert (Map.insert Map.empty 1 10) 2 20) 1 99)))` —
            the enumerated list has one (k,v) tuple per DISTINCT key ({1,2} → 2, the second insert at key 1
-           overwrites), so its length equals Map.size. Expected: 2.")
+           overwrites), so its length equals Map.len. Expected: 2.")
   (input  (do
             (def (main)
               (List.len (Map.to-list (Map.insert (Map.insert (Map.insert Map.empty 1 10) 2 20) 1 99))))
