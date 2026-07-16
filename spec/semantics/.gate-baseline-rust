@@ -819,6 +819,8 @@ pass	a nested sum match missing an inner variant is non-exhaustive
 pass	a nested tuple pattern of the wrong arity is a type error
 pass	a nested tuple-arity mismatch in equality is a type error
 pass	a nested tuple-pattern parameter destructures a runtime tuple
+pass	a nested unquote Bool pattern does not match a non-boolean operand
+pass	a nested unquote pattern matches a Bool sub-AST by shape
 pass	a nested unquote pattern matches a Float sub-AST by shape
 pass	a nested unquote pattern matches a Str sub-AST by shape
 pass	a nested unquote pattern matches a sub-AST by shape
@@ -881,6 +883,7 @@ pass	a parameterized export returns a tuple computed from its argument
 pass	a partial application persists its capture across two applications
 pass	a partial constructor bound in a let completes when applied
 pass	a partial constructor bound in a let-tuple completes when applied to a runtime arg
+pass	a partial constructor in a runtime tuple element completes via an eta-closure lift
 pass	a partial constructor passed to a higher-order function completes the variant
 pass	a partial constructor projected from a tuple literal completes when applied
 pass	a partial constructor stored in a record field completes when applied
@@ -969,6 +972,7 @@ pass	a record field holding a sum is projected then matched
 pass	a record field key that coincides with a parameter name survives the call
 pass	a record field with no value expression is rejected, not a crash
 pass	a record is constructed and a field is read
+pass	a record match pattern is named as unimplemented, not leaked as an unbound field binder (CDZ0201)
 pass	a record missing a field the annotation names is rejected
 pass	a record scrutinee is bound whole by a match binder
 pass	a record whose field is a runtime tuple nests across the boundary
@@ -1057,6 +1061,7 @@ pass	a right shift by a floating-point count does not silently promote
 pass	a right shift by the bit width or more traps rather than masking
 pass	a run-time-index scalar read is present in bounds and absent out of bounds
 pass	a runtime BigInt operation does not silently promote a fixed-width operand
+pass	a runtime FLOAT width nested in a compound annotation is rejected
 pass	a runtime Float32 addition emits the f32 machine add
 pass	a runtime Float32 division emits f32.div
 pass	a runtime Float32 equality compares by the canonical byte form
@@ -1088,6 +1093,8 @@ pass	a runtime division truncates toward zero
 pass	a runtime element collapses against a constant one at build
 pass	a runtime float addition emits the machine add
 pass	a runtime float division rounds under the fixed mode
+pass	a runtime float equality feeds the true-literal boolean coercion
+pass	a runtime float equality negated by the false-literal coercion
 pass	a runtime float multiplication emits the machine mul
 pass	a runtime float promotes to a wider width with the machine promote
 pass	a runtime float subtraction emits the machine sub
@@ -1107,6 +1114,7 @@ pass	a runtime list of lists escapes with its nested element type
 pass	a runtime list parameter consumed by push in a self-recursive call's sibling operand is unchanged
 pass	a runtime magnitude unwraps through a unit conversion
 pass	a runtime map shared across two recursive-call operands is not mutated by an insert in one
+pass	a runtime mixed-scale combine converts a COMPUTED Float quantity operand
 pass	a runtime mixed-unit sum emits the scale conversion (Int)
 pass	a runtime modulo of the minimum integer by -1 is zero on every backend
 pass	a runtime multiplication that overflows traps
@@ -1165,6 +1173,7 @@ pass	a runtime unsigned-byte multiplication traps exactly past its width maximum
 pass	a runtime unsigned-byte subtraction traps below zero
 pass	a runtime value under a const key binds through the map pattern
 pass	a runtime wider integer is truncated into a byte by wrap
+pass	a runtime width NESTED in a compound annotation is rejected
 pass	a runtime wrapper sum whose payload is a variant is matched by a nested constructor pattern
 pass	a runtime-assembled tree round-trips equal to its quoted twin
 pass	a runtime-branched tuple returned from a callee is projected in the caller
@@ -1287,6 +1296,7 @@ pass	a sum variant carrying a NARROW-int payload boxes and reads it at its width
 pass	a sum variant carrying a String payload matches and reads the string
 pass	a sum whose variants are named after target-language keywords constructs and matches
 pass	a sum with FOUR type parameters instantiates and matches each at a distinct type
+pass	a sum-match payload's heap child consumed while the scrutinee is live is retained
 pass	a sum-match recursion that accumulates a built-in list returns a list
 pass	a sum-payload-wrapped self-application is rejected in bounded time, not a compiler stack overflow
 pass	a sum-type value is constructed through a variant
@@ -1296,6 +1306,7 @@ pass	a symbol converts back to its content string
 pass	a symbol's identity is its content, not how the content was derived
 pass	a tag-length-value record round-trips through construct then match
 pass	a tagged template expands via its binding-dispatched tag function
+pass	a tagged template nested in another's hole composes — the inner's result reaches the outer tag
 pass	a tagged template threads MULTIPLE holes and an interior chunk to its tag function
 pass	a tagged template weaves a hole into its expansion
 pass	a tagged template whose tag is not a function is rejected
@@ -1322,6 +1333,7 @@ pass	a three-element runtime tuple is returned as a result
 pass	a three-level curried spine applies through both intermediate closures
 pass	a three-parameter closure is applied at full arity through a recursive HOF
 pass	a three-payload constructor fully curried builds the variant
+pass	a three-payload constructor partially applied in a runtime tuple completes via eta-closure
 pass	a top-level module is named by a top-level def's body
 pass	a top-level sum value definition may reference a sum value defined later
 pass	a top-level tuple pattern matches a tuple produced by a runtime conditional
@@ -2003,6 +2015,7 @@ pass	negative zero encodes to bytes distinct from positive zero
 pass	negative zero is distinct in the canonical value form
 pass	negative zero is not equal to positive zero
 pass	negative zero round-trips through the codec by byte identity
+pass	negative zero stays distinct from zero through the hoisted float compare
 pass	nested patterns deconstruct recursively
 pass	nested patterns with literals
 pass	nested quasiquote embeds a FLOAT via the inner unquote
@@ -2254,6 +2267,7 @@ pass	the runtime-list version of a tail fold compiles and folds correctly
 pass	the same function called under two handlers is discharged by each in turn
 pass	the scalar length of a runtime multi-byte string counts scalars, not bytes
 pass	the selected operand decides a hoisted comparison
+pass	the selected operand decides a hoisted float equality
 pass	the shrinking search terminates via its fuel bound rather than searching unboundedly
 pass	the slice overflow guard holds on a chained slice-of-a-slice
 pass	the taken arm's checked add still overflows under the operator hoist
@@ -2491,6 +2505,7 @@ todo	MULTI-EXPORT: two two-Tuple-arg closures with a BYTE-ROPE result
 todo	MULTI-EXPORT: two two-Tuple-arg closures with a LIST result share one `call`
 todo	MULTI-EXPORT: two two-Tuple-arg closures with a fixed COMPOUND result
 todo	N-suffixed literals compose under BigInt arithmetic
+todo	NaN equality survives the hoisted float compare by canonical byte form
 todo	Qty.unit recovers a quantity's unit to build another quantity of the same unit
 todo	SUM ARG + LIST RESULT declines cleanly (Option arg, List result)
 todo	THREE Tuple args cross the direct-call boundary
@@ -2727,7 +2742,6 @@ todo	a parameterized export returns a runtime BigInt computed from its argument
 todo	a parameterized export returns a runtime Rational computed from its argument
 todo	a parameterized plain export alongside a closure export applies its argument
 todo	a parameterized plain export alongside a closure export — the closure captures and applies
-todo	a partial constructor in a runtime tuple element declines cleanly (was invalid wasm)
 todo	a prefixed quantity displays scaled to its reference unit (Float)
 todo	a prelude Option value crosses a module boundary as an export result
 todo	a produced closure is handed back into a consumer export (the round trip)
@@ -2789,6 +2803,7 @@ todo	a runtime division of the minimum integer by -1 overflows and traps
 todo	a runtime exact mixing of inch and millimeter keeps the fractional scale
 todo	a runtime final rest segment binds the empty tail when the scrutinee is only the header
 todo	a runtime fixed-width segment is emitted big-endian and read back by index
+todo	a runtime mixed-scale combine converts a COMPUTED BigInt quantity operand
 todo	a runtime nibble truncation keeps the low four bits
 todo	a runtime out-of-bounds list update traps rather than aliasing a valid slot
 todo	a runtime signed little-endian segment lays the low byte first
