@@ -1136,6 +1136,36 @@
             (export main)))
   (output (: 1 Int64)))
 
+(case "Type.of reflects a function's BODY-SOLVED domain, distinguishing different parameter types"
+  (doc    "`Type.of` on a FUNCTION value reflects its arrow type with each UNANNOTATED parameter solved from
+           the body, not left undetermined. `f x = x + 1` has domain `Int64` (the `+` pins it) and `g b =
+           if b 0 1` has domain `Bool` (the `if` condition pins it), both returning `Int64`. Their reflected
+           arrows `(-> Int64 Int64)` and `(-> Bool Int64)` differ in the DOMAIN, so `Type.eq` is false —
+           `0 + 0 = 0`. Guards the reflection-soundness fix: a bottom-up arrow left both domains `Any`, so
+           two functions with genuinely different parameter types reflected the SAME `(-> Any Int64)` and
+           `Type.eq` returned a WRONG `true` (a miscompiled reflection); the body-solve grounds the domain.")
+  (input  (do
+            (def (f x) (+ x 1))
+            (def (g b) (if b 0 1))
+            (def (main) (+ (if (Type.eq (Type.of f) (Type.of g)) 1 0)
+                           (if (Type.eq (Type.of g) (Type.of f)) 10 0)))
+            (export main)))
+  (output (: 0 Int64)))
+
+(case "a function's reflected domain matches an equivalent explicitly-annotated signature"
+  (doc    "The dual of the domain-distinguishing case: an UNANNOTATED parameter solved from the body reflects
+           the SAME type an explicit annotation would. `f x = x + 1` (domain solved `Int64`) and `h (: y
+           Int64) = y + 1` (domain declared `Int64`) reflect the SAME `(-> Int64 Int64)`, so `Type.eq` is
+           true — `1`. Guards the second facet of the same fix: the old bottom-up arrow reflected `f` as
+           `(-> Any Int64)`, unequal to the annotated `(-> Int64 Int64)`, so an unannotated function was
+           wrongly DISTINCT from its own explicitly-typed twin.")
+  (input  (do
+            (def (f x) (+ x 1))
+            (def (h (: y Int64)) (+ y 1))
+            (def (main) (if (Type.eq (Type.of f) (Type.of h)) 1 0))
+            (export main)))
+  (output (: 1 Int64)))
+
 (case "an if on Type.eq selects a branch at compile time"
   (doc    "The headline of compile-time reflection: `(if (Type.eq (Type.of 5) Int64) 100 200)` folds the
            condition to the constant `true`, so the whole `if` is `100`. A program BRANCHES on types at
