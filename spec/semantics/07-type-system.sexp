@@ -1044,6 +1044,58 @@
             (export main)))
   (output (: 1 Int64)))
 
+; Type.eq on a type-valued parameter NEIGHBORS (breaker): the case above compares ONE parameter against a
+; WRITTEN type (Int64). These pin the operand positions it doesn't: BOTH operands type-valued parameters
+; (t vs u), a COMPOUND type operand (List Int64 — structural, not a leaf), a type-value THREADED through a
+; second call before the Type.eq (monomorphization must carry it), and a parameter against ITSELF (always
+; true regardless of the instantiation). All fold per-call at compile time, both backends.
+
+(case "Type.eq compares two type-valued parameters to each other"
+  (doc    "Both operands are type-valued PARAMETERS, not one against a written type: `(Type.eq t u)`. Each
+           instantiation substitutes concrete type-values, so it folds per call — `(same Int64 Int64)` folds
+           true → 1, `(same Int64 Bool)` folds false → 0, sum 1. Pins that a type-valued parameter is a valid
+           operand on BOTH sides of Type.eq, not only the left.")
+  (input  (do
+            (def (same (: t Type) (: u Type)) (if (Type.eq t u) 1 0))
+            (def (main) (+ (same Int64 Int64) (same Int64 Bool)))
+            (export main)))
+  (output (: 1 Int64)))
+
+(case "Type.eq on a type-valued parameter against a COMPOUND type is structural"
+  (doc    "The operand may be a COMPOUND written type, not only a leaf: `(Type.eq t (List Int64))`. Type
+           equality is structural, so `(List Int64)` ≠ `(List Bool)` — `(is-list-int (List Int64))` folds true
+           → 1, `(is-list-int (List Bool))` folds false → 0, sum 1. Pins that Type.eq on a type-valued
+           parameter compares compound types by structure (the element type distinguishes them), not by a
+           head-only tag.")
+  (input  (do
+            (def (is-list-int (: t Type)) (if (Type.eq t (List Int64)) 1 0))
+            (def (main) (+ (is-list-int (List Int64)) (is-list-int (List Bool))))
+            (export main)))
+  (output (: 1 Int64)))
+
+(case "a type-valued parameter threaded through a second call reaches Type.eq with its type intact"
+  (doc    "Monomorphization must carry the type-value across a call boundary: `relay` passes its `(: t Type)`
+           to `check`, which does the `Type.eq t Int64`. `(relay Int64)` folds true → 1, `(relay Bool)` folds
+           false → 0, sum 1. Pins that a type-valued parameter substituted at `relay`'s instantiation flows
+           into `check`'s Type.eq — the type-value is not lost when passed to another function.")
+  (input  (do
+            (def (check (: t Type)) (if (Type.eq t Int64) 1 0))
+            (def (relay (: t Type)) (check t))
+            (def (main) (+ (relay Int64) (relay Bool)))
+            (export main)))
+  (output (: 1 Int64)))
+
+(case "Type.eq of a type-valued parameter against itself is always true"
+  (doc    "`(Type.eq t t)` — a type-valued parameter compared to ITSELF — is true at EVERY instantiation,
+           whatever type is passed: `(refl Int64 5)` → 1 and `(refl Bool 5)` → 1, sum 2. Pins the reflexivity
+           of Type.eq on a type-valued operand independent of the substituted type (a fold that only matched
+           against a WRITTEN type would miss the param-vs-same-param case).")
+  (input  (do
+            (def (refl (: t Type) (: x Int64)) (if (Type.eq t t) 1 0))
+            (def (main) (+ (refl Int64 5) (refl Bool 5)))
+            (export main)))
+  (output (: 2 Int64)))
+
 ; A TYPE-VALUE is compile-time-only (`type-system.md §A Type Parameter Is Resolvable At Compile Time`: a
 ; type-value never flows from runtime data into a position that determines a type). So a value that would
 ; carry a type-value into RUNTIME data — a compound storing a type, returned across the component boundary

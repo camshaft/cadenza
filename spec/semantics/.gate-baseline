@@ -159,9 +159,12 @@ pass	TWO prefix scalars then a Tuple then a suffix scalar cross the direct-call 
 pass	Type is a first-class value
 pass	Type.eq branches on a type-valued parameter, monomorphized per passed type
 pass	Type.eq compares a reflected type against a written type
+pass	Type.eq compares two type-valued parameters to each other
 pass	Type.eq distinguishes quantities by their unit
 pass	Type.eq is false for values of different types
 pass	Type.eq is true for two values of the same type
+pass	Type.eq of a type-valued parameter against itself is always true
+pass	Type.eq on a type-valued parameter against a COMPOUND type is structural
 pass	Type.of carries a quantity's unit into a same-type annotation
 pass	Type.of reflects a runtime parameter's type at compile time
 pass	Type.of reflects a value's type for use as an annotation
@@ -1976,6 +1979,7 @@ pass	a type stored in a compound result cannot cross the boundary
 pass	a type variable nested in a generic parameter annotation is an unbound name
 pass	a type-name-colliding variant construct coexists with the width type it collides with
 pass	a type-value in integer-width position is rejected
+pass	a type-valued parameter threaded through a second call reaches Type.eq with its type intact
 pass	a u16 segment encodes an integer big-endian by default
 pass	a u32 segment encodes four big-endian bytes
 pass	a u64 pattern segment reads eight big-endian bytes back into an integer
