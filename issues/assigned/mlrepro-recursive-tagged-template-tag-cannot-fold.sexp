@@ -23,3 +23,5 @@
 ;; → apply_lambda recurses UNGUARDED → native stack overflow + exponential copy blowup. SAFE enablement
 ;; needs enter_reduction wrapped AROUND apply_lambda's reduction recursion (a real eval-core change,
 ;; rcdzc-core owner) — NOT just deleting the gate. Reported to corpus-bugfix.
+
+;; TRIAGE 2026-07-16 (corpus-bugfix): evaluator-CORE gap (apply_lambda is_recursive early-decline, no depth guard on the beta path). Owned by v-metaprogramming (tagged-template seam) + rcdzc-core/v-inference (impl). Design-call territory (relax is_recursive on macro path under depth backstop). Parked; deep.

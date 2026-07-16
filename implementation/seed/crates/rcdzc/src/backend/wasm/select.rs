@@ -2763,6 +2763,9 @@ fn collect_cont_ops_rec(
                     out.insert(OP_VALUE_EQ);
                     out.insert(OP_DROP)
                 }
+                // A char-literal probe only FOLDS (a constant char payload) — a runtime char has no machine
+                // rep, so a runtime-char payload declines at emit rather than reaching here; no op to collect.
+                crate::core::Probe::Char(_) => false,
                 // A `ListLen` probe over a runtime list payload reads `vec-len` of the sub-list handle to
                 // gate the arm (a constant list folds instead, never reaching here).
                 crate::core::Probe::ListLen { .. } => out.insert(OP_VEC_LEN),
@@ -9257,6 +9260,13 @@ fn emit_probe_condition(probe: &crate::core::Probe, src: OperandSrc, it: IntTy, 
                 "a string-literal probe folds; it is never emitted as a runtime scalar probe"
             )
         }
+        // A char-literal probe only ever FOLDS (a constant scrutinee) — a runtime char is not a scalar
+        // (`is_scalar`) and has no machine rep, so a `Probe::Char` never reaches the runtime scalar emit.
+        crate::core::Probe::Char(_) => {
+            unreachable!(
+                "a char-literal probe folds; it is never emitted as a runtime scalar probe"
+            )
+        }
         // A `ListLen` probe folds against a constant list; a runtime list payload declines earlier, so it
         // never reaches a runtime scalar probe.
         crate::core::Probe::ListLen { .. } => {
@@ -9985,6 +9995,11 @@ fn emit_probe_chain(
             crate::core::Probe::Str(_) => {
                 unreachable!(
                     "a string-literal probe folds; a runtime string match declines at is_scalar"
+                )
+            }
+            crate::core::Probe::Char(_) => {
+                unreachable!(
+                    "a char-literal probe folds; a runtime char match declines at is_scalar"
                 )
             }
             crate::core::Probe::ListLen { .. } => {
@@ -11094,6 +11109,15 @@ fn emit_sum_cont(
                     out.push(Lir::CallImport(OP_VEC_LEN)); // [len:i32]
                     out.push(Lir::ConstI32(*len as i32));
                     out.push(if *at_least { Lir::I32GeU } else { Lir::I32Eq }); // [bool]
+                }
+                crate::core::Probe::Char(_) => {
+                    // A char-literal payload over a RUNTIME value: a `Char` has NO runtime machine rep yet
+                    // (its `=` folds only at compile time), so there is no leaf handle to compare — a
+                    // CONSTANT char payload folds the `Char` test instead (`build_tree`), never reaching
+                    // here. Decline (like the runtime map-payload probe), never a miscompile.
+                    return Err(Reject::decline(
+                        "a char-literal payload over a runtime char is not yet matched at run time (no runtime char rep)",
+                    ));
                 }
                 crate::core::Probe::MapHasKeys { .. } => {
                     // A map-pattern payload over a RUNTIME map: the key-presence gate would need a runtime

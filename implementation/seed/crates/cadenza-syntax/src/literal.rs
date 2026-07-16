@@ -793,6 +793,42 @@ mod tests {
     }
 
     #[test]
+    fn int_render_parse_is_the_identity_over_generated_values_and_radices() {
+        // `parse_int(render_int(v, radix)) == (v, radix)` — the number-side inverse-pair, the analogue of
+        // the string escape sweep. The radix is part of a leaf's identity (the codec preserves it so the
+        // printed form re-reads to the SAME leaf), so BOTH value and radix must survive. The fixed test
+        // above pins ~8 points; this sweeps random BigInts (arbitrary magnitude 0..~2^128, both signs)
+        // across ALL THREE radices — the whole render/parse space, so a radix-prefix or sign/magnitude
+        // regression (e.g. a `0x`/`0b` prefix the parser doesn't round-trip, or a to_str_radix width
+        // quirk) surfaces as a non-identity round-trip that no fixed value necessarily hits.
+        use num_bigint::Sign;
+        let radices = [Radix::Dec, Radix::Hex, Radix::Bin];
+        let mut rng = Rng(0x1237_c0de_1237_c0de);
+        for _ in 0..30_000 {
+            // A random magnitude of 0..=16 bytes (up to 128 bits), and a random sign.
+            let nbytes = (rng.next() % 17) as usize;
+            let mag: Vec<u8> = (0..nbytes).map(|_| (rng.next() & 0xff) as u8).collect();
+            let base = BigInt::from_bytes_be(Sign::Plus, &mag); // non-negative magnitude
+            // Negate roughly half the time — but a zero value is never negative (no signed-zero int).
+            let value = if base != BigInt::from(0) && rng.next() & 1 == 0 {
+                -base
+            } else {
+                base
+            };
+            let radix = radices[(rng.next() as usize) % radices.len()];
+            let rendered = render_int(&value, radix);
+            let (v2, radix2) = parse_int(&rendered).unwrap_or_else(|| {
+                panic!("render_int({value}, {radix:?})={rendered:?} did not parse")
+            });
+            assert_eq!(
+                (&value, radix),
+                (&v2, radix2),
+                "int {value} @ {radix:?} → {rendered:?} did not round-trip"
+            );
+        }
+    }
+
+    #[test]
     fn ints_with_base() {
         assert_eq!(parse_int("42"), Some((BigInt::from(42), Radix::Dec)));
         assert_eq!(parse_int("0x2A"), Some((BigInt::from(42), Radix::Hex)));

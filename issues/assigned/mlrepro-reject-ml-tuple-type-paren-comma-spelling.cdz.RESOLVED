@@ -24,3 +24,7 @@ def pair-sum(a: Int64, b: Int64) = f((a, b))
 def tuple-type-param-works() = if pair-sum(3, 4) == 7 then unit else trap("3+4=7 through a Tuple param")
 
 export { f }
+
+/// TRIAGE 2026-07-16 (corpus-bugfix): checks clean on trunk 840e7b5ee (regression witness for the working Tuple(...) spelling holds). The rejected (A,B)-in-type-position = v-syntax READER gap (lowers to value ctor head). DIAGNOSTIC-clarity ask routed to v-diagnostics. Feature (accept (A,B) as tuple type) = v-syntax, low-pri.
+
+/// ✅ RESOLVED 2026-07-16 — VERIFIED BY CONTENT on fresh trunk cdddf7107. The natural `(Int64, Int64)` in TYPE position now CHECKS CLEAN (rc=0) — v-syntax implemented the exact "ideal" fix this repro proposed (reader accepts paren-comma in type position as the tuple TYPE). No misleading CDZ0203 remains; the Tuple(...) witness still passes too. CLOSED.

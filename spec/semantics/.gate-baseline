@@ -24,6 +24,9 @@ pass	COMPOUND SUM PAYLOAD: (Option (Tuple Int64 Int64)) arg, drive Some
 pass	COMPOUND SUM PAYLOAD: an Option-tuple closure beside a scalar closure (distinct-sig)
 pass	COMPOUND SUM PAYLOAD: mixed-width tuple payload (Int32, Int64, Bool)
 pass	COMPOUND SUM PAYLOAD: two same-sig Option-tuple closures share one call (multi-export)
+pass	Char.from-int at U+E000 (first scalar after the surrogate block) is Some
+pass	Char.from-int at the last surrogate U+DFFF is None
+pass	Char.from-int at the maximum valid scalar U+10FFFF is Some
 pass	DIFF-WIDTH RESULT: (Result Int32 Int64) — the NARROW side is Ok, negative
 pass	DIFF-WIDTH RESULT: (Result Int64 Int32) arg, drive Err with a NEGATIVE narrow payload
 pass	DIFF-WIDTH RESULT: (Result Int64 Int32) arg, drive Ok with a big s64
@@ -487,7 +490,10 @@ pass	a chained Option.expect(Option.expect s) payload consumed per iteration acc
 pass	a chained access through an if-of-records composes and shields the untaken branch's trap
 pass	a chained float ordering is not foldable by transitivity — a NaN middle breaks the chain
 pass	a char literal naming a surrogate is a reader error
+pass	a char not among the literal arms falls through to the wildcard
 pass	a char order agrees with its scalar value
+pass	a char-literal pattern nested in a variant payload matches by scalar value
+pass	a char-literal pattern selects the arm whose char matches
 pass	a checked addition of two runtime-wrapped bytes still guards at the narrow width
 pass	a checked conversion of a negative CONSTANT into an unsigned type is rejected
 pass	a checked integer conversion of an out-of-range CONSTANT is rejected at compile time
@@ -1218,6 +1224,7 @@ pass	a nested Result pattern selects the inner Err arm
 pass	a nested application of a let-bound lambda resolves each argument at its call site
 pass	a nested call chain whose callee duplicates its parameter folds without exponential blowup
 pass	a nested chain of function calls compiles in linear time and folds to a constant
+pass	a nested char-literal payload falls through on a non-matching char
 pass	a nested conditional (the sign idiom) folds to branchless nested selects — negative
 pass	a nested conditional (the sign idiom) folds to branchless nested selects — positive
 pass	a nested conditional (the sign idiom) folds to branchless nested selects — zero
@@ -3205,6 +3212,7 @@ pass	the manifest is DERIVED from what entrypoints delegate, not from effect dec
 pass	the maximum Int64 in hexadecimal reads as an integer
 pass	the maximum Int64 literal reads as an integer
 pass	the maximum unsigned 8-bit value is its per-width bound
+pass	the maximum valid scalar U+10FFFF round-trips through to-int
 pass	the minimum Int64 literal reads as an integer
 pass	the minimum integer scrutinee misses a zero-based jump table
 pass	the minimum signed 8-bit value is its per-width bound

@@ -77,6 +77,53 @@ const ROUTES = [
       await page.waitForSelector("canvas", { timeout: 30000 }).catch(() => {});
     },
   },
+  {
+    // /notebook must (1) run its starter cell to a computed value on first load and (2) reactively
+    // recompute when a widget changes — the novel runtime-input mechanism. A regression (a broken cell
+    // assembly, a dead reactive edge) leaves an error string / a frozen output. Notebook is surface-pinned
+    // s-expr internally, so no `surface` seed needed. Desktop-only (not a mobile-overflow surface).
+    path: "/notebook",
+    waitFor: '[data-testid="notebook"]',
+    label: "notebook",
+    onlyViewports: ["desktop-1280"],
+    async interact(page) {
+      // Wait for the first cell to finish its initial run (leave "not run"/"running").
+      await page
+        .waitForFunction(
+          () => {
+            const e = document.querySelector('[data-testid="cell-output"]');
+            return e && !/not run|running/i.test(e.innerText);
+          },
+          { timeout: 30000 },
+        )
+        .catch(() => {});
+    },
+    async assert(page, check, label) {
+      const out0 = (await page.locator('[data-testid="cell-output"]').first().innerText()).trim();
+      check(/\d/.test(out0) && !/error|running/i.test(out0), `${label}: first cell runs to a computed value (${JSON.stringify(out0)})`);
+      // Drive the rate slider. A React CONTROLLED range input ignores a raw `el.value = v` (React's value
+      // tracker overrides it) — Playwright's fill() uses the native setter path React observes, so the
+      // onChange fires and the cell recomputes. (A manual el.value+dispatch does NOT work here.)
+      const rate = page.locator('[data-testid="widget-rate"]');
+      if ((await rate.count()) > 0) {
+        await rate.fill("0.2");
+        await page
+          .waitForFunction(
+            (prev) => {
+              const e = document.querySelector('[data-testid="cell-output"]');
+              return e && !/running/i.test(e.innerText) && e.innerText.trim() !== prev;
+            },
+            out0,
+            { timeout: 30000 },
+          )
+          .catch(() => {});
+        const out1 = (await page.locator('[data-testid="cell-output"]').first().innerText()).trim();
+        check(out1 !== out0, `${label}: a widget change reactively recomputes the cell (${JSON.stringify(out0)} -> ${JSON.stringify(out1)})`);
+      } else {
+        check(false, `${label}: widget-rate slider present`);
+      }
+    },
+  },
 ];
 
 let chromium;

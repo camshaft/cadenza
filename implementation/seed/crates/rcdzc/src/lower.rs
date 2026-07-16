@@ -3599,6 +3599,9 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
                 crate::ty::Ty::Symbol => Some(crate::ty::Ty::Symbol),
                 _ => Some(crate::ty::Ty::String),
             },
+            // A `Char` probe comes from a char-literal `#\a` pattern; it agrees only with a `Char`
+            // scrutinee (a char pattern over an Int/String scrutinee is a shape error, CDZ0201).
+            crate::core::Probe::Char(_) => Some(crate::ty::Ty::Char),
             // A `ListLen`/`MapHasKeys` probe never arises in the SCALAR match path (each comes from a
             // list/map PAYLOAD sub-pattern in the sum decision tree, not `classify_probe`); no scalar-type
             // check applies.
@@ -3667,6 +3670,7 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
         Core::ConstInt(v) => Some(GuardFoldScrut::Int(v.clone())),
         Core::ConstBool(b) => Some(GuardFoldScrut::Bool(*b)),
         Core::ConstStr(s) => Some(GuardFoldScrut::Str(s.clone())),
+        Core::ConstChar(c) => Some(GuardFoldScrut::Char(*c)),
         _ => None,
     };
     if let Some(sc) = const_scrut {
@@ -3676,6 +3680,7 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
                 GuardFoldScrut::Int(v) => probe_matches_int(probe, v),
                 GuardFoldScrut::Bool(b) => probe_matches_bool(probe, *b),
                 GuardFoldScrut::Str(s) => probe_matches_str(probe, s),
+                GuardFoldScrut::Char(c) => probe_matches_char(probe, *c),
             };
             if !probe_hit {
                 continue; // this arm's pattern doesn't match the constant — try the next
@@ -6339,6 +6344,7 @@ enum GuardFoldScrut {
     Int(IntValue),
     Bool(bool),
     Str(String),
+    Char(char),
 }
 
 /// Walk a constant-value path from `root` down `steps`, returning the leaf's core if EVERY step lands
@@ -7367,6 +7373,13 @@ fn pattern_constraints(
         crate::resolved::Resolved::SymbolConst(s) => {
             Some((crate::core::Probe::Str(s), crate::ty::Ty::Symbol))
         }
+        // A CHAR-literal payload sub-pattern — `(Tok.Ch #\a)` matches a `Tok.Ch` carrying `#\a`. Like the
+        // Int/Bool literal it imposes no discriminant, adds a `Probe::Char` lit-test, and folds against a
+        // constant `Core::ConstChar` (a runtime char payload declines at emit — a `Char` has no runtime
+        // rep). Its expected sub-value type is `Char` (the char twin of the String/Symbol-literal payload).
+        crate::resolved::Resolved::Char(c) => {
+            Some((crate::core::Probe::Char(c), crate::ty::Ty::Char))
+        }
         _ => None,
     };
     if let Some((probe, lit_ty)) = probe {
@@ -8374,6 +8387,10 @@ fn build_tree_ft(
                     // equality (both NFC-normalized by the reader) — `(Ast.Name "+")` matches an
                     // `Ast.Name` carrying "+". A runtime string payload has no `ConstStr` → declines below.
                     (crate::core::Probe::Str(s), Core::ConstStr(cs)) => s == cs,
+                    // A char-literal payload test folds against a constant `Core::ConstChar` by codepoint
+                    // equality — `(Tok.Ch #\a)` matches a `Tok.Ch` carrying `#\a`. A runtime char payload
+                    // has no `ConstChar` → declines below.
+                    (crate::core::Probe::Char(c), Core::ConstChar(cc)) => c == cc,
                     // A LIST length test folds against a CONSTANT list: an exact test needs `== len`, a
                     // rest (`at_least`) test needs `>= len` (the tail binds the surplus). (A runtime list
                     // has no `ListNew` here → the runtime-test arm below, which declines.)
@@ -9259,6 +9276,11 @@ fn classify_probe(db: &mut Db, pat: StructId) -> Option<crate::core::Probe> {
         // `#"add"` dispatches exactly as a match on `"add"` does. This is the head-dispatch idiom over a
         // symbol (`(match tag (#"add" …) (#"sub" …))`), the symbol twin of String-literal patterns.
         Resolved::SymbolConst(s) => Some(crate::core::Probe::Str(s)),
+        // A CHAR-literal pattern (`(#\a …)`). Classified as a `Char` probe — a constant scrutinee folds by
+        // codepoint equality (`Char` is `Eq`), the last scalar-literal kind to gain a match arm (Int/Bool/
+        // Str/Symbol already do). A runtime char has no machine rep yet, so it declines at `is_scalar`
+        // before a `Core::Match` is built — the char probe realizes ONLY the constant fold this increment.
+        Resolved::Char(c) => Some(crate::core::Probe::Char(c)),
         _ => None,
     }
 }
@@ -9272,6 +9294,7 @@ fn probe_matches_int(probe: &crate::core::Probe, v: &IntValue) -> bool {
         crate::core::Probe::Wild => true,
         crate::core::Probe::Bool(_)
         | crate::core::Probe::Str(_)
+        | crate::core::Probe::Char(_)
         | crate::core::Probe::ListLen { .. }
         | crate::core::Probe::MapHasKeys { .. } => false,
     }
@@ -9284,6 +9307,7 @@ fn probe_matches_bool(probe: &crate::core::Probe, b: bool) -> bool {
         crate::core::Probe::Wild => true,
         crate::core::Probe::Int(_)
         | crate::core::Probe::Str(_)
+        | crate::core::Probe::Char(_)
         | crate::core::Probe::ListLen { .. }
         | crate::core::Probe::MapHasKeys { .. } => false,
     }
@@ -9298,6 +9322,22 @@ fn probe_matches_str(probe: &crate::core::Probe, s: &str) -> bool {
         crate::core::Probe::Wild => true,
         crate::core::Probe::Int(_)
         | crate::core::Probe::Bool(_)
+        | crate::core::Probe::Char(_)
+        | crate::core::Probe::ListLen { .. }
+        | crate::core::Probe::MapHasKeys { .. } => false,
+    }
+}
+
+/// Whether a probe matches a constant char scrutinee (for the fold). A `Wild` matches anything; a char
+/// literal matches by CODEPOINT equality (`Char` is `Eq` — a scalar Unicode-scalar-value comparison,
+/// the same basis as the char `=` fold). The char twin of `probe_matches_str`.
+fn probe_matches_char(probe: &crate::core::Probe, c: char) -> bool {
+    match probe {
+        crate::core::Probe::Char(p) => *p == c,
+        crate::core::Probe::Wild => true,
+        crate::core::Probe::Int(_)
+        | crate::core::Probe::Bool(_)
+        | crate::core::Probe::Str(_)
         | crate::core::Probe::ListLen { .. }
         | crate::core::Probe::MapHasKeys { .. } => false,
     }

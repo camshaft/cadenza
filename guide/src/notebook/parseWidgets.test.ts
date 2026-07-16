@@ -86,6 +86,18 @@ test("Int64 literals are bare integers; a fractional current value truncates", (
   assert.equal(literalFor("Int64", 7.9), "7");
 });
 
+test("literalFor never emits invalid Cadenza for non-finite / huge numbers (self-audit)", () => {
+  // NaN / ±Infinity would emit `def x = NaN`/`Infinity` — not valid Cadenza. Clamp to a safe default.
+  assert.equal(literalFor("Float64", NaN), "0.0");
+  assert.equal(literalFor("Float64", Infinity), "0.0");
+  assert.equal(literalFor("Float64", -Infinity), "0.0");
+  assert.equal(literalFor("Int64", NaN), "0");
+  assert.equal(literalFor("Int64", Infinity), "0");
+  // A large Int64 must render in FULL, not exponential (`1e+21` isn't a Cadenza literal).
+  assert.equal(literalFor("Int64", 1e21), "1000000000000000000000");
+  assert.match(literalFor("Int64", 1e21), /^\d+$/);
+});
+
 test("Bool literals are true/false; String literals are quoted + escaped", () => {
   assert.equal(literalFor("Bool", true), "true");
   assert.equal(literalFor("Bool", false), "false");

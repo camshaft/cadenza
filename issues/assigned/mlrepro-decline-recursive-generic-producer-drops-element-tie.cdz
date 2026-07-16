@@ -102,3 +102,5 @@ def strings() =
   if str-list-eq(collect(from-list(["a", "bb", "ccc"])), ["a", "bb", "ccc"]) then unit else trap("strings")
 
 export { Iter.* }
+
+/// TRIAGE 2026-07-16 (corpus-bugfix): deep LOWERING/monomorphization gap (type_specialize, 2-instantiation tie). Owned by v-inference — matches the deep-deferred re-entrancy queued item. Parked; not a quick fix. Re-surface to v-inference when it picks up the self-nested-producer scheme-solve work.

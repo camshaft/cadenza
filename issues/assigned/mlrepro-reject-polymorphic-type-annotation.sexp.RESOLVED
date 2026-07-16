@@ -16,3 +16,7 @@
   (def (len (: l (Lst a))) (match l ((Lst.Nil) 0) ((Lst.Cons _ t) (+ 1 (len t)))))
   (def (main) (len (Lst.Cons 1 (Lst.Nil))))
   (export main))
+
+; TRIAGE 2026-07-16 (corpus-bugfix): still declines CDZ0101-unbound on trunk 840e7b5ee — by-design (no forall-binder in annotation, see the ruling). FEATURE (bind sig type-vars) = language-design, not a bug. DIAGNOSTIC-clarity ask routed to v-diagnostics (issue). Parked pending a design decision on type-var-in-signature; low-pri.
+
+; ✅ RESOLVED 2026-07-16 — VERIFIED BY CONTENT on fresh trunk cdddf7107. The misleading "CDZ0203 Lst is a type not a function" + bare "unbound a" is GONE; now ONE actionable CDZ0101 with full guidance (leave UNANNOTATED — already polymorphic — OR annotate concrete OR take an explicit (: t Type) param). Fixed by v-diagnostics lowercase-type-var work (M211-era), overtook my 07-14 repro. CLOSED.
