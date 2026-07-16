@@ -122,6 +122,11 @@ pub fn rust_type(ty: &Ty) -> Option<String> {
         // A SET is a persistent collection of unique elements — Rust's ordered `BTreeSet<T>` (sorted
         // iteration = the canonical `Set.to-list` order; `Ord` element compares by value, dedup at insert).
         Ty::Set(elem) => Some(format!("std::collections::BTreeSet<{}>", rust_type(elem)?)),
+        // A BYTES value is a raw byte sequence — Rust's owned `Vec<u8>`. Non-Copy (owned heap buffer) →
+        // clone-on-read covers a shared bytes value. (Cadenza's `Bytes` is a persistent rope at run time;
+        // the native rep is a flat `Vec<u8>`, and every emitted bytes op produces a NEW `Vec` — the
+        // rope-vs-flat distinction is invisible at the value level, so `Bytes.compact` is a no-op here.)
+        Ty::Bytes => Some("Vec<u8>".to_string()),
         // A STRING is a UTF-8 text value — Rust's owned `String`. A Cadenza string counts UNICODE SCALAR
         // VALUES (not bytes), which Rust's `String`/`.chars()` model directly. Non-Copy (owned heap
         // buffer) → clone-on-read covers a shared string. (`String` is `Ord`, so it can also key a

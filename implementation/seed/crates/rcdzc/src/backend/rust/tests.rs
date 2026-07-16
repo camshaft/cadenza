@@ -598,6 +598,63 @@ fn rustc_roundtrip_string_result_renders_quoted() {
 }
 
 #[test]
+fn bytes_ops_emit_native_vec_u8_operations() {
+    // A `Ty::Bytes` → `Vec<u8>`; `Bytes.of` builds it with a per-element range check.
+    let of = compile_rust(
+        "(module m (def (f (: n Int64)) (if (= n 0) (Bytes.of (list 65 66 67)) (f (+ n -1)))) \
+           (def (g) (Bytes.len (f 1))) (export g))",
+    );
+    assert!(of.contains("Vec<u8>"), "bytes type:\n{of}");
+    assert!(
+        of.contains("panic!(\"byte value out of range\")") && of.contains("as u8"),
+        "range-checked byte build:\n{of}"
+    );
+    // Bytes.at → a native Option, byte zero-extended to Int64.
+    let at = compile_rust(
+        "(module m (def (f (: n Int64)) (if (= n 0) (Bytes.of (list 10 20)) (f (+ n -1)))) \
+           (def (g (: i Int64)) (match (Bytes.at (f 1) i) ((Some b) b) ((None _) -1))) (export g))",
+    );
+    assert!(
+        at.contains("as i64") && at.contains("None"),
+        "bytes at:\n{at}"
+    );
+    // String.concat lowers through BytesConcat but must emit push_str (String), NOT extend (Vec<u8>).
+    let sconcat = compile_rust(
+        "(module m (def (rep (: s String) (: n Int64)) (if (< n 1) s (rep (String.concat s \"x\") (- n 1)))) \
+           (def (g) (rep \"hi\" 2)) (export g))",
+    );
+    assert!(
+        sconcat.contains("push_str") && !sconcat.contains(".extend("),
+        "String.concat uses push_str, not Vec extend:\n{sconcat}"
+    );
+}
+
+#[test]
+fn rustc_roundtrip_bytes_build_read_and_string_concat_run() {
+    // Bytes: build [65,66,67], len 3 + at(1)=66 = 69.
+    let by = compile_rust(
+        "(module m (def (f (: n Int64)) (if (= n 0) (Bytes.of (list 65 66 67)) (f (+ n -1)))) \
+           (def (at1 (: i Int64)) (match (Bytes.at (f 1) i) ((Some b) b) ((None _) -1))) \
+           (def (mk) (+ (Bytes.len (f 1)) (at1 1))) (export mk))",
+    );
+    if let Some(out) = rustc_run(&by, "mk()") {
+        assert_eq!(out, "69", "3 bytes + byte-at(1)=66");
+    }
+    // A runtime-built string via String.concat crosses end-to-end and renders quoted: "hi" + "x"*3 = "hixxx".
+    let module = compile_rust(
+        "(module m (def (rep (: s String) (: n Int64)) (if (< n 1) s (rep (String.concat s \"x\") (- n 1)))) \
+           (def (mk) (rep \"hi\" 3)) (export mk))",
+    );
+    let driver = "fn main() { let s = prog::mk(); println!(\"\\\"{}\\\"\", s); }";
+    if let Some(out) = rustc_run_driver(&module, driver) {
+        assert_eq!(
+            out, "\"hixxx\"",
+            "a runtime-built string concatenates correctly"
+        );
+    }
+}
+
+#[test]
 fn an_ill_formed_integer_width_is_rejected_not_declined() {
     // An out-of-range integer WIDTH (negative/non-natural, or over-ceiling `(UInt 65)`) is an ILL-FORMED
     // TYPE, not a target limitation — a boundary of that type must REJECT (CDZ0302), the SAME outcome the

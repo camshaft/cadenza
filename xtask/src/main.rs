@@ -1565,6 +1565,25 @@ fn cdz_render_at(
     if ty == "String" {
         return format!("format!(\"\\\"{{}}\\\"\", {path})");
     }
+    // A `Bytes` value is the Rust `Vec<u8>` the backend emits — render it as cdz-run's canonical `b"…"`
+    // form, escaping each byte with the SAME rules as the runtime's `escape_byte`: `\n`/`\r`/`\t`/`\\`/`\"`
+    // named, `\0`, printable ASCII `0x20..=0x7e` passthrough, else `\xHH` (lowercase hex). The emitted Rust
+    // block folds the bytes into the `b"…"` string. (`{path}` is a `Vec<u8>`/`&Vec<u8>`; `.iter()` yields
+    // `&u8`.)
+    if ty == "Bytes" {
+        return format!(
+            "{{ let mut __s = String::from(\"b\\\"\"); for &__byte in ({path}).iter() {{ match __byte {{ \
+             b'\\n' => __s.push_str(\"\\\\n\"), \
+             b'\\r' => __s.push_str(\"\\\\r\"), \
+             b'\\t' => __s.push_str(\"\\\\t\"), \
+             b'\\\\' => __s.push_str(\"\\\\\\\\\"), \
+             b'\\\"' => __s.push_str(\"\\\\\\\"\"), \
+             0 => __s.push_str(\"\\\\0\"), \
+             0x20..=0x7e => __s.push(__byte as char), \
+             b => __s.push_str(&format!(\"\\\\x{{:02x}}\", b)), \
+             }} }} __s.push('\\\"'); __s }}"
+        );
+    }
     // The BUILT-IN `Option`/`Result` map to Rust's OWN `Option`/`Result`, so a value of one is rendered by
     // MATCHING it — the driver knows both variant shapes (`Some`/`None`, `Ok`/`Err`) and cdz-run's canonical
     // BARE form for a built-in variant (`(Some <p>)`, `(None unit)`, `(Ok <p>)`, `(Err <p>)`). The payload
