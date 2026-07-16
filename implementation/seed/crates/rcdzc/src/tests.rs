@@ -60213,6 +60213,39 @@ mod sidecar_driven {
     }
 
     #[test]
+    fn highlight_paints_quoted_data_as_symbol_not_unbound() {
+        // Inside a (quasiquote …), a QUOTED name is inert DATA, not a live reference — so it must NOT be
+        // painted `unbound` (error-red) even though it resolves to nothing. `reify_quotes` orphans the
+        // original quoted children (they keep spans but detach from the root), so `classify_highlight`
+        // reclassifies a DETACHED would-be-unbound leaf as `symbol`. Only the UNQUOTE hole is a live ref.
+        // `mk`'s body is a valid quasiquote; `add`/`foo` are quoted data, `x` is the (bound) unquote hole.
+        let src =
+            "(module m (def (mk (: x Ast)) (quasiquote (add 1 (unquote x) foo))) (export mk))";
+        assert_eq!(
+            highlight_kinds_of(src, "add"),
+            vec!["symbol"],
+            "a quoted name is data, not an unbound typo"
+        );
+        assert_eq!(
+            highlight_kinds_of(src, "foo"),
+            vec!["symbol"],
+            "a quoted name is data, not an unbound typo"
+        );
+        // The unquote hole `x` is a LIVE reference to the parameter — still classified as a param (it is
+        // reachable from root, so the detached-orphan reclassification does not touch it). `x` appears
+        // twice: the parameter binder occurrence + the unquote-hole use, both `param`.
+        assert_eq!(highlight_kinds_of(src, "x"), vec!["param", "param"]);
+    }
+
+    #[test]
+    fn highlight_still_flags_a_reachable_unbound_typo() {
+        // The quoted-data reclassification is NARROW: a genuine unbound typo in LIVE (root-reachable) code
+        // stays `unbound` (red) — only DETACHED (quoted-orphan) leaves are softened to `symbol`.
+        let src = "(module m (def (main) (nonexistent 1)) (export main))";
+        assert_eq!(highlight_kinds_of(src, "nonexistent"), vec!["unbound"]);
+    }
+
+    #[test]
     fn highlight_colours_literals_by_kind() {
         // Each literal leaf carries its own kind; a keyword head is `keyword`.
         let src = "(module m (def (main) (if true 42 0)) (export main))";
