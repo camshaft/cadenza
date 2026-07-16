@@ -2,6 +2,10 @@
 pass	Ast.decode converts bytes to an AST sum type value
 pass	Ast.decode decodes bytes that arrive as a function argument
 pass	Ast.encode and Ast.decode round-trip
+pass	BigInt.of a UInt64 at 2^63 - 1 is positive (the sub-high-bit control)
+pass	BigInt.of a UInt64 at 2^63 is a positive BigInt, not a wrong negative
+pass	BigInt.of a UInt64 at u64::MAX is a positive BigInt
+pass	BigInt.of a UInt64 widens to the exact value (round-trips back through Int64.of where it fits)
 pass	DOMINATOR CSE does not reuse a condition's perform-product in the taken branch
 pass	Int64.min crosses the parameter boundary and back unchanged
 pass	Int64.min crossing the boundary is still negative
@@ -20,6 +24,7 @@ pass	OR-saturation to a full-width mask on an unsigned runtime value
 pass	OR-then-mask absorption does not discard a trapping runtime operand
 pass	OR-then-mask absorption folds to the mask constant on a runtime operand
 pass	Ok carrying a Some keeps both variant tags
+pass	Qty.pow and repeated multiplication produce the same dimension for a matching add
 pass	Qty.unit recovers a derived unit
 pass	Qty.unit recovers the unit of a quantity whose magnitude is a runtime value
 pass	Qty.value recovers the underlying numeric value, discarding the unit
@@ -52,9 +57,12 @@ pass	TRANS unions the hypotheses of BOTH operands when each carries a distinct a
 pass	TWO performs in an if condition both fold on the strict-first spine
 pass	Type.eq branches on a type-valued parameter, monomorphized per passed type
 pass	Type.eq compares a reflected type against a written type
+pass	Type.eq compares two type-valued parameters to each other
 pass	Type.eq distinguishes quantities by their unit
 pass	Type.eq is false for values of different types
 pass	Type.eq is true for two values of the same type
+pass	Type.eq of a type-valued parameter against itself is always true
+pass	Type.eq on a type-valued parameter against a COMPOUND type is structural
 pass	Type.of carries a quantity's unit into a same-type annotation
 pass	Type.of reflects a runtime parameter's type at compile time
 pass	Type.of reflects a value's type for use as an annotation
@@ -1520,6 +1528,7 @@ pass	a type stored in a compound result cannot cross the boundary
 pass	a type variable nested in a generic parameter annotation is an unbound name
 pass	a type-name-colliding variant construct coexists with the width type it collides with
 pass	a type-value in integer-width position is rejected
+pass	a type-valued parameter threaded through a second call reaches Type.eq with its type intact
 pass	a u16 segment encodes an integer big-endian by default
 pass	a u32 segment encodes four big-endian bytes
 pass	a u64 pattern segment reads eight big-endian bytes back into an integer
@@ -1572,9 +1581,12 @@ pass	a zero-bit integer width is rejected
 pass	a zero-length slice is the empty byte sequence
 pass	accessing through an empty-side split-at is usable, like the equivalent literal
 pass	accumulator introduction threads a transformed extra parameter through a multi-parameter recursion
+pass	adding a cubed length to a squared length is a dimension mismatch
+pass	adding a squared length to a plain length is a dimension mismatch
 pass	adding quantities of incompatible dimension is a compile-time error
 pass	adding rational-magnitude quantities of incompatible dimension is still a compile-time error
 pass	adding two named family units of one dimension converts to the reference (Float)
+pass	adding two squared-length quantities is well-dimensioned
 pass	addition of a string and a byte sequence names both text types
 pass	addition of a string and a list names both non-numeric types
 pass	addition of two lists is rejected — a list is not a number
@@ -1680,6 +1692,7 @@ pass	an effect result drives the bound of a PURE recursive helper called in the 
 pass	an effect that declares an operation name twice is rejected
 pass	an effect-built NESTED-compound value escapes the handle and a nested projection reads through it
 pass	an effect-built heap list bound in a let is USED TWICE and retained across both uses
+pass	an effect-performing helper called inside a recursive self-call's argument folds
 pass	an effectful condition is performed exactly once under the operator hoist
 pass	an effectful condition of a same-constructor if is performed exactly once
 pass	an effectful init before a failing `?` performs exactly once
@@ -2786,6 +2799,7 @@ todo	a Rational set deduplicates by exact value regardless of how each was writt
 todo	a Rational-annotated literal composes with exact rational arithmetic
 todo	a Rational-inner quantity addition stays exact through the quantity wrapper
 todo	a Rational-payload sum value escapes across the boundary in its canonical form
+todo	a SELECT-axiom theorem is unforgeable — its Thm cannot be fabricated outside the kernel
 todo	a SOLE RECORD closure ARG crosses the direct-call boundary
 todo	a SYM tactic reduces a goal to a subgoal plus a kernel justification (backward proof)
 todo	a String-returning closure alongside a parameterized plain export
@@ -3260,7 +3274,12 @@ todo	round-trip: a scalar consumer and a byte-rope consumer of the same closure 
 todo	round-trip: an UNANNOTATED inner closure with a List param via the context arrow
 todo	runtime Rational arithmetic adds two parameter-built fractions exactly
 todo	scaling a quantity by a dimensionless quantity keeps its dimension
+todo	take-while composed after a map threads both transformers' closures
+todo	take-while excludes the failing element and everything after it (content, not just count)
+todo	take-while where every element satisfies the predicate keeps the whole run
+todo	take-while where the first element fails the predicate returns the empty run
 todo	the ETA axiom is minted via new_axiom as a hypothesis-free theorem
+todo	the SELECT (choice) axiom is minted via new_axiom as a hypothesis-free theorem
 todo	the built variant is the multi-arg one, the unbuilt arm still gets its call type
 todo	the empty and None arms of a list-payload split dispatch to their own values
 todo	the implication-extended kernel Thm stays unforgeable — Thm.Seq of a bogus implication outside is CDZ0214
