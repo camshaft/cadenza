@@ -70233,6 +70233,83 @@ mod cross_component_oracle {
     }
 
     // ------------------------------------------------------------------------------------------------
+    // PL39 — THE FULL MODEL-CALL SHAPE: a peer op `converse : (-> String String)` gets a String prompt IN
+    // and returns a String completion that the entrypoint RETURNS (escapes as a resource). This is the
+    // Bedrock-as-peer critical path end-to-end — it combines the String ARGUMENT emit (PL28) with the
+    // String-RESULT resource escape through the fused with-methods envelope (the FOURTH resource-escape
+    // path, emit_runtime_bytes_resource, now peer-aware). A String result escapes as a
+    // resource-WITH-METHODS (len/is-empty/to-bytes), so it uses the methods-carrying fused assembler, NOT
+    // the plain one PL35-37 exercise. Provider doubles the prompt; main("hi") → "hihi" escapes as its value
+    // form. Before this the shape DECLINED (the bytes-resource path carried no peer import).
+    // ------------------------------------------------------------------------------------------------
+    #[test]
+    fn the_full_converse_string_arg_and_string_result_crosses_a_peer_end_to_end() {
+        use crate::backend::wasm::runtime_abi::{REQUIRED_RUNTIME_HASH, RUNTIME_IFACE};
+        use crate::testkit::parse;
+        let import_name = format!("{RUNTIME_IFACE}@0.0.0+{REQUIRED_RUNTIME_HASH}");
+        // PROVIDER: converse(prompt) = prompt ++ prompt — a String arg IN, a String result OUT, both ropes.
+        let provider = compile_provider(
+            "(do (def (converse (: prompt String)) (String.concat prompt prompt)) (export converse))",
+            "cadenza:model/api",
+        );
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&provider)
+                .expect("the converse provider validates");
+        }
+        // CONSUMER: main passes a String prompt AND RETURNS the peer's String completion → the completion
+        // escapes as a resource-with-methods while the peer op is reached (the fused with-methods envelope).
+        let src = "(do \
+            (effect M (op converse (-> String String))) \
+            (bind M \"cadenza:model/api\") \
+            (def (main) (host (M) (M.converse \"hi\"))) \
+            (export main))";
+        let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .unwrap_or_else(|d| {
+                panic!(
+                    "the full converse consumer compiles: {} [{:?}]",
+                    d.message, d.code
+                )
+            });
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&consumer)
+                .expect("the full converse consumer validates");
+        }
+        let text = String::from_utf8_lossy(&consumer);
+        assert!(
+            text.contains("cadenza:model/api") && text.contains(&import_name),
+            "the fused converse consumer imports BOTH the peer interface and the value-heap runtime"
+        );
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("[PL39] runtime wasm not found; skipping");
+            return;
+        };
+        let peers = vec![cdz_run::Peer {
+            bytes: provider,
+            interface: "cadenza:model/api".to_string(),
+        }];
+        let opts = cdz_run::RunOpts {
+            export: None, // a resource-escape program exports no bare func — the host takes the escape path
+            args: Vec::new(),
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run_with_peers(&consumer, &peers, &opts)
+            .expect("the full (-> String String) converse crosses a peer end to end")
+        {
+            // main passed "hi" as the peer arg; converse doubled it → "hihi"; main RETURNED that String →
+            // escapes as the String value form. The full model-call boundary, both directions, one run.
+            cdz_run::Outcome::Value(s) => assert_eq!(
+                s, "(: \"hihi\" String)",
+                "the full (-> String String) model call crosses a peer: prompt arg in, doubled completion out"
+            ),
+            cdz_run::Outcome::Trap(t) => panic!("the full converse run trapped: {t}"),
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------------
     // U17 — HANDLE PASS-THROUGH: peer A produces a compound, the consumer passes it DIRECTLY to peer B
     // WITHOUT inspecting it. Composes U16 (compound arg in) with U5 (compound result out) across TWO
     // boundary crossings in one body, exercising ownership-transfer-on-argument: the handle A mints flows

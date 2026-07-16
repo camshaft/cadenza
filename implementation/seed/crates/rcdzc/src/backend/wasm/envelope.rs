@@ -2568,6 +2568,257 @@ pub fn assemble_runtime_resource_with_scalar_methods(
     out
 }
 
+/// The resource-escape × peer-extern FUSION for the WITH-METHODS shape (a String/Bytes result escaping the
+/// entrypoint while a peer op is reached). [`assemble_runtime_resource_with_scalar_methods`] plus a leading
+/// SINGLE peer interface import — the exact composition [`assemble_extern_runtime_resource`] applies to the
+/// plain (no-methods) resource, extended to carry the make + encode + N scalar methods. Peer interface is
+/// component instance 0 / type 0, runtime is instance 1 / type 1 (shifted +1), resource type is comp type
+/// 2; every runtime/resource CORE-func index shifts by `p = peer_fns.len()` (peer ops `0..p`, runtime ops
+/// `p..p+k`, resource-new/rep `p+k`/`p+k+1`, make `p+k+3`, t-encode `p+k+4`, cabi_realloc `p+k+5`, method
+/// `i` at `p+k+6+i`); component funcs shift by `p` (make = comp func `p+k`, encode `p+k+1`, method `i`
+/// `p+k+2+i`); the inner re-export instantiation is comp instance 2. The core module (built by
+/// `runtime_resource_core_module_form_ex2` with the `RuntimeBytes` form + methods) imports both `"peer"`
+/// and `"heap"`. SCOPE: a SINGLE peer interface (the byte-exact single-peer shape).
+#[allow(clippy::too_many_arguments)]
+pub fn assemble_extern_runtime_resource_with_scalar_methods(
+    main_core: &[u8],
+    dtor_core: &[u8],
+    imports: &[&RtOp],
+    import_name: &str,
+    peer_fns: &[HostFn],
+    peer_iface: &str,
+    make_param_bytes: &[u8],
+    methods: &[ScalarMethod],
+) -> Vec<u8> {
+    let p = peer_fns.len();
+    let k = imports.len();
+    let mut out = Vec::new();
+    out.extend_from_slice(COMPONENT_MAGIC);
+
+    // sec 7: TWO instance-types — peer interface (comp type 0, p ops) then runtime (comp type 1, k ops).
+    let type_sec = {
+        let peer_it = {
+            let mut decls = Vec::new();
+            for (local, f) in peer_fns.iter().enumerate() {
+                decls.push(0x01);
+                decls.extend_from_slice(&f.comp_functype);
+                decls.push(0x04);
+                decls.extend_from_slice(&extern_name(&super::kebab_extern_name(&f.op)));
+                decls.push(0x01);
+                uleb128(local as u64, &mut decls);
+            }
+            let mut it = vec![0x42];
+            it.extend_from_slice(&wasm_vec(2 * p, &decls));
+            it
+        };
+        let rt_it = {
+            let mut decls = Vec::new();
+            for (i, op) in imports.iter().enumerate() {
+                decls.push(0x01);
+                decls.extend_from_slice(&op_comp_functype(op));
+                decls.push(0x04);
+                decls.extend_from_slice(&extern_name(op.name));
+                decls.push(0x01);
+                uleb128(i as u64, &mut decls);
+            }
+            let mut it = vec![0x42];
+            it.extend_from_slice(&wasm_vec(2 * k, &decls));
+            it
+        };
+        let mut items = peer_it;
+        items.extend_from_slice(&rt_it);
+        section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
+    };
+    out.extend_from_slice(&type_sec);
+
+    // sec 10: import the PEER interface (comp type 0) → comp instance 0, then the runtime (comp type 1) →
+    // comp instance 1.
+    let import_sec = {
+        let mut items = Vec::new();
+        let mut pe = extern_name(&super::kebab_extern_name(peer_iface));
+        pe.push(0x05);
+        uleb128(0, &mut pe);
+        items.extend_from_slice(&pe);
+        let mut rt = extern_name(import_name);
+        rt.push(0x05);
+        uleb128(1, &mut rt);
+        items.extend_from_slice(&rt);
+        section(sec::COMPONENT_IMPORT, &wasm_vec(2, &items))
+    };
+    out.extend_from_slice(&import_sec);
+
+    // sec 6: alias peer ops out of comp instance 0 (→ comp funcs `0..p`), then runtime ops out of comp
+    // instance 1 (→ comp funcs `p..p+k`).
+    let op_alias_sec = {
+        let mut items = Vec::new();
+        for f in peer_fns {
+            items.extend_from_slice(&comp_alias_item(0, &super::kebab_extern_name(&f.op)));
+        }
+        for op in imports {
+            items.extend_from_slice(&comp_alias_item(1, op.name));
+        }
+        section(sec::ALIAS, &wasm_vec(p + k, &items))
+    };
+    out.extend_from_slice(&op_alias_sec);
+    // sec 8: canon-lower each aliased op (comp funcs `0..p+k`) → core funcs `0..p+k`.
+    let lower_sec = {
+        let mut items = Vec::new();
+        for i in 0..(p + k) {
+            items.extend_from_slice(&canon_lower_item(i as u32));
+        }
+        section(sec::CANON, &wasm_vec(p + k, &items))
+    };
+    out.extend_from_slice(&lower_sec);
+    // sec 2: peer core instance exporting the lowered peer ops (core funcs `0..p`) → core instance 0.
+    let peer_core_inst = {
+        let ex: Vec<(&str, u32)> = peer_fns
+            .iter()
+            .enumerate()
+            .map(|(i, f)| (f.op.as_str(), i as u32))
+            .collect();
+        core_export_instance_item(&ex)
+    };
+    out.extend_from_slice(&section(sec::CORE_INSTANCE, &wasm_vec(1, &peer_core_inst)));
+    // sec 2: `heap-dtor` instance exporting the lowered `drop` (at `p + drop's runtime index`) → core
+    // instance 1.
+    let drop_core = imports
+        .iter()
+        .position(|op| op.name == RUNTIME_DROP)
+        .map(|i| (p + i) as u32)
+        .expect("the runtime-resource escape imports `drop` for the dtor");
+    out.extend_from_slice(&section(
+        sec::CORE_INSTANCE,
+        &wasm_vec(1, &core_export_instance_item(&[(RUNTIME_DROP, drop_core)])),
+    ));
+    out.extend_from_slice(&core_module_section(dtor_core));
+    // sec 2: instantiate the dtor module threading `heap-dtor` = core instance 1 → core instance 2.
+    out.extend_from_slice(&section(
+        sec::CORE_INSTANCE,
+        &wasm_vec(1, &core_instantiate_item(0, &[(HEAP_DTOR_MODULE, 1)])),
+    ));
+    // sec 6: alias `t-dtor` out of core instance 2 → core func `p+k`.
+    out.extend_from_slice(&section(
+        sec::ALIAS,
+        &wasm_vec(1, &core_alias_item(2, DTOR_CORE_EXPORT)),
+    ));
+    // sec 7: the resource type `t` (rep i32, dtor = core func `p+k`) → component type 2.
+    out.extend_from_slice(&section(
+        sec::COMPONENT_TYPE,
+        &wasm_vec(1, &resource_type_item((p + k) as u32)),
+    ));
+    // sec 8: canon resource.new (→ core func `p+k+1`) + resource.rep (→ core func `p+k+2`) for comp type 2.
+    let resource_canons = {
+        let mut items = resource_new_item(2);
+        items.extend_from_slice(&resource_rep_item(2));
+        section(sec::CANON, &wasm_vec(2, &items))
+    };
+    out.extend_from_slice(&resource_canons);
+    // sec 2: `heap` instance exporting the k runtime ops (funcs `p..p+k`) + resource-new (`p+k+1`) +
+    // resource-rep (`p+k+2`) → core instance 3.
+    let heap_exports = {
+        let mut ex: Vec<(&str, u32)> = imports
+            .iter()
+            .enumerate()
+            .map(|(i, op)| (op.name, (p + i) as u32))
+            .collect();
+        ex.push((RESOURCE_NEW, (p + k + 1) as u32));
+        ex.push((RESOURCE_REP, (p + k + 2) as u32));
+        ex
+    };
+    out.extend_from_slice(&section(
+        sec::CORE_INSTANCE,
+        &wasm_vec(1, &core_export_instance_item(&heap_exports)),
+    ));
+    // sec 1: the program core module (module 1).
+    out.extend_from_slice(&core_module_section(main_core));
+    // sec 2: instantiate the program module threading `peer` = core instance 0 AND `heap` = core instance 3
+    // → core instance 4.
+    out.extend_from_slice(&section(
+        sec::CORE_INSTANCE,
+        &wasm_vec(
+            1,
+            &core_instantiate_item(1, &[(PEER_MODULE, 0), (HEAP_MODULE, 3)]),
+        ),
+    ));
+    // sec 6: alias the boundary exports off the program instance (core instance 4): make `p+k+3`, t-encode
+    // `p+k+4`, memory, cabi_realloc `p+k+5`, THEN each method's `t-<name>` (core func `p+k+6+i`).
+    let boundary_aliases = {
+        let mut items = Vec::new();
+        items.extend_from_slice(&core_alias_item(4, MAKE_CORE_EXPORT));
+        items.extend_from_slice(&core_alias_item(4, ENCODE_CORE_EXPORT));
+        items.extend_from_slice(&memory_alias_item(4, MEMORY_EXPORT));
+        items.extend_from_slice(&core_alias_item(4, REALLOC_EXPORT));
+        for m in methods {
+            items.extend_from_slice(&core_alias_item(4, m.core_export));
+        }
+        section(sec::ALIAS, &wasm_vec(4 + methods.len(), &items))
+    };
+    out.extend_from_slice(&boundary_aliases);
+    // sec 7 + 8: make (own<t> = type 2's own, minted at types 3,4 → comp func `p+k`) and encode (borrow<t>
+    // type 5 + list type 6 + encode-ft 7 → comp func `p+k+1`).
+    let make_types = {
+        let mut items = own_item(2);
+        items.extend_from_slice(&params_result_functype(make_param_bytes, &owned_valtype(3)));
+        section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
+    };
+    out.extend_from_slice(&make_types);
+    out.extend_from_slice(&section(
+        sec::CANON,
+        &wasm_vec(1, &canon_lift_item((p + k + 3) as u32, 4)),
+    ));
+    let encode_types = {
+        let mut items = borrow_item(2);
+        items.extend_from_slice(&list_u8_defined_type());
+        items.extend_from_slice(&self_borrow_to_list_functype(5, 6));
+        section(sec::COMPONENT_TYPE, &wasm_vec(3, &items))
+    };
+    out.extend_from_slice(&encode_types);
+    out.extend_from_slice(&section(
+        sec::CANON,
+        &wasm_vec(
+            1,
+            &canon_lift_list_item((p + k + 4) as u32, 0, (p + k + 5) as u32, 7),
+        ),
+    ));
+    // Per method `i`: functype (comp type `8+i`) REUSING borrow<t> defined type 5 (+ list type 6), then a
+    // canon lift of core func `p+k+6+i` → comp func `p+k+2+i`.
+    for (i, m) in methods.iter().enumerate() {
+        let ty_idx = 8 + i as u32;
+        let functype = match m.result {
+            MethodResult::Scalar(prim) => self_borrow_to_scalar_functype(5, prim),
+            MethodResult::ListU8 => self_borrow_to_list_functype(5, 6),
+        };
+        out.extend_from_slice(&section(sec::COMPONENT_TYPE, &wasm_vec(1, &functype)));
+        let lift = match m.result {
+            MethodResult::Scalar(_) => canon_lift_item((p + k + 6 + i) as u32, ty_idx),
+            MethodResult::ListU8 => {
+                canon_lift_list_item((p + k + 6 + i) as u32, 0, (p + k + 5) as u32, ty_idx)
+            }
+        };
+        out.extend_from_slice(&section(sec::CANON, &wasm_vec(1, &lift)));
+    }
+    // sec 4: the nested re-export component (make/encode + methods).
+    out.extend_from_slice(&component_section(
+        &resource_inner_component_scalar_methods(make_param_bytes, methods),
+    ));
+    // sec 5: instantiate the inner component with the resource (comp type 2) + lifted funcs (make comp func
+    // `p+k`, encode `p+k+1`, method i `p+k+2+i`) → component instance 2.
+    out.extend_from_slice(&section(
+        sec::COMPONENT_INSTANCE,
+        &wasm_vec(
+            1,
+            &component_instantiate_scalar_methods_item(2, (p + k) as u32, methods),
+        ),
+    ));
+    // sec 11: export the inner instance as `cadenza:run/run` (the two imports are comp instances 0, 1, so
+    // the inner instantiation is comp instance 2).
+    out.extend_from_slice(&section(
+        sec::COMPONENT_EXPORT,
+        &wasm_vec(1, &export_instance_item(RUN_INTERFACE, 2)),
+    ));
+    out
+}
+
 /// Assemble a CLOSURE-RESOURCE component (C-HOST-1): a closure crossing the boundary as a resource whose
 /// `call` method invokes it. The same runtime-import + resource shape as [`assemble_runtime_resource`],
 /// but the second lifted method is `call : (self: own<t>, args…) -> R` (no `encode`, so no `list<u8>`
