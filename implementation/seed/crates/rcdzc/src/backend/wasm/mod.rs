@@ -1212,6 +1212,13 @@ fn collect_host_arg_strings_at(db: &mut Db, id: crate::ast::StructId, out: &mut 
             collect_host_arg_strings(db, string, out);
             collect_host_arg_strings(db, index, out);
         }
+        Core::StrSlice {
+            string, start, end, ..
+        } => {
+            collect_host_arg_strings(db, string, out);
+            collect_host_arg_strings(db, start, out);
+            collect_host_arg_strings(db, end, out);
+        }
         Core::BytesSlice {
             bytes, start, len, ..
         } => {

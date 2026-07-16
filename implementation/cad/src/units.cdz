@@ -80,9 +80,20 @@ def a_length_round_trips_mm_to_inch() =
   if Qty.value(shown) == ri(1) then unit else trap("127/5 mm displays as exactly 1 inch")
 
 @test
+def as-mm-wraps-a-bare-mm-coordinate() =
+  // as-mm is the OUTPUT edge dual of the input constructors: a stored bare-Rational mm coordinate → a Qty in
+  // millimeters. Directly (was only exercised transitively via display-in): its value is the same Rational and
+  // re-reading it in mm returns the coordinate (identity round-trip on the model unit). Exact.
+  let coord = Rational.of(127, 20) in            // 6.35 mm (a 1/4-inch hole radius), exact
+  let q = as-mm(coord) in
+  if Qty.value(q) == coord then
+    (if Qty.value(Unit.in(Unit.of(#"millimeter"), q)) == coord then unit else trap("re-read in mm")) else trap("as-mm value")
+
+@test
 def v3-mm-builds-a-millimetre-vector() =
   let v = v3-mm(ri(10), ri(20), ri(30)) in
-  // component-wise (Rational-leaf compound == still declines — see exact.cdz finding)
+  // component-wise scalar checks (a whole-Vec3r `==` now walks over Rational since the ty_heap_walkable fix,
+  // but this file doesn't import v3r-eq; a per-component scalar compare is equally exact and self-contained).
   match v with | Vec3r.V3r(x, y, z) =>
     if x == ri(10) then (if y == ri(20) then (if z == ri(30) then unit else trap("z")) else trap("y")) else trap("x")
 

@@ -2494,6 +2494,55 @@ mod tests {
     }
 
     #[test]
+    fn nested_multi_arg_constructor_in_a_type_def_block_parses_and_round_trips() {
+        // Regression for a reported cdz-vs-browser divergence (v-guide-infra): a NESTED multi-arg
+        // constructor application inside a multi-line sum-type-def block — `Solidr.Differencer(
+        // Solidr.Cuber(V3r(r(4), r(4), r(4))), Solidr.Spherer(Rational.of(5, 2)))` — was suspected to
+        // trip the ML front-end. It does NOT: the parser accepts it with ZERO errors and the arena
+        // round-trips through ML print → reparse. (The browser rejection traced to a STALE deployed
+        // guide-wasm, not a live front-end defect — cadenza-syntax's `read_ml` is what both native cdz
+        // and cdz-wasm use.) This pins the shape so a real regression here would be caught. Covers both
+        // the single-line minimal case and the full multi-line, multi-variant block.
+        for src in [
+            // Minimal: one nested multi-arg ctor `V3r(...)` inside `Cuber(...)`.
+            "type Vec3r = | V3r(Rational, Rational, Rational)\n\
+             type Solidr = | Cuber(Vec3r)\n\
+             def r(n: Int64) = Rational.of(n, 1)\n\
+             def main() = Solidr.Cuber(V3r(r(4), r(4), r(4)))\n",
+            // Full: multi-line block, multiple variants, deeper nesting + a member-access head.
+            "type Vec3r = | V3r(Rational, Rational, Rational)\n\
+             type Solidr =\n\
+             \x20\x20| Cuber(Vec3r)\n\
+             \x20\x20| Spherer(Rational)\n\
+             \x20\x20| Differencer(Solidr, Solidr)\n\
+             def r(n: Int64) = Rational.of(n, 1)\n\
+             def main() =\n\
+             \x20\x20Solidr.Differencer(\n\
+             \x20\x20\x20\x20Solidr.Cuber(V3r(r(4), r(4), r(4))),\n\
+             \x20\x20\x20\x20Solidr.Spherer(Rational.of(5, 2)))\n",
+        ] {
+            let p = read_ml(src);
+            assert!(
+                p.ok(),
+                "nested-ctor program should parse cleanly, got {:?}",
+                p.errors
+            );
+            // Round-trips: reprint to ML, reparse, structurally identical (no silent tree corruption).
+            let printed = crate::printer::print(&p.arenas, 100);
+            let reparsed = read_ml(&printed);
+            assert!(
+                reparsed.ok(),
+                "ML reprint should reparse cleanly, got {:?}\n--- reprint ---\n{printed}",
+                reparsed.errors
+            );
+            assert!(
+                p.arenas.structurally_eq(&reparsed.arenas),
+                "nested-ctor arena not preserved across ML round-trip\n--- reprint ---\n{printed}"
+            );
+        }
+    }
+
+    #[test]
     fn deeply_nested_input_is_diagnosed_not_crashed() {
         // The Pratt parser recurses through `expr` one native frame per nesting level, so DESCENDING to
         // the depth guard (`MAX_NESTING_DEPTH` = 1024) itself needs more stack than a default `cargo test`

@@ -1325,6 +1325,27 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                 "{{ let __s = {s}; let __i = ({i}) as usize; __s.chars().nth(__i).map(|__c| __c.to_string()) }}"
             ))
         }
+        // `String.slice` on a RUNTIME string → the half-open SCALAR sub-range `[start, end)`, fallibly, as a
+        // native `Option<String>`. `.chars()` iterates by Unicode scalar (matching the spec's scalar-value
+        // addressing, NOT byte), collected once into a `Vec<char>` so the two bounds index the same scalar
+        // sequence. Valid iff `0 <= start <= end <= scalar-len` (signed guard on the RAW i64s BEFORE the
+        // `usize` cast — a negative bound would wrap to a huge `usize`); then the selected scalars re-collect
+        // into a `String` (`start == end` → the empty string, `Some`, not `None`). Any out-of-range bound →
+        // `None` (total, matching the runtime walk). The multi-scalar twin of `StrAt`.
+        Core::StrSlice {
+            string, start, end, ..
+        } => {
+            let s = emit(db, string, env, ctx)?;
+            let a = emit(db, start, env, ctx)?;
+            let b = emit(db, end, env, ctx)?;
+            Ok(format!(
+                "{{ let __cs: ::std::vec::Vec<char> = ({s}).chars().collect(); \
+                 let __a = {a}; let __b = {b}; let __len = __cs.len() as i64; \
+                 if __a >= 0 && __a <= __b && __b <= __len {{ \
+                     Some(__cs[(__a as usize)..(__b as usize)].iter().collect::<String>()) \
+                 }} else {{ None }} }}"
+            ))
+        }
         // `String.from-bytes` on a RUNTIME `Bytes` → the TOTAL UTF-8 decode `Bytes → (Option String)`.
         // Rust's `String::from_utf8` performs EXACTLY the strict validation the runtime `str-from-bytes`
         // does — rejecting invalid bytes, overlong encodings, AND surrogate code points (the three spec

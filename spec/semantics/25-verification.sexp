@@ -2525,3 +2525,101 @@
                      ((Option.None) false))))))
            (export main)))
   (output (: true Bool)))
+
+; ============================================================================================
+; Increment 15 — a minimal TACTIC layer (UNTRUSTED code above the kernel). In LCF, tactics are ordinary
+; library functions that drive backward proof: a tactic reduces a GOAL (a term to prove) to zero or more
+; SUBGOALS plus a JUSTIFICATION (a function that assembles the goal's Thm from the subgoals' Thms). The
+; crucial property: a tactic is UNTRUSTED — it can only produce a Thm by calling kernel rules, so a buggy
+; tactic yields a wrong goal-match (Option.None) or a valid Thm, NEVER an unsound one. These cases pin a
+; leaf tactic (REFL_TAC closes a reflexivity goal, and CANNOT close a false one) and a backward tactic
+; (SYM_TAC reduces a goal to a subgoal + a kernel justification). This is the layer that makes the kernel
+; USABLE for real proofs while keeping the trusted core tiny.
+; ============================================================================================
+
+(case "a REFL tactic closes a reflexivity goal by driving the kernel, and cannot close a false goal"
+  (doc    "A leaf tactic. REFL_TAC takes a goal (a term to prove) and, if it is (a = a), closes it by
+           producing the kernel's refl(a) — no subgoals. `prove` runs a tactic and CHECKS the produced Thm
+           actually proves the claimed goal (the soundness check a tactic framework performs). The case
+           shows REFL_TAC proves (Var 7 = Var 7), and — crucially — CANNOT prove a false goal (Var 7 = Var
+           8): the tactic returns None, so `prove` is false. Pins that a tactic is untrusted glue that can
+           only mint a Thm through the kernel — it can drive the rules but never fabricate a proof of
+           something false.")
+  (module "hol"
+    (do
+      (type Term (Var Int64) (Comb Term Term) (Eq Term Term))
+      (type Thm (Seq (List Term) Term))
+      (def (term-eq (: a Term) (: b Term))
+        (match a
+          ((Term.Var n)    (match b ((Term.Var m) (= n m)) (_ false)))
+          ((Term.Comb x y) (match b ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) (_ false)))
+          ((Term.Eq x y)   (match b ((Term.Eq p q) (and (term-eq x p) (term-eq y q))) (_ false)))))
+      (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
+      (def (refl (: t Term)) (Thm.Seq (list) (Term.Eq t t)))
+      (def (refl-tac (: goal Term))
+        (match goal
+          ((Term.Eq a b) (if (term-eq a b) (Option.Some (refl a)) (Option.None)))
+          (_ (Option.None))))
+      (def (prove (: goal Term) (: th-opt (Option Thm)))
+        (match th-opt
+          ((Option.Some th) (term-eq (concl th) goal))
+          ((Option.None) false)))
+      (export (. Term *))
+      (export Thm)
+      (export term-eq)
+      (export refl-tac)
+      (export prove)
+      (export concl)))
+  (input  (do
+            (import "hol" (Term Thm term-eq refl-tac prove concl))
+            (def (main)
+              (let ((g-ok (Term.Eq (Term.Var 7) (Term.Var 7)))
+                    (g-bad (Term.Eq (Term.Var 7) (Term.Var 8))))
+                (and (prove g-ok (refl-tac g-ok))
+                     (not (prove g-bad (refl-tac g-bad))))))
+            (export main)))
+  (output (: true Bool)))
+
+(case "a SYM tactic reduces a goal to a subgoal plus a kernel justification (backward proof)"
+  (doc    "The backward-proof shape: a tactic reduces a GOAL to a SUBGOAL and a JUSTIFICATION that builds
+           the goal's Thm from the subgoal's Thm. SYM_TAC reduces goal (a=b) to subgoal (b=a); its
+           justification is the kernel's sym. Here the goal is (Var 3 = Var 3): SYM_TAC produces subgoal
+           (Var 3 = Var 3), which the kernel's refl closes, and the justification (sym) reassembles a Thm of
+           the original goal. The case checks the final Thm's conclusion IS the goal. Pins the tactic
+           machinery — goal→subgoal→justify — where the justification is a kernel rule, so the assembled
+           proof is genuinely kernel-minted (a tactic never bypasses the trusted core).")
+  (module "hol"
+    (do
+      (type Term (Var Int64) (Comb Term Term) (Eq Term Term))
+      (type Thm (Seq (List Term) Term))
+      (def (term-eq (: a Term) (: b Term))
+        (match a
+          ((Term.Var n)    (match b ((Term.Var m) (= n m)) (_ false)))
+          ((Term.Comb x y) (match b ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) (_ false)))
+          ((Term.Eq x y)   (match b ((Term.Eq p q) (and (term-eq x p) (term-eq y q))) (_ false)))))
+      (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
+      (def (hyps (: th Thm)) (match th ((Thm.Seq h _) h)))
+      (def (refl (: t Term)) (Thm.Seq (list) (Term.Eq t t)))
+      (def (sym (: th Thm)) (match (concl th) ((Term.Eq a b) (Option.Some (Thm.Seq (hyps th) (Term.Eq b a)))) (_ (Option.None))))
+      (def (sym-subgoal (: goal Term))
+        (match goal ((Term.Eq a b) (Option.Some (Term.Eq b a))) (_ (Option.None))))
+      (def (sym-justify (: subgoal-thm Thm)) (sym subgoal-thm))
+      (export (. Term *))
+      (export Thm)
+      (export term-eq)
+      (export refl)
+      (export sym-subgoal)
+      (export sym-justify)
+      (export concl)))
+  (input  (do
+            (import "hol" (Term Thm term-eq refl sym-subgoal sym-justify concl))
+            (def (main)
+              (let ((g (Term.Eq (Term.Var 3) (Term.Var 3))))
+                (match (sym-subgoal g)
+                  ((Option.Some sg)
+                    (match (sym-justify (refl (Term.Var 3)))
+                      ((Option.Some proof-of-g) (term-eq (concl proof-of-g) g))
+                      ((Option.None) false)))
+                  ((Option.None) false))))
+            (export main)))
+  (output (: true Bool)))

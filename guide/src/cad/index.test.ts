@@ -76,3 +76,13 @@ test("an empty solid meshes to zero triangles (matches the native Manifold::empt
   assert.equal(r.ok, true);
   if (r.ok) assert.equal(r.indices.length, 0, "an empty solid has no triangles");
 });
+
+test("a negative-dimension cube meshes to zero triangles (cross-surface: matches native + exact model)", async () => {
+  // Cross-surface consistency guard: the exact model (exact.cdz) normalizes a negative-dimension box, the native
+  // cdz-cad driver meshes it empty, and manifold documents that any negative dimension → an empty Manifold. This
+  // pins that the BROWSER driver agrees — a negative-size Cuber meshes to NOTHING (never degenerate geometry that
+  // would crash three.js), so all three surfaces treat a pathological negative dimension the same way.
+  const r = await meshFromSolid("(: (Cuber (: (tuple -2/1 2/1 2/1) Vec3r)) Solidr)");
+  assert.equal(r.ok, true, "a negative-dimension cube must parse + mesh (not throw)");
+  if (r.ok) assert.equal(r.indices.length, 0, "a negative-dimension cube has no triangles");
+});

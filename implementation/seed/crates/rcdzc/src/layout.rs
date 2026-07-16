@@ -813,6 +813,13 @@ fn collect_closure_codes_at(db: &mut Db, id: StructId, out: &mut std::collection
             collect_closure_codes(db, string, out);
             collect_closure_codes(db, index, out);
         }
+        Core::StrSlice {
+            string, start, end, ..
+        } => {
+            collect_closure_codes(db, string, out);
+            collect_closure_codes(db, start, out);
+            collect_closure_codes(db, end, out);
+        }
         Core::BytesSlice {
             bytes, start, len, ..
         } => {
@@ -1047,6 +1054,13 @@ fn collect_call_callees_at(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
         crate::core::Core::StrAt { string, index, .. } => {
             collect_call_callees(db, string, out);
             collect_call_callees(db, index, out);
+        }
+        crate::core::Core::StrSlice {
+            string, start, end, ..
+        } => {
+            collect_call_callees(db, string, out);
+            collect_call_callees(db, start, out);
+            collect_call_callees(db, end, out);
         }
         crate::core::Core::BytesConcat { lhs, rhs } => {
             collect_call_callees(db, lhs, out);

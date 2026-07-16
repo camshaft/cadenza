@@ -284,6 +284,7 @@ pass	a RECORD closure ARG with a LIST result
 pass	a RECORD closure ARG with a narrow Bool field, among scalars
 pass	a RECORD with a nested TUPLE field crosses the direct-call boundary
 pass	a RECURSIVE effectful walk accumulates into a list-state handler
+pass	a REFL tactic closes a reflexivity goal by driving the kernel, and cannot close a false goal
 pass	a RESULT-returning effect op is matched on Ok / Err — the fallible-step idiom
 pass	a RUNTIME guarded sum-match arm dispatches through its guard
 pass	a RUNTIME payload-literal refinement dispatches through its literal test
@@ -305,6 +306,7 @@ pass	a SOLE RECORD closure ARG crosses the direct-call boundary
 pass	a STRING-result effect op resumes with a string that folds through a concat
 pass	a SUM constructor payload that is a compound built from performs threads and destructures
 pass	a SUM is threaded as a handler's folded state across operations
+pass	a SYM tactic reduces a goal to a subgoal plus a kernel justification (backward proof)
 pass	a Sign match missing two of three variants is non-exhaustive
 pass	a Some carrying a bare None type-checks under a whole-expression annotation
 pass	a Some carrying an inner-annotated None matches its arm (the control)

@@ -78,6 +78,8 @@ enum Cmd {
     /// Convert a program between surfaces (binary/sexpr/ml + the debug/flat views).
     Convert(syntax_cli::ConvertArgs),
     /// Format program file(s) in place: reprint each canonically in its OWN surface (`--check`/`--diff`).
+    /// With NO file argument (or a `Project.cdz` / a directory holding one), formats the whole PROJECT —
+    /// the manifest's `entry`+`modules`+`tests` — like `cdz build`/`test`/`check`. A lone `-` reads stdin.
     Fmt(syntax_cli::FmtArgs),
     /// Structurally search a program for a PATTERN (the codemod query).
     Query(syntax_cli::QueryArgs),
