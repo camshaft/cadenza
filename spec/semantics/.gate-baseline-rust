@@ -928,6 +928,7 @@ pass	a mutually-recursive parser projects a return tuple and rebuilds one with a
 pass	a name bound to a string keys a map by its value, not the literal name
 pass	a name pattern binds the runtime scrutinee when no literal arm matches
 pass	a name resolves to the nearest enclosing binding
+pass	a named arm still dispatches directly rather than forwarding through the open tail
 pass	a named capturing closure applied directly folds through its capture
 pass	a named capturing closure applied more than once folds at each use
 pass	a named catch-all binder captures the whole sum and re-matches it
@@ -2091,6 +2092,8 @@ pass	an open sum with a guarded named arm plus an open-tail arm is exhaustive
 pass	an open sum's open-tail arm dispatches a NAMED-but-uncovered variant, not only unnamed ones
 pass	an open sum's open-tail arm dispatches a variant the specific arms do not name
 pass	an open sum's payload decodes against a schema to a typed result
+pass	an open-sum value bound by an open-tail arm is forwarded to another matcher with its variant intact
+pass	an open-sum value matching no named arm in either matcher reaches the forwarded sentinel
 pass	an operation on mismatched types is rejected at compile time
 pass	an operation with a RECORD parameter binds the compound and the arm reads its fields
 pass	an operation with a TUPLE parameter binds the compound and the arm projects it

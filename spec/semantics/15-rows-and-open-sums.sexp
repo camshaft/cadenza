@@ -434,6 +434,46 @@
             (def (main) (name-of (Unknown unit))) (export main)))
   (output (: "other" String)))
 
+; The dispatch case above pins the open-tail `_` handles an uncovered variant AS DATA. These pin that the
+; value BOUND by an open-tail arm carries its ACTUAL variant intact THROUGH a function call and a RE-MATCH:
+; a value that falls to a `rest` binder, is forwarded to another function, and is matched there must still
+; be the variant it was (the open-tail bind must not erase the discriminant or corrupt the payload — the
+; row variable crosses the call boundary). This is the forwarding idiom a layered dispatcher uses (handle
+; what I know, pass the rest on). Both the named-arm-hit and match-neither paths are checked.
+
+(case "an open-sum value bound by an open-tail arm is forwarded to another matcher with its variant intact"
+  (doc    "`classify` matches `(A n)` and forwards everything else via a `rest` binder to `extract`, which
+           matches `(B m)`. `(B 42)` falls to `classify`'s open-tail `rest`, crosses the call to `extract`,
+           and matches `(B 42)` there → 42. Pins that the open-tail bind preserves the actual variant and
+           payload across a function forward + re-match — a layered-dispatcher idiom; a bind that erased the
+           discriminant or dropped the payload would lose the `B 42` and mis-dispatch in `extract`.")
+  (input  (do (type V (A Int64) (B Int64) .. r)
+              (def (extract (: v V)) (match v ((B m) m) (_ (- 0 1))))
+              (def (classify (: v V)) (match v ((A n) n) (rest (extract rest))))
+              (def (main) (classify (B 42))) (export main)))
+  (output (: 42 Int64)))
+
+(case "a named arm still dispatches directly rather than forwarding through the open tail"
+  (doc    "The named-hit companion: `(A 7)` matches `classify`'s OWN `(A n)` arm → 7, never reaching the
+           `rest` forward. Pins that forwarding is only for the open-tail fall-through; a value the current
+           matcher names is handled locally, not passed on.")
+  (input  (do (type V (A Int64) (B Int64) .. r)
+              (def (extract (: v V)) (match v ((B m) m) (_ (- 0 1))))
+              (def (classify (: v V)) (match v ((A n) n) (rest (extract rest))))
+              (def (main) (classify (A 7))) (export main)))
+  (output (: 7 Int64)))
+
+(case "an open-sum value matching no named arm in either matcher reaches the forwarded sentinel"
+  (doc    "`(C 99)` matches neither `classify`'s `(A n)` nor (after forwarding) `extract`'s `(B m)`, so it
+           reaches `extract`'s own open-tail `_` → -1. Pins the forward composes across TWO layers of
+           open-tail fall-through — the value crosses both matchers as data and lands on the final sentinel,
+           its variant never named but never lost.")
+  (input  (do (type V (A Int64) (B Int64) (C Int64) .. r)
+              (def (extract (: v V)) (match v ((B m) m) (_ (- 0 1))))
+              (def (classify (: v V)) (match v ((A n) n) (rest (extract rest))))
+              (def (main) (classify (C 99))) (export main)))
+  (output (: -1 Int64)))
+
 (case "a match on an open sum omitting the open-tail arm is rejected"
   (doc    "Witnesses type-system.md #A Sum Type May Be Open (a match that omits the open-tail arm is a
            compile-time rejection): because an open sum's variant set is not closed, a match covering
