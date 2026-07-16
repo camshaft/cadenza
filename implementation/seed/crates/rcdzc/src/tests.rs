@@ -49709,8 +49709,10 @@ mod stage1 {
             .expect("rust artifact");
         let rs = String::from_utf8(rs).expect("utf8");
         assert!(
-            rs.contains("#[derive(Clone, PartialEq, Eq)]\n#[allow(dead_code)]\npub enum Color"),
-            "an all-nullary enum must derive PartialEq/Eq so native `==` builds; got:\n{rs}"
+            rs.contains(
+                "#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]\n#[allow(dead_code)]\npub enum Color"
+            ),
+            "an all-nullary enum must derive PartialEq/Eq (+ Ord, so it can key a BTreeMap) so native `==` builds; got:\n{rs}"
         );
 
         // A payload-carrying sum whose payloads are Eq-derivable (Int64) NOW derives PartialEq/Eq too, so a
@@ -49726,8 +49728,10 @@ mod stage1 {
                 .expect("rust artifact");
         let rs2 = String::from_utf8(rs2).expect("utf8");
         assert!(
-            rs2.contains("#[derive(Clone, PartialEq, Eq)]\n#[allow(dead_code)]\npub enum Box"),
-            "a payload sum with Eq-derivable payloads now derives PartialEq/Eq; got:\n{rs2}"
+            rs2.contains(
+                "#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]\n#[allow(dead_code)]\npub enum Box"
+            ),
+            "a payload sum with Eq-derivable payloads now derives PartialEq/Eq (+ Ord); got:\n{rs2}"
         );
 
         // A FLOAT-carrying sum stays Clone-only — `f64` is `PartialEq` but NOT `Eq`, so `#[derive(Eq)]`
