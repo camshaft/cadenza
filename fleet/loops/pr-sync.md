@@ -13,8 +13,29 @@ they make it — so integration is a local `git merge`, never a push/fetch/CAS r
    cycle below.
 3. Build the runtime store (`cargo xtask build`) so your gate is truthful.
 
+## ⚠ Keep your context small — you ingest more than any other agent
+You process every MR's diff + a full gate/test cycle per request, so your context fills fastest of
+anyone — and a saturated context is the fleet's worst failure: at ~100% even `/compact` can't submit
+(it needs headroom the full window lacks), so the SOLE integrator wedges *unrecoverably* and stalls
+ALL integration. Two disciplines keep that from ever happening — follow BOTH every tick:
+
+- **(a) Compact BEFORE you fill up.** At the TOP of each tick, if your context usage is past ~70%,
+  run `/compact` FIRST (a compact at 70% submits fine; at 100% it cannot). Don't wait to feel full —
+  a big batch can cross 70%→100% within one tick. When in doubt near the end of a long batch,
+  `/compact` between requests.
+- **(b) NEVER paste full gate/test output into your context or a reply.** `cargo xtask check` and
+  `cargo xtask gate` write their full output to `target/xtask-logs/check-*.log` (and print only a
+  short verdict — the pass/todo/fail counts, the fail-set diff, `check: all green ✓` / `FAILED at
+  <step>`). READ ONLY that verdict + the fail-set diff to decide green/red — never cat the whole log
+  into the conversation. Run gates as `cargo xtask check > /tmp/pr-sync-check.log 2>&1; tail -20
+  /tmp/pr-sync-check.log` (or read the `xtask-logs` file) and `grep -E 'FAILED|gate:|check:|error\['`
+  for the summary. On a `reject`, put a SHORT fail-summary (the failing step + the fail-set delta +
+  the log PATH) in `--body`, not the full stdout — a 40-MR batch must not dump 40× full gate logs
+  into your window. This is the ROOT fix: it makes saturation structurally impossible.
+
 ## Each tick
-1. `cargo xtask fleet heartbeat pr-sync`.
+1. `cargo xtask fleet heartbeat pr-sync`. **Then apply discipline (a): if context > ~70%, `/compact`
+   before draining the batch** (never risk reaching the unrecoverable 100%).
 2. **Drain your inbox**, oldest-first. The messages that matter are `merge-request`s (from any
    agent). For each, in order:
 
@@ -32,9 +53,11 @@ they make it — so integration is a local `git merge`, never a push/fetch/CAS r
       a peer's conflict for them.
    b. Re-gate the merged result yourself — you are the last line of defense: `cargo test -p rcdzc
       --lib` (0 failed) + `cargo xtask gate` (diff the FAIL SET vs baseline — a `Todo→Fail` is a
-      miscompile the sender's local gate missed under a stale base) + `cargo xtask check`. If it's
-      red, `git reset --hard trunk@{1}` (undo the merge) and `fleet ack <request> --outcome reject
-      --body "<failing gate output>"`. The sender fixes and resends.
+      miscompile the sender's local gate missed under a stale base) + `cargo xtask check`. Run these
+      to a FILE and read only the verdict (per discipline (b) above) — do not ingest full stdout. If
+      it's red, `git reset --hard trunk@{1}` (undo the merge) and `fleet ack <request> --outcome
+      reject --body "<SHORT fail-summary: the failing step + fail-set delta + the log path>"` — a
+      concise summary the sender can act on, NOT the full gate output. The sender fixes and resends.
    c. Green → the merge stays. `trunk` has advanced. Resolve with `fleet ack <request> --outcome
       merged --ref <new-trunk-sha> --body "<gate summary>"` (this replies `merged` to the sender AND
       archives the request; the sender will `fleet remove` itself if it was a one-shot `fix` agent).
