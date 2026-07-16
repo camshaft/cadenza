@@ -9203,8 +9203,9 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         //       No enclosing function, or a DEFINITE non-fallible enclosing result type, → CDZ0230 (no
         //       boundary admits the `?`). When BOTH operand and boundary are definite fallible sums of
         //       DIFFERENT kinds (a `Result`-`?` under an `Option` boundary, or vice-versa) → CDZ0203 (§5:
-        //       no coercion). Exact error-type unification across sites is deferred (HM handles it once
-        //       the desugar wires the arms in T1); this pins the kind-agreement half.
+        //       no coercion). When both are `Result` but their ERROR types disagree (definite, unequal) →
+        //       CDZ0203 too: the failure arm passes `Err(oe)` out UNCHANGED as the boundary value, so `oe`
+        //       must match the boundary's error type (else a `Bool` error escapes as a claimed `Int64`).
         Resolved::Try { operand } => {
             let t = type_of(db, operand);
             let operand_fallible = fallible_shape(db, &t);
@@ -9262,46 +9263,77 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                             }
                             // Boundary unsolved — cannot yet judge; leave it (no over-rejection).
                             None => {}
-                            Some((bkind, _, _)) => {
-                                // Both definite fallible: a `Result`-`?` under an `Option` boundary (or
-                                // vice-versa) cannot short-circuit — the kinds disagree (§5, no coercion).
-                                if let Some((okind, _, _)) = operand_fallible
-                                    && okind != bkind
-                                {
-                                    trace!(target: "rcdzc::infer", node = id.0, "fault: `?` operand kind disagrees with the boundary (CDZ0203)");
-                                    // The concrete conversion idiom, phrased in terms of forms that EXIST
-                                    // (a `match` re-wrap) — NOT `Result.map-err`/`Option.ok-or`, which are
-                                    // not yet in the prelude (a "did you mean X" must not name an absent op;
-                                    // those helpers are the T3 increment). Direction-specific: an `Option`
-                                    // operand needs an error to become a `Result`; a `Result` operand needs
-                                    // its error dropped to become an `Option`.
-                                    let (o, b, convert) = match okind {
-                                        FallibleKind::Option => (
-                                            "Option",
-                                            "Result",
-                                            "match the `Option` and supply an error \
-                                             (`(None) => (Err e)`, `(Some x) => (Ok x)`)",
-                                        ),
-                                        FallibleKind::Result => (
-                                            "Result",
-                                            "Option",
-                                            "match the `Result` and drop the error \
-                                             (`(Err _) => (None unit)`, `(Ok x) => (Some x)`)",
-                                        ),
-                                    };
-                                    out.push(
-                                        Reject::coded(
-                                            Code::TypeMismatch,
-                                            format!(
-                                                "a `{o}`-valued `?` cannot short-circuit a `{b}` \
-                                                 boundary — the enclosing function returns `{}`. \
-                                                 Either change the boundary's result type, or {convert} \
-                                                 before the `?`.",
-                                                bt.render_name()
+                            Some((bkind, _, boundary_err)) => {
+                                if let Some((okind, _, operand_err)) = operand_fallible {
+                                    if okind != bkind {
+                                        // Kinds disagree — a `Result`-`?` under an `Option` boundary (or
+                                        // vice-versa) cannot short-circuit (§5, no coercion).
+                                        trace!(target: "rcdzc::infer", node = id.0, "fault: `?` operand kind disagrees with the boundary (CDZ0203)");
+                                        // The concrete conversion idiom, phrased in terms of forms that
+                                        // EXIST (a `match` re-wrap) — NOT `Result.map-err`/`Option.ok-or`,
+                                        // which are not yet in the prelude (a "did you mean X" must not name
+                                        // an absent op; those helpers are the T3 increment).
+                                        let (o, b, convert) = match okind {
+                                            FallibleKind::Option => (
+                                                "Option",
+                                                "Result",
+                                                "match the `Option` and supply an error \
+                                                 (`(None) => (Err e)`, `(Some x) => (Ok x)`)",
                                             ),
-                                        )
-                                        .at(operand),
-                                    );
+                                            FallibleKind::Result => (
+                                                "Result",
+                                                "Option",
+                                                "match the `Result` and drop the error \
+                                                 (`(Err _) => (None unit)`, `(Ok x) => (Some x)`)",
+                                            ),
+                                        };
+                                        out.push(
+                                            Reject::coded(
+                                                Code::TypeMismatch,
+                                                format!(
+                                                    "a `{o}`-valued `?` cannot short-circuit a `{b}` \
+                                                     boundary — the enclosing function returns `{}`. \
+                                                     Either change the boundary's result type, or \
+                                                     {convert} before the `?`.",
+                                                    bt.render_name()
+                                                ),
+                                            )
+                                            .at(operand),
+                                        );
+                                    } else if bkind == FallibleKind::Result
+                                        && let (Some(oe), Some(be)) = (operand_err, boundary_err)
+                                        && !matches!(oe, Ty::Any | Ty::Var(_))
+                                        && !matches!(be, Ty::Any | Ty::Var(_))
+                                        && !oe.agrees_with(&be)
+                                    {
+                                        // Kinds AGREE (both `Result`), but the ERROR types disagree. On the
+                                        // failure arm the operand's `Err(oe)` flows out UNCHANGED as the
+                                        // boundary value, so `oe` MUST match the boundary's error type `be`
+                                        // (§5: "the error type `b` unifies with the boundary's"). Without
+                                        // this a `(try (Err true))` short-circuits a `(Result _ Int64)`
+                                        // boundary, presenting a `Bool` where the boundary claims `Int64` —
+                                        // a soundness hole the ordinary `(: (Err true) (Result _ Int64))`
+                                        // annotation path already rejects. No coercion (no `From`), so a
+                                        // definite mismatch is CDZ0203.
+                                        trace!(target: "rcdzc::infer", node = id.0, "fault: `?` operand error type disagrees with the boundary (CDZ0203)");
+                                        out.push(
+                                            Reject::coded(
+                                                Code::TypeMismatch,
+                                                format!(
+                                                    "the `?`'d `Result`'s error type `{}` does not match \
+                                                     the enclosing function's error type `{}` — a `?` \
+                                                     short-circuits by passing its `Err` out unchanged, so \
+                                                     the error types must agree (Cadenza has no automatic \
+                                                     error conversion). `match` the `Result` and re-wrap \
+                                                     its error to `{}`, or change the boundary's error type.",
+                                                    oe.render_name(),
+                                                    be.render_name(),
+                                                    be.render_name(),
+                                                ),
+                                            )
+                                            .at(operand),
+                                        );
+                                    }
                                 }
                             }
                         }

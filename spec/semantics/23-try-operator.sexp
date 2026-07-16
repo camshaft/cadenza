@@ -251,3 +251,14 @@
               (match (opt) ((Some v) v) ((None _) -1)))
             (export main)))
   (output (: -1 Int64)))
+
+(case "a `?` whose Result error type disagrees with the boundary's is rejected"
+  (doc    "SOUNDNESS pin: `(def (main) (: (let ((y (try (Err true)))) (Ok y)) (Result Int64 Int64)))` —
+           the `?`'s operand `(Err true)` is a `Result _ Bool` (error type `Bool`), but the enclosing
+           function's declared error type is `Int64`. A `?` short-circuits by passing its `Err` OUT
+           UNCHANGED as the boundary value, so the error types MUST agree (§5: the error type unifies with
+           the boundary's; Cadenza has no automatic error conversion). Without this check the `Bool` `true`
+           escaped as a claimed `Int64` error — a soundness hole (the ordinary `(: (Err true) (Result Int64
+           Int64))` annotation path already rejects it). CDZ0203.")
+  (input  (do (def (main) (: (let ((y (try (Err true)))) (Ok y)) (Result Int64 Int64))) (export main)))
+  (error  CDZ0203))
