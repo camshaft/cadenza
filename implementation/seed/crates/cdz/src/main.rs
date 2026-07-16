@@ -575,10 +575,23 @@ fn run_project(args: &cdz_run::cli::RunArgs) -> ExitCode {
         Ok(p) => p,
         Err(code) => return code,
     };
-    // Compile the entry (+ modules) into a temp component beside the manifest, at the default tier (`cdz
-    // run` is the dev-loop command; a release run is `cdz build --release` then `cdz run <file>`). Use a
-    // pid-stamped name in the manifest dir so concurrent runs don't collide and the artifact is written
-    // where the sources resolve.
+    // The build tier by the SAME precedence `cdz build` uses (`--opt-level` > manifest `opt-level` >
+    // `--release`'s O2 > the default O1) — so `cdz run --release` (or a manifest `def opt-level`) runs the
+    // optimized build, matching `cargo run --release`. The dev default (no flags, no manifest level) is O1.
+    let opt_level = match resolve_opt_level_precedence(
+        args.opt_level.as_deref(),
+        args.release,
+        project.m.opt_level.as_deref(),
+        &project.mpath,
+    ) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("{PROG}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    // Compile the entry (+ modules) into a temp component beside the manifest. Use a pid-stamped name in
+    // the manifest dir so concurrent runs don't collide and the artifact is written where sources resolve.
     let out_dir = project
         .mpath
         .parent()
@@ -594,7 +607,7 @@ fn run_project(args: &cdz_run::cli::RunArgs) -> ExitCode {
         Some(&project.entry_name),
         Some(out_wasm.clone()),
         &[rcdzc::Target::Wasm],
-        rcdzc::OptLevel::default(),
+        opt_level,
     );
     if build_code != ExitCode::SUCCESS {
         let _ = std::fs::remove_file(&out_wasm);
@@ -741,15 +754,34 @@ fn resolve_build_opt_level(
     manifest_opt_level: Option<&str>,
     mpath: &std::path::Path,
 ) -> Result<rcdzc::OptLevel, String> {
+    resolve_opt_level_precedence(
+        args.opt_level.as_deref(),
+        args.release,
+        manifest_opt_level,
+        mpath,
+    )
+}
+
+/// The shared optimization-tier PRECEDENCE, so `cdz build` and `cdz run` agree exactly (v-core-opt design
+/// §7): an explicit `--opt-level <LEVEL>` wins; else the manifest's `def opt-level`; else `--release`
+/// (`O2`); else the default (`O1`). A malformed level string — from the flag or the manifest — is an
+/// `Err` naming the source, so a typo is a clear failure rather than a silent default. `mpath` names the
+/// manifest in a manifest parse error.
+fn resolve_opt_level_precedence(
+    flag_opt_level: Option<&str>,
+    release: bool,
+    manifest_opt_level: Option<&str>,
+    mpath: &std::path::Path,
+) -> Result<rcdzc::OptLevel, String> {
     use std::str::FromStr;
-    if let Some(s) = &args.opt_level {
+    if let Some(s) = flag_opt_level {
         return rcdzc::OptLevel::from_str(s).map_err(|e| format!("--opt-level `{s}`: {e}"));
     }
     if let Some(s) = manifest_opt_level {
         return rcdzc::OptLevel::from_str(s)
             .map_err(|e| format!("{}: `opt-level` `{s}`: {e}", mpath.display()));
     }
-    if args.release {
+    if release {
         return Ok(rcdzc::OptLevel::O2);
     }
     Ok(rcdzc::OptLevel::default())

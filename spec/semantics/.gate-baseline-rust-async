@@ -80,6 +80,7 @@ pass	a CBOR simple value that is not a known boolean is classified as not-a-bool
 pass	a CBOR skip steps over a tagged item to the value it wraps
 pass	a CBOR skip walks past a whole nested item to the next offset
 pass	a CONSTANT recursive sum compares equal to a differently-built RUNTIME one
+pass	a Char-payload sum value escapes across the boundary in its canonical form
 pass	a DOUBLY-nested projected list, consumed then read, is unchanged (child retain through a proj chain)
 pass	a FLOAT-result effect op threads a float state and its resume folds under a float-dispatched operator
 pass	a GENERIC recursive sum branching through a tuple folds at a concrete instantiation
@@ -824,6 +825,7 @@ pass	a non-tail accumulable recursion runs to a large runtime N in constant stac
 pass	a non-tail call passing a heap-match argument compiles to valid wasm
 pass	a non-tail recursion with a fallible read in its base arm composes
 pass	a non-tail-resumptive outer handler reduces a reducible inner handle before its own fold
+pass	a not of a runtime conjunction computes the negated conjunction
 pass	a nullary Sign variant applied to a non-unit payload is a type error
 pass	a nullary constructor is a plain first-class value stored in a tuple
 pass	a nullary constructor is a single-arity function taking unit
@@ -910,6 +912,9 @@ pass	a pure lambda passed as an argument to a performing callee folds
 pass	a pure let-bound lambda and a performing one are both applied in the handle body
 pass	a pure shared subexpression computes the same value however the backend optimizes it
 pass	a qualified construct and a bare match name the same colliding variant
+pass	a quantity annotation at an in-range narrow width grounds and accepts
+pass	a quantity annotation range-checks the inner width — an out-of-range magnitude is rejected
+pass	a quantity annotation rejects a negative magnitude at an unsigned inner width
 pass	a quantity built from an extracted unit is dimensionally checked
 pass	a quantity over a Rational magnitude compares by its exact value
 pass	a quantity raised to the zeroth power is a dimensionless one
@@ -1449,6 +1454,7 @@ pass	an Option built by an if with the nullary branch first type-checks
 pass	an Option built by an if with the payload branch first type-checks (the control)
 pass	an Option carrying a Result is matched across two different sum types
 pass	an Option pipeline short-circuits on the first None
+pass	an Option.expect payload consumed per iteration while the option is threaded accumulates stably
 pass	an abort abandons a pending borrowed map lookup and the map survives
 pass	an abort abandons a pending consuming op and the shared binding survives
 pass	an abortive handler arm never resumes, so its value becomes the handle's value
@@ -1488,6 +1494,7 @@ pass	an all-nullary enum dispatches its runtime-selected variant and escapes
 pass	an all-nullary enum nested in a tuple carries its discriminant through the heap
 pass	an all-nullary enum reached through a tuple element inside a boxed sum survives the heap round-trip
 pass	an all-wildcard tuple arm is a catch-all that shadows a later refining arm
+pass	an and of two runtime negations computes their conjunction
 pass	an annihilator identity folds to zero when its operand is trap-free
 pass	an annotated argument joins a callee-side quantity at its own scale
 pass	an annotated destructuring let binder
@@ -1776,6 +1783,9 @@ pass	constructor pattern binders capture the payload uniformly
 pass	converting a BigInt back to a fixed width is checked and a compile-provable out-of-range narrowing is rejected
 pass	converting a char to its integer scalar value is total
 pass	converting a float to its own width is the identity
+pass	converting a scalar-valued integer to a char yields Some
+pass	converting a surrogate code point to a char yields None
+pass	converting an out-of-range integer to a char yields None
 pass	declaring a unit with a conversion conflicting with a built-in is an error
 pass	decode of a Float tag with a non-finite (NaN) bit pattern yields the error case
 pass	decode of a Str tag with an oversized length yields the error case
@@ -2022,6 +2032,8 @@ pass	print of an Ast.Bool renders the bare word and read inverts it
 pass	print of an Ast.Float renders a re-readable decimal and read inverts it
 pass	print of an Ast.Str renders a quoted literal with escapes and read inverts it
 pass	print of an integer-valued Ast.Float keeps its float form through read
+pass	print renders a nested compound with a string leaf as its exact canonical text
+pass	print renders an empty Ast.List as the empty-parens form
 pass	projecting a field is independent of the order fields are written
 pass	projecting a field of a non-compound argument is rejected at the call site
 pass	projecting a just-built tuple does not evaluate the unprojected sibling's trap
@@ -2052,6 +2064,9 @@ pass	read of the empty string declines
 pass	reading a byte from a sequence built with a RUNTIME element widens it to the Option payload
 pass	reading a field of a record built from runtime elements folds to the field
 pass	reading a member from an if-of-records resolves each branch's field by its own sorted order
+pass	reading a string's scalar addresses scalar values, not bytes
+pass	reading a string's scalar in bounds yields Some of the char
+pass	reading a string's scalar out of bounds yields None
 pass	reading the text a printer produced round-trips to an equal value
 pass	record equality is independent of the order fields are written
 pass	record fields render in canonical (key-sorted) order regardless of source order
@@ -2506,7 +2521,6 @@ todo	a CAPTURING closure taking a Result Int64 Int64 ARG — Err arm uses the ca
 todo	a CAPTURING closure taking a Tuple ARG crosses the DIRECT-CALL boundary
 todo	a CAPTURING closure taking an Option Int64 ARG crosses the direct-call boundary
 todo	a CAPTURING closure taking an Option Int64 ARG — None takes the captured value
-todo	a Char-payload sum value escapes across the boundary in its canonical form
 todo	a DOUBLY-nested Tuple ARG (three levels deep) crosses the direct-call boundary
 todo	a FLAT runtime string nested in a tuple is unaffected (control)
 todo	a FLOAT-field Tuple closure ARG flattens + rebuilds (box-float imported)
@@ -2887,10 +2901,7 @@ todo	arithmetic on a bound Rational payload computes and escapes exactly
 todo	binary operator operands are evaluated left to right
 todo	boxed closures of two fn types in one sum: the unbuilt variant's dispatch is dead
 todo	converting a fixed-width integer to BigInt is explicit
-todo	converting a scalar-valued integer to a char yields Some
-todo	converting a surrogate code point to a char yields None
 todo	converting a unit to another unit of the same dimension is an exact rational scale
-todo	converting an out-of-range integer to a char yields None
 todo	dimensional equality is decided by canonical exponent map, not written form
 todo	distinct signatures sharing a core valtype shape dispatch distinct bodies
 todo	distinct-sig byte-rope closure alongside a plain export — the closure
@@ -2970,9 +2981,6 @@ todo	or performs the right operand's effect when the left is false
 todo	or short-circuit does not perform the right operand's effect
 todo	raising a BigInt-magnitude quantity to a power runs the unbounded multiply
 todo	raising a quantity to a compile-time power composes the unit and the magnitude
-todo	reading a string's scalar addresses scalar values, not bytes
-todo	reading a string's scalar in bounds yields Some of the char
-todo	reading a string's scalar out of bounds yields None
 todo	round-trip byte-rope consumer alongside a plain export — the consumer
 todo	round-trip byte-rope consumer alongside a plain export — the plain
 todo	round-trip: a HIGHER-ORDER closure arg composed with a SUM result

@@ -1575,6 +1575,27 @@ fn cdz_render_at(
     if ty == "String" {
         return format!("format!(\"\\\"{{}}\\\"\", {path})");
     }
+    // A `Char` value is the Rust `char` the backend emits — render it as cdz-run's canonical `#\<…>` form,
+    // matching `cadenza-syntax`'s `char_literal_text`: the named specials (`#\space`/`#\newline`/`#\tab`/
+    // `#\return`/`#\null`), a control scalar → `#\u+HHHH` (uppercase hex, ≥4 digits), else `#\<char>`. The
+    // emitted Rust block matches `char` against those cases. `{path}` is a `char`/`&char`; deref-copy via
+    // `*` in the block (a `&char` derefs to `char`).
+    if ty == "Char" {
+        // `.clone()` (not a bare bind): `{path}` may be a `char` value OR a `&char` payload binder; `char`
+        // is Copy+Clone, so `.clone()` yields an owned `char` from either (a bare `let __c: char = &char`
+        // would fail).
+        return format!(
+            "{{ let __c: char = ({path}).clone(); match __c {{ \
+             ' ' => \"#\\\\space\".to_string(), \
+             '\\n' => \"#\\\\newline\".to_string(), \
+             '\\t' => \"#\\\\tab\".to_string(), \
+             '\\r' => \"#\\\\return\".to_string(), \
+             '\\0' => \"#\\\\null\".to_string(), \
+             __c if __c.is_control() => format!(\"#\\\\u+{{:04X}}\", __c as u32), \
+             __c => format!(\"#\\\\{{}}\", __c), \
+             }} }}"
+        );
+    }
     // A `Bytes` value is the Rust `Vec<u8>` the backend emits — render it as cdz-run's canonical `b"…"`
     // form, escaping each byte with the SAME rules as the runtime's `escape_byte`: `\n`/`\r`/`\t`/`\\`/`\"`
     // named, `\0`, printable ASCII `0x20..=0x7e` passthrough, else `\xHH` (lowercase hex). The emitted Rust

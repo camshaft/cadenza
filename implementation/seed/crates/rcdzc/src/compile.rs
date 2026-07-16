@@ -779,17 +779,25 @@ pub(crate) fn validate_type_position(
         out.push(Reject::coded(Code::IntOutOfRange, crate::infer::FLOAT_WIDTH_MESSAGE).at(pos));
         return;
     }
-    // A RUNTIME WIDTH `(Int n)`/`(Float n)` (n a parameter/ref) in a type-declaration payload
-    // (`(type T (Mk (List (Int n))))`) — a runtime value in a type-determining position, forbidden
-    // (numeric-model.md §A … Type Is Indexed By A Compile-Time Width). `reduce_ctor` clamps it to a
-    // sentinel so `typeval_of` would wave it through; reject here, same CDZ0302 the annotation sites give.
-    if crate::eval::is_runtime_width_type(db, pos) {
-        let msg = if crate::eval::is_float_ctor_type(db, pos) {
+    // A RUNTIME WIDTH `(Int n)`/`(Float n)` (n a parameter/ref) anywhere in this type position — a runtime
+    // value in a type-determining position, forbidden (numeric-model.md §A … Type Is Indexed By A
+    // Compile-Time Width). `reduce_ctor` clamps it to a sentinel so `typeval_of` would wave it through.
+    // DESCEND the type expression (`nested_runtime_width_type`), anchored at the inner `(Int n)`/`(Float
+    // n)`, rather than the old top-level-only `is_runtime_width_type(db, pos)` which missed a width NESTED
+    // in a compound (`(List (Int n))`) — the caller (`push_payload_type_positions`) only descends
+    // record-bearing containers, so a `List`/`Option`/`Tuple` of a width type reaches here WHOLE (PR #439 /
+    // Copilot r3592610268). This is a variant-payload / effect-op-type position (the two callers), neither
+    // of which has a runtime binding in scope TODAY — so the descent is a soundness-hardening + comment-
+    // accuracy fix that closes the code-flagged latent hole and pre-empts any future path (a const-param-
+    // threaded width) where a nested type-position width does resolve to runtime data. Same CDZ0302 the
+    // annotation sites give.
+    if let Some(node) = crate::infer::nested_runtime_width_type(db, pos) {
+        let msg = if crate::eval::is_float_ctor_type(db, node) {
             "a floating-point width must be a compile-time admitted width (32 or 64), not runtime data"
         } else {
             "an integer width must be a compile-time natural, not runtime data"
         };
-        out.push(Reject::coded(Code::IntOutOfRange, msg).at(pos));
+        out.push(Reject::coded(Code::IntOutOfRange, msg).at(node));
         return;
     }
     if crate::eval::typeval_of(db, pos).is_some() {

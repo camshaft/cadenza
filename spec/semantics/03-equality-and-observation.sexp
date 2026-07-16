@@ -129,6 +129,39 @@
   (call   main)
   (output (: true Bool)))
 
+(case "equality over a compound mixing a float and a Bytes leaf walks both"
+  (doc    "A compound value-eq whose leaves span TWO of the newly-walkable types at once — a Float64 and a
+           Bytes — exercises the heap-walk over a heterogeneous compound: `(= (tuple f b) (tuple f b'))`
+           where `f=1.5` and `b`/`b'` are the same bytes (one via a `Bytes.concat`-shaped `rep b 0` = `b`).
+           Both leaves compare by their canonical byte form → true. Pins that admitting Float AND Bytes in
+           `ty_heap_walkable` composes — a mixed-leaf compound walks correctly, not just single-type ones.")
+  (input  (do
+            (def (rep (: b Bytes) (: n Int64)) (if (= n 0) b (rep (Bytes.concat b (Bytes.of (list 120))) (- n 1))))
+            (def (eq (: f Float64) (: b Bytes)) (= (tuple f b) (tuple f (rep b 0))))
+            (def (main) (eq 1.5 (Bytes.of (list 104)))) (export main)))
+  (call   main)
+  (output (: true Bool)))
+
+(case "a runtime float is found as a Set element by canonical byte form"
+  (doc    "Set membership over a `Set Float64` with a runtime query: `1.5` IS a member of `(Set.of (list
+           1.5 2.5))` → true, `9.9` is NOT → false. The float element/query is compared by its canonical
+           byte form through the CHAMP `champ_eq`/`champ_hash` (box-float canonicalizes on construct), so a
+           runtime float key hashes+matches its equal — the Set/CHAMP-key face of runtime float equality.")
+  (input  (do
+            (def (mem (: x Float64)) (Set.contains (Set.of (list 1.5 2.5)) x))
+            (def (main) (mem 1.5)) (export main)))
+  (call   main)
+  (output (: true Bool)))
+
+(case "a runtime float absent from a Set is not found"
+  (doc    "The negative companion: a runtime float `9.9` NOT in `(Set.of (list 1.5 2.5))` → false. Confirms
+           the float Set-membership is a genuine canonical-byte match, not always-present.")
+  (input  (do
+            (def (mem (: x Float64)) (Set.contains (Set.of (list 1.5 2.5)) x))
+            (def (main) (mem 9.9)) (export main)))
+  (call   main)
+  (output (: false Bool)))
+
 ; A `nan` value carries its DECLARING float width — `Float64.nan` is a Float64, `Float32.nan` a Float32 —
 ; so a CROSS-WIDTH comparison between them (or against a finite float of the other width) is the same
 ; no-silent-promotion type error a cross-width FINITE comparison is (CDZ0301, numeric-model.md #Numeric

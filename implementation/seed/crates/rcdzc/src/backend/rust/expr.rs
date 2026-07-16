@@ -642,6 +642,11 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         // emitted source is valid regardless of the string's content. A Cadenza `String` is owned text, so
         // `.to_string()` gives the owned `String` the type map (`Ty::String`→`String`) expects.
         Core::ConstStr(s) => Ok(format!("{}.to_string()", rust_string_literal(&s))),
+        // A CHAR constant → a Rust `char` literal `'…'`. Escapes `'`/`\`/the whitespace controls and any
+        // other control/non-printable scalar via `\u{..}` so the literal is always valid; a printable
+        // scalar (incl a UTF-8 letter) is emitted verbatim. `Ty::Char` maps to `char`, so this crosses as
+        // a `char` value (a sum payload / tuple element).
+        Core::ConstChar(c) => Ok(rust_char_literal(c)),
         // A parameter or kept-let reference — read the identifier its binder maps to. A binder with no
         // environment entry is a compiler bug (a ref whose binding was not brought into scope), so
         // decline rather than emit a dangling name.
@@ -1391,7 +1396,6 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         // panic carrying its own op-named reason, not `Core::Trap`, so this literal is only the non-
         // arithmetic explicit trap, whose canonical kind IS `unreachable`.)
         Core::Trap => Ok("panic!(\"unreachable\")".to_string()),
-        Core::ConstChar(_)
         // Runtime BigInt (a heap leaf + the runtime `bigint-*` ops) has no native Rust rendering yet —
         // the rust backend would need a Rust bignum runtime. Declines cleanly (a constant BigInt folds
         // and reaches this backend as a `Core::ConstInt`, which emits fine).
@@ -2008,6 +2012,21 @@ fn rust_string_literal(s: &str) -> String {
     }
     out.push('"');
     out
+}
+
+/// Render `c` as a Rust CHAR LITERAL (`'…'`) with a valid escape for every scalar — so the emitted
+/// source compiles for any char. Escapes `'`, `\`, the whitespace controls, and any other control/
+/// non-printable scalar via `\u{..}`; a printable scalar (incl a UTF-8 letter) is emitted verbatim.
+fn rust_char_literal(c: char) -> String {
+    match c {
+        '\\' => "'\\\\'".to_string(),
+        '\'' => "'\\''".to_string(),
+        '\n' => "'\\n'".to_string(),
+        '\r' => "'\\r'".to_string(),
+        '\t' => "'\\t'".to_string(),
+        c if (c as u32) < 0x20 || c == '\u{7f}' => format!("'\\u{{{:x}}}'", c as u32),
+        c => format!("'{c}'"),
+    }
 }
 
 /// A human op name for a trap panic message.

@@ -58,6 +58,19 @@ pub struct RunArgs {
     /// Exchange). Absent (the common case) → an ordinary single-component run.
     #[arg(long = "peer", value_name = "INTERFACE=PATH")]
     pub peers: Vec<String>,
+
+    /// PROJECT mode only (`cdz run` on a `Project.cdz`/directory/omitted): build the entry at the RELEASE
+    /// tier (`O2`) before running, the `cargo run --release` analogue. Ignored when running a pre-built
+    /// `.wasm` (there is nothing to build). Shorthand for `--opt-level O2`; `--opt-level` wins if both are
+    /// given, and a manifest `def opt-level` wins over `--release` (same precedence as `cdz build`).
+    #[arg(long)]
+    pub release: bool,
+
+    /// PROJECT mode only: the optimization LEVEL (`O0`..`O3`) to build the entry at before running,
+    /// overriding both `--release` and any `Project.cdz` `opt-level`. Ignored when running a pre-built
+    /// `.wasm`. Omitted → the manifest's `opt-level`, else `--release`'s `O2`, else the default `O1`.
+    #[arg(long, value_name = "LEVEL")]
+    pub opt_level: Option<String>,
 }
 
 /// Run a component per `args`, printing the value to stdout (host calls to stderr) and returning the

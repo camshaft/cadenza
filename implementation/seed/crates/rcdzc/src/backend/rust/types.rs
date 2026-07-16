@@ -38,6 +38,10 @@ pub fn rust_type(ty: &Ty) -> Option<String> {
         ),
         Ty::Bool => Some("bool".to_string()),
         Ty::Unit => Some("()".to_string()),
+        // A CHAR is a single Unicode scalar value — Rust's native `char` (which IS a Unicode scalar,
+        // exactly the Cadenza model). Copy, so no clone-on-read needed. Lets a `Char` cross as a sum
+        // payload / tuple element (a `(Tok (Ch Char))` enum) and a `ConstChar` emit as a `'…'` literal.
+        Ty::Char => Some("char".to_string()),
         // A tuple is Rust's native tuple: `(T0, T1, …)` — each element mapped recursively (so a nested
         // tuple / a tuple of scalars composes). A 1-tuple is written `(T,)` (Rust needs the trailing
         // comma to distinguish it from a parenthesized type). An element with no native mapping declines

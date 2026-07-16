@@ -2359,3 +2359,42 @@ fn rustc_roundtrip_const_float_nan_emits_and_compares_by_canonical_bits() {
         );
     }
 }
+
+#[test]
+fn char_maps_to_rust_char_and_escapes_across_a_sum_payload() {
+    // `Ty::Char`→`char`; `ConstChar`→a `'…'` literal; a Char crosses as a sum payload and renders `#\<c>`.
+    let rs = compile_rust(
+        "(module m (type Tok (Ch Char) (End)) (def (mk) ((. Tok Ch) #\\a)) (export mk))",
+    );
+    assert!(
+        rs.contains("Ch(char)"),
+        "Char sum payload → char field:\n{rs}"
+    );
+    assert!(
+        rs.contains("Ch('a')"),
+        "ConstChar → a Rust char literal:\n{rs}"
+    );
+    // e2e: the Char-payload sum renders `(Ch #\a)`.
+    let driver = "fn main(){ let v = prog::mk(); let s = match v { prog::Tok::Ch(__c) => { let __c: char = __c; match __c { ' ' => \"#\\\\space\".to_string(), c if c.is_control() => format!(\"#\\\\u+{:04X}\", c as u32), c => format!(\"#\\\\{}\", c) } }, prog::Tok::End => \"(End unit)\".to_string() }; println!(\"(Ch {})\", s); }";
+    if let Some(out) = rustc_run_driver(&rs, driver) {
+        assert_eq!(
+            out, "(Ch #\\a)",
+            "a Char sum payload renders in the canonical #\\ form"
+        );
+    }
+    // Char.from-int on a CONSTANT scalar folds to Some(char); a surrogate folds to None. (A runtime-int
+    // from-int still declines — constant-only — so these fold cases exercise the Char VALUE + Option render,
+    // which the Char→char mapping enables.) 97='a' → Some → 1; 0xD800 surrogate → None → 0.
+    let ok = compile_rust(
+        "(module m (def (f) (match ((. Char from-int) 97) ((Some c) 1) ((None _) 0))) (export f))",
+    );
+    if let Some(out) = rustc_run(&ok, "f()") {
+        assert_eq!(out, "1", "97 is a valid scalar → Some");
+    }
+    let bad = compile_rust(
+        "(module m (def (f) (match ((. Char from-int) 55296) ((Some c) 1) ((None _) 0))) (export f))",
+    );
+    if let Some(out) = rustc_run(&bad, "f()") {
+        assert_eq!(out, "0", "0xD800 is a surrogate → None");
+    }
+}

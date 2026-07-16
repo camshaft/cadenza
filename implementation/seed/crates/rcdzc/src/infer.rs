@@ -838,7 +838,7 @@ pub(crate) const FLOAT_WIDTH_MESSAGE: &str =
 /// TOP-LEVEL ctor, so a runtime width NESTED in a compound slipped past `cdz check` (rc=0) AND compiled —
 /// a runtime value determining a type, which the type system forbids (numeric-model.md §An Integer/
 /// Floating-Point Type Is Indexed By A Compile-Time Width). This closes that nested gap.
-fn nested_runtime_width_type(db: &mut Db, ty_expr: StructId) -> Option<StructId> {
+pub(crate) fn nested_runtime_width_type(db: &mut Db, ty_expr: StructId) -> Option<StructId> {
     if crate::eval::is_runtime_width_type(db, ty_expr) {
         return Some(ty_expr);
     }

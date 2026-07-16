@@ -2207,10 +2207,13 @@ impl<'a> Printer<'a> {
     fn unquote_atomic(&self, id: StructId) -> bool {
         match self.a.get(id) {
             Struct::Atom(_) => true,
+            // a pure member-access chain `(. a b)` with a plain-ident key. An EMPTY list (`items` is
+            // empty) has no head to inspect — it is not a member chain, so it is not atomic. Guard the
+            // `items[0]`/`items[2]` indexing (an empty list is a valid arena node, e.g. `(unquote ())`,
+            // and must not panic the printer — the reader-never-panics contract extends to the printer).
             Struct::List(items) => {
-                // a pure member-access chain `(. a b)` with a plain-ident key
-                self.head_name(items[0]).as_deref() == Some(".")
-                    && items.len() == 3
+                items.len() == 3
+                    && self.head_name(items[0]).as_deref() == Some(".")
                     && self.plain_key(items[2]).is_some()
                     && self.unquote_atomic(items[1])
             }
@@ -2785,6 +2788,106 @@ mod tests {
             "not idempotent: {src:?} -> {printed:?} -> {printed2:?}"
         );
         printed
+    }
+
+    /// A tiny deterministic PRNG (SplitMix64) — reproducible fuzz without a dependency, matching the
+    /// lexer/parser/sexpr/codec house style (the crate stays "plain").
+    struct SplitMix64(u64);
+    impl SplitMix64 {
+        fn next(&mut self) -> u64 {
+            self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+            z ^ (z >> 31)
+        }
+    }
+
+    #[test]
+    fn printer_is_total_on_arbitrary_input_and_idempotent_on_clean_parses() {
+        // The PRINTER half of the round-trip contract, on ARBITRARY input. `read_ml` recovers (never
+        // bails), so every fuzzed string yields an arena to print. Two tiers of invariant:
+        //
+        //   * UNIVERSAL (any input, incl. an error-recovery arena holding synthetic `<error>` marker
+        //     nodes): `print` never PANICS, at any width, and its output RE-PARSES without panicking —
+        //     the printer never emits un-lexable/un-parsable text.
+        //   * IDEMPOTENCE (`print(read(print(x))) == print(x)`) — asserted ONLY when the original input
+        //     parsed CLEANLY. The idempotence contract is for WELL-FORMED arenas; an arena recovered
+        //     from malformed input contains `<error>` markers that are a best-effort recovery artifact,
+        //     not a spec'd round-trip surface (e.g. `@` → `` @`<error>` `` re-parses to a different tree
+        //     — a known, acceptable limitation, NOT a miscompile of any valid program).
+        //
+        // Widths vary so the layout engine's break decisions are exercised, not just the flat form.
+        let alphabet: Vec<char> = "()[]{}|,;=>-+*/<:.@#`\"\\ \tabcdefimntxλ中0123456789\n"
+            .chars()
+            .collect();
+        let mut rng = SplitMix64(0x7b1e_5111_0d1c_a5f1);
+        for len in 0..=32usize {
+            for _ in 0..80 {
+                let s: String = (0..len)
+                    .map(|_| alphabet[(rng.next() as usize) % alphabet.len()])
+                    .collect();
+                let parsed = parser::read_ml(&s);
+                let clean = parsed.ok();
+                for width in [0usize, 1, 20, 80] {
+                    let printed = print(&parsed.arenas, width); // must not panic
+                    let reparsed = parser::read_ml(&printed); // must not panic
+                    if clean {
+                        // A clean parse's printed form must itself re-parse clean and print identically.
+                        assert!(
+                            reparsed.ok(),
+                            "printed form of a clean parse must re-parse clean: {s:?} -> {printed:?}: \
+                             {:?}",
+                            reparsed.errors
+                        );
+                        let printed2 = print(&reparsed.arenas, width);
+                        assert_eq!(
+                            printed, printed2,
+                            "printer not idempotent at width {width} for clean input {s:?}: \
+                             {printed:?} -> {printed2:?}"
+                        );
+                    }
+                }
+            }
+        }
+        // Pathological shapes that stress the layout engine + minimal-paren logic (all parse clean).
+        for s in [
+            "a+a+a+a+a+a",
+            "f(f(f(f(f(x)))))",
+            "a.b.c.d.e.f",
+            "1;2;3;4;5;6",
+            "a:b:c:d",
+        ] {
+            for width in [0usize, 1, 40, 200] {
+                let printed = assert_roundtrip(s, width); // clean-parse round-trip + idempotence
+                let _ = printed;
+            }
+        }
+    }
+
+    #[test]
+    fn unquote_over_an_empty_list_does_not_panic() {
+        // Regression (found by `printer_is_total_on_arbitrary_input_…`): `unquote_atomic` indexed
+        // `items[0]` on a `Struct::List` WITHOUT checking it was non-empty, so an unquote wrapping an
+        // EMPTY list — `(unquote ())`, a valid arena node — panicked the printer (`index out of bounds:
+        // len 0`) instead of printing. `cdz convert` on that s-expr crashed. The printer must be TOTAL.
+        let a = sexpr::read("(unquote ())").unwrap();
+        let _ = print(&a, 80); // must not panic
+        // Sibling empty-list shapes through the same predicate path.
+        for src in [
+            "(unquote ())",
+            "(quasiquote ())",
+            "(unquote (. ()))",
+            "(unquote (. a))",
+        ] {
+            let a = sexpr::read(src).unwrap();
+            let printed = print(&a, 80); // must not panic
+            // And the printed form re-parses (the printer emits well-formed text).
+            assert!(
+                parser::read_ml(&printed).ok(),
+                "{src:?} printed to non-reparsing {printed:?}"
+            );
+        }
     }
 
     #[test]

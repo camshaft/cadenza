@@ -314,3 +314,66 @@ fn cdz_run_no_arg_with_no_project_errors() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn cdz_run_release_builds_the_project_and_runs() {
+    // `cdz run --release` builds the entry at the O2 tier before running (the `cargo run --release`
+    // analogue). The observable is the same value + success; the tier is exercised by the build path.
+    let dir = scalar_project("release");
+    let (ok, out, err) = run(&[
+        "run",
+        dir.to_str().unwrap(),
+        "--release",
+        "--call",
+        "add",
+        "--arg",
+        "2",
+        "--arg",
+        "40",
+    ]);
+    assert!(ok, "cdz run --release failed: {err}");
+    assert_eq!(out.trim(), "42", "release build runs correctly: {out}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn cdz_run_opt_level_builds_the_project_and_runs() {
+    // `cdz run --opt-level O0` builds+runs at the named tier — the explicit-level form.
+    let dir = scalar_project("optlevel");
+    let (ok, out, err) = run(&[
+        "run",
+        dir.to_str().unwrap(),
+        "--opt-level",
+        "O0",
+        "--call",
+        "add",
+        "--arg",
+        "20",
+        "--arg",
+        "22",
+    ]);
+    assert!(ok, "cdz run --opt-level O0 failed: {err}");
+    assert_eq!(out.trim(), "42", "O0 build runs correctly: {out}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn cdz_run_a_bad_opt_level_errors_naming_the_choices() {
+    // A malformed `--opt-level` on a project run is a clear error naming the valid set (shared with
+    // `cdz build`'s precedence), not a silent fallback.
+    let dir = scalar_project("badopt");
+    let (ok, _out, err) = run(&[
+        "run",
+        dir.to_str().unwrap(),
+        "--opt-level",
+        "O9",
+        "--call",
+        "add",
+    ]);
+    assert!(!ok, "a bad --opt-level must fail");
+    assert!(
+        err.contains("O0, O1, O2, O3"),
+        "error names the valid levels: {err}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
