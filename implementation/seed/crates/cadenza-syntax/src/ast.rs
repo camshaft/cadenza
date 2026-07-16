@@ -761,7 +761,7 @@ mod tests {
         // arena, and `structurally_eq` is reflexive on the result. The corpus roundtrip only covers
         // reader-producible trees; this reaches the leaf-kind/arity combinations only a hand-built or
         // decoded arena takes, stressing the codec's per-kind serialization + the structurally_eq walk.
-        let mut rng = Rng(0xa57_c0de_a57_c0de);
+        let mut rng = Rng(0x00a5_7c0d_ea57_c0de);
         for _ in 0..4000 {
             let mut b = Builder::new();
             let depth = 1 + rng.below(4);
