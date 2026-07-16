@@ -16484,6 +16484,51 @@ mod match_engine {
     }
 
     #[test]
+    fn a_nested_non_exhaustive_match_names_the_uncovered_inner_variant() {
+        // A NESTED-payload non-exhaustive match now NAMES the uncovered inner variant (CDZ0210 "pattern `B`
+        // not covered") instead of the generic "must cover every variant" (v-diagnostics note 2026-07-16).
+        // `(match o ((Some (A)) 1) ((None) 0))` over `Option C` where `C = (A)|(B)` leaves `(Some (B))`
+        // uncovered — the inner sum `C` at switch-path `[Payload]` is missing variant `B`. The matrix path
+        // (build_tree at a non-empty switch_path) surfaces the missing-variant witness via
+        // `non_exhaustive_sum_message` (message-only — a nested gap's covering arm can't be flat-appended,
+        // so no fix, unlike the top-level path). Message-quality; the reject is unchanged (still CDZ0210).
+        let d = reject_full(
+            "(module m (type C (A) (B)) \
+               (def (f (: o (Option C))) (match o ((Some (A)) 1) ((None) 0))) (export f))",
+        )
+        .expect("nested non-exhaustive must reject");
+        assert_eq!(d.code.as_deref(), Some("CDZ0210"), "got: {}", d.message);
+        assert!(
+            d.message.contains("`B`") && d.message.contains("not covered"),
+            "names the uncovered inner variant `B`, not the generic message: {}",
+            d.message
+        );
+        // TWO missing inner variants → both named.
+        let d2 = reject_full(
+            "(module m (type C (A) (B) (E)) \
+               (def (f (: o (Option C))) (match o ((Some (A)) 1) ((None) 0))) (export f))",
+        )
+        .expect("nested non-exhaustive must reject");
+        assert!(
+            d2.message.contains("`B`") && d2.message.contains("`E`"),
+            "names both uncovered inner variants: {}",
+            d2.message
+        );
+        // NO false alarm: an EXHAUSTIVE nested match is not rejected. (A nullary `main` that constructs +
+        // matches internally, so the `(Option C)` value never crosses the host boundary — the boundary is
+        // an orthogonal concern from exhaustiveness.)
+        assert!(
+            reject_full(
+                "(module m (type C (A) (B)) \
+                   (def (f (: o (Option C))) (match o ((Some (A)) 1) ((Some (B)) 2) ((None) 0))) \
+                   (def (main) (f (Some (A)))) (export main))",
+            )
+            .is_none(),
+            "an exhaustive nested match compiles clean"
+        );
+    }
+
+    #[test]
     fn adding_two_rationals_type_checks_without_a_phantom_int64() {
         // `(+ r s)` with BOTH operands `Rational` — Rational arithmetic IS wired (B4-1, `@431d7833`:
         // `apply_type` gives a Rational-operand `+`/`-`/`*`/`/` the result `Ty::Rational`). So it type-checks

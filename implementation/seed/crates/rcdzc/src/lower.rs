@@ -8073,6 +8073,47 @@ fn non_exhaustive_sum_reject(
     }
 }
 
+/// The CDZ0210 NON-EXHAUSTIVE message for a NESTED sub-match (a gap inside a payload pattern) — names the
+/// missing variant(s) of the sub-value's sum but carries NO fix. A nested gap's covering arms would have to
+/// be shaped to the enclosing pattern's nesting (`((Some (B)) …)`, not a flat `(B …)`), which the top-level
+/// flat-append fix cannot express — so a nested non-exhaustive keeps the actionable "pattern `B` not
+/// covered" NAME (a big improvement over the generic "must cover every variant") without a misleading
+/// fix. The message-only twin of [`non_exhaustive_sum_reject`], sharing its missing-variant computation.
+/// (v-diagnostics note 2026-07-16: the nested path fell to the generic message; this surfaces the witness.)
+fn non_exhaustive_sum_message(db: &Db, decl: StructId, tested: &[u32]) -> Reject {
+    let generic = "a sum match must cover every variant or end in a wildcard `_` (non-exhaustive)";
+    let Some(t) = db.type_decl_by_occ(decl) else {
+        return Reject::coded(Code::NonExhaustive, generic);
+    };
+    // An OPEN nested sub-sum with every NAMED variant covered needs an open-tail `_` — name that.
+    let is_open = t.open_tail.is_some();
+    let missing: Vec<&crate::db::Variant> = t
+        .variants
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !tested.contains(&(*i as u32)))
+        .map(|(_, v)| v)
+        .collect();
+    if missing.is_empty() {
+        if is_open {
+            return Reject::coded(
+                Code::NonExhaustive,
+                "non-exhaustive match: this open sum requires an open-tail `_` arm covering its unnamed variants",
+            );
+        }
+        return Reject::coded(Code::NonExhaustive, generic);
+    }
+    let names: Vec<String> = missing.iter().map(|v| format!("`{}`", v.name)).collect();
+    Reject::coded(
+        Code::NonExhaustive,
+        format!(
+            "non-exhaustive match: pattern{} {} not covered",
+            if missing.len() == 1 { "" } else { "s" },
+            join_and(&names),
+        ),
+    )
+}
+
 /// Join names as `a`, `a and b`, or `a, b, and c` — the English list a "not covered" message reads
 /// naturally with (matching rustc's phrasing).
 fn join_and(items: &[String]) -> String {
@@ -8513,10 +8554,11 @@ fn build_tree_ft(
         if switch_path.is_empty() {
             return Err(non_exhaustive_sum_reject(db, decl, &tested, scrutinee));
         }
-        return Err(Reject::coded(
-            Code::NonExhaustive,
-            "a sum match must cover every variant or end in a wildcard `_` (non-exhaustive)",
-        ));
+        // A NESTED gap (inside a payload pattern) — name the missing variant(s) of the sub-value's sum
+        // (message-only: a nested arm's shape can't be flat-appended, so no fix). Big improvement over the
+        // generic message: `(match o ((Some (A)) 1) ((None) 0))` now says "pattern `B` not covered" (the
+        // uncovered inner variant) rather than "must cover every variant".
+        return Err(non_exhaustive_sum_message(db, decl, &tested));
     }
     // One arm per tested discriminant, then the default arm (if any). Each arm's sub-matrix merges its
     // disc rows with the default rows by source index (both already ascending), recursing under a
