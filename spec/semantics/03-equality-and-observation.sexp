@@ -305,6 +305,31 @@
   (input  (= Float32.nan (: 1.5 Float64)))
   (error  CDZ0301))
 
+; A FUNCTION value has no decidable equality — two functions are equal iff they agree on every input, which
+; is undecidable — so `=` on a function operand is a TYPE ERROR (CDZ0203, 'this operation is not defined on
+; a function value'), not a reference/identity compare and not a run-to-a-value. This holds for a function
+; LITERAL and for a function-TYPED parameter alike; the observation `=` is defined only over values with a
+; canonical byte form, which a closure does not have.
+
+(case "comparing two function literals with = is a type error"
+  (doc    "`(= (fn (x) x) (fn (y) y))` compares two function literals — a function has no decidable equality
+           (equal iff equal on every input, undecidable), so `=` is not defined on it: CDZ0203, 'this
+           operation is not defined on a function value'. Pins that `=` rejects a function operand rather
+           than falling back to a reference/identity compare or running to a value — the observation is over
+           values with a canonical byte form, which a closure lacks.")
+  (input  (do (def (main) (if (= (fn (x) x) (fn (y) y)) 1 0)) (export main)))
+  (error  CDZ0203))
+
+(case "comparing two function-typed parameters with = is a type error"
+  (doc    "The parameter companion: `(= f g)` over two `(-> Int64 Int64)` parameters rejects CDZ0203 too —
+           a function is incomparable whether written inline or bound as a parameter. Pins that the
+           no-equality-on-functions rule follows the TYPE (a `->` type), not the syntactic form of the
+           operand, so a comparison hidden behind a parameter is still caught at the operation.")
+  (input  (do (def (cmp (: f (-> Int64 Int64)) (: g (-> Int64 Int64))) (= f g))
+              (def (main) (if (cmp (fn (x) x) (fn (y) y)) 1 0))
+              (export main)))
+  (error  CDZ0203))
+
 ; --- RUNTIME scalar float equality (not a constant fold) — the canonical-byte BIT compare -----------
 ; The scalar cases above are CONSTANT operands (they fold in `lower`). These pin the RUNTIME path: two
 ; Float64/Float32 BOUNDARY PARAMETERS compared with `=`, which cannot fold and must emit the runtime

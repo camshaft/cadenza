@@ -62,9 +62,9 @@ pass	TRANS chained three deep accumulates every operand's hypotheses
 pass	TRANS unions the hypotheses of BOTH operands when each carries a distinct assumption
 pass	TWO performs in an if condition both fold on the strict-first spine
 pass	Type.eq branches on a type-valued parameter, monomorphized per passed type
+pass	Type.eq carries an integer type's full width and signedness
 pass	Type.eq compares a RECORD type-value structurally, by field types
 pass	Type.eq compares a TUPLE type-value structurally, by element types
-pass	Type.eq carries an integer type's full width and signedness
 pass	Type.eq compares a reflected type against a written type
 pass	Type.eq compares two type-valued parameters to each other
 pass	Type.eq distinguishes a constructed generic sum by its type argument
@@ -101,6 +101,7 @@ pass	a BigInt factorial accumulator computes 25! exactly
 pass	a BigInt is usable as a map key, matched by its arbitrary-precision value
 pass	a BigInt is usable as a set element, deduplicated by its arbitrary-precision value
 pass	a BigInt operation does not silently promote a fixed-width operand
+pass	a BigInt-inner quantity ADDITION past Int64.max stays exact through the wrapper
 pass	a BigInt-inner quantity grows past Int64.max without trapping
 pass	a BigInt-inner quantity scales by a bare BigInt on the bigint path
 pass	a Bool argument to a parameter used in integer addition is rejected
@@ -1427,6 +1428,7 @@ pass	a sparse three-arm match's terminal pair dispatches branchlessly — the de
 pass	a sparse three-arm match's terminal pair dispatches branchlessly — the middle probe
 pass	a spliced boolean drives an evaluated conditional through the lifted leaf
 pass	a spliced string participates in an evaluated equality
+pass	a squared BigInt-inner quantity added to a linear one is a dimension mismatch
 pass	a squared quantity does not add to a linear quantity
 pass	a stateful handler threads its counter across a function boundary
 pass	a straight-line tuple built from callee params is projected in the caller
@@ -1584,7 +1586,9 @@ pass	a type-name-colliding variant construct coexists with the width type it col
 pass	a type-value in integer-width position is rejected
 pass	a type-valued parameter threaded through a second call reaches Type.eq with its type intact
 pass	a u16 segment encodes an integer big-endian by default
+pass	a u16 segment round-trips at its maximum value
 pass	a u32 segment encodes four big-endian bytes
+pass	a u32 segment round-trips at its maximum value
 pass	a u64 pattern segment reads eight big-endian bytes back into an integer
 pass	a u64 segment encodes eight big-endian bytes
 pass	a unary constructor applied to a runtime value is returned as a program result
@@ -1808,6 +1812,7 @@ pass	an export with two tuple parameters returns a list from both
 pass	an exported closure with a narrow-arg wide-result mismatched body is rejected, not miscompiled
 pass	an exported closure with an annotation-mismatched body is rejected, not emitted invalid
 pass	an expression tree built at run time is evaluated by matching its node variants
+pass	an i16 segment round-trips at its two's-complement minimum
 pass	an identity conversion unwraps the magnitude unchanged
 pass	an if choosing between two nullary enum variants selects branchlessly on the discriminant
 pass	an if on Type.eq selects a branch at compile time
@@ -1894,6 +1899,12 @@ pass	an underscore-prefixed token is an identifier, not an integer
 pass	an unproductive self-recursion is declined, not a compiler crash
 pass	an unquote nested inside a plain quote is a syntax error, not an active unquote
 pass	an unquote of an expression with an unbound name is rejected, not quoted
+pass	an unquoted variable is not captured by a list-rest-pattern binder
+pass	an unquoted variable is not captured by a same-named fn param in the template
+pass	an unquoted variable is not captured by a same-named let binder in the template
+pass	an unquoted variable is not captured by a same-named match-pattern binder in the template
+pass	an unquoted variable is not captured by a tuple-pattern binder
+pass	an unquoted variable is not captured by a variant-payload match-pattern binder
 pass	an unrecognized annotation leaves its wrapped definition in effect
 pass	an unrecognized pragma key is rejected rather than ignored
 pass	an unrecognized string escape is rejected
@@ -2137,6 +2148,10 @@ pass	greater-than-or-equal of an integer and a float is rejected
 pass	heap string elements of a hoisted list if select by branch
 pass	heap-valued handler state above an inner abort keeps threading
 pass	hexadecimal, binary, and decimal spellings of one value are equal
+pass	hygiene fix does not over-reach: a different-named template binder needs no rename
+pass	hygiene: a spliced unquote sits beside the template's own use of the renamed binder
+pass	hygiene: an unquote is uncaptured through two nested same-named template binders
+pass	hygiene: two distinct unquotes each colliding with a different template binder are both renamed
 pass	identical negative zeros nested in a tuple compare equal
 pass	identically-built ropes on both sides of a nested compare are equal (control)
 pass	indexed reads at different indices of one list are not shared
@@ -2496,6 +2511,7 @@ pass	the generator reproduces its stream from a runtime seed (same seed, same va
 pass	the greater-than operator on chars follows scalar order
 pass	the guarded-let conditional takes its else-branch when the conjunction is false
 pass	the heap list a handle BUILDS escapes the handle and is consumed outside it
+pass	the hygiene rename recurses into a NESTED compound match pattern
 pass	the identity function applied to a boolean returns the boolean
 pass	the identity function applied to an integer returns the integer
 pass	the int-to-float generator is order-preserving (a < b implies of a <= of b — NON-decreasing)
@@ -2686,6 +2702,7 @@ pass	updating a record field changes its type to the new value's
 pass	updating a record field replaces its value
 pass	updating an absent record field is rejected
 pass	when two abortive performs sit on one spine the FIRST (leftmost) abort wins
+pass	widening a runtime narrow-width integer to Int64 declines (the emit is a later increment)
 pass	wrapping addition of in-range operands is ordinary addition
 pass	wrapping addition wraps modulo two to the sixty-fourth on overflow
 pass	wrapping an unwrapped number re-enters the units world at the new unit
@@ -3172,6 +3189,7 @@ todo	breaker exists: DISJ2 preserves the premise's hypothesis
 todo	breaker exists: EXISTS-intro preserves multiple hypotheses from the premise
 todo	breaker exists: EXISTS-intro rejects a witness whose instance does not match the premise (unforgeability)
 todo	breaker exists: EXISTS-intro with the witness variable also free in the body substitutes all occurrences
+todo	capture-avoiding substitution renames a Forall binder to avoid capture (logical-form subst)
 todo	capture-avoiding substitution renames a binder so the substituted term's free variable is not captured
 todo	compound equality over a Rational leaf respects normalization (1/2 = 2/4)
 todo	compound equality over a runtime Rational leaf compares by the normalized form
@@ -3309,6 +3327,7 @@ todo	scan emits the seed plus one accumulator per element (n+1 outputs)
 todo	scan over an empty iterator emits just the seed
 todo	scan threads its accumulator left-to-right (an order-sensitive folder)
 todo	scan's kth emitted accumulator is the running fold of the first k elements
+todo	substitution fires inside an implication (subst recurses into Imp)
 todo	take-while composed after a map threads both transformers' closures
 todo	take-while excludes the failing element and everything after it (content, not just count)
 todo	take-while where every element satisfies the predicate keeps the whole run

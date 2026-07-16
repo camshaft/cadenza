@@ -179,8 +179,9 @@ enum Cmd {
     /// reporting pass/fail. Each `@test def` crosses the boundary as a nullary entry the runner invokes;
     /// a test that RETURNS (unit) PASSES, one that TRAPS FAILS (an assertion emits its message via a host
     /// effect, then traps). The report/host effect is compiled in ONLY here — a normal `cdz compile` build
-    /// never carries it. Shells out to the sibling `cdz-run` binary to execute each test (this bin holds
-    /// no wasm engine). Exits non-zero if any test fails.
+    /// never carries it. Runs each test IN-PROCESS (wasmtime + the runner are linked into `cdz` via the
+    /// `cdz-run` library — no sibling binary on the PATH), so a single `cdz` both compiles and runs the
+    /// suite. Exits non-zero if any test fails.
     Test(TestArgs),
 
     // ── semantic queries — the in-process win (both libraries + spans) ──────────────────────────
@@ -1522,11 +1523,13 @@ struct DoctorArgs {
 /// analogue), so a broken setup surfaces before a `cdz run`/`cdz test` fails mid-operation. It reports
 /// three things and exits non-zero if a component that would break run/test is missing. First, the `cdz`
 /// version + executable path (what a bug report should cite). Second, the sibling `cdz-run` binary — this
-/// bin holds no wasm engine, so `cdz run`/`cdz test` shell out to it; if it's absent, those fail. Third,
-/// the value-heap runtime store: present, and holding the runtime `cdz` compiles against
-/// (`REQUIRED_RUNTIME_HASH`) — without it, running a program that builds heap values can't resolve its
-/// runtime by content address (a scalar/const program still runs without the store, and the note says so).
-/// A missing `cdz-run` or runtime is an ERROR (rc≠0) so a setup/CI script can gate on `cdz doctor`.
+/// is now PURELY INFORMATIONAL: `cdz run`/`cdz test` run IN-PROCESS (wasmtime + the runner are linked into
+/// `cdz` via the `cdz-run` library), so a missing standalone `cdz-run` binary does NOT break anything and
+/// is NOT a doctor failure — it's reported only as a convenience note (a standalone runner some scripts
+/// still invoke). Third, the value-heap runtime store: present, and holding the runtime `cdz` compiles
+/// against (`REQUIRED_RUNTIME_HASH`) — without it, running a program that builds heap values can't resolve
+/// its runtime by content address (a scalar/const program still runs without the store, and the note says
+/// so). Only a not-ok STORE is an ERROR (rc≠0), so a setup/CI script can gate on `cdz doctor`.
 fn run_doctor(args: &DoctorArgs) -> ExitCode {
     // Compute the three checks into structured `(status, detail)` values FIRST, so the human and `--json`
     // outputs are the same facts rendered two ways (they can't drift). `status` is "ok" for a healthy
@@ -1535,7 +1538,8 @@ fn run_doctor(args: &DoctorArgs) -> ExitCode {
         .ok()
         .map(|p| p.display().to_string());
 
-    // cdz-run runner.
+    // Standalone `cdz-run` runner — informational only (run/test are in-process; its absence breaks
+    // nothing).
     let cdz_run = locate_cdz_run().map(|p| p.display().to_string());
 
     // Runtime store.
@@ -1548,8 +1552,11 @@ fn run_doctor(args: &DoctorArgs) -> ExitCode {
     } else {
         "stale"
     };
-    // A missing `cdz-run` OR a not-ok store is a run/test-breaking problem.
-    let ok = cdz_run.is_some() && store_status == "ok";
+    // ONLY a not-ok store is a run/test-breaking problem now — `cdz run`/`cdz test` run in-process, so the
+    // standalone `cdz-run` binary's presence is informational and never flips the verdict. (This also makes
+    // `cdz doctor` env-independent for the runner: a bare `cargo test` checkout that never built `cdz-run`
+    // is still `ok` when the store is present.)
+    let ok = store_status == "ok";
 
     if args.json {
         use cadenza_syntax::query::json;
@@ -1560,7 +1567,11 @@ fn run_doctor(args: &DoctorArgs) -> ExitCode {
             None => obj.raw("path", "null"),
         }
         let mut cr = json::Object::new();
+        // `present`: whether the standalone binary was found beside `cdz` (informational — run/test are
+        // in-process, so this never affects `ok`). The `ok` key is kept as an alias for back-compat.
+        cr.raw("present", if cdz_run.is_some() { "true" } else { "false" });
         cr.raw("ok", if cdz_run.is_some() { "true" } else { "false" });
+        cr.raw("required", "false"); // in-process run/test need no standalone runner
         match &cdz_run {
             Some(p) => cr.string("path", p),
             None => cr.raw("path", "null"),
@@ -1584,10 +1595,12 @@ fn run_doctor(args: &DoctorArgs) -> ExitCode {
     println!("cdz {}", env!("CARGO_PKG_VERSION"));
     println!("  path: {}", exe.as_deref().unwrap_or("<unknown>"));
     match &cdz_run {
-        Some(p) => println!("  cdz-run: ok ({p})"),
+        Some(p) => println!(
+            "  cdz-run: present ({p}) — standalone runner (optional; run/test are in-process)"
+        ),
         None => println!(
-            "  cdz-run: MISSING — build it (`cargo build --bin cdz-run`) beside `cdz`; \
-             `cdz run`/`cdz test` need it"
+            "  cdz-run: not present — optional; `cdz run`/`cdz test` run IN-PROCESS, so no standalone \
+             runner is needed (build one with `cargo build --bin cdz-run` only if a script invokes it directly)"
         ),
     }
     let short = &required[..12.min(required.len())];
@@ -1626,10 +1639,11 @@ fn run_doctor(args: &DoctorArgs) -> ExitCode {
 ///     in declaration order; filtered by `--filter` if given.
 ///  3. Compile with an `EmitTests` sidecar request → the wasm component whose exports ARE the tests
 ///     (`layout::compute_tests`). A test that TRAPS on failure crosses as a nullary no-result entry.
-///  4. Shell out to the sibling `cdz-run` binary once per test (this bin holds no wasm engine, by design):
-///     `cdz-run <component> --call <kebab-name>`. Exit 0 = the test returned (PASS); exit ≠ 0 = it trapped
-///     (FAIL). A failure's message rides `cdz-run`'s `host-arg` stderr line (the assertion text the test
-///     emitted via a host effect before trapping).
+///  4. Run each test IN-PROCESS via the `cdz-run` LIBRARY (`run_capturing` — no sibling binary), calling
+///     the test's kebab export. The export RETURNING = PASS; it TRAPPING = FAIL. A failure's message rides
+///     an OBSERVED host-op entry (the assertion text the test emitted via its report host effect before
+///     trapping); `run_capturing`'s observed-op list also yields the `Test.gen` count that distinguishes a
+///     property test from a plain unit test — no subprocess, no stderr parsing.
 ///
 /// Exits non-zero if ANY test fails (or if a file's compile declines / no `@test` is present) — the CI
 /// shape. FILE may be a DIRECTORY: every source file under it (recursively, `.cdz`/`.ml`/`.sexp`) is run
@@ -1721,14 +1735,10 @@ fn run_test(args: &TestArgs) -> ExitCode {
         vec![target.clone()]
     };
 
-    // Locate the sibling `cdz-run` binary + the runtime store ONCE (shared across files).
-    let Some(cdz_run) = locate_cdz_run() else {
-        eprintln!(
-            "{PROG}: cannot find the `cdz-run` binary beside this executable — build it \
-             (`cargo build --bin cdz-run`) so `cdz test` can run the compiled tests"
-        );
-        return ExitCode::FAILURE;
-    };
+    // The runtime store (shared across files). `cdz` runs each test IN-PROCESS — wasmtime + the runner
+    // are linked in via the `cdz-run` LIBRARY, not shelled out to a sibling `cdz-run` BINARY — so the
+    // one-binary guarantee holds for `cdz test` exactly as it does for `cdz run`: a single `cdz` on the
+    // PATH both compiles AND runs the tests, with no second executable to install.
     let store = args.store.clone().unwrap_or_else(default_store);
     let multi = files.len() > 1;
 
@@ -1747,7 +1757,6 @@ fn run_test(args: &TestArgs) -> ExitCode {
             file,
             args.filter.as_deref(),
             args.tag.as_deref(),
-            &cdz_run,
             &store,
             args.trials,
             args.seed,
@@ -1783,7 +1792,6 @@ fn run_test_file(
     file: &str,
     filter: Option<&str>,
     tag: Option<&str>,
-    cdz_run: &std::path::Path,
     store: &std::path::Path,
     trials: u64,
     seed: u64,
@@ -1912,33 +1920,30 @@ fn run_test_file(
     };
     let component = component.to_vec();
 
-    // Write the component to a temp file the runner reads. (cdz-run also reads `-` from stdin, but a
-    // per-test re-invocation reuses one file rather than re-piping the bytes each call.) Keyed by pid +
-    // a path-derived tag (non-alphanumerics → `_`, so a nested `dir/mod.cdz` yields a FLAT temp name, not
-    // a path with missing parent dirs) so files in a directory run never clash on one path.
-    let tag: String = file
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-        .collect();
-    let tmp = std::env::temp_dir().join(format!("cdz-test-{}-{tag}.wasm", std::process::id()));
-    if let Err(e) = std::fs::write(&tmp, &component) {
-        eprintln!(
-            "{PROG}: writing the test component to {}: {e}",
-            tmp.display()
-        );
-        return Err(());
-    }
+    // Resolve the value-heap runtime ONCE for this file's test component (reused across every test + trial):
+    // the component records the exact runtime hash it was emitted against, and we read `<store>/<hash>.wasm`
+    // BY CONTENT ADDRESS — the same resolution `cdz run` uses. A scalar/const test component imports no
+    // runtime, so `required_runtime` returns `None` and we run with no runtime (no store needed). A missing
+    // store entry is reported here, once, rather than as a trap inside each test.
+    let runtime = match resolve_test_runtime(&component, store) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("{PROG}: {file}: {e}");
+            return Err(());
+        }
+    };
 
-    // Run each test through `cdz-run`, in declaration order. A NULLARY test runs ONCE — PASS = exit 0
-    // (returned), FAIL = nonzero (trapped). A PROPERTY test (parameters) runs `trials` times with generated
-    // inputs; it PASSES only if every trial returns, and FAILS on the first trapping trial — reported with
-    // the failing inputs (shrunk toward a minimal counterexample) + the seed to replay.
+    // Run each test IN-PROCESS (via the `cdz-run` library — no sibling binary), in declaration order. A
+    // NULLARY test runs ONCE — PASS = the export returned, FAIL = it trapped. A PROPERTY test (parameters)
+    // runs `trials` times with generated inputs; it PASSES only if every trial returns, and FAILS on the
+    // first trapping trial — reported with the failing inputs (shrunk toward a minimal counterexample) + the
+    // seed to replay. The runtime cache dir is the store, so the JIT-compiled runtime is reused per trial.
     let mut passed = 0usize;
     let mut failed = 0usize;
     for (name, gens, exhaustive) in &tests {
         let kebab = cadenza_syntax::extern_name::kebab_extern_name(name);
         let run_one = |arg_vals: &[String]| -> TrialOutcome {
-            run_one_trial(cdz_run, &tmp, &kebab, store, arg_vals)
+            run_one_trial(&component, runtime.as_deref(), &kebab, store, arg_vals)
         };
         match gens {
             // A parameter whose type is not a generatable scalar — cannot property-test it. Report + fail.
@@ -1972,7 +1977,7 @@ fn run_test_file(
             // unit test (pulls no generated int). Decide it by RUNNING once under a seeded int pool and
             // counting the `Test.gen` calls the guest made.
             Some(gens) if gens.is_empty() => {
-                match run_gen_driven(cdz_run, &tmp, &kebab, store, trials, seed) {
+                match run_gen_driven(&component, runtime.as_deref(), &kebab, store, trials, seed) {
                     // The test consumed NO generated int → a plain unit test; report its single run.
                     GenDrivenOutcome::Plain(TrialOutcome::Pass) => {
                         passed += 1;
@@ -2078,7 +2083,6 @@ fn run_test_file(
             },
         }
     }
-    let _ = std::fs::remove_file(&tmp);
 
     println!("\n{passed} passed, {failed} failed");
     Ok((passed, failed))
@@ -2145,16 +2149,18 @@ struct PropertyFailure {
     message: Option<String>,
 }
 
-/// Invoke `cdz-run` once on the test component, calling `kebab` with `arg_vals` (rendered `--arg` text).
-/// PASS = exit 0; FAIL carries `cdz-run`'s `host-arg` failure message if the test reported one.
+/// Run the test component IN-PROCESS once, calling `kebab` with `arg_vals` (rendered arg text). PASS = the
+/// export returned; FAIL carries the failure message the test reported (via its `Test`/report host effect)
+/// if any. `runtime` is the value-heap runtime bytes the component was resolved against (or `None` for a
+/// scalar/const test component that imports no runtime).
 fn run_one_trial(
-    cdz_run: &std::path::Path,
-    component: &std::path::Path,
+    component: &[u8],
+    runtime: Option<&[u8]>,
     kebab: &str,
     store: &std::path::Path,
     arg_vals: &[String],
 ) -> TrialOutcome {
-    run_one_trial_with_pool(cdz_run, component, kebab, store, arg_vals, &[]).0
+    run_one_trial_with_pool(component, runtime, kebab, store, arg_vals, &[]).0
 }
 
 /// The well-known GENERATOR effect operation a property test performs to pull one random `Int64` from the
@@ -2164,55 +2170,114 @@ fn run_one_trial(
 /// type-directed generation decodes — needs no per-shape host coordination.
 const GEN_OP_LABEL: &str = "test.gen";
 
-/// Invoke `cdz-run` once, ALSO supplying a seeded int `pool` as `--host-response Test.gen=<n>` responses
-/// (consumed IN ORDER by each `Test.gen` performance — a result-bearing op; a unit op like `Test.fail`
-/// consumes none). Returns the trial outcome AND how many `Test.gen` calls the guest actually made (parsed
-/// from `cdz-run`'s `host-call` stderr lines) — the signal that distinguishes a PROPERTY test (pulls ≥1
-/// generated int) from a plain unit test (pulls none). An unconsumed pool response is harmless (ignored).
+/// Run the test component IN-PROCESS (via the `cdz-run` LIBRARY — `run_capturing`, no sibling binary),
+/// ALSO supplying a seeded int `pool` as ordered `Test.gen=<n>` host responses (consumed IN ORDER by each
+/// `Test.gen` performance — a result-bearing op; a unit op like `Test.fail` consumes none). Returns the
+/// trial outcome AND how many `Test.gen` calls the guest actually made (counted from the OBSERVED host-op
+/// list `run_capturing` returns) — the signal that distinguishes a PROPERTY test (pulls ≥1 generated int)
+/// from a plain unit test (pulls none). An unconsumed pool response is harmless (ignored).
 fn run_one_trial_with_pool(
-    cdz_run: &std::path::Path,
-    component: &std::path::Path,
+    component: &[u8],
+    runtime: Option<&[u8]>,
     kebab: &str,
     store: &std::path::Path,
     arg_vals: &[String],
     pool: &[i64],
 ) -> (TrialOutcome, usize) {
-    let mut cmd = std::process::Command::new(cdz_run);
-    cmd.arg(component)
-        .arg("--call")
-        .arg(kebab)
-        .arg("--store")
-        .arg(store);
-    for v in arg_vals {
-        cmd.arg("--arg").arg(v);
-    }
-    for n in pool {
-        cmd.arg("--host-response").arg(format!("Test.gen={n}"));
-    }
-    match cmd.output() {
-        Ok(o) => {
-            let gens = count_gen_calls(&o.stderr);
-            let outcome = if o.status.success() {
-                TrialOutcome::Pass
-            } else {
-                TrialOutcome::Fail(test_failure_message(&o.stderr))
+    // Each pool int becomes a `Test.gen` host response, consumed in order. The op label pairs it with the
+    // call for the ordered-consume model (the value is coerced to the op's `Int64` result at binding).
+    let host_responses: Vec<cdz_run::HostResponse> = pool
+        .iter()
+        .map(|n| cdz_run::HostResponse {
+            op: "Test.gen".to_string(),
+            value: n.to_string(),
+        })
+        .collect();
+    let opts = cdz_run::RunOpts {
+        export: Some(kebab.to_string()),
+        args: arg_vals.to_vec(),
+        runtime: runtime.map(<[u8]>::to_vec),
+        runtime_cache_dir: Some(store.to_path_buf()),
+        host_responses,
+    };
+    match cdz_run::run_capturing(component, &opts) {
+        Ok((outcome, observed)) => {
+            let gens = count_gen_calls(&observed);
+            let trial = match outcome {
+                cdz_run::Outcome::Value(_) => TrialOutcome::Pass,
+                // A trapping test FAILS. The assertion message the test emitted (via its report host effect,
+                // e.g. `Test.fail("…")`) rides an OBSERVED op entry as `<op>\t<message>` — recover it so the
+                // report names WHY, exactly as the subprocess path read it off the `host-arg` stderr line.
+                cdz_run::Outcome::Trap(_) => {
+                    TrialOutcome::Fail(observed_failure_message(&observed))
+                }
             };
-            (outcome, gens)
+            (trial, gens)
         }
+        // A run-level error (an invalid component, an unresolvable runtime the pre-check missed) — surface
+        // it as a failure so the test is reported, not silently skipped.
         Err(e) => (
-            TrialOutcome::Fail(Some(format!("could not run `cdz-run`: {e}"))),
+            TrialOutcome::Fail(Some(format!("could not run test: {e:#}"))),
             0,
         ),
     }
 }
 
-/// How many `Test.gen` performances the guest made, from `cdz-run`'s `host-call\t<op>` stderr lines — the
-/// count of generated ints a trial consumed. `> 0` ⇒ the test is a PROPERTY test driven by the int pool.
-fn count_gen_calls(stderr: &[u8]) -> usize {
-    String::from_utf8_lossy(stderr)
-        .lines()
-        .filter(|l| l.strip_prefix("host-call\t") == Some(GEN_OP_LABEL))
+/// How many `Test.gen` performances the guest made, from the OBSERVED host-op list `run_capturing` returns
+/// (each entry is a dotted `E.op`, optionally `\t<str-args>`). `> 0` ⇒ the test is a PROPERTY test driven
+/// by the int pool. Matches the op field (before any tab) case-insensitively against the `Test.gen` label.
+fn count_gen_calls(observed: &[String]) -> usize {
+    observed
+        .iter()
+        .filter(|entry| {
+            let op = entry.split('\t').next().unwrap_or(entry);
+            op.eq_ignore_ascii_case(GEN_OP_LABEL)
+        })
         .count()
+}
+
+/// The assertion message a trapping test reported, from the OBSERVED host-op list: the FIRST entry that
+/// carries string arguments (an `op\t<message>`) — a `Test.fail("…")`/`report.fail("…")` — yielding the
+/// message after the tab. `None` if no reporting op carried a message (a bare trap with no assertion text).
+fn observed_failure_message(observed: &[String]) -> Option<String> {
+    observed
+        .iter()
+        .find_map(|entry| entry.split_once('\t').map(|(_op, msg)| msg.to_string()))
+}
+
+/// Resolve the value-heap runtime bytes the test `component` requires, BY CONTENT ADDRESS from `store` —
+/// the same content-addressed resolution `cdz run` performs. Returns `Ok(None)` for a scalar/const
+/// component that imports no runtime (no store needed), `Ok(Some(bytes))` when the store holds the exact
+/// required hash, and `Err` (a clear, once-per-file message) when the component needs a runtime the store
+/// does not hold — reported before running rather than as an opaque trap inside each test.
+fn resolve_test_runtime(
+    component: &[u8],
+    store: &std::path::Path,
+) -> Result<Option<Vec<u8>>, String> {
+    let req = match cdz_run::required_runtime(component) {
+        Ok(Some(req)) => req,
+        Ok(None) => return Ok(None), // scalar/const test component — no runtime import
+        Err(e) => return Err(format!("could not inspect the test component: {e:#}")),
+    };
+    if req.hash.is_empty() {
+        return Err(
+            "the test component imports the value-heap runtime but records no content address to \
+             resolve it by (an unpinned runtime import)"
+                .to_string(),
+        );
+    }
+    let path = store.join(format!("{}.wasm", req.hash));
+    if !path.is_file() {
+        return Err(format!(
+            "no runtime of content address {} in the store at {} — build it (`cargo xtask build`) so \
+             `cdz test` can run a heap-value test",
+            req.hash,
+            store.display()
+        ));
+    }
+    std::fs::read(&path)
+        .map(Some)
+        .map_err(|e| format!("reading the stored runtime {}: {e}", path.display()))
 }
 
 /// Run a PROPERTY test `trials` times with generated inputs, returning `None` if every trial passed or the
@@ -2256,15 +2321,15 @@ const GEN_POOL_SIZE: usize = 64;
 /// unconsumed pool). If it consumed ≥1, it is a property test: run `trials` trials each with a FRESH
 /// seeded pool (`seed + trial`, reproducible), failing on the first trapping trial with the SHRUNK pool.
 fn run_gen_driven(
-    cdz_run: &std::path::Path,
-    component: &std::path::Path,
+    component: &[u8],
+    runtime: Option<&[u8]>,
     kebab: &str,
     store: &std::path::Path,
     trials: u64,
     seed: u64,
 ) -> GenDrivenOutcome {
     let run_pool = |pool: &[i64]| -> (TrialOutcome, usize) {
-        run_one_trial_with_pool(cdz_run, component, kebab, store, &[], pool)
+        run_one_trial_with_pool(component, runtime, kebab, store, &[], pool)
     };
     // First trial (trial 0) doubles as the PLAIN-vs-property probe.
     let pool0 = gen_pool(seed, GEN_POOL_SIZE);
@@ -2571,19 +2636,6 @@ fn locate_cdz_run() -> Option<PathBuf> {
             })
         })
         .filter(|p| p.exists())
-}
-
-/// The failure MESSAGE a trapped test emitted — the FIRST `host-arg\t<op>\t<message>` line in `cdz-run`'s
-/// stderr (the assertion text a test performs via its report host effect before trapping). `None` when no
-/// message rode along (a test that trapped with no host report — just the bare trap). The `host-arg`
-/// protocol is `cdz-run`'s additive channel for a host call's STRING argument (`main.rs`), distinct from
-/// the gate's `host-call` line, so reading it here never collides with the observed-op sequence.
-fn test_failure_message(stderr: &[u8]) -> Option<String> {
-    String::from_utf8_lossy(stderr)
-        .lines()
-        .find_map(|l| l.strip_prefix("host-arg\t").map(str::to_string))
-        // `host-arg` is `<op>\t<message>`; take the message (everything after the op's tab).
-        .and_then(|entry| entry.split_once('\t').map(|(_op, msg)| msg.to_string()))
 }
 
 /// The default content-addressed runtime store — `<repo>/target/cadenza-store`, resolved relative to this

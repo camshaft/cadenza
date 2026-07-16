@@ -19,3 +19,5 @@
 ; ESCALATED 2026-07-16 (corpus-bugfix): v-try-operator idle/complete + unresponsive to 2 direct pings — escalated STUCK-OWNER to concierge (nudge-or-reassign). Verified live: nested COMPILES, same-let control REJECTS CDZ0304 (its own :146 pin), so it IS its seam. Last active miscompile, ~8 ticks open.
 
 ; UPDATE 2026-07-16: concierge RULED nudge-not-reassign (v-try-operator IS correct owner — BRICK-3 fold, mirror of its :146 guard). Sent a firm kind=assign (take-now+ACK). Watching this tick; if still silent next tick, re-ping concierge for harder escalation.
+
+; UPDATE 2026-07-16 (t2): ROOT CAUSE = v-try-operator was NOT draining its inbox (concludes "idle" without consuming msgs), so both concierge assign #1354 + my issue #1221 sat UNREAD. concierge HAND-ARMED its pane directly w/ repro+fix (mirror its :146 same-let guard for the nested fast-path); now actively processing. Give this tick+next; ?-desugar-owner fallback if no MR + case still compiles. Keep OPEN until nested-let REJECTS CDZ0304 on fresh trunk.

@@ -148,27 +148,47 @@ fn drive_one(
     // message (the body reaches the model via `Inbox.next` → `Model.converse`, not a fixed prompt).
     let body = msg_body.to_string();
     let next_message = move || body.clone();
+
+    // Observe model FAILURES: a backend encodes a failed call as a `MODEL_ERROR_PREFIX` completion (the
+    // converse contract is `String -> String`, so it can't return a Result). Wrap the backend to raise a
+    // shared flag whenever it returns that marker, so the loop's outcome is reported as a FAILURE rather
+    // than a normal completion — a Bedrock error never silently becomes an answer the agent acts on.
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    let model_errored = Arc::new(AtomicBool::new(false));
+    let observe = {
+        let flag = Arc::clone(&model_errored);
+        move |completion: String| {
+            if cdz_agent::is_model_error(&completion) {
+                flag.store(true, Ordering::SeqCst);
+                eprintln!("cdz-agent: model call failed: {completion}");
+            }
+            completion
+        }
+    };
+
     // The model backend: mock by default; the real Bedrock backend when built with `--features bedrock`
-    // + an optional `--model` (defaulting to a region-prefixed inference-profile id).
+    // + an optional `--model` (defaulting to a region-prefixed inference-profile id). Wrapped in `observe`.
     let outcome = {
         #[cfg(feature = "bedrock")]
         {
             let model =
                 _model.unwrap_or_else(|| "us.anthropic.claude-haiku-4-5-20251001-v1:0".to_string());
-            let converse = cdz_agent::bedrock_converse(model, 1024);
+            let backend = cdz_agent::bedrock_converse(model, 1024);
+            let converse = move |p: String| observe(backend(p));
             cdz_agent::run_hive_agent_loop(consumer, &opts, next_message, converse, authorize)?
         }
         #[cfg(not(feature = "bedrock"))]
         {
-            cdz_agent::run_hive_agent_loop(
-                consumer,
-                &opts,
-                next_message,
-                cdz_agent::mock_converse,
-                authorize,
-            )?
+            let converse = move |p: String| observe(cdz_agent::mock_converse(p));
+            cdz_agent::run_hive_agent_loop(consumer, &opts, next_message, converse, authorize)?
         }
     };
+    // A model failure during the run is a FAILURE outcome, even if the loop returned a value (the marker
+    // completion would otherwise render as a normal `value …`).
+    if model_errored.load(Ordering::SeqCst) {
+        return Ok("model-error (see stderr)".to_string());
+    }
     Ok(match outcome {
         cdz_run::Outcome::Value(s) => format!("value {s}"),
         cdz_run::Outcome::Trap(t) => format!("trap {t}"),

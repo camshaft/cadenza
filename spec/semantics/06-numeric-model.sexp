@@ -1056,6 +1056,26 @@
   (call   main (: 1.5 Float32))
   (output (: 1.5 Float64)))
 
+; The float widening above (runtime Float32 → Float64) EMITS. The integer analogue — widening a runtime
+; NARROW-width int up to Int64 (`(Int64.of x)` where `x : UInt8`) — does NOT yet emit: the seed DECLINES
+; a runtime narrow→wide integer conversion (the runtime narrow-int rep exists — `UInt8.wrapping-add` on a
+; runtime UInt8 works, cases below — but the emit for the widening CONVERT is a later increment). It is a
+; SOUND decline, NOT a miscompile: the CONSTANT `(Int64.of (UInt8.wrap 300))` folds correctly (→ 44), and
+; the runtime path refuses rather than emitting a wrong (unmasked / sign-extended) widen. This case GRADES
+; that decline so the boundary is tracked — a future change that made a runtime integer widen silently
+; MISCOMPILE (sign-extend a UInt8's high bit, or read adjacent bytes) instead of declining would flip this
+; `(declines)` and be caught. (Contrast: the runtime float widen above, and runtime BigInt.of widening,
+; both EMIT — this is specifically the fixed-narrow-int→Int64 convert.)
+(case "widening a runtime narrow-width integer to Int64 declines (the emit is a later increment)"
+  (doc    "`(Int64.of x)` with `x` a runtime `UInt8` PARAMETER widens a narrow int up to Int64. The seed
+           does not yet emit this runtime integer-widening convert, so it soundly DECLINES rather than
+           emitting a possibly-wrong (sign-extended / unmasked) result — reject-don't-miscompile. Contrast
+           the runtime FLOAT widen `(Float64.of x:Float32)` above (which emits `f64.promote_f32`) and the
+           CONSTANT `(Int64.of (UInt8.wrap 300))` = 44 (which folds). Grades the runtime narrow→wide
+           INTEGER conversion decline as an intentional, tracked boundary pending its emit.")
+  (input  (do (def (main (: x UInt8)) (Int64.of x)) (export main)))
+  (declines))
+
 ; --- Float is WIDTH-INDEXED: (Float N) over N in {32, 64}, with Float32/Float64 aliases -------------
 ; numeric-model.md #A Floating-Point Type Is Indexed By A Compile-Time Width: a float type is the
 ; width-indexed constructor `Float` applied to a compile-time width, and Float32/Float64 alias

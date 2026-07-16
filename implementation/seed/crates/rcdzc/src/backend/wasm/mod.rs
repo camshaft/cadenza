@@ -1947,13 +1947,106 @@ fn emit_runtime_resource(
             }
         });
     }
-    // A HOST effect delegated from a resource-escaping entrypoint is a further fusion (host+resource); only
-    // a PEER effect is handled here. A non-peer host import reaching this path declines cleanly.
+    // A HOST effect delegated from a resource-escaping entrypoint composes the host import space with the
+    // resource escape (`envelope::assemble_host_runtime_resource`, the host-side mirror of the peer fusion
+    // below). SCOPE this increment: SCALAR/unit host ops only (a STRING-param host op needs the shared-memory
+    // `_mem` variant — a later increment; its `(ptr,len)` ABI is 2 core slots, which the scalar type section
+    // here does not model). A host effect ALONGSIDE a peer effect is a further fusion (both import spaces at
+    // once) — decline. Only the pure-host, scalar case is emitted here.
     if !host_imports.is_empty() {
-        return Err(Reject::decline(
-            "a host-delegated effect in an entrypoint whose result escapes as a runtime resource is not \
-             yet emitted (only a peer-bound effect is); consume the host op's result into a scalar the \
-             entrypoint returns",
+        if !extern_imports.is_empty() {
+            return Err(Reject::decline(
+                "a host effect composed with a peer effect in a resource-escaping entrypoint is not yet \
+                 emitted (host+peer+resource triple fusion)",
+            ));
+        }
+        if host::set_needs_memory(&host_imports) {
+            return Err(Reject::decline(
+                "a host op with a STRING parameter in a resource-escaping entrypoint is not yet emitted \
+                 (the shared-memory host-resource `_mem` variant is a later increment); a scalar/unit host \
+                 op result-escaping as a resource IS emitted",
+            ));
+        }
+        // The host op set, laid FIRST in the core module (host imports `0..h`) — a `CallHostImport(i)`
+        // resolves to core func `i`. Record `host_order` so `select` emits each `Core::HostCall` with its
+        // raw index, shift `import_base` past the `h` host ops + `k` runtime ops + resource-new/rep, then
+        // rebuild the core module with `leading_is_host = true` (host ops import from `"host"`) and dispatch
+        // to `assemble_host_runtime_resource`. The host ops carry the SAME core functype as an extern op
+        // (scalar-by-value), so they are threaded through the `extern_fns` slot of the core-module builder
+        // (byte-identical for a scalar op; the module string is switched by `leading_is_host`).
+        let h = host_imports.len() as u32;
+        let k = imports.len() as u32;
+        let host_order: Vec<(String, String)> = host_imports
+            .iter()
+            .map(|hi| (hi.effect.clone(), hi.op.clone()))
+            .collect();
+        let iface = host_imports[0].effect.clone();
+        let host_layout = layout
+            .with_import_base(h + k + 2)
+            .with_host_order(host_order);
+        let host_layout = &host_layout;
+
+        let mut funcs: Vec<SelectedFunc> = Vec::new();
+        for &def in &host_layout.order {
+            let body = def_body(db, def)?;
+            let params = match host_layout.export_plan(def) {
+                Some(e) => e.params.clone(),
+                None => crate::layout::def_params(db, def),
+            };
+            funcs.push(select_function_of(
+                db,
+                body,
+                &params,
+                host_layout,
+                Some(def),
+            )?);
+        }
+        let export_abs = host_layout
+            .abs(export_def)
+            .ok_or_else(|| Reject::decline("the escaping export is not in the emission order"))?;
+
+        // The host ops as the core module's leading-import slot (ExternImport-shaped; byte-identical to a
+        // host functype for a scalar op — see the `leading_is_host` review). A String param declined above.
+        let host_as_extern: Vec<host::ExternImport> = host_imports
+            .iter()
+            .map(|hi| host::ExternImport {
+                interface: hi.effect.clone(),
+                op: hi.op.clone(),
+                params: hi.params.iter().filter_map(host_param_abi).collect(),
+                result: hi.result,
+            })
+            .collect();
+        let mut main_core = serialize::runtime_resource_core_module_form_ex2(
+            &funcs,
+            &imports,
+            &host_as_extern,
+            true, // leading ops are HOST — import from "host"
+            export_abs,
+            serialize::EscapeForm::Flat(tpl),
+            &[],
+            &make_params.leaf_vts,
+            &make_params.core_slots(),
+        )
+        .map_err(Reject::decline)?;
+        append_debug_sections(db, host_layout, &funcs, &imports, spans, &mut main_core);
+        let dtor_core = serialize::resource_dtor_module_with_drop();
+        let import_name = runtime_import_name();
+        let host_fns: Vec<envelope::HostFn> = host_imports
+            .iter()
+            .map(|hi| envelope::HostFn {
+                op: hi.op.clone(),
+                comp_functype: host_op_comp_functype(hi),
+                core_functype: Vec::new(),
+            })
+            .collect();
+        return Ok(envelope::assemble_host_runtime_resource(
+            &main_core,
+            &dtor_core,
+            &imports,
+            &import_name,
+            &iface,
+            &host_fns,
+            &make_params.boundary_slots(),
         ));
     }
     // The fused envelope now supports MULTIPLE distinct peer interfaces (the component groups the peer ops
@@ -1994,6 +2087,7 @@ fn emit_runtime_resource(
         &funcs,
         &imports,
         &extern_imports,
+        false, // leading ops are PEER (extern), not host — import from "peer"
         export_abs,
         serialize::EscapeForm::Flat(tpl),
         &[],
@@ -6804,6 +6898,7 @@ fn emit_runtime_bytes_resource(
         &funcs,
         &imports,
         &extern_imports,
+        false, // leading ops are PEER (extern), not host — import from "peer"
         export_abs,
         serialize::EscapeForm::RuntimeBytes(form),
         &core_methods,
@@ -6995,6 +7090,7 @@ fn emit_runtime_sum_resource(
         &funcs,
         &imports,
         &extern_imports,
+        false, // leading ops are PEER (extern), not host — import from "peer"
         export_abs,
         serialize::EscapeForm::Sum(tpl),
         &[],
@@ -7156,6 +7252,7 @@ fn emit_recursive_sum_resource(
         &funcs,
         &imports,
         &extern_imports,
+        false, // leading ops are PEER (extern), not host — import from "peer"
         export_abs,
         serialize::EscapeForm::RecursiveSum(descriptor),
         &[],
