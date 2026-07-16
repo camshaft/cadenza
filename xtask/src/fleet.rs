@@ -2851,4 +2851,40 @@ mod tests {
         assert_eq!(fmt_age(86399), "23h");
         assert_eq!(fmt_age(86400), "1d");
     }
+
+    #[test]
+    fn shell_quote_wraps_and_escapes_for_eval() {
+        // `describe` emits KEY='<value>' lines that window.sh `eval`s, so shell_quote MUST produce a
+        // literal a POSIX shell reads back as the exact input — no expansion, no injection. A plain
+        // value is just single-quoted; an embedded single quote uses the POSIX close-reopen idiom
+        // ('\'') since a single-quoted string can't contain a quote. (Each expected literal below was
+        // verified to round-trip through a real `sh -c` in this slice.)
+        assert_eq!(shell_quote("plain"), "'plain'");
+        assert_eq!(shell_quote("with space"), "'with space'");
+        // A metacharacter payload stays inert (single quotes suppress $(...)/`...`/$VAR expansion).
+        assert_eq!(shell_quote("$(evil)"), "'$(evil)'");
+        assert_eq!(shell_quote("`evil`"), "'`evil`'");
+        // The load-bearing case: an embedded single quote → close, escaped-quote, reopen.
+        assert_eq!(shell_quote("a'b"), "'a'\\''b'");
+        assert_eq!(shell_quote("a'b'c"), "'a'\\''b'\\''c'");
+        // Empty string is a valid empty quoted literal (not nothing) — else `eval` would drop the arg.
+        assert_eq!(shell_quote(""), "''");
+    }
+
+    #[test]
+    fn resolve_model_maps_aliases_and_passes_through() {
+        // The ONE place the long 1M-context ids live — the roster/`--model` carries short aliases and
+        // window.sh hands the resolved id to `claude --model`. A wrong mapping runs every agent on the
+        // wrong model, so pin the two aliases and the pass-through (a full id / future model is used
+        // verbatim, never mangled).
+        assert_eq!(resolve_model("opus"), "us.anthropic.claude-opus-4-8[1m]");
+        assert_eq!(resolve_model("fable"), "us.anthropic.claude-fable-5[1m]");
+        // A non-alias (already a full id, or an unknown/future model) passes through unchanged.
+        assert_eq!(
+            resolve_model("us.anthropic.claude-opus-4-8[1m]"),
+            "us.anthropic.claude-opus-4-8[1m]"
+        );
+        assert_eq!(resolve_model("some-future-model"), "some-future-model");
+        assert_eq!(resolve_model(""), "");
+    }
 }
