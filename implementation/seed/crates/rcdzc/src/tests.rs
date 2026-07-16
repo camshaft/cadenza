@@ -24627,12 +24627,12 @@ mod match_engine {
     }
 
     #[test]
-    fn list_at_and_bytes_at_over_an_owned_temporary_reclaim_the_collection_but_keep_a_borrowed_one()
-    {
-        // The READ-op face of the owned-temporary reclaim: `List.at`/`Bytes.at` BORROW the collection
-        // (vec-len/vec-get, bytes-len/bytes-get) and the read element is COPIED/dup'd into the `Some`, so an
-        // OWNED-TEMPORARY collection (`List.at (build …) i`) must be dropped after the borrows or it leaks.
-        // A BORROWED param/kept-local collection read alongside a later use must NOT be freed early.
+    fn list_at_over_an_owned_temporary_reclaims_it_but_keeps_a_borrowed_one() {
+        // The READ-op face of the owned-temporary reclaim: `List.at` BORROWS the list (vec-len/vec-get) and
+        // the read element is dup'd into the `Some`, so an OWNED-TEMPORARY list (`List.at (build …) i`) must
+        // be dropped after the borrows or it leaks. A BORROWED param/kept-local list read alongside a later
+        // use must NOT be freed early. (The Bytes.at twin lives in
+        // `bytes_at_over_an_owned_temporary_reclaims_it_but_keeps_a_borrowed_one`.)
         let list_owned = "(module m \
                (def (build i n acc) (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc)) \
                (def (main) ((. Option expect) ((. List at) (build 0 3 (list)) 1) \"v\")) (export main))";
@@ -24655,6 +24655,40 @@ mod match_engine {
             assert_eq!(
                 out, "4",
                 "a borrowed list read by List.at must not be freed early (at=1 + len=3)"
+            );
+        }
+    }
+
+    #[test]
+    fn bytes_at_over_an_owned_temporary_reclaims_it_but_keeps_a_borrowed_one() {
+        // The Bytes.at twin of `list_at_and_bytes_at_…` (PR #427 Copilot: that test's name/doc claim both
+        // List.at AND Bytes.at, but its body only exercised List.at). Bytes.at BORROWS the bytes
+        // (bytes-len + bytes-get) and the read byte is a COPIED i32 value, so an OWNED-TEMPORARY bytes must
+        // be dropped after the borrows or it leaks. A constant `Bytes.of`/`b"…"` folds away at compile time
+        // (no runtime handle), so build the owned bytes at RUN TIME with a recursive `Bytes.concat` loop —
+        // its result is a `Call`, the Owned classifier's fresh-handle case, exactly like List's `build`.
+        let bytes_owned = "(module m \
+               (def (build i n acc) (if (< i n) (build (+ i 1) n ((. Bytes concat) acc b\"\\x0a\")) acc)) \
+               (def (main) ((. Option expect) ((. Bytes at) (build 0 3 b\"\") 1) \"v\")) (export main))";
+        assert!(
+            component_imports_op(&component(bytes_owned), "drop"),
+            "Bytes.at over an owned-temporary bytes must import `drop` (reclaim — leak fix)"
+        );
+        if let Some(out) = run_on_heap(bytes_owned) {
+            assert_eq!(
+                out, "10",
+                "Bytes.at value unchanged by the reclaim (0x0a = 10)"
+            );
+        }
+        // A BORROWED bytes — read by Bytes.at AND Bytes.len — must not be freed by the at (else double-free).
+        let bytes_borrowed = "(module m \
+               (def (build i n acc) (if (< i n) (build (+ i 1) n ((. Bytes concat) acc b\"\\x0a\")) acc)) \
+               (def (main) (let ((bs (build 0 3 b\"\"))) \
+                             (+ ((. Option expect) ((. Bytes at) bs 1) \"v\") ((. Bytes len) bs)))) (export main))";
+        if let Some(out) = run_on_heap(bytes_borrowed) {
+            assert_eq!(
+                out, "13",
+                "a borrowed bytes read by Bytes.at must not be freed early (at=10 + len=3)"
             );
         }
     }
