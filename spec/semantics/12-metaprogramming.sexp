@@ -589,6 +589,35 @@
             (_             0)))
   (output (: 1 Int64)))
 
+; The keyword companion of the digit-led boundary: `true`/`false` are BOOLEAN literals in the grammar, not
+; identifiers, so the same text-round-trip scoping applies. `print (Ast.Name "true")` emits the bare word
+; `true`, which `read` classifies as `Ast.Bool` (the reader's keyword arm) — not the original `Ast.Name`.
+; Like a digit-led name, `Ast.Name "true"` cannot arise from parsing real source (the lexer yields `true`
+; as a boolean, never a name). The byte codec is total over it. (These correct the reader's comment that
+; claimed "a name can never collide" — a HAND-CONSTRUCTED keyword/numeric-spelled name can, and the text
+; round-trip is scoped to grammatically-valid identifiers accordingly.)
+
+(case "the byte codec round-trips a keyword-spelled Ast.Name that the text path would reclassify"
+  (doc    "`Ast.encode`/`Ast.decode` is total over a name spelled like a keyword: `(Ast.Name \"true\")`
+           round-trips to an EQUAL `Ast.Name` through the byte path (its tag delimits the payload, no
+           re-lexing). The keyword companion of the digit-led byte-codec case; contrast the text path below.")
+  (input  (match (Ast.decode (Ast.encode (Ast.Name "true")))
+            ((Ok a)  (= a (Ast.Name "true")))
+            ((Err _) false)))
+  (output (: true Bool)))
+
+(case "print then read of a keyword-spelled Ast.Name reclassifies it as the boolean literal"
+  (doc    "`print (Ast.Name \"true\")` renders the bare word `true`, which `read` classifies as `Ast.Bool`
+           (the reader's keyword arm — `true`/`false` are boolean literals, not identifiers), NOT the
+           original `Ast.Name`. Like the digit-led case, `Ast.Name \"true\"` can't arise from source (the
+           lexer never yields a name spelled `true`). Correct grammar behavior, not a bug — the text
+           round-trip is scoped to grammatically-valid identifiers. Matched via the Bool arm.")
+  (input  (match (read (print (Ast.Name "true")))
+            ((Ast.Bool _) 1)
+            ((Ast.Name _) 2)
+            (_            0)))
+  (output (: 1 Int64)))
+
 (case "print of an Ast.Str renders a quoted literal with escapes and read inverts it"
   (doc    "`print : Ast → String` renders an `Ast.Str` as a `\"…\"` literal, escaping the closed set
            (`\\n \\t \\r \\\\ \\\"`) — the canonical re-readable spelling — and `read : String → Ast`
