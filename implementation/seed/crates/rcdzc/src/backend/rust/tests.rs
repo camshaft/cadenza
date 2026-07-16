@@ -779,6 +779,85 @@ fn bytes_slice_is_total_on_a_usize_overflowing_range() {
 }
 
 #[test]
+fn rustc_roundtrip_persistent_collections_do_not_mutate_the_original() {
+    // INVARIANT PIN: Cadenza collections are PERSISTENT — an op returns a NEW value and the operand is
+    // unchanged. The rust backend realizes this by CLONING a shared (non-Copy) binding on read (tick-2/5/11
+    // work). These pin that a `let`-bound collection used in BOTH an op and a later read keeps its original
+    // value — a future change to the clone-on-read discipline that broke persistence would flip these.
+    // List: push then read the ORIGINAL length. len([1,2,3]+push) 4 + len original 3 = 7.
+    let lst = compile_rust(
+        "(module m (def (f (: n Int64)) (if (= n 0) (list 1 2 3) (f (+ n -1)))) \
+           (def (mk) (let ((xs (f 1))) (+ (List.len (List.push xs 9)) (List.len xs)))) (export mk))",
+    );
+    if let Some(out) = rustc_run(&lst, "mk()") {
+        assert_eq!(
+            out, "7",
+            "List.push leaves the original list unchanged (4 + 3)"
+        );
+    }
+    // Map: remove a key, look it up in the NEW map (None→99) AND the ORIGINAL (still 10). 99 + 10 = 109.
+    let mp = compile_rust(
+        "(module m (def (f (: n Int64)) (if (= n 0) (Map.insert (Map.insert (Map.empty) 1 10) 2 20) (f (+ n -1)))) \
+           (def (mk) (let ((m (f 1))) \
+              (+ (match (Map.lookup (Map.remove m 1) 1) ((Some v) v) ((None _) 99)) \
+                 (match (Map.lookup m 1) ((Some v) v) ((None _) 0))))) (export mk))",
+    );
+    if let Some(out) = rustc_run(&mp, "mk()") {
+        assert_eq!(
+            out, "109",
+            "Map.remove leaves the original map's key intact (99 + 10)"
+        );
+    }
+    // Set: insert into a copy, sum the new len + the original len. len({1,2}+9)=3 + len{1,2}=2 = 5.
+    let st = compile_rust(
+        "(module m (def (f (: n Int64)) (if (= n 0) (Set.of (list 1 2)) (f (+ n -1)))) \
+           (def (mk) (let ((s (f 1))) (+ (Set.len (Set.insert s 9)) (Set.len s)))) (export mk))",
+    );
+    if let Some(out) = rustc_run(&st, "mk()") {
+        assert_eq!(
+            out, "5",
+            "Set.insert leaves the original set unchanged (3 + 2)"
+        );
+    }
+}
+
+#[test]
+fn rustc_roundtrip_nested_heap_in_heap_composes() {
+    // INVARIANT PIN: heap values NEST arbitrarily — a list in a map value, a compound in a sum payload —
+    // and the native-aggregate types + clone-on-read compose. A list stored as a Map VALUE, retrieved and
+    // measured: len == 3.
+    let lm = compile_rust(
+        "(module m (def (f (: n Int64)) (if (= n 0) (Map.insert (Map.empty) 1 (list 10 20 30)) (f (+ n -1)))) \
+           (def (mk) (match (Map.lookup (f 1) 1) ((Some xs) (List.len xs)) ((None _) -1))) (export mk))",
+    );
+    if let Some(out) = rustc_run(&lm, "mk()") {
+        assert_eq!(out, "3", "a list stored in a map value round-trips");
+    }
+    // A Map inside a sum payload, matched then looked up: Box.Mk({5:50}) → 50.
+    let ms = compile_rust(
+        "(module m (type Box (Mk (Map Int64 Int64))) \
+           (def (f (: n Int64)) (if (= n 0) (Box.Mk (Map.insert (Map.empty) 5 50)) (f (+ n -1)))) \
+           (def (mk) (match (f 1) ((Mk m) (match (Map.lookup m 5) ((Some v) v) ((None _) -1))))) (export mk))",
+    );
+    if let Some(out) = rustc_run(&ms, "mk()") {
+        assert_eq!(out, "50", "a map inside a sum payload round-trips");
+    }
+}
+
+#[test]
+fn rustc_roundtrip_compound_map_key_matches_by_value() {
+    // INVARIANT PIN: a map/set keyed by a COMPOUND (tuple) matches BY VALUE (the BTreeMap `Ord` over the
+    // Rust tuple, matching Cadenza's by-value key semantics). A tuple key inserted and looked up → 99.
+    let mk = compile_rust(
+        "(module m (def (f (: n Int64)) (if (= n 0) (Map.insert (Map.empty) (tuple 1 2) 99) (f (+ n -1)))) \
+           (def (g) (match (Map.lookup (f 1) (tuple 1 2)) ((Some v) v) ((None _) -1))) (export g))",
+    );
+    if let Some(out) = rustc_run(&mk, "g()") {
+        assert_eq!(out, "99", "a tuple map key matches by value");
+    }
+}
+
+#[test]
 fn an_ill_formed_integer_width_is_rejected_not_declined() {
     // An out-of-range integer WIDTH (negative/non-natural, or over-ceiling `(UInt 65)`) is an ILL-FORMED
     // TYPE, not a target limitation — a boundary of that type must REJECT (CDZ0302), the SAME outcome the
