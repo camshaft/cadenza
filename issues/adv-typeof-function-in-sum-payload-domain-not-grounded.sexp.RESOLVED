@@ -57,3 +57,5 @@
            (def (main) (if (Type.eq (Type.of (Some f)) (Type.of (Some p))) 1 0))
            (export main)))
   (output (: 0 Int64)))
+
+; ✅ RESOLVED 2026-07-16 — VERIFIED BY CONTENT on trunk 36b486e0d (reproducer 3-pass/0-fail). v-inference MR d35528e33: reflected_ty variant-ctor Apply arm re-runs the ctor scheme instantiate+unify with each payload GROUNDED via reflected_ty (mirroring apply_type), guarded to variant_disc_of. (Some f:Int64->Int64) vs (Some g:Bool->Int64) Type.eq now →0 (was silent-wrong 1). Sum-payload sibling of e0b3c0827. CLOSED.

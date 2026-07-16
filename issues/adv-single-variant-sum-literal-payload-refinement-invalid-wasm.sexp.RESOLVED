@@ -79,3 +79,5 @@
   (input (do (type W (A Bool) (B Bool)) (def (main (: b Bool)) (match (W.A b) ((W.A true) 1) ((W.A _) 0) ((W.B _) 9))) (export main)))
   (call main (: true Bool))
   (output (: 1 Int64)))
+
+; ✅ RESOLVED 2026-07-16 — VERIFIED BY CONTENT on trunk 36b486e0d (gate 3478/3/0 green). v-patterns MR 0e1f97547: holds_handle gate in select.rs SumCont::LitTest (erased scalar newtype reads raw payload, no boxed get-int/get-bool). BOTH symptoms fixed: Int64 (Wrap 0)→100/(Wrap 5)→5 now VALID wasm (was invalid-component), Bool (Wrap true)→1 (was silently 0). v-patterns shipped all 5 breaker cases (3 Int+2 Bool) + baseline into 05-compound-types.sexp same-commit. CLOSED.
