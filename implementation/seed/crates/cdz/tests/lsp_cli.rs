@@ -484,6 +484,64 @@ fn lsp_package_analysis_uses_the_open_buffer_overlay_not_the_stale_disk_lib() {
 }
 
 #[test]
+fn lsp_editing_an_open_library_re_lints_its_open_importers() {
+    // Reverse-dependency invalidation: lib exports `helper` (importer clean); a didChange to the OPEN lib
+    // that DROPS the export must re-lint the importer LIVE — a fresh diagnostics push for main.sexp
+    // showing helper is no longer available. Before this, didChange re-linted only the edited doc, so an
+    // importer kept a stale-clean squiggle until it was itself touched.
+    let dir = std::env::temp_dir().join(format!("cdz-lsp-revdep-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let lib_path = dir.join("lib.sexp");
+    std::fs::write(
+        &lib_path,
+        "(module lib (def (helper x) (+ x 1)) (export helper))",
+    )
+    .expect("write lib");
+    let main_path = dir.join("main.sexp");
+    let main_text = "(do (import \"lib\" (helper)) (def (main) (helper 41)) (export main))";
+    std::fs::write(&main_path, main_text).expect("write main");
+    let lib_uri = format!("file://{}", lib_path.display());
+    let main_uri = format!("file://{}", main_path.display());
+    let lib_no_export = "(module lib (def (helper x) (+ x 1)))"; // drops (export helper)
+
+    let msgs = drive_messages(&[
+        serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{},"processId":null,"rootUri":null}}),
+        serde_json::json!({"jsonrpc":"2.0","method":"initialized","params":{}}),
+        serde_json::json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":lib_uri,"languageId":"cadenza","version":1,"text":"(module lib (def (helper x) (+ x 1)) (export helper))"}}}),
+        serde_json::json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":main_uri,"languageId":"cadenza","version":1,"text":main_text}}}),
+        // Edit the OPEN lib to drop the export — the importer must be re-linted.
+        serde_json::json!({"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":lib_uri,"version":2},"contentChanges":[{"text":lib_no_export}]}}),
+        serde_json::json!({"jsonrpc":"2.0","id":99,"method":"shutdown","params":null}),
+        serde_json::json!({"jsonrpc":"2.0","method":"exit","params":null}),
+    ]);
+    let pushes = diagnostic_pushes_by_uri(&msgs);
+    // The LAST push for main.sexp (after the lib edit) must be NON-empty — the importer saw the dropped
+    // export. (The first main push, right after its didOpen, was clean.)
+    let last_main = pushes
+        .iter()
+        .rev()
+        .find(|(u, _)| u.ends_with("main.sexp"))
+        .map(|(_, d)| d.clone())
+        .expect("a diagnostics push for the importer");
+    assert!(
+        !last_main.is_empty(),
+        "editing the open lib to drop the export must re-lint the importer (reverse-dep invalidation); \
+         got {last_main:?}"
+    );
+    // And there must be MORE than one main.sexp push (open + the re-lint triggered by the lib edit).
+    let main_pushes = pushes
+        .iter()
+        .filter(|(u, _)| u.ends_with("main.sexp"))
+        .count();
+    assert!(
+        main_pushes >= 2,
+        "the importer should be re-published after the lib edit (>=2 main pushes), got {main_pushes}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn lsp_goto_definition_jumps_across_files_to_an_imported_def() {
     // Cross-file go-to-definition: from the `helper` USE in main.sexp, jump to its DEFINITION in
     // lib.sexp — the target Location is in the OTHER file. Before this increment definition was
