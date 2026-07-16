@@ -25,6 +25,19 @@ def is-free(e: Term, x: String) = Set.contains(free-vars(e), x)
 /// A closed term has no free variables.
 def is-closed(e: Term) = Set.len(free-vars(e)) == 0
 
+/// The free variables of `e` as a CANONICAL-ORDER `List String` — the observable "here are the free
+/// variables" output a compiler emits (a diagnostic listing, a capture-set to close over). `Set.to-list`
+/// enumerates the free-var set in canonical (sorted) element order, so the list is REPRODUCIBLE
+/// regardless of the order the vars were encountered while walking the term. (This rendering was
+/// impossible before `Set.to-list` was exposed; `free-count`/`is-free` above could only measure/query
+/// the set, not enumerate it.)
+def free-var-list(e: Term) = Set.to-list(free-vars(e))
+
+/// The free variable at canonical position `i`, or `""` past the end.
+def free-var-at(e: Term, i: Int64) = match List.at(free-var-list(e), i) with
+  | Option.Some(x) => x
+  | Option.None(_) => ""
+
 @test
 def fv-var() = if free-count(Term.Var("x")) == 1 then unit else trap("a bare var is free")
 
@@ -77,4 +90,31 @@ def fv-free-and-bound-same-name() =
   let e = Term.App(Term.Var("x"), Term.Lam("x", Term.Var("x"))) in
   if is-free(e, "x") then unit else trap("outer x is free")
 
-export { free-vars, free-count, is-free, is-closed }
+@test
+def fv-list-length-matches-count() =
+  // free-var-list has the same length as free-count (the set rendered, no loss/dup).
+  let e = Term.App(Term.Var("y"), Term.App(Term.Var("x"), Term.Var("z"))) in
+  if List.len(free-var-list(e)) == free-count(e) then unit else trap("list length == set cardinality")
+
+@test
+def fv-list-canonical-order() =
+  // (y (x z)) → free {x,y,z}; Set.to-list renders them in canonical (sorted) order: x, y, z —
+  // regardless of the encounter order (y was seen first). Position 0 is x, 1 is y, 2 is z.
+  let e = Term.App(Term.Var("y"), Term.App(Term.Var("x"), Term.Var("z"))) in
+  if free-var-at(e, 0) == "x" then
+    (if free-var-at(e, 1) == "y" then (if free-var-at(e, 2) == "z" then unit else trap("z at 2")) else trap("y at 1"))
+  else
+    trap("x first in canonical order, not encounter order")
+
+@test
+def fv-list-respects-binding() =
+  // λx. (x y) → only y free; the rendered list is exactly ["y"].
+  let e = Term.Lam("x", Term.App(Term.Var("x"), Term.Var("y"))) in
+  if List.len(free-var-list(e)) == 1 then (if free-var-at(e, 0) == "y" then unit else trap("y is the sole free var")) else trap("one free var listed")
+
+@test
+def fv-list-empty-for-closed() =
+  // λx. x → closed → empty free-var list.
+  if List.len(free-var-list(Term.Lam("x", Term.Var("x")))) == 0 then unit else trap("closed term lists no free vars")
+
+export { free-vars, free-count, is-free, is-closed, free-var-list, free-var-at }

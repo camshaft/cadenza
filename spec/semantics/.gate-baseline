@@ -628,6 +628,7 @@ pass	a factory RETURNS a closure capturing the def's SCALAR parameter
 pass	a factory RETURNS a closure that captures a let-bound inner closure
 pass	a failing guard falls through to a later arm
 pass	a failing payload-binder guard falls to a later arm re-binding the payload
+pass	a failing tuple guard falls to a later arm re-binding the elements
 pass	a failure `?` short-circuits BEFORE later computation runs
 pass	a fallible parser threads a Result((value,cursor),String) through mutual recursion, short-circuiting on Err
 pass	a false variant guard shields its arm's trapping body
@@ -1705,6 +1706,9 @@ pass	a tuple annotated with too many elements is rejected
 pass	a tuple binding pattern against a non-tuple value is a shape error
 pass	a tuple binding pattern nests to any depth
 pass	a tuple compound export under a non-main name crosses to the host
+pass	a tuple guard mixes an element binder with an enclosing parameter
+pass	a tuple guard reads a ctor payload binder inside a tuple element
+pass	a tuple guard reads a nested tuple's inner binders
 pass	a tuple is constructed with positional elements
 pass	a tuple of bools is exhaustive when every combination is covered
 pass	a tuple of calls to a sibling function on recursive-sum values matches with constructor patterns
@@ -1720,6 +1724,7 @@ pass	a tuple payload extracted through a helper return must not be rejected as a
 pass	a tuple payload returned through a helper from a built-in Option must not trap
 pass	a tuple with a runtime element is returned as a program result
 pass	a tuple with every element computed at run time is returned as a result
+pass	a tuple-of-two-sums match reads each sum's payload from its own slot (HM-unify shape)
 pass	a tuple-parameter export returns a BigInt computed from its fields
 pass	a tuple-parameter export returns a list computed from its fields
 pass	a tuple-pattern parameter binds the halves of its pair argument
@@ -2503,7 +2508,9 @@ pass	quasiquotes unquoting a runtime variable and a literal build equal ASTs
 pass	quote produces an AST value without evaluating
 pass	quote-vs-constructor AST equality holds regardless of operand order
 pass	raising a BigInt-magnitude quantity to a power runs the unbounded multiply
+pass	raising a COMPUTED (derived) quantity to a power squares its magnitude and dimension
 pass	raising a quantity to a compile-time power composes the unit and the magnitude
+pass	raising a runtime computed quantity to a power squares the runtime magnitude
 pass	reaching an effect neither handled nor delegated is rejected at compile time
 pass	reading a byte from a sequence built with a RUNTIME element widens it to the Option payload
 pass	reading a field of a record built from runtime elements folds to the field
@@ -2906,3 +2913,6 @@ todo	a closure-typed closure ARG on the DIRECT-CALL path is declined — host wo
 todo	a producer capturing a host-supplied COMPOUND parameter is declined — host→guest decode
 todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
+pass	eval of a quasiquote-built form with a float unquote folds
+pass	eval of a quasiquote splicing a string works through String ops
+pass	print of a quote containing a float renders re-readably

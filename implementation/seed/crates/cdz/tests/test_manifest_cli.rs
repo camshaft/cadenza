@@ -65,6 +65,24 @@ fn run(args: &[&str]) -> (bool, String, String) {
     )
 }
 
+/// Whether the value-heap runtime STORE is present beside the `cdz` binary (`<target>/cadenza-store`,
+/// where `cdz test` looks by default). CI's bare `test (ubuntu+macos)` job runs `cargo test --workspace`
+/// with NO `cargo xtask build`, so there is no store — and a `@test` whose body touches a HEAP value
+/// (a runtime `List`/`Set`/`Map`/`Record` — every property test over a generated collection) TRAPS
+/// without it (`staging-sync-loop-harness-trap`). A heap-dependent test SKIPS (returns green) when this
+/// is false, so the storeless `test` job cannot red on it; the store-having `gate` + `@test suites` jobs
+/// still exercise it fully. This mirrors the `let Some(store) else return` guard the heap-value CLI
+/// tests already use.
+fn store_present() -> bool {
+    // `CARGO_BIN_EXE_cdz` = `<target>/<profile>/cdz`; the store sits at `<target>/cadenza-store` (two
+    // parents up, then `cadenza-store`) — the same path `cdz test`'s `default_store` computes.
+    std::path::PathBuf::from(env!("CARGO_BIN_EXE_cdz"))
+        .parent()
+        .and_then(|d| d.parent())
+        .map(|t| t.join("cadenza-store").exists())
+        .unwrap_or(false)
+}
+
 /// Run `cdz <args…>` with the process's working directory set to `cwd` — for exercising the no-argument
 /// "search up for Project.cdz" path, which is relative to the current directory.
 fn run_in(cwd: &std::path::Path, args: &[&str]) -> (bool, String, String) {
@@ -566,6 +584,15 @@ fn a_false_property_fails_with_a_shrunk_counterexample_and_a_seed() {
 /// rewrites): a passing list property + a failing one that reports a counterexample.
 #[test]
 fn a_list_parameter_test_is_property_tested_by_a_synthesized_generator() {
+    // A property over a generated collection builds a runtime HEAP value, which traps without the
+    // value-heap store; the storeless CI `test` job has none, so skip there (the store-having `gate` +
+    // `@test suites` jobs cover it). See `store_present`.
+    if !store_present() {
+        eprintln!(
+            "skipping: no cadenza-store (storeless test job) — heap property tests need the store"
+        );
+        return;
+    }
     let d = dir("f1-listgen");
     // A TRUE property over any generated `List Int64` (length is non-negative), plus a second def so the
     // ML file's top level is a `do`-block. The synthesized `<name>-gen` wrapper is what runs.
@@ -656,5 +683,55 @@ fn a_list_parameter_test_is_property_tested_by_a_synthesized_generator() {
         stdout.contains("PASS pair_ok-gen (8 trials)")
             && stdout.contains("PASS nested_ok-gen (8 trials)"),
         "a Tuple param and a nested List(Tuple) param are both property-tested: {stdout}"
+    );
+
+    // G4: a `(Record …)` parameter is generated too (`(record (f <gen>) …)`). Written in the SEXPR
+    // canonical form (the record-TYPE ML surface `Record(x: T, …)` is a separate v-syntax concern; the
+    // generator recursion over record fields is what this pins).
+    let rec = write(
+        &d,
+        "rec.sexp",
+        "(do \
+           (@ test (def (rec-ok (: v (Record (x Int64) (y Bool)))) \
+             (if (= (. v x) (. v x)) unit (trap \"r\")))) \
+           (def (anchor3) 1))",
+    );
+    let (ok, stdout, stderr) = run(&["test", &rec, "--trials", "8"]);
+    assert!(ok, "a Record property passes: {stdout}{stderr}");
+    assert!(
+        stdout.contains("PASS rec-ok-gen (8 trials)"),
+        "a Record parameter is property-tested via the synthesized wrapper: {stdout}"
+    );
+
+    // G5: a `@test` over a USER SUM is property-tested — the generator picks a variant by `Test.gen % k`
+    // and builds its payload (a mix of payload'd + nullary variants). Sexpr form (a user sum type).
+    let sum = write(
+        &d,
+        "sum.sexp",
+        "(do (type Ty (Var Int64) (Con Bool) (Nil)) \
+           (@ test (def (ty-ok (: t Ty)) \
+             (match t (((. Ty Var) n) unit) (((. Ty Con) b) unit) (((. Ty Nil)) unit)))) \
+           (def (anchor5) 1))",
+    );
+    let (ok, stdout, stderr) = run(&["test", &sum, "--trials", "12"]);
+    assert!(ok, "a user-sum property passes: {stdout}{stderr}");
+    assert!(
+        stdout.contains("PASS ty-ok-gen (12 trials)"),
+        "a user-sum parameter is property-tested via the synthesized wrapper: {stdout}"
+    );
+
+    // G6: `(Set …)` and `(Map …)` params are generated too (a `Set.of (list …)` / a `Map.insert` fold).
+    let setmap = write(
+        &d,
+        "setmap.cdz",
+        "@test def set_ok(s: Set(Int64)) = if Set.len(s) >= 0 then unit else trap(\"s\")\n\
+         @test def map_ok(m: Map(Int64, Bool)) = if Map.len(m) >= 0 then unit else trap(\"m\")\n",
+    );
+    let (ok, stdout, stderr) = run(&["test", &setmap, "--trials", "8"]);
+    assert!(ok, "Set + Map properties pass: {stdout}{stderr}");
+    assert!(
+        stdout.contains("PASS set_ok-gen (8 trials)")
+            && stdout.contains("PASS map_ok-gen (8 trials)"),
+        "a Set and a Map parameter are both property-tested via synthesized wrappers: {stdout}"
     );
 }

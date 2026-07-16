@@ -332,6 +332,57 @@ fn rustc_roundtrip_list_ops_compute_and_a_shared_list_does_not_move() {
 }
 
 #[test]
+fn a_list_match_emits_a_length_tested_if_chain() {
+    // A list match `(match xs ((list) …) ((list h .. t) …))` → an `if xs.len() == 0 { … } else if
+    // xs.len() >= 1 { … }` chain over the scrutinee's length; a leading element binder reads `xs[i]`,
+    // the rest binds `xs[1..].to_vec()`.
+    let rs = compile_rust(
+        "(module m (def (sum (: xs (List Int64))) \
+           (match xs ((list) 0) ((list h .. t) (+ h (sum t))))) (export sum))",
+    );
+    assert!(rs.contains(".len() == 0"), "empty-arm length test:\n{rs}");
+    assert!(rs.contains(".len() >= 1"), "rest-arm length test:\n{rs}");
+    assert!(
+        rs.contains("[1..].to_vec()"),
+        "rest binder → tail sublist:\n{rs}"
+    );
+    assert!(
+        rs.contains("[0]"),
+        "leading element binder → index 0:\n{rs}"
+    );
+    // A FIXED-arity arm `(list a b)` → `== 2`, its elements `xs[0]`/`xs[1]`.
+    let fixed = compile_rust(
+        "(module m (def (f (: xs (List Int64))) (match xs ((list a b) (+ a b)) (_ 0))) (export f))",
+    );
+    assert!(fixed.contains(".len() == 2"), "fixed-arity test:\n{fixed}");
+}
+
+#[test]
+fn rustc_roundtrip_recursive_list_match_folds_to_a_scalar() {
+    // End-to-end: a recursive `(list)`/`(list h .. t)` match sums a runtime-built list. Build `[10 20 30]`
+    // behind a recursive call so it is a genuine runtime `Vec`, then fold it: 10+20+30 = 60.
+    let module = compile_rust(
+        "(module m \
+           (def (sum (: xs (List Int64))) (match xs ((list) 0) ((list h .. t) (+ h (sum t))))) \
+           (def (f (: n Int64)) (if (= n 0) (list 10 20 30) (f (+ n -1)))) \
+           (def (mk) (sum (f 1))) (export mk))",
+    );
+    if let Some(out) = rustc_run(&module, "mk()") {
+        assert_eq!(out, "60", "10+20+30 folded through the list match");
+    }
+    // A fixed-arity arm computes over its bound elements; a non-matching length falls to the catch-all.
+    let pick = compile_rust(
+        "(module m \
+           (def (g (: xs (List Int64))) (match xs ((list a b c) (+ a (+ b c))) (_ -1))) \
+           (def (f (: n Int64)) (if (= n 0) (list 3 4 5) (f (+ n -1)))) \
+           (def (mk) (g (f 1))) (export mk))",
+    );
+    if let Some(out) = rustc_run(&pick, "mk()") {
+        assert_eq!(out, "12", "3+4+5 over the exactly-3 arm");
+    }
+}
+
+#[test]
 fn an_ill_formed_integer_width_is_rejected_not_declined() {
     // An out-of-range integer WIDTH (negative/non-natural, or over-ceiling `(UInt 65)`) is an ILL-FORMED
     // TYPE, not a target limitation — a boundary of that type must REJECT (CDZ0302), the SAME outcome the

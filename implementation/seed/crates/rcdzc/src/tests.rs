@@ -13805,6 +13805,60 @@ mod match_engine {
     }
 
     #[test]
+    fn a_tuple_of_two_sums_match_reads_each_sums_payload_from_its_own_slot() {
+        // REGRESSION (silent MISCOMPILE): a match on a TUPLE OF TWO SUMS binding a payload from EACH sum —
+        // `match (a, b) with (TArrow(a1,a2), TArrow(b1,b2)) => unify(a2, b2)` — read BOTH `a2` and `b2` from
+        // the SAME payload (a's), so a self-recursive `unify(a2,b2)` became `unify(a2,a2)`. `unify((Int→Bool),
+        // (Int→Int))` recurses on the 2nd components `unify(Bool, Int)` which MUST be 0 (Bool≠Int), but
+        // returned 1 (it compared `unify(Bool, Bool)`). This is the HM-unification dispatch shape — a
+        // self-hosted type checker silently misunifies.
+        //
+        // ROOT: the shared-sum-payload-prefix CSE (`payload_prefix_slots`) keyed its slot on `(scrutinee,
+        // prefix LENGTH)`. A tuple-of-two-sums match produces TWO prefixes of the SAME length off the SAME
+        // tuple scrutinee — `[Elem(0), Payload]` (a's payload) and `[Elem(1), Payload]` (b's) — so the
+        // length-only key COLLIDED them: the second overwrote the first, and both `a2`/`b2` reads used one
+        // slot. FIX: key on the full prefix STEPS, so the two distinct prefixes get distinct slots.
+        let Some(v) = run_heap_value(
+            "(module m (type Ty (TInt) (TBool) (TArrow Ty Ty)) \
+               (def (unify (: a Ty) (: b Ty)) \
+                 (match (tuple a b) \
+                   ((tuple (. Ty TInt) (. Ty TInt)) 1) \
+                   ((tuple (. Ty TBool) (. Ty TBool)) 1) \
+                   ((tuple (Ty.TArrow a1 a2) (Ty.TArrow b1 b2)) (unify a2 b2)) \
+                   ((tuple _ _) 0))) \
+               (def (main) (unify (Ty.TArrow (Ty.TInt) (Ty.TBool)) (Ty.TArrow (Ty.TInt) (Ty.TInt)))) \
+               (export main))",
+            vec![],
+        ) else {
+            eprintln!("runtime wasm not found; skipping tuple-of-two-sums payload-slot run");
+            return;
+        };
+        assert_eq!(
+            v, "0",
+            "the arrow arm recurses unify(a2,b2) = unify(TBool, TInt) → 0 (b2 must read b's payload, not a's)"
+        );
+        // The DUAL: two arrows with EQUAL 2nd components unify to 1 — confirms b2 is genuinely read (not
+        // always aliased to a2): unify((Int→Int),(Bool→Int)) → recurse unify(Int,Int) → 1.
+        assert_eq!(
+            run_heap_value(
+                "(module m (type Ty (TInt) (TBool) (TArrow Ty Ty)) \
+                   (def (unify (: a Ty) (: b Ty)) \
+                     (match (tuple a b) \
+                       ((tuple (. Ty TInt) (. Ty TInt)) 1) \
+                       ((tuple (. Ty TBool) (. Ty TBool)) 1) \
+                       ((tuple (Ty.TArrow a1 a2) (Ty.TArrow b1 b2)) (unify a2 b2)) \
+                       ((tuple _ _) 0))) \
+                   (def (main) (unify (Ty.TArrow (Ty.TInt) (Ty.TInt)) (Ty.TArrow (Ty.TBool) (Ty.TInt)))) \
+                   (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "1",
+            "equal 2nd components (Int,Int) unify to 1 — b2 reads b's payload"
+        );
+    }
+
+    #[test]
     fn a_tail_loop_threading_a_projected_boxed_sum_accumulator_decodes_correctly() {
         // A tuple-projected boxed sum threaded through a self-tail loop must SURVIVE the loop step. `one`
         // returns `(tuple (W.Atom <byte>) (+ pos 1))`; `loop` threads `(. r 0)` (the nested-compound boxed
@@ -32835,6 +32889,28 @@ mod match_engine {
                 "main"
             ),
             3.0
+        );
+    }
+
+    #[test]
+    fn qty_pow_over_a_computed_quantity_squares_it() {
+        // `lower_qty_pow` fell back from the literal-only `qty_value_occ` to `(Qty.value q)` for a
+        // non-literal argument, so `Qty.pow` now works over ANY quantity expression, not only a directly
+        // written `Qty.of`. `(Qty.pow (/ (Qty 6.0 m) (Qty 2.0 s)) 2)` — squaring a COMPUTED velocity —
+        // previously declined ("Qty.pow over a non-Qty.of magnitude"); now (3.0 m/s)² = 9.0. Qty.value
+        // recovers the squared magnitude.
+        let src = "(do (def (main) ((. Qty value) \
+                   ((. Qty pow) (/ ((. Qty of) 6.0 ((. Unit base) #\"meter\")) \
+                                   ((. Qty of) 2.0 ((. Unit base) #\"second\"))) 2))) \
+                   (export main))";
+        assert_eq!(
+            run_returns::<f64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("Qty.pow over a computed velocity compiles and runs"),
+                "main"
+            ),
+            9.0,
+            "(6m/2s = 3 m/s)^2 = 9.0 (Qty.pow over a computed quantity, not a literal Qty.of)"
         );
     }
 

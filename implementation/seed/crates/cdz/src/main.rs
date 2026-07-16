@@ -118,6 +118,13 @@ enum Cmd {
     /// path/to/Project.cdz` builds that project. For a single loose file, use `cdz compile <file>`.
     Build(BuildArgs),
 
+    // ── shell completions ───────────────────────────────────────────────────────────────────────
+    /// Print a shell COMPLETION script for `cdz` to stdout — `cdz completions <shell>` for bash, zsh,
+    /// fish, elvish, or powershell. Generated from the actual command tree, so it always matches the
+    /// current subcommands + flags. Install by sourcing/placing per your shell (e.g.
+    /// `cdz completions bash > /etc/bash_completion.d/cdz`, or `cdz completions zsh > _cdz` on `$fpath`).
+    Completions(CompletionsArgs),
+
     // ── unit testing ─────────────────────────────────────────────────────────────────────────────
     /// Compile a SEPARATE test component from a FILE's `@test`-marked NULLARY definitions and run each,
     /// reporting pass/fail. Each `@test def` crosses the boundary as a nullary entry the runner invokes;
@@ -209,6 +216,7 @@ fn main() -> ExitCode {
         // `cdz calc` — mounted from the `cdz-calc` lib; the same code the standalone `cdz-calc` bin runs.
         Cmd::Calc(a) => cdz_calc::cli::run(&a, PROG),
         Cmd::Build(a) => run_build(&a),
+        Cmd::Completions(a) => run_completions(&a),
         Cmd::Test(a) => run_test(&a),
         // The span-mapped semantic queries live here (they need both libraries in one process).
         Cmd::Type(a) => run_type(&a),
@@ -607,6 +615,26 @@ fn resolve_build_opt_level(
         return Ok(rcdzc::OptLevel::O2);
     }
     Ok(rcdzc::OptLevel::default())
+}
+
+// ── shell completions ────────────────────────────────────────────────────────────────────────────
+
+#[derive(clap::Args)]
+struct CompletionsArgs {
+    /// The shell to generate a completion script for.
+    #[arg(value_enum)]
+    shell: clap_complete::Shell,
+}
+
+/// `cdz completions <shell>` — print a shell completion script for `cdz` to stdout, generated from the
+/// clap command tree (so it can never drift from the real subcommands/flags). The user redirects it to
+/// their shell's completion location. Codegen only; always succeeds.
+fn run_completions(args: &CompletionsArgs) -> ExitCode {
+    use clap::CommandFactory;
+    let mut cmd = Cli::command();
+    let name = cmd.get_name().to_string();
+    clap_complete::generate(args.shell, &mut cmd, name, &mut std::io::stdout());
+    ExitCode::SUCCESS
 }
 
 // ── cdz test ─────────────────────────────────────────────────────────────────────────────────────

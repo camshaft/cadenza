@@ -336,6 +336,11 @@ fn tail_callees(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
                 tail_callees(db, a.body, out);
             }
         }
+        Core::MatchList { arms, .. } => {
+            for a in arms {
+                tail_callees(db, a.body, out);
+            }
+        }
         _ => {}
     }
 }
@@ -374,6 +379,9 @@ fn body_has_tail_call_to(db: &mut Db, id: StructId, members: &[usize]) -> bool {
         }
         Core::Let { body, .. } => body_has_tail_call_to(db, body, members),
         Core::Match { arms, .. } => arms
+            .iter()
+            .any(|a| body_has_tail_call_to(db, a.body, members)),
+        Core::MatchList { arms, .. } => arms
             .iter()
             .any(|a| body_has_tail_call_to(db, a.body, members)),
         _ => false,
@@ -503,6 +511,11 @@ fn emit_tail(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, 
         // a tail flag so arm bodies go through `emit_tail`.)
         Core::Match { scrutinee, arms } => {
             emit_match_impl(db, id, scrutinee, &arms, env, ctx, true)
+        }
+        // A LIST match in tail position: each arm body is tail (so a self-recursive list walker iterates
+        // the enclosing loop rather than growing the stack). Delegates with the tail flag.
+        Core::MatchList { scrutinee, arms } => {
+            emit_list_match_impl(db, scrutinee, &arms, env, ctx, true)
         }
         // Any other tail leaf: its value is the loop's result — `break` it out. A bare-literal leaf is
         // grounded to the function's result width so every `break` in the loop yields the same type.
@@ -906,6 +919,14 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         // is not bound in the arm pattern here — it resolves to a `Core::SumPayload` that re-extracts the
         // payload — so the arm pattern ignores the payload (`Enum::V { .. }` / `Enum::V(_)`).
         Core::MatchSum { scrutinee, root } => emit_sum_match(db, scrutinee, &root, env, ctx),
+        // A LIST match `(match xs ((list) …) ((list a .. rest) …) …)` → a length-tested `if`/`else if`
+        // chain over `xs.len()`. Each arm's condition is `== n` (fixed arity), `>= lead` (rest pattern),
+        // or always (bare binder/`_`); the first satisfied arm's body runs. The scrutinee is bound ONCE
+        // to a local so `.len()` and each element/rest binder (`SumPayload{Elem(i)}` → `xs[i]`,
+        // `SumPayload{RestFrom(k)}` → `xs[k..].to_vec()`) read the same value. Exhaustiveness (every length
+        // covered) is checked in `lower`, so the chain always ends in a catch-all arm — a defensive final
+        // `else` panics `unreachable` to satisfy Rust's need for a total `if`/`else` expression.
+        Core::MatchList { scrutinee, arms } => emit_list_match(db, scrutinee, &arms, env, ctx),
         // The SUB-VALUE of a sum scrutinee at a path, read by a variant pattern's binder. Rust binds in
         // the pattern, not by a separate accessor, so this re-matches the scrutinee to extract the
         // payload at `path`: `match <scrut> { <Enum>::<V>(p) => <walk path into p>, _ => unreachable!() }`.
@@ -934,8 +955,7 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         // panic carrying its own op-named reason, not `Core::Trap`, so this literal is only the non-
         // arithmetic explicit trap, whose canonical kind IS `unreachable`.)
         Core::Trap => Ok("panic!(\"unreachable\")".to_string()),
-        Core::MatchList { .. }
-        | Core::ConstStr(_)
+        Core::ConstStr(_)
         | Core::ConstChar(_)
         | Core::ConstFloatNan
         | Core::BytesOf { .. }
@@ -1315,6 +1335,114 @@ fn emit_match_impl(
     }
     out.push('}');
     Ok(out)
+}
+
+/// Emit a runtime LIST match `(match xs ((list) …) ((list a .. rest) …) …)` → an `if`/`else if` chain
+/// over the scrutinee's `.len()`. Non-tail form (the arm bodies are ordinary values). See
+/// [`emit_list_match_impl`].
+fn emit_list_match(
+    db: &mut Db,
+    scrutinee: StructId,
+    arms: &[crate::core::ListArm],
+    env: &Env,
+    ctx: &Ctx,
+) -> Result<String, Reject> {
+    emit_list_match_impl(db, scrutinee, arms, env, ctx, false)
+}
+
+/// Emit a runtime LIST match as a length-tested `if`/`else if` chain over the scrutinee's `.len()`.
+///
+/// Each [`ListArm`]'s condition tests the scrutinee length: `LenEq(n)` → `len == n`, `LenGe(lead)` →
+/// `len >= lead`, `Any` → an unconditional `else`. A `guard` ANDs a boolean onto the length test (a false
+/// guard falls through to the next arm — the natural `else` chain). The scrutinee is a pure occurrence
+/// (a param/local, per `lower`), so each element/rest binder in an arm body re-reads it via `SumPayload`
+/// (`Elem(i)` → `xs[i]`, `RestFrom(k)` → `xs[k..].to_vec()`), materializing it identically each time.
+/// `lower` proved exhaustiveness (every length ≥ 0 is covered), so the chain always ends in a catch-all;
+/// a defensive trailing `else { panic!("unreachable") }` makes the emitted `if` total for Rust (a chain
+/// with no bare `Any`/`LenGe(0)` tail — e.g. only guarded arms — would otherwise be a non-exhaustive
+/// `if` with no `else`, an E0317 "missing else"). When `tail`, each arm body goes through [`emit_tail`]
+/// (a self-call iterates the enclosing loop); otherwise each is an ordinary value grounded to the match's
+/// result width.
+#[allow(clippy::too_many_arguments)]
+fn emit_list_match_impl(
+    db: &mut Db,
+    scrutinee: StructId,
+    arms: &[crate::core::ListArm],
+    env: &Env,
+    ctx: &Ctx,
+    tail: bool,
+) -> Result<String, Reject> {
+    use crate::core::ListArmCond;
+    // The scrutinee's Rust value, evaluated ONCE into a local so `.len()` and every binder read the same
+    // list. (The scrutinee is pure, but binding it once keeps the emitted chain readable and avoids
+    // re-emitting a possibly-large expression per length test.) The binder is fresh per match nesting.
+    let scrut = emit(db, scrutinee, env, ctx)?;
+    let lv = format!("__lm{}", scrutinee.0);
+    // The match's result integer type — a bare-literal arm body is grounded to it (as in `emit_match_impl`).
+    let result_it = arm_result_it(db, arms);
+    let mut chain = String::new();
+    let mut first = true;
+    let mut has_catch_all = false;
+    for arm in arms {
+        // The length test. `Any` (a bare binder / `_`) is the unconditional catch-all; render it as the
+        // final `else` (no condition). A guard ANDs onto the length test.
+        let len_cond = match arm.cond {
+            ListArmCond::LenEq(n) => Some(format!("{lv}.len() == {n}")),
+            // `LenGe(0)` is unconditional (every list has length ≥ 0) — treat like `Any`.
+            ListArmCond::LenGe(0) => None,
+            ListArmCond::LenGe(lead) => Some(format!("{lv}.len() >= {lead}")),
+            ListArmCond::Any => None,
+        };
+        let cond = match (len_cond, arm.guard) {
+            (Some(c), Some(g)) => Some(format!("{c} && {}", emit(db, g, env, ctx)?)),
+            (Some(c), None) => Some(c),
+            // An unconditional length (Any/LenGe(0)) WITH a guard is still conditional on the guard.
+            (None, Some(g)) => Some(emit(db, g, env, ctx)?),
+            (None, None) => None,
+        };
+        let body = if tail {
+            format!("{{ {} }}", emit_tail(db, arm.body, env, ctx)?)
+        } else {
+            match result_it {
+                Some(it) => emit_grounded(db, arm.body, it, env, ctx)?,
+                None => emit(db, arm.body, env, ctx)?,
+            }
+        };
+        match cond {
+            Some(c) => {
+                let kw = if first { "if" } else { "else if" };
+                chain.push_str(&format!("{kw} {c} {{ {body} }} "));
+                first = false;
+            }
+            None => {
+                // An unconditional arm — the catch-all `else`. Every later arm is unreachable (as in
+                // `lower`), so stop here.
+                if first {
+                    // No preceding condition: the whole match is just this arm's body (a bare-binder match).
+                    return Ok(format!("{{ let {lv} = {scrut}; {body} }}"));
+                }
+                chain.push_str(&format!("else {{ {body} }}"));
+                has_catch_all = true;
+                break;
+            }
+        }
+    }
+    // A chain with no unconditional tail (only `==`/`>=`/guarded arms) needs a defensive `else` so the
+    // `if` is a total expression (Rust E0317). `lower` guarantees exhaustiveness, so this is unreachable.
+    if !has_catch_all {
+        chain.push_str("else { panic!(\"unreachable\") }");
+    }
+    Ok(format!("{{ let {lv} = {scrut}; {chain} }}"))
+}
+
+/// The result INTEGER type shared by a list-match's arms (for grounding a bare-literal arm body), read off
+/// the first arm's body type. `None` if it is not an integer type (no width grounding needed).
+fn arm_result_it(db: &mut Db, arms: &[crate::core::ListArm]) -> Option<IntTy> {
+    let first = arms.first()?;
+    match type_of(db, first.body) {
+        Ty::Int(it) => Some(it),
+        _ => None,
+    }
 }
 
 /// An integer literal PATTERN in the scrutinee's Rust type — the literal written so it matches a value
@@ -2097,6 +2225,32 @@ fn emit_sum_payload(
             }
         }
         return Ok(expr);
+    }
+    // A LIST-PATTERN binder off a runtime LIST scrutinee — a `MatchList` arm's leading-element binder
+    // (`[Elem(i)]` → `xs[i]`) or rest binder (`[RestFrom(k)]` → the tail sublist `xs[k..].to_vec()`). The
+    // scrutinee is pure (a param/local), so re-emitting it per binder is sound; each read is INDEPENDENT
+    // (matching the wasm `vec-get`/`vec-split` per binder). A leading element of a non-Copy type is
+    // `.clone()`d (a `Vec` element used by value would move out of the borrowed list); the rest
+    // `.to_vec()` already produces an owned, independent `Vec`.
+    if matches!(type_of(db, scrutinee).strip_nominal(), Ty::List(_)) {
+        match path {
+            [crate::core::PathStep::Elem(i)] => {
+                let xs = emit(db, scrutinee, env, ctx)?;
+                // Clone a non-Copy element (the read value's own type drives it); a Copy element indexes
+                // in place. `id` is this `SumPayload` node — its type is the element type.
+                if needs_clone_on_read(db, id) {
+                    return Ok(format!("({xs})[{i}].clone()"));
+                }
+                return Ok(format!("({xs})[{i}]"));
+            }
+            [crate::core::PathStep::RestFrom(k)] => {
+                let xs = emit(db, scrutinee, env, ctx)?;
+                // The tail sublist from index `k` — an owned `Vec` slice copy (persistent value semantics;
+                // the source list is left intact for any sibling element binder in the same arm).
+                return Ok(format!("({xs})[{k}..].to_vec()"));
+            }
+            _ => {}
+        }
     }
     Err(Reject::decline(
         "sum payload has no bound match arm (unsupported pattern shape)",

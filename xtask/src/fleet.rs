@@ -416,8 +416,11 @@ pub enum FleetCmd {
     /// empty-prompt no-op and never actually revives anything). The `--stale-cap` bound is what keeps a
     /// long-interval agent (e.g. 30m) from getting an hour-long dead window. Skips: agents with no live
     /// tmux window, agents mid-tick
-    /// ("esc to interrupt" — real work in flight), and agents re-armed within `--grace-secs`
-    /// (anti-thrash). REAP: any genuinely-DONE agent (registry status=stopped AND a stop-file present)
+    /// ("esc to interrupt" — real work in flight), agents re-armed within `--grace-secs` (anti-thrash),
+    /// and `pr-sync` when `trunk` advanced within the stale window (it does minutes-long synchronous
+    /// gate work per MR, so its heartbeat legitimately goes stale mid-batch while it's alive — a recent
+    /// commit on `trunk`, which only pr-sync writes, proves liveness). REAP: any genuinely-DONE agent
+    /// (registry status=stopped AND a stop-file present)
     /// whose tmux window is still live gets that window killed — role-agnostic, so it catches design/
     /// self-removed agents the PM's `remove --close` reaper never gets a note about. The registry row
     /// is kept (history/archive); only the panel goes away, and a `--grace-secs` window off the stop
@@ -855,6 +858,22 @@ fn send(
         })
         .or_else(|| sender_from_branch(fleet))
         .unwrap_or_else(|| "unknown".to_string());
+    // The resolved `from` becomes the RECIPIENT of any reply pr-sync sends back (it addresses the
+    // reply to `mr.from`), and `deliver` validates the recipient name. So an INVALID `from` — e.g.
+    // `--from foo/bar`, or a branch `fleet/foo/bar` deriving `foo/bar` — would pass here but make the
+    // REPLY dead-letter at deliver-time, leaving the sender stuck (never sees merged/reject). Validate
+    // the resolved sender HERE, at the source, and refuse early with a clear error, so a malformed
+    // sender can never silently lose its reply. (`unknown` is the sentinel handled just below.)
+    if from != "unknown"
+        && let Err(why) = validate_agent_name(&from)
+    {
+        eprintln!(
+            "fleet send: REFUSING — resolved sender `{from}` is not a valid agent name ({why}). A reply \
+             addressed back to it would dead-letter at delivery, stranding you. Pass a valid \
+             `--from <agent>` (ASCII alphanumerics + `-`; no slashes/dots), or fix your branch name."
+        );
+        std::process::exit(1);
+    }
     // A reply-EXPECTING message (the sender waits for a merged/reject/answer) MUST have a real sender,
     // or the reply dead-letters and the sender idles forever. Refuse rather than send into the void.
     if from == "unknown" && matches!(kind, "merge-request" | "ask" | "issue") {
@@ -1356,6 +1375,23 @@ fn watchdog(fleet: &Fleet, dry_run: bool, stale_mult: u32, stale_cap: u64, grace
         };
         if age <= stale_after {
             continue; // ticked recently — healthy.
+        }
+
+        // pr-sync liveness via TRUNK ADVANCE: pr-sync does minutes-long SYNCHRONOUS work per tick (a
+        // full gate cycle — `cargo test` + `xtask gate` + `check` — per MR in a batch), so its
+        // heartbeat mtime legitimately goes 15-25min stale MID-BATCH while it's alive and integrating.
+        // A stale heartbeat alone falsely reads as "stalled" for the one agent that advances `trunk`.
+        // So for pr-sync, also consult trunk: if `trunk` has a commit newer than the stale window, it's
+        // demonstrably alive (only pr-sync writes trunk) — don't re-arm. (Any agent on the `trunk`
+        // branch is pr-sync; keyed by name to be explicit.)
+        if a.name == "pr-sync"
+            && let Some(commit_age) = last_commit_age_secs(&fleet.repo, TRUNK)
+            && commit_age <= stale_after
+        {
+            println!(
+                "  = pr-sync heartbeat stale ({age}s) but trunk advanced {commit_age}s ago — alive mid-batch, left alone"
+            );
+            continue;
         }
 
         // Anti-thrash: don't re-arm an agent we nudged within the grace period — give the nudge time
@@ -2067,6 +2103,21 @@ fn trunk_vs_origin_main(repo: &Path) -> Option<(usize, usize)> {
     let behind = it.next()?.parse().ok()?; // left  = origin/main-only
     let ahead = it.next()?.parse().ok()?; // right = trunk-only
     Some((ahead, behind))
+}
+
+/// Age in seconds of the newest commit on `refname` (`now - committer-time of HEAD of ref`), or `None`
+/// if the ref can't be resolved. Used as a liveness signal for pr-sync (recent trunk advance ⟹ alive).
+fn last_commit_age_secs(repo: &Path, refname: &str) -> Option<u64> {
+    let out = Command::new("git")
+        .current_dir(repo)
+        .args(["log", "-1", "--format=%ct", refname])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let ct: u64 = String::from_utf8(out.stdout).ok()?.trim().parse().ok()?;
+    Some(now_unix().saturating_sub(ct))
 }
 
 #[cfg(test)]

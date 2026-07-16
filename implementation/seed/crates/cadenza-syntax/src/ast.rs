@@ -462,4 +462,178 @@ mod tests {
         assert_eq!(a.head_name(root), Some("+"));
         assert_eq!(a.as_form(root, "+").map(|t| t.len()), Some(2));
     }
+
+    #[test]
+    fn leaf_and_leaf_name_share_one_name_index() {
+        // A `Name` leaf interned via the general `leaf(Leaf::Name(..))` entry MUST land in the SAME
+        // slot as one interned via the hot `leaf_name(&str)` path — `leaf` routes `Name` to `leaf_name`,
+        // so there is exactly ONE dedup index for names. If they diverged, the same identifier could get
+        // two leaf ids and structural equality / dedup would silently break.
+        let mut b = Builder::new();
+        let via_name = b.leaf_name("foo");
+        let via_leaf = b.leaf(Leaf::Name("foo".to_string()));
+        assert_eq!(via_name, via_leaf, "leaf(Name) must reuse leaf_name's id");
+        // And a second `leaf_name` hit reuses it too — no new leaf appended.
+        let again = b.leaf_name("foo");
+        assert_eq!(again, via_name);
+        let root = b.atom(via_name);
+        let a = b.finish(root);
+        assert_eq!(a.leaves.len(), 1, "one interned leaf for the single name");
+    }
+
+    #[test]
+    fn same_text_across_leaf_kinds_stays_distinct() {
+        // `Name("x")`, `Str("x")`, and `Sym("x")` carry the same text but are DIFFERENT values — the
+        // name goes through `name_index`, the other two through the general `leaf_index`. They must NOT
+        // collapse to one id (a name reference, a text value, and a symbol value are semantically apart).
+        let mut b = Builder::new();
+        let n = b.leaf(Leaf::Name("x".to_string()));
+        let s = b.leaf(Leaf::Str("x".to_string()));
+        let y = b.leaf(Leaf::Sym("x".to_string()));
+        assert_ne!(n, s);
+        assert_ne!(n, y);
+        assert_ne!(s, y);
+        // Re-interning each kind reuses its own id (dedup within a kind).
+        assert_eq!(b.leaf(Leaf::Str("x".to_string())), s);
+        assert_eq!(b.leaf(Leaf::Sym("x".to_string())), y);
+    }
+
+    // Build a one-form arena `(head child…)` where `head` is either a Name or a Str atom.
+    fn form(head: Leaf, children: &[Leaf]) -> Arenas {
+        let mut b = Builder::new();
+        let h = b.atom_leaf(head);
+        let mut kids = vec![h];
+        for c in children {
+            kids.push(b.atom_leaf(c.clone()));
+        }
+        let root = b.list(kids);
+        b.finish(root)
+    }
+
+    #[test]
+    fn structurally_eq_collapses_ctor_head_name_and_string() {
+        // The four compound ctors: a NAME-headed `(list …)` and a STRING-headed `("list" …)` denote the
+        // SAME construct (the printer sugars the name form, the reader re-reads a string head), so
+        // structural equality MUST treat the two head kinds as equal — in BOTH directions.
+        for ctor in ["list", "tuple", "record", "map"] {
+            let name_headed = form(
+                Leaf::Name(ctor.to_string()),
+                &[Leaf::Int {
+                    value: BigInt::from(1),
+                    radix: Radix::Dec,
+                }],
+            );
+            let str_headed = form(
+                Leaf::Str(ctor.to_string()),
+                &[Leaf::Int {
+                    value: BigInt::from(1),
+                    radix: Radix::Dec,
+                }],
+            );
+            assert!(
+                name_headed.structurally_eq(&str_headed),
+                "{ctor}: name head must equal string head"
+            );
+            assert!(
+                str_headed.structurally_eq(&name_headed),
+                "{ctor}: equality is symmetric"
+            );
+        }
+    }
+
+    #[test]
+    fn structurally_eq_does_not_collapse_non_ctor_head() {
+        // A non-ctor spelling has no head-kind normalization: `(foo 1)` name-headed vs string-headed are
+        // DISTINCT (a bare application vs a string-headed form). Only the four ctors collapse.
+        let name_headed = form(Leaf::Name("foo".to_string()), &[Leaf::Bool(true)]);
+        let str_headed = form(Leaf::Str("foo".to_string()), &[Leaf::Bool(true)]);
+        assert!(!name_headed.structurally_eq(&str_headed));
+    }
+
+    #[test]
+    fn structurally_eq_collapse_is_head_position_only() {
+        // The ctor collapse fires ONLY in head position. A ctor spelling appearing as a non-head CHILD
+        // (`(f list)` with `list` a Name vs `(f "list")` with `"list"` a Str) must stay distinct — the
+        // child falls through to exact leaf comparison, so Name("list") != Str("list") there.
+        let name_child = form(
+            Leaf::Name("f".to_string()),
+            &[Leaf::Name("list".to_string())],
+        );
+        let str_child = form(
+            Leaf::Name("f".to_string()),
+            &[Leaf::Str("list".to_string())],
+        );
+        assert!(
+            !name_child.structurally_eq(&str_child),
+            "a ctor spelling as a non-head child must not collapse"
+        );
+    }
+
+    #[test]
+    fn structurally_eq_is_robust_to_interning_order() {
+        // Structural equality compares the DENOTED tree, not the raw arena vectors — so two arenas that
+        // intern the same leaves in different order (hence different leaf ids) are still equal.
+        let mut b1 = Builder::new();
+        let p1 = b1.name("pair");
+        let x1 = b1.name("x");
+        let y1 = b1.name("y");
+        let r1 = b1.list(vec![p1, x1, y1]);
+        let a1 = b1.finish(r1);
+
+        let mut b2 = Builder::new();
+        // Intern y before x (reversed) so the leaf ids differ from a1's.
+        let _y = b2.leaf_name("y");
+        let p2 = b2.name("pair");
+        let x2 = b2.name("x");
+        let y2 = b2.name("y");
+        let r2 = b2.list(vec![p2, x2, y2]);
+        let a2 = b2.finish(r2);
+
+        assert!(a1.structurally_eq(&a2));
+        // A different child count is not equal.
+        let mut b3 = Builder::new();
+        let p3 = b3.name("pair");
+        let x3 = b3.name("x");
+        let r3 = b3.list(vec![p3, x3]);
+        let a3 = b3.finish(r3);
+        assert!(!a1.structurally_eq(&a3));
+    }
+
+    #[test]
+    fn head_and_form_accessors_distinguish_name_from_ctor() {
+        // `head_name`/`as_form` read a NAME head; `head_ctor`/`as_ctor_form` read a STRING head. A
+        // string-headed form has no name head (and vice-versa), so the accessors don't cross over.
+        let str_headed = form(Leaf::Str("record".to_string()), &[Leaf::Bool(false)]);
+        assert_eq!(str_headed.head_ctor(str_headed.root), Some("record"));
+        assert_eq!(str_headed.head_name(str_headed.root), None);
+        assert_eq!(
+            str_headed
+                .as_ctor_form(str_headed.root, "record")
+                .map(<[_]>::len),
+            Some(1)
+        );
+        assert_eq!(str_headed.as_form(str_headed.root, "record"), None);
+
+        let name_headed = form(Leaf::Name("if".to_string()), &[Leaf::Bool(true)]);
+        assert_eq!(name_headed.head_name(name_headed.root), Some("if"));
+        assert_eq!(name_headed.head_ctor(name_headed.root), None);
+        assert_eq!(name_headed.as_str(name_headed.root), None); // the root is a List, not a Str atom
+    }
+
+    #[test]
+    fn builder_get_and_as_form_inspect_a_just_built_node() {
+        // The Builder mirrors Arenas' read accessors so the parser can inspect a node it just pushed
+        // (e.g. flattening a top-level `(do …)`) before `finish`. `get` returns the pushed entry and
+        // `as_form` matches a name head — validated mid-build, not just post-finish.
+        let mut b = Builder::new();
+        let do_head = b.name("do");
+        let stmt = b.name("stmt");
+        let root = b.list(vec![do_head, stmt]);
+        // `get` sees the list before finish.
+        assert!(matches!(b.get(root), Struct::List(items) if items.len() == 2));
+        // `as_form` peels the `do` head.
+        assert_eq!(b.as_form(root, "do").map(<[_]>::len), Some(1));
+        assert_eq!(b.as_form(root, "if"), None); // wrong head
+        assert_eq!(b.structure_len(), 3); // do, stmt, root
+    }
 }

@@ -60,8 +60,10 @@
   (doc    "`(def (main) (let ((x (try (Ok 1)))) (Some x)))` — the body's tail `(Some x)` makes main's
            result type `Option`, but the `?`'s operand `(Ok 1)` is a `Result`. A `Result`-`?` cannot
            short-circuit an `Option` boundary — the kinds disagree and Cadenza has NO auto-conversion
-           (§5.1, against Rust's `?`-via-`From`), so it is CDZ0203. The explicit idiom is
-           `Option.ok-or` / `Result.map-err` to reconcile the types first.")
+           (§5.1, against Rust's `?`-via-`From`), so it is CDZ0203. The explicit idiom is to `match` the
+           `Result` and drop its error (`(Err _) => (None unit)`, `(Ok x) => (Some x)`) before the `?`
+           (a prelude `Result.map-err`/`Option.ok-or` is the T3 increment — not yet in the prelude, so the
+           CDZ0203 hint names the `match` re-wrap that exists today, not an absent op).")
   (input  (do (def (main) (let ((x (try (Ok 1)))) (Some x))) (export main)))
   (error  CDZ0203))
 
