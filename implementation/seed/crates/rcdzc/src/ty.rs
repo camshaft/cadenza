@@ -1624,8 +1624,14 @@ impl Ty {
     /// messages where only the built-in scalar names reach it.
     pub fn render_with_article(&self) -> String {
         let name = self.render_name();
-        // The only vowel-SOUND type names are the signed ints (`Int…`); `UInt…`/`Unit` are "yoo" = `a`.
-        let article = if name.starts_with("Int") { "an" } else { "a" };
+        // "an" before a vowel SOUND. The signed ints (`Int…`) and other vowel-initial type names (`Ast`,
+        // `Any`, `Option`, `Iter`, `Error`, a user `(type Elephant …)`) take "an"; the EXCEPTIONS are the
+        // `U…` names whose leading `u` is the consonant "yoo" sound — `UInt…`, `Unit` — which take "a".
+        let vowel_initial = name.starts_with(['A', 'E', 'I', 'O', 'a', 'e', 'i', 'o'])
+            || (name.starts_with(['U', 'u'])
+                && !name.starts_with("UInt")
+                && !name.starts_with("Unit"));
+        let article = if vowel_initial { "an" } else { "a" };
         format!("{article} {name}")
     }
 }

@@ -4164,12 +4164,23 @@ fn reparse_spans(
             let (arenas, id_map) = cadenza_syntax::canon::canonicalize_with_map(&parsed.arenas);
             Some(parsed.spans.remap(&id_map, arenas.structure.len()))
         }
-        _ => match cadenza_syntax::sexpr::read_spanned(text) {
-            Ok((_, spans)) => Some(spans),
-            Err(_) => cadenza_syntax::sexpr::read_all_spanned(text)
-                .ok()
-                .map(|(_, spans)| spans),
-        },
+        _ => {
+            // CANONICALIZE + REMAP the span table, mirroring the ML branch (and
+            // `parse_program_spanned_counted`): the `Diagnostics` query answers with CANONICAL node ids
+            // (the arena is `codec::encode`d, which canonicalizes), so the span table `cdz fix` indexes a
+            // fix_node into must be keyed by canonical ids too. A LONE form is built canonically already
+            // (identity map — the previously-correct single-form case is unchanged), but the MULTI-form
+            // `read_all_spanned` fallback wraps the roots in a synthetic `(do …)` whose head is built LAST;
+            // canonicalization reorders the ids, so an un-remapped table maps the canonical fix_node to a
+            // NEIGHBOUR's span — landing the edit on the wrong node (rewriting a param's TYPE, or the whole
+            // param list, DESTROYING the function). Remap keys the table by canonical ids on both surfaces.
+            let (raw_arenas, raw_spans) = match cadenza_syntax::sexpr::read_spanned(text) {
+                Ok(pair) => pair,
+                Err(_) => cadenza_syntax::sexpr::read_all_spanned(text).ok()?,
+            };
+            let (arenas, id_map) = cadenza_syntax::canon::canonicalize_with_map(&raw_arenas);
+            Some(raw_spans.remap(&id_map, arenas.structure.len()))
+        }
     }
 }
 
@@ -4188,10 +4199,17 @@ fn reparse_arenas(
             }
             Some(cadenza_syntax::canon::canonicalize_with_map(&parsed.arenas).0)
         }
-        _ => match cadenza_syntax::sexpr::read_spanned(text) {
-            Ok((arenas, _)) => Some(arenas),
-            Err(_) => cadenza_syntax::sexpr::read_all(text).ok(),
-        },
+        _ => {
+            // CANONICALIZE, matching the ML branch + `reparse_spans`'s s-expr arm: the next `Diagnostics`
+            // pass and the span table must agree on canonical node ids (a multi-form program's synthetic
+            // `(do …)` reorders ids under canonicalization). Reading raw here and canonicalizing keeps the
+            // arena consistent with the remapped span table. A lone form's map is identity (no-op).
+            let raw_arenas = match cadenza_syntax::sexpr::read_spanned(text) {
+                Ok((arenas, _)) => arenas,
+                Err(_) => cadenza_syntax::sexpr::read_all(text).ok()?,
+            };
+            Some(cadenza_syntax::canon::canonicalize_with_map(&raw_arenas).0)
+        }
     }
 }
 

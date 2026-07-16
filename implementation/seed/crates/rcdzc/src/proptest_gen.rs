@@ -1252,4 +1252,36 @@ mod tests {
             "a lone single-form compound test gains a wrapper (no do-block needed): {names:?}"
         );
     }
+
+    /// DEEP nesting composes: the recursive `<gen:T>` derivation threads through a `Map` VALUE that is
+    /// itself compound (`Map Int64 (List Bool)` — the map-value recursion, distinct from a scalar value)
+    /// and through three levels (`List (Tuple (Set Int64) (Record …))` — list-elem → tuple-slot →
+    /// set-elem / record-field). Each still synthesizes one wrapper. Pins that no nesting path is missed.
+    #[test]
+    fn synthesizes_a_wrapper_for_deeply_nested_compounds() {
+        for (src, def, wrapper) in [
+            (
+                "(do (@ test (def (mlb (: m (Map Int64 (List Bool)))) 0)) (def (o) 1))",
+                "mlb",
+                "mlb-gen",
+            ),
+            (
+                "(do (@ test (def (deep (: v (List (Tuple (Set Int64) (Record (x Int64) (y Bool)))))) \
+                   (List.len v))) (def (o) 1))",
+                "deep",
+                "deep-gen",
+            ),
+        ] {
+            let db = Db::load(crate::testkit::parse(src));
+            let names: Vec<String> = db
+                .test_defs()
+                .into_iter()
+                .map(|i| db.defs[i].name.clone())
+                .collect();
+            assert!(
+                names.iter().any(|n| n == wrapper) && !names.iter().any(|n| n == def),
+                "{def}: expected wrapper {wrapper} for a deeply nested compound, got {names:?}"
+            );
+        }
+    }
 }

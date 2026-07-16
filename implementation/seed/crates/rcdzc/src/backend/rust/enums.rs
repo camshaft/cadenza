@@ -695,8 +695,19 @@ fn ty_derives_eq(
                 None => false,
             }
         }
-        // A function/closure, a `List`/`Map`/`Set`, a free `Ty::Var`/`Any`, a `Qty` — not `Eq`-derivable
-        // here (either no native rep or not `Eq`). Conservative: an unknown type declines the derive.
+        // `String`/`Char`/`Bytes` map to `String`/`char`/`Vec<u8>` — all `Eq` — so a runtime `=` over them
+        // (and over a compound CONTAINING them) emits a native `==`. A `Vec<u8>`/`String` `==` compares
+        // CONTENT, so a rope and its flat twin (same bytes) compare EQUAL — matching the canonical-byte-form
+        // value equality the wasm heap walk gives. (`String` eq already worked via a different path; this
+        // adds `Bytes` + `Char` + the compound-containing-them cases — see v-core-opt's Bytes-eq note.)
+        Ty::String | Ty::Char | Ty::Bytes => true,
+        // A `List`/`Set` of an `Eq` element → `Vec<T>`/`BTreeSet<T>` is `Eq` (elementwise); a `Map` is `Eq`
+        // when both key and value are. Recurse into the element/key/value type (a `List Float64` is NOT Eq,
+        // caught by the recursion). `BTreeMap`/`BTreeSet` `==` compares by content, matching value equality.
+        Ty::List(e) | Ty::Set(e) => ty_derives_eq(db, e, visited),
+        Ty::Map(k, v) => ty_derives_eq(db, k, visited) && ty_derives_eq(db, v, visited),
+        // A function/closure, a free `Ty::Var`/`Any`, a `Qty` — not `Eq`-derivable here (no native rep or
+        // not `Eq`). Conservative: an unknown type declines the derive.
         _ => false,
     }
 }

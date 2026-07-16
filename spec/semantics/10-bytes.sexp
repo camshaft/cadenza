@@ -975,3 +975,49 @@
             (def (main) (eq (rep (Bytes.of (list 104)) 1) (Bytes.of (list 104 120)))) (export main)))
   (call   main)
   (output (: true Bool)))
+
+; --- Nested-Bytes equality: the remaining composition faces -----------------------------------------
+; ea95d250f admits nested/keyed runtime Bytes into value-eq and CHAMP (its pins: tuple-nested,
+; unequal control, set element, direct map key, sum payload). These pin the remaining faces,
+; promoted from passing breaker probes — the Bytes twins of the nested-String-rope family.
+
+(case "a runtime Bytes rope in a record field compares equal to its flat twin"
+  (doc    "The record-field face of the nested-Bytes walk: `(record (f <rope>) (g 1))` = `(record (f
+           <flat>) (g 1))` → true. The field-keyed compound complements the landed tuple/sum faces
+           (a walk admitting only positional children misses the field map).")
+  (input  (do
+            (def (main (: a Int64))
+              (if (= (record (f (Bytes.concat (Bytes.of (list (UInt8.wrap a))) (Bytes.of (list (UInt8.wrap 2))))) (g 1))
+                     (record (f (Bytes.of (list (UInt8.wrap 1) (UInt8.wrap 2)))) (g 1))) 1 0))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 1 Int64)))
+
+(case "a compound map key containing a Bytes rope is found by its flat-twin key"
+  (doc    "The COMPOUND-key face: the map is keyed by a TUPLE whose Bytes element is a rope; the
+           lookup key carries the flat twin → 42. Requires champ_hash/champ_eq to canonicalize the
+           Bytes leaf INSIDE the compound key (the direct-key face is pinned by the landing; a
+           per-leaf compaction that only fires on a top-level Bytes key misses the nested one —
+           the exact gap the String family had).")
+  (input  (do
+            (def (main (: a Int64))
+              (match (Map.lookup (Map.insert Map.empty (tuple (Bytes.concat (Bytes.of (list (UInt8.wrap a))) (Bytes.of (list (UInt8.wrap 2)))) 1) 42)
+                                 (tuple (Bytes.of (list (UInt8.wrap 1) (UInt8.wrap 2))) 1))
+                ((Some v) v)
+                ((None _) -1)))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 42 Int64)))
+
+(case "a float leaf and a Bytes leaf compare together in one compound"
+  (doc    "One tuple carrying BOTH newly-walkable leaf kinds — a Float (canonical byte form) and a
+           Bytes rope (compacted) → true against the flat twin. The two ty_heap_walkable admissions
+           landed together; this pins them composing in a single walk (an early-exit on the first
+           admitted kind would skip the second leaf's canonicalization).")
+  (input  (do
+            (def (main (: a Int64))
+              (if (= (tuple 1.5 (Bytes.concat (Bytes.of (list (UInt8.wrap a))) (Bytes.of (list (UInt8.wrap 2)))))
+                     (tuple 1.5 (Bytes.of (list (UInt8.wrap 1) (UInt8.wrap 2))))) 1 0))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 1 Int64)))

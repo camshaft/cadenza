@@ -2398,3 +2398,32 @@ fn char_maps_to_rust_char_and_escapes_across_a_sum_payload() {
         assert_eq!(out, "0", "0xD800 is a surrogate → None");
     }
 }
+
+#[test]
+fn rustc_roundtrip_value_eq_over_bytes_string_and_compounds() {
+    // `Core::ValueEq` over a String/Char/Bytes (and a compound containing them) now emits a native `==`
+    // (`String`/`char`/`Vec<u8>` are Eq; `==` compares by content = the canonical-byte value equality).
+    // Bytes value-eq (v-core-opt's repro): two equal runtime byte sequences compare equal.
+    let beq = compile_rust(
+        "(module m (def (f (: n Int64)) \
+           (if (= (Bytes.of (list (UInt8.wrap n) 20)) (Bytes.of (list (UInt8.wrap n) 20))) 1 0)) (export f))",
+    );
+    assert!(beq.contains("=="), "Bytes value-eq emits native ==:\n{beq}");
+    if let Some(out) = rustc_run(&beq, "f(5)") {
+        assert_eq!(out, "1", "equal byte sequences compare equal");
+    }
+    // A rope String equals its flat twin (built by concat vs a literal) — `==` compares content.
+    let seq = compile_rust(
+        "(module m (def (f (: n Int64)) (if (= (String.concat \"ab\" \"c\") \"abc\") 1 0)) (export f))",
+    );
+    if let Some(out) = rustc_run(&seq, "f(0)") {
+        assert_eq!(out, "1", "a concat rope equals its flat twin by content");
+    }
+    // A char compares equal to a literal char (via a scalar read that folds to a char).
+    let ceq = compile_rust(
+        "(module m (def (f) (if (= ((. Char from-int) 97) ((. Char from-int) 97)) 1 0)) (export f))",
+    );
+    if let Some(out) = rustc_run(&ceq, "f()") {
+        assert_eq!(out, "1", "equal chars compare equal");
+    }
+}

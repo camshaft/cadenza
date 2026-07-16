@@ -2296,8 +2296,15 @@ fn lower_print(db: &mut Db, ast_val: StructId) -> Core {
 /// Render a compile-time-visible `Ast` value (a `Core::SumNew` at an Int/Name/List disc) as canonical
 /// s-expression text into `out`. Returns `None` if the value is not a fully-constant AST. The canonical
 /// spelling is the ordinary s-expression form: `Ast.Int` → the decimal, `Ast.Name` → the bare identifier,
-/// `Ast.List` → `(elem elem …)` space-separated. This is the exact inverse `SexprReader` (in `lower_read`)
-/// parses back, so `read(print(v)) == v`.
+/// `Ast.List` → `(elem elem …)` space-separated. This is the inverse `SexprReader` (in `lower_read`) parses
+/// back, so `read(print(v)) == v` for any WELL-FORMED AST — i.e. an `Ast.Name` whose payload is a valid
+/// identifier. A `Name` is rendered as its bare word, and the reader classifies a bare token by the
+/// language's number/identifier boundary (a DIGIT-LED token is a number). So an `Ast.Name` with a
+/// digit-led spelling (`"1.5"`, `"123"` — names that cannot arise from parsing real source, since no valid
+/// identifier is digit-led) prints as that numeric text and reads back as `Ast.Float`/`Ast.Int`, NOT the
+/// original `Name`: the text round-trip is scoped to grammatically-valid names, matching the surface
+/// grammar. The BYTE codec (`Ast.encode`/`Ast.decode`) is total over ANY `Name` string (its tag delimits
+/// the payload), so a digit-led name still round-trips there.
 fn print_ast_value(db: &mut Db, node: StructId, disc: &AstDiscs, out: &mut String) -> Option<()> {
     let Core::SumNew { disc: d, payloads } = core_of(db, node) else {
         return None;
