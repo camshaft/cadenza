@@ -86,6 +86,30 @@
   (input  (>> 1 2.0))
   (error  CDZ0301))
 
+; A bitwise/shift operator on a NON-NUMERIC operand is a DIFFERENT rejection from the mixed-numeric cases
+; above. `& | ^ << >>` carry the scheme `∀a. (Int a) -> (Int a) -> (Int a)`, so a Bool/String/Char operand
+; has no `(Int a)` instance at all — a type mismatch (CDZ0203), not a numeric-kind mix (CDZ0301). The
+; distinction matters for the DIAGNOSTIC: a mixed Int64/Float64 is "no silent promotion" (CDZ0301), but a
+; Bool operand is "a bitwise operator needs integer operands" (CDZ0203) — naming the integer requirement
+; rather than leaking the ground-out phantom clash ("Int64 and Bool must be the same type here") the scheme
+; default would otherwise surface. These pin that the checker names the real fault on the non-numeric axis.
+(case "a bitwise operator on a boolean operand names the integer requirement"
+  (doc    "`(& true false)` applies bitwise AND to two Bool operands — a Bool is not an integer bit
+           pattern, so it rejects CDZ0203, distinct from the Int64/Float64 MIX above (CDZ0301). The
+           message names the integer requirement (and points to `and`/`or` for boolean logic) rather than
+           grounding the operator's `(Int a)` scheme to a default and leaking a phantom 'Int64 and Bool'
+           clash. Pins the non-numeric bitwise operand as a type mismatch, not a numeric-kind mismatch.")
+  (input  (& true false))
+  (error  CDZ0203))
+
+(case "a shift by a non-numeric count names the integer requirement"
+  (doc    "`(<< \"x\" 1)` shifts a String value — a String is not an integer, so it rejects CDZ0203,
+           the same integer-operand requirement as the boolean case, on the shift operators. Pins that
+           `<<`/`>>` name the fault on a non-numeric VALUE operand (not only the shift COUNT), distinct
+           from the Float64-count mix (CDZ0301) above.")
+  (input  (<< "x" 1))
+  (error  CDZ0203))
+
 (case "overflow of the default integer traps deterministically"
   (doc    "Witnesses numeric-model.md #Overflow Is Defined: the compiler REJECTS operations
            it can PROVE will overflow (via constant folding or β-reduction), failing the build
