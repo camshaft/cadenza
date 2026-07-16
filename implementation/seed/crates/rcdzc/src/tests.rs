@@ -69879,41 +69879,144 @@ mod cross_component_oracle {
     }
 
     // ------------------------------------------------------------------------------------------------
-    // PL21 — the peer-op-in-a-resource-escaping-entrypoint decline is ACTIONABLE, not opaque. When a
-    // peer-bound op is reached in a body whose ENTRYPOINT RESULT escapes as a runtime resource (it
-    // RETURNS the compound/collection the peer produced — `List.at` as the whole body), the resource-
-    // escape emit path (`emit_runtime_resource`) does not carry the peer extern envelope, so the op has
-    // no import to call. This declines (SAFE — no wasm) with a message that NAMES the op + interface,
-    // the real cause, and the workaround (consume to a scalar / handle in-program), rather than the
-    // opaque internal "not in the extern-import set". The resource×peer-extern envelope fusion is the
-    // filed follow-up (queue/assigned/peerbug-list-at-…); this pins the actionable decline meanwhile.
+    // PL36 (was PL21's decline) — a peer op reached in a body whose ENTRYPOINT RESULT escapes as a runtime
+    // resource (main RETURNS the Option the peer's result was consumed into — `List.at` as the whole body)
+    // now CROSSES via the fused resource-escape × peer-extern envelope (task #6, increment 2). This used to
+    // DECLINE (the resource-escape path carried no peer import); now `emit_runtime_sum_resource` (a
+    // non-recursive Option result) threads the peer import + dispatches to `assemble_extern_runtime_resource`,
+    // so the escaped value form is returned to the host. main(7) = List.at(mklist(7)=[8,9], 0) = Some 8.
     // ------------------------------------------------------------------------------------------------
     #[test]
-    fn a_peer_op_in_a_resource_escaping_entrypoint_declines_actionably() {
+    fn a_peer_option_result_escapes_the_entrypoint_via_the_fused_envelope() {
+        use crate::backend::wasm::runtime_abi::{REQUIRED_RUNTIME_HASH, RUNTIME_IFACE};
         use crate::testkit::parse;
-        // main RETURNS the raw Option (List.at is the whole body) → escapes as a runtime resource.
+        let import_name = format!("{RUNTIME_IFACE}@0.0.0+{REQUIRED_RUNTIME_HASH}");
+        let provider = compile_provider(
+            "(do (def (mklist (: x Int64)) (list (+ x 1) (+ x 2))) (export mklist))",
+            "cadenza:l/api",
+        );
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&provider)
+                .expect("the option-result provider validates");
+        }
+        // main RETURNS the raw Option (List.at is the whole body) → escapes as a runtime SUM resource,
+        // while the peer op `mklist` is reached in the body → the fused envelope.
         let src = "(do \
             (effect L (op mklist (-> Int64 (List Int64)))) \
             (bind L \"cadenza:l/api\") \
             (def (main (: x Int64)) (host (L) (List.at (L.mklist x) 0))) \
             (export main))";
-        let err = crate::compile::compile_component(&crate::codec::encode(&parse(src))).expect_err(
-            "a peer op whose result escapes as a resource must DECLINE, not miscompile",
-        );
+        let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .unwrap_or_else(|d| {
+                panic!(
+                    "fused peer-option-result consumer compiles: {} [{:?}]",
+                    d.message, d.code
+                )
+            });
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&consumer)
+                .expect("the fused peer+sum-resource consumer validates");
+        }
+        let text = String::from_utf8_lossy(&consumer);
         assert!(
-            err.message.contains("escapes as a runtime resource")
-                && err.message.contains("mklist")
-                && err.message.contains("cadenza:l/api")
-                && err.message.contains("scalar"),
-            "the decline must name the op + interface + workaround, not be opaque: {}",
-            err.message
+            text.contains("cadenza:l/api") && text.contains(&import_name),
+            "the fused consumer imports BOTH the peer interface and the value-heap runtime"
         );
-        // Not the opaque internal phrasing any more.
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("[PL36] runtime wasm not found; skipping");
+            return;
+        };
+        let peers = vec![cdz_run::Peer {
+            bytes: provider,
+            interface: "cadenza:l/api".to_string(),
+        }];
+        let opts = cdz_run::RunOpts {
+            export: None,
+            args: vec!["7".to_string()],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run_with_peers(&consumer, &peers, &opts)
+            .expect("a peer Option result escapes the entrypoint via the fused envelope")
+        {
+            // mklist(7) = [8,9]; List.at 0 = Some 8; main RETURNS that Option → escapes as its value form.
+            cdz_run::Outcome::Value(s) => assert_eq!(
+                s, "(: (Some 8) (Option Int64))",
+                "the peer-derived Option escapes the entrypoint as a resource + decodes to its value form"
+            ),
+            cdz_run::Outcome::Trap(t) => panic!("fused peer-option-result run trapped: {t}"),
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // PL37 — a peer op's LIST result escapes the entrypoint via the fused envelope (the recursive-sum /
+    // `value-encode` walker path — `emit_recursive_sum_resource`, distinct from PL35's flat Tuple and
+    // PL36's non-recursive Option). main RETURNS the raw List the peer produced. main(7) = [8,9].
+    // ------------------------------------------------------------------------------------------------
+    #[test]
+    fn a_peer_list_result_escapes_the_entrypoint_via_the_fused_envelope() {
+        use crate::backend::wasm::runtime_abi::{REQUIRED_RUNTIME_HASH, RUNTIME_IFACE};
+        use crate::testkit::parse;
+        let import_name = format!("{RUNTIME_IFACE}@0.0.0+{REQUIRED_RUNTIME_HASH}");
+        let provider = compile_provider(
+            "(do (def (mklist (: x Int64)) (list (+ x 1) (+ x 2))) (export mklist))",
+            "cadenza:l/api",
+        );
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&provider)
+                .expect("the list-result provider validates");
+        }
+        let src = "(do \
+            (effect L (op mklist (-> Int64 (List Int64)))) \
+            (bind L \"cadenza:l/api\") \
+            (def (main (: x Int64)) (host (L) (L.mklist x))) \
+            (export main))";
+        let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .unwrap_or_else(|d| {
+                panic!(
+                    "fused peer-list-result consumer compiles: {} [{:?}]",
+                    d.message, d.code
+                )
+            });
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&consumer)
+                .expect("the fused peer+recursive-sum-resource consumer validates");
+        }
+        let text = String::from_utf8_lossy(&consumer);
         assert!(
-            !err.message.contains("not in the extern-import set"),
-            "the opaque internal message must be replaced: {}",
-            err.message
+            text.contains("cadenza:l/api") && text.contains(&import_name),
+            "the fused list-result consumer imports BOTH the peer interface and the runtime"
         );
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("[PL37] runtime wasm not found; skipping");
+            return;
+        };
+        let peers = vec![cdz_run::Peer {
+            bytes: provider,
+            interface: "cadenza:l/api".to_string(),
+        }];
+        let opts = cdz_run::RunOpts {
+            export: None,
+            args: vec!["7".to_string()],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run_with_peers(&consumer, &peers, &opts)
+            .expect("a peer List result escapes the entrypoint via the fused envelope")
+        {
+            // mklist(7) = [8,9]; main RETURNS it → escapes as the List's value form.
+            cdz_run::Outcome::Value(s) => assert_eq!(
+                s, "(: (list 8 9) (List Int64))",
+                "the peer-produced List escapes the entrypoint as a resource + decodes to its value form"
+            ),
+            cdz_run::Outcome::Trap(t) => panic!("fused peer-list-result run trapped: {t}"),
+        }
     }
 
     // ------------------------------------------------------------------------------------------------
