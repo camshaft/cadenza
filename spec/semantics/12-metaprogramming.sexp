@@ -1252,3 +1252,29 @@
             (export main)))
   (call   main (: 0 Int64))
   (output (: 7 Int64)))
+
+(case "eval of a quoted float feeds ordinary float arithmetic"
+  (doc    "`(* (eval (quote 2.5)) 2.0)` = 5.0 — the reconstructed float literal is a first-class
+           Float64 in downstream arithmetic (a payload mis-read as the i64 bit pattern computes
+           garbage). The arithmetic-consumption companion of the eval-to-value case above.")
+  (input  (do
+            (def (main (: d Int64))
+              (* (eval (quote 2.5)) 2.0))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 5.0 Float64)))
+
+(case "all four leaf kinds in one quoted form dispatch their own tags"
+  (doc    "`(quote (\"s\" 5 true 2.5))` — Str, Int, Bool, and Float leaves in ONE reified list, each
+           classified by a shared match: 1·1000 + 2·100 + 3·10 + 4 = 1234. The full-leaf-set
+           integration pin: any mis-tagged element shifts one digit, naming the culprit.")
+  (input  (do
+            (def (kind (: a Ast))
+              (match a ((Ast.Str _) 1) ((Ast.Int _) 2) ((Ast.Bool _) 3) ((Ast.Float _) 4) (_ 9)))
+            (def (main (: d Int64))
+              (match (quote ("s" 5 true 2.5))
+                ((Ast.List (list a b c e)) (+ (+ (+ (* 1000 (kind a)) (* 100 (kind b))) (* 10 (kind c))) (kind e)))
+                (_ -1)))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 1234 Int64)))

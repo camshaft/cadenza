@@ -9143,3 +9143,76 @@
             (export main)))
   (call   main (: 0 Int64))
   (output (: 1 Int64)))
+
+(case "three same-variant literal arms fall through in order"
+  (doc    "`(Add 0) -> 100, (Add 1) -> 200, (Add n) -> n` over single-element lists: input `(Add 1)`
+           falls PAST the 0-arm to the 1-arm (200), input `(Add 7)` past both literals to the binder
+           (7) -> 207. The chain face of the literal-refinement guard: each literal guard must refine
+           by ITS payload (a payload-wildcarding guard sends every Add to arm one; a first-literal
+           latch sends (Add 1) to the removed trap).")
+  (input  (do
+            (type Op (Add Int64) (Mul Int64) (Neg Unit))
+            (def (f (: xs (List Op)))
+              (match xs
+                ((list (Op.Add 0) .. r) 100)
+                ((list (Op.Add 1) .. r) 200)
+                ((list (Op.Add n) .. r) n)
+                (_ -1)))
+            (def (main (: v Int64))
+              (+ (f (List.push (list) (Op.Add 1))) (f (List.push (list) (Op.Add v)))))
+            (export main)))
+  (call   main (: 7 Int64))
+  (output (: 207 Int64)))
+
+(case "literal payload refinement works in a non-head element position"
+  (doc    "The refined element sits at index 1: [Neg, Add 0] -> 100, [Neg, Add 9] -> 9 -> 109. The
+           desugar guards each element separately; the payload refinement must survive at every
+           index, not only the head the fall-through pin covers.")
+  (input  (do
+            (type Op (Add Int64) (Mul Int64) (Neg Unit))
+            (def (f (: xs (List Op)))
+              (match xs
+                ((list _ (Op.Add 0) .. r) 100)
+                ((list _ (Op.Add n) .. r) n)
+                (_ -1)))
+            (def (main (: v Int64))
+              (+ (f (List.push (List.push (list) (Op.Neg unit)) (Op.Add 0)))
+                 (f (List.push (List.push (list) (Op.Neg unit)) (Op.Add v)))))
+            (export main)))
+  (call   main (: 9 Int64))
+  (output (: 109 Int64)))
+
+(case "literal refinement on two elements of one list pattern"
+  (doc    "BOTH elements carry same-variant ctors, the second refined by literal vs binder: input
+           [Add 0, Add 4] takes the binder arm -> 4. A per-arm guard built from only the FIRST
+           refutable element passes arm one on the shared prefix and traps in its body re-match.")
+  (input  (do
+            (type Op (Add Int64) (Mul Int64) (Neg Unit))
+            (def (f (: xs (List Op)))
+              (match xs
+                ((list (Op.Add 0) (Op.Add 0) .. r) 1)
+                ((list (Op.Add 0) (Op.Add n) .. r) n)
+                (_ -1)))
+            (def (main (: v Int64))
+              (f (List.push (List.push (list) (Op.Add 0)) (Op.Add v))))
+            (export main)))
+  (call   main (: 4 Int64))
+  (output (: 4 Int64)))
+
+(case "a string literal payload refines a ctor list element"
+  (doc    "`(Tag \"a\")` -> 1 vs `(Tag s)` -> byte-len s: the literal is a HEAP payload compared by
+           content — [Tag \"a\"] takes the literal arm, [Tag \"bc\"] falls through and binds (2) ->
+           3. The heap-literal face of the payload-refinement guard (a discriminant-only guard passes
+           \"bc\" into the \"a\" arm's body re-match; a physical-byte compare misfires on a rope).")
+  (input  (do
+            (type T (Tag String) (Other Unit))
+            (def (f (: xs (List T)))
+              (match xs
+                ((list (T.Tag "a") .. r) 1)
+                ((list (T.Tag s) .. r) (String.byte-len s))
+                (_ -1)))
+            (def (main (: d Int64))
+              (+ (f (List.push (list) (T.Tag "a"))) (f (List.push (list) (T.Tag "bc")))))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 3 Int64)))

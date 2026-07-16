@@ -1520,6 +1520,7 @@ pass	a runtime-index list read yields the element at that index
 pass	a runtime-index read of a runtime-built list
 pass	a runtime-index update leaves the other elements unchanged
 pass	a runtime-index update replaces exactly that element, read back at the same index
+pass	a runtime-keyed map entry enumerates as its key-value tuple
 pass	a runtime-magnitude product multiplies the erased magnitudes
 pass	a runtime-magnitude quantity raised to a negative power emits the reciprocal
 pass	a runtime-magnitude quantity raised to a power emits the repeated multiply
@@ -1610,6 +1611,7 @@ pass	a string compared to a symbol is a type error
 pass	a string equality on an inlined match operand
 pass	a string literal
 pass	a string literal is normalized to the canonical text form
+pass	a string literal payload refines a ctor list element
 pass	a string passed to a function as a runtime argument is measured by its byte length
 pass	a string spelled like a keyword round-trips as an Ast.Str, not an Ast.Bool or Ast.Name
 pass	a string-literal pattern in a match selects by string equality, distinguishing Unicode
@@ -1810,6 +1812,7 @@ pass	addition of two records is rejected — a record is not a number
 pass	addition of two sets is rejected — a set is not a number
 pass	addition of two strings is rejected — text is not a number
 pass	addition of two symbols is rejected — a symbol is not a number
+pass	all four leaf kinds in one quoted form dispatch their own tags
 pass	all-nullary enum equality compares discriminants
 pass	an 8-bit-integer closure crosses the host boundary
 pass	an AST from quasiquoting a runtime value equals the same AST built by quote
@@ -2275,6 +2278,8 @@ pass	eval of a quoted boolean executes it to the boolean value
 pass	eval of a quoted conditional reduces its comparison condition first
 pass	eval of a quoted conditional takes the branch its boolean literal selects
 pass	eval of a quoted float executes it to the float value
+pass	eval of a quoted float executes it to the float value
+pass	eval of a quoted float feeds ordinary float arithmetic
 pass	eval of a quoted string executes it to the string value
 pass	eval on malformed AST traps
 pass	every not-a-number value is equal to every not-a-number value
@@ -2321,6 +2326,7 @@ pass	indexing a runtime string past its last scalar yields None
 pass	indexing a slice is relative to the slice's start
 pass	indexing an empty list yields None
 pass	inline-always on a recursive definition is rejected
+pass	insert-order does not leak into Set.to-list enumeration order
 pass	inserting a key already present replaces its value, not the size
 pass	inserting a key of a different type into a map is a type error
 pass	inserting a present element is a no-op value
@@ -2347,6 +2353,8 @@ pass	less-than-or-equal of an integer and a float is rejected
 pass	let bindings' initializers are evaluated in binding order
 pass	list concatenation is associative by content
 pass	lists are equal by elements in order
+pass	literal payload refinement works in a non-head element position
+pass	literal refinement on two elements of one list pattern
 pass	looking up an absent key yields None
 pass	map equality is independent of insertion order
 pass	match on a Result returned by a fallible function
@@ -2768,6 +2776,7 @@ pass	the wrapping additive and multiplicative identities preserve a boundary ope
 pass	three closures with a SHARED signature cross as two resource types
 pass	three distinct closure signatures cross as three resource types
 pass	three leaf variants in one quoted form each dispatch their own tag
+pass	three same-variant literal arms fall through in order
 pass	triple negation of a runtime boolean is a single negation
 pass	true is greater than false
 pass	true is not less than false

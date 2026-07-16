@@ -613,3 +613,30 @@
             (def (main) (List.len (Set.to-list (Set.remove (Set.of (list 1)) 1))))
             (export main)))
   (output (: 0 Int64)))
+
+(case "insert-order does not leak into Set.to-list enumeration order"
+  (doc    "{3, 1, 2} built by inserts IN THAT ORDER enumerates [1, 2, 3] — element 0 is 1 and element
+           2 is 3 -> 103. Insertion HISTORY is unobservable (canonical order); a cursor walking
+           trie/hash order (which varies with insert sequence) or an append-in-insert-order
+           enumeration leaks it. Complements the runtime-min case above (which pins the first
+           element) by pinning a NON-head position of a scrambled successive-insert build.")
+  (input  (do
+            (def (main (: d Int64))
+              (let ((xs (Set.to-list (Set.insert (Set.insert (Set.insert (Set.of (list)) 3) 1) 2))))
+                (+ (* 100 (Option.expect (List.at xs 0) "a"))
+                   (Option.expect (List.at xs 2) "c"))))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 103 Int64)))
+
+(case "a runtime-keyed map entry enumerates as its key-value tuple"
+  (doc    "`(Map.to-list (Map.insert Map.empty k 42))` with k a parameter — the single entry
+           enumerates as a (k, 42) tuple whose value projects 42. Pins the entry-tuple
+           materialization over a runtime key (a folded key builds the tuple at compile time; this
+           one must build it from live heap values).")
+  (input  (do
+            (def (main (: k Int64))
+              (. (Option.expect (List.at (Map.to-list (Map.insert Map.empty k 42)) 0) "e") 1))
+            (export main)))
+  (call   main (: 7 Int64))
+  (output (: 42 Int64)))
