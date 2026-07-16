@@ -1959,15 +1959,18 @@ fn watchdog(
             .is_some_and(|s| s.contains("esc to interrupt"));
 
         let ctx_pct = pane.as_deref().and_then(parse_context_pct);
-        let hub_inbox_depth = count_dir(&fleet.inbox(&a.name), |f| f.ends_with(".json"));
+        // Only ACTIONABLE queued mail counts toward a drain-stall — stale informational notes/merged
+        // acks an agent left un-archived are untidy, not stuck work (see `message_kind_is_actionable`).
+        let actionable_depth = actionable_inbox_depth(&fleet.inbox(&a.name));
         let pane_idle = hb_age.is_some() && !pane_working;
-        let drain_stall = is_probable_drain_stall(&a.role, hub_inbox_depth, pane_idle);
+        let drain_stall = is_probable_drain_stall(&a.role, actionable_depth, pane_idle);
         if drain_stall {
             drain_stalls += 1;
             eprintln!(
-                "  ⚠ '{}' is IDLE at prompt with {hub_inbox_depth} UNCONSUMED message(s) in its hub \
-                 inbox ({}) — probable DRAIN-STALL (loop alive, heartbeat fresh, but not draining; \
-                 e.g. a worktree-relative inbox glob). Check it drains via `cargo xtask fleet inbox {}`.",
+                "  ⚠ '{}' is IDLE at prompt with {actionable_depth} UNCONSUMED ACTIONABLE message(s) in \
+                 its hub inbox ({}) — probable DRAIN-STALL (loop alive, heartbeat fresh, but not \
+                 draining; e.g. a worktree-relative inbox glob). Check it drains via \
+                 `cargo xtask fleet inbox {}`.",
                 a.name,
                 fleet.inbox(&a.name).display(),
                 a.name
@@ -2429,19 +2432,24 @@ fn pane_busy_means_working(hb_ever: bool, pane_busy: bool) -> bool {
     hb_ever && pane_busy
 }
 
-/// Whether an agent looks like it's in a silent DRAIN-STALL the watchdog should flag: it has
-/// unconsumed messages in its (hub) inbox AND its pane is idle (not mid-tick). Pure so the signal's
-/// gate is unit-testable. This is orthogonal to the heartbeat/stale check — a drain-stalled agent
-/// typically has a FRESH heartbeat (the loop runs; it just doesn't drain), so the normal staleness
-/// path would wave it through as healthy. The two INTERACTIVE roles (`concierge`, `design`) sit idle
-/// with mail a human reads on their own cadence — that is NOT a stall, so exempt them. `inbox_depth`
-/// counts only queued messages (not `processed/`); `pane_idle` should already fold in "has ever
-/// heartbeated" (an un-booted agent's idle pane isn't a drain-stall, it's a cold start).
-fn is_probable_drain_stall(role: &str, inbox_depth: usize, pane_idle: bool) -> bool {
+/// Whether an agent looks like it's in a silent DRAIN-STALL the watchdog should flag: it has unconsumed
+/// ACTIONABLE messages in its (hub) inbox AND its pane is idle (not mid-tick). Pure so the signal's gate
+/// is unit-testable. This is orthogonal to the heartbeat/stale check — a drain-stalled agent typically
+/// has a FRESH heartbeat (the loop runs; it just doesn't drain), so the normal staleness path would wave
+/// it through as healthy. The two INTERACTIVE roles (`concierge`, `design`) sit idle with mail a human
+/// reads on their own cadence — that is NOT a stall, so exempt them.
+///
+/// 🔑 `actionable_depth` counts only queued messages of an ACTIONABLE kind (assign/reject/ask/issue/
+/// request/answer/…), NOT informational mail (note/merged/backlog/…) — see `message_kind_is_actionable`.
+/// An agent idling with only stale informational mail it never archived is UNTIDY, not stalled; counting
+/// it would fire a false drain-stall (and, under `--nudge-drain-stalls`, a pointless nudge). `pane_idle`
+/// should already fold in "has ever heartbeated" (an un-booted agent's idle pane is a cold start, not a
+/// drain-stall).
+fn is_probable_drain_stall(role: &str, actionable_depth: usize, pane_idle: bool) -> bool {
     if matches!(role, "concierge" | "design") {
         return false;
     }
-    inbox_depth > 0 && pane_idle
+    actionable_depth > 0 && pane_idle
 }
 
 /// What the watchdog should do about a probable drain-stall this sweep. Distinguishes a first/fresh
@@ -3416,6 +3424,48 @@ fn inbox_depth(fleet: &Fleet, name: &str) -> String {
     } else {
         format!("{n} msg")
     }
+}
+
+/// Is a message of this `kind` ACTIONABLE — i.e. the recipient must DO something (drain + act), so an
+/// idle agent still holding one is a genuine drain-stall — versus INFORMATIONAL (read-and-archive; a
+/// tidy-up, not work)? The message-bus filename is `<seq>-<pid>-<kind>.json`, so `kind` is the trailing
+/// dash-segment before `.json` (see `deliver`/`next_delivery_seq`).
+///
+/// This is the "severity depends on the queued KIND" refinement: the raw inbox count treats a stale
+/// `note`/`merged` confirmation the same as an unread `assign`/`reject`, so an agent idling with only
+/// already-actioned informational mail it never bothered to archive looks identical to one truly stuck
+/// on unread work — a FALSE drain-stall (and, under `--nudge-drain-stalls`, a pointless nudge). Observed
+/// live: v-cdz-tooling/v-agent-harness/v-notebook each sit at 1 informational message, 0 actionable.
+///
+///   * ACTIONABLE: `assign` (do this work), `reject` (fix + resend), `ask` (a peer needs YOUR decision —
+///     only the concierge/design are exempt as roles, handled separately), `issue` (triage this bug),
+///     `merge-request`/`request` (pr-sync must integrate), `answer` (the reply to an ask this agent is
+///     itself waiting on), `redelivery` (a re-sent actionable message).
+///   * INFORMATIONAL: `note` (FYI), `merged` (confirmation your OWN MR landed — nothing to do),
+///     `backlog` (concierge's own list), `status` (a status reply), `reply` (generic ack).
+///
+/// Unknown/malformed kinds default to ACTIONABLE (fail-safe: better a spurious flag than a silent miss
+/// of real work).
+fn message_kind_is_actionable(kind: &str) -> bool {
+    !matches!(kind, "note" | "merged" | "backlog" | "status" | "reply")
+}
+
+/// The message `kind` of a bus filename `<seq>-<pid>-<kind>.json`, or `None` if it doesn't match the
+/// pattern. Parses the trailing dash-segment before `.json` — kinds are lowercase words that may
+/// contain a dash (`merge-request`), so take everything after the LAST `-` that precedes `.json`.
+fn message_kind_from_filename(name: &str) -> Option<&str> {
+    name.strip_suffix(".json")?.rsplit('-').next()
+}
+
+/// Count only the ACTIONABLE queued messages in `dir` (non-recursive; ignores `processed/`). This is
+/// the drain-stall signal's numerator: informational mail (notes/merged acks) an agent hasn't archived
+/// is untidy, not stalled work. NOTE: `merge-request` and `redelivery` end in `-request`/`-redelivery`,
+/// whose LAST dash-segment is `request`/`redelivery` — both actionable, so the simple last-segment
+/// parse classifies them correctly without special-casing the embedded dash.
+fn actionable_inbox_depth(dir: &Path) -> usize {
+    count_dir(dir, |f| {
+        message_kind_from_filename(f).is_some_and(message_kind_is_actionable)
+    })
 }
 
 /// Count immediate entries in `dir` whose file name passes `keep` (non-recursive; ignores subdirs
@@ -4557,19 +4607,89 @@ mod tests {
 
     #[test]
     fn is_probable_drain_stall_needs_unconsumed_mail_and_an_idle_pane() {
-        // The stall signature: unconsumed inbox + idle pane, on a non-interactive role.
+        // The stall signature: unconsumed ACTIONABLE mail + idle pane, on a non-interactive role.
         assert!(is_probable_drain_stall("vertical", 1, true));
         assert!(is_probable_drain_stall("fix", 3, true));
-        // Empty inbox → nothing to drain → not a stall (this is legitimate idle).
+        // No actionable mail (informational-only, or empty) → nothing to DO → not a stall (legit idle).
         assert!(!is_probable_drain_stall("vertical", 0, true));
         // Pane busy (mid-tick) → it may be about to drain → not flagged.
         assert!(!is_probable_drain_stall("vertical", 2, false));
         // Interactive roles legitimately sit idle with mail a human reads → never flagged.
         assert!(!is_probable_drain_stall("concierge", 5, true));
         assert!(!is_probable_drain_stall("design", 5, true));
-        // A non-interactive role with mail + idle IS flagged even if it's pr-sync (it should be
-        // draining merge-requests; idle-with-queued-MRs is worth surfacing).
+        // A non-interactive role with actionable mail + idle IS flagged even if it's pr-sync (it should
+        // be draining merge-requests; idle-with-queued-MRs is worth surfacing).
         assert!(is_probable_drain_stall("pr-sync", 4, true));
+    }
+
+    #[test]
+    fn message_kind_actionability_splits_work_from_fyi() {
+        // Actionable — the recipient must DO something.
+        for k in [
+            "assign",
+            "reject",
+            "ask",
+            "issue",
+            "request",
+            "merge-request",
+            "answer",
+            "redelivery",
+        ] {
+            assert!(message_kind_is_actionable(k), "{k} should be actionable");
+        }
+        // Informational — read-and-archive, no work.
+        for k in ["note", "merged", "backlog", "status", "reply"] {
+            assert!(
+                !message_kind_is_actionable(k),
+                "{k} should be informational"
+            );
+        }
+        // Unknown kind → fail-safe to ACTIONABLE (never silently swallow real work).
+        assert!(message_kind_is_actionable("some-new-kind"));
+    }
+
+    #[test]
+    fn message_kind_from_filename_parses_the_trailing_segment() {
+        assert_eq!(
+            message_kind_from_filename("000000002045-3804702-merge-request.json"),
+            Some("request") // last dash-segment; `request` is actionable, which is what matters
+        );
+        assert_eq!(
+            message_kind_from_filename("000000001905-4025075-merged.json"),
+            Some("merged")
+        );
+        assert_eq!(
+            message_kind_from_filename("000000000652-1961391-note.json"),
+            Some("note")
+        );
+        // A non-bus .json with no dash → the whole stem (won't appear in an inbox; harmless).
+        assert_eq!(
+            message_kind_from_filename("registry.json"),
+            Some("registry")
+        );
+        // Not a .json at all → None (never counted).
+        assert_eq!(message_kind_from_filename("not-a-message.txt"), None);
+    }
+
+    #[test]
+    fn actionable_inbox_depth_ignores_informational_mail() {
+        let tmp = std::env::temp_dir().join(format!("vft-actionable-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        // 2 informational + 1 actionable.
+        for f in [
+            "000000000001-10-note.json",
+            "000000000002-11-merged.json",
+            "000000000003-12-assign.json",
+        ] {
+            std::fs::write(tmp.join(f), "{}").unwrap();
+        }
+        assert_eq!(count_dir(&tmp, |f| f.ends_with(".json")), 3);
+        assert_eq!(actionable_inbox_depth(&tmp), 1);
+        // Add a reject → 2 actionable; a merge-request (embedded dash) also counts.
+        std::fs::write(tmp.join("000000000004-13-reject.json"), "{}").unwrap();
+        std::fs::write(tmp.join("000000000005-14-merge-request.json"), "{}").unwrap();
+        assert_eq!(actionable_inbox_depth(&tmp), 3);
+        std::fs::remove_dir_all(&tmp).ok();
     }
 
     #[test]
