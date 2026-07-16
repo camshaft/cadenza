@@ -140,6 +140,36 @@ fn clean_a_project_with_no_artifacts_reports_nothing_to_clean() {
 }
 
 #[test]
+fn clean_works_on_a_manifest_with_no_entry() {
+    // HARDENING: `cdz clean` must NOT require an `entry` — a manifest still being authored (or a
+    // library-only layout) has build cruft (link-map.txt, a leftover cdz-run temp) that clean should
+    // still remove. Previously `clean` went through the entry-requiring resolver and errored
+    // "declares no entry", leaving the cruft un-cleanable. Now it cleans the unambiguous artifacts and
+    // still never touches a user file.
+    let dir = std::env::temp_dir().join(format!("cdz-clean-noentry-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("Project.cdz"), "def name = \"x\"\n").unwrap(); // NO entry
+    std::fs::write(dir.join("link-map.txt"), "stale demux").unwrap();
+    std::fs::write(dir.join(".cdz-run-foo-1.wasm"), b"leftover temp").unwrap();
+    std::fs::write(dir.join("helper.rs"), "fn h() {}\n").unwrap(); // user file — must survive
+    let (ok, out, err) = run_in(&dir, &["clean"]);
+    assert!(
+        ok,
+        "clean of an entry-less manifest should succeed, not error: {err}{out}"
+    );
+    assert!(
+        !dir.join("link-map.txt").is_file() && !dir.join(".cdz-run-foo-1.wasm").is_file(),
+        "the link-map + run temp are removed even with no entry"
+    );
+    assert!(
+        dir.join("helper.rs").is_file() && dir.join("Project.cdz").is_file(),
+        "a user file + the manifest survive"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn clean_never_deletes_user_authored_rs_or_wasm_files() {
     // DATA-LOSS REGRESSION (Copilot PR #451): `cdz clean` must remove only THIS project's own emitted
     // outputs (by the compiler's export-derived NAME) + `link-map.txt` + `.cdz-run-*` temps — NEVER a

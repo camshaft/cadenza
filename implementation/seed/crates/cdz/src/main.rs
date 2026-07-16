@@ -709,17 +709,17 @@ struct ProjectSpecs {
     specs: Vec<String>,
 }
 
-/// Resolve a project's `Project.cdz` and its compile inputs — the shared front half of `cdz build` and
-/// `cdz run <project>`. `target_arg` is the command's DIR argument (a manifest path, a directory holding
-/// one, or `None` → an upward search from the cwd, like `cargo build` finding `Cargo.toml`). `cmd` names
-/// the invoking command in the "not a project" hint. On any resolution failure this PRINTS the diagnostic
-/// and returns `Err(ExitCode::FAILURE)`, so a caller just propagates it. On success returns the manifest
-/// and the deduped `specs` (entry file first, then `modules`, glob-expanded + `exclude`-filtered), with
-/// `entry_name` = the resolved entry file's stem (NOT the possibly-glob pattern — a `*` name would fail
-/// package linking). The entry must resolve to EXACTLY ONE file (a component has one boundary).
-fn resolve_project_specs(target_arg: Option<&str>, cmd: &str) -> Result<ProjectSpecs, ExitCode> {
-    // Resolve the manifest: an explicit `Project.cdz`, a directory holding one, or (no arg) an upward
-    // search from the cwd (mirrors `cdz test`).
+/// Resolve a project's `Project.cdz` to `(dir, manifest-path, manifest)` — the DIR-resolution shared by
+/// every project command. `target_arg` is a manifest path, a directory holding one, or `None` → an upward
+/// search from the cwd (like `cargo` finding `Cargo.toml`); `cmd` names the invoking command in the "not a
+/// project" hint. Does NOT require an `entry` — a command that only needs the manifest directory (e.g.
+/// `cdz clean`, which cleans `link-map.txt`/temps regardless of whether an entry is declared) uses this
+/// directly, while `resolve_project_specs` layers the entry requirement on top. Prints the diagnostic and
+/// returns `Err(ExitCode::FAILURE)` on any resolution failure.
+fn resolve_project_manifest(
+    target_arg: Option<&str>,
+    cmd: &str,
+) -> Result<(PathBuf, PathBuf, Manifest), ExitCode> {
     let target: String = match target_arg {
         Some(d) => d.to_string(),
         None => match find_manifest_upward() {
@@ -756,17 +756,30 @@ fn resolve_project_specs(target_arg: Option<&str>, cmd: &str) -> Result<ProjectS
         );
         return Err(ExitCode::FAILURE);
     };
-    let (mpath, m) = match load_manifest(&dir) {
-        Ok(Some(v)) => v,
+    match load_manifest(&dir) {
+        Ok(Some((mpath, m))) => Ok((dir, mpath, m)),
         Ok(None) => {
             eprintln!("{PROG}: no `{MANIFEST_NAME}` in {}", dir.display());
-            return Err(ExitCode::FAILURE);
+            Err(ExitCode::FAILURE)
         }
         Err(e) => {
             eprintln!("{PROG}: {e}");
-            return Err(ExitCode::FAILURE);
+            Err(ExitCode::FAILURE)
         }
-    };
+    }
+}
+
+/// Resolve a project's `Project.cdz` and its compile inputs — the shared front half of `cdz build` and
+/// `cdz run <project>`. `target_arg` is the command's DIR argument (a manifest path, a directory holding
+/// one, or `None` → an upward search from the cwd, like `cargo build` finding `Cargo.toml`). `cmd` names
+/// the invoking command in the "not a project" hint. On any resolution failure this PRINTS the diagnostic
+/// and returns `Err(ExitCode::FAILURE)`, so a caller just propagates it. On success returns the manifest
+/// and the deduped `specs` (entry file first, then `modules`, glob-expanded + `exclude`-filtered), with
+/// `entry_name` = the resolved entry file's stem (NOT the possibly-glob pattern — a `*` name would fail
+/// package linking). The entry must resolve to EXACTLY ONE file (a component has one boundary).
+fn resolve_project_specs(target_arg: Option<&str>, cmd: &str) -> Result<ProjectSpecs, ExitCode> {
+    // Resolve the manifest DIR + load it (shared with `cdz clean`, which needs no entry).
+    let (dir, mpath, m) = resolve_project_manifest(target_arg, cmd)?;
     // `entry` names the component boundary file — required to build (no entry, no component).
     let Some(entry_spec) = m.entry.clone() else {
         eprintln!(
@@ -1104,19 +1117,26 @@ fn project_artifact_files(
 /// Only the manifest's own directory is swept. `--dry-run` lists the targets without deleting; a missing
 /// artifact is silently fine. A `read_dir` failure is SURFACED (not masked as "nothing to clean").
 fn run_clean(args: &CleanArgs) -> ExitCode {
-    let project = match resolve_project_specs(args.dir.as_deref(), "cdz clean") {
-        Ok(p) => p,
+    // Resolve just the manifest DIR — `cdz clean` does NOT require an `entry` (it removes `link-map.txt` +
+    // `.cdz-run-*` temps regardless, and derives the primary-output name from the entry's exports only IF
+    // an entry is declared). So an entry-less / still-being-authored manifest can still be cleaned.
+    let (dir, _mpath, m) = match resolve_project_manifest(args.dir.as_deref(), "cdz clean") {
+        Ok(v) => v,
         Err(code) => return code,
     };
-    let dir = project
-        .mpath
-        .parent()
-        .map(std::path::Path::to_path_buf)
-        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    // The entry file the outputs are named after, if the manifest declares one that resolves to a single
+    // file — else `None` (clean then handles only the unambiguous `link-map`/temps). Mirrors the entry
+    // resolution `cdz build`/`metadata` use, but never ERRORS on a missing/multi-glob entry here.
+    let entry_file = m.entry.as_ref().and_then(|e| {
+        match expand_manifest_globs(&dir, std::slice::from_ref(e), &m.exclude).as_slice() {
+            [one] => Some(one.clone()),
+            _ => None,
+        }
+    });
     // The precise removal set (this project's own emitted outputs by exact name + our temps), NOT a blanket
     // extension sweep — so a user's hand-authored `.rs`/`.wasm` is never deleted. A `read_dir` failure is a
     // real error — SURFACE it (don't mask it as "nothing to clean").
-    let targets = match project_artifact_files(project.specs.first().map(String::as_str), &dir) {
+    let targets = match project_artifact_files(entry_file.as_deref(), &dir) {
         Ok(t) => t,
         Err(e) => {
             eprintln!("{PROG}: reading {}: {e}", dir.display());
