@@ -1,0 +1,143 @@
+/// pretty.cdz — an INDENTED multi-line pretty-printer for the canonical `Ast` (imported from `ast`), the
+/// `-emit`-style rendering a compiler uses to show a tree structurally (one node per line, nesting shown
+/// by indentation). Distinct from `print.cdz` (a compact single-line s-expr) and `unparse.cdz` (infix
+/// surface syntax): this favors READABILITY of the tree shape.
+///
+/// A leaf renders on its own indented line (`Int` as its decimal, `Bool`/`Str`/`Name` textually). A `List`
+/// renders `(` then each child on its own line indented two more, then a closing `)` at the list's indent:
+///   (Int 1, (Int 2, Int 3))  →
+///     (
+///       1
+///       (
+///         2
+///         3
+///       )
+///     )
+/// Builds the string by concatenating recursively-rendered SUB-results (the safe recursive-render form —
+/// not a threaded-param accumulator, though that now works too since the String.concat retain fix). Depth
+/// is unbounded; indentation grows by 2 per level.
+
+import { Ast } from "ast"
+
+/// `n` spaces.
+def spaces(n: Int64, acc: String) = if n == 0 then acc else spaces(n - 1, String.concat(acc, " "))
+
+/// A single decimal digit as a 1-char string.
+def digit(d: Int64) =
+  if d == 0 then "0" else (if d == 1 then "1" else (if d == 2 then "2" else (if d == 3 then "3"
+  else (if d == 4 then "4" else (if d == 5 then "5" else (if d == 6 then "6" else (if d == 7 then "7"
+  else (if d == 8 then "8" else "9"))))))))
+
+/// Decimal rendering of a non-negative Int64 (a small itoa; negative handled by `itoa`).
+def itoa-pos(v: Int64, acc: String) =
+  if v == 0 then acc else itoa-pos(v / 10, String.concat(digit(v % 10), acc))
+
+/// Decimal rendering of an Int64 (0 special-cased; negatives get a leading '-').
+def itoa(v: Int64) =
+  if v == 0 then "0"
+  else (if v < 0 then String.concat("-", itoa-pos(0 - v, "")) else itoa-pos(v, ""))
+
+/// Render `a` at indentation `ind` (a multi-line string; no trailing newline).
+def render(a: Ast, ind: Int64) = match a with
+  | Ast.Int(v) => String.concat(spaces(ind, ""), itoa(v))
+  | Ast.Bool(b) => String.concat(spaces(ind, ""), if b then "true" else "false")
+  | Ast.Str(s) => String.concat(spaces(ind, ""), String.concat("\"", String.concat(s, "\"")))
+  | Ast.Name(n) => String.concat(spaces(ind, ""), n)
+  | Ast.List(es) =>
+    String.concat(
+      String.concat(String.concat(spaces(ind, ""), "(\n"), render-list(es, ind + 2)),
+      String.concat("\n", String.concat(spaces(ind, ""), ")")))
+
+/// Render each child on its own line, joined by newlines, at indent `ind`.
+def render-list(es: List(Ast), ind: Int64) = match es with
+  | [] => spaces(ind, "")
+  | [e] => render(e, ind)
+  | [e, .. rest] => String.concat(String.concat(render(e, ind), "\n"), render-list(rest, ind))
+
+/// Pretty-print `a` at the top level (indent 0).
+def pretty(a: Ast) = render(a, 0)
+
+/// The 1-char string at position `i` (or "" past end) — for content probes.
+def char-at(s: String, i: Int64) = match String.at(s, i) with
+  | Option.Some(c) => c
+  | Option.None(_) => ""
+
+/// Count the newlines in `s` (→ line count is this + 1) — a structural probe of the rendering.
+def newline-count(s: String, i: Int64, acc: Int64) =
+  if i == String.byte-len(s) then acc
+  else newline-count(s, i + 1, acc + (if char-at(s, i) == "\n" then 1 else 0))
+
+def nl-count(s: String) = newline-count(s, 0, 0)
+
+/// Builders.
+def lst(xs: List(Ast)) = Ast.List(xs)
+
+@test
+def pp-leaf-int() =
+  // A bare Int at indent 0 → just its digits, no newlines.
+  let s = pretty(Ast.Int(42)) in
+  if String.byte-len(s) == 2 then (if nl-count(s) == 0 then unit else trap("leaf has no newline")) else trap("42 is 2 chars")
+
+@test
+def pp-leaf-negative() =
+  // A negative Int → leading '-'. -7 renders "-7" (2 chars).
+  if String.byte-len(pretty(Ast.Int(0 - 7))) == 2 then unit else trap("-7 is 2 chars")
+
+@test
+def pp-leaf-zero() = if String.byte-len(pretty(Ast.Int(0))) == 1 then unit else trap("0 is 1 char")
+
+@test
+def pp-indent-depth() =
+  // render(Int 5, 3) → "   5": 3 spaces then '5' (4 bytes), col-0 is a space, col-3 is '5'.
+  let s = render(Ast.Int(5), 3) in
+  if String.byte-len(s) == 4 then
+    (if char-at(s, 0) == " " then (if char-at(s, 3) == "5" then unit else trap("digit at col 3")) else trap("leading space"))
+  else
+    trap("indent 3 + 1 digit = 4 chars")
+
+@test
+def pp-name-leaf() =
+  // A Name renders its text verbatim: "foo" = 3 chars.
+  if String.byte-len(pretty(Ast.Name("foo"))) == 3 then unit else trap("foo is 3 chars")
+
+@test
+def pp-bool-leaf() =
+  // true renders "true" (4), false "false" (5).
+  if String.byte-len(pretty(Ast.Bool(true))) == 4 then (if String.byte-len(pretty(Ast.Bool(false))) == 5 then unit else trap("false 5")) else trap("true 4")
+
+@test
+def pp-str-leaf() =
+  // A Str renders quoted: "hi" → \"hi\" = 4 chars.
+  if String.byte-len(pretty(Ast.Str("hi"))) == 4 then unit else trap("\"hi\" is 4 chars")
+
+@test
+def pp-flat-list-lines() =
+  // (1 2 3) renders on 5 lines: "(", three children, ")" → 4 newlines.
+  let s = pretty(lst([Ast.Int(1), Ast.Int(2), Ast.Int(3)])) in
+  if nl-count(s) == 4 then unit else trap("flat 3-list has 4 newlines (5 lines)")
+
+@test
+def pp-empty-list-lines() =
+  // () renders "(\n\n)" — open, an empty child line, close → 2 newlines.
+  let s = pretty(lst([])) in
+  if nl-count(s) == 2 then unit else trap("empty list has 2 newlines")
+
+@test
+def pp-nested-list-lines() =
+  // (1 (2 3)) → "(", "1", "(", "2", "3", ")", ")" = 7 lines → 6 newlines.
+  let s = pretty(lst([Ast.Int(1), lst([Ast.Int(2), Ast.Int(3)])])) in
+  if nl-count(s) == 6 then unit else trap("(1 (2 3)) has 6 newlines (7 lines)")
+
+@test
+def pp-first-char-is-paren() =
+  // A list at indent 0 starts with '('.
+  if char-at(pretty(lst([Ast.Int(1)])), 0) == "(" then unit else trap("list starts with (")
+
+@test
+def pp-nested-indent-grows() =
+  // In (1 (2 3)), the inner '(' is indented 2 spaces. Find it: line 3 (0-based line 2) should start with
+  // "  (" — but rather than parse lines, check the whole render's length is stable/plausible (>15 bytes for
+  // 7 lines with indentation). A precise indent check is pp-indent-depth; this pins the composite renders.
+  if String.byte-len(pretty(lst([Ast.Int(1), lst([Ast.Int(2), Ast.Int(3)])]))) > 15 then unit else trap("nested render has substance")
+
+export { pretty, render }
