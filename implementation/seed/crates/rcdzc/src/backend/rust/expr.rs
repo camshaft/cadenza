@@ -160,15 +160,18 @@ pub fn emit_body(
 }
 
 /// Wrap an emitted KEY/element expression for a Set element / Map key SLOT when its type is a bare
-/// `Float`: a `BTreeSet`/`BTreeMap` key is `CdzF64` (the total-order wrapper), so a bare-`f64` key value
-/// must be lifted with `CdzF64::new(<e>)` (NaN-canonicalizing on construction, mirroring the runtime's
-/// `box-float`). A non-float key stays verbatim. This is the emit twin of [`types::ord_key_type`]'s type
-/// substitution — the two MUST agree on which slots become `CdzF64`, or the emitted value's type would
-/// not match the collection's key type. Only a BARE float is wrapped (a float nested in a compound key
-/// declines upstream via `ty_is_ord_key`), so a single `CdzF64::new` at the top wrapping suffices.
+/// `Float`: a `BTreeSet`/`BTreeMap` key is the WIDTH-SPECIFIC total-order wrapper (`__CdzF64` for a
+/// `Float64`, `__CdzF32` for a `Float32`), so a bare float key value must be lifted with the matching
+/// `__CdzF{64,32}::new(<e>)` (NaN-canonicalizing on construction, mirroring the runtime's `box-float`).
+/// A non-float key stays verbatim. This is the emit twin of [`types::ord_key_type`]'s type substitution —
+/// the two MUST agree on BOTH which slots become a wrapper AND the WIDTH, or the emitted value's type would
+/// not match the collection's key type (a `__CdzF64::new` around an `f32` is a type error — the very bug
+/// this width-split fixes). Only a BARE float is wrapped (a float nested in a compound key declines upstream
+/// via `ty_is_ord_key`), so a single `::new` at the top wrapping suffices.
 fn wrap_ord_key(expr: String, key_ty: &Ty) -> String {
     match key_ty {
-        Ty::Float(_) => format!("CdzF64::new({expr})"),
+        Ty::Float(ft) if ft.ground_width() == 32 => format!("__CdzF32::new({expr})"),
+        Ty::Float(_) => format!("__CdzF64::new({expr})"),
         _ => expr,
     }
 }

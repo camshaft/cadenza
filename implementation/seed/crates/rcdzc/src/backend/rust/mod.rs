@@ -162,15 +162,25 @@ pub fn emit(db: &mut Db, layout: &Layout, mode: Mode) -> Result<Vec<u8>, Reject>
             out.push_str(&f);
         }
     }
-    // A Float-keyed set/map emits the `CdzF64` total-order wrapper (a bare `f64` is not `Ord`). It is only
-    // needed when some emitted body actually references it, so detect that by scanning the emitted source
-    // for the type name and INSERT the declaration right after the preamble (before any use). Gating on the
-    // emitted text — rather than threading a "used" flag through every `emit` call — keeps the wrapper out
-    // of the common float-free program (where an unused struct would be dead code). The name is
-    // backend-reserved (`Cdz`-prefixed, never a user ident), so a substring match cannot false-positive.
-    if out.contains("CdzF64") {
-        let insert_at = PREAMBLE.len();
-        out.insert_str(insert_at, CDZ_F64_DECL);
+    // A Float-keyed set/map emits a total-order float wrapper (a bare `f32`/`f64` is not `Ord`). Two
+    // width-specific wrappers — `__CdzF64` over `u64` bits, `__CdzF32` over `u32` bits — since the key type
+    // maps `Float64`→`__CdzF64` / `Float32`→`__CdzF32` (a `__CdzF64` around an `f32` would not type-check).
+    // Each is emitted ONLY when the body references it, detected by scanning for its unambiguous CONSTRUCTOR
+    // marker `<name>::new(` (NOT a raw type-name substring — the `__`-prefixed name is backend-reserved so a
+    // user ident can never produce it, and `::new(` cannot appear except where the wrap emits it). Inserted
+    // right after the preamble, before any use. Gating on the emitted text keeps the wrapper out of the
+    // common float-free program (where an unused struct would be dead code). ORDER: F32 then F64, both after
+    // the preamble — a program may key on either or both width.
+    let insert_at = PREAMBLE.len();
+    let mut prelude = String::new();
+    if out.contains("__CdzF32::new(") {
+        prelude.push_str(CDZ_F32_DECL);
+    }
+    if out.contains("__CdzF64::new(") {
+        prelude.push_str(CDZ_F64_DECL);
+    }
+    if !prelude.is_empty() {
+        out.insert_str(insert_at, &prelude);
     }
     Ok(out.into_bytes())
 }
@@ -200,24 +210,43 @@ const PREAMBLE: &str = "\
 /// (the corpus's "a set of two NaN floats dedups to one" / "a NaN map key is found by a differently-produced
 /// NaN"); a non-NaN keeps its bits verbatim, so `-0.0` stays DISTINCT from `0.0`. Ordering is by the raw
 /// `u64` bits — NOT numeric order — matching the runtime, which orders a float key by its canonical bytes
-/// (`Set.to-list` / map enumeration order is by those bytes, not by magnitude). This is emitted ONLY when a
-/// program uses a Float-keyed set/map (`needs_cdz_f64`); an unused struct would trip dead-code lints even
-/// under `#![allow(clippy::all)]` (a bare `dead_code`), so it is gated — emitted only when a Float set/map
-/// key is present, and carries `#[allow(dead_code)]` on the helper methods (a program may use only one of
-/// `new`/`get`).
+/// (`Set.to-list` / map enumeration order is by those bytes, not by magnitude). The name is `__`-prefixed
+/// (backend-RESERVED — a user ident never begins with `__`, so it can never collide with a `(type CdzF64 …)`
+/// the way the bare `CdzF64` did → rustc E0428). Emitted ONLY when a Float64-keyed set/map is present
+/// (gated on the `__CdzF64::new(` marker); an unused struct would trip dead-code lints, so `#[allow(dead_code)]`.
 const CDZ_F64_DECL: &str = "\
 #[derive(Clone, Copy)]
 #[allow(dead_code)]
-struct CdzF64(u64);
+struct __CdzF64(u64);
 #[allow(dead_code)]
-impl CdzF64 {
-    fn new(v: f64) -> Self { CdzF64(if v.is_nan() { f64::NAN.to_bits() } else { v.to_bits() }) }
+impl __CdzF64 {
+    fn new(v: f64) -> Self { __CdzF64(if v.is_nan() { f64::NAN.to_bits() } else { v.to_bits() }) }
     fn get(self) -> f64 { f64::from_bits(self.0) }
 }
-impl PartialEq for CdzF64 { fn eq(&self, other: &Self) -> bool { self.0 == other.0 } }
-impl Eq for CdzF64 {}
-impl PartialOrd for CdzF64 { fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> { Some(self.cmp(other)) } }
-impl Ord for CdzF64 { fn cmp(&self, other: &Self) -> std::cmp::Ordering { self.0.cmp(&other.0) } }
+impl PartialEq for __CdzF64 { fn eq(&self, other: &Self) -> bool { self.0 == other.0 } }
+impl Eq for __CdzF64 {}
+impl PartialOrd for __CdzF64 { fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> { Some(self.cmp(other)) } }
+impl Ord for __CdzF64 { fn cmp(&self, other: &Self) -> std::cmp::Ordering { self.0.cmp(&other.0) } }
+";
+
+/// The Float32 twin of [`CDZ_F64_DECL`] — a total-order wrapper over the `u32` bit pattern, canonicalizing
+/// every NaN to the one quiet `f32::NAN.to_bits()` (the f32 twin of the runtime's `box-float32`). Needed
+/// because a `Float32`-keyed set/map maps to `__CdzF32` (a `__CdzF64` around an `f32` value would not
+/// type-check, and a lossy `as f64` widen would collapse distinct f32 keys). Same `__`-reserved name +
+/// `::new(`-marker gating as the F64 wrapper.
+const CDZ_F32_DECL: &str = "\
+#[derive(Clone, Copy)]
+#[allow(dead_code)]
+struct __CdzF32(u32);
+#[allow(dead_code)]
+impl __CdzF32 {
+    fn new(v: f32) -> Self { __CdzF32(if v.is_nan() { f32::NAN.to_bits() } else { v.to_bits() }) }
+    fn get(self) -> f32 { f32::from_bits(self.0) }
+}
+impl PartialEq for __CdzF32 { fn eq(&self, other: &Self) -> bool { self.0 == other.0 } }
+impl Eq for __CdzF32 {}
+impl PartialOrd for __CdzF32 { fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> { Some(self.cmp(other)) } }
+impl Ord for __CdzF32 { fn cmp(&self, other: &Self) -> std::cmp::Ordering { self.0.cmp(&other.0) } }
 ";
 
 /// Emit one exported definition as a `pub fn` — its verbatim boundary name, solved parameter types,

@@ -176,16 +176,22 @@ pub fn rust_type(ty: &Ty) -> Option<String> {
     }
 }
 
-/// The Rust type for a Set ELEMENT / Map KEY position — like [`rust_type`], except a bare `Float` maps to
-/// the total-order wrapper `CdzF64` (a `BTreeSet`/`BTreeMap` needs `Ord`, which `f64` lacks). This is the
-/// ONLY place a float becomes `CdzF64`: a float in a NON-key position (a value, a tuple element, a Map
-/// VALUE) stays a bare `f64`. A float NESTED inside a compound KEY (a `(Tuple Float Int64)` key) is NOT
-/// handled here — that still declines via `ty_is_ord` (the wrapper would have to be threaded through the
-/// tuple, a later increment); this covers the bare-`Float` key/element the corpus exercises. Any other
-/// type falls through to `rust_type` unchanged.
+/// The Rust type for a Set ELEMENT / Map KEY position — like [`rust_type`], except a bare `Float` maps to a
+/// WIDTH-SPECIFIC total-order wrapper (a `BTreeSet`/`BTreeMap` needs `Ord`, which `f32`/`f64` lack). The
+/// wrapper MUST match the float's width: a `Float64` → `__CdzF64` (over `u64` bits), a `Float32` → `__CdzF32`
+/// (over `u32` bits) — a single `__CdzF64` around an `f32` would not type-check (and an `as f64` widen would
+/// collapse distinct f32 keys). This is the ONLY place a float becomes a wrapper: a float in a NON-key
+/// position (a value, a tuple element, a Map VALUE) stays a bare `f32`/`f64`. A float NESTED inside a
+/// compound KEY (a `(Tuple Float Int64)` key) is NOT handled here — that still declines via `ty_is_ord` (the
+/// wrapper would have to be threaded through the tuple, a later increment); this covers the bare-`Float`
+/// key/element the corpus exercises. Any other type falls through to `rust_type` unchanged.
 pub(super) fn ord_key_type(ty: &Ty) -> Option<String> {
     match ty {
-        Ty::Float(_) => Some("CdzF64".to_string()),
+        Ty::Float(ft) => Some(if ft.ground_width() == 32 {
+            "__CdzF32".to_string()
+        } else {
+            "__CdzF64".to_string()
+        }),
         _ => rust_type(ty),
     }
 }
