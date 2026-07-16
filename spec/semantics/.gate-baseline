@@ -186,6 +186,9 @@ pass	Type.eq of a type-valued parameter against itself is always true
 pass	Type.eq on a constructed generic sum compares the full instantiated type
 pass	Type.eq on a type-valued parameter against a COMPOUND type is structural
 pass	Type.of carries a quantity's unit into a same-type annotation
+pass	Type.of grounds a RETURNED function's domain — a closure whose result is a function
+pass	Type.of grounds a function nested TWO containers deep — a sum payload inside a list
+pass	Type.of grounds a function nested TWO containers deep — a tuple inside a sum payload
 pass	Type.of grounds a function stored inside a SUM VARIANT payload
 pass	Type.of grounds a function stored inside a compound value's element
 pass	Type.of on a bare nullary variant reflects its element as UNDETERMINED
@@ -1893,6 +1896,9 @@ pass	a single-variant abstract theorem's constructor match outside the kernel is
 pass	a single-variant abstract type's constructor match outside its module is rejected CDZ0214 (withheld-ctor)
 pass	a single-variant newtype BOOL literal-payload arm falls through on false
 pass	a single-variant newtype BOOL literal-payload arm is reached, not silently dead
+pass	a single-variant newtype list element falls through on a non-matching payload
+pass	a single-variant newtype list element with a binder payload stays irrefutable
+pass	a single-variant newtype list element with a literal payload matches by value
 pass	a single-variant newtype literal-payload arm falls through to the binding arm on a miss
 pass	a single-variant newtype literal-payload arm is selected when the payload matches
 pass	a single-variant newtype over a COMPOUND escapes the bare compound under its type header
@@ -1956,6 +1962,7 @@ pass	a sum-payload-wrapped self-application is rejected in bounded time, not a c
 pass	a sum-type value is constructed through a variant
 pass	a sum-type value is deconstructed by an exhaustive match
 pass	a supplementary-plane char literal matches by scalar value
+pass	a symbol compared to a number is a kind-boundary type error
 pass	a symbol compared to a string is a type error
 pass	a symbol converts back to its content string
 pass	a symbol is constructed from a string
@@ -1977,6 +1984,8 @@ pass	a tagged template whose tag is unbound is a scope error
 pass	a tagged template whose tag returns a non-Ast is a type error at the spliced site
 pass	a tagged template's hole is threaded to the tag function and read
 pass	a tagged template's spliced result folds through the ordinary path
+pass	a tagged-template tag returning a finite Ast.Float expands normally (expander control)
+pass	a tagged-template tag returning a non-canonical Ast.Float declines (the guard fires through the expander)
 pass	a tail list fold reads its scrutinee handle from its own parameter slot
 pass	a tail loop threading a projected boxed-sum accumulator and a projected cursor decodes correctly
 pass	a tail loop threads a boxed-sum accumulator and a cursor projected from one builder tuple

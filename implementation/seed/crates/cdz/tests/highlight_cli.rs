@@ -127,8 +127,13 @@ fn highlight_json_emits_one_structured_object_per_token() {
     let (ok, out, err) = run(&["highlight", &file, "--json"]);
     assert!(ok, "cdz highlight --json should succeed: {err}");
     let rows: Vec<&str> = out.lines().filter(|l| !l.trim().is_empty()).collect();
-    // Same token count as the human form (parity — both skip span-less nodes identically).
-    let (_hok, human, _he) = run(&["highlight", &file]);
+    // Same token count as the human form (parity — both skip span-less nodes identically). Assert the
+    // baseline run SUCCEEDED — otherwise human_rows would be 0 and the parity check would pass hollowly.
+    let (hok, human, herr) = run(&["highlight", &file]);
+    assert!(
+        hok,
+        "baseline (non-json) highlight run should succeed: {herr}"
+    );
     let human_rows = human.lines().filter(|l| !l.trim().is_empty()).count();
     assert_eq!(
         rows.len(),
@@ -139,19 +144,24 @@ fn highlight_json_emits_one_structured_object_per_token() {
         rows.len() >= 5,
         "a non-trivial program yields several tokens"
     );
+    // PARSE each row as JSON (serde_json is in-crate) — a substring check would pass for MALFORMED JSON
+    // (a missing comma / bad escaping); parsing rejects it. Assert the typed fields on the parsed value.
+    let mut kinds = std::collections::BTreeSet::new();
     for row in &rows {
+        let v: serde_json::Value =
+            serde_json::from_str(row).unwrap_or_else(|e| panic!("row is valid JSON ({e}): {row}"));
+        assert!(v["file"].is_string(), "`file` is a string: {row}");
         assert!(
-            row.trim_start().starts_with('{') && row.trim_end().ends_with('}'),
-            "each row is a JSON object: {row}"
+            v["line"].is_number() && v["col"].is_number(),
+            "`line`/`col` are numbers (every token has a span): {row}"
         );
-        for key in ["\"file\"", "\"line\"", "\"col\"", "\"kind\""] {
-            assert!(row.contains(key), "row has {key}: {row}");
-        }
+        let kind = v["kind"].as_str().expect("`kind` is a string");
+        kinds.insert(kind.to_string());
     }
-    // The semantic classification rides through as a structured field (the `kind` values, not text).
+    // The semantic classification rides through as a structured `kind` field (parsed, not substring).
     assert!(
-        out.contains("\"kind\":\"type\"") && out.contains("\"kind\":\"function\""),
-        "the type + function classifications are emitted as structured kinds: {out}"
+        kinds.contains("type") && kinds.contains("function"),
+        "the type + function classifications are emitted as structured kinds: {kinds:?}"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }

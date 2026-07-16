@@ -22711,15 +22711,19 @@ mod match_engine {
             bytes.message
         );
 
-        // `-`/`*`/`/` on two texts: honest message, but NO concat fix (subtraction is not concatenation).
-        for op in ["-", "*", "/"] {
+        // `-`/`*`/`/`/`%` on two texts: honest message, but NO concat fix (subtraction/remainder is not
+        // concatenation). `%` (Rem) is integer arithmetic like the others — a non-numeric operand names
+        // "arithmetic is not defined on String" instead of the phantom "type mismatch: Int64 and String"
+        // (Rem was formerly omitted from the arith cross-kind list, so it leaked the internal-clash read).
+        for op in ["-", "*", "/", "%"] {
             let d = reject_full(&format!(
                 "(module m (def (f (: a String) (: b String)) ({op} a b)) (export f))"
             ))
             .unwrap_or_else(|| panic!("({op} String String) must reject"));
             assert!(
-                d.message.contains("arithmetic is not defined on String"),
-                "`{op}` names the real type: {}",
+                d.message.contains("arithmetic is not defined on String")
+                    && !d.message.contains("must be the same type here"),
+                "`{op}` names the real type, not a phantom Int64 clash: {}",
                 d.message
             );
             assert!(
@@ -28801,6 +28805,71 @@ mod match_engine {
             .unwrap(),
             "-99",
             "the empty list matches no ctor arm and falls to the catch-all"
+        );
+    }
+
+    #[test]
+    fn a_single_variant_newtype_list_element_with_a_literal_payload_refines_by_value() {
+        // A SINGLE-variant (newtype) ctor list element with a LITERAL payload — `(list (Wrap 0) .. r)`,
+        // `W = (Wrap Int64)`. A newtype has NO discriminant, so with a BARE-binder payload `(Wrap x)` it is
+        // IRREFUTABLE (Inc-1, always matches once the length holds). But a LITERAL payload makes it
+        // REFUTABLE — `(Wrap 0)` matches only a `Wrap` whose payload is `0` — which the length-dispatch
+        // matcher cannot express directly, so it declined "needs element-value refinement". Now
+        // `refutable_ctor_element_head` routes a single-variant ctor with a refutable payload through the
+        // SAME desugar the multi-variant ctor uses: a fresh binder + a guard `(match __lc ((Wrap 0) …)
+        // (_ false))` that tests the payload value (no disc — `ctor_pattern_with_wildcard_payloads` KEEPS
+        // the literal payload) + a body re-match. The list-element analog of the single-variant sum-match
+        // literal-payload support (Inc-48/49).
+        let ok = |src: &str| assert!(reject_code(src).is_none(), "must compile: {src}");
+        // Int-payload newtype: literal element compiles (was a decline).
+        ok("(module m (type W (Wrap Int64)) \
+              (def (f (: xs (List W))) (match xs ((list (Wrap 0) .. r) 1) (_ 0))) \
+              (def (main) (f (list (Wrap 0)))) (export main))");
+        // Fixed-arity (no rest) single-variant literal element also compiles.
+        ok("(module m (type W (Wrap Int64)) \
+              (def (f (: xs (List W))) (match xs ((list (Wrap 0)) 1) (_ 0))) \
+              (def (main) (f (list (Wrap 0)))) (export main))");
+        // String-payload newtype: `(N \"hi\")` element compiles too.
+        ok("(module m (type T (N String)) \
+              (def (f (: xs (List T))) (match xs ((list (N \"hi\") .. r) 1) (_ 0))) \
+              (def (main) (f (list (N \"hi\")))) (export main))");
+
+        // RUN, RUNTIME scrutinee: the payload-value refinement selects the arm on a match, falls through on
+        // a mismatch, and the binder-payload control `(Wrap x)` still binds any value.
+        let Some(v) = run_heap_value(
+            "(module m (type W (Wrap Int64)) \
+               (def (classify (: xs (List W))) (match xs ((list (Wrap 0) .. r) 1) (_ 0))) \
+               (def (main (: k Int64)) (classify (list (Wrap k) (Wrap 9)))) (export main))",
+            vec!["0".to_string()],
+        ) else {
+            eprintln!("runtime wasm not found; skipping single-variant-literal-list-element run");
+            return;
+        };
+        assert_eq!(
+            v, "1",
+            "a runtime (Wrap 0) head matches the literal-payload arm"
+        );
+        assert_eq!(
+            run_heap_value(
+                "(module m (type W (Wrap Int64)) \
+                   (def (classify (: xs (List W))) (match xs ((list (Wrap 0) .. r) 1) (_ 0))) \
+                   (def (main (: k Int64)) (classify (list (Wrap k) (Wrap 9)))) (export main))",
+                vec!["5".to_string()],
+            )
+            .unwrap(),
+            "0",
+            "a runtime (Wrap 5) head misses the (Wrap 0) arm and falls to the wildcard"
+        );
+        assert_eq!(
+            run_heap_value(
+                "(module m (type W (Wrap Int64)) \
+                   (def (first (: xs (List W))) (match xs ((list (Wrap x) .. r) x) (_ -1))) \
+                   (def (main (: k Int64)) (first (list (Wrap k)))) (export main))",
+                vec!["7".to_string()],
+            )
+            .unwrap(),
+            "7",
+            "the bare-binder payload control (Wrap x) still binds any value (irrefutable)"
         );
     }
 

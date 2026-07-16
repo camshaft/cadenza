@@ -2307,19 +2307,24 @@ fn scope_json_emits_one_structured_object_per_binding() {
         2,
         "one JSON object per visible binding (p, q): {stdout}"
     );
+    // PARSE each row (serde_json is in-crate) — a substring check would pass for MALFORMED JSON; parsing
+    // rejects it. Collect the binding names off the parsed values.
+    let mut names = std::collections::BTreeSet::new();
     for row in &rows {
+        let v: serde_json::Value =
+            serde_json::from_str(row).unwrap_or_else(|e| panic!("row is valid JSON ({e}): {row}"));
+        assert!(v["file"].is_string(), "`file` is a string: {row}");
         assert!(
-            row.trim_start().starts_with('{') && row.trim_end().ends_with('}'),
-            "each row is a JSON object: {row}"
+            v["line"].is_number() && v["col"].is_number(),
+            "`line`/`col` are numbers: {row}"
         );
-        for key in ["\"file\"", "\"line\"", "\"col\"", "\"name\"", "\"type\""] {
-            assert!(row.contains(key), "row has {key}: {row}");
-        }
+        assert!(v["type"].is_string(), "`type` is a string: {row}");
+        names.insert(v["name"].as_str().expect("`name` is a string").to_string());
     }
-    // The bindings ride through as structured fields (same facts as the human form).
+    // Both bindings ride through as structured `name` fields (parsed, not substring).
     assert!(
-        stdout.contains("\"name\":\"p\"") && stdout.contains("\"name\":\"q\""),
-        "both bindings p + q are emitted as structured objects: {stdout}"
+        names.contains("p") && names.contains("q"),
+        "both bindings p + q are emitted as structured objects: {names:?}"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -2375,23 +2380,31 @@ fn exports_json_emits_one_structured_object_per_export() {
     assert!(ok, "cdz exports --json should succeed: {err}");
     let rows: Vec<&str> = stdout.lines().filter(|l| !l.trim().is_empty()).collect();
     assert_eq!(rows.len(), 2, "one JSON object per export: {stdout}");
+    // PARSE each row (serde_json is in-crate) — a substring check would pass for MALFORMED JSON; parsing
+    // rejects it. Collect the (name → type) map off the parsed values.
+    let mut exports = std::collections::BTreeMap::new();
     for row in &rows {
+        let v: serde_json::Value =
+            serde_json::from_str(row).unwrap_or_else(|e| panic!("row is valid JSON ({e}): {row}"));
+        assert!(v["file"].is_string(), "`file` is a string: {row}");
         assert!(
-            row.trim_start().starts_with('{') && row.trim_end().ends_with('}'),
-            "each row is a JSON object: {row}"
+            v["line"].is_number() && v["col"].is_number(),
+            "`line`/`col` are numbers: {row}"
         );
-        for key in ["\"file\"", "\"line\"", "\"col\"", "\"name\"", "\"type\""] {
-            assert!(row.contains(key), "row has {key}: {row}");
-        }
+        let name = v["name"].as_str().expect("`name` is a string").to_string();
+        let ty = v["type"].as_str().expect("`type` is a string").to_string();
+        exports.insert(name, ty);
     }
-    // The export names + their types ride through as structured fields (same facts as the human form).
-    assert!(
-        stdout.contains("\"name\":\"inc\"") && stdout.contains("\"type\":\"(-> Int64 Int64)\""),
-        "the function export inc carries its arrow type: {stdout}"
+    // The export names + their types ride through as structured fields (parsed, not substring).
+    assert_eq!(
+        exports.get("inc").map(String::as_str),
+        Some("(-> Int64 Int64)"),
+        "the function export inc carries its arrow type: {exports:?}"
     );
-    assert!(
-        stdout.contains("\"name\":\"v\"") && stdout.contains("\"type\":\"Int64\""),
-        "the value export v carries its type: {stdout}"
+    assert_eq!(
+        exports.get("v").map(String::as_str),
+        Some("Int64"),
+        "the value export v carries its type: {exports:?}"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }

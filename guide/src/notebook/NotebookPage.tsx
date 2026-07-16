@@ -185,14 +185,33 @@ function defaultsOf(widgets: Widget[]): WidgetValues {
 }
 
 /// A code cell: its source (unless hidden) + its computed output.
+/// Whether a CellOutput is a FAILURE (trap/timeout/error) vs a normal success (value/table/chart/formula).
+/// A hidden cell suppresses its successful output but MUST still surface a failure (a silently-broken
+/// hidden setup cell would make downstream cells fail mysteriously).
+function isFailure(output: CellOutput): boolean {
+  return output.render === "trap" || output.render === "timeout" || output.render === "error";
+}
+
 function CodeCellView({ source, hidden, state }: { source: string; hidden: boolean; state?: CellState }) {
+  // A HIDDEN cell runs for its scope (defs used downstream) but shows NO source and NO success output —
+  // it's a setup cell, not a result. It renders nothing while idle/running/succeeding; only a FAILURE is
+  // surfaced (so a broken hidden cell isn't invisible). A non-hidden cell shows source + full output.
+  if (hidden) {
+    if (state?.phase === "done" && isFailure(state.output)) {
+      return (
+        <div className="my-3 rounded-lg border border-rose-900/50 bg-slate-900/40 px-3 py-2" data-testid="cell-output">
+          <OutputView output={state.output} />
+        </div>
+      );
+    }
+    return null; // hidden + (idle | running | succeeded) → render nothing
+  }
+
   return (
     <div className="my-3 rounded-lg border border-slate-800 bg-slate-900/40">
-      {!hidden && (
-        <pre className="overflow-x-auto border-b border-slate-800 px-3 py-2 font-mono text-sm text-slate-300">
-          {source}
-        </pre>
-      )}
+      <pre className="overflow-x-auto border-b border-slate-800 px-3 py-2 font-mono text-sm text-slate-300">
+        {source}
+      </pre>
       <div className="px-3 py-2" data-testid="cell-output">
         {!state || state.phase === "idle" ? (
           <span className="text-xs text-slate-600">not run</span>

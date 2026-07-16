@@ -938,6 +938,32 @@
             (_ 0.0)))
   (output (: 2.5 Float64)))
 
+(case "a tagged-template tag returning a non-canonical Ast.Float declines (the guard fires through the expander)"
+  (doc    "The non-canonical-float guard fires on EVERY path that constructs an `Ast.Float`, including the
+           tagged-template expander: a tag function returning `(Ast.Float Float64.nan)` is β-reduced through
+           the ordinary ctor path at expansion, so the same construction guard declines it — the tagged
+           template does not smuggle a NaN node past the guard. A tag returning a FINITE `Ast.Float` still
+           expands (the control below). Pins the ctor-guard × tagged-template-expander interaction.")
+  (input  (do
+            (def (bad chunks holes) (Ast.Float Float64.nan))
+            (def (main) (match (tagged-template bad (chunks "x") (holes))
+                          ((Ast.Float f) (= f 1.0))
+                          (_ false)))
+            (export main)))
+  (declines))
+
+(case "a tagged-template tag returning a finite Ast.Float expands normally (expander control)"
+  (doc    "The control for the expander × non-canonical guard: a tag returning a FINITE `(Ast.Float 2.5)`
+           expands and folds — the guard only rejects a non-canonical payload, not a finite one, on the
+           expander path just as on the direct ctor.")
+  (input  (do
+            (def (ok chunks holes) (Ast.Float 2.5))
+            (def (main) (match (tagged-template ok (chunks "x") (holes))
+                          ((Ast.Float f) (= f 2.5))
+                          (_ false)))
+            (export main)))
+  (output (: true Bool)))
+
 (case "eval of a quoted float executes it to the float value"
   (doc    "eval executes an AST value as code; a float form evaluates to itself, so `(eval (quote 1.5))`
            runs to `1.5` — the float companion of `(eval (quote true))`.")

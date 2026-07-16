@@ -73,14 +73,16 @@ fn uses_json_emits_one_structured_object_per_reference() {
     let rows: Vec<&str> = out.lines().filter(|l| !l.trim().is_empty()).collect();
     // `inc` is called three times — three JSON objects, matching the human row count.
     assert_eq!(rows.len(), 3, "one JSON object per reference: {out}");
+    // PARSE each row (serde_json is in-crate) — a substring check would pass for MALFORMED JSON; parsing
+    // rejects it. Every reference here has a span, so line/col are present + numeric.
     for row in &rows {
+        let v: serde_json::Value =
+            serde_json::from_str(row).unwrap_or_else(|e| panic!("row is valid JSON ({e}): {row}"));
+        assert!(v["file"].is_string(), "`file` is a string: {row}");
         assert!(
-            row.trim_start().starts_with('{') && row.trim_end().ends_with('}'),
-            "each row is a JSON object: {row}"
+            v["line"].is_number() && v["col"].is_number(),
+            "`line`/`col` are numbers (each reference has a span): {row}"
         );
-        for key in ["\"file\"", "\"line\"", "\"col\""] {
-            assert!(row.contains(key), "row has {key}: {row}");
-        }
     }
     let _ = std::fs::remove_dir_all(&dir);
 }

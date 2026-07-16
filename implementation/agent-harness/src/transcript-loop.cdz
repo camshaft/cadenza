@@ -1,0 +1,90 @@
+// transcript-loop.cdz — the agent loop BUILDING A TRANSCRIPT string across turns (Increment 2c).
+//
+// string-loop.cdz proved the loop at the real model boundary (Model.converse : String -> String) with
+// termination + tool-routing decided by String EQUALITY-dispatch, but folded a SCALAR accumulator. This
+// module takes the next step a real harness needs: the running accumulator is itself a STRING — the
+// growing conversation TRANSCRIPT — built with `String.concat` from each turn's completion. So it
+// exercises String CONSTRUCTION (not just crossing + equality) composing through the effect+recursion
+// shape: each turn's model completion crosses back IN as a rope handle and is concatenated onto the acc.
+//
+// This is the transcript/context a real loop threads forward to feed the next model call. Here the model
+// is mocked in-program (answers a fixed token per turn); the SAME loop swaps to the cadenza:bedrock/api
+// peer with no code change (a nearer handler wins over the peer binding).
+//
+// Like the sibling loops it is single-shot tail-resumptive (the continuation never escapes the handler),
+// fuel-bounded, and the accumulator is threaded through `run`'s own `acc` PARAMETER — here a `String`, so
+// the transcript grows in the fold argument, never in handler state (dodging the known cross-function
+// resume(v,s) re-threading limit reported to v-effects).
+// The model effect: a turn's prompt in, the model's completion out — the token appended to the transcript.
+effect Model =
+  | converse : String -> String
+
+// The tools effect: `done` ends the loop and hands back the final transcript String (kind is String here,
+// since the accumulator is the transcript, not a scalar score).
+effect Tools =
+  | done : String -> String
+
+// One agent RUN building a transcript: drive up to `fuel` turns, threading `acc` (the transcript so far).
+// Each turn converses; if the completion is "stop" the agent is finished and `done` returns the transcript
+// built so far, otherwise the completion is CONCATENATED onto the transcript and the loop recurses. `fuel`
+// is the max-turns guard. The accumulator is a String grown by `String.concat` — the real fold a harness
+// does to carry the conversation forward.
+def run(fuel: Int64, acc: String) =
+  if fuel == 0 then
+    Tools.done(acc)
+  else
+    let reply = Model.converse("turn") in
+    if reply == "stop" then Tools.done(acc) else run(fuel - 1, String.concat(acc, reply))
+
+// Run under a MOCK model + tools handled in-program. The mock model always answers "ab" (a 2-byte token,
+// never "stop", so the loop runs to fuel exhaustion), and `done` returns the accumulator unchanged. So
+// `run-mock(n)` builds "ab" repeated n times — a 2n-byte transcript. `Model`/`Tools` need no state (the
+// transcript lives in `run`'s `acc`).
+def run-mock(fuel: Int64) =
+  handle Model(0) with
+    | converse(q, s) => resume("ab", s)
+  in
+  handle Tools("") with
+    | done(a, s) => resume(a, s)
+  in
+  run(fuel, "")
+
+@test
+def transcript-zero-fuel-is-empty() =
+  if String.byte-len(run-mock(0)) == 0 then unit else trap("zero fuel yields the empty transcript")
+
+@test
+def transcript-one-turn-appends-one-token() =
+  if String.byte-len(run-mock(1)) == 2 then unit else trap("one turn appends one 2-byte token")
+
+@test
+def transcript-grows-by-concat-per-turn() =
+  if String.byte-len(run-mock(5)) == 10 then unit else trap("five turns build a 10-byte transcript")
+
+@test
+def transcript-stops-on-stop-completion() =
+  let stopped = handle Model(0) with
+      | converse(q, s) => resume("stop", s)
+    in
+    handle Tools("") with
+      | done(a, s) => resume(a, s)
+    in
+    run(5, "") in
+  if String.byte-len(stopped) == 0 then
+    unit
+  else
+    trap("a \"stop\" completion ends with the empty transcript")
+
+@test
+def transcript-preserves-a-seed-prefix() =
+  let seeded = handle Model(0) with
+      | converse(q, s) => resume("ab", s)
+    in
+    handle Tools("") with
+      | done(a, s) => resume(a, s)
+    in
+    run(3, "sys:") in
+  if String.byte-len(seeded) == 10 then
+    unit
+  else
+    trap("a seeded transcript grows from its prefix: 4 + 3*2 = 10")

@@ -101,32 +101,42 @@ fn symbols_json_emits_one_structured_object_per_declaration() {
     let (ok, out, err) = run(&["symbols", &file, "--json"]);
     assert!(ok, "cdz symbols --json should succeed: {err}");
     let rows: Vec<&str> = out.lines().filter(|l| !l.trim().is_empty()).collect();
-    // One object per declaration (pi, inc, main) — same count as the human form.
-    let (_hok, human, _he) = run(&["symbols", &file]);
+    // One object per declaration (pi, inc, main) — same count as the human form. Assert the baseline run
+    // SUCCEEDED (else human_rows would be 0 and the parity check would pass hollowly).
+    let (hok, human, herr) = run(&["symbols", &file]);
+    assert!(
+        hok,
+        "baseline (non-json) symbols run should succeed: {herr}"
+    );
     let human_rows = human.lines().filter(|l| !l.trim().is_empty()).count();
     assert_eq!(
         rows.len(),
         human_rows,
         "one JSON row per human row (parity): {out}"
     );
-    // Every row is a well-formed object carrying the documented keys.
+    // PARSE each row (serde_json is in-crate) — a substring check would pass for MALFORMED JSON; parsing
+    // rejects it. Collect the (kind, name) pairs off the parsed values to assert the classification.
+    let mut decls = std::collections::BTreeSet::new();
     for row in &rows {
+        let v: serde_json::Value =
+            serde_json::from_str(row).unwrap_or_else(|e| panic!("row is valid JSON ({e}): {row}"));
+        assert!(v["file"].is_string(), "`file` is a string: {row}");
         assert!(
-            row.trim_start().starts_with('{') && row.trim_end().ends_with('}'),
-            "each row is a JSON object: {row}"
+            v["line"].is_number() && v["col"].is_number(),
+            "`line`/`col` are numbers: {row}"
         );
-        for key in ["\"file\"", "\"line\"", "\"col\"", "\"kind\"", "\"name\""] {
-            assert!(row.contains(key), "row has {key}: {row}");
-        }
+        let kind = v["kind"].as_str().expect("`kind` is a string");
+        let name = v["name"].as_str().expect("`name` is a string");
+        decls.insert((kind.to_string(), name.to_string()));
     }
-    // The classified declarations are present with their kinds (the same facts as the human form).
+    // The classified declarations are present with their kinds (parsed, not substring).
     assert!(
-        out.contains("\"kind\":\"value\"") && out.contains("\"name\":\"pi\""),
-        "the value `pi` is emitted as a structured object: {out}"
+        decls.contains(&("value".to_string(), "pi".to_string())),
+        "the value `pi` is emitted as a structured object: {decls:?}"
     );
     assert!(
-        out.contains("\"kind\":\"function\"") && out.contains("\"name\":\"inc\""),
-        "the private function `inc` is emitted (superset, private included): {out}"
+        decls.contains(&("function".to_string(), "inc".to_string())),
+        "the private function `inc` is emitted (superset, private included): {decls:?}"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -1298,6 +1298,55 @@
             (export main)))
   (output (: 100 Int64)))
 
+(case "Type.of grounds a function nested TWO containers deep — a sum payload inside a list"
+  (doc    "The nested facet of the function-domain reflection family: a function two containers deep — a
+           variant payload inside a list, `(list (Some f))` — is grounded from its body just like the
+           single-container element/payload cases. `f x = x + 1` is `(-> Int64 Int64)` and `g b = if b 0 1`
+           is `(-> Bool Int64)`, so `(list (Some f))` reflects `(List (Option (-> Int64 Int64)))` and
+           `(list (Some g))` reflects `(List (Option (-> Bool Int64)))` — distinct → `Type.eq` false; but
+           `(list (Some f))` vs `(list (Some f2))` (both `(-> Int64 Int64)`) is true. `0 + 100 = 100`.
+           Guards that reflection recurses through STACKED containers to ground the fn, not just one level.")
+  (input  (do
+            (def (f x) (+ x 1))
+            (def (f2 z) (+ z 9))
+            (def (g b) (if b 0 1))
+            (def (main) (+ (if (Type.eq (Type.of (list (Some f))) (Type.of (list (Some g)))) 1 0)
+                           (if (Type.eq (Type.of (list (Some f))) (Type.of (list (Some f2)))) 100 0)))
+            (export main)))
+  (output (: 100 Int64)))
+
+(case "Type.of grounds a function nested TWO containers deep — a tuple inside a sum payload"
+  (doc    "The complementary nesting order: a function inside a tuple inside a variant payload,
+           `(Some (tuple f 0))`. `f x = x + 1` vs `g b = if b 0 1` give distinct payload tuple types, so
+           `(Some (tuple f 0))` reflects `(Option (Tuple (-> Int64 Int64) Int64))` and `(Some (tuple g 0))`
+           reflects `(Option (Tuple (-> Bool Int64) Int64))` — `Type.eq` false; same domain (`f` vs `f2`)
+           true. `0 + 100 = 100`. Pins that the ctor-scheme re-grounding (sum payload) composes with the
+           compound-element re-grounding (tuple) when they are nested.")
+  (input  (do
+            (def (f x) (+ x 1))
+            (def (f2 z) (+ z 9))
+            (def (g b) (if b 0 1))
+            (def (main) (+ (if (Type.eq (Type.of (Some (tuple f 0))) (Type.of (Some (tuple g 0)))) 1 0)
+                           (if (Type.eq (Type.of (Some (tuple f 0))) (Type.of (Some (tuple f2 0)))) 100 0)))
+            (export main)))
+  (output (: 100 Int64)))
+
+(case "Type.of grounds a RETURNED function's domain — a closure whose result is a function"
+  (doc    "A higher-order value: `(fn (a) f)` is a closure returning `f`, so its reflected type is
+           `(-> Any (-> Int64 Int64))` grounded at the RETURNED function's domain. `f x = x + 1` vs
+           `g b = if b 0 1`: `(fn (a) f)` and `(fn (a) g)` reflect arrows with different codomain-function
+           domains → `Type.eq` false; `(fn (a) f)` vs `(fn (a) f2)` (both return `(-> Int64 Int64)`) is
+           true. `0 + 100 = 100`. Guards that reflection grounds a function reachable through a RESULT
+           position, not only through container elements/payloads.")
+  (input  (do
+            (def (f x) (+ x 1))
+            (def (f2 z) (+ z 9))
+            (def (g b) (if b 0 1))
+            (def (main) (+ (if (Type.eq (Type.of (fn (a) f)) (Type.of (fn (a) g))) 1 0)
+                           (if (Type.eq (Type.of (fn (a) f)) (Type.of (fn (a) f2))) 100 0)))
+            (export main)))
+  (output (: 100 Int64)))
+
 (case "an if on Type.eq selects a branch at compile time"
   (doc    "The headline of compile-time reflection: `(if (Type.eq (Type.of 5) Int64) 100 200)` folds the
            condition to the constant `true`, so the whole `if` is `100`. A program BRANCHES on types at
