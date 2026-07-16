@@ -632,3 +632,164 @@
             (def (main) (Thm.Seq (list) (Term.Eq (Term.Abs 0 (Term.Var 0)) (Term.Var 1))))
             (export main)))
   (error  CDZ0214))
+
+; ============================================================================================
+; Increment 5 — CAPTURE-AVOIDING substitution: the soundness fix for the λ-layer. The Inc-4 `subst` is
+; NAIVE — substituting a term with a free variable `x` under a binder `λx.…` would CAPTURE it (bind the
+; free x), which in a real kernel lets you prove FALSE theorems. This increment gives the kernel a
+; capture-avoiding subst: when the substituted term's free variables would be captured by a binder, the
+; binder is α-renamed to a FRESH variable first. It needs three supporting functions the kernel walks
+; over the recursive Term: `free-in` (is v free in t?), `max-id` (largest id, for fresh generation), and
+; `rename` (α-rename a binder). These cases pin BOTH faces — the naive version DOES capture (the bug this
+; prevents) and the capture-avoiding version does NOT — and that BETA over the safe subst still proves the
+; identity theorem (no regression). This makes the λ-fragment SOUND, not just mechanical.
+; ============================================================================================
+
+(case "capture-avoiding substitution renames a binder so the substituted term's free variable is not captured"
+  (doc    "The soundness fix. Substituting s = (Var 0) for y (=x1) into (λx0. x1) must NOT capture: the
+           binder x0 is a free variable of s, so a correct subst α-renames x0 to a fresh id before
+           descending, leaving the substituted (Var 0) FREE in the result. The case checks `free-in 0
+           result` is TRUE — the (Var 0) survived uncaptured. A naive (capturing) subst would bind it and
+           this would be FALSE (see the control below). Pins that the kernel's substitution is
+           capture-avoiding — the property that makes β-reduction and INST sound rather than able to
+           derive false equalities. `free-in`, `max-id`, `rename`, and the capture-aware `subst` all fold
+           over the recursive Term (with binders) correctly on trunk.")
+  (module "hol"
+    (do
+      (type Term (Var Int64) (Comb Term Term) (Eq Term Term) (Abs Int64 Term))
+      (def (free-in (: v Int64) (: t Term))
+        (match t
+          ((Term.Var n)   (= n v))
+          ((Term.Comb f x) (or (free-in v f) (free-in v x)))
+          ((Term.Eq a b)  (or (free-in v a) (free-in v b)))
+          ((Term.Abs w body) (if (= w v) false (free-in v body)))))
+      (def (max-id (: t Term))
+        (match t
+          ((Term.Var n)   n)
+          ((Term.Comb f x) (let ((a (max-id f)) (b (max-id x))) (if (> a b) a b)))
+          ((Term.Eq a b)  (let ((p (max-id a)) (q (max-id b))) (if (> p q) p q)))
+          ((Term.Abs w body) (let ((m (max-id body))) (if (> w m) w m)))))
+      (def (rename (: from Int64) (: to Int64) (: t Term))
+        (match t
+          ((Term.Var n)   (if (= n from) (Term.Var to) (Term.Var n)))
+          ((Term.Comb f x) (Term.Comb (rename from to f) (rename from to x)))
+          ((Term.Eq a b)  (Term.Eq (rename from to a) (rename from to b)))
+          ((Term.Abs w body) (if (= w from) (Term.Abs w body) (Term.Abs w (rename from to body))))))
+      (def (subst (: v Int64) (: s Term) (: t Term))
+        (match t
+          ((Term.Var n)   (if (= n v) s (Term.Var n)))
+          ((Term.Comb f x) (Term.Comb (subst v s f) (subst v s x)))
+          ((Term.Eq a b)  (Term.Eq (subst v s a) (subst v s b)))
+          ((Term.Abs w body)
+            (if (= w v)
+                (Term.Abs w body)
+                (if (free-in w s)
+                    (let ((fresh (+ 1 (let ((ms (max-id s)) (mt (max-id body))) (if (> ms mt) ms mt)))))
+                      (Term.Abs fresh (subst v s (rename w fresh body))))
+                    (Term.Abs w (subst v s body)))))))
+      (export (. Term *))
+      (export free-in)
+      (export subst)))
+  (input  (do
+            (import "hol" (Term free-in subst))
+            (def (main)
+              (let ((s (Term.Var 0))
+                    (body (Term.Abs 0 (Term.Var 1))))
+                (free-in 0 (subst 1 s body))))
+            (export main)))
+  (output (: true Bool)))
+
+(case "a naive (non-renaming) substitution captures a free variable — the bug capture-avoidance prevents"
+  (doc    "The control that gives the pin above its teeth: a NAIVE subst that does not α-rename binders
+           substitutes s = (Var 0) for y into (λx0. y) yielding (λx0. x0) — the free (Var 0) is now BOUND
+           by the binder (captured). `free-in 0 result` is FALSE. This is the exact unsoundness the Inc-5
+           capture-avoiding subst prevents; pinning it ensures a future 'simplification' that drops the
+           renaming would flip this case and be caught. (A kernel with capturing substitution can derive
+           false theorems, so this is a soundness — not merely a hygiene — property.)")
+  (module "hol"
+    (do
+      (type Term (Var Int64) (Comb Term Term) (Eq Term Term) (Abs Int64 Term))
+      (def (free-in (: v Int64) (: t Term))
+        (match t
+          ((Term.Var n)   (= n v))
+          ((Term.Comb f x) (or (free-in v f) (free-in v x)))
+          ((Term.Eq a b)  (or (free-in v a) (free-in v b)))
+          ((Term.Abs w body) (if (= w v) false (free-in v body)))))
+      (def (naive-subst (: v Int64) (: s Term) (: t Term))
+        (match t
+          ((Term.Var n)   (if (= n v) s (Term.Var n)))
+          ((Term.Comb f x) (Term.Comb (naive-subst v s f) (naive-subst v s x)))
+          ((Term.Eq a b)  (Term.Eq (naive-subst v s a) (naive-subst v s b)))
+          ((Term.Abs w body) (if (= w v) (Term.Abs w body) (Term.Abs w (naive-subst v s body))))))
+      (export (. Term *))
+      (export free-in)
+      (export naive-subst)))
+  (input  (do
+            (import "hol" (Term free-in naive-subst))
+            (def (main)
+              (free-in 0 (naive-subst 1 (Term.Var 0) (Term.Abs 0 (Term.Var 1)))))
+            (export main)))
+  (output (: false Bool)))
+
+(case "BETA over the capture-avoiding substitution still proves the identity theorem (no regression)"
+  (doc    "Guards that hardening subst to be capture-avoiding did not break β-reduction: BETA on the
+           identity combinator (λx0.x0) applied to y (=Var 42), using the capture-avoiding subst, still
+           yields ⊢ ((λx0.x0) y) = y — the conclusion's right side is y. Pins that the soundness fix
+           composes with the primitive rules from Inc-4 (the identity theorem still holds).")
+  (module "hol"
+    (do
+      (type Term (Var Int64) (Comb Term Term) (Eq Term Term) (Abs Int64 Term))
+      (type Thm (Seq (List Term) Term))
+      (def (term-eq (: a Term) (: b Term))
+        (match a
+          ((Term.Var n)    (match b ((Term.Var m) (= n m)) (_ false)))
+          ((Term.Comb x y) (match b ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) (_ false)))
+          ((Term.Eq x y)   (match b ((Term.Eq p q) (and (term-eq x p) (term-eq y q))) (_ false)))
+          ((Term.Abs v x)  (match b ((Term.Abs w q) (and (= v w) (term-eq x q))) (_ false)))))
+      (def (free-in (: v Int64) (: t Term))
+        (match t
+          ((Term.Var n)   (= n v))
+          ((Term.Comb f x) (or (free-in v f) (free-in v x)))
+          ((Term.Eq a b)  (or (free-in v a) (free-in v b)))
+          ((Term.Abs w body) (if (= w v) false (free-in v body)))))
+      (def (max-id (: t Term))
+        (match t
+          ((Term.Var n)   n)
+          ((Term.Comb f x) (let ((a (max-id f)) (b (max-id x))) (if (> a b) a b)))
+          ((Term.Eq a b)  (let ((p (max-id a)) (q (max-id b))) (if (> p q) p q)))
+          ((Term.Abs w body) (let ((m (max-id body))) (if (> w m) w m)))))
+      (def (rename (: from Int64) (: to Int64) (: t Term))
+        (match t
+          ((Term.Var n)   (if (= n from) (Term.Var to) (Term.Var n)))
+          ((Term.Comb f x) (Term.Comb (rename from to f) (rename from to x)))
+          ((Term.Eq a b)  (Term.Eq (rename from to a) (rename from to b)))
+          ((Term.Abs w body) (if (= w from) (Term.Abs w body) (Term.Abs w (rename from to body))))))
+      (def (subst (: v Int64) (: s Term) (: t Term))
+        (match t
+          ((Term.Var n)   (if (= n v) s (Term.Var n)))
+          ((Term.Comb f x) (Term.Comb (subst v s f) (subst v s x)))
+          ((Term.Eq a b)  (Term.Eq (subst v s a) (subst v s b)))
+          ((Term.Abs w body)
+            (if (= w v)
+                (Term.Abs w body)
+                (if (free-in w s)
+                    (let ((fresh (+ 1 (let ((ms (max-id s)) (mt (max-id body))) (if (> ms mt) ms mt)))))
+                      (Term.Abs fresh (subst v s (rename w fresh body))))
+                    (Term.Abs w (subst v s body)))))))
+      (def (beta (: v Int64) (: body Term) (: arg Term))
+        (Thm.Seq (list) (Term.Eq (Term.Comb (Term.Abs v body) arg) (subst v arg body))))
+      (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
+      (export (. Term *))
+      (export Thm)
+      (export term-eq)
+      (export beta)
+      (export concl)))
+  (input  (do
+            (import "hol" (Term Thm term-eq beta concl))
+            (def (main)
+              (let ((y (Term.Var 42)))
+                (match (concl (beta 0 (Term.Var 0) y))
+                  ((Term.Eq lhs rhs) (term-eq rhs y))
+                  (_ false))))
+            (export main)))
+  (output (: true Bool)))

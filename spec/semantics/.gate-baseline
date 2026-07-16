@@ -2,6 +2,7 @@
 pass	Ast.decode converts bytes to an AST sum type value
 pass	Ast.decode decodes bytes that arrive as a function argument
 pass	Ast.encode and Ast.decode round-trip
+pass	BETA over the capture-avoiding substitution still proves the identity theorem (no regression)
 pass	COMPOUND RESULT PAYLOAD: (Result (Tuple Int64 Int64) (Tuple Int64 Int64)) — BOTH sides compound
 pass	COMPOUND RESULT PAYLOAD: (Result (Tuple Int64 Int64) Int64) arg, drive Err (scalar side)
 pass	COMPOUND RESULT PAYLOAD: (Result (Tuple Int64 Int64) Int64) arg, drive Ok (tuple side)
@@ -1073,6 +1074,7 @@ pass	a mutually-recursive group threads two nested handlers' states at once
 pass	a mutually-recursive group with the perform in a DIFFERENT branch from the mutual call folds
 pass	a mutually-recursive pair fully named by the export clause resolves
 pass	a mutually-recursive parser projects a return tuple and rebuilds one with a boxed sum across the edge
+pass	a naive (non-renaming) substitution captures a free variable — the bug capture-avoidance prevents
 pass	a name bound to a string keys a map by its value, not the literal name
 pass	a name pattern binds the runtime scrutinee when no literal arm matches
 pass	a name resolves to the nearest enclosing binding
@@ -1589,6 +1591,8 @@ pass	a runtime string compared against a literal folds against the literal side
 pass	a runtime string equality selects a branch by comparing a parameter to a literal
 pass	a runtime string is indexed by scalar and the extracted scalar is returned
 pass	a runtime string is sliced by scalar offsets
+pass	a runtime string pattern dispatches by content (value-eq compare)
+pass	a runtime string pattern falls through to the wildcard when no literal matches
 pass	a runtime string returned across the run boundary renders as its quoted text
 pass	a runtime string rope compared through a borrowed operand
 pass	a runtime string rope compares equal to its flat twin
@@ -2280,6 +2284,7 @@ pass	byte length agrees with the length of the encoded bytes
 pass	byte length counts the normalized form, not the source spelling
 pass	byte length is the UTF-8 byte count
 pass	byte sequences are equal by their bytes in order
+pass	capture-avoiding substitution renames a binder so the substituted term's free variable is not captured
 pass	chained guards of the same variant are tried in order
 pass	char to-int and from-int round-trip through the scalar value
 pass	checked addition yields None on overflow instead of trapping
@@ -3178,8 +3183,6 @@ pass	wrapping-sub of a runtime value from itself is zero at every input
 pass	wrapping-sub on a runtime Int8 wraps at its signed min boundary
 pass	wrapping-sub on a runtime UInt8 wraps modulo 256
 pass	wrapping-sub wraps a boundary-crossing runtime Int64 at the min boundary
-pass	a runtime string pattern dispatches by content (value-eq compare)
-pass	a runtime string pattern falls through to the wildcard when no literal matches
 todo	SUM ARG + LIST RESULT declines cleanly (Option arg, List result)
 todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
