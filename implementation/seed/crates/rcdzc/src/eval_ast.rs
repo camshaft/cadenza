@@ -86,6 +86,18 @@ pub fn desugar_eval(ast: &mut Arenas) {
             continue;
         };
         if let Some(replacement) = reconstruct(ast, arg) {
+            // HYGIENE: a template-introduced binder (a `let`/`fn`/`match` binder BUILT by the
+            // reconstruction — a FRESH node, id >= original_len) must not CAPTURE a variable the
+            // reconstruction spliced from an ACTIVE UNQUOTE (a LIVE-REUSED operand node, id <
+            // original_len, carrying its enclosing-scope name). Without this, `(let ((x 10)) (eval
+            // `(let ((x 1)) (+ ,x 99))))` reconstructs to `(let ((x 1)) (+ x 99))` where the spliced
+            // `,x` (meant to be the outer 10) is captured by the template's `(let (x 1))` → 100, not the
+            // correct 109 — a silent variable-capture miscompile. `rename_captured_binders` alpha-renames
+            // any template binder whose spelling collides with a spliced (live-reused) name to a fresh
+            // name, rewriting only the FRESH bound occurrences (the spliced ones, being live-reused, keep
+            // their spelling and resolve in the enclosing scope). Binder-kind-agnostic: any template
+            // binder that shadows a spliced name.
+            rename_captured_binders(ast, replacement, original_len);
             plans.push(EvalPlan {
                 eval: id,
                 arg,
@@ -132,6 +144,133 @@ pub fn desugar_eval(ast: &mut Arenas) {
             ast.structure[replacement.0 as usize] = Struct::List(Vec::new());
         }
     }
+}
+
+/// Hygiene pass over a reconstructed source subtree `root`: rename any TEMPLATE-introduced binder that
+/// would CAPTURE a variable spliced from an active unquote. The `original_len` boundary is the provenance
+/// signal — a node with id `< original_len` is LIVE-REUSED from the eval argument (an unquote operand
+/// carrying its enclosing-scope name), while a node with id `>= original_len` is FRESH, built by the
+/// reconstruction (a template literal / binder). So: (1) collect the spellings of live-reused Name nodes
+/// (the enclosing-scope names the splice must preserve); (2) find every binder form (`let`/`fn`/`match`)
+/// in `root` and, for each binder whose spelling is a spliced name, alpha-rename it — rewriting the FRESH
+/// occurrences of that spelling within the binder form's subtree to a fresh unique name. The live-reused
+/// spliced occurrences (id < original_len) are left untouched, so they keep their spelling and resolve in
+/// the enclosing scope rather than being captured by the template binder.
+fn rename_captured_binders(ast: &mut Arenas, root: StructId, original_len: u32) {
+    // (1) The spliced (live-reused, id < original_len) name spellings reachable in the reconstruction —
+    // the enclosing-scope variables that a template binder must not shadow.
+    let mut spliced: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for n in reachable(ast, root) {
+        if n < original_len
+            && let Some(name) = ast.as_name(StructId(n))
+        {
+            spliced.insert(name.to_string());
+        }
+    }
+    if spliced.is_empty() {
+        return;
+    }
+    // (2) Walk every compound in the reconstruction; at a binder form, rename any binder colliding with a
+    // spliced name. A stack walk over the FRESH structure (binder forms are reconstruction-built).
+    let mut stack = vec![root];
+    let mut seen = std::collections::HashSet::new();
+    while let Some(node) = stack.pop() {
+        if !seen.insert(node.0) {
+            continue;
+        }
+        let Struct::List(items) = ast.get(node) else {
+            continue;
+        };
+        let items = items.clone();
+        for &c in &items {
+            stack.push(c);
+        }
+        // Collect this form's template binder names (by kind) that collide with a spliced name.
+        for binder in binder_names_of(ast, node) {
+            let Some(spelling) = ast.as_name(binder).map(str::to_string) else {
+                continue;
+            };
+            if !spliced.contains(&spelling) {
+                continue;
+            }
+            // Alpha-rename: a fresh, collision-proof name (contains a space, so the reader/round-trip
+            // never produces it and no source name collides). Rewrite the binder node + every FRESH
+            // (id >= original_len) Name node of this spelling within `node`'s subtree; the spliced
+            // (live-reused, id < original_len) occurrences keep the original spelling.
+            let fresh = format!("{spelling} $capture{}", binder.0);
+            for m in reachable(ast, node) {
+                if m >= original_len && ast.as_name(StructId(m)) == Some(spelling.as_str()) {
+                    // Overwrite the leaf this atom points at with the fresh name.
+                    if let Struct::Atom(lid) = ast.get(StructId(m)) {
+                        let lid = *lid;
+                        ast.leaves[lid.0 as usize] = Leaf::Name(fresh.clone());
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The binder NAME nodes a binding form `node` introduces, or empty if `node` is not a binder form.
+/// Mirrors the binder shapes `eval.rs`/`resolve.rs` recognize:
+///  - `(let ((n init)…) body)` — each binding pair's first element `n`;
+///  - `(fn (p…) body)` / `(fn ((: p T)…) body)` — each param `p` (bare or the name inside `(: p T)`);
+///  - `(match scrut (pat body)…)` — each arm's PATTERN when it is a bare-name binder.
+fn binder_names_of(ast: &Arenas, node: StructId) -> Vec<StructId> {
+    let Struct::List(items) = ast.get(node) else {
+        return Vec::new();
+    };
+    let head = items.first().and_then(|&h| ast.as_name(h));
+    let mut binders = Vec::new();
+    match head {
+        Some("let") => {
+            // items = [let, bindings-list, body…]; bindings-list = [(n init)…].
+            if let Some(&bindings) = items.get(1)
+                && let Struct::List(pairs) = ast.get(bindings)
+            {
+                for &pair in pairs {
+                    if let Struct::List(p) = ast.get(pair)
+                        && let Some(&name) = p.first()
+                    {
+                        binders.push(binder_of_param(ast, name));
+                    }
+                }
+            }
+        }
+        Some("fn") => {
+            // items = [fn, param-list, body…]; param-list = [p… | (: p T)…].
+            if let Some(&params) = items.get(1)
+                && let Struct::List(ps) = ast.get(params)
+            {
+                for &p in ps {
+                    binders.push(binder_of_param(ast, p));
+                }
+            }
+        }
+        Some("match") => {
+            // items = [match, scrut, (pat body)…]; a bare-name pattern is a binder.
+            for &arm in items.iter().skip(2) {
+                if let Struct::List(a) = ast.get(arm)
+                    && let Some(&pat) = a.first()
+                    && ast.as_name(pat).is_some()
+                {
+                    binders.push(pat);
+                }
+            }
+        }
+        _ => {}
+    }
+    binders
+}
+
+/// A param slot's binder name: the bare name, or the `p` inside an annotated `(: p T)` binder.
+fn binder_of_param(ast: &Arenas, slot: StructId) -> StructId {
+    if let Some(tail) = ast.as_form(slot, ":")
+        && let Some(&name) = tail.first()
+    {
+        return name;
+    }
+    slot
 }
 
 /// Reconstruct the source form an `Ast` construction `node` denotes — the inverse of the reifier's map.

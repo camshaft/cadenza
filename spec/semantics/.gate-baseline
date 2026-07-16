@@ -2350,6 +2350,9 @@ pass	an unimported sibling definition is not in scope
 pass	an unproductive self-recursion is declined, not a compiler crash
 pass	an unquote nested inside a plain quote is a syntax error, not an active unquote
 pass	an unquote of an expression with an unbound name is rejected, not quoted
+pass	an unquoted variable is not captured by a same-named fn param in the template
+pass	an unquoted variable is not captured by a same-named let binder in the template
+pass	an unquoted variable is not captured by a same-named match-pattern binder in the template
 pass	an unrecognized annotation leaves its wrapped definition in effect
 pass	an unrecognized pragma key is rejected rather than ignored
 pass	an unrecognized string escape is rejected
@@ -2670,6 +2673,7 @@ pass	heap string elements of a hoisted list if select by branch
 pass	heap-valued handler state above an inner abort keeps threading
 pass	hexadecimal, binary, and decimal spellings of one value are equal
 pass	host calls are observed in the order they were made
+pass	hygiene fix does not over-reach: a different-named template binder needs no rename
 pass	identical negative zeros nested in a tuple compare equal
 pass	identically-built ropes on both sides of a nested compare are equal (control)
 pass	importing a name a module does not export is rejected
