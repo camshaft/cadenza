@@ -215,6 +215,7 @@ pass	a DOUBLY-nested projected list, consumed then read, is unchanged (child ret
 pass	a FLAT runtime string nested in a tuple is unaffected (control)
 pass	a FLOAT-field Tuple closure ARG flattens + rebuilds (box-float imported)
 pass	a FLOAT-result effect op threads a float state and its resume folds under a float-dispatched operator
+pass	a Float element inserted into an empty (runtime) set boxes with box-float, not box-int
 pass	a Float64 closure captures a Float64 build-time host effect result
 pass	a GENERIC recursive sum branching through a tuple folds at a concrete instantiation
 pass	a GENERIC user sum crosses a module boundary at a concrete instantiation
