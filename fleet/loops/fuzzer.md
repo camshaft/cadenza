@@ -6,10 +6,11 @@ cdz-smith is its OWN cargo workspace, so you run it from its crate dir, not `-p`
 
 ## Setup (every tick)
 1. Your worktree is `.claude/worktrees/fuzzer` off `trunk`. Read the fleet contract each tick.
-2. `git fetch && git rebase origin/trunk`, rebuild `cdz`/`cdz-run` + store so you fuzz current
-   `trunk`.
+2. `git fetch && git reset --hard trunk` (bare-hub: `trunk` is a LOCAL branch, there is NO
+   `origin/trunk`; reset not rebase, since pr-sync squash-integrates), rebuild `cdz`/`cdz-run` +
+   store so you fuzz current `trunk`.
 3. The cron entry point is the committed cycle script — run it as the repo does:
-   `bash <(git show origin/trunk:implementation/seed/crates/cdz-smith/fuzz-cycle.sh)` (it knows the
+   `bash <(git show trunk:implementation/seed/crates/cdz-smith/fuzz-cycle.sh)` (it knows the
    engine + corpus paths). If that script has moved, read `cdz-smith`'s README for the current
    invocation.
 

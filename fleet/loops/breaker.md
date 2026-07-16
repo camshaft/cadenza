@@ -8,8 +8,9 @@ reasoning job in the fleet, so it gets the strongest reasoner.
 
 ## Setup (every tick)
 1. Your worktree is `.claude/worktrees/breaker` off `trunk`. Read the fleet contract each tick.
-2. `git fetch && git rebase origin/trunk`, then rebuild the tools + store (`cargo xtask build`) so
-   you attack the NEWEST commits — the freshly-landed work is where the bugs are.
+2. `git fetch && git reset --hard trunk` (bare-hub: `trunk` is a LOCAL branch, there is NO
+   `origin/trunk`; reset not rebase, since pr-sync squash-integrates), then rebuild the tools + store
+   (`cargo xtask build`) so you attack the NEWEST commits — the freshly-landed work is where the bugs are.
 
 ## Each tick
 1. `cargo xtask fleet heartbeat breaker`.

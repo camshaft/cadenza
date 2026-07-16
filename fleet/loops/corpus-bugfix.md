@@ -71,8 +71,9 @@ the operator via the concierge). Each is a `.sexp` reproducer (same `case`/`inpu
 7. **Reap completed fix agents (you are the SOLE reaper).** When a `fix` agent sends you a `note`
    "fix complete: <branch>" (its work is `merged`), VERIFY before closing its window — a wrongly
    closed window loses an unfinished fix's scrollback:
-   - Confirm the fix truly landed on `trunk`: `git fetch && git rebase origin/trunk`, `cargo xtask
-     build`, then re-run the case (`cargo xtask gate --case "<substr>"`) — it must now PASS, and the
+   - Confirm the fix truly landed on `trunk`: `git fetch && git reset --hard trunk` (bare-hub: `trunk`
+     is a LOCAL branch, there is NO `origin/trunk`; reset not rebase, since pr-sync squash-integrates),
+     `cargo xtask build`, then re-run the case (`cargo xtask gate --case "<substr>"`) — it must now PASS, and the
      reproducer must be migrated into `spec/semantics/NN-*.sexp` (not just fixed ad hoc).
    - Verified → reap the panel: `cargo xtask fleet remove <fix-agent> --close` (marks it stopped AND
      kills the tmux window; the registry row is kept for history). This is what stops the 1000-panel
