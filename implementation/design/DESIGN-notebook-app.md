@@ -109,7 +109,9 @@ A notebook document is an **ordered list of cells** parsed from a single markdow
 - **Prose cell** — any markdown between code fences. Rendered read-only by `Prose.tsx`.
 - **Code cell** — a ` ```cadenza ` (or `~~~cadenza`) fenced block, with an optional **directive** on the
   fence info string: ` ```cadenza chart:line `, ` ```cadenza table `, ` ```cadenza widget `,
-  ` ```cadenza hidden ` (runs but doesn't show source). No directive ⇒ auto-render by value shape (§3).
+  ` ```cadenza hidden ` (a setup cell: runs for its scope/defs but shows NEITHER source NOR its success
+  output — only a failure is surfaced, so a broken hidden cell isn't invisible). No directive ⇒ auto-render
+  by value shape (§3).
 
 Parsing is a plain markdown-fence scan (no language work): split on fence boundaries, tag each code fence
 with its info string, everything else is prose. This mirrors how the guide's chapter content already
