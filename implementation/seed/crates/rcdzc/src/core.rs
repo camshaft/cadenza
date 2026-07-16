@@ -165,6 +165,13 @@ pub enum Probe {
     /// string scrutinee is not a scalar (`is_scalar` is Int/Bool), so its match declines until the runtime
     /// string-equality probe is emitted (a later increment).
     Str(String),
+    /// `scrutinee == this char` — a char-literal pattern (`(#\a …)`). Like `Str`, only the CONSTANT-
+    /// scrutinee FOLD is realized (a constant scrutinee selects the first arm whose char equals it). A
+    /// RUNTIME char is not a scalar (`is_scalar` is Int/Bool) — a `Char` has NO runtime machine rep yet
+    /// (its `=`/`to-int` fold only at compile time), so a runtime-char match declines until that rep and a
+    /// char-equality probe are emitted (a later, cross-vertical increment — the Char twin of the runtime
+    /// string-equality path). So a `Probe::Char` never survives to a backend, exactly like `Probe::Str`.
+    Char(char),
     /// A LIST pattern's length test — the list at this path must have `len` elements (`at_least` false, a
     /// fixed-arity `(list p0 … p{len-1})`) or AT LEAST `len` (`at_least` true, a rest pattern `(list p0 …
     /// p{len-1} .. rest)` binding the tail). Like `Str`, only the CONSTANT-scrutinee FOLD is realized (a

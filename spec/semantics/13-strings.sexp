@@ -1491,6 +1491,58 @@
   (input  (compare #\a #\a))
   (output (: (Equal unit) Ordering)))
 
+; --- Char-LITERAL patterns: a `match` dispatches by scalar value ----------------------------------
+; A char is a scalar whose identity IS its Unicode scalar value (collections-and-text.md #A Char Is A
+; Single Unicode Scalar Value), so a char-literal pattern `(#\a …)` matches by that value — the Char
+; analogue of an Int/Bool/String/Symbol-literal match arm (core-semantics.md #Matching Selects The
+; First Arm Whose Pattern Matches). A char match dispatches exactly as the char `=` above compares:
+; `(match c (#\a 1) (#\b 2) (_ 0))` selects the arm whose char equals `c`. Char is an OPEN type (any
+; scalar value), so a char match — like an Int match — needs a wildcard tail to be exhaustive; without
+; one it is CDZ0210, and a char pattern over a non-Char scrutinee is a CDZ0201 shape error. (These
+; witness the CONSTANT-scrutinee dispatch; a Char has no run-time value form in the seed, exactly as
+; the scalar-access cases above note, so every char match folds at compile time.)
+
+(case "a char-literal pattern selects the arm whose char matches"
+  (doc    "`(match #\\b (#\\a 1) (#\\b 2) (_ 0))` is 2 — the `#\\b` scrutinee equals the second arm's char
+           literal, so that arm is selected (core-semantics.md #Matching Selects The First Arm Whose
+           Pattern Matches). The Char analogue of an Int/Bool/String-literal match: dispatch is by scalar
+           value, exactly as `(= #\\b #\\b)` holds. Pins that a char literal is a valid match pattern.")
+  (input  (do (def (main) (match #\b (#\a 1) (#\b 2) (_ 0))) (export main)))
+  (call   main)
+  (output (: 2 Int64)))
+
+(case "a char not among the literal arms falls through to the wildcard"
+  (doc    "`(match #\\z (#\\a 1) (#\\b 2) (_ 0))` is 0 — `#\\z` matches neither char-literal arm, so the
+           wildcard `_` tail covers it (core-semantics.md #Matching Selects The First Arm Whose Pattern
+           Matches — the wildcard is the last, always-matching arm). The miss companion of the char-match
+           hit; pins that char dispatch is genuine (a non-listed char is NOT silently mapped to an arm).")
+  (input  (do (def (main) (match #\z (#\a 1) (#\b 2) (_ 0))) (export main)))
+  (call   main)
+  (output (: 0 Int64)))
+
+(case "a char-literal pattern nested in a variant payload matches by scalar value"
+  (doc    "`(match (Tok.Ch #\\a) ((Tok.Ch #\\a) 97) ((Tok.Ch _) 1) ((Tok.End) 0))` is 97 — the variant
+           carries a `Char` payload and the arm `(Tok.Ch #\\a)` matches a `Tok.Ch` whose payload equals
+           `#\\a`, exactly as the String/Symbol-payload literal arms do. Pins a char literal as a valid
+           NESTED sub-pattern (the payload twin of the top-level char match; the `#\\a` payload variant of
+           the `(Ch Char)` case in 05-compound-types).")
+  (input  (do (type Tok (Ch Char) (End))
+              (def (main) (match (Tok.Ch #\a) ((Tok.Ch #\a) 97) ((Tok.Ch _) 1) ((Tok.End) 0)))
+              (export main)))
+  (call   main)
+  (output (: 97 Int64)))
+
+(case "a nested char-literal payload falls through on a non-matching char"
+  (doc    "`(match (Tok.Ch #\\z) ((Tok.Ch #\\a) 97) ((Tok.Ch _) 1) ((Tok.End) 0))` is 1 — the payload
+           `#\\z` does not equal the `(Tok.Ch #\\a)` arm's literal, so the match falls to the `(Tok.Ch _)`
+           arm binding any char. The miss companion of the nested-payload hit; pins that a nested char
+           literal genuinely discriminates within a variant, not a blanket match on the constructor.")
+  (input  (do (type Tok (Ch Char) (End))
+              (def (main) (match (Tok.Ch #\z) ((Tok.Ch #\a) 97) ((Tok.Ch _) 1) ((Tok.End) 0)))
+              (export main)))
+  (call   main)
+  (output (: 1 Int64)))
+
 ; --- String operations at RUN TIME: a string not fixed at compile time ---------------------------------
 ; The string cases above operate on CONSTANT string literals, so their lengths / slices / concatenations
 ; fold at compile time. A string chosen at run time — an `(if …)` selecting between two literals produces
