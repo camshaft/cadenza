@@ -1584,7 +1584,15 @@ fn enrich_nested_lowercase_type_vars(
                              #\"{unit}\")` for a base unit, or `Unit.one` for the dimensionless unit"
                         ),
                     )
-                    .at(child),
+                    .at(child)
+                    // The name IS the intended base-unit name, so spell the exact `(Unit.base #"<name>")`
+                    // wrap — fix-parity with the bare-SYMBOL arm above (same recoverable repair). Heuristic:
+                    // the author might instead mean `Unit.one` or a composition, so the base-unit wrap is
+                    // the likeliest single repair, not a proven one.
+                    .with_fix(Fix::replace_heuristic(
+                        child,
+                        format!("(Unit.base #\"{unit}\")"),
+                    )),
                 );
                 continue;
             }

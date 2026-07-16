@@ -23289,27 +23289,46 @@ mod match_engine {
         // parameter unannotated"; uppercase → "unknown type `Meter`, declare it with `(type …)`"), both
         // NONSENSE for a unit position. It now names the unit misuse + the real spelling `(Unit.base
         // #"…")`. The INNER (first) Qty argument stays a type position (keeps type guidance).
-        let msg = |src: &str| -> String {
-            crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+        // Both a lowercase and an uppercase bare name in the unit position get the unit message, at a
+        // parameter site AND a value-annotation site (the nested walk handles both). Each also carries the
+        // `(Unit.base #"<name>")` wrap fix — the name IS the intended base-unit name, so the repair is
+        // spelled exactly (fix-parity with the bare-SYMBOL sibling case).
+        for (src, name) in [
+            (
+                "(module m (def (g (: q (Qty Int64 meter))) q) (export g))",
+                "meter",
+            ),
+            (
+                "(module m (def (g (: q (Qty Int64 Meter))) q) (export g))",
+                "Meter",
+            ),
+            (
+                "(module m (def (main) (: 5 (Qty Int64 meter))) (export main))",
+                "meter",
+            ),
+        ] {
+            let d = crate::diagnostics(&mut crate::db::Db::load(parse(src)))
                 .into_iter()
                 .find(|d| d.code.as_deref() == Some("CDZ0101") && d.message.contains("not a unit"))
-                .unwrap_or_else(|| panic!("expected a unit-position fault for {src}"))
-                .message
-        };
-        // Both a lowercase and an uppercase bare name in the unit position get the unit message, at a
-        // parameter site AND a value-annotation site (the nested walk handles both).
-        for src in [
-            "(module m (def (g (: q (Qty Int64 meter))) q) (export g))",
-            "(module m (def (g (: q (Qty Int64 Meter))) q) (export g))",
-            "(module m (def (main) (: 5 (Qty Int64 meter))) (export main))",
-        ] {
-            let m = msg(src);
+                .unwrap_or_else(|| panic!("expected a unit-position fault for {src}"));
             assert!(
-                m.contains("`Qty`'s second argument is a UNIT")
-                    && m.contains("(Unit.base")
-                    && !m.contains("type variable")
-                    && !m.contains("declare it with `(type"),
-                "the unit position names a unit misuse, not a type: {m}"
+                d.message.contains("`Qty`'s second argument is a UNIT")
+                    && d.message.contains("(Unit.base")
+                    && !d.message.contains("type variable")
+                    && !d.message.contains("declare it with `(type"),
+                "the unit position names a unit misuse, not a type: {}",
+                d.message
+            );
+            let fix = d
+                .fix
+                .as_ref()
+                .expect("the bare-name unit case carries a wrap fix");
+            assert_eq!(fix.kind, crate::abi::FixKind::Replace);
+            assert_eq!(
+                fix.replacement,
+                format!("(Unit.base #\"{name}\")"),
+                "the fix spells the exact base-unit wrap: {}",
+                fix.replacement
             );
         }
         // The INNER (type) position still gets TYPE guidance — a bad inner type + a bad unit produce their
