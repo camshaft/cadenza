@@ -76,10 +76,13 @@ export default function NotebookPage() {
 
   const runCells = useCallback(
     (indices: number[], vals: WidgetValues, from: Surface, token: number) => {
-      for (const i of indices) setStates((s) => ({ ...s, [i]: { phase: "running" } }));
       runChain.current = runChain.current.then(async () => {
         for (const i of indices) {
           if (runToken.current !== token) return; // superseded — stop the stale chain
+          // Mark THIS cell running only when the chain reaches it — NOT all cells up-front. Up-front
+          // marking left a cell stuck at "running…" forever if the run was superseded before reaching it
+          // (a partial widget-recompute plan re-marks only its own cells, orphaning the rest).
+          setStates((s) => ({ ...s, [i]: { phase: "running" } }));
           const { buffer, entry } = assembleForRun(cells, i, widgets, vals, from);
           let output: CellOutput;
           try {
