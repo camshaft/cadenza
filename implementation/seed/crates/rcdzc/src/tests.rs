@@ -33395,6 +33395,61 @@ mod match_engine {
     }
 
     #[test]
+    fn a_same_dimension_annotation_does_not_rebrand_the_values_scale() {
+        // High-severity regression guard (breaker's adv-annotation-rebrands-quantity-scale repro): a
+        // same-dimension quantity annotation is a PURE DIMENSION CHECK — it must NOT re-label the value's
+        // unit. `(: (Qty.of 1 kilometer) (Qty Int64 meter))` stays 1 KM downstream; the annotation names
+        // the dimension, it does not normalize/coerce the magnitude to the annotation's unit. The landed
+        // dimension-not-scale fix accepted the annotation but ALSO rebranded (type became `(Qty Int64
+        // meter)`), so `1 km` was silently reinterpreted as `1 meter` — a silent wrong-value miscompile
+        // inverting the units safety promise. Root: `type_of`'s Annot arm returned the ANNOTATION type; now
+        // for two same-dimension quantities it keeps the EXPRESSION's type (its own unit/scale).
+        // Converting the annotated 1 km to meters must be 1000 (not the rebranded 1).
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(
+                    "(do (def (main) ((. Unit in) ((. Unit of) #\"meter\") \
+                     (: ((. Qty of) 1 ((. Unit of) #\"kilometer\")) (Qty Int64 ((. Unit of) #\"meter\"))))) \
+                     (export main))"
+                )))
+                .expect("a same-dimension annotation preserves scale through a conversion"),
+                "main"
+            ),
+            1000,
+            "1 km annotated at meter is still 1 km → 1000 m (no rebrand to 1 meter)"
+        );
+        // Converting BACK to km is the identity (1) — the sharpest witness (rebrand gave 0).
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(
+                    "(do (def (main) ((. Unit in) ((. Unit of) #\"kilometer\") \
+                     (: ((. Qty of) 1 ((. Unit of) #\"kilometer\")) (Qty Int64 ((. Unit of) #\"meter\"))))) \
+                     (export main))"
+                )))
+                .expect("the annotated km round-trips to km as identity"),
+                "main"
+            ),
+            1,
+            "1 km annotated at meter, back to km, is the identity 1 (rebrand gave 0)"
+        );
+        // A combine with a real km operand keeps the annotated value at its own km scale: 1km + 2km = 3km
+        // = 3000 m (rebrand gave 2001: annotated entered as 1 m + a silently-converting mixed add).
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(
+                    "(do (def (main) ((. Unit in) ((. Unit of) #\"meter\") \
+                     (+ (: ((. Qty of) 1 ((. Unit of) #\"kilometer\")) (Qty Int64 ((. Unit of) #\"meter\"))) \
+                        ((. Qty of) 2 ((. Unit of) #\"kilometer\"))))) (export main))"
+                )))
+                .expect("an annotated quantity combines at its own scale"),
+                "main"
+            ),
+            3000,
+            "1 km + 2 km = 3 km = 3000 m (rebrand gave 2001 via a silent mixed-scale bypass)"
+        );
+    }
+
+    #[test]
     fn an_if_join_over_different_unit_quantities_names_the_scale_not_a_shadowed_declaration() {
         // Two same-dimension quantities at DIFFERENT units (km vs m) are distinct `(Qty T u)` types (the
         // unit carries the scale), so an if-join rejects them CDZ0203 — but BOTH render to
@@ -42669,6 +42724,30 @@ mod stage1 {
             None
         );
         assert_eq!(code("(let (((tuple a _) (tuple 3 9))) a)"), None);
+        // A `..` REST MARKER in a tuple pattern is rejected CDZ0201 (was SILENTLY SWALLOWED — `..` counted
+        // as a positional element, so `(tuple a .. r)` matched a 3-tuple and bound `..`/`r` as ordinary
+        // sub-patterns). A tuple has fixed arity; `..` is a LIST construct. Both binding positions (`let`)
+        // and match arms are covered (the binding arm routes through the same `pattern_constraints`).
+        assert_eq!(
+            code("(let (((tuple a .. r) (tuple 1 2 3))) a)").as_deref(),
+            Some("CDZ0201"),
+            "a `..` in a let-binding tuple pattern is rejected"
+        );
+        let rest_msg = msg("(let (((tuple a .. r) (tuple 1 2 3))) a)").unwrap_or_default();
+        assert!(
+            rest_msg.contains("a tuple pattern has fixed arity")
+                && rest_msg.contains("`..`")
+                && rest_msg.contains("(list a .. rest)"),
+            "the `..`-in-tuple reject names the fixed-arity reason + the list alternative: {rest_msg}"
+        );
+        // NO false positive: a `..` in a nested LIST element of a tuple pattern is fine — only a `..` that
+        // is a DIRECT element of the tuple is rejected. (`(tuple (list a .. r1) …)`'s `..` belongs to the
+        // inner list, not the tuple.)
+        assert_eq!(
+            code("(let (((tuple (list a .. r1) c) (tuple (list 1 2) 3))) c)"),
+            None,
+            "a `..` inside a nested list element of a tuple pattern is valid"
+        );
     }
 
     #[test]
@@ -67500,6 +67579,63 @@ mod cross_component_oracle {
                 "a peer-returned BigInt crosses as a handle; value-equality holds across the boundary"
             ),
             cdz_run::Outcome::Trap(t) => panic!("bigint-result run trapped: {t}"),
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // PL26 — a peer op returning a NESTED compound `(Tuple (List Int64) Int64)` crosses as ONE handle,
+    // and the consumer projects the nested collection out + reads it. The prior result pins were FLAT
+    // (a Tuple of scalars, or a bare List); this exercises a compound CONTAINING a collection — the
+    // whole nesting crosses as a single u32 handle, element 0 (a nested List) is reachable via `(. t 0)`
+    // and its `List.len` works over the shared runtime. nest(5)=([5,5,5], 6) → len(3) + 6 = 9.
+    // ------------------------------------------------------------------------------------------------
+    #[test]
+    fn a_peer_op_returning_a_nested_compound_crosses_and_is_projected() {
+        use crate::testkit::parse;
+        // PROVIDER: nest(x) = (tuple (list x x x) (x+1)) — a tuple whose first element is a List.
+        let provider = compile_provider(
+            "(do (def (nest (: x Int64)) (tuple (list x x x) (+ x 1))) (export nest))",
+            "cadenza:n/api",
+        );
+        // CONSUMER: projects the nested List (element 0), reads its length, and adds the scalar element 1.
+        let src = "(do \
+            (effect N (op nest (-> Int64 (Tuple (List Int64) Int64)))) \
+            (bind N \"cadenza:n/api\") \
+            (def (main (: x Int64)) \
+              (host (N) (+ (List.len (. (N.nest x) 0)) (. (N.nest x) 1)))) \
+            (export main))";
+        let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .unwrap_or_else(|d| {
+                panic!(
+                    "nested-compound consumer compiles: {} [{:?}]",
+                    d.message, d.code
+                )
+            });
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("[PL26] runtime wasm not found; skipping");
+            return;
+        };
+        let peers = vec![cdz_run::Peer {
+            bytes: provider,
+            interface: "cadenza:n/api".to_string(),
+        }];
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec!["5".to_string()],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run_with_peers(&consumer, &peers, &opts)
+            .expect("a peer op returning a nested compound crosses")
+        {
+            // nest(5) = ([5,5,5], 6); the consumer reads len([5,5,5])=3 + 6 = 9. The nested List inside
+            // the crossed tuple handle is reachable via projection over the shared runtime.
+            cdz_run::Outcome::Value(s) => assert_eq!(
+                s, "9",
+                "a nested compound crosses as one handle; the nested collection is projectable + readable"
+            ),
+            cdz_run::Outcome::Trap(t) => panic!("nested-compound run trapped: {t}"),
         }
     }
 

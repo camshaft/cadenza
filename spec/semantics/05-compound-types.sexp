@@ -4400,6 +4400,33 @@
   (call   main)
   (output (: 10 Int64)))
 
+; --- A partial constructor in a GENUINELY-RUNTIME compound element DECLINES cleanly (reject-don't-miscompile) ---
+; The cases above hold the partial ctor in a COMPILE-TIME-VISIBLE compound (a literal / let-bound tuple or
+; record), so `peel_ref_annot` follows the projection to the ctor spine and completes it to a flat variant.
+; But when the tuple is built behind a RECURSIVE call (opaque to the fold), the partial ctor `(T.Mk 10)` is a
+; genuine RUNTIME first-class value — completing it needs a runtime eta-closure lift the compiler does not yet
+; build. It DECLINES cleanly (`todo`) rather than emit the malformed value. This was a MISCOMPILE: a
+; single-variant sum (a NEWTYPE) applied SHORT of arity erased to its partial payload (`(T.Mk 10)` → the bare
+; `10`, dropping the arity check), so the tuple stored a raw i64 where a closure handle belonged and the
+; downstream project+apply `call_indirect`'d it → INVALID WASM (`func N: type mismatch: expected i32, found
+; i64`, un-instantiable component from a check-clean program). The fix moved the partial-arity guard AHEAD of
+; newtype-erasure in `lower_sum_new`, so a partial ctor of ANY sum (newtype or not) declines. Intended value
+; when the runtime eta-lift lands: `(T.Mk 10 5)` → `(+ a b)` = 15.
+(case "a partial constructor in a runtime tuple element declines cleanly (was invalid wasm)"
+  (doc    "`(mk n)` builds `(tuple (T.Mk 10) n)` behind a recursive `if` so the tuple is genuinely runtime;
+           `(let ((p (mk 1))) ((. p 0) 5))` projects the partial ctor `(T.Mk 10)` and applies `5`. The value
+           is not statically visible, so the compiler cannot complete the ctor spine — it DECLINES (a `todo`)
+           rather than emit the malformed value. Was a MISCOMPILE: the newtype `T` erased `(T.Mk 10)` to the
+           bare `10`, so the project+apply produced invalid wasm (`func N: expected i32, found i64`). Intended
+           value once the runtime eta-closure lift exists: `(T.Mk 10 5)` → 15.")
+  (input  (do
+            (type T (Mk Int64 Int64))
+            (def (mk (: n Int64)) (if (< n 0) (tuple (T.Mk 0) 0) (tuple (T.Mk 10) n)))
+            (def (main) (let ((p (mk 1))) (match ((. p 0) 5) ((T.Mk a b) (+ a b)))))
+            (export main)))
+  (call   main)
+  (output (: 15 Int64)))
+
 ; --- A compound bound from a sum payload, extracted ACROSS A FUNCTION BOUNDARY, then projected ---
 ; A value bound out of a sum payload carries its shape WITHIN THE MATCH ARM (the payload-bound cases
 ; above project fields, index lists, and re-match variants inside the arm). But when the payload

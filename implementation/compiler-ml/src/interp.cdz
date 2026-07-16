@@ -65,11 +65,18 @@ def interp-shadowing() =
   else
     trap("inner let shadows outer")
 
-// NOTE: `let x = 1 in ((let x = 2 in x) + x)` SHOULD be 3 (2 + 1 — the outer x stays 1 after the inner
-// let's body), but currently MISCOMPILES to 4: a `Map.insert(env, …)` in the left operand's recursion
-// MUTATES the shared `env` param, so the right operand's `x` reads 2. Withheld until the seed bug is
-// fixed — see `mlrepro-miscompile-map-insert-mutates-shared-recursive-param.sexp` (queue). (`interp-shadowing`
-// above passes because there the inner binding is the ONLY use of the env after insertion.)
+@test
+def interp-shadow-does-not-leak-into-sibling() =
+  // REGRESSION: `let x = 1 in ((let x = 2 in x) + x)` is 3 (2 + 1) — the inner `let x = 2` shadows only
+  // WITHIN its own body; the trailing `x` still reads the OUTER 1. This once MISCOMPILED to 4 — a
+  // `Map.insert(env, …)` in the left operand's recursion mutated the SHARED `env` param, so the right
+  // operand's `x` wrongly read 2 (queue: mlrepro-miscompile-map-insert-mutates-shared-recursive-param,
+  // now RESOLVED — the seed aliasing bug was fixed, so this is enabled as a live guard). Distinct from
+  // `interp-shadowing` above, where the inner binding is the ONLY use of the env after insertion (so the
+  // aliasing could not be observed and it passed even while this case failed).
+  let inner = Expr.Let("x", Expr.Num(2), Expr.Var("x")) in
+  let e = Expr.Let("x", Expr.Num(1), Expr.Add(inner, Expr.Var("x"))) in
+  if run(e) == 3 then unit else trap("inner-let shadow must not leak into a sibling operand: 2 + 1 = 3")
 
 @test
 def interp-rhs-sees-outer-scope() =

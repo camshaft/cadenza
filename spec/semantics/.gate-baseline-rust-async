@@ -29,8 +29,15 @@ pass	Set.remove of a rope-element set built via Set.of lowers the cardinality
 pass	Set.to-list enumerates the elements as a List in canonical (sorted) order
 pass	Set.to-list length is the set's cardinality (deduped)
 pass	Set.to-list of a runtime-empty but element-typed set is the empty list
+pass	String.from-bytes accepts a two-byte sequence split across a concat seam
+pass	String.from-bytes decodes a RUNTIME byte sequence built by a recursive appender
+pass	String.from-bytes decodes a multibyte RUNTIME Bytes ROPE, flattening before validation
+pass	String.from-bytes of an ill-formed RUNTIME byte sequence yields None (never traps)
+pass	String.from-bytes rejects a lone continuation byte
+pass	String.from-bytes rejects an overlong encoding
 pass	String.scalar-len of a string selected by a runtime if
 pass	String.scalar-len of a string selected by a runtime match
+pass	String.to-bytes of a genuinely-runtime string yields its UTF-8 byte length
 pass	String.to-bytes of a runtime string threaded through recursion round-trips its bytes
 pass	TWO performs in an if condition both fold on the strict-first spine
 pass	Type.eq compares a reflected type against a written type
@@ -195,6 +202,7 @@ pass	a built-in Ast.Str constructor applied to a wrong-type payload is a type er
 pass	a built-in Option is unwrapped by a helper that binds its payload
 pass	a built-in Option tuple payload consumed INLINE in the Some arm projects
 pass	a built-in Result whose two type arguments DIFFER is matched on both variants
+pass	a byte of a runtime string's encoding is its exact UTF-8 value, not merely the right count
 pass	a byte sequence carrying a runtime byte value is a first-class value
 pass	a byte sequence is constructed from a list of integers in range
 pass	a byte sequence written as a literal renders back to the same literal
@@ -274,6 +282,7 @@ pass	a constructor selected at RUNTIME is a first-class value that is then appli
 pass	a constructor whose payload is a constructor keeps the outer variant tag
 pass	a constructor with an all-irrefutable payload shadows a later refining arm of the same variant
 pass	a consumed bare None type-checks without annotation (ambiguity is escape-only)
+pass	a consumed empty list type-checks without annotation (ambiguity is escape-only)
 pass	a consuming op inside a hoisted list element respects a still-live binding
 pass	a consuming op on a still-live binding inside one match arm's payload keeps its retain
 pass	a correctly-annotated function parameter is accepted
@@ -554,6 +563,7 @@ pass	a list-carrying recursion whose base arm does a fallible indexed read compi
 pass	a list-concatenating helper threads lists through a call
 pass	a list-payload split missing the empty arm is non-exhaustive
 pass	a list-payload split missing the non-empty arm is non-exhaustive
+pass	a list-scrutinee match arm whose head is an unbound name is rejected in a recursive body (CDZ0101)
 pass	a literal arm wins over a later guard arm that also matches
 pass	a literal in a let binder is refutable and rejected
 pass	a literal inside a NESTED constructor pattern refines the match
@@ -987,7 +997,9 @@ pass	a returned runtime string with a multi-byte scalar renders the scalar verba
 pass	a returned runtime string with a non-printable scalar renders it verbatim, not a u-escape
 pass	a right shift by a floating-point count does not silently promote
 pass	a right shift by the bit width or more traps rather than masking
+pass	a run-time-index scalar read is present in bounds and absent out of bounds
 pass	a runtime BigInt operation does not silently promote a fixed-width operand
+pass	a runtime Float32 addition emits the f32 machine add
 pass	a runtime List built past 32 elements reads correctly by index across the RRB leaf-to-trie boundary
 pass	a runtime Option carrying a user sum is matched by a nested constructor pattern
 pass	a runtime Result carrying a String error is matched
@@ -1012,6 +1024,7 @@ pass	a runtime float addition emits the machine add
 pass	a runtime float division rounds under the fixed mode
 pass	a runtime float multiplication emits the machine mul
 pass	a runtime float promotes to a wider width with the machine promote
+pass	a runtime float subtraction emits the machine sub
 pass	a runtime greater-than compares by signed order
 pass	a runtime greater-than-or-equal holds at the equal-operand boundary
 pass	a runtime increment traps exactly at the maximum integer
@@ -1049,6 +1062,7 @@ pass	a runtime square multiply traps exactly past the Int64 square-root boundary
 pass	a runtime string bound from a sum payload compares equal to a string parameter
 pass	a runtime string compared against a literal folds against the literal side
 pass	a runtime string equality selects a branch by comparing a parameter to a literal
+pass	a runtime string is indexed by scalar and the extracted scalar is returned
 pass	a runtime string is sliced by scalar offsets
 pass	a runtime string returned across the run boundary renders as its quoted text
 pass	a runtime string slice addresses scalar values, not bytes
@@ -1416,6 +1430,7 @@ pass	an all-nullary enum reached through a tuple element inside a boxed sum surv
 pass	an all-wildcard tuple arm is a catch-all that shadows a later refining arm
 pass	an annihilator identity folds to zero when its operand is trap-free
 pass	an annotated destructuring let binder
+pass	an annotated empty list escapes fine (the undetermined-empty-list control)
 pass	an annotated escaped None renders its canonical nullary-variant form (the control)
 pass	an annotated let binder constrains the value's type
 pass	an annotated let binder range-checks its narrow-width bound value
@@ -1461,6 +1476,7 @@ pass	an element pattern matches a list by its length and elements
 pass	an element read across a concatenation boundary is the right value
 pass	an empty binary form is the empty byte sequence
 pass	an empty byte-string literal is the empty byte sequence
+pass	an empty list escaping to the host is rejected as undetermined, like a bare None
 pass	an empty map is unequal to a non-empty map, not a type error
 pass	an empty quote is rejected, not a crash
 pass	an empty scrutinee matches an empty bin pattern
@@ -1632,6 +1648,7 @@ pass	chained guards of the same variant are tried in order
 pass	char to-int and from-int round-trip through the scalar value
 pass	checked addition yields None on overflow instead of trapping
 pass	checked addition yields Some of the sum when it fits
+pass	checked minus traps where wrapping-sub wraps on the same inputs
 pass	checked multiplication reports overflow as None
 pass	checked multiplication yields Some when it fits
 pass	checked subtraction yields None on underflow instead of trapping
@@ -1699,6 +1716,8 @@ pass	decode of a Str tag with an oversized length yields the error case
 pass	decode of a truncated Float tag yields the error case, not a trap
 pass	decode of an unknown tag byte yields the error case
 pass	decoding a four-byte sequence for a code point above U+10FFFF yields none
+pass	decoding a runtime ROPE Bytes as UTF-8 flattens before validating (well-formed)
+pass	decoding a runtime ROPE Bytes that is ill-formed yields none
 pass	decoding a surrogate code point encoded as UTF-8 yields none
 pass	decoding an encoded string round-trips to the same bytes (the inverse direction)
 pass	decoding an overlong UTF-8 encoding yields none
@@ -1981,11 +2000,13 @@ pass	resolving a head against a prelude symbol rejects a length-mismatched prefi
 pass	resolving a name in a shadowing environment returns the innermost binding's slot
 pass	resuming with a value of the wrong type for the operation's result is a type error
 pass	resuming with a wrong-type value for a compound result type is a type error
+pass	runtime Bytes value-equality distinguishes different content
 pass	runtime float equality compares by canonical byte form
 pass	runtime float inequality compares by canonical byte form
 pass	runtime structural equality over a GENERIC RECURSIVE sum walks the whole tree
 pass	runtime structural equality over a payload-carrying sum agrees on both backends
 pass	runtime tuple concatenation preserves element order across the seam
+pass	runtime wrapping subtraction wraps at both sign extremes
 pass	same-arity tuple match arms share an equal element and sink the differing one
 pass	same-key-set record match arms share an equal field and sink the differing one
 pass	same-length list match arms share an equal element and sink the differing one
@@ -2215,6 +2236,7 @@ pass	two performs of a MULTI-parameter op each combine both args with the state 
 pass	two rationals denoting the same number are equal regardless of how they were written
 pass	two recursion-built linked lists compare equal by a deep heap walk
 pass	two recursion-built linked lists of different lengths compare unequal by a heap walk
+pass	two runtime Bytes values of equal content compare equal (rope vs flat)
 pass	two runtime Ok values of a multi-parameter sum compare equal by a heap walk
 pass	two runtime records compare equal by a heap walk
 pass	two runtime strings compare equal by their contents
@@ -2375,13 +2397,6 @@ todo	Qty.unit recovers a quantity's unit to build another quantity of the same u
 todo	SUM ARG + LIST RESULT declines cleanly (Option arg, List result)
 todo	Set.to-list over a RUNTIME-built set yields canonical order (first element is the minimum)
 todo	Set.to-list over a runtime set sums its distinct elements
-todo	String.from-bytes accepts a two-byte sequence split across a concat seam
-todo	String.from-bytes decodes a RUNTIME byte sequence built by a recursive appender
-todo	String.from-bytes decodes a multibyte RUNTIME Bytes ROPE, flattening before validation
-todo	String.from-bytes of an ill-formed RUNTIME byte sequence yields None (never traps)
-todo	String.from-bytes rejects a lone continuation byte
-todo	String.from-bytes rejects an overlong encoding
-todo	String.to-bytes of a genuinely-runtime string yields its UTF-8 byte length
 todo	THREE Tuple args cross the direct-call boundary
 todo	THREE Tuple args with a LIST result
 todo	TWO Record args cross the direct-call boundary
@@ -2484,7 +2499,6 @@ todo	a boxed runtime closure taking Unit (a lazy thunk) is forced without declin
 todo	a branching recursive tree fold infers its unannotated callback across both arms
 todo	a build-time delegated effect whose result a returned closure captures does not escape
 todo	a built-in comparison on an abstract type's value is rejected outside its module
-todo	a byte of a runtime string's encoding is its exact UTF-8 value, not merely the right count
 todo	a camelCase round-trip resolves through kebab boundary-name normalization
 todo	a camelCase same-signature multi-export normalizes each make-<name>
 todo	a capturing 32-bit-integer closure crosses and is called
@@ -2698,7 +2712,6 @@ todo	a round-trip consumer takes the non-applying match arm
 todo	a round-trip consumer that does NOT apply the closure on the taken branch
 todo	a run's result is a deterministic function of a host call's recorded response
 todo	a run-time-index String.at result compares equal to the same character as a literal
-todo	a run-time-index scalar read is present in bounds and absent out of bounds
 todo	a runtime BigInt accumulator threaded through recursion grows past Int64
 todo	a runtime BigInt comparison sees an intermediate that overflows Int64
 todo	a runtime BigInt divide crosses the host boundary as its truncated quotient
@@ -2730,7 +2743,6 @@ todo	a runtime set-difference result escapes to the host as its value form
 todo	a runtime set-union result escapes to the host as its value form
 todo	a runtime signed little-endian segment lays the low byte first
 todo	a runtime signed little-endian segment round-trips a negative value
-todo	a runtime string is indexed by scalar and the extracted scalar is returned
 todo	a runtime string rope compared through a borrowed operand
 todo	a runtime string rope compares equal to its flat twin
 todo	a runtime string rope inserted into a set is a member
@@ -2823,8 +2835,6 @@ todo	converting a scalar-valued integer to a char yields Some
 todo	converting a surrogate code point to a char yields None
 todo	converting a unit to another unit of the same dimension is an exact rational scale
 todo	converting an out-of-range integer to a char yields None
-todo	decoding a runtime ROPE Bytes as UTF-8 flattens before validating (well-formed)
-todo	decoding a runtime ROPE Bytes that is ill-formed yields none
 todo	dimensional equality is decided by canonical exponent map, not written form
 todo	distinct signatures sharing a core valtype shape dispatch distinct bodies
 todo	distinct-sig byte-rope closure alongside a plain export — the closure
@@ -2962,6 +2972,7 @@ todo	the empty and None arms of a list-payload split dispatch to their own value
 todo	the generated-set convergence property has discriminating power — two different generated sets are NOT equal
 todo	the program manifest is the union of its entrypoints' delegations
 todo	the round trip tracks the produced closure's captured value
+todo	the runtime UTF-8 encoding of a string equals its exact byte literal
 todo	the same declared effect is handled in-program by one entrypoint and delegated by another
 todo	the same program with a different response gives a different deterministic result
 todo	the same-core-shape sibling dispatches ITS body, not the first

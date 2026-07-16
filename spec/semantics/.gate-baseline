@@ -1575,6 +1575,8 @@ pass	a runtime-scrutinee match with a bare-binder first arm and a differently-ty
 pass	a runtime-selected closure survives as a value threaded through a recursive HOF (false branch)
 pass	a runtime-selected closure survives as a value threaded through a recursive HOF (true branch)
 pass	a runtime-selected function chosen directly at the application head is applied
+pass	a same-dimension annotation is the identity under its own unit's conversion
+pass	a same-dimension annotation preserves the value's own scale through a conversion
 pass	a same-dimension quantity annotation whose inner numeric type differs is still an error
 pass	a same-type sum match is accepted and binds the payload (the control)
 pass	a same-unit quantity join flows and its magnitude reads back
@@ -1940,6 +1942,7 @@ pass	an annotated escaped None renders its canonical nullary-variant form (the c
 pass	an annotated let binder constrains the value's type
 pass	an annotated let binder range-checks its narrow-width bound value
 pass	an annotated let binder that contradicts the value is rejected
+pass	an annotated quantity joins additions at its own scale, no silent mixed-scale bypass
 pass	an annotated tuple-pattern parameter binds its pattern's names
 pass	an annotated tuple-pattern parameter still checks its annotation against the argument
 pass	an annotated value takes a narrower integer width
@@ -3005,5 +3008,6 @@ pass	wrapping-sub on a runtime Int8 wraps at its signed min boundary
 pass	wrapping-sub on a runtime UInt8 wraps modulo 256
 pass	wrapping-sub wraps a boundary-crossing runtime Int64 at the min boundary
 todo	SUM ARG + LIST RESULT declines cleanly (Option arg, List result)
+todo	a partial constructor in a runtime tuple element declines cleanly (was invalid wasm)
 todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional

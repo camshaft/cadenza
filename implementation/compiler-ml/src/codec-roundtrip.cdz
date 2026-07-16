@@ -16,7 +16,9 @@
 /// reaches bit 63 — even for the valid value `1 << 63` (= Int64.min), and inconsistently with `&`/`|`/`^`
 /// which set the sign bit freely. Filed as a language issue (queue: left-shift-traps-into-sign-bit); once
 /// `<<` shifts like the other bit ops the leaf can widen. The cases here stay within the 0..255 leaf range
-/// the format guarantees. (The Name/Str CONTENT round-trip — the point of this witness — is exact at any length.)
+/// the format guarantees. The Name/Str CONTENT round-trip — the point of this witness — is exact UP TO the
+/// 255-byte length-prefix cap (a longer string now TRAPS in `str-payload` rather than truncating its
+/// length; Copilot PR #433/#434), which is ample for any compiler symbol.
 
 import { round-trip } from "encode"
 import { ast-eq } from "ast-eq"

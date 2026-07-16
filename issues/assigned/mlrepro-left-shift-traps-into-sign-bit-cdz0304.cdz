@@ -41,3 +41,34 @@ def or-reaches-sign-bit-fine() =
   if (Int64.min | 5) == (0 - 9223372036854775803) then unit else trap("| reaches the sign bit")
 
 export { hi-byte }
+
+// ═══ VERDICT (v-wasm-opt, 2026-07-16): NON-BUG — the "EXPECTED" contradicts the pinned spec ═══
+// This repro's premise is WRONG. `<<` overflow-trapping is CORRECT, intended, and corpus-pinned:
+//   • numeric-model.md §Overflow Is Defined: an integer op that overflows its type traps under the
+//     checked default. A left shift is EXACT multiplication by 2^k, so an overflowing `<<` traps exactly
+//     like an overflowing `*` (per the §, and the seed landed `<<` as a guarded op deliberately).
+//   • The gate ALREADY PINS a passing case "a runtime overflowing left shift traps" (spec/semantics/
+//     .gate-baseline + .gate-baseline-rust-async). Making `<<` wrap would REGRESS that pin.
+//   • The strength-reduction `x * 2^k → x << k` (select.rs) DEPENDS on `<<` trapping like `*`; a wrapping
+//     `<<` would make that rewrite UNSOUND (mul traps on overflow, a wrapping shift would not).
+// So `1 << 63 → CDZ0304` is correct. `&`/`|`/`^` differ because they are TOTAL on the two's-complement
+// value (no value leaves the type), whereas `<<` can push bits OUT of the type — an overflow, like `*`.
+//
+// The repro's claim "the same rejection fires when the shifted operand is runtime-valued" is FALSE
+// (verified 2026-07-16): a RUNTIME shift `(<< b 56)` COMPILES and traps at RUNTIME only on actual
+// overflow — b=128 traps (128<<56 overflows), b=1 yields 72057594037927936 (in range). The repro
+// conflated the compile-time CONSTANT reject (`1<<63` is provably-overflowing → CDZ0304) with the
+// runtime path (which is correct). So the codec-decoder use case (a runtime byte into the high bits)
+// ALREADY WORKS whenever the shift stays in range; it only traps when the composed value genuinely
+// overflows Int64 — which a faithful decoder avoids by masking/using the right width.
+//
+// LEGITIMATE KERNEL → a PRELUDE/DESIGN request, not a bug: if a program wants to PLACE bits into the
+// sign position without trapping (a full-width mask `1<<63`, or an aggressive bit-packer), the spec
+// answer is a WRAPPING shift op — the shift analogue of the existing `wrapping-mul`/`wrapping-add`
+// (numeric-model.md §a named wrapping form). `Prim::Shl` exists; there is NO `Prim::WrappingShl`. Adding
+// a `wrapping-shl` (bitwise, non-trapping, `<<` mod 2^width) would give `1 wrapping-shl 63 == Int64.min`
+// cleanly WITHOUT weakening the trapping default or the strength-reduction. That is a numeric-model +
+// prelude increment (design/v-inference/numeric), NOT a wasm-backend fix.
+//
+// RECOMMEND: mark NON-BUG for the "<< should wrap" ask; re-file the wrapping-shl prelude op as a design
+// item. No wasm-opt change; reject-don't-miscompile + the trapping default both hold.

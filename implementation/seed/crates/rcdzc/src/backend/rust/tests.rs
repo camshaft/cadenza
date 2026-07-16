@@ -655,6 +655,71 @@ fn rustc_roundtrip_bytes_build_read_and_string_concat_run() {
 }
 
 #[test]
+fn runtime_string_ops_emit_native_str_operations() {
+    // StrAt → scalar-indexed `.chars().nth(i).map(to_string)`; StrFromBytes → `from_utf8().ok()`;
+    // StrToBytes → `.into_bytes()`.
+    let at = compile_rust(
+        "(module m (def (f (: n Int64)) (if (= n 0) \"hi\" (f (+ n -1)))) \
+           (def (g (: i Int64)) (match (String.at (f 1) i) ((Some c) 1) ((None _) 0))) (export g))",
+    );
+    assert!(
+        at.contains(".chars().nth(") && at.contains(".to_string()"),
+        "String.at is scalar-indexed:\n{at}"
+    );
+    let fb = compile_rust(
+        "(module m (def (f (: n Int64)) (if (= n 0) (Bytes.of (list 104 105)) (f (+ n -1)))) \
+           (def (g) (match (String.from-bytes (f 1)) ((Some s) 1) ((None _) 0))) (export g))",
+    );
+    assert!(
+        fb.contains("String::from_utf8(") && fb.contains(".ok()"),
+        "String.from-bytes uses from_utf8().ok():\n{fb}"
+    );
+    let tb = compile_rust(
+        "(module m (def (f (: n Int64)) (if (= n 0) (String.concat \"a\" \"b\") (f (+ n -1)))) \
+           (def (g) (Bytes.len (String.to-bytes (f 1)))) (export g))",
+    );
+    assert!(
+        tb.contains(".into_bytes()"),
+        "String.to-bytes uses into_bytes:\n{tb}"
+    );
+}
+
+#[test]
+fn rustc_roundtrip_string_at_is_scalar_indexed_and_from_bytes_validates() {
+    // StrAt indexes by SCALAR VALUE, not byte: in "café", scalar 3 is 'é' (a 2-byte UTF-8 char). Read it
+    // back and measure its byte length (2), proving scalar-not-byte addressing; an OOB index → None → -1.
+    let at = compile_rust(
+        "(module m (def (f (: n Int64)) (if (= n 0) \"café\" (f (+ n -1)))) \
+           (def (mk (: i Int64)) (match (String.at (f 1) i) ((Some c) (Bytes.len (String.to-bytes c))) ((None _) -1))) \
+           (export mk))",
+    );
+    if let Some(out) = rustc_run(&at, "mk(3)") {
+        assert_eq!(out, "2", "scalar 3 of 'café' is 'é', a 2-byte UTF-8 char");
+    }
+    if let Some(out) = rustc_run(&at, "mk(9)") {
+        assert_eq!(out, "-1", "an out-of-range scalar index is None");
+    }
+    // String.from-bytes decodes valid UTF-8 to Some, and rejects a lone continuation byte (0x80) to None.
+    let fb = compile_rust(
+        "(module m \
+           (def (f (: n Int64)) (if (= n 0) (Bytes.of (list 104 105)) (f (+ n -1)))) \
+           (def (bad (: n Int64)) (if (= n 0) (Bytes.of (list 128)) (bad (+ n -1)))) \
+           (def (mk (: which Int64)) \
+              (match (String.from-bytes (if (= which 0) (f 1) (bad 1))) ((Some s) (Bytes.len (String.to-bytes s))) ((None _) -1))) \
+           (export mk))",
+    );
+    if let Some(out) = rustc_run(&fb, "mk(0)") {
+        assert_eq!(out, "2", "valid UTF-8 'hi' decodes to a 2-byte string");
+    }
+    if let Some(out) = rustc_run(&fb, "mk(1)") {
+        assert_eq!(
+            out, "-1",
+            "a lone continuation byte is rejected → None (never traps)"
+        );
+    }
+}
+
+#[test]
 fn an_ill_formed_integer_width_is_rejected_not_declined() {
     // An out-of-range integer WIDTH (negative/non-natural, or over-ceiling `(UInt 65)`) is an ILL-FORMED
     // TYPE, not a target limitation — a boundary of that type must REJECT (CDZ0302), the SAME outcome the

@@ -527,6 +527,22 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
         Resolved::Annot { expr, ty_expr } => match crate::eval::typeval_of(db, ty_expr) {
             Some(annot_ty) => {
                 let expr_ty = type_of(db, expr);
+                // A QUANTITY annotation is a pure DIMENSION CHECK — it must NOT rebrand the value's unit.
+                // `(: (Qty.of 1 kilometer) (Qty Int64 meter))` checks that km and meter share a dimension
+                // (the check lives in `check_application`), but the value STAYS `1 km` downstream — the
+                // annotation names the dimension, it does NOT normalize/coerce the magnitude to the
+                // annotation's unit. Returning `annot_ty` here (the general grounding behavior below)
+                // REBRANDED it to `(Qty Int64 meter)`, so `1 km` was silently reinterpreted as `1 meter`
+                // and then combined with real km quantities WITHOUT the mixed-unit conversion (a
+                // high-severity miscompile: `(: (1 km) meter) + 2 km` gave 2001 m, not 3000 m — the units
+                // safety promise inverted). So when both sides are quantities of the SAME dimension, keep
+                // the EXPRESSION's type (its own unit/scale intact); a cross-dimension conflict is a fault
+                // `check_application` reports (CDZ0501) and the value column stays whatever `expr` derived.
+                if let (Ty::Qty { unit: au, .. }, Ty::Qty { unit: eu, .. }) = (&annot_ty, &expr_ty)
+                    && au.same_dimension(eu)
+                {
+                    return expr_ty;
+                }
                 let mut subst = Subst::new();
                 let _ = crate::unify::unify(&mut subst, &annot_ty, &expr_ty);
                 subst.apply(&annot_ty)

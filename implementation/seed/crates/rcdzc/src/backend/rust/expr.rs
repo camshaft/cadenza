@@ -1165,6 +1165,36 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         // and owned, so on the native rep this is a NO-OP: return the operand (the rope-flatten the wasm
         // runtime does has no analogue for a `Vec`).
         Core::BytesCompact { operand } => emit(db, operand, env, ctx),
+        // `String.at`/`String.scalar-at` on a RUNTIME string → the i-th UNICODE SCALAR, fallibly, as a
+        // one-scalar `(Option String)`. `.chars()` iterates by scalar value (matching the spec's
+        // scalar-value addressing — NOT bytes), `.nth(i)` picks it, `.map(to_string)` wraps the scalar as
+        // a one-scalar String → native `Option<String>`. A negative index → a huge `usize` → `nth` returns
+        // None (total, matching the runtime's out-of-range → None). The char-payload variant is the same
+        // slice at the source; here the result is always `(Option String)`.
+        Core::StrAt { string, index, .. } => {
+            let s = emit(db, string, env, ctx)?;
+            let i = emit(db, index, env, ctx)?;
+            Ok(format!(
+                "{{ let __s = {s}; let __i = ({i}) as usize; __s.chars().nth(__i).map(|__c| __c.to_string()) }}"
+            ))
+        }
+        // `String.from-bytes` on a RUNTIME `Bytes` → the TOTAL UTF-8 decode `Bytes → (Option String)`.
+        // Rust's `String::from_utf8` performs EXACTLY the strict validation the runtime `str-from-bytes`
+        // does — rejecting invalid bytes, overlong encodings, AND surrogate code points (the three spec
+        // failure modes) — and `.ok()` maps the `Result` to `Option<String>` (None on failure, never a
+        // trap). Consumes the `Vec<u8>` (matching the runtime's consume).
+        Core::StrFromBytes { bytes, .. } => {
+            let b = emit(db, bytes, env, ctx)?;
+            Ok(format!("String::from_utf8({b}).ok()"))
+        }
+        // `String.to-bytes` on a RUNTIME `String` → the UTF-8 encoding `String → Bytes`. A String IS a
+        // UTF-8 byte sequence, so `String::into_bytes` is the total, no-op-cost encoding (consumes the
+        // String, yields the `Vec<u8>` the `Ty::Bytes` result maps to). The rust-native twin of the
+        // runtime's `bytes-compact`-based flatten (no rope to materialize — a `String` is already flat).
+        Core::StrToBytes { string } => {
+            let s = emit(db, string, env, ctx)?;
+            Ok(format!("({s}).into_bytes()"))
+        }
         // A SUM VALUE CONSTRUCTION → the Rust enum variant `<Enum>::<Variant>(payloads…)`. The enum +
         // variant names come from the node's solved `Ty::Sum` declaration at the disc's index (the
         // discriminant IS the variant's declaration-order position). A nullary variant is the bare
@@ -1320,9 +1350,6 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         Core::Trap => Ok("panic!(\"unreachable\")".to_string()),
         Core::ConstChar(_)
         | Core::ConstFloatNan
-        | Core::StrAt { .. }
-        | Core::StrFromBytes { .. }
-        | Core::StrToBytes { .. }
         // Runtime BigInt (a heap leaf + the runtime `bigint-*` ops) has no native Rust rendering yet —
         // the rust backend would need a Rust bignum runtime. Declines cleanly (a constant BigInt folds
         // and reaches this backend as a `Core::ConstInt`, which emits fine).

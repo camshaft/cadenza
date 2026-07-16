@@ -118,6 +118,15 @@ enum Cmd {
     /// path/to/Project.cdz` builds that project. For a single loose file, use `cdz compile <file>`.
     Build(BuildArgs),
 
+    // ── project metadata ──────────────────────────────────────────────────────────────────────────
+    /// Print the resolved project manifest as JSON (the `cargo metadata` analogue) — a machine-readable
+    /// description of the project for editors, build tools, and scripts. Resolves the same `Project.cdz`
+    /// as `cdz build`/`cdz test` and emits one object: the manifest's raw fields (`name`, `entry`,
+    /// `opt_level`, and the `modules`/`tests`/`exclude` PATTERNS) plus their RESOLVED glob-expanded file
+    /// sets (`entry_file`, `module_files`, `test_files`), so a consumer sees both intent and concrete
+    /// files without re-implementing glob resolution.
+    Metadata(MetadataArgs),
+
     // ── project scaffold ────────────────────────────────────────────────────────────────────────
     /// Scaffold a new PROJECT (the `cargo new` analogue): create `<name>/` with a `Project.cdz`
     /// manifest naming the entry, and a minimal buildable entry file. `cdz new my-app` then `cd my-app
@@ -231,6 +240,7 @@ fn main() -> ExitCode {
         // `cdz calc` — mounted from the `cdz-calc` lib; the same code the standalone `cdz-calc` bin runs.
         Cmd::Calc(a) => cdz_calc::cli::run(&a, PROG),
         Cmd::Build(a) => run_build(&a),
+        Cmd::Metadata(a) => run_metadata(&a),
         Cmd::New(a) => run_new(&a),
         Cmd::Init(a) => run_init(&a),
         Cmd::Completions(a) => run_completions(&a),
@@ -647,6 +657,120 @@ fn resolve_build_opt_level(
         return Ok(rcdzc::OptLevel::O2);
     }
     Ok(rcdzc::OptLevel::default())
+}
+
+// ── project metadata ─────────────────────────────────────────────────────────────────────────────
+
+#[derive(clap::Args)]
+struct MetadataArgs {
+    /// The project to describe: a `Project.cdz` manifest, or a DIRECTORY holding one. OMITTED → search up
+    /// from the current directory for the nearest `Project.cdz` (like `cdz build`/`cdz test`).
+    dir: Option<String>,
+}
+
+/// `cdz metadata [DIR]` — print the resolved project manifest as JSON (the `cargo metadata` analogue): a
+/// machine-readable description of what the project IS, for editors, build tools, and scripts. Resolves
+/// the same `Project.cdz` that `cdz build`/`cdz test` do, then emits one JSON object: the manifest's raw
+/// fields (`name`, `entry`, `opt_level`, the `modules`/`tests`/`exclude` PATTERNS) PLUS their RESOLVED,
+/// glob-expanded, `exclude`-filtered file sets (`entry_file`, `module_files`, `test_files`) — so a
+/// consumer sees both the declared intent and the concrete files, without re-implementing glob
+/// resolution. Paths are the manifest-relative form the tool uses.
+fn run_metadata(args: &MetadataArgs) -> ExitCode {
+    // Resolve the manifest dir, mirroring `cdz build`: an explicit `Project.cdz`, a directory holding one,
+    // or (no arg) an upward search from the cwd. A named-but-missing manifest is a clear "no such file".
+    let target: String = match &args.dir {
+        Some(d) => d.clone(),
+        None => match find_manifest_upward() {
+            Some(p) => p.to_string_lossy().into_owned(),
+            None => {
+                eprintln!(
+                    "{PROG}: no `{MANIFEST_NAME}` found in the current directory or any ancestor \
+                     (name a project dir/manifest, or add a `{MANIFEST_NAME}`)"
+                );
+                return ExitCode::FAILURE;
+            }
+        },
+    };
+    let path = std::path::Path::new(&target);
+    let is_manifest_arg = path.file_name().and_then(|n| n.to_str()) == Some(MANIFEST_NAME);
+    if is_manifest_arg && !path.is_file() {
+        eprintln!("{PROG}: {target}: no such file");
+        return ExitCode::FAILURE;
+    }
+    let dir = if is_manifest_arg {
+        match path.parent() {
+            Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
+            _ => std::path::Path::new(".").to_path_buf(),
+        }
+    } else if path.is_dir() {
+        path.to_path_buf()
+    } else {
+        eprintln!(
+            "{PROG}: `{target}` is not a `{MANIFEST_NAME}` or a directory holding one \
+             (`cdz metadata` describes a project)"
+        );
+        return ExitCode::FAILURE;
+    };
+    let (mpath, m) = match load_manifest(&dir) {
+        Ok(Some(v)) => v,
+        Ok(None) => {
+            eprintln!("{PROG}: no `{MANIFEST_NAME}` in {}", dir.display());
+            return ExitCode::FAILURE;
+        }
+        Err(e) => {
+            eprintln!("{PROG}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    use cadenza_syntax::query::json;
+    // A `[patterns] → resolved files` pair: the declared globs and the concrete files they expand to.
+    let str_array = |items: &[String]| -> String {
+        let mut arr = json::Array::new();
+        for it in items {
+            arr.string(it);
+        }
+        arr.finish()
+    };
+    let mut obj = json::Object::new();
+    obj.string("manifest", &mpath.to_string_lossy());
+    match &m.name {
+        Some(n) => obj.string("name", n),
+        None => obj.raw("name", "null"),
+    }
+    // The entry: its declared pattern, and the single file it resolves to (a component has ONE boundary;
+    // a glob matching ≠1 file yields `null`, matching how `cdz build` treats it as an error at build time).
+    match &m.entry {
+        Some(e) => {
+            obj.string("entry", e);
+            let resolved = expand_manifest_globs(&dir, std::slice::from_ref(e), &m.exclude);
+            match resolved.as_slice() {
+                [one] => obj.string("entry_file", one),
+                _ => obj.raw("entry_file", "null"),
+            }
+        }
+        None => {
+            obj.raw("entry", "null");
+            obj.raw("entry_file", "null");
+        }
+    }
+    match &m.opt_level {
+        Some(o) => obj.string("opt_level", o),
+        None => obj.raw("opt_level", "null"),
+    }
+    // The pattern lists PLUS their resolved, glob-expanded, exclude-filtered file sets.
+    obj.raw("modules", &str_array(&m.modules));
+    obj.raw(
+        "module_files",
+        &str_array(&expand_manifest_globs(&dir, &m.modules, &m.exclude)),
+    );
+    obj.raw("tests", &str_array(&m.tests));
+    obj.raw(
+        "test_files",
+        &str_array(&expand_manifest_globs(&dir, &m.tests, &m.exclude)),
+    );
+    obj.raw("exclude", &str_array(&m.exclude));
+    println!("{}", obj.finish());
+    ExitCode::SUCCESS
 }
 
 // ── project scaffold ─────────────────────────────────────────────────────────────────────────────

@@ -61,10 +61,13 @@ Every firing of your `/loop`, in order:
    act on each; then move it to `.claude/fleet/inbox/<you>/processed/`. Answering peers takes
    priority over starting new work (a `reject` from pr-sync means your last merge needs a fix —
    handle it before anything else).
-4. **Sync your base.** `git -C <your-worktree> fetch -q` then `git rebase origin/trunk` (or the
-   local `trunk` ref — they track together). Rebuild what you measure against
-   (`cargo xtask build` for the runtime store; a stale store makes heap cases false-fail). This is
-   also what refreshes your role body on disk for next tick's step 1.
+4. **Sync your base.** `git -C <your-worktree> fetch -q` then `git reset --hard trunk`. `trunk` is a
+   LOCAL branch in the bare hub (shared via the common git dir) — there is NO `origin/trunk` (`origin`
+   is GitHub), so a bare `trunk` is the ref to use, never `origin/trunk`. Reset (not rebase): pr-sync
+   squash-integrates, so a plain `rebase` replays your already-landed commits as orphans against the
+   new tree — `reset --hard trunk` lands you exactly on the integrated tip. Rebuild what you measure
+   against (`cargo xtask build` for the runtime store; a stale store makes heap cases false-fail).
+   This is also what refreshes your role body on disk for next tick's step 1.
 5. **Do ONE well-scoped unit of work** per your role body. Gate it (below). Never leave `trunk`
    broken — but your worktree may be left dirty across ticks (the next tick resumes it).
 6. **If a commit is ready,** send `pr-sync` a `merge-request` (below). Otherwise reschedule.
