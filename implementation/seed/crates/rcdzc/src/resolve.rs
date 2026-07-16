@@ -785,14 +785,23 @@ fn resolve_name(db: &Db, id: StructId, name: &str) -> Resolved {
             && body.starts_with(|c: char| c.is_ascii_digit())
             && (body.contains('.') || body.contains('e') || body.contains('E'))
         {
-            return Resolved::Poison(Reject::coded(
-                Code::Malformed,
-                format!(
-                    "the `N` suffix means BigInt (an unbounded integer), which is written as a plain \
-                     integer, but `{name}` is in decimal/float form — for a decimal value use the `R` \
-                     (Rational) suffix: `{body}R`"
-                ),
-            ));
+            // The message names the exact repair (`{body}R`) — swapping the `N` suffix for `R` on the same
+            // digit body — so carry it as a structural replace fix, not prose only (`spec/capabilities/
+            // diagnostics.md` §A Diagnostic Carries A Route To A Fix). Heuristic: `R` is the likeliest
+            // intent for a decimal value, but the author might instead have meant to drop the fraction for
+            // a true BigInt — the swap clears the malformed token either way, and the choice is theirs.
+            return Resolved::Poison(
+                Reject::coded(
+                    Code::Malformed,
+                    format!(
+                        "the `N` suffix means BigInt (an unbounded integer), which is written as a plain \
+                         integer, but `{name}` is in decimal/float form — for a decimal value use the `R` \
+                         (Rational) suffix: `{body}R`"
+                    ),
+                )
+                .at(id)
+                .with_fix(crate::diag::Fix::replace_heuristic(id, format!("{body}R"))),
+            );
         }
         return Resolved::Poison(Reject::coded(
             Code::Malformed,
