@@ -1051,6 +1051,7 @@ pass	a multi-payload variant whose spread element is itself a compound escapes c
 pass	a multi-payload variant with MIXED-width, MIXED-type payloads deconstructs each field
 pass	a multi-payload variant with a scalar AND two recursive payloads escapes flat
 pass	a multi-segment bin concatenates mixed-width signed and unsigned segments in order
+pass	a multi-step kernel derivation composes several primitive rules into one theorem
 pass	a multi-variant abstract proof type's constructor match outside the kernel is a withheld-constructor rejection
 pass	a multi-variant constructor nested in a tuple let-binder is refutable and rejected
 pass	a multi-variant-sum binding pattern is refutable and rejected
@@ -1250,8 +1251,8 @@ pass	a pattern that binds the same name twice is rejected
 pass	a payload-in-payload nested list pattern dispatches through two recorded types
 pass	a peephole rewrite rule reads in the shape of the code it rewrites
 pass	a peer-bound operation cannot take or return a closure
-pass	a perform BETWEEN two sibling recursive calls threads the intervening state
 pass	a peer-bound operation takes a String argument (it crosses as a runtime handle)
+pass	a perform BETWEEN two sibling recursive calls threads the intervening state
 pass	a perform SHORT-CIRCUITED out of an or's right operand is NOT executed (empty host-calls)
 pass	a perform composes as the SOURCE of a pipeline
 pass	a perform in a match-arm guard is discharged by the enclosing handle
@@ -2936,6 +2937,9 @@ pass	the intersection contains the elements in both sets
 pass	the intersection of disjoint sets is empty
 pass	the kernel proves reflexivity end-to-end: refl t yields a theorem whose conclusion is (t = t)
 pass	the kernel's ASSUME rule yields the sequent {p} |- p
+pass	the kernel's DEDUCT_ANTISYM rule: from A |- p and B |- q derive (A-q)++(B-p) |- p=q
+pass	the kernel's EQ_MP rule: from |- p=q and G |- p derive G |- q (hypotheses unioned)
+pass	the kernel's MK_COMB rule: equals applied to equals are equal — from f=g and x=y derive (f x)=(g y)
 pass	the largest factorial that fits the integer type computes exactly
 pass	the le modifier encodes a u16 little-endian
 pass	the left payload of the taken arm traps before the right payload
