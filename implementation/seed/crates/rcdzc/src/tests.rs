@@ -69234,6 +69234,73 @@ mod cross_component_oracle {
     }
 
     // ------------------------------------------------------------------------------------------------
+    // PL32 — a String ARGUMENT handle passed to a peer is REUSED locally after the call (refcount/borrow
+    // correctness). PL28-31 pin that a String arg CROSSES; this pins that passing the handle to the peer
+    // does NOT consume it — the consumer reads the SAME rope again in-program after the peer call. If the
+    // peer-arg emit treated the handle as OWNED (moved/dropped by the call) rather than BORROWED, the
+    // second local `String.byte-len s` would be a use-after-free on a reclaimed rope: a runtime trap or a
+    // garbage length, NOT a clean answer — and it would still VALIDATE (byte-valid ≠ refcount-correct, the
+    // "probe the type not one read" lesson). Running it e2e proves the handle stays live across the
+    // boundary. `s = "abcde"` (concat, so a runtime rope); main = S.blen(s) + byte-len(s) = 5 + 5 = 10.
+    // ------------------------------------------------------------------------------------------------
+    #[test]
+    fn a_string_argument_handle_survives_the_peer_call_and_is_reused_locally() {
+        use crate::testkit::parse;
+        let provider = compile_provider(
+            "(do (def (blen (: s String)) (String.byte-len s)) (export blen))",
+            "cadenza:reuse/api",
+        );
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&provider)
+                .expect("the reuse provider validates");
+        }
+        // The rope is let-bound, passed to the peer, THEN read again locally in the same expression — the
+        // peer call must BORROW (not consume) the handle, or the second read hits a freed rope.
+        let src = "(do \
+            (effect S (op blen (-> String Int64))) \
+            (bind S \"cadenza:reuse/api\") \
+            (def (main) \
+              (let ((s (String.concat \"ab\" \"cde\"))) \
+                (host (S) (+ (S.blen s) (String.byte-len s))))) \
+            (export main))";
+        let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .unwrap_or_else(|d| panic!("reuse consumer compiles: {} [{:?}]", d.message, d.code));
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&consumer).expect("reuse consumer validates");
+        }
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("[PL32] runtime wasm not found; skipping");
+            return;
+        };
+        let peers = vec![cdz_run::Peer {
+            bytes: provider,
+            interface: "cadenza:reuse/api".to_string(),
+        }];
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: Vec::new(),
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run_with_peers(&consumer, &peers, &opts)
+            .expect("a reused string-arg handle survives the peer call")
+        {
+            // S.blen("abcde") + byte-len("abcde") = 5 + 5 = 10. The handle passed to the peer stayed LIVE
+            // for the subsequent local read — the peer arg BORROWS, it does not consume + free.
+            cdz_run::Outcome::Value(s) => assert_eq!(
+                s, "10",
+                "a String arg handle passed to a peer stays live for a later local read (borrow, not move)"
+            ),
+            cdz_run::Outcome::Trap(t) => {
+                panic!("reused string-arg run trapped (use-after-free?): {t}")
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------------
     // PL18 — a peer op returning a LIST (a variable-length collection) crosses + the consumer reads its
     // LENGTH. The rich-interface north star names lists crossing the peer boundary; the List RESULT read
     // was untested e2e (U5d built a list peer but did not run a source consumer reading it). A List
