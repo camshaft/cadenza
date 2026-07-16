@@ -747,6 +747,8 @@ pass	a floating-point literal
 pass	a four-level nested-constructor pattern with a generic user sum in the middle matches
 pass	a fresh-id supply threads state across two sibling recursive calls in one arm
 pass	a fresh-id walk over a THREE-constructor sum threads state across mixed-arity arms
+pass	a full-string String.slice byte-len equals the whole string's byte-len
+pass	a full-string String.slice recovers the whole string's length by both measures
 pass	a function applied to an argument
 pass	a function argument is applied through a recursive higher-order function
 pass	a function binding the same parameter name twice is rejected
@@ -2193,6 +2195,7 @@ pass	an empty quote is rejected, not a crash
 pass	an empty scrutinee matches an empty bin pattern
 pass	an empty string is unequal to a non-empty string
 pass	an empty-range slice of a non-empty string is Some of the empty string
+pass	an empty-span String.slice at a multi-byte position has scalar-len zero
 pass	an empty-string Ast.Str round-trips through encode and decode
 pass	an empty-string Ast.Str round-trips through print and read
 pass	an encode-decode round-trip preserves an ASCII string's byte length
@@ -3050,6 +3053,7 @@ pass	the byte codec round-trips a keyword-spelled Ast.Name that the text path wo
 pass	the byte length of a run-time multibyte string exceeds its scalar length
 pass	the byte length of a run-time-selected string reads the actual handle
 pass	the byte length of a runtime string equals the length of its encoded bytes
+pass	the byte-len of a multi-byte String.slice exceeds its scalar-len (the two measures diverge)
 pass	the decode error's kind is matchable
 pass	the default-integer pragma is definition-site scoped, not use-site
 pass	the difference contains the elements not in the second set

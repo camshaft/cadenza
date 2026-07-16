@@ -709,6 +709,60 @@
             (export main)))
   (output (: 3 Int64)))
 
+; slice LENGTH-ALGEBRA neighbors (breaker): the case above pins scalar-len(slice i j) == j - i. These pin
+; the companions: on the SAME multi-byte slice the BYTE-len differs from the scalar-len (proving the two
+; measures genuinely diverge), a full-string slice (0..scalar-len) recovers the whole string's length by
+; BOTH measures, and an empty span (i=j) is scalar-len 0 even at a multi-byte position. Over "aébcd" (a,é,
+; b,c,d — 5 scalars; é is 2 UTF-8 bytes, so byte-len 6). `s` is a runtime value via `(if true …)`.
+
+(case "the byte-len of a multi-byte String.slice exceeds its scalar-len (the two measures diverge)"
+  (doc    "The SAME slice the span case measures at scalar-len 3, measured by BYTE-len, is 4: `(String.slice
+           \"aébcd\" 1 4)` = \"ébc\" — 3 scalars but 4 bytes (é=2, b=1, c=1). Pins that byte-len and scalar-len
+           of one slice genuinely DIVERGE for multi-byte content — the slice carries the real UTF-8 bytes,
+           and byte-len counts them while scalar-len counts the span. A slice that stored a scalar-count as
+           its byte length (or vice versa) would make these equal.")
+  (input  (do
+            (def (bytelen (: s String) (: i Int64) (: j Int64))
+              (String.byte-len (Option.expect (String.slice s i j) "in bounds")))
+            (def (main) (bytelen (if true "aébcd" "x") 1 4))
+            (export main)))
+  (output (: 4 Int64)))
+
+(case "a full-string String.slice recovers the whole string's length by both measures"
+  (doc    "Slicing the FULL span `0..scalar-len` returns the whole string: scalar-len of `(String.slice
+           \"aébcd\" 0 5)` is 5 (= the string's scalar-len), and its byte-len is 6 (= the string's byte-len,
+           é contributing 2). Pins the identity slice at both measures — the span 0..n is the whole string,
+           not off-by-one at either end.")
+  (input  (do
+            (def (spanlen (: s String) (: i Int64) (: j Int64))
+              (String.scalar-len (Option.expect (String.slice s i j) "in bounds")))
+            (def (main) (spanlen (if true "aébcd" "x") 0 5))
+            (export main)))
+  (output (: 5 Int64)))
+
+(case "a full-string String.slice byte-len equals the whole string's byte-len"
+  (doc    "The byte-len companion of the full-string slice: `(String.byte-len (String.slice \"aébcd\" 0 5))`
+           is 6 — a=1, é=2, b=1, c=1, d=1. Pins that the identity slice preserves the exact UTF-8 byte count,
+           not a scalar-count (which would be 5).")
+  (input  (do
+            (def (bytelen (: s String) (: i Int64) (: j Int64))
+              (String.byte-len (Option.expect (String.slice s i j) "in bounds")))
+            (def (main) (bytelen (if true "aébcd" "x") 0 5))
+            (export main)))
+  (output (: 6 Int64)))
+
+(case "an empty-span String.slice at a multi-byte position has scalar-len zero"
+  (doc    "An empty span `i=j` returns the empty string — scalar-len 0 — even when `i` sits at a multi-byte
+           scalar boundary. `(String.scalar-len (String.slice \"aébcd\" 1 1))` = 0 (index 1 is é's position).
+           Pins that a zero-width span is genuinely empty regardless of the byte width at that position — the
+           j - i = 0 span case, the interior-multibyte companion of the empty-span boundary.")
+  (input  (do
+            (def (spanlen (: s String) (: i Int64) (: j Int64))
+              (String.scalar-len (Option.expect (String.slice s i j) "in bounds")))
+            (def (main) (spanlen (if true "aébcd" "x") 1 1))
+            (export main)))
+  (output (: 0 Int64)))
+
 ; --- A string operation consumes a string SELECTED by runtime control flow -----------------
 ; A string operation (String.scalar-len/at/slice/concat) takes a string ARGUMENT; that argument may be a
 ; string SELECTED at run time by an `if` or a `match`, not only a literal. The seed resolves a string
