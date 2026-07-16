@@ -43,6 +43,22 @@ const ROUTES = [
     },
   },
   { path: "/playground", waitFor: ".cm-content", label: "playground" },
+  {
+    // /cad's showcase must RENDER on first load: it auto-runs the starter Solid program on mount, which
+    // compiles → runs → meshes → mounts a three.js <canvas>. A regression here (a broken starter, a
+    // surface mismatch feeding the driver a non-s-expr render) leaves "Run to preview" / an error and NO
+    // canvas — exactly the first-load break this route was added to catch. Desktop-only (the 3D preview
+    // isn't a mobile-overflow surface, and the heavy three+manifold chunk is slow to double-run).
+    path: "/cad",
+    waitFor: "textarea",
+    label: "cad",
+    onlyViewports: ["desktop-1280"],
+    expectCanvas: true,
+    async interact(page) {
+      // Auto-run on mount meshes the starter; wait up to 30s for the canvas (compile+run+lazy 3D chunk).
+      await page.waitForSelector("canvas", { timeout: 30000 }).catch(() => {});
+    },
+  },
 ];
 
 let chromium;
@@ -78,6 +94,8 @@ try {
   for (const vp of VIEWPORTS) {
     console.log(`\n[${vp.name}]`);
     for (const route of ROUTES) {
+      // A route can restrict itself to certain viewports (e.g. /cad's 3D preview is desktop-only).
+      if (route.onlyViewports && !route.onlyViewports.includes(vp.name)) continue;
       const page = await browser.newPage({ viewport: { width: vp.width, height: vp.height } });
       const errs = [];
       page.on("console", (m) => {
@@ -100,6 +118,12 @@ try {
         // heavy jco routes). Only fail on errors that aren't that known, harmless line.
         const realErrs = errs.filter((e) => !/use components|module level directives/i.test(e));
         check(realErrs.length === 0, `${route.label}: no console/page errors${realErrs.length ? ` (${realErrs.slice(0, 2).join(" | ")})` : ""}`);
+
+        // A route that must render 3D (only /cad) has to have mounted a <canvas> after its interaction.
+        if (route.expectCanvas) {
+          const hasCanvas = await page.evaluate(() => !!document.querySelector("canvas"));
+          check(hasCanvas, `${route.label}: 3D preview rendered a <canvas> on first load`);
+        }
       } catch (e) {
         check(false, `${route.label}: driver error — ${e.message.split("\n")[0]}`);
       } finally {
