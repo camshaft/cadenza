@@ -94,3 +94,21 @@ tracks the distinct-name count. So step 4 is straightforward — thread a `(Map 
 in a pre-pass (or in the parser) to convert `Ast.Name`→`Ex.Var(id)`, matching the `fresh.cdz`/`anf.cdz`
 counter discipline. No language gap. **All four risky steps (1 export-ctors, 4 interning) now de-risked;
 (B) is ready to build on the operator's word.**
+
+## Cross-cutting confirmation (tick 138): EVERY module is a closed island
+
+Surveyed the exports of all ~12 type/transform modules (infer, infer-let, type-scheme, apply-ty, tycheck,
+closure, anf, strength, constprop, …): NONE export their core type's constructors — they export only
+FUNCTIONS (`{ infer, principal-type, … }`, `{ cp, eval }`, `{ ty-eq, apply-fun, … }`, etc.). So a module's
+exported functions CANNOT be exercised on externally-constructed values: an external caller that
+re-declares `type Ex`/`type Ty` builds a DIFFERENT type (correctly caught by CDZ0201/CDZ0203: "two
+DIFFERENT types printed with the same name — a declaration shadows a built-in"). Confirmed by two probes
+(infer-let, apply-ty) — both blocked at the type boundary, as expected.
+
+**Implication for (B):** this is THE structural driver-blocker, now fully scoped. Two ways to wire a
+driver: (a) each module adds `export { T.* }` for its type (N edits, N types still distinct — doesn't
+compose), or (b) — STRONGLY PREFERRED — all passes import ONE `core-ex.cdz` that `export { Ex.* }`, so they
+share ONE type and compose by construction. (b) is the whole point of the shared-Ex plan; this survey
+confirms (a) wouldn't actually connect the passes (distinct types with the same name don't unify). So the
+migration MUST route through a shared core-ex, not per-module ctor exports. No language gap — the diagnostics
+are correct + helpful; it's purely a design/wiring consequence.
