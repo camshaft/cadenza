@@ -1,0 +1,43 @@
+// mlrepro: `<<` (left shift) is rejected CDZ0304 the moment the result reaches bit 63, even for
+// `1 << 63` (= Int64.min — a VALID Int64 value) and even when the shifted operand is runtime-valued.
+// This is inconsistent with the other bitwise operators (`&`, `|`, `^`), which freely produce
+// sign-bit-set (negative) results without any overflow check. A left shift is a BIT operation; giving
+// it arithmetic-overflow (`checked_shl`-style) semantics blocks two ordinary compiler idioms:
+//   1. a full-width Int64 bitmask:            `1 << 63`
+//   2. a faithful little-endian Int64 decoder: `byte7 << 56 | ... | byte0`  (the port's codec Int leaf
+//      is stuck at ONE value byte, 0..255, precisely because it cannot place a byte into the high bits).
+//
+// EXPECTED: `<<` performs a wrapping/bit shift like `&`/`|`/`^` — `1 << 63 == Int64.min`, and shifting a
+// runtime byte into the top bits is allowed. Overflow-trapping a bit shift is the wrong model; if a
+// checked shift is desired it should be a distinct op, not the default `<<`.
+//
+// OBSERVED (cdz @ trunk, 2026-07-16):
+//   1 << 62        => 4611686018427387904   (ok)
+//   1 << 63        => error CDZ0304: "constant << traps: the shifted result overflows Int64"
+//   2 << 62        => CDZ0304 (declined)
+//   128 << 56      => CDZ0304 (declined)  — = Int64.min, a valid value
+//   Int64.min | 5  => -9223372036854775803 (ok — `|` reaches the sign bit fine)
+// The diagnostic says "constant" but the same rejection fires when the shifted operand is runtime-valued
+// (a byte read from a Bytes buffer), so it is not a constant-fold-only guard.
+//
+// Minimal discriminators below. Each @test states the value `<<` SHOULD produce; they currently fail to
+// COMPILE (CDZ0304), which is the bug.
+
+// (1) full-width bitmask — the canonical high-bit case.
+@test
+def shift-to-sign-bit-is-int64-min() =
+  if (1 << 63) == Int64.min then unit else trap("1 << 63 should equal Int64.min")
+
+// (2) the byte-into-high-bits case a little-endian Int64 decoder needs.
+def hi-byte(b: Bytes) = Option.expect(Bytes.at(b, 0), "x") << 56
+@test
+def runtime-byte-into-top-bits() =
+  // byte 0x80 (128) shifted into the top byte = Int64.min. Operand is runtime-valued, not constant.
+  if hi-byte(Bytes.of([UInt8.wrap(128)])) == Int64.min then unit else trap("128 << 56 should equal Int64.min")
+
+// (3) consistency witness: `|` and `^` freely set the sign bit, so `<<` refusing to is inconsistent.
+@test
+def or-reaches-sign-bit-fine() =
+  if (Int64.min | 5) == (0 - 9223372036854775803) then unit else trap("| reaches the sign bit")
+
+export { hi-byte }
