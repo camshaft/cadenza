@@ -1055,7 +1055,7 @@ fn run_test_file(
     // Each test's name PLUS the generators for its parameters (empty = a plain nullary test, run once;
     // non-empty = a PROPERTY test, run `trials` times with generated inputs). A param whose type is not a
     // generatable scalar makes `param_generators` return `None` — reported per test, not aborting the run.
-    let mut tests: Vec<(String, Option<Vec<GenKind>>)> = Vec::new();
+    let mut tests: Vec<(String, Option<Vec<GenKind>>, bool)> = Vec::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     for i in db.test_defs() {
         // In a PACKAGE, `test_defs()` sees every linked file's `@test`s — keep only the ENTRY file's own,
@@ -1080,8 +1080,11 @@ fn run_test_file(
         if !seen.insert(name.clone()) {
             continue;
         }
+        // `@exhaustive`: the test is driven over its ENTIRE finite input domain, not by random sampling.
+        // Captured per test (before `db` is re-borrowed by the next `param_generators`).
+        let exhaustive = db.is_exhaustive(i);
         let gens = param_generators(&mut db, i);
-        tests.push((name, gens));
+        tests.push((name, gens, exhaustive));
     }
     if tests.is_empty() {
         // No matching `@test` here. A file with no tests (e.g. a pure library module in a package dir, or
@@ -1136,7 +1139,7 @@ fn run_test_file(
     // the failing inputs (shrunk toward a minimal counterexample) + the seed to replay.
     let mut passed = 0usize;
     let mut failed = 0usize;
-    for (name, gens) in &tests {
+    for (name, gens, exhaustive) in &tests {
         let kebab = cadenza_syntax::extern_name::kebab_extern_name(name);
         let run_one = |arg_vals: &[String]| -> TrialOutcome {
             run_one_trial(cdz_run, &tmp, &kebab, store, arg_vals)
@@ -1191,7 +1194,47 @@ fn run_test_file(
                     }
                 }
             }
-            // A PROPERTY test: run `trials` trials with generated inputs.
+            // An `@exhaustive` PROPERTY test: drive the ENTIRE finite input domain (every combination of
+            // the scalar parameters) rather than random sampling — a pass is a PROOF over the domain. Only
+            // a BOUNDED domain can be enumerated; an unbounded parameter (a 32/64-bit int or a float, whose
+            // domain is astronomically/infinitely large) makes `exhaustive_domain` return `None` → report
+            // (the property must narrow its types, e.g. to `Bool`/`UInt8`, to be exhaustively provable).
+            Some(gens) if *exhaustive => match exhaustive_domain(gens) {
+                None => {
+                    failed += 1;
+                    println!(
+                        "FAIL {name}: @exhaustive needs a BOUNDED input domain — a parameter's type \
+                         (a wide integer or a float) has too large a domain to enumerate; narrow it \
+                         (e.g. Bool or UInt8)"
+                    );
+                }
+                Some(domain) => {
+                    let total = domain.len();
+                    match domain
+                        .into_iter()
+                        .find(|inputs| matches!(run_one(inputs), TrialOutcome::Fail(_)))
+                    {
+                        None => {
+                            passed += 1;
+                            println!("PASS {name} (exhaustive, {total} cases)");
+                        }
+                        Some(inputs) => {
+                            failed += 1;
+                            // Re-run the failing case to recover its reported message.
+                            let msg = match run_one(&inputs) {
+                                TrialOutcome::Fail(Some(m)) => format!(": {m}"),
+                                _ => String::new(),
+                            };
+                            let args_str = inputs.join(", ");
+                            println!(
+                                "FAIL {name}{msg}\n  counterexample: {name}({args_str})  (exhaustive \
+                                 — the domain contains a failing case)"
+                            );
+                        }
+                    }
+                }
+            },
+            // A sampled PROPERTY test: run `trials` trials with generated inputs.
             Some(gens) => match run_property(gens, trials, seed, &run_one) {
                 None => {
                     passed += 1;
@@ -1521,6 +1564,79 @@ fn generate_inputs(gens: &[GenKind], seed: u64) -> Vec<String> {
             }
         })
         .collect()
+}
+
+/// The maximum number of cases `@exhaustive` will enumerate. A domain larger than this is treated as
+/// unbounded (`exhaustive_domain` returns `None`) — enumerating millions of cases would be a denial of
+/// service, not a proof. `Bool`×`Bool` = 4, a `UInt8` = 256, `UInt8`×`Bool` = 512 all fit comfortably;
+/// a 16-bit int (65 536) fits; a 32/64-bit int or a float does not (narrow the type to prove exhaustively).
+const MAX_EXHAUSTIVE_CASES: usize = 100_000;
+
+/// The COMPLETE input domain of a property whose parameters are all bounded scalars — every combination of
+/// each parameter's full value set, as rendered `--arg` strings (the Cartesian product). `None` if the
+/// domain is unbounded/too large (any `Float`, or an integer width whose range times the running product
+/// would exceed [`MAX_EXHAUSTIVE_CASES`]) — such a property cannot be exhaustively proven and must narrow
+/// its types. An empty `gens` (a nullary signature) yields one case (the empty argument list), though the
+/// exhaustive path is only taken for a parameterized boundary-arg test.
+fn exhaustive_domain(gens: &[GenKind]) -> Option<Vec<Vec<String>>> {
+    // Build the per-parameter value sets (each the full rendered domain of that scalar), bailing if any is
+    // unbounded, while tracking the running product so we stop before building an enormous set.
+    let mut per_param: Vec<Vec<String>> = Vec::with_capacity(gens.len());
+    let mut product: usize = 1;
+    for g in gens {
+        let values = scalar_domain(g)?;
+        product = product.checked_mul(values.len())?;
+        if product > MAX_EXHAUSTIVE_CASES {
+            return None;
+        }
+        per_param.push(values);
+    }
+    // Cartesian product of the per-parameter value sets, in row-major order (last parameter varies
+    // fastest), seeded with one empty tuple.
+    let mut domain: Vec<Vec<String>> = vec![Vec::new()];
+    for values in &per_param {
+        let mut next = Vec::with_capacity(domain.len() * values.len());
+        for prefix in &domain {
+            for v in values {
+                let mut row = prefix.clone();
+                row.push(v.clone());
+                next.push(row);
+            }
+        }
+        domain = next;
+    }
+    Some(domain)
+}
+
+/// The full rendered value domain of ONE bounded scalar generator, or `None` if it is unbounded/too large.
+/// `Bool` = {false, true}; `Char` is bounded but astronomically large (all Unicode scalars) so it is not
+/// enumerated here; an integer is enumerable only for narrow widths (≤16 bits) whose range fits within
+/// [`MAX_EXHAUSTIVE_CASES`]; a `Float` is never enumerable. Each value is rendered exactly as
+/// `generate_inputs` renders it (so `cdz-run`'s `coerce_one` accepts it).
+fn scalar_domain(g: &GenKind) -> Option<Vec<String>> {
+    match g {
+        GenKind::Bool => Some(vec!["false".to_string(), "true".to_string()]),
+        // A `Char`'s domain is every Unicode scalar (~1.1M) — far past the cap; a float is infinite. Not
+        // exhaustively enumerable (narrow to a bounded integer/Bool instead).
+        GenKind::Char | GenKind::Float => None,
+        GenKind::Int { signed, width } => {
+            // Only widths whose FULL range fits the cap are enumerable (8/16-bit); 32/64-bit are unbounded
+            // for this purpose. Enumerate the whole range, rendered via `render_int` (same as sampling).
+            let range: Vec<i64> = match (signed, width) {
+                (false, 8) => (0..=u8::MAX as i64).collect(),
+                (true, 8) => (i8::MIN as i64..=i8::MAX as i64).collect(),
+                (false, 16) => (0..=u16::MAX as i64).collect(),
+                (true, 16) => (i16::MIN as i64..=i16::MAX as i64).collect(),
+                _ => return None, // 32/64-bit (or a deferred width) — too large to enumerate
+            };
+            Some(
+                range
+                    .into_iter()
+                    .map(|v| render_int(v, *signed, *width))
+                    .collect(),
+            )
+        }
+    }
 }
 
 /// Render a generated `i64` as the decimal text for an integer parameter of the given signedness/width,
