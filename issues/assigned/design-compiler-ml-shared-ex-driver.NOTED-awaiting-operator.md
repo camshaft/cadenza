@@ -76,3 +76,21 @@ Built a local `core-ex.cdz`-shaped module + a consumer importing it; ran via `cd
 
 So when the operator picks (B): `core-ex.cdz` MUST `export { Ex.* }` (plus helpers). No other blocker found
 for step 1. The `Var(String)` vs `Var(Int64)` reconciliation (step 4) remains the real design work.
+
+## Step-4 de-risking spike (tick 134 — the Var(String)→Var(Int64) reconciliation)
+
+The design's one real risk was reconciling the String-keyed passes (constprop/deadlet/inline/optimize/
+interp) with the Int64-keyed shared `Ex`. Spiked a string INTERNER (throwaway, verified then removed):
+
+```
+def intern(name: String, tbl: Tuple(Map(String, Int64), Int64)) = match tbl with
+  | (m, next) => (match Map.lookup(m, name) with
+    | Option.Some(id) => (id, (m, next))
+    | Option.None(_)  => (next, (Map.insert(m, name, next), next + 1)))
+```
+
+Verified 2/2: a fresh name gets the next id, a repeat REUSES its id (stable), and the next-id counter
+tracks the distinct-name count. So step 4 is straightforward — thread a `(Map String Int64, next)` interner
+in a pre-pass (or in the parser) to convert `Ast.Name`→`Ex.Var(id)`, matching the `fresh.cdz`/`anf.cdz`
+counter discipline. No language gap. **All four risky steps (1 export-ctors, 4 interning) now de-risked;
+(B) is ready to build on the operator's word.**
