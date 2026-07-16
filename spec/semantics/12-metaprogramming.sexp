@@ -1258,3 +1258,47 @@
             (export main)))
   (call   main (: 0 Int64))
   (output (: 1234 Int64)))
+
+; --- Codec bijection over rich trees: the composition faces of encode/decode -----------------------
+; The per-leaf round-trips and the adversarial-bytes totality pins grade single nodes; these grade
+; the BIJECTION contract (ast-encoding.md — one canonical byte form) over structurally rich trees,
+; promoted from passing breaker probes after the non-minimal-varint reject (codec bijection).
+
+(case "a deep four-leaf tree round-trips through encode and decode"
+  (doc    "`(quote (f (g 1 true) \"s\" 2.5))` — three nesting levels carrying all four leaf kinds —
+           encodes and decodes to an EQUAL tree. The composition face of the per-leaf round-trips:
+           length-prefixed lists nest, and each leaf's payload survives inside the compound framing
+           (a framing error corrupts everything after the first nested list).")
+  (input  (match (Ast.decode (Ast.encode (quote (f (g 1 true) "s" 2.5))))
+            ((Ok a) (= a (quote (f (g 1 true) "s" 2.5))))
+            ((Err _) false)))
+  (output (: true Bool)))
+
+(case "quote-built and constructor-built equal trees encode byte-identically"
+  (doc    "`(quote (f 1))` and `(Ast.List (list (Ast.Name \"f\") (Ast.Int 1)))` are ONE value built
+           two ways; the bijection contract (one canonical byte form per tree) means their encodings
+           are byte-EQUAL, not merely decode-equivalent. A codec with construction-dependent framing
+           (or the non-minimal varints just rejected) breaks exactly this equality.")
+  (input  (= (Ast.encode (quote (f 1)))
+             (Ast.encode (Ast.List (list (Ast.Name "f") (Ast.Int 1))))))
+  (output (: true Bool)))
+
+(case "one encode-decode cycle is byte-stable"
+  (doc    "encode(decode(encode t)) = encode(t) — the decoded tree re-encodes to the SAME bytes (the
+           bijection composed both directions). Catches a decoder that normalizes or a codec pair
+           that round-trips values while drifting bytes (legal under decode-equality, illegal under
+           the canonical-byte-form contract).")
+  (input  (match (Ast.decode (Ast.encode (quote (f (g 1 true) "s" 2.5))))
+            ((Ok a) (= (Ast.encode a) (Ast.encode (quote (f (g 1 true) "s" 2.5)))))
+            ((Err _) false)))
+  (output (: true Bool)))
+
+(case "a runtime-assembled tree round-trips equal to its quoted twin"
+  (doc    "`` `(f ,(+ 1 2)) `` — the tree is ASSEMBLED at run time (an active unquote splicing a
+           computed 3) — encodes/decodes equal to the statically-quoted `(quote (f 3))`. Pins the
+           codec over a runtime-built tree (the constant cases could fold end-to-end; a splice's
+           lifted leaf must serialize identically to a quoted one).")
+  (input  (match (Ast.decode (Ast.encode (quasiquote (f (unquote (+ 1 2))))))
+            ((Ok a) (= a (quote (f 3))))
+            ((Err _) false)))
+  (output (: true Bool)))
