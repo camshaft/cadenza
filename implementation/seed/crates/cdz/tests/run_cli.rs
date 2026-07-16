@@ -258,3 +258,59 @@ fn cdz_run_a_project_stdout_is_only_the_value() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Run `cdz <args…>` FROM `cwd` (for the no-arg upward-search cases), returning (exit_ok, stdout, stderr).
+fn run_from(cwd: &std::path::Path, args: &[&str]) -> (bool, String, String) {
+    let exe = env!("CARGO_BIN_EXE_cdz");
+    let out = Command::new(exe)
+        .args(args)
+        .current_dir(cwd)
+        .output()
+        .expect("spawn cdz");
+    (
+        out.status.success(),
+        String::from_utf8_lossy(&out.stdout).to_string(),
+        String::from_utf8_lossy(&out.stderr).to_string(),
+    )
+}
+
+#[test]
+fn cdz_run_no_arg_builds_and_runs_the_current_project() {
+    // A bare `cdz run` (no component) in a project directory builds+runs the manifest entry — the `cargo
+    // run` analogue, completing the no-arg parity `build`/`test`/`check` already have.
+    let dir = scalar_project("noarg");
+    let (ok, out, err) = run_from(&dir, &["run", "--call", "add", "--arg", "2", "--arg", "40"]);
+    assert!(ok, "bare `cdz run` in a project dir failed: {err}");
+    assert_eq!(out.trim(), "42", "printed the built export's value: {out}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn cdz_run_no_arg_searches_upward_from_a_subdirectory() {
+    // Like `cargo run`, a bare `cdz run` searches UP for the nearest `Project.cdz`, so it works from any
+    // subdirectory of the project.
+    let dir = scalar_project("noarg-up");
+    let deep = dir.join("sub").join("deep");
+    std::fs::create_dir_all(&deep).unwrap();
+    let (ok, out, err) = run_from(
+        &deep,
+        &["run", "--call", "add", "--arg", "20", "--arg", "22"],
+    );
+    assert!(ok, "upward-search `cdz run` failed: {err}");
+    assert_eq!(out.trim(), "42", "ran the project found upward: {out}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn cdz_run_no_arg_with_no_project_errors() {
+    // A bare `cdz run` where no `Project.cdz` exists in the cwd or any ancestor is a clear error (not a
+    // confusing missing-component read failure).
+    let dir = temp_dir("noarg-none");
+    let (ok, _out, err) = run_from(&dir, &["run"]);
+    assert!(!ok, "bare `cdz run` with no project must fail");
+    assert!(
+        err.contains("Project.cdz"),
+        "error names the missing manifest: {err}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

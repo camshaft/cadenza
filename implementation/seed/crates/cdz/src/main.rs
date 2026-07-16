@@ -237,7 +237,7 @@ fn main() -> ExitCode {
         // When the `component` arg is a PROJECT (a `Project.cdz` or a directory holding one), `cdz`
         // BUILDS the manifest's entry first (the `cargo run` analogue), then runs the produced component;
         // otherwise it runs the given `.wasm`/stdin component directly.
-        Cmd::Run(a) if run_target_is_project(&a.component) => run_project(&a),
+        Cmd::Run(a) if run_target_is_project(a.component.as_deref()) => run_project(&a),
         Cmd::Run(a) => cdz_run::cli::run(&a, PROG),
         // `cdz corpus` — mounted from the `cdz-corpus` lib; the same code the standalone bin runs.
         Cmd::Corpus(a) => cdz_corpus::cli::run(&a, PROG),
@@ -548,12 +548,15 @@ fn run_build(args: &BuildArgs) -> ExitCode {
     )
 }
 
-/// Is `cdz run`'s `component` argument a PROJECT (rather than a pre-built component)? True when it names
-/// a `Project.cdz` (the file itself) or a DIRECTORY — the forms `cdz build`/`cdz test` treat as a project.
-/// A `.wasm` path, or `-` (stdin), is NOT a project → the direct run path. (No `component`-omitted case:
-/// clap requires the arg; a bare `cdz run` in a project dir is a future no-arg-upward enhancement.)
-fn run_target_is_project(component: &std::path::Path) -> bool {
-    component.is_dir() || component.file_name().and_then(|n| n.to_str()) == Some(MANIFEST_NAME)
+/// Is `cdz run`'s `component` argument a PROJECT (rather than a pre-built component)? True when it is
+/// OMITTED (a bare `cdz run` → build+run the nearest `Project.cdz` upward, like `cargo run`), or names a
+/// `Project.cdz` (the file itself) or a DIRECTORY — the forms `cdz build`/`cdz test` treat as a project.
+/// A `.wasm` path, or `-` (stdin), is NOT a project → the direct run path.
+fn run_target_is_project(component: Option<&std::path::Path>) -> bool {
+    match component {
+        None => true, // bare `cdz run` — the current-directory project
+        Some(p) => p.is_dir() || p.file_name().and_then(|n| n.to_str()) == Some(MANIFEST_NAME),
+    }
 }
 
 /// `cdz run <project>` — BUILD the project's manifest entry, then RUN the produced component (the `cargo
@@ -562,8 +565,13 @@ fn run_target_is_project(component: &std::path::Path) -> bool {
 /// `cdz-run` code path the direct `cdz run <file>` uses — passing through `--call`/`--arg`/`--store`/
 /// `--host-response`/`--peer` unchanged. The temp component is removed after the run.
 fn run_project(args: &cdz_run::cli::RunArgs) -> ExitCode {
-    let target = args.component.to_string_lossy().into_owned();
-    let project = match resolve_project_specs(Some(&target), "cdz run") {
+    // The project target: the given `Project.cdz`/directory, or `None` (a bare `cdz run`) → an upward
+    // search from the cwd, exactly as `resolve_project_specs` handles a `None` argument.
+    let target = args
+        .component
+        .as_ref()
+        .map(|p| p.to_string_lossy().into_owned());
+    let project = match resolve_project_specs(target.as_deref(), "cdz run") {
         Ok(p) => p,
         Err(code) => return code,
     };
@@ -595,7 +603,7 @@ fn run_project(args: &cdz_run::cli::RunArgs) -> ExitCode {
     // Run the freshly-built component through the SAME `cdz-run` path as a direct `cdz run <file>`: clone
     // the parsed args, but point `component` at the built wasm (the other flags pass through unchanged).
     let mut run_args = args.clone();
-    run_args.component = out_wasm.clone();
+    run_args.component = Some(out_wasm.clone());
     let code = cdz_run::cli::run(&run_args, PROG);
     let _ = std::fs::remove_file(&out_wasm); // best-effort cleanup of the temp artifact
     code
