@@ -3635,6 +3635,26 @@
             (export main)))
   (error  CDZ0201))
 
+(case "an annotation on a nested generic-call argument grounds the self-nested producer and it runs"
+  (doc    "The WORKAROUND for the decline above (the one the CDZ0201 message names): annotating a nested
+           generic-call argument with its concrete type grounds the element BEFORE the outer producer's
+           scheme solve needs it, so the program compiles and runs. `(from-list (list (: (inner) (Iter
+           Int64)) (inner)))` — the first `(inner)` carries `(: … (Iter Int64))`, which pins the list's
+           element to `Iter Int64`, so the outer `from-list` is `from-list` at `Iter Int64` and `icount` of
+           the 2-element doubly-nested iter is 2. Pins that the annotation escape hatch works (the decline is
+           NOT a hard wall — an author can ground it), the runnable twin of the decline case above; when the
+           re-entrancy fix lands, the un-annotated form joins this one at 2.")
+  (input  (do
+            (type Iter (Nil) (Cons a (Iter a)))
+            (def (from-list xs)
+              (match xs ((list) (Iter.Nil)) ((list h .. t) (Iter.Cons h (from-list t)))))
+            (def (inner) (from-list (list 1 2)))
+            (def (icount it)
+              (match it ((Iter.Nil) 0) ((Iter.Cons h rest) (+ 1 (icount rest)))))
+            (def (main) (icount (from-list (list (: (inner) (Iter Int64)) (inner)))))
+            (export main)))
+  (output (: 2 Int64)))
+
 ; The COMPLEMENT of the producer tie above — a recursive-generic TRANSFORMER that threads a CLOSURE:
 ; `(gmap it f) = (Cons (f h) (gmap rest f))` maps `f` over each element, principal type
 ; `∀a b. (Iter a) → (a → b) → (Iter b)` with the closure DOMAIN `a` tied to the element `it` carries. The
