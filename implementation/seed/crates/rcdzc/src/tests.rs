@@ -20040,6 +20040,51 @@ mod match_engine {
     }
 
     #[test]
+    fn an_empty_let_binding_list_names_the_binds_nothing_case_not_a_malformed_binding() {
+        // `(let () <body>)` — an EMPTY binding list — is distinct from a MALFORMED one `(let ((a 1 2)) …)`:
+        // there is no binding to be "malformed", the `let` just binds nothing. The message now says so
+        // ("binds nothing — an empty `()` binding list has no effect; write the body directly") instead of
+        // the misleading "each must be `(<name> <init>)`" (which implies a broken binding that isn't there).
+        let msg = |src: &str| -> String {
+            crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.code.as_deref() == Some("CDZ0201"))
+                .unwrap_or_else(|| panic!("expected CDZ0201 for {src}"))
+                .message
+        };
+        let empty = msg("(module m (def (f) (let () 5)) (export f))");
+        assert!(
+            empty.contains("binds nothing") && empty.contains("empty `()`"),
+            "an empty binding list names the binds-nothing case: {empty}"
+        );
+        // A GENUINELY MALFORMED binding list keeps the "malformed" message (a broken `(<name> <init>)`).
+        for malformed in [
+            "(module m (def (f) (let ((a 1 2)) a)) (export f))", // 3-element binding
+            "(module m (def (f) (let (a) a)) (export f))",       // a bare-name non-pair binding
+        ] {
+            let m = msg(malformed);
+            assert!(
+                m.contains("bindings are malformed") && !m.contains("binds nothing"),
+                "a malformed binding keeps the malformed message: {malformed} -> {m}"
+            );
+        }
+        // NO regression: the degenerate `(let)` (no bindings AND no body) keeps its own message; a valid
+        // one-binding let compiles clean.
+        assert!(
+            msg("(module m (def (f) (let)) (export f))").contains("no bindings and no body"),
+            "the degenerate (let) keeps its no-bindings-and-no-body message"
+        );
+        assert!(
+            crate::diagnostics(&mut crate::db::Db::load(parse(
+                "(module m (def (f) (let ((a 1)) a)) (export f))"
+            )))
+            .iter()
+            .all(|d| d.severity != crate::abi::Severity::Error),
+            "a valid one-binding let is clean"
+        );
+    }
+
+    #[test]
     fn a_member_access_with_the_wrong_operand_count_offers_a_delete_fix_and_names_the_form() {
         // Member access `(. operand key)` is a fixed-arity form (want 2), so it routes through the SHARED
         // `fixed_arity_reject` the other fixed-arity forms use — bringing it to fix-parity with the family
