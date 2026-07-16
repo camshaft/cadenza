@@ -3488,6 +3488,26 @@
   (call   main (: 1 Int64) (: 0 Int64))
   (trap   "divide by zero"))
 
+; The UNDEMANDED-element face the case above deferred is now SETTLED: the same §283 dead-init ruling that
+; lets a `?` short-circuit elide an unobserved trapping let-init (23-try-operator) — and that lets an
+; unreferenced `let` binding's trap be elided (the dead-binding cases below) — makes a tuple element the
+; projection DISCARDS unobserved too. So projecting the SAFE position of a tuple whose OTHER position would
+; trap does NOT trap: observation, not construction, forces a trap (core-semantics.md §A Trap Occurs Only
+; Where Its Computation Is Observed). This grades the discard face — the complement of the demanded-element
+; trap above — so a fold that eagerly evaluated the whole tuple (materializing the discarded trapping
+; element) would be caught FLIPPING this from its value to a trap.
+(case "projecting the safe element of a tuple elides the discarded trapping element's trap"
+  (doc    "`(. (tuple (/ 10 d) 1) 1)` projects position 1 (the `1`) and DISCARDS position 0 (`(/ 10 d)`).
+           At d = 0 the discarded element WOULD divide by zero, but the projection never observes it, so
+           per §A Trap Occurs Only Where Its Computation Is Observed (the same rule that elides an unused
+           `let` init and a `?`-short-circuited earlier init) the trap is ELIDED — the result is `1`, not a
+           trap. Settles the undemanded-element dead-trap-on-discard question the demanded-element case
+           above deferred; the discarded element's evaluation is not forced by tuple CONSTRUCTION, only by
+           projection of THAT position. `d` is a runtime parameter so this is emitted code, both backends.")
+  (input  (do (def (main (: d Int64)) (. (tuple (/ 10 d) 1) 1)) (export main)))
+  (call   main (: 0 Int64))
+  (output (: 1 Int64)))
+
 (case "an escaping tuple evaluates its trapping element"
   (doc    "`(tuple (/ 10 d) 1)` RETURNED whole (no projection): every element is demanded by the
            escape, so the d = 0 divide trap must fire — no fold may discard it. The escape control the

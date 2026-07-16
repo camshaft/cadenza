@@ -2353,6 +2353,7 @@ pass	projecting a tuple passed as a function parameter yields the element, never
 pass	projecting an if-of-tuples does not evaluate the untaken branch's unprojected sibling
 pass	projecting an if-of-tuples evaluates the taken branch's projected element, so its trap occurs
 pass	projecting the result of a function that threads a tuple parameter must not trap
+pass	projecting the safe element of a tuple elides the discarded trapping element's trap
 pass	promoting a Float32 to Float64 is exact
 pass	pushing an element of a different type onto a list is a type error
 pass	pushing an element onto a list appends it
