@@ -168,9 +168,9 @@ pass	TWO performs in an if condition both fold on the strict-first spine
 pass	TWO prefix scalars then a Tuple then a suffix scalar cross the direct-call boundary
 pass	Type is a first-class value
 pass	Type.eq branches on a type-valued parameter, monomorphized per passed type
+pass	Type.eq carries an integer type's full width and signedness
 pass	Type.eq compares a RECORD type-value structurally, by field types
 pass	Type.eq compares a TUPLE type-value structurally, by element types
-pass	Type.eq carries an integer type's full width and signedness
 pass	Type.eq compares a reflected type against a written type
 pass	Type.eq compares two type-valued parameters to each other
 pass	Type.eq distinguishes a constructed generic sum by its type argument
@@ -2356,9 +2356,12 @@ pass	an unimported sibling definition is not in scope
 pass	an unproductive self-recursion is declined, not a compiler crash
 pass	an unquote nested inside a plain quote is a syntax error, not an active unquote
 pass	an unquote of an expression with an unbound name is rejected, not quoted
+pass	an unquoted variable is not captured by a list-rest-pattern binder
 pass	an unquoted variable is not captured by a same-named fn param in the template
 pass	an unquoted variable is not captured by a same-named let binder in the template
 pass	an unquoted variable is not captured by a same-named match-pattern binder in the template
+pass	an unquoted variable is not captured by a tuple-pattern binder
+pass	an unquoted variable is not captured by a variant-payload match-pattern binder
 pass	an unrecognized annotation leaves its wrapped definition in effect
 pass	an unrecognized pragma key is rejected rather than ignored
 pass	an unrecognized string escape is rejected
@@ -3114,6 +3117,7 @@ pass	the generator reproduces its stream from a runtime seed (same seed, same va
 pass	the greater-than operator on chars follows scalar order
 pass	the guarded-let conditional takes its else-branch when the conjunction is false
 pass	the heap list a handle BUILDS escapes the handle and is consumed outside it
+pass	the hygiene rename recurses into a NESTED compound match pattern
 pass	the identity function applied to a boolean returns the boolean
 pass	the identity function applied to an integer returns the integer
 pass	the implication-extended kernel Thm stays unforgeable — Thm.Seq of a bogus implication outside is CDZ0214

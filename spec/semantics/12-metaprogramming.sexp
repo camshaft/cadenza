@@ -131,6 +131,43 @@
   (input  (let ((x 10)) (eval (quasiquote (let ((y 1)) (+ (unquote x) 99))))))
   (output (: 109 Int64)))
 
+; The hygiene fix reaches a binder NESTED in a COMPOUND match pattern, not only a bare-name pattern — a
+; variant payload `(Some x)`, a `(tuple x y)`, a `(list x .. rest)`, and nesting. `eval_ast`'s
+; `collect_pattern_binders` recurses into the pattern (skipping the ctor/alias head + the `..` marker), so
+; every pattern binder that collides with a spliced unquote name is alpha-renamed. Without this, a
+; compound-pattern binder still captured the spliced var (`(match (Some 1) ((Some x) ,x))` → 1 not 10) —
+; the gap that remained after the bare-pattern fix.
+
+(case "an unquoted variable is not captured by a variant-payload match-pattern binder"
+  (doc    "`(let ((x 10)) (eval `(match (Some 1) ((Some x) ,x) (_ 0))))` = 10: the `,x` splices the enclosing
+           x=10; the template arm's `(Some x)` payload binder — a binder NESTED in a compound pattern — must
+           not capture it. Pins that the hygiene rename recurses into a variant-payload pattern (captured
+           would give the payload 1).")
+  (input  (let ((x 10)) (eval (quasiquote (match (Some 1) ((Some x) (unquote x)) (_ 0))))))
+  (output (: 10 Int64)))
+
+(case "an unquoted variable is not captured by a tuple-pattern binder"
+  (doc    "`(let ((x 10)) (eval `(match (tuple 1 2) ((tuple x y) (+ ,x y)))))` = 12: the `,x`=enclosing 10,
+           the tuple pattern's `x` binder (= 1) must not capture it → `(+ 10 2)` = 12, not the captured
+           `(+ 1 2)` = 3. Pins the recursion into a `tuple` compound pattern.")
+  (input  (let ((x 10)) (eval (quasiquote (match (tuple 1 2) ((tuple x y) (+ (unquote x) y)))))))
+  (output (: 12 Int64)))
+
+(case "an unquoted variable is not captured by a list-rest-pattern binder"
+  (doc    "`(let ((x 10)) (eval `(match (list 1 2) ((list x .. rest) ,x) (_ 0))))` = 10: the `list` pattern's
+           head-element binder `x` (= 1) must not capture the spliced enclosing x=10. Pins the recursion into
+           a `(list … .. rest)` pattern — the `..` rest marker is skipped, its binder neighbors are renamed.")
+  (input  (let ((x 10)) (eval (quasiquote (match (list 1 2) ((list x .. rest) (unquote x)) (_ 0))))))
+  (output (: 10 Int64)))
+
+(case "the hygiene rename recurses into a NESTED compound match pattern"
+  (doc    "Depth companion: `(match (Some (tuple 1 2)) ((Some (tuple x y)) (+ ,x y)))` with enclosing x=10 →
+           12. The `x` binder is TWO compound levels deep (`Some` payload, then `tuple` element), and the
+           rename still reaches it, so `,x`=10 gives `(+ 10 2)` = 12. Pins that `collect_pattern_binders`
+           recurses to arbitrary compound-pattern depth.")
+  (input  (let ((x 10)) (eval (quasiquote (match (Some (tuple 1 2)) ((Some (tuple x y)) (+ (unquote x) y)) (_ 0))))))
+  (output (: 12 Int64)))
+
 (case "print of a quote containing a float renders re-readably"
   (doc    "`print : Ast → String` renders a quoted compound containing a float as its canonical re-readable
            s-expression: `(quote (f 1.5))` prints `\"(f 1.5)\"` — the `Ast.Float` leaf renders with a `.` so

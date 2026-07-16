@@ -248,19 +248,55 @@ fn binder_names_of(ast: &Arenas, node: StructId) -> Vec<StructId> {
             }
         }
         Some("match") => {
-            // items = [match, scrut, (pat body)…]; a bare-name pattern is a binder.
+            // items = [match, scrut, (pat body)…]; a pattern binds its bare-name sub-nodes — a BARE pattern
+            // `x`, but also every binder NESTED in a COMPOUND pattern: a variant payload `(Some x)`, a
+            // `(tuple x y)`, a `(list h .. rest)`, a `(map (k v) .. rest)`, and nesting thereof. Recurse so a
+            // compound-pattern binder is renamed too (else it captures a spliced var — the gap v-inference
+            // caught: `(match (Some 1) ((Some x) ,x))` mis-captured `,x`).
             for &arm in items.iter().skip(2) {
                 if let Struct::List(a) = ast.get(arm)
                     && let Some(&pat) = a.first()
-                    && ast.as_name(pat).is_some()
                 {
-                    binders.push(pat);
+                    collect_pattern_binders(ast, pat, &mut binders);
                 }
             }
         }
         _ => {}
     }
     binders
+}
+
+/// Collect every bare-name BINDER node in a match PATTERN into `out`, recursing into compound patterns.
+/// A pattern is a binder-bearing shape: a bare name `x` (a binder — unless `_`); a compound `(head sub…)`
+/// where `head` is a constructor / a `tuple`/`list`/`map`/`record` alias — its HEAD is not a binder (it is
+/// the ctor/alias name or a `.`-qualified ctor), but each SUB-pattern is; a `..` rest marker's following
+/// name is a rest binder. A literal (Int/Float/Str/Bool) or `_` binds nothing. Mirrors the pattern-binder
+/// enumeration `resolve.rs`/`lower.rs` do (list/map/variant pattern binders), scoped to name collection.
+fn collect_pattern_binders(ast: &Arenas, pat: StructId, out: &mut Vec<StructId>) {
+    match ast.get(pat) {
+        Struct::Atom(_) => {
+            // A bare name is a binder (`_` binds nothing; a literal atom is not a Name so `as_name` is None).
+            if let Some(name) = ast.as_name(pat)
+                && name != "_"
+            {
+                out.push(pat);
+            }
+        }
+        Struct::List(items) => {
+            // A compound pattern `(head sub…)`: the head is the ctor / `tuple`|`list`|`map`|`record` alias /
+            // the `.`-qualified ctor form `(. T Ctor)` — NOT a binder. Every following element is a
+            // sub-pattern (recurse); a `..` rest marker is skipped (its neighbor name is an ordinary binder
+            // reached by the recursion). Skip element 0 (the head).
+            let items = items.clone();
+            for &sub in items.iter().skip(1) {
+                // Skip the `..` rest marker itself (a bare `..` name); its binder neighbor recurses normally.
+                if ast.as_name(sub) == Some("..") {
+                    continue;
+                }
+                collect_pattern_binders(ast, sub, out);
+            }
+        }
+    }
 }
 
 /// A param slot's binder name: the bare name, or the `p` inside an annotated `(: p T)` binder.
