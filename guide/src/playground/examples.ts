@@ -189,6 +189,73 @@ export const EXAMPLES: Example[] = [
   (export main))`,
   },
   {
+    // Shows off: the classic Euclidean algorithm — recursion + modulo — and deriving LCM from it.
+    // gcd(a,b) = gcd(b, a mod b); lcm(a,b) = a*b/gcd. lcm(12,18) = 36.
+    name: "GCD and LCM (Euclid)",
+    surface: "sexpr",
+    source: `(module m
+  ; Euclid's algorithm: gcd(a, b) = gcd(b, a mod b), until b is 0.
+  (def (gcd a b) (if (= b 0) a (gcd b (% a b))))
+  ; LCM falls out of GCD: lcm(a, b) = a * b / gcd(a, b).
+  (def (lcm a b) (/ (* a b) (gcd a b)))
+  (def (main) (lcm 12 18))
+  (export main))`,
+  },
+  {
+    // Shows off: Set operations as first-class values. Symmetric difference (elements in exactly one
+    // of two sets) is built from union + difference: (A\\B) ∪ (B\\A). Result: {1, 2, 5, 6}.
+    name: "Set algebra (symmetric difference)",
+    surface: "sexpr",
+    source: `(module m
+  ; The symmetric difference of two sets: elements in exactly one of them.
+  ; (A minus B) union (B minus A). Sets also give you dedup for free.
+  (def (sym-diff a b)
+    (Set.union (Set.difference a b) (Set.difference b a)))
+  (def (main)
+    (let ((a (Set.of (list 1 2 3 4)))
+          (b (Set.of (list 3 4 5 6))))
+      (Set.to-list (sym-diff a b))))
+  (export main))`,
+  },
+  {
+    // Shows off: a sum type as a functional STACK (cons list) with real push/pop via match, driving a
+    // stack machine. Evaluates RPN (postfix): numbers push; an operator pops two and pushes the result.
+    // "3 4 + 5 *" = (3+4)*5 = 35.
+    name: "RPN calculator (stack machine)",
+    surface: "sexpr",
+    source: `(module m
+  ; A stack is a cons list — push and pop are just constructors and match.
+  (type Stack (Empty unit) (Cons (Tuple Int64 Stack)))
+  (def (push s x) (Cons (tuple x s)))
+  ; A postfix token: a number, or a binary operator.
+  (type Tok (Num Int64) (Plus unit) (Times unit))
+  ; An operator pops the top two operands and pushes the result.
+  (def (apply2 s f)
+    (match s
+      ((Cons top1)
+       (match (. top1 1)
+         ((Cons top2) (push (. top2 1) (f (. top2 0) (. top1 0))))
+         ((Empty _) s)))
+      ((Empty _) s)))
+  (def (step s tok)
+    (match tok
+      ((Num n) (push s n))
+      ((Plus _) (apply2 s +))
+      ((Times _) (apply2 s *))))
+  (def (run toks i n s)
+    (if (= i n)
+        s
+        (match (List.at toks i)
+          ((Some t) (run toks (+ i 1) n (step s t)))
+          ((None) s))))
+  (def (top s) (match s ((Cons t) (. t 0)) ((Empty _) 0)))
+  ; 3 4 + 5 *  ==>  (3 + 4) * 5 = 35
+  (def (main)
+    (let ((toks (list (Num 3) (Num 4) (Plus unit) (Num 5) (Times unit))))
+      (top (run toks 0 (List.len toks) (Empty unit)))))
+  (export main))`,
+  },
+  {
     name: "A type error (see the squiggle)",
     surface: "sexpr",
     source: `(module m
