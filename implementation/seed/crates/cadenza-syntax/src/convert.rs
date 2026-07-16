@@ -518,6 +518,39 @@ mod tests {
     }
 
     #[test]
+    fn an_embedded_syntax_region_survives_the_whole_code_surface_matrix() {
+        // The operator's tool-transparency promise for first-class embedded syntaxes: because a
+        // `json{ … }` region lands as ORDINARY arena nodes — `(embedded #json <json-subtree>)` — every
+        // code-surface converter and the binary codec handle it for FREE, with NO embedded-syntax-aware
+        // code anywhere downstream of the parser. Prove it end-to-end: an ML program carrying an embedded
+        // JSON region survives ML → binary → sexpr → binary → ML and comes back structurally identical.
+        // A codec that dropped the grammar tag, or an ML/sexpr printer that choked on the `(embedded …)`
+        // node, would break this — so it pins that the node is fully first-class across the matrix.
+        let src = br#"def config() = json{ {"port": 8080, "hosts": ["a", "b"]} }"#;
+        let bin = convert(src, Format::Ml, Format::Binary).expect("ml → binary");
+        let sexpr = convert(&bin, Format::Binary, Format::Sexpr).expect("binary → sexpr");
+        // The grammar tag + the embedded subtree both survive into the s-expr projection.
+        let sx = String::from_utf8(sexpr.clone()).unwrap();
+        assert!(
+            sx.contains("embedded") && sx.contains("#\"json\""),
+            "the s-expr projection keeps the embedded node + its grammar tag: {sx}"
+        );
+        // Round the binary back to ML and re-read: structurally identical to the original parse.
+        let ml = convert(&bin, Format::Binary, Format::Ml).expect("binary → ml");
+        let bin2 = convert(&ml, Format::Ml, Format::Binary).expect("ml → binary again");
+        assert_eq!(
+            bin, bin2,
+            "an embedded-syntax program is byte-stable across ml ⇄ binary (canonical)"
+        );
+        // And the sexpr side round-trips too (sexpr → binary → sexpr identical).
+        let bin_from_sx = convert(&sexpr, Format::Sexpr, Format::Binary).expect("sexpr → binary");
+        assert_eq!(
+            bin, bin_from_sx,
+            "the embedded node is codec-stable through the sexpr surface too"
+        );
+    }
+
+    #[test]
     fn ml_width_option_controls_wrapping() {
         let src = b"(outer (inner aaaa bbbb) (inner cccc dddd))";
         // wide: one line
