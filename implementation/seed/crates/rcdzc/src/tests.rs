@@ -48773,6 +48773,37 @@ mod stage1 {
     }
 
     #[test]
+    fn two_distinct_host_effects_in_a_resource_escape_decline_cleanly() {
+        // `assemble_host_runtime_resource` imports exactly ONE host interface instance, so host ops from >1
+        // DISTINCT effect delegated from a resource-escaping entrypoint would be conflated into that single
+        // interface and MIS-SERIALIZED (silent, not a clean decline) — the host arms took `iface =
+        // host_imports[0].effect` with no single-effect guard (PR #481, Copilot). The guard now declines the
+        // multi-effect shape cleanly on ALL THREE resource-escape arms (Flat tuple / Sum / recursive-sum
+        // List), mirroring the non-resource host-envelope path. (The multi-interface host-resource shape is a
+        // later increment.)
+        for src in [
+            // FLAT (tuple) — two effects A, B
+            "(do (effect A (op a (-> Int64 Int64))) (effect B (op b (-> Int64 Int64))) \
+             (def (main (: x Int64)) (host (A) (host (B) (\"tuple\" (A.a x) (B.b x))))) (export main))",
+            // SUM (Option)
+            "(do (effect A (op a (-> Int64 Int64))) (effect B (op b (-> Int64 Int64))) (type Opt (None) (Some Int64)) \
+             (def (main (: x Int64)) (host (A) (host (B) (Some (+ (A.a x) (B.b x)))))) (export main))",
+            // RECURSIVE-SUM (List)
+            "(do (effect A (op a (-> Int64 Int64))) (effect B (op b (-> Int64 Int64))) \
+             (def (main (: x Int64)) (host (A) (host (B) ((. List push) (list) (+ (A.a x) (B.b x)))))) (export main))",
+        ] {
+            let err = compile_component(&crate::codec::encode(&parse(src))).expect_err(
+                "two distinct host effects in a resource escape must decline, not mis-serialize",
+            );
+            assert!(
+                err.message.contains("more than one host effect"),
+                "the multi-host-effect resource-escape decline must name the cause: {}",
+                err.message
+            );
+        }
+    }
+
+    #[test]
     fn a_scalar_host_op_result_escaping_as_a_sum_or_list_resource_emits() {
         // HOST-RESOURCE-ESCAPE, increment 2: the SUM (Option) and RECURSIVE-SUM (List) resource-escape
         // sites — `emit_runtime_sum_resource` / `emit_recursive_sum_resource` — get the same host arm as the
