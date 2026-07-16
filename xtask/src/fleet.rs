@@ -855,6 +855,22 @@ fn send(
         })
         .or_else(|| sender_from_branch(fleet))
         .unwrap_or_else(|| "unknown".to_string());
+    // The resolved `from` becomes the RECIPIENT of any reply pr-sync sends back (it addresses the
+    // reply to `mr.from`), and `deliver` validates the recipient name. So an INVALID `from` — e.g.
+    // `--from foo/bar`, or a branch `fleet/foo/bar` deriving `foo/bar` — would pass here but make the
+    // REPLY dead-letter at deliver-time, leaving the sender stuck (never sees merged/reject). Validate
+    // the resolved sender HERE, at the source, and refuse early with a clear error, so a malformed
+    // sender can never silently lose its reply. (`unknown` is the sentinel handled just below.)
+    if from != "unknown"
+        && let Err(why) = validate_agent_name(&from)
+    {
+        eprintln!(
+            "fleet send: REFUSING — resolved sender `{from}` is not a valid agent name ({why}). A reply \
+             addressed back to it would dead-letter at delivery, stranding you. Pass a valid \
+             `--from <agent>` (ASCII alphanumerics + `-`; no slashes/dots), or fix your branch name."
+        );
+        std::process::exit(1);
+    }
     // A reply-EXPECTING message (the sender waits for a merged/reject/answer) MUST have a real sender,
     // or the reply dead-letters and the sender idles forever. Refuse rather than send into the void.
     if from == "unknown" && matches!(kind, "merge-request" | "ask" | "issue") {
