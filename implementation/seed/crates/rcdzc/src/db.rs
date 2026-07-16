@@ -1629,6 +1629,10 @@ pub struct Db {
     /// `@exhaustive` def is ALSO in `tests` (it is a test), so `test_defs` hoists it with no extra `@test`.
     pub(crate) exhaustive: crate::fxhash::FxHashSet<StructId>,
 
+    /// `(@ (tag …) …)` heads whose arg is not exactly one STRING — malformed `@tag` annotations. Read by
+    /// `Db::malformed_tag_forms` to REJECT them in `collect_faults` (a silently-dropped tag masks the error).
+    pub(crate) malformed_tags: Vec<StructId>,
+
     /// TRANSIENT flow-sensitive value-range REFINEMENTS, active only during wasm emit. A stack of
     /// frames, each mapping a variable's binder occurrence (a `Core::Param`/`LocalRef` `binder`) to a
     /// range `[lo, hi]` KNOWN to hold in the current control-flow branch (`hi = None` = unbounded above).
@@ -1703,6 +1707,7 @@ impl Db {
             tests,
             tags,
             exhaustive,
+            malformed_tags,
         } = strip_annotations(&mut ast);
         // The program's node count, captured BEFORE the prelude appends — the boundary between user
         // nodes (which the front-end's span table covers) and everything appended after. Ids `0..this`
@@ -2163,6 +2168,7 @@ impl Db {
             tests,
             tags,
             exhaustive,
+            malformed_tags,
             range_refinements: Vec::new(),
         };
         // NEWTYPE ERASURE: materialize, once, which declared sums are erasable NEWTYPES and their
@@ -3444,6 +3450,15 @@ impl Db {
         out
     }
 
+    /// The `(@ (tag …) …)` annotation heads whose argument is NOT exactly one STRING — malformed `@tag`
+    /// forms (`@tag(5)`, `@tag(foo)`, `@tag()`, `@tag("a" "b")`). Recorded by `strip_annotations` (which
+    /// unwraps the wrapper in place, so the offending head can't be re-found post-strip). `collect_faults`
+    /// rejects each: a `@tag` takes exactly one string literal; a malformed one is silently dropped (the
+    /// tag is recorded nowhere), which would mask an author's mistake — so reject it instead.
+    pub fn malformed_tag_forms(&self) -> &[StructId] {
+        &self.malformed_tags
+    }
+
     /// Each well-formed-SHAPE constructor-export element `(. T A)` / `(. T *)` in a top-level `(export …)`
     /// clause, as `(element_occ, type_name_occ, ctor_name_occ)`. `element_occ` anchors a diagnostic at the
     /// `(. …)` element; `type_name_occ`/`ctor_name_occ` are the `T`/`A` atoms (the ctor is the reserved `*`
@@ -4077,6 +4092,10 @@ pub(crate) struct StrippedAnnotations {
     /// like `tests`; `Db::is_exhaustive` reads it. `@exhaustive` implies the def is a property test but is
     /// recorded independently of `@test` (the runner treats an `@exhaustive` def as a test too).
     pub(crate) exhaustive: crate::fxhash::FxHashSet<StructId>,
+    /// `(@ (tag …) …)` annotation heads whose argument is not exactly one STRING — a malformed `@tag`
+    /// (`@tag(5)`, `@tag(foo)`, `@tag()`, `@tag("a" "b")`). Recorded by the offending `(tag …)` occurrence
+    /// so `collect_faults` rejects it (rather than silently dropping the tag and masking the author error).
+    pub(crate) malformed_tags: Vec<StructId>,
 }
 
 /// Unwrap EVERY `@`-ANNOTATION on a definition — `(@ inline-never (def …))`, `(@ inline-always (def …))`,
@@ -4169,6 +4188,8 @@ fn strip_annotations(ast: &mut Arenas) -> StrippedAnnotations {
     let mut tags: crate::fxhash::FxHashMap<StructId, Vec<String>> =
         crate::fxhash::FxHashMap::default();
     let mut exhaustive: crate::fxhash::FxHashSet<StructId> = crate::fxhash::FxHashSet::default();
+    // `(@ (tag …) …)` heads whose argument is not exactly one STRING — malformed tag annotations to reject.
+    let mut malformed_tags: Vec<StructId> = Vec::new();
     for i in 0..ast.structure.len() {
         let id = StructId(i as u32);
         // `(@ NAME INNER)` — the annotation head `@`, its name, and the annotated form. Only a known
@@ -4195,12 +4216,20 @@ fn strip_annotations(ast: &mut Arenas) -> StrippedAnnotations {
         // its head `tag` + a single STRING argument the tag text. A def may stack several
         // (`@tag("slow") @tag("net")`), each recorded below. Any other application-name annotation is an
         // inert unknown marker (unwrapped, recorded nowhere), exactly like an unknown bare name.
-        let tag_arg: Option<String> = ast.as_form(name_occ, "tag").and_then(|app_tail| {
+        let tag_app = ast.as_form(name_occ, "tag");
+        let tag_arg: Option<String> = tag_app.and_then(|app_tail| {
             match app_tail {
                 [only] => ast.as_str(*only).map(str::to_string),
                 _ => None, // `@tag` with not-exactly-one-arg (or a non-string arg) — not a modeled tag
             }
         });
+        // A `(tag …)` HEAD that is NOT a valid `@tag("string")` — the arg is not exactly one STRING (a
+        // number `@tag(5)`, a bare name `@tag(foo)`, zero args `@tag()`, or two `@tag("a" "b")`). This is
+        // always an author mistake: silently ignoring it (recording no tag) masks the error, so record the
+        // offending `(tag …)` occurrence for `collect_faults` to REJECT (a malformed tag annotation).
+        if tag_app.is_some() && tag_arg.is_none() {
+            malformed_tags.push(name_occ);
+        }
         // The inner must be a `(def SIG BODY …)` — read its children to adopt them + find the BODY occ.
         let Some(def_tail) = ast.as_form(inner, "def") else {
             continue; // an annotation around a non-def — leave untouched (a well-formedness concern elsewhere)
@@ -4259,6 +4288,7 @@ fn strip_annotations(ast: &mut Arenas) -> StrippedAnnotations {
         tests,
         tags,
         exhaustive,
+        malformed_tags,
     }
 }
 

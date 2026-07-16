@@ -2293,6 +2293,23 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
             .at(occ),
         );
     }
+    // A MALFORMED `@tag` — `(@ (tag …) def)` whose argument is not exactly ONE STRING (`@tag(5)`,
+    // `@tag(foo)`, `@tag()`, `@tag("a" "b")`). A `@tag` takes exactly one string literal (the tag text
+    // `cdz test --tag` matches). Without this reject the malformed tag is SILENTLY DROPPED — the def is
+    // untagged and the author's intent (to tag it) is lost with no signal — so a mis-typed `--tag` filter
+    // then matches nothing. Reject each, naming the required shape.
+    for &occ in db.malformed_tag_forms() {
+        faults.push(
+            Reject::coded(
+                Code::Malformed,
+                "this `@tag` annotation takes exactly one STRING argument — the tag text, e.g. \
+                 `@tag(\"slow\")` (`(@ (tag \"slow\") (def …))`); a non-string, missing, or multiple \
+                 argument is not a tag and would be silently ignored"
+                    .to_string(),
+            )
+            .at(occ),
+        );
+    }
     // SEMANTIC validation of a CONSTRUCTOR-EXPORT `(export (. T A))` / `(export (. T *))` — the opaque-types
     // surface. `malformed_exports` (above) accepts its SHAPE, and the linker's `as_ctor_export` records the
     // (type, ctor) names WITHOUT checking they exist — so `(export (. T Nonesuch))` (a ctor `T` lacks),

@@ -16254,6 +16254,46 @@ mod match_engine {
         }
     }
 
+    /// A MALFORMED `@tag` — `(@ (tag …) def)` whose argument is not exactly ONE STRING — must be REJECTED,
+    /// not silently dropped. `strip_annotations` records the tag only for `(tag "string")`; any other arg
+    /// shape (`(tag 5)`, `(tag foo)`, `(tag)`, `(tag "a" "b")`) recorded the tag NOWHERE, so the def was
+    /// untagged with no signal — masking the author's mistake (a `cdz test --tag` filter then matches
+    /// nothing). `collect_faults` now rejects each, naming the required one-string shape. (Flagged by
+    /// v-diagnostics; annotation semantics are v-property-testing's charter.)
+    #[test]
+    fn a_malformed_tag_annotation_is_rejected_not_silently_dropped() {
+        use crate::testkit::parse;
+        for src in [
+            "(module m (@ (tag 5) (def (c) 3)) (export c))", // non-string (number)
+            "(module m (@ (tag foo) (def (c) 3)) (export c))", // non-string (bare name)
+            "(module m (@ (tag) (def (c) 3)) (export c))",   // zero args
+            "(module m (@ (tag \"a\" \"b\") (def (c) 3)) (export c))", // two args
+        ] {
+            let d = crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| {
+                    d.message
+                        .contains("`@tag` annotation takes exactly one STRING")
+                })
+                .unwrap_or_else(|| panic!("a malformed `@tag` must be rejected: {src}"));
+            assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+        }
+        // NO false positive: a VALID `@tag("string")` (bare, or stacked with `@test`) is accepted silently.
+        for ok in [
+            "(module m (@ (tag \"slow\") (def (c) 3)) (export c))",
+            "(module m (@ (tag \"slow\") (@ test (def (c) 3))) (export c))",
+        ] {
+            assert!(
+                !crate::diagnostics(&mut crate::db::Db::load(parse(ok)))
+                    .iter()
+                    .any(|d| d
+                        .message
+                        .contains("`@tag` annotation takes exactly one STRING")),
+                "a valid @tag is not flagged: {ok}"
+            );
+        }
+    }
+
     /// A SHAPE-valid constructor-export `(export (. T A))` / `(export (. T *))` must ALSO be SEMANTICALLY
     /// valid: `T` a declared sum, `A` one of its variants. The linker's `as_ctor_export` recorded the
     /// (type, ctor) names WITHOUT checking they exist, so `(export (. T Nonesuch))` (a ctor `T` lacks),
