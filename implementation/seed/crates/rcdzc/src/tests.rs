@@ -15067,6 +15067,71 @@ mod match_engine {
     }
 
     #[test]
+    fn a_narrow_newtype_literal_payload_arm_compares_at_the_payload_width() {
+        // The erased-newtype literal-payload read (the fix above) must ALSO compare at the payload's native
+        // machine width. An erased scalar newtype leaves the RAW payload on the stack — i64 for `Int64`, but
+        // i32 for a NARROW newtype (`(Wrap UInt8)`/`Int8`/`Int16`/`Int32`, raw rep i32). Reading the raw
+        // scalar but comparing at the hard-coded i64 (`i64.eqz`) over the i32 payload emitted an INVALID
+        // component (`expected i64, found i32` — the narrow twin of the Int64 invalid-component). The
+        // compare is keyed on the payload width: `i32.eqz`/`i32.eq` for a narrow raw leaf, i64 for an Int64
+        // raw leaf (and any BOXED payload, whose `get-int` normalizes to i64). breaker-found (incomplete-fix
+        // of the single-variant Int64 case).
+        if super::find_runtime_wasm().is_none() {
+            eprintln!("runtime wasm not found; skipping narrow-newtype-payload heap-runs");
+            return;
+        }
+        // UInt8 newtype: literal-0 hit (→100) and miss to the binding arm (→5), both now VALID at i32 width.
+        assert_eq!(
+            run_heap_value(
+                "(do (type W (Wrap UInt8)) (def (main) (match (W.Wrap 0) ((W.Wrap 0) 100) ((W.Wrap x) x))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "100",
+            "an erased UInt8 newtype literal-0 arm is selected (was an invalid component — i64.eqz over i32)"
+        );
+        assert_eq!(
+            run_heap_value(
+                "(do (type W (Wrap UInt8)) (def (main) (match (W.Wrap 5) ((W.Wrap 0) 100) ((W.Wrap x) x))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "5",
+            "an erased UInt8 newtype falls through to the binding arm on a miss"
+        );
+        // A NONZERO narrow literal (exercises the `i32.eq` const path, not just `i32.eqz`).
+        assert_eq!(
+            run_heap_value(
+                "(do (type W (Wrap UInt8)) (def (main) (match (W.Wrap 7) ((W.Wrap 7) 100) ((W.Wrap x) x))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "100",
+            "an erased UInt8 newtype nonzero-literal arm compares at i32 width (i32.eq const)"
+        );
+        // Int32 (a signed narrow width, also i32-backed).
+        assert_eq!(
+            run_heap_value(
+                "(do (type W (Wrap Int32)) (def (main) (match (W.Wrap 0) ((W.Wrap 0) 100) ((W.Wrap x) x))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "100",
+            "an erased Int32 newtype literal arm compiles at i32 width (every narrow width, not only UInt8)"
+        );
+        // The Int64 WIDE control: the raw payload is an i64, so the compare stays i64 — unaffected.
+        assert_eq!(
+            run_heap_value(
+                "(do (type W (Wrap Int64)) (def (main) (match (W.Wrap 0) ((W.Wrap 0) 100) ((W.Wrap x) x))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "100",
+            "an erased Int64 newtype literal arm still compares at i64 width (the wide control, unchanged)"
+        );
+    }
+
+    #[test]
     fn a_tail_loop_threading_a_projected_boxed_sum_accumulator_decodes_correctly() {
         // A tuple-projected boxed sum threaded through a self-tail loop must SURVIVE the loop step. `one`
         // returns `(tuple (W.Atom <byte>) (+ pos 1))`; `loop` threads `(. r 0)` (the nested-compound boxed
