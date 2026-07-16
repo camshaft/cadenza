@@ -1,0 +1,131 @@
+/// purity.cdz — PURITY (effect-freedom) ANALYSIS: can an expression be eliminated, reordered, or
+/// duplicated without changing observable behavior? This is the SAFETY CHECK every code-motion transform
+/// depends on — the inliner, dead-let elimination, and CSE all silently ASSUME purity; a real pass must
+/// prove it. An expression is PURE iff it has no sub-term that can produce an observable effect or a trap:
+///   - `Print e`      — an observable effect (must run, in order) → IMPURE.
+///   - `Div(l, r)`    — may TRAP on a zero divisor → IMPURE (eliminating it could remove a trap; reordering
+///                      could move where the trap is observed). Conservative: impure even if `r` ≠ 0 here.
+///   - `Call(f, e)`   — an unknown callee may do anything → conservatively IMPURE.
+///   - `Num`/`Var`    — pure. `Add`/`Sub` — pure iff both operands are pure.
+///
+/// The transform-safety predicates read off purity:
+///   - `safe-to-eliminate e` — a computation whose result is unused may be dropped ONLY if pure (dropping
+///     an impure `e` would lose its effect / suppress its trap). = `is-pure`.
+///   - `safe-to-duplicate e` — inlining a binding into N ≥ 2 use sites re-runs `e` N times; safe ONLY if
+///     pure (duplicating a `Print` prints N times; duplicating a `Div` multiplies the trap opportunities).
+///     = `is-pure`. (Linear inlining into ONE site needs no purity — see inline.cdz; this is the 2+ case.)
+///   - `safe-to-reorder a b` — two computations may swap ONLY if at least one is pure (two effects have a
+///     defined order that must be preserved; a pure one commutes with anything).
+
+type Ex =
+  | Num(Int64)
+  | Var(Int64)
+  | Add(Ex, Ex)
+  | Sub(Ex, Ex)
+  | Div(Ex, Ex)          // may trap (division by zero) → impure
+  | Print(Ex)            // observable effect → impure (the argument is still analyzed)
+  | Call(Int64, Ex)      // unknown callee → conservatively impure
+
+/// Is `e` pure — free of effects and traps, so it may be freely eliminated/reordered/duplicated?
+def is-pure(e: Ex) = match e with
+  | Ex.Num(_) => true
+  | Ex.Var(_) => true
+  | Ex.Add(l, r) => is-pure(l) and is-pure(r)
+  | Ex.Sub(l, r) => is-pure(l) and is-pure(r)
+  | Ex.Div(_, _) => false
+  | Ex.Print(_) => false
+  | Ex.Call(_, _) => false
+
+/// A pure, unused computation may be dropped; an impure one may not (its effect/trap must remain).
+def safe-to-eliminate(e: Ex) = is-pure(e)
+
+/// A computation may be duplicated across ≥2 use sites only if pure (else the effect/trap multiplies).
+def safe-to-duplicate(e: Ex) = is-pure(e)
+
+/// Two computations may be reordered iff at least one is pure (a pure one commutes with anything; two
+/// effects have an order that must be preserved).
+def safe-to-reorder(a: Ex, b: Ex) = is-pure(a) or is-pure(b)
+
+/// Count the effectful/trapping sub-terms (Print/Div/Call) — 0 iff pure. A structural measure of how much
+/// a purity-preserving transform must leave in place.
+def effect-count(e: Ex) = match e with
+  | Ex.Num(_) => 0
+  | Ex.Var(_) => 0
+  | Ex.Add(l, r) => effect-count(l) + effect-count(r)
+  | Ex.Sub(l, r) => effect-count(l) + effect-count(r)
+  | Ex.Div(l, r) => 1 + effect-count(l) + effect-count(r)
+  | Ex.Print(x) => 1 + effect-count(x)
+  | Ex.Call(_, x) => 1 + effect-count(x)
+
+/// Builders.
+def v(x: Int64) = Ex.Var(x)
+def n(k: Int64) = Ex.Num(k)
+
+@test
+def pure-arithmetic() =
+  // (x + 1) - 2 : pure, 0 effects.
+  let e = Ex.Sub(Ex.Add(v(0), n(1)), n(2)) in
+  if is-pure(e) then (if effect-count(e) == 0 then unit else trap("0 effects")) else trap("arithmetic is pure")
+
+@test
+def print-is-impure() =
+  // print(x) is impure, 1 effect.
+  let e = Ex.Print(v(0)) in
+  if is-pure(e) then trap("print is impure") else (if effect-count(e) == 1 then unit else trap("1 effect"))
+
+@test
+def div-is-impure() =
+  // x / y may trap → impure even though it's "just arithmetic".
+  if is-pure(Ex.Div(v(0), v(1))) then trap("div may trap → impure") else unit
+
+@test
+def call-is-impure() =
+  // an unknown call is conservatively impure.
+  if is-pure(Ex.Call(3, v(0))) then trap("unknown call is impure") else unit
+
+@test
+def impurity-propagates-up() =
+  // (x + print(y)) : the Print makes the whole Add impure.
+  let e = Ex.Add(v(0), Ex.Print(v(1))) in
+  if is-pure(e) then trap("an impure operand makes the sum impure") else (if effect-count(e) == 1 then unit else trap("1 effect"))
+
+@test
+def nested-effects-counted() =
+  // print(x / y) : both Print and Div are effects → 2.
+  let e = Ex.Print(Ex.Div(v(0), v(1))) in
+  if effect-count(e) == 2 then (if is-pure(e) then trap("impure") else unit) else trap("2 effects")
+
+@test
+def safe-to-eliminate-pure() =
+  // a pure unused expr may be dropped; an impure one may not.
+  if safe-to-eliminate(Ex.Add(v(0), n(1))) then
+    (if safe-to-eliminate(Ex.Print(v(0))) then trap("must NOT drop a Print") else unit)
+  else trap("a pure unused expr is droppable")
+
+@test
+def safe-to-duplicate-pure() =
+  // pure → duplicable across use sites; a Div (may trap) → not.
+  if safe-to-duplicate(Ex.Sub(v(0), n(1))) then
+    (if safe-to-duplicate(Ex.Div(v(0), v(1))) then trap("must NOT duplicate a Div") else unit)
+  else trap("a pure expr is duplicable")
+
+@test
+def safe-to-reorder-needs-one-pure() =
+  // pure with anything → reorderable; two effects → NOT.
+  if safe-to-reorder(Ex.Add(v(0), n(1)), Ex.Print(v(1))) then
+    (if safe-to-reorder(Ex.Print(v(0)), Ex.Print(v(1))) then trap("two effects keep their order") else unit)
+  else trap("a pure computation commutes with an effect")
+
+@test
+def deep-pure-tree() =
+  // a deep purely-arithmetic tree stays pure.
+  let e = Ex.Add(Ex.Sub(Ex.Add(v(0), n(1)), n(2)), Ex.Add(v(1), v(2))) in
+  if is-pure(e) then (if effect-count(e) == 0 then unit else trap("0 effects")) else trap("deep arithmetic is pure")
+
+@test
+def effect-inside-pure-shell() =
+  // (a + b) - call(f, c) : the Call taints the whole tree; effect-count 1.
+  let e = Ex.Sub(Ex.Add(v(0), v(1)), Ex.Call(9, v(2))) in
+  if is-pure(e) then trap("a Call makes the tree impure") else (if effect-count(e) == 1 then unit else trap("1 effect"))
+
+export { is-pure, safe-to-eliminate, safe-to-duplicate, safe-to-reorder, effect-count }
