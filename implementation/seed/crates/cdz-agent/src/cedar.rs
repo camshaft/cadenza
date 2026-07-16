@@ -199,6 +199,54 @@ mod tests {
     }
 
     #[test]
+    fn a_delegation_grant_can_be_time_scoped_by_an_expiry() {
+        // DESIGN §4.2: a delegation grant carries an EXPIRY. Model it as a numeric context condition —
+        // the permit applies only while `context.now <= context.expires` — so a grant that has passed its
+        // expiry stops authorizing WITHOUT superseding the policy (the caller passes the current time in
+        // context each request). A plain integer comparison, no Cedar datetime extension/schema needed.
+        let grant = concat!(
+            r#"permit(principal, action, resource)"#,
+            r#" when { context.now <= context.expires };"#,
+        );
+        // Before expiry (now 100 <= expires 200) → allow.
+        assert_eq!(
+            authorize(grant, AGENT, WRITE, FILE, r#"{"now":100,"expires":200}"#).unwrap(),
+            AuthzDecision::Allow,
+            "a live (unexpired) grant authorizes"
+        );
+        // After expiry (now 300 > expires 200) → the when-clause fails → deny (the grant lapsed).
+        assert_eq!(
+            authorize(grant, AGENT, WRITE, FILE, r#"{"now":300,"expires":200}"#).unwrap(),
+            AuthzDecision::Deny,
+            "an expired grant no longer authorizes — time-scoped delegation"
+        );
+    }
+
+    #[test]
+    fn a_forbid_in_the_delegation_overrides_the_agent_permit_on_behalf_of() {
+        // On-behalf-of is agent ∩ delegation; a FORBID in the delegation is the sharpest denial — the
+        // user can explicitly withhold a specific action even from an all-permitting agent. (Cedar forbid
+        // beats permit within the delegation eval; the intersection then denies.)
+        let agent = r#"permit(principal, action, resource);"#; // agent may do anything
+        let delegation = concat!(
+            r#"permit(principal, action, resource);"#,
+            r#"forbid(principal, action == Action::"tool:delete-prod", resource);"#,
+        );
+        // A non-forbidden action passes both → allow.
+        assert_eq!(
+            authorize_on_behalf_of(agent, delegation, AGENT, WRITE, FILE, "{}").unwrap(),
+            AuthzDecision::Allow,
+            "write: agent permits AND delegation permits (no forbid) → allow"
+        );
+        // The delegation's forbid on delete-prod denies even though the agent permits everything.
+        assert_eq!(
+            authorize_on_behalf_of(agent, delegation, AGENT, DELETE, FILE, "{}").unwrap(),
+            AuthzDecision::Deny,
+            "delete-prod: the delegation's FORBID overrides — the user withheld it"
+        );
+    }
+
+    #[test]
     fn a_malformed_policy_is_a_clean_error_not_a_panic() {
         let err = authorize("this is not cedar", AGENT, WRITE, FILE, "{}").unwrap_err();
         assert!(
