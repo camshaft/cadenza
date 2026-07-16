@@ -44,6 +44,12 @@ const NOTEBOOK_IDE = {
   prepare: (t: string) => ({ compiled: t, wrapPrefixBytes: 0 }),
 };
 
+/// The notebook is a RATIONAL-mode app (operator-directed, app-level like the calculator): a bare numeric
+/// literal — integer OR float — grounds to Rational, so cells compute EXACTLY (right for scientific use).
+/// This is `replEval`'s `exact` flag (C6's default-fraction pragma), NOT a language-wide default — it's the
+/// notebook's app-level choice, the same knob /calculator and /cad select.
+const NOTEBOOK_EXACT = true;
+
 /// Per-code-cell run state, keyed by the cell's index in the parsed cell list.
 type CellState = { phase: "idle" } | { phase: "running" } | { phase: "done"; output: CellOutput };
 
@@ -124,7 +130,7 @@ export default function NotebookPage() {
             // assembleForRun is inside the try so a bad-shape assembly error renders as a cell error
             // rather than rejecting the chain callback (which would poison all subsequent runs).
             const { buffer, entry } = assembleForRun(cells, i, widgets, vals, from);
-            const compiled = await replEval(buffer, entry, from);
+            const compiled = await replEval(buffer, entry, from, NOTEBOOK_EXACT);
             if (!compiled.component) {
               const d = compiled.diagnostics.find((x) => x.error) ?? compiled.diagnostics[0];
               output = { render: "error", message: d ? `${d.code} ${d.message}`.trim() : "compile declined" };
