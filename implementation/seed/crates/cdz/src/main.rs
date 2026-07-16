@@ -517,6 +517,13 @@ fn run_build(args: &BuildArgs) -> ExitCode {
     };
     let path = std::path::Path::new(&target);
     let is_manifest_arg = path.file_name().and_then(|n| n.to_str()) == Some(MANIFEST_NAME);
+    // Naming a `Project.cdz` that DOESN'T EXIST is a clear error, mirroring `cdz check`/`cdz test`:
+    // without this, the arg resolves to its parent dir and `load_manifest` reports the confusing "no
+    // `Project.cdz` in <parent>" (naming the dir, not the file the user typed). Fail with "no such file".
+    if is_manifest_arg && !path.is_file() {
+        eprintln!("{PROG}: {target}: no such file");
+        return ExitCode::FAILURE;
+    }
     let dir = if is_manifest_arg {
         match path.parent() {
             Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
