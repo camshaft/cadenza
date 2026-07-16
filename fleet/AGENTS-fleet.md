@@ -126,6 +126,15 @@ Before you send a `merge-request`, all of these must hold in your worktree:
 4. Do NOT edit `cdz-runtime`'s `//` comments or `wit/runtime.wit` casually — they are inside the
    frozen `REQUIRED_RUNTIME_HASH`; a change there means `cargo xtask build` + `codegen --check`.
 
+**A sudden MASS heap-test failure is almost always a STALE STORE, not a regression.** If dozens+ of
+heap/gate cases flip to fail at once — ESPECIALLY right after a numeric/bignum/runtime change (which
+bumps `REQUIRED_RUNTIME_HASH`) — do NOT escalate or revert. A one-commit change rarely flips hundreds
+of cases; a stale runtime store flips every heap case at once (each traps `no runtime of content
+address <hash> in the store`). REBUILD the store on current trunk (`cargo xtask build`) and re-run on
+the FRESH build first — the mass-red almost always vanishes. Only after a clean rebuild still fails is
+it a real regression. (This trap cost multiple false "fleet-red regression" escalations + a near-miss
+revert in one session — see the stale-store memory traps.)
+
 ## Shared memory — write your own; do NOT reorganize or minimize it (that's the librarian's job)
 
 The shared memory (`/local/home/bythewc/claude-memory/`) is the fleet's brain. You WRITE your own
