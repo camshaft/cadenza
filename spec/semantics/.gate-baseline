@@ -555,6 +555,7 @@ pass	a constructor selected at RUNTIME is a first-class value that is then appli
 pass	a constructor whose payload is a constructor keeps the outer variant tag
 pass	a constructor with an all-irrefutable payload shadows a later refining arm of the same variant
 pass	a consumed bare None type-checks without annotation (ambiguity is escape-only)
+pass	a consumed empty list type-checks without annotation (ambiguity is escape-only)
 pass	a consumer applies TWO handed-back closures
 pass	a consumer applies the handed-back closure inside a larger expression
 pass	a consumer applies the handed-back closure to an internal constant
@@ -1927,6 +1928,7 @@ pass	an all-owned-arms match operand compares correctly through the ownership jo
 pass	an all-wildcard tuple arm is a catch-all that shadows a later refining arm
 pass	an annihilator identity folds to zero when its operand is trap-free
 pass	an annotated destructuring let binder
+pass	an annotated empty list escapes fine (the undetermined-empty-list control)
 pass	an annotated escaped None renders its canonical nullary-variant form (the control)
 pass	an annotated let binder constrains the value's type
 pass	an annotated let binder range-checks its narrow-width bound value
@@ -1974,6 +1976,7 @@ pass	an element pattern matches a list by its length and elements
 pass	an element read across a concatenation boundary is the right value
 pass	an empty binary form is the empty byte sequence
 pass	an empty byte-string literal is the empty byte sequence
+pass	an empty list escaping to the host is rejected as undetermined, like a bare None
 pass	an empty map is unequal to a non-empty map, not a type error
 pass	an empty quote is rejected, not a crash
 pass	an empty scrutinee matches an empty bin pattern

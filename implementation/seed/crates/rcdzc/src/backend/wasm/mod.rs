@@ -838,7 +838,14 @@ pub fn emit(
             // change. A CONSUMED such value would have constrained the variable and never reach this guard.
             //= spec/capabilities/type-system.md#inference-is-principal-type-inference-by-unification
             //# A value that escapes to the host whose type contains a type variable no use constrains MUST be rejected at compile time with the type-determination fault code, rather than crossing the boundary with an invented type, so that a serialized value's type header is always fully determined. A bare `None` returned as the program result (type `Option ?`, the payload free), an `Ok` whose `Err` parameter is never constructed, or an empty list indexed to `None` (element free) is rejected for its unresolved type — the fix is an annotation that determines the variable — not for its export shape. A CONSUMED such value (matched, or passed to a typed parameter) constrains the variable and type-checks without annotation; the ambiguity bites only at an unannotated escape.
-            if e.result.has_free_var() && e.params.is_empty() && !multi_export {
+            // `has_undetermined_escape_component` (not bare `has_free_var`) so an empty collection whose
+            // element grounded to `Ty::Any` (`(list)` → `(List Any)`) gets THIS coded CDZ0203 "annotate it"
+            // — the same undetermined-escape fault as a free-`Var` `(None)`, just a different grounding —
+            // rather than falling through to the misleading uncoded "value-form walker loops to a runtime
+            // depth" decline below (which describes a genuine recursive-collection limitation, not this
+            // undetermined-type one). Matches the `cdz check` twin in `compile.rs`.
+            if e.result.has_undetermined_escape_component() && e.params.is_empty() && !multi_export
+            {
                 return Err(Reject::coded(
                     crate::diag::Code::TypeMismatch,
                     format!(
