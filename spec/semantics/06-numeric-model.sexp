@@ -1076,6 +1076,32 @@
   (input  (do (def (main (: x UInt8)) (Int64.of x)) (export main)))
   (declines))
 
+; The widen decline above is one face of a family: the runtime `.of` fixed-width integer CONVERT does not
+; yet emit in ANY direction. These pin the other two faces so the whole boundary is tracked, not just the
+; Int64-widen: NARROWING a runtime Int64 to a fixed width (`UInt8.of n`, range-checked) and CROSS-WIDTH
+; widening one narrow type to another (`UInt16.of x:UInt8`) both DECLINE too. As with the widen, the
+; CONSTANT forms fold (checked-narrow / exact-widen at compile time) and the `wrap`/`wrapping-*` truncation
+; ops emit fine on runtime narrow values — it is specifically the runtime `.of` CONVERT emit that is the
+; later increment. Sound declines, reject-don't-miscompile; a future runtime `.of` that silently emitted a
+; wrong (unchecked-narrow / sign-extended) result would flip these `(declines)`.
+(case "narrowing a runtime Int64 to a fixed width with .of declines (the checked-narrow emit is pending)"
+  (doc    "`(Int64.of (UInt8.of n))` with `n` a runtime Int64: the inner `(UInt8.of n)` range-checks-narrows
+           the runtime Int64 to a UInt8 — a runtime `.of` CONVERT the seed does not yet emit, so it soundly
+           DECLINES (rather than emitting an unchecked truncation). Contrast the CONSTANT `(UInt8.of
+           (BigInt.of 300))` narrow cases (which fold + range-check at compile time). Grades the runtime
+           narrow-direction `.of` decline, the companion of the widen above.")
+  (input  (do (def (main (: n Int64)) (Int64.of (UInt8.of n))) (export main)))
+  (declines))
+
+(case "cross-width widening a runtime narrow int with .of (UInt16.of a UInt8) declines (emit pending)"
+  (doc    "`(UInt16.of x)` with `x` a runtime `UInt8` widens one fixed-narrow type to a wider fixed type —
+           a runtime `.of` CONVERT between narrow widths, distinct from the Int64-widen and the Int64-narrow
+           above. The seed does not yet emit it, so it soundly DECLINES. Completes the runtime `.of`
+           integer-conversion decline family (widen-to-Int64 / narrow-from-Int64 / cross-narrow-width) as a
+           single tracked boundary pending the convert emit; the `wrap` truncation path is unaffected.")
+  (input  (do (def (main (: x UInt8)) (UInt16.of x)) (export main)))
+  (declines))
+
 ; --- Float is WIDTH-INDEXED: (Float N) over N in {32, 64}, with Float32/Float64 aliases -------------
 ; numeric-model.md #A Floating-Point Type Is Indexed By A Compile-Time Width: a float type is the
 ; width-indexed constructor `Float` applied to a compile-time width, and Float32/Float64 alias
@@ -2023,6 +2049,42 @@
            corrupt it). Confirms `a +% 0` and `a *% 1` are true identities across the whole range.")
   (input  (= (Int64.wrapping-add Int64.min 0) (Int64.wrapping-mul Int64.min 1)))
   (output (: true Bool)))
+
+; The identity case above preserves Int64.min under `+% 0` / `*% 1`. These pin the SELF-WRAP at min: the
+; two-s-complement fact that `min * -1` and `0 - min` both compute +2^63, which is ≡ -2^63 (mod 2^64) =
+; Int64.min — so negating the minimum wraps back to itself. And the three-family divergence at that input:
+; checked → None, wrapping → min (trapping → trap is pinned elsewhere).
+
+(case "wrapping-mul of the minimum integer by -1 wraps back to the minimum"
+  (doc    "`(Int64.wrapping-mul Int64.min -1)` = Int64.min: mathematically min·-1 = +2^63, which is one past
+           Int64.max and wraps to -2^63 = Int64.min (mod 2^64). The self-wrap at the minimum — negating the
+           most-negative value cannot represent its positive, so wrapping returns the value unchanged. The
+           wrapping companion of the trapping `(* min -1)` (traps) and checked `(checked-mul min -1)` (None).")
+  (input  (= (Int64.wrapping-mul -9223372036854775808 -1) -9223372036854775808))
+  (output (: true Bool)))
+
+(case "wrapping-sub of the minimum integer from zero wraps back to the minimum"
+  (doc    "`(Int64.wrapping-sub 0 Int64.min)` = Int64.min: `0 - (-2^63)` = +2^63 ≡ -2^63 (mod 2^64). The
+           subtractive form of the self-wrap — negating Int64.min via `0 - min` overflows and wraps to min,
+           exactly as `wrapping-mul min -1` does. Pins that the two spellings of negating the minimum agree
+           under wrapping (both = min), the wrapping companion of the trapping `(- 0 min)` which traps.")
+  (input  (= (Int64.wrapping-sub 0 -9223372036854775808) -9223372036854775808))
+  (output (: true Bool)))
+
+(case "at min times -1 the three overflow families diverge: checked None, wrapping min"
+  (doc    "The same overflowing input `min * -1` distinguishes the three arithmetic families: `checked-mul`
+           reports None (overflow, no representable result), and `wrapping-mul` yields Int64.min (the
+           self-wrap). Matching the checked None falls through to the wrapping value → Int64.min. Pins that
+           checked and wrapping genuinely DIVERGE on this input (checked refuses, wrapping wraps) — a
+           dispatch that conflated them would give the wrong answer. (The trapping `*` traps here, pinned
+           separately — the third family.)")
+  (input  (do
+            (def (main)
+              (match (Int64.checked-mul -9223372036854775808 -1)
+                ((Some v) v)
+                ((None _) (Int64.wrapping-mul -9223372036854775808 -1))))
+            (export main)))
+  (output (: -9223372036854775808 Int64)))
 
 (case "wrapping arithmetic over runtime operands wraps at run time"
   (doc    "The runtime companion: `(w a b)` = `(Int64.wrapping-add a b)` over parameters wraps on the

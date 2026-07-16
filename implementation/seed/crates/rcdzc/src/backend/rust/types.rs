@@ -54,15 +54,27 @@ pub fn rust_type(ty: &Ty) -> Option<String> {
         // `Ty::Qty` wrapper, so the emitted VALUE is just the inner magnitude. Map to `rust_type(inner)`;
         // the unit is recovered for the boundary render from the `cdz-return` note's `render_name` and
         // rendered as `(Qty.of <magnitude> <unit>)` by the gate harness. RESTRICTED to a SCALE-1 reference
-        // unit whose render is a SIMPLE base (`(Unit.base #"…")`) or dimensionless (`Unit.one`): a
-        // non-scale-1 unit DISPLAY-scales the magnitude (`5 mile`→`201168/25 meter` — per-inner-type
-        // scaling, a later increment), and a DERIVED unit (`Unit.*`/`Unit.^`/product) needs the dotted
-        // value-form conversion the harness doesn't yet do. Those decline (`None`); this increment covers
-        // the common base/dimensionless quantity result.
+        // unit whose render STRUCTURALLY matches cdz-run's canonical value form (the gate harness only dots
+        // the `(Unit.base …)`/`Unit.one` leaves, leaving the `Unit.^`/`Unit.*`/`Unit./` head verbatim):
+        //   - `Unit.one` (dimensionless),
+        //   - a SIMPLE base `(Unit.base #"…")`,
+        //   - a SINGLE base to a POSITIVE integer power `(Unit.^ (Unit.base #"…") n)` (`meter²` — an area).
+        // A non-scale-1 unit DISPLAY-scales the magnitude (`5 mile`→`201168/25 meter` — per-inner-type
+        // scaling, a later increment). A PRODUCT of distinct bases renders `(Unit.* …)` but cdz-run's value
+        // form uses `Unit./` for a quotient / a NEGATIVE power renders `(Unit.^ … -1)` where cdz-run shows
+        // `(Unit./ (. Unit one) …)` — those structures DIVERGE from `render()`, so they still decline (they
+        // need a render→value-form reconstruction from the exponent map, a later increment).
         Ty::Qty { inner, unit }
             if unit.scale() == (1, 1) && {
                 let r = unit.render();
-                r == "Unit.one" || (r.starts_with("(Unit.base ") && !r.contains("Unit.*"))
+                r == "Unit.one"
+                    || (r.starts_with("(Unit.base ") && !r.contains("Unit.*"))
+                    // A single base to a positive power: `(Unit.^ (Unit.base #"…") n)`, n ≥ 1. Exclude a
+                    // product (`Unit.*`) and a negative exponent (a ` -` before the exponent) — both render
+                    // in a form cdz-run's value spelling does not use.
+                    || (r.starts_with("(Unit.^ (Unit.base ")
+                        && !r.contains("Unit.*")
+                        && !r.contains(" -"))
             } =>
         {
             rust_type(inner)

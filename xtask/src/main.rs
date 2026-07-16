@@ -1607,7 +1607,16 @@ fn cdz_render_at(
                 // `(Unit.base #"meter")` → `((. Unit base) #"meter")`.
                 format!("((. Unit base) {}", &u["(Unit.base ".len()..])
             }
-            other => other.to_string(), // shouldn't occur (backend declines derived units); pass through.
+            // A single base to a POSITIVE power: `(Unit.^ (Unit.base #"meter") 2)` →
+            // `(Unit.^ ((. Unit base) #"meter") 2)` — the `Unit.^` head stays verbatim (cdz-run's value
+            // form uses it), only the inner `(Unit.base …)` leaf dots. The backend's `types.rs` guard only
+            // admits THIS derived shape (single base, positive exponent), so a naive base-substring replace
+            // is safe: there is exactly one `(Unit.base ` to rewrite. (A product/quotient/negative-power
+            // unit declines at the backend and never reaches here.)
+            u if u.starts_with("(Unit.^ (Unit.base ") => {
+                u.replacen("(Unit.base ", "((. Unit base) ", 1)
+            }
+            other => other.to_string(), // shouldn't occur (backend declines other derived units); pass through.
         };
         let unit_lit = unit.replace('\\', "\\\\").replace('"', "\\\"");
         let inner = cdz_render_at(inner_ty, path, sums, newtypes, sum_params, helpers, on_path);

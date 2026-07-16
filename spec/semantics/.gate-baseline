@@ -2167,6 +2167,7 @@ pass	an annotated tuple-pattern parameter binds its pattern's names
 pass	an annotated tuple-pattern parameter still checks its annotation against the argument
 pass	an annotated value takes a narrower integer width
 pass	an annotation by a reflected type that contradicts the value is rejected
+pass	an annotation on a nested generic-call argument grounds the self-nested producer and it runs
 pass	an annotation that contradicts the value is rejected
 pass	an applied lambda whose body enters a mutually-recursive performing group folds
 pass	an applied lambda whose body performs an ABORTIVE op abandons the enclosing computation
@@ -2399,6 +2400,7 @@ pass	arithmetic right shift
 pass	arithmetic right shift of negative one is negative one
 pass	arithmetic right shift preserves the sign bit for a negative operand
 pass	arithmetic within one integer type
+pass	at min times -1 the three overflow families diverge: checked None, wrapping min
 pass	binary operator operands are evaluated left to right
 pass	binding the same effect to a peer twice is rejected
 pass	bit-field segments pack sub-byte values into one byte
@@ -2522,6 +2524,7 @@ pass	converting a scalar-valued integer to a char yields Some
 pass	converting a surrogate code point to a char yields None
 pass	converting a unit to another unit of the same dimension is an exact rational scale
 pass	converting an out-of-range integer to a char yields None
+pass	cross-width widening a runtime narrow int with .of (UInt16.of a UInt8) declines (emit pending)
 pass	declaring a unit with a conversion conflicting with a built-in is an error
 pass	decode of a Float tag with a non-finite (NaN) bit pattern yields the error case
 pass	decode of a Str tag with an oversized length yields the error case
@@ -2815,6 +2818,7 @@ pass	multiplying a scaled-unit quantity by the literal one keeps its dimension a
 pass	multiplying quantities multiplies their dimensions
 pass	narrowing a BigInt-valued if back to Int64 works over both branches
 pass	narrowing a constant BigInt out of the target range is rejected at compile time
+pass	narrowing a runtime Int64 to a fixed width with .of declines (the checked-narrow emit is pending)
 pass	negating a runtime Int64 near the boundary is exact just above the min
 pass	negating a runtime Int64 overflows at Int64.min
 pass	negating a runtime narrow integer just above its min is exact
@@ -3378,9 +3382,11 @@ pass	wrapping subtraction wraps modulo two to the sixty-fourth on underflow
 pass	wrapping-add on a runtime Int8 wraps at its signed boundary
 pass	wrapping-add on a runtime UInt8 wraps modulo 256
 pass	wrapping-add wraps a boundary-crossing runtime Int64 at the max boundary
+pass	wrapping-mul of the minimum integer by -1 wraps back to the minimum
 pass	wrapping-mul on a runtime UInt8 wraps modulo 256
 pass	wrapping-mul wraps a boundary-crossing runtime Int64
 pass	wrapping-sub of a runtime value from itself is zero at every input
+pass	wrapping-sub of the minimum integer from zero wraps back to the minimum
 pass	wrapping-sub on a runtime Int8 wraps at its signed min boundary
 pass	wrapping-sub on a runtime UInt8 wraps modulo 256
 pass	wrapping-sub wraps a boundary-crossing runtime Int64 at the min boundary
