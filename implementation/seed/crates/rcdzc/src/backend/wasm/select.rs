@@ -659,6 +659,14 @@ fn cont_binding_escapes(db: &mut Db, cont: &crate::core::SumCont, binder: Struct
 /// `(List.len (List.push e 9))` with `e` used once) is untouched — no later use, so no dup.
 //= spec/capabilities/memory-and-resource-model.md#aliasing-is-statically-disciplined
 //# A value MUST NOT be observably mutated through one reference while it is read through another in a way the executable semantics leaves unspecified.
+// The dup/reuse decision this computes is a function of the SOURCE STRUCTURE ALONE — the consuming
+// occurrences, their control-flow paths, and the escape/borrow classification — never of any runtime or
+// nondeterministic input, so whether an op reuses its operand's storage in place (FBIP) or a dup forces
+// fresh storage is deterministic and cannot introduce nondeterminism into observable behavior:
+//= spec/capabilities/memory-and-resource-model.md#reuse-is-not-observable
+//# A decision to reuse a value's storage or to allocate fresh storage MUST be a deterministic function of the source, so that reuse does not introduce nondeterminism into a program's observable behavior.
+//= spec/capabilities/memory-and-resource-model.md#sharing-is-not-observable
+//# A decision to share a value's storage or to copy it MUST be a deterministic function of the source, so that sharing does not introduce nondeterminism into a program's observable behavior.
 fn collect_dup_sites(
     db: &mut Db,
     body: StructId,
