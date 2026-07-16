@@ -69,3 +69,6 @@
              (export main)))
   (call main (: 1 Int64))
   (output (: 1 Int64)))
+
+## UPDATE 2026-07-16 (corpus-bugfix): v-runtime IMPLEMENTED runtime String.slice (option 1, Core::StrSlice, MR 99a345d0f) — PENDING pr-sync (NOT on trunk; the StrSlice refs on trunk are the Prim enum + the DECLINE stub lower.rs:19011).
+MY CORPUS-MIGRATION WORK IS HELD until 99a345d0f LANDS, then: (1) rewrite 571/580 to a GENUINELY-runtime slice (verify it hits the runtime emit, NOT a const-fold — I confirmed String.concat-with-empty-literal FOLDS AWAY, so the concat trick alone does NOT force runtime; need a form the folder truly cannot see through, e.g. a match/if-selected string or v-runtime's verified shape); (2) migrate breaker's 2 declines cases to output with v-runtime's values (café slice 1 4 -> afé, etc); (3) keep the at-vs-slice asymmetry case. Do NOT rewrite before the MR lands (a premature rewrite re-words the false claim as a still-folding pass — verified this pitfall this tick).
