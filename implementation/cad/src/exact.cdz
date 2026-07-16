@@ -106,7 +106,8 @@ def aabbr-empty() = Aabbr.Boxr(v3r(rzero(), rzero(), rzero()), v3r(rzero(), rzer
 /// A `Cuber(w,d,h)` is the FULL size (matching `solid.cdz`'s `Cube`), centred at the origin → it spans
 /// [-w/2, w/2]×[-d/2, d/2]×[-h/2, h/2]. A `Cylinderr(height, radius)` is the FULL height + radius →
 /// [-r, r]×[-r, r]×[-height/2, height/2] (radius IS a half-diameter, so it's not halved). A sphere of radius
-/// r spans [-r, r]³. A union encloses both children; a translate shifts both corners.
+/// r spans [-r, r]³. A union encloses both children; a translate shifts both corners; a scale multiplies them
+/// (re-normalized to stay well-formed under a NEGATIVE/mirror factor — see the `Scaler` arm).
 def bounding-box(s: Solidr) = match s with
   | Solidr.Emptyr => aabbr-empty()
   | Solidr.Cuber(sz) =>
@@ -127,7 +128,14 @@ def bounding-box(s: Solidr) = match s with
       | Aabbr.Boxr(lo, hi) => Aabbr.Boxr(v3r-add(lo, by), v3r-add(hi, by)))
   | Solidr.Scaler(by, of) =>
     (match bounding-box(of) with
-      | Aabbr.Boxr(lo, hi) => Aabbr.Boxr(v3r-mul(lo, by), v3r-mul(hi, by)))
+      // A NEGATIVE scale factor (a mirror) flips a corner past the other on that axis, so `v3r-mul(lo,by)` may
+      // land ABOVE `v3r-mul(hi,by)` — an INVERTED box (lo > hi) whose `aabbr-size` would go negative and whose
+      // union/intersect would misbehave. Re-normalize component-wise (min of the scaled corners as lo, max as
+      // hi) so the box stays well-formed for ANY factor sign. For positive factors this is identity.
+      | Aabbr.Boxr(lo, hi) =>
+        let slo = v3r-mul(lo, by) in
+        let shi = v3r-mul(hi, by) in
+        Aabbr.Boxr(v3r-min(slo, shi), v3r-max(slo, shi)))
 
 /// The exact size (max − min) of a bounding box — the "how big" answer, exact.
 def aabbr-size(b: Aabbr) =
@@ -273,6 +281,22 @@ def scale-multiplies-the-box() =
   let sz = aabbr-size(bounding-box(scaled)) in
   if v3r-eq(sz, v3r(Rational.of(4,1), Rational.of(6,1), Rational.of(8,1))) then unit
   else trap("scaled box size (4,6,8) exact")
+
+@test
+def negative-scale-keeps-a-well-formed-box() =
+  // REGRESSION: a NEGATIVE scale factor (a MIRROR) flips corners, so the naive `v3r-mul` of both corners would
+  // invert the box (lo.x > hi.x) → a NEGATIVE aabbr-size, which would break a mesh driver / union / intersect.
+  // bounding-box re-normalizes (min/max of the scaled corners), so a mirror keeps a well-formed box + correct
+  // POSITIVE size. Mirror a size-2 cube (box [-1,1]³) by (-1, 1, -2) → still [-1,1]×[-1,1]×[-2,2], size (2,2,4).
+  let one = Rational.of(1,1) in let two = Rational.of(2,1) in
+  let mirrored = Solidr.Scaler(v3r(rzero() - one, one, rzero() - two), Solidr.Cuber(v3r(two, two, two))) in
+  match bounding-box(mirrored) with | Aabbr.Boxr(lo, hi) =>
+    // lo ≤ hi on every axis (well-formed), and size is the POSITIVE (2, 2, 4).
+    (if v3r-eq(lo, v3r(rzero() - one, rzero() - one, rzero() - two)) then
+      (if v3r-eq(hi, v3r(one, one, two)) then
+        (if v3r-eq(aabbr-size(bounding-box(mirrored)), v3r(two, two, Rational.of(4,1))) then unit
+         else trap("mirrored size must be positive (2,2,4)")) else trap("hi corner"))
+     else trap("lo corner — box should be normalized, not inverted"))
 
 @test
 def intersection-of-two-cubes-is-the-overlap() =
