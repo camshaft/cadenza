@@ -3036,6 +3036,24 @@
             (def (main) (f (tuple 3 4))) (export main)))
   (output (: 7 Int64)))
 
+(case "a guard on a nested-list-in-list element reads the inner list's binder"
+  (doc    "A user `(guard …)` on a list arm whose leading element is a NESTED LIST, whose guard cond reads the
+           INNER list's element binder — `(guard (list (list a .. r1) .. r2) (> a 3))`. `a` must be in scope
+           for the guard. Regression (same class as the ctor-list-element guard): the nested-list desugar
+           (Inc-14) replaces the nested-list element with a fresh binder + an inner-LENGTH guard + a body
+           re-match that binds `a`; the user cond, ANDed at the outer level, saw `a` unbound → false CDZ0101.
+           The fix evaluates the user cond inside a match on the fresh binder that binds the inner pattern
+           (`(and <len_test> (match __ne (<nested-pat> <user-cond>) (_ false)))`), so `a` is in scope. `f
+           [[5]]`: inner element a = 5, (> 5 3) holds → 5.")
+  (input  (do
+            (def (f (: xs (List (List Int64))))
+              (match xs
+                ((guard (list (list a .. r1) .. r2) (> a 3)) a)
+                (_                                           -1)))
+            (def (mk (: k Int64)) (list (list k)))
+            (def (main) (f (mk 5))) (export main)))
+  (output (: 5 Int64)))
+
 (case "a nullary variant list element dispatches by its discriminant"
   (doc    "A NULLARY variant is a refutable ctor list element too — `(list C.Red .. r)` matches only a list
            whose first element is `C.Red`, dispatching by the head's tag exactly as an applied ctor

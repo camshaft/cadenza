@@ -703,6 +703,7 @@ pass	a genuinely-narrow op with a wrapped-down if-operand yields the exact value
 pass	a guard combines the payload binder with the rest binder
 pass	a guard on a ctor list element reads the constructor's payload binder
 pass	a guard on a literal-element list pattern reads an enclosing let binding through inlining
+pass	a guard on a nested-list-in-list element reads the inner list's binder
 pass	a guard on a tuple arm reads the tuple's element binders
 pass	a guard over a variant pattern gates on the payload
 pass	a guard reads a binding from the enclosing scope, not only its pattern's

@@ -26098,6 +26098,44 @@ mod match_engine {
     }
 
     #[test]
+    fn a_guard_on_a_nested_list_in_list_element_reads_the_inner_binder() {
+        // REGRESSION (false CDZ0101): a user `(guard …)` on a list arm whose leading element is a NESTED LIST,
+        // whose guard cond reads the INNER list's element binder — `(guard (list (list a .. r1) .. r2) (> a
+        // 3))` — falsely reported CDZ0101 unbound `a`. ROOT (same class as Inc-34): `desugar_refutable_nested_
+        // list_elements` (Inc-14) replaces the nested-list element with a fresh binder + an inner-LENGTH guard
+        // + a BODY re-match that binds `a`/`r1`; the user cond was ANDed at the OUTER level where `a` isn't in
+        // scope. FIX: evaluate the user cond inside a match on the fresh binder that binds the inner pattern —
+        // `(and <len_test> (match __ne (<nested-pat> <user-cond>) (_ false)))` — so `a` is in scope.
+        let Some(v) = run_heap_value(
+            "(module m (def (f (: xs (List (List Int64)))) \
+               (match xs ((guard (list (list a .. r1) .. r2) (> a 3)) a) (_ -1))) \
+             (def (mk (: k Int64)) (list (list k))) \
+             (def (main (: k Int64)) (f (mk k))) (export main))",
+            vec!["5".to_string()],
+        ) else {
+            eprintln!("runtime wasm not found; skipping nested-list-guard run");
+            return;
+        };
+        assert_eq!(
+            v, "5",
+            "the guard reads the inner list's element a=5; (> 5 3) holds → a"
+        );
+        // Guard FALSE → falls through to the catch-all.
+        assert_eq!(
+            run_heap_value(
+                "(module m (def (f (: xs (List (List Int64)))) \
+                   (match xs ((guard (list (list a .. r1) .. r2) (> a 3)) a) (_ -1))) \
+                 (def (mk (: k Int64)) (list (list k))) \
+                 (def (main (: k Int64)) (f (mk k))) (export main))",
+                vec!["2".to_string()],
+            )
+            .unwrap(),
+            "-1",
+            "a=2 → (> 2 3) false → falls through to the catch-all"
+        );
+    }
+
+    #[test]
     fn a_nullary_variant_list_element_dispatches_by_discriminant() {
         // A NULLARY variant `(list C.R .. r)` is a refutable ctor list element too — Inc-12 handled an
         // APPLIED ctor `(Op.Add n)` (its head `(. Op Add)` is a distinct non-element node) but a nullary

@@ -4959,8 +4959,25 @@ fn desugar_refutable_nested_list_elements(
         let guard_cond = match existing_guard {
             None => len_test,
             Some(g) => {
+                // 🩸 The user guard cond `g` may read the INNER list's binders (`(guard (list (list a .. r1)
+                // .. r2) (> a 3))` reads `a`). Those bind only in the BODY re-match (below), NOT at the outer
+                // guard level — so ANDing `g` here left `a` unbound (a false CDZ0101). FIX (mirrors Inc-34's
+                // ctor-element guard): evaluate `g` INSIDE a match on the fresh binder `__ne` that binds the
+                // inner pattern — `(match __ne (<nested-pat> g) (_ false))` — so the inner binders are in
+                // scope for `g`; the `_ → false` is dead (the length test already gated it) but keeps the
+                // inner match well-formed and returns a bool. Conjoin with the length test:
+                // `(and <len_test> (match __ne (<nested-pat> g) (_ false)))`. A CLONE of the nested pattern is
+                // used (the body re-match reuses the original; a node has one parent).
+                let g_scrut = db.push_name(&name);
+                let nested_clone = clone_refutable_payload(db, nested_pat);
+                let g_true_arm = db.push_list(vec![nested_clone, g]);
+                let g_wild = db.push_name("_");
+                let g_false = db.push_atom(crate::ast::Leaf::Bool(false));
+                let g_false_arm = db.push_list(vec![g_wild, g_false]);
+                let g_match_head = db.push_name("match");
+                let g_in_scope = db.push_list(vec![g_match_head, g_scrut, g_true_arm, g_false_arm]);
                 let and_head = db.push_name("and");
-                db.push_list(vec![and_head, g, len_test])
+                db.push_list(vec![and_head, len_test, g_in_scope])
             }
         };
         let guard_head = db.push_name("guard");
