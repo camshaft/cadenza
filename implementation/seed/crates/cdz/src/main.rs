@@ -190,7 +190,8 @@ enum Cmd {
     Type(TypeArgs),
     /// The inferred type of the node at a source BYTE OFFSET in FILE — a "type at cursor" (hover).
     TypeAt(TypeAtArgs),
-    /// Every source location that references the definition/type NAME in FILE, as `file:line:col`.
+    /// Every source location that references the definition/type NAME in FILE, as `file:line:col`
+    /// (`--json` emits one structured object per reference for an editor's find-all-references).
     Uses(UsesArgs),
     /// Report every well-formedness fault in FILE (type mismatch, unbound name, …) as
     /// `file:line:col: severity [CODE]: message` — "diagnostics as you type". No export/run needed;
@@ -2835,6 +2836,12 @@ struct UsesArgs {
     name: String,
     /// The program file (`.cdz`/`.ml` → ml, `.sexp`/`.sexpr` → sexpr).
     file: String,
+    /// Emit each reference as a machine-readable JSON object (one per line) instead of the human
+    /// `file:line:col` text — the shape an editor consumes for a find-all-references result without
+    /// re-parsing the text layout. Each object has `file`, `line`, `col` (the `cdz symbols --json`/`cdz
+    /// exports --json`/`cdz check --json` machine-readable convention).
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(clap::Args)]
@@ -3167,14 +3174,30 @@ fn run_uses(args: &UsesArgs) -> ExitCode {
     // 4000 references = 207ms, 99.9% in `line_col`); with the index it is linear.
     let index = cadenza_syntax::query::driver::LineIndex::new(&source);
     for id in ids {
-        match spans.get(cadenza_syntax::StructId(id)) {
-            Some(span) => {
-                let (line, col) = index.line_col(&source, span.start);
-                println!("{}:{line}:{col}", args.file);
+        let line_col = spans
+            .get(cadenza_syntax::StructId(id))
+            .map(|span| index.line_col(&source, span.start));
+        if args.json {
+            use cadenza_syntax::query::json;
+            let mut obj = json::Object::new();
+            obj.string("file", &args.file);
+            match line_col {
+                Some((line, col)) => {
+                    obj.raw("line", &line.to_string());
+                    obj.raw("col", &col.to_string());
+                }
+                // A referencing occurrence with no recorded span (should not happen for a user node)
+                // still reports the raw id rather than dropping it silently.
+                None => obj.raw("node", &id.to_string()),
             }
-            // A referencing occurrence with no recorded span (should not happen for a user node) still
-            // reports the raw id rather than dropping it silently.
-            None => println!("{}:node {id}", args.file),
+            println!("{}", obj.finish());
+        } else {
+            match line_col {
+                Some((line, col)) => println!("{}:{line}:{col}", args.file),
+                // A referencing occurrence with no recorded span (should not happen for a user node)
+                // still reports the raw id rather than dropping it silently.
+                None => println!("{}:node {id}", args.file),
+            }
         }
     }
     ExitCode::SUCCESS
