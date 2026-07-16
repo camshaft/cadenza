@@ -9412,7 +9412,7 @@ fn head_is_runtime_fn_value(db: &mut Db, id: StructId) -> bool {
 /// def), so those keep their own lowering paths. The accumulated args feed ONE `call_indirect`; if their
 /// count doesn't match a lifted lambda's arity (a genuine partial or over-application) it declines at
 /// select rather than fabricating an intermediate closure.
-fn runtime_fn_spine(db: &mut Db, id: StructId) -> Option<(StructId, Vec<StructId>)> {
+pub(crate) fn runtime_fn_spine(db: &mut Db, id: StructId) -> Option<(StructId, Vec<StructId>)> {
     match resolved_of(db, id) {
         Resolved::Apply { head, args } => {
             // A nested application head — recurse and PREPEND the deeper spine's args (they bind to the
@@ -9443,7 +9443,7 @@ fn runtime_fn_spine(db: &mut Db, id: StructId) -> Option<(StructId, Vec<StructId
 /// FLAT `(Pair 3 4)` has a non-`Apply` head and takes the ordinary `lower_sum_new` path directly — this
 /// is only for the nested-parens surface). `None` for any other head, so lambdas/prims/defs keep their
 /// paths. The caller checks the gathered count against the variant's payload arity before building.
-fn ctor_spine(db: &mut Db, id: StructId) -> Option<(StructId, Vec<StructId>)> {
+pub(crate) fn ctor_spine(db: &mut Db, id: StructId) -> Option<(StructId, Vec<StructId>)> {
     // FUEL bounds the peel. The Ref-follow + lambda-reduction below can chain (a partial ctor bound to a
     // ref, itself the reduction of a helper); more importantly a RECURSIVE nullary def `(def (f) (f))`
     // has its head-ref point back to the SAME `(f)` apply, so an unfueled follow-and-recurse cycles
@@ -9457,7 +9457,7 @@ fn ctor_spine(db: &mut Db, id: StructId) -> Option<(StructId, Vec<StructId>)> {
 /// through a binding or an annotation wrapper (both introduced by `apply_lambda` when it inlines a HOF that
 /// took a constructor as a first-class arg) is found. Bounded by a small fuel so a self-referential ref
 /// cannot cycle. Stops at the first node that is neither a `Ref` nor an `Annot`.
-fn peel_ref_annot(db: &mut Db, id: StructId) -> StructId {
+pub(crate) fn peel_ref_annot(db: &mut Db, id: StructId) -> StructId {
     let mut cur = id;
     for _ in 0..64 {
         match resolved_of(db, cur) {
@@ -9508,7 +9508,7 @@ fn peel_ref_annot(db: &mut Db, id: StructId) -> StructId {
 /// inference context: each `__eta{k}` param's type is SEEDED into `db.param_types` from the k-th arrow
 /// parameter, and the body `(ctor __eta…)` lowers to `SumNew` typed as the sum. `None` if the scheme is
 /// unavailable or a payload/result type has no machine representation (declines cleanly, as before).
-fn eta_ctor_closure(db: &mut Db, ctor_head: StructId) -> Option<Core> {
+pub(crate) fn eta_ctor_closure(db: &mut Db, ctor_head: StructId) -> Option<Core> {
     // The ctor's curried scheme `(-> p0 (-> p1 … Sum))` — peel each parameter type + the final sum.
     let mut fresh = crate::unify::Fresh::new();
     let scheme = crate::eval::scheme_of(db, ctor_head, &mut fresh)?;

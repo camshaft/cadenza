@@ -7000,6 +7000,80 @@ fn atom_surface(db: &Db, id: StructId) -> Option<String> {
     None
 }
 
+/// Whether the application `app` (head `head`, this level's `args`) is a BUILT-IN OPERATION applied at
+/// FEWER args than it takes AND left UNCONSUMED — the partial-application both-miss hole. `head` is already
+/// known to be a prim (`meta_apply_of` is `Some`) at the call site. Returns `true` only when ALL hold:
+///  (a) SPINE-TOP: `app`'s parent (peeled through ref/annot wrappers) is not an `Apply` feeding `app` as
+///      its HEAD — so no ENCLOSING application saturates it. This O(1) parent read is the completion test
+///      (an inner partial whose outer Apply completes it has that Apply as parent → not spine-top → false).
+///  (b) NOT A COMPLETED/ETA-LIFTABLE CONSTRUCTOR: a ctor-headed spine that reaches its payload arity
+///      (`ctor_spine` + `variant_payload_arity`) builds; a bare partial ctor that `eta_ctor_closure` lifts
+///      is a legitimate first-class value. Only a non-ctor OPERATION (or a ctor spine that neither
+///      completes nor eta-lifts) is the unbuilt partial.
+///  (c) UNDER-APPLIED: the gathered spine arg count is < the head's value-param arity. Arity is the
+///      head's scheme INSTANTIATED then arrow-peeled — instantiation renames the `∀` quantifiers to fresh
+///      vars so only genuine `Ty::Fn` value params are counted (peeling the raw scheme would miscount).
+/// A `Var`/`Any`/unknown arity (no scheme) is conservatively NOT flagged (never a false reject).
+fn is_builtin_partial_application(
+    db: &mut Db,
+    app: StructId,
+    head: StructId,
+    args: &[StructId],
+) -> bool {
+    // (a) SPINE-TOP. If a parent Apply feeds `app` as its head, an outer level supplies more args — `app`
+    // is an inner node of a larger spine, not its top; skip (the top is checked on its own visit).
+    if let Some(parent) = db.parent_of(app) {
+        let parent = crate::lower::peel_ref_annot(db, parent);
+        if let Resolved::Apply { head: ph, .. } = resolved_of(db, parent)
+            && crate::lower::peel_ref_annot(db, ph) == app
+        {
+            return false;
+        }
+    }
+    // UNARY NEGATION `(- e)` — `Sub` applied to ONE arg. `Sub`'s scheme is BINARY (`∀a.(Int a)→(Int a)→
+    // (Int a)`), so the arity check below would read it as under-applied; but arity-1 `Sub` is the LEGIT
+    // prefix-negation `lower` builds as `0 - e` (its own `check_application` arm handles it), NOT an unbuilt
+    // partial. Exclude it — the concrete instance of "a prim `lower` CAN build at this arg count is not a
+    // partial". (Binary `Sub` at 2 args is full-arity anyway; only the 1-arg negation needs this guard.)
+    if crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::Sub) && args.len() == 1 {
+        return false;
+    }
+    // (b) A CONSTRUCTOR that COMPLETES its payload arity via the curried spine is a real construction, not a
+    // partial — exclude. (`ctor_spine` gathers the whole spine's payloads; equal to the variant's arity ⇒
+    // built.) A bare partial ctor that ETA-LIFTS is a legitimate first-class value — exclude.
+    if let Some((ctor, all_args)) = crate::lower::ctor_spine(db, app)
+        && crate::eval::variant_payload_arity(db, ctor) == Some(all_args.len())
+    {
+        return false;
+    }
+    if crate::eval::variant_disc_of(db, head).is_some() {
+        // A ctor head at THIS node: partial iff it neither completed above nor eta-lifts. If it eta-lifts,
+        // it is a first-class closure value — not the unbuilt-partial hole.
+        if crate::lower::eta_ctor_closure(db, head).is_some() {
+            return false;
+        }
+    }
+    // (c) UNDER-APPLIED against the head's VALUE-param arity. Gather the full spine's args (a ctor/op spine
+    // may nest); fall back to this level's args when no deeper spine. Arity from the INSTANTIATED scheme's
+    // arrow chain — instantiate first so `∀` quantifiers become fresh vars, not counted as params.
+    let gathered = crate::lower::ctor_spine(db, app)
+        .or_else(|| crate::lower::runtime_fn_spine(db, app))
+        .map(|(_, a)| a.len())
+        .unwrap_or(args.len());
+    let mut fresh = crate::unify::Fresh::new();
+    let Some(scheme) = crate::eval::scheme_of(db, head, &mut fresh) else {
+        return false; // no scheme (malformed / not typed) — never a false reject
+    };
+    let mut ty = crate::unify::instantiate(&scheme, &mut fresh);
+    let mut arity = 0usize;
+    while let Ty::Fn(_, r) = ty {
+        arity += 1;
+        ty = *r;
+    }
+    // Under-applied is the partial; exactly-applied builds; over-applied is the coded CDZ0203 elsewhere.
+    gathered < arity
+}
+
 fn check_application(
     db: &mut Db,
     app: StructId,
@@ -7096,6 +7170,41 @@ fn check_application(
             );
         }
         collect(db, args[0], out);
+        return;
+    }
+    // BUILT-IN OPERATION applied at FEWER args than it takes — a PARTIAL APPLICATION as an UNCONSUMED
+    // value (`(String.slice s 0)` — slice takes 3 — as a dead/unexported def body). `lower` rejects a
+    // reached one (`BUILTIN_WRONG_ARITY_DECLINE`, "a built-in operation must be applied to exactly its
+    // arguments — a partial application … is not yet built"), but an unexported/dead partial reaches
+    // NEITHER `collect_reached_poisons` (nullary+exported only) NOR the lower path — so it was accepted by
+    // BOTH `cdz check` AND `cdz compile` (shipped unflagged). This is the ONE pass over every body, so it
+    // surfaces the hole. Co-designed with v-inference (owns this seam + the operation-vs-ctor semantics).
+    //
+    // The completion test is LOCAL, done in O(1) via the parent, so this per-node check never false-flags
+    // an inner partial that an OUTER application saturates (the tick-108 regression class): fire ONLY when
+    // `app` is a SPINE-TOP — its parent, peeled through ref/annot wrappers, is NOT an `Apply` feeding `app`
+    // as its head (if it were, the parent brings more args → not partial here). A generic OPERATION prim is
+    // NOT partially applicable (needs a runtime closure, unbuilt); a CONSTRUCTOR is (curried spine completes
+    // / eta-lifts) — so exclude a ctor-headed spine that reaches its payload arity or eta-lifts. `Var`/`Any`
+    // arities and non-prim heads (user fn / module member currying — legitimate) never reach the reject.
+    if crate::eval::meta_apply_of(db, head).is_some()
+        && is_builtin_partial_application(db, app, head, args)
+    {
+        let named = member_op_head_name(db, head)
+            .map(|(m, k)| format!("`{m}.{k}`"))
+            .unwrap_or_else(|| "a built-in operation".to_string());
+        trace!(target: "rcdzc::infer", app = app.0, head = head.0, "fault: built-in operation partially applied as an unconsumed value (surfaced in check)");
+        out.push(
+            Reject::decline(format!(
+                "{named} is applied at the wrong arity — a built-in operation must be applied to \
+                 exactly its arguments (a partial application, which would need a runtime closure, is \
+                 not yet built)"
+            ))
+            .at(app),
+        );
+        for &arg in args {
+            collect(db, arg, out);
+        }
         return;
     }
     // `Qty.of <value> <unit>` — the SECOND argument must be a compile-time UNIT expression (`Unit.one`,
