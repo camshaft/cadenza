@@ -1252,3 +1252,126 @@
             (def (main) (Thm.Seq (list) (Term.Forall 0 (Term.Eq (Term.Var 0) (Term.Var 1)))))
             (export main)))
   (error  CDZ0214))
+
+; ============================================================================================
+; Increment 9 — COMPOSED PROOFS: the kernel used as a real proof engine, chaining rules from DIFFERENT
+; families into one derivation. Individual rules were pinned in Inc-2..8; these cases show they COMPOSE —
+; each step consumes theorems only obtainable from prior rules and mints only through the private Thm
+; constructor, exactly as a real HOL proof script does. Two witnesses: a proof spanning the equational (TRANS),
+; λ (BETA), and logical (DISCH) families in one chain; and a purely-logical composition over a quantified
+; proposition (DISCH then MP).
+; ============================================================================================
+
+(case "a composed proof chains the equational, λ, and logical rule families into one derivation"
+  (doc    "The kernel as a proof engine across families. STEP 1 (λ): BETA on (λx0.x0) applied to (Var 7)
+           gives ⊢ ((λx0.x0) 7) = 7. STEP 2 (equational): TRANS with refl(7) chains it (7=7 composes
+           trivially) → ⊢ ((λx0.x0) 7) = 7. STEP 3 (logical): with P that equation, DISCH P (ASSUME P)
+           derives ⊢ P ⇒ P — an implication whose antecedent/consequent is a β-reduction theorem. The case
+           verifies the final theorem is (Imp P P) with empty hypotheses AND that P is exactly the
+           id-application equation. Pins that rules from three families thread into a single derivation,
+           each minting only through the kernel — the shape every real proof takes.")
+  (module "hol"
+    (do
+      (type Term (Var Int64) (Comb Term Term) (Eq Term Term) (Abs Int64 Term) (Imp Term Term))
+      (type Thm (Seq (List Term) Term))
+      (def (term-eq (: a Term) (: b Term))
+        (match a
+          ((Term.Var n)    (match b ((Term.Var m) (= n m)) (_ false)))
+          ((Term.Comb x y) (match b ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) (_ false)))
+          ((Term.Eq x y)   (match b ((Term.Eq p q) (and (term-eq x p) (term-eq y q))) (_ false)))
+          ((Term.Abs v x)  (match b ((Term.Abs w q) (and (= v w) (term-eq x q))) (_ false)))
+          ((Term.Imp x y)  (match b ((Term.Imp p q) (and (term-eq x p) (term-eq y q))) (_ false)))))
+      (def (remove (: t Term) (: hs (List Term)))
+        (match hs ((list) (list)) ((list h .. rest) (if (term-eq h t) (remove t rest) (List.push (remove t rest) h)))))
+      (def (subst (: v Int64) (: s Term) (: t Term))
+        (match t
+          ((Term.Var n) (if (= n v) s (Term.Var n)))
+          ((Term.Comb f x) (Term.Comb (subst v s f) (subst v s x)))
+          ((Term.Eq a b) (Term.Eq (subst v s a) (subst v s b)))
+          ((Term.Abs w body) (if (= w v) (Term.Abs w body) (Term.Abs w (subst v s body))))
+          ((Term.Imp a b) (Term.Imp (subst v s a) (subst v s b)))))
+      (def (refl (: t Term)) (Thm.Seq (list) (Term.Eq t t)))
+      (def (beta (: v Int64) (: body Term) (: arg Term))
+        (Thm.Seq (list) (Term.Eq (Term.Comb (Term.Abs v body) arg) (subst v arg body))))
+      (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
+      (def (hyps (: th Thm)) (match th ((Thm.Seq h _) h)))
+      (def (assume (: p Term)) (Thm.Seq (list p) p))
+      (def (disch (: p Term) (: th Thm))
+        (match th ((Thm.Seq g q) (Thm.Seq (remove p g) (Term.Imp p q)))))
+      (def (trans (: t1 Thm) (: t2 Thm))
+        (match (concl t1)
+          ((Term.Eq a b) (match (concl t2) ((Term.Eq b2 c) (if (term-eq b b2) (Option.Some (Thm.Seq (list) (Term.Eq a c))) (Option.None))) (_ (Option.None))))
+          (_ (Option.None))))
+      (export (. Term *))
+      (export Thm)
+      (export term-eq)
+      (export refl)
+      (export beta)
+      (export trans)
+      (export assume)
+      (export disch)
+      (export concl)
+      (export hyps)))
+  (input  (do
+            (import "hol" (Term Thm term-eq refl beta trans assume disch concl hyps))
+            (def (main)
+              (let ((idfn-app (Term.Comb (Term.Abs 0 (Term.Var 0)) (Term.Var 7))))
+                (let ((th-beta (beta 0 (Term.Var 0) (Term.Var 7))))
+                  (match (trans th-beta (refl (Term.Var 7)))
+                    ((Option.Some th-chain)
+                      (let ((p (concl th-chain)))
+                        (let ((impthm (disch p (assume p))))
+                          (and (term-eq (concl impthm) (Term.Imp p p))
+                               (and (match (hyps impthm) ((list) true) (_ false))
+                                    (match p ((Term.Eq l r) (and (term-eq l idfn-app) (term-eq r (Term.Var 7)))) (_ false)))))))
+                    ((Option.None) false)))))
+            (export main)))
+  (output (: true Bool)))
+
+(case "a purely-logical composed proof over a quantified proposition: DISCH then MP"
+  (doc    "Composition within the logical layer, over a QUANTIFIED proposition P = (∀x0. x0 = x0). DISCH P
+           (ASSUME P) derives ⊢ P ⇒ P (empty hyps); then MP applied to that implication and {P} ⊢ P
+           (ASSUME P) derives a theorem whose conclusion is P. Pins that implication introduction and
+           elimination compose, and that the Imp and Forall term forms coexist in a single proof.")
+  (module "hol"
+    (do
+      (type Term (Var Int64) (Comb Term Term) (Eq Term Term) (Abs Int64 Term) (Imp Term Term) (Forall Int64 Term))
+      (type Thm (Seq (List Term) Term))
+      (def (term-eq (: a Term) (: b Term))
+        (match a
+          ((Term.Var n)    (match b ((Term.Var m) (= n m)) (_ false)))
+          ((Term.Comb x y) (match b ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) (_ false)))
+          ((Term.Eq x y)   (match b ((Term.Eq p q) (and (term-eq x p) (term-eq y q))) (_ false)))
+          ((Term.Abs v x)  (match b ((Term.Abs w q) (and (= v w) (term-eq x q))) (_ false)))
+          ((Term.Imp x y)  (match b ((Term.Imp p q) (and (term-eq x p) (term-eq y q))) (_ false)))
+          ((Term.Forall v x) (match b ((Term.Forall w q) (and (= v w) (term-eq x q))) (_ false)))))
+      (def (remove (: t Term) (: hs (List Term)))
+        (match hs ((list) (list)) ((list h .. rest) (if (term-eq h t) (remove t rest) (List.push (remove t rest) h)))))
+      (def (assume (: p Term)) (Thm.Seq (list p) p))
+      (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
+      (def (hyps (: th Thm)) (match th ((Thm.Seq h _) h)))
+      (def (disch (: p Term) (: th Thm))
+        (match th ((Thm.Seq g q) (Thm.Seq (remove p g) (Term.Imp p q)))))
+      (def (mp (: imp Thm) (: th Thm))
+        (match (concl imp)
+          ((Term.Imp p q) (if (term-eq (concl th) p) (Option.Some (Thm.Seq (List.concat (hyps imp) (hyps th)) q)) (Option.None)))
+          (_ (Option.None))))
+      (export (. Term *))
+      (export Thm)
+      (export term-eq)
+      (export assume)
+      (export disch)
+      (export mp)
+      (export concl)
+      (export hyps)))
+  (input  (do
+            (import "hol" (Term Thm term-eq assume disch mp concl hyps))
+            (def (main)
+              (let ((p (Term.Forall 0 (Term.Eq (Term.Var 0) (Term.Var 0)))))
+                (let ((imp (disch p (assume p))))
+                  (and (term-eq (concl imp) (Term.Imp p p))
+                       (match (mp imp (assume p))
+                         ((Option.Some r) (term-eq (concl r) p))
+                         ((Option.None) false))))))
+            (export main)))
+  (output (: true Bool)))

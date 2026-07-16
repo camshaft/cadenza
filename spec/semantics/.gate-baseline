@@ -518,6 +518,7 @@ pass	a comparison-predicate function returns its boolean result
 pass	a compile-time type branch reads a runtime parameter's static type
 pass	a component's manifest is the union of two entrypoints' distinct rows
 pass	a composed call over a record-transforming function with an arithmetic field compiles
+pass	a composed proof chains the equational, λ, and logical rule families into one derivation
 pass	a compound element projected from a let-bound runtime tuple is matched
 pass	a compound if condition is a type error, not an unbound name
 pass	a compound map key containing a Bytes rope is found by its flat-twin key
@@ -1315,6 +1316,7 @@ pass	a projection chain through a tuple inside a record retains the consumed chi
 pass	a pure lambda passed as an argument to a performing callee folds
 pass	a pure let-bound lambda and a performing one are both applied in the handle body
 pass	a pure shared subexpression computes the same value however the backend optimizes it
+pass	a purely-logical composed proof over a quantified proposition: DISCH then MP
 pass	a qualified construct and a bare match name the same colliding variant
 pass	a quantity annotation at an in-range narrow width grounds and accepts
 pass	a quantity annotation range-checks the inner width — an out-of-range magnitude is rejected
