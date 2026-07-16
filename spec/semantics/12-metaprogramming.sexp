@@ -1445,6 +1445,32 @@
             (other             other)))
   (error  CDZ0221))
 
+; The FLAGSHIP idiom the quote-pattern surface enables: a RECURSIVE evaluator that destructures its `Ast`
+; argument by quote patterns and recurses on the bound sub-ASTs. The unquote binders `,x`/`,y` bind the
+; operand sub-trees, and `eval-expr` calls itself on them — an interpreter written by pattern-matching over
+; the AST, the metaprogramming payoff of quote-in-pattern position. Every case above pins ONE facet (a single
+; bind, a leaf shape, a splice, the arity/head constraints); this composes them into the real use — a
+; multi-level recursive descent over a built tree. (metaprogramming.md #Quote Produces An AST Value + the
+; pattern-position dual; the runtime-Ast destructuring this needs landed on trunk — v-patterns batch-87 +
+; runtime-string-pattern `eb0a9f0548`.)
+
+(case "a recursive evaluator destructures a built Ast by quote patterns and recurses"
+  (doc    "The interpreter idiom: `eval-expr` matches an `Ast` by quote patterns — `(Ast.Int n)` → the value,
+           `` `(+ ,x ,y) `` → `eval-expr(x) + eval-expr(y)`, `` `(* ,x ,y) `` → the product — recursing on the
+           unquote-bound sub-ASTs. Over `(quote (* (+ 1 2) 4))` it descends two levels: `(+ 1 2)`→3, then
+           `3 * 4`→12. Pins the flagship quote-pattern use (a recursive AST evaluator), composing the
+           single-facet cases above into the real multi-level recursive descent a macro/interpreter runs.")
+  (input  (do
+            (def (eval-expr (: a Ast))
+              (match a
+                ((Ast.Int n) n)
+                ((quasiquote (+ (unquote x) (unquote y))) (+ (eval-expr x) (eval-expr y)))
+                ((quasiquote (* (unquote x) (unquote y))) (* (eval-expr x) (eval-expr y)))
+                (_ 0)))
+            (def (main) (eval-expr (quote (* (+ 1 2) 4))))
+            (export main)))
+  (output (: 12 Int64)))
+
 ; --- eval drives CONTROL FLOW reified from quoted source (the Ast.Bool integration faces) ---------
 ; The Ast.Bool cases above pin the leaf (quote/match/eval/encode/print of a bare boolean); these pin
 ; the boolean leaf DOING ITS JOB inside evaluated control flow — an `if` whose condition arrives
