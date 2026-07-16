@@ -24538,6 +24538,39 @@ mod match_engine {
     }
 
     #[test]
+    fn list_at_and_bytes_at_over_an_owned_temporary_reclaim_the_collection_but_keep_a_borrowed_one()
+    {
+        // The READ-op face of the owned-temporary reclaim: `List.at`/`Bytes.at` BORROW the collection
+        // (vec-len/vec-get, bytes-len/bytes-get) and the read element is COPIED/dup'd into the `Some`, so an
+        // OWNED-TEMPORARY collection (`List.at (build …) i`) must be dropped after the borrows or it leaks.
+        // A BORROWED param/kept-local collection read alongside a later use must NOT be freed early.
+        let list_owned = "(module m \
+               (def (build i n acc) (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc)) \
+               (def (main) ((. Option expect) ((. List at) (build 0 3 (list)) 1) \"v\")) (export main))";
+        assert!(
+            component_imports_op(&component(list_owned), "drop"),
+            "List.at over an owned-temporary list must import `drop` (reclaim — leak fix)"
+        );
+        if let Some(out) = run_on_heap(list_owned) {
+            assert_eq!(
+                out, "1",
+                "List.at value unchanged by the reclaim (leak-only)"
+            );
+        }
+        // A BORROWED list — read by List.at AND List.len — must not be freed by the at (else double-free).
+        let list_borrowed = "(module m \
+               (def (build i n acc) (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc)) \
+               (def (main) (let ((xs (build 0 3 (list)))) \
+                             (+ ((. Option expect) ((. List at) xs 1) \"v\") ((. List len) xs)))) (export main))";
+        if let Some(out) = run_on_heap(list_borrowed) {
+            assert_eq!(
+                out, "4",
+                "a borrowed list read by List.at must not be freed early (at=1 + len=3)"
+            );
+        }
+    }
+
+    #[test]
     fn a_projected_list_consumed_then_reprojected_is_retained_not_mutated() {
         // The PROJECTION face of the still-live-binding retain (repeated-proj-of-let-consumed-then-read): the
         // shared value is a nested-compound PROJECTION `(. t 0)` of a `let`-bound tuple, not the binding
@@ -41278,6 +41311,11 @@ mod stage1 {
             .all(|d| d.severity != crate::abi::Severity::Error),
             "a lowercase name in a variant payload is a type variable, not an unbound-name fault"
         );
+        // A bare UPPERCASE unknown type at a TOP-LEVEL annotation position now names it a missing TYPE
+        // (not a would-be type variable, not the generic "unbound name"): "unknown type `Widget` — no type
+        // by that name is declared … declare it with `(type Widget …)`". Still CDZ0101. (A nested position
+        // like `(List Widget)` keeps the bare message — the top-level branch does not descend; the
+        // `nested_upper` case above pins that.)
         let widget = crate::diagnostics(&mut crate::db::Db::load(parse(
             "(module m (def (f (: x Widget)) x) (def (main) (f 1)) (export main))",
         )))
@@ -41285,10 +41323,24 @@ mod stage1 {
         .find(|d| d.code.as_deref() == Some("CDZ0101"))
         .expect("Widget is unbound");
         assert!(
-            widget.message.contains("unbound name `Widget`")
+            widget.message.contains("unknown type `Widget`")
+                && widget.message.contains("(type Widget …)")
                 && !widget.message.contains("not a type variable"),
-            "an uppercase missing type keeps the plain unbound message: {}",
+            "an uppercase missing type in an annotation names the missing type + the declare fix: {}",
             widget.message
+        );
+        // A NEAR typo of a real type must still win the did-you-mean (the suggestion pool includes type
+        // names), NOT the generic "unknown type" — the branch is gated on there being no near suggestion.
+        let typo = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def (f (: x Strng)) x) (def (main) (f \"a\")) (export main))",
+        )))
+        .into_iter()
+        .find(|d| d.code.as_deref() == Some("CDZ0101"))
+        .expect("Strng is unbound");
+        assert!(
+            typo.message.contains("did you mean `String`?"),
+            "a near type typo keeps the did-you-mean, not the generic unknown-type: {}",
+            typo.message
         );
     }
 
