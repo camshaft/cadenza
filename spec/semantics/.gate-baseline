@@ -570,8 +570,6 @@ pass	a constructor selected at RUNTIME is a first-class value that is then appli
 pass	a constructor whose payload is a constructor keeps the outer variant tag
 pass	a constructor with an all-irrefutable payload shadows a later refining arm of the same variant
 pass	a consumed and a borrowed read of one loop invariant coexist per iteration
-pass	a nested match on a recursive sum with a KNOWN outer discriminant reads the right payload depth
-pass	a nested match on a recursive sum falls through when the inner variant differs (known outer disc)
 pass	a consumed bare None type-checks without annotation (ambiguity is escape-only)
 pass	a consumed empty list type-checks without annotation (ambiguity is escape-only)
 pass	a consumer applies TWO handed-back closures
@@ -1151,6 +1149,8 @@ pass	a nested literal pattern of the wrong type is a type error
 pass	a nested map pattern falls through when its key is absent
 pass	a nested map pattern with a malformed rest names the shape, not an unbound binder (CDZ0201)
 pass	a nested match missing an inner variant under a DISC-≥1 variant is non-exhaustive
+pass	a nested match on a recursive sum falls through when the inner variant differs (known outer disc)
+pass	a nested match on a recursive sum with a KNOWN outer discriminant reads the right payload depth
 pass	a nested match on a runtime scrutinee
 pass	a nested module's function export is applied through the projection chain
 pass	a nested option value annotated with the wrong inner payload type is rejected
@@ -2457,9 +2457,9 @@ pass	equality over a runtime float in a SUM payload compares by the float leaf
 pass	eval does not forge a private constructor NESTED in a compound
 pass	eval does not see through a splice whose operand is itself an Ast value
 pass	eval is optional for macros and interactive use
+pass	eval of a fully-concrete imported constructor is legal from outside
 pass	eval of a partially-exported type's EXPORTED constructor works
 pass	eval of a partially-exported type's WITHHELD constructor is rejected
-pass	eval of a fully-concrete imported constructor is legal from outside
 pass	eval of a quasiquote splicing a compile-time-known value
 pass	eval of a quasiquote splicing a string works through String ops
 pass	eval of a quasiquote-built form with a float unquote folds
@@ -2708,6 +2708,7 @@ pass	quasiquote constructs AST with selective evaluation
 pass	quasiquote makes AST construction readable
 pass	quasiquote nests with inner unquote evaluated
 pass	quasiquotes unquoting a runtime variable and a literal build equal ASTs
+pass	quote of a let reifies as an Ast.List with a let head and round-trips
 pass	quote produces an AST value without evaluating
 pass	quote reifies a grammar-keyword head as an ordinary Ast.Name
 pass	quote-built and constructor-built equal trees encode byte-identically
