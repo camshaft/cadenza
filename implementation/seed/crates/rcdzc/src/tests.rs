@@ -33147,6 +33147,49 @@ mod match_engine {
     }
 
     #[test]
+    fn an_if_join_over_different_unit_quantities_names_the_scale_not_a_shadowed_declaration() {
+        // Two same-dimension quantities at DIFFERENT units (km vs m) are distinct `(Qty T u)` types (the
+        // unit carries the scale), so an if-join rejects them CDZ0203 — but BOTH render to
+        // `(Qty Int64 (Unit.base #"meter"))` (the reference-unit name, scale dropped), so the generic
+        // same-name-distinct-type hint would wrongly blame "a declaration shadows a built-in".
+        // `qty_scale_mismatch_hint` fires first and names the REAL cause (same dimension, different units,
+        // convert with in/as). Pins the diagnostic content, not just the code.
+        let diag = reject_full(
+            "(module m (def (main (: b Bool)) ((. Qty value) \
+             (if b ((. Qty of) 1 ((. Unit prefix) kilo ((. Unit base) #\"meter\"))) \
+                   ((. Qty of) 500 ((. Unit base) #\"meter\"))))) (export main))",
+        )
+        .expect("an if over km vs m branches is rejected");
+        assert_eq!(
+            diag.code.as_deref(),
+            Some("CDZ0203"),
+            "a quantity-scale join clash is CDZ0203"
+        );
+        assert!(
+            diag.message.contains("SAME dimension at DIFFERENT units"),
+            "the message must name the scale difference, not a shadowed declaration: {}",
+            diag.message
+        );
+        assert!(
+            !diag.message.contains("shadows a built-in"),
+            "the misleading shadowed-declaration hint must NOT fire for a quantity-scale clash: {}",
+            diag.message
+        );
+        // A cross-DIMENSION join (meter vs second) is a plain distinguishable mismatch — no scale tail.
+        let cross = reject_full(
+            "(module m (def (main (: b Bool)) ((. Qty value) \
+             (if b ((. Qty of) 1 ((. Unit base) #\"meter\")) \
+                   ((. Qty of) 2 ((. Unit base) #\"second\"))))) (export main))",
+        )
+        .expect("an if over meter vs second branches is rejected");
+        assert!(
+            !cross.message.contains("SAME dimension at DIFFERENT units"),
+            "a cross-dimension clash must NOT claim same-dimension: {}",
+            cross.message
+        );
+    }
+
+    #[test]
     fn a_narrow_width_int_quantity_overflow_is_cdz0304_not_backend_cdz0302() {
         // A quantity's arithmetic runs the ERASED inner numeric type's op, so a `(Qty Int8 u)` add must
         // overflow-trap like a bare Int8. `(+ (Qty.of (Int8.of 100) m) (Qty.of (Int8.of 100) m))` = 200

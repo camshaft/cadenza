@@ -5277,7 +5277,36 @@ pub(crate) fn structural_delta_hint(first: &Ty, other: &Ty) -> Option<String> {
         .or_else(|| collection_element_mismatch_hint(first, other))
         .or_else(|| sum_payload_mismatch_hint(first, other))
         .or_else(|| fn_signature_delta_hint(first, other))
+        .or_else(|| qty_scale_mismatch_hint(first, other))
         .or_else(|| same_name_distinct_type_hint(first, other))
+}
+
+/// A message TAIL for two `(Qty T u)` types that are the SAME DIMENSION but at DIFFERENT SCALES — the
+/// units-specific reason two quantities fail to unify at a join (`if`/`match`/`list`). `(Qty Int64 km)`
+/// and `(Qty Int64 m)` are distinct types (their `Ty::Qty.unit` carries the scale — km is 1000/1, m is
+/// 1/1), so a join rejects them, but BOTH `render_name()` to `(Qty Int64 (Unit.base #"meter"))` (the
+/// render shows the reference-unit NAME and drops the scale). Without this the generic
+/// `same_name_distinct_type_hint` fires and blames a "declaration shadows a built-in" — flat wrong for a
+/// scale clash. Name the REAL cause and the repair: the branches carry the same dimension at different
+/// units, so convert one to the other's unit (`in`/`as`) to make the join well-typed — a quantity join
+/// does NOT auto-normalize (the no-silent-promotion rule; a conversion is explicit). Fires ONLY for two
+/// same-dimension different-scale quantities; a genuine cross-DIMENSION clash (meter vs second) renders
+/// distinguishably and needs no tail, and a same-scale pair unifies (no mismatch to explain).
+fn qty_scale_mismatch_hint(first: &Ty, other: &Ty) -> Option<String> {
+    let (Ty::Qty { unit: ua, .. }, Ty::Qty { unit: ub, .. }) = (first, other) else {
+        return None;
+    };
+    // Same dimension, different scale — the case the generic same-name hint would misdiagnose. A different
+    // dimension renders distinguishably (the units differ by name), so leave it to the plain mismatch.
+    if !ua.same_dimension(ub) || ua.scale() == ub.scale() {
+        return None;
+    }
+    Some(
+        " — these are the SAME dimension at DIFFERENT units (their scales to the reference differ); a \
+         quantity join does not auto-convert, so convert one branch to the other's unit with `in`/`as` \
+         to make them the same type"
+            .to_string(),
+    )
 }
 
 /// A message TAIL for two DISTINCT types that RENDER to the SAME name — "an Int64, but a value of type

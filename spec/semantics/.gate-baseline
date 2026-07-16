@@ -2005,6 +2005,8 @@ pass	an identity conversion unwraps the magnitude unchanged
 pass	an if choosing between two nullary enum variants selects branchlessly on the discriminant
 pass	an if on Type.eq selects a branch at compile time
 pass	an if over different-length list arms keeps each branch's own list
+pass	an if over two quantities at the SAME unit joins normally
+pass	an if over two same-dimension quantities at different units is a type mismatch (no auto-convert)
 pass	an if over two trap-free bitwise arms selects branchlessly — else arm
 pass	an if over two trap-free bitwise arms selects branchlessly — then arm
 pass	an if returning false/true folds to the negation of a runtime condition
