@@ -1785,8 +1785,6 @@ fn stale_window_secs(interval_secs: u64, mult: u32, cap: u64) -> u64 {
     interval_secs.saturating_mul(mult as u64).min(cap)
 }
 
-/// Does the agent's tmux pane show Claude actively working? Claude Code prints an "esc to interrupt"
-/// affordance in its status line while a turn is in flight; its presence means the loop is alive and
 /// Whether a busy-looking pane should be TRUSTED as "genuinely mid-tick, leave alone" for a stale
 /// agent. Pure so the invariant is unit-tested. A pane only counts as real work if the agent has EVER
 /// stamped a heartbeat (`hb_ever` = `heartbeat_age_secs(...).is_some()`): a genuine tick stamps its
@@ -1798,6 +1796,8 @@ fn pane_busy_means_working(hb_ever: bool, pane_busy: bool) -> bool {
     hb_ever && pane_busy
 }
 
+/// Does the agent's tmux pane show Claude actively working? Claude Code prints an "esc to interrupt"
+/// affordance in its status line while a turn is in flight; its presence means the loop is alive and
 /// mid-tick, so a stale heartbeat is just a long tick — don't re-arm (that would inject a `/loop`
 /// into the middle of real work). Captures only the visible pane (no scrollback).
 fn window_is_working(session: &str, agent: &str) -> bool {
