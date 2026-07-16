@@ -1300,14 +1300,22 @@ fn rustc_run(module: &str, call: &str) -> Option<String> {
     // linker can transiently fail under that concurrency ("linking with cc failed") — an environment
     // race, not a defect in the emitted source. Retry once before treating a non-zero status as a real
     // compile error (a genuine miscompile fails both attempts, so this never hides one).
+    // A BigInt program emits `cdz_num::Big`; link the `cdz-num` dev-dep rlib (harmless when unused —
+    // `--extern` only makes the crate available). Mirrors the async runner's `cdz_rt` linking.
+    let cdz_num = cdz_num_link();
     let compile = || {
-        Command::new("rustc")
-            .args(["-O", "--edition", "2021"])
+        let mut cmd = Command::new("rustc");
+        cmd.args(["-O", "--edition", "2021"])
             .arg(&src_path)
             .arg("-o")
-            .arg(&bin_path)
-            .output()
-            .expect("run rustc")
+            .arg(&bin_path);
+        if let Some((dep_dir, rlib)) = &cdz_num {
+            cmd.arg("-L")
+                .arg(format!("dependency={}", dep_dir.display()))
+                .arg("--extern")
+                .arg(format!("cdz_num={}", rlib.display()));
+        }
+        cmd.output().expect("run rustc")
     };
     let mut status = compile();
     if !status.status.success() {
@@ -1381,13 +1389,26 @@ fn rustc_run_driver(module: &str, driver: &str) -> Option<String> {
 /// round-trip skips the extern; a sync module never needs the crate). A hashed name means picking the
 /// newest match, which the current build produced.
 fn cdz_rt_link() -> Option<(std::path::PathBuf, std::path::PathBuf)> {
+    dep_rlib_link("libcdz_rt")
+}
+
+/// Same as `cdz_rt_link` for the `cdz-num` bignum rlib (`libcdz_num-*.rlib`) — the BigInt round-trip
+/// tests link it so an emitted `cdz_num::Big` program compiles.
+fn cdz_num_link() -> Option<(std::path::PathBuf, std::path::PathBuf)> {
+    dep_rlib_link("libcdz_num")
+}
+
+/// Locate a dev-dependency rlib (a `cargo test` build writes each dep's rlib, with a metadata-hash
+/// suffix, into the test binary's `deps/` dir) by its `lib<crate>` filename prefix, returning `(dep_dir,
+/// rlib_path)` for `rustc -L dependency=<dep_dir> --extern <crate>=<rlib>`. Picks the newest match.
+fn dep_rlib_link(prefix: &str) -> Option<(std::path::PathBuf, std::path::PathBuf)> {
     let exe = std::env::current_exe().ok()?;
     let deps = exe.parent()?.to_path_buf(); // …/target/<profile>/deps
     let mut best: Option<(std::time::SystemTime, std::path::PathBuf)> = None;
     for entry in std::fs::read_dir(&deps).ok()? {
         let path = entry.ok()?.path();
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        if name.starts_with("libcdz_rt") && name.ends_with(".rlib") {
+        if name.starts_with(prefix) && name.ends_with(".rlib") {
             let mtime = path
                 .metadata()
                 .and_then(|m| m.modified())
@@ -1398,6 +1419,39 @@ fn cdz_rt_link() -> Option<(std::path::PathBuf, std::path::PathBuf)> {
         }
     }
     best.map(|(_, rlib)| (deps, rlib))
+}
+
+#[test]
+fn rustc_roundtrip_bigint_arithmetic_and_render() {
+    // BigInt emit-side: a runtime `Big` (cdz_num, source-shared with the wasm runtime) crosses end to end.
+    // `Ty::BigInt` → `cdz_num::Big`; `BigInt.of` widens; `+`/`-`/`*`/`/`/`%` are `Big` methods; the result
+    // renders as its exact decimal (`to_decimal_string`). Small in-range add: 40+2 = 42.
+    // `rustc_run`'s driver prints the call via `{}`; `Big` isn't `Display` (it renders by
+    // `to_decimal_string`, as the gate harness does), so the CALL expression asks for that string.
+    let add = compile_rust("(module m (def (g) (+ (BigInt.of 40) (BigInt.of 2))) (export g))");
+    assert!(
+        add.contains("cdz_num::Big"),
+        "BigInt maps to cdz_num::Big:\n{add}"
+    );
+    if let Some(out) = rustc_run(&add, "g().to_decimal_string()") {
+        assert_eq!(out, "42", "runtime BigInt add");
+    }
+    // The DEFINING case — a product that overflows i64 must GROW, not trap: 10^10 * 10^10 = 10^20.
+    let big = compile_rust(
+        "(module m (def (g) (* (BigInt.of 10000000000) (BigInt.of 10000000000))) (export g))",
+    );
+    if let Some(out) = rustc_run(&big, "g().to_decimal_string()") {
+        assert_eq!(out, "100000000000000000000", "10^10 squared grows past i64");
+    }
+    // A negative subtract crosses with its sign; truncating divide.
+    let neg = compile_rust("(module m (def (g) (- (BigInt.of 42) (BigInt.of 100))) (export g))");
+    if let Some(out) = rustc_run(&neg, "g().to_decimal_string()") {
+        assert_eq!(out, "-58", "negative BigInt result keeps its sign");
+    }
+    let divv = compile_rust("(module m (def (g) (/ (BigInt.of 100) (BigInt.of 7))) (export g))");
+    if let Some(out) = rustc_run(&divv, "g().to_decimal_string()") {
+        assert_eq!(out, "14", "truncating BigInt divide");
+    }
 }
 
 #[test]

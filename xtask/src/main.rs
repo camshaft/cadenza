@@ -566,6 +566,10 @@ struct Tools {
     /// as `-L dependency=<dir> --extern cdz_rt=<dir>/libcdz_rt.rlib` when compiling an emitted async
     /// module (which `use`s the shared `cdz_rt::CdzEnv`). `None` if the rlib build failed / wasn't run.
     cdz_rt_dir: Option<PathBuf>,
+    /// The directory holding the built `cdz-num` rlib (`libcdz_num.rlib`) — passed to `rustc` as `-L
+    /// dependency=<dir> --extern cdz_num=…` when an emitted (sync or async) program uses `cdz_num::Big`.
+    /// `None` if the rlib wasn't built.
+    cdz_num_dir: Option<PathBuf>,
 }
 
 /// Build the three pipeline tools once (under `profile`) and return their binary paths — shared by
@@ -581,9 +585,12 @@ fn build_tools(paths: &Paths, profile: &str) -> Tools {
     // Also build `cdz-rt` (the shared native runtime interface an emitted ASYNC module links against for
     // `CdzEnv`). It is a plain rlib; the Rust-async gate passes it to `rustc` via `--extern`. Built here
     // once (cheap, tiny crate) so the ~900-case async gate does not rebuild it per case.
+    // Also build `cdz-num` (the bignum the rust backend emits `cdz_num::Big` against — it source-shares
+    // the runtime's `bigint.rs`). A plain rlib the SYNC rust gate passes to `rustc` via `--extern` when
+    // an emitted program uses BigInt. Built here once alongside `cdz-rt`.
     if let Err(e) = cmd!(
         sh,
-        "cargo build --quiet --profile {profile} -p cdz -p cdz-corpus -p cdz-run -p cdz-rt"
+        "cargo build --quiet --profile {profile} -p cdz -p cdz-corpus -p cdz-run -p cdz-rt -p cdz-num"
     )
     .quiet()
     .run()
@@ -601,12 +608,16 @@ fn build_tools(paths: &Paths, profile: &str) -> Tools {
     // The `cdz-rt` rlib lands at `target/<subdir>/libcdz_rt.rlib`; the directory itself is the `-L`
     // search path for `rustc`. Only present when the rlib actually built.
     let cdz_rt_dir = bin.join("libcdz_rt.rlib").exists().then(|| bin.clone());
+    // The `cdz-num` rlib (`libcdz_num.rlib`) — the SYNC rust gate links it via `--extern` for a
+    // BigInt-using program. Same directory as `cdz-rt`; recorded only when the rlib actually built.
+    let cdz_num_dir = bin.join("libcdz_num.rlib").exists().then(|| bin.clone());
     Tools {
         syntax: cdz.clone(),
         corpus: bin.join("cdz-corpus"),
         rcdzc: cdz,
         run: bin.join("cdz-run"),
         cdz_rt_dir,
+        cdz_num_dir,
     }
 }
 
@@ -1071,7 +1082,7 @@ fn run_program_rust(tools: &Tools, program: &str, call: Option<&Call>, async_mod
     // Compile with the ambient rustc. A compile failure is a BAD ARTIFACT (the backend emitted source
     // that does not build) — the exact miscompile class this gate catches. In ASYNC mode the emitted
     // module `use`s the shared `cdz_rt::CdzEnv`, so link the pre-built `cdz-rt` rlib: `-L dependency=<dir>
-    // --extern cdz_rt=<dir>/libcdz_rt.rlib`. (Sync mode needs no extern — it emits plain `fn`s.)
+    // --extern cdz_rt=<dir>/libcdz_rt.rlib`.
     let mut cmd = Command::new("rustc");
     cmd.args(["-O", "--edition", "2021"])
         .arg(&src)
@@ -1082,6 +1093,15 @@ fn run_program_rust(tools: &Tools, program: &str, call: Option<&Call>, async_mod
             .arg(format!("dependency={}", dir.display()))
             .arg("--extern")
             .arg(format!("cdz_rt={}", dir.join("libcdz_rt.rlib").display()));
+    }
+    // A program that uses BigInt emits `cdz_num::Big`, so link the `cdz-num` rlib. Provided for BOTH sync
+    // and async (BigInt appears in either); harmless when the program doesn't reference it (`--extern`
+    // only makes the crate available, it isn't force-linked). `-L dependency` lets rustc find its deps.
+    if let Some(dir) = tools.cdz_num_dir.as_deref() {
+        cmd.arg("-L")
+            .arg(format!("dependency={}", dir.display()))
+            .arg("--extern")
+            .arg(format!("cdz_num={}", dir.join("libcdz_num.rlib").display()));
     }
     let compiled = cmd.output();
     let compiled = match compiled {
@@ -1567,6 +1587,13 @@ fn cdz_render_at(
         return format!(
             "{{ let mut __s = String::from(\"(map\"); for ({kbind}, {vbind}) in ({path}).iter() {{ __s.push_str(&format!(\" ({{}} {{}})\", {kr}, {vr})); }} __s.push(')'); __s }}"
         );
+    }
+    // A `BigInt` value is the Rust `cdz_num::Big` the backend emits — render it as its exact decimal, the
+    // BARE integer text cdz-run prints for a BigInt (`42`, `-58`), via `Big::to_decimal_string`. `{path}`
+    // is a `Big`/`&Big`; the method takes `&self`, so a reference works. Matches the runtime's BigInt
+    // value-encode (a sign-magnitude leaf rendered as its decimal).
+    if ty == "BigInt" {
+        return format!("({path}).to_decimal_string()");
     }
     // A `String` value is the Rust `String` the backend emits — render it as cdz-run's canonical
     // `"<content>"` form: the RAW UTF-8 content wrapped in double quotes, with NO escaping (matching the
