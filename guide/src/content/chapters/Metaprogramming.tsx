@@ -196,6 +196,35 @@ export default function Metaprogramming() {
         <C>{"`(+ ,x 4)"}</C>.
       </P>
 
+      <H2>A quasiquote pattern, and an interpreter</H2>
+      <P>
+        That quasiquote pattern is the whole game for an interpreter or a macro. In a{" "}
+        <C>match</C> arm, a <C>quasiquote</C> form with <C>unquote</C> holes matches a tree of that shape
+        and <em>binds</em> what's in each hole — <C>(unquote x)</C> in a pattern is a binder, the dual of{" "}
+        <C>(unquote x)</C> in a template (which embeds a value). Match a runtime <C>Ast</C> against{" "}
+        <C>{"`(+ ,x ,y)"}</C> and you get its two operands as sub-trees, ready to recurse on. Here's a
+        complete little evaluator over an arithmetic <C>Ast</C> — integers evaluate to themselves, and each
+        operator shape recurses into its operands:
+      </P>
+      <Runnable
+        source={`(def (eval-expr (: a Ast))
+  (match a
+    ((Ast.Int n) n)
+    ((quasiquote (+ (unquote x) (unquote y))) (+ (eval-expr x) (eval-expr y)))
+    ((quasiquote (* (unquote x) (unquote y))) (* (eval-expr x) (eval-expr y)))
+    (_ 0)))
+(def (main) (eval-expr (quote (* (+ 1 2) 4))))`}
+      />
+      <P>
+        The quoted <C>(* (+ 1 2) 4)</C> is a real tree, and <C>eval-expr</C> walks it: the outer{" "}
+        <C>{"`(* ,x ,y)"}</C> arm binds <C>x</C> to the sub-tree <C>(+ 1 2)</C> and <C>y</C> to <C>4</C>,
+        recurses into each, and multiplies — <C>(1 + 2) * 4 = 12</C>. This is exactly how the compiler and a
+        macro take apart the code handed to them: the same <C>match</C> you use on any sum type, with a
+        template-shaped pattern for the syntax you care about. Note the arms dispatch on the operator too —
+        a <C>{"`(+ ,x ,y)"}</C> arm won't match a <C>*</C> form — so distinguishing one operator from
+        another is just two arms.
+      </P>
+
       <Why tenet="One representation for code, and it's an ordinary value">
         Many languages bolt on a separate macro system — a second little language, with its own rules,
         for programs that write programs. Cadenza doesn't. The AST is a sum type declared like any other,
