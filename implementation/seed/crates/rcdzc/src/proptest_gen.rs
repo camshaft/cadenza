@@ -26,13 +26,14 @@
 //! ```
 //!
 //! The wrapper builds the argument by a recursive `<gen:T>` derivation over the parameter type: a scalar
-//! consumes one `Test.gen` int (`Bool` = `(= (% gen 2) 0)`, the parity), a `(List ELEM)` builds a fixed-length list of
-//! recursively-generated elements, a `(Tuple T…)` builds `(tuple <gen:T> …)`. Every `Test.gen` is hoisted
-//! into a `let` (an inlined one under a constructor is not seen within the `host` scope). The existing
-//! gen-driven runner detects the wrapper (it pulls `Test.gen` ints), runs `--trials` trials, and shrinks
-//! over the int pool — no ABI change, no runner change. Increments so far cover G1 `List<Int>`, G2
-//! `List<Bool>` + element recursion, G3 `Tuple` + nesting, G4 `Record`, and G5 user `sum` (bounded — a
-//! recursive sum declines), and G6 `Set`/`Map`; still to come are variable-length lists, `Float`/`Char`,
+//! consumes one `Test.gen` int (`Bool` = `(= (% gen 2) 0)`, the parity), a `(List ELEM)` builds a
+//! VARIABLE-length list (`0..=G1_LIST_LEN`, a gen'd count picking a prefix — so the empty + short lists
+//! are exercised), a `(Tuple T…)` builds `(tuple <gen:T> …)`. Every `Test.gen` is hoisted into a `let`
+//! (an inlined one under a constructor is not seen within the `host` scope). The existing gen-driven
+//! runner detects the wrapper (it pulls `Test.gen` ints), runs `--trials` trials, and shrinks over the
+//! int pool — no ABI change, no runner change. Increments so far cover G1 `List<Int>`, G2 `List<Bool>` +
+//! element recursion, G3 `Tuple` + nesting, G4 `Record`, G5 user `sum` (bounded — a recursive sum
+//! declines), G6 `Set`/`Map`, and G7 variable-length lists; still to come are `Float`/`Char`,
 //! multi-parameter tests, and a lone single-form file (which currently needs a `do`-block root).
 //!
 //! Runs at load BEFORE `strip_annotations`/`scan_top_level`, so the synthesized `(effect …)` and
@@ -492,15 +493,12 @@ fn build_gen(ast: &mut Arenas, ty: &GenTy, binds: &mut Vec<(StructId, StructId)>
             );
             push_list(ast, vec![eq, parity, zero])
         }),
-        // `(list <gen:ELEM> …)` — a fixed-length list (G1_LIST_LEN elements), each recursively generated.
-        GenTy::List(elem) => {
-            let head = name(ast, "list");
-            let mut children = vec![head];
-            for _ in 0..G1_LIST_LEN {
-                children.push(build_gen(ast, elem, binds));
-            }
-            push_list(ast, children)
-        }
+        // A VARIABLE-length list in `0..=G1_LIST_LEN`: generate `G1_LIST_LEN` candidate elements + a
+        // hoisted count `c = (% Test.gen (LEN+1))`, then an `if`-chain picking the length-`c` prefix
+        // (`(list)` / `(list e0)` / `(list e0 e1)` / …). This exercises the EMPTY list + short lists (the
+        // classic off-by-one / empty-case property-test coverage) that a fixed-length never reached — with
+        // no recursive-helper synthesis (all inline, still let-hoisted so each `Test.gen` lives in `host`).
+        GenTy::List(elem) => build_var_list_gen(ast, elem, binds),
         // `(tuple <gen:T> …)` — one generated value per slot.
         GenTy::Tuple(slots) => {
             let head = name(ast, "tuple");
@@ -643,6 +641,78 @@ fn build_sum_gen(
         };
         let if_head = name(ast, "if");
         chain = push_list(ast, vec![if_head, cond, ctors[i], chain]);
+    }
+    chain
+}
+
+/// Build a VARIABLE-length `(List ELEM)` in `0..=G1_LIST_LEN`: hoist a length selector
+/// `c = (% ((. Test gen)) (LEN+1))` (so `c ∈ 0..=LEN`) + the `LEN` candidate element values (each let-
+/// hoisted through `build_gen`), then a nested `if`-chain returning the length-`c` prefix:
+/// `(if (<= c 0) (list) (if (<= c 1) (list e0) … (list e0 … e_{LEN-1})))`. All inline (no recursive
+/// helper); every `Test.gen` is a `let` in the caller's chain, so it lives within the wrapper's `host`.
+fn build_var_list_gen(
+    ast: &mut Arenas,
+    elem: &GenTy,
+    binds: &mut Vec<(StructId, StructId)>,
+) -> StructId {
+    // Hoist the count `c = (% gen (LEN+1))`, capturing its name for the `(<= c i)` guards.
+    let modn = (G1_LIST_LEN + 1) as i64;
+    let count_name = format!("g{}", binds.len());
+    {
+        let g = gen_call(ast);
+        let m = push_atom(
+            ast,
+            Leaf::Int {
+                value: crate::ast::IntValue::from_i64(modn),
+                radix: crate::ast::Radix::Dec,
+            },
+        );
+        let rem = name(ast, "%");
+        let expr = push_list(ast, vec![rem, g, m]);
+        let var = name(ast, &count_name);
+        binds.push((var, expr));
+    }
+    // Hoist the LEN candidate element values, each bound to its own `gN` name, so the prefix lists just
+    // reference the names (never share an expression node across multiple `(list …)` parents). The bind
+    // name is computed AFTER `build_gen` (which itself may push binds for a scalar element), so the index
+    // is fresh.
+    let elem_names: Vec<String> = (0..G1_LIST_LEN)
+        .map(|_| {
+            let e = build_gen(ast, elem, binds);
+            let nm = format!("g{}", binds.len());
+            let var = name(ast, &nm);
+            binds.push((var, e));
+            nm
+        })
+        .collect();
+    // Build the prefix lists `(list)`, `(list e0)`, …, `(list e0 … e_{LEN-1})`.
+    let prefixes: Vec<StructId> = (0..=G1_LIST_LEN)
+        .map(|len| {
+            let head = name(ast, "list");
+            let mut children = vec![head];
+            for enm in elem_names.iter().take(len) {
+                children.push(name(ast, enm));
+            }
+            push_list(ast, children)
+        })
+        .collect();
+    // Fold into `(if (<= c 0) prefix0 (if (<= c 1) prefix1 … prefixLEN))` — the last prefix is the else.
+    let mut chain = prefixes[G1_LIST_LEN];
+    for len in (0..G1_LIST_LEN).rev() {
+        let cond = {
+            let le = name(ast, "<=");
+            let c_use = name(ast, &count_name);
+            let iv = push_atom(
+                ast,
+                Leaf::Int {
+                    value: crate::ast::IntValue::from_i64(len as i64),
+                    radix: crate::ast::Radix::Dec,
+                },
+            );
+            push_list(ast, vec![le, c_use, iv])
+        };
+        let if_head = name(ast, "if");
+        chain = push_list(ast, vec![if_head, cond, prefixes[len], chain]);
     }
     chain
 }
