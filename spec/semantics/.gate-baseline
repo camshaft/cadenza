@@ -999,6 +999,7 @@ pass	a member access with no field operand is rejected, not a crash
 pass	a misspelled segment kind is rejected with a rename suggestion
 pass	a misspelled utf8 segment kind is rejected
 pass	a mixed-ownership inlined-match operand leaves the source map intact across repeated compares
+pass	a mixed-scale Int comparison truncates each operand to the reference (lossy, can compare equal)
 pass	a mixed-scale narrow-width Int quantity combine that overflows the inner width traps
 pass	a module declaration binds its name in the enclosing scope
 pass	a module function calls a sibling export by name
@@ -2901,6 +2902,7 @@ pass	the runtime-if list takes its else branch and measures that length
 pass	the runtime-list version of a tail fold compiles and folds correctly
 pass	the same declared effect is handled in-program by one entrypoint and delegated by another
 pass	the same function called under two handlers is discharged by each in turn
+pass	the same mixed-scale comparison is EXACT over Rational (keeps the fractional scale)
 pass	the same program with a different response gives a different deterministic result
 pass	the same-core-shape sibling dispatches ITS body, not the first
 pass	the scalar length of a runtime multi-byte string counts scalars, not bytes

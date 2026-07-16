@@ -33365,6 +33365,43 @@ mod match_engine {
     }
 
     #[test]
+    fn a_mixed_scale_comparison_truncates_over_int_but_is_exact_over_rational() {
+        // A mixed-scale comparison converts each operand to the reference in the INNER numeric type. Over
+        // Int64 that conversion TRUNCATES (the numeric core's rule), so two sub-reference-unit quantities
+        // can truncate to the SAME reference value and compare EQUAL even when their exact values differ:
+        // 30 cm = 30/100 m and 1 foot = 381/1250 m both truncate to 0 m over Int → (= 30cm 1foot) is TRUE.
+        // The same comparison over Rational is EXACT (375/1250 < 381/1250), giving the correct ordering.
+        // Pins the documented lossy-Int / exact-Rational contract for a mixed-scale comparison (a passing-
+        // but-surprising behavior — the Int truncation is opting into integer math, not a miscompile).
+        // Int64: 30 cm and 1 foot both truncate to 0 m → EQUAL (1).
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(
+                    "(do (def (main) (if (= ((. Qty of) 30 ((. Unit of) #\"centimeter\")) \
+                     ((. Qty of) 1 ((. Unit of) #\"foot\"))) 1 0)) (export main))"
+                )))
+                .expect("a mixed-scale Int comparison compiles"),
+                "main"
+            ),
+            1,
+            "30 cm and 1 foot both truncate to 0 m over Int → compare equal (lossy, documented)"
+        );
+        // Rational: exact — 375/1250 m < 381/1250 m → 30 cm < 1 foot is TRUE (1), the answer Int truncates.
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(
+                    "(do (def (main) (if (< ((. Qty of) ((. Rational of) 30 1) ((. Unit of) #\"centimeter\")) \
+                     ((. Qty of) ((. Rational of) 1 1) ((. Unit of) #\"foot\"))) 1 0)) (export main))"
+                )))
+                .expect("a mixed-scale Rational comparison compiles"),
+                "main"
+            ),
+            1,
+            "30 cm < 1 foot exactly over Rational (375/1250 < 381/1250) — the answer Int truncates away"
+        );
+    }
+
+    #[test]
     fn a_bigint_or_rational_inner_quantity_comparison_folds_to_the_exact_compare() {
         // Companion to the bigint-quantity arithmetic fix: a `(Qty BigInt/Rational u)` COMPARISON must
         // route to the exact bigint/rational compare, not decline as a "compound value needs a heap walk".
