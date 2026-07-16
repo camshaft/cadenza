@@ -2185,6 +2185,25 @@
               (handle Countdown 3 ((tick (u) s (resume s (- s 1)))) (loop))) (export main)))
   (output (: 3 Int64)))
 
+(case "a self-recursive effectful loop sums a fresh-id draw per step — the gensym idiom"
+  (doc    "The compiler-ml port's fresh-id generator shape (`implementation/compiler-ml/src/fresh.cdz`, the
+           self-host's first use of the effect system): `id-sum n = if n = 0 then 0 else (Fresh.next) +
+           id-sum(n - 1)` draws one fresh id per recursion and sums them. The perform `(Fresh.next)` is the
+           LEFT operand of the `+` and the self-call the RIGHT — a strict spine where the perform is
+           evaluated BEFORE the self-call, so it reads the PRE-recursion (incoming) state, which the
+           single-return effect-context specialization threads correctly. Seeded 0, the ids drawn are 0, 1,
+           2, so `id-sum 3` = `0 + (1 + (2 + 0))` = 3. Pins the gensym idiom the self-hosted compiler uses to
+           thread unique type-variable / name ids without a hand-plumbed counter. (Contrast the SELF-CALL-
+           before-perform shape — two sibling recursive calls whose second reads the first's OUT-state —
+           which the single-return spec cannot thread and declines cleanly, pending the multi-value-return
+           increment.)")
+  (input  (do
+            (effect Fresh (op next (-> Int64)))
+            (def (id-sum (: n Int64)) (if (= n 0) 0 (+ (Fresh.next) (id-sum (- n 1)))))
+            (def (main)
+              (handle Fresh 0 ((next () s (resume s (+ s 1)))) (id-sum 3))) (export main)))
+  (output (: 3 Int64)))
+
 (case "a MUTUALLY-recursive effectful group is specialized under a state handler"
   (doc    "Effect-context monomorphization extends past a SINGLE self-recursive function to a MUTUALLY-
            recursive group. `ev` and `od` call each other, and the effect `Ctr.tick` is reached by `ev`
