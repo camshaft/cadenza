@@ -67806,6 +67806,86 @@ mod cross_component_oracle {
     }
 
     // ------------------------------------------------------------------------------------------------
+    // U8 — a STRING ARGUMENT crosses to a peer-bound effect (the mirror of U7's result). This completes
+    // the model-call `converse(prompt) -> completion : String` boundary the agent HARNESS Route-B
+    // bring-up needs (`DESIGN-agent-harness.md` §2.1a): the PROMPT crosses IN as a peer String arg (a
+    // runtime rope handle, not a component `string`) and the COMPLETION comes back as the String RESULT
+    // (U7). This cell was DECLINED until v-peer-linking wired the inbound-rope-handle emit (the
+    // `string-crossing-matrix` issue's cell #2); pin it now that it passes so a transport regression
+    // that reverted to the decline (or miscompiled the arg as a component `string` → invalid component)
+    // is caught fleet-wide. Provider ECHOES its String arg back, so the result's byte-len reflects the
+    // ARG that actually crossed. The entrypoint returns a scalar (byte-len), sidestepping the still-open
+    // result-escape cell #3 (v-peer-linking task #6); the prompt is an in-program literal, sidestepping
+    // the still-open String-entrypoint-param cell #7 — which the real loop does anyway (it builds the
+    // prompt from context, never takes it as an export param).
+    // ------------------------------------------------------------------------------------------------
+    #[test]
+    fn u8_a_string_argument_crosses_to_a_peer() {
+        use crate::backend::wasm::runtime_abi::{REQUIRED_RUNTIME_HASH, RUNTIME_IFACE};
+        use crate::testkit::parse;
+        let import_name = format!("{RUNTIME_IFACE}@0.0.0+{REQUIRED_RUNTIME_HASH}");
+        // PROVIDER (source): `converse(prompt)` CONCATS the prompt with itself — it BUILDS a new rope FROM
+        // the crossed arg (so it imports the value-heap runtime, and the doubled length proves the arg both
+        // crossed AND was consumed, not merely echoed as an untouched handle). Takes a String arg AND
+        // returns a String, both as rope handles over the shared runtime.
+        let provider = compile_provider(
+            "(do (def (converse (: prompt String)) (String.concat prompt prompt)) (export converse))",
+            "cadenza:model/api",
+        );
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&provider)
+                .expect("string-arg echo provider validates");
+        }
+        // CONSUMER (source): a peer-bound effect M `(-> String String)`; main passes an in-program literal
+        // prompt "hello" and reads the doubled completion's byte-len — proving the ARG crossed (a broken
+        // arg emit would trap or mis-length). Entrypoint returns Int64 (scalar), so nothing escapes as a
+        // resource.
+        let src = "(do \
+            (effect M (op converse (-> String String))) \
+            (bind M \"cadenza:model/api\") \
+            (def (main) (String.byte-len (host (M) (M.converse \"hello\")))) \
+            (export main))";
+        let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .unwrap_or_else(|d| panic!("consumer compiles: {} [{:?}]", d.message, d.code));
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&consumer).expect("consumer validates");
+        }
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("[U8] runtime wasm not found; skipping");
+            return;
+        };
+        assert!(
+            String::from_utf8_lossy(&provider).contains(&import_name),
+            "the source provider imports the value-heap runtime (it handles a String rope)"
+        );
+        let peers = vec![cdz_run::Peer {
+            bytes: provider,
+            interface: "cadenza:model/api".to_string(),
+        }];
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: Vec::new(),
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run_with_peers(&consumer, &peers, &opts)
+            .expect("a String argument crosses to a peer-bound effect")
+        {
+            // main passed "hello" (5 bytes) as the peer arg; the provider concatenated it with itself →
+            // "hellohello" (10 bytes). byte-len = 10 proves the String arg crossed INTO the peer as a rope
+            // handle and was consumed — the mirror of U7's result crossing.
+            cdz_run::Outcome::Value(s) => assert_eq!(
+                s, "10",
+                "the doubled prompt's byte-len proves the String arg crossed + was consumed by the peer"
+            ),
+            cdz_run::Outcome::Trap(t) => panic!("string-arg peer run trapped: {t}"),
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------------
     // PL4 — a NON-KEBAB peer OP NAME agrees across the consumer + provider and RUNS. The op name is a
     // component-boundary extern name (the interface func); a camelCase source op (`addTwo`) must
     // kebab-normalize to the SAME `add-two` on BOTH sides — the consumer's `(bind)`/`host` import AND
