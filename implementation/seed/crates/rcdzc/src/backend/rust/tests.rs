@@ -252,6 +252,86 @@ fn rustc_roundtrip_list_builds_and_runs() {
 }
 
 #[test]
+fn runtime_list_ops_emit_native_vec_operations() {
+    // `List.len` → `.len() as i64`; measured over a runtime-built list (a constant list's length folds).
+    let len = compile_rust(
+        "(module m (def (f (: n Int64)) (if (= n 0) (list n n) (f (+ n -1)))) \
+                    (def (main) (List.len (f 2))) (export main))",
+    );
+    assert!(
+        len.contains(".len() as i64)"),
+        "List.len → .len() as i64:\n{len}"
+    );
+    // `List.push` → a mut-local push returning the vec.
+    let push = compile_rust(
+        "(module m (def (f (: n Int64)) (if (= n 0) (list n) (f (+ n -1)))) \
+                    (def (main) (List.push (f 1) 9)) (export main))",
+    );
+    assert!(
+        push.contains("__v.push(") && push.contains("-> Vec<i64>"),
+        "List.push → push:\n{push}"
+    );
+    // `List.concat` → extend.
+    let cat = compile_rust(
+        "(module m (def (f (: n Int64)) (if (= n 0) (list n) (f (+ n -1)))) \
+                    (def (main) (List.concat (f 1) (f 2))) (export main))",
+    );
+    assert!(cat.contains("__v.extend("), "List.concat → extend:\n{cat}");
+    // `List.update` → a bounds-checked index-set that traps OOB.
+    let upd = compile_rust(
+        "(module m (def (f (: n Int64)) (if (= n 0) (list n n) (f (+ n -1)))) \
+                    (def (main (: i Int64)) (List.update (f 1) i 9)) (export main))",
+    );
+    assert!(
+        upd.contains("panic!(\"index out of bounds\")") && upd.contains("__v[__i] ="),
+        "List.update → bounds-checked set:\n{upd}"
+    );
+    // `List.at` → the fallible read yielding a native Option.
+    let at = compile_rust(
+        "(module m (def (f (: n Int64)) (if (= n 0) (list 10 20) (f (+ n -1)))) \
+                    (def (main (: i Int64)) (List.at (f 1) i)) (export main))",
+    );
+    assert!(
+        at.contains("-> Option<i64>")
+            && at.contains("Some(__v[__i].clone())")
+            && at.contains("None"),
+        "List.at → Option read:\n{at}"
+    );
+}
+
+#[test]
+fn rustc_roundtrip_list_ops_compute_and_a_shared_list_does_not_move() {
+    // End-to-end: build a list, then in one function BOTH pass it to a helper AND measure its length —
+    // a Vec is move-only, so the binding is `.clone()`d on the non-last use (the Perceus-dup analogue).
+    // `sum-at` walks the list by `List.at`+`List.len` and sums it: build `[0 1 2]`, sum = 3.
+    let module = compile_rust(
+        "(module m \
+           (def (build i n out) (if (< i n) (build (+ i 1) n (List.push out i)) out)) \
+           (def (sum-at xs i n) (if (< i n) (+ (match (List.at xs i) ((Some x) x) ((None _) 0)) \
+                (sum-at xs (+ i 1) n)) 0)) \
+           (def (mk) (let ((xs (build 0 3 (list)))) (sum-at xs 0 (List.len xs)))) (export mk))",
+    );
+    // A list binding used in two positions (passed to sum-at AND measured) must be cloned, not moved.
+    assert!(
+        module.contains(".clone()"),
+        "a shared list is cloned:\n{module}"
+    );
+    if let Some(out) = rustc_run(&module, "mk()") {
+        assert_eq!(out, "3", "0+1+2 = 3 over the built-then-read list");
+    }
+    // `List.update` traps out of bounds (a Rust panic == a Cadenza trap). Drive an in-range update and
+    // read back the changed element to confirm the op computes; the OOB trap is exercised by the corpus.
+    let upd = compile_rust(
+        "(module m (def (f (: n Int64)) (if (= n 0) (list 10 20 30) (f (+ n -1)))) \
+           (def (at2 (: xs (List Int64))) (match (List.at xs 1) ((Some x) x) ((None _) 0))) \
+           (def (mk) (at2 (List.update (f 1) 1 99))) (export mk))",
+    );
+    if let Some(out) = rustc_run(&upd, "mk()") {
+        assert_eq!(out, "99", "index 1 replaced with 99");
+    }
+}
+
+#[test]
 fn an_ill_formed_integer_width_is_rejected_not_declined() {
     // An out-of-range integer WIDTH (negative → clamped `Int0`, or over-ceiling `(UInt 65)`) is an
     // ILL-FORMED TYPE, not a target limitation — a boundary of that type must REJECT (CDZ0302), the SAME
