@@ -213,3 +213,41 @@
                           (_ 0)))
             (export main)))
   (output (: 46 Int64)))
+
+; --- The expander is a STRUCTURAL rewrite, not a validator: the chunks==holes+1 invariant is the READER's -
+; The chunks/holes count invariant (`chunks.len() == holes.len() + 1`) is guaranteed by the READER on the
+; surface path (a `tag"…{}…"` literal always yields well-balanced chunks/holes); `tagged_template::expand`
+; deliberately DOES NOT re-check it (its docstring says so) — it rewrites any well-SHAPED 4-child
+; `(tagged-template <tag> (chunks …) (holes …))` node to `(<tag> (list c…) (list h…))` regardless of the
+; count relationship. So a canonical node WRITTEN DIRECTLY (as this file does) with a mismatched count still
+; expands: the tag function receives whatever chunk/hole lists it was given. This pins that split — a future
+; change that added a count re-check in the expander would break directly-written nodes (and duplicate the
+; reader's job), so the structural-not-validating contract is locked here.
+
+(case "the expander rewrites a directly-written node even when chunks != holes+1 (no re-check)"
+  (doc    "The reader guarantees `chunks.len() == holes.len() + 1`, but the expander does NOT re-check it — a
+           canonical node written directly with 3 chunks and 1 hole (violating the invariant) still expands.
+           `id` ignores its args and returns `(Ast.Int 0)`, so `(tagged-template id (chunks \"a\" \"b\" \"c\")
+           (holes (Ast.Int 1)))` expands and folds to 0. Pins that the expander is a STRUCTURAL rewrite (any
+           well-shaped 4-child node), not a validator — the count invariant is the reader's job, not
+           duplicated here (a future re-check would break directly-written nodes).")
+  (input  (do
+            (def (id chunks holes) (Ast.Int 0))
+            (def (main) (match (tagged-template id (chunks "a" "b" "c") (holes (Ast.Int 1)))
+                          ((Ast.Int n) n)
+                          (_           -1)))
+            (export main)))
+  (output (: 0 Int64)))
+
+(case "the expander threads the hole list to the tag even with zero chunks and zero holes"
+  (doc    "The degenerate shape: zero chunks and zero holes. The expander still rewrites `(tagged-template id
+           (chunks) (holes))` to `(id (list) (list))`; `id` returns `(Ast.Int 5)`, folding to 5. Pins that
+           empty chunk/hole lists are threaded (both `(list)`), not a decline — the structural rewrite has no
+           lower bound on element count.")
+  (input  (do
+            (def (id chunks holes) (Ast.Int 5))
+            (def (main) (match (tagged-template id (chunks) (holes))
+                          ((Ast.Int n) n)
+                          (_           -1)))
+            (export main)))
+  (output (: 5 Int64)))
