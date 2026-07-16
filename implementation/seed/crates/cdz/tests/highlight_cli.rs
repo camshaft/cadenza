@@ -7,7 +7,9 @@
 //! CLASSIFICATION itself — the payoff of the feature: a type name is `type`, a called function is
 //! `function`, a parameter is `param`, a numeric literal is `number`, the surface keyword is `keyword`.
 //! A regression that mis-coloured (e.g. classified a type as a variable) would slip past the
-//! position-only test but fails here. Drives the built binary; `file:line:col: kind` per token.
+//! position-only test but fails here. Drives the built binary; `file:line:col: kind` per token (or, under
+//! `--json`, one structured `{file,line,col,kind}` object per token — the machine-readable semanticTokens
+//! payload).
 
 use std::process::Command;
 
@@ -111,6 +113,45 @@ fn highlight_every_line_is_file_line_col_kind() {
     assert!(
         count >= 5,
         "a non-trivial program yields several tokens: {count}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn highlight_json_emits_one_structured_object_per_token() {
+    // `--json` emits one machine-readable object per classified token — {file,line,col,kind} — the
+    // `semanticTokens` payload an editor consumes without re-parsing the `file:line:col: kind` text. Both
+    // output shapes come from the SAME resolved token set (span-less nodes are skipped in both), so they
+    // keep row-for-row parity.
+    let (dir, file) = temp_src("json", PROG);
+    let (ok, out, err) = run(&["highlight", &file, "--json"]);
+    assert!(ok, "cdz highlight --json should succeed: {err}");
+    let rows: Vec<&str> = out.lines().filter(|l| !l.trim().is_empty()).collect();
+    // Same token count as the human form (parity — both skip span-less nodes identically).
+    let (_hok, human, _he) = run(&["highlight", &file]);
+    let human_rows = human.lines().filter(|l| !l.trim().is_empty()).count();
+    assert_eq!(
+        rows.len(),
+        human_rows,
+        "one JSON row per human token: {out}"
+    );
+    assert!(
+        rows.len() >= 5,
+        "a non-trivial program yields several tokens"
+    );
+    for row in &rows {
+        assert!(
+            row.trim_start().starts_with('{') && row.trim_end().ends_with('}'),
+            "each row is a JSON object: {row}"
+        );
+        for key in ["\"file\"", "\"line\"", "\"col\"", "\"kind\""] {
+            assert!(row.contains(key), "row has {key}: {row}");
+        }
+    }
+    // The semantic classification rides through as a structured field (the `kind` values, not text).
+    assert!(
+        out.contains("\"kind\":\"type\"") && out.contains("\"kind\":\"function\""),
+        "the type + function classifications are emitted as structured kinds: {out}"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
