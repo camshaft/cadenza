@@ -536,12 +536,40 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
                 // and then combined with real km quantities WITHOUT the mixed-unit conversion (a
                 // high-severity miscompile: `(: (1 km) meter) + 2 km` gave 2001 m, not 3000 m — the units
                 // safety promise inverted). So when both sides are quantities of the SAME dimension, keep
-                // the EXPRESSION's type (its own unit/scale intact); a cross-dimension conflict is a fault
-                // `check_application` reports (CDZ0501) and the value column stays whatever `expr` derived.
-                if let (Ty::Qty { unit: au, .. }, Ty::Qty { unit: eu, .. }) = (&annot_ty, &expr_ty)
+                // the EXPRESSION's UNIT (its own scale intact) — but GROUND the inner numeric type from the
+                // ANNOTATION, exactly as any annotation grounds a deferred width: `(: (Qty.of 5 kilometer)
+                // (Qty UInt8 meter))` keeps `kilometer` (no rebrand) yet its inner becomes `UInt8` (so a
+                // deferred literal width is fixed + range-checked by `nested_literal_width_faults`, and the
+                // emitted value carries the annotated width, not a defaulted Int64). Returning `expr_ty`
+                // WHOLESALE kept the unit but left the inner ungrounded (a completeness gap: an out-of-range
+                // magnitude slipped the check and the ABI type stayed Int64). Keep expr's unit + annot's
+                // inner; a cross-dimension conflict is `check_application`'s CDZ0501, an inner-numeric
+                // conflict its CDZ0203.
+                if let (
+                    Ty::Qty {
+                        inner: ai,
+                        unit: au,
+                    },
+                    Ty::Qty {
+                        inner: ei,
+                        unit: eu,
+                    },
+                ) = (&annot_ty, &expr_ty)
                     && au.same_dimension(eu)
                 {
-                    return expr_ty;
+                    // Unify the two inner numeric types (a deferred literal width grounds to the
+                    // annotation's); on a genuine inner clash keep the annotation's inner (the CDZ0203 is
+                    // reported by `check_application`), and always keep the EXPRESSION's unit `eu`.
+                    let mut subst = Subst::new();
+                    let inner = if crate::unify::unify(&mut subst, ai, ei).is_ok() {
+                        subst.apply(ai)
+                    } else {
+                        (**ai).clone()
+                    };
+                    return Ty::Qty {
+                        inner: Box::new(inner),
+                        unit: eu.clone(),
+                    };
                 }
                 let mut subst = Subst::new();
                 let _ = crate::unify::unify(&mut subst, &annot_ty, &expr_ty);
@@ -869,6 +897,19 @@ fn nested_literal_width_faults(db: &mut Db, value: StructId, ty_expr: StructId) 
             elems
                 .iter()
                 .find_map(|&e| width_fault_against_ty(db, e, &elem_ty))
+        }
+        // A quantity `(Qty.of 300 kilometer)` : `(Qty UInt8 meter)` — drill the MAGNITUDE against the
+        // annotation's INNER numeric type. A quantity annotation checks the dimension (not the scale, so
+        // km may be annotated at meter), but it STILL grounds + range-checks the inner numeric type exactly
+        // as a bare `(: 300 UInt8)` does — otherwise a quantity-wrapped literal slips its width entirely
+        // (the annotation's `Ty::Qty` arm in `type_of` keeps the expression's own type to avoid the scale
+        // rebrand, so the inner width never grounds/checks; this restores the check at the same choke point
+        // the compound-payload cases use). The magnitude is the `Qty.of` value occurrence; range-check it
+        // against the annotation's `inner`. This covers both a same-unit and a same-dimension different-
+        // scale annotation uniformly. `Unit.in`'s bare-number result is not a `Ty::Qty` and is unaffected.
+        Ty::Qty { inner, .. } => {
+            let magnitude = crate::eval::qty_value_occ(db, value)?;
+            width_fault_against_ty(db, magnitude, inner)
         }
         _ => None,
     }

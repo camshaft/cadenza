@@ -1267,6 +1267,9 @@ pass	a pure lambda passed as an argument to a performing callee folds
 pass	a pure let-bound lambda and a performing one are both applied in the handle body
 pass	a pure shared subexpression computes the same value however the backend optimizes it
 pass	a qualified construct and a bare match name the same colliding variant
+pass	a quantity annotation at an in-range narrow width grounds and accepts
+pass	a quantity annotation range-checks the inner width — an out-of-range magnitude is rejected
+pass	a quantity annotation rejects a negative magnitude at an unsigned inner width
 pass	a quantity built from an extracted unit is dimensionally checked
 pass	a quantity is constructed from a numeric value and a unit
 pass	a quantity over a BigInt magnitude compares by its exact value

@@ -748,6 +748,37 @@
   (input  (Qty.value (: (Qty.of 1 (Unit.prefix kilo (Unit.base #"meter"))) (Qty Float64 (Unit.base #"meter")))))
   (error  CDZ0203))
 
+; A quantity annotation grounds + RANGE-CHECKS the inner numeric type exactly as a bare `(: 300 UInt8)`
+; does — the annotation checks the dimension (scale is construction sugar) but still constrains the inner
+; width/sign, so an out-of-range magnitude is CDZ0302, not silently accepted. Covers both a same-unit and
+; a same-dimension different-scale annotation (the check drills the quantity's magnitude against the
+; annotation's inner type, at the same choke point the compound-payload cases use).
+
+(case "a quantity annotation range-checks the inner width — an out-of-range magnitude is rejected"
+  (doc    "`(: (Qty.of 300 kilometer) (Qty UInt8 meter))` — the annotation checks the dimension (km and
+           meter are both length, accepted) but STILL range-checks the inner numeric type: 300 does not fit
+           UInt8 (0..=255), so CDZ0302, exactly as the bare `(: 300 UInt8)` is rejected. A quantity
+           annotation grounds + checks the inner width like any annotation; the dimension-not-scale rule
+           does not excuse an out-of-range magnitude (it previously slipped the inner check entirely).")
+  (input  (Qty.value (: (Qty.of 300 (Unit.of #"kilometer")) (Qty UInt8 (Unit.base #"meter")))))
+  (error  CDZ0302))
+
+(case "a quantity annotation rejects a negative magnitude at an unsigned inner width"
+  (doc    "`(: (Qty.of -1 meter) (Qty UInt8 meter))` — a same-UNIT annotation whose inner width is unsigned:
+           -1 does not fit UInt8 (0..=255), CDZ0302. Pins that the inner range-check also enforces SIGN (a
+           negative into an unsigned width), the same as the bare `(: -1 UInt8)`, and that the check fires
+           for a same-unit annotation too (it drills the magnitude regardless of the unit relationship).")
+  (input  (Qty.value (: (Qty.of -1 (Unit.base #"meter")) (Qty UInt8 (Unit.base #"meter")))))
+  (error  CDZ0302))
+
+(case "a quantity annotation at an in-range narrow width grounds and accepts"
+  (doc    "`(: (Qty.of 5 kilometer) (Qty UInt8 meter))` — the control: 5 fits UInt8 (0..=255), so the
+           annotation grounds the inner to UInt8 and accepts, keeping the km unit (value stays 1·5 = 5 km).
+           `Qty.value` reads back 5. Pins that the inner range-check rejects ONLY a genuine out-of-range
+           magnitude — an in-range same-dimension annotation still grounds + accepts, unit preserved.")
+  (input  (Qty.value (: (Qty.of 5 (Unit.of #"kilometer")) (Qty UInt8 (Unit.base #"meter")))))
+  (output (: 5 UInt8)))
+
 ; ============================================================================================
 ; Erasure — a quantity is byte-identical to its underlying numeric (the numeric core is untouched)
 ; ============================================================================================
