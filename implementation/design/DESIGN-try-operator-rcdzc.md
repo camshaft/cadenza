@@ -155,6 +155,22 @@ fires on the happy path — so a constant-`Some`/`Ok` `?` needs no `Core::Block`
 like a constant `List.at`). The `Block`/`Break` path (BRICK 2/3) is for the FAILURE arm and the RUNTIME
 operand.
 
+**Constant-failure fast path (BRICK 3a, landed) — and the §283 elide ruling.** When `e` folds to a
+compile-time-CONSTANT failure variant (`None` / `Err r`), the `?` short-circuits the WHOLE continuation:
+`lower_let` recognizes a let-init that is a `Try` lowering to `Core::Break { value }` and folds the enclosing
+let straight to `core_of(value)` — the boundary result is that failure value, and every later binding (and
+the body) is dropped, since the break makes them unreachable. **This is where the §283 ruling bites:** an
+earlier let-init that *would* trap but whose value is never observed on the surviving path is NOT forced to
+trap — the trap is ELIDED (the binding compiles to the failure value, e.g. `(None unit)`, with a CDZ0305
+"detected-unreachable-trap" WARNING). Operator ruling (verbatim intent): *"we don't emit the trap unless it's
+reachable; but if we detect an unreachable trap it should be a warning."* This makes the same-let, nested-let,
+and `if false` shapes all consistently elide, aligning with the landed §283 dead-binding DCE. The ONE guard
+that survives on this fast path is **host-call-freedom** (`subtree_reaches_host_call`): a host call / `perform`
+IS an observable effect §283 lists, so a discarded init that reaches one bails the fold (no elide) rather
+than dropping an observable effect. There is NO `is_trap_free` guard here — a pure trap on an unobserved value
+elides. Corpus pins: `23-try-operator.sexp` same-let + nested-let discard cases (→ `(None unit)` + CDZ0305),
+and the RUNTIME-effect observability cases (effectful-init-before-failing-`?` performs exactly once).
+
 ### 3.3 The boundary block
 
 A boundary `B` with body `body` and result type `T_B` lowers to:

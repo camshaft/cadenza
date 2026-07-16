@@ -20,12 +20,19 @@ fn run(args: &[&str], stdin: &str) -> (bool, String, String) {
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn cdz-cad");
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(stdin.as_bytes())
-        .expect("write stdin");
+    // Feed stdin, but TOLERATE a BrokenPipe: an arg-error path (e.g. `rejects_no_output_and_no_info`)
+    // rejects + exits BEFORE reading stdin, so the write races the child's exit and intermittently hits
+    // `BrokenPipe` (errno 32) — a timing flake, not a contract failure. The test cares about the exit
+    // status + output, not that stdin was consumed. Any OTHER write error is still a real problem.
+    {
+        let mut si = child.stdin.take().unwrap();
+        if let Err(e) = si.write_all(stdin.as_bytes()) {
+            if e.kind() != std::io::ErrorKind::BrokenPipe {
+                panic!("write stdin: {e:?}");
+            }
+        }
+        // drop `si` → close the pipe so the child sees EOF if it IS reading.
+    }
     let out = child.wait_with_output().expect("wait cdz-cad");
     (
         out.status.success(),

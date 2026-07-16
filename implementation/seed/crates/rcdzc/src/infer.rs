@@ -2090,6 +2090,114 @@ pub fn solved_lambda_arrow(db: &mut Db, params: &[StructId], body: StructId) -> 
     }))
 }
 
+/// The REFLECTED type of the value `id` — what `Type.of id` denotes. Like `type_of`, but a FUNCTION
+/// VALUE (bare, or nested inside a compound) reflects its BODY-SOLVED arrow via `solved_lambda_arrow`
+/// rather than the bottom-up `type_of` Lambda arm that leaves an unannotated parameter `Any`. The plain
+/// `type_of` is what LAYOUT + EMIT consume, so it must stay untouched (its `Any` param holes are erased,
+/// not compared); reflection is the ONLY consumer that needs the grounded arrow, so the grounding lives
+/// HERE, off the hot path. Recurses the compound VALUE nodes (`tuple`/`list`/`record`/`map`) so a fn
+/// stored in an element grounds too — `(Type.of (tuple f 0))` with `f : Int64 → Int64` reflects
+/// `(Tuple (-> Int64 Int64) Int64)`, not `(Tuple (-> Any Int64) Int64)`, so `Type.eq` distinguishes it
+/// from a `(tuple g 0)` whose `g : Bool → Int64` (else both collapse to `(-> Any Int64)` → wrong `true`,
+/// the compound-element facet of the function-domain reflection miscompile). A non-function, non-compound
+/// value takes the plain `type_of` (unchanged). Element joins/products mirror `type_of`'s own compound
+/// arms exactly, so a value with no fn element reflects byte-identically to before.
+pub fn reflected_ty(db: &mut Db, id: StructId) -> Ty {
+    use crate::resolved::Prim;
+    // A FUNCTION value — bare `(fn …)`, a named def-ref, an annotated/`let`-wrapped lambda — grounds via
+    // the body-solve. Checked first: a fn value never resolves to a compound value node below.
+    if let Some((params, body)) = crate::eval::lambda_params_and_body(db, id) {
+        return solved_lambda_arrow(db, &params, body).unwrap_or_else(|| type_of(db, id));
+    }
+    match resolved_of(db, id) {
+        // A COMPOUND VALUE — `(tuple …)`/`(list …)`/`(record …)`/`(map …)` — resolves to an `Apply` of the
+        // compound-value constructor prim (NOT a symbol-headed `Resolved::Tuple` node — the name-alias
+        // application is how the ML/s-expr surfaces build it). Recurse `reflected_ty` over its element
+        // args so a fn stored in an element grounds, mirroring `compound_ctor_type`'s per-arg `type_of`
+        // (which drops the fn domain to `Any`). This is the compound-element facet: `(tuple f 0)` with
+        // `f : Int64 → Int64` reflects `(Tuple (-> Int64 Int64) Int64)`, distinguishable from a `(tuple g
+        // 0)` whose `g : Bool → Int64`. A malformed record field list has no type (`Any`), as in `type_of`.
+        Resolved::Apply { head, args } => match crate::eval::meta_apply_of(db, head) {
+            Some(Prim::TupleNew) => Ty::Tuple(args.iter().map(|&e| reflected_ty(db, e)).collect()),
+            Some(Prim::ListNew) => {
+                let mut elem_ty = Ty::Any;
+                for &e in args.iter() {
+                    let et = reflected_ty(db, e);
+                    elem_ty = elem_ty.join(&et);
+                }
+                Ty::List(Box::new(elem_ty))
+            }
+            Some(Prim::RecordNew) => match crate::resolve::read_record_fields(db, &args) {
+                Ok(fields) => {
+                    let mut field_tys = std::collections::BTreeMap::new();
+                    for (label, &value) in fields.iter() {
+                        field_tys.insert(label.clone(), reflected_ty(db, value));
+                    }
+                    Ty::Record(std::rc::Rc::new(field_tys))
+                }
+                Err(_) => Ty::Any,
+            },
+            Some(Prim::MapNew) => {
+                let mut key_ty = Ty::Any;
+                let mut val_ty = Ty::Any;
+                // `(map (k v) …)` — read the `(key, value)` entry nodes via the shared helper (handles
+                // both the primitive `Resolved::Map` and this `Apply(MapNew)` name-alias spelling).
+                if let Some(entries) = map_entry_nodes(db, id) {
+                    for (k, v) in entries {
+                        let kt = reflected_ty(db, k);
+                        let vt = reflected_ty(db, v);
+                        key_ty = key_ty.join(&kt);
+                        val_ty = val_ty.join(&vt);
+                    }
+                }
+                Ty::Map(Box::new(key_ty), Box::new(val_ty))
+            }
+            // A non-compound application (a call, a sum ctor, an operator) has no fn element to ground —
+            // its result reflects exactly as `type_of` types it.
+            _ => type_of(db, id),
+        },
+        // The SYMBOL-headed compound value nodes (`Resolved::Tuple`/`List`/`Record`/`Map`) — the same
+        // shapes reached directly rather than through the name-alias `Apply`. Recurse identically so both
+        // spellings ground a fn element.
+        Resolved::Tuple { elems } => {
+            Ty::Tuple(elems.iter().map(|&e| reflected_ty(db, e)).collect())
+        }
+        Resolved::List { elems } => {
+            let mut elem_ty = Ty::Any;
+            for &e in elems.iter() {
+                let et = reflected_ty(db, e);
+                elem_ty = elem_ty.join(&et);
+            }
+            Ty::List(Box::new(elem_ty))
+        }
+        Resolved::Record { fields } => {
+            if crate::eval::typeval_of(db, id).is_some() {
+                Ty::Type
+            } else {
+                let mut field_tys = std::collections::BTreeMap::new();
+                for (label, &value) in fields.iter() {
+                    field_tys.insert(label.clone(), reflected_ty(db, value));
+                }
+                Ty::Record(std::rc::Rc::new(field_tys))
+            }
+        }
+        Resolved::Map { entries } => {
+            let mut key_ty = Ty::Any;
+            let mut val_ty = Ty::Any;
+            for &(k, v) in entries.iter() {
+                let kt = reflected_ty(db, k);
+                let vt = reflected_ty(db, v);
+                key_ty = key_ty.join(&kt);
+                val_ty = val_ty.join(&vt);
+            }
+            Ty::Map(Box::new(key_ty), Box::new(val_ty))
+        }
+        // Every other value — a scalar, a sum value, a projection, a call result — reflects exactly as
+        // `type_of` types it (no fn domain to ground).
+        _ => type_of(db, id),
+    }
+}
+
 /// The FUNCTION TYPE a lambda VALUE is EXPECTED to have from its immediate CONTEXT — the type its parent
 /// construct requires of it — when that context DECLARES an arrow. `type_of` computes a lambda's type
 /// bottom-up (from its body + param occurrences), so a bare `(fn (n) …)` whose param the body does not
@@ -7573,6 +7681,53 @@ fn check_application(
                     b.render_with_article(),
                 ),
             ));
+            for &arg in args {
+                collect(db, arg, out);
+            }
+            return;
+        }
+        // A CHAR against a NUMBER in a COMPARISON / EQUALITY (`(< c 1)`, `(= c 5)`, `(> #\a 0)`) — the
+        // comparison/equality twin of the ARITHMETIC `(+ #\a 1)` case. Arithmetic flows to the numeric-
+        // coercion path, which offers the `(Char.to-int …)` wrap fix; comparison/equality instead falls to
+        // the generic scheme-unify → the opaque "type mismatch: Char and Int64 must be the same type here"
+        // (an internal-clash read), with NO repair. `Char.to-int : Char → Int64` is TOTAL, so the SAME wrap
+        // fits — name the kind boundary + carry the `(Char.to-int …)` fix on the CHAR operand, at parity
+        // with arithmetic. (`Bool` was handled above — a boolean has no numeric conversion; a `Char` does.)
+        let is_compare_or_eq = matches!(
+            crate::eval::meta_apply_of(db, head),
+            Some(
+                crate::resolved::Prim::Lt
+                    | crate::resolved::Prim::Gt
+                    | crate::resolved::Prim::Le
+                    | crate::resolved::Prim::Ge
+                    | crate::resolved::Prim::Eq
+                    | crate::resolved::Prim::Compare
+            )
+        );
+        let char_operand = if a == Ty::Char && matches!(b, Ty::Int(_) | Ty::Float(_)) {
+            Some(args[0])
+        } else if b == Ty::Char && matches!(a, Ty::Int(_) | Ty::Float(_)) {
+            Some(args[1])
+        } else {
+            None
+        };
+        if is_compare_or_eq && let Some(char_arg) = char_operand {
+            trace!(target: "rcdzc::infer", head = head.0, "fault: Char compared to a number — not comparable, offer Char.to-int (CDZ0203)");
+            out.push(
+                Reject::coded(
+                    Code::TypeMismatch,
+                    "a character and a number are not comparable directly — a `Char` is not a number; \
+                     convert it to its Int64 scalar value with `Char.to-int` first"
+                        .to_string(),
+                )
+                .at(char_arg)
+                .with_fix(Fix::wrap_heuristic(
+                    char_arg,
+                    "(Char.to-int ",
+                    ")",
+                    "convert the char to its Int64 scalar value with `Char.to-int`",
+                )),
+            );
             for &arg in args {
                 collect(db, arg, out);
             }

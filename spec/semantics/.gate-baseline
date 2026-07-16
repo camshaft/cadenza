@@ -186,6 +186,7 @@ pass	Type.eq of a type-valued parameter against itself is always true
 pass	Type.eq on a constructed generic sum compares the full instantiated type
 pass	Type.eq on a type-valued parameter against a COMPOUND type is structural
 pass	Type.of carries a quantity's unit into a same-type annotation
+pass	Type.of grounds a function stored inside a compound value's element
 pass	Type.of on a bare nullary variant reflects its element as UNDETERMINED
 pass	Type.of reflects a RETURNED function's body-solved domain, at every currying level
 pass	Type.of reflects a function's BODY-SOLVED domain, distinguishing different parameter types
@@ -493,6 +494,7 @@ pass	a char literal naming a surrogate is a reader error
 pass	a char not among the literal arms falls through to the wildcard
 pass	a char order agrees with its scalar value
 pass	a char-literal pattern nested in a variant payload matches by scalar value
+pass	a char-literal pattern over a non-char scrutinee is a type error
 pass	a char-literal pattern selects the arm whose char matches
 pass	a checked addition of two runtime-wrapped bytes still guards at the narrow width
 pass	a checked conversion of a negative CONSTANT into an unsigned type is rejected
@@ -1626,6 +1628,7 @@ pass	a runtime bitwise OR combines bits
 pass	a runtime bitwise XOR toggles bits
 pass	a runtime byte truncation of the sign extremes keeps exactly the low byte
 pass	a runtime bytes value is spliced into a length-prefixed frame
+pass	a runtime char reaches a later char-literal arm by scalar value
 pass	a runtime closure compares its argument to a captured value in a branch
 pass	a runtime closure whose body calls a recursive top-level function
 pass	a runtime compound structural equality is expressible as a hand-written recursive comparator
@@ -1911,6 +1914,7 @@ pass	a sum-payload loop invariant consumed per iteration accumulates stably
 pass	a sum-payload-wrapped self-application is rejected in bounded time, not a compiler stack overflow
 pass	a sum-type value is constructed through a variant
 pass	a sum-type value is deconstructed by an exhaustive match
+pass	a supplementary-plane char literal matches by scalar value
 pass	a symbol compared to a string is a type error
 pass	a symbol converts back to its content string
 pass	a symbol is constructed from a string
@@ -3131,6 +3135,7 @@ pass	the bitwise-AND-with-zero annihilator does not discard a trapping runtime o
 pass	the boolean less-than operator agrees with compare over Bool
 pass	the boolean less-than operator agrees with the three-way comparison
 pass	the boolean literals
+pass	the boolean-literal coercion composes over a runtime Symbol equality
 pass	the built variant is the multi-arg one, the unbuilt arm still gets its call type
 pass	the built-in Ast is transformed as an ordinary value
 pass	the built-in list is folded by an element-with-rest pattern

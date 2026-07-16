@@ -29,18 +29,22 @@ function renderInline(spans: Inline[]): ReactNode[] {
   });
 }
 
-/// Render one parsed block. Headings h1/h2 reuse Prose's H1/H2; h3–h6 fall back to a styled heading (the
-/// guide's Prose only defines H1/H2). Lists + blockquotes get lightweight Tailwind matching the Prose look.
+/// Render one parsed block. Headings h1/h2 reuse Prose's H1/H2; h3–h6 emit the CORRECT `<h{level}>`
+/// element (not all-h3) so document structure survives for screen readers + in-page nav (PR #482). Lists
+/// + blockquotes get lightweight Tailwind matching the Prose look.
 function renderBlock(block: Block, key: number): ReactNode {
   switch (block.t) {
     case "heading": {
       const kids = renderInline(block.spans);
       if (block.level === 1) return <H1 key={key}>{kids}</H1>;
       if (block.level === 2) return <H2 key={key}>{kids}</H2>;
+      // h3–h6: emit the real heading element for the level (clamped 1–6 by the parser) so the outline is
+      // faithful. A shared style keeps them visually consistent with the Prose look.
+      const Tag = `h${block.level}` as "h3" | "h4" | "h5" | "h6";
       return (
-        <h3 key={key} className="mt-6 mb-2 text-lg font-semibold text-slate-200">
+        <Tag key={key} className="mt-6 mb-2 text-lg font-semibold text-slate-200">
           {kids}
-        </h3>
+        </Tag>
       );
     }
     case "paragraph":

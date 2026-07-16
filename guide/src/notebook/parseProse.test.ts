@@ -48,6 +48,14 @@ test("headings parse at each level with inline spans", () => {
   assert.deepEqual(b[1], { t: "heading", level: 3, spans: [{ t: "text", text: "Sub " }, { t: "em", text: "emph" }] });
 });
 
+test("levels 3–6 parse as DISTINCT levels (ProseView renders real h3/h4/h5/h6, not all-h3 — PR #482)", () => {
+  const b = parseProse("### h3\n\n#### h4\n\n##### h5\n\n###### h6");
+  assert.deepEqual(
+    b.map((x) => (x.t === "heading" ? x.level : x.t)),
+    [3, 4, 5, 6],
+  );
+});
+
 test("consecutive non-blank lines coalesce into one paragraph; a blank line splits paragraphs", () => {
   const b = parseProse("line one\nline two\n\nsecond para");
   assert.equal(b.length, 2);

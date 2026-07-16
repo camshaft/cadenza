@@ -1226,6 +1226,25 @@
             (export main)))
   (output (: 1 Int64)))
 
+(case "Type.of grounds a function stored inside a compound value's element"
+  (doc    "Reflection solves a function's domain even when the function is an ELEMENT of a tuple/list/record,
+           not just a bare operand. `(tuple f 0)` with `f x = x + 1` reflects `(Tuple (-> Int64 Int64)
+           Int64)` and `(tuple g 0)` with `g b = if b 0 1` reflects `(Tuple (-> Bool Int64) Int64)` — the
+           element function types differ, so `Type.eq` is false; but `(list f)` vs `(list f2)` (both `(-> Int64
+           Int64)`) is true. `0 + 100 = 100`. Guards the compound-element facet of the function-domain
+           reflection fix: the element type came from the bottom-up `type_of` (which leaves an unannotated fn
+           element `(-> Any R)`), so two compounds whose element functions had genuinely different domains
+           reflected the SAME type and `Type.eq` returned a wrong `true`. Reflection now recurses the compound
+           and grounds each fn element from its body.")
+  (input  (do
+            (def (f x) (+ x 1))
+            (def (f2 z) (+ z 9))
+            (def (g b) (if b 0 1))
+            (def (main) (+ (if (Type.eq (Type.of (tuple f 0)) (Type.of (tuple g 0))) 1 0)
+                           (if (Type.eq (Type.of (list f)) (Type.of (list f2))) 100 0)))
+            (export main)))
+  (output (: 100 Int64)))
+
 (case "an if on Type.eq selects a branch at compile time"
   (doc    "The headline of compile-time reflection: `(if (Type.eq (Type.of 5) Int64) 100 200)` folds the
            condition to the constant `true`, so the whole `if` is `100`. A program BRANCHES on types at

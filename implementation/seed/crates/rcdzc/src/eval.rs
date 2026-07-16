@@ -2052,23 +2052,20 @@ pub fn reduce_ctor(
             if args.len() != 1 {
                 return Err("Type.of takes one value argument".to_string());
             }
-            // A FUNCTION VALUE reflects its BODY-SOLVED arrow, not the bottom-up `type_of` arrow. The
-            // `type_of` Lambda arm types each parameter from its NAME occurrence alone, so an UNANNOTATED
-            // param is `Any` — `(fn (x) (+ x 1))` reflects `(-> Any Int64)` even though the body pins `x`
-            // to `Int64`. Two such functions with genuinely different domains (`(fn (x) (+ x 1))` vs
-            // `(fn (b) (if b 0 1))`) then reflect the SAME `(-> Any Int64)` and `Type.eq` returns a wrong
-            // `true` — a reflection-soundness miscompile, and the dual (an unannotated vs an equal
-            // ANNOTATED domain reflected `false`). `solved_lambda_arrow` solves each unannotated param
-            // from the body (the same solve `lower_lambda_value` runs), grounding the domain — so
-            // reflection agrees with how the closure lowers and with an equivalent annotated signature. A
-            // still-unconstrained param stays `Any` (a genuinely polymorphic `(fn (x) x)`), which is the
-            // honest reflected domain. Falls back to the plain `type_of` when the operand is not a
-            // function (`lambda_params_and_body` → `None`).
-            let ty = match lambda_params_and_body(db, args[0]) {
-                Some((params, body)) => crate::infer::solved_lambda_arrow(db, &params, body)
-                    .unwrap_or_else(|| crate::infer::type_of(db, args[0])),
-                None => crate::infer::type_of(db, args[0]),
-            };
+            // Reflect via `infer::reflected_ty`, NOT the bottom-up `type_of`. The `type_of` Lambda arm
+            // types each parameter from its NAME occurrence alone, so an UNANNOTATED param is `Any` —
+            // `(fn (x) (+ x 1))` reflects `(-> Any Int64)` even though the body pins `x` to `Int64`. Two
+            // such functions with genuinely different domains (`(fn (x) (+ x 1))` vs `(fn (b) (if b 0 1))`)
+            // then reflect the SAME `(-> Any Int64)` and `Type.eq` returns a wrong `true` — a reflection-
+            // soundness miscompile (and the dual: an unannotated vs an equal ANNOTATED domain reflected
+            // `false`). `reflected_ty` grounds each unannotated fn param from the body (via
+            // `solved_lambda_arrow`, the same solve `lower_lambda_value` runs) — for a bare function AND
+            // for one stored inside a compound (`(tuple f 0)`, `(list f)`, a record/map field), recursing
+            // the compound element types. A genuinely-unconstrained param stays `Any` (a polymorphic
+            // `(fn (x) x)`), the honest domain. A value with no fn to ground reflects exactly as `type_of`
+            // types it. `type_of` itself is left untouched — layout/emit consume it and erase `Any` param
+            // holes rather than comparing them, so only reflection needs the grounded arrow.
+            let ty = crate::infer::reflected_ty(db, args[0]);
             trace!(target: "rcdzc::eval", ty = %ty.render_name(), "ctor (Type.of): reflected value type");
             Ok(encode_typeval(db, &ty))
         }
