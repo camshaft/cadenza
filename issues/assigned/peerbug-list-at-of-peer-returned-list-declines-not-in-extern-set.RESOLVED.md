@@ -179,3 +179,28 @@ is the only builder lacking it, and the gap is index math, not new control flow.
 + one byte oracle across 2-3 ticks; STILL not green-partial-able (a wrong shift = invalid component, no
 intermediate lands). Build smallest-first: 1 peer op → `(Tuple Int64 Int64)` result, `wasm-tools validate`
 + `run_with_peers` each step.
+
+## ✅ RESOLVED (2026-07-16, v-peer-linking) — the resource×peer-extern envelope fusion LANDED
+The fusion described above was executed exactly as planned across the PL28–PL46 increments (this queue
+file's earlier STATUS predated those landings and was stale). It is now shipped on trunk:
+- **Envelopes** (envelope.rs): `assemble_extern_runtime_resource` (envelope.rs:2305, the plain
+  Tuple/Record/List/Map/Option compound escape, `g`-generalized to MULTIPLE peer interfaces in
+  `95a82ee37`) + `assemble_extern_runtime_resource_with_scalar_methods` (envelope.rs:3095, the
+  String/Bytes methods-envelope escape, `5159df77f` — the full `(-> String String)` model-call shape).
+- **Emit routing** (mod.rs): ALL FOUR resource-escape paths now `collect_host_imports` → split
+  peer-bound ops into `extern_imports` → `layout.with_extern_order(...)` + shifted `import_base` →
+  dispatch to the fused assembler when `!extern_imports.is_empty()`: `emit_runtime_resource`
+  (mod.rs:1915), `emit_runtime_sum_resource` (mod.rs:7013), `emit_recursive_sum_resource`
+  (mod.rs:7280), and the bytes/string resource path (mod.rs:6869).
+- **Core module** (serialize.rs): `runtime_resource_core_module_form_ex2` threads `extern_fns` +
+  `leading_is_host` so the resource core imports BOTH `"peer"` and `"heap"`, layout byte-identical.
+- **Pinned tests** (all PASS on trunk `6c1e89f65`, verified this tick): the exact DECLINES shape —
+  a peer op whose compound result IS the escaping entrypoint result — is now green:
+  `a_peer_compound_result_escapes_the_entrypoint_via_the_fused_envelope` (tests.rs:71755),
+  `a_peer_option_result_escapes_...` (72190), `a_peer_list_result_escapes_...` (72260),
+  `a_peer_bytes_result_escapes_...` (72776), plus the multi-peer `a_two_peer_interface_compound_result_
+  escapes_via_the_fused_envelope` (72331) and `two_peer_interfaces_with_a_string_result_escape_via_the_
+  methods_envelope` (72417). Landed: batch 91 (#461, `d623a5bdd`) for the compound/list/option escape;
+  `5159df77f` for the String/Bytes methods envelope; `95a82ee37` for the multi-interface `g`-loop.
+No further work: the peer-returned compound re-exported as the entrypoint result crosses zero-cost and
+validates. This queue item is CLOSED.
