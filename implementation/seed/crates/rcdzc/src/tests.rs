@@ -70326,35 +70326,99 @@ mod cross_component_oracle {
     }
 
     // ------------------------------------------------------------------------------------------------
-    // PL38 — the fused resource escape's SCOPE EDGES decline cleanly (report-don't-miscompile). The fused
-    // envelope (PL35-37) supports a SINGLE peer interface and a PEER (not host) effect. The two shapes just
-    // OUTSIDE that scope must DECLINE with an actionable message, NOT emit an invalid component:
-    //   (a) a resource-escaping entrypoint reaching TWO distinct peer interfaces (the envelope images one
-    //       peer instance; a second needs the multi-`g` widening) — names the limit;
-    //   (b) a HOST-delegated effect (not peer-bound) from a resource-escaping entrypoint (host+resource is
-    //       a separate fusion) — names the workaround (consume to a scalar).
-    // These pin the emit boundary so a future widening that forgets to keep the out-of-scope case a clean
-    // decline (emitting a malformed component instead) is caught. Both are compile-time declines (no wasm).
+    // PL43 — a resource-escaping entrypoint reaching TWO DISTINCT peer interfaces now CROSSES (the multi-`g`
+    // widening of the fused envelope). main returns a tuple built from ops on TWO separate peers (an
+    // ensemble: call model A + model B, return both results) — the escaped compound is published as a
+    // resource while the component imports BOTH peer interfaces (comp instances 0, 1) AND the runtime
+    // (instance 2). Was a clean decline (PL38); now the envelope groups the peer ops by interface into g
+    // imported instances. Providers: A.pa doubles, B.pb triples; main(5) = (A.pa 5, B.pb 5) = (10, 15).
     // ------------------------------------------------------------------------------------------------
     #[test]
-    fn the_fused_resource_escape_scope_edges_decline_cleanly() {
+    fn a_two_peer_interface_compound_result_escapes_via_the_fused_envelope() {
         use crate::testkit::parse;
-        // (a) main RETURNS a tuple built from TWO distinct peers → escapes as a resource reaching 2 ifaces.
-        let two_peer = "(do \
+        let a = compile_provider(
+            "(do (def (pa (: x Int64)) (+ x x)) (export pa))",
+            "cadenza:a/api",
+        );
+        let b = compile_provider(
+            "(do (def (pb (: x Int64)) (+ (+ x x) x)) (export pb))",
+            "cadenza:b/api",
+        );
+        {
+            let mut va = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            va.validate_all(&a).expect("provider A validates");
+            let mut vb = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            vb.validate_all(&b).expect("provider B validates");
+        }
+        // main RETURNS a tuple built from ops on TWO distinct peers → escapes as a resource reaching 2 ifaces.
+        let src = "(do \
             (effect A (op pa (-> Int64 Int64))) (bind A \"cadenza:a/api\") \
             (effect B (op pb (-> Int64 Int64))) (bind B \"cadenza:b/api\") \
             (def (main (: x Int64)) (host (A B) (tuple (A.pa x) (B.pb x)))) \
             (export main))";
-        let err = crate::compile::compile_component(&crate::codec::encode(&parse(two_peer)))
-            .expect_err("a two-peer-interface resource escape must DECLINE, not miscompile");
+        let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .unwrap_or_else(|d| {
+                panic!(
+                    "two-peer-interface resource-escape consumer compiles: {} [{:?}]",
+                    d.message, d.code
+                )
+            });
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&consumer)
+                .expect("the two-peer-interface fused consumer validates");
+        }
+        let text = String::from_utf8_lossy(&consumer);
         assert!(
-            err.message.contains("TWO distinct peer interfaces")
-                && err.message.contains("single peer interface"),
-            "the two-interface decline must name the limit: {}",
-            err.message
+            text.contains("cadenza:a/api") && text.contains("cadenza:b/api"),
+            "the fused consumer imports BOTH peer interfaces"
         );
-        // (b) main RETURNS a tuple built from a HOST-delegated effect (H is NOT bound to a peer) → the
-        // host+resource fusion is separate; must decline naming the scalar-consume workaround.
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("[PL43] runtime wasm not found; skipping");
+            return;
+        };
+        let peers = vec![
+            cdz_run::Peer {
+                bytes: a,
+                interface: "cadenza:a/api".to_string(),
+            },
+            cdz_run::Peer {
+                bytes: b,
+                interface: "cadenza:b/api".to_string(),
+            },
+        ];
+        let opts = cdz_run::RunOpts {
+            export: None,
+            args: vec!["5".to_string()],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run_with_peers(&consumer, &peers, &opts)
+            .expect("a two-peer-interface compound result escapes via the fused envelope")
+        {
+            // A.pa(5)=10, B.pb(5)=15; main RETURNS (10,15) → escapes as its value form. Both peer
+            // interfaces crossed into ONE resource-escaping component.
+            cdz_run::Outcome::Value(s) => assert_eq!(
+                s, "(: (tuple 10 15) (Tuple Int64 Int64))",
+                "a compound built from TWO distinct peers escapes the entrypoint as a resource"
+            ),
+            cdz_run::Outcome::Trap(t) => {
+                panic!("two-peer-interface resource-escape run trapped: {t}")
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // PL38 — the REMAINING fused-resource scope edge declines cleanly: a HOST-delegated effect (not
+    // peer-bound) from a resource-escaping entrypoint. The host+resource fusion is separate from the
+    // peer+resource one; this shape must DECLINE with an actionable message (consume to a scalar), NOT emit
+    // an invalid component. (The two-distinct-peer-interfaces edge is no longer a decline — PL43 runs it.)
+    // ------------------------------------------------------------------------------------------------
+    #[test]
+    fn a_host_effect_from_a_resource_escaping_entrypoint_declines_cleanly() {
+        use crate::testkit::parse;
+        // main RETURNS a tuple built from a HOST-delegated effect (H is NOT bound to a peer).
         let host_res = "(do \
             (effect H (op h (-> Int64 Int64))) \
             (def (main (: x Int64)) (host (H) (tuple (H.h x) x))) \

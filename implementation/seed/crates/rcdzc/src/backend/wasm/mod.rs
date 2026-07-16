@@ -1949,17 +1949,8 @@ fn emit_runtime_resource(
              entrypoint returns",
         ));
     }
-    // A SINGLE peer interface is supported by the fused envelope. Two distinct interfaces decline.
-    let peer_ifaces: std::collections::BTreeSet<&str> = extern_imports
-        .iter()
-        .map(|e| e.interface.as_str())
-        .collect();
-    if peer_ifaces.len() > 1 {
-        return Err(Reject::decline(
-            "a resource-escaping entrypoint reaching TWO distinct peer interfaces is not yet emitted \
-             (the fused resource envelope supports a single peer interface)",
-        ));
-    }
+    // The fused envelope now supports MULTIPLE distinct peer interfaces (the component groups the peer ops
+    // by interface into g imported instances; the core module imports them all from one `"peer"` module).
     let p = extern_imports.len() as u32;
     let extern_order: Vec<(String, String)> = extern_imports
         .iter()
@@ -2023,9 +2014,13 @@ fn emit_runtime_resource(
             &make_params.boundary_slots(),
         ));
     }
-    // The FUSED resource-escape × peer-extern envelope (task #6): the component imports the peer interface
-    // AND publishes the resource. Single interface (checked above).
-    let peer_iface = extern_imports[0].interface.clone();
+    // The FUSED resource-escape × peer-extern envelope (task #6): the component imports the peer
+    // interface(s) AND publishes the resource. `op_ifaces` runs parallel to `peer_fns` so the envelope
+    // groups ops by their (possibly multiple) interfaces.
+    let op_ifaces: Vec<&str> = extern_imports
+        .iter()
+        .map(|e| e.interface.as_str())
+        .collect();
     let peer_fns: Vec<envelope::HostFn> = extern_imports
         .iter()
         .map(|e| envelope::HostFn {
@@ -2040,7 +2035,7 @@ fn emit_runtime_resource(
         &imports,
         &import_name,
         &peer_fns,
-        &peer_iface,
+        &op_ifaces,
         &make_params.boundary_slots(),
     ))
 }
@@ -6756,16 +6751,7 @@ fn emit_runtime_bytes_resource(
              entrypoint returns",
         ));
     }
-    let peer_ifaces: std::collections::BTreeSet<&str> = extern_imports
-        .iter()
-        .map(|e| e.interface.as_str())
-        .collect();
-    if peer_ifaces.len() > 1 {
-        return Err(Reject::decline(
-            "a resource-escaping entrypoint reaching TWO distinct peer interfaces is not yet emitted \
-             (the fused resource envelope supports a single peer interface)",
-        ));
-    }
+    // The fused envelope supports MULTIPLE distinct peer interfaces (grouped into g imported instances).
     let p = extern_imports.len() as u32;
     let extern_order: Vec<(String, String)> = extern_imports
         .iter()
@@ -6852,8 +6838,11 @@ fn emit_runtime_bytes_resource(
         ));
     }
     // The FUSED with-methods envelope: a peer op is reached in a body whose STRING/Bytes result escapes
-    // (the full `(-> String String)` model call). Single peer interface (checked above).
-    let peer_iface = extern_imports[0].interface.clone();
+    // (the full `(-> String String)` model call). Supports multiple peer interfaces (grouped by op_ifaces).
+    let op_ifaces: Vec<&str> = extern_imports
+        .iter()
+        .map(|e| e.interface.as_str())
+        .collect();
     let peer_fns: Vec<envelope::HostFn> = extern_imports
         .iter()
         .map(|e| envelope::HostFn {
@@ -6869,7 +6858,7 @@ fn emit_runtime_bytes_resource(
             &imports,
             &import_name,
             &peer_fns,
-            &peer_iface,
+            &op_ifaces,
             &make_param_bytes,
             &scalar_methods,
         ),
@@ -6961,16 +6950,7 @@ fn emit_runtime_sum_resource(
              entrypoint returns",
         ));
     }
-    let peer_ifaces: std::collections::BTreeSet<&str> = extern_imports
-        .iter()
-        .map(|e| e.interface.as_str())
-        .collect();
-    if peer_ifaces.len() > 1 {
-        return Err(Reject::decline(
-            "a resource-escaping entrypoint reaching TWO distinct peer interfaces is not yet emitted \
-             (the fused resource envelope supports a single peer interface)",
-        ));
-    }
+    // The fused envelope supports MULTIPLE distinct peer interfaces (grouped into g imported instances).
     let p = extern_imports.len() as u32;
     let extern_order: Vec<(String, String)> = extern_imports
         .iter()
@@ -7034,7 +7014,10 @@ fn emit_runtime_sum_resource(
             &make_slots,
         ));
     }
-    let peer_iface = extern_imports[0].interface.clone();
+    let op_ifaces: Vec<&str> = extern_imports
+        .iter()
+        .map(|e| e.interface.as_str())
+        .collect();
     let peer_fns: Vec<envelope::HostFn> = extern_imports
         .iter()
         .map(|e| envelope::HostFn {
@@ -7049,7 +7032,7 @@ fn emit_runtime_sum_resource(
         &imports,
         &import_name,
         &peer_fns,
-        &peer_iface,
+        &op_ifaces,
         &make_slots,
     ))
 }
@@ -7136,16 +7119,7 @@ fn emit_recursive_sum_resource(
              entrypoint returns",
         ));
     }
-    let peer_ifaces: std::collections::BTreeSet<&str> = extern_imports
-        .iter()
-        .map(|e| e.interface.as_str())
-        .collect();
-    if peer_ifaces.len() > 1 {
-        return Err(Reject::decline(
-            "a resource-escaping entrypoint reaching TWO distinct peer interfaces is not yet emitted \
-             (the fused resource envelope supports a single peer interface)",
-        ));
-    }
+    // The fused envelope supports MULTIPLE distinct peer interfaces (grouped into g imported instances).
     let p = extern_imports.len() as u32;
     let extern_order: Vec<(String, String)> = extern_imports
         .iter()
@@ -7194,7 +7168,10 @@ fn emit_recursive_sum_resource(
             &make_params.boundary_slots(),
         ));
     }
-    let peer_iface = extern_imports[0].interface.clone();
+    let op_ifaces: Vec<&str> = extern_imports
+        .iter()
+        .map(|e| e.interface.as_str())
+        .collect();
     let peer_fns: Vec<envelope::HostFn> = extern_imports
         .iter()
         .map(|e| envelope::HostFn {
@@ -7209,7 +7186,7 @@ fn emit_recursive_sum_resource(
         &imports,
         &import_name,
         &peer_fns,
-        &peer_iface,
+        &op_ifaces,
         &make_params.boundary_slots(),
     ))
 }
