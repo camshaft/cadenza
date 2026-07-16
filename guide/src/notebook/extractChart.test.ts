@@ -80,3 +80,33 @@ test("ragged multi-y tuples use the shared (minimum) y-column count", () => {
   assert.equal(r.series.length, 1);
   assert.deepEqual(r.series[0].points, [{ x: 1, y: 10 }, { x: 2, y: 20 }]);
 });
+
+test("a List of records → x = first field, y-series = subsequent numeric fields (named)", () => {
+  const r = extractChart("(: (list (record (year 1) (bal 10)) (record (year 2) (bal 20))) T)");
+  assert.ok(r.ok);
+  assert.equal(r.series.length, 1);
+  assert.equal(r.series[0].name, ""); // single y-series is unnamed
+  assert.deepEqual(r.series[0].points, [{ x: 1, y: 10 }, { x: 2, y: 20 }]);
+});
+
+test("a record list with two numeric y fields → two named series sharing x", () => {
+  const r = extractChart("(: (list (record (x 1) (a 10) (b 100)) (record (x 2) (a 20) (b 200))) T)");
+  assert.ok(r.ok);
+  assert.deepEqual(r.series.map((s) => s.name), ["a", "b"]);
+  assert.deepEqual(r.series[0].points, [{ x: 1, y: 10 }, { x: 2, y: 20 }]);
+  assert.deepEqual(r.series[1].points, [{ x: 1, y: 100 }, { x: 2, y: 200 }]);
+});
+
+test("a record list with a non-numeric first field → category label, x = row index", () => {
+  const r = extractChart('(: (list (record (month "jan") (n 10)) (record (month "feb") (n 20))) T)');
+  assert.ok(r.ok);
+  assert.deepEqual(r.series[0].points, [
+    { x: 0, y: 10, label: "jan" },
+    { x: 1, y: 20, label: "feb" },
+  ]);
+});
+
+test("a record with only one field (no y) → typed fallback", () => {
+  const r = extractChart("(: (list (record (x 1)) (record (x 2))) T)");
+  assert.equal(r.ok, false);
+});

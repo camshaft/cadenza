@@ -4550,11 +4550,14 @@ fn refutable_ctor_element_head(db: &mut Db, elem_pat: StructId) -> Option<Struct
 }
 
 /// Whether a constructor-payload sub-pattern `arg` is IRREFUTABLE (always matches its sub-value): a bare
-/// binder / `_`, or a tuple/record whose parts are irrefutable. A literal (`Int`/`Bool`/`Str`/`Float`/
-/// `Bytes`/`Sym`/`Char`) or a nested constructor pattern is REFUTABLE. Used to decide whether a
-/// single-variant ctor list-element needs the refutable-ctor desugar (a refutable payload makes the
-/// otherwise-irrefutable newtype element refutable). A bare name in payload position resolves INERT in a
-/// pattern (a fresh binder), so `as_name` detects it structurally without consulting resolve.
+/// binder / `_`, or a tuple whose parts are irrefutable. A literal (`Int`/`Bool`/`Str`/`Float`/`Bytes`/
+/// `Sym`/`Char`) or a nested constructor pattern is REFUTABLE. (Only `tuple` is special-cased below —
+/// there is no record PATTERN form: a product is a single-variant sum matched as a `(tuple …)` payload, so
+/// a "record" arm would be dead. If a first-class record pattern is ever added, extend the recursion here.)
+/// Used to decide whether a single-variant ctor list-element needs the refutable-ctor desugar (a refutable
+/// payload makes the otherwise-irrefutable newtype element refutable). A bare name in payload position
+/// resolves INERT in a pattern (a fresh binder), so `as_name` detects it structurally without consulting
+/// resolve.
 fn ctor_payload_arg_is_irrefutable(db: &mut Db, arg: StructId) -> bool {
     // A bare name (`x`) or `_` is the trivial irrefutable payload binder.
     if db.ast.as_name(arg).is_some() {

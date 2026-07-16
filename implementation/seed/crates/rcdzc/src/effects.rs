@@ -4915,8 +4915,15 @@ fn captured_enclosing_params(
 ) -> Vec<(String, crate::ty::Ty)> {
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut out: Vec<(String, crate::ty::Ty)> = Vec::new();
-    let arm_bodies: Vec<StructId> = ctx.arms.values().map(|a| a.body).collect();
-    for body in arm_bodies {
+    // DETERMINISM: `ctx.arms` is a HashMap, whose `.values()` iteration order is nondeterministic. The
+    // first-seen capture order decides the synthesized spec signature's extra-param order AND the
+    // `effect_spec_captures` arg order — so an unstable walk order would produce a run-to-run-varying
+    // signature / arg order → non-reproducible wasm (violates the frozen-hash discipline). Walk the arm
+    // bodies in a STABLE order, sorted by each arm's `(decl, op-index)` key. (Copilot PR #504.)
+    let mut arm_bodies: Vec<((u32, u32), StructId)> =
+        ctx.arms.iter().map(|(&k, a)| (k, a.body)).collect();
+    arm_bodies.sort_by_key(|&(k, _)| k);
+    for (_, body) in arm_bodies {
         collect_captures(db, body, own_binders, &mut seen, &mut out);
     }
     out

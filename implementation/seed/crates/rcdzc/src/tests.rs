@@ -24370,6 +24370,67 @@ mod match_engine {
     }
 
     #[test]
+    fn a_malformed_unit_composition_operand_is_named_not_silently_shipped() {
+        // The M235 check-miss: a `Unit.*`/`Unit./`/`Unit.^` composition with a MALFORMED operand — a
+        // non-unit factor (`(Unit.* (Unit.base #"m") 5)`) or a non-integer exponent (`(Unit.^ u 2.5)`) —
+        // made `eval::unit_of` return None. `Qty.of`'s not-a-unit check SKIPPED it (the arg IS a unit-builder
+        // form, so the check deferred to the builder's own validation), but the builder had NONE: it silently
+        // reduced to `Any`, `cdz check` passed (exit 0), and `cdz compile` leaked "function return type has no
+        // machine representation". Now the composition is walked to NAME the offending operand (CDZ0201).
+        let msg = |src: &str, needle: &str| -> bool {
+            crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .any(|d| d.message.contains(needle))
+        };
+        // A non-unit FACTOR in a product / quotient is named (with its type).
+        assert!(
+            msg(
+                "(module m (def (main) (Qty.value (Qty.of 1.0 (Unit.* (Unit.base #\"m\") 5)))) (export main))",
+                "`Unit.*` composes two UNITS, but this operand is not a unit",
+            ),
+            "a non-unit factor in Unit.* is named"
+        );
+        assert!(
+            msg(
+                "(module m (def (main) (Qty.value (Qty.of 1.0 (Unit./ (Unit.base #\"m\") 5)))) (export main))",
+                "`Unit./` composes two UNITS, but this operand is not a unit",
+            ),
+            "a non-unit factor in Unit./ is named"
+        );
+        // A non-INTEGER exponent in a power is named.
+        assert!(
+            msg(
+                "(module m (def (main) (Qty.value (Qty.of 1.0 (Unit.^ (Unit.base #\"m\") 2.5)))) (export main))",
+                "`Unit.^`'s exponent must be a compile-time integer",
+            ),
+            "a non-integer Unit.^ exponent is named"
+        );
+        // A non-unit BASE in a power is named.
+        assert!(
+            msg(
+                "(module m (def (main) (Qty.value (Qty.of 1.0 (Unit.^ 5 2)))) (export main))",
+                "`Unit.^` raises a UNIT to a power, but this base is not a unit",
+            ),
+            "a non-unit Unit.^ base is named"
+        );
+        // NO false positive: VALID compositions (a product of two units, a power with an integer exponent,
+        // a nested composition) are unaffected — no not-a-unit / not-an-integer message.
+        for ok in [
+            "(module m (def (main) (Qty.value (Qty.of 1.0 (Unit.* (Unit.base #\"m\") (Unit.base #\"s\"))))) (export main))",
+            "(module m (def (main) (Qty.value (Qty.of 1.0 (Unit.^ (Unit.base #\"m\") 2)))) (export main))",
+            "(module m (def (main) (Qty.value (Qty.of 1.0 (Unit./ (Unit.^ (Unit.base #\"m\") 2) (Unit.base #\"s\"))))) (export main))",
+        ] {
+            let ds = crate::diagnostics(&mut crate::db::Db::load(parse(ok)));
+            assert!(
+                !ds.iter().any(|d| d.message.contains("is not a unit")
+                    || d.message.contains("must be a compile-time integer")),
+                "a valid unit composition is not flagged: {ok} — {:?}",
+                ds.iter().map(|d| &d.message).collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
     fn a_non_string_trap_message_names_the_string_requirement_not_a_phantom_clash() {
         use crate::testkit::parse;
         // `trap : ∀a. String → a` — its message MUST be a String. A non-String message (`(trap 5)`,

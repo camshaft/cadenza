@@ -7126,6 +7126,93 @@ fn is_unit_builder_form(db: &mut Db, id: crate::ast::StructId) -> bool {
     )
 }
 
+/// A `Unit.*`/`Unit./`/`Unit.^` composition whose `eval::unit_of` returned `None` has a MALFORMED OPERAND —
+/// a non-unit factor (`(Unit.* (Unit.base #"m") 5)`) or a non-integer exponent (`(Unit.^ u 2.5)`). Walk the
+/// composition to NAME the offending operand (CDZ0201). Without this, `Qty.of`'s not-a-unit check SKIPS a
+/// unit-builder-headed arg (deferring to the builder's own validation — see `is_unit_builder_form`), but the
+/// builder had NONE: the composition silently reduced to `Any`, `cdz check` passed, and `cdz compile` leaked
+/// "function return type has no machine representation" — a check-miss + poor-compile-message gap. Handles the
+/// EXPLICIT builder members (`UnitMul`/`UnitDiv`/`UnitPow`); recurses into nested compositions. Returns true
+/// if it pushed a fault (the first bad operand only — one actionable message, not a cascade).
+fn check_unit_composition(db: &mut Db, id: crate::ast::StructId, out: &mut Vec<Reject>) -> bool {
+    use crate::resolved::Prim;
+    let Resolved::Apply { head, args } = resolved_of(db, id) else {
+        return false;
+    };
+    let Some(prim) = crate::eval::meta_apply_of(db, head) else {
+        return false;
+    };
+    match prim {
+        // A PRODUCT / QUOTIENT composes two UNITS — each operand must reduce to a unit.
+        Prim::UnitMul | Prim::UnitDiv if args.len() == 2 => {
+            let op = if prim == Prim::UnitDiv {
+                "Unit./"
+            } else {
+                "Unit.*"
+            };
+            for &operand in args.iter() {
+                if crate::eval::unit_of(db, operand).is_some() {
+                    continue; // a valid unit factor
+                }
+                // Not a unit. If it is itself a composition, recurse to the DEEPER bad operand; otherwise
+                // THIS operand is the fault (a literal, a plain value where a unit was expected).
+                if !check_unit_composition(db, operand, out) {
+                    let t = type_of(db, operand);
+                    out.push(
+                        Reject::coded(
+                            Code::Malformed,
+                            format!(
+                                "`{op}` composes two UNITS, but this operand is not a unit — write a \
+                                 unit expression (e.g. `(Unit.base #\"meter\")`), not a {} value",
+                                t.render_name()
+                            ),
+                        )
+                        .at(operand),
+                    );
+                }
+                return true; // report the first bad operand only
+            }
+            false
+        }
+        // A POWER raises a UNIT to a compile-time INTEGER — the base must be a unit, the exponent an integer.
+        Prim::UnitPow if args.len() == 2 => {
+            let base = args[0];
+            if crate::eval::unit_of(db, base).is_none() && !check_unit_composition(db, base, out) {
+                let t = type_of(db, base);
+                out.push(
+                    Reject::coded(
+                        Code::Malformed,
+                        format!(
+                            "`Unit.^` raises a UNIT to a power, but this base is not a unit — write a \
+                             unit expression (e.g. `(Unit.base #\"meter\")`), not a {} value",
+                            t.render_name()
+                        ),
+                    )
+                    .at(base),
+                );
+                return true;
+            }
+            if !matches!(resolved_of(db, args[1]), Resolved::Int(_)) {
+                let t = type_of(db, args[1]);
+                out.push(
+                    Reject::coded(
+                        Code::Malformed,
+                        format!(
+                            "`Unit.^`'s exponent must be a compile-time integer (e.g. `2` for a square), \
+                             but this is a {} value",
+                            t.render_name()
+                        ),
+                    )
+                    .at(args[1]),
+                );
+                return true;
+            }
+            false
+        }
+        _ => false,
+    }
+}
+
 /// The SURFACE spelling of a simple leaf `Atom` — a name or an integer literal — for splicing into a
 /// fix replacement (`(: <value> <Type>)`). Returns `None` for a compound node or any other leaf
 /// (a float, whose faithful re-spelling needs `Decimal` reconstruction; a string/char, which needs
@@ -7393,22 +7480,32 @@ fn check_application(
     if crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::QtyOf)
         && args.len() == 2
         && crate::eval::unit_of(db, args[1]).is_none()
-        && !is_unit_builder_form(db, args[1])
     {
         let before = out.len();
-        collect(db, args[1], out);
-        // Only add the not-a-unit reject if the unit arg is otherwise fault-free (else its own error is
-        // the primary one).
-        if out.len() == before {
-            out.push(
-                Reject::coded(
-                    Code::Malformed,
-                    "`Qty.of`'s second argument must be a UNIT expression, but this value is not one — \
-                     write a unit, e.g. `(Unit.base #\"meter\")` for a base unit, `Unit.one` for the \
-                     dimensionless unit, or a `Unit.*`/`Unit./`/`Unit.^` composition",
-                )
-                .at(args[1]),
-            );
+        if is_unit_builder_form(db, args[1]) {
+            // The unit arg IS a `Unit.*`/`Unit./`/`Unit.^` (or `Unit.of`) builder form, yet `unit_of`
+            // declined — so a builder OPERAND is malformed (a non-unit factor, a non-int exponent) OR the
+            // `Unit.of` names an unknown unit (handled by `check_unknown_units` with a did-you-mean, so we
+            // leave THAT be — `check_unit_composition` only fires on the arithmetic composers). Name the bad
+            // operand rather than skipping the whole form (the M235 check-miss: a malformed composition
+            // slipped by `check` and leaked "no machine representation" at compile).
+            check_unit_composition(db, args[1], out);
+        } else {
+            // Not a unit-builder form at all — a plain literal `(Qty.of 5 5)`, a string `(Qty.of 5 "m")`, a
+            // tuple. Descend for the arg's own faults, then add the not-a-unit reject if it is otherwise
+            // fault-free (else its own error is the primary one).
+            collect(db, args[1], out);
+            if out.len() == before {
+                out.push(
+                    Reject::coded(
+                        Code::Malformed,
+                        "`Qty.of`'s second argument must be a UNIT expression, but this value is not one — \
+                         write a unit, e.g. `(Unit.base #\"meter\")` for a base unit, `Unit.one` for the \
+                         dimensionless unit, or a `Unit.*`/`Unit./`/`Unit.^` composition",
+                    )
+                    .at(args[1]),
+                );
+            }
         }
         // Descend into the VALUE arg for its own faults; the unit arg was handled above. Return so the
         // generic scheme-unify does not also fault (`Qty.of`'s unit is not an HM-typed argument).

@@ -1240,6 +1240,7 @@ pass	a recursive sum built then folded by a NESTED recursive call composes on ev
 pass	a recursive sum consumer whose arguments are recursive sum producers compiles
 pass	a recursive sum recurses THROUGH a record-typed payload
 pass	a recursive sum type works with pattern matching
+pass	a recursive tag builds a compound Ast.List at compile-time fold
 pass	a recursive tag function const-folds to a compile-time Ast
 pass	a recursive unifier distinguishes arrow components through the payload slots
 pass	a recursive user sum type is built at run time and renders its variant names
@@ -1348,6 +1349,7 @@ pass	a runtime float absent from a Set is not found
 pass	a runtime float addition emits the machine add
 pass	a runtime float addition with nan propagates the nan
 pass	a runtime float divide by zero yields a non-trapping infinity
+pass	a runtime float divided by ITSELF is not folded to 1.0 — 0.0/0.0 is nan, no trap
 pass	a runtime float division rounds under the fixed mode
 pass	a runtime float equality feeds the true-literal boolean coercion
 pass	a runtime float equality negated by the false-literal coercion

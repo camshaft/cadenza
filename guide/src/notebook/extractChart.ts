@@ -71,9 +71,14 @@ export function extractChart(rendered: string): ChartResult {
     };
   }
 
+  // A list of records → each record is a point: the FIRST field is x (numeric, else a category label with
+  // x = row index), and each subsequent numeric field is a y-series named by its field. Mirrors the tuple
+  // path with named columns, and matches how the table renderer accepts record-lists.
+  if (elems.every((e) => head(e) === "record")) return recordSeries(elems);
+
   // Otherwise every element must be a tuple with ≥2 fields.
   if (!elems.every((e) => head(e) === "tuple")) {
-    return { ok: false, reason: "chart rows must be all numbers or all `tuple` points" };
+    return { ok: false, reason: "chart rows must be all numbers, all `tuple` points, or all `record` points" };
   }
   const tuples = elems.map((e) => (e as { list: Node[] }).list.slice(1));
   const yCount = Math.min(...tuples.map((t) => t.length)) - 1; // shared y-columns (x is field 0)
@@ -96,6 +101,41 @@ export function extractChart(rendered: string): ChartResult {
       if (yNum === null) continue; // skip a non-numeric y cell rather than aborting the whole chart
       series[s].points.push(label !== undefined ? { x, y: yNum, label } : { x, y: yNum });
     }
+  });
+
+  return { ok: true, series };
+}
+
+/// A `(name value)` field of a record; returns [name, valueNode] or null if malformed.
+function recordField(f: Node): [string, Node] | null {
+  if (isList(f) && f.list.length === 2 && isAtom(f.list[0])) return [f.list[0].atom, f.list[1]];
+  return null;
+}
+
+/// Shape a list of `(record (f v) …)` rows into series: the FIRST field is x (numeric, else a category
+/// label with x = the row index); each SUBSEQUENT numeric field is a y-series named by its field name.
+/// The y-series set is taken from the first row (`(record (year 1) (bal 10))` → x=year, series "bal").
+function recordSeries(elems: Node[]): ChartResult {
+  const firstFields = (elems[0] as { list: Node[] }).list.slice(1).map(recordField);
+  if (firstFields.some((f) => f === null) || firstFields.length < 2) {
+    return { ok: false, reason: "each `record` point needs a first (x) field and at least one numeric y field" };
+  }
+  const yNames = firstFields.slice(1).map((f) => f![0]); // series names = the non-x field names
+  const series: Series[] = yNames.map((name) => ({ name: yNames.length === 1 ? "" : name, points: [] as Point[] }));
+
+  elems.forEach((e, i) => {
+    const fields = (e as { list: Node[] }).list.slice(1).map(recordField).filter((f): f is [string, Node] => f !== null);
+    const byName = new Map(fields);
+    const xNode = fields[0]?.[1];
+    const xNum = xNode ? asNumber(xNode) : null;
+    const x = xNum ?? i;
+    const label = xNum === null && xNode && isAtom(xNode) ? unquoteAtom(xNode.atom) : undefined;
+    yNames.forEach((name, s) => {
+      const v = byName.get(name);
+      const yNum = v ? asNumber(v) : null;
+      if (yNum === null) return; // skip a missing/non-numeric y in this row
+      series[s].points.push(label !== undefined ? { x, y: yNum, label } : { x, y: yNum });
+    });
   });
 
   return { ok: true, series };

@@ -1062,6 +1062,26 @@
   (call   main (: 5.0 Float64))
   (output (: 1 Int64)))
 
+(case "a runtime float divided by ITSELF is not folded to 1.0 — 0.0/0.0 is nan, no trap"
+  (doc    "`(/ x x)` = 1 holds for a nonzero INTEGER (and the integer `x/x` still TRAPS at x=0, self-operand
+           cluster below). For FLOAT it does NOT fold to 1.0: `0.0 / 0.0` = nan (IEEE — a float divide by
+           zero does NOT trap, it yields inf or nan, per the divide-by-zero case above), and `nan / nan` =
+           nan. So a Core pass applying an `x / x → 1` identity to a float divide would MISCOMPILE the zero
+           (and NaN) case — and, unlike the integer `x/x`, there is NO trap to preserve; the wrong value is
+           silently nan. `dv x = (/ x x)`, and `run` observes `(= (dv x) 1.0)`: a finite-nonzero x (1.5, via
+           `(if (> c 0) 1.5 …)`) → 1.0 → 1; a ZERO x (0.0) → 0.0/0.0 = nan, and `nan ≠ 1.0` → 0. Pins that
+           float `x / x` is NOT the `=1` identity — the float divide is not folded away — both backends. The
+           division companion of the float `x - x` non-identity above; distinct from the integer self-divide
+           (which traps at 0) and from `x - x` (which is 0 for finite).")
+  (input  (do
+            (def (dv (: x Float64)) (/ x x))
+            (def (run (: c Int64)) (let ((x (if (> c 0) 1.5 0.0))) (if (= (dv x) 1.0) 1 0)))
+            (export run)))
+  (call   run (: 5 Int64))
+  (output (: 1 Int64))
+  (call   run (: -5 Int64))
+  (output (: 0 Int64)))
+
 (case "a runtime integer converts to a float with the machine convert"
   (doc    "`(Float64.of-int n)` over a runtime Int64 `n` emits `f64.convert_i64_s`; `(of-int 42)` = 42.0.
            The explicit int→float conversion (numeric-model.md #A Conversion Involving A Floating-Point
