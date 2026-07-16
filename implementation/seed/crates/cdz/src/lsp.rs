@@ -2479,6 +2479,23 @@ mod tests {
     }
 
     #[test]
+    fn sexpr_references_finds_every_use_across_multiple_forms() {
+        // References on the s-expr surface (multi-form → the `read_all_spanned` fallback + canon remap):
+        // `helper` is defined on line 0 and used on lines 1 and 2. References from a use finds BOTH uses.
+        // This shares the node-id/canonicalization concern the s-expr canon fix addressed — pin it so a
+        // regression that mis-anchors the `UsesOf` answers to neighbour nodes is caught.
+        let text = "(def (helper x) (+ x 1))\n(def a (helper 1))\n(def b (helper 2))";
+        // The `helper` use in `a` (line 1, col 8: "(def a (" = 8 chars before `helper`).
+        let refs = references_at(text, false, Position::new(1, 8), &test_uri(), false);
+        assert_eq!(refs.len(), 2, "two uses expected, got {refs:?}");
+        let lines: Vec<u32> = refs.iter().map(|l| l.range.start.line).collect();
+        assert!(
+            lines.contains(&1) && lines.contains(&2),
+            "both use sites (lines 1 and 2) expected, got {lines:?}"
+        );
+    }
+
+    #[test]
     fn references_finds_every_use_of_the_name_under_the_cursor() {
         // `helper` is used twice (lines 1 and 2). References from any occurrence finds both uses;
         // excluding the declaration by default (UsesOf excludes the defining occurrence).
