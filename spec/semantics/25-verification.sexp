@@ -22,12 +22,11 @@
 ; visibility gate as hand-written code, so it is CDZ0214 exactly as a direct reference is. Cases 5–6 pin
 ; it (construct + match), so this trust-critical fix can never silently regress.
 ;
-; NOTE (tracked, not pinned here): a SINGLE-VARIANT abstract sum's MATCH outside its module currently
-; rejects CDZ0203 rather than the withheld-constructor CDZ0214 (construction is always CDZ0214, and a
-; MULTI-variant match is too — cases 4 + 6). Sound either way (the match IS rejected, opacity holds),
-; but the diagnostic code is wrong per spec. Filed as queue/adv-single-variant-abstract-match-wrong-
-; diag-cdz0203-not-cdz0214.sexp; this file pins the multi-variant match (correct CDZ0214) and will gain
-; the single-variant match pin once that fix lands.
+; NOTE (CLOSED): a SINGLE-VARIANT abstract sum's MATCH outside its module once rejected CDZ0203 rather
+; than the withheld-constructor CDZ0214 (construction was always CDZ0214, and a MULTI-variant match too —
+; cases 4 + 6). Sound either way (the match was rejected, opacity held), but the diagnostic code was wrong
+; per spec. v-patterns fixed it; a single-variant match now rejects CDZ0214 like everything else. Both
+; halves are pinned here now: multi-variant match (cases 4 + 6) and single-variant match (Increment 13).
 ; ============================================================================================
 
 (case "an abstract theorem type cannot be forged by constructing its rule constructor outside the kernel"
@@ -94,9 +93,8 @@
            handle `Proof` + the rule `ax` but not `Proof`'s constructors, so `(match (ax 3) ((Proof.Axiom n)
            …) ((Proof.Step m) …))` in the importer is a withheld-constructor rejection — the importer can
            neither build nor take apart a proof, only pass it and feed it to exported functions. Pins the
-           match half of the boundary for a MULTI-variant abstract type. (A single-variant match currently
-           rejects CDZ0203 rather than CDZ0214 — a tracked diagnostic gap, see the header note; that pin is
-           added when the fix lands.)")
+           match half of the boundary for a MULTI-variant abstract type. (The single-variant match is pinned
+           separately at Increment 13 — it now also rejects CDZ0214, the once-tracked diagnostic gap is closed.)")
   (module "hol"
     (do
       (type Proof (Axiom Int64) (Step Int64))
@@ -135,7 +133,7 @@
            reconstruct a match on `Proof`'s withheld constructors; it is rejected CDZ0214, exactly as a
            hand-written match is (case 4). Pins that eval cannot read the private payload out of a proof —
            for a kernel, that a theorem's sequent cannot be extracted through reflection. (Multi-variant
-           proof type — the single-variant match diagnostic gap is tracked separately, see the header.)")
+           proof type — the single-variant match is pinned at Increment 13; its diagnostic gap is closed.)")
   (module "hol"
     (do
       (type Proof (Axiom Int64) (Step Int64))
