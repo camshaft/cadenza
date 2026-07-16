@@ -2342,6 +2342,7 @@ pass	float <= is NOT (< or =): they diverge on NaN because canonical-byte equali
 pass	float >= is NOT (> or =): the same NaN divergence mirrors on the greater-or-equal side
 pass	float division rounds under the fixed mode
 pass	float division that does not divide evenly rounds to nearest
+pass	float double negation round-trips signed zero — -(-0.0) is +0.0, not -0.0
 pass	float multiplication uses the arithmetic operator
 pass	float subtraction uses the arithmetic operator
 pass	floating-point uses the fixed rounding mode
