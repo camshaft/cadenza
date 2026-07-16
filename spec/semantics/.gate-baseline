@@ -406,6 +406,7 @@ pass	a built-in Ast.Str constructor applied to a wrong-type payload is a type er
 pass	a built-in Option is unwrapped by a helper that binds its payload
 pass	a built-in Option tuple payload consumed INLINE in the Some arm projects
 pass	a built-in Result whose two type arguments DIFFER is matched on both variants
+pass	a built-in comparison on an abstract theorem value outside the kernel is rejected
 pass	a built-in comparison on an abstract type's value is rejected outside its module
 pass	a byte of a runtime string's encoding is its exact UTF-8 value, not merely the right count
 pass	a byte sequence carrying a runtime byte value is a first-class value
@@ -1045,6 +1046,7 @@ pass	a multi-payload variant whose spread element is itself a compound escapes c
 pass	a multi-payload variant with MIXED-width, MIXED-type payloads deconstructs each field
 pass	a multi-payload variant with a scalar AND two recursive payloads escapes flat
 pass	a multi-segment bin concatenates mixed-width signed and unsigned segments in order
+pass	a multi-variant abstract proof type's constructor match outside the kernel is a withheld-constructor rejection
 pass	a multi-variant constructor nested in a tuple let-binder is refutable and rejected
 pass	a multi-variant-sum binding pattern is refutable and rejected
 pass	a multi-way string-head dispatch resolves an operator name to its operation
@@ -1326,6 +1328,7 @@ pass	a rational operation does not silently promote an integer operand
 pass	a rational with numerator and denominator both negative normalizes to positive
 pass	a rational's sign is normalized onto the numerator
 pass	a rational-magnitude quantity erases to its exact rational value
+pass	a re-declared same-name theorem type in another module is a distinct type a kernel value does not satisfy
 pass	a reader literal carries a qualified name with a dot
 pass	a recognized pragma with a malformed argument list is rejected
 pass	a recognized string escape denotes its one scalar value
@@ -1984,6 +1987,8 @@ pass	an absorbed conjunction composes as a live disjunction's operand
 pass	an absorbing and-false discards a trap-free left operand's value
 pass	an absorbing and-false keeps its trapping left operand
 pass	an absorbing or-true keeps an effectful left operand's perform
+pass	an abstract theorem is obtained only through the kernel's exported inference rule and accessor
+pass	an abstract theorem type cannot be forged by constructing its rule constructor outside the kernel
 pass	an abstract type is used through the module's exported constructor and accessor
 pass	an abstract type's constructor is not reachable outside its module
 pass	an absurd runtime width is rejected, not silently ignored
@@ -2453,7 +2458,9 @@ pass	eval of a quoted conditional takes the branch its boolean literal selects
 pass	eval of a quoted float executes it to the float value
 pass	eval of a quoted float feeds ordinary float arithmetic
 pass	eval of a quoted private constructor is withheld exactly as a direct reference — no forge
+pass	eval of a quoted proof-variant match cannot destructure an abstract proof outside the kernel
 pass	eval of a quoted string executes it to the string value
+pass	eval of a quoted theorem constructor cannot forge an abstract theorem outside the kernel
 pass	eval of a template splicing a runtime VALUE folds — the working side of the boundary
 pass	eval of an exported smart constructor still works — the forge fix does not over-reject
 pass	eval on malformed AST traps
