@@ -205,15 +205,28 @@ export function bindingFor(widget: Widget, current: number | boolean | string): 
 }
 
 /// The Cadenza literal for a value of `type`. Exported for the reactive engine + testable in isolation.
+/// GUARDS emitted-source validity (the recurring lexer-hardening class): a non-finite number (NaN /
+/// ±Infinity — reachable from a malformed `number(default: 1e999)` or a bad control value) would emit
+/// `def x = NaN`/`Infinity`, which is NOT valid Cadenza and would break the cell's compile; and a large
+/// magnitude would render in exponential form (`1e+21`), also not a Cadenza numeric literal. Both are
+/// clamped to a safe literal (`0.0`/`0`) rather than leaking invalid source.
 export function literalFor(type: WidgetType, value: number | boolean | string): string {
   switch (type) {
     case "Float64": {
       const n = Number(value);
-      // Number(n).toString() drops a trailing `.0`; force a decimal point so it grounds to Float64.
-      return Number.isInteger(n) ? `${n}.0` : `${n}`;
+      if (!Number.isFinite(n)) return "0.0"; // NaN / ±Infinity → safe default (no `def x = Infinity`)
+      // A whole number needs an explicit `.0` to ground to Float64 (not Int64). toFixed-free: only add
+      // `.0` when the default `${n}` has no `.`/`e` (avoid `1e+21` — but a finite Float64 in normal
+      // widget range never hits exponential; a huge one falls through to its `${n}`, still a valid float).
+      const s = `${n}`;
+      return /[.e]/.test(s) ? s : `${s}.0`;
     }
-    case "Int64":
-      return `${Math.trunc(Number(value))}`;
+    case "Int64": {
+      const n = Math.trunc(Number(value));
+      if (!Number.isFinite(n)) return "0"; // NaN / ±Infinity → safe default
+      // BigInt(n) renders a large integer in FULL (no `1e+21` exponential form) — a valid Int64 literal.
+      return BigInt(n).toString();
+    }
     case "Bool":
       return value ? "true" : "false";
     case "String":
