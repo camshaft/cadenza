@@ -752,6 +752,7 @@ pass	a dotted nullary arm whose body nests a same-type sum match dispatches corr
 pass	a double same-dimension annotation preserves the original scale
 pass	a double-negated condition unwinds to the original selection
 pass	a double-negated float compare unwinds to the compare, preserving NaN-false
+pass	a double-nominal narrow newtype (newtype of a newtype of UInt8) boxed in a list refines by value
 pass	a doubly-call-returned narrow newtype spills correctly through two calls
 pass	a doubly-nested strength-reduced multiply chains shift into shift
 pass	a doubly-nested tuple map key containing a rope is found by its flat twin
@@ -1218,6 +1219,8 @@ pass	a narrow addition reconciles a constant LEFT operand to the variable's widt
 pass	a narrow comparison reconciles a constant LEFT operand to the variable's width
 pass	a narrow match binder used in arithmetic with the scrutinee
 pass	a narrow multiplication reconciles a constant LEFT operand to the variable's width
+pass	a narrow newtype boxed as a map value stores at the widened cell
+pass	a narrow newtype boxed in a list round-trips two payloads through binder reads
 pass	a narrow value in the else branch opposite a bare literal computes at the narrow width
 pass	a narrow-UInt8-guarded div is not select-ified — the guard shields the trap
 pass	a narrow-body arithmetic on an in-range constant arg overflows the parameter width

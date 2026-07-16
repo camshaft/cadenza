@@ -594,6 +594,7 @@ pass	a handle body reads an enclosing function parameter
 pass	a handle whose head names a value rather than an effect is rejected
 pass	a handle's TUPLE value pairing a scalar with a built list escapes and is destructured
 pass	a handler accumulates into a list and a read-out operation reads it back
+pass	a handler arm capturing an enclosing fn param folds under a multi-arm nested handler
 pass	a handler arm consumes its resume value through an effect-free helper call
 pass	a handler arm for an operation the effect does not declare is rejected
 pass	a handler arm forwarding an effect its enclosing scope does not hold is rejected
@@ -894,6 +895,8 @@ pass	a narrow addition reconciles a constant LEFT operand to the variable's widt
 pass	a narrow comparison reconciles a constant LEFT operand to the variable's width
 pass	a narrow match binder used in arithmetic with the scrutinee
 pass	a narrow multiplication reconciles a constant LEFT operand to the variable's width
+pass	a narrow newtype boxed as a map value stores at the widened cell
+pass	a narrow newtype boxed in a list round-trips two payloads through binder reads
 pass	a narrow value in the else branch opposite a bare literal computes at the narrow width
 pass	a narrow-UInt8-guarded div is not select-ified — the guard shields the trap
 pass	a narrow-body arithmetic on an in-range constant arg overflows the parameter width
@@ -3197,6 +3200,7 @@ todo	a distinct-signature round-trip alongside a plain export — the plain expo
 todo	a distinct-signature round-trip applies the Int64->Bool closure
 todo	a distinct-signature round-trip applies the Int64->Int64 closure
 todo	a distinct-signature round-trip's Bool closure on a nonzero input
+todo	a double-nominal narrow newtype (newtype of a newtype of UInt8) boxed in a list refines by value
 todo	a doubly-call-returned narrow newtype spills correctly through two calls
 todo	a fixed-shape Tuple ARG with a Bytes RESULT crosses the direct-call boundary
 todo	a fixed-shape Tuple ARG with a List RESULT crosses the direct-call boundary
@@ -3240,6 +3244,10 @@ todo	a mutual AST walker re-extracts a node's payload in a sibling operand while
 todo	a mutually-recursive AST walker reads a node's child list without corrupting a sibling head-read
 todo	a mutually-recursive decoder returns a heap value and cursor and its heap slot is dispatched
 todo	a naive (non-renaming) substitution captures a free variable — the bug capture-avoidance prevents
+todo	a narrow-width newtype boxed as a list element matches by its literal payload
+todo	a narrow-width newtype boxed as a sum payload matches by its literal payload
+todo	a narrow-width newtype boxed as a tuple element falls through on a non-matching payload
+todo	a narrow-width newtype boxed as a tuple element matches by its literal payload
 todo	a nested conjunction accumulates all three operand hypotheses
 todo	a nested element pattern dispatches on a NON-variant-0 list payload
 todo	a nested tuple list element is bound over a runtime list and folded across the rest

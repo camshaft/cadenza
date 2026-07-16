@@ -3303,6 +3303,46 @@
   (call   main (: 0 UInt8))
   (output (: 100 Int64)))
 
+; The tuple/list/sum cases above pin the narrow-newtype box-widen (is_narrow_int strip_nominal) at ONE
+; nominal level. These pin the same helper across the axes the "single helper every box-int site routes
+; through" claim implies: a DOUBLE-nominal narrow newtype (strip_nominal must strip repeatedly to reach the
+; narrow int), a narrow newtype as a MAP VALUE (another nested box position), and a binder read-back that
+; ROUND-TRIPS two narrow payloads out of a boxed list (the widen must hold on the read/unbox side too, not
+; only the store). A widen that stripped only one nominal level, or missed the map/read path, would pass the
+; single-level tuple/list/sum cases yet corrupt these.
+
+(case "a double-nominal narrow newtype (newtype of a newtype of UInt8) boxed in a list refines by value"
+  (doc    "`(type Inner (I UInt8))`, `(type Outer (O Inner))` — a newtype wrapping a newtype over a narrow
+           int, boxed as a list element and matched by a literal payload `(Outer.O (Inner.I 0))` → 100. The
+           box-widen's `strip_nominal` must peel BOTH nominal layers to reach the `UInt8` before widening
+           i32→i64; a single-level strip would leave `Ty::Nominal(Inner, Int u8)` and skip the widen →
+           invalid component. Pins the strip is repeated, not one-shot.")
+  (input  (do (type Inner (I UInt8)) (type Outer (O Inner))
+              (def (main (: n UInt8)) (match (list (Outer.O (Inner.I n))) ((list (Outer.O (Inner.I 0)) .. r) 100) (_ 0))) (export main)))
+  (call   main (: 0 UInt8))
+  (output (: 100 Int64)))
+
+(case "a narrow newtype boxed as a map value stores at the widened cell"
+  (doc    "The MAP-VALUE nested-box position: `(Map.insert Map.empty 1 (W.Wrap n))` with `W = (Wrap UInt8)`
+           boxes the narrow newtype as a map value — the same i32→i64 box-widen the tuple/list/sum positions
+           need. `Map.len` = 1. Pins the shared box-int helper covers the map-value store, not only the
+           tuple/list/sum element positions the fix's own cases exercise.")
+  (input  (do (type W (Wrap UInt8))
+              (def (main (: n UInt8)) (Map.len (Map.insert Map.empty 1 (W.Wrap n)))) (export main)))
+  (call   main (: 5 UInt8))
+  (output (: 1 Int64)))
+
+(case "a narrow newtype boxed in a list round-trips two payloads through binder reads"
+  (doc    "The READ/unbox side: a list of two `(W.Wrap n)` narrow newtypes matched with binder payloads
+           `(list (W.Wrap a) (W.Wrap b) .. r)`, summing the read-back values `(+ (Int64.of a) (Int64.of b))`
+           = 200 for n=100. Pins the box-widen holds on the READ path (each boxed narrow payload unboxes to
+           the correct widened value), not only the store — a store-only widen would read back garbage. The
+           binder companion of the literal-payload cases above.")
+  (input  (do (type W (Wrap UInt8))
+              (def (main (: n UInt8)) (match (list (W.Wrap n) (W.Wrap n)) ((list (W.Wrap a) (W.Wrap b) .. r) (+ (Int64.of a) (Int64.of b))) (_ 0))) (export main)))
+  (call   main (: 100 UInt8))
+  (output (: 200 Int64)))
+
 ; A list-arm element may also be a MAP key-value pattern — a list of key-value records destructured by key
 ; in one arm. Like a refutable constructor element, a `(map (k v)…)` element is refutable (it matches only a
 ; map containing the named keys) AND binds the values, so it desugars to a fresh binder + a key-presence
