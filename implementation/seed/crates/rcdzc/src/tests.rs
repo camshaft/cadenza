@@ -21846,6 +21846,71 @@ mod match_engine {
     }
 
     #[test]
+    fn a_value_juxtaposed_with_a_type_names_the_missing_colon_annotation() {
+        // `(5 Int64)` — a value annotation written WITHOUT the colon (the correct form is `(: 5 Int64)`).
+        // A plain value head applied to exactly one argument that resolves as a TYPE reads as applying a
+        // non-function; previously the generic "cannot apply a value of type Int64 — it is not a function"
+        // hid the real cause. It is the value-position twin of the parameter slice `(a Float64)` → `(: a
+        // Float64)` and the argument-position counterpart of `(Int64 5)`'s "a type appears in an
+        // annotation" message. Now it names the missing-colon repair and carries a HEURISTIC fix with the
+        // exact `(: 5 Int64)` spelling (heuristic — the `:` is the certain structural repair, but the
+        // annotation may itself not hold, e.g. `(5 Bool)` → a CDZ0203; a Verified fix must clear the
+        // diagnostic by construction, which this does only when the value's type satisfies the annotation).
+        let d = reject_full("(module m (def (main) (5 Int64)) (export main))")
+            .expect("a colon-less value annotation is rejected");
+        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+        assert!(
+            d.message.contains("`(: <value> <Type>)`")
+                && d.message.contains("leading `:`")
+                && d.message.contains("juxtaposed with a type"),
+            "names the missing-colon repair: {}",
+            d.message
+        );
+        let fix = d.fix.as_ref().expect("carries an add-`:` fix");
+        assert!(
+            !fix.verified,
+            "heuristic — the annotation is not proven to hold"
+        );
+        assert_eq!(fix.replacement, "(: 5 Int64)", "the exact repair spelling");
+
+        // A COMPOUND type argument (`(List Int64)`) has no single name atom to splice — the message still
+        // names the shape but carries NO fix.
+        let dc = reject_full("(module m (def (main) (5 (List Int64))) (export main))")
+            .expect("a compound-type colon-less annotation is rejected");
+        assert!(
+            dc.message.contains("juxtaposed with a type"),
+            "compound-type case still names the shape: {}",
+            dc.message
+        );
+        assert!(
+            dc.fix.is_none(),
+            "no fix when the type is compound: {:?}",
+            dc.fix
+        );
+
+        // NO false positive: a two-value application `(5 6)` — the argument is NOT a type — keeps the
+        // generic "not a function" message (it is a genuine malformed application, not a missing colon).
+        let d2 = reject_full("(module m (def (main) (5 6)) (export main))")
+            .expect("applying a value to a value is rejected");
+        assert!(
+            d2.message.contains("cannot apply a value of type")
+                && !d2.message.contains("juxtaposed"),
+            "a non-type argument is not hijacked as a missing-colon annotation: {}",
+            d2.message
+        );
+
+        // NO false positive: the type-in-HEAD form `(Int64 5)` keeps its own category message (a sibling
+        // test pins it), and this slice must not shadow it.
+        let d3 = reject_full("(module m (def (main) (Int64 5)) (export main))")
+            .expect("applying a type name is rejected");
+        assert!(
+            d3.message.contains("`Int64` is a type, not a function"),
+            "type-in-head is unaffected: {}",
+            d3.message
+        );
+    }
+
+    #[test]
     fn applying_a_monomorphic_sum_type_to_arguments_says_it_takes_no_type_parameters() {
         // The common sum-annotation slip: `(: t (T Int64))` where `(type T (Leaf Int64) …)` is MONOMORPHIC
         // (takes no type parameters). The reader parses `(T Int64)` as applying `T` to `Int64`; since `T`

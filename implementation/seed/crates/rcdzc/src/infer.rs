@@ -6227,6 +6227,21 @@ pub(crate) fn check_unknown_units(db: &mut Db, out: &mut Vec<Reject>) {
     }
 }
 
+/// The SURFACE spelling of a simple leaf `Atom` — a name or an integer literal — for splicing into a
+/// fix replacement (`(: <value> <Type>)`). Returns `None` for a compound node or any other leaf
+/// (a float, whose faithful re-spelling needs `Decimal` reconstruction; a string/char, which needs
+/// quoting/escaping), so a fix's replacement is only ever emitted when its exact text is trivially
+/// reconstructible; the caller then carries the message alone, no fix.
+fn atom_surface(db: &Db, id: StructId) -> Option<String> {
+    if let Some(name) = db.ast.as_name(id) {
+        return Some(name.to_string());
+    }
+    if let Some(int) = db.ast.as_int(id) {
+        return Some(int.to_decimal_string());
+    }
+    None
+}
+
 fn check_application(
     db: &mut Db,
     app: StructId,
@@ -7988,6 +8003,50 @@ fn check_application(
                                 .then(|| n.to_string())
                         });
                     trace!(target: "rcdzc::infer", head = head.0, ty = %ht.render_name(), "fault: applying a non-function value (CDZ0201)");
+                    // A MISSING-COLON VALUE ANNOTATION — `(5 Int64)` written where `(: 5 Int64)` was
+                    // meant. When a plain value head is applied to EXACTLY ONE argument that resolves as a
+                    // TYPE (`typeval_of`), the author juxtaposed a value with its type instead of heading
+                    // them with `:`, so it reads as an application of a non-function. This is the
+                    // value-position twin of the parameter-position `(a Float64)` → `(: a Float64)` slice,
+                    // and the argument-position counterpart of `(Int64 5)`'s "a type appears in an
+                    // annotation `(: value Int64)`, not in call position". Name the real repair. When BOTH
+                    // the head and the type are simple atoms (a name or an int/float literal — the common
+                    // `(5 Int64)` case) the rewrite `(<value> <Type>)` → `(: <value> <Type>)` is a
+                    // deterministic rule, so the fix is VERIFIED and carries the exact spelling; a compound
+                    // type or a non-atom head keeps the message alone (no single spelling to splice). Only
+                    // in the `(None, None)` arm — a type/effect head or a nullary def keeps its own message.
+                    let colon_annotation = if name_category.is_none()
+                        && nullary_fn.is_none()
+                        && args.len() == 1
+                        && crate::eval::typeval_of(db, args[0]).is_some()
+                    {
+                        let value_text = atom_surface(db, head);
+                        let type_text = db.ast.as_name(args[0]).map(str::to_string);
+                        Some((value_text, type_text))
+                    } else {
+                        None
+                    };
+                    if let Some((value_text, type_text)) = colon_annotation {
+                        let mut reject = Reject::coded(
+                            Code::Malformed,
+                            "a value is annotated `(: <value> <Type>)`, with a leading `:` — this value \
+                             is juxtaposed with a type, so it reads as applying a non-function; add the \
+                             `:` to annotate it",
+                        )
+                        .at(app);
+                        if let (Some(v), Some(t)) = (&value_text, &type_text) {
+                            // HEURISTIC, not Verified: adding the `:` is the certain STRUCTURAL repair,
+                            // but the resulting annotation may itself not hold — `(5 Bool)` → `(: 5 Bool)`
+                            // trades the CDZ0201 for a CDZ0203 (`Bool` does not match `Int64`). A Verified
+                            // fix must CLEAR the diagnostic by construction; this one clears it only when
+                            // the value's type satisfies the annotation, which the compiler has not proved
+                            // here, so it stays a heuristic an agent confirms.
+                            reject = reject
+                                .with_fix(Fix::replace_heuristic(app, format!("(: {v} {t})")));
+                        }
+                        out.push(reject);
+                        return;
+                    }
                     let message = match (name_category, nullary_fn) {
                         (Some((name, cat)), _) => {
                             format!(
