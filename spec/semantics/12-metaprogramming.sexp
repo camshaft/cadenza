@@ -167,6 +167,37 @@
            recurses to arbitrary compound-pattern depth.")
   (input  (let ((x 10)) (eval (quasiquote (match (Some (tuple 1 2)) ((Some (tuple x y)) (+ (unquote x) y)) (_ 0))))))
   (output (: 12 Int64)))
+; The hygiene cases above pin one unquote colliding with one binder (per kind) + the no-over-reach control.
+; These push the capture-avoiding alpha-rename harder: TWO distinct unquotes each colliding with a DIFFERENT
+; template binder (both must rename independently), a NESTED same-name shadow (an unquote spliced past two
+; levels of the colliding name), and a splice BESIDE the template's own use of the renamed binder (the
+; renamed binder's occurrences must still resolve to the template value while the splice keeps its own).
+
+(case "hygiene: two distinct unquotes each colliding with a different template binder are both renamed"
+  (doc    "`(let ((x 10) (y 20)) (eval `(let ((x 1) (y 2)) (+ ,x ,y))))` — the template binds BOTH x and y,
+           and BOTH are unquoted with colliding names. Each splice keeps its enclosing-scope value (x=10,
+           y=20), so the sum is 30, not 3 (the captured 1+2). Pins that the alpha-rename handles multiple
+           independent collisions in one template, not just a single binder.")
+  (input  (let ((x 10) (y 20)) (eval (quasiquote (let ((x 1) (y 2)) (+ (unquote x) (unquote y)))))))
+  (output (: 30 Int64)))
+
+(case "hygiene: an unquote is uncaptured through two nested same-named template binders"
+  (doc    "`(let ((x 100)) (eval `(let ((x 1)) (let ((x 2)) (+ ,x x)))))` — the template nests TWO binders
+           of the colliding name `x`. The spliced `,x` keeps its enclosing value 100; the template's own `x`
+           resolves to the INNERMOST binder (2). Sum = 102, not 3 (2+1 captured) or 4 (2+2). Pins that the
+           rename tracks the splice's provenance across nested same-name shadows, and the template's own `x`
+           still binds to its lexically-nearest (innermost) binder.")
+  (input  (let ((x 100)) (eval (quasiquote (let ((x 1)) (let ((x 2)) (+ (unquote x) x)))))))
+  (output (: 102 Int64)))
+
+(case "hygiene: a spliced unquote sits beside the template's own use of the renamed binder"
+  (doc    "`(let ((x 5)) (eval `(let ((x 1)) (* ,x x))))` — the template both splices `,x` (value 5) AND
+           uses its own `x` (bound to 1) in the same expression. After the rename, the splice is 5 and the
+           template `x` is 1, so the product is 5, not 1 (both captured to 1) or 25 (both the splice 5). Pins
+           that the renamed binder's own occurrences resolve to the template value while the splice keeps its
+           enclosing value — the two `x`-shaped operands end up DIFFERENT.")
+  (input  (let ((x 5)) (eval (quasiquote (let ((x 1)) (* (unquote x) x))))))
+  (output (: 5 Int64)))
 
 (case "print of a quote containing a float renders re-readably"
   (doc    "`print : Ast → String` renders a quoted compound containing a float as its canonical re-readable

@@ -2684,6 +2684,9 @@ pass	heap-valued handler state above an inner abort keeps threading
 pass	hexadecimal, binary, and decimal spellings of one value are equal
 pass	host calls are observed in the order they were made
 pass	hygiene fix does not over-reach: a different-named template binder needs no rename
+pass	hygiene: a spliced unquote sits beside the template's own use of the renamed binder
+pass	hygiene: an unquote is uncaptured through two nested same-named template binders
+pass	hygiene: two distinct unquotes each colliding with a different template binder are both renamed
 pass	identical negative zeros nested in a tuple compare equal
 pass	identically-built ropes on both sides of a nested compare are equal (control)
 pass	importing a name a module does not export is rejected
