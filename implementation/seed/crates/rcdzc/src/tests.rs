@@ -67504,6 +67504,63 @@ mod cross_component_oracle {
     }
 
     // ------------------------------------------------------------------------------------------------
+    // PL26 — a peer op returning a NESTED compound `(Tuple (List Int64) Int64)` crosses as ONE handle,
+    // and the consumer projects the nested collection out + reads it. The prior result pins were FLAT
+    // (a Tuple of scalars, or a bare List); this exercises a compound CONTAINING a collection — the
+    // whole nesting crosses as a single u32 handle, element 0 (a nested List) is reachable via `(. t 0)`
+    // and its `List.len` works over the shared runtime. nest(5)=([5,5,5], 6) → len(3) + 6 = 9.
+    // ------------------------------------------------------------------------------------------------
+    #[test]
+    fn a_peer_op_returning_a_nested_compound_crosses_and_is_projected() {
+        use crate::testkit::parse;
+        // PROVIDER: nest(x) = (tuple (list x x x) (x+1)) — a tuple whose first element is a List.
+        let provider = compile_provider(
+            "(do (def (nest (: x Int64)) (tuple (list x x x) (+ x 1))) (export nest))",
+            "cadenza:n/api",
+        );
+        // CONSUMER: projects the nested List (element 0), reads its length, and adds the scalar element 1.
+        let src = "(do \
+            (effect N (op nest (-> Int64 (Tuple (List Int64) Int64)))) \
+            (bind N \"cadenza:n/api\") \
+            (def (main (: x Int64)) \
+              (host (N) (+ (List.len (. (N.nest x) 0)) (. (N.nest x) 1)))) \
+            (export main))";
+        let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .unwrap_or_else(|d| {
+                panic!(
+                    "nested-compound consumer compiles: {} [{:?}]",
+                    d.message, d.code
+                )
+            });
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("[PL26] runtime wasm not found; skipping");
+            return;
+        };
+        let peers = vec![cdz_run::Peer {
+            bytes: provider,
+            interface: "cadenza:n/api".to_string(),
+        }];
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec!["5".to_string()],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run_with_peers(&consumer, &peers, &opts)
+            .expect("a peer op returning a nested compound crosses")
+        {
+            // nest(5) = ([5,5,5], 6); the consumer reads len([5,5,5])=3 + 6 = 9. The nested List inside
+            // the crossed tuple handle is reachable via projection over the shared runtime.
+            cdz_run::Outcome::Value(s) => assert_eq!(
+                s, "9",
+                "a nested compound crosses as one handle; the nested collection is projectable + readable"
+            ),
+            cdz_run::Outcome::Trap(t) => panic!("nested-compound run trapped: {t}"),
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------------
     // PL19 — the ELEMENT read of a peer-returned list, USED (matched to a scalar). The common pattern:
     // a peer op returns a `(List Int64)`, the consumer indexes it with `List.at` and matches the
     // resulting `Option` down to a scalar the entrypoint returns. main(7) = match (List.at [8,9] 0) →
