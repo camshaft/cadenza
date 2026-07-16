@@ -290,3 +290,12 @@
                 (+ (match (opt) ((Some v) v) ((None _) -1)) (Ctr.tick unit))))
             (export main)))
   (output (: 3 Int64)))
+(case "a `?` on an ill-typed operand reports the operand's error, not a `?`-shape cascade"
+  (doc    "`(let ((x (try (+ 1 2.0)))) (Some x))` — the operand `(+ 1 2.0)` is itself ill-typed (a numeric
+           mismatch, CDZ0301). The `?`-operand-shape check must NOT pile a confusing `?` operand must be a
+           fallible Result/Option, found Float64` on top: the operand's own fault is the primary `no`. Pins
+           that the `?` collect arm collects the operand's faults FIRST and suppresses its shape/boundary
+           checks when the operand already carries a coded fault (the `Member`-arm operand-is-poison
+           discipline). Grades on CDZ0301 — the operand mismatch — not the suppressed `?` cascade.")
+  (input  (do (def (main) (let ((x (try (+ 1 2.0)))) (Some x))) (export main)))
+  (error  CDZ0301))
