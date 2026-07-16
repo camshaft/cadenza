@@ -1,0 +1,76 @@
+; BREAKER FINDING — WASM miscompile (INCOMPLETE FIX of 00010145c): a single-variant NEWTYPE over a NARROW
+; width (UInt8/Int8/Int16/Int32) as a LIST-ELEMENT sub-pattern with a LITERAL payload emits an INVALID wasm
+; component. The 00010145c fix ("a single-variant newtype list element with a literal payload refines by
+; value") closed the Int64 case — its desugar synthesizes a payload-value guard `(match __lc ((Wrap 0) …)
+; (_ false))` — but that synthesized guard compares the narrow erased payload at the WRONG width (i64 vs the
+; i32 narrow rep), exactly the class a1510c912 fixed for DIRECT matches but which this list-element desugar
+; does not route through.
+;
+; SYMPTOM: `cdz-run: invalid component: failed to compile: wasm[0]::function[7]`.
+;   wasm-tools validate: func 7 failed — type mismatch: expected i64, found i32 (at offset 0x256).
+; WAT (wasm-tools print) shows the synthesized value-guard: a nested `if (result i64)` doing `local.get 0`
+; (the raw UInt8 payload, an i32) then `i32.eqz` in an i64-expecting context — the narrow payload's literal
+; check is mis-widthed inside the list-element refinement desugar.
+;
+; ISOLATED (recompute-before-crying-bug, one axis at a time — all on wasm):
+;   Int64 newtype list-elem + literal  (the 00010145c target)                 -> WORKS (control)
+;   UInt8 newtype list-elem BINDING-only (no literal)                         -> WORKS (irrefutable path)
+;   bare UInt8 (no newtype) list-elem + literal  (match (list n) ((list 0 ..r)…)) -> WORKS
+;   UInt8 / Int32 newtype list-elem + LITERAL                                 -> INVALID component (this bug)
+; So the trigger is NARROW erased-newtype payload + LITERAL refinement + LIST-ELEMENT position; Int64, the
+; binding-only path, and the bare-narrow list-elem all compile. (rust DECLINES the whole single-variant
+; newtype list-element path — a known rust gap — so this is a wasm-emit bug, no differential twin.)
+;
+; SUGGESTED FIX (v-patterns): the 00010145c list-element refinement desugar's synthesized payload-value guard
+; `(match __lc ((Wrap 0) …) (_ false))` must compare the erased narrow payload at its ACTUAL width (i32 for
+; UInt8/Int8/Int16/Int32, i64 for Int64), exactly as a1510c912 fixed the DIRECT single-variant newtype
+; literal-payload match (`SumCont::LitTest Probe::Int` keying on `Machine::of(it).slot32`). The desugar
+; either re-emits the compare itself (mis-widthed) or routes through a path that predates a1510c912. VERIFY
+; emit locus via WAT (func 7, the synthesized guard's i32.eqz-in-i64-context).
+;
+; The cases below assert the CORRECT results (n=0 hits `(W.Wrap 0)` → 100; n=5 misses → wildcard 0). They
+; FAIL on wasm today (invalid component); the Int64 control PASSES. Flip to pass when the guard is widthed.
+
+(case "adv narrow-newtype-list UInt8: a literal-payload list element refines by value (hit)"
+  (doc "`(match (list (W.Wrap n)) ((list (W.Wrap 0) .. r) 100) (_ 0))` where W = (Wrap UInt8), n=0: the
+        list's sole element `(W.Wrap 0)` matches the literal-payload list-element sub-pattern → 100. On wasm
+        this emits an INVALID component — the synthesized value-guard compares the i32 narrow payload with an
+        i64 op (expected i64, found i32). Should return 100. The narrow-width analogue of the Int64 case
+        00010145c fixed.")
+  (input (do (type W (Wrap UInt8)) (def (main (: n UInt8)) (match (list (W.Wrap n)) ((list (W.Wrap 0) .. r) 100) (_ 0))) (export main)))
+  (call main (: 0 UInt8))
+  (output (: 100 Int64)))
+
+(case "adv narrow-newtype-list UInt8: the literal-payload list element falls through on a miss"
+  (doc "The miss companion: n=5, the element `(W.Wrap 5)` does not match `(W.Wrap 0)`, so the match takes the
+        wildcard → 0. Same invalid-component emit today; should return 0. Together with the hit case pins the
+        whole match compiles, not one arm.")
+  (input (do (type W (Wrap UInt8)) (def (main (: n UInt8)) (match (list (W.Wrap n)) ((list (W.Wrap 0) .. r) 100) (_ 0))) (export main)))
+  (call main (: 5 UInt8))
+  (output (: 0 Int64)))
+
+(case "adv narrow-newtype-list Int32: the same literal-payload list element on an Int32 newtype (hit)"
+  (doc "The Int32 width: `(match (list (W.Wrap n)) ((list (W.Wrap 0) .. r) 100) (_ 0))` W = (Wrap Int32),
+        n=0 → 100. Also invalid today. Pins the bug spans every narrow (i32-backed) width in the list-element
+        refinement, not only UInt8.")
+  (input (do (type W (Wrap Int32)) (def (main (: n Int32)) (match (list (W.Wrap n)) ((list (W.Wrap 0) .. r) 100) (_ 0))) (export main)))
+  (call main (: 0 Int32))
+  (output (: 100 Int64)))
+
+(case "adv narrow-newtype-list CONTROL: an Int64 newtype list-element literal still refines (00010145c target)"
+  (doc "The control that PASSES: the SAME shape on an Int64 newtype — `(match (list (W.Wrap n)) ((list
+        (W.Wrap 0) .. r) 100) (_ 0))` W = (Wrap Int64), n=0 → 100 — compiles and runs, because the synthesized
+        guard's i64 compare matches the i64 payload. Pins the bug is the NARROW width specifically; the Int64
+        case 00010145c added is unaffected.")
+  (input (do (type W (Wrap Int64)) (def (main (: n Int64)) (match (list (W.Wrap n)) ((list (W.Wrap 0) .. r) 100) (_ 0))) (export main)))
+  (call main (: 0 Int64))
+  (output (: 100 Int64)))
+
+(case "adv narrow-newtype-list CONTROL: a UInt8 newtype list-element BINDING payload stays irrefutable"
+  (doc "The binding-only control: `(match (list (W.Wrap n)) ((list (W.Wrap x) .. r) x) (_ 0))` over a UInt8
+        newtype — a bare binder payload, no literal — is irrefutable and compiles, binding the narrow payload
+        → 5. Pins the bug is the LITERAL refinement in the list element specifically; the binding path is
+        correct and is the shape the literal path should reach the same width on.")
+  (input (do (type W (Wrap UInt8)) (def (main (: n UInt8)) (match (list (W.Wrap n)) ((list (W.Wrap x) .. r) x) (_ 0))) (export main)))
+  (call main (: 5 UInt8))
+  (output (: 5 Int64)))
