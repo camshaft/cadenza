@@ -207,6 +207,7 @@ pass	a Unit record field beside an Int64 field, the Int64 read
 pass	a `?` in a CALLED (inlined, non-exported) helper finds its boundary
 pass	a `?` inside a match-arm resolves against the enclosing function boundary
 pass	a `?` inside an if-branch resolves against the enclosing function boundary
+pass	a `?` mid-body under a provably non-fallible boundary is rejected
 pass	a `?` on a String operand is a type error
 pass	a `?` on a non-fallible operand is a type error
 pass	a `?` on an ill-typed operand reports the operand's error, not a `?`-shape cascade
@@ -404,6 +405,10 @@ pass	a consumed bare None type-checks without annotation (ambiguity is escape-on
 pass	a consumed empty list type-checks without annotation (ambiguity is escape-only)
 pass	a consuming op inside a hoisted list element respects a still-live binding
 pass	a consuming op on a still-live binding inside one match arm's payload keeps its retain
+pass	a context-typed empty float map accepts a runtime float key insert
+pass	a context-typed empty float map needs no key inserted to ground its wrapper type
+pass	a context-typed empty float set grounds its element wrapper type
+pass	a context-typed empty float32 map grounds the narrow-float wrapper
 pass	a contradictory ARROW annotation on a function value is rejected
 pass	a correctly-annotated function parameter is accepted
 pass	a cross-type variant pattern whose payload width differs is rejected, not miscompiled
@@ -2703,6 +2708,7 @@ pass	the runtime UTF-8 encoding of a string equals its exact byte literal
 pass	the runtime-if list takes its else branch and measures that length
 pass	the runtime-list version of a tail fold compiles and folds correctly
 pass	the same function called under two handlers is discharged by each in turn
+pass	the same literal-payload refinement on a MULTI-variant sum works (the boxed control)
 pass	the same mixed-scale comparison is EXACT over Rational (keeps the fractional scale)
 pass	the same nullary variant constrained to different concrete types reflects different types
 pass	the scalar length of a runtime multi-byte string counts scalars, not bytes
@@ -3240,6 +3246,10 @@ todo	a scalar BETWEEN two Tuple args with a LIST result
 todo	a second same-signature closure export shares the one call method
 todo	a single-variant abstract theorem's constructor match outside the kernel is a withheld-constructor rejection (CDZ0214)
 todo	a single-variant abstract type's constructor match outside its module is rejected CDZ0214 (withheld-ctor)
+todo	a single-variant newtype BOOL literal-payload arm falls through on false
+todo	a single-variant newtype BOOL literal-payload arm is reached, not silently dead
+todo	a single-variant newtype literal-payload arm falls through to the binding arm on a miss
+todo	a single-variant newtype literal-payload arm is selected when the payload matches
 todo	a specific constructor export exposes one variant and keeps the rest private
 todo	a sum TYPE and its constructors are imported by a wildcard and constructed in the entry
 todo	a sum variant's list payload split across empty and rest arms is exhaustive and dispatches

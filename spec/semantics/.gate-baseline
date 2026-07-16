@@ -649,6 +649,10 @@ pass	a consumer returns a different type than the closure it applies
 pass	a consumer takes the handed-back closure as its SECOND parameter
 pass	a consuming op inside a hoisted list element respects a still-live binding
 pass	a consuming op on a still-live binding inside one match arm's payload keeps its retain
+pass	a context-typed empty float map accepts a runtime float key insert
+pass	a context-typed empty float map needs no key inserted to ground its wrapper type
+pass	a context-typed empty float set grounds its element wrapper type
+pass	a context-typed empty float32 map grounds the narrow-float wrapper
 pass	a contradictory ARROW annotation on a function value is rejected
 pass	a correctly-annotated function parameter is accepted
 pass	a cross-type variant pattern whose payload width differs is rejected, not miscompiled

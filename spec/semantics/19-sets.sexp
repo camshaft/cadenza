@@ -796,3 +796,46 @@
               (def (main (: d Int64)) (if (test Float64.nan Float64.nan) 1 0)) (export main)))
   (call   main (: 0 Int64))
   (output (: 1 Int64)))
+
+; --- A CONTEXT-TYPED empty float collection grounds its key/element wrapper WITHOUT a construction ----
+; The rust backend represents a float key/element with a width-specific wrapper struct (`__CdzF64` /
+; `__CdzF32`) whose comparison follows the canonical byte form (the wasm side needs no such struct — the
+; canonicalization is in the heap ops). A CONTEXT-TYPED empty collection — `(: (Map.empty) (Map Float64
+; Int64))` — annotates that wrapper type with NO constructor call, so the backend must inject the wrapper
+; decl on the ANNOTATION (the type-param `<__CdzF64` position), not only on a `::new(` constructor; a gate
+; that keyed on the constructor alone emitted a bare `BTreeMap<__CdzF64,_>` with no decl → rust "cannot
+; find type `__CdzF64`". These pin the typed-empty float collection compiles and runs on BOTH backends
+; (the divergence a decl-injection miss would produce is rust-only, so the wasm control matters), across
+; Map key, a runtime insert onto the typed-empty map, a float Set element, and the narrow Float32 wrapper.
+
+(case "a context-typed empty float map needs no key inserted to ground its wrapper type"
+  (doc    "`(: (Map.empty) (Map Float64 Int64))` is an empty float-keyed map grounded by its ANNOTATION, no
+           insert — `Map.len` = 0. On rust the `__CdzF64` key wrapper is named in the map type-param with no
+           constructor, so its decl must be injected on the annotation; a constructor-only gate would emit
+           `BTreeMap<__CdzF64,_>` with no decl and fail to compile. Pins the typed-empty float map compiles
+           and runs on both backends.")
+  (input  (do (def (main) (Map.len (: (Map.empty) (Map Float64 Int64)))) (export main)))
+  (output (: 0 Int64)))
+
+(case "a context-typed empty float map accepts a runtime float key insert"
+  (doc    "The construction companion: inserting a runtime `d : Float64` key into the typed-empty float map
+           `(Map.insert (: (Map.empty) (Map Float64 Int64)) d 1)` → one entry, `Map.len` = 1. Pins the
+           annotation-grounded wrapper agrees with the constructed-key path — the annotation and the insert
+           name the SAME `__CdzF64` key type, so the decl injected for the annotation covers the insert.")
+  (input  (do (def (main (: d Float64)) (Map.len (Map.insert (: (Map.empty) (Map Float64 Int64)) d 1))) (export main)))
+  (call   main (: 2.5 Float64))
+  (output (: 1 Int64)))
+
+(case "a context-typed empty float set grounds its element wrapper type"
+  (doc    "The Set companion: `(: (Set.of (list)) (Set Float64))` is an empty float-element set grounded by
+           its annotation — `Set.len` = 0. Pins the wrapper-decl injection covers a float Set ELEMENT type
+           (`__CdzF64` in a set type-param), not only a Map key.")
+  (input  (do (def (main) (Set.len (: (Set.of (list)) (Set Float64)))) (export main)))
+  (output (: 0 Int64)))
+
+(case "a context-typed empty float32 map grounds the narrow-float wrapper"
+  (doc    "The narrow-width companion: `(: (Map.empty) (Map Float32 Int64))` grounds the `__CdzF32` wrapper
+           (distinct from `__CdzF64`) — `Map.len` = 0. Pins the decl injection is width-specific and covers
+           the Float32 wrapper too, the narrow-float dual of the Float64 typed-empty map.")
+  (input  (do (def (main) (Map.len (: (Map.empty) (Map Float32 Int64)))) (export main)))
+  (output (: 0 Int64)))
