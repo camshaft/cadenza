@@ -10,13 +10,25 @@ type Ty =
   | TBool
   | TFun(Ty, Ty)
 
-/// A scalar tag per type constructor. A top-level match maps each variant to an Int64 — used so `ty-eq`
-/// compares nullary types by TAG rather than a NESTED nullary match, which the ML reader currently
-/// mis-parses (`mlrepro-reject-ml-nullary-variant-pattern-in-nested-match.cdz` (queue)).
+/// A scalar tag per type constructor. A top-level match maps each variant to an Int64. `ty-eq` compares
+/// nullary types by TAG — a clean design that also USED to be necessary: a nullary variant pattern inside
+/// a NESTED match was once mis-parsed by the ML reader. That gap is now RESOLVED
+/// (`mlrepro-reject-nullary-variant-pattern-in-nested-match`, queue), so `tag` is now a design choice; the
+/// `ty-eq-fully-nested-regression` test below pins the once-misparsed nested-nullary form directly.
 def tag(t: Ty) = match t with
   | Ty.TInt => 0
   | Ty.TBool => 1
   | Ty.TFun(_, _) => 2
+
+/// Type equality written with FULLY-NESTED nullary matches (nullary `Ty.TInt`/`Ty.TBool` arms inside the
+/// inner match) — the shape the ML reader once mis-parsed. Kept only as a regression guard; `ty-eq` above
+/// (via `tag`) is what the module uses.
+def ty-eq-nested(x: Ty, y: Ty) = match x with
+  | Ty.TInt => (match y with | Ty.TInt => true | Ty.TBool => false | Ty.TFun(_, _) => false)
+  | Ty.TBool => (match y with | Ty.TInt => false | Ty.TBool => true | Ty.TFun(_, _) => false)
+  | Ty.TFun(a, b) => (match y with
+    | Ty.TFun(c, d) => (if ty-eq-nested(a, c) then ty-eq-nested(b, d) else false)
+    | _ => false)
 
 /// Structural equality of two types (recursively over `TFun`). Nullary variants compare by `tag`; only
 /// the payload-carrying `TFun` needs a nested match — which is fine because its pattern is non-nullary.
@@ -101,5 +113,17 @@ def chain2-second-fails() =
   // first ok, second wrong → None
   let f = Ty.TFun(Ty.TInt, Ty.TFun(Ty.TInt, Ty.TBool)) in
   if is-some(chain2(f, Ty.TInt, Ty.TBool)) then trap("second arg wrong → None") else unit
+
+@test
+def ty-eq-fully-nested-regression() =
+  // REGRESSION (mlrepro-reject-nullary-variant-pattern-in-nested-match, RESOLVED): a nullary variant
+  // pattern inside a nested match once mis-parsed. ty-eq-nested must agree with ty-eq on every shape.
+  let f = Ty.TFun(Ty.TInt, Ty.TBool) in
+  if ty-eq-nested(Ty.TInt, Ty.TInt) then
+    (if ty-eq-nested(Ty.TInt, Ty.TBool) then trap("Int ≠ Bool")
+     else (if ty-eq-nested(f, f) then
+       (if ty-eq-nested(f, Ty.TFun(Ty.TBool, Ty.TBool)) then trap("domains differ") else unit)
+     else trap("fun equals itself")))
+  else trap("Int = Int")
 
 export { ty-eq, apply-fun, chain2 }
