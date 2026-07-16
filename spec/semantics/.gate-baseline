@@ -935,6 +935,7 @@ pass	a map inserted-into in one recursive sub-call is unchanged for a sibling su
 pass	a map inserted-into on one path and size-read on another keeps copy-on-write across recursion
 pass	a map literal with keys of two different types is a type error
 pass	a map match over a map literal with a runtime key selects by value, not a const fold
+pass	a map match pattern with a malformed rest names the shape, not an unbound binder (CDZ0201)
 pass	a map mixing integer and float values is a type error
 pass	a map operation applies to a map passed as a function parameter
 pass	a map pattern as a list-arm element binds its value binder
@@ -1381,7 +1382,6 @@ pass	a recursive sum consumer whose arguments are recursive sum producers compil
 pass	a recursive sum recurses THROUGH a record-typed payload
 pass	a recursive sum type works with pattern matching
 pass	a recursive unifier distinguishes arrow components through the payload slots
-pass	a map match pattern with a malformed rest names the shape, not an unbound binder (CDZ0201)
 pass	a recursive user sum built in a lib is folded by the entry over the imported type
 pass	a recursive user sum type is built at run time and renders its variant names
 pass	a recursive walk consulting a node's own and its child's String key computes correctly
@@ -2616,6 +2616,8 @@ pass	print of an Ast.Bool renders the bare word and read inverts it
 pass	print of an Ast.Float renders a re-readable decimal and read inverts it
 pass	print of an Ast.Str renders a quoted literal with escapes and read inverts it
 pass	print of an integer-valued Ast.Float keeps its float form through read
+pass	print renders a nested compound with a string leaf as its exact canonical text
+pass	print renders an empty Ast.List as the empty-parens form
 pass	projecting a field is independent of the order fields are written
 pass	projecting a field of a non-compound argument is rejected at the call site
 pass	projecting a just-built tuple does not evaluate the unprojected sibling's trap

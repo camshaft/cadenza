@@ -93,6 +93,29 @@
   (input  (= (print (quote (f 1.5))) "(f 1.5)"))
   (output (: true Bool)))
 
+; `print`'s EXACT canonical rendering — not just its round-trip. The `read(print v) == v` cases pin the
+; printer/reader as INVERSES, but a round-trip normalizes, so it does NOT pin the exact text `print` emits
+; (spacing between elements, nested parenthesization, the empty-list form). These assert the literal string,
+; catching a printer that changed spacing/nesting yet still round-tripped: a deep compound with a nested
+; list and a quoted string renders `(f (g 1) "s")` (one space between elements, inner parens, the Str leaf
+; quoted), and an empty list renders `()`.
+
+(case "print renders a nested compound with a string leaf as its exact canonical text"
+  (doc    "`print` of `(quote (f (g 1) \"s\"))` is exactly `\"(f (g 1) \\\"s\\\")\"`: elements space-
+           separated, the nested list `(g 1)` parenthesized in place, and the `Ast.Str` leaf rendered as a
+           QUOTED literal (distinct from the bare name `f`). Pins the exact rendering of nesting + spacing +
+           string-quoting in one string — a printer that dropped a space or a paren would still round-trip
+           but flip this literal-text assertion.")
+  (input  (= (print (quote (f (g 1) "s"))) "(f (g 1) \"s\")"))
+  (output (: true Bool)))
+
+(case "print renders an empty Ast.List as the empty-parens form"
+  (doc    "`print (Ast.List (list))` is exactly `\"()\"` — the zero-element list rendering (open then close
+           with nothing between). Pins the empty-list edge of the printer, which the non-empty compound
+           cases never reach.")
+  (input  (= (print (Ast.List (list))) "()"))
+  (output (: true Bool)))
+
 (case "the AST is a sum type deconstructible by pattern matching"
   (doc    "Witnesses metaprogramming.md #Quote Produces An AST Value (2nd sentence): the AST is a
            sum type with variants for each syntactic form. Pattern matching over (quote 42) binds
