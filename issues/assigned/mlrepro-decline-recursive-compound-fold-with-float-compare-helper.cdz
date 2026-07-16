@@ -1,3 +1,11 @@
+// ⚖ RULING 2026-07-16 (operator, via concierge): float ordering = PARTIAL (IEEE partialOrd),
+//   OVERRIDING the totalOrder rec. NaN is UNORDERED — the 4 relational ops (< <= > >=) involving NaN
+//   yield FALSE (NaN not less/greater/equal to anything incl itself); -0.0 compares EQUAL-under-ordering
+//   to +0.0. Relational ops STILL typecheck + evaluate (NaN -> false), NOT trap/decline. This DIFFERS
+//   from canonical-byte EQUALITY (==/!=: NaN==NaN TRUE, -0.0 != +0.0) — the two relations disagree on
+//   NaN + signed-zero (inherent to float). When v-inference lands float ordering, EXPECT partial
+//   semantics here. NB v-cad bbox (the original consumer) is being redirected to Rational/Qty per a
+//   separate ruling, but this ordering trigger stands for GENERAL float compare.
 // ⚠ UPDATE 2026-07-16 (corpus-bugfix): this is scalar float ORDERING (ax<bx / ax>bx in v3-min/v3-max),
 //   NOT equality and NOT a compound compare. Float EQUALITY landed (04f206e90) and flipped the scalar-eq
 //   sibling — but ORDERING (< <= > >=) still declines PENDING the operator totalOrder ruling (v-inference
