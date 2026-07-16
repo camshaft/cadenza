@@ -2306,7 +2306,11 @@ pass	comparing two quantities of the same dimension yields a Bool
 pass	comparing two same-shape nominal sum types is a type error, not false
 pass	comparing two same-unit Float-inner quantities at RUNTIME rides the scalar float compare
 pass	comparing two units of one dimension converts before comparing
+pass	compound equality over a Rational leaf respects normalization (1/2 = 2/4)
+pass	compound equality over a runtime BigInt leaf compares by the canonical bytes
+pass	compound equality over a runtime BigInt leaf distinguishes different values
 pass	compound equality over a runtime NaN float leaf: nan equals nan
+pass	compound equality over a runtime Rational leaf compares by the normalized form
 pass	compound equality over a runtime float leaf: different floats compare unequal
 pass	compound equality over a runtime float leaf: equal floats compare equal
 pass	compound equality over a runtime float leaf: negative zero is not equal to positive zero

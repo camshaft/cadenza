@@ -163,6 +163,51 @@
   (call   main)
   (output (: true Bool)))
 
+; --- COMPOUND value-equality over a runtime BIGINT / RATIONAL leaf ------------------------------------
+; The numeric-tower siblings of the Float-leaf cases. A runtime BigInt is a CANONICAL sign-magnitude byte
+; leaf (runtime `box_bigint`, the sole producer), and a runtime Rational is a NORMALIZED 2-BigInt-handle
+; node (lowest terms, sign on the numerator — 06-numeric-model "one canonical byte form"). Both are
+; canonical BY CONSTRUCTION, so `ty_heap_walkable` admits them and `champ_eq` compares a BigInt leaf by its
+; bytes / descends a Rational's two canonical children — exactly the property that made the Float admission
+; sound. Before this, a whole-compound `=` over a BigInt/Rational leaf declined "comparison of a compound
+; value needs a heap walk" (forcing componentwise comparison — the CAD Rational-redirect blocker). A DIRECT
+; scalar BigInt/Rational `=` already worked; this is the NESTED-leaf face.
+
+(case "compound equality over a runtime BigInt leaf compares by the canonical bytes"
+  (doc    "`(= (tuple (BigInt.of a) 1) (tuple (BigInt.of b) 1))` over runtime BigInts — the BigInt leaf is
+           compared by its canonical sign-magnitude bytes through the value-eq walk. a=b=7 → true; a=7,b=8
+           → false. Pins the runtime BigInt compound-`=` face (was a decline).")
+  (input  (do (def (eq (: a Int64) (: b Int64)) (= (tuple (BigInt.of a) 1) (tuple (BigInt.of b) 1)))
+              (def (main) (eq 7 7)) (export main)))
+  (call   main)
+  (output (: true Bool)))
+
+(case "compound equality over a runtime BigInt leaf distinguishes different values"
+  (doc    "The negative companion: different BigInts in the tuple → false (a=7, b=8). Confirms the BigInt
+           compound walk is genuinely structural, not always-true.")
+  (input  (do (def (eq (: a Int64) (: b Int64)) (= (tuple (BigInt.of a) 1) (tuple (BigInt.of b) 1)))
+              (def (main) (eq 7 8)) (export main)))
+  (call   main)
+  (output (: false Bool)))
+
+(case "compound equality over a runtime Rational leaf compares by the normalized form"
+  (doc    "`(= (tuple (Rational.of a 2) 1) (tuple (Rational.of b 2) 1))` — the Rational leaf (a normalized
+           2-BigInt-handle node) is compared by `champ_eq` descending its canonical children. a=b=3 → true;
+           a=3,b=5 → false. Pins the runtime Rational compound-`=` face.")
+  (input  (do (def (eq (: a Int64) (: b Int64)) (= (tuple (Rational.of a 2) 1) (tuple (Rational.of b 2) 1)))
+              (def (main) (eq 3 3)) (export main)))
+  (call   main)
+  (output (: true Bool)))
+
+(case "compound equality over a Rational leaf respects normalization (1/2 = 2/4)"
+  (doc    "The normalization face: `(Rational.of 1 2)` and `(Rational.of 2 4)` both normalize to the lowest-
+           terms `1/2` — the SAME canonical node — so a compound holding one equals a compound holding the
+           other → true. Confirms the Rational leaf's canonical form (gcd-reduced) is what `champ_eq` walks,
+           not the as-written numerator/denominator.")
+  (input  (do (def (main) (= (tuple (Rational.of 1 2) 1) (tuple (Rational.of 2 4) 1))) (export main)))
+  (call   main)
+  (output (: true Bool)))
+
 (case "equality over a compound mixing a float and a Bytes leaf walks both"
   (doc    "A compound value-eq whose leaves span TWO of the newly-walkable types at once — a Float64 and a
            Bytes — exercises the heap-walk over a heterogeneous compound: `(= (tuple f b) (tuple f b'))`

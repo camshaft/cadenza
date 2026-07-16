@@ -3536,6 +3536,41 @@ fn compound_equality_over_a_runtime_float_leaf_follows_the_canonical_byte_form()
     }
 }
 
+/// COMPOUND EQUALITY over a runtime BIGINT / RATIONAL leaf — the numeric-tower siblings of the Float-leaf
+/// admission. A runtime BigInt is a canonical sign-magnitude byte leaf (`box_bigint`); a Rational is a
+/// NORMALIZED 2-BigInt-handle node, so `champ_eq` descends its canonical children. `ty_heap_walkable` now
+/// admits both (was a decline forcing componentwise compare — the CAD Rational-redirect blocker). The
+/// sharpest check is Rational normalization: `1/2` and `2/4` reduce to the SAME node, so tuples holding
+/// them compare EQUAL → 1. (The equal/different faces are graded in 03-equality-and-observation.)
+#[test]
+fn compound_equality_over_a_runtime_rational_leaf_respects_normalization() {
+    use crate::testkit::parse;
+    let src = "(module m \
+                 (def (main) (if (= (tuple (Rational.of 1 2) 1) (tuple (Rational.of 2 4) 1)) 1 0)) \
+                 (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect(
+        "compound Rational equality must compile (ty_heap_walkable admits a Rational leaf), not decline",
+    );
+    let Some(runtime) = find_runtime_wasm() else {
+        eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
+        return;
+    };
+    let opts = cdz_run::RunOpts {
+        export: Some("main".to_string()),
+        args: vec![],
+        runtime: Some(runtime),
+        runtime_cache_dir: None,
+        host_responses: Vec::new(),
+    };
+    match cdz_run::run(&bytes, &opts).expect("run") {
+        cdz_run::Outcome::Value(s) => assert_eq!(
+            s, "1",
+            "1/2 and 2/4 normalize to the same canonical Rational node, so the tuples compare equal"
+        ),
+        cdz_run::Outcome::Trap(t) => panic!("compound Rational equality trapped: {t}"),
+    }
+}
+
 /// RUNTIME STRUCTURAL EQUALITY leak balance: a `=` on two RUNTIME sum values (`value-eq`) leaves NO
 /// live heap cells. Both operands are OWNED temporaries — `(build 3)` allocates a cons-list each side —
 /// and `value-eq` only BORROWS them, so the emit must `drop` each after the compare (else two whole
