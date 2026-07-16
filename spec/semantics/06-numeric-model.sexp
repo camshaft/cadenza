@@ -1771,6 +1771,55 @@
             (def (main) (sh 256 64)) (export main)))
   (error  CDZ0304))
 
+; The cases above all reach the count-range check via a foldable count (a literal, or a β-reducible
+; constant argument) — the compiler proves the out-of-range count at compile time (CDZ0304). A count
+; that is a GENUINE runtime parameter (supplied at the call boundary, so it CANNOT be folded) must hit
+; the RUNTIME guard the seed emits before wasm's masking i64.shl/i64.shr_s (`if c >= 64 { trap }`), else
+; the count silently masks mod 64 (shift-by-64 == shift-by-0) and a negative count masks into 0..63.
+; These pin the genuinely-runtime out-of-range count: an in-range control that works, then a count == 64,
+; a negative count, and a count > 64 that would mask to a small in-range value — all MUST TRAP. The trap
+; is the compiler's own non-arithmetic guard (a `Core::Trap` → wasm `unreachable`), a DIFFERENT trap KIND
+; from the arithmetic `(<< 1 63)` overflow above (`integer overflow`) — the count-range fault and the
+; result-overflow fault are distinct guards. (These grade `todo` on the rust backend: rustc's guard traps
+; with the message "shift count out of range", which the gate's trap_kind classifier does not yet map to
+; a canonical kind — a classifier gap, not a miscompile; the rust backend DOES trap, correctly.)
+
+(case "a genuinely-runtime in-range shift count works"
+  (doc    "The control for the runtime-count guard: a shift count that is a true runtime parameter, in
+           range, shifts normally. `(<< x n)` with x = 1, n = 4 = 16. Proves the runtime shift path
+           produces the right value when the count is valid — so a trap on the out-of-range companions
+           below is the guard firing, not the runtime shift path being broken.")
+  (input  (do (def (main (: x Int64) (: n Int64)) (<< x n)) (export main)))
+  (call   main (: 1 Int64) (: 4 Int64))
+  (output (: 16 Int64)))
+
+(case "a genuinely-runtime left-shift count equal to the bit width traps rather than masking"
+  (doc    "`(<< x n)` with x = 1 and n = 64 supplied AT THE CALL BOUNDARY — the count is not foldable, so
+           the compiler cannot reject it CDZ0304 (contrast the β-reducible companion above). It MUST hit
+           the runtime guard and trap, NOT silently mask to `(<< 1 0)` = 1 (wasm's i64.shl masks the count
+           mod 64). The trap is the count-range guard (`unreachable`), distinct in KIND from the arithmetic
+           overflow trap of `(<< 1 63)`.")
+  (input  (do (def (main (: x Int64) (: n Int64)) (<< x n)) (export main)))
+  (call   main (: 1 Int64) (: 64 Int64))
+  (trap   "unreachable"))
+
+(case "a genuinely-runtime negative right-shift count traps rather than masking"
+  (doc    "`(>> x n)` with x = 256 and n = -1 at the call boundary. A negative count has no defined value;
+           the runtime guard MUST trap, NOT mask -1 into 63 and yield `(>> 256 63)` = 0. Pins the negative-
+           count guard on the genuinely-runtime path for the RIGHT shift.")
+  (input  (do (def (main (: x Int64) (: n Int64)) (>> x n)) (export main)))
+  (call   main (: 256 Int64) (: -1 Int64))
+  (trap   "unreachable"))
+
+(case "a genuinely-runtime left-shift count beyond the bit width traps rather than masking to a small count"
+  (doc    "`(<< x n)` with x = 1 and n = 65 at the call boundary. 65 mod 64 = 1, so a masking lowering
+           would silently yield `(<< 1 1)` = 2 — a wrong VALUE, not a trap. The runtime guard MUST trap
+           instead. The sharpest masking-divergence face: the masked result (2) is a plausible small
+           value, not an obviously-wrong one.")
+  (input  (do (def (main (: x Int64) (: n Int64)) (<< x n)) (export main)))
+  (call   main (: 1 Int64) (: 65 Int64))
+  (trap   "unreachable"))
+
 ; --- Checked and wrapping arithmetic: the two DEFINED non-trapping overflow outcomes ----------------
 ; The default `+`/`-`/`*` TRAP on overflow (the checked-Int64 default, above). numeric-model.md #Overflow
 ; Is Defined admits a defined VALUE outcome too — offered here as explicit Int64 methods that never trap:
