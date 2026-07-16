@@ -3027,6 +3027,7 @@ pass	the implication-extended kernel Thm stays unforgeable — Thm.Seq of a bogu
 pass	the int-to-float generator is order-preserving (a < b implies of a < of b)
 pass	the intersection contains the elements in both sets
 pass	the intersection of disjoint sets is empty
+pass	the kernel defines T (truth) as a constant and DERIVES |- T through the rules
 pass	the kernel proves reflexivity end-to-end: refl t yields a theorem whose conclusion is (t = t)
 pass	the kernel proves the identity theorem ⊢ (λx.x) y = y via BETA — the first-theorem milestone
 pass	the kernel proves the tautology ⊢ p ⇒ p via DISCH (implication introduction) over ASSUME
@@ -3038,6 +3039,7 @@ pass	the kernel's EQ_MP rule: from |- p=q and G |- p derive G |- q (hypotheses u
 pass	the kernel's GEN (∀-introduction) enforces its free-variable side-condition
 pass	the kernel's MK_COMB rule: equals applied to equals are equal — from f=g and x=y derive (f x)=(g y)
 pass	the kernel's SPEC (∀-elimination) instantiates the quantified body with the witness
+pass	the kernel's conjunction: CONJ unions hypotheses, CONJUNCT1/2 project (hyps survive)
 pass	the kernel's modus ponens (⇒-elimination): from ⊢ p⇒q and ⊢ p derive ⊢ q
 pass	the largest factorial that fits the integer type computes exactly
 pass	the le modifier encodes a u16 little-endian
