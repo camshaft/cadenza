@@ -6301,13 +6301,24 @@ fn emit(
         // The boxed element is an owned temporary the emit must `drop` after the borrow — stash it in a
         // scratch slot, box, contains, then drop the stashed element. Leaves the bool on the stack.
         Core::SetContains { set, elem, elem_ty } => {
-            let elem_slot = base;
+            let set_slot = base;
+            let elem_slot = base + 1;
             if elem_slot + 1 > *high {
                 *high = elem_slot + 1;
             }
+            scratch_ty.insert(set_slot, ValType::I32);
             scratch_ty.insert(elem_slot, ValType::I32);
-            emit(db, set, slots, base + 1, high, scratch_ty, layout, out)?; // [set]
-            emit(db, elem, slots, base + 1, high, scratch_ty, layout, out)?; // [set, elem]
+            // `set-contains` BORROWS BOTH the set and the element and returns a bool (nothing borrows out of
+            // the set). Reclaim EACH iff an OWNED TEMPORARY: the SET when it is a fresh computed value
+            // (`Set.contains (build …) x` — else it leaks, the collection twin of the Set.len owned-temp
+            // reclaim), the ELEMENT via the existing `key_handle_is_owned_temporary` gate. A borrowed
+            // param/kept-local set/element is left to its owner.
+            let set_owned = matches!(heap_operand_ownership(db, set), Ok(HandleOwnership::Owned));
+            emit(db, set, slots, base + 2, high, scratch_ty, layout, out)?; // [set]
+            if set_owned {
+                out.push(Lir::LocalTee(set_slot)); // [set], set_slot = the owned set (for the later drop)
+            }
+            emit(db, elem, slots, base + 2, high, scratch_ty, layout, out)?; // [set, elem]
             let elem_boxed = box_op_for(db, elem, &elem_ty)?;
             emit_heap_store_tail(db, elem, elem_boxed, out); // [set, elem-handle]
             if key_needs_compaction(db, elem) {
@@ -6324,6 +6335,11 @@ fn emit(
             if elem_owned {
                 // Drop the owned element temporary now that the borrow-contains is done.
                 out.push(Lir::LocalGet(elem_slot));
+                out.push(Lir::CallImport(OP_DROP));
+            }
+            if set_owned {
+                // Drop the owned-temporary SET (set-contains only borrowed it; the bool result is a scalar).
+                out.push(Lir::LocalGet(set_slot));
                 out.push(Lir::CallImport(OP_DROP));
             }
             Ok(()) // leaves [bool]
@@ -6356,13 +6372,24 @@ fn emit(
         } => {
             let key_slot = base;
             let val_slot = base + 1;
-            if val_slot + 1 > *high {
-                *high = val_slot + 1;
+            let map_slot = base + 2;
+            if map_slot + 1 > *high {
+                *high = map_slot + 1;
             }
             scratch_ty.insert(key_slot, ValType::I32);
             scratch_ty.insert(val_slot, ValType::I32);
-            emit(db, map, slots, base + 2, high, scratch_ty, layout, out)?; // [map]
-            emit(db, key, slots, base + 2, high, scratch_ty, layout, out)?; // [map, key]
+            scratch_ty.insert(map_slot, ValType::I32);
+            // `map-lookup` BORROWS the map; if the map is an OWNED TEMPORARY (`Map.lookup (build …) k` — not
+            // a reused param/kept-local) it must be reclaimed or it LEAKS. ⚠ DELICATE ORDERING: the looked-up
+            // VALUE is stored borrowed in `val_slot` and `dup`'d in the Some arm — so the map's drop must come
+            // AFTER that dup (THEN), and in the None arm (val is NULL, nothing to preserve). Dropping right
+            // after `map-lookup` would free the value `val_slot` still borrows → a UAF. Stash the map now.
+            let map_owned = matches!(heap_operand_ownership(db, map), Ok(HandleOwnership::Owned));
+            emit(db, map, slots, base + 3, high, scratch_ty, layout, out)?; // [map]
+            if map_owned {
+                out.push(Lir::LocalTee(map_slot)); // [map], map_slot = the owned map (for the arm drops)
+            }
+            emit(db, key, slots, base + 3, high, scratch_ty, layout, out)?; // [map, key]
             let key_boxed = box_op_for(db, key, &key_ty)?;
             emit_heap_store_tail(db, key, key_boxed, out); // [map, key-handle]
             if key_needs_compaction(db, key) {
@@ -6398,6 +6425,13 @@ fn emit(
             out.push(Lir::CallImport(OP_DUP)); // pops value, rc++ → [disc_some]
             out.push(Lir::LocalGet(val_slot)); // [disc_some, value] (retained)
             out.push(Lir::CallImport(OP_SUM_NEW)); // [Some-handle]
+            if map_owned {
+                // The value is now independently retained (dup'd above), so it is SAFE to drop the
+                // owned-temporary map here — AFTER the dup, not right after `map-lookup` (that would free
+                // the value the `val_slot` borrow points at → UAF). `drop` pops only the map. [Some-handle]
+                out.push(Lir::LocalGet(map_slot));
+                out.push(Lir::CallImport(OP_DROP));
+            }
             out.push(Lir::Else);
             // ELSE — None: the unit payload is an empty array.
             out.push(Lir::ConstI32(disc_none as i32)); // [disc_none]
@@ -6408,6 +6442,12 @@ fn emit(
             // `String.at`/`Bytes.at` None arms to parity).
             out.push(Lir::ConstI32(super::runtime_abi::IMM_UNIT as i32)); // [disc_none, unit-payload]
             out.push(Lir::CallImport(OP_SUM_NEW)); // [None-handle]
+            if map_owned {
+                // None arm: `val_slot` is NULL (no value borrowed out), so the owned-temporary map is dropped
+                // here with nothing to preserve. [None-handle]
+                out.push(Lir::LocalGet(map_slot));
+                out.push(Lir::CallImport(OP_DROP));
+            }
             out.push(Lir::End);
             Ok(())
         }
@@ -15520,9 +15560,13 @@ mod tests {
         // the second borrowed key freed under its owner, flipping its comparison and dropping a per-node
         // decision (a silent wrong count). No `box`/`bytes-compact` runs for a String key (it is already a
         // handle, and a borrowed String is a flat leaf), so the un-owned key must be left to its owner.
+        // BOTH the map and the key are BORROWED params the caller owns — so this body must drop NEITHER
+        // (`map-lookup` borrows both). Using a param MAP (not an inline `Map.insert`) isolates the borrowed
+        // -key concern from the owned-temporary-map reclaim (a fresh inline map IS an owned temporary the
+        // emit now correctly drops — see `an_owned_temporary_map_lookup_map_is_reclaimed`).
         let ast = crate::testkit::parse(
-            "(module m (def (pv (: op String)) \
-               (match (Map.lookup (Map.insert (map) \"a\" 1) op) \
+            "(module m (def (pv (: mm (Map String Int64)) (: op String)) \
+               (match (Map.lookup mm op) \
                  (((. Option Some) p) p) (((. Option None) _) 0))) \
                (def (main) 0) (export main))",
         );
@@ -15532,16 +15576,43 @@ mod tests {
         let f = select_function(&mut db, body, &params, &layout).expect("select");
         assert!(
             !f.code.contains(&Lir::CallImport("drop")),
-            "a borrowed String lookup key (a param the caller owns) must not be dropped — \
-             dropping it frees a value still live in the caller; got: {:?}",
+            "a borrowed String lookup key AND a borrowed map param must not be dropped — \
+             dropping either frees a value still live in the caller; got: {:?}",
             f.code
         );
-        // The map built INSIDE the function IS a fresh owned value — but it is consumed by `map-lookup`
-        // (which borrows), so this body drops nothing at all. The only drop in a real program is on an
-        // OWNED key (a constant/rope), covered by `an_owned_string_map_lookup_key_is_dropped`.
         assert!(
             f.code.contains(&Lir::CallImport("map-lookup")),
             "the lookup must still emit"
+        );
+    }
+
+    #[test]
+    fn an_owned_temporary_map_lookup_map_is_reclaimed() {
+        // The COLLECTION-operand reclaim: a `Map.lookup` whose MAP is a fresh OWNED TEMPORARY (built inline,
+        // used once) must be dropped after the borrowing lookup, or it leaks. ⚠ the drop must come AFTER the
+        // value is dup'd out (the Some arm) — not right after `map-lookup` (that would free the value the
+        // val-slot still borrows → UAF). Here the key is a constant (also owned → also dropped), so we get
+        // ≥2 drops (key + map). Pins that the owned-temporary map is reclaimed.
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: d Int64)) \
+               (match (Map.lookup (Map.insert (map) \"a\" 1) \"a\") \
+                 (((. Option Some) p) p) (((. Option None) _) 0))) \
+               (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
+        let drops = f
+            .code
+            .iter()
+            .filter(|i| matches!(i, Lir::CallImport("drop")))
+            .count();
+        assert!(
+            drops >= 2,
+            "an owned-temporary map (built inline) AND its owned constant key must both be dropped after \
+             the borrowing lookup (≥2 drops); got {drops}: {:?}",
+            f.code
         );
     }
 
@@ -15574,9 +15645,12 @@ mod tests {
         // The `Set.contains` twin of `a_borrowed_string_map_lookup_key_is_not_dropped`: `set-contains`
         // BORROWS its element, so a BORROWED String element (a `String` param the caller owns) must NOT be
         // dropped after the membership probe — dropping it would free the caller's value.
+        // BOTH the set and the element are BORROWED params — so drop NEITHER. Using a param SET (not an
+        // inline `Set.of`) isolates the borrowed-element concern from the owned-temporary-set reclaim (a
+        // fresh inline set IS an owned temporary the emit now correctly drops).
         let ast = crate::testkit::parse(
-            "(module m (def (has (: e String)) \
-               (Set.contains (Set.of (list \"a\" \"b\")) e)) \
+            "(module m (def (has (: s (Set String)) (: e String)) \
+               (Set.contains s e)) \
                (def (main) 0) (export main))",
         );
         let mut db = Db::load(ast);
@@ -15585,7 +15659,7 @@ mod tests {
         let f = select_function(&mut db, body, &params, &layout).expect("select");
         assert!(
             !f.code.contains(&Lir::CallImport("drop")),
-            "a borrowed String set-contains element (a param the caller owns) must not be dropped; \
+            "a borrowed String set-contains element AND a borrowed set param must not be dropped; \
              got: {:?}",
             f.code
         );

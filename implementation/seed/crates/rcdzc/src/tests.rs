@@ -24571,6 +24571,39 @@ mod match_engine {
     }
 
     #[test]
+    fn set_contains_and_map_lookup_over_an_owned_temporary_reclaim_the_collection() {
+        // The last READ-op faces: `Set.contains`/`Map.lookup` over an owned-temporary collection must
+        // reclaim it. ⚠ Map.lookup is DELICATE — the looked-up value is borrowed from the map and dup'd in
+        // the Some arm, so the owned-map drop must come AFTER that dup (not right after map-lookup, which
+        // would free the value → UAF). Both drive a stress loop building a fresh collection each iteration:
+        // if the collection leaked or was double-freed, the value would drift or the run would trap.
+        // set-contains: build {0,1,2} 300×, each contains(…,1)=true → sum 300.
+        let set_stress = "(module m \
+               (def (build i n s) (if (< i n) (build (+ i 1) n ((. Set insert) s i)) s)) \
+               (def (drive j m tot) (if (< j m) \
+                   (drive (+ j 1) m (+ tot (if ((. Set contains) (build 0 3 ((. Set of) (list))) 1) 1 0))) tot)) \
+               (def (main) (drive 0 300 0)) (export main))";
+        if let Some(out) = run_on_heap(set_stress) {
+            assert_eq!(
+                out, "300",
+                "300 owned-temporary Set.contains must each reclaim the set (no leak/UAF drift)"
+            );
+        }
+        // map-lookup Some path, 300×: build {0:0,1:10,2:20}, lookup 1 → 10 each → sum 3000.
+        let map_stress = "(module m \
+               (def (build i n mp) (if (< i n) (build (+ i 1) n ((. Map insert) mp i (* i 10))) mp)) \
+               (def (drive j m tot) (if (< j m) \
+                   (drive (+ j 1) m (+ tot ((. Option expect) ((. Map lookup) (build 0 3 (map)) 1) \"v\"))) tot)) \
+               (def (main) (drive 0 300 0)) (export main))";
+        if let Some(out) = run_on_heap(map_stress) {
+            assert_eq!(
+                out, "3000",
+                "300 owned-temporary Map.lookup(Some) must each reclaim the map AFTER the value-dup (no UAF)"
+            );
+        }
+    }
+
+    #[test]
     fn a_projected_list_consumed_then_reprojected_is_retained_not_mutated() {
         // The PROJECTION face of the still-live-binding retain (repeated-proj-of-let-consumed-then-read): the
         // shared value is a nested-compound PROJECTION `(. t 0)` of a `let`-bound tuple, not the binding
