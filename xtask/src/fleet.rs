@@ -1837,6 +1837,31 @@ fn watchdog(fleet: &Fleet, dry_run: bool, stale_mult: u32, stale_cap: u64, grace
                 }
             }
         };
+        // DRAIN-STALL detection (report-only). A silent drain-stall is INVISIBLE to the heartbeat
+        // check below: the loop IS running (so the heartbeat stays fresh and `age <= stale_after`), it
+        // just isn't consuming its inbox — e.g. it globs a worktree-relative `.claude/...` that matches
+        // nothing, sees "empty" every tick, and idles at prompt while an `assign`/`reject` piles up
+        // unread (this stalled v-try-operator ~8 ticks). So BEFORE the healthy-`continue`, cross-check
+        // the hub inbox depth against the pane: an agent sitting IDLE (not mid-tick) WITH unconsumed hub
+        // messages is a probable drain-stall. Report it loudly (don't auto-nudge — the loop runs; a
+        // human/operator wants to see the anomaly, and a spurious nudge mid-anything is riskier than a
+        // warning). Interactive roles (concierge/design) legitimately sit idle with mail a human reads,
+        // so exempt them. Uses the canonical hub inbox (fleet.inbox), never a relative path.
+        let hub_inbox_depth = count_dir(&fleet.inbox(&a.name), |f| f.ends_with(".json"));
+        let pane_idle = hb_age.is_some() && !window_is_working(&session, &a.name);
+        if is_probable_drain_stall(&a.role, hub_inbox_depth, pane_idle) {
+            eprintln!(
+                "  ⚠ '{}' is IDLE at prompt with {hub_inbox_depth} UNCONSUMED message(s) in its hub \
+                 inbox ({}) — probable DRAIN-STALL (loop alive, heartbeat fresh, but not draining; \
+                 e.g. a worktree-relative inbox glob). Check it drains via `cargo xtask fleet inbox {}`.",
+                a.name,
+                fleet.inbox(&a.name).display(),
+                a.name
+            );
+            // fall through — still run the normal heartbeat logic below (a drain-stall usually has a
+            // FRESH heartbeat and would `continue` as healthy, so the warning above is the signal).
+        }
+
         if hb_age.is_some() && age <= stale_after {
             continue; // ticked recently — healthy.
         }
@@ -2095,6 +2120,21 @@ fn stale_window_secs(interval_secs: u64, mult: u32, cap: u64) -> u64 {
 /// false-positive). Returns true ⇒ honor the busy pane and skip re-arm; false ⇒ ignore the pane.
 fn pane_busy_means_working(hb_ever: bool, pane_busy: bool) -> bool {
     hb_ever && pane_busy
+}
+
+/// Whether an agent looks like it's in a silent DRAIN-STALL the watchdog should flag: it has
+/// unconsumed messages in its (hub) inbox AND its pane is idle (not mid-tick). Pure so the signal's
+/// gate is unit-testable. This is orthogonal to the heartbeat/stale check — a drain-stalled agent
+/// typically has a FRESH heartbeat (the loop runs; it just doesn't drain), so the normal staleness
+/// path would wave it through as healthy. The two INTERACTIVE roles (`concierge`, `design`) sit idle
+/// with mail a human reads on their own cadence — that is NOT a stall, so exempt them. `inbox_depth`
+/// counts only queued messages (not `processed/`); `pane_idle` should already fold in "has ever
+/// heartbeated" (an un-booted agent's idle pane isn't a drain-stall, it's a cold start).
+fn is_probable_drain_stall(role: &str, inbox_depth: usize, pane_idle: bool) -> bool {
+    if matches!(role, "concierge" | "design") {
+        return false;
+    }
+    inbox_depth > 0 && pane_idle
 }
 
 /// Does the agent's tmux pane show Claude actively working? Claude Code prints an "esc to interrupt"
@@ -3950,6 +3990,23 @@ mod tests {
         );
         // A `+ <sha> <subject>` form (some git configs append the subject) keeps just the sha.
         assert_eq!(commits_to_replay("+ 9999 wip: something"), vec!["9999"]);
+    }
+
+    #[test]
+    fn is_probable_drain_stall_needs_unconsumed_mail_and_an_idle_pane() {
+        // The stall signature: unconsumed inbox + idle pane, on a non-interactive role.
+        assert!(is_probable_drain_stall("vertical", 1, true));
+        assert!(is_probable_drain_stall("fix", 3, true));
+        // Empty inbox → nothing to drain → not a stall (this is legitimate idle).
+        assert!(!is_probable_drain_stall("vertical", 0, true));
+        // Pane busy (mid-tick) → it may be about to drain → not flagged.
+        assert!(!is_probable_drain_stall("vertical", 2, false));
+        // Interactive roles legitimately sit idle with mail a human reads → never flagged.
+        assert!(!is_probable_drain_stall("concierge", 5, true));
+        assert!(!is_probable_drain_stall("design", 5, true));
+        // A non-interactive role with mail + idle IS flagged even if it's pr-sync (it should be
+        // draining merge-requests; idle-with-queued-MRs is worth surfacing).
+        assert!(is_probable_drain_stall("pr-sync", 4, true));
     }
 
     #[test]
