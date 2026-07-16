@@ -682,3 +682,63 @@
             (export main)))
   (call   main (: 3.5 Float64))
   (output (: 1 Int64)))
+
+; --- Float CHAMP keys/elements under the canonical byte form ----------------------------------------
+; 9c2790cef fixed the Float element-boxing arm (box-float, not the defaulted box-int — my filed
+; invalid-wasm; its pin covers the empty-set insert). These pin the canonical-form semantics the
+; boxing now reaches, promoted from breaker probes held back until the fix: NaN is ONE key; -0.0
+; and 0.0 are TWO.
+
+(case "a NaN map key is found by a differently-produced NaN"
+  (doc    "Insert under `(/ x x)` at x = 0.0 (a computed NaN), look up with `Float64.nan` → 42.
+           Every NaN shares one canonical byte form, so champ_hash/champ_eq land both spellings in
+           one slot — the map-key face of the scalar NaN-equality rule (a raw-bits hash scatters
+           NaN keys; raw f64.eq never matches them).")
+  (input  (do
+            (def (main (: x Float64))
+              (match (Map.lookup (Map.insert Map.empty (/ x x) 42) Float64.nan)
+                ((Some v) v)
+                ((None _) -1)))
+            (export main)))
+  (call   main (: 0.0 Float64))
+  (output (: 42 Int64)))
+
+(case "negative zero and zero are distinct map keys"
+  (doc    "Insert 1 under -0.0 and 2 under 0.0: the map holds TWO entries and -0.0 looks up its own
+           value → 10·2 + 1 = 21. The -0.0 complement of the NaN-unification key face (an f64.eq
+           key compare collapses the pair to one entry).")
+  (input  (do
+            (def (main (: d Int64))
+              (+ (* 10 (Map.len (Map.insert (Map.insert Map.empty -0.0 1) 0.0 2)))
+                 (match (Map.lookup (Map.insert (Map.insert Map.empty -0.0 1) 0.0 2) -0.0)
+                   ((Some v) v)
+                   ((None _) -1))))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 21 Int64)))
+
+(case "a set dedups NaN elements and keeps zero signs distinct"
+  (doc    "Insert a computed NaN then `Float64.nan` → ONE element (canonical unification); insert
+           -0.0 then 0.0 → TWO (distinct canonical forms): 10·1 + 2 = 12. The set-element face of
+           both canonical-form rules through the fixed box-float path.")
+  (input  (do
+            (def (main (: x Float64))
+              (+ (* 10 (Set.len (Set.insert (Set.insert (Set.of (list)) (/ x x)) Float64.nan)))
+                 (Set.len (Set.insert (Set.insert (Set.of (list)) -0.0) 0.0))))
+            (export main)))
+  (call   main (: 0.0 Float64))
+  (output (: 12 Int64)))
+
+(case "a computed float map key is found by its literal twin"
+  (doc    "Insert under `(+ x 1.25)` at x = 1.25, look up with the literal 2.5 → 42. The
+           arithmetic-result key and the literal share one canonical form (float arithmetic is
+           deterministic; the emitted add's bits equal the folded literal's) — the computed-key
+           control beside the special-value faces.")
+  (input  (do
+            (def (main (: x Float64))
+              (match (Map.lookup (Map.insert Map.empty (+ x 1.25) 42) 2.5)
+                ((Some v) v)
+                ((None _) -1)))
+            (export main)))
+  (call   main (: 1.25 Float64))
+  (output (: 42 Int64)))

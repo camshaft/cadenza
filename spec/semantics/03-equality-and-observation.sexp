@@ -1338,3 +1338,29 @@
               (= (tuple 5 (= (% s 2) 0)) (tuple 5 (= (% s 3) 0))))
             (export main)))
   (call   main (: 4 Int64)) (output (: false Bool)))
+
+(case "the float ordering-versus-equality split on the zero pair"
+  (doc    "`(= -0.0 0.0)` is FALSE (distinct canonical byte forms) while `(<= -0.0 0.0)` is TRUE
+           (IEEE order-equal) — both on ONE pair in one body → 0 + 1 = 1. The landed ordering cases
+           pin each side separately; this pins the SPLIT itself side by side, the sharpest
+           two-relations-one-pair discriminator (a lowering that reused the equality path for `<=`'s
+           equal-case answers 11; one that reused ordering for `=` answers 10).")
+  (input  (do
+            (def (main (: d Int64))
+              (+ (if (= -0.0 0.0) 10 0) (if (<= -0.0 0.0) 1 0)))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 1 Int64)))
+
+(case "infinities order beyond every finite value"
+  (doc    "`(/ 1.0 0.0)` = +∞ exceeds 1.0; `(/ -1.0 0.0)` = -∞ is below -1000000.0 → 10 + 1 = 11.
+           Float division by zero is total (the never-traps rule) and the resulting infinities take
+           their IEEE places in the runtime order — the infinity face of the partial-order landing
+           (its pins cover finite values and NaN).")
+  (input  (do
+            (def (main (: x Float64))
+              (+ (if (< 1.0 (/ 1.0 x)) 10 0)
+                 (if (< (/ -1.0 x) -1000000.0) 1 0)))
+            (export main)))
+  (call   main (: 0.0 Float64))
+  (output (: 11 Int64)))

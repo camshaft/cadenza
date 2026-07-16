@@ -256,6 +256,7 @@ pass	a NESTED mixed ARG (a tuple containing a record) crosses the direct-call bo
 pass	a NESTED-tuple ARG composes with a NESTED-tuple RESULT
 pass	a NOMINAL-over-tuple ARG crosses as the underlying tuple (direct-call)
 pass	a NON-tail-resumptive arm projects a tuple parameter twice in its pure one-hole context
+pass	a NaN map key is found by a differently-produced NaN
 pass	a NaN nested in a list compares equal under the canonical byte form
 pass	a NaN nested in a sum payload compares equal under the canonical byte form
 pass	a NaN nested in a tuple compares equal under the canonical byte form
@@ -519,6 +520,7 @@ pass	a compound map key containing a Bytes rope is found by its flat-twin key
 pass	a compound map key containing a rope is found by its flat-twin key
 pass	a compound map key whose Bytes element is a rope is found by its flat twin
 pass	a compound map key whose LIST element is a rope is found by its flat-twin key
+pass	a computed float map key is found by its literal twin
 pass	a conditional evaluates only the selected branch
 pass	a conditional inside a function with a constant condition and mismatched branches is a type error
 pass	a conditional on a negated runtime condition selects the correct branch and shields the other
@@ -1683,6 +1685,7 @@ pass	a set chosen by a runtime if is membership-tested with valid wasm
 pass	a set chosen by a runtime if is size-measured with valid wasm
 pass	a set collapses a duplicate element
 pass	a set consumed by Set.insert in one operand is unchanged for a later read of the same binding
+pass	a set dedups NaN elements and keeps zero signs distinct
 pass	a set is constructed from a list of its elements
 pass	a set nested in a tuple compares equal with a runtime element, order-independent
 pass	a set of user-sum elements tests membership by variant
@@ -2522,6 +2525,7 @@ pass	indexing a list with a negative index yields None
 pass	indexing a runtime string past its last scalar yields None
 pass	indexing a slice is relative to the slice's start
 pass	indexing an empty list yields None
+pass	infinities order beyond every finite value
 pass	inline-always on a recursive definition is rejected
 pass	insert-order does not leak into Set.to-list enumeration order
 pass	inserting a key already present replaces its value, not the size
@@ -2632,6 +2636,7 @@ pass	negating a runtime narrow integer just above its min is exact
 pass	negating a runtime narrow integer traps at the width's own min, not the Int64 min
 pass	negation inverts a boolean
 pass	negative integer to byte uses two's complement
+pass	negative zero and zero are distinct map keys
 pass	negative zero crosses the parameter boundary preserving its sign
 pass	negative zero encodes to bytes distinct from positive zero
 pass	negative zero is distinct in the canonical value form
@@ -2917,6 +2922,7 @@ pass	the expander threads the hole list to the tag even with zero chunks and zer
 pass	the exponent marker is case-insensitive
 pass	the false-literal coercion negates a float ordering compare, turning an unordered pair true
 pass	the first failing `?` short-circuits; a later `?` never runs
+pass	the float ordering-versus-equality split on the zero pair
 pass	the generated-set convergence property has discriminating power — two different generated sets are NOT equal
 pass	the generator is a deterministic function of its seed (same seed, same value) — folds
 pass	the generator reproduces its stream from a runtime seed (same seed, same value) — runs
