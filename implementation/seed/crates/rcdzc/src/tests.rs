@@ -66093,6 +66093,61 @@ mod cross_component_oracle {
     }
 
     // ------------------------------------------------------------------------------------------------
+    // PL17 — TWO compound arguments cross to a peer in one op. U16 pins a SINGLE compound arg; this pins
+    // that MULTIPLE compound args each cross as their own handle in the same call (the inbound
+    // multi-handle case). A peer op `add4 : (Tuple, Tuple) -> Int64` reads both tuples; the consumer
+    // passes two freshly-built tuples. main(5) = add4((5,5),(5,5)) = 20 — both handles crossed + read.
+    // ------------------------------------------------------------------------------------------------
+    #[test]
+    fn two_compound_arguments_cross_to_a_peer_in_one_op() {
+        use crate::testkit::parse;
+        // PROVIDER: add4 takes TWO tuples, sums all four elements.
+        let provider = compile_provider(
+            "(do (def (add4 (: a (Tuple Int64 Int64)) (: b (Tuple Int64 Int64))) \
+             (+ (+ (. a 0) (. a 1)) (+ (. b 0) (. b 1)))) (export add4))",
+            "cadenza:s/api",
+        );
+        // CONSUMER: builds two tuples and passes BOTH into the peer op.
+        let src = "(do \
+            (effect S (op add4 (-> (Tuple Int64 Int64) (Tuple Int64 Int64) Int64))) \
+            (bind S \"cadenza:s/api\") \
+            (def (main (: x Int64)) (host (S) (S.add4 (tuple x x) (tuple x x)))) \
+            (export main))";
+        let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .unwrap_or_else(|d| {
+                panic!(
+                    "two-compound-arg consumer compiles: {} [{:?}]",
+                    d.message, d.code
+                )
+            });
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("[PL17] runtime wasm not found; skipping");
+            return;
+        };
+        let peers = vec![cdz_run::Peer {
+            bytes: provider,
+            interface: "cadenza:s/api".to_string(),
+        }];
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec!["5".to_string()],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run_with_peers(&consumer, &peers, &opts)
+            .expect("two compound arguments cross to a peer")
+        {
+            // add4((5,5),(5,5)) = 5+5+5+5 = 20. Both tuple handles crossed the boundary + were read.
+            cdz_run::Outcome::Value(s) => assert_eq!(
+                s, "20",
+                "two compound arguments each cross as their own handle in one peer call"
+            ),
+            cdz_run::Outcome::Trap(t) => panic!("two-compound-argument run trapped: {t}"),
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------------
     // U17 — HANDLE PASS-THROUGH: peer A produces a compound, the consumer passes it DIRECTLY to peer B
     // WITHOUT inspecting it. Composes U16 (compound arg in) with U5 (compound result out) across TWO
     // boundary crossings in one body, exercising ownership-transfer-on-argument: the handle A mints flows
