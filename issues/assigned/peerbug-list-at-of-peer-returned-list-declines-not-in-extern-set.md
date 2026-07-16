@@ -33,20 +33,37 @@ peer list first (`(let ((xs (L.mklist x))) (List.at xs 0))`) still declines. Bot
 `List.at` consumers import `cadenza:runtime/heap`, so it is NOT an envelope (extern-only vs
 extern+runtime) difference.
 
-## Where it originates
-`select.rs:8123` — `layout.extern_index(&iface, &op)` returns `None` for the peer op `mklist` when
-its result feeds a `Core::ListAt`, so the emit declines. `collect_host_imports` (host.rs) DOES descend
-`Core::ListAt { list, index, .. }` (and `Core::ListLen { operand }`), so both should populate the
-extern set — yet only `List.at` misses. Suspected root cause: `List.at` of a peer-returned OWNED
-temporary triggers the U13/U14 reclamation path (a borrowed-handle `dup`/`drop` around the projection
-in `select.rs`), which likely re-shapes or re-parents the `Core::HostCall` so the emit-time
-`extern_index` lookup no longer matches the op collected into `extern_order`. `List.len` has no such
-reclamation dup, so it is unaffected.
+## ROOT CAUSE (traced 2026-07-16 by v-peer-linking — NOT what the title suggests; NOT `List.at`-specific, NOT the reclamation dup)
+The trigger is the ENTRYPOINT RESULT TYPE, not `List.at`. `List.at` returns `Option Int64`; when that
+Option IS the whole entrypoint body, `main`'s result is a compound that ESCAPES via
+`emit_runtime_resource` (mod.rs:1842, dispatched at mod.rs:441 for a runtime value-form result). That
+emit path collects the RUNTIME ops (`collect_module_used_ops`) but **NEVER threads the peer
+extern-import set** — it builds `layout.with_import_base(k+2)` and never calls `.with_extern_order(...)`,
+so `extern_order` stays `[]`. Then select.rs:8132 `extern_index` returns `None` → the decline.
 
-## Repro shapes to pin once fixed
-- peer List result + `List.at` const index (above) — should run: `mklist(7)=[8,9]`, `at 0` = 8.
-- peer List result + `List.at` runtime index — same decline.
-- peer List result + `List.len` — already WORKS (add as a passing pin too).
+Proof (instrumented emit): `List.len` (scalar Int64 result) → normal `emit` → `extern_order=
+[("cadenza:l/api","mklist")]` → works. `List.at` returning the raw Option → `emit_runtime_resource` →
+`extern_order=[]` → declines. CONTROL that confirms the diagnosis: `(match (List.at …) ((Some v) v)
+(None 0))` — element read but entrypoint returns a SCALAR — takes the normal `emit` path and WORKS
+(compiles + runs, main(7)=8). So the real gap: **a peer-bound `Core::HostCall` in a body whose EXPORT
+RESULT escapes as a runtime resource** (`emit_runtime_resource`, and likely `emit_recursive_sum_resource`
++ the closure-resource paths) has NO extern-import threading and NO extern×resource envelope.
+
+## The real fix (a resource-escape × peer-envelope FUSION — bigger than a one-tick patch)
+`emit_runtime_resource` (+ `emit_recursive_sum_resource`) must, like the main `emit`:
+(1) `collect_host_imports` over the reachable bodies, (2) split peer-bound ops into `extern_imports`,
+(3) `layout.with_extern_order(...)` + shift `import_base` past the extern ops, (4) assemble a component
+composing the RESOURCE envelope WITH the peer extern envelope — a NEW fusion (`assemble_runtime_resource`
+and `assemble_extern_runtime` are separate today; neither imports a peer interface AND publishes a
+resource). (4) is the substantial part. Until then the shape is a clean DECLINE.
+
+## Repro shapes
+- WORKS (common case, PINNED as rcdzc test `an_element_of_a_peer_returned_list_is_read_and_used`):
+  peer List result + `List.at` + match-to-scalar → entrypoint returns Int64 → normal emit → main(7)=8.
+- WORKS (PINNED `a_peer_op_returning_a_list_crosses_and_its_length_is_read`): peer List + `List.len` → 3.
+- DECLINES (the gap): entrypoint whose RESULT IS the raw compound/Option (`List.at` as the whole body,
+  or any peer op whose result the entrypoint returns as a List/Map/Set/Option) → `emit_runtime_resource`
+  → "not in the extern-import set". Fix = the resource×extern envelope fusion above; then pin this.
 
 ## Not-a-miscompile note
 This is a clean DECLINE (compile error, no artifact), so it is safe; it just blocks a valid rich-
