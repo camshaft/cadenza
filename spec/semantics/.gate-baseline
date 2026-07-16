@@ -908,6 +908,7 @@ pass	a literal-refined variant arm does not satisfy exhaustiveness
 pass	a lookup at a runtime key finds the present value, else None
 pass	a loop whose bound is an invariant computation runs correctly (the bound is hoisted)
 pass	a loop-invariant computed in both the condition and the body is shared, computing correctly
+pass	a loop-invariant heap projection consumed in the loop body is not LICM-hoisted
 pass	a loop-invariant subexpression in a MATCH scrutinee is hoisted to valid wasm
 pass	a loop-invariant trapping expression is not evaluated when the loop runs zero iterations
 pass	a lowercase type variable in a USER-GENERIC parameter annotation is rejected

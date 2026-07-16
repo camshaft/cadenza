@@ -3459,6 +3459,19 @@ fn collect_hoistable(
     if !licm_trivial(db, id)
         && licm_invariant(db, id, inv_params)
         && (crate::lower::is_trap_free(db, id) || frontier.contains(&id))
+        // HEAP-HANDLE HOIST GUARD (Perceus soundness): a hoisted value is materialized ONCE before the loop
+        // into a persistent slot and read back each iteration via `slots.get(&id)` — with the refcounts it
+        // had at hoist time. That is correct for a SCALAR result (a count/index — copying an i64 is free and
+        // rc-neutral). But a heap-HANDLE hoist root emits its dup/retain ONCE in the prologue, while the body
+        // may CONSUME it (a `List.push`/`Bytes.concat`/`Map.insert` of the projected handle) once PER
+        // ITERATION — so a single hoisted dup covers only the first consume; the second iteration consumes a
+        // shared handle at rc==1 and FBIP-mutates it in place, and the loop-carried value DRIFTS. (Repro:
+        // `(loop … pr … (List.len (List.push (. pr 0) 99)))` with `pr` a threaded tuple carrying the list —
+        // per-iter len drifts 3,3,4,5,… .) A heap invariant that is only BORROWED in the body is safe, but
+        // its maximal hoist root is then the enclosing SCALAR read (`List.len (. pr 0)` hoists as one i64
+        // slot, the projection riding inside), so refusing a heap-TYPED root loses only the dangerous
+        // handle-alone hoist, never the scalar borrow-read wins. A missed hoist is a slower loop, never wrong.
+        && !is_heap_type(&type_of(db, id))
     {
         if !out.contains(&id) {
             out.push(id);
