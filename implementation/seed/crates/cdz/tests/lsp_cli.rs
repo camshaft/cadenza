@@ -540,6 +540,49 @@ fn lsp_hover_types_an_imported_name_across_files() {
 }
 
 #[test]
+fn lsp_hover_shows_the_docstring_of_an_imported_documented_def() {
+    // Cross-file hover carries the DOCSTRING too: lib documents `helper` with a `///` doc; hovering its
+    // use in main shows that doc (as Markdown, alongside the type) — the DocAt query over the closure.
+    let dir = std::env::temp_dir().join(format!("cdz-lsp-xhoverdoc-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    std::fs::write(
+        dir.join("lib.ml"),
+        "/// Adds one to its argument.\ndef helper(x: Int64) -> Int64 = x + 1\nexport { helper }",
+    )
+    .expect("write lib");
+    let main_path = dir.join("main.ml");
+    let main_text = "import { helper } from \"lib\"\ndef main() -> Int64 = helper(41)";
+    std::fs::write(&main_path, main_text).expect("write main");
+    let main_uri = format!("file://{}", main_path.display());
+    // Cursor on the `helper` USE in main's body (line 1) — the last occurrence.
+    let (line, ch) = {
+        let last = main_text.lines().last().unwrap();
+        (1i64, last.find("helper").expect("a helper use") as i64)
+    };
+
+    let msgs = drive_messages(&[
+        serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{},"processId":null,"rootUri":null}}),
+        serde_json::json!({"jsonrpc":"2.0","method":"initialized","params":{}}),
+        serde_json::json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":main_uri,"languageId":"cadenza","version":1,"text":main_text}}}),
+        serde_json::json!({"jsonrpc":"2.0","id":10,"method":"textDocument/hover","params":{"textDocument":{"uri":main_uri},"position":{"line":line,"character":ch}}}),
+        serde_json::json!({"jsonrpc":"2.0","id":99,"method":"shutdown","params":null}),
+        serde_json::json!({"jsonrpc":"2.0","method":"exit","params":null}),
+    ]);
+    let hover = response(&msgs, 10).expect("a hover response");
+    // A documented hover is Markup — read `/result/contents/value`.
+    let value = hover
+        .pointer("/result/contents/value")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    assert!(
+        value.contains("Adds one to its argument."),
+        "cross-file hover should carry the imported def's docstring, got {value:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn lsp_references_span_multiple_files_across_the_closure() {
     // Cross-file find-references: `helper` is defined + used in lib.sexp AND imported + used in
     // main.sexp. References on the use in main returns Locations in BOTH files (single-buffer would
