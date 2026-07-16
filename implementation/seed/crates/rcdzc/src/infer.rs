@@ -6538,6 +6538,32 @@ pub(crate) fn check_unknown_units(db: &mut Db, out: &mut Vec<Reject>) {
     }
 }
 
+/// Whether `id` is a UNIT-BUILDER form — its head (or itself, for the nullary `Unit.one`) is one of the
+/// `Unit.*` prims (`one`/`base`/`of`/`*`/`/`/`^`/`define`). Used to tell a genuine unit expression that
+/// merely fails to REDUCE (a `(Unit.of #"zorks")` naming an unknown unit — handled by
+/// `check_unknown_units` with a did-you-mean) from a value that is NOT a unit form at all (a literal, a
+/// tuple), so `Qty.of`'s not-a-unit reject fires only on the latter and never shadows the richer
+/// unknown-unit message.
+fn is_unit_builder_form(db: &mut Db, id: crate::ast::StructId) -> bool {
+    use crate::resolved::Prim;
+    let head = match db.ast.get(id) {
+        crate::ast::Struct::List(kids) => kids.first().copied().unwrap_or(id),
+        _ => id,
+    };
+    matches!(
+        crate::eval::meta_apply_of(db, head),
+        Some(
+            Prim::UnitOne
+                | Prim::UnitBase
+                | Prim::UnitOf
+                | Prim::UnitMul
+                | Prim::UnitDiv
+                | Prim::UnitPow
+                | Prim::UnitDefine
+        )
+    )
+}
+
 /// The SURFACE spelling of a simple leaf `Atom` — a name or an integer literal — for splicing into a
 /// fix replacement (`(: <value> <Type>)`). Returns `None` for a compound node or any other leaf
 /// (a float, whose faithful re-spelling needs `Decimal` reconstruction; a string/char, which needs
@@ -6591,6 +6617,42 @@ fn check_application(
     // lower. So it imposes NO operand constraint here; return so the generic scheme-unify does not fault
     // (the intrinsic has no HM scheme). The operand's own faults are collected by the caller.
     if crate::eval::prim_of(db, head) == Some(crate::resolved::Prim::AstLift) && args.len() == 1 {
+        return;
+    }
+    // `Qty.of <value> <unit>` — the SECOND argument must be a compile-time UNIT expression (`Unit.one`,
+    // `(Unit.base #"m")`, `(Unit.of #"m")`, or a `Unit.*`/`Unit./`/`Unit.^` composition), read by
+    // `eval::unit_of`. A second arg that is NOT a unit-builder form at all — a plain literal `(Qty.of 5
+    // 5)`, a string `(Qty.of 5 "m")`, a tuple `(Qty.of 5 (tuple 1 2))` — made `unit_of` return `None`,
+    // and `type_of`'s `Qty.of` arm SILENTLY fell through to `Any`, so `cdz check` passed — a quantity with
+    // no real unit slipped by. Reject it (CDZ0201), the value-position twin of the `Qty`-TYPE unit message
+    // (M213). GUARDS: (a) skip an arg whose head IS a `Unit.*` builder prim — a `(Unit.of #"zorks")` with
+    // an UNKNOWN unit name is a real unit form with a bad name, handled by `check_unknown_units` with a
+    // did-you-mean, so leave it be (else we'd shadow that richer message); (b) skip if the arg is itself
+    // faulty (a bare unbound `(Qty.of 5 meter)` → its own CDZ0101). So this fires only on a well-formed
+    // value that is plainly not a unit expression.
+    if crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::QtyOf)
+        && args.len() == 2
+        && crate::eval::unit_of(db, args[1]).is_none()
+        && !is_unit_builder_form(db, args[1])
+    {
+        let before = out.len();
+        collect(db, args[1], out);
+        // Only add the not-a-unit reject if the unit arg is otherwise fault-free (else its own error is
+        // the primary one).
+        if out.len() == before {
+            out.push(
+                Reject::coded(
+                    Code::Malformed,
+                    "`Qty.of`'s second argument must be a UNIT expression, but this value is not one — \
+                     write a unit, e.g. `(Unit.base #\"meter\")` for a base unit, `Unit.one` for the \
+                     dimensionless unit, or a `Unit.*`/`Unit./`/`Unit.^` composition",
+                )
+                .at(args[1]),
+            );
+        }
+        // Descend into the VALUE arg for its own faults; the unit arg was handled above. Return so the
+        // generic scheme-unify does not also fault (`Qty.of`'s unit is not an HM-typed argument).
+        collect(db, args[0], out);
         return;
     }
     // UNARY NEGATION `(- e)` — the arity-1 subtraction (the ML prefix `-<expr>` desugar). Negation is
