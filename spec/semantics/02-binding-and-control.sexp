@@ -214,6 +214,20 @@
   (call   main (: -5 Int64) (: 100 UInt8) (: 200 UInt8))
   (output (: 200 UInt8)))
 
+(case "a two-arm if selecting between two runtime SIGNED Int8 values preserves the sign of the chosen leaf"
+  (doc    "The SIGNED-narrow face of select-ification: a 2-arm `(if (> b 0) x y)` over runtime `Int8` `x`/`y`
+           lowers to a branchless `select` at the narrow payload width, and must preserve the operand's SIGN
+           — a select that zero-extended (instead of sign-extending) the narrow leaf would corrupt a NEGATIVE
+           value. `x` = -50 (sign bit set), `y` = 120: b=5 → -50 (the negative then-value survives intact),
+           b=-5 → 120. Pins the if→select carries the correct SIGNED Int8 operand at its own width with its
+           sign — the signed companion of the UInt8 select above (which used an unsigned high-bit value); the
+           negative leaf is what a sign-mishandling select would get wrong. Both backends.")
+  (input  (do (def (main (: b Int64) (: x Int8) (: y Int8)) (if (> b 0) x y)) (export main)))
+  (call   main (: 5 Int64) (: -50 Int8) (: 120 Int8))
+  (output (: -50 Int8))
+  (call   main (: -5 Int64) (: -50 Int8) (: 120 Int8))
+  (output (: 120 Int8)))
+
 (case "a dense zero-based jump-table match routes an out-of-range scrutinee to the default"
   (doc    "`(def (main (: x Int64)) (match x (0 10) (1 20) (2 30) (3 40) (_ 50)))` — a dense match over
            0..3 compiles to a `br_table` jump. Because the covered range starts at 0, the table index is
