@@ -37266,6 +37266,48 @@ mod diagnostics {
         );
     }
 
+    /// The MAP + SCALAR-path twins of the list gap above: a match arm whose head is a name-as-constructor
+    /// over a MAP scrutinee, or over a scrutinee that ROUTED TO THE SCALAR PATH (a Map/List with no
+    /// structural `(map …)`/`(list …)` arm falls through there), was an UNCODED lowering-only decline that
+    /// `cdz check` missed on a parameterized / recursive body. Both now propagate the arm head's own coded
+    /// poison (CDZ0101 unbound / CDZ0201 non-member) so `match_pattern_fault` surfaces it in check —
+    /// completing the coverage across all three matcher paths (list, map, scalar-fallthrough).
+    #[test]
+    fn a_bogus_map_or_scalar_path_arm_head_over_a_recursive_body_is_a_coded_fault_in_check() {
+        // MAP matcher: a real `(map …)` arm routes to `lower_match_map`, and the sibling `(Zorp …)` arm
+        // head — unbound — is reported by check (was silent). `go` is self-recursive.
+        let map_arm = "(module m (def (go (: mp (Map Int64 Int64))) \
+                       (match mp ((map (1 v)) v) ((Zorp x) (go mp)) (_ 0))) (export go))";
+        let all = diags_of(map_arm);
+        assert!(
+            all.iter()
+                .any(|d| d.code.as_deref() == Some("CDZ0101") && d.message.contains("Zorp")),
+            "check reports the unbound map-arm head as CDZ0101 (was silent): {all:?}"
+        );
+        // SCALAR-FALLTHROUGH: a Map scrutinee with NO structural `(map …)` arm routes to the scalar path;
+        // the `(Zorp x)` compound head there is likewise surfaced (was the scalar path's uncoded
+        // "not a scalar literal or `_`" decline).
+        let scalar_path = "(module m (def (go (: mp (Map Int64 Int64))) \
+                          (match mp ((Zorp x) (go mp)) (_ 0))) (export go))";
+        let all = diags_of(scalar_path);
+        assert!(
+            all.iter()
+                .any(|d| d.code.as_deref() == Some("CDZ0101") && d.message.contains("Zorp")),
+            "check reports the scalar-path compound arm head as CDZ0101 (was silent): {all:?}"
+        );
+        // NO false alarm: a WELL-FORMED runtime map match (a `(map …)` arm + catch-all) stays clean — the
+        // coded-head propagation fires only on an unbound/non-member ctor head, never a real pattern.
+        let ok = "(module m (def (go (: mp (Map Int64 Int64))) \
+                  (match mp ((map (1 v)) v) (_ 0))) (export go))";
+        assert!(
+            diags_of(ok)
+                .iter()
+                .all(|d| d.severity != crate::abi::Severity::Error),
+            "a well-formed runtime map match still checks clean: {:?}",
+            diags_of(ok)
+        );
+    }
+
     /// A malformed match PATTERN's CDZ0201 anchors at the OFFENDING PATTERN node (`(tuple a b c)`,
     /// `(list … .. …)`), not the enclosing `(match …)`. The pattern-shape rejects in `pattern_constraints`
     /// / `lower_match_list` carry the faulting `pat` node explicitly (`.at(pat)`); without it,

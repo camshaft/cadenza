@@ -9520,3 +9520,20 @@
             (def (main) (sum-it (Take (tuple 3 (Range (tuple 0 1000000))))))
             (export main)))
   (output (: 3 Int64)))
+
+(case "a map-scrutinee match arm whose head is an unbound name is rejected in a recursive body (CDZ0101)"
+  (doc    "The MAP twin of the list-arm coded-head case above. A `(Map …)` scrutinee has no user
+           constructors, so a match arm whose head is a NAME used as a pattern constructor — `((Zorp x)
+           …)` alongside a genuine `(map …)` arm — can never be a valid map pattern; its head resolves to
+           an unbound name (CDZ0101). The rejection is well-formedness and MUST hold in a self-RECURSIVE
+           body (`go` calls `go`), the shape that used to slip past `cdz check`: the arm reached the map
+           matcher's UNCODED 'a map match arm that is not a `(map …)` pattern or a binder is not yet
+           supported' decline, produced only by the emit-path lowering walk over nullary-exported bodies —
+           so `check` was SILENT while `compile` declined. The map matcher now propagates the head's own
+           CODED poison (the MAP twin of the list/sum matchers' unknown-head paths), so `check` surfaces
+           the CDZ0101. A generation that skipped this would let a mistyped map-pattern head error only at
+           emit, hiding it from the fast diagnostics path.")
+  (input  (do (def (go (: mp (Map Int64 Int64)))
+                (match mp ((map (1 v)) v) ((Zorp x) (go mp)) (_ 0)))
+              (export go)))
+  (error CDZ0101))
