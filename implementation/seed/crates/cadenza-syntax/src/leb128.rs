@@ -1,9 +1,12 @@
-//! Unsigned LEB128 varint (`VarU64`): 7 data bits per byte, high bit = continuation, up to 10 bytes,
-//! overlong encodings rejected. Used for the small, slowly-growing fields of the wire form (counts,
-//! node-id references). Plus fixed big-endian scalar helpers for the exact-width fields. No dependency.
+//! Unsigned LEB128 varint (`VarU64`): 7 data bits per byte, high bit = continuation, up to 10 bytes.
+//! Used for the small, slowly-growing fields of the wire form (counts, node-id references). Plus fixed
+//! big-endian scalar helpers for the exact-width fields. No dependency.
 //!
-//! Reads are total: a truncated or over-long varint returns `None` rather than panicking, because
-//! decode operates on untrusted external bytes.
+//! Reads are total: a truncated, over-64-bit, or NON-MINIMAL (overlong) varint returns `None` rather
+//! than panicking, because decode operates on untrusted external bytes. Rejecting non-minimal
+//! encodings (`0x80 0x00`, an overlong `0`) is what makes the varint a BIJECTION — one accepted byte
+//! form per value — so the codec built on it inherits its "one canonical byte form" contract
+//! (`ast-encoding.md` §The Encoding Is A Bijection With One Canonical Byte Form).
 
 /// Append the unsigned LEB128 encoding of `value` to `out`.
 pub fn write_u64(out: &mut Vec<u8>, mut value: u64) {
@@ -66,7 +69,12 @@ impl<'a> Reader<'a> {
         Some(i64::from_be_bytes(b.try_into().ok()?))
     }
 
-    /// Read a `VarU64` (unsigned LEB128). `None` on truncation or a value wider than 64 bits.
+    /// Read a `VarU64` (unsigned LEB128). `None` on truncation, a value wider than 64 bits, or a
+    /// NON-MINIMAL (overlong) encoding — a varint whose terminating byte is a zero group after a
+    /// continuation byte (e.g. `0x80 0x00`, an overlong `0`; `0xFF 0x00`, an overlong `127`). The
+    /// encoder ([`write_u64`]) never emits such a form, so every value has exactly ONE accepted
+    /// encoding — the codec's "one canonical byte form" bijection (`ast-encoding.md`) would otherwise
+    /// admit many byte strings decoding to the same tree. `0x00` alone is the canonical `0`.
     pub fn read_varu64(&mut self) -> Option<u64> {
         let mut result: u64 = 0;
         let mut shift = 0u32;
@@ -81,6 +89,12 @@ impl<'a> Reader<'a> {
             }
             result |= payload << shift;
             if byte & 0x80 == 0 {
+                // Minimality: a terminating zero group after at least one continuation byte means the
+                // value fit in fewer bytes — a non-canonical encoding. Reject. (`shift == 0` is the
+                // single-byte case, where a `0x00` terminator is the canonical `0`.)
+                if payload == 0 && shift != 0 {
+                    return None;
+                }
                 return Some(result);
             }
             shift += 7;
@@ -163,5 +177,70 @@ mod tests {
     fn overlong_is_none() {
         let buf = [0x80u8; 11];
         assert_eq!(Reader::new(&buf).read_varu64(), None);
+    }
+
+    #[test]
+    fn non_minimal_encoding_is_rejected() {
+        // A varint whose terminating byte is a zero group AFTER a continuation byte encodes a value
+        // that fit in fewer bytes — a non-canonical form the encoder never emits. Reject it, so each
+        // value has exactly one accepted encoding (the codec's canonical-byte-form bijection).
+        assert_eq!(Reader::new(&[0x80, 0x00]).read_varu64(), None, "overlong 0");
+        assert_eq!(
+            Reader::new(&[0xFF, 0x00]).read_varu64(),
+            None,
+            "overlong 127"
+        );
+        assert_eq!(
+            Reader::new(&[0x80, 0x80, 0x00]).read_varu64(),
+            None,
+            "overlong 0 (3 bytes)"
+        );
+        // But the single-byte `0x00` IS the canonical zero, and a genuine two-byte value whose high
+        // group is nonzero is minimal and accepted.
+        assert_eq!(Reader::new(&[0x00]).read_varu64(), Some(0));
+        assert_eq!(Reader::new(&[0x80, 0x01]).read_varu64(), Some(128));
+        assert_eq!(Reader::new(&[0xFF, 0x01]).read_varu64(), Some(255));
+    }
+
+    #[test]
+    fn canonical_encoding_is_the_only_accepted_one() {
+        // The bijection property: for a sweep of values, the encoder's output is the UNIQUE byte string
+        // `read_varu64` accepts — appending a spurious `0x00` (making it non-minimal) is rejected, and
+        // the canonical form decodes back to the value at exactly its length.
+        for v in [0u64, 1, 127, 128, 255, 300, 16_383, 16_384, u64::MAX] {
+            let mut buf = Vec::new();
+            write_u64(&mut buf, v);
+            let mut r = Reader::new(&buf);
+            assert_eq!(r.read_varu64(), Some(v));
+            assert!(
+                r.at_end(),
+                "canonical form consumes exactly its bytes for {v}"
+            );
+
+            // A non-minimal variant: clear the terminator's continuation-free status by turning the
+            // last byte into a continuation and appending a `0x00`. This must be rejected.
+            if v != 0 {
+                let mut overlong = buf.clone();
+                let last = overlong.len() - 1;
+                overlong[last] |= 0x80; // make the former terminator a continuation byte
+                overlong.push(0x00); // ... then terminate with a zero group -> non-minimal
+                assert_eq!(
+                    Reader::new(&overlong).read_varu64(),
+                    None,
+                    "non-minimal re-encoding of {v} is rejected"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn truncated_multibyte_is_none() {
+        // A continuation byte with no following byte is truncation, not a value.
+        assert_eq!(Reader::new(&[0x80, 0x80]).read_varu64(), None);
+        assert_eq!(Reader::new(&[]).read_varu64(), None);
+        // A reader that fails a varint mid-stream leaves the rest inspectable (position advanced past
+        // the consumed bytes, no panic).
+        let mut r = Reader::new(&[0x80]);
+        assert_eq!(r.read_varu64(), None);
     }
 }
