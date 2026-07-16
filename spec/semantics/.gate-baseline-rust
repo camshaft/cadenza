@@ -214,6 +214,7 @@ pass	a `?` on an ill-typed operand reports the operand's error, not a `?`-shape 
 pass	a `?` result is usable mid-body, not only in tail position
 pass	a `?` whose Result error type disagrees with the boundary's is rejected
 pass	a `?` with no fallible enclosing function boundary is rejected
+pass	a bare UInt8 literal-match (no newtype) is the width template
 pass	a bare arithmetic keyword is rejected, not a crash
 pass	a bare binding form with no bindings and no body is rejected, not a crash
 pass	a bare built-in constructor Some is passed as a first-class function
@@ -3010,6 +3011,7 @@ todo	a BOOL-field Tuple closure ARG, false discriminant
 todo	a Bytes-returning closure alongside a plain export — the closure runs
 todo	a Bytes-returning closure alongside a plain export — the plain runs
 todo	a Bytes-returning closure on a different argument
+todo	a CALL-returned single-variant newtype with a literal-payload arm spills at the right width
 todo	a CAPTURING closure returning a List
 todo	a CAPTURING closure returning a tuple
 todo	a CAPTURING closure taking TWO Tuple args
@@ -3253,6 +3255,10 @@ todo	a runtime value is constructed into a fixed-width segment and its length re
 todo	a runtime value narrowed to the segment width constructs without trapping
 todo	a scalar BETWEEN two Tuple args with a LIST result
 todo	a second same-signature closure export shares the one call method
+todo	a single-variant Int32 newtype literal-payload arm compiles at the payload width
+todo	a single-variant Int64 newtype literal-payload arm still compiles (the wide control)
+todo	a single-variant UInt8 newtype literal-payload arm compiles at the payload width
+todo	a single-variant UInt8 newtype literal-payload arm falls through to the binding arm on a miss
 todo	a single-variant abstract theorem's constructor match outside the kernel is a withheld-constructor rejection (CDZ0214)
 todo	a single-variant abstract type's constructor match outside its module is rejected CDZ0214 (withheld-ctor)
 todo	a single-variant newtype BOOL literal-payload arm falls through on false
