@@ -11,7 +11,6 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { useSyntax } from "../syntax/SyntaxContext.tsx";
 import { replEval } from "../compiler/client.ts";
 import { run as runComponent } from "../runner/client.ts";
 import type { Surface } from "../compiler/worker.ts";
@@ -29,11 +28,18 @@ import { DEFAULT_EXAMPLE } from "./examples.ts";
 /// `examples` module, so the route, the docs, and check:visual all draw from one source of truth).
 const STARTER = DEFAULT_EXAMPLE.markdown;
 
+/// Notebook cells are authored + run in s-expr, FIXED regardless of the guide's global editing surface
+/// (the /cad rationale, confirmed by v-guide-infra): the example cells are s-expr, and the driver
+/// consumes the canonical s-expr render — compiling a fixed-surface starter in the wrong global surface
+/// errors (an ML compile of an s-expr cell fails "expected a name"). Per-surface starters / an editable
+/// surface toggle are a later slice.
+const NOTEBOOK_SURFACE: Surface = "sexpr";
+
 /// Per-code-cell run state, keyed by the cell's index in the parsed cell list.
 type CellState = { phase: "idle" } | { phase: "running" } | { phase: "done"; output: CellOutput };
 
 export default function NotebookPage() {
-  const { surface } = useSyntax();
+  const surface = NOTEBOOK_SURFACE;
   // The notebook document. Editing the whole doc (an editor pane) is a later slice; for now it's the
   // starter, and code cells run/recompute against it. `setDoc` is wired when the doc editor lands.
   const [doc] = useState(STARTER);

@@ -47,14 +47,16 @@ test("a realistic notebook parses into the expected cell kinds in order", () => 
   );
 });
 
-test("the balance cell's run buffer carries the widget binding at its current value", () => {
+test("the balance cell's run buffer carries the widget binding + the cell def; entry is a main() call", () => {
   const cells = parseDocument(NOTEBOOK);
   const widgets = allWidgets(cells);
   assert.deepEqual(widgets.map((w) => w.name), ["rate"]);
   // The balance cell is index 3 (prose,widget,prose,CODE,...).
   const { buffer, entry } = assembleForRun(cells, 3, widgets, { rate: 0.1 }, "ml");
-  assert.equal(buffer, "def rate = 0.1");
-  assert.equal(entry, "def main() = 1000.0 * (1.0 + rate)");
+  // Widget binding AND the cell's own def-block are both in the buffer; entry is a CALL (an expression).
+  assert.equal(buffer, "def rate = 0.1\n\ndef main() = 1000.0 * (1.0 + rate)");
+  assert.equal(entry, "main()");
+  assert.ok(!/^def\b/.test(entry), "entry must be an expression, never a def-block (replEval contract)");
 });
 
 test("initialRunOrder runs both code cells (not the widget/prose) top-to-bottom", () => {
@@ -73,7 +75,7 @@ test("a widget whose value is absent falls back to its default in the buffer", (
   const cells = parseDocument(NOTEBOOK);
   const widgets = allWidgets(cells);
   const { buffer } = assembleForRun(cells, 3, widgets, {}, "ml"); // no value supplied
-  assert.equal(buffer, "def rate = 0.05"); // the slider's default
+  assert.match(buffer, /^def rate = 0.05\b/); // widget binding uses the slider's default
 });
 
 test("a notebook with no widgets: initial run covers all code cells, no recompute plan for a phantom widget", () => {
