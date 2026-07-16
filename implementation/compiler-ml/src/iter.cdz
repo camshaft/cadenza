@@ -275,6 +275,19 @@ def adjacent-pairs-from(it, have, prev) = match next(it) with
 /// `cur - prev`. Reuses the `(Int64, Int64)` EntryIter (no generic element). Eager, like `enumerate`.
 def pairwise(it) = EntryIter.EFromList(adjacent-pairs-from(it, false, 0))
 
+// build the element-wise pair list of two iterators, stopping when EITHER runs out. Eager.
+def zip-pairs-from(a, b) = match next(a) with
+  | Option.None(_) => []
+  | Option.Some(pa) => (match pa with | (x, ra) => (match next(b) with
+    | Option.None(_) => []
+    | Option.Some(pb) => (match pb with | (y, rb) => List.concat([(x, y)], zip-pairs-from(ra, rb)))))
+
+/// Zip two iterators element-wise into an `EntryIter` of `(a_i, b_i)` pairs, stopping at the shorter.
+/// The PAIR-yielding companion of `zip-with` (which combines each pair into one scalar via `f`) — keeps
+/// both elements, so you can `fold-entries` over `(x, y)` (e.g. a dot product `acc + x*y`). Reuses the
+/// `(Int64, Int64)` EntryIter (no generic element). Eager; bound infinite sources with `take` first.
+def zip-to-entries(a, b) = EntryIter.EFromList(zip-pairs-from(a, b))
+
 /// Left fold over entries: thread `acc` through `f(acc, key, value)` for every entry, in key order.
 def fold-entries(it, acc, f: Int64 -> Int64 -> Int64 -> Int64) = match entry-next(it) with
   | Option.None(_) => acc
@@ -1383,5 +1396,39 @@ def pairwise-over-a-range() =
     unit
   else
     trap("range deltas sum = 4")
+
+// ── zip-to-entries: element-wise pairs of two iterators ──────────────────────────────────────────
+
+@test
+def zip-entries-dot-product() =
+  // zip [1,2,3] with [10,20,30] -> (1,10),(2,20),(3,30); dot product = 10+40+90 = 140
+  if fold-entries(zip-to-entries(from-list([1, 2, 3]), from-list([10, 20, 30])), 0, fn(acc, x, y) => acc + x * y) == 140 then
+    unit
+  else
+    trap("dot product = 140")
+
+@test
+def zip-entries-stops-at-shorter() =
+  // range(0,5) zip [100,200] -> only 2 pairs (the shorter side bounds it)
+  if entry-count(zip-to-entries(range(0, 5), from-list([100, 200]))) == 2 then unit else trap("2 pairs")
+
+@test
+def zip-entries-empty-side() =
+  if entry-count(zip-to-entries(empty(), range(0, 9))) == 0 then unit else trap("empty side -> 0 pairs")
+
+@test
+def zip-entries-first-pair() =
+  match entry-next(zip-to-entries(from-list([7, 8]), from-list([70, 80]))) with
+    | Option.None(_) => trap("should have a pair")
+    | Option.Some(p) => (match p with | (kv, _) => (match kv with | (x, y) =>
+        if x == 7 then (if y == 70 then unit else trap("second is 70")) else trap("first is 7")))
+
+@test
+def zip-entries-bounds-infinite() =
+  // both sides infinite: zip iterate(1,*2) with range(0,inf-ish), take-bound the LEFT to 3 -> 3 pairs
+  if entry-count(zip-to-entries(take(iterate(1, fn(x) => x * 2), 3), range(0, 1000000))) == 3 then
+    unit
+  else
+    trap("bounded zip -> 3 pairs")
 
 export { Iter.* }
