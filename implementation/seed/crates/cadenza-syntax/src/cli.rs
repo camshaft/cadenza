@@ -306,6 +306,17 @@ impl FmtArgs {
     pub fn with_files(self, files: Vec<String>) -> FmtArgs {
         FmtArgs { files, ..self }
     }
+
+    /// The parsed positional targets, exactly as the user supplied them (before directory recursion or
+    /// stdin resolution). The read side of [`with_files`](Self::with_files): a caller that owns project
+    /// resolution — the `cdz` bin deciding whether `cdz fmt` should enter project-mode — inspects these
+    /// to classify the invocation before rebuilding the args. Empty means "no positionals" (stdin, or a
+    /// project sweep); a lone `-` is the explicit stdin marker; a single directory or `Project.cdz` is a
+    /// project target. `fmt` itself never needs this (it resolves internally via `collect_targets`); it
+    /// exists purely so the classify logic can stay on the caller's side. The field stays private.
+    pub fn files(&self) -> &[String] {
+        &self.files
+    }
 }
 
 /// The surface formats, as a clap `ValueEnum`. Mirrors [`Format`]. `pub` because it appears in the
@@ -1195,6 +1206,57 @@ mod tests {
         assert_eq!(resolved.width, 100, "width preserved");
         assert!(resolved.check, "check preserved");
         assert!(!resolved.diff && !resolved.stdout, "diff/stdout preserved");
+    }
+
+    #[test]
+    fn files_getter_reads_the_parsed_positionals_verbatim_the_read_side_of_with_files() {
+        // `FmtArgs::files()` is the read side `cdz` uses to CLASSIFY an invocation before deciding
+        // project-mode (empty = stdin/project, lone `-` = explicit stdin, single dir/Project.cdz =
+        // project target). It returns the positionals exactly as parsed — no recursion, no stdin
+        // resolution — and round-trips with `with_files` (write then read yields the same list).
+        let base = FmtArgs {
+            files: vec![],
+            from: None,
+            width: 80,
+            check: false,
+            diff: false,
+            stdout: false,
+        };
+        // No positionals — the "stdin or enter project-mode" case cdz keys off.
+        assert!(
+            base.files().is_empty(),
+            "empty positionals read back as empty"
+        );
+        // A lone `-` stays verbatim (the explicit stdin marker, NOT a project sweep).
+        let stdin = base.with_files(vec!["-".to_string()]);
+        assert_eq!(
+            stdin.files(),
+            ["-".to_string()],
+            "lone `-` preserved verbatim"
+        );
+        // A single directory-looking arg is handed back unmodified — cdz, not fmt, classifies it.
+        let dir = FmtArgs {
+            files: vec![],
+            from: None,
+            width: 80,
+            check: false,
+            diff: false,
+            stdout: false,
+        }
+        .with_files(vec!["src".to_string()]);
+        assert_eq!(
+            dir.files(),
+            ["src".to_string()],
+            "a lone dir arg is read verbatim"
+        );
+        // Round-trip: with_files(write) then files(read) yields the same list.
+        let list = vec!["a.cdz".to_string(), "b.sexp".to_string()];
+        let round = dir.with_files(list.clone());
+        assert_eq!(
+            round.files(),
+            list.as_slice(),
+            "with_files → files() round-trips"
+        );
     }
 
     #[test]
