@@ -32467,6 +32467,29 @@ mod match_engine {
     }
 
     #[test]
+    fn a_mixed_scale_rational_quantity_combine_converts_exactly() {
+        // `lower_quantity_combine`'s Rational arm gained a runtime path: a MIXED-SCALE combine over a
+        // Rational inner converts each operand to the reference by an EXACT rational multiply then combines
+        // — previously it declined ("runtime mixed-unit Rational combine not yet emitted"), folding only a
+        // constant pair. THE exact-mixing case at runtime: (v inch + 1 mm) with v runtime = 127/5000 +
+        // 1/1000 = 33/1250 m EXACTLY (a fractional scale, no rounding — the point of Rational). Uses the
+        // FULL runtime; skips if absent (the corpus gate covers it e2e).
+        let src = "(do \
+                   (def (rt) ((. Rational of-int) ((. Int64 of) ((. BigInt of) 1)))) \
+                   (def (main) \
+                     ((. Qty value) (+ ((. Qty of) (rt) ((. Unit of) #\"inch\")) \
+                                       ((. Qty of) ((. Rational of) 1 1) ((. Unit of) #\"millimeter\"))))) \
+                   (export main))";
+        let Some(rendered) = run_heap_value_escape(src) else {
+            return; // no runtime store — the corpus gate is the e2e witness
+        };
+        assert!(
+            rendered.contains("33/1250"),
+            "1 inch + 1 mm (Rational, mixed scale) = 33/1250 exactly: {rendered}"
+        );
+    }
+
+    #[test]
     fn a_bigint_or_rational_inner_quantity_comparison_folds_to_the_exact_compare() {
         // Companion to the bigint-quantity arithmetic fix: a `(Qty BigInt/Rational u)` COMPARISON must
         // route to the exact bigint/rational compare, not decline as a "compound value needs a heap walk".

@@ -12346,9 +12346,29 @@ fn lower_quantity_combine(
                 _ => Core::Poison(Reject::decline("mixed-unit rational: unsupported operator")),
             };
         }
-        return Core::Poison(Reject::decline(
-            "runtime mixed-unit Rational combine (not yet emitted)",
-        ));
+        // RUNTIME — convert each operand to the reference by `value * (Rational.of num den)` (an EXACT
+        // rational multiply, no rounding) via `convert_operand_ast_rational`, then run the combine op on
+        // the two converted Rationals (which lowers through the runtime `rational-*` ops). Mirrors the
+        // BigInt runtime arm below; the exact-rational analogue of the Int/BigInt runtime scale multiply.
+        let lconv = match convert_operand_ast_rational(db, lhs, ln, ld) {
+            Some(n) => n,
+            None => {
+                return Core::Poison(Reject::decline(
+                    "runtime mixed-unit Rational combine over a non-Qty.of operand (not yet emitted)",
+                ));
+            }
+        };
+        let rconv = match convert_operand_ast_rational(db, rhs, rn, rd) {
+            Some(n) => n,
+            None => {
+                return Core::Poison(Reject::decline(
+                    "runtime mixed-unit Rational combine over a non-Qty.of operand (not yet emitted)",
+                ));
+            }
+        };
+        let head = db.push_name(combine_op_name(op));
+        let app = db.push_list(vec![head, lconv, rconv]);
+        return core_of(db, app);
     }
     // BIGINT inner: convert each operand to the reference by `value * num / den` in UNBOUNDED bigint
     // arithmetic (the heap-handle magnitudes can't take the i128 fold below — that path is for fixnum
