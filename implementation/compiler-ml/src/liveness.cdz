@@ -1,0 +1,124 @@
+/// liveness.cdz — LIVE-VARIABLE ANALYSIS over a straight-line statement sequence, the backward dataflow a
+/// middle-end runs before register allocation and dead-store elimination. A variable is LIVE at a program
+/// point if its current value may be READ before it is next overwritten. The classic transfer function,
+/// applied backward (a variable's liveness flows from its uses toward its definition):
+///
+///   live-in(stmt) = (live-out(stmt) \ { defined }) ∪ { used }
+///
+/// A program is a `List(Stmt)` in source order; each `Assign(d, uses)` defines variable `d` from an
+/// expression that reads the variables in `uses`. Analysis folds from the END (live-out of the last stmt
+/// is the program's result set — empty for a program whose value escapes via nothing, or the set the
+/// caller still needs). Variables are `Int64` ids; live sets are `Set(Int64)` (union/difference are the
+/// prelude ops the transfer function needs).
+///
+/// What a compiler reads off this:
+///   - `live-in prog out` — variables live at the TOP (its free variables: read before defined).
+///   - `is-dead-store s out` — a `def` whose variable is NOT in live-out is a DEAD STORE (removable): the
+///     value is never read before being overwritten or the program ends.
+///   - `dead-store-count prog out` — how many assignments are dead (a DSE pass would delete them).
+
+/// A statement assigns variable `d` (an id) the value of an expression reading the vars in `uses`.
+type Stmt =
+  | Assign(Int64, List(Int64))
+
+/// Fold a list of variable ids into a set (the `use` set of one statement).
+def uses-set(us: List(Int64), acc: Set(Int64)) = match us with
+  | [] => acc
+  | [h, .. t] => uses-set(t, Set.insert(acc, h))
+
+/// The transfer function for ONE statement: given the set live AFTER it, the set live BEFORE it.
+/// `(live-out \ { d }) ∪ uses` — the definition kills `d`, then the uses become live.
+def step(s: Stmt, live-out: Set(Int64)) = match s with
+  | Stmt.Assign(d, us) => uses-set(us, Set.difference(live-out, Set.of([d])))
+
+/// Live-IN of the whole program given the set live at its END (backward fold: each stmt's live-out is the
+/// live-in of everything after it).
+def live-in(prog: List(Stmt), live-out: Set(Int64)) = match prog with
+  | [] => live-out
+  | [s, .. rest] => step(s, live-in(rest, live-out))
+
+/// Is statement `s` a DEAD STORE relative to `live-out`? — its defined variable is not live afterward, so
+/// the assignment's value is never read.
+def is-dead-store(s: Stmt, live-out: Set(Int64)) = match s with
+  | Stmt.Assign(d, _) => Set.contains(live-out, d) == false
+
+/// Count the dead stores in `prog` given the program-end live-out. Walks forward but needs each stmt's
+/// OWN live-out, which is the live-in of the suffix after it — so it recomputes that suffix liveness.
+def dead-store-count(prog: List(Stmt), end-out: Set(Int64)) = match prog with
+  | [] => 0
+  | [s, .. rest] =>
+    let out-here = live-in(rest, end-out) in
+    (if is-dead-store(s, out-here) then 1 else 0) + dead-store-count(rest, end-out)
+
+/// Builders.
+def asg(d: Int64, us: List(Int64)) = Stmt.Assign(d, us)
+def none() = Set.of([])
+
+@test
+def live-empty-program() =
+  // no statements → live-in is exactly the end live-out (here empty).
+  if Set.len(live-in([], none())) == 0 then unit else trap("empty program has empty live-in")
+
+@test
+def live-single-use-of-input() =
+  // y := x  with end-out {} → live-in {x}: x is read but never defined here, so it's live at the top.
+  let prog = [asg(1, [0])] in
+  let li = live-in(prog, none()) in
+  if Set.len(li) == 1 then (if Set.contains(li, 0) then unit else trap("x (id 0) is live in")) else trap("one live var")
+
+@test
+def live-defined-before-use-not-live-in() =
+  // x := []; y := x; z := y → every var defined before use → live-in at top is empty.
+  let prog = [asg(0, []), asg(1, [0]), asg(2, [1])] in
+  if Set.len(live-in(prog, none())) == 0 then unit else trap("all defined before use → nothing live in")
+
+@test
+def live-out-passes-through() =
+  // z := y, and the caller still needs z at the end (end-out {z}) → live-in {y}. (z defined, then wanted;
+  // y read.) end-out {2}: z:=y → live-in {y=1}.
+  let prog = [asg(2, [1])] in
+  let li = live-in(prog, Set.of([2])) in
+  if Set.contains(li, 1) then (if Set.contains(li, 2) then trap("z was defined, not live before") else unit) else trap("y is live in")
+
+@test
+def live-across-a-statement() =
+  // x := in0; t := x; out := x  (x used twice, across the t:=x stmt). end-out {}.
+  // Backward: out:=x → {x}; t:=x → {x} (x still live, used again? no — t:=x reads x, out already gone up).
+  // Actually: out:=x → live-in {x}; t:=x → (({x}\{t}) ∪ {x}) = {x}; x:=in0 → (({x}\{x}) ∪ {in0}) = {in0}.
+  // So in0 (id 9) is live at the top; x is live BETWEEN the defs.
+  let prog = [asg(0, [9]), asg(1, [0]), asg(2, [0])] in
+  let li = live-in(prog, none()) in
+  if Set.contains(li, 9) then (if Set.len(li) == 1 then unit else trap("only in0 live at top")) else trap("in0 live in")
+
+@test
+def dead-store-detected() =
+  // x := in0 ; x := in1 ; y := x  (end-out {}). Single-pass liveness finds TWO dead stores: x:=in0 (x is
+  // overwritten by x:=in1 before any read) AND y:=x (y is never used). x:=in1 is NOT dead — it feeds y:=x.
+  let prog = [asg(0, [9]), asg(0, [8]), asg(1, [0])] in
+  if dead-store-count(prog, none()) == 2 then unit else trap("x:=in0 and y:=x are dead; x:=in1 is not")
+
+@test
+def no-dead-store-when-all-used() =
+  // x := in0 ; y := x → x is read by y, y is dead only if not in end-out. With end-out {y}=... but y id 1.
+  // end-out {1}: y live at end → y:=x not dead; x:=in0 → x read by y → not dead. 0 dead stores.
+  let prog = [asg(0, [9]), asg(1, [0])] in
+  if dead-store-count(prog, Set.of([1])) == 0 then unit else trap("no dead stores when the result is used")
+
+@test
+def dead-store-last-when-result-unused() =
+  // x := in0 ; y := x  (end-out {}). SINGLE-PASS liveness finds ONE dead store: y:=x (y unused). x:=in0 is
+  // NOT flagged — its live-out is {x} because y:=x reads x. Cascading (deleting y:=x would then make x:=in0
+  // dead) needs an ITERATED DSE-then-recompute loop; one liveness pass does not cascade, which is correct.
+  let prog = [asg(0, [9]), asg(1, [0])] in
+  if dead-store-count(prog, none()) == 1 then unit else trap("only y:=x is dead in a single pass")
+
+@test
+def live-reuse-keeps-earlier-def() =
+  // x := in0 ; y := x ; z := x → x used by BOTH y and z, so x:=in0 is NOT dead. end-out {}: y and z both
+  // dead (unused), but x's def is live because x is read twice. dead stores: y:=x and z:=x = 2.
+  let prog = [asg(0, [9]), asg(1, [0]), asg(2, [0])] in
+  if dead-store-count(prog, none()) == 2 then
+    (if is-dead-store(asg(0, [9]), live-in([asg(1, [0]), asg(2, [0])], none())) then trap("x is read, not dead") else unit)
+  else trap("y and z are dead, x is not")
+
+export { live-in, step, is-dead-store, dead-store-count }
