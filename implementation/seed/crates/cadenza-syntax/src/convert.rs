@@ -648,4 +648,52 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn convert_is_total_over_the_whole_from_to_format_matrix() {
+        // `convert(input, from, to)` must NEVER PANIC for any (from, to) pair — it either produces bytes
+        // or returns a clean `ConvertError`. Individual pairs are tested piecemeal; this pins the WHOLE
+        // matrix at once, including cross data↔code pairs (`Cedar → Ml`, `Json → Toml`, `Ml → Cedar`) and
+        // every OUTPUT-ONLY target (`Debug`/`Flat`, which `write` handles) — the combinations `cdz convert
+        // --from X --to Y` exposes but no single test enumerates. For each READABLE source we take a valid
+        // sample; `Debug`/`Flat` are output-only (rejected as a SOURCE), so they are only used as targets.
+        let readable: &[(Format, &[u8])] = &[
+            (Format::Binary, b""), // filled below with a real binary sample
+            (Format::Sexpr, b"(def (main) (+ 1 2))"),
+            (Format::Ml, b"def main() = 1 + 2"),
+            (Format::Markdown, b"# Title\n\ntext with `code`\n"),
+            (Format::Json, b"{\"a\": [1, 2, null], \"b\": \"x\"}"),
+            (Format::Toml, b"a = 1\nb = \"x\"\n"),
+            (Format::Cedar, b"permit(principal, action, resource);"),
+        ];
+        // A real binary sample (the codec form of a small program) for the Binary source row.
+        let bin_sample = convert(b"(def (main) 42)", Format::Sexpr, Format::Binary).unwrap();
+        let all_targets = [
+            Format::Binary,
+            Format::Sexpr,
+            Format::Ml,
+            Format::Markdown,
+            Format::Json,
+            Format::Toml,
+            Format::Cedar,
+            Format::Debug,
+            Format::Flat,
+        ];
+        for &(from, sample) in readable {
+            let input: &[u8] = if from == Format::Binary {
+                &bin_sample
+            } else {
+                sample
+            };
+            // The source must itself read cleanly (sanity: the samples are valid).
+            assert!(read(input, from).is_ok(), "sample for {from:?} should read");
+            for &to in &all_targets {
+                // The whole point: this call must RETURN (Ok or Err), never panic. A cross data↔code
+                // pair may legitimately Err (e.g. a JSON value has no ML program form), and that's fine —
+                // totality, not success, is the contract. `catch_unwind` would mask the panic we're
+                // guarding against, so we simply call it: a panic fails the test at the unwind.
+                let _ = convert(input, from, to);
+            }
+        }
+    }
 }
