@@ -1186,3 +1186,19 @@
             (export main)))
   (call   main (: 0 Int64))
   (output (: 7 Int64)))
+(case "a single-variant abstract type's constructor match outside its module is rejected CDZ0214 (withheld-ctor)"
+  (doc    "A withheld-constructor MATCH outside its module is rejected with CDZ0214 (the withheld-constructor
+           code) — exactly as CONSTRUCTION is and as a MULTI-variant match is, per modules-and-namespaces.md
+           §A Type's Handle And Its Constructors Are Independently Visible. `lib` exports the abstract handle
+           `C` + smart ctor `mk` but NOT `C`'s variant ctor `A`; the entry matching `C.A` outside is rejected
+           CDZ0214. A single-variant sum newtype-ERASES to `Ty::Nominal`, so its match reaches the nominal
+           wrong-ctor check — which used to report the GENERIC CDZ0203 'not a variant of the matched type'
+           instead of the actionable withheld-ctor CDZ0214 (v-verification: the exact HOL-kernel `Thm`/`Term`
+           newtype shape). The nominal branch now propagates the head's coded withheld poison FIRST (the
+           newtype twin of the boxed-sum path), so the message says 'this constructor is withheld, use the
+           exported accessor'. Soundness was always intact (the match is rejected either way — abstract
+           opacity holds); this pins the CODE. A genuine other-type ctor (no withheld poison) still gives CDZ0203.")
+  (module "lib"
+    (do (type C (A Int64)) (def (mk) (C.A 5)) (export C) (export mk)))
+  (input  (do (import "lib" (C mk)) (def (main) (match (mk) ((C.A n) n))) (export main)))
+  (error  CDZ0214))

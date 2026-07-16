@@ -1063,6 +1063,7 @@ pass	a multi-payload variant with a scalar AND two recursive payloads escapes fl
 pass	a multi-segment bin concatenates mixed-width signed and unsigned segments in order
 pass	a multi-step kernel derivation composes several primitive rules into one theorem
 pass	a multi-variant abstract proof type's constructor match outside the kernel is a withheld-constructor rejection
+pass	a single-variant abstract type's constructor match outside its module is rejected CDZ0214 (withheld-ctor)
 pass	a multi-variant constructor nested in a tuple let-binder is refutable and rejected
 pass	a multi-variant-sum binding pattern is refutable and rejected
 pass	a multi-way string-head dispatch resolves an operator name to its operation

@@ -7692,6 +7692,21 @@ fn pattern_constraints(
     } = ty
     {
         if crate::eval::variant_owner_decl(db, head) != Some(*scrut_decl) {
+            // A WITHHELD constructor (`C.A` where `C`'s handle is imported but its ctor `A` is not exported
+            // to this file) has its member-fold poison carry the precise CDZ0214 "constructor is withheld"
+            // code — the SAME diagnostic a MULTI-variant match (the `variant_disc_of`-miss path below) and a
+            // CONSTRUCTION site emit. A single-variant sum NEWTYPE-ERASES to `Ty::Nominal`, so its withheld
+            // match reaches HERE (not the `Ty::Sum` path), where the bare `variant_owner_decl != scrut_decl`
+            // check reported the generic CDZ0203 "not a variant of the matched type" instead of the
+            // actionable withheld-ctor CDZ0214 (v-verification: exactly the HOL-kernel `Thm`/`Term` newtype
+            // shape). Propagate the head's coded poison FIRST (the newtype twin of the Sum branch's
+            // `core_of(head)` propagation), so a withheld single-variant ctor match names the real cause;
+            // fall to the generic CDZ0203 only when the head has no coded poison (a genuine other-type ctor).
+            if let Core::Poison(reject) = core_of(db, head)
+                && reject.code.is_some()
+            {
+                return Err(enrich_pattern_head_suggestion(db, head, ty, reject));
+            }
             // The pattern names a variant of a DIFFERENT type than the newtype scrutinee. Enrich with the
             // same "did you mean?" / closest-variants suggestion the boxed-sum path gets (the scrutinee's
             // own — single — variant is the candidate the author likely reached for), carrying a replace
