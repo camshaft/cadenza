@@ -1045,6 +1045,7 @@ pass	a literal inside a constructor pattern matches a runtime payload
 pass	a literal inside a tuple pattern matches a runtime element
 pass	a literal inside an Ok pattern refines a Result match
 pass	a literal list element dispatches a runtime list by its value
+pass	a literal narrow-width newtype list element in a constructed list grounds to its inner width
 pass	a literal nested in a compound payload that overflows the annotated width is rejected
 pass	a literal nested in a tuple def-parameter is refutable and rejected
 pass	a literal nested in a tuple let-binder is refutable and rejected

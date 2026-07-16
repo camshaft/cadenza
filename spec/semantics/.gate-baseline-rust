@@ -3253,6 +3253,7 @@ todo	a kernel rule using α-equivalence accepts an α-variant premise a structur
 todo	a list of closures each keeps its own capture, selected by a runtime index
 todo	a list pattern in a sum-variant payload matches a runtime node by its child count
 todo	a list-arm constructor element over a runtime-built list
+todo	a literal narrow-width newtype list element in a constructed list grounds to its inner width
 todo	a middle module re-exports a base function and also uses it in its own exported function
 todo	a multi-argument closure among distinct-signature exports
 todo	a multi-argument closure returning a COMPOUND round-trips — flat arrow spelling
