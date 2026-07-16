@@ -705,6 +705,40 @@
   (input  (Qty.value (: (Qty.of 1 (Unit.prefix kilo (Unit.base #"meter"))) (Qty Int64 (Unit.base #"meter")))))
   (output (: 1 Int64)))
 
+; The value keeping its own scale must survive a CONVERSION and a COMBINATION — the annotation is a pure
+; dimension CHECK, it must NOT rebrand the value's unit (a landed regression re-labeled 1 km as 1 meter
+; downstream: `Unit.in` read the wrong scale and a combine with real km silently bypassed the mixed-unit
+; conversion — breaker's high-severity miscompile, adv-annotation-rebrands-quantity-scale-silent-magnitude
+; -reinterpret.sexp). These three pin the no-rebrand invariant at each downstream use.
+
+(case "a same-dimension annotation preserves the value's own scale through a conversion"
+  (doc    "`(Unit.in meter (: (Qty.of 1 kilometer) (Qty Int64 meter)))` — the annotation CHECKS the
+           dimension and the value KEEPS ITS OWN SCALE (still 1 km), so converting it to meters is 1000,
+           NOT 1. A landed regression re-labeled the magnitude at the annotation's unit (1 km → 1 meter),
+           making this 1 — the sharpest conversion witness of the rebrand. The annotation names the
+           dimension; it does not normalize/coerce the magnitude to its unit.")
+  (input  (Unit.in (Unit.of #"meter") (: (Qty.of 1 (Unit.of #"kilometer")) (Qty Int64 (Unit.of #"meter")))))
+  (output (: 1000 Int64)))
+
+(case "a same-dimension annotation is the identity under its own unit's conversion"
+  (doc    "`(Unit.in kilometer (: (Qty.of 1 kilometer) (Qty Int64 meter)))` — converting the annotated
+           value BACK to kilometers is the identity → 1 (the value is still 1 km). The rebrand regression
+           gave 0 (a re-labeled 1 meter truncates to 0 km) — the single sharpest witness that the magnitude
+           had been re-labeled at the annotation's unit rather than keeping its own.")
+  (input  (Unit.in (Unit.of #"kilometer") (: (Qty.of 1 (Unit.of #"kilometer")) (Qty Int64 (Unit.of #"meter")))))
+  (output (: 1 Int64)))
+
+(case "an annotated quantity joins additions at its own scale, no silent mixed-scale bypass"
+  (doc    "`(+ (: (Qty.of 1 km) (Qty Int64 meter)) (Qty.of 2 km))` in meters — the annotated operand is
+           still 1 km, so one km plus two km is three km = 3000 m. The rebrand regression made the
+           annotated operand enter the add as 1 METER, and the mixed add silently converted the 2 km
+           without the guard firing → 2001 (compounding the rebrand with a silent mixed-scale sum the join
+           rule forbids). Pins that a same-dimension annotation does not corrupt a downstream COMBINE.")
+  (input  (Unit.in (Unit.of #"meter")
+            (+ (: (Qty.of 1 (Unit.of #"kilometer")) (Qty Int64 (Unit.of #"meter")))
+               (Qty.of 2 (Unit.of #"kilometer")))))
+  (output (: 3000 Int64)))
+
 (case "a same-dimension quantity annotation whose inner numeric type differs is still an error"
   (doc    "`(: (Qty.of 1 kilometer) (Qty Float64 meter))` shares the dimension (length) but the value's
            inner numeric type is Int64 while the annotation says Float64 — a genuine numeric-type conflict,
