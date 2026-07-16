@@ -168,6 +168,8 @@ pass	TWO performs in an if condition both fold on the strict-first spine
 pass	TWO prefix scalars then a Tuple then a suffix scalar cross the direct-call boundary
 pass	Type is a first-class value
 pass	Type.eq branches on a type-valued parameter, monomorphized per passed type
+pass	Type.eq compares a RECORD type-value structurally, by field types
+pass	Type.eq compares a TUPLE type-value structurally, by element types
 pass	Type.eq compares a reflected type against a written type
 pass	Type.eq compares two type-valued parameters to each other
 pass	Type.eq distinguishes a constructed generic sum by its type argument

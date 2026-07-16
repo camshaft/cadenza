@@ -1034,6 +1034,32 @@
             (export main)))
   (output (: 0 Int64)))
 
+(case "Type.eq compares a TUPLE type-value structurally, by element types"
+  (doc    "`Type.of` on a tuple value reflects its structural `Ty::Tuple` type, compared element-wise.
+           `(Type.of (tuple 1 \"a\"))` is `(Tuple Int64 String)`: equal to another `(Tuple Int64 String)`
+           regardless of the element VALUES (→ true), but distinct from `(Tuple Int64 Int64)` (a differing
+           element type → false). `1 + 0 = 1`. Pins that type equality over a tuple type-value is by the
+           element TYPES, not the values — the tuple analogue of the record/sum structural comparison.")
+  (input  (do
+            (def (main) (+ (if (Type.eq (Type.of (tuple 1 "a")) (Type.of (tuple 2 "b"))) 1 0)
+                           (if (Type.eq (Type.of (tuple 1 "a")) (Type.of (tuple 1 2))) 10 0)))
+            (export main)))
+  (output (: 1 Int64)))
+
+(case "Type.eq compares a RECORD type-value structurally, by field types"
+  (doc    "`Type.of` on a record value reflects its structural `Ty::Record` type, compared by field name +
+           type. `(Type.of (record (x 1) (y \"a\")))` is `(Record (x Int64) (y String))`: equal to another
+           record of the same field-name-and-type set regardless of values (→ true), but distinct when a
+           field's TYPE differs — `(y String)` vs `(y Int64)` → false. `1 + 0 = 1`. Pins that a record
+           type-value's equality carries each field's type (the record analogue of the tuple case above).")
+  (input  (do
+            (def (main) (+ (if (Type.eq (Type.of (record (x 1) (y "a")))
+                                        (Type.of (record (x 2) (y "b")))) 1 0)
+                           (if (Type.eq (Type.of (record (x 1) (y "a")))
+                                        (Type.of (record (x 1) (y 2)))) 10 0)))
+            (export main)))
+  (output (: 1 Int64)))
+
 (case "an if on Type.eq selects a branch at compile time"
   (doc    "The headline of compile-time reflection: `(if (Type.eq (Type.of 5) Int64) 100 200)` folds the
            condition to the constant `true`, so the whole `if` is `100`. A program BRANCHES on types at
