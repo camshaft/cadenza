@@ -205,3 +205,37 @@ disagree is a coordination detail for v-cdz-tooling (suggest: `--release` sets t
 --release` must produce the same OBSERVABLE result as a default build for every program — the
 level-equivalence guarantee the `every_opt_level_emits_byte_identical_wasm` test already pins, and a
 future `--opt-sweep` gate would extend corpus-wide.
+
+## 8. Current state — the framework is READY BUT EMPTY, and that is the honest finding (v-core-opt, 2026-07-16)
+
+Everything except the passes themselves is landed and wired end-to-end:
+- `OptLevel` (O0..O3, default O1) + `PassManager` (tier-gated) + `CorePass` trait — `opt.rs`.
+- `compile_with_opt(inputs, targets, level)` runs the manager at the post-load Core seam.
+- The full surface: `cdz build --release` (O2), `--opt-level <O0..O3>`, `Project.cdz def opt-level`,
+  resolved by §7's precedence — landed by v-cdz-tooling.
+- Level-equivalence guard: `every_opt_level_emits_byte_identical_wasm` unit test.
+
+**But the `PassManager` registers ZERO passes, so no level changes emitted output today** — and an
+audit (v-core-opt, ticks 17–21) found this is the CORRECT state, not incomplete work:
+- The cheap backend-independent optimizations the design assigned to O0/O1 (constant folding, copy
+  propagation, admin-redex elimination, algebraic identities, non-recursive-call inlining +
+  monomorphization, `@inline-*` policy, the fold family) are ALREADY done eagerly in `lower.rs` as the
+  demand-driven core column is built. They are not separable into level-gated passes without rearchitecting
+  lowering to be non-lazy — and they should always run (they are canonicalization + the cheapest correct
+  emit), so gating them off at O0 would only ever mis-emit or under-optimize with no dev-speed win worth
+  the rearchitecture.
+- The expensive whole-function optimizations the design assigned to O2 (LICM, dominator/global CSE,
+  accumulator introduction) live in the WASM backend (`select.rs`) and are wasm-Lir/slot-specific
+  (confirmed with v-wasm-opt). They do NOT lift to backend-independent Core passes, because the RUST
+  backend delegates optimization to `rustc` — wasm needs its own only because it has no downstream
+  optimizer. So there is no backend-agnostic O2 transform to register.
+
+**Consequence:** the tiered-opt framework is valuable as READY infrastructure — the surface, the enum,
+the precedence, the seam, and the level-equivalence guard all exist, so the moment a genuinely
+backend-independent, level-worthy transform is identified it drops in as one `CorePass` registration
+with a gate. But forcing a speculative pass now would add cost without a real optimization behind it.
+The open question (escalated to the operator via the concierge): is "ready but empty" the intended
+resting state, or is there a specific backend-independent O2 transform the operator wants built (e.g. a
+Core-level global value-numbering that BOTH backends keep, accepting the redundancy with rustc's)? Until
+that is answered, v-core-opt holds the framework here and continues hardening the fold family's gate
+coverage (which is what actually protects the emitted-code quality both backends share).
