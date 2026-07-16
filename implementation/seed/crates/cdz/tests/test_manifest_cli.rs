@@ -660,12 +660,36 @@ fn an_exhaustive_property_is_driven_over_its_whole_domain() {
         "a compound @exhaustive domain → non-zero exit (declines): {stdout}"
     );
     assert!(
-        stdout.contains("FAIL clist-gen") && stdout.contains("BOUNDED input domain"),
-        "a compound @exhaustive declines with a bounded-domain message: {stdout}"
+        stdout.contains("FAIL clist-gen")
+            && stdout.contains("not supported for a compound parameter"),
+        "a compound @exhaustive declines because its generator samples (cannot enumerate a domain): {stdout}"
     );
     assert!(
         stdout.contains("PASS anchor4"),
         "a compound @exhaustive decline does NOT abort the file — the sibling test still runs: {stdout}"
+    );
+
+    // A small user-SUM enum is a FINITE domain, but `@exhaustive` still declines it — the decline is not
+    // about boundedness (the message must NOT claim the enum is "unbounded") but about the compound
+    // generator sampling the pool rather than enumerating. Sexpr form (a user `(type …)` sum). Pins the
+    // accurate diagnostic for a bounded-but-compound domain.
+    let enom = write(
+        &d,
+        "enom.sexp",
+        "(do (type Color (Red) (Green) (Blue)) \
+           (@ exhaustive (def (ce (: c Color)) unit)) (def (anchor6) 1))",
+    );
+    let (ok, stdout, _) = run(&["test", &enom]);
+    assert!(
+        !ok,
+        "a user-sum @exhaustive declines → non-zero exit: {stdout}"
+    );
+    assert!(
+        stdout.contains("FAIL ce-gen")
+            && stdout.contains("not supported for a compound parameter")
+            && !stdout.contains("unbounded"),
+        "a bounded user-sum @exhaustive declines with the compound-generator reason, NOT a false \
+         'unbounded' claim: {stdout}"
     );
 
     // A MULTI-scalar `@exhaustive` enumerates the full Cartesian PRODUCT of its parameters' domains:
