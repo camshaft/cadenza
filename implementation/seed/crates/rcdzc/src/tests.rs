@@ -5683,6 +5683,33 @@ fn an_effectful_helper_in_a_selfcall_arg_folds() {
     }
 }
 
+/// The follow-up sub-case: an effectful helper that ALSO reads a DRIVER parameter in its own body —
+/// `turn(a, acc) = acc + Tools.dispatch a`, called `(run (- fuel 1) (turn fuel acc))` where `acc` is also
+/// `run`'s param. Inlining `turn` β-substitutes the driver's `acc` by returning the arg node as-is (the
+/// pinned-name fast path), so `acc` kept a pin to `run`'s dead scope; inside the recursive self-call arg,
+/// the reduced body landed in the synthesized `f#ctx` def where the pinned `acc` no longer resolved →
+/// CDZ0101 `unbound acc`. Deep-fresh-copying the reduced inline body (in the cross-function-inline arm)
+/// drops the stale pins so every name re-resolves against the specialized def's sig. `run 4 0` = 10.
+/// (A NESTED two-effect variant — an outer `Cedar` handler around the `Tools` one — still declines with a
+/// `run#eff$s0` leak: the merged-context manifestation, queued separately.)
+#[test]
+fn an_effectful_helper_reading_a_driver_param_in_a_selfcall_arg_folds() {
+    use crate::testkit::parse;
+    let src = "(do \
+        (effect Tools (op dispatch (-> Int64 Int64)) (op done (-> Int64 Int64))) \
+        (def (turn (: a Int64) (: acc Int64)) (+ acc (Tools.dispatch a))) \
+        (def (run (: fuel Int64) (: acc Int64)) \
+          (if (= fuel 0) (Tools.done acc) (run (- fuel 1) (turn fuel acc)))) \
+        (def (main) \
+          (handle Tools 0 ((dispatch (a) s (resume a a)) (done (a) s (resume a a))) \
+            (run 4 0))) (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src)))
+        .expect("an effectful helper reading a driver param folds (deep-fresh inline-body copy)");
+    if let Some(v) = run_linked(&bytes, "main") {
+        assert_eq!(v, "10");
+    }
+}
+
 // --- HOST-COMPOSITION INVARIANT boundary (§4.4: a reified/duplicated continuation must NOT span a host
 // call or an outer handler's effect). These are documented in 14-effects-and-handlers.sexp as a "clean
 // decline" but were not pinned by any test — so a future fold change that admitted the multi-shot /
