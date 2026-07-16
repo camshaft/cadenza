@@ -1132,11 +1132,12 @@
             (other                0)))
   (output (: 7 Int64)))
 
-; A nested unquote pattern matches ANY Ast leaf variant, not just Int — the Float and Str variants (the
-; leaves this vertical realized) destructure by shape exactly as `Ast.Int` does. These pin the interaction
-; between the quote-pattern surface and the Float/Str leaves: a `,(Ast.Float n)` matches only a float
-; operand and binds its value; a `,(Ast.Str s)` matches only a string operand. A change to either the
-; quote-pattern lowering or a leaf variant that broke this cross-feature match would flip these.
+; A nested unquote pattern matches ANY Ast leaf variant, not just Int — the Float, Str, and Bool variants
+; (the leaves this vertical realized) destructure by shape exactly as `Ast.Int` does. These pin the
+; interaction between the quote-pattern surface and those leaves: a `,(Ast.Float n)` matches only a float
+; operand and binds its value; a `,(Ast.Str s)` matches only a string operand; a `,(Ast.Bool b)` matches
+; only a boolean operand. A change to either the quote-pattern lowering or a leaf variant that broke this
+; cross-feature match would flip these.
 
 (case "a nested unquote pattern matches a Float sub-AST by shape"
   (doc    "`` `(f ,(Ast.Float n)) `` matches only a compound headed `f` whose operand is a FLOAT literal,
@@ -1157,6 +1158,27 @@
             (`(f ,(Ast.Str s)) (String.byte-len s))
             (other             0)))
   (output (: 2 Int64)))
+
+(case "a nested unquote pattern matches a Bool sub-AST by shape"
+  (doc    "The boolean companion, completing the leaf set: `` `(f ,(Ast.Bool b)) `` matches only a compound
+           headed `f` whose operand is a BOOLEAN literal, binding it. Against `(quote (f true))` the operand
+           `(Ast.Bool true)` matches `(Ast.Bool b)` binding b=true, so the arm returns true. Pins that a
+           quote pattern destructures the `Ast.Bool` leaf exactly as it does Int/Float/Str — the last
+           realized leaf in the nested-unquote-pattern family.")
+  (input  (match (quote (f true))
+            (`(f ,(Ast.Bool b)) b)
+            (other              false)))
+  (output (: true Bool)))
+
+(case "a nested unquote Bool pattern does not match a non-boolean operand"
+  (doc    "The discriminator companion: `` `(f ,(Ast.Bool b)) `` matches ONLY a boolean operand, so against
+           `(quote (f 3))` — an INTEGER operand — the quote-pattern arm does NOT fire and control falls to
+           the catch-all (→ 0). Pins that the nested-unquote leaf pattern is shape-SELECTIVE (a leaf pattern
+           that matched any operand would wrongly bind the Int here), the negative face of the match cases.")
+  (input  (match (quote (f 3))
+            (`(f ,(Ast.Bool b)) 1)
+            (other              0)))
+  (output (: 0 Int64)))
 
 (case "a final unquote-splice binds the remaining elements as a list"
   (doc    "A final `,@<name>` binds the remaining list elements as a LIST (never a single element), the

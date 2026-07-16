@@ -4373,6 +4373,45 @@ fn a_runtime_closure_leaks_exactly_one_cell_known_gap() {
     );
 }
 
+/// A PARTIALLY-APPLIED CONSTRUCTOR held in a GENUINELY-RUNTIME compound element, projected + applied,
+/// completes via the synthesized runtime eta-closure lift — the WORKING fix for the FACE-B miscompile
+/// (was invalid wasm: a newtype erased `(T.Mk 10)` to the bare `10`, storing a scalar where a closure
+/// handle belonged → `func N: expected i32, found i64`). `mk` builds `(tuple (T.Mk 10) n)` behind a
+/// recursive `if` so the tuple is not fold-visible; `((. p 0) 5)` projects the partial ctor and applies
+/// the last payload. `lower_sum_new`'s partial-arity path synthesizes `(fn (y) (T.Mk 10 y))` (capturing
+/// the supplied `10`), lifts it as an ordinary closure, and the application completes `(T.Mk 10 5)` → 15.
+/// Compiles to a VALID module (the miscompile was an INVALID one) and runs to 15.
+#[test]
+fn a_partial_ctor_in_a_runtime_tuple_completes_via_an_eta_closure_lift() {
+    use crate::testkit::parse;
+    let src = "(module m \
+                 (type T (Mk Int64 Int64)) \
+                 (def (mk (: n Int64)) (if (< n 0) (tuple (T.Mk 0) 0) (tuple (T.Mk 10) n))) \
+                 (def (main) (let ((p (mk 1))) (match ((. p 0) 5) ((T.Mk a b) (+ a b))))) \
+                 (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src)))
+        .expect("a partial ctor in a runtime tuple must compile (eta-closure lift), not decline");
+    let Some(runtime) = find_runtime_wasm() else {
+        eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
+        return;
+    };
+    let opts = cdz_run::RunOpts {
+        export: Some("main".to_string()),
+        args: vec![],
+        runtime: Some(runtime),
+        runtime_cache_dir: None,
+        host_responses: Vec::new(),
+    };
+    match cdz_run::run(&bytes, &opts).expect("run") {
+        cdz_run::Outcome::Value(s) => assert_eq!(
+            s, "15",
+            "the eta-closure captures the supplied 10 and applying 5 completes (T.Mk 10 5) → 15 \
+             (was invalid wasm — the newtype erased the partial to the bare 10)"
+        ),
+        cdz_run::Outcome::Trap(t) => panic!("partial-ctor eta-closure trapped: {t}"),
+    }
+}
+
 /// KNOWN LEAK (tracking probe, the PERVASIVE case): a recursive fold over a HEAP LIST leaks EVERY node —
 /// the recursion-heap-reclamation gap is NOT closure-specific and NOT O(1); it is O(N) in the data. A
 /// `match` reading `sum-payload` does not drop the matched shell, so a list threaded through a recursive
@@ -11618,6 +11657,36 @@ mod runtime_ops {
                 code2.iter().filter(|i| matches!(i, Lir::Select)).count(),
                 2,
                 "distinct conditions are not shared, got: {code2:?}"
+            );
+            // A repeated runtime FLOAT equality (`Core::FloatCompare`) is CSE'd too: `is_cse_shareable`
+            // admits it, so `core_eq` must recognize two equal ones. `(+ (if (= a b) 10 0) (if (= a b) 20
+            // 0))` over Float64 emits the canon-and-compare (a single `i64.eq` over the canonicalized bits)
+            // ONCE, not twice. Regression guard for the `core_eq` FloatCompare arm.
+            let src3 = "(module m (def (f (: a Float64) (: b Float64)) (+ (if (= a b) 10 0) (if (= a b) 20 0))) (def (main) 0) (export main))";
+            let mut db3 = crate::db::Db::load(crate::testkit::parse(src3));
+            let layout3 = crate::layout::compute(&mut db3).expect("layout");
+            let d3 = db3.def_by_name("f").expect("f");
+            let ps3: Vec<_> = db3.defs[d3]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db3
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db3, b))
+                })
+                .collect();
+            let body3 = db3.defs[d3].body.expect("body");
+            let code3 = select_function(&mut db3, body3, &ps3, &layout3)
+                .expect("select")
+                .code;
+            assert_eq!(
+                code3.iter().filter(|i| matches!(i, Lir::I64Eq)).count(),
+                1,
+                "the identical float equality is computed once, got: {code3:?}"
             );
         }
     }
@@ -24891,6 +24960,52 @@ mod match_engine {
     }
 
     #[test]
+    fn a_sum_payload_heap_child_consumed_while_the_scrutinee_is_live_is_retained() {
+        // MISCOMPILE (found + fixed 2026-07-16, v-memory-safety): a sum-match payload binder lowers to
+        // `Core::SumPayload` = a BORROW of the scrutinee's payload (no rc++). Consuming that heap child
+        // (`List.push`) WHILE the scrutinee is still live (matched again / threaded to a self-call)
+        // FBIP-mutated it in place → the still-live scrutinee read the grown value (drift). The RestFrom
+        // step already dups for this; the Payload/Elem-extracted-child case did not. Fix: the `SumPayload`
+        // arm of `mark_binder_dups` marks a child-dup site (mirror `Proj`), + `is_heap_type` now counts a
+        // `Ty::Nominal` (a single-variant newtype ERASES to its heap inner, so `bx : Box` is a retain
+        // candidate). STRAIGHT-LINE: want len(push(xs,99))=3 + len(bx's payload)=2 = 5; drifted to 6.
+        let straight = "(module m \
+               (type Box (B (List Int64))) \
+               (def (mb i n acc) (if (< i n) (mb (+ i 1) n ((. List push) acc i)) acc)) \
+               (def (main) (let ((bx (B (mb 0 2 (list))))) \
+                             (+ ((. List len) ((. List push) (match bx ((B xs) xs)) 99)) \
+                                ((. List len) (match bx ((B ys) ys)))))) (export main))";
+        if let Some(out) = run_on_heap(straight) {
+            assert_eq!(
+                out, "5",
+                "a payload consumed by List.push must not corrupt the still-live scrutinee (3 + 2)"
+            );
+        }
+        // Loop form: `bx` threaded unchanged, its payload consumed each iteration → 3 each of 4 iters.
+        let looped = "(module m \
+               (type Box (B (List Int64))) \
+               (def (mb i n acc) (if (< i n) (mb (+ i 1) n ((. List push) acc i)) acc)) \
+               (def (loop j m bx tot) \
+                 (if (< j m) (loop (+ j 1) m bx (+ tot ((. List len) ((. List push) (match bx ((B xs) xs)) 99)))) tot)) \
+               (def (main) (loop 0 4 (B (mb 0 2 (list))) 0)) (export main))";
+        if let Some(out) = run_on_heap(looped) {
+            assert_eq!(
+                out, "12",
+                "a threaded sum's payload consumed per-iteration must not drift"
+            );
+        }
+        // FBIP fast path: a payload consumed EXACTLY ONCE with the scrutinee NOT otherwise live must stay
+        // dup-free (the retain only fires when the scrutinee is still live).
+        let linear = "(module m (type Box (B (List Int64))) \
+               (def (f bx) ((. List len) ((. List push) (match bx ((B xs) xs)) 9))) \
+               (def (main) (f (B (list 1 2)))) (export main))";
+        assert!(
+            !component_imports_op(&component(linear), "dup"),
+            "a single-consume payload with a dead scrutinee must not import `dup` (FBIP fast path)"
+        );
+    }
+
+    #[test]
     fn a_loop_invariant_heap_projection_consumed_in_the_body_is_not_licm_hoisted() {
         // MISCOMPILE (found + fixed 2026-07-16, v-memory-safety): LICM hoists a loop-invariant subexpression
         // ONCE into a persistent slot read back each iteration. That is sound for a SCALAR (a count/index),
@@ -33093,6 +33208,43 @@ mod match_engine {
     }
 
     #[test]
+    fn a_mixed_scale_combine_converts_a_computed_quantity_operand() {
+        // The mixed-scale converters (convert_operand_ast{,_bigint,_rational}) read the operand's magnitude
+        // via `qty_magnitude_occ` — a literal `Qty.of`'s value occurrence, else `(Qty.value operand)`. So a
+        // COMPUTED quantity operand (a `*`-scaled one, here `(Qty n km) * 2N`), not only a literal `Qty.of`,
+        // combines across scales. Previously the literal-only `qty_value_occ` declined it ("runtime
+        // mixed-unit BigInt combine over a non-Qty.of operand not yet emitted"). (Qty n km * 2N) + 500 m,
+        // n=3 → 3·1000·2 + 500 = 6500. Uses the FULL runtime; skips if absent (the corpus gate covers e2e).
+        let src = "(do \
+                   (def (main (: n Int64)) \
+                     ((. Qty value) (+ (* ((. Qty of) ((. BigInt of) n) \
+                                             ((. Unit prefix) kilo ((. Unit base) #\"meter\"))) \
+                                          ((. BigInt of) 2)) \
+                                       ((. Qty of) ((. BigInt of) 500) ((. Unit base) #\"meter\"))))) \
+                   (export main))";
+        let bytes = crate::codec::encode(&parse(src));
+        let comp = compile_component(&bytes)
+            .expect("a mixed-scale combine over a computed BigInt quantity operand compiles (was a decline)");
+        let Some(runtime) = super::find_runtime_wasm() else {
+            return; // no runtime store — the corpus gate is the e2e witness
+        };
+        let opts = cdz_run::RunOpts {
+            export: None,
+            args: vec!["3".to_string()],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run(&comp, &opts).expect("run") {
+            cdz_run::Outcome::Value(s) => assert!(
+                s.contains("6500"),
+                "(n km * 2N) + 500 m, n=3 → 6500 (computed operand combines across scales): {s}"
+            ),
+            cdz_run::Outcome::Trap(t) => panic!("computed-operand combine trapped: {t}"),
+        }
+    }
+
+    #[test]
     fn a_bigint_or_rational_inner_quantity_comparison_folds_to_the_exact_compare() {
         // Companion to the bigint-quantity arithmetic fix: a `(Qty BigInt/Rational u)` COMPARISON must
         // route to the exact bigint/rational compare, not decline as a "compound value needs a heap walk".
@@ -37456,6 +37608,57 @@ mod diagnostics {
                 .all(|d| d.severity != crate::abi::Severity::Error),
             "a well-formed runtime map match still checks clean: {:?}",
             diags_of(ok)
+        );
+    }
+
+    /// A RECORD match pattern is not yet implemented; the diagnostic must NAME that (a coded CDZ0201 with
+    /// the whole-binder-and-project workaround), NOT leak a misleading "unbound name" for its field binder.
+    /// The `(record (field binder) …)` arm used to fall through to the variant-ctor block (where `record`
+    /// is read as a variant head over a `Ty::Record` scrutinee that has none), so the arm bound nothing and
+    /// a body/guard reference to a field binder resolved UNBOUND (CDZ0101 blaming the reference). Two
+    /// coordinated pieces fix it: (1) `pattern_constraints` declines the `(record …)` arm as a CODED
+    /// `Malformed` so `match_pattern_fault` surfaces it in `cdz check` on EVERY body (not just
+    /// nullary-exported — the Inc 39/40 discipline); (2) resolve Case 6rec resolves a field-binder
+    /// reference to that same decline, SUPPRESSING the consequent unbound-name cascade. Flagged by
+    /// v-diagnostics (2026-07-16). Replaced by real field-directed matching when record patterns land.
+    #[test]
+    fn a_record_match_pattern_is_named_not_leaked_as_an_unbound_field_binder() {
+        // Body references the field binder `a` — the case v-diagnostics flagged. `f` is a parameterized
+        // (non-nullary) body, so this exercises the check≡compile path via `match_pattern_fault`.
+        let uses_binder = "(module m (def (f (: r (Record (x Int64)))) \
+                           (match r ((record (x a)) a))) (export f))";
+        let all = diags_of(uses_binder);
+        assert!(
+            all.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
+                && d.message
+                    .contains("record match pattern is not yet supported")),
+            "check names the unimplemented record match pattern (CDZ0201): {all:?}"
+        );
+        assert!(
+            all.iter().all(|d| d.code.as_deref() != Some("CDZ0101")),
+            "no misleading 'unbound name' for the field binder — the real cause is named instead: {all:?}"
+        );
+        // Body does NOT reference a binder (just `99`) — still the clear coded decline (the
+        // `pattern_constraints` arm fires regardless of whether resolve Case 6rec is exercised).
+        let ignores_binder = "(module m (def (f (: r (Record (x Int64)))) \
+                             (match r ((record (x a)) 99))) (export f))";
+        let all = diags_of(ignores_binder);
+        assert!(
+            all.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
+                && d.message
+                    .contains("record match pattern is not yet supported")),
+            "a record match arm declines clearly even when its binder is unused: {all:?}"
+        );
+        // NO false alarm: a record match with a WHOLE-value binder + field projection (the workaround) is
+        // the SUPPORTED form and stays clean.
+        let workaround = "(module m (def (f (: r (Record (x Int64)))) \
+                          (match r (whole (. whole x)))) (export f))";
+        assert!(
+            diags_of(workaround)
+                .iter()
+                .all(|d| d.severity != crate::abi::Severity::Error),
+            "the whole-binder + projection workaround still checks clean: {:?}",
+            diags_of(workaround)
         );
     }
 
@@ -52872,6 +53075,43 @@ mod stage1 {
                 d.message
             );
         }
+    }
+
+    #[test]
+    fn the_sigil_question_mark_as_a_head_points_at_the_try_spelling() {
+        // The diagnostics call the operator "`?`/`try`" and `?` is the sigil many languages use, so an
+        // author reaches for `(? e)` — but the s-expr surface head is the keyword `try` (`(try e)`), so `?`
+        // resolves unbound: a misleading "unbound name `?`" (a did-you-mean scan is nonsense for a sigil).
+        // `?` in HEAD position now names the real spelling + carries a VERIFIED `?` → `try` head-rewrite.
+        for body in ["(? (Ok 1))", "(? r)"] {
+            let d = expect_error(body);
+            assert_eq!(d.code.as_deref(), Some("CDZ0101"), "got: {}", d.message);
+            assert!(
+                d.message.contains("`(try <expression>)`") && d.message.contains("write `try`"),
+                "names the try spelling: {}",
+                d.message
+            );
+            let fix = d.fix.as_ref().expect("carries a `?`->`try` fix");
+            assert!(fix.verified, "the head rewrite is deterministic (verified)");
+            assert_eq!(fix.replacement, "try", "rewrites the `?` head to `try`");
+        }
+        // NO false positive: a bare `?` NOT in head position keeps the ordinary unbound-name path (no
+        // try-spelling hint, no fix) — only a `(? …)` head is the reachable-for-try mistake.
+        let arg = expect_error("(list ?)");
+        assert_eq!(arg.code.as_deref(), Some("CDZ0101"), "got: {}", arg.message);
+        assert!(
+            arg.message.contains("unbound name `?`") && !arg.message.contains("try"),
+            "a non-head `?` stays a plain unbound name: {}",
+            arg.message
+        );
+        // NO false change: the correct `(try e)` spelling is unaffected (its own boundary/operand checks
+        // still apply — here a non-fallible operand is the CDZ0203, not an unbound `?`).
+        let ok = expect_error("(try 5)");
+        assert!(
+            !ok.message.contains("spelled `(try"),
+            "a real `(try …)` never draws the `?`-head hint: {}",
+            ok.message
+        );
     }
 
     #[test]

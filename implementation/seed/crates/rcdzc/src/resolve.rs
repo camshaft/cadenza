@@ -817,6 +817,30 @@ fn resolve_name(db: &Db, id: StructId, name: &str) -> Resolved {
             .at(id),
         );
     }
+    // `?` used as the HEAD of a form — `(? e)`. The diagnostics for the fallible short-circuit operator
+    // consistently call it "`?`/`try`", and `?` is the sigil many languages spell it with, so an author
+    // reaches for `(? e)`; but the s-expr surface head is the KEYWORD `try` (`(try e)`), and `?` is not a
+    // bound name, so it resolves unbound — a misleading "unbound name `?`" (a did-you-mean scan over scope
+    // is nonsense for a sigil). Name the real spelling + carry a VERIFIED head-rewrite `?` → `try` (the
+    // operand is preserved; the rewrite is the exact form the author meant). Only in HEAD position — a bare
+    // `?` elsewhere keeps the ordinary unbound path. `try` is a grammar keyword, so this never shadows a
+    // user name.
+    if name == "?"
+        && db.parent_of(id).is_some_and(
+            |p| matches!(db.ast.get(p), Struct::List(kids) if kids.first() == Some(&id)),
+        )
+    {
+        trace!(target: "rcdzc::resolve", node = id.0, "`?` head → the try operator is spelled `(try e)`");
+        return Resolved::Poison(
+            Reject::coded(
+                Code::Unbound,
+                "the fallible short-circuit operator is spelled `(try <expression>)` in this surface, \
+                 not `(? …)` — write `try` as the head",
+            )
+            .at(id)
+            .with_fix(crate::diag::Fix::replace_verified(id, "try", "replace `?` with `try`")),
+        );
+    }
     trace!(target: "rcdzc::resolve", node = id.0, %name, "name UNBOUND (CDZ0101)");
     // The "did you mean?" typo suggestion (the nearest in-scope name) is computed LAZILY, at the ONE site
     // that SURFACES an unbound name as a user fault (`infer::collect_node`) — NOT here. `resolved_of` is
@@ -1448,6 +1472,19 @@ fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Reso
             steps: steps.into(),
             heads: heads.into(),
         });
+    }
+    // Case 6rec: `form` is a MATCH ARM whose pattern is a `(record (field binder) …)` RECORD pattern
+    // binding `name` at a field — a pattern kind not yet implemented (the match twin of the `(record …)`
+    // binding decline). The field binder does not wire, so WITHOUT this the body/guard reference fell
+    // through to a misleading CDZ0101 "unbound name" blaming the user. Resolve it to a CODED decline that
+    // names the real cause — the unimplemented feature — so `cdz check` reports the actionable message
+    // (v-diagnostics note). A COMPILE-provable well-formedness decline surfaced at the reference (the
+    // binder position), matching how the binding path decline reads; replaced by real field-directed
+    // resolution when record match patterns land.
+    if match_arm_record_binds(db, form, from, name) {
+        return Some(Resolved::Poison(Reject::decline(
+            "a record match pattern is not yet supported (Increment B)",
+        )));
     }
     // Case 7: `form` is a HANDLE ARM `(op (params…) state body)`, ascended from `body`, and `name` is one
     // of the operation PARAMETERS or the STATE binder → it binds for this arm's body. Like a lambda
@@ -2145,6 +2182,59 @@ fn match_arm_binds(db: &Db, form: StructId, from: StructId, name: &str) -> Optio
         return None; // `form` is the scrutinee position, not an arm
     }
     Some(scrutinee)
+}
+
+/// Whether `form` is a MATCH ARM `(pattern body)` (ascended from `body`, or a guarded arm's guard cond)
+/// whose pattern is a `(record (field binder) …)` RECORD pattern that binds `name` at one of its field
+/// positions. Record MATCH patterns are not yet implemented (the match twin of `check_binding_pattern`'s
+/// `(record …)` binding decline) — the arm's field binders never wire, so a body/guard reference to one
+/// (`(match r ((record (x a)) a))`'s body `a`) fell through every binder case to a MISLEADING CDZ0101
+/// "unbound name `a`" that points at the reference and blames the user, hiding the real cause (the
+/// feature is unimplemented). This detector lets `binder_in` resolve such a reference to a CLEAR CODED
+/// decline naming the feature instead (v-diagnostics note 2026-07-16). Returns `true` when `name` is a
+/// field binder of a record match-arm pattern; the caller turns that into the decline. GATED to a genuine
+/// match arm over a record pattern, so a `(record …)` VALUE expression (not a pattern) is untouched.
+fn match_arm_record_binds(db: &Db, form: StructId, from: StructId, name: &str) -> bool {
+    let Struct::List(pb) = db.ast.get(form) else {
+        return false;
+    };
+    if pb.len() != 2 {
+        return false;
+    }
+    let (pattern, body) = (pb[0], pb[1]);
+    // Peel a `(guard <record-pattern> <cond>)` wrapper — a reference in the guard cond binds the same
+    // field binders as the body (the record analogue of the tuple/list guard peels).
+    let (record_pat, guard_cond) = match db.ast.as_form(pattern, "guard") {
+        Some(g) if g.len() == 2 => (g[0], Some(g[1])),
+        _ => (pattern, None),
+    };
+    if from != body && Some(from) != guard_cond {
+        return false;
+    }
+    // The pattern must be a `(record (key value) …)` form.
+    let Some(fields) = db.ast.as_form(record_pat, "record") else {
+        return false;
+    };
+    // `form` must be an arm of an enclosing `(match scrutinee arm…)`, not the scrutinee itself.
+    let parent = match db.parent_of(form) {
+        Some(p) => p,
+        None => return false,
+    };
+    let Some(mtail) = db.ast.as_form(parent, "match") else {
+        return false;
+    };
+    match mtail.first() {
+        Some(&scrutinee) if scrutinee != form => {}
+        _ => return false,
+    }
+    // Does any field pair `(key value)` bind `name` as its VALUE sub-pattern (a bare binder)? The KEY is a
+    // field LABEL, never a binder — only the value position binds. (A nested value sub-pattern would also
+    // fail to wire, but the whole record pattern is declined regardless, so a bare-binder match suffices to
+    // attribute the reference to this unimplemented pattern.)
+    fields.iter().any(|&pair| {
+        matches!(db.ast.get(pair), Struct::List(kv) if kv.len() == 2
+            && db.ast.as_name(kv[1]) == Some(name) && name != "_")
+    })
 }
 
 /// Descend a LIST PATTERN `(list p… [.. rest])` looking for a LEADING element binder `name` — the

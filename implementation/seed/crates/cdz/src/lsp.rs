@@ -857,13 +857,24 @@ fn parse_surface(
         // The s-expr surface: a single top-level form stays bare (mirrors the ML root convention), else
         // wrap in `(do …)`. `read_spanned` succeeds iff there is exactly one form; fall back to the
         // multi-form spanned reader. A genuine malformed program hard-errors — surface it as a diagnostic.
-        match cadenza_syntax::sexpr::read_spanned(text) {
-            Ok((arenas, spans)) => Ok((arenas, spans, Vec::new())),
+        let (raw_arenas, raw_spans) = match cadenza_syntax::sexpr::read_spanned(text) {
+            Ok(pair) => pair,
             Err(_) => match cadenza_syntax::sexpr::read_all_spanned(text) {
-                Ok((arenas, spans)) => Ok((arenas, spans, Vec::new())),
-                Err(e) => Err(((0, text.len().min(1)), format!("s-expr parse: {}", e.0))),
+                Ok(pair) => pair,
+                Err(e) => return Err(((0, text.len().min(1)), format!("s-expr parse: {}", e.0))),
             },
-        }
+        };
+        // CANONICALIZE + REMAP — the SAME step the ML branch (and the CLI loader
+        // `parse_program_spanned_counted`) does, for the SAME reason: the compiler reports over
+        // `codec::encode`'d (canonical) node ids, so a NODE-ID-keyed query (definition/references/hover/
+        // tokens) needs the canonical arena + a span table keyed by canonical ids. A LONE s-expr form is
+        // already canonical (identity map, no-op), but the MULTI-form `read_all_spanned` fallback wraps
+        // the roots in a synthetic `(do …)` whose head is built LAST — canonicalization then REORDERS the
+        // ids, and an un-remapped span table would map every answer to a NEIGHBOUR's node (a
+        // go-to-definition on a multi-form `.sexp` buffer jumped to the wrong line).
+        let (arenas, id_map) = cadenza_syntax::canon::canonicalize_with_map(&raw_arenas);
+        let spans = raw_spans.remap(&id_map, arenas.structure.len());
+        Ok((arenas, spans, Vec::new()))
     }
 }
 
@@ -2418,6 +2429,53 @@ mod tests {
         assert!(definition_at(text, true, Position::new(0, 13), &test_uri()).is_none());
         // Cursor past the end.
         assert!(definition_at(text, true, Position::new(9, 9), &test_uri()).is_none());
+    }
+
+    // ── s-expr surface (is_ml = false) — the OTHER reader/canonicalization path ──────────────────────
+    // Almost every single-buffer unit test drives the ML surface; `parse_surface`'s s-expr branch is a
+    // DISTINCT reader (`sexpr::read_spanned` with a `read_all_spanned` multi-form fallback, no `canon`
+    // remap) whose node ids must ALSO line up with what the queries answer. These pin the node-id-keyed
+    // analyses (definition/hover/completion) on `.sexp` so a regression in that branch can't slip past.
+
+    #[test]
+    fn sexpr_definition_jumps_from_a_use_to_the_defining_name() {
+        // Multi-form s-expr program (exercises the `read_all_spanned` fallback): `double` is defined on
+        // line 0 and used on line 1; go-to-definition from the use lands on the definition's name.
+        let text = "(def (double x) (+ x x))\n(def use (double 21))";
+        // The `double` USE in `use`'s body: line 1, col 10 ("(def use (" = 10 chars before `double`).
+        let loc =
+            definition_at(text, false, Position::new(1, 10), &test_uri()).expect("a definition");
+        assert_eq!(
+            loc.range.start.line, 0,
+            "definition is on line 0, got {loc:?}"
+        );
+    }
+
+    #[test]
+    fn sexpr_hover_reports_the_type() {
+        // Hover on the s-expr surface reads TypeAt over the s-expr arena — the node ids must match.
+        let text = "(def (double x) (+ x x))\n(def use (double 21))";
+        let h = hover_at(text, false, Position::new(1, 10)).expect("a hover");
+        let rendered = match &h.contents {
+            HoverContents::Scalar(MarkedString::String(s)) => s.clone(),
+            HoverContents::Markup(m) => m.value.clone(),
+            other => panic!("unexpected hover contents: {other:?}"),
+        };
+        assert!(
+            rendered.contains("->") || rendered.contains("Int"),
+            "hover should report the function type, got: {rendered}"
+        );
+    }
+
+    #[test]
+    fn sexpr_completion_offers_top_level_symbols() {
+        // Completion on the s-expr surface offers the module's top-level declarations (`Symbols` read).
+        let text = "(def (double x) (+ x x))\n(def use (double 21))";
+        let items = completions_at(text, false, Position::new(1, 10));
+        assert!(
+            items.iter().any(|i| i.label == "double"),
+            "completion should offer the top-level `double`: {items:?}"
+        );
     }
 
     #[test]

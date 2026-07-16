@@ -3,14 +3,16 @@
 /// transformers (map/filter/take/…) build a new iterator without forcing anything, and a consumer
 /// (fold/count/collect/…) drives the pull.
 ///
-/// ENCODING — reified (defunctionalized), not a thunk. The proposal's ideal form is a thunk
-/// `Iter(a) = Susp(Unit -> Option (a, Iter(a)))`, but a `Unit`-parameter closure boxed into a heap sum
-/// currently DECLINES ("a closure's parameter type has no machine representation" — a zero-width `Unit`
-/// has no machine valtype at the closure boundary; see
-/// `mlrepro-decline-unit-param-closure-boxed-in-sum.cdz` (queue)). So an iterator is instead a SUM of the known
-/// step-shapes and `next` interprets one step. This is still lazy — `map`/`filter` build a wrapping
-/// variant and force nothing until `next` pulls — and it stores each closure over the ELEMENT type
-/// (representable), never `Unit`.
+/// ENCODING — reified (defunctionalized), not a thunk. The proposal's alternative form is a thunk
+/// `Iter(a) = Susp(Unit -> Option (a, Iter(a)))`. That once DECLINED — a `Unit`-parameter closure boxed
+/// into a heap sum was rejected ("a closure's parameter type has no machine representation") — but that
+/// gap is now RESOLVED (queue: `mlrepro-decline-unit-param-closure-boxed-in-sum`, pinned by
+/// `unit-param-closure-boxed-regression` below), so the thunk form is expressible today. The reified form
+/// is RETAINED anyway: it makes each step-shape inspectable, needs no per-pull closure allocation, and the
+/// generic story is blocked on OTHER open gaps (see ELEMENT TYPE), so a thunk rewrite would not unlock the
+/// generic version. An iterator is a SUM of the known step-shapes and `next` interprets one step — still
+/// lazy (`map`/`filter` build a wrapping variant and force nothing until `next` pulls), each closure stored
+/// over the ELEMENT type, never `Unit`.
 ///
 /// ELEMENT TYPE — this iterator is monomorphic over `Int64`. A fully generic `Iter(a)` type-checks for
 /// the producers/transformers with unannotated signatures, but a generic recursive CONSUMER that
@@ -22,8 +24,13 @@
 /// documented follow-up gated on those fixes.
 ///
 /// HIGHER-ORDER PARAMETERS carry an explicit ARROW annotation (`f: Int64 -> Int64 -> Int64`,
-/// `p: Int64 -> Bool`). That is required, not decoration: an unannotated closure threaded through a
-/// self-recursive HOF fails to infer its parameter types (the same constraint `traverse.cdz` documents).
+/// `p: Int64 -> Bool`). That is still required, but NOT for the reason it once was: an unannotated
+/// closure threaded through a self-recursive HOF used to fail to infer its parameter types (CDZ0203,
+/// "no machine representation" — the constraint `traverse.cdz` documented). That inference gap is now
+/// RESOLVED upstream. What the annotation buys today is the ELEMENT TYPE: dropping it from a self-recursive
+/// consumer like `fold` reports CDZ0201 (the recursive-generic element tie — see the ELEMENT TYPE note
+/// above), not a param-type failure. The arrow pins the element to `Int64` so the monomorphic consumer
+/// type-checks; it is the anchor for the element type, no longer for the closure's param types.
 
 /// The reified iterator. Each variant is a step-shape `next` knows how to interpret.
 ///   - `FromList(xs)`      — yield the list's elements in order.
@@ -1430,5 +1437,18 @@ def zip-entries-bounds-infinite() =
     unit
   else
     trap("bounded zip -> 3 pairs")
+
+/// A minimal thunk (`Unit -> a` closure boxed into a heap sum) — the shape the thunk-based iterator
+/// `Iter(a) = Susp(Unit -> Option (a, Iter(a)))` would use. It once DECLINED ("a closure's parameter type
+/// has no machine representation"); kept here only to pin that the gap is fixed (see the ENCODING note).
+type Susp = | Thunk(Unit -> Int64)
+
+def force-susp(s: Susp) = match s with | Susp.Thunk(f) => f(unit)
+
+@test
+def unit-param-closure-boxed-regression() =
+  // REGRESSION: a Unit-parameter closure boxed into a heap sum (`Susp.Thunk(fn(_) => 42)`) once declined
+  // at emit. Must now compile and force to its value — this is why the thunk-based iterator is expressible.
+  if force-susp(Susp.Thunk(fn(_u) => 42)) == 42 then unit else trap("forced thunk yields 42")
 
 export { Iter.* }

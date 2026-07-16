@@ -1597,6 +1597,32 @@
   (call   main (: 3 Int64)) (output (: 9 Int64))
   (call   main (: 4 Int64)) (output (: 12 Int64)))
 
+(case "a sum-match payload's heap child consumed while the scrutinee is live is retained"
+  (doc    "The SUM-PAYLOAD face of the still-live-binding family: a sum-match payload binder lowers to a
+           `Core::SumPayload` = a BORROW of the scrutinee's payload (`sum-payload`/`arr-get`, no rc++).
+           Consuming that heap child (`List.push`) WHILE the scrutinee `bx` is STILL LIVE — matched again in
+           the same expression, and threaded UNCHANGED to the self-recursive call — FBIP-mutates it in place
+           at rc==1, so the still-live scrutinee reads the grown value (drift). `bx` carries [0,1]; each
+           iteration reads `(List.len (List.push (match bx ((B xs) xs)) 99))` = 3, so total = 3*m. Before the
+           fix per-iteration length drifted 3,4,5,6 (m=2 → 7 not 6, m=4 → 18 not 12). The RestFrom step
+           already `dup`s the scrutinee for this reason; the Payload/Elem-extracted-child case did not. Fix:
+           the `SumPayload` arm of `mark_binder_dups` marks a child-`dup` site (mirroring the nested-compound
+           `Proj` arm), and `is_heap_type` counts a `Ty::Nominal` (a single-variant newtype ERASES to its
+           heap inner, so `bx : Box` is a retain candidate). A path ending in `RestFrom` is excluded (the
+           emit's own dup handles it). `mb` makes the payload a genuine runtime list (no fold).")
+  (input  (do
+            (type Box (B (List Int64)))
+            (def (mb (: i Int64) (: n Int64) (: acc (List Int64)))
+              (if (< i n) (mb (+ i 1) n (List.push acc i)) acc))
+            (def (loop (: j Int64) (: m Int64) (: bx Box) (: tot Int64))
+              (if (< j m) (loop (+ j 1) m bx (+ tot (List.len (List.push (match bx ((B xs) xs)) 99)))) tot))
+            (def (main (: m Int64)) (loop 0 m (B (mb 0 2 (list))) 0))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 3 Int64))
+  (call   main (: 2 Int64)) (output (: 6 Int64))
+  (call   main (: 3 Int64)) (output (: 9 Int64))
+  (call   main (: 4 Int64)) (output (: 12 Int64)))
+
 ; The mutual-recursion companion of the still-live-binding family above: the IDIOMATIC homoiconic-AST
 ; walker shape — a `fc` (per-node) / `fl` (per-child-list) mutual pair over a recursive `Ast` sum. Here
 ; `fc` matches a `List` node binding its child list `elems`, reads the head OUT OF `elems` directly
@@ -4425,25 +4451,26 @@
   (call   main)
   (output (: 10 Int64)))
 
-; --- A partial constructor in a GENUINELY-RUNTIME compound element DECLINES cleanly (reject-don't-miscompile) ---
+; --- A partial constructor in a GENUINELY-RUNTIME compound element completes via a runtime eta-closure lift ---
 ; The cases above hold the partial ctor in a COMPILE-TIME-VISIBLE compound (a literal / let-bound tuple or
-; record), so `peel_ref_annot` follows the projection to the ctor spine and completes it to a flat variant.
-; But when the tuple is built behind a RECURSIVE call (opaque to the fold), the partial ctor `(T.Mk 10)` is a
-; genuine RUNTIME first-class value — completing it needs a runtime eta-closure lift the compiler does not yet
-; build. It DECLINES cleanly (`todo`) rather than emit the malformed value. This was a MISCOMPILE: a
+; record), so `peel_ref_annot` follows the projection to the ctor spine and completes it to a flat variant at
+; compile time. When the tuple is built behind a RECURSIVE call (opaque to the fold), the partial ctor
+; `(T.Mk 10)` is a genuine RUNTIME first-class value: `lower_sum_new`'s partial-arity path synthesizes the
+; equivalent explicit lambda over the REMAINING payloads, CAPTURING the supplied args — `(T.Mk 10)` →
+; `(fn (__eta0) (T.Mk 10 __eta0))`, the exact shape a hand-written lambda lowers+runs correctly — and lifts it
+; as an ordinary runtime closure. Applying the last payload completes the variant. This was a MISCOMPILE: a
 ; single-variant sum (a NEWTYPE) applied SHORT of arity erased to its partial payload (`(T.Mk 10)` → the bare
 ; `10`, dropping the arity check), so the tuple stored a raw i64 where a closure handle belonged and the
 ; downstream project+apply `call_indirect`'d it → INVALID WASM (`func N: type mismatch: expected i32, found
-; i64`, un-instantiable component from a check-clean program). The fix moved the partial-arity guard AHEAD of
-; newtype-erasure in `lower_sum_new`, so a partial ctor of ANY sum (newtype or not) declines. Intended value
-; when the runtime eta-lift lands: `(T.Mk 10 5)` → `(+ a b)` = 15.
-(case "a partial constructor in a runtime tuple element declines cleanly (was invalid wasm)"
+; i64`). The fix moved the partial-arity guard AHEAD of newtype-erasure in `lower_sum_new` and routes a
+; genuine partial to the eta-closure lift rather than the malformed value.
+(case "a partial constructor in a runtime tuple element completes via an eta-closure lift"
   (doc    "`(mk n)` builds `(tuple (T.Mk 10) n)` behind a recursive `if` so the tuple is genuinely runtime;
            `(let ((p (mk 1))) ((. p 0) 5))` projects the partial ctor `(T.Mk 10)` and applies `5`. The value
-           is not statically visible, so the compiler cannot complete the ctor spine — it DECLINES (a `todo`)
-           rather than emit the malformed value. Was a MISCOMPILE: the newtype `T` erased `(T.Mk 10)` to the
-           bare `10`, so the project+apply produced invalid wasm (`func N: expected i32, found i64`). Intended
-           value once the runtime eta-closure lift exists: `(T.Mk 10 5)` → 15.")
+           is not statically visible, so the compiler synthesizes the runtime eta-closure `(fn (y) (T.Mk 10
+           y))` (capturing the supplied `10`), lifts it, and applies `5` → `(T.Mk 10 5)`, `(+ a b)` = 15. Was
+           a MISCOMPILE: the newtype `T` erased `(T.Mk 10)` to the bare `10`, so the project+apply produced
+           invalid wasm (`func N: expected i32, found i64`).")
   (input  (do
             (type T (Mk Int64 Int64))
             (def (mk (: n Int64)) (if (< n 0) (tuple (T.Mk 0) 0) (tuple (T.Mk 10) n)))
@@ -4451,6 +4478,19 @@
             (export main)))
   (call   main)
   (output (: 15 Int64)))
+
+(case "a three-payload constructor partially applied in a runtime tuple completes via eta-closure"
+  (doc    "The multi-remaining-param eta lift: `(mk n)` stashes the one-of-three-applied `(Tri.Mk 1)` in a
+           runtime tuple; projecting it and applying the remaining two payloads `((g 2) 3)` completes
+           `(Tri.Mk 1 2 3)`, `(+ a (+ b c))` = 6. Pins that the synthesized eta-closure abstracts ALL the
+           remaining payloads (a 2-param lambda here), not just one.")
+  (input  (do
+            (type Tri (Mk Int64 Int64 Int64))
+            (def (mk (: n Int64)) (if (< n 0) (tuple (Tri.Mk 0) 0) (tuple (Tri.Mk 1) n)))
+            (def (main) (let ((p (mk 1))) (match (((. p 0) 2) 3) ((Tri.Mk a b c) (+ a (+ b c))))))
+            (export main)))
+  (call   main)
+  (output (: 6 Int64)))
 
 ; --- A compound bound from a sum payload, extracted ACROSS A FUNCTION BOUNDARY, then projected ---
 ; A value bound out of a sum payload carries its shape WITHIN THE MATCH ARM (the payload-bound cases
@@ -9604,3 +9644,18 @@
             (export main)))
   (call   main (: 0 Int64))
   (output (: 30 Int64)))
+(case "a record match pattern is named as unimplemented, not leaked as an unbound field binder (CDZ0201)"
+  (doc    "A record MATCH pattern `((record (x a)) …)` is a not-yet-implemented feature (the match twin of
+           the `(record …)` BINDING decline). The diagnostic MUST name that — a coded CDZ0201 pointing at
+           the record pattern, carrying the whole-binder + field-projection workaround — NOT the misleading
+           'unbound name `a`' the field binder used to leak (the `record`-headed arm fell through to the
+           variant-ctor path, bound nothing, and the body's `a` reference resolved unbound, blaming the
+           user instead of naming the unimplemented feature). Pins that `cdz check` reports the CODED
+           feature decline on a PARAMETERIZED body (via match_pattern_fault, not only the emit-path walk on
+           nullary-exported bodies) and that NO CDZ0101 unbound-name cascade accompanies it. Flagged by
+           v-diagnostics 2026-07-16. When record match patterns land, this case is replaced by a runtime
+           destructuring case; until then it guards the diagnostic against re-leaking the confusing message.")
+  (input  (do (def (f (: r (Record (x Int64))))
+                (match r ((record (x a)) a)))
+              (export f)))
+  (error CDZ0201))

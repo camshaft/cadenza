@@ -1214,6 +1214,16 @@ fn rust_ident(name: &str) -> String {
 /// so no trial reaches here relying on them, and a genuinely unhandled shape fails rustc exactly as before.
 fn rust_call_arg(val: &str) -> String {
     let v = val.trim();
+    // A FLOAT SPECIAL-VALUE literal (`nan`/`inf`/`-inf`) is not a Rust value token — map it to the `f64`
+    // associated constant so it crosses as the right float. (The corpus writes these as bare words; a
+    // finite float literal like `1.5` is already valid Rust, so it passes through below.) Only `f64` forms
+    // appear as args today; a `Float32` NaN arg would need `f32::NAN` + a cast, but none occur.
+    match v {
+        "nan" | "NaN" => return "f64::NAN".to_string(),
+        "inf" | "+inf" => return "f64::INFINITY".to_string(),
+        "-inf" => return "f64::NEG_INFINITY".to_string(),
+        _ => {}
+    }
     // A compound is a parenthesized head form; a bare token is a scalar literal → verbatim.
     let inner = match v.strip_prefix('(').and_then(|s| s.strip_suffix(')')) {
         Some(inner) => inner.trim(),
@@ -3769,5 +3779,11 @@ mod trap_grading_tests {
         assert_eq!(rust_call_arg("(record (x 4))"), "(4,)");
         // An unhandled head passes through verbatim (declines at the backend if unsupported).
         assert_eq!(rust_call_arg("(list 1 2 3)"), "(list 1 2 3)");
+        // A FLOAT SPECIAL-VALUE arg (`nan`/`inf`/`-inf`) is not a Rust value token → the `f64` constant.
+        assert_eq!(rust_call_arg("nan"), "f64::NAN");
+        assert_eq!(rust_call_arg("inf"), "f64::INFINITY");
+        assert_eq!(rust_call_arg("-inf"), "f64::NEG_INFINITY");
+        // A finite float literal is already valid Rust — passes through.
+        assert_eq!(rust_call_arg("1.5"), "1.5");
     }
 }

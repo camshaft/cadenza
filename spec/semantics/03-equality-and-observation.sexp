@@ -35,6 +35,32 @@
   (call   main (: 2 Int64) (: 1 Int64))
   (output (: true Bool)))
 
+; The boolean-coercion equality above also composes over a runtime FLOAT `=` — now that runtime scalar
+; float equality is realized (the canonical-byte cases below), `(= (= x y) true/false)` nests a runtime
+; float compare inside the bool-literal equality. The inner float `=` is the NaN-canonicalizing bit
+; compare; the outer `= true`/`= false` coerces/negates its Bool result. These pin the composition (the
+; earlier cases used an integer `<` as the inner Bool; these use a float `=`), on both backends.
+
+(case "a runtime float equality feeds the true-literal boolean coercion"
+  (doc    "`(= (= x y) true)` over Float64 params: the inner `(= x y)` is the runtime canonical-byte float
+           compare, the outer `= true` yields that Bool. (1.5,1.5) → equal → true; (1.5,2.5) → false.
+           Pins the bool-literal-equality fold composing over a runtime FLOAT equality operand.")
+  (input  (do (def (main (: x Float64) (: y Float64)) (= (= x y) true)) (export main)))
+  (call   main (: 1.5 Float64) (: 1.5 Float64))
+  (output (: true Bool))
+  (call   main (: 1.5 Float64) (: 2.5 Float64))
+  (output (: false Bool)))
+
+(case "a runtime float equality negated by the false-literal coercion"
+  (doc    "The dual: `(= (= x y) false)` negates the inner float equality — (1.5,1.5) → equal, `= false` →
+           false; (1.5,2.5) → not equal, `= false` → true. Pins `(= bexpr false)` = ¬bexpr composing over
+           a runtime float `=`, both backends.")
+  (input  (do (def (main (: x Float64) (: y Float64)) (= (= x y) false)) (export main)))
+  (call   main (: 1.5 Float64) (: 1.5 Float64))
+  (output (: false Bool))
+  (call   main (: 1.5 Float64) (: 2.5 Float64))
+  (output (: true Bool)))
+
 (case "negative zero is not equal to positive zero"
   (doc    "Witnesses core-semantics.md #Floating-Point Equality Follows The Canonical Byte Form:
            -0.0 and 0.0 have distinct canonical byte forms, so they are not equal.")
@@ -989,3 +1015,52 @@
   (host-responses (respond log.emit (: true Bool)))
   (call   main (: false Bool)) (output (: 1 Int64))
   (host-calls (call log.emit (: "rhs" String))))
+
+; --- The FloatCompare hoist preserves canonical-byte semantics --------------------------------------
+; 551cdf619 extends the common-operator if-arm hoist to Core::FloatCompare — `(if c (= a k) (= b k))`
+; over floats emits one canon-and-compare over the selected operand. The hoist must preserve the
+; canonical byte form the scalar cases above pin (NaN == NaN; -0.0 distinct from 0.0): a hoist that
+; lowered the merged compare to bare f64.eq inverts both. Promoted from passing breaker probes.
+
+(case "the selected operand decides a hoisted float equality"
+  (doc    "`(if (> c 0) (= a 1.5) (= b 1.5))` → the hoisted `(= (if c a b) 1.5)`: c = 1 selects
+           a = 1.5 → true → 1; c = 0 selects b = 9.0 → false → 0. The float twin of the integer
+           comparison-hoist selection pin (a positional mispairing answers the other arm's boolean).")
+  (input  (do
+            (def (main (: c Int64) (: a Float64) (: b Float64))
+              (if (if (> c 0) (= a 1.5) (= b 1.5)) 1 0))
+            (export main)))
+  (call   main (: 1 Int64) (: 1.5 Float64) (: 9.0 Float64))
+  (output (: 1 Int64))
+  (call   main (: 0 Int64) (: 1.5 Float64) (: 9.0 Float64))
+  (output (: 0 Int64)))
+
+(case "NaN equality survives the hoisted float compare by canonical byte form"
+  (doc    "A runtime NaN (`(/ 0.0 0.0)`) compared against `Float64.nan` through hoisted if-arms:
+           c = 1 → the NaN arm → TRUE (1, every NaN equals every NaN under the canonical byte form);
+           c = 0 → `(= nan 2.0)` → 0. The hoist merges the two compares over one selected operand —
+           a merge that dropped the canonicalization (bare f64.eq) answers 0 on the first call, the
+           exact inversion the canonical form exists to prevent.")
+  (input  (do
+            (def (main (: c Int64) (: x Float64))
+              (let ((n (/ x x)))
+                (if (if (> c 0) (= n Float64.nan) (= n 2.0)) 1 0)))
+            (export main)))
+  (call   main (: 1 Int64) (: 0.0 Float64))
+  (output (: 1 Int64))
+  (call   main (: 0 Int64) (: 0.0 Float64))
+  (output (: 0 Int64)))
+
+(case "negative zero stays distinct from zero through the hoisted float compare"
+  (doc    "`(if (> c 0) (= a 0.0) (= b 0.0))` with a = -0.0, b = 0.0: the hoisted compare receives
+           the SELECTED operand and must answer by canonical bytes — c = 1 → -0.0 ≠ 0.0 → 0; c = 0 →
+           0.0 = 0.0 → 1. The -0.0 complement of the NaN pin (bare f64.eq answers 1 on the first
+           call — the other half of the inversion).")
+  (input  (do
+            (def (main (: c Int64) (: a Float64) (: b Float64))
+              (if (if (> c 0) (= a 0.0) (= b 0.0)) 1 0))
+            (export main)))
+  (call   main (: 1 Int64) (: -0.0 Float64) (: 0.0 Float64))
+  (output (: 0 Int64))
+  (call   main (: 0 Int64) (: -0.0 Float64) (: 0.0 Float64))
+  (output (: 1 Int64)))

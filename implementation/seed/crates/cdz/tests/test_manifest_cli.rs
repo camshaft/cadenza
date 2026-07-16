@@ -579,10 +579,20 @@ fn a_false_property_fails_with_a_shrunk_counterexample_and_a_seed() {
 /// F2 (`@exhaustive`): a property test marked `@exhaustive` is driven over its ENTIRE finite input domain
 /// (every combination of its bounded scalar parameters) rather than by random sampling — a pass is a PROOF
 /// over the domain, and a failure names the exact case. An UNBOUNDED domain (a wide int / float) declines
-/// with a narrow-the-type message. Scalar-only params, so no value-heap store is needed (like the sampled
-/// scalar property tests above — no `store_present` guard).
+/// with a narrow-the-type message.
 #[test]
 fn an_exhaustive_property_is_driven_over_its_whole_domain() {
+    // NOTE: even a scalar-only `@exhaustive`/`@test` here EXECUTES its body under `cdz-run`, which resolves
+    // the value-heap runtime by content-address from the store — so the `anchor` sibling (`if 1==1 then
+    // unit`) FAILS storeless (giving a spurious "0 passed, N failed"). CI's `test` job builds NO store,
+    // so guard like the heap-property tests: skip when the store is absent (the store-having `gate` +
+    // `@test suites` jobs exercise this fully). See `store_present`.
+    if !store_present() {
+        eprintln!(
+            "skipping: no cadenza-store (storeless test job) — @test bodies execute under the runtime"
+        );
+        return;
+    }
     let d = dir("exhaustive");
     // A TRUE property over Bool×Bool (4 cases) — `@exhaustive` reports the case count, not a trial count.
     // (The body is trivially true over the whole domain, exercising the enumeration + report, not a bug.)
@@ -632,6 +642,30 @@ fn an_exhaustive_property_is_driven_over_its_whole_domain() {
     assert!(
         stdout.contains("FAIL wide") && stdout.contains("BOUNDED input domain"),
         "an unbounded @exhaustive domain declines with a narrow-the-type message: {stdout}"
+    );
+
+    // A COMPOUND param under `@exhaustive` (a collection domain is unbounded) declines cleanly — and does
+    // NOT abort the whole file (the sibling `anchor` still runs). Before the fix, `@exhaustive` was not
+    // recognized by the generator-synthesis pass, so the compound param hit the export boundary and killed
+    // the entire compile.
+    let compound = write(
+        &d,
+        "compound.cdz",
+        "@exhaustive def clist(xs: List(Bool)) = if List.len(xs) >= 0 then unit else trap(\"x\")\n\
+         @test def anchor4() = if 1 == 1 then unit else trap(\"a\")\n",
+    );
+    let (ok, stdout, _) = run(&["test", &compound]);
+    assert!(
+        !ok,
+        "a compound @exhaustive domain → non-zero exit (declines): {stdout}"
+    );
+    assert!(
+        stdout.contains("FAIL clist-gen") && stdout.contains("BOUNDED input domain"),
+        "a compound @exhaustive declines with a bounded-domain message: {stdout}"
+    );
+    assert!(
+        stdout.contains("PASS anchor4"),
+        "a compound @exhaustive decline does NOT abort the file — the sibling test still runs: {stdout}"
     );
 }
 
@@ -843,5 +877,23 @@ fn a_list_parameter_test_is_property_tested_by_a_synthesized_generator() {
         stdout.contains("PASS flen-gen (8 trials)")
             && stdout.contains("PASS tfloat-gen (8 trials)"),
         "a compound Float param is property-tested via the synthesized wrapper: {stdout}"
+    );
+
+    // A LONE single-form file — ONE @test def with a compound param and NOTHING else — has no enclosing
+    // `do`-block (it parses as the bare annotated def AS the root). The synthesis must still fire. Before
+    // this, such a file declined at the compound param's boundary (the pass only handled a `(do …)` root).
+    let lone = write(
+        &d,
+        "lone.cdz",
+        "@test def solo(xs: List(Int64)) = if List.len(xs) >= 0 then unit else trap(\"neg\")\n",
+    );
+    let (ok, stdout, stderr) = run(&["test", &lone, "--trials", "6"]);
+    assert!(
+        ok,
+        "a lone single-form compound test passes: {stdout}{stderr}"
+    );
+    assert!(
+        stdout.contains("PASS solo-gen (6 trials)"),
+        "a lone single-form file (no do-block) is property-tested via the synthesized wrapper: {stdout}"
     );
 }

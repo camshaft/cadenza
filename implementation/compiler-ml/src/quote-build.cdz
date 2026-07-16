@@ -5,9 +5,10 @@
 /// staged-compilation layer manipulates. (The built-in `Ast` has exactly three variants — `Int Int64`,
 /// `Name String`, `List (List Ast)` — so a quoted `(+ 1 2)` is `List[Name "+", Int 1, Int 2]`.)
 ///
-/// NOTE: `unquote` currently only lifts an Int64-valued operand (`Ast.Int`); splicing an already-`Ast`
-/// value is not yet supported (see `mlrepro-reject-unquote-of-an-ast-value.sexp` (queue)) — so `wrap` below takes
-/// an `Int64`, not an `Ast`.
+/// `unquote` lifts an Int64-valued operand (`wrap` below) AND splices an already-`Ast` value (`wrap-ast`)
+/// — the latter is the sub-expression splicing at the heart of a macro. Ast-valued unquote once declined
+/// (`mlrepro-reject-unquote-of-an-ast-value`, queue) but is now RESOLVED, so `wrap-ast` takes an `Ast`
+/// operand and grafts the whole spliced tree into the template.
 
 /// Count every node in a reified `Ast`.
 def nc(a: Ast) = match a with
@@ -42,6 +43,10 @@ def is-compound(a: Ast) = match a with
 
 /// Build `(+ n 1)` as an `Ast` by splicing the number `n` into a quasiquote template.
 def wrap(n: Int64) = quasiquote(unquote(n) + 1)
+
+/// Build `(+ a 1)` by splicing an already-`Ast` operand `a` into the template — sub-expression splicing,
+/// the macro primitive. `a` can itself be a compound (`quote(2 * 3)`), grafted whole into the tree.
+def wrap-ast(a: Ast) = quasiquote(unquote(a) + 1)
 
 @test
 def quote-flat-count() =
@@ -94,4 +99,20 @@ def quasiquote-splice-varies() =
   // the spliced value flows through: wrap(10) has int-sum 11
   if isum(wrap(10)) == 11 then unit else trap("10 + 1 sum 11")
 
-export { nc, isum, wrap }
+@test
+def quasiquote-splice-ast-leaf() =
+  // REGRESSION (mlrepro-reject-unquote-of-an-ast-value, RESOLVED): splice an Ast LEAF. wrap-ast(quote(5))
+  // = (+ 5 1) → List[Name+, Int5, Int1] → 4 nodes, int-sum 6 (same as wrap(5), but the operand is an Ast).
+  if nc(wrap-ast(quote(5))) == 4 then (if isum(wrap-ast(quote(5))) == 6 then unit else trap("5 + 1 sum 6")) else trap("4 nodes")
+
+@test
+def quasiquote-splice-ast-compound() =
+  // Splice a COMPOUND Ast sub-tree: wrap-ast(quote(2 * 3)) = (+ (* 2 3) 1). The whole (* 2 3) is grafted
+  // in → List[Name+, List[Name*, Int2, Int3], Int1] → 1 + 1 + (1+1+1+1) + 1 = 7 nodes, int-sum 2+3+1 = 6.
+  let w = wrap-ast(quote(2 * 3)) in
+  if nc(w) == 7 then
+    (if isum(w) == 6 then (if is-compound(w) then unit else trap("result is compound")) else trap("sum 6"))
+  else
+    trap("spliced compound has 7 nodes")
+
+export { nc, isum, wrap, wrap-ast }

@@ -7536,6 +7536,29 @@ fn pattern_constraints(
         ));
         return Ok(Vec::new());
     }
+    // A `(record (field p) …)` pattern — destructuring a record BY FIELD — is not yet matched (the record
+    // MATCH twin of the `(record …)` BINDING decline, `check_binding_pattern` above). Without this arm, a
+    // `record`-headed pattern would fall through to the compound/variant-ctor block below, where `record`
+    // is read as a variant-constructor head; over a `Ty::Record` scrutinee that names no such variant, so
+    // the arm silently contributed no discriminant and its field binders (`a` in `(record (x a))`) resolved
+    // UNBOUND — a misleading CDZ0101 "unbound name `a`" pointing at the binder instead of naming the real
+    // cause (v-diagnostics note 2026-07-16). DECLINE cleanly here with the same "not yet supported" message
+    // the binding path gives, so the diagnostic names the unimplemented FEATURE, not a phantom unbound name.
+    // (When record match patterns land, this arm is replaced by the real field-directed constraint logic.)
+    // CODED (`Malformed`) rather than an uncoded decline so `type_errors`' `match_pattern_fault` accessor
+    // surfaces it in `cdz check` on EVERY body — the same coded-fault-so-check-sees-it discipline as the
+    // list/map coded-head fixes (Inc 39/40); an uncoded decline here would be silent in `check` on a
+    // recursive / directly-exported body (only the emit-path walk over nullary-exported bodies produces
+    // it) while `compile` rejects — the very check≡compile gap those closed. The workaround (a whole-value
+    // binder + field projection `(. r x)`) is named so the message routes the user to it.
+    if db.ast.as_form(pat, "record").is_some() {
+        return Err(Reject::coded(
+            Code::Malformed,
+            "a record match pattern is not yet supported — bind the whole record and project its fields \
+             (`(match r (whole (. whole field)))`) until record match patterns land (Increment B)",
+        )
+        .at(pat));
+    }
     // A compound pattern. Its head is the variant CONSTRUCTOR — a member `(. Sum V)` or a bare variant
     // name — and the remaining children are payload sub-patterns.
     let (head, args): (StructId, Vec<StructId>) = match db.ast.get(pat) {
@@ -9292,6 +9315,66 @@ fn eta_ctor_closure(db: &mut Db, ctor_head: StructId) -> Option<Core> {
             .or_insert_with(|| payload_tys[k].clone());
     }
     // Lower the synthesized lambda as a runtime closure value.
+    match resolved_of(db, lambda) {
+        Resolved::Lambda { params, body } => Some(lower_lambda_value(db, lambda, &params, body)),
+        _ => None,
+    }
+}
+
+/// A PARTIALLY-applied constructor `(T.Mk 10)` as a runtime value: synthesize the equivalent
+/// explicit lambda over the REMAINING payloads, splicing the already-supplied args into the body so they
+/// are CAPTURED by the closure — `(fn (__eta0 …__eta{r-1}) (ctor <supplied…> __eta0 …))`. This is exactly
+/// the shape a source `(fn (y) (T.Mk 10 y))` takes, which lowers+runs correctly today. The supplied args
+/// become free variables in the lambda body → the lambda-lift captures them into the closure env, and the
+/// lifted func reads them back — no bare-scalar-in-a-handle-slot (the miscompile). `supplied` are the args
+/// already applied (`< arity`); the lambda binds the `arity - supplied.len()` remaining payloads.
+fn partial_ctor_eta_closure(
+    db: &mut Db,
+    ctor_head: StructId,
+    supplied: &[StructId],
+) -> Option<Core> {
+    let mut fresh = crate::unify::Fresh::new();
+    let scheme = crate::eval::scheme_of(db, ctor_head, &mut fresh)?;
+    let inst = crate::unify::instantiate(&scheme, &mut fresh);
+    let mut payload_tys: Vec<crate::ty::Ty> = Vec::new();
+    let mut cur = inst;
+    while let crate::ty::Ty::Fn(p, r) = cur {
+        payload_tys.push(*p);
+        cur = *r;
+    }
+    let m = supplied.len();
+    if m == 0 || m >= payload_tys.len() {
+        return None; // not a genuine partial (bare ctor → eta_ctor_closure; full/over → the build path)
+    }
+    let r = payload_tys.len() - m; // remaining params to eta-abstract
+    // Body: `(ctor supplied[0] … supplied[m-1] __eta0 … __eta{r-1})`. The supplied occurrences are the
+    // caller's own arg nodes (already lowered/typed in this scope), spliced verbatim so they capture.
+    let remaining_occs: Vec<StructId> =
+        (0..r).map(|k| db.push_name(&format!("__eta{k}"))).collect();
+    let mut body_children = Vec::with_capacity(1 + m + r);
+    body_children.push(ctor_head);
+    for &a in supplied {
+        body_children.push(a);
+    }
+    for k in 0..r {
+        body_children.push(db.push_name(&format!("__eta{k}")));
+    }
+    let body = db.push_list(body_children);
+    let params_list = db.push_list(remaining_occs.clone());
+    let fn_head = db.push_name("fn");
+    let lambda = db.push_list(vec![fn_head, params_list, body]);
+    crate::resolve::resolve_subtree(db, lambda);
+    let params = match resolved_of(db, lambda) {
+        Resolved::Lambda { params, .. } => params,
+        _ => return None,
+    };
+    // Seed each remaining param's machine type from the ctor scheme (the payloads AFTER the supplied ones).
+    for (k, &p) in params.iter().enumerate() {
+        let occ = crate::eval::param_name_occ(db, p);
+        db.param_types
+            .entry(occ)
+            .or_insert_with(|| payload_tys[m + k].clone());
+    }
     match resolved_of(db, lambda) {
         Resolved::Lambda { params, body } => Some(lower_lambda_value(db, lambda, &params, body)),
         _ => None,
@@ -12650,11 +12733,31 @@ fn lower_runtime_combine(
     core_of(db, app)
 }
 
+/// The erased magnitude of a quantity `operand` as a reusable arena node. A directly-written `(Qty.of x
+/// u)` yields its value occurrence `x` (`qty_value_occ`); ANY OTHER quantity expression — a `*`/`/`-
+/// computed quantity, a let-bound one — is not a literal `Qty.of`, so fall back to `(Qty.value operand)`,
+/// the explicit unwrap that re-lowers `operand` and erases the unit. Both are the erased inner numeric.
+/// This is the shared fallback the mixed-scale `convert_operand_ast*` helpers and `lower_qty_pow` use so
+/// a runtime combine/conversion works over a COMPUTED quantity operand, not only a literal `Qty.of` (the
+/// literal-only `qty_value_occ` alone declined those — e.g. `(+ (* (Qty n km) 2N) (Qty 500 m))`). Total:
+/// a non-quantity operand still resolves through `Qty.value`'s own lowering (which faults if inapt).
+fn qty_magnitude_occ(db: &mut Db, operand: StructId) -> StructId {
+    match crate::eval::qty_value_occ(db, operand) {
+        Some(v) => v,
+        None => {
+            let dot = db.push_name(".");
+            let qty = db.push_name("Qty");
+            let value_key = db.push_name("value");
+            let qty_value_head = db.push_list(vec![dot, qty, value_key]);
+            db.push_list(vec![qty_value_head, operand])
+        }
+    }
+}
+
 /// Synthesize an arena node for a quantity operand's magnitude CONVERTED to the reference: `value * num
 /// / den`, using the ordinary numeric operators (float `*.`/`/.` for a float inner, int `*`/`/`
-/// otherwise). `value` is the quantity's `Qty.of` value occurrence (reused, not re-synthesized). When
-/// the scale is 1/1 the value passes through unconverted. `None` if the operand has no reusable value
-/// occurrence (not a literal `Qty.of`).
+/// otherwise). `value` is the quantity's magnitude (`qty_magnitude_occ` — a literal `Qty.of`'s value
+/// occurrence, else `(Qty.value operand)`). When the scale is 1/1 the value passes through unconverted.
 fn convert_operand_ast(
     db: &mut Db,
     operand: StructId,
@@ -12662,7 +12765,7 @@ fn convert_operand_ast(
     den: i128,
     is_float: bool,
 ) -> Option<StructId> {
-    let value = crate::eval::qty_value_occ(db, operand)?;
+    let value = qty_magnitude_occ(db, operand);
     // Scale 1/1 — no conversion, use the value as-is.
     if num == 1 && den == 1 {
         return Some(value);
@@ -12697,7 +12800,7 @@ fn convert_operand_ast_bigint(
     num: i128,
     den: i128,
 ) -> Option<StructId> {
-    let value = crate::eval::qty_value_occ(db, operand)?;
+    let value = qty_magnitude_occ(db, operand);
     // `(BigInt.of <n>)` — a bigint scale literal. `BigInt.of` is member access `(. BigInt of)`.
     let bigint_of = |db: &mut Db, n: i128| -> StructId {
         let dot = db.push_name(".");
@@ -12736,7 +12839,7 @@ fn convert_operand_ast_rational(
     num: i128,
     den: i128,
 ) -> Option<StructId> {
-    let value = crate::eval::qty_value_occ(db, operand)?;
+    let value = qty_magnitude_occ(db, operand);
     if num == 1 && den == 1 {
         return Some(value);
     }
@@ -13025,20 +13128,11 @@ fn lower_qty_pow(db: &mut Db, q: StructId, exp: StructId) -> Core {
         let one = inner_one(db);
         return core_of(db, one);
     }
-    // The erased magnitude to raise: a directly-written `(Qty.of x u)` operand yields its value occurrence
-    // `x` (`qty_value_occ`); ANY OTHER quantity expression (a `/`-computed velocity, a let-bound quantity)
-    // is not a literal `Qty.of`, so fall back to `(Qty.value q)` — the explicit unwrap of q's magnitude,
-    // which re-lowers q and erases the unit. Both are the erased inner numeric; `Qty.pow` raises that.
-    let value = match crate::eval::qty_value_occ(db, q) {
-        Some(v) => v,
-        None => {
-            let dot = db.push_name(".");
-            let qty = db.push_name("Qty");
-            let value_key = db.push_name("value");
-            let qty_value_head = db.push_list(vec![dot, qty, value_key]);
-            db.push_list(vec![qty_value_head, q])
-        }
-    };
+    // The erased magnitude to raise: a literal `(Qty.of x u)` yields its value occurrence `x`, ANY OTHER
+    // quantity expression (a `/`-computed velocity, a let-bound quantity) falls back to `(Qty.value q)`
+    // (`qty_magnitude_occ` — the shared literal-or-unwrap the mixed-scale converters also use). Both are
+    // the erased inner numeric; `Qty.pow` raises that.
+    let value = qty_magnitude_occ(db, q);
     // Build `value^|n|` = `(* (* … value value) value)` — `|n|` copies, left-nested — with the ONE
     // multiply operator `*`; a float `value` routes it to float arithmetic by the operand type at
     // lowering (no distinct `*.`), so the spelling is inner-type-independent.
@@ -17493,7 +17587,17 @@ fn lower_sum_new(db: &mut Db, head: StructId, args: &[StructId]) -> Core {
     if let Some(arity) = crate::eval::variant_payload_arity(db, head)
         && args.len() < arity
     {
-        trace!(target: "rcdzc::lower", head = head.0, n_args = args.len(), arity, "sum-new: partial constructor as a runtime value — declines (eta-closure lift not yet built)");
+        // Synthesize the equivalent explicit lambda over the REMAINING payloads, CAPTURING the supplied
+        // args — `(T.Mk 10)` → `(fn (__eta0) (T.Mk 10 __eta0))`, the shape a hand-written lambda already
+        // lowers+runs correctly. The supplied args become free vars captured into the closure env; the
+        // lifted func reads them back, so no bare scalar lands in a handle slot (the erstwhile miscompile).
+        if let Some(c) = partial_ctor_eta_closure(db, head, args) {
+            trace!(target: "rcdzc::lower", head = head.0, n_args = args.len(), arity, "sum-new: partial constructor as a runtime value → eta-closure over the remaining payloads");
+            return c;
+        }
+        // Fallback (synthesis could not classify — a non-representable payload/result type): decline cleanly
+        // (reject-don't-miscompile) rather than emit a malformed value.
+        trace!(target: "rcdzc::lower", head = head.0, n_args = args.len(), arity, "sum-new: partial constructor — eta synthesis bailed, declines");
         return Core::Poison(Reject::decline(
             "a partially-applied constructor as a runtime value is not yet lowered to a runtime closure",
         ));

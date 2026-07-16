@@ -1365,6 +1365,19 @@ fn run_test_file(
                      runner generates (Int/Bool/Float/Char); annotate it with a scalar type"
                 );
             }
+            // An `@exhaustive` test whose (original) parameter was COMPOUND: the compiler synthesized a
+            // gen-driven wrapper (nullary here, pulling random ints), but a COLLECTION/compound domain is
+            // UNBOUNDED — it cannot be exhaustively enumerated. Decline cleanly (the same spirit as an
+            // unbounded scalar domain), rather than sampling under an `@exhaustive` label (which would
+            // falsely imply a proof) or aborting the whole file at the compound param's export boundary.
+            Some(gens) if gens.is_empty() && *exhaustive => {
+                failed += 1;
+                println!(
+                    "FAIL {name}: @exhaustive needs a BOUNDED input domain — this test's parameter is a \
+                     collection/compound type, whose domain is unbounded; use a sampled `@test`, or an \
+                     `@exhaustive` over bounded scalar parameters (Bool / a narrow integer)"
+                );
+            }
             // Nullary SOURCE signature — but this splits at runtime into two cases by whether the body
             // performs `Test.gen`: a GENERATOR-DRIVEN property test (a nullary wrapper that pulls random
             // ints from the runner to build its own inputs — the compound/int-stream route) vs a plain

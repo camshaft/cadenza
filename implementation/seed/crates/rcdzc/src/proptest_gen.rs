@@ -35,7 +35,10 @@
 //! element recursion, G3 `Tuple` + nesting, G4 `Record`, G5 user `sum` (bounded — a recursive sum
 //! declines), G6 `Set`/`Map`, G7 variable-length lists, G8 multi-parameter, and G9 `Float32`/`Float64`
 //! leaves (integer-valued via `float-of-int`); still to come is a `Char` leaf and a lone single-form file
-//! (which currently needs a `do`-block root).
+//! (which currently needs a `do`-block root). The pass fires for `@exhaustive` as well as `@test` (and the
+//! stacked `@exhaustive @test`): a compound-param `@exhaustive` gains a wrapper carrying the `@exhaustive`
+//! marker, so the runner declines it cleanly (a collection domain is unbounded) instead of the compound
+//! param aborting the whole file at the export boundary.
 //!
 //! Runs at load BEFORE `strip_annotations`/`scan_top_level`, so the synthesized `(effect …)` and
 //! `(@ test (def …))` flow through the ordinary effect-synthesis + test-hoist + resolve/infer/lower with
@@ -61,11 +64,18 @@ const G1_LIST_LEN: usize = 3;
 /// program with no such test. Idempotent in practice (it only fires on a `(@ test (def …))` with a
 /// compound param, and after the rewrite that def is no longer `@test`-marked).
 pub fn synthesize(ast: &mut Arenas) {
-    // Only a top-level `(do …)` block can carry both the test defs and the appended effect/wrapper; a
-    // bare single-form program (or a `(module …)`) is left untouched by G1 (a compound-param `@test`
-    // there still declines, as before — G1 targets the common `(do …)` test file).
+    // The synthesis needs a top-level ITEM LIST to append the wrapper + effect to. A multi-form test file
+    // has a `(do …)` root (the common case). A LONE single-form file — one `@test def` with nothing else —
+    // parses as the bare `(@ test (def …))` AS the root (no enclosing `do`); treat it as a one-item list so
+    // a single-test file is handled too, rebuilding a `(do …)` root below. A `(module …)` root is left
+    // untouched (its own item list; not the `cdz test` file shape G1 targets).
     let root = ast.root;
-    let Some(items) = ast.as_form(root, "do").map(<[_]>::to_vec) else {
+    let items: Vec<StructId> = if let Some(do_items) = ast.as_form(root, "do").map(<[_]>::to_vec) {
+        do_items
+    } else if ast.as_form(root, "@").is_some() {
+        // A bare annotated def at the root — a lone single-form test file. Its one item is the root itself.
+        vec![root]
+    } else {
         return;
     };
 
@@ -99,7 +109,13 @@ pub fn synthesize(ast: &mut Arenas) {
     for plan in &plans {
         if let crate::ast::Struct::List(inner_children) = ast.get(plan.inner_def).clone() {
             let item = items[plan.item_idx];
-            ast.structure[item.0 as usize] = crate::ast::Struct::List(inner_children);
+            ast.structure[item.0 as usize] = crate::ast::Struct::List(inner_children.clone());
+            // A stacked `@exhaustive @test` leaves a MIDDLE `(@ test (def…))` node in the arena; rewrite it
+            // to the def too, so `strip_annotations`'s full-arena scan does not re-record the compound def
+            // as a test (which would revive the boundary decline).
+            if let Some(mid) = plan.nested_ann {
+                ast.structure[mid.0 as usize] = crate::ast::Struct::List(inner_children);
+            }
         }
     }
     // Build the new item list: the (now-unwrapped) original items, then one wrapper per plan, then a
@@ -136,6 +152,17 @@ struct TestPlan {
     wrapper_name: String,
     /// The generatable type of EACH parameter, in signature order — one `<gen:T>` per param.
     gen_tys: Vec<GenTy>,
+    /// Whether the source annotation was `@exhaustive` (vs `@test`). A compound-param `@exhaustive` cannot
+    /// be exhaustively enumerated (a collection domain is unbounded), so the synthesized wrapper keeps the
+    /// `@exhaustive` marker and the `cdz test` runner declines it cleanly — rather than the whole file
+    /// aborting at the compound param's export boundary (the pre-fix behavior).
+    exhaustive: bool,
+    /// A NESTED annotation node to ALSO neutralize, when the source stacked `@exhaustive @test`
+    /// (`(@ exhaustive (@ test (def…)))`) — the middle `(@ test …)` node. `strip_annotations` scans EVERY
+    /// arena node (not just root-reachable ones), so if this middle node is left intact it would still
+    /// record the original compound-param def as a test → the boundary decline this pass avoids. `None`
+    /// for a single (unstacked) annotation.
+    nested_ann: Option<StructId>,
 }
 
 /// A type this pass can GENERATE, and the recursive shape of its `<gen:T>` expression (each built from
@@ -183,12 +210,28 @@ fn plan_for_item(
     item: StructId,
     items: &[StructId],
 ) -> Option<TestPlan> {
-    // `(@ test INNER)` — the annotation must be the bare name `test`.
+    // `(@ NAME INNER)` where NAME is `test` or `exhaustive` — the two annotations that mark a property
+    // test this pass synthesizes a generator wrapper for. `@exhaustive` is included so a COMPOUND-param
+    // `@exhaustive` def gets a wrapper too (else its compound param declines at the export boundary,
+    // aborting the whole file); the wrapper carries the `@exhaustive` marker forward so the runner reports
+    // it (a compound domain is unbounded → the runner declines it as not-exhaustively-enumerable).
     let ann = ast.as_form(item, "@")?;
     let (&name_occ, &inner) = (ann.first()?, ann.get(1)?);
-    if ast.as_name(name_occ) != Some("test") {
+    let ann_name = ast.as_name(name_occ)?;
+    if ann_name != "test" && ann_name != "exhaustive" {
         return None;
     }
+    let exhaustive = ann_name == "exhaustive";
+    // The inner may itself be a `(@ test …)` when `@exhaustive` STACKS on `@test` (`@exhaustive @test def`
+    // → `(@ exhaustive (@ test (def…)))`); peel one such nested annotation to reach the `(def …)`, and
+    // remember the MIDDLE node so `synthesize` also neutralizes it (else `strip_annotations` re-records the
+    // compound def as a test). A single annotation is the common case (`inner` is already the def).
+    let (inner, nested_ann) = match ast.as_form(inner, "@") {
+        Some(nested) if nested.first().and_then(|&n| ast.as_name(n)) == Some("test") => {
+            (*nested.get(1)?, Some(inner))
+        }
+        _ => (inner, None),
+    };
     // INNER must be `(def SIG BODY…)`.
     let def_tail = ast.as_form(inner, "def")?;
     let &sig = def_tail.first()?;
@@ -233,6 +276,8 @@ fn plan_for_item(
         wrapper_name: format!("{def_name}-gen"),
         def_name,
         gen_tys,
+        exhaustive,
+        nested_ann,
     })
 }
 
@@ -480,10 +525,18 @@ fn build_wrapper(ast: &mut Arenas, plan: &TestPlan) -> StructId {
         };
         push_list(ast, vec![head, sig, host])
     };
-    // `(@ test def)` — mark the wrapper as the test to hoist.
+    // `(@ test def)` / `(@ exhaustive def)` — mark the wrapper as the test to hoist, carrying the SOURCE
+    // annotation forward so an `@exhaustive` def's wrapper is still seen as exhaustive by the runner.
     let at = name(ast, "@");
-    let test_ann = name(ast, "test");
-    push_list(ast, vec![at, test_ann, def])
+    let ann = name(
+        ast,
+        if plan.exhaustive {
+            "exhaustive"
+        } else {
+            "test"
+        },
+    );
+    push_list(ast, vec![at, ann, def])
 }
 
 /// Recursively build the `<gen:T>` VALUE expression for a generatable type — the Arbitrary-like
@@ -1146,6 +1199,57 @@ mod tests {
         assert!(
             test_names.iter().any(|n| n == "p-gen"),
             "a user-declared Test(gen) effect is reused + the wrapper synthesized: {test_names:?}"
+        );
+    }
+
+    /// A compound-param `@exhaustive` def gains a synthesized wrapper (so its compound param does NOT
+    /// decline at the export boundary, aborting the whole file), and the wrapper carries the `@exhaustive`
+    /// marker forward (`Db::is_exhaustive` sees it) — the runner then declines it cleanly as an unbounded
+    /// domain. Also covers the STACKED `@exhaustive @test` form: the middle `@test` node is neutralized so
+    /// `strip_annotations` does not re-record the original compound def as a plain test.
+    #[test]
+    fn a_compound_exhaustive_test_synthesizes_an_exhaustive_wrapper() {
+        for src in [
+            // single `@exhaustive`
+            "(do (@ exhaustive (def (e (: xs (List Bool))) (List.len xs))) (def (o) 1))",
+            // stacked `@exhaustive @test`
+            "(do (@ exhaustive (@ test (def (e (: xs (List Bool))) (List.len xs)))) (def (o) 1))",
+        ] {
+            let db = Db::load(crate::testkit::parse(src));
+            let test_idx = db.test_defs();
+            let names: Vec<String> = test_idx.iter().map(|&i| db.defs[i].name.clone()).collect();
+            // The wrapper is the (only) hoisted test; the original `e` is neutralized (now a plain callee).
+            assert!(
+                names.iter().any(|n| n == "e-gen") && !names.iter().any(|n| n == "e"),
+                "{src}: expected the exhaustive wrapper e-gen, got {names:?}"
+            );
+            // The wrapper carries `@exhaustive` forward.
+            let gen_idx = db.def_by_name("e-gen").expect("e-gen def");
+            assert!(
+                db.is_exhaustive(gen_idx),
+                "{src}: the synthesized wrapper is marked @exhaustive"
+            );
+        }
+    }
+
+    /// A LONE single-form test file — one `@test def` with a compound param and nothing else — parses as
+    /// the bare `(@ test (def…))` AS the root (no enclosing `(do …)`). The pass must still fire: treat the
+    /// root as a one-item list, synthesize the wrapper, and rebuild a `(do …)` root. Before this, such a
+    /// file declined at the compound param's boundary (the pass only handled a `(do …)` root).
+    #[test]
+    fn a_lone_single_form_compound_test_synthesizes() {
+        // No `(do …)` — the `(@ test …)` is the whole program.
+        let db = Db::load(crate::testkit::parse(
+            "(@ test (def (lp (: xs (List Int64))) (List.len xs)))",
+        ));
+        let names: Vec<String> = db
+            .test_defs()
+            .into_iter()
+            .map(|i| db.defs[i].name.clone())
+            .collect();
+        assert!(
+            names.iter().any(|n| n == "lp-gen") && !names.iter().any(|n| n == "lp"),
+            "a lone single-form compound test gains a wrapper (no do-block needed): {names:?}"
         );
     }
 }

@@ -802,6 +802,29 @@ fn nested_ill_formed_float_width(db: &mut Db, ty_expr: StructId) -> Option<Struc
 pub(crate) const FLOAT_WIDTH_MESSAGE: &str =
     "a floating-point width must be one of the admitted IEEE widths (32 or 64)";
 
+/// The RUNTIME-WIDTH companion of [`nested_ill_formed_int_width`]/[`nested_ill_formed_float_width`]: the
+/// position of a width-indexed numeric type `(Int n)`/`(UInt n)`/`(Float n)` whose width is RUNTIME DATA
+/// (a parameter/ref) at `ty_expr` OR nested in one of its type-argument positions (`(List (Int n))`,
+/// `(Option (Float n))`, a record field). `None` if no width in the type expression is runtime data. Same
+/// skip-first descent as the ill-formed-width helpers. `is_runtime_width_type` (eval.rs) checks only the
+/// TOP-LEVEL ctor, so a runtime width NESTED in a compound slipped past `cdz check` (rc=0) AND compiled —
+/// a runtime value determining a type, which the type system forbids (numeric-model.md §An Integer/
+/// Floating-Point Type Is Indexed By A Compile-Time Width). This closes that nested gap.
+fn nested_runtime_width_type(db: &mut Db, ty_expr: StructId) -> Option<StructId> {
+    if crate::eval::is_runtime_width_type(db, ty_expr) {
+        return Some(ty_expr);
+    }
+    let crate::ast::Struct::List(children) = db.ast.get(ty_expr) else {
+        return None;
+    };
+    for &child in children.clone().iter().skip(1) {
+        if let Some(found) = nested_runtime_width_type(db, child) {
+            return Some(found);
+        }
+    }
+    None
+}
+
 /// The CDZ0302 out-of-range range-check EXTENDED through a COMPOUND value's payload/elements. The scalar
 /// `literal_width_fault` above catches a top-level `(: 999 Int8)`, but a NESTED narrow-width literal — the
 /// payload of `(: (Some 999) (Option Int8))`, an element of `(: (tuple 999) (Tuple Int8))`, a list element
@@ -1711,9 +1734,11 @@ pub fn param_annotation_faults(db: &mut Db, param: StructId, out: &mut Vec<Rejec
     // A RUNTIME WIDTH `(: n (UInt m))` with a runtime `m` is its own CDZ0302 (surfaced where the
     // annotation is used in the body); do not also fault it here as "not a type". An integer type's
     // width must be a COMPILE-TIME value: a width read from runtime data is rejected, never accepted.
+    // Descends nested positions too (`(: xs (List (Int n)))`), so a runtime width buried in a compound
+    // parameter type is caught, not only a top-level `(Int n)`.
     //= spec/capabilities/numeric-model.md#an-integer-type-is-indexed-by-a-compile-time-width
     //# The bit width of an integer type MUST be resolved from a compile-time value and MUST NOT be determined by runtime data, so that an integer's width is fixed before the program runs rather than dependent on a value computed at runtime.
-    if crate::eval::is_runtime_width_type(db, ty_expr) {
+    if nested_runtime_width_type(db, ty_expr).is_some() {
         return;
     }
     // An OVER-CEILING / zero integer width `(UInt 65)`/`(UInt 0)` is an ILL-FORMED type (no valid
@@ -10704,17 +10729,20 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
             // runtime data). This is checked on the ANNOTATION's un-inlined body, so `(def (mk n) (: 5
             // (UInt n)))` rejects (CDZ0302) even though a constant call site `(mk 8)` would fold `n` — a
             // width must be non-dependent regardless of how it happens to be called.
-            let runtime_width = crate::eval::is_runtime_width_type(db, ty_expr);
-            if runtime_width {
+            // Descends nested positions (`(: xs (List (UInt n)))`), returning the offending `(Int n)`/
+            // `(Float n)` position so the message names the right axis and the reject anchors there.
+            let runtime_width_pos = nested_runtime_width_type(db, ty_expr);
+            let runtime_width = runtime_width_pos.is_some();
+            if let Some(pos) = runtime_width_pos {
                 trace!(target: "rcdzc::infer", node = id.0, "fault: numeric width from runtime data (CDZ0302)");
                 // `(Float n)` and `(Int n)`/`(UInt n)` both forbid a runtime width; name the axis the
                 // written type actually uses so the message is not misleadingly integer-only for a float.
-                let msg = if crate::eval::is_float_ctor_type(db, ty_expr) {
+                let msg = if crate::eval::is_float_ctor_type(db, pos) {
                     "a floating-point width must be a compile-time admitted width (32 or 64), not runtime data"
                 } else {
                     "an integer width must be a compile-time natural, not runtime data"
                 };
-                out.push(Reject::coded(Code::IntOutOfRange, msg));
+                out.push(Reject::coded(Code::IntOutOfRange, msg).at(pos));
             }
             // A TYPE CONSTRUCTOR applied at the WRONG arity in the annotation position — a prelude `(: 5
             // (List Int64 Int64))` or a user generic sum `(: b (Box Int64 Bool))`. Checked FIRST, before

@@ -1115,6 +1115,40 @@
             (export main)))
   (call   main (: 2 Int64)) (output (: 2500 BigInt)))
 
+; A mixed-scale combine converts each operand's magnitude to the reference — and that magnitude may come
+; from a COMPUTED quantity (a `*`/`/`-derived one, a let-bound one), not only a directly-written `Qty.of`.
+; The converter reads the magnitude via `qty_magnitude_occ`: a literal `Qty.of`'s value occurrence, else
+; `(Qty.value operand)` (the explicit unwrap). Previously the converters used the literal-only occurrence
+; and DECLINED a computed operand ('runtime mixed-unit … combine over a non-Qty.of operand not yet
+; emitted'); these pin that a computed operand now combines across scales.
+
+(case "a runtime mixed-scale combine converts a COMPUTED BigInt quantity operand"
+  (doc    "`(+ (* (Qty.of (BigInt.of n) kilometer) (BigInt.of 2)) (Qty.of (BigInt.of 500) meter))` — the
+           LEFT operand is a COMPUTED quantity (a scaled `n km × 2`), not a literal `Qty.of`, combined
+           across scales with a meter quantity. Its magnitude is recovered via `(Qty.value …)` (the
+           qty_magnitude_occ fallback), converted to the reference (×1000), and added: n=3 → 3·1000·2 + 500
+           = 6500. Pins that a runtime mixed-scale combine works over a computed operand, not only a
+           literal `Qty.of` (it previously declined 'non-Qty.of operand not yet emitted').")
+  (input  (do
+            (def (main (: n Int64))
+              (Qty.value (+ (* (Qty.of (BigInt.of n) (Unit.prefix kilo (Unit.base #"meter"))) (BigInt.of 2))
+                            (Qty.of (BigInt.of 500) (Unit.base #"meter")))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 6500 BigInt)))
+
+(case "a runtime mixed-scale combine converts a COMPUTED Float quantity operand"
+  (doc    "The Float companion: `(+ (* (Qty.of n kilometer) 2.0) (Qty.of 500.0 meter))` with a runtime
+           Float64 `n` — the computed left operand's magnitude is recovered via `(Qty.value …)`, scaled to
+           the reference meter (×1000), and added. n=3.0 → 3.0·1000·2.0 + 500.0 = 6500.0. Pins the Float
+           arm of the computed-operand fallback (the same qty_magnitude_occ path the BigInt/Int/Rational
+           arms use).")
+  (input  (do
+            (def (main (: n Float64))
+              (Qty.value (+ (* (Qty.of n (Unit.prefix kilo (Unit.base #"meter"))) 2.0)
+                            (Qty.of 500.0 (Unit.base #"meter")))))
+            (export main)))
+  (call   main (: 3.0 Float64)) (output (: 6500.0 Float64)))
+
 (case "a runtime MIXED-SCALE BigInt comparison converts to the reference before comparing"
   (doc    "`(< (Qty.of (BigInt.of v) kilometer) (Qty.of (BigInt.of 5000) meter))` — a mixed-scale BigInt
            COMPARISON: v km converts to meters (×1000) before comparing. v=2 → 2000 m < 5000 m → true (1);

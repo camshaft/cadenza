@@ -183,3 +183,33 @@
                           (_             0)))
             (export main)))
   (output (: 3 Int64)))
+
+; --- Composition: a tagged template NESTED in another's hole -----------------------------------------
+; A hole is an ordinary expression, so it may itself be a `(tagged-template …)`. The expander scans every
+; ORIGINAL node once (`tagged_template::expand`), so BOTH the inner and outer templates rewrite; the inner
+; sits in the outer's `(holes …)` list, so after the inner rewrites to its tag application, the outer's
+; hole IS that application — the inner's expanded `Ast` reaches the outer tag as a hole value. This pins
+; that nested expansion composes: the two rewrites do not interfere (the append-bounded scan + node
+; overwrite handle a template inside a template), and the outer tag consumes the inner's RESULT, not the
+; raw `(tagged-template …)` node. `inner` returns `(Ast.Int 5)`; `outer` wraps its hole as `(+ <hole> 40)`,
+; so the composition builds `(+ 5 40)`, scored `byte-len("+") + 5 + 40 = 46`.
+
+(case "a tagged template nested in another's hole composes — the inner's result reaches the outer tag"
+  (doc    "A `(tagged-template …)` inside another's hole: `inner` returns `(Ast.Int 5)`, and `outer` wraps
+           its single hole as `(Ast.List (Ast.Name \"+\") <hole> (Ast.Int 40))`. The expander rewrites both
+           original nodes, so the outer receives the inner's EXPANSION (`(Ast.Int 5)`) as hole 0 and builds
+           `(+ 5 40)`; the match scores `byte-len(\"+\") + 5 + 40 = 46`. Pins that nested tagged-template
+           expansion composes — the outer tag consumes the inner's result, not the raw template node, and
+           the two rewrites in one scan do not interfere.")
+  (input  (do
+            (def (inner chunks holes) (Ast.Int 5))
+            (def (outer chunks holes)
+              (match holes
+                ((list h) (Ast.List (list (Ast.Name "+") h (Ast.Int 40))))
+                (_        (Ast.List (list)))))
+            (def (main) (match (tagged-template outer (chunks "" "") (holes (tagged-template inner (chunks "x") (holes))))
+                          ((Ast.List (list (Ast.Name op) (Ast.Int a) (Ast.Int b)))
+                           (+ (String.byte-len op) (+ a b)))
+                          (_ 0)))
+            (export main)))
+  (output (: 46 Int64)))
