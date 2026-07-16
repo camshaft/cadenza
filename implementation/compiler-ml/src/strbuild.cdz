@@ -1,0 +1,89 @@
+/// strbuild.cdz — INCREMENTAL STRING BUILDING that threads a String value through a self-recursive loop
+/// and concatenates it each step — the shape a pretty-printer takes (append a separator / an indent unit /
+/// a token repeatedly). A permanent SOURCE-LEVEL regression guard, in the now-GATED compiler-ml suite, for
+/// the String.concat threaded-param out-of-bounds trap fixed on trunk.
+///
+/// THE BUG (fixed): a `String` PARAMETER consumed by `String.concat` AND passed to the recursive call
+/// (read-after-consume) trapped "out of bounds memory access" past ~3 iterations — the still-live-binding
+/// omitted-dup, on the String.concat face. ROOT: `is_heap_type` (the retain-candidate gate feeding
+/// `collect_dup_sites`) counted `Bytes` but NOT `String`/`Symbol`, so a String param never entered the dup
+/// analysis; the shared rope handle was freed/reused while still referenced. Fix: add String+Symbol to
+/// `is_heap_type` (a String is a heap rope exactly as Bytes). These builders exercise the exact shape at
+/// depth >3, so they stay green only while the retain holds — and `cdz test implementation/compiler-ml` is
+/// wired into `cargo xtask check`, so this guards the fix fleet-wide.
+///
+/// (Discriminators that pinned the fix locus: a LITERAL operand or a NON-threaded operand never trapped;
+/// the analogous `Bytes.concat` never trapped; a `List.push` loop never trapped — only String.concat of a
+/// threaded String param. So the threaded-param builders below are the sharp regression cases.)
+
+/// Repeat `s` `n` times by threading `s` through the loop and concatenating it onto `acc` each step.
+/// (`s` is consumed by `String.concat` AND passed to the recursive `repeat(s, …)` — the fixed shape.)
+def repeat(s: String, n: Int64, acc: String) =
+  if n == 0 then acc else repeat(s, n - 1, String.concat(acc, s))
+
+/// Join `parts` with `sep` between them — the printer idiom that builds output from a list of pieces,
+/// threading the separator through the recursion and concatenating it each step.
+def join(sep: String, parts: List(String), acc: String) = match parts with
+  | [] => acc
+  | [p] => String.concat(acc, p)
+  | [p, .. rest] => join(sep, rest, String.concat(String.concat(acc, p), sep))
+
+/// Concatenate the threaded arg on the LHS (the other operand position, which also trapped).
+def repeat-left(s: String, n: Int64, acc: String) =
+  if n == 0 then acc else repeat-left(s, n - 1, String.concat(s, acc))
+
+@test
+def sb-repeat-three() =
+  // n=3 always worked (below the old threshold) — a baseline.
+  if String.byte-len(repeat("x", 3, "")) == 3 then unit else trap("repeat x 3 = 3 bytes")
+
+@test
+def sb-repeat-four-was-the-trap() =
+  // n=4 was the OLD trap boundary (out of bounds memory access). Now it must build 4 bytes.
+  if String.byte-len(repeat("x", 4, "")) == 4 then unit else trap("repeat x 4 = 4 bytes (was the OOB trap)")
+
+@test
+def sb-repeat-deep() =
+  // A deep build (well past the old threshold): "ab" × 20 = 40 bytes.
+  if String.byte-len(repeat("ab", 20, "")) == 40 then unit else trap("repeat ab 20 = 40 bytes")
+
+@test
+def sb-repeat-empty() =
+  // n=0 → the empty accumulator, unchanged.
+  if String.byte-len(repeat("x", 0, "")) == 0 then unit else trap("repeat x 0 = empty")
+
+@test
+def sb-repeat-left-deep() =
+  // The LHS-operand form also builds correctly at depth (both concat positions were affected).
+  if String.byte-len(repeat-left("z", 10, "")) == 10 then unit else trap("repeat-left z 10 = 10 bytes")
+
+@test
+def sb-join-two() =
+  // ["a", "b"] joined by ", " → "a, b" = 4 bytes.
+  if String.byte-len(join(", ", ["a", "b"], "")) == 4 then unit else trap("a, b = 4 bytes")
+
+@test
+def sb-join-three() =
+  // ["a", "bb", "ccc"] joined by ", " → "a, bb, ccc" = 10 bytes (threads the separator deep).
+  if String.byte-len(join(", ", ["a", "bb", "ccc"], "")) == 10 then unit else trap("a, bb, ccc = 10 bytes")
+
+@test
+def sb-join-empty() =
+  if String.byte-len(join(", ", [], "")) == 0 then unit else trap("join of no parts = empty")
+
+@test
+def sb-join-single() =
+  // A single part → no separator: "solo" = 4 bytes.
+  if String.byte-len(join(", ", ["solo"], "")) == 4 then unit else trap("single part = 4 bytes, no sep")
+
+@test
+def sb-join-content-correct() =
+  // Not just length — the content: join ["a","b","c"] by "-" starts with 'a' and its 2nd char is '-'.
+  let s = join("-", ["a", "b", "c"], "") in
+  (match String.at(s, 0) with
+    | Option.Some(c0) => (if c0 == "a" then
+        (match String.at(s, 1) with | Option.Some(c1) => (if c1 == "-" then unit else trap("sep after first")) | Option.None(_) => trap("has 2nd char"))
+      else trap("starts with a"))
+    | Option.None(_) => trap("non-empty"))
+
+export { repeat, join }

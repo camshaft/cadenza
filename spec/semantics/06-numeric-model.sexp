@@ -1686,6 +1686,22 @@
   (input  (Int64.checked-mul 6 7))
   (output (: (Some 42) (Option Int64))))
 
+(case "checked subtraction yields Some of the difference when it fits"
+  (doc    "`(Int64.checked-sub 50 8)` = `(Some 42)`: the result is in range, so checked subtraction
+           returns it wrapped in `Some` (numeric-model.md #Overflow Is Defined — a defined value
+           outcome). The fallible companion of `-`, the third named overflow-fallible form the numeric
+           model requires alongside checked add and checked mul.")
+  (input  (Int64.checked-sub 50 8))
+  (output (: (Some 42) (Option Int64))))
+
+(case "checked subtraction yields None on underflow instead of trapping"
+  (doc    "`(Int64.checked-sub Int64.min 1)` = `(None unit)`: the difference underflows the Int64 range,
+           so checked subtraction reports the overflow as `None` rather than trapping (contrast the `-`
+           default, `(- Int64.min 1)` → trap). Pins subtraction's defined non-trapping overflow outcome —
+           the fallible form must exist for subtraction, not only addition and multiplication.")
+  (input  (Int64.checked-sub Int64.min 1))
+  (output (: (None unit) (Option Int64))))
+
 (case "a checked result is consumed by matching its Option at run time"
   (doc    "The idiom a compiler writes: compute a checked sum of RUNTIME operands and branch on overflow
            without trapping. `(add-or a b d)` returns the sum when it fits, else the default `d`:
@@ -1720,6 +1736,21 @@
            overflow is more than a single carry bit.")
   (input  (Int64.wrapping-mul Int64.max 2))
   (output (: -2 Int64)))
+
+(case "wrapping subtraction wraps modulo two to the sixty-fourth on underflow"
+  (doc    "`(Int64.wrapping-sub Int64.min 1)` = Int64.max (9223372036854775807): wrapping subtraction does
+           NOT trap on underflow — it wraps in two's complement, so MIN − 1 becomes MAX (numeric-model.md
+           #Overflow Is Defined, the modular value outcome). Contrast `(- Int64.min 1)` → trap. The
+           subtraction companion of the wrapping-add wrap, the third named wrapping form the numeric model
+           requires.")
+  (input  (Int64.wrapping-sub Int64.min 1))
+  (output (: 9223372036854775807 Int64)))
+
+(case "wrapping subtraction of in-range operands is ordinary subtraction"
+  (doc    "`(Int64.wrapping-sub 50 8)` = 42: with no underflow, wrapping subtraction equals `-`. The
+           in-range companion pinning that wrapping only differs from `-` at the overflow boundary.")
+  (input  (Int64.wrapping-sub 50 8))
+  (output (: 42 Int64)))
 
 (case "wrapping arithmetic algebraic identities hold at the range boundaries"
   (doc    "The wrapping ops fold their algebraic identities — `a +% 0 = a`, `a *% 1 = a`, `a *% 0 = 0` — and

@@ -159,6 +159,95 @@ pub fn emit_body(
     Ok(format!("    {expr}"))
 }
 
+/// The Rust identifier for lambda-lifted closure slot `k` — the `fn` a `Core::Closure { code: k }` value
+/// calls into. A backend-reserved name (`__`) that cannot collide with a source def.
+pub(super) fn lifted_ident(k: usize) -> String {
+    format!("__lifted_{k}")
+}
+
+/// Emit lambda-lifted closure slot `k` as a private `fn __lifted_{k}(<captures…>, <params…>) -> <ret>`.
+///
+/// The lifted lambda (`layout.lifted[k]` — a [`crate::lower::LiftedLambda`]) is the body of a `(fn …)`
+/// that could not be β-reduced (it is passed to a recursive function). On the wasm backend it becomes a
+/// standalone function taking the closure CELL as slot 0 (the env) and reading captures back out of it;
+/// on the RUST backend, captures are passed as ORDINARY LEADING PARAMETERS (the closure value forwards
+/// the captured values it holds), so `Core::Captured { index }` reads the `index`-th capture PARAM
+/// directly — no env-cell indirection. The captures come FIRST (in `captures` order = the wasm cell index
+/// `1 + position`), then the lambda's own `params`. The body is rendered against an env mapping each
+/// capture binder and param binder to its emitted identifier. A capture/param/result type with no native
+/// Rust mapping declines the whole lifted fn (hence the module) — the same boundary every `fn` draws.
+pub(super) fn emit_lifted_lambda(
+    db: &mut Db,
+    k: usize,
+    layout: &Layout,
+    mode: Mode,
+) -> Result<String, Reject> {
+    // Clone the lifted lambda's shape out of the layout so `db` can be borrowed mutably while emitting.
+    let lam = layout.lifted[k].clone();
+    // Async lifted lambdas would need the `env: &mut CdzEnv` prefix + `.await` threading; defer that to a
+    // later slice (sync closures first). Decline an async lifted lambda cleanly.
+    if mode.is_async() {
+        return Err(Reject::decline(
+            "an async lambda-lifted closure is not yet emitted by the Rust backend",
+        ));
+    }
+    let mut params_src = String::new();
+    let mut env: Env = HashMap::new();
+    let mut first = true;
+    // Captures FIRST — each an ordinary leading parameter `__cap{j}: <ty>`. `Core::Captured{index:j}`
+    // reads it. The capture's TYPE is the solved type of the captured binding (read off its occurrence).
+    for (j, &cap_binder) in lam.captures.iter().enumerate() {
+        let cty = type_of(db, cap_binder);
+        let rty = types::rust_type(&cty).ok_or_else(|| {
+            Reject::decline(format!(
+                "lifted lambda capture {j} type {} has no native Rust representation",
+                cty.render_name()
+            ))
+        })?;
+        let cname = format!("__cap{j}");
+        if !first {
+            params_src.push_str(", ");
+        }
+        params_src.push_str(&format!("{cname}: {rty}"));
+        env.insert(cap_binder, cname);
+        first = false;
+    }
+    // Then the lambda's own PARAMETERS, in order.
+    for (i, (binder, ty)) in lam.params.iter().enumerate() {
+        let rty = types::rust_type(ty).ok_or_else(|| {
+            Reject::decline(format!(
+                "lifted lambda parameter {i} type {} has no native Rust representation",
+                ty.render_name()
+            ))
+        })?;
+        let pname = super::param_name(db, *binder, i);
+        if !first {
+            params_src.push_str(", ");
+        }
+        params_src.push_str(&format!("{pname}: {rty}"));
+        env.insert(*binder, pname);
+        first = false;
+    }
+    let ret = types::rust_type(&lam.ret_ty).ok_or_else(|| {
+        Reject::decline(format!(
+            "lifted lambda result type {} has no native Rust representation",
+            lam.ret_ty.render_name()
+        ))
+    })?;
+    let ctx = Ctx {
+        mode,
+        layout,
+        loop_group: None,
+        sum_binds: Vec::new(),
+        sum_path_types: Vec::new(),
+    };
+    let body = emit(db, lam.body, &env, &ctx)?;
+    let ident = lifted_ident(k);
+    Ok(format!(
+        "// cdz-lifted[{k}]\nfn {ident}({params_src}) -> {ret} {{\n    {body}\n}}\n"
+    ))
+}
+
 /// Emit a tail-recursion group's shared `loop` for the member being defined (`self_def`, which is
 /// `members[0]`). The shared positional locals `__p0…` are initialized from this member's params; for a
 /// MUTUAL group a `which` state selects the member body each iteration (this member enters at `which =
@@ -944,6 +1033,79 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             scrutinee,
             disc_present,
         } => emit_sum_expect(db, scrutinee, disc_present, env, ctx),
+        // A RUNTIME CLOSURE VALUE `(fn …)` that survived to run time (passed to a recursive fn) → a Rust
+        // `Rc<dyn Fn(…) -> …>` that forwards its captured values + call args to the lifted `fn __lifted_k`.
+        // The captures are emitted at the BUILD site (values in the enclosing scope) and MOVED into the
+        // closure; each call then invokes `__lifted_k(<cap0>, …, <a0>, …)`. The closure's arity comes from
+        // the lifted lambda's param count; a fresh `__a{i}` binds each. `Rc::new` makes it Clone (so a
+        // multiply-used closure clones on read). (C1: works for any capture set — C1's gate cases are
+        // no-capture combinators, but the emit handles captures uniformly.)
+        Core::Closure { code, captures } => {
+            let lam = ctx.layout.lifted[code].clone();
+            let arity = lam.params.len();
+            let ident = lifted_ident(code);
+            // Emit each capture value + bind it to a `move`d local so the closure owns it.
+            let mut cap_lets = String::new();
+            let mut cap_names = Vec::with_capacity(captures.len());
+            for (j, &c) in captures.iter().enumerate() {
+                let cv = emit(db, c, env, ctx)?;
+                let cn = format!("__c{j}");
+                cap_lets.push_str(&format!("let {cn} = {cv}; "));
+                cap_names.push(cn);
+            }
+            let params: Vec<String> = (0..arity).map(|i| format!("__a{i}")).collect();
+            // The forwarded call: captures first (in cell order), then the closure's args. A capture is
+            // CLONED into each call — the closure is an `Fn` (callable repeatedly), so it may NOT MOVE a
+            // captured variable out on a call (rustc E0507); cloning gives each invocation its own value
+            // and leaves the capture intact for the next call. A Copy capture's `.clone()` is a plain copy.
+            let mut call_args: Vec<String> = cap_names.iter().map(|c| format!("{c}.clone()")).collect();
+            call_args.extend(params.iter().cloned());
+            // Coerce EXPLICITLY to the `Rc<dyn Fn(…) -> …>` trait-object type when the node's solved
+            // function type maps concretely (an `as` cast triggers the unsizing coercion). Without it,
+            // `Rc::new(closure)` has a UNIQUE per-closure concrete type, so two closures of the "same"
+            // Cadenza function type do NOT unify — `vec![mk(1), mk(2)]` or a match yielding two closures
+            // would be an E0308 "expected closure, found a different closure". The cast makes every closure
+            // of a given `Ty::Fn` the SAME `Rc<dyn Fn>` type, so they compose in a list/if/match.
+            //
+            // If the node's solved type does NOT map to a concrete `Rc<dyn Fn>` (an UNANNOTATED lambda
+            // whose arg/result widths the solver left as a var at the closure node — `(fn (x) (+ x k))`
+            // with no annotation, whose type never fully grounds here), DECLINE: the bare `Rc::new` has a
+            // unique per-closure concrete type, so such a closure placed in a `list`/`if`/`match` beside a
+            // sibling is an E0308 non-unification (a BadArtifact fail), and without a concrete `dyn` type
+            // we cannot coerce it. A decline is the honest `todo` (the wasm target represents these via its
+            // handle ABI; the annotated closures — the overwhelming majority — pass). A concretely-typed
+            // closure gets the `as` cast, so it unifies in any position.
+            let dyn_ty = types::rust_type(&type_of(db, id)).ok_or_else(|| {
+                Reject::decline(
+                    "a closure whose function type is not fully solved here has no native Rust representation",
+                )
+            })?;
+            let closure_expr = format!(
+                "std::rc::Rc::new(move |{}| {ident}({})) as {dyn_ty}",
+                params.join(", "),
+                call_args.join(", ")
+            );
+            Ok(format!("{{ {cap_lets}{closure_expr} }}"))
+        }
+        // Apply a runtime closure at full arity → a direct call of the `Rc<dyn Fn>`: `(<closure>)(<a0>,…)`.
+        Core::CallClosure { closure, args } => {
+            let c = emit(db, closure, env, ctx)?;
+            let mut rendered = Vec::with_capacity(args.len());
+            for &a in &args {
+                rendered.push(emit(db, a, env, ctx)?);
+            }
+            Ok(format!("({c})({})", rendered.join(", ")))
+        }
+        // A read of the k-th CAPTURED free variable inside a lifted body → the capture PARAMETER the lifted
+        // fn bound it to (the env maps its binder to `__cap{index}`). On the rust backend a capture is an
+        // ordinary leading param, so this is a plain identifier read — no env-cell `arr-get`. `Captured`
+        // resolves via the env like a `Param`; if absent (a compiler-bug shape), decline.
+        Core::Captured { index, .. } => {
+            // The lifted-lambda emit inserted `__cap{index}` into the env keyed by the capture's binder,
+            // but a `Captured` node carries only the INDEX, not the binder. The env is keyed by binder, so
+            // resolve by the reserved name directly: the lifted emit names capture j `__cap{j}`.
+            Ok(format!("__cap{index}"))
+        }
         // `trap` → a Rust `panic!` (a Cadenza trap, matching the wasm `unreachable`). Rust's `panic!`
         // returns the never type `!`, which coerces to ANY expected type — the runtime counterpart of
         // `trap`'s `Never` unifying with any position. The panic message is the literal `"unreachable"`
@@ -999,9 +1161,6 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         | Core::BinBitsBuild { .. }
         | Core::BinIntRead { .. }
         | Core::BinRestRead { .. }
-        | Core::Closure { .. }
-        | Core::CallClosure { .. }
-        | Core::Captured { .. }
         // A host call OR a cross-component call crosses a component boundary — the Rust backend emits no
         // component imports, so it declines (the wasm backend is the boundary target). A sequencing block
         // only ever holds a host-call statement today, so the Rust backend declines it too.
@@ -1185,11 +1344,11 @@ fn emit_arith(
         // WRAPPING arithmetic → Rust's own `wrapping_add`/`wrapping_mul` — two's-complement wraparound,
         // never panics (the native mirror of the wasm backend's raw `i64.add`/`i64.mul`). `it` is the
         // aliased width N, so the operands are the N-bit type and the wrap is modulo 2^N.
-        Prim::WrappingAdd | Prim::WrappingMul => {
-            let method = if matches!(op, Prim::WrappingAdd) {
-                "wrapping_add"
-            } else {
-                "wrapping_mul"
+        Prim::WrappingAdd | Prim::WrappingSub | Prim::WrappingMul => {
+            let method = match op {
+                Prim::WrappingAdd => "wrapping_add",
+                Prim::WrappingSub => "wrapping_sub",
+                _ => "wrapping_mul",
             };
             Ok(format!("({l}).{method}({r})"))
         }
@@ -1564,6 +1723,9 @@ fn ty_is_non_copy(ty: &Ty) -> bool {
         // single-use enum is sound; the emitted enums carry `#[allow(clippy::all)]` so no needless-clone
         // lint fires.
         Ty::Sum { .. } => true,
+        // A function value is `Rc<dyn Fn>` — Clone (so a multiply-used closure clones on read) but NOT
+        // Copy, so a closure read in more than one position must clone, like any other heap value.
+        Ty::Fn(_, _) => true,
         _ => false,
     }
 }

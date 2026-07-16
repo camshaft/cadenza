@@ -1860,13 +1860,17 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 // `Int64.checked-add` / `checked-mul` — the FALLIBLE arithmetic. FOLD a constant operand
                 // pair to `(Some result)` in range / `(None unit)` on overflow; a runtime operand is a
                 // later increment (declines cleanly).
-                Some(prim @ (Prim::CheckedAdd | Prim::CheckedMul)) if args.len() == 2 => {
+                Some(prim @ (Prim::CheckedAdd | Prim::CheckedSub | Prim::CheckedMul))
+                    if args.len() == 2 =>
+                {
                     lower_checked_arith(db, id, prim, args[0], args[1])
                 }
                 // `Int64.wrapping-add` / `wrapping-mul` — two's-complement wraparound, NEVER trapping. FOLD
                 // a constant pair via `wrapping_*`; a runtime operand emits `Core::Arith` (which for a
                 // wrapping prim selects the RAW machine op, no overflow guard).
-                Some(prim @ (Prim::WrappingAdd | Prim::WrappingMul)) if args.len() == 2 => {
+                Some(prim @ (Prim::WrappingAdd | Prim::WrappingSub | Prim::WrappingMul))
+                    if args.len() == 2 =>
+                {
                     lower_wrapping_arith(db, id, prim, args[0], args[1])
                 }
                 // `String.concat` — the TOTAL binary join. FOLD two constant strings to their
@@ -12476,8 +12480,30 @@ fn lower_quantity_combine(
                 ));
             }
         };
-        let _ = id;
-        return fold_int_combine(op, l, r);
+        // Fold the op over the two reference-converted magnitudes, THEN range-check an arithmetic
+        // result against the quantity's INNER integer width — exactly as `lower_arith` does for a bare
+        // `+`/`-`. `fold_int_combine` evaluates over i128, so a NARROW overflow whose true result still
+        // fits i128 (`100 + 100 = 200` over `(Qty Int8 u)`) folds to a valid `ConstInt` and would
+        // otherwise slip through to a backend CDZ0302 ("a literal that doesn't fit") — and, because that
+        // gate lives only in the backend, `cdz check` would MISS it entirely. It is a constant OPERATION
+        // whose defined outcome is a TRAP (the sum overflows the type), NOT an out-of-range literal, so it
+        // is CDZ0304 (`ConstTrap`) — the SAME code the bare `(+ (Int8.of 100) (Int8.of 100))` gets. The
+        // inner width is read off `id`'s solved `Ty::Qty { inner: Int … }` (a comparison result is a Bool,
+        // unaffected). Units are erased, so a quantity's arithmetic obeys the inner numeric type's rule.
+        let folded = fold_int_combine(op, l, r);
+        if let Core::ConstInt(ref r) = folded
+            && let crate::ty::Ty::Qty { inner, .. } = crate::infer::type_of(db, id)
+            && let crate::ty::Ty::Int(it) = *inner
+            && !r.fits_width(it.ground_signed(), it.ground_width())
+        {
+            trace!(target: "rcdzc::fold", node = id.0, "mixed/same-unit Int combine result overflows the inner narrow width → CDZ0304");
+            return Core::Poison(Reject::coded(
+                Code::ConstTrap,
+                "this constant arithmetic operation overflows its integer type (a \
+                 compile-provable overflow traps)",
+            ));
+        }
+        return folded;
     }
     // RUNTIME operand(s) — synthesize the scale conversion as real integer arithmetic and lower it.
     lower_runtime_combine(db, op, lhs, (ln, ld), rhs, (rn, rd), false)
@@ -13418,7 +13444,15 @@ fn lower_arith(db: &mut Db, id: StructId, op: Prim, args: &[StructId]) -> Core {
             // List.update-OOB path already follows. (A direct out-of-range LITERAL `(: 256 UInt8)` is
             // still CDZ0302 at its own annotation — it is a literal, not an operation result.)
             match fold_arith(op, a, b) {
-                Core::ConstInt(r) => match crate::infer::type_of(db, id) {
+                // Peel `Ty::Qty` before reading the width: a same-unit quantity `+`/`-`/`*`/`/` over a
+                // narrow-Int inner (`(Qty Int8 u)`) falls through to this generic arith path (its scales
+                // are equal, so it is NOT a mixed-unit combine), and its solved type is `Ty::Qty { inner:
+                // Int … }`, not a bare `Ty::Int`. Without the peel the width-check below never fired for a
+                // quantity, so an inner-narrow overflow (`100 + 100` over `(Qty Int8 u)`) slipped through to
+                // a backend CDZ0302 ("a literal that doesn't fit") — a wrong code (it is an OPERATION
+                // overflow, not a literal), and one `cdz check` MISSED (the gate lives only in the backend).
+                // Units are erased, so a quantity's arithmetic obeys the inner integer type's overflow rule.
+                Core::ConstInt(r) => match peel_qty_inner_ty(crate::infer::type_of(db, id)) {
                     crate::ty::Ty::Int(it)
                         if !r.fits_width(it.ground_signed(), it.ground_width()) =>
                     {
@@ -13721,6 +13755,9 @@ fn arith_identity(
         // other operand, so it too is guarded on trap-freedom (`(/ x 0) *% 0` must still trap).
         Prim::WrappingAdd if is(rc, 0) => Some(lc.clone()),
         Prim::WrappingAdd if is(lc, 0) => Some(rc.clone()),
+        // `a -% 0 = a` — the RIGHT-zero identity only (subtraction is not commutative, so `0 -% a` is the
+        // negation of `a`, NOT `a`, and does not simplify here).
+        Prim::WrappingSub if is(rc, 0) => Some(lc.clone()),
         Prim::WrappingMul if is(rc, 1) => Some(lc.clone()),
         Prim::WrappingMul if is(lc, 1) => Some(rc.clone()),
         Prim::WrappingMul if is(rc, 0) && is_trap_free(db, lhs) => Some(zero()),
@@ -14940,12 +14977,18 @@ pub(crate) fn is_trap_free(db: &mut Db, id: StructId) -> bool {
         | Core::Param { .. }
         | Core::LocalRef { .. } => true,
         // Bitwise ops are total; a comparison never traps — trap-free if their operands are. The WRAPPING
-        // arithmetic ops (`wrapping-add`/`wrapping-mul`) are ALSO total: they emit the raw machine
-        // `add`/`mul` with NO overflow guard (wasm's op wraps modulo the slot — that is their whole point vs
-        // checked `+`/`*`), so they never trap and are trap-free when their operands are. (Checked `Add`/
-        // `Mul` — with an overflow guard — stay in the possibly-trapping `_` arm below.)
+        // arithmetic ops (`wrapping-add`/`wrapping-sub`/`wrapping-mul`) are ALSO total: they emit the raw
+        // machine `add`/`sub`/`mul` with NO overflow guard (wasm's op wraps modulo the slot — that is their
+        // whole point vs checked `+`/`-`/`*`), so they never trap and are trap-free when their operands
+        // are. (Checked `Add`/`Sub`/`Mul` — with an overflow guard — stay in the possibly-trapping `_` arm below.)
         Core::Arith {
-            op: Prim::BitAnd | Prim::BitOr | Prim::BitXor | Prim::WrappingAdd | Prim::WrappingMul,
+            op:
+                Prim::BitAnd
+                | Prim::BitOr
+                | Prim::BitXor
+                | Prim::WrappingAdd
+                | Prim::WrappingSub
+                | Prim::WrappingMul,
             lhs,
             rhs,
         }
@@ -15512,8 +15555,10 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::StrFromBytes
         | Prim::SumExpect
         | Prim::CheckedAdd
+        | Prim::CheckedSub
         | Prim::CheckedMul
         | Prim::WrappingAdd
+        | Prim::WrappingSub
         | Prim::WrappingMul
         | Prim::StringTy
         | Prim::BytesAt
@@ -18826,6 +18871,7 @@ fn lower_checked_arith(
             };
             let checked = match prim {
                 Prim::CheckedAdd => x.checked_add(y),
+                Prim::CheckedSub => x.checked_sub(y),
                 _ => x.checked_mul(y),
             };
             match checked {
@@ -18884,6 +18930,7 @@ fn lower_wrapping_arith(
             };
             let n = match prim {
                 Prim::WrappingAdd => x.wrapping_add(y),
+                Prim::WrappingSub => x.wrapping_sub(y),
                 _ => x.wrapping_mul(y),
             };
             // MASK the raw i64 result to the op's solved integer width — a wrapping op's outcome is the
@@ -20225,8 +20272,10 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::SumExpect => "sum-expect",
         Prim::Trap => "trap",
         Prim::CheckedAdd => "checked-add",
+        Prim::CheckedSub => "checked-sub",
         Prim::CheckedMul => "checked-mul",
         Prim::WrappingAdd => "wrapping-add",
+        Prim::WrappingSub => "wrapping-sub",
         Prim::WrappingMul => "wrapping-mul",
         // The F* prims are the float MODE of the ONE arithmetic operator — a float `+`, not a distinct
         // `+.` — so a user-facing message (arity fault) names the undotted operator the author wrote.

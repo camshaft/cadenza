@@ -236,11 +236,13 @@ fn parse_stranded(stderr: &str) -> Option<String> {
     }
 }
 
-/// The last `n` non-empty-ish lines of a string, rejoined — for surfacing a report failure's tail.
+/// The last `n` non-blank lines of a string, rejoined — for surfacing a report failure's tail with
+/// signal, not padding. Whitespace-only lines are dropped BEFORE taking the last `n` (duvet's error
+/// output is full of blank spacer lines, so a verbatim tail could be mostly empty).
 fn last_lines(s: &str, n: usize) -> String {
-    let all: Vec<&str> = s.lines().collect();
-    let start = all.len().saturating_sub(n);
-    all[start..].join("\n")
+    let non_blank: Vec<&str> = s.lines().filter(|l| !l.trim().is_empty()).collect();
+    let start = non_blank.len().saturating_sub(n);
+    non_blank[start..].join("\n")
 }
 
 /// Count citation vs SPEC annotations in a `duvet report --json` document. A SPEC-typed annotation is
@@ -347,5 +349,14 @@ mod tests {
         // A non-stranding failure must NOT be classified as a stranding (so it still hard-fails).
         assert!(parse_stranded("thread 'main' panicked at 'boom'").is_none());
         assert!(parse_stranded("").is_none());
+    }
+
+    #[test]
+    fn last_lines_drops_blanks_and_takes_the_tail() {
+        // Blank/whitespace-only lines are filtered BEFORE taking the last n (matches the doc).
+        let s = "a\n\nb\n   \nc\n\n";
+        assert_eq!(last_lines(s, 2), "b\nc"); // last 2 NON-blank, not "\n" padding
+        assert_eq!(last_lines(s, 10), "a\nb\nc"); // fewer than n → all non-blank
+        assert_eq!(last_lines("\n  \n\t\n", 3), ""); // all blank → empty
     }
 }

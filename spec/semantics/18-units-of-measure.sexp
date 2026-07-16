@@ -1312,3 +1312,45 @@
   (input  (Qty.value (+ (Qty.of (Rational.of 1 3) (Unit.of #"meter"))
                         (Qty.of (Rational.of 1 6) (Unit.of #"meter")))))
   (output (: 1/2 Rational)))
+
+; --- narrow-width Int-inner quantity arithmetic obeys the inner type's overflow rule ---------------
+; A quantity's arithmetic runs the ERASED inner numeric type's operation, so a `(Qty Int8 u)` + / * /
+; must overflow-trap exactly as a bare Int8 does — a compile-provable narrow overflow is CDZ0304 (a
+; constant OPERATION with no value), the SAME code the bare `(+ (Int8.of 100) (Int8.of 100))` gets, NOT
+; the backend CDZ0302 "literal does not fit its width" (100 fits Int8; it is the SUM 200 that overflows).
+; The width-check reads the quantity's INNER Int type (`Ty::Qty { inner: Int … }`): the same-unit case
+; falls through to the generic arith path (equal scales → not a mixed-unit combine), the mixed-scale case
+; folds inside the reference-converting combine — both peel the quantity to read the inner width. A
+; non-overflowing narrow-width quantity arithmetic runs normally (the control).
+
+(case "a narrow-width Int quantity add that overflows the inner width traps at compile time"
+  (doc    "`(+ (Qty.of (Int8.of 100) meter) (Qty.of (Int8.of 100) meter))` — a same-unit add over an
+           Int8 inner: 100 + 100 = 200 overflows Int8 (max 127). Units are erased, so the arithmetic
+           obeys the inner Int8 type's overflow rule: a compile-provable overflow is CDZ0304 (a constant
+           operation with no value), the SAME code the bare `(+ (Int8.of 100) (Int8.of 100))` gets — NOT
+           CDZ0302 (each 100 literal FITS Int8; it is the sum that overflows). The width-check reads the
+           quantity's INNER Int8 type; without peeling the `Ty::Qty` the overflow slipped through to a
+           backend CDZ0302 that `cdz check` never saw.")
+  (input  (Qty.value (+ (Qty.of (Int8.of 100) (Unit.base #"meter"))
+                        (Qty.of (Int8.of 100) (Unit.base #"meter")))))
+  (error  CDZ0304))
+
+(case "a narrow-width Int quantity add that fits the inner width runs normally"
+  (doc    "`(+ (Qty.of (Int8.of 50) meter) (Qty.of (Int8.of 50) meter))` = 100, which FITS Int8 — the
+           control beside the overflowing case: a narrow-width quantity arithmetic whose result is in
+           range runs exactly as the bare Int8 add does, no spurious trap. Pins that the inner-width
+           overflow check rejects ONLY a genuine overflow.")
+  (input  (Qty.value (+ (Qty.of (Int8.of 50) (Unit.base #"meter"))
+                        (Qty.of (Int8.of 50) (Unit.base #"meter")))))
+  (output (: 100 Int8)))
+
+(case "a mixed-scale narrow-width Int quantity combine that overflows the inner width traps"
+  (doc    "`(+ (Qty.of (UInt8.of 1) kilometer) (Qty.of (UInt8.of 50) meter))` — a MIXED-scale combine
+           over a UInt8 inner: 1 km converts to 1000 m at the reference, then 1000 + 50 = 1050 overflows
+           UInt8 (max 255). The reference-converting combine folds the result and range-checks it against
+           the inner UInt8 width — a compile-provable overflow is CDZ0304, exactly as the same-unit case
+           above. Pins that the mixed-scale (reference-converting) path honors the inner width too, not
+           only the same-unit generic-arith path.")
+  (input  (Qty.value (+ (Qty.of (UInt8.of 1) (Unit.prefix kilo (Unit.base #"meter")))
+                        (Qty.of (UInt8.of 50) (Unit.base #"meter")))))
+  (error  CDZ0304))

@@ -974,6 +974,7 @@ pass	a member access with no field operand is rejected, not a crash
 pass	a misspelled segment kind is rejected with a rename suggestion
 pass	a misspelled utf8 segment kind is rejected
 pass	a mixed-ownership inlined-match operand leaves the source map intact across repeated compares
+pass	a mixed-scale narrow-width Int quantity combine that overflows the inner width traps
 pass	a module declaration binds its name in the enclosing scope
 pass	a module function calls a sibling export by name
 pass	a module function is recursive
@@ -1044,6 +1045,8 @@ pass	a narrow match binder used in arithmetic with the scrutinee
 pass	a narrow multiplication reconciles a constant LEFT operand to the variable's width
 pass	a narrow value in the else branch opposite a bare literal computes at the narrow width
 pass	a narrow-body arithmetic on an in-range constant arg overflows the parameter width
+pass	a narrow-width Int quantity add that fits the inner width runs normally
+pass	a narrow-width Int quantity add that overflows the inner width traps at compile time
 pass	a narrow-width accumulator that never changes threads through the recursion
 pass	a narrow-width parameter compared to a bare literal computes at the parameter width
 pass	a narrow-width parameter plus a bare literal computes at the parameter width
@@ -2133,6 +2136,8 @@ pass	checked addition yields None on overflow instead of trapping
 pass	checked addition yields Some of the sum when it fits
 pass	checked multiplication reports overflow as None
 pass	checked multiplication yields Some when it fits
+pass	checked subtraction yields None on underflow instead of trapping
+pass	checked subtraction yields Some of the difference when it fits
 pass	combining a named rate with a length is a dimensional error
 pass	compacting a byte sequence built at run time preserves its bytes
 pass	compacting a slice preserves its bytes
@@ -2923,6 +2928,8 @@ pass	wrapping arithmetic algebraic identities hold at the range boundaries
 pass	wrapping arithmetic over runtime operands wraps at run time
 pass	wrapping arithmetic uses the named wrapping form of the operator
 pass	wrapping multiplication wraps rather than trapping
+pass	wrapping subtraction of in-range operands is ordinary subtraction
+pass	wrapping subtraction wraps modulo two to the sixty-fourth on underflow
 pass	wrapping-add on a runtime Int8 wraps at its signed boundary
 pass	wrapping-add on a runtime UInt8 wraps modulo 256
 pass	wrapping-add wraps a boundary-crossing runtime Int64 at the max boundary

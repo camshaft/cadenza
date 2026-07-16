@@ -2302,13 +2302,17 @@ fn int_module_record(ast: &mut Arenas, signed: bool, width: u32) -> StructId {
     // and whose `(meta apply)` is the `wrap` intrinsic. ONE such field per module (no per-source-type
     // explosion): the target is fixed by the module, the source by unification at the call site.
     fields.push(wrap_field(ast, signed, width));
-    // `checked-add`/`checked-mul` — the FALLIBLE arithmetic companions of the trapping `+`/`*`: `T → T →
-    // (Option T)`, the exact result wrapped in `Some` when it fits, `None` on overflow (numeric-model.md
-    // §Overflow Is Defined — the defined value outcome alongside the trap). Real operator records (the
-    // `(meta apply)` = the checked intrinsic); a constant folds, a runtime operand is a later increment.
+    // `checked-add`/`checked-sub`/`checked-mul` — the FALLIBLE arithmetic companions of the trapping
+    // `+`/`-`/`*`: `T → T → (Option T)`, the exact result wrapped in `Some` when it fits, `None` on
+    // overflow (numeric-model.md §Overflow Is Defined — the defined value outcome alongside the trap).
+    // Real operator records (the `(meta apply)` = the checked intrinsic); a constant folds, a runtime
+    // operand is a later increment. A NAMED overflow-fallible form is offered for EACH of addition,
+    // subtraction, and multiplication (the full set the numeric model requires):
+    //= spec/capabilities/numeric-model.md#an-overflow-fallible-operation-reports-overflow-rather-than-trapping
+    //# An integer type MUST offer, alongside its trapping arithmetic, a named overflow-fallible form of each of addition, subtraction, and multiplication whose result is the exact value wrapped in the present case when it is in range and the absent case when the operation overflows, so that a program can branch on overflow without trapping.
     //
-    // These fallible forms are opted into BY NAME (`checked-add`/`checked-mul`) — the bare `+`/`*` keeps
-    // the trapping default, so overflow is never SILENTLY reported as absent:
+    // These fallible forms are opted into BY NAME (`checked-add`/`checked-sub`/`checked-mul`) — the bare
+    // `+`/`-`/`*` keeps the trapping default, so overflow is never SILENTLY reported as absent:
     //= spec/capabilities/numeric-model.md#an-overflow-fallible-operation-reports-overflow-rather-than-trapping
     //# The overflow-fallible form MUST be opted into by name at the operation, so that an author who writes the ordinary operator still gets the trapping outcome and overflow is never silently reported.
     fields.push(checked_field(
@@ -2320,25 +2324,42 @@ fn int_module_record(ast: &mut Arenas, signed: bool, width: u32) -> StructId {
     ));
     fields.push(checked_field(
         ast,
+        "checked-sub",
+        "checked-sub",
+        signed,
+        width,
+    ));
+    fields.push(checked_field(
+        ast,
         "checked-mul",
         "checked-mul",
         signed,
         width,
     ));
-    // `wrapping-add`/`wrapping-mul` — two's-complement wraparound modulo 2^width: `T → T → T`, NEVER
-    // trapping (numeric-model.md §Overflow Is Defined — the modular value outcome, what a hash / fixed-
-    // width round-trip wants). Real operator records (`(meta apply)` = the wrapping intrinsic); a constant
-    // folds via `wrapping_*`, a runtime operand emits the RAW machine `i64.add`/`i64.mul` (no overflow
-    // guard — wasm's add/mul already wrap).
+    // `wrapping-add`/`wrapping-sub`/`wrapping-mul` — two's-complement wraparound modulo 2^width:
+    // `T → T → T`, NEVER trapping (numeric-model.md §Overflow Is Defined — the modular value outcome, what
+    // a hash / fixed-width round-trip wants). Real operator records (`(meta apply)` = the wrapping
+    // intrinsic); a constant folds via `wrapping_*`, a runtime operand emits the RAW machine
+    // `i64.add`/`i64.sub`/`i64.mul` (no overflow guard — wasm's ops already wrap). A NAMED wrapping form is
+    // offered for EACH of addition, subtraction, and multiplication (the full set the numeric model requires):
+    //= spec/capabilities/numeric-model.md#a-wrapping-operation-has-a-defined-modular-outcome
+    //# An integer type MUST offer a named wrapping form of each of addition, subtraction, and multiplication whose result on overflow is the two's-complement value reduced modulo the type's range, so that modular arithmetic has a defined non-trapping outcome distinct from the trapping default.
     //
-    // The wrapping form is opted into BY NAME (`wrapping-add`/`wrapping-mul`), so it never displaces the
-    // trapping default an unqualified `+`/`*` selects:
+    // The wrapping form is opted into BY NAME (`wrapping-add`/`wrapping-sub`/`wrapping-mul`), so it never
+    // displaces the trapping default an unqualified `+`/`-`/`*` selects:
     //= spec/capabilities/numeric-model.md#a-wrapping-operation-has-a-defined-modular-outcome
     //# The wrapping form MUST be opted into by name at the operation, so that it never displaces the trapping default an unqualified operator selects.
     fields.push(wrapping_field(
         ast,
         "wrapping-add",
         "wrapping-add",
+        signed,
+        width,
+    ));
+    fields.push(wrapping_field(
+        ast,
+        "wrapping-sub",
+        "wrapping-sub",
         signed,
         width,
     ));

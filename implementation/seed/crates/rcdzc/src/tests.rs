@@ -10948,6 +10948,45 @@ mod runtime_ops {
     }
 
     #[test]
+    fn a_deep_list_push_chain_marks_dup_sites_in_bounded_time_not_exponential() {
+        // REGRESSION (perf): `mark_binder_dups`'s `seq` pre-pass used to detect a sibling's binder
+        // occurrence by calling `mark_binder_dups` itself (the full two-pass walk). Invoked from EVERY
+        // nested `seq` level, that re-walked a deeply-nested term's inner subtree once per enclosing level —
+        // EXPONENTIAL: a `push(push(push(xs)))` chain compiled in 12ms / 275ms / 30s+ TIMEOUT at depth
+        // 10/20/30. Fixed by using the cheap memoized `binder_occurs` scan in the pre-pass (marks no sites).
+        // Guard: COMPILE a depth-N push-chain over a runtime list param (returns `List.len` so it is a valid
+        // scalar-export component — the dup-marker still walks the whole chain). Paired N vs 2N timing, MIN
+        // ratio (cancels harness contention); an exponential blows the ratio past any linear bound.
+        fn push_chain(n: usize) -> String {
+            let opens: String = "((. List push) ".repeat(n);
+            let closes: String = (1..=n).map(|i| format!(" {i})")).collect();
+            format!(
+                "(module m (def (f (: xs (List Int64))) ((. List len) {opens}xs{closes})) \
+                 (def (main) (f (list))) (export main))"
+            )
+        }
+        fn compile_ms(src: &str) -> f64 {
+            let start = std::time::Instant::now();
+            let _ = crate::compile::compile_component(&crate::codec::encode(&parse(src)));
+            start.elapsed().as_secs_f64() * 1000.0
+        }
+        let (narrow, wide) = (push_chain(20), push_chain(40));
+        compile_ms(&narrow); // warm one-time init before the timed pairs
+        let mut best = f64::INFINITY;
+        for _ in 0..6 {
+            let t20 = compile_ms(&narrow);
+            let t40 = compile_ms(&wide);
+            best = best.min(t40 / t20.max(0.1));
+        }
+        assert!(
+            best < 4.0,
+            "a deep List.push chain's dup-site marking must not be exponential (was 2^depth via the \
+             `seq` pre-pass calling `mark_binder_dups`; now the memoized `binder_occurs` scan): depth \
+             20→40 grew {best:.1}× (min paired ratio); polynomial is a few×, exponential is astronomical"
+        );
+    }
+
+    #[test]
     fn a_wide_literal_match_builds_its_decision_tree_in_bounded_time() {
         // REGRESSION (perf): `lower::build_tree`'s lit-test arm compiles a wide literal match
         // (`(match t ((tuple 0 a) …) ((tuple 1 a) …) … (_ -1))`) as an N-DEEP chain of `LitTest` nodes.
@@ -28519,6 +28558,8 @@ mod match_engine {
         for (prog, want) in [
             ("(Int64.checked-add 20 22)", 42),       // fits
             ("(Int64.checked-add Int64.max 1)", -1), // overflows → None
+            ("(Int64.checked-sub 50 8)", 42),        // fits
+            ("(Int64.checked-sub Int64.min 1)", -1), // underflows → None
             ("(Int64.checked-mul 6 7)", 42),         // fits
             ("(Int64.checked-mul Int64.max 2)", -1), // overflows → None
         ] {
@@ -28539,9 +28580,12 @@ mod match_engine {
         // model.md §Overflow Is Defined). A constant pair FOLDS via `wrapping_*`; the result is a bare
         // Int64 (no Option). `MAX + 1` wraps to MIN, `MAX * 2` wraps to -2, in-range equals `+`/`*`.
         let min = i64::MIN; // -9223372036854775808
+        let max = i64::MAX; //  9223372036854775807
         for (prog, want) in [
             ("(Int64.wrapping-add 20 22)", 42),
             ("(Int64.wrapping-add Int64.max 1)", min),
+            ("(Int64.wrapping-sub 50 8)", 42),
+            ("(Int64.wrapping-sub Int64.min 1)", max), // MIN - 1 wraps to MAX
             ("(Int64.wrapping-mul 6 7)", 42),
             ("(Int64.wrapping-mul Int64.max 2)", -2),
         ] {
@@ -28561,6 +28605,15 @@ mod match_engine {
             run_returns::<i64>(&component(src), "main"),
             min,
             "runtime wrapping-add wraps at run time"
+        );
+        // The subtraction runtime companion: `(s a b) = (Int64.wrapping-sub a b)` emits the raw `i64.sub`
+        // (no underflow guard), so `(s Int64.min 1)` wraps to MAX rather than trapping.
+        let src = "(module m (def (s a b) (Int64.wrapping-sub a b)) \
+                    (def (main) (s Int64.min 1)) (export main))";
+        assert_eq!(
+            run_returns::<i64>(&component(src), "main"),
+            max,
+            "runtime wrapping-sub wraps at run time"
         );
     }
 
@@ -33009,6 +33062,51 @@ mod match_engine {
             ),
             9.0,
             "(6m/2s = 3 m/s)^2 = 9.0 (Qty.pow over a computed quantity, not a literal Qty.of)"
+        );
+    }
+
+    #[test]
+    fn a_narrow_width_int_quantity_overflow_is_cdz0304_not_backend_cdz0302() {
+        // A quantity's arithmetic runs the ERASED inner numeric type's op, so a `(Qty Int8 u)` add must
+        // overflow-trap like a bare Int8. `(+ (Qty.of (Int8.of 100) m) (Qty.of (Int8.of 100) m))` = 200
+        // overflows Int8 → a compile-provable overflow is CDZ0304 (a constant OPERATION with no value),
+        // the SAME code the bare Int8 add gets — NOT CDZ0302 ("literal does not fit its width": each 100
+        // FITS Int8, it is the sum that overflows). The width-check peels `Ty::Qty` to read the inner Int8
+        // width; without the peel the over-range ConstInt slipped to a BACKEND CDZ0302 that `cdz check`
+        // never saw (a check-vs-compile gap). Same-unit → the generic arith path (lower_arith).
+        assert_eq!(
+            reject_code(
+                "(module m (def (main) ((. Qty value) \
+                 (+ ((. Qty of) ((. Int8 of) 100) ((. Unit base) #\"meter\")) \
+                    ((. Qty of) ((. Int8 of) 100) ((. Unit base) #\"meter\"))))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0304"),
+            "a narrow-width Int8 quantity add overflow is CDZ0304, not backend CDZ0302"
+        );
+        // The mixed-scale (reference-converting) path honors the inner width too: 1 km → 1000 m, then
+        // 1000 + 50 = 1050 overflows UInt8 → CDZ0304 (folded inside lower_quantity_combine's Int arm).
+        assert_eq!(
+            reject_code(
+                "(module m (def (main) ((. Qty value) \
+                 (+ ((. Qty of) ((. UInt8 of) 1) ((. Unit prefix) kilo ((. Unit base) #\"meter\"))) \
+                    ((. Qty of) ((. UInt8 of) 50) ((. Unit base) #\"meter\"))))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0304"),
+            "a mixed-scale UInt8 quantity combine overflow is CDZ0304 (reference-converting path)"
+        );
+        // The control: a narrow-width quantity arithmetic whose result FITS runs normally (no spurious
+        // trap) — 50 + 50 = 100 fits Int8.
+        assert_eq!(
+            reject_code(
+                "(module m (def (main) ((. Qty value) \
+                 (+ ((. Qty of) ((. Int8 of) 50) ((. Unit base) #\"meter\")) \
+                    ((. Qty of) ((. Int8 of) 50) ((. Unit base) #\"meter\"))))) (export main))"
+            )
+            .as_deref(),
+            None,
+            "a non-overflowing narrow-width Int8 quantity add does not trap"
         );
     }
 

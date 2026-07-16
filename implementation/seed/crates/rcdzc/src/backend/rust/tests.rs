@@ -383,6 +383,106 @@ fn rustc_roundtrip_recursive_list_match_folds_to_a_scalar() {
 }
 
 #[test]
+fn a_runtime_closure_emits_an_rc_dyn_fn_and_a_lifted_fn() {
+    // A `(fn …)` passed to a RECURSIVE HOF survives to run time → an `Rc<dyn Fn(…) -> …>` value that
+    // forwards to a lifted `fn __lifted_k`. The function-typed PARAM maps to the same `Rc<dyn Fn>`.
+    let rs = compile_rust(
+        "(module m \
+           (def (foldl (: f (-> Int64 (-> Int64 Int64))) (: acc Int64) (: xs (List Int64))) \
+              (match xs ((list) acc) ((list h .. t) (foldl f (f h acc) t)))) \
+           (def (main) (foldl (fn (x a) (+ a x)) 0 (list 5 7 30))) (export main))",
+    );
+    // The arrow SPINE is flattened: `(-> Int64 (-> Int64 Int64))` → `Rc<dyn Fn(i64, i64) -> i64>`.
+    assert!(
+        rs.contains("std::rc::Rc<dyn Fn(i64, i64) -> i64>"),
+        "flattened Fn type:\n{rs}"
+    );
+    // The lifted lambda is emitted as a standalone fn; the closure value is an Rc::new coerced to dyn Fn.
+    assert!(rs.contains("fn __lifted_0("), "lifted fn emitted:\n{rs}");
+    assert!(
+        rs.contains("std::rc::Rc::new(move |") && rs.contains(") as std::rc::Rc<dyn Fn"),
+        "closure value builds + coerces to dyn Fn:\n{rs}"
+    );
+}
+
+#[test]
+fn rustc_roundtrip_closures_run_no_capture_and_capturing_and_in_a_list() {
+    // NO-CAPTURE combinator folded over a list: 5+7+30 = 42.
+    let fold = compile_rust(
+        "(module m \
+           (def (foldl (: f (-> Int64 (-> Int64 Int64))) (: acc Int64) (: xs (List Int64))) \
+              (match xs ((list) acc) ((list h .. t) (foldl f (f h acc) t)))) \
+           (def (mk) (foldl (fn (x a) (+ a x)) 0 (list 5 7 30))) (export mk))",
+    );
+    if let Some(out) = rustc_run(&fold, "mk()") {
+        assert_eq!(out, "42", "no-capture closure folds the list");
+    }
+    // CAPTURING closure: `(fn (b) (g b))` captures the closure `g` and is applied through the recursive
+    // HOF `sumapply`; the capture is cloned into each call (an `Fn` cannot move its capture out). With
+    // `g = (fn (x) (+ x 1))`: `rec` sums `sumapply (fn (b) (g b)) 2` = g(2)+g(1) = 3+2 = 5 per round, over
+    // 3 rounds = 15.
+    let cap = compile_rust(
+        "(module m \
+           (def (sumapply (: h (-> Int64 Int64)) (: n Int64)) \
+              (if (= n 0) 0 (+ (h n) (sumapply h (- n 1))))) \
+           (def (rec (: g (-> Int64 Int64)) (: n Int64)) \
+              (if (= n 0) 0 (+ (sumapply (fn ((: b Int64)) (g b)) 2) (rec g (- n 1))))) \
+           (def (mk) (rec (fn ((: x Int64)) (+ x 1)) 3)) (export mk))",
+    );
+    if let Some(out) = rustc_run(&cap, "mk()") {
+        assert_eq!(
+            out, "15",
+            "a closure capturing another closure, applied through a recursive HOF"
+        );
+    }
+    // A LIST of capturing closures, each keeping its own capture, indexed and applied — the closures must
+    // coerce to ONE `Rc<dyn Fn>` type to share a `Vec` (the `as` coercion on a CONCRETELY-typed closure).
+    // Annotate the lambda so its function type grounds at the closure node (an unannotated `(fn (x) …)`
+    // whose width stays a var declines — see the decline test). index 1 → (mkc 20) applied to 1 = 21.
+    let list = compile_rust(
+        "(module m \
+           (def (mkc (: k Int64)) (fn ((: x Int64)) (+ x k))) \
+           (def (at (: fs (List (-> Int64 Int64))) (: i Int64) (: x Int64)) \
+              (match ((. List at) fs i) ((Some f) (f x)) (None -1))) \
+           (def (pick (: i Int64)) (at (list (mkc 10) (mkc 20) (mkc 30)) i 1)) (export pick))",
+    );
+    assert!(
+        list.contains(") as std::rc::Rc<dyn Fn"),
+        "list-of-closures coerces each to dyn Fn:\n{list}"
+    );
+    if let Some(out) = rustc_run(&list, "pick(1)") {
+        assert_eq!(out, "21", "the index-1 closure captures 20; 20+1 = 21");
+    }
+}
+
+#[test]
+fn a_closure_crossing_the_export_boundary_declines() {
+    // A closure cannot cross the EXPORT boundary (no closure-handle ABI on the Rust target): an exported
+    // fn with a function-typed PARAM or RESULT declines cleanly (todo), rather than emitting a signature
+    // the gate driver could not call with a value argument. (An INTERNAL closure is unaffected — see above.)
+    let param = try_compile_rust(
+        "(module m (def (apply-it (: g (-> Int64 Int64)) (: x Int64)) (g x)) (export apply-it))",
+    )
+    .expect_err("a closure-typed export param must decline");
+    assert!(
+        param
+            .iter()
+            .any(|d| d.contains("cannot cross the Rust export boundary")),
+        "decline cites the export boundary: {param:?}"
+    );
+    let result = try_compile_rust(
+        "(module m (def (mk (: k Int64)) (fn ((: x Int64)) (+ x k))) (export mk))",
+    )
+    .expect_err("a closure-returning export must decline");
+    assert!(
+        result
+            .iter()
+            .any(|d| d.contains("cannot cross the Rust export boundary")),
+        "decline cites the export boundary: {result:?}"
+    );
+}
+
+#[test]
 fn an_ill_formed_integer_width_is_rejected_not_declined() {
     // An out-of-range integer WIDTH (negative/non-natural, or over-ceiling `(UInt 65)`) is an ILL-FORMED
     // TYPE, not a target limitation — a boundary of that type must REJECT (CDZ0302), the SAME outcome the

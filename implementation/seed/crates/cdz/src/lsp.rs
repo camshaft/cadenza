@@ -410,8 +410,25 @@ impl Server {
     /// set by the typed prefix. `None` when the document is not open; an empty list otherwise (total).
     fn completion(&self, params: &CompletionParams) -> Option<CompletionResponse> {
         let pos = &params.text_document_position;
-        let doc = self.docs.get(&pos.text_document.uri)?;
-        let items = completions_at(&doc.text, doc.is_ml, pos.position);
+        let uri = &pos.text_document.uri;
+        let doc = self.docs.get(uri)?;
+        // A `file://` document with imports completes over its package closure, so an IMPORTED name is
+        // offered (it appears in neither single-buffer source); everything else is single-buffer.
+        let items =
+            if let Some(entry_path) = uri_to_path(uri).filter(|_| self.doc_declares_import(doc)) {
+                let open = self.open_resolver();
+                package_completions_at(
+                    &entry_path.to_string_lossy(),
+                    &open,
+                    &doc.text,
+                    doc.is_ml,
+                    pos.position,
+                )
+                // A closure-load failure → the single-buffer candidates, still total.
+                .unwrap_or_else(|| completions_at(&doc.text, doc.is_ml, pos.position))
+            } else {
+                completions_at(&doc.text, doc.is_ml, pos.position)
+            };
         Some(CompletionResponse::Array(items))
     }
 
@@ -1438,12 +1455,27 @@ fn package_references_at(
 /// partial candidate set from its recovered tree; on the s-expr surface a buffer that does not parse
 /// hard-fails, and completions are then EMPTY (there is no recovered tree to read scope/symbols from).
 fn completions_at(text: &str, is_ml: bool, pos: Position) -> Vec<CompletionItem> {
-    let Ok((arenas, spans, _errors)) = parse_surface(text, is_ml) else {
-        return Vec::new();
-    };
     // A name → item map; INSERT top-level first, then locals OVERWRITE (a local shadows a top-level).
     let mut items: std::collections::BTreeMap<String, CompletionItem> =
         std::collections::BTreeMap::new();
+    fill_completions_from(text, is_ml, pos, &mut items);
+    items.into_values().collect()
+}
+
+/// Fill `items` with the candidates the SINGLE buffer `text` offers at `pos` — the module's top-level
+/// declarations (`Symbols`) then the locals in scope (`ScopeAt`, which OVERWRITE to shadow a top-level of
+/// the same name). Factored out of [`completions_at`] so [`package_completions_at`] can seed the same map
+/// with the entry's own candidates before layering the imported names on top. A buffer that does not
+/// parse contributes nothing (leaves `items` untouched).
+fn fill_completions_from(
+    text: &str,
+    is_ml: bool,
+    pos: Position,
+    items: &mut std::collections::BTreeMap<String, CompletionItem>,
+) {
+    let Ok((arenas, spans, _errors)) = parse_surface(text, is_ml) else {
+        return;
+    };
 
     // Top-level declarations (name<TAB>kind<TAB>node) — kind ∈ value/function/type/effect/module.
     if let Some(answer) = run_query_text(
@@ -1491,8 +1523,129 @@ fn completions_at(text: &str, is_ml: bool, pos: Position) -> Vec<CompletionItem>
             }
         }
     }
+}
 
-    items.into_values().collect()
+/// Cross-file completion: the entry's own single-buffer candidates PLUS the names each `(import "lib"
+/// (name…))` clause brings into scope. Imported names appear in neither single-buffer source — `Symbols`
+/// lists only the entry's own declarations and `ScopeAt` walks only lexical binders (not the import
+/// clause) — so a project buffer would otherwise never complete an imported name. For each imported name
+/// we read the LIBRARY's `Exports` (for the type detail) and `Symbols` (for the kind), so the item looks
+/// exactly like a locally-declared one. An imported name does NOT overwrite an entry-local of the same
+/// spelling already in the map (the local binding wins, matching resolution). `None` when the closure
+/// can't load (the caller falls back to the single-buffer path).
+fn package_completions_at(
+    entry_path: &str,
+    open: &dyn Fn(&std::path::Path) -> Option<String>,
+    entry_text: &str,
+    entry_is_ml: bool,
+    pos: Position,
+) -> Option<Vec<CompletionItem>> {
+    let files = crate::closure::load(entry_path, open).ok()?;
+    let mut items: std::collections::BTreeMap<String, CompletionItem> =
+        std::collections::BTreeMap::new();
+    // The entry's own candidates first (top-level decls + locals in scope at the cursor).
+    fill_completions_from(entry_text, entry_is_ml, pos, &mut items);
+
+    // The entry's imports: `(import "lib" (name…))` → (lib package name, [imported name]).
+    let (entry_arenas, _entry_spans, _e) = parse_surface(entry_text, entry_is_ml).ok()?;
+    for (lib_name, imported) in imported_names(&entry_arenas) {
+        // Locate the library file in the loaded closure (skip an unresolved import — the compiler
+        // reports it; here it simply contributes no completions).
+        let Some(lib) = files.iter().find(|f| f.name == lib_name) else {
+            continue;
+        };
+        // The library's exported types (name → type) and symbol kinds (name → kind), each a single-file
+        // query over the library's OWN arenas — no linking needed for these per-file facts.
+        let types = query_columns(
+            &lib.arenas,
+            rcdzc::sidecar::Query::Exports,
+            rcdzc::sidecar::KIND_EXPORTS,
+        );
+        let kinds = query_columns(
+            &lib.arenas,
+            rcdzc::sidecar::Query::Symbols,
+            rcdzc::sidecar::KIND_SYMBOLS,
+        );
+        for name in imported {
+            // A local binder of the same spelling already won — don't shadow it with the import.
+            if items.contains_key(&name) {
+                continue;
+            }
+            let kind = kinds
+                .get(&name)
+                .map(|k| symbol_kind_to_completion_kind(k))
+                .unwrap_or(CompletionItemKind::CONSTANT);
+            let detail = types.get(&name).cloned();
+            items.insert(
+                name.clone(),
+                CompletionItem {
+                    label: name.clone(),
+                    kind: Some(kind),
+                    detail,
+                    ..Default::default()
+                },
+            );
+        }
+    }
+    Some(items.into_values().collect())
+}
+
+/// The names each root-level `(import "path" (name…))` clause brings into scope, grouped by the imported
+/// PACKAGE name (the `"path"` string). Mirrors [`closure::declared_import_paths`]'s arena walk (peel a
+/// leading comment/doc wrapper, scan a `(do …)` root's children or a lone root form) but also reads the
+/// clause's name-list. Only the named-list form contributes names; the alias form `(import "path" alias)`
+/// (a bare-atom spec) is a later phase and yields none. Malformed clauses are skipped (total).
+fn imported_names(arenas: &cadenza_syntax::Arenas) -> Vec<(String, Vec<String>)> {
+    let root = crate::unwrap_comment(arenas, arenas.root);
+    let items: Vec<cadenza_syntax::StructId> = match arenas.as_form(root, "do") {
+        Some(tail) => tail.to_vec(),
+        None => vec![root],
+    };
+    let mut out: Vec<(String, Vec<String>)> = Vec::new();
+    for item in items {
+        let item = crate::unwrap_comment(arenas, item);
+        let Some(tail) = arenas.as_form(item, "import") else {
+            continue;
+        };
+        let (Some(&path_id), Some(&spec_id)) = (tail.first(), tail.get(1)) else {
+            continue;
+        };
+        let Some(path) = arenas.as_str(path_id) else {
+            continue;
+        };
+        // The name spec must be a `(name…)` LIST; a bare-atom spec is the alias form (no bound names).
+        let cadenza_syntax::ast::Struct::List(names) = arenas.get(spec_id) else {
+            continue;
+        };
+        let bound: Vec<String> = names
+            .iter()
+            .filter_map(|&n| arenas.as_name(n).map(str::to_string))
+            .collect();
+        if !bound.is_empty() {
+            out.push((path.to_string(), bound));
+        }
+    }
+    out
+}
+
+/// Run a `name<TAB>value<TAB>…` query over `arenas` and collect the first two columns into a `name →
+/// value` map (later lines win on a duplicate key, matching insertion). Used to read a library's
+/// `Exports` (name → type) and `Symbols` (name → kind) as lookup tables. Empty on a query with no answer.
+fn query_columns(
+    arenas: &cadenza_syntax::Arenas,
+    query: rcdzc::sidecar::Query,
+    kind: &str,
+) -> std::collections::HashMap<String, String> {
+    let mut map = std::collections::HashMap::new();
+    if let Some(answer) = run_query_text(arenas, query, kind) {
+        for line in answer.lines() {
+            let mut cols = line.splitn(3, '\t');
+            if let (Some(name), Some(value)) = (cols.next(), cols.next()) {
+                map.insert(name.to_string(), value.to_string());
+            }
+        }
+    }
+    map
 }
 
 /// Map a `Symbols`-query kind spelling to the LSP `CompletionItemKind`. `value`→CONSTANT, `function`→
@@ -2261,6 +2414,37 @@ mod tests {
         // A buffer that does not parse yields a defined (possibly empty) candidate set, never a panic.
         let _ = completions_at("def (f x = (", true, Position::new(0, 5));
         let _ = completions_at("", true, Position::new(0, 0));
+    }
+
+    #[test]
+    fn imported_names_reads_the_named_list_clauses() {
+        // `imported_names` returns each `(import "path" (name…))` clause's package + bound names — the
+        // source of the imported completion candidates. A `(do …)` root with two imports.
+        let (arenas, _spans, _e) = parse_surface(
+            "(do (import \"lib\" (helper twice)) (import \"more\" (extra)))",
+            false,
+        )
+        .expect("parses");
+        let imports = imported_names(&arenas);
+        let by_pkg: std::collections::HashMap<_, _> =
+            imports.iter().map(|(p, n)| (p.as_str(), n)).collect();
+        assert_eq!(
+            by_pkg.get("lib").map(|v| v.as_slice()),
+            Some(["helper".to_string(), "twice".to_string()].as_slice()),
+            "lib's imported names: {imports:?}"
+        );
+        assert_eq!(
+            by_pkg.get("more").map(|v| v.as_slice()),
+            Some(["extra".to_string()].as_slice()),
+            "more's imported names: {imports:?}"
+        );
+    }
+
+    #[test]
+    fn imported_names_is_total_on_a_program_with_no_imports() {
+        // A buffer with no `(import …)` yields no imported names (and never panics).
+        let (arenas, _spans, _e) = parse_surface("def answer = 42", true).expect("parses");
+        assert!(imported_names(&arenas).is_empty());
     }
 
     #[test]

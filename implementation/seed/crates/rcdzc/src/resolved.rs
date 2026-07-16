@@ -572,6 +572,7 @@ pub enum Prim {
     /// overflow-detecting `Some`/`None` build (a later increment). The target width is the module's own,
     /// read off the solved type.
     CheckedAdd,
+    CheckedSub,
     CheckedMul,
     /// `Int64.wrapping-add` / `wrapping-mul` — two's-complement wraparound modulo 2^width: `T → T → T`,
     /// NEVER trapping (numeric-model.md §Overflow Is Defined — the modular value outcome). The `(meta
@@ -580,6 +581,7 @@ pub enum Prim {
     /// `i64.mul` (wasm's add/mul already wrap — no overflow guard, unlike the trapping `+`/`*`). The
     /// target width is the module's own, read off the solved type (a narrow width masks after the op).
     WrappingAdd,
+    WrappingSub,
     WrappingMul,
     /// A MAP TYPE CONSTRUCTOR — the `(meta apply)` of the `Map` prelude module. Applying it in TYPE
     /// position (`(Map Int64 Int64)`) builds the type-value `Ty::Map(key, value)` (used in annotations
@@ -858,8 +860,10 @@ impl Prim {
             "sum-expect" => Some(Prim::SumExpect),
             "trap" => Some(Prim::Trap),
             "checked-add" => Some(Prim::CheckedAdd),
+            "checked-sub" => Some(Prim::CheckedSub),
             "checked-mul" => Some(Prim::CheckedMul),
             "wrapping-add" => Some(Prim::WrappingAdd),
+            "wrapping-sub" => Some(Prim::WrappingSub),
             "wrapping-mul" => Some(Prim::WrappingMul),
             "Map" => Some(Prim::MapCtor),
             "map-new" => Some(Prim::MapNew),
