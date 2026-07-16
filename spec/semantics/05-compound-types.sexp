@@ -9618,3 +9618,18 @@
             (export main)))
   (call   main (: 0 Int64))
   (output (: 30 Int64)))
+(case "a record match pattern is named as unimplemented, not leaked as an unbound field binder (CDZ0201)"
+  (doc    "A record MATCH pattern `((record (x a)) …)` is a not-yet-implemented feature (the match twin of
+           the `(record …)` BINDING decline). The diagnostic MUST name that — a coded CDZ0201 pointing at
+           the record pattern, carrying the whole-binder + field-projection workaround — NOT the misleading
+           'unbound name `a`' the field binder used to leak (the `record`-headed arm fell through to the
+           variant-ctor path, bound nothing, and the body's `a` reference resolved unbound, blaming the
+           user instead of naming the unimplemented feature). Pins that `cdz check` reports the CODED
+           feature decline on a PARAMETERIZED body (via match_pattern_fault, not only the emit-path walk on
+           nullary-exported bodies) and that NO CDZ0101 unbound-name cascade accompanies it. Flagged by
+           v-diagnostics 2026-07-16. When record match patterns land, this case is replaced by a runtime
+           destructuring case; until then it guards the diagnostic against re-leaking the confusing message.")
+  (input  (do (def (f (: r (Record (x Int64))))
+                (match r ((record (x a)) a)))
+              (export f)))
+  (error CDZ0201))

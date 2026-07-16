@@ -37535,6 +37535,57 @@ mod diagnostics {
         );
     }
 
+    /// A RECORD match pattern is not yet implemented; the diagnostic must NAME that (a coded CDZ0201 with
+    /// the whole-binder-and-project workaround), NOT leak a misleading "unbound name" for its field binder.
+    /// The `(record (field binder) …)` arm used to fall through to the variant-ctor block (where `record`
+    /// is read as a variant head over a `Ty::Record` scrutinee that has none), so the arm bound nothing and
+    /// a body/guard reference to a field binder resolved UNBOUND (CDZ0101 blaming the reference). Two
+    /// coordinated pieces fix it: (1) `pattern_constraints` declines the `(record …)` arm as a CODED
+    /// `Malformed` so `match_pattern_fault` surfaces it in `cdz check` on EVERY body (not just
+    /// nullary-exported — the Inc 39/40 discipline); (2) resolve Case 6rec resolves a field-binder
+    /// reference to that same decline, SUPPRESSING the consequent unbound-name cascade. Flagged by
+    /// v-diagnostics (2026-07-16). Replaced by real field-directed matching when record patterns land.
+    #[test]
+    fn a_record_match_pattern_is_named_not_leaked_as_an_unbound_field_binder() {
+        // Body references the field binder `a` — the case v-diagnostics flagged. `f` is a parameterized
+        // (non-nullary) body, so this exercises the check≡compile path via `match_pattern_fault`.
+        let uses_binder = "(module m (def (f (: r (Record (x Int64)))) \
+                           (match r ((record (x a)) a))) (export f))";
+        let all = diags_of(uses_binder);
+        assert!(
+            all.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
+                && d.message
+                    .contains("record match pattern is not yet supported")),
+            "check names the unimplemented record match pattern (CDZ0201): {all:?}"
+        );
+        assert!(
+            all.iter().all(|d| d.code.as_deref() != Some("CDZ0101")),
+            "no misleading 'unbound name' for the field binder — the real cause is named instead: {all:?}"
+        );
+        // Body does NOT reference a binder (just `99`) — still the clear coded decline (the
+        // `pattern_constraints` arm fires regardless of whether resolve Case 6rec is exercised).
+        let ignores_binder = "(module m (def (f (: r (Record (x Int64)))) \
+                             (match r ((record (x a)) 99))) (export f))";
+        let all = diags_of(ignores_binder);
+        assert!(
+            all.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
+                && d.message
+                    .contains("record match pattern is not yet supported")),
+            "a record match arm declines clearly even when its binder is unused: {all:?}"
+        );
+        // NO false alarm: a record match with a WHOLE-value binder + field projection (the workaround) is
+        // the SUPPORTED form and stays clean.
+        let workaround = "(module m (def (f (: r (Record (x Int64)))) \
+                          (match r (whole (. whole x)))) (export f))";
+        assert!(
+            diags_of(workaround)
+                .iter()
+                .all(|d| d.severity != crate::abi::Severity::Error),
+            "the whole-binder + projection workaround still checks clean: {:?}",
+            diags_of(workaround)
+        );
+    }
+
     /// A malformed match PATTERN's CDZ0201 anchors at the OFFENDING PATTERN node (`(tuple a b c)`,
     /// `(list … .. …)`), not the enclosing `(match …)`. The pattern-shape rejects in `pattern_constraints`
     /// / `lower_match_list` carry the faulting `pat` node explicitly (`.at(pat)`); without it,

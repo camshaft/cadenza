@@ -7536,6 +7536,29 @@ fn pattern_constraints(
         ));
         return Ok(Vec::new());
     }
+    // A `(record (field p) …)` pattern — destructuring a record BY FIELD — is not yet matched (the record
+    // MATCH twin of the `(record …)` BINDING decline, `check_binding_pattern` above). Without this arm, a
+    // `record`-headed pattern would fall through to the compound/variant-ctor block below, where `record`
+    // is read as a variant-constructor head; over a `Ty::Record` scrutinee that names no such variant, so
+    // the arm silently contributed no discriminant and its field binders (`a` in `(record (x a))`) resolved
+    // UNBOUND — a misleading CDZ0101 "unbound name `a`" pointing at the binder instead of naming the real
+    // cause (v-diagnostics note 2026-07-16). DECLINE cleanly here with the same "not yet supported" message
+    // the binding path gives, so the diagnostic names the unimplemented FEATURE, not a phantom unbound name.
+    // (When record match patterns land, this arm is replaced by the real field-directed constraint logic.)
+    // CODED (`Malformed`) rather than an uncoded decline so `type_errors`' `match_pattern_fault` accessor
+    // surfaces it in `cdz check` on EVERY body — the same coded-fault-so-check-sees-it discipline as the
+    // list/map coded-head fixes (Inc 39/40); an uncoded decline here would be silent in `check` on a
+    // recursive / directly-exported body (only the emit-path walk over nullary-exported bodies produces
+    // it) while `compile` rejects — the very check≡compile gap those closed. The workaround (a whole-value
+    // binder + field projection `(. r x)`) is named so the message routes the user to it.
+    if db.ast.as_form(pat, "record").is_some() {
+        return Err(Reject::coded(
+            Code::Malformed,
+            "a record match pattern is not yet supported — bind the whole record and project its fields \
+             (`(match r (whole (. whole field)))`) until record match patterns land (Increment B)",
+        )
+        .at(pat));
+    }
     // A compound pattern. Its head is the variant CONSTRUCTOR — a member `(. Sum V)` or a bare variant
     // name — and the remaining children are payload sub-patterns.
     let (head, args): (StructId, Vec<StructId>) = match db.ast.get(pat) {
