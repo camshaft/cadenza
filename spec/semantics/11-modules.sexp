@@ -1167,3 +1167,22 @@
             (def (main) (= (mk) (mk)))
             (export main)))
   (error  CDZ0202))
+
+(case "eval of a fully-concrete imported constructor is legal from outside"
+  (doc    "`(eval (quote (P.Mk 7)))` where lib2 exports `(. P *)` — the CONCRETE complement of the
+           no-forge pins above: a fully-exported ctor is reachable through eval's call-site
+           visibility exactly as a direct `(P.Mk 7)` is, and the reconstructed value matches → 7.
+           Pins the visibility gate's other edge (an over-reaching gate that withheld every
+           eval-reconstructed ctor — not just private ones — breaks the legitimate metaprogramming
+           path).")
+  (module "lib2"
+    (do
+      (type P (Mk Int64))
+      (export (. P *))))
+  (input  (do
+            (import "lib2" (P))
+            (def (main (: d Int64))
+              (match (eval (quote (P.Mk 7))) ((P.Mk v) v)))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 7 Int64)))
