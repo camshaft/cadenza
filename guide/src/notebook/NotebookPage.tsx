@@ -68,12 +68,20 @@ export default function NotebookPage() {
   // can be double-invoked under StrictMode/batching, which would enqueue duplicate runs).
   const valuesRef = useRef<WidgetValues>(values);
   useEffect(() => { valuesRef.current = values; }, [values]);
-  // Seed any widget missing a value with its default (on doc/widget change).
+  // Reconcile widget values with the current widget set (on doc/widget change): seed a missing widget
+  // with its default AND prune a value whose widget no longer exists (a doc edit that removed/renamed it),
+  // so a stale value can't linger and be picked up by a cell that references the old name.
   useEffect(() => {
     setValues((prev) => {
-      const next = { ...prev };
+      const names = new Set(widgets.map((w) => w.name));
+      const next: WidgetValues = {};
       let changed = false;
-      for (const w of widgets) if (!(w.name in next)) { next[w.name] = w.default; changed = true; }
+      for (const w of widgets) {
+        next[w.name] = w.name in prev ? prev[w.name] : w.default;
+        if (!(w.name in prev)) changed = true;
+      }
+      // A previously-held value whose widget is gone → dropped (changed if `prev` had an extra key).
+      for (const k in prev) if (!names.has(k)) changed = true;
       return changed ? next : prev;
     });
   }, [widgets]);
