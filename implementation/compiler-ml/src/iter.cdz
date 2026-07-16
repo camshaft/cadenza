@@ -339,6 +339,19 @@ def all(it, p: Int64 -> Bool) = match next(it) with
   | Option.None(_) => true
   | Option.Some(pr) => (match pr with | (v, rest) => if p(v) then all(rest, p) else false)
 
+/// How many elements satisfy `p` — the count of the sub-sequence `filter(it, p)` would yield, without
+/// materializing it. (The predicate companion of `count`.)
+def count-where(it, p: Int64 -> Bool) = match next(it) with
+  | Option.None(_) => 0
+  | Option.Some(pr) => (match pr with | (v, rest) =>
+      if p(v) then 1 + count-where(rest, p) else count-where(rest, p))
+
+/// Does the iterator yield NO elements? `true` iff the first pull is exhaustion (does not drain the
+/// whole iterator — the O(1) emptiness test).
+def is-empty(it) = match next(it) with
+  | Option.None(_) => true
+  | Option.Some(_) => false
+
 /// The last element, or `None` if the iterator is empty. Diverges on an infinite iterator, so bound
 /// such a source with `take` first.
 def last(it) = match next(it) with
@@ -1162,5 +1175,39 @@ def dedup-is-lazy() =
     unit
   else
     trap("dedup lazy take 3")
+
+// ── count-where / is-empty consumers ─────────────────────────────────────────────────────────────
+
+@test
+def count-where-evens() =
+  // how many evens in 0..10 -> 5 (0,2,4,6,8)
+  if count-where(range(0, 10), fn(x) => x % 2 == 0) == 5 then unit else trap("5 evens in 0..10")
+
+@test
+def count-where-none-match() =
+  if count-where(range(0, 5), fn(x) => x > 100) == 0 then unit else trap("no element > 100")
+
+@test
+def count-where-all-match() =
+  if count-where(range(0, 4), fn(x) => x >= 0) == 4 then unit else trap("all 4 are >= 0")
+
+@test
+def count-where-agrees-with-filter-count() =
+  // count-where p == count(filter(it, p)) — the law tying it to the transformer
+  if count-where(range(0, 20), fn(x) => x % 3 == 0) == count(filter(range(0, 20), fn(x) => x % 3 == 0)) then
+    unit
+  else
+    trap("count-where ≠ count∘filter")
+
+@test
+def is-empty-of-empty() = if is-empty(empty()) then unit else trap("empty() is empty")
+
+@test
+def is-empty-of-nonempty() = if is-empty(range(0, 3)) then trap("0..3 is not empty") else unit
+
+@test
+def is-empty-of-filtered-out() =
+  // an iterator whose every element is filtered away is empty
+  if is-empty(filter(range(0, 5), fn(x) => x > 100)) then unit else trap("all filtered -> empty")
 
 export { Iter.* }
