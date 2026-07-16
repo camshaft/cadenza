@@ -8,10 +8,24 @@
 > their output. This would be a new vertical owner."
 > (https://github.com/camshaft/cadenza/issues/468 — github-liaison closes it when the work lands on trunk.)
 
-> **STATUS (2026-07-16) — Increment 0, DESIGN. No code yet.** This doc is the cell/document model, the
-> cell-scope semantics, the rich-output-type model, and — the novel core — the interactive-widget /
-> runtime-input-recompute (reactive) model. Three genuine forks (§6) are routed to the concierge → operator
-> before any code lands, exactly as CAD's G3/scope forks were. Written against `trunk` @ `88d84df66`.
+> **STATUS (updated 2026-07-16) — SHIPPED. `/notebook` is LIVE + functional on trunk, check:visual-green.**
+> The full feature landed as a stack of gated slices: the pure model layer (`guide/src/notebook/` —
+> `parseDocument`, `assembleCell`, `parseWidgets`, `sexpr`, `extractTable`, `extractChart`, `renderOutput`,
+> `recomputePlan`, `parseProse`, `assembleForRun`; ~210 unit tests), the presentational components
+> (`ProseView`, `OutputView`, `WidgetControls`), and the live route `NotebookPage.tsx` (lazy `/notebook` in
+> `main.tsx`, mirroring /cad). The reactive widget→recompute core works end-to-end in the browser and is
+> guarded by v-guide-infra's `check:visual` case (first cell → 1050; rate drag → 1200) + a standing
+> `npm run check:notebook` headless gate. The three §6 forks all shipped on their recommended defaults
+> (D1 sequential scope, D2 notebook-directive widget DSL + a filed first-class-`input` language finding,
+> D3 hand-rolled SVG charts). Two implementation decisions confirmed in the build (not in the original
+> design): (a) `replEval`'s entry is an EXPRESSION, so a cell's def-block goes in the buffer and the entry
+> is a `(main)` call; (b) the notebook runs in a FIXED s-expr surface (the /cad approach), not the global
+> editing surface. GH #468's core is delivered + regression-protected. Remaining work is polish (see the
+> vertical log's improvement backlog: `hidden`-cell output UX, a real formula renderer, a quantity/rational
+> cell renderer, a doc-editor pane, more widget kinds, a notebook-as-guide-chapter content type).
+>
+> *The original Increment-0 design pass (below) was written against `trunk` @ `88d84df66`; it held up — the
+> forks shipped on their defaults and the reuse-the-browser-pipeline thesis was borne out.*
 
 Like the calculator (`DESIGN-calculator-repl.md`) and CAD (`DESIGN-cad-solid-modeling.md`) app-scale
 showcases, this leans on one structural finding: **almost none of it is new language work.** A notebook is
