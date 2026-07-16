@@ -2455,6 +2455,34 @@
                     (walk 2))))) (export main)))
   (output (: 1203 Int64)))
 
+(case "a handler arm capturing an enclosing fn param folds under a multi-arm nested handler"
+  (doc    "A handler arm may reference a name bound by an ENCLOSING function — here `converse`'s arm
+           `(resume p 0)` captures `run-with`'s parameter `p`, NOT the arm's own params/state. When the
+           recursive driver `run` performs BOTH effects (so the fold takes the two-nested-states MERGE path)
+           AND the inner handler is MULTI-ARM (`Tools` declares `dispatch`+`done`), the captured `p` used to
+           be LOST — the synthesized `run#ctx` carried the driver's params and the threaded states but not
+           `p`, so the spliced free `p` re-resolved against `run#ctx`'s signature (which lacked it) and the
+           whole program declined `CDZ0101 unbound name p` (a valid program falsely refused; found by the
+           agent-harness dogfood). The fix threads a captured enclosing-fn param as an EXTRA specialized
+           parameter (after the originals, before the trailing states), passed UNCHANGED at every call since
+           it is constant across the recursion. `run-with(3)` seeds `run(3,0)`; each step adds
+           `converse→p (=3)` and `dispatch→1`, over three steps: `(0+3+1)+(3+1)+(3+1)` threaded = 12. This is
+           the shape of a self-hosting pass whose handler closes over a config parameter (a routing table, a
+           fuel budget) while walking a structure under more than one effect.")
+  (input  (do
+            (effect Model (op converse (-> Int64 Int64)))
+            (effect Tools (op dispatch (-> Int64 Int64)) (op done (-> Int64 Int64)))
+            (def (run (: fuel Int64) (: acc Int64))
+              (if (= fuel 0)
+                  acc
+                  (run (- fuel 1) (+ acc (+ (Model.converse fuel) (Tools.dispatch fuel))))))
+            (def (run-with (: p Int64))
+              (handle Model 0 ((converse (q) s (resume p 0)))
+                (handle Tools 0 ((dispatch (a) s (resume 1 0)) (done (a) s (resume a 0)))
+                  (run 3 0))))
+            (def (main) (run-with 3)) (export main)))
+  (output (: 12 Int64)))
+
 (case "an inner handler's INIT state is computed by performing an enclosing effect"
   (doc    "The seed of an inner handler is itself a PERFORM of an OUTER effect — the two handlers compose
            through the init position, not just the body. `(handle Seed 0 ((s (u) t (resume 50 t))) (handle

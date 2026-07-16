@@ -5756,6 +5756,37 @@ fn an_effectful_helper_reading_a_driver_param_in_a_selfcall_arg_folds() {
     }
 }
 
+/// A handler arm that CAPTURES an enclosing fn param, under a MULTI-ARM nested handler, over a recursive
+/// driver performing BOTH effects (the two-nested-states MERGE path). `converse`'s arm `(resume p 0)` closes
+/// over `run-with`'s param `p` — not the arm's own params/state. Before the fix, the synthesized `run#ctx`
+/// carried the driver's params + the threaded states but NOT `p`, so the spliced free `p` re-resolved against
+/// `run#ctx`'s signature (which lacked it) → a spurious CDZ0101 unbound `p` (a valid program falsely refused;
+/// v-agent-harness dogfood). The fix threads a captured enclosing-fn param as an extra specialized parameter
+/// (after the originals, before the states), passed UNCHANGED at every call. `run-with(3)` seeds `run(3,0)`;
+/// each step adds `converse→p (=3)` and `dispatch→1`: `(0+3+1)+(3+1)+(3+1)` = 12. The single-arm inner handler
+/// case never regressed (it specialized once); the multi-arm case is what surfaced the double-spec + leak.
+#[test]
+fn a_handler_arm_capturing_an_enclosing_fn_param_folds_under_a_multi_arm_nested_handler() {
+    use crate::testkit::parse;
+    let src = "(do \
+        (effect Model (op converse (-> Int64 Int64))) \
+        (effect Tools (op dispatch (-> Int64 Int64)) (op done (-> Int64 Int64))) \
+        (def (run (: fuel Int64) (: acc Int64)) \
+          (if (= fuel 0) acc \
+            (run (- fuel 1) (+ acc (+ (Model.converse fuel) (Tools.dispatch fuel)))))) \
+        (def (run-with (: p Int64)) \
+          (handle Model 0 ((converse (q) s (resume p 0))) \
+            (handle Tools 0 ((dispatch (a) s (resume 1 0)) (done (a) s (resume a 0))) \
+              (run 3 0)))) \
+        (def (main) (run-with 3)) (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect(
+        "a captured enclosing-fn param must thread as an extra spec param, not leak CDZ0101 unbound",
+    );
+    if let Some(v) = run_linked(&bytes, "main") {
+        assert_eq!(v, "12");
+    }
+}
+
 /// The residual sub-case of the effectful-helper-in-a-self-call-arg family: an inlined helper whose perform
 /// sits UNDER A CONDITIONAL (`if`/`match`) — either in a branch (`if c then acc + B.b x else acc`) or in the
 /// condition (`if B.b x == 1 then …`). The deep-fresh-copy fixes fold a helper that performs on its

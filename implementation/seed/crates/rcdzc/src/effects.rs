@@ -3217,6 +3217,16 @@ fn thread_bounded(
                 cur = next;
             }
             let spec = specialize_recursive(db, head, ctx)?;
+            // CAPTURED enclosing-fn params come AFTER the original args and BEFORE the state args (the sig
+            // layout). Each is passed as a fresh bare-name reference: inside `f#ctx` it resolves to the new
+            // capture param; at the INITIAL call from the handle body it resolves to the enclosing fn's param
+            // (`run-with`'s `tool`). They are CONSTANT across the recursion, so the same name is passed every
+            // call — no threading. This one arm handles both the internal self-calls and the initial call.
+            if let Some(captures) = db.effect_spec_captures.get(&spec).cloned() {
+                for name in captures {
+                    rargs.push(db.push_atom(Leaf::Name(name)));
+                }
+            }
             rargs.extend(cur.iter().copied()); // one trailing state arg per slot, in slot order
             // Build the call `(<spec-name> args… state…)`. The specialized def is named, so a name atom
             // resolves to it (via `def_by_name`), and the ordinary recursive `Core::Call` + reachability
@@ -4254,9 +4264,40 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
     // its annotation. Every param — original AND each trailing STATE (one per handler slot, in slot order)
     // — is an ANNOTATED binder `(: name T)`. The state params come LAST, since the self-call appends the
     // slot states last (in slot order).
+    // CAPTURED enclosing-fn params: a handler arm may reference a name bound by an ENCLOSING function (not
+    // the arm's own params/state, not the recursive def's params) — e.g. `converse(q,s) => resume(tool,0)`
+    // where `tool` is `run-with`'s param. That free name, spliced into the synthesized `f#ctx` body by the
+    // fold, would re-resolve against `f#ctx`'s sig (which lacks it) → a spurious CDZ0101. Thread each such
+    // capture as an EXTRA param (after the originals, before the trailing states) and pass it UNCHANGED at
+    // every call (it is constant across the recursion). `own_binders` = the binders bound WITHIN the
+    // specialization: the recursive def's own params + each arm's params and state binder. A reference to
+    // any of these is NOT a capture. (v-agent-harness merged-nested multi-arm dogfood.)
+    let mut own_binders: std::collections::HashSet<StructId> =
+        orig_params.iter().copied().collect();
+    for arm in ctx.arms.values() {
+        own_binders.extend(arm.params.iter().copied());
+        own_binders.insert(arm.state);
+    }
+    let captured_specs = captured_enclosing_params(db, ctx, &own_binders);
+    // A capture with an undetermined type cannot annotate its extra param — decline the whole specialization
+    // (mirrors the `orig_params` `Ty::Any` guard), so the shape stays a clean todo rather than emitting a
+    // loosely-typed param.
+    if captured_specs.iter().any(|(_, ty)| ty_has_any(ty)) {
+        return None;
+    }
+    let capture_names: Vec<String> = captured_specs.iter().map(|(n, _)| n.clone()).collect();
+
     let spec_name_atom = db.push_atom(Leaf::Name(spec_name.clone()));
     let mut sig_children = vec![spec_name_atom];
     for (n, ty) in &orig_param_specs {
+        let name_atom = db.push_atom(Leaf::Name(n.clone()));
+        let ty_expr = crate::eval::encode_typeval(db, ty);
+        let colon = db.push_atom(Leaf::Name(":".to_string()));
+        sig_children.push(db.push_list(vec![colon, name_atom, ty_expr]));
+    }
+    // The captured enclosing-fn params — annotated with each capture's solved type, AFTER the originals and
+    // BEFORE the trailing states (the layout every call site appends args in: orig, captured, states).
+    for (n, ty) in &captured_specs {
         let name_atom = db.push_atom(Leaf::Name(n.clone()));
         let ty_expr = crate::eval::encode_typeval(db, ty);
         let colon = db.push_atom(Leaf::Name(":".to_string()));
@@ -4291,6 +4332,12 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
     // `(value, out-states…)` tuple and rewrites its own self-calls to destructure + thread the out-state.
     if multivalue {
         db.multivalue_specs.insert(spec_name.clone());
+    }
+    // Register the captured enclosing-fn param names so the self-call rewrite arm (and the initial call from
+    // the handle body) passes them through as extra args, in the same order the sig lays them out.
+    if !capture_names.is_empty() {
+        db.effect_spec_captures
+            .insert(spec_name.clone(), capture_names.clone());
     }
 
     // Thread `orig_body` under `ctx`, with each slot's incoming state = a REFERENCE to its state param. A
@@ -4852,6 +4899,73 @@ fn count_resumes(db: &mut Db, node: StructId) -> u32 {
 /// against duplicating a PERFORMING argument: substituting an arg that reaches an effect into a param used
 /// more than once would run that effect once per use (a miscompile — `(E.op (tuple (A.get) (A.get)))` whose
 /// arm reads `(. p 0)` AND `(. p 1)` duplicated the two inner gets, threading four reads instead of two).
+/// Collect the CAPTURED enclosing-fn param NAMES that a handler context's arm bodies reference free — a
+/// name that resolves to a `Param` binder which is NOT one of the arm's own params/state (those are bound
+/// by the arm) and is NOT a param of the recursive def being specialized (those are the `orig_params`,
+/// already threaded). Such a name is captured from an enclosing function (e.g. `tool` from `run-with` in a
+/// `converse(q,s) => resume(tool,0)` arm) and must be threaded as an extra specialized param, else it
+/// re-resolves against the synthesized `f#ctx` sig (which lacks it) → a spurious CDZ0101. Returns each
+/// capture's (name, solved-type) in first-seen order, deduped by name. `own_binders` is the set of binders
+/// bound WITHIN the specialization (the arm params/state + the recursive def's params) — a reference to any
+/// of these is NOT a capture.
+fn captured_enclosing_params(
+    db: &mut Db,
+    ctx: &HandlerCtx,
+    own_binders: &std::collections::HashSet<StructId>,
+) -> Vec<(String, crate::ty::Ty)> {
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut out: Vec<(String, crate::ty::Ty)> = Vec::new();
+    let arm_bodies: Vec<StructId> = ctx.arms.values().map(|a| a.body).collect();
+    for body in arm_bodies {
+        collect_captures(db, body, own_binders, &mut seen, &mut out);
+    }
+    out
+}
+
+/// Walk `node`, recording each free `Param`-resolving name whose binder is not in `own_binders` (a capture).
+fn collect_captures(
+    db: &mut Db,
+    node: StructId,
+    own_binders: &std::collections::HashSet<StructId>,
+    seen: &mut std::collections::HashSet<String>,
+    out: &mut Vec<(String, crate::ty::Ty)>,
+) {
+    // A captured reference resolves either directly to `Param { binder }` or via a `Ref` chain reaching a
+    // param binder (mirrors `count_param_refs`). Either way, if that binder is NOT bound within the
+    // specialization it is an enclosing-fn capture.
+    let capture_binder = match resolved_of(db, node) {
+        Resolved::Param { binder } => Some(binder),
+        Resolved::Ref { value } => {
+            let mut target = value;
+            loop {
+                match resolved_of(db, target) {
+                    Resolved::Param { binder } => break Some(binder),
+                    Resolved::Ref { value: next } => target = next,
+                    _ => break None,
+                }
+            }
+        }
+        _ => None,
+    };
+    if let Some(binder) = capture_binder
+        && !own_binders.contains(&binder)
+        && let Some(name) = db.ast.as_name(node).map(str::to_string)
+        && !seen.contains(&name)
+    {
+        let ty = crate::infer::type_of(db, node);
+        // Only thread a capture with a DETERMINED type — an undetermined one cannot annotate the extra
+        // spec param (mirrors the `orig_params` `Ty::Any` decline). A capture we cannot type makes the
+        // whole specialization decline (returned as an empty marker the caller checks).
+        seen.insert(name.clone());
+        out.push((name, ty));
+    }
+    if let Struct::List(children) = db.ast.get(node).clone() {
+        for c in children {
+            collect_captures(db, c, own_binders, seen, out);
+        }
+    }
+}
+
 fn count_param_refs(db: &mut Db, node: StructId, binder: StructId) -> u32 {
     // A reference matches the way `beta_reduce` substitutes: either a `Param { binder }` whose binder IS
     // the arm param, OR a `Ref { value }` whose chain reaches that binder transitively (an op-arm param

@@ -1509,6 +1509,16 @@ pub struct Db {
     /// convention (id-sum/countdown), unchanged. Populated by `specialize_recursive`.
     pub(crate) multivalue_specs: std::collections::HashSet<String>,
 
+    /// Per synthesized specialization NAME, the CAPTURED enclosing-fn param names that its handler arms
+    /// reference free (e.g. a handler arm `converse(q,s) => resume(tool,0)` where `tool` is the enclosing
+    /// `run-with`'s param — NOT the arm's own params/state, NOT the recursive def's params). Such a name is
+    /// threaded as an EXTRA specialized param (after the original params, before the trailing state params),
+    /// and every self-call — plus the initial call from the handle body — passes it through UNCHANGED (it is
+    /// constant across the recursion). Without this, the free name resolves against the synthesized `f#ctx`
+    /// sig (which lacks it) → a spurious CDZ0101 (v-agent-harness merged-nested multi-arm dogfood).
+    /// Populated by `specialize_recursive`; read by the self-call rewrite arm.
+    pub(crate) effect_spec_captures: std::collections::HashMap<String, Vec<String>>,
+
     /// Memo of `effects::subtree_performs` — whether the subtree at a node reaches a discharged perform (a
     /// `resume`, or a call into a discharged effect) under a given handler context. Keyed by `(node,
     /// handler-context-key)` (the same resolved-identity string `effect_specializations` uses). The
@@ -2155,6 +2165,7 @@ impl Db {
             core: Column::new(),
             effect_specializations: crate::fxhash::FxHashMap::default(),
             multivalue_specs: std::collections::HashSet::new(),
+            effect_spec_captures: std::collections::HashMap::new(),
             subtree_performs_cache: crate::fxhash::FxHashMap::default(),
             reduced_callable_walked: crate::fxhash::FxHashSet::default(),
             type_specializations: crate::fxhash::FxHashMap::default(),
