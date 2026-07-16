@@ -186,6 +186,13 @@ impl<'a> Parser<'a> {
     /// whole `tag"…"` is one lexed token; a finer per-hole span is a future refinement). A hole that
     /// fails to parse contributes its recovered/error arena (the reader never panics), and any parse
     /// errors are surfaced by lifting them into this parser's error list.
+    //
+    // The grafted subtree IS the hole's parsed expression, placed directly under the node's `holes`
+    // list (see the `Kind::TaggedTemplate` arm) — so each hole appears in the node as an ordinary
+    // expression of the language.
+    //
+    //= spec/capabilities/metaprogramming.md#a-tagged-template-is-a-binding-dispatched-compile-time-macro-over-literal-chunks-and-holes
+    //# Each interpolation hole `{expr}` MUST be parsed as an ordinary expression of the language and MUST appear in the node as such.
     fn graft_ml_expr(&mut self, src: &str, span: Span) -> StructId {
         let parsed = read_ml(src);
         for e in &parsed.errors {

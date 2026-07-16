@@ -530,6 +530,9 @@ impl<'a> Lexer<'a> {
         // is one token (not the name `b` then a string). A SPACE between (`tag "s"`) stays a bare ident
         // then a separate string. (`b"`/`#"` are handled earlier by their own arms; any OTHER ident glued
         // to `"` reaches here.) The parser splits the span into tag + chunks + holes. Unterminated → Error.
+        //
+        //= spec/capabilities/metaprogramming.md#a-tagged-template-is-a-binding-dispatched-compile-time-macro-over-literal-chunks-and-holes
+        //# A tagged template — an identifier written immediately before a string literal, with no intervening whitespace, such as `tag"…text…{expr}…"` — MUST lex to a single canonical abstract-syntax-tree node carrying the tag name, the literal string chunks between the interpolation holes, and the holes, so that an embedded foreign syntax is captured as ordinary program data.
         if self.peek() == Some('"') {
             let quote = self.bump().unwrap(); // the opening `"`
             let body = self.read_template_body(quote);
@@ -557,6 +560,12 @@ impl<'a> Lexer<'a> {
     ///
     /// Returns a `TaggedTemplate` token on a clean close, or `Error` if the body/hole is unterminated.
     /// The parser re-scans this same body text (via `literal::split_template_body`) to build the node.
+    //
+    // This scan is a pure lexical brace/quote walk: it runs no program code and knows no embedded
+    // grammar — it only tracks `{…}` hole nesting so the body can later be split into chunks + holes.
+    //
+    //= spec/capabilities/metaprogramming.md#a-tagged-template-is-a-binding-dispatched-compile-time-macro-over-literal-chunks-and-holes
+    //# The reader MUST NOT run any program code or learn any grammar when lexing a tagged template, so that the reader stays outside the compiler's trusted path exactly as it does for every other form.
     fn read_template_body(&mut self, open: Char) -> Token {
         let mut end = open.span;
         let mut depth: u32 = 0; // `{…}` hole nesting

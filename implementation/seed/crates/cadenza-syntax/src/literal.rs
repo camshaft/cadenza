@@ -294,6 +294,9 @@ pub struct TemplateBody {
 
 /// Split a tagged-template TOKEN (`tag"…"`, the whole lexed span) into its [`TemplateBody`]. Returns
 /// `None` if `token` is not `<ident>"…"`-shaped.
+//
+//= spec/capabilities/metaprogramming.md#a-tagged-template-is-a-binding-dispatched-compile-time-macro-over-literal-chunks-and-holes
+//# The reader MUST, when lexing a tagged template, only split the string body into literal chunks and `{…}` holes.
 pub fn split_template_body(token: &str) -> Option<TemplateBody> {
     let q = token.find('"')?;
     let tag = token[..q].to_string();
@@ -366,6 +369,12 @@ pub fn split_template_body(token: &str) -> Option<TemplateBody> {
             _ => chunk.push(c),
         }
     }
+    // The trailing chunk is always pushed once, after every hole has closed its preceding chunk — so a
+    // body with N holes yields exactly N+1 chunks (`chunks.len() == holes.len() + 1`), letting the
+    // chunks and holes reconstruct the original text in order.
+    //
+    //= spec/capabilities/metaprogramming.md#a-tagged-template-is-a-binding-dispatched-compile-time-macro-over-literal-chunks-and-holes
+    //# The count of literal chunks in a tagged template MUST be exactly one greater than the count of holes, so that the chunks and holes reconstruct the original text in order.
     chunks.push(chunk); // the trailing chunk (always one more chunk than holes)
     Some(TemplateBody { tag, chunks, holes })
 }
