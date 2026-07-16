@@ -9,7 +9,11 @@
 //! (`reference-compiler.md` §The Exported Interface Is The Declared Signature). An export's signature
 //! is its solved parameter types (each `(name-occurrence, type)`) and result type, obtained by
 //! demanding `type_of`/`def_scheme` (a lazy read of the type column). The export NAME crosses
-//! verbatim; no export is recognized by name or body shape.
+//! verbatim; no export is recognized by name or body shape. So the boundary calling convention is
+//! fixed by the declared signature alone, not by any compiler internal:
+//!
+//= spec/contracts/component-abi.md#lowering-and-lifting-are-fixed-inverses
+//# The calling convention across the boundary MUST be a function of the declared signature alone, independent of compiler internals.
 //!
 //! The exported entries come from the program's `(export …)` clauses — the compiler reads which
 //! definitions are exported from the source, so the entry the runtime invokes is determined by the
