@@ -745,6 +745,7 @@ pass	a float in integer-width position is rejected
 pass	a float leaf and a Bytes leaf compare together in one compound
 pass	a float width from runtime data is rejected, like an integer width
 pass	a float width outside the admitted set is rejected
+pass	a float-form literal with the N (BigInt) suffix is rejected with a swap-to-R fix
 pass	a floating-point literal
 pass	a four-level nested-constructor pattern with a generic user sum in the middle matches
 pass	a fresh-id supply threads state across two sibling recursive calls in one arm
@@ -1403,6 +1404,7 @@ pass	a radix literal with an empty body is a malformed literal, not an unbound n
 pass	a rate derived by division mixes with a named rate unit of the same dimension
 pass	a rational is normalized to lowest terms on construction
 pass	a rational operation does not silently promote an integer operand
+pass	a rational with near-Int64 numerator and denominator normalizes by gcd exactly
 pass	a rational with numerator and denominator both negative normalizes to positive
 pass	a rational's sign is normalized onto the numerator
 pass	a rational-magnitude quantity erases to its exact rational value
@@ -1919,6 +1921,8 @@ pass	a trailing digit separator is a malformed literal, not the digits with it d
 pass	a transformation maps a syntax tree to a syntax tree and preserves meaning
 pass	a transformation observably rewrites the tree, not just its value
 pass	a transformation over the built-in Ast composes across a function call
+pass	a transitive import (app <- lib <- kernel) can use a theorem through re-exported kernel functions
+pass	a transitive import cannot forge a theorem — the kernel's private constructor is unreachable from the app
 pass	a trapping condition of a same-constructor if traps before either arm
 pass	a trapping condition preempts the hoisted operator's trap
 pass	a trapping earlier let-init is NOT dropped by a constant-failure `?` short-circuit

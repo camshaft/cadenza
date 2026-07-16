@@ -3,10 +3,10 @@
 //!
 //! For each JSON message in an inbox directory (`.claude/fleet/inbox/<agent>/*.json`, the format the
 //! fleet already uses), it drives a compiled Cadenza agent-loop consumer through the AUTHORIZED loop
-//! ([`cdz_agent::run_authorized_agent_loop`]): the model call (`Model.converse`) is answered by the
-//! backend (mock by default, Bedrock behind `--features bedrock`), and every tool dispatch is gated by a
-//! Cedar policy (`Cedar.authorize`). The message body is handed to the model via the `converse` closure's
-//! captured context (the consumer builds its prompt in-program — a String export param doesn't cross).
+//! ([`cdz_agent::run_hive_agent_loop`]): the loop READS the message body via `Inbox.next`, calls the
+//! model on it (`Model.converse`, mock by default / Bedrock behind `--features bedrock`), and every tool
+//! dispatch is gated by a Cedar policy (`Cedar.authorize`). The message body reaches the model through
+//! the inbox closure this binary supplies — so the agent actually acts on the message it is driving.
 //!
 //! Usage:
 //!   cdz-agent --consumer <loop.wasm> --inbox <dir> [--policy <cedar-file>] [--model <id>] [--limit N]
@@ -120,8 +120,10 @@ fn run() -> Result<()> {
     Ok(())
 }
 
-/// Drive ONE message through the authorized Cadenza agent loop. The model backend sees `msg_body` via
-/// the closure's captured context; the loop's tool dispatches are Cedar-gated by `policies`.
+/// Drive ONE message through the full hive-agent loop: the loop reads the message body via `Inbox.next`
+/// (so the body ACTUALLY reaches the model), calls the model on it (`Model.converse`), and every tool
+/// dispatch is Cedar-gated by `policies`. The consumer must import all three ops (`cadenza:inbox/api`,
+/// `cadenza:model/api`, `cadenza:cedar/api`).
 fn drive_one(
     consumer: &[u8],
     runtime: &[u8],
@@ -142,12 +144,10 @@ fn drive_one(
         r#"Tool::"any""#.to_string(),
         "{}".to_string(),
     );
-    // NOTE: the consumer builds its own prompt IN-PROGRAM (a String export param doesn't cross the
-    // boundary), so the message body does not yet reach the model as the prompt — threading it in
-    // (a prompt the loop reads from an inbox effect, or a String the converse closure prepends) is a
-    // follow-on. For now the body is logged/carried but the loop drives its own fixed prompt; this slice
-    // proves the real message → authorized-loop → model path runs end-to-end.
-    let _ = msg_body;
+    // The inbox closure hands the loop THIS message's body — so the model call operates on the real
+    // message (the body reaches the model via `Inbox.next` → `Model.converse`, not a fixed prompt).
+    let body = msg_body.to_string();
+    let next_message = move || body.clone();
     // The model backend: mock by default; the real Bedrock backend when built with `--features bedrock`
     // + an optional `--model` (defaulting to a region-prefixed inference-profile id).
     let outcome = {
@@ -156,13 +156,14 @@ fn drive_one(
             let model =
                 _model.unwrap_or_else(|| "us.anthropic.claude-haiku-4-5-20251001-v1:0".to_string());
             let converse = cdz_agent::bedrock_converse(model, 1024);
-            cdz_agent::run_authorized_agent_loop(consumer, &opts, converse, authorize)?
+            cdz_agent::run_hive_agent_loop(consumer, &opts, next_message, converse, authorize)?
         }
         #[cfg(not(feature = "bedrock"))]
         {
-            cdz_agent::run_authorized_agent_loop(
+            cdz_agent::run_hive_agent_loop(
                 consumer,
                 &opts,
+                next_message,
                 cdz_agent::mock_converse,
                 authorize,
             )?

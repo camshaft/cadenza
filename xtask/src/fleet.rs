@@ -406,8 +406,12 @@ pub enum FleetCmd {
     /// reply (in the sender's inbox + `processed/`) whose `in_reply_to` names that request file, and
     /// reports any ORPHAN (archived, no reply). Requests archived before the `in_reply_to` field
     /// existed, or resolved by a hand-`send` instead of `fleet ack`, are reported as UNVERIFIABLE
-    /// (not counted as orphans). Report-only by default (exit 0); pass `--strict` to exit non-zero
-    /// when any orphan is found. Run it from any worktree.
+    /// (not counted as orphans). It ALSO runs the mirror check — a merge-request still QUEUED in
+    /// pr-sync's LIVE inbox whose `--ref` is already on trunk by patch-id (pr-sync landed the content
+    /// under a re-parented sha but never acked the file); these no-op MRs would gate to an empty merge,
+    /// so they're surfaced for a batch reject-as-superseded. Report-only by default (exit 0); pass
+    /// `--strict` to exit non-zero when any orphan OR queued-but-landed MR is found. Run it from any
+    /// worktree.
     Audit {
         /// Show every checked request, not just the orphans/unverifiable summary.
         #[arg(long)]
@@ -1429,6 +1433,60 @@ fn audit(fleet: &Fleet, verbose: bool, strict: bool) {
             "  These senders may be stuck waiting on a merged/reject that never came. pr-sync should \
              re-process them via `cargo xtask fleet ack`, or the senders should resend. (Some may have \
              actually landed pre-`ack` without a reply-stamp — verify before assuming loss.)\n"
+        );
+        if strict {
+            std::process::exit(1);
+        }
+    }
+
+    // Second check — the MIRROR of a silent drop: a merge-request still QUEUED in pr-sync's LIVE inbox
+    // (not yet processed) whose `--ref` content is ALREADY on trunk by patch-id. This happens when
+    // pr-sync integrates a commit under a re-parented/squashed sha but never acks the original file, so
+    // the no-op MR lingers and would gate to an empty merge. Surface them so pr-sync can batch-reject
+    // (`fleet ack <file> --outcome reject --body "already landed by patch-id; superseded"`) rather than
+    // re-gate each. Only checks merge-requests from still-active senders (a stale one-shot's leftover is
+    // noise). Read-only; skipped silently if git can't resolve `trunk`.
+    let mut landed_queued: Vec<(String, String, String)> = Vec::new(); // (filename, sender, ref)
+    let pr_inbox = fleet.inbox("pr-sync");
+    if let Ok(rd) = std::fs::read_dir(&pr_inbox) {
+        for entry in rd.filter_map(Result::ok) {
+            let p = entry.path();
+            let fname = entry.file_name().to_string_lossy().to_string();
+            if !p.is_file() || !fname.ends_with("merge-request.json") {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&p) else {
+                continue;
+            };
+            let Ok(mr) = serde_json::from_str::<Message>(&text) else {
+                continue;
+            };
+            if mr.r#ref.is_empty() || !active.contains(&mr.from) {
+                continue;
+            }
+            let cherry = Command::new("git")
+                .current_dir(&fleet.repo)
+                .args(["cherry", TRUNK, &mr.r#ref])
+                .output();
+            if let Ok(out) = cherry
+                && out.status.success()
+                && cherry_says_landed(&String::from_utf8_lossy(&out.stdout))
+            {
+                landed_queued.push((fname, mr.from.clone(), mr.r#ref.clone()));
+            }
+        }
+    }
+    if !landed_queued.is_empty() {
+        eprintln!(
+            "\n  ⚠ QUEUED-BUT-ALREADY-LANDED — a merge-request still in pr-sync's inbox whose --ref is \
+             already on trunk by patch-id (would gate to an empty merge):"
+        );
+        for (fname, from, r#ref) in &landed_queued {
+            eprintln!("    • {fname}  (from '{from}', ref {ref} landed) — reject as superseded");
+        }
+        eprintln!(
+            "  pr-sync: clear each with `cargo xtask fleet ack <file> --outcome reject --body \
+             \"already landed by patch-id; superseded\"` — no gate needed.\n"
         );
         if strict {
             std::process::exit(1);
@@ -2900,6 +2958,35 @@ fn commits_to_replay(cherry_output: &str) -> Vec<String> {
         .collect()
 }
 
+/// Whether `git cherry <trunk> <ref>` output says `<ref>`'s patch is ALREADY upstream (landed) — i.e.
+/// every commit line is prefixed `-` (equivalent patch on trunk), with at least one line. `git cherry`
+/// prints `- <sha>` for a commit whose patch-id is upstream and `+ <sha>` for one that is not; for a
+/// single `<ref>` it's normally one line. A merge-request still QUEUED in pr-sync's inbox whose `--ref`
+/// reads landed is a no-op (pr-sync integrated the content under a re-parented sha but never acked the
+/// file) — `audit` surfaces these so they can be batch-rejected instead of gated to empty merges. Pure
+/// so it's unit-testable. Empty output (ref == trunk, nothing to compare) is NOT "landed" — return
+/// false so we never mis-flag a ref we can't prove landed (conservative: a false negative just leaves an
+/// MR queued; a false positive would tell pr-sync to reject live work).
+fn cherry_says_landed(cherry_output: &str) -> bool {
+    let mut saw_line = false;
+    for line in cherry_output.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        saw_line = true;
+        // Any `+ ` (not-yet-upstream) line means NOT fully landed.
+        if line.starts_with("+ ") {
+            return false;
+        }
+        // Anything that isn't a `- ` marker is unexpected → don't claim landed.
+        if !line.starts_with("- ") {
+            return false;
+        }
+    }
+    saw_line
+}
+
 /// Guard for `fleet sync`: would replaying `replay_shas` orphan a merge-request THIS agent already sent?
 /// `fleet sync` cherry-picks unlanded commits onto the fresh trunk, giving them NEW shas — so if a
 /// commit in the replay set is the exact `--ref` of a merge-request still queued in pr-sync's inbox
@@ -3791,6 +3878,29 @@ mod tests {
         );
         // A `+ <sha> <subject>` form (some git configs append the subject) keeps just the sha.
         assert_eq!(commits_to_replay("+ 9999 wip: something"), vec!["9999"]);
+    }
+
+    #[test]
+    fn cherry_says_landed_only_when_all_lines_are_upstream() {
+        // `-` = patch upstream (landed). A single `-` line → landed.
+        assert!(cherry_says_landed(
+            "- 1111111111111111111111111111111111111111"
+        ));
+        // `+` = not upstream → not landed.
+        assert!(!cherry_says_landed(
+            "+ 1111111111111111111111111111111111111111"
+        ));
+        // Empty output (ref == trunk / nothing to compare) is NOT a landed proof — conservative false.
+        assert!(!cherry_says_landed(""));
+        assert!(!cherry_says_landed("\n  \n"));
+        // Multiple lines: landed only if EVERY line is `-`.
+        assert!(cherry_says_landed("- aaaa\n- bbbb"));
+        assert!(!cherry_says_landed("- aaaa\n+ bbbb"));
+        // Unexpected prefix (not `- `/`+ `) → don't claim landed.
+        assert!(!cherry_says_landed("aaaa"));
+        assert!(!cherry_says_landed("- aaaa\nnoise"));
+        // Blank lines interspersed are tolerated as long as the real lines are all `-`.
+        assert!(cherry_says_landed("\n- aaaa\n\n- bbbb\n"));
     }
 
     #[test]

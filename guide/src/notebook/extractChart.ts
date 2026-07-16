@@ -1,0 +1,102 @@
+/// Extract chart data (series of numeric points) from a cell's rendered value, for the `chart:line` /
+/// `chart:bar` / `chart:scatter` output renderers (Increment 3). The hand-rolled SVG chart component
+/// (design D3, ratified: no charting dep for the first cut) consumes this shape.
+///
+/// Accepted value shapes (all parsed from the CANONICAL s-expr render, never the display surface — the
+/// /cad lesson):
+///   - a List of `(tuple x y)`             → one unnamed series of (x, y) points
+///   - a List of `(tuple label y)` where   → still (x, y): a non-numeric x becomes the categorical label
+///       x is a string/symbol                 (bar/line over categories); its numeric index is the x.
+///   - a List of numbers `y`               → a series of (i, y) points (x = the 0-based index)
+///   - a List of `(tuple x y1 y2 …)`       → multiple series sharing the x (series "y0","y1",…)
+///
+/// PURE (no worker/React) — unit-testable under `node --test`.
+
+import { parseSexpr, stripAscription, isAtom, isList, unquoteAtom, type Node } from "./sexpr.ts";
+
+/// One plotted point. `x` is numeric (a category's index when the source x was a label); `label` carries
+/// the original categorical x when it wasn't numeric, so the axis can show it.
+export interface Point {
+  x: number;
+  y: number;
+  label?: string;
+}
+
+/// A named series of points. `name` is "" for a single unnamed series; "y0","y1",… for multi-series rows.
+export interface Series {
+  name: string;
+  points: Point[];
+}
+
+export type ChartResult = { ok: true; series: Series[] } | { ok: false; reason: string };
+
+function head(n: Node): string | null {
+  if (isList(n) && n.list.length > 0 && isAtom(n.list[0])) return n.list[0].atom;
+  return null;
+}
+
+/// Parse an atom node as a finite number, or null if it isn't one (a rational `n/d` evaluates to n/d).
+function asNumber(n: Node): number | null {
+  if (!isAtom(n)) return null;
+  const a = n.atom;
+  const rat = /^(-?\d+)\/(-?\d+)$/.exec(a);
+  if (rat) {
+    const d = Number(rat[2]);
+    return d === 0 ? null : Number(rat[1]) / d;
+  }
+  const v = Number(a);
+  return Number.isFinite(v) ? v : null;
+}
+
+/// Shape a rendered value into one or more numeric series. Returns a typed `{ ok: false }` (never throws)
+/// when the value isn't chartable, so the renderer can fall back to the table / plain-value view.
+export function extractChart(rendered: string): ChartResult {
+  let node: Node;
+  try {
+    node = stripAscription(parseSexpr(rendered));
+  } catch (e) {
+    return { ok: false, reason: `unparseable value: ${(e as Error).message}` };
+  }
+  if (head(node) !== "list") {
+    return { ok: false, reason: "value is not a `list` — a chart cell must return a List of points" };
+  }
+  const elems = (node as { list: Node[] }).list.slice(1);
+  if (elems.length === 0) return { ok: true, series: [] };
+
+  // A list of bare numbers → a single series of (index, y).
+  if (elems.every((e) => asNumber(e) !== null)) {
+    return {
+      ok: true,
+      series: [{ name: "", points: elems.map((e, i) => ({ x: i, y: asNumber(e)! })) }],
+    };
+  }
+
+  // Otherwise every element must be a tuple with ≥2 fields.
+  if (!elems.every((e) => head(e) === "tuple")) {
+    return { ok: false, reason: "chart rows must be all numbers or all `tuple` points" };
+  }
+  const tuples = elems.map((e) => (e as { list: Node[] }).list.slice(1));
+  const yCount = Math.min(...tuples.map((t) => t.length)) - 1; // shared y-columns (x is field 0)
+  if (yCount < 1) return { ok: false, reason: "each `tuple` point needs an x and at least one y" };
+
+  const seriesCount = yCount;
+  const series: Series[] = Array.from({ length: seriesCount }, (_, s) => ({
+    name: seriesCount === 1 ? "" : `y${s}`,
+    points: [] as Point[],
+  }));
+
+  tuples.forEach((t, i) => {
+    const xNode = t[0];
+    const xNum = asNumber(xNode);
+    // A non-numeric x is a category label; its x is the row index.
+    const x = xNum ?? i;
+    const label = xNum === null ? (isAtom(xNode) ? unquoteAtom(xNode.atom) : undefined) : undefined;
+    for (let s = 0; s < seriesCount; s++) {
+      const yNum = asNumber(t[s + 1]);
+      if (yNum === null) continue; // skip a non-numeric y cell rather than aborting the whole chart
+      series[s].points.push(label !== undefined ? { x, y: yNum, label } : { x, y: yNum });
+    }
+  });
+
+  return { ok: true, series };
+}

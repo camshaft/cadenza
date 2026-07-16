@@ -166,6 +166,14 @@ enum Cmd {
     /// `cdz completions bash > /etc/bash_completion.d/cdz`, or `cdz completions zsh > _cdz` on `$fpath`).
     Completions(CompletionsArgs),
 
+    // ── toolchain health ────────────────────────────────────────────────────────────────────────
+    /// Diagnose the `cdz` TOOLCHAIN environment (a `cargo`-doctor-style preflight): the `cdz` version +
+    /// path, whether the sibling `cdz-run` binary is present (needed to run/`test` compiled components),
+    /// and whether the value-heap runtime store holds the runtime `cdz` compiles against (needed to run a
+    /// program that builds heap values). Exits non-zero if a component that would break `cdz run`/`test`
+    /// is missing — so CI/setup scripts can gate on `cdz doctor`. `--store <DIR>` checks a specific store.
+    Doctor(DoctorArgs),
+
     // ── unit testing ─────────────────────────────────────────────────────────────────────────────
     /// Compile a SEPARATE test component from a FILE's `@test`-marked NULLARY definitions and run each,
     /// reporting pass/fail. Each `@test def` crosses the boundary as a nullary entry the runner invokes;
@@ -266,6 +274,7 @@ fn main() -> ExitCode {
         Cmd::New(a) => run_new(&a),
         Cmd::Init(a) => run_init(&a),
         Cmd::Completions(a) => run_completions(&a),
+        Cmd::Doctor(a) => run_doctor(&a),
         Cmd::Test(a) => run_test(&a),
         // The span-mapped semantic queries live here (they need both libraries in one process).
         Cmd::Type(a) => run_type(&a),
@@ -1488,6 +1497,84 @@ fn run_completions(args: &CompletionsArgs) -> ExitCode {
     let name = cmd.get_name().to_string();
     clap_complete::generate(args.shell, &mut cmd, name, &mut std::io::stdout());
     ExitCode::SUCCESS
+}
+
+// ── cdz doctor ─────────────────────────────────────────────────────────────────────────────────
+
+#[derive(clap::Args)]
+struct DoctorArgs {
+    /// The value-heap runtime store to check (`<store>/<hash>.wasm`). Defaults to the store beside the
+    /// `cdz` binary (`<target>/cadenza-store`) — the same default `cdz run`/`cdz test` resolve.
+    #[arg(long)]
+    store: Option<PathBuf>,
+}
+
+/// `cdz doctor` — a preflight health check of the `cdz` TOOLCHAIN environment (the `cargo`-doctor
+/// analogue), so a broken setup surfaces before a `cdz run`/`cdz test` fails mid-operation. It reports
+/// three things and exits non-zero if a component that would break run/test is missing. First, the `cdz`
+/// version + executable path (what a bug report should cite). Second, the sibling `cdz-run` binary — this
+/// bin holds no wasm engine, so `cdz run`/`cdz test` shell out to it; if it's absent, those fail. Third,
+/// the value-heap runtime store: present, and holding the runtime `cdz` compiles against
+/// (`REQUIRED_RUNTIME_HASH`) — without it, running a program that builds heap values can't resolve its
+/// runtime by content address (a scalar/const program still runs without the store, and the note says so).
+/// A missing `cdz-run` or runtime is an ERROR (rc≠0) so a setup/CI script can gate on `cdz doctor`.
+fn run_doctor(args: &DoctorArgs) -> ExitCode {
+    let mut ok = true;
+
+    // 1. cdz itself — version + path (always available).
+    let exe = std::env::current_exe().ok();
+    println!("cdz {}", env!("CARGO_PKG_VERSION"));
+    match &exe {
+        Some(p) => println!("  path: {}", p.display()),
+        None => println!("  path: <unknown>"),
+    }
+
+    // 2. The sibling `cdz-run` runner — required by `cdz run`/`cdz test` (this bin has no wasm engine).
+    match locate_cdz_run() {
+        Some(p) => println!("  cdz-run: ok ({})", p.display()),
+        None => {
+            println!(
+                "  cdz-run: MISSING — build it (`cargo build --bin cdz-run`) beside `cdz`; \
+                 `cdz run`/`cdz test` need it"
+            );
+            ok = false;
+        }
+    }
+
+    // 3. The value-heap runtime store — needs the runtime `cdz` compiles against, by content address.
+    let store = args.store.clone().unwrap_or_else(default_store);
+    let required = rcdzc::backend::wasm::runtime_abi::REQUIRED_RUNTIME_HASH;
+    let runtime_wasm = store.join(format!("{required}.wasm"));
+    if !store.is_dir() {
+        println!(
+            "  runtime store: MISSING ({}) — build it (`cargo xtask build`); required to run a program \
+             that builds heap values (a scalar/const program still runs without it)",
+            store.display()
+        );
+        ok = false;
+    } else if runtime_wasm.is_file() {
+        println!(
+            "  runtime store: ok ({}) — has the required runtime {}",
+            store.display(),
+            &required[..12.min(required.len())]
+        );
+    } else {
+        println!(
+            "  runtime store: STALE ({}) — present but missing the required runtime {}.wasm; rebuild \
+             (`cargo xtask build`)",
+            store.display(),
+            &required[..12.min(required.len())]
+        );
+        ok = false;
+    }
+
+    if ok {
+        println!("doctor: ok");
+        ExitCode::SUCCESS
+    } else {
+        eprintln!("{PROG}: doctor found problem(s) — see above");
+        ExitCode::FAILURE
+    }
 }
 
 // ── cdz test ─────────────────────────────────────────────────────────────────────────────────────
