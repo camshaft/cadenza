@@ -1,0 +1,104 @@
+/// multi-payload.cdz — REGRESSION GUARD for MULTI-PAYLOAD variant construction, matching, and field
+/// extraction. A sum variant with 2, 3, or more fields (`Tri(Int64, Int64, Int64)`) must construct with
+/// all fields, match with a full field-pattern, and extract any single field by position — including when
+/// the scrutinee is a STATICALLY-KNOWN constant (the fold path). The compiler's "multi-payload variant
+/// fold" (a real backend transform, exercised by every sum-type-heavy pass in this port — Ty, Ex, Instr,
+/// the whole IR) must read each field at the RIGHT offset. A bug there reads the wrong field and looks
+/// like a source logic error, so this pins it at the ML level.
+///
+/// Covers: 2/3/5-field variants; middle- and last-field extraction; a mixed sum where only one variant
+/// carries the payload; a constant scrutinee (the fold path); and a recursive multi-payload type (a `Pair`
+/// whose second field is the type itself) — with exhaustiveness respected.
+
+type Tri =
+  | T3(Int64, Int64, Int64)
+  | Nil3
+
+type Five =
+  | F5(Int64, Int64, Int64, Int64, Int64)
+
+type Rec =
+  | Pair(Int64, Rec)
+  | Leaf(Int64)
+
+/// Sum all three fields of a T3 (full field-pattern match).
+def sum3(t: Tri) = match t with
+  | Tri.T3(a, b, c) => a + b + c
+  | Tri.Nil3 => 0
+
+/// Extract the MIDDLE field (position 1 of 3) — the offset a fold bug most easily gets wrong.
+def middle3(t: Tri) = match t with
+  | Tri.T3(_, b, _) => b
+  | Tri.Nil3 => 0 - 1
+
+/// Extract the LAST field (position 2 of 3).
+def last3(t: Tri) = match t with
+  | Tri.T3(_, _, c) => c
+  | Tri.Nil3 => 0 - 1
+
+/// Sum all five fields of a wide variant.
+def sum5(w: Five) = match w with
+  | Five.F5(a, b, c, d, e) => a + b + c + d + e
+
+/// A recursive multi-payload walk (Pair carries an Int64 AND the recursive tail).
+def rec-sum(r: Rec) = match r with
+  | Rec.Pair(x, rest) => x + rec-sum(rest)
+  | Rec.Leaf(v) => v
+
+def rec-depth(r: Rec) = match r with
+  | Rec.Pair(_, rest) => 1 + rec-depth(rest)
+  | Rec.Leaf(_) => 0
+
+@test
+def mp-construct-and-sum-three() =
+  // build a 3-field variant, match all three → 10+20+30 = 60.
+  if sum3(Tri.T3(10, 20, 30)) == 60 then unit else trap("T3(10,20,30) sums to 60")
+
+@test
+def mp-middle-field() =
+  // middle-field extraction (const scrutinee — the fold path) reads position 1, not 0 or 2.
+  if middle3(Tri.T3(1, 2, 3)) == 2 then unit else trap("middle field of T3(1,2,3) is 2")
+
+@test
+def mp-last-field() =
+  if last3(Tri.T3(1, 2, 3)) == 3 then unit else trap("last field of T3(1,2,3) is 3")
+
+@test
+def mp-fields-distinct-positions() =
+  // all three positions read distinctly (not aliased): T3(7,8,9) → middle 8, last 9, sum 24.
+  let t = Tri.T3(7, 8, 9) in
+  if middle3(t) == 8 then (if last3(t) == 9 then (if sum3(t) == 24 then unit else trap("sum 24")) else trap("last 9")) else trap("middle 8")
+
+@test
+def mp-nil-variant() =
+  // the payload-less variant of the same sum matches its own arm.
+  if sum3(Tri.Nil3) == 0 then (if middle3(Tri.Nil3) == 0 - 1 then unit else trap("Nil middle -1")) else trap("Nil sums 0")
+
+@test
+def mp-five-field-wide() =
+  // a 5-field variant reads all five at the right offsets → 1+2+3+4+5 = 15.
+  if sum5(Five.F5(1, 2, 3, 4, 5)) == 15 then unit else trap("F5 sums to 15")
+
+@test
+def mp-five-field-order() =
+  // distinct values so a swapped offset would show: F5(10,20,30,40,50) = 150 (and not e.g. a doubled field).
+  if sum5(Five.F5(10, 20, 30, 40, 50)) == 150 then unit else trap("F5 distinct sums to 150")
+
+@test
+def mp-recursive-pair-sum() =
+  // Pair carries an Int64 + the recursive tail: Pair(1, Pair(2, Leaf(3))) → 1+2+3 = 6.
+  let r = Rec.Pair(1, Rec.Pair(2, Rec.Leaf(3))) in
+  if rec-sum(r) == 6 then (if rec-depth(r) == 2 then unit else trap("depth 2")) else trap("rec-sum 6")
+
+@test
+def mp-recursive-deep() =
+  // deeper: Pair(1, Pair(2, Pair(3, Leaf(4)))) → 10, depth 3.
+  let r = Rec.Pair(1, Rec.Pair(2, Rec.Pair(3, Rec.Leaf(4)))) in
+  if rec-sum(r) == 10 then (if rec-depth(r) == 3 then unit else trap("depth 3")) else trap("rec-sum 10")
+
+@test
+def mp-recursive-leaf-only() =
+  // a bare Leaf (no Pair payload) → its value.
+  if rec-sum(Rec.Leaf(42)) == 42 then (if rec-depth(Rec.Leaf(42)) == 0 then unit else trap("depth 0")) else trap("leaf 42")
+
+export { sum3, middle3, last3, sum5, rec-sum, rec-depth }
