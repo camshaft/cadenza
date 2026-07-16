@@ -378,6 +378,30 @@
   (input  (do (def (main) (List.concat 5 6)) (export main)))
   (error  CDZ0203))
 
+; A built-in operation applied to TOO MANY arguments names the arity and offers a remove-the-extra fix-it.
+; `(List.len (list 1) 2)` gives `List.len` a second argument it does not take — CDZ0203 '`List.len` takes 1
+; argument, but 2 were given' with a 'remove this element' fix on the extra operand, rather than a bare type
+; clash. (An UNDER-application is a partial application — a distinct decline, since a runtime closure is not
+; yet built — so only the over-application is a coded reject here.) Pins the built-in over-arity diagnostic
+; for a unary op and a two-argument op.
+
+(case "a built-in operation applied to too many arguments names its arity"
+  (doc    "`(List.len (list 1) 2)` applies the unary `List.len` to a second argument `2` — CDZ0203
+           '`List.len` takes 1 argument, but 2 were given', carrying a 'remove this element' fix-it on the
+           extra operand. Pins the built-in over-application arity diagnostic (names the operation's arity +
+           the count given), distinct from the wrong-argument-TYPE message. The program's outcome is the
+           rejection.")
+  (input  (do (def (main) (List.len (list 1) 2)) (export main)))
+  (error  CDZ0203))
+
+(case "a two-argument built-in applied to three arguments names its arity"
+  (doc    "`(List.concat (list 1) (list 2) (list 3))` gives the two-argument `List.concat` a third list —
+           CDZ0203 '`List.concat` takes 2 arguments, but 3 were given' + a 'remove this element' fix. The
+           multi-argument companion of the `List.len` over-arity case; pins that the arity count is reported
+           correctly for an operation that takes more than one argument.")
+  (input  (do (def (main) (List.concat (list 1) (list 2) (list 3))) (export main)))
+  (error  CDZ0203))
+
 ; Projecting a tuple that arrives as a FUNCTION PARAMETER (a runtime tuple whose shape is not the
 ; inline literal at the projection site) must either compute the projection or DECLINE — never emit an
 ; invalid component. `(def (fst t) (. t 0))` applied to `(tuple 7 8)` is well-typed and its value is
