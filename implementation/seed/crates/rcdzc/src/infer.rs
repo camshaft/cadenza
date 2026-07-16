@@ -1541,6 +1541,34 @@ fn enrich_nested_lowercase_type_vars(
             crate::eval::meta_apply_of(db, h) == Some(crate::resolved::Prim::QtyCtor)
         });
         for (i, &child) in kids.iter().enumerate().skip(1) {
+            // A bare SYMBOL `#"meter"` in the unit position — `(Qty Float64 #"meter")` — is the twin slip
+            // of the bare NAME below: the author wrote the unit's NAME directly (as a symbol) instead of a
+            // unit EXPRESSION. It falls through the name check (a symbol is not `as_name`) to the generic
+            // "requires a type, but found a non-type", which MISLEADS (the position is a UNIT, not a type)
+            // and gives no repair. Name it a unit and show the exact wrap — the symbol text is already in
+            // hand, so the `(Unit.base #"<sym>")` fix is spelled precisely. (This mirrors the value-position
+            // `Qty.of` unit reject, which already names the unit-expression forms.)
+            if is_qty
+                && i == 2
+                && let Some(sym) = db.ast.as_sym(child).map(str::to_string)
+            {
+                out.push(
+                    Reject::coded(
+                        Code::Malformed,
+                        format!(
+                            "`#\"{sym}\"` is not a unit — `Qty`'s second argument is a UNIT expression, \
+                             not a bare symbol. Write `(Unit.base #\"{sym}\")` for a base unit, or \
+                             `Unit.one` for the dimensionless unit"
+                        ),
+                    )
+                    .at(child)
+                    .with_fix(Fix::replace_heuristic(
+                        child,
+                        format!("(Unit.base #\"{sym}\")"),
+                    )),
+                );
+                continue;
+            }
             if is_qty
                 && i == 2
                 && db.ast.as_name(child).is_some()
