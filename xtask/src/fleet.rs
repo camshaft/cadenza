@@ -2925,15 +2925,29 @@ fn shell_quote(s: &str) -> String {
 /// order), sender, and kind — enough to drain oldest-first.
 fn inbox_list(fleet: &Fleet, name: &str) {
     let dir = fleet.inbox(name);
-    let mut names: Vec<String> = std::fs::read_dir(&dir)
-        .map(|rd| {
-            rd.filter_map(Result::ok)
-                .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
-                .map(|e| e.file_name().to_string_lossy().to_string())
-                .filter(|n| n.ends_with(".json"))
-                .collect()
-        })
-        .unwrap_or_default();
+    // Distinguish a READ ERROR from a genuinely-empty inbox: `read_dir` errs when the path is missing
+    // or unreadable — and collapsing that into an empty Vec (the old `unwrap_or_default`) would print
+    // "0 messages", the EXACT confusion this command exists to prevent (PR #483 Copilot). On an error,
+    // say so loudly + distinctly (an unreadable inbox path is the wrong-path signal, not "no mail").
+    let rd = match std::fs::read_dir(&dir) {
+        Ok(rd) => rd,
+        Err(e) => {
+            // Always print the resolved path first, then the error — so a wrong/missing path is obvious.
+            eprintln!(
+                "inbox for '{name}' at {}: COULD NOT READ ({e}). That path is missing or unreadable — \
+                 this is NOT an empty inbox. Verify it's the HUB path (`.claude/` exists only at the \
+                 main repo, shared via the common git dir), not a worktree-relative `.claude/...`.",
+                dir.display()
+            );
+            std::process::exit(1);
+        }
+    };
+    let mut names: Vec<String> = rd
+        .filter_map(Result::ok)
+        .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|n| n.ends_with(".json"))
+        .collect();
     sort_inbox_filenames(&mut names);
     // ALWAYS print the resolved hub path — a wrong path is the whole failure mode we're guarding, so
     // make it visible every time, not just on error.
