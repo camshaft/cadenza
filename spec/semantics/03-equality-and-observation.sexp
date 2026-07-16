@@ -74,6 +74,61 @@
   (input  (= Float64.nan Float64.nan))
   (output (: true Bool)))
 
+; --- COMPOUND value-equality over a runtime FLOAT LEAF (a float inside a tuple/sum) -------------------
+; The scalar cases above fold at compile time (constant float operands). A RUNTIME float — a def parameter
+; — stored in a compound and compared by `=` takes the runtime `value-eq`/`champ_eq` heap-walk. It follows
+; the SAME canonical-byte-form semantics as the scalar `Core::FloatCompare` fix, WITHOUT extra machinery:
+; the runtime `box-float`/`box-float32` (the sole float-leaf producers) canonicalize-on-construct — every
+; NaN collapses to the one canonical quiet-NaN, ±0.0 keep distinct sign bits — so a float leaf already has
+; the canonical byte form and the physical `champ_eq` walk is exact. (`ty_heap_walkable` admits a Float
+; leaf; before this a compound-float `=` declined "comparison of a compound value needs a heap walk".)
+
+(case "compound equality over a runtime float leaf: equal floats compare equal"
+  (doc    "`(= (tuple x 1) (tuple y 1))` over runtime Float64 params `x=y=3.5` — the float leaf is compared
+           by the runtime value-eq heap-walk (its canonical byte form), so equal floats in a compound are
+           equal → true. Pins runtime compound float equality (was a decline).")
+  (input  (do (def (eq (: x Float64) (: y Float64)) (= (tuple x 1) (tuple y 1)))
+              (def (main) (eq 3.5 3.5)) (export main)))
+  (call   main)
+  (output (: true Bool)))
+
+(case "compound equality over a runtime float leaf: different floats compare unequal"
+  (doc    "The negative companion: `(= (tuple x) (tuple y))` with `x=3.5`, `y=2.5` — distinct canonical
+           byte forms → false. Confirms the compound float walk is genuinely structural, not always-true.")
+  (input  (do (def (eq (: x Float64) (: y Float64)) (= (tuple x) (tuple y)))
+              (def (main) (eq 3.5 2.5)) (export main)))
+  (call   main)
+  (output (: false Bool)))
+
+(case "compound equality over a runtime NaN float leaf: nan equals nan"
+  (doc    "A runtime NaN leaf in a compound compares EQUAL to another NaN (`box-float` canonicalizes every
+           NaN to the one quiet-NaN, so `champ_eq` sees identical bytes) — the compound analogue of the
+           scalar `nan == nan` case. `(= (tuple x 1) (tuple Float64.nan 1))` with `x = Float64.nan` → true.")
+  (input  (do (def (eq (: x Float64)) (= (tuple x 1) (tuple Float64.nan 1)))
+              (def (main) (eq Float64.nan)) (export main)))
+  (call   main)
+  (output (: true Bool)))
+
+(case "compound equality over a runtime float leaf: negative zero is not equal to positive zero"
+  (doc    "`-0.0` and `+0.0` have distinct canonical byte forms (the box keeps the sign bit of a zero), so
+           a compound holding `-0.0` is NOT equal to one holding `+0.0` — the compound analogue of the
+           scalar `-0.0 != 0.0` case. `(= (tuple x) (tuple y))` with `x = -0.0`, `y = 0.0` → false.")
+  (input  (do (def (eq (: x Float64) (: y Float64)) (= (tuple x) (tuple y)))
+              (def (main) (eq -0.0 0.0)) (export main)))
+  (call   main)
+  (output (: false Bool)))
+
+(case "equality over a runtime float in a SUM payload compares by the float leaf"
+  (doc    "The variant-payload companion (not only a tuple element): a float carried in a sum variant is
+           compared by its canonical byte form through the value-eq walk. `(B.Wrap x)` vs `(B.Wrap y)` with
+           `x=y=1.25` → true. Pins that `ty_heap_walkable` admits a Float leaf through a sum variant's
+           payload, not just a tuple/record position.")
+  (input  (do (type B (Wrap Float64))
+              (def (eq (: x Float64) (: y Float64)) (= (B.Wrap x) (B.Wrap y)))
+              (def (main) (eq 1.25 1.25)) (export main)))
+  (call   main)
+  (output (: true Bool)))
+
 ; A `nan` value carries its DECLARING float width — `Float64.nan` is a Float64, `Float32.nan` a Float32 —
 ; so a CROSS-WIDTH comparison between them (or against a finite float of the other width) is the same
 ; no-silent-promotion type error a cross-width FINITE comparison is (CDZ0301, numeric-model.md #Numeric

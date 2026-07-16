@@ -17580,6 +17580,15 @@ fn ty_heap_walkable(db: &mut Db, ty: &crate::ty::Ty, seen: &mut Vec<StructId>) -
         // compiler at B1; a runtime `BigInt` `=` is wired with the runtime limb library). A `Rational`
         // likewise: a constant `Rational` `=` folds in the compiler (B4-1), a runtime rational compound
         // walk is a later B4 slice — declines here for now.
+        // A FLOAT leaf is CANONICAL by construction: `box-float`/`box-float32` (the SOLE float-leaf
+        // producers) normalize-on-construct — every NaN (any bit pattern, any sign) collapses to the ONE
+        // canonical quiet-NaN, while ±0.0 keep their distinct sign bits (runtime lib.rs `op_box_float`/
+        // `op_box_float32`). So a float stored in a compound already has the spec's canonical byte form
+        // (`deterministic-value-form.md` §A Value Has One Canonical Byte Form), and the physical `champ_eq`
+        // byte-walk compares it EXACTLY — `nan == nan` true, `-0.0 != +0.0` — the SAME semantics the scalar
+        // `Core::FloatCompare` fix (04f206e90) gives a DIRECT float `=`. No construction-site canonicalize
+        // is needed (unlike a Bytes rope): the box already normalizes, so a compound float `=` Just Works.
+        Ty::Float(_) => true,
         Ty::List(_)
         | Ty::Bytes
         | Ty::Char

@@ -3405,6 +3405,41 @@ fn perceus_balance_leaves_no_live_objects() {
     );
 }
 
+/// COMPOUND EQUALITY over a runtime FLOAT LEAF follows the canonical byte form — the compound analogue of
+/// the scalar `Core::FloatCompare` fix, with NO extra machinery: `box-float` canonicalizes every NaN to
+/// the one quiet-NaN on construct (and keeps ±0.0 distinct), so a float in a compound already has the
+/// canonical byte form and the `champ_eq` walk is exact. `ty_heap_walkable` admits a Float leaf (was a
+/// decline). Here two equal runtime Float64 params in a tuple compare EQUAL → 1. (The full semantics —
+/// nan==nan, -0.0!=+0.0, different!=  — are pinned as graded corpus cases in 03-equality-and-observation.)
+#[test]
+fn compound_equality_over_a_runtime_float_leaf_follows_the_canonical_byte_form() {
+    use crate::testkit::parse;
+    let src = "(module m \
+                 (def (eq (: x Float64) (: y Float64)) (if (= (tuple x 1) (tuple y 1)) 1 0)) \
+                 (def (main) (eq 3.5 3.5)) (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect(
+        "compound float equality must compile (ty_heap_walkable admits a Float leaf), not decline",
+    );
+    let Some(runtime) = find_runtime_wasm() else {
+        eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
+        return;
+    };
+    let opts = cdz_run::RunOpts {
+        export: Some("main".to_string()),
+        args: vec![],
+        runtime: Some(runtime),
+        runtime_cache_dir: None,
+        host_responses: Vec::new(),
+    };
+    match cdz_run::run(&bytes, &opts).expect("run") {
+        cdz_run::Outcome::Value(s) => assert_eq!(
+            s, "1",
+            "two equal runtime floats in a tuple compare equal via the canonical-byte champ_eq walk"
+        ),
+        cdz_run::Outcome::Trap(t) => panic!("compound float equality trapped: {t}"),
+    }
+}
+
 /// RUNTIME STRUCTURAL EQUALITY leak balance: a `=` on two RUNTIME sum values (`value-eq`) leaves NO
 /// live heap cells. Both operands are OWNED temporaries — `(build 3)` allocates a cons-list each side —
 /// and `value-eq` only BORROWS them, so the emit must `drop` each after the compare (else two whole
