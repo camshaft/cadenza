@@ -21,6 +21,7 @@
 //! | `(output (: v T))`         | `` ```cdz output ``  | `v : T` (ML ascription)      |
 //! | `(error CODE)`             | `` ```error ``       | `CODE`                       |
 //! | `(trap "…")`               | `` ```trap ``        | the reason (an ML string)    |
+//! | `(declines)`               | `` ```declines ``    | (empty — payloadless)        |
 //! | `(compiler (error CODE))`  | `` ```compiler-error `` | `CODE`                    |
 //! | `(call export a…)`         | `` ```cdz call ``    | export then args, one/line   |
 //! | `(host-calls c…)`          | `` ```cdz host-calls `` | one call per line, ML     |
@@ -183,6 +184,8 @@ fn fence_for(a: &Arenas, clause: StructId, head: &str) -> Result<(String, String
         "output" => ("cdz output", true),
         "error" => ("error", true),
         "trap" => ("trap", true),
+        // `(declines)` — a bare, payloadless expectation. An empty-bodied `declines` fence.
+        "declines" => ("declines", true),
         "call" => ("cdz call", false),
         "host-calls" => ("cdz host-calls", false),
         "host-responses" => ("cdz host-responses", false),
@@ -410,6 +413,8 @@ fn reconstruct_clause(fence: &MdFence) -> Result<String, String> {
             Ok(format!("({} {})", fence.role, sexpr_of_ml(body)?))
         }
         "compiler-error" => Ok(format!("(compiler (error {}))", sexpr_of_ml(body)?)),
+        // `(declines)` — a payloadless clause; its fence body is empty.
+        "declines" => Ok("(declines)".to_string()),
         "call" | "host-calls" | "host-responses" => {
             // One ML form per non-empty line -> the clause's children.
             let children: Result<Vec<String>, String> = body

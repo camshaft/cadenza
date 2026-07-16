@@ -158,6 +158,8 @@ pass	a boolean-returning function called with a false result
 pass	a bound effect performed with neither a handler nor a host delegation has no home
 pass	a bound name in a map key is used by its value, not the literal name
 pass	a bounded generator produces only in-range values (0 <= roll < 64) for a runtime seed
+pass	a boxed runtime closure returning Unit applies without declining
+todo	a boxed runtime closure taking Unit (a lazy thunk) is forced without declining
 pass	a branch perform under two nested handlers threads the inner state to the continuation
 pass	a built-in Ast constructor applied to a wrong-type payload is a type error
 pass	a built-in Ast.Bool constructor applied to a wrong-type payload is a type error
@@ -2283,7 +2285,7 @@ todo	a closure export alongside a plain scalar export — the plain export runs
 todo	a closure exported to the host is called by the host
 todo	a closure returned from a recursive function is applied through a recursive HOF
 todo	a closure returning Bytes crosses to the host as list<u8>
-todo	a closure returning Unit is declined — Unit has no machine representation
+pass	a closure returning Unit is declined — Unit has no machine representation
 todo	a closure returning a LIST of tuples (direct-call)
 todo	a closure returning a List crosses as the value form
 todo	a closure returning a Map — canonical key order
@@ -2320,7 +2322,7 @@ todo	a closure whose CALL returns a user sum crosses as the value form
 todo	a closure whose CALL returns an Option crosses as the value form
 todo	a closure whose body applies a nested lambda in place runs through a recursive HOF
 todo	a closure whose body calls a top-level helper function
-todo	a closure-typed closure ARG on the DIRECT-CALL path is declined — host would supply the closure
+pass	a closure-typed closure ARG on the DIRECT-CALL path is declined — host would supply the closure
 todo	a collection-carrying recursion whose base arm does a fallible indexed read compiles
 todo	a compound map key containing a rope is found by its flat-twin key
 todo	a compound map key whose Bytes element is a rope is found by its flat twin
@@ -2452,7 +2454,7 @@ todo	a predicate closure returning Bool drives an early-exit recursive HOF
 todo	a prefixed quantity displays scaled to its reference unit (Float)
 todo	a prelude Option value crosses a module boundary as an export result
 todo	a produced closure is handed back into a consumer export (the round trip)
-todo	a producer capturing a host-supplied COMPOUND parameter is declined — host→guest decode
+pass	a producer capturing a host-supplied COMPOUND parameter is declined — host→guest decode
 todo	a program that makes a host call has that call in its observable behavior
 todo	a program uses a response-returning delegated host function's return value
 todo	a quantity is constructed from a numeric value and a unit

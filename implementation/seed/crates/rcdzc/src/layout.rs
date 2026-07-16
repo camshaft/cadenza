@@ -607,8 +607,30 @@ fn collect_closure_call_sigs(
     db.walk_depth += 1;
     if let Core::CallClosure { closure, args } = crate::lower::core_of(db, id) {
         // The application's env-prefixed param valtypes + result type — the shape the `call_indirect` needs.
-        let arg_vts: Option<Vec<ValType>> =
-            args.iter().map(|&a| valtype_of(&type_of(db, a))).collect();
+        // A `Unit` argument is ELIDED (it occupies no wasm slot — the same elision `select::closure_type_index`
+        // and the lifted lambda's own functype apply), so it is DROPPED here rather than making the whole
+        // collection `None`. A non-Unit arg with no machine rep makes the shape unrepresentable → skip it
+        // (the application declines at select). Keeping this in lockstep with `closure_type_index`'s arg
+        // handling is load-bearing: a mismatch registers a functype of the wrong shape (or none), so the
+        // `call_indirect` type index disagrees with the emitted body — an "indirect call type mismatch" trap.
+        let arg_vts: Option<Vec<ValType>> = {
+            let mut vts = Vec::new();
+            let mut ok = true;
+            for &a in &args {
+                let ty = type_of(db, a);
+                if matches!(ty.strip_nominal(), Ty::Unit) {
+                    continue; // Unit arg → no slot, elided
+                }
+                match valtype_of(&ty) {
+                    Some(v) => vts.push(v),
+                    None => {
+                        ok = false;
+                        break;
+                    }
+                }
+            }
+            if ok { Some(vts) } else { None }
+        };
         if let Some(arg_vts) = arg_vts {
             let mut result_ty = type_of(db, closure);
             let mut ok = true;

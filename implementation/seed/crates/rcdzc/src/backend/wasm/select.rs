@@ -2653,18 +2653,29 @@ pub fn select_function_of(
     // walk the tagless heap, so only scalars get a `DW_TAG_variable`. Cheap (a name lookup per param);
     // the emit path only reads it under a debug request.
     let mut locals: Vec<LocalVar> = Vec::new();
-    for (i, (binder, ty)) in params.iter().enumerate() {
+    for (binder, ty) in params.iter() {
+        // A `Unit` parameter occupies NO wasm slot — Unit is zero-width (`valtype_of(Unit) = None`), so it
+        // is ELIDED from the functype's params, exactly as a Unit RESULT is elided to a zero-result
+        // functype and a Unit ARGUMENT (`Core::Unit`) pushes nothing. The slot counter advances only for
+        // represented params, so the remaining params + scratch keep a dense `0..n` numbering. A
+        // `Core::Param` reference to this binder emits nothing (see the `Core::Param` arm), the read
+        // analogue of a Unit value carrying no machine content. This is what lets a `(-> Unit T)` closure
+        // (the canonical lazy THUNK `Susp(Unit -> …)`) box + dispatch through `call_indirect`.
+        if matches!(ty.strip_nominal(), Ty::Unit) {
+            continue;
+        }
+        let slot = param_vts.len() as u32;
         let vt = valtype_of(ty).ok_or_else(|| {
             Reject::decline("a function parameter's type has no machine representation")
         })?;
-        slot_of.insert(*binder, i as u32);
+        slot_of.insert(*binder, slot);
         param_vts.push(vt);
-        param_slots.push(i as u32);
+        param_slots.push(slot);
         if matches!(ty.strip_nominal(), Ty::Int(_) | Ty::Bool | Ty::Float(_))
             && let Some(name) = db.ast.as_name(*binder)
         {
             locals.push(LocalVar {
-                slot: i as u32,
+                slot,
                 name: name.to_string(),
                 ty: ty.clone(),
                 is_param: true,
@@ -4781,12 +4792,18 @@ fn closure_type_index(
     args: &[StructId],
     layout: &Layout,
 ) -> Option<u32> {
-    // Each argument's machine valtype, and the application's result valtype (the closure's type peeled
-    // by `args.len()` arrows).
-    let arg_vts: Vec<crate::backend::wasm::lir::ValType> = args
-        .iter()
-        .map(|&a| valtype_of(&type_of(db, a)))
-        .collect::<Option<_>>()?;
+    // Each argument's machine valtype, in order — a `Unit` argument is ELIDED (it occupies no wasm slot,
+    // pushes nothing, and the lifted lambda's Unit param is elided from its functype too), so it is
+    // dropped here rather than making the whole collection `None`. A non-Unit arg with no machine rep
+    // (should not reach a runtime application) makes the shape unrepresentable → `None` (caller declines).
+    let mut arg_vts: Vec<crate::backend::wasm::lir::ValType> = Vec::new();
+    for &a in args {
+        let ty = type_of(db, a);
+        if matches!(ty.strip_nominal(), Ty::Unit) {
+            continue;
+        }
+        arg_vts.push(valtype_of(&ty)?);
+    }
     let mut result_ty = type_of(db, closure);
     for _ in 0..args.len() {
         result_ty = match result_ty {
@@ -4794,31 +4811,60 @@ fn closure_type_index(
             _ => return None,
         };
     }
-    let rv = valtype_of(&result_ty)?;
-    // Find a lifted lambda with the same param valtypes (in order) + result valtype.
-    if let Some(slot) = layout.lifted.iter().position(|l| {
-        l.params.len() == arg_vts.len()
-            && l.params
+    // The application's result valtype — `None` for a `Unit` result, which crosses as a ZERO-RESULT
+    // functype (the serializer emits a Unit-returning lifted lambda as `0x60 <params> <>`). A result
+    // that is neither machine-repr NOR Unit is unrepresentable, so no type matches (the caller declines).
+    let is_unit_result = matches!(result_ty, Ty::Unit);
+    let rv = if is_unit_result {
+        None
+    } else {
+        Some(valtype_of(&result_ty)?)
+    };
+    // A lifted lambda's result MATCHES this application's result shape — a Unit result matches a lift
+    // whose own result is Unit (both zero-result functypes); a scalar result matches by valtype.
+    let ret_matches = |l: &crate::lower::LiftedLambda| {
+        if is_unit_result {
+            matches!(l.ret_ty, Ty::Unit)
+        } else {
+            valtype_of(&l.ret_ty) == rv
+        }
+    };
+    // A lifted lambda's REPRESENTED param valtypes (in order) — a `Unit` param is elided (it occupies no
+    // wasm slot), mirroring the `arg_vts` elision above, so the two lists compare like-for-like.
+    let lift_param_vts =
+        |l: &crate::lower::LiftedLambda| -> Vec<crate::backend::wasm::lir::ValType> {
+            l.params
                 .iter()
-                .zip(&arg_vts)
-                .all(|((_, pt), av)| valtype_of(pt) == Some(*av))
-            && valtype_of(&l.ret_ty) == Some(rv)
-    }) {
+                .filter(|(_, pt)| !matches!(pt.strip_nominal(), Ty::Unit))
+                .filter_map(|(_, pt)| valtype_of(pt))
+                .collect()
+        };
+    // Find a lifted lambda with the same represented-param valtypes (in order) + result shape.
+    if let Some(slot) = layout
+        .lifted
+        .iter()
+        .position(|l| lift_param_vts(l) == arg_vts && ret_matches(l))
+    {
         return Some(layout.lifted_type_index(slot, layout.import_base));
     }
     // No lifted lambda supplies this shape — the applied closure is of a type NO `Core::Closure` in this
     // program builds (a statically-reachable but dynamically-dead `match` arm applying a variant's boxed
     // closure). `layout.closure_call_types` registered an EXTRA functype of the needed `(env:i32, args…)
     // ->result` shape; find it and use its type-section index. The lifted lambda's functype prepends an
-    // i32 env, so the extra functype's params are `[i32, arg_vts…]` — match on that full param list.
+    // i32 env, so the extra functype's params are `[i32, arg_vts…]` — match on that full param list. A
+    // Unit result is a zero-result functype (`ret` is `Ty::Unit`), matched the same way as the lift path.
     let want_params: Vec<crate::backend::wasm::lir::ValType> =
         core::iter::once(crate::backend::wasm::lir::ValType::I32)
             .chain(arg_vts.iter().copied())
             .collect();
-    let i = layout
-        .closure_call_types
-        .iter()
-        .position(|(pvts, ret)| *pvts == want_params && valtype_of(ret) == Some(rv))?;
+    let i = layout.closure_call_types.iter().position(|(pvts, ret)| {
+        *pvts == want_params
+            && if is_unit_result {
+                matches!(ret, Ty::Unit)
+            } else {
+                valtype_of(ret) == rv
+            }
+    })?;
     Some(layout.closure_call_type_index(i, layout.import_base))
 }
 
@@ -7481,13 +7527,16 @@ fn emit(
             )
         }
         // A parameter reference — read its local slot. The slot was assigned in `select_function`; a
-        // reference to a binder with no slot is a compiler bug (a param not in the signature), so
-        // decline rather than emit a wrong `local.get`.
+        // reference to a binder with no slot is either a `Unit` param (elided from the signature — Unit
+        // occupies no slot, so reading it pushes nothing, the read analogue of `Core::Unit`) or a
+        // compiler bug (a represented param not in the signature), so decline in the latter case rather
+        // than emit a wrong `local.get`.
         Core::Param { binder } => match slots.get(&binder) {
             Some(&slot) => {
                 emit_binder_ref(id, slot, out);
                 Ok(())
             }
+            None if matches!(type_of(db, binder).strip_nominal(), Ty::Unit) => Ok(()),
             None => Err(Reject::decline("parameter reference has no local slot")),
         },
         // An A-normal binding sequence: give each binding a PERSISTENT local slot (unlike the reused

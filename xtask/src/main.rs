@@ -2454,6 +2454,27 @@ fn grade_trial(expect: &str, ran: &Ran) -> Grade {
             },
             Ran::Declined { .. } => Grade::Todo,
         },
+        // `declines`: the corpus says the compiler DECLINES to emit a component for this well-formed
+        // program (a shape it does not yet realize — e.g. a type with no boundary representation), the
+        // "decline rather than miscompile" outcome (reference-compiler.md §A Type Without A Boundary
+        // Representation Declines At The Boundary; cross-component-interop.md §A Not-Yet-Supported
+        // Cross-Component Shape Declines Rather Than Miscompiles). Grade by what the compiler DID:
+        //  - declined (codeless OR coded — either is a refusal to emit) → Pass (the guard held);
+        //  - ran to a VALUE → Fail (it EMITTED a component and produced a value — the miscompile this
+        //    guard exists to catch, the honest analogue of a wrong `output` value);
+        //  - trapped / broken artifact → Fail (a component WAS emitted — not the clean decline pinned).
+        // The Pass side is DELIBERATELY wide (any `Declined`, coded or not): a case migrated from `todo`
+        // to `declines` pins "this must not emit", not a specific diagnostic code (that is `error CODE`'s
+        // job). Should the compiler later gain a coded rejection for the same shape, this still passes;
+        // should it later EMIT the shape, the case flips to Fail and the corpus is updated to `output`.
+        "declines" => match ran {
+            Ran::Declined { .. } => Grade::Pass,
+            Ran::Value(v, _) => Grade::Fail(format!("expected a decline, ran → {v}")),
+            Ran::Trap(t) => Grade::Fail(format!("expected a decline, trapped: {t}")),
+            Ran::BadArtifact(e) => {
+                Grade::Fail(format!("expected a decline, artifact did not build: {e}"))
+            }
+        },
         _ => Grade::Todo,
     }
 }

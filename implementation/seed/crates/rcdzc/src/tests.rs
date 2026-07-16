@@ -51170,6 +51170,42 @@ mod stage1 {
     }
 
     #[test]
+    fn a_boxed_closure_taking_unit_a_lazy_thunk_is_forced_and_runs() {
+        // The canonical lazy THUNK `Thunk = Susp(Unit -> Int64)` — a closure with a `Unit` PARAMETER boxed
+        // in a sum, extracted by a match, and FORCED (`(f unit)`). `valtype_of(Unit) = None`, so the
+        // boxed-closure lift guard declined "a closure's parameter type has no machine representation" —
+        // but a Unit param, like a Unit result, occupies NO wasm slot. The fix ELIDES a Unit param from
+        // the closure's functype (lift guard, `select_function_of` slot assignment, `Core::Param` read of
+        // a Unit binder, `closure_type_index`, and `collect_closure_call_sigs`, all in lockstep). Unlike
+        // the Unit-RESULT face, the forced call is NOT dead (its result is observed), so a real
+        // `call_indirect` runs → 42. Unblocks the ideal thunk-based lazy `Iter` (v-iterators).
+        use crate::testkit::parse;
+        let src = "(module m \
+            (type Thunk (Susp (-> Unit Int64))) \
+            (def (force (: t Thunk)) (match t (((. Thunk Susp) f) (f unit)))) \
+            (def (mk) ((. Thunk Susp) (fn ((: u Unit)) 42))) \
+            (def (main) (force (mk))) \
+            (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src)))
+            .expect("a boxed Unit-param closure (thunk) compiles (was: declined)");
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
+            return;
+        };
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec![],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run(&bytes, &opts).expect("run boxed-unit-param thunk") {
+            cdz_run::Outcome::Value(s) => assert_eq!(s, "42"),
+            cdz_run::Outcome::Trap(t) => panic!("boxed-unit-param thunk trapped: {t}"),
+        }
+    }
+
+    #[test]
     fn lambda_lifting_dedups_by_body_and_gives_distinct_lambdas_distinct_slots() {
         // `Db::lift_lambda` dedups by the lambda's `body` occurrence via an O(1) index (was a linear scan
         // of `db.lifted` per lift → O(N²) for a program lifting N distinct closures). This locks in the two
