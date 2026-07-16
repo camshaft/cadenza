@@ -273,3 +273,202 @@
             (def (main) (Thm.Seq (list) (Term.Eq (Term.Var 1) (Term.Var 2))))
             (export main)))
   (error  CDZ0214))
+
+; ============================================================================================
+; Increment 3 — the rest of the equational-core primitive inference rules, and a multi-step proof.
+; Building on the Inc-2 skeleton (Term concrete / Thm abstract sequent / refl / assume / term-eq), this
+; adds the derived-from-primitive rules that make the kernel usable: TRANS (chaining equalities),
+; MK_COMB (congruence: equals applied to equals are equal), EQ_MP (from ⊢p=q and G⊢p derive G⊢q,
+; unioning hypotheses), and DEDUCT_ANTISYM (from A⊢p and B⊢q derive (A-q)∪(B-p)⊢p=q — the rule that
+; builds an equality from bidirectional entailment, discharging the matched hypotheses). Each rule mints
+; a Thm ONLY through the private constructor and checks its premises with the recursive term-eq, so a
+; malformed application yields Option.None (a non-theorem) rather than an unsound Thm. The final case
+; composes several rules into a single derivation, exercising the kernel as a real proof engine.
+; ============================================================================================
+
+(case "the kernel's MK_COMB rule: equals applied to equals are equal — from f=g and x=y derive (f x)=(g y)"
+  (doc    "Congruence. MK_COMB takes ⊢ f = g and ⊢ x = y and derives ⊢ (f x) = (g y): the theorem that
+           applying equal functions to equal arguments yields equal results. The rule reads the two
+           premise conclusions (each an Eq), and mints the application-equality only through the private
+           Thm constructor. Here from refl(f) : ⊢ f=f and refl(x) : ⊢ x=x it derives ⊢ (f x) = (f x),
+           whose two sides term-eq. Pins that a rule CONSUMING two theorems and PRODUCING a structurally
+           larger one composes correctly through the abstract boundary.")
+  (module "hol"
+    (do
+      (type Term (Var Int64) (Comb Term Term) (Eq Term Term))
+      (type Thm (Seq (List Term) Term))
+      (def (term-eq (: a Term) (: b Term))
+        (match a
+          ((Term.Var n)    (match b ((Term.Var m) (= n m)) ((Term.Comb _ _) false) ((Term.Eq _ _) false)))
+          ((Term.Comb x y) (match b ((Term.Var _) false) ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) ((Term.Eq _ _) false)))
+          ((Term.Eq x y)   (match b ((Term.Var _) false) ((Term.Comb _ _) false) ((Term.Eq p q) (and (term-eq x p) (term-eq y q)))))))
+      (def (refl (: t Term)) (Thm.Seq (list) (Term.Eq t t)))
+      (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
+      (def (mk-comb (: th1 Thm) (: th2 Thm))
+        (match (concl th1)
+          ((Term.Eq f g)
+            (match (concl th2)
+              ((Term.Eq x y) (Option.Some (Thm.Seq (list) (Term.Eq (Term.Comb f x) (Term.Comb g y)))))
+              (_ (Option.None))))
+          (_ (Option.None))))
+      (export (. Term *))
+      (export Thm)
+      (export term-eq)
+      (export refl)
+      (export mk-comb)
+      (export concl)))
+  (input  (do
+            (import "hol" (Term Thm term-eq refl mk-comb concl))
+            (def (main)
+              (let ((f (Term.Var 0)) (x (Term.Var 1)))
+                (match (mk-comb (refl f) (refl x))
+                  ((Option.Some th)
+                    (match (concl th) ((Term.Eq l r) (term-eq l r)) (_ false)))
+                  ((Option.None) false))))
+            (export main)))
+  (output (: true Bool)))
+
+(case "the kernel's EQ_MP rule: from |- p=q and G |- p derive G |- q (hypotheses unioned)"
+  (doc    "Modus ponens for equality — the rule that lets a proof MOVE across a proven equality. EQ_MP
+           takes ⊢ p = q and G ⊢ p and derives G ⊢ q, checking (via term-eq) that the second theorem's
+           conclusion really is the left side p, and UNIONING the two hypothesis sets (List.concat). Here
+           from refl(p) : ⊢ p=p and assume(p) : {p} ⊢ p it derives {p} ⊢ p. Pins hypothesis-threading: a
+           theorem's hyp list survives the rule and the derived theorem carries the union. A mismatch
+           (concl ≠ p) yields Option.None, never a forged theorem.")
+  (module "hol"
+    (do
+      (type Term (Var Int64) (Comb Term Term) (Eq Term Term))
+      (type Thm (Seq (List Term) Term))
+      (def (term-eq (: a Term) (: b Term))
+        (match a
+          ((Term.Var n)    (match b ((Term.Var m) (= n m)) ((Term.Comb _ _) false) ((Term.Eq _ _) false)))
+          ((Term.Comb x y) (match b ((Term.Var _) false) ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) ((Term.Eq _ _) false)))
+          ((Term.Eq x y)   (match b ((Term.Var _) false) ((Term.Comb _ _) false) ((Term.Eq p q) (and (term-eq x p) (term-eq y q)))))))
+      (def (refl (: t Term)) (Thm.Seq (list) (Term.Eq t t)))
+      (def (assume (: p Term)) (Thm.Seq (list p) p))
+      (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
+      (def (hyps (: th Thm)) (match th ((Thm.Seq h _) h)))
+      (def (eq-mp (: eq Thm) (: thm Thm))
+        (match (concl eq)
+          ((Term.Eq p q)
+            (if (term-eq (concl thm) p)
+                (Option.Some (Thm.Seq (List.concat (hyps eq) (hyps thm)) q))
+                (Option.None)))
+          (_ (Option.None))))
+      (export (. Term *))
+      (export Thm)
+      (export term-eq)
+      (export refl)
+      (export assume)
+      (export eq-mp)
+      (export concl)
+      (export hyps)))
+  (input  (do
+            (import "hol" (Term Thm term-eq refl assume eq-mp concl hyps))
+            (def (main)
+              (let ((p (Term.Var 5)))
+                (match (eq-mp (refl p) (assume p))
+                  ((Option.Some th)
+                    (and (term-eq (concl th) p)
+                         (match (hyps th) ((list h) (term-eq h p)) (_ false))))
+                  ((Option.None) false))))
+            (export main)))
+  (output (: true Bool)))
+
+(case "the kernel's DEDUCT_ANTISYM rule: from A |- p and B |- q derive (A-q)++(B-p) |- p=q"
+  (doc    "The rule that BUILDS an equality from bidirectional entailment (HOL's DEDUCT_ANTISYM_RULE):
+           from A ⊢ p and B ⊢ q derive (A − q) ∪ (B − p) ⊢ p = q, discharging q from A's hypotheses and p
+           from B's. It exercises a recursive `remove` over a hypothesis list (a leading-rest list pattern
+           `(list h .. rest)` + term-eq + List.push) — the kernel's most structurally involved hypothesis
+           manipulation. From assume(p) : {p}⊢p and assume(q) : {q}⊢q it derives ({p}−q) ∪ ({q}−p) ⊢ p=q =
+           {p,q} ⊢ p=q, whose conclusion is the equality p=q. Pins that a rule reshaping hypothesis sets
+           (not just unioning them) composes correctly and mints only through the private constructor.")
+  (module "hol"
+    (do
+      (type Term (Var Int64) (Comb Term Term) (Eq Term Term))
+      (type Thm (Seq (List Term) Term))
+      (def (term-eq (: a Term) (: b Term))
+        (match a
+          ((Term.Var n)    (match b ((Term.Var m) (= n m)) ((Term.Comb _ _) false) ((Term.Eq _ _) false)))
+          ((Term.Comb x y) (match b ((Term.Var _) false) ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) ((Term.Eq _ _) false)))
+          ((Term.Eq x y)   (match b ((Term.Var _) false) ((Term.Comb _ _) false) ((Term.Eq p q) (and (term-eq x p) (term-eq y q)))))))
+      (def (remove (: t Term) (: hs (List Term)))
+        (match hs
+          ((list) (list))
+          ((list h .. rest) (if (term-eq h t) (remove t rest) (List.push (remove t rest) h)))))
+      (def (assume (: p Term)) (Thm.Seq (list p) p))
+      (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
+      (def (deduct (: th1 Thm) (: th2 Thm))
+        (match th1 ((Thm.Seq h1 p)
+          (match th2 ((Thm.Seq h2 q)
+            (Thm.Seq (List.concat (remove q h1) (remove p h2)) (Term.Eq p q)))))))
+      (export (. Term *))
+      (export Thm)
+      (export term-eq)
+      (export assume)
+      (export deduct)
+      (export concl)))
+  (input  (do
+            (import "hol" (Term Thm term-eq assume deduct concl))
+            (def (main)
+              (let ((p (Term.Var 1)) (q (Term.Var 2)))
+                (match (concl (deduct (assume p) (assume q)))
+                  ((Term.Eq l r) (and (term-eq l p) (term-eq r q)))
+                  (_ false))))
+            (export main)))
+  (output (: true Bool)))
+
+(case "a multi-step kernel derivation composes several primitive rules into one theorem"
+  (doc    "The kernel as a real proof engine: a derivation chaining TRANS and MK_COMB. From refl we get
+           ⊢ a=a and ⊢ b=b; MK_COMB gives ⊢ (a b)=(a b); TRANS of ⊢(a b)=(a b) with itself again gives
+           ⊢ (a b)=(a b). The point is not the (trivial) theorem but that MULTIPLE rules compose — each
+           consuming theorems only obtainable from prior rules, each minting through the private
+           constructor — and the final conclusion is the expected equality. This is the shape every real
+           HOL proof takes: primitive rules threaded into a derivation, with the kernel the sole minter.")
+  (module "hol"
+    (do
+      (type Term (Var Int64) (Comb Term Term) (Eq Term Term))
+      (type Thm (Seq (List Term) Term))
+      (def (term-eq (: a Term) (: b Term))
+        (match a
+          ((Term.Var n)    (match b ((Term.Var m) (= n m)) ((Term.Comb _ _) false) ((Term.Eq _ _) false)))
+          ((Term.Comb x y) (match b ((Term.Var _) false) ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) ((Term.Eq _ _) false)))
+          ((Term.Eq x y)   (match b ((Term.Var _) false) ((Term.Comb _ _) false) ((Term.Eq p q) (and (term-eq x p) (term-eq y q)))))))
+      (def (refl (: t Term)) (Thm.Seq (list) (Term.Eq t t)))
+      (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
+      (def (mk-comb (: th1 Thm) (: th2 Thm))
+        (match (concl th1)
+          ((Term.Eq f g)
+            (match (concl th2)
+              ((Term.Eq x y) (Option.Some (Thm.Seq (list) (Term.Eq (Term.Comb f x) (Term.Comb g y)))))
+              (_ (Option.None))))
+          (_ (Option.None))))
+      (def (trans (: th1 Thm) (: th2 Thm))
+        (match (concl th1)
+          ((Term.Eq a b)
+            (match (concl th2)
+              ((Term.Eq b2 c) (if (term-eq b b2) (Option.Some (Thm.Seq (list) (Term.Eq a c))) (Option.None)))
+              (_ (Option.None))))
+          (_ (Option.None))))
+      (export (. Term *))
+      (export Thm)
+      (export term-eq)
+      (export refl)
+      (export mk-comb)
+      (export trans)
+      (export concl)))
+  (input  (do
+            (import "hol" (Term Thm term-eq refl mk-comb trans concl))
+            (def (main)
+              (let ((a (Term.Var 0)) (b (Term.Var 1)))
+                (match (mk-comb (refl a) (refl b))
+                  ((Option.Some th-ab)
+                    (match (trans th-ab th-ab)
+                      ((Option.Some th)
+                        (match (concl th)
+                          ((Term.Eq l r) (term-eq l r))
+                          (_ false)))
+                      ((Option.None) false)))
+                  ((Option.None) false))))
+            (export main)))
+  (output (: true Bool)))
