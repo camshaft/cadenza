@@ -16117,6 +16117,58 @@ mod match_engine {
         }
     }
 
+    /// A MALFORMED top-level `@`-annotation — one that wraps no well-formed definition — must name the
+    /// annotation SHAPE, not resolve as the misleading "unbound name `@` at the top level". `@` is the
+    /// general-purpose annotation head `(@ <name> (def …))`; `strip_annotations` rewrites every well-formed
+    /// def-wrapping annotation IN PLACE to BE its inner def (even an UNKNOWN name — a transparent
+    /// forward-compat marker), so any SURVIVING top-level `(@ …)` wrapped no def to unwrap. Left alone it
+    /// resolved as "unbound name `@`" (`@` is a recognized head, not a name) plus a phantom unbound-name
+    /// for any def it hid. `collect_faults` now rejects each CDZ0201 naming the `(@ <name> (def …))` shape.
+    #[test]
+    fn a_malformed_top_level_annotation_names_the_annotation_shape_not_an_unbound_at() {
+        use crate::testkit::parse;
+        for src in [
+            "(module m (@ test) (def (main) 0) (export main))", // name-only, no target def
+            "(module m (@) (def (main) 0) (export main))",      // empty annotation
+            "(module m (@ test 5) (def (main) 0) (export main))", // non-form target
+            "(module m (@ test (foo 1)) (def (main) 0) (export main))", // non-def list target
+            "(module m (@ test (def)) (export c))",             // malformed inner def
+        ] {
+            let d = crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.message.contains("annotation wraps no definition"))
+                .unwrap_or_else(|| panic!("a malformed `(@ …)` must be rejected: {src}"));
+            assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+            assert!(
+                d.message.contains("`(@ <name> (def …))`"),
+                "the message names the annotation shape: {}",
+                d.message
+            );
+            // The misleading resolve-phase "unbound name `@`" must NOT reach the surface.
+            assert!(
+                !crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                    .iter()
+                    .any(|d| d.message.contains("unbound name `@`")),
+                "the misleading `unbound name @` is superseded: {src}"
+            );
+        }
+        // NO false positive: a well-formed annotation (known name, unknown name, or call-style tag, plus a
+        // stacked pair) is unwrapped to its inner def and never flagged.
+        for ok in [
+            "(module m (@ test (def (c) 3)) (export c))",
+            "(module m (@ (tag \"slow\") (def (c) 3)) (export c))",
+            "(module m (@ nonsuch (def (c) 3)) (export c))",
+            "(module m (@ (tag \"slow\") (@ test (def (c) 3))) (export c))",
+        ] {
+            assert!(
+                !crate::diagnostics(&mut crate::db::Db::load(parse(ok)))
+                    .iter()
+                    .any(|d| d.message.contains("annotation wraps no definition")),
+                "a well-formed annotation is not flagged: {ok}"
+            );
+        }
+    }
+
     /// A SHAPE-valid constructor-export `(export (. T A))` / `(export (. T *))` must ALSO be SEMANTICALLY
     /// valid: `T` a declared sum, `A` one of its variants. The linker's `as_ctor_export` recorded the
     /// (type, ctor) names WITHOUT checking they exist, so `(export (. T Nonesuch))` (a ctor `T` lacks),
