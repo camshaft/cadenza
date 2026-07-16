@@ -1,0 +1,166 @@
+/// anf.cdz — A-NORMAL FORM conversion: rewrite an expression so that every operand of a primitive is
+/// ATOMIC (a literal or variable), naming each compound intermediate with a `let`. ANF is the canonical
+/// IR a compiler lowers to before codegen — it makes evaluation order explicit and every intermediate
+/// value a named temporary, so instruction selection / register allocation read straight off the `let`s.
+///
+///   (1 + 2) * 3   ⟶   let t = 1 + 2 in t * 3          -- the compound operand (1+2) is named `t`
+///
+/// The transform threads a FRESH-ID counter (variables are `Int64` ids). To guarantee fresh temporaries
+/// never collide with a program's existing variables, the counter is seeded at `max-id(e) + 1` — above
+/// every id already in the tree. `norm` returns `(normalized-expr, next-counter)`; `atomize` turns a
+/// sub-expression into an atom plus the (zero or one) binding needed to name it, and `wrap` threads those
+/// bindings back as `let`s around the operator.
+///
+/// Contract: `anf` PRESERVES meaning — `eval(anf(e)) == eval(e)` — and its result satisfies `is-anf` (every
+/// primitive operand is atomic). This is the invariant the backend relies on.
+
+type Ex =
+  | Num(Int64)
+  | Var(Int64)
+  | Add(Ex, Ex)
+  | Mul(Ex, Ex)
+  | Let(Int64, Ex, Ex)
+
+/// Is `e` an ATOM — a value usable directly as a primitive operand (no evaluation of a sub-expression)?
+def is-atom(e: Ex) = match e with
+  | Ex.Num(_) => true
+  | Ex.Var(_) => true
+  | _ => false
+
+def imax(a: Int64, b: Int64) = if a > b then a else b
+
+/// The largest variable id appearing in `e` (-1 if none) — used to seed fresh temporaries above it.
+def max-id(e: Ex) = match e with
+  | Ex.Num(_) => 0 - 1
+  | Ex.Var(x) => x
+  | Ex.Add(l, r) => imax(max-id(l), max-id(r))
+  | Ex.Mul(l, r) => imax(max-id(l), max-id(r))
+  | Ex.Let(x, rhs, body) => imax(x, imax(max-id(rhs), max-id(body)))
+
+/// Turn `e` into an atom plus the bindings that name it: an atom needs none; a compound `e` is bound to a
+/// fresh var `k`, returning `(Var k, [(k, e)], k+1)`. Returns `(atomRef, bindings, nextCounter)`.
+def atomize(e: Ex, k: Int64) =
+  if is-atom(e) then (e, [], k)
+  else (Ex.Var(k), [(k, e)], k + 1)
+
+/// Wrap a list of `(id, rhs)` bindings around `body` as nested `let`s (first binding outermost).
+def wrap(binds: List(Tuple(Int64, Ex)), body: Ex) = match binds with
+  | [] => body
+  | [b, .. rest] => (match b with | (id, rhs) => Ex.Let(id, rhs, wrap(rest, body)))
+
+/// Normalize `e` to ANF, threading the fresh-id counter `k`. Returns `(anf-expr, nextCounter)`.
+def norm(e: Ex, k: Int64) = match e with
+  | Ex.Num(n) => (Ex.Num(n), k)
+  | Ex.Var(x) => (Ex.Var(x), k)
+  | Ex.Add(l, r) => norm-bin(l, r, k, true)
+  | Ex.Mul(l, r) => norm-bin(l, r, k, false)
+  | Ex.Let(x, rhs, body) =>
+    (match norm(rhs, k) with | (rhs2, k1) =>
+      (match norm(body, k1) with | (body2, k2) => (Ex.Let(x, rhs2, body2), k2)))
+
+/// Normalize a binary primitive: recursively ANF each operand, atomize both (naming any compound result),
+/// then wrap the fresh bindings around the now-atomic-operand operator.
+def norm-bin(l: Ex, r: Ex, k: Int64, is-add: Bool) =
+  (match norm(l, k) with | (l2, k1) =>
+    (match norm(r, k1) with | (r2, k2) =>
+      (match atomize(l2, k2) with | (la, lb, k3) =>
+        (match atomize(r2, k3) with | (ra, rb, k4) =>
+          (let op = (if is-add then Ex.Add(la, ra) else Ex.Mul(la, ra)) in
+           (wrap(List.concat(lb, rb), op), k4))))))
+
+/// Convert `e` to A-normal form. Fresh temporaries start above `max-id(e)` so they cannot shadow or
+/// collide with any variable already in `e`.
+def anf(e: Ex) = match norm(e, max-id(e) + 1) with | (a, _) => a
+
+/// The ANF invariant: every primitive operand is an atom (and every subterm is itself ANF).
+def is-anf(e: Ex) = match e with
+  | Ex.Num(_) => true
+  | Ex.Var(_) => true
+  | Ex.Add(l, r) => is-atom(l) and is-atom(r) and is-anf(l) and is-anf(r)
+  | Ex.Mul(l, r) => is-atom(l) and is-atom(r) and is-anf(l) and is-anf(r)
+  | Ex.Let(_, rhs, body) => is-anf(rhs) and is-anf(body)
+
+/// Reference evaluator (a free var reads as -1) — to check meaning preservation.
+def ev(e: Ex, env: Map(Int64, Int64)) = match e with
+  | Ex.Num(n) => n
+  | Ex.Var(x) => (match Map.lookup(env, x) with | Option.Some(v) => v | Option.None(_) => 0 - 1)
+  | Ex.Add(l, r) => ev(l, env) + ev(r, env)
+  | Ex.Mul(l, r) => ev(l, env) * ev(r, env)
+  | Ex.Let(x, rhs, body) => ev(body, Map.insert(env, x, ev(rhs, env)))
+
+def eval(e: Ex) = ev(e, Map.empty)
+
+/// Count `let` bindings (how many temporaries ANF introduced).
+def let-count(e: Ex) = match e with
+  | Ex.Add(l, r) => let-count(l) + let-count(r)
+  | Ex.Mul(l, r) => let-count(l) + let-count(r)
+  | Ex.Let(_, rhs, body) => 1 + let-count(rhs) + let-count(body)
+  | _ => 0
+
+/// Builders.
+def n(k: Int64) = Ex.Num(k)
+def v(x: Int64) = Ex.Var(x)
+
+@test
+def anf-atom-unchanged() =
+  // an atom is already ANF: anf(5) = 5, no lets.
+  let a = anf(n(5)) in
+  if is-anf(a) then (if let-count(a) == 0 then (if eval(a) == 5 then unit else trap("eval 5")) else trap("no lets")) else trap("atom is anf")
+
+@test
+def anf-flat-add-unchanged() =
+  // 1 + 2 : both operands atomic already → no new lets, still ANF.
+  let a = anf(Ex.Add(n(1), n(2))) in
+  if is-anf(a) then (if let-count(a) == 0 then (if eval(a) == 3 then unit else trap("eval 3")) else trap("no lets")) else trap("flat add is anf")
+
+@test
+def anf-names-compound-operand() =
+  // (1 + 2) * 3 : the compound left operand is named → one let; result is ANF; eval 9.
+  let e = Ex.Mul(Ex.Add(n(1), n(2)), n(3)) in
+  let a = anf(e) in
+  if is-anf(a) then (if let-count(a) == 1 then (if eval(a) == 9 then unit else trap("eval 9")) else trap("one let")) else trap("result is anf")
+
+@test
+def anf-original-not-already-anf() =
+  // sanity that the transform is doing work: the ORIGINAL (1+2)*3 is NOT ANF (a compound operand).
+  if is-anf(Ex.Mul(Ex.Add(n(1), n(2)), n(3))) then trap("(1+2)*3 is not ANF before conversion") else unit
+
+@test
+def anf-both-operands-compound() =
+  // (1+2) * (3+4) : both operands compound → two lets; eval 21.
+  let e = Ex.Mul(Ex.Add(n(1), n(2)), Ex.Add(n(3), n(4))) in
+  let a = anf(e) in
+  if is-anf(a) then (if let-count(a) == 2 then (if eval(a) == 21 then unit else trap("eval 21")) else trap("two lets")) else trap("result is anf")
+
+@test
+def anf-preserves-meaning-deep() =
+  // ((1+2) * (3+4)) + 5 = 26 — meaning preserved through nesting.
+  let e = Ex.Add(Ex.Mul(Ex.Add(n(1), n(2)), Ex.Add(n(3), n(4))), n(5)) in
+  let a = anf(e) in
+  if eval(a) == eval(e) then (if is-anf(a) then (if eval(a) == 26 then unit else trap("eval 26")) else trap("anf")) else trap("meaning preserved")
+
+@test
+def anf-fresh-ids-avoid-user-vars() =
+  // A tree with an existing high user id (Var 5) bound by a let: fresh temporaries must start ABOVE 5, so
+  // they cannot shadow the user's x=5. let x5 = (1+2)*x5' ... use: let x=5 in (x + 1) * (x + 2) — both
+  // (x+1),(x+2) are compound → named with fresh ids > 5; eval: x=5 → 6 * 7 = 42.
+  let e = Ex.Let(5, n(5), Ex.Mul(Ex.Add(v(5), n(1)), Ex.Add(v(5), n(2)))) in
+  let a = anf(e) in
+  if eval(a) == eval(e) then (if eval(a) == 42 then (if is-anf(a) then unit else trap("anf")) else trap("eval 42")) else trap("fresh ids don't clobber user var 5")
+
+@test
+def anf-let-body-normalized() =
+  // let x = 10 in (x + 1) * 2 → the body's compound operand (x+1) is named; meaning preserved: 11*2 = 22.
+  let e = Ex.Let(0, n(10), Ex.Mul(Ex.Add(v(0), n(1)), n(2))) in
+  let a = anf(e) in
+  if eval(a) == 22 then (if is-anf(a) then unit else trap("anf")) else trap("eval 22")
+
+@test
+def anf-idempotent() =
+  // ANF of an already-ANF expression preserves its meaning (and stays ANF).
+  let e = Ex.Mul(Ex.Add(n(1), n(2)), Ex.Add(n(3), n(4))) in
+  let once = anf(e) in
+  let twice = anf(once) in
+  if eval(once) == eval(twice) then (if is-anf(twice) then unit else trap("still anf")) else trap("idempotent under eval")
+
+export { anf, is-anf, is-atom, eval, max-id }
