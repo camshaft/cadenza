@@ -9234,9 +9234,25 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                                     && okind != bkind
                                 {
                                     trace!(target: "rcdzc::infer", node = id.0, "fault: `?` operand kind disagrees with the boundary (CDZ0203)");
-                                    let (o, b) = match okind {
-                                        FallibleKind::Option => ("Option", "Result"),
-                                        FallibleKind::Result => ("Result", "Option"),
+                                    // The concrete conversion idiom, phrased in terms of forms that EXIST
+                                    // (a `match` re-wrap) — NOT `Result.map-err`/`Option.ok-or`, which are
+                                    // not yet in the prelude (a "did you mean X" must not name an absent op;
+                                    // those helpers are the T3 increment). Direction-specific: an `Option`
+                                    // operand needs an error to become a `Result`; a `Result` operand needs
+                                    // its error dropped to become an `Option`.
+                                    let (o, b, convert) = match okind {
+                                        FallibleKind::Option => (
+                                            "Option",
+                                            "Result",
+                                            "match the `Option` and supply an error \
+                                             (`(None) => (Err e)`, `(Some x) => (Ok x)`)",
+                                        ),
+                                        FallibleKind::Result => (
+                                            "Result",
+                                            "Option",
+                                            "match the `Result` and drop the error \
+                                             (`(Err _) => (None unit)`, `(Ok x) => (Some x)`)",
+                                        ),
                                     };
                                     out.push(
                                         Reject::coded(
@@ -9244,8 +9260,8 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                                             format!(
                                                 "a `{o}`-valued `?` cannot short-circuit a `{b}` \
                                                  boundary — the enclosing function returns `{}`. \
-                                                 Convert with `Result.map-err` / `Option.ok-or`, or \
-                                                 change the boundary's result type.",
+                                                 Either change the boundary's result type, or {convert} \
+                                                 before the `?`.",
                                                 bt.render_name()
                                             ),
                                         )
