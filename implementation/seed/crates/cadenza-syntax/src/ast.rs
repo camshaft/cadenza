@@ -389,34 +389,54 @@ impl Arenas {
     }
 
     fn node_eq(&self, a: StructId, other: &Arenas, b: StructId) -> bool {
-        match (self.get(a), other.get(b)) {
-            (Struct::Atom(la), Struct::Atom(lb)) => self.leaf(*la) == other.leaf(*lb),
-            (Struct::List(xs), Struct::List(ys)) => {
-                if xs.len() != ys.len() {
-                    return false;
+        // An EXPLICIT stack of `(self-id, other-id)` pairs to compare, not native recursion: an arena can
+        // originate POST-DECODE, and `codec::decode` accepts arbitrarily-deep valid-tree arenas (no cap,
+        // unlike the reader's `MAX_NESTING_DEPTH`), so a recursive parallel walk overflowed the native
+        // stack on a deep tree. Every pair must be structurally equal; the FIRST mismatch short-circuits
+        // to `false`. Order of comparison does not affect the boolean result, so a plain LIFO stack is
+        // fine (no need to preserve left-to-right).
+        let mut stack: Vec<(StructId, StructId)> = vec![(a, b)];
+        while let Some((a, b)) = stack.pop() {
+            match (self.get(a), other.get(b)) {
+                (Struct::Atom(la), Struct::Atom(lb)) => {
+                    if self.leaf(*la) != other.leaf(*lb) {
+                        return false;
+                    }
                 }
-                // In HEAD position, a compound ctor's shadowable NAME alias and its unshadowable
-                // STRING primitive denote the same construct (they compile identically). The pretty-
-                // printer sugars an unshadowed name-headed `(record …)`/`(tuple …)`/`(list …)`/`(map …)`
-                // to a literal, which the reader re-reads with a STRING head — so a name-headed input
-                // still round-trips. Normalize the two head kinds here, but ONLY for the four ctors and
-                // ONLY in head position, so a bare `list` name and the string value `"list"` elsewhere
-                // stay distinct.
-                if let (Some(&xh), Some(&yh)) = (xs.first(), ys.first()) {
-                    let heads_eq = match (self.ctor_head_key(xh), other.ctor_head_key(yh)) {
-                        (Some(x), Some(y)) => x == y,
-                        _ => self.node_eq(xh, other, yh),
-                    };
-                    return heads_eq
-                        && xs[1..]
-                            .iter()
-                            .zip(&ys[1..])
-                            .all(|(&x, &y)| self.node_eq(x, other, y));
+                (Struct::List(xs), Struct::List(ys)) => {
+                    if xs.len() != ys.len() {
+                        return false;
+                    }
+                    // In HEAD position, a compound ctor's shadowable NAME alias and its unshadowable
+                    // STRING primitive denote the same construct (they compile identically). The pretty-
+                    // printer sugars an unshadowed name-headed `(record …)`/`(tuple …)`/`(list …)`/`(map
+                    // …)` to a literal, which the reader re-reads with a STRING head — so a name-headed
+                    // input still round-trips. Normalize the two head kinds here, but ONLY for the four
+                    // ctors and ONLY in head position, so a bare `list` name and the string value `"list"`
+                    // elsewhere stay distinct.
+                    if let (Some(&xh), Some(&yh)) = (xs.first(), ys.first()) {
+                        match (self.ctor_head_key(xh), other.ctor_head_key(yh)) {
+                            // Both are compound-ctor heads: compare the collapsed key inline (do NOT
+                            // descend into the head — a `Name`/`Str` head-kind difference is normalized).
+                            (Some(x), Some(y)) => {
+                                if x != y {
+                                    return false;
+                                }
+                            }
+                            // Otherwise the head is an ordinary pair to compare structurally.
+                            _ => stack.push((xh, yh)),
+                        }
+                        // The remaining children are ordinary pairs.
+                        for (&x, &y) in xs[1..].iter().zip(&ys[1..]) {
+                            stack.push((x, y));
+                        }
+                    }
+                    // (both empty — equal lengths, no head — is trivially equal: push nothing)
                 }
-                true // both empty (equal lengths, no head)
+                _ => return false,
             }
-            _ => false,
         }
+        true
     }
 
     /// The compound-ctor spelling an occurrence denotes as a LIST HEAD, collapsing the shadowable
@@ -597,6 +617,38 @@ mod tests {
         let r3 = b3.list(vec![p3, x3]);
         let a3 = b3.finish(r3);
         assert!(!a1.structurally_eq(&a3));
+    }
+
+    #[test]
+    fn structurally_eq_is_iterative_not_recursive_on_a_deep_arena() {
+        // `node_eq` (backing `structurally_eq`) walks two arenas in parallel. An arena can originate
+        // POST-DECODE, and `codec::decode` accepts arbitrarily-deep valid-tree arenas (no cap, unlike the
+        // reader's MAX_NESTING_DEPTH), so the walk must be iterative — a native-recursive parallel walk
+        // overflowed the native stack (SIGABRT) on a deep tree (last of the recursive-walk class, after
+        // debug::print / sexpr::print_node / canon::visit). Build two independent 100k-deep chains (past
+        // any native-stack limit) and assert equal-to-equal and a deep mismatch, both without overflow.
+        let deep_chain = |leaf: &str, depth: usize| {
+            let mut b = Builder::new();
+            let mut cur = b.name(leaf);
+            for _ in 0..depth {
+                cur = b.list(vec![cur]);
+            }
+            b.finish(cur)
+        };
+        let depth = 100_000usize;
+        let a = deep_chain("x", depth);
+        let b = deep_chain("x", depth);
+        assert!(
+            a.structurally_eq(&b),
+            "two equal deep chains compare equal (no overflow)"
+        );
+        // A mismatch only at the very BOTTOM (different leaf) — the walk must descend the full depth to
+        // find it, exercising the stack to its deepest, and still return (false) without overflowing.
+        let c = deep_chain("y", depth);
+        assert!(
+            !a.structurally_eq(&c),
+            "a deep leaf mismatch is detected without overflow"
+        );
     }
 
     #[test]
