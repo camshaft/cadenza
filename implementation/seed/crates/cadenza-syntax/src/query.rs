@@ -3469,22 +3469,36 @@ mod tests {
         // any matching even ran. Build a 100k-deep chain (past any native-stack limit) and assert the
         // round-trip arena → Tree → arena completes without overflow and preserves the tree (byte-equal
         // via codec::encode, itself a flat loop — the arena is already canonical so re-encode is stable).
-        let depth = 100_000usize;
-        let mut b = Builder::new();
-        let mut cur = b.name("x");
-        for _ in 0..depth {
-            cur = b.list(vec![cur]);
-        }
-        let a = b.finish(cur);
-        let a_bytes = crate::codec::encode(&a);
+        // Run on a 64 MB stack: `Tree::of`/`to_arena` are iterative (that's what this pins), but the deep
+        // `Tree`/`Builder` structures this test BUILDS then DROPS are native-recursive on drop (a 100k-deep
+        // nested chain drops one frame per level), which SIGABRTs a default ~2 MB test-worker stack before
+        // the assertion — the same reason the sibling ML-printer deep test uses a big-stack worker.
+        // (`run_with_compiler_stack` lives in rcdzc, not reachable here; spawn an inline big-stack thread +
+        // resume_unwind so an assertion failure inside still fails the test.)
+        let h = std::thread::Builder::new()
+            .stack_size(64 * 1024 * 1024)
+            .spawn(|| {
+                let depth = 100_000usize;
+                let mut b = Builder::new();
+                let mut cur = b.name("x");
+                for _ in 0..depth {
+                    cur = b.list(vec![cur]);
+                }
+                let a = b.finish(cur);
+                let a_bytes = crate::codec::encode(&a);
 
-        let t = Tree::of(&a); // from_arena: must NOT overflow
-        let back = t.to_arena(); // build: must NOT overflow
-        assert_eq!(
-            crate::codec::encode(&back),
-            a_bytes,
-            "arena → Tree → arena preserves the deep tree"
-        );
+                let t = Tree::of(&a); // from_arena: must NOT overflow
+                let back = t.to_arena(); // build: must NOT overflow
+                assert_eq!(
+                    crate::codec::encode(&back),
+                    a_bytes,
+                    "arena -> Tree -> arena preserves the deep tree"
+                );
+            })
+            .expect("spawn big-stack arena-roundtrip worker");
+        if let Err(p) = h.join() {
+            std::panic::resume_unwind(p);
+        }
     }
 
     #[test]
