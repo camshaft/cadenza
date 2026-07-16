@@ -929,3 +929,128 @@
                     ((Option.None) false)))))
             (export main)))
   (output (: true Bool)))
+
+; ============================================================================================
+; Increment 7 — the IMPLICATION fragment and the FLAGSHIP LOGICAL THEOREM ⊢ p ⇒ p. This lifts the kernel
+; from equational/λ reasoning to genuine LOGIC. Term gains an `Imp` form (p ⇒ q); the kernel gains two
+; natural-deduction rules for it: DISCH (⇒-introduction — from G ⊢ q derive (G − p) ⊢ (p ⇒ q), discharging
+; the assumption p) and MP (⇒-elimination / modus ponens — from ⊢ p ⇒ q and ⊢ p derive ⊢ q). The theorem
+; ⊢ p ⇒ p — proved by DISCH over ASSUME — is the first LOGICAL (not merely equational) theorem the kernel
+; derives: a real tautology, established through the rules, with its assumption correctly discharged.
+; (This models ⇒ as a primitive term form with introduction/elimination rules — the natural-deduction
+; presentation — rather than HOL-Light's ⇒-as-a-defined-constant, which would first need T/∧ and
+; new_basic_definition. Both are sound; the primitive presentation is the cleaner slice and still yields
+; the genuine ⊢ p ⇒ p. A defined-constant logical layer with the three HOL axioms can follow.)
+; ============================================================================================
+
+(case "the kernel proves the tautology ⊢ p ⇒ p via DISCH (implication introduction) over ASSUME"
+  (doc    "The FLAGSHIP logical theorem — the kernel's first genuine tautology. ASSUME p gives {p} ⊢ p;
+           DISCH p discharges the assumption, yielding ⊢ (p ⇒ p) with an EMPTY hypothesis set — a theorem
+           that holds unconditionally. The case verifies both the conclusion is (Imp p p) AND the
+           hypotheses are empty (p was discharged). This is the payoff of the whole kernel: a real logical
+           truth, DERIVED through the inference rules (not asserted), minted only through the private Thm
+           constructor. DISCH reuses the recursive `remove` over the hypothesis list.")
+  (module "hol"
+    (do
+      (type Term (Var Int64) (Comb Term Term) (Eq Term Term) (Abs Int64 Term) (Imp Term Term))
+      (type Thm (Seq (List Term) Term))
+      (def (term-eq (: a Term) (: b Term))
+        (match a
+          ((Term.Var n)    (match b ((Term.Var m) (= n m)) (_ false)))
+          ((Term.Comb x y) (match b ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) (_ false)))
+          ((Term.Eq x y)   (match b ((Term.Eq p q) (and (term-eq x p) (term-eq y q))) (_ false)))
+          ((Term.Abs v x)  (match b ((Term.Abs w q) (and (= v w) (term-eq x q))) (_ false)))
+          ((Term.Imp x y)  (match b ((Term.Imp p q) (and (term-eq x p) (term-eq y q))) (_ false)))))
+      (def (remove (: t Term) (: hs (List Term)))
+        (match hs
+          ((list) (list))
+          ((list h .. rest) (if (term-eq h t) (remove t rest) (List.push (remove t rest) h)))))
+      (def (assume (: p Term)) (Thm.Seq (list p) p))
+      (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
+      (def (hyps (: th Thm)) (match th ((Thm.Seq h _) h)))
+      (def (disch (: p Term) (: th Thm))
+        (match th ((Thm.Seq g q) (Thm.Seq (remove p g) (Term.Imp p q)))))
+      (export (. Term *))
+      (export Thm)
+      (export term-eq)
+      (export assume)
+      (export disch)
+      (export concl)
+      (export hyps)))
+  (input  (do
+            (import "hol" (Term Thm term-eq assume disch concl hyps))
+            (def (main)
+              (let ((p (Term.Var 0)))
+                (let ((th (disch p (assume p))))
+                  (and (term-eq (concl th) (Term.Imp p p))
+                       (match (hyps th) ((list) true) (_ false))))))
+            (export main)))
+  (output (: true Bool)))
+
+(case "the kernel's modus ponens (⇒-elimination): from ⊢ p⇒q and ⊢ p derive ⊢ q"
+  (doc    "The elimination rule dual to DISCH: MP takes ⊢ p ⇒ q and ⊢ p and derives ⊢ q, checking the
+           antecedent matches (term-eq) and unioning hypotheses. Here from ⊢ (p ⇒ p) (built by DISCH over
+           ASSUME) and {p} ⊢ p (ASSUME p), MP derives a theorem whose conclusion is p. Pins that the
+           implication fragment is complete (introduction + elimination) and that MP mints only through the
+           private constructor, returning Option.None on an antecedent mismatch rather than a forged Thm.")
+  (module "hol"
+    (do
+      (type Term (Var Int64) (Comb Term Term) (Eq Term Term) (Abs Int64 Term) (Imp Term Term))
+      (type Thm (Seq (List Term) Term))
+      (def (term-eq (: a Term) (: b Term))
+        (match a
+          ((Term.Var n)    (match b ((Term.Var m) (= n m)) (_ false)))
+          ((Term.Comb x y) (match b ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) (_ false)))
+          ((Term.Eq x y)   (match b ((Term.Eq p q) (and (term-eq x p) (term-eq y q))) (_ false)))
+          ((Term.Abs v x)  (match b ((Term.Abs w q) (and (= v w) (term-eq x q))) (_ false)))
+          ((Term.Imp x y)  (match b ((Term.Imp p q) (and (term-eq x p) (term-eq y q))) (_ false)))))
+      (def (remove (: t Term) (: hs (List Term)))
+        (match hs
+          ((list) (list))
+          ((list h .. rest) (if (term-eq h t) (remove t rest) (List.push (remove t rest) h)))))
+      (def (assume (: p Term)) (Thm.Seq (list p) p))
+      (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
+      (def (hyps (: th Thm)) (match th ((Thm.Seq h _) h)))
+      (def (disch (: p Term) (: th Thm))
+        (match th ((Thm.Seq g q) (Thm.Seq (remove p g) (Term.Imp p q)))))
+      (def (mp (: imp Thm) (: th Thm))
+        (match (concl imp)
+          ((Term.Imp p q) (if (term-eq (concl th) p) (Option.Some (Thm.Seq (List.concat (hyps imp) (hyps th)) q)) (Option.None)))
+          (_ (Option.None))))
+      (export (. Term *))
+      (export Thm)
+      (export term-eq)
+      (export assume)
+      (export disch)
+      (export mp)
+      (export concl)))
+  (input  (do
+            (import "hol" (Term Thm term-eq assume disch mp concl))
+            (def (main)
+              (let ((p (Term.Var 0)))
+                (let ((imp (disch p (assume p))))
+                  (match (mp imp (assume p))
+                    ((Option.Some r) (term-eq (concl r) p))
+                    ((Option.None) false)))))
+            (export main)))
+  (output (: true Bool)))
+
+(case "the implication-extended kernel Thm stays unforgeable — Thm.Seq of a bogus implication outside is CDZ0214"
+  (doc    "Re-asserts the soundness boundary after adding the Imp term form and the DISCH/MP rules: the
+           logical layer opens no forge path. An importer cannot fabricate a false implication theorem —
+           building Thm.Seq directly (a bogus ⊢ (Var 1) ⇒ (Var 2), which does NOT hold) outside the kernel
+           is CDZ0214. Logical connectives are terms an importer may build freely; asserting an implication
+           as a THEOREM remains the exclusive province of the kernel's rules (DISCH).")
+  (module "hol"
+    (do
+      (type Term (Var Int64) (Comb Term Term) (Eq Term Term) (Abs Int64 Term) (Imp Term Term))
+      (type Thm (Seq (List Term) Term))
+      (def (assume (: p Term)) (Thm.Seq (list p) p))
+      (export (. Term *))
+      (export Thm)
+      (export assume)))
+  (input  (do
+            (import "hol" (Term Thm assume))
+            (def (main) (Thm.Seq (list) (Term.Imp (Term.Var 1) (Term.Var 2))))
+            (export main)))
+  (error  CDZ0214))

@@ -2971,17 +2971,20 @@ pass	the guarded-let conditional takes its else-branch when the conjunction is f
 pass	the heap list a handle BUILDS escapes the handle and is consumed outside it
 pass	the identity function applied to a boolean returns the boolean
 pass	the identity function applied to an integer returns the integer
+pass	the implication-extended kernel Thm stays unforgeable — Thm.Seq of a bogus implication outside is CDZ0214
 pass	the int-to-float generator is order-preserving (a < b implies of a < of b)
 pass	the intersection contains the elements in both sets
 pass	the intersection of disjoint sets is empty
 pass	the kernel proves reflexivity end-to-end: refl t yields a theorem whose conclusion is (t = t)
 pass	the kernel proves the identity theorem ⊢ (λx.x) y = y via BETA — the first-theorem milestone
+pass	the kernel proves the tautology ⊢ p ⇒ p via DISCH (implication introduction) over ASSUME
 pass	the kernel's ABS rule lifts an equation under a binder: from |- t=u derive |- (λx.t)=(λx.u)
 pass	the kernel's ASSUME rule yields the sequent {p} |- p
 pass	the kernel's BETA rule reduces an application of a lambda: (λv.body) arg = body[arg/v]
 pass	the kernel's DEDUCT_ANTISYM rule: from A |- p and B |- q derive (A-q)++(B-p) |- p=q
 pass	the kernel's EQ_MP rule: from |- p=q and G |- p derive G |- q (hypotheses unioned)
 pass	the kernel's MK_COMB rule: equals applied to equals are equal — from f=g and x=y derive (f x)=(g y)
+pass	the kernel's modus ponens (⇒-elimination): from ⊢ p⇒q and ⊢ p derive ⊢ q
 pass	the largest factorial that fits the integer type computes exactly
 pass	the le modifier encodes a u16 little-endian
 pass	the left payload of the taken arm traps before the right payload
