@@ -433,6 +433,7 @@ pass	a contradictory ARROW annotation on a function value is rejected
 pass	a contradictory arrow annotation on a function INSIDE a compound is rejected
 pass	a contradictory arrow annotation on a function in a SUM payload is rejected
 pass	a contradictory arrow annotation on a function in a runtime Map value is rejected
+pass	a contradictory arrow annotation on a function stored as a Map KEY is rejected
 pass	a correctly-annotated function parameter is accepted
 pass	a cross-type variant pattern whose payload width differs is rejected, not miscompiled
 pass	a crossing text-literal arm is rejected even beside a same-kind sibling arm
@@ -478,6 +479,8 @@ pass	a delegation naming an effect that is never reached is rejected as latent a
 pass	a dense zero-based jump-table match hits a covered arm
 pass	a dense zero-based jump-table match routes an out-of-range scrutinee to the default
 pass	a dependent size of zero binds an empty body and leaves the rest untouched
+pass	a dependent size one past the remaining bytes overruns and falls through
+pass	a dependent-size segment binding exactly the remaining bytes leaves an empty rest
 pass	a dependent-size segment binds exactly the number of bytes an earlier segment named
 pass	a dependent-size segment that overruns the remaining bytes falls through
 pass	a destructuring let over a runtime value binds its parts
@@ -1544,6 +1547,7 @@ pass	a shift of a non-numeric operand names the integer requirement
 pass	a short-circuit connective threads a branch perform to the continuation
 pass	a shorter string that is a prefix of a longer one compares Less
 pass	a sibling-recursive walk threads a HEAP list accumulator across the siblings
+pass	a signed dependent size that reads negative falls through, not a backward read
 pass	a signed i8 segment encodes as two's complement
 pass	a signed narrow if-branch opposite a bare literal computes at the narrow width
 pass	a signed narrow match binder returns the bound value
