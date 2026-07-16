@@ -2191,6 +2191,24 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
             .at(occ),
         );
     }
+    // A MALFORMED top-level `@`-annotation form — a bare `(@)`, a name-only `(@ test)`, or a non-form
+    // target `(@ test 5)` — that SURVIVED `strip_annotations` because it wraps no definition. `@` is the
+    // GENERAL-PURPOSE annotation head `(@ <name> (def …))`; `strip_annotations` unwraps every def-wrapping
+    // annotation in place (even an unknown name — a transparent forward-compat marker), so a SURVIVING
+    // top-level `(@ …)` has no wrappable target. Left alone it resolves as a misleading "unbound name `@`
+    // at the top level" (`@` is a recognized head, not a name) plus a phantom unbound-name for any def it
+    // hid. Reject each CDZ0201 naming the annotation shape + how an annotation attaches to a definition.
+    for occ in db.malformed_annotation_forms() {
+        faults.push(
+            Reject::coded(
+                Code::Malformed,
+                "this `(@ …)` annotation wraps no definition — an annotation is `(@ <name> (def …))`, \
+                 e.g. `(@ test (def (t) 1))` (the annotation name, then the definition it marks)"
+                    .to_string(),
+            )
+            .at(occ),
+        );
+    }
     // SEMANTIC validation of a CONSTRUCTOR-EXPORT `(export (. T A))` / `(export (. T *))` — the opaque-types
     // surface. `malformed_exports` (above) accepts its SHAPE, and the linker's `as_ctor_export` records the
     // (type, ctor) names WITHOUT checking they exist — so `(export (. T Nonesuch))` (a ctor `T` lacks),

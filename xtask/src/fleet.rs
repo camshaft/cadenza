@@ -869,23 +869,36 @@ fn status(fleet: &Fleet) {
     println!("\n  queue: {qn} open work item(s) in {}", queue.display());
 
     // trunk vs origin/main, so the operator sees the publish backlog at a glance.
-    if let Some((ahead, behind)) = trunk_vs_origin_main(&fleet.repo) {
+    let trunk_om = trunk_vs_origin_main(&fleet.repo);
+    if let Some((ahead, behind)) = trunk_om {
         println!("  trunk: {ahead} ahead / {behind} behind origin/main");
     }
 
-    // Single-writer-invariant alarm: `trunk` should only ever be advanced (cherry-picked) by pr-sync.
-    // A `reset: moving to origin/main` in its recent reflog means a SECOND writer clobbered it backward
-    // (an out-of-band sync running `git reset --hard origin/main` in pr-sync's worktree) — latent
-    // data-loss (a clobber inside pr-sync's replay window drops a batch). Surface it; read-only.
+    // Trunk-ref-regression watch. `trunk` should only ever move FORWARD (pr-sync cherry-picks). A
+    // `reset: moving to origin/main` in its reflog is a backward move — root-caused to pr-sync's own
+    // PUBLISH re-parent when done in-place (`git reset --hard origin/main` in its trunk worktree)
+    // rather than in a scratch worktree; the fix is the scratch-worktree publish (pr-sync.md step 3).
+    // A past reset that trunk has since ADVANCED PAST is benign history (pr-sync stashed + replayed),
+    // so only WARN LOUDLY when trunk is currently AT/BEHIND origin/main (a regression still in effect);
+    // otherwise note it quietly as self-recovered. Read-only.
     if let Some(n) = trunk_clobber_count(&fleet.repo, 40)
         && n > 0
     {
-        println!(
-            "  ⚠ trunk CLOBBER: {n} `reset: moving to origin/main` in the last 40 reflog entries — a \
-             non-pr-sync writer is resetting trunk backward (single-writer invariant violated). Find \
-             the ~9min sync job doing `git reset --hard origin/main` in the pr-sync worktree and stop \
-             it touching the trunk ref."
-        );
+        let ahead = trunk_om.map(|(a, _)| a).unwrap_or(1);
+        if ahead == 0 {
+            println!(
+                "  ⚠ trunk REGRESSED: {n} `reset: moving to origin/main` in the last 40 reflog entries \
+                 AND trunk is not ahead of origin/main — a backward reset is currently IN EFFECT. This \
+                 is pr-sync's publish re-parent resetting the trunk ref in-place; it should re-parent \
+                 in a SCRATCH worktree (pr-sync.md step 3) so trunk only moves forward."
+            );
+        } else {
+            println!(
+                "  · trunk: {n} `reset: moving to origin/main` in the recent reflog, but trunk is ahead \
+                 again (self-recovered — pr-sync's in-place publish re-parent; prefer the scratch-worktree \
+                 form so the ref never regresses)."
+            );
+        }
     }
 }
 

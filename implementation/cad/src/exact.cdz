@@ -136,6 +136,44 @@ def aabbr-size(b: Aabbr) =
       (match hi with | Vec3r.V3r(hx, hy, hz) =>
         Vec3r.V3r(hx - lx, hy - ly, hz - lz)))
 
+/// Is this exact solid the empty node? A direct top-node test (NOT a full leaf-count) — `simplify-r` collapses
+/// dead branches to `Emptyr`, so an `Emptyr` at a node is the signal an algebraic identity fires.
+def solidr-is-empty(s: Solidr) = match s with
+  | Solidr.Emptyr => true
+  | _ => false
+
+/// Simplify an exact CSG tree by the empty-solid algebraic identities — the exact-model twin of `simplify`
+/// (solid.cdz's Float64 version). A mesh driver runs this before meshing to prune dead branches:
+///   • `Unionr Emptyr x` = `Unionr x Emptyr` = `x`          (Emptyr is union's identity)
+///   • `Intersectionr Emptyr x` = `Intersectionr x Emptyr` = `Emptyr`  (Emptyr absorbs intersection)
+///   • `Differencer Emptyr x` = `Emptyr`; `Differencer x Emptyr` = `x`  (subtracting nothing is a no-op)
+///   • `Translater/Scaler _ Emptyr` = `Emptyr`               (transforming nothing is nothing)
+/// Leaves and genuinely-non-empty nodes rebuild unchanged. Idempotent (a second pass is a no-op) and never
+/// adds geometry. NOTE: no `Rotater` in the exact model (rotation is an f64 mesh-leaf concern), so no rotate arm.
+def simplify-r(s: Solidr) = match s with
+  | Solidr.Emptyr => Solidr.Emptyr
+  | Solidr.Cuber(v) => Solidr.Cuber(v)
+  | Solidr.Spherer(r) => Solidr.Spherer(r)
+  | Solidr.Cylinderr(h, r) => Solidr.Cylinderr(h, r)
+  | Solidr.Unionr(a, b) =>
+    let sa = simplify-r(a) in
+    let sb = simplify-r(b) in
+    (if solidr-is-empty(sa) then sb else (if solidr-is-empty(sb) then sa else Solidr.Unionr(sa, sb)))
+  | Solidr.Differencer(a, b) =>
+    let sa = simplify-r(a) in
+    let sb = simplify-r(b) in
+    (if solidr-is-empty(sa) then Solidr.Emptyr else (if solidr-is-empty(sb) then sa else Solidr.Differencer(sa, sb)))
+  | Solidr.Intersectionr(a, b) =>
+    let sa = simplify-r(a) in
+    let sb = simplify-r(b) in
+    (if solidr-is-empty(sa) then Solidr.Emptyr else (if solidr-is-empty(sb) then Solidr.Emptyr else Solidr.Intersectionr(sa, sb)))
+  | Solidr.Translater(by, of) =>
+    let so = simplify-r(of) in
+    (if solidr-is-empty(so) then Solidr.Emptyr else Solidr.Translater(by, so))
+  | Solidr.Scaler(by, of) =>
+    let so = simplify-r(of) in
+    (if solidr-is-empty(so) then Solidr.Emptyr else Solidr.Scaler(by, so))
+
 /// ============================ @test suite (R1 exact-geometry proof) ============================
 
 @test
@@ -285,5 +323,59 @@ def aabbr-union-and-intersect-of-explicit-boxes() =
          and v3r-eq(ilo, v3r(Rational.of(1, 1), Rational.of(1, 1), Rational.of(1, 1))) and v3r-eq(ihi, v3r(Rational.of(2, 1), Rational.of(2, 1), Rational.of(2, 1)))
       then unit else trap("union/intersect corners")))
 
+// ---- R11: simplify-r — the empty-solid algebraic identities on the EXACT Solidr model --------------------
+
+@test
+def simplify-r-absorbs-empty-in-union() =
+  // Unionr Emptyr x = x (both sides); check the result is the surviving cube (box unchanged) and non-empty.
+  let one = Rational.of(1, 1) in
+  let cube = Solidr.Cuber(v3r(one, one, one)) in
+  let sl = simplify-r(Solidr.Unionr(Solidr.Emptyr, cube)) in
+  let sr = simplify-r(Solidr.Unionr(cube, Solidr.Emptyr)) in
+  if v3r-eq(aabbr-size(bounding-box(sl)), aabbr-size(bounding-box(cube)))
+     and v3r-eq(aabbr-size(bounding-box(sr)), aabbr-size(bounding-box(cube)))
+     and (solidr-is-empty(sl) == false)
+  then unit else trap("Unionr with Emptyr reduces to the other operand")
+
+@test
+def simplify-r-intersection-with-empty-is-empty() =
+  // Intersectionr Emptyr x = Emptyr (absorbing).
+  let one = Rational.of(1, 1) in
+  let cube = Solidr.Cuber(v3r(one, one, one)) in
+  if solidr-is-empty(simplify-r(Solidr.Intersectionr(Solidr.Emptyr, cube)))
+     and solidr-is-empty(simplify-r(Solidr.Intersectionr(cube, Solidr.Emptyr)))
+  then unit else trap("Intersectionr with Emptyr is Emptyr")
+
+@test
+def simplify-r-difference-identities() =
+  // Differencer Emptyr x = Emptyr; Differencer x Emptyr = x (subtracting nothing is a no-op).
+  let one = Rational.of(1, 1) in
+  let cube = Solidr.Cuber(v3r(one, one, one)) in
+  let subtract-nothing = simplify-r(Solidr.Differencer(cube, Solidr.Emptyr)) in
+  if solidr-is-empty(simplify-r(Solidr.Differencer(Solidr.Emptyr, cube)))
+     and (solidr-is-empty(subtract-nothing) == false)
+     and v3r-eq(aabbr-size(bounding-box(subtract-nothing)), aabbr-size(bounding-box(cube)))
+  then unit else trap("Differencer empty identities")
+
+@test
+def simplify-r-prunes-a-nested-empty-branch-and-transform() =
+  // a translate of empty collapses to empty; a union of two dead branches collapses fully to empty.
+  let dead = Solidr.Translater(v3r(Rational.of(5,1), rzero(), rzero()), Solidr.Emptyr) in
+  let both-dead = Solidr.Unionr(dead, Solidr.Intersectionr(Solidr.Emptyr, Solidr.Spherer(Rational.of(1,1)))) in
+  if solidr-is-empty(simplify-r(dead)) and solidr-is-empty(simplify-r(both-dead)) then unit
+  else trap("simplify-r prunes dead transform + all-empty tree to Emptyr")
+
+@test
+def simplify-r-preserves-a-real-tree-and-is-idempotent() =
+  // a fully-real model is unchanged in extent, and a second simplify pass is a no-op (idempotent).
+  let two = Rational.of(2, 1) in
+  let model = Solidr.Differencer(Solidr.Cuber(v3r(two, two, two)), Solidr.Spherer(Rational.of(1,1))) in
+  let s1 = simplify-r(model) in
+  let s2 = simplify-r(s1) in
+  if v3r-eq(aabbr-size(bounding-box(s1)), aabbr-size(bounding-box(model)))
+     and v3r-eq(aabbr-size(bounding-box(s2)), aabbr-size(bounding-box(s1)))
+  then unit else trap("simplify-r preserves a real tree + is idempotent")
+
 export { Vec3r.*, Solidr.*, Aabbr.*, rmin, rmax, rzero, v3r, v3r-x, v3r-y, v3r-z, v3r-add, v3r-mul, v3r-min,
-         v3r-max, v3r-eq, aabbr-union, aabbr-intersect, aabbr-empty, bounding-box, aabbr-size }
+         v3r-max, v3r-eq, aabbr-union, aabbr-intersect, aabbr-empty, bounding-box, aabbr-size,
+         solidr-is-empty, simplify-r }

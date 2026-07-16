@@ -3461,6 +3461,23 @@ mod tests {
             sexpr::print(&parser::read_ml("def m() = t\"x{g(\"\\\"}\")}y\"").arenas),
             "(def (m) (tagged-template t (chunks \"x\" \"y\") (holes (g \"\\\"}\"))))"
         );
+        // A backslash-escaped brace `\{` / `\}` is an ALTERNATE spelling of a literal brace: it reads to
+        // the SAME chunk as the `{{` / `}}` doubling (chunk holds `{`/`}`), and the printer CANONICALIZES
+        // it to the doubled form. So `\{`/`\}` input is not byte-preserved — it normalizes to `{{`/`}}` —
+        // but the normalization is a FIXED POINT (re-reading the output re-prints identically). Pin both:
+        // the two spellings read to one arena, and the output is idempotent.
+        assert_eq!(
+            sexpr::print(&parser::read_ml("t\"a\\{b\\}c\"").arenas),
+            sexpr::print(&parser::read_ml("t\"a{{b}}c\"").arenas),
+            "backslash-escaped and doubled braces read to the same literal-brace chunk"
+        );
+        assert_eq!(
+            sexpr::print(&parser::read_ml("t\"a\\{b\\}c\"").arenas),
+            "(tagged-template t (chunks \"a{b}c\") (holes))"
+        );
+        // The escaped spelling canonicalizes to the doubled form, which is then a fixed point.
+        assert_eq!(assert_roundtrip("t\"a\\{b\\}c\"", 80), "t\"a{{b}}c\"");
+        assert_eq!(assert_roundtrip("t\"a{{b}}c\"", 80), "t\"a{{b}}c\"");
     }
 
     #[test]

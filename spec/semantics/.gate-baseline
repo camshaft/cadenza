@@ -295,6 +295,7 @@ pass	a STRING-result effect op resumes with a string that folds through a concat
 pass	a SUM constructor payload that is a compound built from performs threads and destructures
 pass	a SUM is threaded as a handler's folded state across operations
 pass	a Sign match missing two of three variants is non-exhaustive
+pass	a nested non-exhaustive match names the uncovered inner variant (CDZ0210 not the generic message)
 pass	a Some carrying a bare None type-checks under a whole-expression annotation
 pass	a Some carrying an inner-annotated None matches its arm (the control)
 pass	a String compound export under a non-main name crosses to the host
@@ -307,6 +308,7 @@ pass	a THREE-parameter op arm binds all three parameters and the state
 pass	a TRIPLY-nested Record ARG crosses the direct-call boundary
 pass	a TUPLE-result perform's projected field feeds a SECOND perform's argument, threading state across both
 pass	a TUPLE-returning operation resumes a pair built from the handler state, then projected
+pass	a Thm rides a collection through outside code without destructure rights
 pass	a Tuple ARG AFTER a scalar arg crosses the direct-call boundary (scalar, then tuple)
 pass	a Tuple ARG BEFORE a scalar arg crosses the direct-call boundary (tuple, then scalar)
 pass	a Tuple ARG BEFORE a scalar with a LIST result crosses the direct-call boundary
@@ -518,6 +520,7 @@ pass	a comparison-predicate function returns its boolean result
 pass	a compile-time type branch reads a runtime parameter's static type
 pass	a component's manifest is the union of two entrypoints' distinct rows
 pass	a composed call over a record-transforming function with an arithmetic field compiles
+pass	a composed proof chains the equational, λ, and logical rule families into one derivation
 pass	a compound element projected from a let-bound runtime tuple is matched
 pass	a compound if condition is a type error, not an unbound name
 pass	a compound map key containing a Bytes rope is found by its flat-twin key
@@ -833,6 +836,7 @@ pass	a host effect with a non-kebab NAME crosses under a normalized interface ex
 pass	a host effect with a non-kebab OPERATION name crosses under a normalized func extern name
 pass	a host-called closure applied to a different argument tracks the input
 pass	a host-called closure with a different body dispatches the right code
+pass	a kernel may deliberately export its rule as a first-class value
 pass	a kernel rule using α-equivalence accepts an α-variant premise a structural equality would reject
 pass	a key-directed pattern matches a RUNTIME map by looking up its keys
 pass	a keyed lookup of an updated map is not shared with the original's
@@ -849,6 +853,7 @@ pass	a later let binding sees an earlier one in the same let
 pass	a later let binding sees an earlier pattern's binders
 pass	a le pattern segment reads a fixed-width integer little-endian
 pass	a leading nested-list element dispatches on the inner list's length
+pass	a leading-rest arm matches an exactly-minimum list with an empty rest
 pass	a left shift by a floating-point count does not silently promote
 pass	a left shift by the bit width or more traps rather than wrapping
 pass	a left shift that overflows Int64 traps like multiplication
@@ -1315,6 +1320,7 @@ pass	a projection chain through a tuple inside a record retains the consumed chi
 pass	a pure lambda passed as an argument to a performing callee folds
 pass	a pure let-bound lambda and a performing one are both applied in the handle body
 pass	a pure shared subexpression computes the same value however the backend optimizes it
+pass	a purely-logical composed proof over a quantified proposition: DISCH then MP
 pass	a qualified construct and a bare match name the same colliding variant
 pass	a quantity annotation at an in-range narrow width grounds and accepts
 pass	a quantity annotation range-checks the inner width — an out-of-range magnitude is rejected
@@ -1672,6 +1678,7 @@ pass	a runtime-index read of a runtime-built list
 pass	a runtime-index update leaves the other elements unchanged
 pass	a runtime-index update replaces exactly that element, read back at the same index
 pass	a runtime-keyed map entry enumerates as its key-value tuple
+pass	a runtime-length list dispatches a leading-rest arm by its actual length
 pass	a runtime-magnitude product multiplies the erased magnitudes
 pass	a runtime-magnitude quantity raised to a negative power emits the reciprocal
 pass	a runtime-magnitude quantity raised to a power emits the repeated multiply
@@ -1838,6 +1845,7 @@ pass	a three-level curried spine applies through both intermediate closures
 pass	a three-parameter closure is applied at full arity through a recursive HOF
 pass	a three-payload constructor fully curried builds the variant
 pass	a three-payload constructor partially applied in a runtime tuple completes via eta-closure
+pass	a too-short list refutes a leading-rest arm and falls through
 pass	a top-level module is named by a top-level def's body
 pass	a top-level sum value definition may reference a sum value defined later
 pass	a top-level tuple pattern matches a tuple produced by a runtime conditional
@@ -2308,6 +2316,12 @@ pass	bitwise XOR with zero is the operand (identity)
 pass	both sibling args consume the same binding independently
 pass	boxed closures of two fn types in one sum: the unbuilt variant's dispatch is dead
 pass	branches performing DIFFERENT counts each thread their own post-state to the continuation
+pass	breaker capsubst: a non-capturing substitution takes the plain path
+pass	breaker capsubst: the fresh binder clears the body's ids, not only s's
+pass	breaker holsubst: a free occurrence beside a shadow substitutes selectively
+pass	breaker holsubst: a shadowing binder blocks substitution
+pass	breaker holsubst: the naive subst's documented capture hazard
+pass	breaker specsubst: GEN of refl then SPEC substitutes the bound var throughout the body
 pass	byte length agrees with the length of the encoded bytes
 pass	byte length counts the normalized form, not the source spelling
 pass	byte length is the UTF-8 byte count

@@ -3396,6 +3396,26 @@ impl Db {
         out
     }
 
+    /// Each MALFORMED top-level `@`-annotation form that SURVIVED `strip_annotations`. `@` is the
+    /// general-purpose annotation head `(@ <name> (def …))`, and `strip_annotations` rewrites every
+    /// well-formed def-wrapping annotation IN PLACE to BE its inner def (the node's head becomes `def`, so
+    /// it is no longer an `@` form here) — including an UNKNOWN name `(@ deprecated (def …))` (a
+    /// transparent forward-compat marker, recorded in no policy set). Therefore ANY top-level `(@ …)` that
+    /// REMAINS is one whose target was NOT a well-formed def to unwrap: a bare `(@)`, a name-only
+    /// `(@ test)`, a non-form target `(@ test 5)`, a non-def list `(@ test (foo 1))`, or a malformed inner
+    /// def `(@ test (def))`. Left alone each resolves as a misleading "unbound name `@` at the top level"
+    /// (`@` is a recognized head, not a name) plus a phantom unbound-name for any def it hid. Returned for
+    /// `collect_faults` to reject CDZ0201 naming the annotation shape.
+    pub fn malformed_annotation_forms(&self) -> Vec<StructId> {
+        let mut out = Vec::new();
+        for item in top_items(&self.ast) {
+            if self.ast.as_form(item, "@").is_some() {
+                out.push(item);
+            }
+        }
+        out
+    }
+
     /// Each well-formed-SHAPE constructor-export element `(. T A)` / `(. T *)` in a top-level `(export …)`
     /// clause, as `(element_occ, type_name_occ, ctor_name_occ)`. `element_occ` anchors a diagnostic at the
     /// `(. …)` element; `type_name_occ`/`ctor_name_occ` are the `T`/`A` atoms (the ctor is the reserved `*`

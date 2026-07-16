@@ -9621,10 +9621,21 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         //       CDZ0203 too: the failure arm passes `Err(oe)` out UNCHANGED as the boundary value, so `oe`
         //       must match the boundary's error type (else a `Bool` error escapes as a claimed `Int64`).
         Resolved::Try { operand } => {
+            // Collect the OPERAND's own faults FIRST — if `e` is itself ill-typed (a numeric mismatch, an
+            // unbound name, …), THAT is the primary diagnostic, and the `?`-shape/boundary checks below
+            // would only pile a confusing "operand must be fallible, found <fallback-type>" cascade on top
+            // (`(try (+ 1 2.0))` reported "not fallible, found Float64" ahead of the real CDZ0301). So gate
+            // the `?`-specific checks on the operand being clean, the same "let the operand's own error be
+            // primary" discipline the `Member` arm applies via `operand_is_poison`.
+            let before = out.len();
+            collect(db, operand, out);
+            let operand_has_own_fault = out.len() > before;
             let t = type_of(db, operand);
             let operand_fallible = fallible_shape(db, &t);
             let operand_definite = !matches!(t, Ty::Any | Ty::Var(_));
-            if operand_definite && operand_fallible.is_none() {
+            if operand_has_own_fault {
+                // The operand's own fault is the primary "no"; add nothing `?`-specific on top.
+            } else if operand_definite && operand_fallible.is_none() {
                 trace!(target: "rcdzc::infer", node = id.0, ty = %t.render_name(), "fault: try operand not Option/Result (CDZ0203)");
                 out.push(
                     Reject::coded(
@@ -9779,7 +9790,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                     }
                 }
             }
-            collect(db, operand, out);
+            // (The operand's own faults were already collected at the top of this arm.)
         }
         // Member access: the operand must be a record, and it must have the named field. Both faults
         // are compile-time rejections (a non-record operand, or an absent field, has no defined result —

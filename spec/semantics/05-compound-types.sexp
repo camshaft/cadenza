@@ -9985,3 +9985,17 @@
               (def (main) (cnt (L.C 1 (L.C 2 (L.C 3 (L.N unit))))))
               (export main)))
   (output (: 3 Int64)))
+
+(case "a nested non-exhaustive match names the uncovered inner variant (CDZ0210 not the generic message)"
+  (doc    "A NESTED-payload non-exhaustive match NAMES the uncovered inner variant — `(match o ((Some (A))
+           1) ((None) 0))` over `(Option C)` where `C = (A)|(B)` leaves `(Some (B))` uncovered → CDZ0210
+           'pattern `B` not covered', not the generic 'a sum match must cover every variant'. The matrix
+           path (`build_tree` at a non-empty switch-path) surfaces the missing-variant witness of the inner
+           sum via `non_exhaustive_sum_message` (message-only: a nested gap's covering arm can't be
+           flat-appended like the top-level path's fix, so it names the variant without a fix). Message
+           quality — the reject is unchanged (CDZ0210). v-diagnostics note 2026-07-16: the nested path used
+           to fall to the generic message; this names the witness so the author sees WHICH inner case is missing.")
+  (input  (do (type C (A) (B))
+              (def (f (: o (Option C))) (match o ((Some (A)) 1) ((None) 0)))
+              (export f)))
+  (error  CDZ0210))
