@@ -1,0 +1,79 @@
+//! End-to-end tests for `cdz doctor` — the toolchain-health preflight (a `cargo`-doctor analogue).
+//!
+//! `cdz doctor` reports the `cdz` version + path, whether the sibling `cdz-run` runner is present, and
+//! whether the value-heap runtime store holds the runtime `cdz` compiles against. It exits non-zero if a
+//! component that would break `cdz run`/`cdz test` is missing — so a setup/CI script can gate on it.
+//! Drives the built binary. (The `cdz-run` sibling is built alongside `cdz` in the test target, so the
+//! runner check is `ok` here; the store checks drive the `--store` override.)
+
+use std::process::Command;
+
+/// Run `cdz <args…>`, returning (exit_ok, stdout, stderr).
+fn run(args: &[&str]) -> (bool, String, String) {
+    let exe = env!("CARGO_BIN_EXE_cdz");
+    let out = Command::new(exe).args(args).output().expect("spawn cdz");
+    (
+        out.status.success(),
+        String::from_utf8_lossy(&out.stdout).to_string(),
+        String::from_utf8_lossy(&out.stderr).to_string(),
+    )
+}
+
+#[test]
+fn doctor_reports_version_and_the_runner() {
+    // Always-present facts: the `cdz` version line and the `cdz-run` runner check. The runner is built
+    // beside `cdz` in the cargo test target, so it reports `ok`.
+    let (_ok, out, _err) = run(&["doctor"]);
+    assert!(
+        out.starts_with("cdz "),
+        "reports the cdz version line: {out}"
+    );
+    assert!(
+        out.contains("path:"),
+        "reports the cdz executable path: {out}"
+    );
+    assert!(
+        out.contains("cdz-run: ok"),
+        "the sibling runner is found: {out}"
+    );
+}
+
+#[test]
+fn doctor_flags_a_missing_runtime_store() {
+    // `--store` at a nonexistent path → the runtime store is MISSING and doctor exits non-zero.
+    let missing = std::env::temp_dir().join(format!("cdz-doctor-nostore-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&missing);
+    let (ok, out, err) = run(&["doctor", "--store", missing.to_str().unwrap()]);
+    assert!(
+        !ok,
+        "a missing runtime store is an error (non-zero exit): {out}"
+    );
+    assert!(
+        out.contains("runtime store: MISSING"),
+        "reports the store as missing: {out}"
+    );
+    assert!(
+        err.contains("doctor found problem"),
+        "summary on stderr: {err}"
+    );
+}
+
+#[test]
+fn doctor_flags_a_store_without_the_required_runtime() {
+    // A store DIRECTORY that exists but lacks the required `<hash>.wasm` runtime → STALE, non-zero.
+    let empty = std::env::temp_dir().join(format!("cdz-doctor-emptystore-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&empty);
+    std::fs::create_dir_all(&empty).unwrap();
+    // A decoy .wasm that is NOT the required runtime hash — must not satisfy the check.
+    std::fs::write(empty.join("deadbeef.wasm"), b"not the runtime").unwrap();
+    let (ok, out, _err) = run(&["doctor", "--store", empty.to_str().unwrap()]);
+    assert!(
+        !ok,
+        "a store missing the required runtime is an error: {out}"
+    );
+    assert!(
+        out.contains("runtime store: STALE"),
+        "reports the store as stale (present, wrong/no runtime): {out}"
+    );
+    let _ = std::fs::remove_dir_all(&empty);
+}
