@@ -1,0 +1,97 @@
+// string-authz-loop.cdz — the authorized loop gating on a STRING action name (Increment 3b).
+//
+// authz-loop.cdz proved the authorization GATE — perform `Cedar.authorize` before dispatch, run the tool
+// only on ALLOW — but with a SCALAR action id (`authorize : Int64 -> Int64`), to keep the spine
+// independent of the String-crossing ABI. That ABI is now proven (rcdzc u7/u8) and is exactly how the
+// real embedder gates: `cedar_authorizer` takes a String ACTION NAME (e.g. "tool:search") and returns the
+// scalar decision from the `cedar-policy` engine. This module is that shipped shape: `Cedar.authorize :
+// String -> Int64` — the model's chosen tool name is authorized BY NAME before the loop dispatches it.
+//
+// It composes the authorization gate with String-equality routing: a `permits` policy stand-in decides
+// allow/deny by matching the action NAME (allow "tool:search"/"tool:read", deny everything else — the
+// deny-by-default a fail-closed policy enforces), and the loop dispatches a tool ONLY when its name is
+// permitted. So a DENY short-circuits that turn's dispatch, exactly as the real Cedar gate does. In the
+// embedder the SAME `Cedar.authorize` performs route to the host `cedar-policy` closure with no code
+// change (a nearer in-program handler wins — the free test override).
+//
+// Single-shot tail-resumptive, fuel-bounded, the dispatch count threaded through run's own `count`
+// PARAMETER (handler state inert Int64, resumed fresh `0`). The mock authorizes/denies a LITERAL action
+// per test rather than a parameterized `run-with(fuel, action)` — the v-effects merged-nested-context
+// capture limit (ACKED + owned) drops an outer-param capture when two effects are both reached by the
+// recursive driver; a literal per test avoids it and still covers allow + deny end-to-end.
+// The authorization effect: given a tool's ACTION NAME, return 1 (allow) or 0 (deny). Performed before
+// every dispatch; the real embedder binds this to the cedar-policy engine over the same name.
+effect Cedar =
+  | authorize : String -> Int64
+
+// The tools effect: `dispatch` runs the authorized tool (returns a result folded into the count); `done`
+// ends the loop with the running dispatch count. `dispatch` takes the tool NAME as a String.
+effect Tools =
+  | dispatch : String -> Int64
+  | done : Int64 -> Int64
+
+// The policy stand-in: allow a known tool-action name, deny everything else (deny-by-default — what a
+// fail-closed Cedar policy enforces). A chained String-equality match, the in-program analogue of the
+// cedar-policy decision the embedder makes over the same action string.
+def permits(action: String) =
+  if action == "tool:search" then 1 else if action == "tool:read" then 1 else 0
+
+// One authorized RUN: drive up to `fuel` turns on a fixed `action` (the model's chosen tool name). Each
+// turn is the GATE — `Cedar.authorize(action)`, and dispatch the tool (folding 1 into `count`) ONLY on
+// ALLOW; a DENY ends the loop with the count so far (the tool is never run). `fuel` bounds the turns.
+def run(fuel: Int64, action: String, count: Int64) =
+  if fuel == 0 then
+    Tools.done(count)
+  else
+    if Cedar.authorize(action) == 1 then
+      run(fuel - 1, action, count + Tools.dispatch(action))
+    else
+      Tools.done(count)
+
+// Run `fuel` turns authorizing "tool:search" (permitted) → all fuel turns dispatch → count = fuel. The
+// mock Cedar consults `permits`; handler state is inert (the count lives in `run`'s `count`), fresh `0`.
+def run-allowed(fuel: Int64) =
+  handle Cedar(0) with
+    | authorize(a, s) => resume(permits(a), 0)
+  in
+  handle Tools(0) with
+    | dispatch(a, s) => resume(1, 0)
+    | done(a, s) => resume(a, 0)
+  in
+  run(fuel, "tool:search", 0)
+
+// Run `fuel` turns on a DENIED action ("tool:delete" is not permitted) → the first turn's authorize
+// returns 0 → the loop ends immediately with count 0, the tool NEVER dispatched. Proves the gate is
+// load-bearing: a denied action's tool does not run.
+def run-denied(fuel: Int64) =
+  handle Cedar(0) with
+    | authorize(a, s) => resume(permits(a), 0)
+  in
+  handle Tools(0) with
+    | dispatch(a, s) => resume(1, 0)
+    | done(a, s) => resume(a, 0)
+  in
+  run(fuel, "tool:delete", 0)
+
+@test
+def permits-allows-known-denies-unknown() =
+  if permits("tool:search") == 1 then
+    if permits("tool:delete") == 0 then unit else trap("unknown action denied")
+  else
+    trap("known action allowed")
+
+@test
+def authz-allowed-action-dispatches-every-turn() =
+  if run-allowed(3) == 3 then unit else trap("an allowed action dispatches every turn, count = 3")
+
+@test
+def authz-denied-action-never-dispatches() =
+  if run-denied(5) == 0 then unit else trap("a denied action never dispatches, count = 0")
+
+@test
+def authz-zero-fuel-dispatches-nothing() =
+  if run-allowed(0) == 0 then unit else trap("zero fuel dispatches nothing")
+
+@test
+def authz-allowed-count-matches-fuel() =
+  if run-allowed(7) == 7 then unit else trap("seven allowed turns dispatch seven tools")

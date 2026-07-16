@@ -39,7 +39,8 @@ function compact(n: Node): string {
 /// Format a rendered value string (`(: value type)` or a bare value) for human display. On any parse
 /// failure, returns the input unchanged (never throws) — a value we can't parse is shown as-is rather
 /// than hidden. A whole scalar like `(: 42 Int64)` → `42`; `(: 5/2 Rational)` → `5/2`; `(: "hi" String)`
-/// → `hi`; `(: (quantity 2192 meter) …)` → `2192 meter`. A compound value keeps its canonical text.
+/// → `hi`; `(: (quantity 2192 meter) …)` → `2192 meter`. A compound value (list/tuple/record) is rendered
+/// compactly (ascription stripped, string atoms unquoted), e.g. `(: (list 1 2) …)` → `(list 1 2)`.
 export function formatValue(rendered: string): string {
   let node: Node;
   try {

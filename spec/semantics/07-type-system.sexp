@@ -586,6 +586,17 @@
   (input  (- (Symbol.of "a") (Symbol.of "b")))
   (error  CDZ0201))
 
+(case "remainder on two strings is rejected — the whole family, including %"
+  (doc    "`(% \"ab\" \"cd\")` — `%` (remainder) is integer arithmetic like `+`/`-`/`*`/`/`, so a String
+           operand is rejected (CDZ0201, 'arithmetic is not defined on String') exactly as `(- \"ab\"
+           \"cd\")` is. `%` was the LAST arithmetic operator to be brought into the non-numeric-operand
+           message family (it had been omitted from the cross-kind operand lists, so a String `%` leaked a
+           phantom `Int64`-and-String clash instead); this pins that `%` now names the numeric requirement
+           like its siblings. The modulo completion of the whole-family rule the `-`-on-strings case
+           introduces.")
+  (input  (% "ab" "cd"))
+  (error  CDZ0201))
+
 ; --- Arithmetic on a MISMATCHED non-numeric pair names BOTH real types -----------------------
 ; The cases above add two operands of the SAME non-numeric type. When the two operands are DIFFERENT
 ; non-numeric types — `(+ "ab" (list 1 2))`, a String and a List — the diagnostic names BOTH real types
@@ -1374,9 +1385,10 @@
             (export main)))
   (output (: 100 Int64)))
 
-(case "Type.of reflects equal for the SAME function stored as a MAP VALUE"
+(case "Type.of reflects equal for two functions of the SAME TYPE stored as a MAP VALUE"
   (doc    "The map-value position (coverage companion to the reflected_ty domain-grounding fixes) — the
-           SAME-function half: `Map.insert(Map.empty, 1, f)` and the same with `f2` (both `(-> Int64 Int64)`)
+           same-TYPE half: `Map.insert(Map.empty, 1, f)` and the same with `f2` — two DISTINCT functions,
+           both `(-> Int64 Int64)`, so they
            reflect the SAME map type, so `Type.eq` is true. `main` returns 1. The DIFFERENT-domain
            map-value/key case (a leak that once left a Map fn's domain `Any`) is now FIXED and pinned by the
            companion case below; this same-fn case is the already-correct control.")
@@ -1405,6 +1417,43 @@
                                         (Type.of (Map.insert Map.empty 1 g))) 1 0)
                            (if (Type.eq (Type.of (Map.insert Map.empty 1 f))
                                         (Type.of (Map.insert Map.empty 1 f2))) 100 0)))
+            (export main)))
+  (output (: 100 Int64)))
+
+(case "Type.of grounds a function stored as a runtime Map KEY"
+  (doc    "The KEY-position companion of the runtime-Map value case above (coverage companion to the
+           reflected_ty (Map k v) grounding fix, which grounds BOTH key and value). A function is a
+           reachable Map key — `(Map.insert Map.empty f 1)` compiles and runs — so its domain must be
+           grounded in the reflected KEY type just like the value. `f x = x + 1` (`Int64 -> Int64`) vs
+           `g b = if b 0 1` (`Bool -> Int64`): the maps' KEY types differ → `Type.eq` false; `f` vs `f2`
+           (both `Int64 -> Int64`) → equal. `0 + 100 = 100`. Before the fix the key domain leaked `Any`
+           exactly as the value did, so distinct-domain key functions reflected the same map type.")
+  (input  (do
+            (def (f x) (+ x 1))
+            (def (f2 z) (+ z 9))
+            (def (g b) (if b 0 1))
+            (def (main) (+ (if (Type.eq (Type.of (Map.insert Map.empty f 1))
+                                        (Type.of (Map.insert Map.empty g 1))) 1 0)
+                           (if (Type.eq (Type.of (Map.insert Map.empty f 1))
+                                        (Type.of (Map.insert Map.empty f2 1))) 100 0)))
+            (export main)))
+  (output (: 100 Int64)))
+
+(case "Type.of grounds a Map-value function nested inside a tuple"
+  (doc    "The compounding facet: a runtime-Map-value function wrapped in an outer container —
+           `(tuple (Map.insert Map.empty 1 f) 0)`. The tuple-element reflection recurses INTO the
+           `Map.insert` node, so the (Map k v) grounding fix flows through the wrapper automatically: the
+           tuples' first-element map types differ when the value functions differ (`f : Int64 -> Int64` vs
+           `g : Bool -> Int64`) → `Type.eq` false; `f` vs `f2` → equal. `0 + 100 = 100`. Pins that the Map
+           grounding composes with an outer container rather than being re-leaked at the wrapper.")
+  (input  (do
+            (def (f x) (+ x 1))
+            (def (f2 z) (+ z 9))
+            (def (g b) (if b 0 1))
+            (def (main) (+ (if (Type.eq (Type.of (tuple (Map.insert Map.empty 1 f) 0))
+                                        (Type.of (tuple (Map.insert Map.empty 1 g) 0))) 1 0)
+                           (if (Type.eq (Type.of (tuple (Map.insert Map.empty 1 f) 0))
+                                        (Type.of (tuple (Map.insert Map.empty 1 f2) 0))) 100 0)))
             (export main)))
   (output (: 100 Int64)))
 

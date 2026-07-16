@@ -1071,6 +1071,72 @@ mod tests {
     }
 
     #[test]
+    fn every_node_span_slices_back_to_that_node_over_generated_programs() {
+        // `spans_cover_the_source_text_of_each_node` pins span ACCURACY on ONE hand program at 3 nodes.
+        // This sweeps it: for EVERY node of every generated program, the span must (a) be an in-bounds,
+        // char-boundary slice of the source, (b) nest inside its parent's span, and (c) — the strong
+        // property — slice to source text that RE-READS to a tree structurally equal to that node's
+        // subtree. (c) is what LSP hover / go-to-def / codemod edits rely on: the span must identify
+        // EXACTLY this node's source, not a neighbor or an off-by-one range. Totality is already swept
+        // (`sexpr_reader_invariants_hold_on_arbitrary_input`); this is about the spans being RIGHT, not
+        // merely present. A list node additionally must bracket `(`…`)`.
+        let mut rng = SplitMix64(0x5a4c_0de5_acc0_1a7e);
+        let mut nodes_checked = 0usize;
+        for _ in 0..3000 {
+            let depth = 1 + (rng.next() as usize) % 4;
+            let src = gen_pretty_prog(&mut rng, depth);
+            let Ok((a, spans)) = read_spanned(&src) else {
+                continue;
+            };
+            // Walk every node with its parent span (root's "parent" is the whole source).
+            let full = Span::new(0, src.len());
+            let mut stack: Vec<(StructId, Span)> = vec![(a.root, full)];
+            while let Some((id, parent)) = stack.pop() {
+                let sp = spans.get(id).expect("span table is total");
+                // (a) in-bounds + char boundaries (slicing panics otherwise, but assert for a clear msg).
+                assert!(
+                    sp.start <= sp.end
+                        && sp.end <= src.len()
+                        && src.is_char_boundary(sp.start)
+                        && src.is_char_boundary(sp.end),
+                    "span {sp:?} out of bounds / off a char boundary in {src:?}"
+                );
+                // (b) nested within the parent's span.
+                assert!(
+                    parent.start <= sp.start && sp.end <= parent.end,
+                    "node span {sp:?} escapes parent {parent:?} in {src:?}"
+                );
+                let text = slice(&src, sp);
+                // (c) the covered text re-reads to a tree structurally equal to this subtree. Materialize
+                // the node rooted at `id` into its own arena (via `query::Tree`), then compare to a fresh
+                // parse of the span text — order-independent since `structurally_eq` compares shape.
+                let sub = crate::query::Tree::from_arena(&a, id).to_arena();
+                let reparsed = read(text).unwrap_or_else(|e| {
+                    panic!("node span text {text:?} must re-read ({e:?}) in {src:?}")
+                });
+                assert!(
+                    reparsed.structurally_eq(&sub),
+                    "node span text {text:?} re-reads to a DIFFERENT tree than the node it spans in {src:?}"
+                );
+                if let Struct::List(items) = a.get(id) {
+                    assert!(
+                        text.starts_with('(') && text.ends_with(')'),
+                        "a list node's span {text:?} must bracket parens in {src:?}"
+                    );
+                    for &child in items {
+                        stack.push((child, sp));
+                    }
+                }
+                nodes_checked += 1;
+            }
+        }
+        assert!(
+            nodes_checked >= 3000,
+            "swept a meaningful node population, got {nodes_checked}"
+        );
+    }
+
+    #[test]
     fn read_all_spanned_wraps_and_spans_each_top_form() {
         let src = "(a 1)\n(b 2)\n";
         let (a, spans) = read_all_spanned(src).unwrap();

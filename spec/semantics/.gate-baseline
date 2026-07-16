@@ -186,9 +186,11 @@ pass	Type.eq of a type-valued parameter against itself is always true
 pass	Type.eq on a constructed generic sum compares the full instantiated type
 pass	Type.eq on a type-valued parameter against a COMPOUND type is structural
 pass	Type.of carries a quantity's unit into a same-type annotation
+pass	Type.of grounds a Map-value function nested inside a tuple
 pass	Type.of grounds a RETURNED function's domain — a closure whose result is a function
 pass	Type.of grounds a function nested TWO containers deep — a sum payload inside a list
 pass	Type.of grounds a function nested TWO containers deep — a tuple inside a sum payload
+pass	Type.of grounds a function stored as a runtime Map KEY
 pass	Type.of grounds a function stored as a runtime Map value
 pass	Type.of grounds a function stored in a RECORD FIELD
 pass	Type.of grounds a function stored inside a SUM VARIANT payload
@@ -198,7 +200,7 @@ pass	Type.of reflects a RETURNED function's body-solved domain, at every curryin
 pass	Type.of reflects a function's BODY-SOLVED domain, distinguishing different parameter types
 pass	Type.of reflects a runtime parameter's type at compile time
 pass	Type.of reflects a value's type for use as an annotation
-pass	Type.of reflects equal for the SAME function stored as a MAP VALUE
+pass	Type.of reflects equal for two functions of the SAME TYPE stored as a MAP VALUE
 pass	UInt16.wrap at exactly two-to-the-sixteenth is zero
 pass	UInt16.wrap one past two-to-the-sixteenth is one
 pass	UInt64.max crosses the parameter boundary and back unchanged
@@ -378,6 +380,8 @@ pass	a UInt32 addition that overflows the 32-bit width is rejected at compile ti
 pass	a UInt32 holds a wasm section size at the width boundary
 pass	a UInt64 closure round-trips through a consumer export
 pass	a UInt64 holds a value above the signed 64-bit maximum
+pass	a UInt8 sum-payload literal-match hits the literal arm, result widens to Int64
+pass	a UInt8 sum-payload literal-match misses, binds the payload widened to Int64
 pass	a Unit element between two Int64s in a tuple, a later element read
 pass	a Unit element in a multi-payload sum variant compiles to valid wasm
 pass	a Unit payload MATCH-bound from a still-live sum at a dup-site drops the sentinel
@@ -2205,6 +2209,10 @@ pass	an IEC-prefixed quantity displays scaled to its reference over Int64
 pass	an INFINITY-axiom theorem is unforgeable — its Thm cannot be fabricated outside the kernel
 pass	an Int argument to a Bool-annotated parameter is rejected
 pass	an Int argument to a parameter used as a Bool condition is rejected
+pass	an Int16 sum-payload literal-match hits the literal arm, result widens to Int64
+pass	an Int32 sum-payload literal-match misses, binds the payload widened to Int64
+pass	an Int64 sum-payload literal-match needs no widening (width control)
+pass	an Int8 sum-payload literal-match misses, binds the payload widened to Int64
 pass	an N suffix lets a huge literal need no annotation
 pass	an N-suffixed integer literal is a BigInt
 pass	an Ok and an Err decode compose through one shared handler
@@ -2510,7 +2518,9 @@ pass	applying a boolean is a type error
 pass	applying a float is a type error
 pass	applying a non-function is a type error
 pass	applying the result of a match whose arms return payload-capturing closures
+pass	arithmetic between a char and a BigInt is rejected with a working two-step conversion fix
 pass	arithmetic between a char and a FLOAT is rejected with a working two-step conversion fix
+pass	arithmetic between a char and a Rational is rejected with a working two-step conversion fix
 pass	arithmetic on a bound Rational payload computes and escapes exactly
 pass	arithmetic right shift
 pass	arithmetic right shift of negative one is negative one
@@ -3004,6 +3014,9 @@ pass	print renders a nested compound with a string leaf as its exact canonical t
 pass	print renders a single-element Ast.List as one parenthesized element
 pass	print renders a template that splices an Ast value — the non-executing path works
 pass	print renders an empty Ast.List as the empty-parens form
+pass	print then read an Ast.Float at full 17-significant-digit precision round-trips
+pass	print then read an Ast.Float at the maximum finite magnitude round-trips
+pass	print then read an Ast.Float at the smallest subnormal round-trips
 pass	print then read of a digit-led Ast.Name reclassifies it per the number/identifier boundary
 pass	print then read of a keyword-spelled Ast.Name reclassifies it as the boolean literal
 pass	projecting a field is independent of the order fields are written
@@ -3063,6 +3076,7 @@ pass	rejection sampling draws until the refinement holds — an only-even genera
 pass	rejection sampling into a narrow range refinement produces only in-range values
 pass	rejection sampling terminates on fuel exhaustion when the refinement is unsatisfiable
 pass	remainder (%) on a quantity declines cleanly (not a leaked scheme mismatch)
+pass	remainder on two strings is rejected — the whole family, including %
 pass	removing a key drops its association and the size
 pass	removing a runtime element drops it or is a no-op if absent
 pass	removing a runtime element lowers the cardinality only when present
@@ -3418,6 +3432,7 @@ pass	two dependent-size segments each bind the count a preceding segment named
 pass	two different variants of the SAME sum compare unequal
 pass	two differing runtime Ok values of a multi-parameter sum compare unequal by a heap walk
 pass	two differing runtime sum values compare unequal by a heap walk
+pass	two distinct doubles print to distinct text — 0.3 and 0.1+0.2 do not round-trip-collide
 pass	two distinct map-keys are distinct entries
 pass	two distinct names bound to the same value key the same map entry
 pass	two distinct-named modules in one scope coexist
