@@ -170,3 +170,106 @@
             (def (main) (fake (refl 5)))
             (export main)))
   (error  CDZ0203))
+
+; ============================================================================================
+; Increment 2 — the kernel SKELETON exercised as a real HOL fragment (not the toy Thm(MkThm Int64)
+; above). A `hol` module declares Term (a HOL term: variable / application / equality) CONCRETELY —
+; users build terms — and Thm ABSTRACTLY as a sequent (Seq hyps concl) — only the kernel's inference
+; rules mint one. The equational-core leaf rules refl (⊢ t = t) and assume (p ⊢ p) are exported;
+; structural term equality (term-eq, HOL's aconv modulo α which a later increment adds) and the
+; concl/hyps accessors let a caller CHECK a theorem without being able to FORGE one. These cases run
+; the kernel end-to-end through the real pipeline — proving the LCF mechanism works in Cadenza — and
+; re-assert the unforgeability boundary for the realistic sequent-shaped Thm.
+; ============================================================================================
+
+(case "the kernel proves reflexivity end-to-end: refl t yields a theorem whose conclusion is (t = t)"
+  (doc    "The first real theorem. `hol` exports Term concretely (a HOL term: Var / Comb / Eq), Thm
+           abstractly (a sequent), the primitive rule `refl`, and the `concl` accessor + `term-eq`
+           checker. The entry proves `⊢ x = x` for x = (Var 0) by calling `refl`, then CHECKS the
+           conclusion really is an equality of x with itself via the exported term-eq — it never
+           fabricates the theorem, it derives it through the rule and inspects it through the accessor.
+           Runs to `true`. Pins that the LCF equational core works end-to-end in Cadenza: a primitive
+           rule mints a theorem, an accessor reads it, and structural term equality (a recursive walk
+           over the Term sum) folds over the derived value.")
+  (module "hol"
+    (do
+      (type Term (Var Int64) (Comb Term Term) (Eq Term Term))
+      (type Thm (Seq (List Term) Term))
+      (def (term-eq (: a Term) (: b Term))
+        (match a
+          ((Term.Var n)    (match b ((Term.Var m) (= n m)) ((Term.Comb _ _) false) ((Term.Eq _ _) false)))
+          ((Term.Comb x y) (match b ((Term.Var _) false) ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) ((Term.Eq _ _) false)))
+          ((Term.Eq x y)   (match b ((Term.Var _) false) ((Term.Comb _ _) false) ((Term.Eq p q) (and (term-eq x p) (term-eq y q)))))))
+      (def (refl (: t Term)) (Thm.Seq (list) (Term.Eq t t)))
+      (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
+      (export (. Term *))
+      (export Thm)
+      (export term-eq)
+      (export refl)
+      (export concl)))
+  (input  (do
+            (import "hol" (Term Thm term-eq refl concl))
+            (def (main)
+              (match (concl (refl (Term.Var 0)))
+                ((Term.Eq a b) (term-eq a b))
+                (_ false)))
+            (export main)))
+  (output (: true Bool)))
+
+(case "the kernel's ASSUME rule yields the sequent {p} |- p"
+  (doc    "The second primitive leaf rule: `ASSUME p` produces the theorem `{p} ⊢ p` — p as both the
+           sole hypothesis and the conclusion. The sequent carries its hypotheses as a `List Term`. The
+           entry assumes (Var 7), then verifies through the exported `concl`/`hyps` accessors that the
+           conclusion is p AND the single hypothesis is p (both checked with term-eq). Runs to `true`.
+           Pins that a theorem with HYPOTHESES threads its hyp list through the abstract boundary and is
+           inspectable via accessors — the shape the discharging rules (DEDUCT_ANTISYM, EQ_MP) consume.")
+  (module "hol"
+    (do
+      (type Term (Var Int64) (Comb Term Term) (Eq Term Term))
+      (type Thm (Seq (List Term) Term))
+      (def (term-eq (: a Term) (: b Term))
+        (match a
+          ((Term.Var n)    (match b ((Term.Var m) (= n m)) ((Term.Comb _ _) false) ((Term.Eq _ _) false)))
+          ((Term.Comb x y) (match b ((Term.Var _) false) ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) ((Term.Eq _ _) false)))
+          ((Term.Eq x y)   (match b ((Term.Var _) false) ((Term.Comb _ _) false) ((Term.Eq p q) (and (term-eq x p) (term-eq y q)))))))
+      (def (assume (: p Term)) (Thm.Seq (list p) p))
+      (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
+      (def (hyps (: th Thm)) (match th ((Thm.Seq h _) h)))
+      (export (. Term *))
+      (export Thm)
+      (export term-eq)
+      (export assume)
+      (export concl)
+      (export hyps)))
+  (input  (do
+            (import "hol" (Term Thm term-eq assume concl hyps))
+            (def (main)
+              (let ((p (Term.Var 7))
+                    (th (assume (Term.Var 7))))
+                (and (term-eq (concl th) p)
+                     (match (hyps th)
+                       ((list h) (term-eq h p))
+                       (_ false)))))
+            (export main)))
+  (output (: true Bool)))
+
+(case "the sequent-shaped kernel Thm is unforgeable — building Thm.Seq outside the kernel is CDZ0214"
+  (doc    "The soundness boundary re-asserted for the REALISTIC sequent Thm (not the toy Thm(MkThm Int64)
+           of the earlier cases). Even though Term is exported CONCRETELY (an importer can build any term
+           it likes), Thm's constructor `Seq` is withheld — so an attacker cannot fabricate a bogus
+           theorem `{} ⊢ (Var 1 = Var 2)` by calling `Thm.Seq` directly; that is CDZ0214. This is the
+           crux: the ability to build TERMS freely does not grant the ability to assert them as THEOREMS.
+           A theorem is minted only by a kernel rule; term construction is not a trust surface.")
+  (module "hol"
+    (do
+      (type Term (Var Int64) (Comb Term Term) (Eq Term Term))
+      (type Thm (Seq (List Term) Term))
+      (def (refl (: t Term)) (Thm.Seq (list) (Term.Eq t t)))
+      (export (. Term *))
+      (export Thm)
+      (export refl)))
+  (input  (do
+            (import "hol" (Term Thm refl))
+            (def (main) (Thm.Seq (list) (Term.Eq (Term.Var 1) (Term.Var 2))))
+            (export main)))
+  (error  CDZ0214))

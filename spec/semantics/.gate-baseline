@@ -2925,6 +2925,8 @@ pass	the identity function applied to an integer returns the integer
 pass	the int-to-float generator is order-preserving (a < b implies of a < of b)
 pass	the intersection contains the elements in both sets
 pass	the intersection of disjoint sets is empty
+pass	the kernel proves reflexivity end-to-end: refl t yields a theorem whose conclusion is (t = t)
+pass	the kernel's ASSUME rule yields the sequent {p} |- p
 pass	the largest factorial that fits the integer type computes exactly
 pass	the le modifier encodes a u16 little-endian
 pass	the left payload of the taken arm traps before the right payload
@@ -2979,6 +2981,7 @@ pass	the scalar length of a runtime multi-byte string counts scalars, not bytes
 pass	the second distinct-signature closure export returns its own type
 pass	the selected operand decides a hoisted comparison
 pass	the selected operand decides a hoisted float equality
+pass	the sequent-shaped kernel Thm is unforgeable — building Thm.Seq outside the kernel is CDZ0214
 pass	the shrinking search terminates via its fuel bound rather than searching unboundedly
 pass	the slice overflow guard holds on a chained slice-of-a-slice
 pass	the taken arm's checked add still overflows under the operator hoist
