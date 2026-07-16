@@ -144,6 +144,60 @@
   (output (: 0 Int64)))
 
 ; ============================================================================================
+; Symbol-LITERAL patterns — the `match` face of runtime-Symbol dispatch
+; ============================================================================================
+; The runtime-`=` cases above dispatch on a Symbol with an `if (= s #"…")` chain. The `match` sibling
+; is a symbol-LITERAL pattern: `(match s (#"add" 1) (#"sub" 2) (_ 0))`. A Symbol shares the constant-
+; string representation (`#"add"` is `(Symbol.of "add")`, a `Core::ConstStr`), so a symbol-literal
+; pattern reuses the SAME machinery as a string-literal pattern (13-strings) — it classifies to a `Str`
+; probe, folds against the constant, and emits a content `value-eq` test — with the probe's expected
+; type set to `Symbol` (not `String`) so it agrees with a Symbol scrutinee across the nominal boundary
+; (a Symbol is nominal over String). This is the pattern face of the `if (= s #"…")` chain, equivalent
+; to it arm-for-arm.
+
+(case "a runtime symbol matches a symbol-literal pattern arm by content"
+  (doc    "`classify` matches a Symbol parameter against symbol-literal arms `(#\"add\" 1) (#\"sub\" 2)`;
+           called with `#\"add\"` (built via `Symbol.of` over a runtime rope so it is not a constant fold)
+           it takes the first arm → 1. The symbol-literal pattern is the `match` sibling of the
+           `if (= s #\"add\")` dispatch: it classifies to a `Str` probe typed `Symbol` and emits a content
+           value-eq test. Pins that a symbol scrutinee accepts a symbol-literal pattern.")
+  (input  (do
+            (def (classify (: s Symbol)) (match s (#"add" 1) (#"sub" 2) (_ 0)))
+            (def (main) (classify (Symbol.of (String.concat "ad" "d")))) (export main)))
+  (output (: 1 Int64)))
+
+(case "a runtime symbol not among the literal arms falls through to the wildcard"
+  (doc    "The companion miss: `classify` called with a runtime `#\"xyz\"` matches neither `#\"add\"` nor
+           `#\"sub\"` and falls through to the `_` arm → 0. Confirms the symbol-literal match is a genuine
+           per-arm content dispatch (1 for a listed name, 0 for an unlisted one), not a blanket answer.")
+  (input  (do
+            (def (classify (: s Symbol)) (match s (#"add" 1) (#"sub" 2) (_ 0)))
+            (def (main) (classify (Symbol.of (String.concat "x" "yz")))) (export main)))
+  (output (: 0 Int64)))
+
+(case "a symbol-literal pattern nested in a variant payload matches by content"
+  (doc    "The NESTED face: a sum whose payload is a Symbol (`(type W (Mk Symbol))`) matched with a
+           symbol-literal payload sub-pattern `(Mk #\"add\")`. The pattern imposes the `Mk` discriminant
+           AND a content lit-test on the payload — `f` called with `(Mk #\"add\")` (payload built at run
+           time) fires the first arm → 1. Pins that the symbol-literal probe classifies as a nested payload
+           sub-pattern (the `SumPayload`-position twin of the top-level cases), typed `Symbol`.")
+  (input  (do
+            (type W (Mk Symbol))
+            (def (f (: w W)) (match w ((Mk #"add") 1) ((Mk _) 0)))
+            (def (main) (f (Mk (Symbol.of (String.concat "ad" "d"))))) (export main)))
+  (output (: 1 Int64)))
+
+(case "a nested symbol-literal payload falls through on a non-matching symbol"
+  (doc    "The nested miss: `f` called with `(Mk #\"sub\")` does not match the `(Mk #\"add\")` arm and
+           takes the `(Mk _)` fall-through → 0. Confirms the nested symbol-literal test is a genuine
+           content compare, the companion of the nested-hit case.")
+  (input  (do
+            (type W (Mk Symbol))
+            (def (f (: w W)) (match w ((Mk #"add") 1) ((Mk _) 0)))
+            (def (main) (f (Mk (Symbol.of (String.concat "su" "b"))))) (export main)))
+  (output (: 0 Int64)))
+
+; ============================================================================================
 ; Symbol-keyed membership — the symbol-table dispatch the form exists for
 ; ============================================================================================
 ; The header's motivation (a self-hosting compiler keys node-kind dispatch and scope resolution on

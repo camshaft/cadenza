@@ -1248,6 +1248,7 @@ pass	a nested pattern under an open sum's named variant still requires the outer
 pass	a nested runtime tuple built behind a recursive call escapes to the host
 pass	a nested runtime tuple is returned as a result
 pass	a nested sum match missing an inner variant is non-exhaustive
+pass	a nested symbol-literal payload falls through on a non-matching symbol
 pass	a nested tuple list element is bound over a runtime list and folded across the rest
 pass	a nested tuple pattern of the wrong arity is a type error
 pass	a nested tuple-arity mismatch in equality is a type error
@@ -1715,7 +1716,9 @@ pass	a runtime sum whose payload comes from recursion compares unequal by a heap
 pass	a runtime sum whose payload is a runtime tuple nests across the boundary
 pass	a runtime symbol compared to an interned constant matches by content
 pass	a runtime symbol is found among a set of known symbols
+pass	a runtime symbol matches a symbol-literal pattern arm by content
 pass	a runtime symbol not among the known symbols is rejected
+pass	a runtime symbol not among the literal arms falls through to the wildcard
 pass	a runtime symbol that differs from the interned constant does not match
 pass	a runtime three-level nested tuple compares equal by a deep walk
 pass	a runtime three-variant classifier dispatches to the middle arm
@@ -1900,6 +1903,7 @@ pass	a symbol compared to a string is a type error
 pass	a symbol converts back to its content string
 pass	a symbol is constructed from a string
 pass	a symbol's identity is its content, not how the content was derived
+pass	a symbol-literal pattern nested in a variant payload matches by content
 pass	a tag-length-value record round-trips through construct then match
 pass	a tagged template expands via its binding-dispatched tag function
 pass	a tagged template nested in another's hole composes — the inner's result reaches the outer tag
