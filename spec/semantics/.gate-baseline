@@ -1984,6 +1984,8 @@ pass	an if-operand arithmetic op with deferred-width branches is Int64, and its 
 pass	an if-tuple returned from a call, let-bound and projected twice
 pass	an if-wrapped self-application is rejected in bounded time, not an inference hang
 pass	an if→SELECT-eligible conditional with a performed condition and pure branches stays sound
+pass	an ill-formed integer width NESTED in a compound annotation is rejected
+pass	an ill-formed integer width in a type-declaration payload is rejected
 pass	an imported helper reaches its own file's private definition when inlined
 pass	an imported name resolves to a sibling file's exported definition
 pass	an in-bounds slice yields Some of the bytes at that range
@@ -2283,6 +2285,8 @@ pass	equality of two tuples of different arity is a type error
 pass	equality over a partly-un-built sum with a free Err type compiles on every backend
 pass	eval is optional for macros and interactive use
 pass	eval of a quasiquote splicing a compile-time-known value
+pass	eval of a quasiquote splicing a string works through String ops
+pass	eval of a quasiquote-built form with a float unquote folds
 pass	eval of a quoted boolean executes it to the boolean value
 pass	eval of a quoted conditional reduces its comparison condition first
 pass	eval of a quoted conditional takes the branch its boolean literal selects
@@ -2486,6 +2490,7 @@ pass	popping a field yields its value and the remaining record
 pass	popping a tuple with a runtime element separates the head from the rest
 pass	popping a tuple yields element zero and the remaining tuple
 pass	popping an absent field is rejected
+pass	print of a quote containing a float renders re-readably
 pass	print of an Ast.Bool renders the bare word and read inverts it
 pass	print of an Ast.Float renders a re-readable decimal and read inverts it
 pass	print of an Ast.Str renders a quoted literal with escapes and read inverts it
@@ -2916,6 +2921,3 @@ todo	a closure-typed closure ARG on the DIRECT-CALL path is declined — host wo
 todo	a producer capturing a host-supplied COMPOUND parameter is declined — host→guest decode
 todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
-pass	eval of a quasiquote-built form with a float unquote folds
-pass	eval of a quasiquote splicing a string works through String ops
-pass	print of a quote containing a float renders re-readably
