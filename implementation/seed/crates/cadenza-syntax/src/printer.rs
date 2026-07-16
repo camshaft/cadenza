@@ -389,8 +389,13 @@ impl<'a> Printer<'a> {
                 self.doc.word("(");
             }
             self.expr(value, PREC_AS);
-            self.doc.space(); // break BEFORE `as`
-            self.doc.word("as ");
+            // A NON-breaking space before `as` (not `space()`): the `as` operator's parser declines to
+            // consume a leading `as` across a NEWLINE (the sequencing guard — a new-line `as` must not
+            // reach back to the previous statement), so a break here emits `… )⏎  as unit`, which then
+            // FAILS to re-parse ("keyword used outside its form"). Keeping ` as` glued to the value's last
+            // line makes `<value> as <unit>` round-trip at every width (the value itself still wraps
+            // internally). Fixes the chained-conversion ML round-trip failure (18-units-of-measure).
+            self.doc.word(" as ");
             self.doc.word(name);
             if paren {
                 self.doc.word(")");
@@ -2988,6 +2993,35 @@ mod tests {
                     "ML print (w={width}) not faithful for {sx:?}\n--- ml ---\n{ml}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn as_conversion_does_not_break_before_as_so_it_round_trips_at_every_width() {
+        // Regression: the `as` unit-conversion used a BREAKABLE space before `as`, so at a narrow width
+        // the printer emitted `<value>⏎  as <unit>` — which then FAILED to re-parse, because the `as`
+        // operator declines a leading `as` across a newline (the statement-sequencing guard). A chained
+        // conversion (`… as millimeter … as centimeter`) is wide enough to trigger the break at the
+        // default width. The fix makes ` as ` a NON-breaking space; assert the value round-trips at every
+        // width (the value still wraps internally, but ` as <unit>` stays glued to its last line).
+        let src = concat!(
+            "(Unit.in (Unit.of #\"centimeter\") ",
+            "(Qty.of (Unit.in (Unit.of #\"millimeter\") ",
+            "(Qty.of (Rational.of 1 1) (Unit.of #\"inch\"))) (Unit.of #\"millimeter\")))"
+        );
+        let a = sexpr::read(src).unwrap();
+        for w in [0usize, 1, 20, 40, 80, 100] {
+            let ml = print(&a, w);
+            let back = parser::read_ml(&ml);
+            assert!(
+                back.ok(),
+                "the `as`-conversion must re-parse clean at width {w}: {ml:?} errs={:?}",
+                back.errors
+            );
+            assert!(
+                back.arenas.structurally_eq(&a),
+                "the `as`-conversion round-trips structurally at width {w}: {ml:?}"
+            );
         }
     }
 

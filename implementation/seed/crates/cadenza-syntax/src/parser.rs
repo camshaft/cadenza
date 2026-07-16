@@ -754,8 +754,25 @@ impl<'a> Parser<'a> {
             return self.error_node(start);
         }
         self.depth += 1;
+        // A numeric literal handles its OWN unit suffix in the prefix arm (preserving the `Suffixed`
+        // exemption: `100N feet` is NOT a quantity). Every OTHER prefix gets the unit suffix generally,
+        // after `postfix`, so a variable / call / parenthesized expression takes a unit too.
+        let prefix_is_number = matches!(self.kind(), Kind::Int | Kind::Float);
         let mut left = self.prefix();
         left = self.postfix(left, start);
+        // UNIT SUFFIX (general postfix): an adjacent same-line unit name applies to ANY non-literal
+        // expression — `x meters`, `f(5) meters`, `(a + b) meters` all read as a quantity. This binds
+        // TIGHTER than every infix operator (applied here, before the infix loop below), so `x + 1 meters`
+        // = `x + (1 meters)` and `(x + 1) meters` needs the parens (operator-confirmed). Generalizes the
+        // former literal-only sugar. Fixes a real miscompile: `x meters` previously SILENTLY parsed as a
+        // two-statement sequence `(do x meters)`. (Typing — the operand must be a DIMENSIONLESS number; a
+        // Quantity operand is a type error — is enforced by v-quantity/v-inference, not the parser: the
+        // parse is the uniform `(Qty.of <expr> (Unit.of #name))` regardless of the operand's type.) A
+        // number is EXCLUDED here — it already took (or, if suffixed, declined) its unit in the prefix arm,
+        // so re-applying would double-wrap a `10 meters` or wrongly unit-suffix a `100N`.
+        if !prefix_is_number {
+            left = self.maybe_unit_suffix(left, start);
+        }
         // The number of left-associative layers this loop has folded onto `left`. Added to `self.depth`
         // (the recursion depth) it is the arena-tree depth built so far, which the guard below bounds.
         let mut spine: u32 = 0;
@@ -926,7 +943,13 @@ impl<'a> Parser<'a> {
                 if matches!(literal::classify_word(&text), Leaf::Suffixed { .. }) {
                     num
                 } else {
-                    self.maybe_quantity_literal(num, span)
+                    // A bare numeric literal takes the unit suffix HERE (the literal-only fast path,
+                    // preserving the exact suffix guard: `100N feet` is not a quantity). A non-literal
+                    // expression gets the SAME sugar generally, applied in `expr` after `postfix` — see
+                    // `maybe_unit_suffix`. Applying it here for the literal keeps the numeric path (and its
+                    // `Suffixed` exemption) unchanged; the `expr` hook then sees a `(Qty.of …)` node with no
+                    // trailing unit ident, so it no-ops and never double-wraps.
+                    self.maybe_unit_suffix(num, span)
                 }
             }
             Kind::Str => {
@@ -1195,7 +1218,17 @@ impl<'a> Parser<'a> {
     /// number and a name has no other meaning on the ML surface (application is `f(x)`, not
     /// juxtaposition), so this repurposes a previously-meaningless adjacency. The printer renders the
     /// same arena shape back to `<num> <name>`, an exact round-trip.
-    fn maybe_quantity_literal(&mut self, num: StructId, num_span: Span) -> StructId {
+    /// Apply an adjacent same-line UNIT SUFFIX to `expr`, yielding `(Qty.of <expr> (Unit.of #name))`, or
+    /// return `expr` unchanged if no unit name follows. `expr` is ANY expression (a numeric literal from
+    /// the prefix arm, or a variable / call / parenthesized expression via the `expr` post-`postfix`
+    /// hook) — this is the general unit-application postfix. The unit name must be an adjacent, SAME-LINE,
+    /// non-keyword/non-word-op `Ident` (the same guards the literal-only sugar used: the same-line guard
+    /// stops the sugar eating the next statement's leading ident across a newline — the `10 a` miscompile
+    /// guard). Typing (operand must be a dimensionless number; a Quantity operand → a type error) is
+    /// v-quantity/v-inference's job — the parse is uniform regardless of the operand's type.
+    fn maybe_unit_suffix(&mut self, expr: StructId, expr_span: Span) -> StructId {
+        let num = expr;
+        let num_span = expr_span;
         if !self.at(Kind::Ident) {
             return num;
         }
@@ -3268,6 +3301,65 @@ mod tests {
     }
 
     #[test]
+    fn unit_application_is_a_general_postfix_on_any_expression() {
+        use crate::sexpr;
+        // OPERATOR BUG FIX: unit application is a general POSTFIX, not literal-only. `let x = 10 in x
+        // meters` (the operator's reported failure) now applies the unit to the VARIABLE. Before, `x
+        // meters` SILENTLY mis-parsed to a two-statement sequence `(do x meters)` — a wrong tree.
+        assert_eq!(
+            sexpr::print(&parse_ok("let x = 10 in x meters")),
+            r#"(let ((x 10)) ((. Qty of) x ((. Unit of) #"meters")))"#
+        );
+        // A bare variable, a parenthesized expression, and a call result all take a unit.
+        assert_eq!(
+            sexpr::print(&parse_ok("x meters")),
+            r#"((. Qty of) x ((. Unit of) #"meters"))"#
+        );
+        assert_eq!(
+            sexpr::print(&parse_ok("(a + b) meters")),
+            r#"((. Qty of) (+ a b) ((. Unit of) #"meters"))"#
+        );
+        assert_eq!(
+            sexpr::print(&parse_ok("f(5) meters")),
+            r#"((. Qty of) (f 5) ((. Unit of) #"meters"))"#
+        );
+        // PRECEDENCE (operator-confirmed): the unit binds TIGHTER than infix, so `x + 1 meters` groups
+        // as `x + (1 meters)`; the whole sum needs parens — `(x + 1) meters`.
+        assert_eq!(
+            sexpr::print(&parse_ok("x + 1 meters")),
+            r#"(+ x ((. Qty of) 1 ((. Unit of) #"meters")))"#
+        );
+        assert_eq!(
+            sexpr::print(&parse_ok("(x + 1) meters")),
+            r#"((. Qty of) (+ x 1) ((. Unit of) #"meters"))"#
+        );
+        // A unit inside a call argument reads as a quantity arg — the CAD units-everywhere case
+        // (`cube(width meters)`). (Consequence: `f(a b)` is now a valid unit-suffixed arg, not a
+        // missing-comma error — see `missing_comma_between_args_recovers`, which uses number args.)
+        assert_eq!(
+            sexpr::print(&parse_ok("cube(width meters)")),
+            r#"(cube ((. Qty of) width ((. Unit of) #"meters")))"#
+        );
+        // A type-SUFFIXED literal is still EXEMPT (a suffix selects a numeric type, not a unit): `100N
+        // feet` is NOT a quantity — it stays the two-form sequence, unchanged by the generalization.
+        assert_eq!(sexpr::print(&parse_ok("100N feet")), r#"(do 100N feet)"#);
+    }
+
+    #[test]
+    fn unit_suffix_does_not_cross_a_newline_on_a_variable() {
+        use crate::sexpr;
+        // The same-line guard that protects the literal sugar (`f57c4a53`) protects the general postfix
+        // too: a variable ending one statement must not eat the next statement's leading name as a unit.
+        // `def a = x <newline> meters` is TWO forms, not `x meters`.
+        let a = parse_ok("def w = x\nmeters");
+        assert_eq!(
+            sexpr::print(&a),
+            r#"(do (def w x) meters)"#,
+            "a newline between the expr and the candidate unit means separate statements"
+        );
+    }
+
+    #[test]
     fn set_literal_desugars() {
         use crate::sexpr;
         // `#(1, 2, 3)` desugars to `Set.of([1, 2, 3])` — a member-access application of the prelude
@@ -3787,8 +3879,12 @@ mod tests {
 
     #[test]
     fn missing_comma_between_args_recovers() {
-        // `f(a b)` — a missing separator is reported once, and BOTH arguments are still recovered.
-        let p = read_ml("f(a b)");
+        // `f(1 2)` — a missing separator is reported once, and BOTH arguments are still recovered. (This
+        // uses NUMBER args deliberately: since the general unit-suffix landed, `f(a b)` is now a VALID
+        // parse — `a` with unit `b`, i.e. `f((Qty.of a (Unit.of #b)))` — not a missing comma. A number
+        // cannot be a unit name, so `1 2` is still unambiguously a missing separator, which keeps this
+        // recovery invariant exercised on a shape the unit grammar does not claim.)
+        let p = read_ml("f(1 2)");
         assert!(!p.ok(), "the missing `,` is reported");
         assert_eq!(p.errors.len(), 1, "exactly one error: {:?}", p.errors);
         assert!(
@@ -3799,8 +3895,20 @@ mod tests {
         let a = &p.arenas;
         let call = a.as_form(a.root, "f").unwrap();
         assert_eq!(call.len(), 2, "both args recovered");
-        assert_eq!(a.as_name(call[0]), Some("a"));
-        assert_eq!(a.as_name(call[1]), Some("b"));
+        // Both args are the number literals (Int atoms — `as_name` is None for a non-Name leaf).
+        for (arg, want) in [(call[0], "1"), (call[1], "2")] {
+            match a.get(arg) {
+                crate::ast::Struct::Atom(lid) => {
+                    assert!(
+                        matches!(a.leaf(*lid), Leaf::Int { .. }),
+                        "arg is an Int literal"
+                    );
+                    let sp = p.spans.get(arg).unwrap();
+                    assert_eq!(&"f(1 2)"[sp.start..sp.end], want, "arg slices to {want}");
+                }
+                other => panic!("arg is an atom, got {other:?}"),
+            }
+        }
     }
 
     #[test]
