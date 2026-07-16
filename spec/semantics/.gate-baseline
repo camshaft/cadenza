@@ -2503,7 +2503,9 @@ pass	quasiquotes unquoting a runtime variable and a literal build equal ASTs
 pass	quote produces an AST value without evaluating
 pass	quote-vs-constructor AST equality holds regardless of operand order
 pass	raising a BigInt-magnitude quantity to a power runs the unbounded multiply
+pass	raising a COMPUTED (derived) quantity to a power squares its magnitude and dimension
 pass	raising a quantity to a compile-time power composes the unit and the magnitude
+pass	raising a runtime computed quantity to a power squares the runtime magnitude
 pass	reaching an effect neither handled nor delegated is rejected at compile time
 pass	reading a byte from a sequence built with a RUNTIME element widens it to the Option payload
 pass	reading a field of a record built from runtime elements folds to the field

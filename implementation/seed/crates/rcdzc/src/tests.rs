@@ -32839,6 +32839,28 @@ mod match_engine {
     }
 
     #[test]
+    fn qty_pow_over_a_computed_quantity_squares_it() {
+        // `lower_qty_pow` fell back from the literal-only `qty_value_occ` to `(Qty.value q)` for a
+        // non-literal argument, so `Qty.pow` now works over ANY quantity expression, not only a directly
+        // written `Qty.of`. `(Qty.pow (/ (Qty 6.0 m) (Qty 2.0 s)) 2)` — squaring a COMPUTED velocity —
+        // previously declined ("Qty.pow over a non-Qty.of magnitude"); now (3.0 m/s)² = 9.0. Qty.value
+        // recovers the squared magnitude.
+        let src = "(do (def (main) ((. Qty value) \
+                   ((. Qty pow) (/ ((. Qty of) 6.0 ((. Unit base) #\"meter\")) \
+                                   ((. Qty of) 2.0 ((. Unit base) #\"second\"))) 2))) \
+                   (export main))";
+        assert_eq!(
+            run_returns::<f64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("Qty.pow over a computed velocity compiles and runs"),
+                "main"
+            ),
+            9.0,
+            "(6m/2s = 3 m/s)^2 = 9.0 (Qty.pow over a computed quantity, not a literal Qty.of)"
+        );
+    }
+
+    #[test]
     fn unit_in_unwraps_to_a_bare_number_usable_in_ordinary_arithmetic() {
         // Q3 (DESIGN-quantity-reference-normalized-unwrap.md §1b): `Unit.in`/`as` UNWRAPS — its result is
         // a BARE dimensionless number of the quantity's inner type, NOT a `(Qty T u)`, so it is subject to

@@ -12822,12 +12822,18 @@ fn lower_qty_pow(db: &mut Db, q: StructId, exp: StructId) -> Core {
         let one = num_literal(db, 1, inner_is_float);
         return core_of(db, one);
     }
+    // The erased magnitude to raise: a directly-written `(Qty.of x u)` operand yields its value occurrence
+    // `x` (`qty_value_occ`); ANY OTHER quantity expression (a `/`-computed velocity, a let-bound quantity)
+    // is not a literal `Qty.of`, so fall back to `(Qty.value q)` — the explicit unwrap of q's magnitude,
+    // which re-lowers q and erases the unit. Both are the erased inner numeric; `Qty.pow` raises that.
     let value = match crate::eval::qty_value_occ(db, q) {
         Some(v) => v,
         None => {
-            return Core::Poison(Reject::decline(
-                "Qty.pow over a non-Qty.of magnitude (not yet emitted)",
-            ));
+            let dot = db.push_name(".");
+            let qty = db.push_name("Qty");
+            let value_key = db.push_name("value");
+            let qty_value_head = db.push_list(vec![dot, qty, value_key]);
+            db.push_list(vec![qty_value_head, q])
         }
     };
     // Build `value^|n|` = `(* (* … value value) value)` — `|n|` copies, left-nested — with the ONE

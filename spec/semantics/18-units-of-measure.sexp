@@ -432,6 +432,29 @@
              (* (Qty.of 2.0 (Unit.base #"meter")) (Qty.of 2.0 (Unit.base #"meter")))))
   (output (: true Bool)))
 
+(case "raising a COMPUTED (derived) quantity to a power squares its magnitude and dimension"
+  (doc    "`(Qty.pow (/ (Qty.of 6.0 meter) (Qty.of 2.0 second)) 2)` — raising a COMPUTED velocity (a
+           `/`-derived `(Qty Float64 meter/second)`, NOT a directly-written `Qty.of`) to the 2nd power:
+           (3.0 m/s)² = 9.0 (m²/s²). Pins that `Qty.pow` works over ANY quantity expression, not only a
+           literal `Qty.of` — it previously declined ('Qty.pow over a non-Qty.of magnitude') because it
+           read the value via the literal-only `qty_value_occ`; now it falls back to `Qty.value` (the
+           erased magnitude) for a computed/let-bound quantity. `Qty.value` recovers the squared magnitude.")
+  (input  (Qty.value (Qty.pow (/ (Qty.of 6.0 (Unit.base #"meter"))
+                                 (Qty.of 2.0 (Unit.base #"second"))) 2)))
+  (output (: 9.0 Float64)))
+
+(case "raising a runtime computed quantity to a power squares the runtime magnitude"
+  (doc    "The runtime companion: `(Qty.pow (/ (Qty.of n meter) (Qty.of 1 second)) 2)` with `n` a boundary
+           parameter — squaring a computed velocity built from a runtime magnitude. n=4 → (4 m/s)² = 16.
+           Pins that the `Qty.value` fallback for a non-literal `Qty.pow` argument also emits over a
+           runtime magnitude, not only a constant.")
+  (input  (do
+            (def (main (: n Int64))
+              (Qty.value (Qty.pow (/ (Qty.of n (Unit.base #"meter"))
+                                     (Qty.of 1 (Unit.base #"second"))) 2)))
+            (export main)))
+  (call   main (: 4 Int64)) (output (: 16 Int64)))
+
 (case "a quantity raised to the zeroth power is a dimensionless one"
   (doc    "`(Qty.pow (Qty.of 5.0 meter) 0)` is the empty product: the unit's exponents are all scaled to
            zero (Unit.one, the group identity) and the magnitude is the multiplicative identity 1.0. Pins
