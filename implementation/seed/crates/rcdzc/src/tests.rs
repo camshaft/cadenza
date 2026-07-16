@@ -69229,6 +69229,54 @@ mod cross_component_oracle {
     }
 
     // ------------------------------------------------------------------------------------------------
+    // U11 — the embedder's model loop runs correctly at DEPTH (a many-turn agent loop). The existing u7-9
+    // fixtures do one turn; a real agent loops. This drives a 50-turn recursive loop where EACH turn
+    // performs `Model.converse` (a String prompt IN, a String completion OUT — a fresh rope allocated +
+    // consumed per turn) and folds the completion's byte-len. It pins that repeated rope alloc across the
+    // host-closure boundary over a real recursion has no rc-leak / miscompile / fold error at depth (a
+    // class the 1-turn tests can't surface). The host `converse` appends "X" (so "turn"→"turnX", 5 bytes);
+    // 50 turns × 5 = 250.
+    // ------------------------------------------------------------------------------------------------
+    #[test]
+    fn u11_the_embedder_model_loop_runs_at_depth() {
+        use crate::testkit::parse;
+        let src = "(do \
+            (effect Model (op converse (-> String String))) \
+            (bind Model \"cadenza:model/api\") \
+            (def (loop (: n Int64) (: acc Int64)) \
+                (if (= n 0) acc \
+                    (loop (- n 1) (+ acc (String.byte-len (host (Model) (Model.converse \"turn\"))))))) \
+            (def (main) (loop 50 0)) \
+            (export main))";
+        let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .unwrap_or_else(|d| panic!("consumer compiles: {} [{:?}]", d.message, d.code));
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("[U11] runtime wasm not found; skipping");
+            return;
+        };
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: Vec::new(),
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        // The host model appends "X": "turn" -> "turnX" (5 bytes). Fresh rope per turn, 50 turns.
+        let converse = |prompt: String| format!("{prompt}X");
+        match cdz_run::run_agent(&consumer, "cadenza:model/api", "converse", &opts, converse)
+            .expect("the many-turn model loop runs")
+        {
+            // 50 turns × byte-len("turnX")=5 → 250. Repeated rope alloc/consume across the boundary at
+            // depth, no leak/miscompile.
+            cdz_run::Outcome::Value(s) => assert_eq!(
+                s, "250",
+                "a 50-turn loop folds 50×5 = 250 — the model loop runs correctly at depth"
+            ),
+            cdz_run::Outcome::Trap(t) => panic!("deep model-loop run trapped: {t}"),
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------------
     // PL4 — a NON-KEBAB peer OP NAME agrees across the consumer + provider and RUNS. The op name is a
     // component-boundary extern name (the interface func); a camelCase source op (`addTwo`) must
     // kebab-normalize to the SAME `add-two` on BOTH sides — the consumer's `(bind)`/`host` import AND
