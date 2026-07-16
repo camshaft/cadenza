@@ -1375,3 +1375,234 @@
                          ((Option.None) false))))))
             (export main)))
   (output (: true Bool)))
+; --- The trust boundary is module COOPERATION: the deliberate-leak and transport faces --------------
+; The unforgeability pins above establish that OUTSIDE code cannot forge or destructure a Thm
+; without the kernel's cooperation. These pin the boundary's exact shape from the other side,
+; promoted from passing breaker probes.
+
+(case "a kernel may deliberately export its rule as a first-class value"
+  (doc    "`(def (mk-forger) Thm.Proved)` exported — the kernel RETURNS its private ctor as a
+           function value, and outside code applies it to build a Thm (99). This is LEGAL and
+           equivalent to exporting the eta-wrapper `(def (mk2 v) (Thm.Proved v))` (a checkless smart
+           constructor): the unforgeability guarantee is that outside code cannot forge WITHOUT the
+           kernel's cooperation, not that the language cages the ctor against the kernel's own
+           choices. A real kernel simply never writes mk-forger — and this pin documents that the
+           boundary is exactly the module's exported surface, no more.")
+  (module "kernel"
+    (do
+      (type Thm (Proved Int64))
+      (def (axiom) (Thm.Proved 42))
+      (def (thm-val (: t Thm)) (match t ((Thm.Proved v) v)))
+      (def (mk-forger) Thm.Proved)
+      (export Thm axiom thm-val mk-forger)))
+  (input  (do
+            (import "kernel" (Thm axiom thm-val mk-forger))
+            (def (main (: d Int64))
+              (thm-val ((mk-forger) 99)))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 99 Int64)))
+
+(case "a Thm rides a collection through outside code without destructure rights"
+  (doc    "`(List.at (List.push (list) (axiom)) 0)` — outside code CARRIES a legitimately-obtained
+           Thm through a collection and hands it back to the kernel's accessor → 42. Pins that the
+           abstract type is a first-class VALUE for transport (store, collect, extract) even where
+           construction and destructure are withheld — an LCF proof store is exactly a collection of
+           Thms held by untrusted orchestration code.")
+  (module "kernel"
+    (do
+      (type Thm (Proved Int64))
+      (def (axiom) (Thm.Proved 42))
+      (def (thm-val (: t Thm)) (match t ((Thm.Proved v) v)))
+      (export Thm axiom thm-val)))
+  (input  (do
+            (import "kernel" (Thm axiom thm-val))
+            (def (main (: d Int64))
+              (thm-val (Option.expect (List.at (List.push (list) (axiom)) 0) "t")))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 42 Int64)))
+
+; --- The subst soundness edges: shadow blocking, selective substitution, and the documented hazard --
+; Inc 4's subst is the kernel's soundness-critical mechanism (an unsound subst mints false theorems
+; through BETA). These pin its edges directly, promoted from passing breaker probes; the third case
+; DELIBERATELY pins the naive subst's capture hazard (subst 1 (Var 2) into (Abs 2 (Var 1)) captures)
+; so the later capture-avoiding increment CHANGES a graded answer visibly instead of silently.
+
+; breaker probe: the HOL subst's capture edges (self-contained kernel matching Inc4's defs).
+; Hand-computed:
+;   p81a shadowing binder blocks: subst 1 (Var 9) (Abs 1 (Var 1)) = (Abs 1 (Var 1)) — unchanged.
+;        Verdict via term-eq -> 1.
+;   p81b free-beside-shadow: subst 1 (Var 9) (Comb (Var 1) (Abs 1 (Var 1))) =
+;        (Comb (Var 9) (Abs 1 (Var 1))): the free occurrence substitutes, the shadowed does not.
+;   p81c substitution UNDER a distinct binder: subst 1 (Var 9) (Abs 2 (Var 1)) = (Abs 2 (Var 9)).
+;   p81d the capture HAZARD the naive subst has (documented later-increment): subst 1 (Var 2)
+;        (Abs 2 (Var 1)) = (Abs 2 (Var 2)) — CAPTURE. The kernel doc says α-conversion is a later
+;        increment and cases use distinct ids; pin the DOCUMENTED naive behavior so the later
+;        capture-avoiding subst CHANGES this case visibly (it will need a fresh binder).
+;   p81e beta over a shadowing body: beta 1 (Abs 1 (Var 1)) (Var 9) mints
+;        ((λ1.λ1.1) 9) = (λ1.1) — the rhs must be the UNsubstituted inner lambda.
+
+(case "breaker holsubst: a shadowing binder blocks substitution"
+  (doc    "Promoted breaker probe — see the section comment.")
+  (input (do
+           (type Term (Var Int64) (Comb Term Term) (Eq Term Term) (Abs Int64 Term))
+           (def (subst (: v Int64) (: s Term) (: t Term))
+             (match t
+               ((Term.Var n)   (if (= n v) s (Term.Var n)))
+               ((Term.Comb f x) (Term.Comb (subst v s f) (subst v s x)))
+               ((Term.Eq a b)  (Term.Eq (subst v s a) (subst v s b)))
+               ((Term.Abs w body) (if (= w v) (Term.Abs w body) (Term.Abs w (subst v s body))))))
+           (def (teq (: a Term) (: b Term))
+             (match a
+               ((Term.Var n) (match b ((Term.Var m) (= n m)) (_ false)))
+               ((Term.Comb x y) (match b ((Term.Comb p q) (and (teq x p) (teq y q))) (_ false)))
+               ((Term.Eq x y) (match b ((Term.Eq p q) (and (teq x p) (teq y q))) (_ false)))
+               ((Term.Abs w x) (match b ((Term.Abs u y) (and (= w u) (teq x y))) (_ false)))))
+           (def (main (: d Int64))
+             (if (teq (subst 1 (Term.Var 9) (Term.Abs 1 (Term.Var 1)))
+                      (Term.Abs 1 (Term.Var 1))) 1 0))
+           (export main)))
+  (call main (: 0 Int64)) (output (: 1 Int64)))
+
+(case "breaker holsubst: a free occurrence beside a shadow substitutes selectively"
+  (doc    "Promoted breaker probe — see the section comment.")
+  (input (do
+           (type Term (Var Int64) (Comb Term Term) (Eq Term Term) (Abs Int64 Term))
+           (def (subst (: v Int64) (: s Term) (: t Term))
+             (match t
+               ((Term.Var n)   (if (= n v) s (Term.Var n)))
+               ((Term.Comb f x) (Term.Comb (subst v s f) (subst v s x)))
+               ((Term.Eq a b)  (Term.Eq (subst v s a) (subst v s b)))
+               ((Term.Abs w body) (if (= w v) (Term.Abs w body) (Term.Abs w (subst v s body))))))
+           (def (teq (: a Term) (: b Term))
+             (match a
+               ((Term.Var n) (match b ((Term.Var m) (= n m)) (_ false)))
+               ((Term.Comb x y) (match b ((Term.Comb p q) (and (teq x p) (teq y q))) (_ false)))
+               ((Term.Eq x y) (match b ((Term.Eq p q) (and (teq x p) (teq y q))) (_ false)))
+               ((Term.Abs w x) (match b ((Term.Abs u y) (and (= w u) (teq x y))) (_ false)))))
+           (def (main (: d Int64))
+             (if (teq (subst 1 (Term.Var 9) (Term.Comb (Term.Var 1) (Term.Abs 1 (Term.Var 1))))
+                      (Term.Comb (Term.Var 9) (Term.Abs 1 (Term.Var 1)))) 1 0))
+           (export main)))
+  (call main (: 0 Int64)) (output (: 1 Int64)))
+
+(case "breaker holsubst: the naive subst's documented capture hazard"
+  (doc    "Promoted breaker probe — see the section comment.")
+  (input (do
+           (type Term (Var Int64) (Comb Term Term) (Eq Term Term) (Abs Int64 Term))
+           (def (subst (: v Int64) (: s Term) (: t Term))
+             (match t
+               ((Term.Var n)   (if (= n v) s (Term.Var n)))
+               ((Term.Comb f x) (Term.Comb (subst v s f) (subst v s x)))
+               ((Term.Eq a b)  (Term.Eq (subst v s a) (subst v s b)))
+               ((Term.Abs w body) (if (= w v) (Term.Abs w body) (Term.Abs w (subst v s body))))))
+           (def (teq (: a Term) (: b Term))
+             (match a
+               ((Term.Var n) (match b ((Term.Var m) (= n m)) (_ false)))
+               ((Term.Comb x y) (match b ((Term.Comb p q) (and (teq x p) (teq y q))) (_ false)))
+               ((Term.Eq x y) (match b ((Term.Eq p q) (and (teq x p) (teq y q))) (_ false)))
+               ((Term.Abs w x) (match b ((Term.Abs u y) (and (= w u) (teq x y))) (_ false)))))
+           (def (main (: d Int64))
+             (if (teq (subst 1 (Term.Var 2) (Term.Abs 2 (Term.Var 1)))
+                      (Term.Abs 2 (Term.Var 2))) 1 0))
+           (export main)))
+  (call main (: 0 Int64)) (output (: 1 Int64)))
+
+
+; --- Capture-avoiding subst: the α-rename's structural edges ----------------------------------------
+; Inc 5's pins verify the substituted free var SURVIVES (free-in true). These pin the α-rename's
+; STRUCTURE — the exact renamed term, promoted from passing breaker probes: the fresh id must clear
+; BOTH s's and the body's ids (not just s's), and a non-capturing subst must take the plain path
+; (no spurious rename).
+
+(case "breaker capsubst: the fresh binder clears the body's ids, not only s's"
+  (doc    "Promoted breaker probe — see the section comment.")
+  (input (do
+           (type Term (Var Int64) (Comb Term Term) (Eq Term Term) (Abs Int64 Term))
+           (def (free-in (: v Int64) (: t Term))
+             (match t
+               ((Term.Var n) (= n v))
+               ((Term.Comb f x) (or (free-in v f) (free-in v x)))
+               ((Term.Eq a b) (or (free-in v a) (free-in v b)))
+               ((Term.Abs w body) (if (= w v) false (free-in v body)))))
+           (def (max-id (: t Term))
+             (match t
+               ((Term.Var n) n)
+               ((Term.Comb f x) (let ((a (max-id f)) (b (max-id x))) (if (> a b) a b)))
+               ((Term.Eq a b) (let ((p (max-id a)) (q (max-id b))) (if (> p q) p q)))
+               ((Term.Abs w body) (let ((m (max-id body))) (if (> w m) w m)))))
+           (def (rename (: from Int64) (: to Int64) (: t Term))
+             (match t
+               ((Term.Var n) (if (= n from) (Term.Var to) (Term.Var n)))
+               ((Term.Comb f x) (Term.Comb (rename from to f) (rename from to x)))
+               ((Term.Eq a b) (Term.Eq (rename from to a) (rename from to b)))
+               ((Term.Abs w body) (if (= w from) (Term.Abs w body) (Term.Abs w (rename from to body))))))
+           (def (subst (: v Int64) (: s Term) (: t Term))
+             (match t
+               ((Term.Var n) (if (= n v) s (Term.Var n)))
+               ((Term.Comb f x) (Term.Comb (subst v s f) (subst v s x)))
+               ((Term.Eq a b) (Term.Eq (subst v s a) (subst v s b)))
+               ((Term.Abs w body)
+                 (if (= w v) (Term.Abs w body)
+                     (if (free-in w s)
+                         (let ((fresh (+ 1 (let ((ms (max-id s)) (mt (max-id body))) (if (> ms mt) ms mt)))))
+                           (Term.Abs fresh (subst v s (rename w fresh body))))
+                         (Term.Abs w (subst v s body)))))))
+           (def (teq (: a Term) (: b Term))
+             (match a
+               ((Term.Var n) (match b ((Term.Var m) (= n m)) (_ false)))
+               ((Term.Comb x y) (match b ((Term.Comb p q) (and (teq x p) (teq y q))) (_ false)))
+               ((Term.Eq x y) (match b ((Term.Eq p q) (and (teq x p) (teq y q))) (_ false)))
+               ((Term.Abs w x) (match b ((Term.Abs u y) (and (= w u) (teq x y))) (_ false)))))
+           (def (main (: d Int64))
+             (if (teq (subst 0 (Term.Var 1) (Term.Abs 1 (Term.Comb (Term.Var 0) (Term.Var 7))))
+                      (Term.Abs 8 (Term.Comb (Term.Var 1) (Term.Var 7)))) 1 0))
+           (export main)))
+  (call main (: 0 Int64)) (output (: 1 Int64)))
+
+(case "breaker capsubst: a non-capturing substitution takes the plain path"
+  (doc    "Promoted breaker probe — see the section comment.")
+  (input (do
+           (type Term (Var Int64) (Comb Term Term) (Eq Term Term) (Abs Int64 Term))
+           (def (free-in (: v Int64) (: t Term))
+             (match t
+               ((Term.Var n) (= n v))
+               ((Term.Comb f x) (or (free-in v f) (free-in v x)))
+               ((Term.Eq a b) (or (free-in v a) (free-in v b)))
+               ((Term.Abs w body) (if (= w v) false (free-in v body)))))
+           (def (max-id (: t Term))
+             (match t
+               ((Term.Var n) n)
+               ((Term.Comb f x) (let ((a (max-id f)) (b (max-id x))) (if (> a b) a b)))
+               ((Term.Eq a b) (let ((p (max-id a)) (q (max-id b))) (if (> p q) p q)))
+               ((Term.Abs w body) (let ((m (max-id body))) (if (> w m) w m)))))
+           (def (rename (: from Int64) (: to Int64) (: t Term))
+             (match t
+               ((Term.Var n) (if (= n from) (Term.Var to) (Term.Var n)))
+               ((Term.Comb f x) (Term.Comb (rename from to f) (rename from to x)))
+               ((Term.Eq a b) (Term.Eq (rename from to a) (rename from to b)))
+               ((Term.Abs w body) (if (= w from) (Term.Abs w body) (Term.Abs w (rename from to body))))))
+           (def (subst (: v Int64) (: s Term) (: t Term))
+             (match t
+               ((Term.Var n) (if (= n v) s (Term.Var n)))
+               ((Term.Comb f x) (Term.Comb (subst v s f) (subst v s x)))
+               ((Term.Eq a b) (Term.Eq (subst v s a) (subst v s b)))
+               ((Term.Abs w body)
+                 (if (= w v) (Term.Abs w body)
+                     (if (free-in w s)
+                         (let ((fresh (+ 1 (let ((ms (max-id s)) (mt (max-id body))) (if (> ms mt) ms mt)))))
+                           (Term.Abs fresh (subst v s (rename w fresh body))))
+                         (Term.Abs w (subst v s body)))))))
+           (def (teq (: a Term) (: b Term))
+             (match a
+               ((Term.Var n) (match b ((Term.Var m) (= n m)) (_ false)))
+               ((Term.Comb x y) (match b ((Term.Comb p q) (and (teq x p) (teq y q))) (_ false)))
+               ((Term.Eq x y) (match b ((Term.Eq p q) (and (teq x p) (teq y q))) (_ false)))
+               ((Term.Abs w x) (match b ((Term.Abs u y) (and (= w u) (teq x y))) (_ false)))))
+           (def (main (: d Int64))
+             (if (teq (subst 0 (Term.Var 5) (Term.Abs 1 (Term.Var 0)))
+                      (Term.Abs 1 (Term.Var 5))) 1 0))
+           (export main)))
+  (call main (: 0 Int64)) (output (: 1 Int64)))
+

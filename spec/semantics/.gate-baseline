@@ -308,6 +308,7 @@ pass	a THREE-parameter op arm binds all three parameters and the state
 pass	a TRIPLY-nested Record ARG crosses the direct-call boundary
 pass	a TUPLE-result perform's projected field feeds a SECOND perform's argument, threading state across both
 pass	a TUPLE-returning operation resumes a pair built from the handler state, then projected
+pass	a Thm rides a collection through outside code without destructure rights
 pass	a Tuple ARG AFTER a scalar arg crosses the direct-call boundary (scalar, then tuple)
 pass	a Tuple ARG BEFORE a scalar arg crosses the direct-call boundary (tuple, then scalar)
 pass	a Tuple ARG BEFORE a scalar with a LIST result crosses the direct-call boundary
@@ -835,6 +836,7 @@ pass	a host effect with a non-kebab NAME crosses under a normalized interface ex
 pass	a host effect with a non-kebab OPERATION name crosses under a normalized func extern name
 pass	a host-called closure applied to a different argument tracks the input
 pass	a host-called closure with a different body dispatches the right code
+pass	a kernel may deliberately export its rule as a first-class value
 pass	a kernel rule using α-equivalence accepts an α-variant premise a structural equality would reject
 pass	a key-directed pattern matches a RUNTIME map by looking up its keys
 pass	a keyed lookup of an updated map is not shared with the original's
@@ -2311,6 +2313,11 @@ pass	bitwise XOR with zero is the operand (identity)
 pass	both sibling args consume the same binding independently
 pass	boxed closures of two fn types in one sum: the unbuilt variant's dispatch is dead
 pass	branches performing DIFFERENT counts each thread their own post-state to the continuation
+pass	breaker capsubst: a non-capturing substitution takes the plain path
+pass	breaker capsubst: the fresh binder clears the body's ids, not only s's
+pass	breaker holsubst: a free occurrence beside a shadow substitutes selectively
+pass	breaker holsubst: a shadowing binder blocks substitution
+pass	breaker holsubst: the naive subst's documented capture hazard
 pass	byte length agrees with the length of the encoded bytes
 pass	byte length counts the normalized form, not the source spelling
 pass	byte length is the UTF-8 byte count
