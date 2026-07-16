@@ -9435,3 +9435,41 @@
             (export main)))
   (call   main (: 0 Int64))
   (output (: 0 Int64)))
+
+; --- Deep push-chain retain placement (the memoized dup-site scan's value guard) --------------------
+; 3d5d48eea memoized mark_binder_dups' occurrence pre-pass (was exponential — depth 30 timed out).
+; A rewritten retain-placement scan must place the SAME dups: these grade value correctness at the
+; depths the old scan could not reach, promoted from passing breaker probes (each compiles in
+; milliseconds and reads the still-live binding after the chain).
+
+(case "a twenty-deep push chain retains the still-live source binding"
+  (doc    "Twenty nested `List.push` over one let-bound list, with the ORIGINAL binding read after:
+           len(chain) = 21, len(xs) = 1 → 22. The first push consumes `xs` (retained — its later read
+           demands it); the other nineteen consume fresh intermediates (no retain needed). A memoized
+           occurrence scan that lost the binder occurrence at depth — or retained every intermediate —
+           answers 22 wrong or leaks; the depth itself is the regression face (the pre-memoization
+           scan was exponential here).")
+  (input  (do
+            (def (main (: d Int64))
+              (let ((xs (List.push (list) d)))
+                (+ (List.len (List.push (List.push (List.push (List.push (List.push (List.push (List.push (List.push (List.push (List.push (List.push (List.push (List.push (List.push (List.push (List.push (List.push (List.push (List.push (List.push xs 1) 2) 3) 4) 5) 6) 7) 8) 9) 10) 11) 12) 13) 14) 15) 16) 17) 18) 19) 20))
+                   (List.len xs))))
+            (export main)))
+  (call   main (: 7 Int64))
+  (output (: 22 Int64)))
+
+(case "a deep push chain beside two other live bindings retains each correctly"
+  (doc    "A ten-deep chain over `xs` with BOTH `xs` and an unrelated `ys` read after: 11 + 1 + 2 =
+           14. The multi-binding face of the memoized scan (the memo key must be per-binder — a
+           scan that cached one binder's occurrence result and replayed it for the other misplaces
+           a retain on `ys`).")
+  (input  (do
+            (def (main (: d Int64))
+              (let ((xs (List.push (list) d))
+                    (ys (List.push (List.push (list) 1) 2)))
+                (+ (+ (List.len (List.push (List.push (List.push (List.push (List.push (List.push (List.push (List.push (List.push (List.push xs 1) 2) 3) 4) 5) 6) 7) 8) 9) 10))
+                      (List.len xs))
+                   (List.len ys))))
+            (export main)))
+  (call   main (: 7 Int64))
+  (output (: 14 Int64)))
