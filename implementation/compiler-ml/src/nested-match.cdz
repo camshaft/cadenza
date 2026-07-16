@@ -1,0 +1,92 @@
+/// nested-match.cdz — REGRESSION GUARD for a subtle nested-pattern-match miscompile on RECURSIVE sums.
+/// Matching a variant of the SAME recursive sum NESTED inside itself — `match t with W(I(7)) => …` over
+/// `type T = I(Int64) | W(T)` — used to take the WRONG branch when the scrutinee's outer discriminant was
+/// STATICALLY KNOWN (a constant literal, or an inlined constructor after inlining): `build_tree`'s
+/// known-discriminant fold dropped the outer switch, so the emit lost the entered variant's payload type
+/// and read the inner payload at the wrong depth. Fixed by v-patterns (trunk commit ce182df365ef,
+/// `payload_step_ty_of` recovers the entered variant from the constant scrutinee).
+///
+/// This is EXACTLY the shape every recursive-AST / tree-walk pass takes (the `Ast`/`Core`/term sum matched
+/// against nested constructor patterns), and a constant/inlined scrutinee is common — so the bug would
+/// have surfaced as a "sometimes wrong branch" that looks like a logic error in the SOURCE, not the
+/// compiler. These cases pin it at the ML level: they exercise nested ctor patterns over a recursive sum
+/// with constant, let-bound, and deeply-nested scrutinees, and assert the branch taken is correct.
+
+type T =
+  | I(Int64)
+  | W(T)
+
+/// Match a one-level nest: `W(I(7))` exactly.
+def is-w-i7(t: T) = match t with
+  | T.W(T.I(7)) => true
+  | _ => false
+
+/// Match a two-level nest: `W(W(I(3)))` exactly.
+def is-w-w-i3(t: T) = match t with
+  | T.W(T.W(T.I(3))) => true
+  | _ => false
+
+/// Extract the inner Int of a `W(I(n))`, or -1 for any other shape (nested ctor + payload binder).
+def inner-of-wi(t: T) = match t with
+  | T.W(T.I(n)) => n
+  | _ => 0 - 1
+
+/// Depth of a `T` (a plain recursive walk, for contrast with the nested-pattern matches).
+def depth(t: T) = match t with
+  | T.I(_) => 0
+  | T.W(inner) => 1 + depth(inner)
+
+@test
+def nm-constant-nested-match-hits() =
+  // the exact miscompile shape: a CONSTANT scrutinee W(I(7)) must take the nested branch.
+  if is-w-i7(T.W(T.I(7))) then unit else trap("W(I(7)) matches W(I(7))")
+
+@test
+def nm-inner-payload-distinguished() =
+  // W(I(8)) must NOT match W(I(7)) — the inner payload is read at the right depth.
+  if is-w-i7(T.W(T.I(8))) then trap("W(I(8)) is not W(I(7))") else unit
+
+@test
+def nm-outer-variant-distinguished() =
+  // I(7) must NOT match W(I(7)) — the OUTER discriminant differs (this is what the known-disc fold broke).
+  if is-w-i7(T.I(7)) then trap("I(7) is not W(I(7))") else unit
+
+@test
+def nm-let-bound-constant-scrutinee() =
+  // a let-bound constant (an inlined SumNew) must match the same as a literal.
+  let c = T.W(T.I(7)) in
+  if is-w-i7(c) then unit else trap("a let-bound W(I(7)) still matches")
+
+@test
+def nm-two-level-nest-hits() =
+  // two-level nesting W(W(I(3))) matches the two-deep pattern.
+  if is-w-w-i3(T.W(T.W(T.I(3)))) then unit else trap("W(W(I(3))) matches the 2-deep pattern")
+
+@test
+def nm-two-level-too-shallow() =
+  // W(I(3)) is too shallow for W(W(I(3))) → no match.
+  if is-w-w-i3(T.W(T.I(3))) then trap("W(I(3)) is too shallow") else unit
+
+@test
+def nm-two-level-inner-differs() =
+  // W(W(I(4))) — inner payload differs from 3 → no match.
+  if is-w-w-i3(T.W(T.W(T.I(4)))) then trap("inner 4 ≠ 3") else unit
+
+@test
+def nm-nested-payload-binder() =
+  // binding the inner payload through the nest: W(I(42)) → 42; I(5) (not a W) → -1.
+  if inner-of-wi(T.W(T.I(42))) == 42 then (if inner-of-wi(T.I(5)) == 0 - 1 then unit else trap("I(5) → -1")) else trap("W(I(42)) binds 42")
+
+@test
+def nm-recursive-depth-walk() =
+  // a plain recursive walk over the same sum still computes right (depth of W(W(I(0))) = 2).
+  if depth(T.W(T.W(T.I(0)))) == 2 then (if depth(T.I(0)) == 0 then unit else trap("depth I = 0")) else trap("depth W(W(I)) = 2")
+
+@test
+def nm-inner-binder-under-known-outer() =
+  // combine: a let-bound constant W(I(9)), matched with an inner binder → 9 (the exact known-scrutinee
+  // + nested-binder combination the fix restored).
+  let c = T.W(T.I(9)) in
+  if inner-of-wi(c) == 9 then unit else trap("known-scrutinee nested binder reads 9")
+
+export { is-w-i7, is-w-w-i3, inner-of-wi, depth }
