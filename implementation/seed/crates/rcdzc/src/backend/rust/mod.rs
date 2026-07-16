@@ -50,6 +50,12 @@ use crate::layout::Layout;
 /// unimplemented-construct `todo` instead of the typed rejection `pass` the wasm target gives). MUST be
 /// distinguished from a VALID-but-non-aliased width (`UInt7`, `UInt24` — in `1..=64`): that is a genuine
 /// backend limitation with no native Rust primitive, which stays a codeless decline (todo, correct).
+/// Whether `ty` is a function type (a closure value) — after stripping a nominal newtype wrapper. Used to
+/// decline a closure crossing the EXPORT boundary (no closure-handle ABI on the Rust target).
+fn is_fn_ty(ty: &crate::ty::Ty) -> bool {
+    matches!(ty.strip_nominal(), crate::ty::Ty::Fn(_, _))
+}
+
 fn ill_formed_int_width_reject(ty: &crate::ty::Ty) -> Option<Reject> {
     use crate::ty::{Ty, Width};
     let Ty::Int(it) = ty else { return None };
@@ -137,6 +143,18 @@ pub fn emit(db: &mut Db, layout: &Layout, mode: Mode) -> Result<Vec<u8>, Reject>
         out.push('\n');
         out.push_str(&f);
     }
+    // Each REACHED lambda-lifted closure (`layout.lifted[k]`, reached by a `Core::Closure` in some body)
+    // becomes a private `fn __lifted_{k}(<captures…>, <params…>) -> <ret>` — the closure VALUE a
+    // `Core::Closure` builds calls into it. An UNREACHED slot is skipped (no `Core::Closure` names it, so
+    // no closure value references it — emitting it would be dead code that might not even type). A lifted
+    // body that declines (an unsupported construct) declines the whole module, exactly like any `fn`.
+    for k in 0..layout.lifted.len() {
+        if layout.lifted_reached.get(k).copied().unwrap_or(false) {
+            let f = expr::emit_lifted_lambda(db, k, layout, mode)?;
+            out.push('\n');
+            out.push_str(&f);
+        }
+    }
     Ok(out.into_bytes())
 }
 
@@ -201,6 +219,18 @@ fn emit_signature(
     layout: &Layout,
     mode: Mode,
 ) -> Result<String, Reject> {
+    // A closure (`Ty::Fn`) crossing the EXPORT boundary declines: an exported fn is called by the gate
+    // driver (and any real consumer) with VALUE arguments written as literals, and there is no way to
+    // synthesize an `Rc<dyn Fn>` argument at that boundary — nor to render a returned closure as a value.
+    // (The corpus's closure round-trip cases pass a scalar where the export's closure PARAM sits, expecting
+    // the wasm handle-ABI to route it; the Rust target has no such boundary.) An INTERNAL closure — passed
+    // to a recursive helper, the case runtime closures exist for — is unaffected: it never crosses an
+    // export edge, so this guard (gated on `public`) does not touch it. Decline cleanly (todo), not fail.
+    if public && (params.iter().any(|(_, t)| is_fn_ty(t)) || is_fn_ty(result)) {
+        return Err(Reject::decline(format!(
+            "`{name}`: a function-typed value cannot cross the Rust export boundary (no closure handle ABI)"
+        )));
+    }
     // Whether this function is compiled as a `loop` (it self-tail-calls). A looped function REASSIGNS
     // its parameter locals each iteration, so they are declared `mut`. Detected once here and again in
     // `emit_body` (both read the same predicate), so the signature's `mut` and the body's loop agree.

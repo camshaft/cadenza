@@ -77,6 +77,30 @@ pub fn rust_type(ty: &Ty) -> Option<String> {
         // (Mk Int64 Int64))` → `(i64, i64)`. (A named Rust newtype struct is a possible future
         // refinement; the erased mapping is correct and matches the wasm backend's read-through.)
         Ty::Nominal { inner, .. } => rust_type(inner),
+        // A FUNCTION value is a first-class closure — `Rc<dyn Fn(A, …) -> R>`. `Rc` (not `Box`) so it is
+        // CLONE-able: a closure bound/used in more than one position is cloned on read (the tick-5
+        // clone-on-read discipline), and `Box<dyn Fn>` is not Clone.
+        //
+        // The arrow SPINE is FLATTENED: `(-> A (-> B C))` → `Rc<dyn Fn(A, B) -> C>`, NOT a nested
+        // `Rc<dyn Fn(A) -> Rc<dyn Fn(B) -> C>>`. A runtime closure is lambda-LIFTED to a FLAT function of
+        // all its parameters and applied at FULL arity by a `Core::CallClosure` carrying every arg (a
+        // PARTIAL application of a runtime multi-param closure declines at the application site — the wasm
+        // backend draws the same line), so the runtime representation is flat and the type must match it.
+        // Each parameter and the final (non-arrow) result maps recursively; any with no native mapping
+        // declines the whole function type.
+        Ty::Fn(_, _) => {
+            let mut params = Vec::new();
+            let mut cur = ty;
+            while let Ty::Fn(p, r) = cur {
+                params.push(rust_type(p)?);
+                cur = r;
+            }
+            let ret = rust_type(cur)?;
+            Some(format!(
+                "std::rc::Rc<dyn Fn({}) -> {ret}>",
+                params.join(", ")
+            ))
+        }
         // A LIST is a homogeneous sequence — Rust's native growable sequence `Vec<T>` (the wasm backend
         // builds it on the persistent `vec-*` heap; here it is an owned `Vec`). The element type maps
         // recursively, so a `List Int64` → `Vec<i64>` and a nested `List (List Int64)` → `Vec<Vec<i64>>`
