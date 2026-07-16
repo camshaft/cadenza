@@ -511,9 +511,33 @@ impl Unit {
     /// `Unit.*`/`Unit./` stay BARE (a non-alphabetic segment the reader does not desugar). This is the note
     /// the Rust-backend gate splices verbatim, so it MUST track `unit_value_ast` exactly.
     pub fn render_value_form(&self) -> String {
+        // Escape a base NAME for embedding in a `#"…"` symbol literal — the SAME closed set the canonical
+        // printer's `literal::escape_string` uses (`\n \t \r \\ \"`), so the rendered symbol re-reads to the
+        // same name AND stays a single-line token. `Unit.base` carries a RAW string (no bare-safe-subset
+        // restriction — a base name may hold a quote, backslash, or control char), so an unescaped `name`
+        // would emit an invalid s-expr AND could split the emitted `// cdz-unit[…]` note across lines,
+        // breaking the Rust gate harness's string-literal splice (which the harness ALSO defends with the
+        // same escape). `cadenza-syntax`'s `escape_string` is the authority but is a DEV-only dep here, so
+        // inline the identical closed set. (A char OUTSIDE this set — a control char other than \n\t\r —
+        // passes through verbatim, exactly as `escape_string` leaves it: the reader accepts it inside `#"…"`,
+        // and the note is still one line since only \n/\r break a line.)
+        fn escape_sym(name: &str) -> String {
+            let mut out = String::with_capacity(name.len());
+            for c in name.chars() {
+                match c {
+                    '\n' => out.push_str("\\n"),
+                    '\t' => out.push_str("\\t"),
+                    '\r' => out.push_str("\\r"),
+                    '\\' => out.push_str("\\\\"),
+                    '"' => out.push_str("\\\""),
+                    _ => out.push(c),
+                }
+            }
+            out
+        }
         // A single base at a (positive) exponent: `((. Unit base) #"name")` or `(Unit.^ … k)`.
         fn factor(name: &str, exp: i64) -> String {
-            let base = format!("((. Unit base) #\"{name}\")");
+            let base = format!("((. Unit base) #\"{}\")", escape_sym(name));
             if exp == 1 {
                 base
             } else {
@@ -1740,5 +1764,46 @@ impl Scheme {
             sign_vars: Vec::new(),
             ty,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Unit;
+
+    #[test]
+    fn render_value_form_escapes_a_base_name_for_the_symbol_literal() {
+        // The value form embeds a base name in a `#"…"` symbol literal. `Unit.base` carries a RAW string, so
+        // a name with a `"`/`\`/newline must be ESCAPED (the closed set `\n \t \r \\ \"`, matching the
+        // canonical printer's `escape_string`) — else it emits an invalid s-expr AND can split the emitted
+        // `// cdz-unit[…]` note across lines, breaking the gate harness's string-literal splice. (Copilot
+        // review on PR #485.)
+        assert_eq!(
+            Unit::base("meter").render_value_form(),
+            "((. Unit base) #\"meter\")",
+            "an ordinary name is unchanged"
+        );
+        assert_eq!(
+            Unit::base("me\"ter").render_value_form(),
+            "((. Unit base) #\"me\\\"ter\")",
+            "an embedded quote is escaped"
+        );
+        assert_eq!(
+            Unit::base("a\\b").render_value_form(),
+            "((. Unit base) #\"a\\\\b\")",
+            "a backslash is escaped"
+        );
+        // A newline in the name would otherwise split the single-line `// cdz-unit` note → escaped to `\n`.
+        assert_eq!(
+            Unit::base("x\ny").render_value_form(),
+            "((. Unit base) #\"x\\ny\")",
+            "a newline is escaped so the note stays one line"
+        );
+        // The escape composes through a power and a quotient (each factor's base name is escaped).
+        assert_eq!(
+            Unit::base("m\"").pow(2).render_value_form(),
+            "(Unit.^ ((. Unit base) #\"m\\\"\") 2)",
+            "a powered factor escapes its base name"
+        );
     }
 }
