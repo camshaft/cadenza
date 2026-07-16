@@ -371,6 +371,17 @@
   (input  (= "x" (Symbol.of "x")))
   (error  CDZ0202))
 
+(case "a symbol compared to a number is a kind-boundary type error"
+  (doc    "`(< (Symbol.of \"x\") 1)` compares a Symbol to a number — two DIFFERENT kinds with no shared
+           order (a Symbol is an interned text value, not a scalar). Distinct from the Symbol-vs-String
+           NOMINAL boundary above: this is a KIND boundary (CDZ0201, `type-system.md` — an operation is not
+           defined across a kind boundary), the same category as `String`-vs-number and `Bool`-vs-number.
+           Pins that a Symbol-vs-number operand pair is NAMED as a kind-boundary error, not left to the
+           opaque generic scheme-unify 'type mismatch: Symbol and Int64 must be the same type here' it fell
+           through to before (Symbol was the scalar-adjacent kind missing from the cross-kind classifier).")
+  (input  (do (def (main) (< (Symbol.of "x") 1)) (export main)))
+  (error  CDZ0201))
+
 ; The nominal boundary holds in a `match` PATTERN too, not just `=`. A String and a Symbol literal
 ; pattern share the `Core::ConstStr` rep, but the two types are distinct across the nominal boundary, so
 ; a text-literal pattern must match a scrutinee of its OWN kind: a `"add"` (String) pattern over a Symbol

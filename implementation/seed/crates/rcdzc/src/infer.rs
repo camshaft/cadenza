@@ -7729,7 +7729,15 @@ fn check_application(
             }
             return;
         }
-        let is_text = |t: &Ty| matches!(t, Ty::String | Ty::Bytes);
+        // `Symbol` counts as a TEXT-like atom here: it is an interned string value, comparable/equatable
+        // only to another `Symbol` (like `String` to `String`), and cross-kind to a number/char/bool/
+        // compound. Including it makes a `Symbol`-vs-scalar or `Symbol`-vs-compound pair take the named
+        // cross-kind boundary message (CDZ0201) instead of the opaque generic scheme-unify "type mismatch:
+        // Symbol and Int64 must be the same type here" it fell through to (Bool/Char/String were already
+        // named; Symbol was the missing scalar-adjacent kind). A `Symbol`-vs-`String` pair is caught
+        // EARLIER by the CDZ0202 nominal-boundary arm, and `Symbol`-vs-`Symbol` is same-kind (not
+        // cross-kind), so neither is disturbed.
+        let is_text = |t: &Ty| matches!(t, Ty::String | Ty::Bytes | Ty::Symbol);
         let is_scalar = |t: &Ty| matches!(t, Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Char);
         // A COMPOUND value — a record, a tuple, a list, a map/set — held against a SCALAR or TEXT operand
         // is the same cross-KIND clash the text-vs-scalar case is: `(= r 5)` compares a heap record to an
