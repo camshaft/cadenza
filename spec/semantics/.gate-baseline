@@ -1403,6 +1403,7 @@ pass	a recursive walk threads THREE nested handlers' states at once
 pass	a recursive walk threads TWO effects at once — a fresh-index counter and a running total
 pass	a recursive-generic producer composes at two element types (the tied result var)
 pass	a recursive-generic producer wrapping elements in a user sum is consumed at one type
+pass	a recursive-generic producer's element is usable at each instantiation
 pass	a recursive-generic producer's result is consumed by an element-typed consumer
 pass	a recursive-sum payload projected more than once folds to a scalar
 pass	a recursively-built MULTI-PAYLOAD-variant list renders its spine FLAT
@@ -1951,6 +1952,7 @@ pass	an Option built by an if with the nullary branch first type-checks
 pass	an Option built by an if with the payload branch first type-checks (the control)
 pass	an Option carrying a Result is matched across two different sum types
 pass	an Option pipeline short-circuits on the first None
+pass	an Option-producing recursive generic ties its payload to the list element
 pass	an Option.expect payload consumed per iteration while the option is threaded accumulates stably
 pass	an R-suffixed decimal literal is its exact fraction
 pass	an R-suffixed integer literal is that integer over one
@@ -2854,6 +2856,7 @@ pass	the default-integer pragma is definition-site scoped, not use-site
 pass	the difference contains the elements not in the second set
 pass	the difference of a set with itself is empty
 pass	the display truncation does not lose the stored magnitude (Qty.value reads it back)
+pass	the element tie survives producer self-composition
 pass	the else-branch of an if threads a performed state to the continuation
 pass	the empty and None arms of a list-payload split dispatch to their own values
 pass	the empty byte sequence has length zero
