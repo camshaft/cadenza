@@ -45067,6 +45067,46 @@ mod stage1 {
     }
 
     #[test]
+    fn an_agent_loop_shape_runs_model_ask_then_tool_dispatch_over_turns() {
+        // The native agent HARNESS (v-agent-harness) loop SPINE, pinned as a single-shot tail-resumptive
+        // program that runs today with NO ABI dependency — the control structure Inc-2 builds on
+        // (`DESIGN-agent-harness.md`). A recursive `loop` drives N turns; each turn performs `Model.ask`
+        // (the model call — here a MOCK handler standing in for the Bedrock peer, which the free
+        // nearer-handler-wins override lets us swap for the real peer later, v-effects §A-Handler-May-
+        // Interpose), then DISPATCHES a tool by value: an `= 0` equality check on the model's answer routes
+        // to `Tools.stop` (return the accumulator) vs `Tools.step` (accumulate + recurse). Both effects are
+        // handled IN-PROGRAM via NESTED handlers; the Tools handler threads the running total as its state.
+        // main runs 3 turns: turn i performs ask(i)→i (mock), i≠0 so step accumulates i and recurses; at
+        // i=0, ask→0, stop returns the accumulator = 3+2+1 = 6. A regression in nested-handler dispatch,
+        // single-shot resume, handler-state threading, or value-dispatch would break the harness's whole
+        // loop. Each Tools arm resumes its own argument `a` (both `step` and `stop` hand back the value they
+        // were called with); `step` also threads `a` as the running state. Nullary `main` (the turn count is
+        // the literal `3`) matches the sibling handler tests' no-arg `run_returns`; verified e2e via
+        // `cdz`/`cdz-run` that the parameterized form main(3)=6, main(5)=15.
+        let src = "(do \
+            (effect Model (op ask (-> Int64 Int64))) \
+            (effect Tools (op step (-> Int64 Int64)) (op stop (-> Int64 Int64))) \
+            (def (loop (: i Int64) (: acc Int64)) \
+                (if (= (Model.ask i) 0) \
+                    (Tools.stop acc) \
+                    (loop (- i 1) (Tools.step (+ acc i))))) \
+            (def (main) \
+                (handle Model 0 ((ask (q) s (resume q s))) \
+                    (handle Tools 0 ((step (a) s (resume a a)) (stop (a) s (resume a a))) \
+                        (loop 3 0)))) \
+            (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("the agent-loop shape compiles and runs"),
+                "main"
+            ),
+            6,
+            "3 turns accumulate 3+2+1; the i=0 turn's `= 0` dispatch routes to stop → 6"
+        );
+    }
+
+    #[test]
     fn two_same_named_effects_are_distinct_not_conflated() {
         // Two top-level effects declared with the SAME name `Log` but DIFFERENT operations. A bare `Log`
         // reference resolves FIRST-declared (op `emit`), so a handler arm naming the OTHER's op `record`
