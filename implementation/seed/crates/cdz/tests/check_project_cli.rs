@@ -170,3 +170,30 @@ fn check_a_project_still_checks_a_module_not_imported_by_the_entry() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_malformed_manifest_fails_every_project_command() {
+    // HARDENING: a `Project.cdz` that does not parse must be a HARD error (non-zero exit) for EVERY project
+    // command — not a silently-empty manifest. The ML reader recovers from a parse error (prints it, hands
+    // back a truncated arena), so `parse_manifest` over that would yield an all-default Manifest; `build`/
+    // `check` happened to fail later (no entry), but `test`/`metadata`/`clean` used to proceed with rc=0.
+    // `load_manifest` now rejects a manifest with any recovered parse error, so all commands fail uniformly.
+    let dir = std::env::temp_dir().join(format!("cdz-badmanifest-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    // A malformed manifest (unterminated string + dangling `def` + stray parens).
+    std::fs::write(dir.join("Project.cdz"), "def name = \"x\ndef entry =\n(((").unwrap();
+    std::fs::write(dir.join("app.cdz"), "def m() -> Int64 = 0\nexport { m }\n").unwrap();
+    for cmd in ["build", "test", "check", "metadata", "clean"] {
+        let (ok, out, err) = run_in(&dir, &[cmd, "."]);
+        assert!(
+            !ok,
+            "`cdz {cmd}` must FAIL on a malformed manifest (not treat it as empty): out=[{out}] err=[{err}]"
+        );
+        assert!(
+            err.contains("does not parse") || err.contains("error:"),
+            "`cdz {cmd}` surfaces the manifest parse error: {err}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
