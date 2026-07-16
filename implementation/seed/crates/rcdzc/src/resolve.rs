@@ -799,6 +799,24 @@ fn resolve_name(db: &Db, id: StructId, name: &str) -> Resolved {
             format!("malformed numeric literal `{name}`"),
         ));
     }
+    // The WILDCARD `_` used as a VALUE — `(+ _ 1)`, `(g _)`, a bare `_` def body. `_` is a binding-position
+    // wildcard (it discards the bound value in a pattern — `((tuple _ b) …)`, `(let ((_ e)) …)`); it names
+    // no value, so a reference to it is not an ordinary unbound name (a "did you mean?" typo suggestion is
+    // nonsense for it) but a category misuse. Name that specifically — it reads far better than "unbound
+    // name `_`" and points at the two legitimate uses. (A `_`-LED binder like `_x` is an ordinary name — a
+    // silenced binder — and never reaches here; only the bare `_` wildcard does.)
+    if name == "_" {
+        trace!(target: "rcdzc::resolve", node = id.0, "wildcard `_` used as a value (CDZ0201)");
+        return Resolved::Poison(
+            Reject::coded(
+                Code::Malformed,
+                "`_` is a wildcard, not a value — it may appear only in a binding position (a pattern \
+                 element like `(tuple _ x)`, or a discarded `let` binder), where it discards the value; \
+                 use a named binder to refer to a value",
+            )
+            .at(id),
+        );
+    }
     trace!(target: "rcdzc::resolve", node = id.0, %name, "name UNBOUND (CDZ0101)");
     // The "did you mean?" typo suggestion (the nearest in-scope name) is computed LAZILY, at the ONE site
     // that SURFACES an unbound name as a user fault (`infer::collect_node`) — NOT here. `resolved_of` is
