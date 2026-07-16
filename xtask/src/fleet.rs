@@ -595,24 +595,44 @@ fn up(fleet: &Fleet) {
 /// worktrees (they share the common `.git`). The `fleet-maxfloor` driver resolves a
 /// `.duvet/coverage-floor.json` conflict by taking the field-wise MAX (via `xtask fleet merge-floor`),
 /// so concurrent citation-floor bumps stop conflicting. `%A` = ours (result), `%B` = theirs.
+/// The `fleet-maxfloor` driver command written into the hub's `.git/config`.
+///
+/// It MUST be worktree-portable: the value lives in the HUB-shared `.git/config`, but a merge can run
+/// from ANY worktree, and each worktree has its OWN `target/` (none is shared). So we must NOT bake in
+/// an absolute `std::env::current_exe()` path — that points into the ONE worktree that happened to run
+/// `fleet up`, and won't exist for a merge driven from another worktree (or after that worktree is
+/// rebuilt/removed), silently disabling the driver so baselines merge WITHOUT the max-dedup (PR #426).
+/// The tracked `cargo xtask` alias (`.cargo/config.toml` is on `trunk`, so every worktree has it)
+/// resolves from whatever worktree git runs the merge in — git invokes the driver with cwd at the
+/// working-tree root, which is the cargo workspace root. `%A` = ours (result), `%B` = theirs.
+fn maxfloor_driver_command() -> &'static str {
+    "cargo xtask fleet merge-floor %A %B"
+}
+
 fn register_merge_drivers(fleet: &Fleet) {
-    // Resolve the xtask binary path so the driver invokes the SAME toolchain.
-    let xtask = std::env::current_exe()
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|_| "cargo xtask".to_string());
-    let driver = format!("{xtask} fleet merge-floor %A %B");
-    let set = |key: &str, val: &str| {
+    let set = |key: &str, val: &str| -> bool {
         Command::new("git")
             .current_dir(&fleet.repo)
             .args(["config", key, val])
             .status()
-            .ok();
+            .map(|s| s.success())
+            .unwrap_or(false)
     };
-    set(
+    // Surface a failed registration instead of swallowing it (`.status().ok()` hid PR #426's failure
+    // mode): if the driver isn't registered the .gitattributes `merge=fleet-maxfloor` line silently
+    // does nothing, reintroducing the coverage-floor conflict tax with no signal.
+    let ok_name = set(
         "merge.fleet-maxfloor.name",
         "max of the two coverage floors",
     );
-    set("merge.fleet-maxfloor.driver", &driver);
+    let ok_driver = set("merge.fleet-maxfloor.driver", maxfloor_driver_command());
+    if !ok_name || !ok_driver {
+        eprintln!(
+            "fleet: WARNING — failed to register the fleet-maxfloor merge driver in {}/.git/config; \
+             concurrent .duvet/coverage-floor.json bumps will fall back to a normal git conflict.",
+            fleet.repo.display()
+        );
+    }
 }
 
 /// Build a runtime [`Agent`] from a tracked [`RosterEntry`], deriving the runtime-only fields (branch,
@@ -2498,6 +2518,32 @@ mod tests {
         let m = merged_floor_value(ours, &theirs);
         assert_eq!(m.get("cited").and_then(|n| n.as_u64()), Some(644)); // theirs, ours missing→0
         assert_eq!(m.get("total").and_then(|n| n.as_u64()), Some(900)); // ours, theirs garbage→0
+    }
+
+    #[test]
+    fn maxfloor_driver_is_worktree_portable() {
+        // PR #426: the driver value lives in the hub-shared .git/config but a merge can run from ANY
+        // worktree, each with its OWN target/. So the command must NOT embed an absolute path or a
+        // `target/` binary (current_exe()'s form) — it must resolve via the tracked `cargo xtask`
+        // alias from whatever worktree git runs the merge in.
+        let cmd = maxfloor_driver_command();
+        assert!(
+            cmd.starts_with("cargo xtask "),
+            "driver must invoke the portable cargo alias, got {cmd:?}"
+        );
+        assert!(
+            !cmd.contains("target/") && !cmd.contains('/'),
+            "driver must not bake in a worktree-local path, got {cmd:?}"
+        );
+        // git substitutes the two conflicting versions into %A (ours/result) and %B (theirs).
+        assert!(
+            cmd.contains("%A") && cmd.contains("%B"),
+            "driver needs the %A/%B placeholders"
+        );
+        assert!(
+            cmd.contains("fleet merge-floor"),
+            "driver must call the merge-floor subcommand"
+        );
     }
 
     #[test]
