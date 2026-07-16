@@ -4647,6 +4647,50 @@ mod tests {
         }
 
         #[test]
+        fn lint_set_compile_and_run_never_panic_on_arbitrary_input() {
+            // `LintSet::compile` parses UNTRUSTED lint-rule text (`cdz lint --rule '…'` / `--rules FILE`)
+            // — like Pattern/Template/RuleSet::compile it must return a diagnostic, never panic, on any
+            // string: `(lint …)` soup, wrong arity, a non-string message, a bad severity name, a bad
+            // pattern, unbalanced parens. And a set that DOES compile must RUN (lint_report) over a
+            // subject without panicking. Mirrors the reader/query-compiler robustness fuzzes.
+            let subject = "g(deprecated(), (todo x), 1)";
+            let (target, _) =
+                crate::query::driver::load(subject.as_bytes(), crate::convert::Format::Ml).unwrap();
+            let alphabet: Vec<char> = "(lint ),@_\"xdeprecatedtoerrwान warnnote0123."
+                .chars()
+                .collect();
+            let mut rng = super::SplitMix64(0x11_7ea5_c0de_0f3e);
+            for len in 0..=28usize {
+                for _ in 0..120 {
+                    let s: String = (0..len)
+                        .map(|_| alphabet[(rng.next() as usize) % alphabet.len()])
+                        .collect();
+                    if let Ok(set) = LintSet::compile(&s) {
+                        // A compiled set must run without panicking (report + json paths).
+                        let _ = crate::query::driver::lint_report(&set, &target, subject, "in.ml");
+                        let _ =
+                            crate::query::driver::lint_json(&set, &target, subject, Some("in.ml"));
+                    }
+                }
+            }
+            // Targeted structural edges — each must be Err/Ok, never panic.
+            for s in [
+                "(lint)",                            // no pattern/message
+                "(lint (x))",                        // missing message
+                "(lint (x) 5)",                      // non-string message
+                "(lint (x) \"m\" bogus)",            // unknown severity
+                "(lint (x) \"m\" error extra)",      // too many operands
+                "(lint (,@a ,@b) \"m\")",            // adjacent splices in the pattern
+                "(lint (x) \"m\" \"notaname\")",     // severity not a bare name
+                "(not-lint (x) \"m\")",              // wrong head
+                "((((",                              // unbalanced
+                "(lint (x) \"a\") (lint (y) \"b\")", // two rules
+            ] {
+                let _ = LintSet::compile(s);
+            }
+        }
+
+        #[test]
         fn compile_reads_pattern_message_and_severity() {
             let set = LintSet::compile("(lint (deprecated ,@_) \"do not use\" error)").unwrap();
             assert_eq!(set.rules.len(), 1);
