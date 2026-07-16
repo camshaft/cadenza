@@ -68167,6 +68167,54 @@ mod cross_component_oracle {
     }
 
     // ------------------------------------------------------------------------------------------------
+    // U9 — the agent-harness EMBEDDER (`cdz_run::run_agent`): a `String -> String` model call answered by
+    // a HOST CLOSURE, not a peer component. This is the Inc-1b bring-up path — the native agent loop's
+    // `Model.converse` bound to a Rust closure that reads the prompt rope (str-get), computes a
+    // completion, and mints the result rope (str-new), all over the SHARED value-heap runtime. It is how
+    // a Bedrock call plugs in (the closure does the SigV4/HTTPS) WITHOUT a Cadenza peer (no TLS in
+    // Cadenza) or the host-String-result ABI (unbuilt). Here the closure is a deterministic MOCK
+    // (uppercases the prompt) so the test needs no network — the same seam a real Bedrock converse fills.
+    // ------------------------------------------------------------------------------------------------
+    #[test]
+    fn u9_the_embedder_answers_a_string_model_call_with_a_host_closure() {
+        use crate::testkit::parse;
+        // CONSUMER (source): a peer-bound effect Model `(-> String String)`; main converses on an
+        // in-program prompt and reads the completion's byte-len (scalar entrypoint — no resource escape).
+        // The prompt "hi" (2 bytes) → the mock uppercases → "HI" (2 bytes) → byte-len 2.
+        let src = "(do \
+            (effect Model (op converse (-> String String))) \
+            (bind Model \"cadenza:model/api\") \
+            (def (main) (String.byte-len (host (Model) (Model.converse \"hi\")))) \
+            (export main))";
+        let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .unwrap_or_else(|d| panic!("consumer compiles: {} [{:?}]", d.message, d.code));
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("[U9] runtime wasm not found; skipping");
+            return;
+        };
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: Vec::new(),
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        // The MOCK model: uppercase the prompt. A real embedder swaps this closure for a Bedrock invoke.
+        let converse = |prompt: String| prompt.to_uppercase();
+        match cdz_run::run_agent(&consumer, "cadenza:model/api", "converse", &opts, converse)
+            .expect("the embedder answers the String model call with a host closure")
+        {
+            // main("hi") → converse → "HI" → byte-len 2. A String crossed OUT to a host closure and the
+            // completion crossed back IN, both as shared-runtime rope handles the embedder marshalled.
+            cdz_run::Outcome::Value(s) => assert_eq!(
+                s, "2",
+                "the host-closure completion's byte-len proves the String round-tripped through the embedder"
+            ),
+            cdz_run::Outcome::Trap(t) => panic!("embedder run trapped: {t}"),
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------------
     // PL4 — a NON-KEBAB peer OP NAME agrees across the consumer + provider and RUNS. The op name is a
     // component-boundary extern name (the interface func); a camelCase source op (`addTwo`) must
     // kebab-normalize to the SAME `add-two` on BOTH sides — the consumer's `(bind)`/`host` import AND

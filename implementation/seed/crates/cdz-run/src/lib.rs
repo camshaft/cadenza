@@ -399,6 +399,114 @@ pub fn run_with_peers(consumer_bytes: &[u8], peers: &[Peer], opts: &RunOpts) -> 
     run_export(&engine, &consumer, &mut store, &linker, opts)
 }
 
+/// Run a CONSUMER component whose one peer interface `model_iface` (e.g. `cadenza:model/api`) is answered
+/// not by a peer COMPONENT but by a HOST closure — the embedder pattern the native agent-harness uses to
+/// wire a `String -> String` model call (Bedrock) into a pure-Cadenza agent loop without a Cadenza peer
+/// (which would need TLS/SigV4 Cadenza lacks) and without the host-boundary String-result ABI (unbuilt).
+///
+/// `model_iface` must export exactly one op `op_name` of type `(String) -> String`, which crosses the
+/// component boundary as `converse(u32) -> u32` — the arg/result are opaque handles into the SHARED
+/// value-heap runtime (component-abi.md §A Cross-Component Handle Is Meaningful Only In The Shared Runtime
+/// Instance). This runner instantiates that ONE shared runtime, captures its `str-get`/`str-new` funcs,
+/// and binds the consumer's import of `model_iface`.`op_name` to a closure that: reads the prompt handle
+/// to a `String` (`str-get`), calls the caller's `converse`, and returns the completion as a fresh handle
+/// (`str-new`). The agent LOOP stays pure Cadenza; the only non-Cadenza surface is `converse` itself
+/// (the crate that supplies a Bedrock-backed `converse` keeps the aws-sdk out of this runner's deps).
+///
+/// SCOPE: the model op is monomorphic `(String) -> String` (the model-call shape); a richer host-backed
+/// interface is a later widening. The consumer must import the value-heap runtime (a String is a rope).
+pub fn run_agent<F>(
+    consumer_bytes: &[u8],
+    model_iface: &str,
+    op_name: &str,
+    opts: &RunOpts,
+    converse: F,
+) -> Result<Outcome>
+where
+    F: Fn(String) -> String + Send + Sync + 'static,
+{
+    use std::sync::Arc;
+    let engine = engine();
+    let consumer = Component::new(&engine, consumer_bytes)
+        .map_err(|e| anyhow!("invalid consumer component: {e}"))?;
+    let mut store = Store::new(&engine, ());
+    let mut linker: Linker<()> = Linker::new(&engine);
+
+    // The consumer's String model call rides the shared value-heap runtime (the prompt/completion are
+    // rope handles), so the runtime is REQUIRED here (unlike the scalar peer path where it is optional).
+    let req = find_runtime_req(&engine, &consumer).ok_or_else(|| {
+        anyhow!(
+            "run_agent requires the consumer to import the value-heap runtime (a String model call \
+             crosses as a rope handle), but it declares no runtime import"
+        )
+    })?;
+    let (rt_instance, heap_names) = instantiate_runtime(&engine, &mut store, &req, opts)?;
+    bind_runtime_into(
+        &engine,
+        &mut store,
+        &mut linker,
+        &req.import_name,
+        &rt_instance,
+        &heap_names,
+    )?;
+
+    // Capture the runtime's `str-get`/`str-new` funcs (the rope<->host-String bridge, runtime.wit #18/#17)
+    // so the `converse` closure can read the prompt handle and mint the completion handle.
+    let heap_idx = rt_instance
+        .get_export_index(&mut store, None, RUNTIME_IFACE)
+        .ok_or_else(|| anyhow!("runtime does not export {RUNTIME_IFACE}"))?;
+    let get_func_named =
+        |store: &mut Store<()>, fname: &str| -> Result<wasmtime::component::Func> {
+            let fidx = rt_instance
+                .get_export_index(&mut *store, Some(&heap_idx), fname)
+                .ok_or_else(|| anyhow!("runtime missing `{fname}`"))?;
+            rt_instance
+                .get_func(&mut *store, fidx)
+                .ok_or_else(|| anyhow!("runtime export `{fname}` is not a func"))
+        };
+    let str_get = get_func_named(&mut store, "str-get")?;
+    let str_new = get_func_named(&mut store, "str-new")?;
+    let converse = Arc::new(converse);
+
+    // Bind the consumer's import `model_iface`.`op_name` to the host closure. The op crosses as
+    // `converse(u32) -> u32`: read the prompt handle to a String, call the user's `converse`, mint the
+    // completion handle. Calling a captured runtime `Func` inside a `func_new` closure via the passed
+    // `ctx` is the same pattern `bind_runtime_into`/`bind_peer_ifaces_into` use.
+    let mut iface = linker
+        .instance(model_iface)
+        .map_err(|e| anyhow!("linker instance {model_iface}: {e}"))?;
+    let converse_cl = Arc::clone(&converse);
+    let op_label = op_name.to_string();
+    iface.func_new(op_name, move |mut ctx, params, results| {
+        let prompt_handle = match params.first() {
+            Some(Val::U32(h)) => *h,
+            other => {
+                return Err(anyhow!(
+                    "model op `{op_label}` expected a u32 prompt handle, got {other:?}"
+                ));
+            }
+        };
+        // str-get(handle) -> string: read the prompt rope out of the shared heap.
+        let mut got = [Val::Bool(false)];
+        str_get.call(&mut ctx, &[Val::U32(prompt_handle)], &mut got)?;
+        str_get.post_return(&mut ctx)?;
+        let prompt = match &got[0] {
+            Val::String(s) => s.to_string(),
+            other => return Err(anyhow!("str-get returned a non-string: {other:?}")),
+        };
+        // The one non-Cadenza edge: the caller's model call (a Bedrock invoke lives behind this).
+        let completion = converse_cl(prompt);
+        // str-new(string) -> handle: mint the completion rope; return its handle to the guest.
+        let mut made = [Val::Bool(false)];
+        str_new.call(&mut ctx, &[Val::String(completion)], &mut made)?;
+        str_new.post_return(&mut ctx)?;
+        results[0] = made[0].clone();
+        Ok(())
+    })?;
+
+    run_export(&engine, &consumer, &mut store, &linker, opts)
+}
+
 /// Instantiate the linked component and invoke its chosen export (or the resource-escape path), returning
 /// the rendered outcome. Split out of [`run_capturing`] so the host-call observation wraps it.
 fn run_export(
