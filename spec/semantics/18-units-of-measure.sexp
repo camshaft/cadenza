@@ -618,7 +618,7 @@
            (length) but DIFFERENT units (km vs m), which are DIFFERENT `(Qty T u)` types (their unit's
            scale to the reference differs: km is 1000/1, m is 1/1). A quantity join does not auto-convert
            to the reference — a unit conversion is explicit (`in`/`as`, the no-silent-promotion rule) —
-           so the join is rejected CDZ0203. (Both branches RENDER to `(Qty Int64 (Unit.base meter))` —
+           so the join is rejected CDZ0203. (Both branches RENDER to `(Qty Int64 (Unit.base #\"meter\"))` —
            the reference-unit name with the scale dropped — so the diagnostic must name the SCALE
            difference, not misread it as a shadowed-declaration same-name clash.)")
   (input  (do (def (main (: b Bool))
