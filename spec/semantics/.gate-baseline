@@ -794,6 +794,7 @@ pass	a function stored in a tuple element is called after extraction
 pass	a function takes a boolean parameter and branches on it
 pass	a function whose body always diverges has result type Never
 pass	a function whose name is capitalized is called, not treated as a constructor
+pass	a function's reflected CODOMAIN is body-solved, distinguishing an Int64 result from a Bool result
 pass	a function's reflected domain matches an equivalent explicitly-annotated signature
 pass	a function's return type ascription agreeing with the body is transparent
 pass	a function's return type contradicting the body is rejected
@@ -3327,7 +3328,9 @@ pass	two expects of one bound optional share its resident handle
 pass	two exports normalizing to the same kebab extern name are rejected
 pass	two fallible reads of one Bytes parameter share its resident handle slot
 pass	two fallible reads of one collection parameter share its resident handle slot
+pass	two functions both body-solved to Int64->Bool reflect equal arrows
 pass	two functions defined by mutual recursion compute a result
+pass	two functions with the same body-solved arrow but different bodies reflect equal types
 pass	two host calls consume their responses in order
 pass	two host responses combine in call order through a non-commutative operator
 pass	two lists are concatenated into one flat list
