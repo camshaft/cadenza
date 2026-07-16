@@ -53,3 +53,29 @@
   (input (do (type W (A Int64) (B Int64)) (def (main (: n Int64)) (match (W.A n) ((W.A 0) 100) ((W.A x) x) ((W.B y) y))) (export main)))
   (call main (: 5 Int64))
   (output (: 5 Int64)))
+
+; ── BREAKER FOLLOW-UP: a BOOL payload is WORSE — a SILENT WRONG VALUE, not an invalid component ──────────
+; Same trigger (single-variant sum + literal-payload refinement + binding), but with a BOOL payload the
+; literal arm silently NEVER MATCHES — it emits a VALID module that returns the WRONG value (falls to the
+; wildcard). `(match (W.Wrap b) ((W.Wrap true) 1) ((W.Wrap _) 0))` with b=true returns 0 (should be 1) — the
+; `(W.Wrap true)` arm is dead. b=false correctly returns 0, which MASKS the bug (0 is also the wildcard's
+; result). So the Int64 payload → invalid component (crash), the Bool payload → silent wrong value (worse).
+; Multi-variant Bool-payload refine works (returns 1); bare Bool refine works. Same single-variant root.
+
+(case "adv single-variant-refine BOOL: a (W.Wrap true) arm is silently dead — returns the wildcard, wrong"
+  (doc "`(match (W.Wrap b) ((W.Wrap true) 1) ((W.Wrap _) 0))` with b=true: the payload true should match the
+        `(W.Wrap true)` literal arm → 1. But on wasm it returns 0 (falls to the wildcard — the literal arm
+        is DEAD). A SILENT WRONG VALUE (valid module, wrong answer), worse than the Int64 invalid-component
+        symptom. Same single-variant + literal-payload-refinement root; a Bool payload takes the wrong-value
+        path instead of the type-mismatch path.")
+  (input (do (type W (Wrap Bool)) (def (main (: b Bool)) (match (W.Wrap b) ((W.Wrap true) 1) ((W.Wrap _) 0))) (export main)))
+  (call main (: true Bool))
+  (output (: 1 Int64)))
+
+(case "adv single-variant-refine BOOL: a MULTI-variant Bool-payload refine works (control)"
+  (doc "The control: the SAME Bool-payload literal refinement on a MULTI-variant sum works — `(match (W.A b)
+        ((W.A true) 1) ((W.A _) 0) ((W.B _) 9))` with b=true → 1. Pins the bug is the SINGLE-variant case; the
+        multi-variant Bool refine selects the literal arm correctly.")
+  (input (do (type W (A Bool) (B Bool)) (def (main (: b Bool)) (match (W.A b) ((W.A true) 1) ((W.A _) 0) ((W.B _) 9))) (export main)))
+  (call main (: true Bool))
+  (output (: 1 Int64)))
