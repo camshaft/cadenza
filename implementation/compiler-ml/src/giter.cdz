@@ -19,11 +19,12 @@
 /// `next` is still the pull interface (`GIter(a) -> Option((a, GIter(a)))`), total (never traps) and pure
 /// (re-stepping yields the same element); the cons-cell IS the reified rest, so `next` just projects it.
 ///
-/// SCOPE (slices 1–6). CLOSURE-FREE (Part C shape): producers (`from-list`, `singleton`), `next`, consumers
+/// SCOPE (slices 1–7). CLOSURE-FREE (Part C shape): producers (`from-list`, `singleton`), `next`, consumers
 /// (`count`, `collect`, `nth`, `last`), transformers (`chain`, `take`, `drop`, `zip`). CLOSURE-STORING
 /// (unblocked by the recursive-generic-transformer closure tie + the rigid-biased if-join): `map`, `filter`,
-/// `drop-while`, `take-while`, `find`, `all`, `any` — each threads a closure and monomorphizes per element
-/// type. Every function composes at Int64 AND String in one program (the tests pin this). ELEMENT-CHANGING
+/// `drop-while`, `take-while`, `scan`, `find`, `all`, `any` — each threads a closure and monomorphizes per
+/// element type. Every function composes at Int64 AND String in one program (the tests pin this).
+/// ELEMENT-CHANGING
 /// is supported too: `zip` yields a tuple element, and `map` maps `a -> b` at a DIFFERENT result type
 /// (int→Bool, int→String — see the tests); no `∀`-annotation is needed because the new element type is
 /// INFERRED from the (unannotated) closure / tuple, never WRITTEN — so the "no-∀-binder-in-annotation"
@@ -189,6 +190,15 @@ def any(it, p) = match it with
 def take-while(it, p) = match it with
   | GIter.Nil(_) => GIter.Nil(unit)
   | GIter.Cons(h, rest) => if p(h) then GIter.Cons(h, take-while(rest, p)) else GIter.Nil(unit)
+
+/// `scan(it, acc, f)` — a RUNNING fold: emit each intermediate accumulator, starting with the seed `acc`
+/// and folding `f : acc -> a -> acc` over the elements. Yields `n+1` values for an `n`-element iterator
+/// (the seed, then one per element). Threads BOTH the accumulator and the closure through the recursion;
+/// every leaf carries a value-tied element (`acc`, never a bare untied `Nil`), so it composes per element
+/// type. `acc` may be a different type than the element `a` (its type is inferred from the seed + `f`).
+def scan(it, acc, f) = match it with
+  | GIter.Nil(_) => GIter.Cons(acc, GIter.Nil(unit))
+  | GIter.Cons(h, rest) => GIter.Cons(acc, scan(rest, f(acc, h), f))
 
 /// TESTS ----------------------------------------------------------------------------------------------
 
@@ -458,5 +468,28 @@ def map-int-to-string() =
 def map-string-to-bool-second-source-type() =
   if bool-list-eq(collect(map(from-list(["a", "bb"]), fn(s) => s == "bb")), [false, true])
   then unit else trap("map String -> Bool (2nd source element type)")
+
+/// SLICE-7: `scan` — running fold, threads accumulator + closure; pinned at two element types + a
+/// non-element accumulator type.
+
+@test
+def scan-running-sum-ints() =
+  if int-list-eq(collect(scan(from-list([1, 2, 3]), 0, fn(a, x) => a + x)), [0, 1, 3, 6])
+  then unit else trap("scan running sum")
+
+@test
+def scan-emits-seed-plus-one-per-element() =
+  if count(scan(from-list([10, 20]), 0, fn(a, x) => a + x)) == 3
+  then unit else trap("scan yields n+1 values")
+
+@test
+def scan-over-strings-accumulates-lengths() =
+  if int-list-eq(collect(scan(from-list(["a", "bb"]), 0, fn(a, s) => a + String.byte-len(s))), [0, 1, 3])
+  then unit else trap("scan String source, Int64 accumulator")
+
+@test
+def scan-string-accumulator() =
+  if str-list-eq(collect(scan(from-list(["a", "b"]), "", fn(a, x) => String.concat(a, x))), ["", "a", "ab"])
+  then unit else trap("scan String source, String accumulator")
 
 export { GIter.* }
