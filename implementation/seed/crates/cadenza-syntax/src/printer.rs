@@ -2941,6 +2941,56 @@ mod tests {
         }
     }
 
+    /// Generate a random VALID program as S-EXPR text (bounded by `depth`) — a shape the ML printer can
+    /// render (infix, call, `let`, `if`, `record`, nested). Read via `sexpr::read` it gives a valid arena
+    /// to print AS ML; keeping generation in s-expr avoids depending on the ML printer we are testing.
+    fn gen_ml_expressible(rng: &mut SplitMix64, depth: usize) -> String {
+        let atoms = ["a", "b", "x", "y", "f", "g", "1", "42", "true"];
+        if depth == 0 || (rng.next() % 3) == 0 {
+            return atoms[(rng.next() as usize) % atoms.len()].to_string();
+        }
+        let sub = |rng: &mut SplitMix64| gen_ml_expressible(rng, depth - 1);
+        match rng.next() % 6 {
+            0 => format!("(+ {} {})", sub(rng), sub(rng)),
+            1 => format!("(f {} {})", sub(rng), sub(rng)),
+            2 => format!("(if {} {} {})", sub(rng), sub(rng), sub(rng)),
+            3 => format!("(let ((x {}) (y {})) {})", sub(rng), sub(rng), sub(rng)),
+            4 => format!("(record (x {}) (y {}))", sub(rng), sub(rng)),
+            _ => format!("(* {} (+ {} {}))", sub(rng), sub(rng), sub(rng)),
+        }
+    }
+
+    #[test]
+    fn ml_print_round_trip_is_faithful_over_generated_programs_and_widths() {
+        // The ML printer's structural FIDELITY, swept: `read_ml(print(a, w))` is STRUCTURALLY EQUAL to
+        // `a`, over random valid programs at a range of widths. The byte-soup sweep above pins that a
+        // clean parse re-parses clean + prints idempotently — but NOT that the tree is unchanged; a
+        // printer could re-parse-clean and be idempotent yet subtly alter the tree at some break width.
+        // This asserts equality against the source arena (via a `def main = <expr>` wrapper so `print`
+        // takes the real top-level path), across widths that force different layout breaks. (Generation
+        // is in S-EXPR so it doesn't lean on the ML printer under test.)
+        let mut rng = SplitMix64(0xa11d_e5c0_de5e_ed01);
+        for _ in 0..3000 {
+            let depth = 1 + (rng.next() % 4) as usize;
+            let sx = format!("(def (main) {})", gen_ml_expressible(&mut rng, depth));
+            let a = sexpr::read(&sx)
+                .unwrap_or_else(|e| panic!("generated s-expr {sx:?} reads: {}", e.0));
+            for &width in &[0usize, 1, 8, 30, 100] {
+                let ml = print(&a, width);
+                let back = parser::read_ml(&ml);
+                assert!(
+                    back.ok(),
+                    "ML print (w={width}) of {sx:?} must re-parse clean, got {:?}\n--- ml ---\n{ml}",
+                    back.errors
+                );
+                assert!(
+                    a.structurally_eq(&back.arenas),
+                    "ML print (w={width}) not faithful for {sx:?}\n--- ml ---\n{ml}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn ml_printer_is_total_over_sexpr_sourced_arenas() {
         // The ML printer runs on ANY arena, including ones the ML READER can never build — a bare empty
