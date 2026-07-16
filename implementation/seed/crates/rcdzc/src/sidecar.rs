@@ -674,13 +674,18 @@ pub fn run_query(db: &mut Db, query: &Query) -> QueryResult {
             // but carries no doc → "no documentation for `X`"; a name that refers to NOTHING → "no such
             // definition `X`". A cdz-side pre-check can't draw this line (it also documents built-ins that
             // aren't in the file's `Symbols`), but the query knows the `Db` + prelude + keyword tables.
-            let text = doc_of_name(db, name).unwrap_or_else(|| {
-                if name_is_known(db, name) {
-                    format!("no documentation for `{name}`")
-                } else {
-                    format!("no such definition `{name}`")
-                }
-            });
+            let text = match doc_of_name(db, name) {
+                Some(doc) => doc,
+                None if name_is_known(db, name) => format!("no documentation for `{name}`"),
+                // Unresolvable — a typo. Offer a "did you mean?" over the DOCUMENTABLE names the query
+                // knows (user defs + built-in prelude bindings), so the answer is actionable like the
+                // compiler's own unbound-name diagnostics (`suggest::nearest`, its edit-distance +
+                // 1-char/empty guards). No suggestion when nothing is close enough.
+                None => match nearest_known_name(db, name) {
+                    Some(near) => format!("no such definition `{name}` — did you mean `{near}`?"),
+                    None => format!("no such definition `{name}`"),
+                },
+            };
             QueryResult {
                 kind: KIND_DOC,
                 name: name.clone(),
@@ -986,6 +991,20 @@ fn name_is_known(db: &Db, name: &str) -> bool {
     db.def_by_name(name).is_some()
         || db.prelude.contains_key(name)
         || grammar_keyword_doc(name).is_some()
+}
+
+/// The closest DOCUMENTABLE name to `name` — a user def or a built-in prelude binding — for the
+/// "did you mean?" on `DocOf`'s "no such definition" verdict, via the shared `suggest::nearest` (its
+/// edit-distance cutoff + 1-char/empty guards decide whether anything is close enough). `None` when no
+/// candidate is a confident near-miss (a genuinely novel typo). Grammar keywords are omitted — someone
+/// asking `cdz doc <typo>` almost always meant a definition, not a keyword.
+fn nearest_known_name(db: &Db, name: &str) -> Option<String> {
+    let candidates = db
+        .defs
+        .iter()
+        .map(|d| d.name.as_str())
+        .chain(db.prelude.keys().map(String::as_str));
+    crate::diag::suggest::nearest(name, candidates)
 }
 
 /// The documentation of the definition the node at `id` belongs to or references — the `DocAt` read.

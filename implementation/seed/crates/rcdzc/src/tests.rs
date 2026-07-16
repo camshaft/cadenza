@@ -58080,7 +58080,8 @@ mod sidecar_driven {
         // Both are DEFINED answers (never an error — the oracle contract: a query is total over every
         // input), but with DISTINCT verdicts so a consumer can tell a real-but-undocumented name from a
         // typo: `main` IS a def (no doc → "no documentation for"), `ghost` names NOTHING ("no such
-        // definition"). `cdz doc` maps the "no such definition" variant to a non-zero exit.
+        // definition"). `cdz doc` maps the "no such definition" variant to a non-zero exit. A typo that is
+        // a NEAR-MISS of a real def (`mian`) additionally gets a "did you mean?" suggestion.
         let src = "(module m (def (main) 42) (export main))";
         let out = compile(
             &inputs(
@@ -58091,6 +58092,9 @@ mod sidecar_driven {
                     }),
                     Request::Query(Query::DocOf {
                         name: "ghost".into(),
+                    }),
+                    Request::Query(Query::DocOf {
+                        name: "mian".into(),
                     }),
                 ],
             ),
@@ -58108,6 +58112,7 @@ mod sidecar_driven {
             vec![
                 "no documentation for `main`".to_string(),
                 "no such definition `ghost`".to_string(),
+                "no such definition `mian` — did you mean `main`?".to_string(),
             ]
         );
     }
