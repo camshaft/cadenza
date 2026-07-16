@@ -9659,3 +9659,19 @@
                 (match r ((record (x a)) a)))
               (export f)))
   (error CDZ0201))
+
+(case "a map match pattern with a malformed rest names the shape, not an unbound binder (CDZ0201)"
+  (doc    "A MAP match pattern whose `..` rest is malformed — a `..` NOT followed by exactly one binder,
+           `(map (1 v) .. rest (2 w))` — reports the clear rest-shape CDZ0201 ('a map rest pattern is
+           `(map (k v) … .. rest)` — exactly one binder after `..`'), the map twin of the list rest-shape
+           message. Before, `map_pattern_of` collapsed a malformed `..` to None, so the arm's value/rest
+           binders failed the inert-binder classifier and the body's `v` reference resolved UNBOUND — a
+           misleading CDZ0101 that masked the real fault (v-diagnostics note 2026-07-16). The resolver now
+           keeps those binders inert and the map matcher + a body reference surface the SAME coded rest-shape
+           message (co-anchored, deduped to one). Pins the CODED CDZ0201 on a parameterized body and that NO
+           unbound-name cascade accompanies it. A generation that skipped this would leave a mistyped map
+           rest pattern blaming the user's binder instead of naming the shape rule.")
+  (input  (do (def (f (: mp (Map Int64 Int64)))
+                (match mp ((map (1 v) .. rest (2 w)) v) (_ 0)))
+              (export f)))
+  (error CDZ0201))

@@ -841,6 +841,28 @@ fn resolve_name(db: &Db, id: StructId, name: &str) -> Resolved {
             .with_fix(crate::diag::Fix::replace_verified(id, "try", "replace `?` with `try`")),
         );
     }
+    // `..` used as a VALUE / form HEAD — `(.. xs)`, `(g ..)`. `..` is the REST/SPREAD marker of a
+    // collection PATTERN (`(list a .. rest)`, `(map (k v) .. rest)`); a real pattern rest is consumed by
+    // the list/map pattern parser (which scans for `as_name(e) == Some("..")`) and NEVER reaches here as a
+    // value reference. So a `..` that DOES reach `resolve_name` is a category misuse — the pattern-only
+    // sigil written where a value/head belongs. The generic path gave "unbound name `..`" (and, in head
+    // position, a misleading "did you mean `.`?" — `..` is distance-1 from member-access `.`, but a rest
+    // marker is not a mistyped `.`). Name the real role instead. NO fix: a rest marker has no value
+    // rewrite, and the `.`-rename is a wrong guess. (Fires on ANY bare `..`, like the `_` branch — `..`
+    // never denotes a value; a `..`-LED name is not a thing.) The uppercase/`?`/`_` sibling of the
+    // sigil-in-value-position family.
+    if name == ".." {
+        trace!(target: "rcdzc::resolve", node = id.0, "`..` rest marker used as a value (CDZ0201)");
+        return Resolved::Poison(
+            Reject::coded(
+                Code::Malformed,
+                "`..` is a rest/spread marker, valid only inside a `(list …)` or `(map …)` PATTERN \
+                 (e.g. `(list a .. rest)`, which binds the leading elements and the tail) — it is not a \
+                 value or a form head here",
+            )
+            .at(id),
+        );
+    }
     trace!(target: "rcdzc::resolve", node = id.0, %name, "name UNBOUND (CDZ0101)");
     // The "did you mean?" typo suggestion (the nearest in-scope name) is computed LAZILY, at the ONE site
     // that SURFACES an unbound name as a user fault (`infer::collect_node`) — NOT here. `resolved_of` is
@@ -1582,7 +1604,64 @@ fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Reso
             value_heads: value_heads.into(),
         });
     }
+    // Case Mmr: `form` is a MATCH ARM whose pattern is a `(map …)` with a MALFORMED `..` rest binding
+    // `name` at a value/rest position. `map_pattern_of` gave `None` (so Cases M/Mn above did not fire), and
+    // WITHOUT this the body reference would fall through to a MISLEADING CDZ0101 "unbound name" that masks
+    // the real rest-shape fault (v-diagnostics note). Resolve it to the SAME coded rest-shape decline the
+    // map matcher emits, SUPPRESSING the unbound cascade — the map twin of the record-pattern Case 6rec.
+    // ANCHOR at the offending `(map …)` PATTERN node (not this reference), so it lands on the SAME node the
+    // map matcher's reject does and the same-node dedup collapses the two into ONE primary diagnostic (the
+    // list rest-shape check keeps its body binder inert, avoiding a second report; a map has no valid field
+    // to bind to when malformed, so we co-anchor instead).
+    if let Some(map_pat) = match_arm_malformed_map_binds(db, form, from, name) {
+        return Some(Resolved::Poison(
+            Reject::coded(
+                crate::diag::Code::Malformed,
+                "a map rest pattern is `(map (k v) … .. rest)` — exactly one binder after `..`",
+            )
+            .at(map_pat),
+        ));
+    }
     None
+}
+
+/// The `(map …)` PATTERN node when `form` is a MATCH ARM `(pattern body)` (ascended from its BODY, or a
+/// guarded arm's guard cond) whose pattern is a `(map …)` form with a MALFORMED `..` rest
+/// ([`map_form_is_malformed_rest`]) that binds `name` at a value/rest position; `None` otherwise. Companion
+/// of [`match_arm_map_binds`] for the malformed case: it lets `binder_in` resolve such a body/guard
+/// reference to the clear rest-shape decline (co-anchored at the returned node) instead of leaking an
+/// unbound name.
+fn match_arm_malformed_map_binds(
+    db: &Db,
+    form: StructId,
+    from: StructId,
+    name: &str,
+) -> Option<StructId> {
+    let Struct::List(pb) = db.ast.get(form) else {
+        return None;
+    };
+    if pb.len() != 2 {
+        return None;
+    }
+    // Peel a `(guard <map-pattern> <cond>)` wrapper — a guard-cond reference binds the same names.
+    let (map_pat, guard_cond) = match db.ast.as_form(pb[0], "guard") {
+        Some(g) if g.len() == 2 => (g[0], Some(g[1])),
+        _ => (pb[0], None),
+    };
+    if from != pb[1] && Some(from) != guard_cond {
+        return None;
+    }
+    if !map_form_is_malformed_rest(db, map_pat) {
+        return None;
+    }
+    // Must be a genuine match arm (parent is `(match scrutinee arm…)`, `form` an arm, not the scrutinee).
+    let parent = db.parent_of(form)?;
+    let mtail = db.ast.as_form(parent, "match")?;
+    match mtail.first() {
+        Some(&scrutinee) if scrutinee != form => {}
+        _ => return None,
+    }
+    map_form_binds_name(db, map_pat, name).then_some(map_pat)
 }
 
 /// If `form` is a match ARM `(pattern body)` (ascended from its BODY) whose pattern is a `(map (k v) …
@@ -2687,6 +2766,74 @@ pub(crate) fn map_pattern_of(db: &Db, pat: StructId) -> Option<MapPattern> {
     Some((entries, rest))
 }
 
+/// Whether `pat` is a `(map …)` FORM whose `..` rest is MALFORMED — a `..` marker NOT followed by exactly
+/// one binder (`(map (k v) .. rest (j w))` — non-final; `(map (k v) .. r1 .. r2)` — two). `map_pattern_of`
+/// collapses this to `None` (indistinguishable from "not a map form at all"), which made a malformed-rest
+/// arm's value/rest binders fail the inert-binder classifier → the body reference resolved UNBOUND, a
+/// misleading CDZ0101 masking the real rest-shape fault (v-diagnostics note 2026-07-16). This predicate
+/// re-detects that specific case so the map matcher can emit the SAME clear rest-shape message the list
+/// matcher gives (`lower_match_list` / `check_binding_pattern`) instead of the generic "not a map pattern",
+/// and so [`is_map_pattern_binder_occurrence`] can still classify the binders inert (suppressing the
+/// unbound cascade — the map twin of how the list rest-shape check keeps its binders inert while faulting).
+pub(crate) fn map_form_is_malformed_rest(db: &Db, pat: StructId) -> bool {
+    let Some(tail) = db
+        .ast
+        .as_ctor_form(pat, "map")
+        .or_else(|| db.ast.as_form(pat, "map"))
+    else {
+        return false;
+    };
+    match tail.iter().position(|&e| db.ast.as_name(e) == Some("..")) {
+        // A `..` present but not followed by EXACTLY one trailing binder — the malformed rest shape.
+        Some(i) => i + 2 != tail.len(),
+        None => false,
+    }
+}
+
+/// Whether the `(map …)` FORM `pat` — WELL-FORMED OR MALFORMED — binds `name` at a value or rest position
+/// (a KEY position is never a binder). Unlike [`map_pattern_of`] (which returns `None` on a malformed
+/// `..`), this scans the tail STRUCTURALLY, so a malformed-rest arm's binders are still recognized — the
+/// map twin of `find_leading_binder_in_list_pattern`/`find_rest_binder_in_list_pattern`, which position-scan
+/// a list pattern regardless of its overall shape. Used by [`is_map_pattern_binder_occurrence`] to keep a
+/// malformed-rest arm's binders INERT so a body reference does not resolve UNBOUND before the rest-shape
+/// fault is reported.
+fn map_form_binds_name(db: &Db, pat: StructId, name: &str) -> bool {
+    if name == "_" || name == ".." {
+        return false;
+    }
+    let Some(tail) = db
+        .ast
+        .as_ctor_form(pat, "map")
+        .or_else(|| db.ast.as_form(pat, "map"))
+    else {
+        return false;
+    };
+    let dotdot = tail.iter().position(|&e| db.ast.as_name(e) == Some(".."));
+    for (i, &item) in tail.iter().enumerate() {
+        match dotdot {
+            // The element(s) after a `..` are REST binders (there may be more than one in a malformed
+            // pattern — accept each as a rest-position binder so none leaks unbound).
+            Some(d) if i > d => {
+                if db.ast.as_name(item) == Some(name) {
+                    return true;
+                }
+            }
+            // The `..` marker itself binds nothing.
+            Some(d) if i == d => {}
+            // An entry `(key value)` — the VALUE (second child) is the binder; the KEY is not.
+            _ => {
+                if let Struct::List(kv) = db.ast.get(item)
+                    && kv.len() == 2
+                    && db.ast.as_name(kv[1]) == Some(name)
+                {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
 /// Whether `id` is a BINDER occurrence of a map PATTERN — a VALUE binder (the `v` in a `(k v)` entry) or
 /// the REST binder (after `..`) of an arm's `(map …)` pattern. Such an occurrence names a binding, not a
 /// value, so it resolves INERT (a body reference resolves via Case M `map_pattern_binds`). The KEY
@@ -2703,9 +2850,6 @@ fn is_map_pattern_binder_occurrence(db: &Db, id: StructId) -> bool {
     // `grandparent` (value binder, inside a `(k v)` entry).
     let map_pat_candidates = [Some(parent), db.parent_of(parent)];
     for cand in map_pat_candidates.into_iter().flatten() {
-        let Some((entries, rest)) = map_pattern_of(db, cand) else {
-            continue;
-        };
         // Is `cand` WITHIN a match arm's PATTERN? Directly (the map IS the arm pattern — Case M) or NESTED
         // inside a tuple/record/variant arm pattern (the map is a sub-pattern — Case Mn). Ascend from
         // `cand` through its enclosing compound patterns to the arm's pattern slot; a binder occurrence in
@@ -2713,10 +2857,24 @@ fn is_map_pattern_binder_occurrence(db: &Db, id: StructId) -> bool {
         if !map_pattern_is_in_a_match_arm(db, cand) {
             continue;
         }
-        // `id` is a binder iff it is a VALUE position of some entry, or the REST binder. (A KEY position
-        // is NOT — it resolves as a value.)
-        if rest == Some(id) || entries.iter().any(|&(_, v)| v == id) {
-            return true;
+        if let Some((entries, rest)) = map_pattern_of(db, cand) {
+            // `id` is a binder iff it is a VALUE position of some entry, or the REST binder. (A KEY
+            // position is NOT — it resolves as a value.)
+            if rest == Some(id) || entries.iter().any(|&(_, v)| v == id) {
+                return true;
+            }
+        } else if map_form_is_malformed_rest(db, cand) {
+            // A `(map …)` form whose `..` rest is MALFORMED (`map_pattern_of` gave `None`). Its
+            // value/rest binders must STILL classify inert — else the arm body's reference to one resolves
+            // UNBOUND, masking the real rest-shape fault (v-diagnostics note). Scan the tail structurally
+            // by NAME (the map twin of the list rest-shape leniency); `id`'s name at a binder position
+            // makes it inert. The clear rest-shape CDZ0201 is then the sole diagnostic (emitted by the map
+            // matcher / the binding path), not a phantom unbound name.
+            if let Some(nm) = db.ast.as_name(id)
+                && map_form_binds_name(db, cand, nm)
+            {
+                return true;
+            }
         }
     }
     false

@@ -1173,11 +1173,47 @@ mod tests {
         assert!(total >= 2000, "swept a meaningful space, got {total}");
     }
 
+    /// `read`/`read_spanned` are INFALLIBLE (CommonMark always parses to SOME document), so there is no
+    /// error path to catch a defect — the invariant is that they never PANIC and always produce a
+    /// well-formed document with a TOTAL span table: a non-empty arena, root id in range, `spans` exactly
+    /// 1:1 with the structure vector, and every reachable child id in range (fully traversable). A broken
+    /// span table would silently corrupt a span-based structural edit over a markdown document, with no
+    /// error to signal it — so assert it on arbitrary input, not just the fixed valid cases.
+    fn assert_markdown_read_invariants(src: &str) {
+        let plain = read(src); // must not panic
+        let (a, spans) = read_spanned(src); // must not panic
+        // The two entry points agree structurally (the spanned read is the plain read + a table).
+        assert!(
+            plain.structurally_eq(&a),
+            "read and read_spanned disagree for {src:?}"
+        );
+        let n = a.structure.len();
+        assert!(n > 0, "a document arena is never empty for {src:?}");
+        assert!((a.root.0 as usize) < n, "root id in range for {src:?}");
+        assert_eq!(
+            spans.len(),
+            n,
+            "span table is total (1:1 with structure) for {src:?}"
+        );
+        fn walk(a: &Arenas, id: StructId) {
+            if let crate::ast::Struct::List(kids) = a.get(id) {
+                for &c in kids {
+                    assert!(
+                        (c.0 as usize) < a.structure.len(),
+                        "child id {} in range",
+                        c.0
+                    );
+                    walk(a, c);
+                }
+            }
+        }
+        walk(&a, a.root);
+    }
+
     #[test]
     fn markdown_read_never_panics_on_arbitrary_input() {
-        // `read` is INFALLIBLE (CommonMark always parses to SOME document) — so the property is that it
-        // never PANICS internally on arbitrary bytes. Sweep random markdown-ish strings (structural
-        // chars + text + unicode) plus odd fragments; each must produce a document without crashing.
+        // Sweep random markdown-ish strings (structural chars + text + unicode) plus odd fragments; each
+        // must produce a well-formed document with a total span table (see `assert_markdown_read_invariants`).
         let alphabet: Vec<char> = "#*_`~->|[]()!\n \t.0123456789abcλ".chars().collect();
         let mut rng = Rng(0x9abc_5678_1234_5eed);
         for len in 0..=40usize {
@@ -1185,13 +1221,27 @@ mod tests {
                 let s: String = (0..len)
                     .map(|_| alphabet[rng.below(alphabet.len())])
                     .collect();
-                let _ = read(&s); // infallible, but must not panic
+                assert_markdown_read_invariants(&s);
             }
         }
         for s in [
             "#", "```", "> ", "- [", "| a |", "![", "[x](", "~~~", "\t\t",
         ] {
-            let _ = read(s);
+            assert_markdown_read_invariants(s);
+        }
+        // Adversarial `cdz`/`ml`/`sexp` fences — the embedded-program path is the riskiest for span
+        // alignment (the fence body is a real arena subtree whose spans are relative to the body): a
+        // truncated, empty, or malformed-program fence must still keep the outer table total.
+        for s in [
+            "```cdz\n",
+            "```cdz\n(def",
+            "```cdz\n\n```\n",
+            "```ml\ndef f() =\n```",
+            "```sexp\n((((\n```",
+            "```cdz\n)))\n```\ntext after\n",
+            "~~~cdz\n@\n~~~",
+        ] {
+            assert_markdown_read_invariants(s);
         }
     }
 }

@@ -1415,4 +1415,101 @@ mod tests {
             assert!(a.structurally_eq(&c), "printer round-trip changed {src}");
         }
     }
+
+    /// A tiny deterministic PRNG (SplitMix64) — reproducible fuzz without a dependency, matching the
+    /// lexer/codec/parser house style (the crate stays "plain").
+    struct SplitMix64(u64);
+    impl SplitMix64 {
+        fn next(&mut self) -> u64 {
+            self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+            z ^ (z >> 31)
+        }
+    }
+
+    /// The s-expr reader's invariant on ARBITRARY input: it MUST NOT PANIC (it returns a `ReadError`
+    /// diagnostic on malformed text, never crashes), and on a SUCCESSFUL read the arena must be
+    /// well-formed — root id in range, span table TOTAL (1:1 with the structure vector), and every
+    /// reachable child id in range (fully traversable). Runs both `read_spanned` (checks the span-table
+    /// totality the whole `SpanTable` design rests on) and `read_all_spanned` (the multi-form wrap).
+    fn assert_sexpr_read_invariants(src: &str) {
+        for spanned in [read_spanned(src), read_all_spanned(src)] {
+            let Ok((a, spans)) = spanned else {
+                continue; // a clean `ReadError` on malformed input is fine — the point is no panic.
+            };
+            let n = a.structure.len();
+            assert!(n > 0, "a successful read has a non-empty arena for {src:?}");
+            assert!((a.root.0 as usize) < n, "root id in range for {src:?}");
+            assert_eq!(
+                spans.len(),
+                n,
+                "span table is total (1:1 with structure) for {src:?}"
+            );
+            fn walk(a: &Arenas, id: StructId) {
+                if let Struct::List(kids) = a.get(id) {
+                    for &c in kids {
+                        assert!(
+                            (c.0 as usize) < a.structure.len(),
+                            "child id {} in range",
+                            c.0
+                        );
+                        walk(a, c);
+                    }
+                }
+            }
+            walk(&a, a.root);
+        }
+    }
+
+    #[test]
+    fn sexpr_reader_invariants_hold_on_arbitrary_input() {
+        // Mirror of the ML parser's `recovered_arena_invariants_hold_on_arbitrary_input`, for the s-expr
+        // surface. The alphabet stresses the reader's branches: list delimiters, the atom/literal
+        // openers (`"` string, `#"` symbol / `#\` char, `b"` byte-string), the `.`-member postfix, digit
+        // + numeric affixes, escape/comment chars, and unicode. Lengths stay ≤32 so the per-nesting-level
+        // recursion cannot overflow a default test stack (the deep-nest DEPTH GUARD is tested separately
+        // in `deeply_nested_input_is_diagnosed_not_crashed`).
+        let alphabet: Vec<char> = "()\"#\\b.,;|=>-+*/<:@`0123456789abcxeNR_ \tλ中\n"
+            .chars()
+            .collect();
+        let mut rng = SplitMix64(0x5e37_c0de_faca_de01);
+        for len in 0..=32usize {
+            for _ in 0..120 {
+                let s: String = (0..len)
+                    .map(|_| alphabet[(rng.next() as usize) % alphabet.len()])
+                    .collect();
+                assert_sexpr_read_invariants(&s);
+            }
+        }
+        // Truncated/odd literal openers — the classic panic bait — and unbalanced-delimiter soup.
+        for s in [
+            "\"",
+            "\"\\",
+            "#\"",
+            "#\"\\",
+            "#\\",
+            "#\\u+",
+            "b\"",
+            "b\"\\",
+            "`",
+            "(",
+            ")",
+            "((((((((",
+            "))))))))",
+            "( . )",
+            "(a .",
+            "#",
+            "#\\u+D800",
+            "0x",
+            "1e",
+            "1_",
+            ".",
+            "(.)",
+        ] {
+            assert_sexpr_read_invariants(s);
+            assert_sexpr_read_invariants(&s.repeat(4));
+        }
+    }
 }

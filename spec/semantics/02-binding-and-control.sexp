@@ -2435,6 +2435,35 @@
   (input  (or true (< (/ 1 0) 2)))
   (output (: true Bool)))
 
+; NESTED boolean connectives compose over runtime operands: `and`/`or`/`not` each desugar to a short-
+; circuit conditional (`(and a b)`=`(if a b false)`, `(or a b)`=`(if a true b)`, `(not a)`=`(if a false
+; true)`), so nesting them (a `not` of an `and`, an `and` of two `not`s — the De Morgan shapes) exercises
+; the conditional nesting the single-operator cases don't. The VALUE is the ordinary boolean composition;
+; these pin that the nested desugaring threads correctly on both backends (not that the compiler applies
+; De Morgan — it need not; the two forms just compute the same truth table).
+
+(case "a not of a runtime conjunction computes the negated conjunction"
+  (doc    "`(not (and (> a 0) (> b 0)))` over runtime params: the `and` short-circuits (right skipped when
+           left false), and the `not` inverts the result. (1,1) both-positive → and=true → not=false;
+           (1,-1) → and=false → not=true. Pins a `not` composing over a runtime short-circuit `and`, both
+           backends.")
+  (input  (do (def (main (: a Int64) (: b Int64)) (not (and (> a 0) (> b 0)))) (export main)))
+  (call   main (: 1 Int64) (: 1 Int64))
+  (output (: false Bool))
+  (call   main (: 1 Int64) (: -1 Int64))
+  (output (: true Bool)))
+
+(case "an and of two runtime negations computes their conjunction"
+  (doc    "The De Morgan twin: `(and (not (> a 0)) (not (> b 0)))` — an `and` whose BOTH operands are
+           negations, over runtime params. Both non-positive → both nots true → and=true; one positive →
+           its not false → and=false (the other not short-circuited away). (-1,-1) → true; (1,-1) → false.
+           Pins two `not`s composing under a short-circuit `and`, both backends.")
+  (input  (do (def (main (: a Int64) (: b Int64)) (and (not (> a 0)) (not (> b 0)))) (export main)))
+  (call   main (: -1 Int64) (: -1 Int64))
+  (output (: true Bool))
+  (call   main (: 1 Int64) (: -1 Int64))
+  (output (: false Bool)))
+
 (case "a runtime conjunction still shields a comparison right operand whose subexpression traps"
   (doc    "The shielding must survive the branchless emit: an `and`/`or` whose right operand is a
            trap-free COMPARISON may be lowered to a branchless `select` (both operands evaluated) — but

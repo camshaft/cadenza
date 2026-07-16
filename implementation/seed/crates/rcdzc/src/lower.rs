@@ -5990,6 +5990,21 @@ fn desugar_runtime_map_match(
             _ => pat,
         };
         let Some((entries, _rest)) = crate::resolve::map_pattern_of(db, inner) else {
+            // A `(map …)` form whose `..` rest is MALFORMED (`..` not followed by exactly one binder):
+            // name the REST-SHAPE fault clearly (CDZ0201), the MAP twin of the list rest-shape message
+            // (`lower_match_list` "a list rest pattern is `(list p… .. rest)` — exactly one binder after
+            // `..`"). Without this, the generic "not a `(map …)` pattern" fired — or, worse, the arm's
+            // binders leaked UNBOUND (v-diagnostics note); the resolver now keeps those binders inert
+            // (`map_form_is_malformed_rest`), so THIS coded reject is the sole, actionable diagnostic.
+            if crate::resolve::map_form_is_malformed_rest(db, inner) {
+                return Some(Core::Poison(
+                    Reject::coded(
+                        Code::Malformed,
+                        "a map rest pattern is `(map (k v) … .. rest)` — exactly one binder after `..`",
+                    )
+                    .at(inner),
+                ));
+            }
             // A non-`(map …)`, non-binder arm — the COMMON way to reach here is a ctor-shaped head over a
             // MAP scrutinee (`((Zorp x) …)` unbound, `((. Map Foo) …)` non-member): a map has no user
             // constructors. When that head resolves to a CODED poison (CDZ0101 unbound / CDZ0201
@@ -6223,6 +6238,17 @@ fn lower_match_map(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId
             _ => pat,
         };
         let Some((pat_entries, _rest)) = crate::resolve::map_pattern_of(db, map_inner) else {
+            // A `(map …)` form with a MALFORMED `..` rest — the clear rest-shape CDZ0201 (the const-map
+            // twin of the runtime-map path above; the MAP twin of the list rest-shape message).
+            if crate::resolve::map_form_is_malformed_rest(db, map_inner) {
+                return Core::Poison(
+                    Reject::coded(
+                        Code::Malformed,
+                        "a map rest pattern is `(map (k v) … .. rest)` — exactly one binder after `..`",
+                    )
+                    .at(map_inner),
+                );
+            }
             // A ctor-shaped head over a (constant) MAP scrutinee — propagate the head's CODED poison
             // (CDZ0101 unbound / CDZ0201 non-member) so `cdz check` surfaces it via `match_pattern_fault`,
             // the const-map twin of the runtime-map path above (both the MAP analogue of the list
@@ -17532,7 +17558,19 @@ fn ty_heap_walkable(db: &mut Db, ty: &crate::ty::Ty, seen: &mut Vec<StructId>) -
             let inner = (**inner).clone();
             ty_heap_walkable(db, &inner, seen)
         }
-        // A collection / bytes-rope / char / float / function / type-value / unresolved leaf is NOT
+        // A FLOAT leaf IS walkable: a float boxed into a heap compound is CANONICALIZED at construction
+        // (`op_box_float`/`op_box_float32` normalize a NaN to one canonical byte form — runtime test
+        // `box_float_canonicalizes_nan_to_one_byte_form` — and preserve a zero's sign bit), so the tagless
+        // `champ_eq` raw-byte walk compares a nested float by its canonical bytes: `nan == nan` TRUE,
+        // `-0.0 != +0.0` — the SAME canonical-byte-form rule the scalar `Core::FloatCompare` gives at top
+        // level. This is the compound companion of runtime scalar float equality; the constant-compound
+        // fold (`const_compound_eq`) already applies the canonical-byte float rule to a nested constant
+        // float, and this makes the RUNTIME heap-walk agree. (The old decline here predated both the
+        // canonicalize-on-construct invariant and scalar `FloatCompare`.)
+        //= spec/capabilities/core-semantics.md#floating-point-equality-follows-the-canonical-byte-form
+        //# A floating-point value MUST be equal to another floating-point value exactly when their canonical byte forms are identical, so that a negative zero is distinct from a positive zero and all not-a-number values are equal to one another.
+        Ty::Float(_) => true,
+        // A collection / bytes-rope / char / function / type-value / unresolved leaf is NOT
         // walkable here (its canonical form needs machinery this increment does not emit, or it is not a
         // runtime value that reaches a compound equality — `Ty::Type`/`Ty::Any`/`Ty::Fn` never cross `=`).
         // A `Char` has no runtime machine rep yet (its equality folds at compile time). `Bytes` can be a
@@ -17547,7 +17585,6 @@ fn ty_heap_walkable(db: &mut Db, ty: &crate::ty::Ty, seen: &mut Vec<StructId>) -
         | Ty::Char
         | Ty::BigInt
         | Ty::Rational
-        | Ty::Float(_)
         | Ty::Fn(_, _)
         | Ty::Type
         | Ty::Any => false,

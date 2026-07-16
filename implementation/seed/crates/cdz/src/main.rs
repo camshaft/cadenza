@@ -237,7 +237,7 @@ fn main() -> ExitCode {
         // When the `component` arg is a PROJECT (a `Project.cdz` or a directory holding one), `cdz`
         // BUILDS the manifest's entry first (the `cargo run` analogue), then runs the produced component;
         // otherwise it runs the given `.wasm`/stdin component directly.
-        Cmd::Run(a) if run_target_is_project(&a.component) => run_project(&a),
+        Cmd::Run(a) if run_target_is_project(a.component.as_deref()) => run_project(&a),
         Cmd::Run(a) => cdz_run::cli::run(&a, PROG),
         // `cdz corpus` — mounted from the `cdz-corpus` lib; the same code the standalone bin runs.
         Cmd::Corpus(a) => cdz_corpus::cli::run(&a, PROG),
@@ -548,12 +548,15 @@ fn run_build(args: &BuildArgs) -> ExitCode {
     )
 }
 
-/// Is `cdz run`'s `component` argument a PROJECT (rather than a pre-built component)? True when it names
-/// a `Project.cdz` (the file itself) or a DIRECTORY — the forms `cdz build`/`cdz test` treat as a project.
-/// A `.wasm` path, or `-` (stdin), is NOT a project → the direct run path. (No `component`-omitted case:
-/// clap requires the arg; a bare `cdz run` in a project dir is a future no-arg-upward enhancement.)
-fn run_target_is_project(component: &std::path::Path) -> bool {
-    component.is_dir() || component.file_name().and_then(|n| n.to_str()) == Some(MANIFEST_NAME)
+/// Is `cdz run`'s `component` argument a PROJECT (rather than a pre-built component)? True when it is
+/// OMITTED (a bare `cdz run` → build+run the nearest `Project.cdz` upward, like `cargo run`), or names a
+/// `Project.cdz` (the file itself) or a DIRECTORY — the forms `cdz build`/`cdz test` treat as a project.
+/// A `.wasm` path, or `-` (stdin), is NOT a project → the direct run path.
+fn run_target_is_project(component: Option<&std::path::Path>) -> bool {
+    match component {
+        None => true, // bare `cdz run` — the current-directory project
+        Some(p) => p.is_dir() || p.file_name().and_then(|n| n.to_str()) == Some(MANIFEST_NAME),
+    }
 }
 
 /// `cdz run <project>` — BUILD the project's manifest entry, then RUN the produced component (the `cargo
@@ -562,8 +565,13 @@ fn run_target_is_project(component: &std::path::Path) -> bool {
 /// `cdz-run` code path the direct `cdz run <file>` uses — passing through `--call`/`--arg`/`--store`/
 /// `--host-response`/`--peer` unchanged. The temp component is removed after the run.
 fn run_project(args: &cdz_run::cli::RunArgs) -> ExitCode {
-    let target = args.component.to_string_lossy().into_owned();
-    let project = match resolve_project_specs(Some(&target), "cdz run") {
+    // The project target: the given `Project.cdz`/directory, or `None` (a bare `cdz run`) → an upward
+    // search from the cwd, exactly as `resolve_project_specs` handles a `None` argument.
+    let target = args
+        .component
+        .as_ref()
+        .map(|p| p.to_string_lossy().into_owned());
+    let project = match resolve_project_specs(target.as_deref(), "cdz run") {
         Ok(p) => p,
         Err(code) => return code,
     };
@@ -595,7 +603,7 @@ fn run_project(args: &cdz_run::cli::RunArgs) -> ExitCode {
     // Run the freshly-built component through the SAME `cdz-run` path as a direct `cdz run <file>`: clone
     // the parsed args, but point `component` at the built wasm (the other flags pass through unchanged).
     let mut run_args = args.clone();
-    run_args.component = out_wasm.clone();
+    run_args.component = Some(out_wasm.clone());
     let code = cdz_run::cli::run(&run_args, PROG);
     let _ = std::fs::remove_file(&out_wasm); // best-effort cleanup of the temp artifact
     code
@@ -825,20 +833,30 @@ fn run_metadata(args: &MetadataArgs) -> ExitCode {
         Some(n) => obj.string("name", n),
         None => obj.raw("name", "null"),
     }
-    // The entry: its declared pattern, and the single file it resolves to (a component has ONE boundary;
-    // a glob matching ≠1 file yields `null`, matching how `cdz build` treats it as an error at build time).
+    // The entry: its declared pattern, the single file it resolves to (a component has ONE boundary; a
+    // glob matching ≠1 file yields `null`, matching how `cdz build` treats it as an error at build time),
+    // and that file's SURFACE (`ml` for `.cdz`/`.ml`, `sexpr` for `.sexp`/`.sexpr`) — so a consumer knows
+    // which parser the project's boundary uses without re-deriving it from the extension. `null` when the
+    // entry is absent or doesn't resolve to exactly one file.
     match &m.entry {
         Some(e) => {
             obj.string("entry", e);
             let resolved = expand_manifest_globs(&dir, std::slice::from_ref(e), &m.exclude);
             match resolved.as_slice() {
-                [one] => obj.string("entry_file", one),
-                _ => obj.raw("entry_file", "null"),
+                [one] => {
+                    obj.string("entry_file", one);
+                    obj.string("surface", if is_ml_source(one) { "ml" } else { "sexpr" });
+                }
+                _ => {
+                    obj.raw("entry_file", "null");
+                    obj.raw("surface", "null");
+                }
             }
         }
         None => {
             obj.raw("entry", "null");
             obj.raw("entry_file", "null");
+            obj.raw("surface", "null");
         }
     }
     match &m.opt_level {
@@ -1425,6 +1443,11 @@ fn run_test_file(
             // domain is astronomically/infinitely large) makes `exhaustive_domain` return `None` → report
             // (the property must narrow its types, e.g. to `Bool`/`UInt8`, to be exhaustively provable).
             Some(gens) if *exhaustive => match exhaustive_domain(gens) {
+                // An unbounded domain (a wide integer / float) is DECLINED with a diagnostic, never
+                // silently sampled — so an exhaustive result is never reported for a domain not fully
+                // covered.
+                //= spec/capabilities/property-based-testing.md#an-unbounded-domain-declines-exhaustive-checking
+                //# A property requested to be checked exhaustively over an unbounded input domain MUST be declined with a diagnostic rather than silently sampled, so that an exhaustive result is never reported for a domain that was not fully covered.
                 None => {
                     failed += 1;
                     println!(
@@ -1439,6 +1462,10 @@ fn run_test_file(
                         .into_iter()
                         .find(|inputs| matches!(run_one(inputs), TrialOutcome::Fail(_)))
                     {
+                        // No failing case in the WHOLE enumerated domain → a proof over the domain, not a
+                        // sample.
+                        //= spec/capabilities/property-based-testing.md#exhaustive-coverage-is-a-proof-over-a-bounded-domain
+                        //# A property whose inputs range over a bounded finite domain MAY be checked by enumerating that entire domain, in which case a run that finds no failing input MUST be treated as a proof of the property over the domain rather than as a sample.
                         None => {
                             passed += 1;
                             println!("PASS {name} (exhaustive, {total} cases)");

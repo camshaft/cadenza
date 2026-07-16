@@ -74,6 +74,61 @@
   (input  (= Float64.nan Float64.nan))
   (output (: true Bool)))
 
+; --- COMPOUND value-equality over a runtime FLOAT LEAF (a float inside a tuple/sum) -------------------
+; The scalar cases above fold at compile time (constant float operands). A RUNTIME float — a def parameter
+; — stored in a compound and compared by `=` takes the runtime `value-eq`/`champ_eq` heap-walk. It follows
+; the SAME canonical-byte-form semantics as the scalar `Core::FloatCompare` fix, WITHOUT extra machinery:
+; the runtime `box-float`/`box-float32` (the sole float-leaf producers) canonicalize-on-construct — every
+; NaN collapses to the one canonical quiet-NaN, ±0.0 keep distinct sign bits — so a float leaf already has
+; the canonical byte form and the physical `champ_eq` walk is exact. (`ty_heap_walkable` admits a Float
+; leaf; before this a compound-float `=` declined "comparison of a compound value needs a heap walk".)
+
+(case "compound equality over a runtime float leaf: equal floats compare equal"
+  (doc    "`(= (tuple x 1) (tuple y 1))` over runtime Float64 params `x=y=3.5` — the float leaf is compared
+           by the runtime value-eq heap-walk (its canonical byte form), so equal floats in a compound are
+           equal → true. Pins runtime compound float equality (was a decline).")
+  (input  (do (def (eq (: x Float64) (: y Float64)) (= (tuple x 1) (tuple y 1)))
+              (def (main) (eq 3.5 3.5)) (export main)))
+  (call   main)
+  (output (: true Bool)))
+
+(case "compound equality over a runtime float leaf: different floats compare unequal"
+  (doc    "The negative companion: `(= (tuple x) (tuple y))` with `x=3.5`, `y=2.5` — distinct canonical
+           byte forms → false. Confirms the compound float walk is genuinely structural, not always-true.")
+  (input  (do (def (eq (: x Float64) (: y Float64)) (= (tuple x) (tuple y)))
+              (def (main) (eq 3.5 2.5)) (export main)))
+  (call   main)
+  (output (: false Bool)))
+
+(case "compound equality over a runtime NaN float leaf: nan equals nan"
+  (doc    "A runtime NaN leaf in a compound compares EQUAL to another NaN (`box-float` canonicalizes every
+           NaN to the one quiet-NaN, so `champ_eq` sees identical bytes) — the compound analogue of the
+           scalar `nan == nan` case. `(= (tuple x 1) (tuple Float64.nan 1))` with `x = Float64.nan` → true.")
+  (input  (do (def (eq (: x Float64)) (= (tuple x 1) (tuple Float64.nan 1)))
+              (def (main) (eq Float64.nan)) (export main)))
+  (call   main)
+  (output (: true Bool)))
+
+(case "compound equality over a runtime float leaf: negative zero is not equal to positive zero"
+  (doc    "`-0.0` and `+0.0` have distinct canonical byte forms (the box keeps the sign bit of a zero), so
+           a compound holding `-0.0` is NOT equal to one holding `+0.0` — the compound analogue of the
+           scalar `-0.0 != 0.0` case. `(= (tuple x) (tuple y))` with `x = -0.0`, `y = 0.0` → false.")
+  (input  (do (def (eq (: x Float64) (: y Float64)) (= (tuple x) (tuple y)))
+              (def (main) (eq -0.0 0.0)) (export main)))
+  (call   main)
+  (output (: false Bool)))
+
+(case "equality over a runtime float in a SUM payload compares by the float leaf"
+  (doc    "The variant-payload companion (not only a tuple element): a float carried in a sum variant is
+           compared by its canonical byte form through the value-eq walk. `(B.Wrap x)` vs `(B.Wrap y)` with
+           `x=y=1.25` → true. Pins that `ty_heap_walkable` admits a Float leaf through a sum variant's
+           payload, not just a tuple/record position.")
+  (input  (do (type B (Wrap Float64))
+              (def (eq (: x Float64) (: y Float64)) (= (B.Wrap x) (B.Wrap y)))
+              (def (main) (eq 1.25 1.25)) (export main)))
+  (call   main)
+  (output (: true Bool)))
+
 ; A `nan` value carries its DECLARING float width — `Float64.nan` is a Float64, `Float32.nan` a Float32 —
 ; so a CROSS-WIDTH comparison between them (or against a finite float of the other width) is the same
 ; no-silent-promotion type error a cross-width FINITE comparison is (CDZ0301, numeric-model.md #Numeric
@@ -206,6 +261,37 @@
   (input  (do (def (main (: n Int64)) (= (tuple 1 (tuple 2 (tuple n 4))) (tuple 1 (tuple 2 (tuple 3 4))))) (export main)))
   (call   main (: 3 Int64)) (output (: true Bool))
   (call   main (: 9 Int64)) (output (: false Bool)))
+
+; --- RUNTIME compound equality with a FLOAT leaf — the canonical-byte rule through the heap walk -------
+; The nested-float cases far above are CONSTANT compounds (they fold via const_compound_eq). These pin the
+; RUNTIME heap-walk over a float leaf: a compound built from a boundary Float parameter cannot fold, so the
+; `value-eq`/`champ_eq` walk must compare the float leaf. That walk is a RAW-BYTE compare — correct ONLY
+; because a float boxed into a heap value is CANONICALIZED at construction (`op_box_float` normalizes a NaN
+; to one canonical byte form and preserves a zero's sign), so the nested-runtime answer matches the scalar
+; `Core::FloatCompare` and the constant fold: `nan == nan` TRUE, `-0.0 != +0.0`. Before, `Ty::Float` was
+; excluded from `ty_heap_walkable` (the decline predated the canonicalize-on-construct invariant), so a
+; runtime float leaf in a compound `=` declined "comparison of a compound value needs a heap walk".
+;= spec/capabilities/core-semantics.md#floating-point-equality-follows-the-canonical-byte-form
+
+(case "a runtime float leaf in a tuple compares by the canonical byte form"
+  (doc    "`(= (tuple a) (tuple b))` over two Float64 boundary parameters — the tuples cannot fold, so the
+           `value-eq` heap walk compares the boxed float leaves. Equal floats → the tuples are equal (1);
+           unequal → 0. Pins that a runtime float leaf in a compound is walkable (was a decline), the
+           compound companion of runtime scalar float equality.")
+  (input  (do (def (main (: a Float64) (: b Float64)) (if (= (tuple a) (tuple b)) 1 0)) (export main)))
+  (call   main (: 1.5 Float64) (: 1.5 Float64)) (output (: 1 Int64))
+  (call   main (: 1.5 Float64) (: 2.5 Float64)) (output (: 0 Int64)))
+
+(case "a runtime NaN leaf in a tuple compares equal, a runtime -0.0 leaf stays distinct"
+  (doc    "The sharp canonical-byte cases through the RUNTIME heap walk: `(= (tuple a) (tuple b))` with a,b
+           runtime Float64. Two NaN leaves compare EQUAL (1) — box-float canonicalized both to one byte
+           form, so the raw-byte `champ_eq` sees identical bytes — and a -0.0 leaf against a +0.0 leaf
+           stays UNEQUAL (0), their sign bits preserved. A heap walk using a raw IEEE compare would answer
+           the OPPOSITE for both. Pins the nested-runtime float rule agrees with the scalar `FloatCompare`
+           and the constant fold.")
+  (input  (do (def (main (: a Float64) (: b Float64)) (if (= (tuple a) (tuple b)) 1 0)) (export main)))
+  (call   main (: nan Float64) (: nan Float64)) (output (: 1 Int64))
+  (call   main (: -0.0 Float64) (: 0.0 Float64)) (output (: 0 Int64)))
 
 (case "a NaN nested in a list compares equal under the canonical byte form"
   (doc    "The list companion: `(= (list Float64.nan 1.0) (list Float64.nan 1.0))` = true — element-wise

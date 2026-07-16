@@ -19,8 +19,11 @@ use crate::{
 #[derive(clap::Args, Clone)]
 pub struct RunArgs {
     /// The component `.wasm` to run, or `-` to read it from stdin (so it composes in a pipe:
-    /// `cdz compile - -o - | cdz run -`).
-    pub component: PathBuf,
+    /// `cdz compile - -o - | cdz run -`). OMITTED — under the `cdz` front-end — means "the project in the
+    /// current directory": `cdz` searches up for the nearest `Project.cdz` and builds+runs its entry (the
+    /// `cargo run` analogue). The standalone `cdz-run` binary has no compiler, so it still REQUIRES a
+    /// component argument (a bare `cdz-run` errors); the optionality is honored only on the `cdz run` path.
+    pub component: Option<PathBuf>,
 
     /// The export to call. Defaults to the component's sole function export.
     #[arg(long)]
@@ -71,15 +74,25 @@ pub fn run(args: &RunArgs, prog: &str) -> ExitCode {
 }
 
 fn real_run(cli: &RunArgs, prog: &str) -> anyhow::Result<ExitCode> {
+    // The component is required on this path: a `.wasm`/stdin arg to run directly. A None `component`
+    // reaches here only via the standalone `cdz-run` (which has no compiler to build a project from) — the
+    // `cdz run` front-end intercepts the project cases (`Project.cdz` / a directory / omitted) BEFORE
+    // delegating here. So an absent component is a clear usage error naming what to pass.
+    let Some(component) = cli.component.as_ref() else {
+        anyhow::bail!(
+            "no component to run — pass a `.wasm` (or `-` for stdin). To build+run a project, \
+             use the `cdz run` front-end (`cdz run [dir]`), which has the compiler"
+        );
+    };
     // The component bytes: from a file, or from stdin when the path is `-`.
-    let component_bytes = if cli.component.as_os_str() == "-" {
+    let component_bytes = if component.as_os_str() == "-" {
         let mut buf = Vec::new();
         std::io::Read::read_to_end(&mut std::io::stdin(), &mut buf)
             .map_err(|e| anyhow::anyhow!("read component from stdin: {e}"))?;
         buf
     } else {
-        std::fs::read(&cli.component)
-            .map_err(|e| anyhow::anyhow!("read component {}: {e}", cli.component.display()))?
+        std::fs::read(component)
+            .map_err(|e| anyhow::anyhow!("read component {}: {e}", component.display()))?
     };
 
     // Resolve the value-heap runtime ONLY if the component records one — a scalar/const component

@@ -3405,6 +3405,41 @@ fn perceus_balance_leaves_no_live_objects() {
     );
 }
 
+/// COMPOUND EQUALITY over a runtime FLOAT LEAF follows the canonical byte form — the compound analogue of
+/// the scalar `Core::FloatCompare` fix, with NO extra machinery: `box-float` canonicalizes every NaN to
+/// the one quiet-NaN on construct (and keeps ±0.0 distinct), so a float in a compound already has the
+/// canonical byte form and the `champ_eq` walk is exact. `ty_heap_walkable` admits a Float leaf (was a
+/// decline). Here two equal runtime Float64 params in a tuple compare EQUAL → 1. (The full semantics —
+/// nan==nan, -0.0!=+0.0, different!=  — are pinned as graded corpus cases in 03-equality-and-observation.)
+#[test]
+fn compound_equality_over_a_runtime_float_leaf_follows_the_canonical_byte_form() {
+    use crate::testkit::parse;
+    let src = "(module m \
+                 (def (eq (: x Float64) (: y Float64)) (if (= (tuple x 1) (tuple y 1)) 1 0)) \
+                 (def (main) (eq 3.5 3.5)) (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect(
+        "compound float equality must compile (ty_heap_walkable admits a Float leaf), not decline",
+    );
+    let Some(runtime) = find_runtime_wasm() else {
+        eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
+        return;
+    };
+    let opts = cdz_run::RunOpts {
+        export: Some("main".to_string()),
+        args: vec![],
+        runtime: Some(runtime),
+        runtime_cache_dir: None,
+        host_responses: Vec::new(),
+    };
+    match cdz_run::run(&bytes, &opts).expect("run") {
+        cdz_run::Outcome::Value(s) => assert_eq!(
+            s, "1",
+            "two equal runtime floats in a tuple compare equal via the canonical-byte champ_eq walk"
+        ),
+        cdz_run::Outcome::Trap(t) => panic!("compound float equality trapped: {t}"),
+    }
+}
+
 /// RUNTIME STRUCTURAL EQUALITY leak balance: a `=` on two RUNTIME sum values (`value-eq`) leaves NO
 /// live heap cells. Both operands are OWNED temporaries — `(build 3)` allocates a cons-list each side —
 /// and `value-eq` only BORROWS them, so the emit must `drop` each after the compare (else two whole
@@ -33643,6 +33678,64 @@ mod match_engine {
     }
 
     #[test]
+    fn a_quantity_annotation_range_checks_its_inner_width() {
+        // Completeness follow-up to the rebrand fix (Copilot PR#437): a quantity annotation checks the
+        // dimension (scale is sugar) but STILL grounds + range-checks the inner numeric type, exactly as a
+        // bare (: 300 UInt8) does. The rebrand fix's type_of arm returns the expression's type to keep the
+        // unit, which meant the inner width never got checked — a Qty-wrapped literal slipped its width.
+        // Fixed by drilling the quantity's magnitude against the annotation's inner type in
+        // nested_literal_width_faults (the same choke point the List/Tuple/Sum payload checks use), so it
+        // covers same-unit AND same-dimension-different-scale uniformly.
+        // Out-of-range at a same-DIMENSION different-scale annotation → CDZ0302.
+        assert_eq!(
+            reject_code(
+                "(module m (def (main) ((. Qty value) \
+                 (: ((. Qty of) 300 ((. Unit of) #\"kilometer\")) (Qty UInt8 ((. Unit base) #\"meter\"))))) \
+                 (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0302"),
+            "300 does not fit UInt8 — a same-dimension quantity annotation range-checks the inner width"
+        );
+        // Out-of-range at a same-UNIT annotation (the pre-existing gap the fix also closes) → CDZ0302.
+        assert_eq!(
+            reject_code(
+                "(module m (def (main) ((. Qty value) \
+                 (: ((. Qty of) 300 ((. Unit base) #\"meter\")) (Qty UInt8 ((. Unit base) #\"meter\"))))) \
+                 (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0302"),
+            "300 does not fit UInt8 — a same-unit quantity annotation range-checks too"
+        );
+        // Negative into an unsigned inner width → CDZ0302 (sign enforced).
+        assert_eq!(
+            reject_code(
+                "(module m (def (main) ((. Qty value) \
+                 (: ((. Qty of) -1 ((. Unit base) #\"meter\")) (Qty UInt8 ((. Unit base) #\"meter\"))))) \
+                 (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0302"),
+            "-1 does not fit an unsigned UInt8 — the inner range-check enforces sign"
+        );
+        // In-range grounds + accepts, keeping the km unit — Qty.value reads back the magnitude.
+        assert_eq!(
+            run_returns::<u8>(
+                &compile_component(&crate::codec::encode(&parse(
+                    "(do (def (main) ((. Qty value) \
+                     (: ((. Qty of) 5 ((. Unit of) #\"kilometer\")) (Qty UInt8 ((. Unit base) #\"meter\"))))) \
+                     (export main))"
+                )))
+                .expect("an in-range quantity annotation grounds the inner width and accepts"),
+                "main"
+            ),
+            5,
+            "5 fits UInt8 — the annotation grounds the inner to UInt8 and accepts (value 5, unit kept)"
+        );
+    }
+
+    #[test]
     fn a_same_dimension_annotation_does_not_rebrand_the_values_scale() {
         // High-severity regression guard (breaker's adv-annotation-rebrands-quantity-scale repro): a
         // same-dimension quantity annotation is a PURE DIMENSION CHECK — it must NOT re-label the value's
@@ -37659,6 +37752,55 @@ mod diagnostics {
                 .all(|d| d.severity != crate::abi::Severity::Error),
             "the whole-binder + projection workaround still checks clean: {:?}",
             diags_of(workaround)
+        );
+    }
+
+    /// A MAP match pattern with a MALFORMED `..` rest (a `..` not followed by exactly one binder) reports
+    /// the clear rest-shape CDZ0201 — the map twin of the list's "a list rest pattern is `(list p… .. rest)`
+    /// — exactly one binder after `..`" — NOT a misleading "unbound name" for a value/rest binder. Before,
+    /// `map_pattern_of` collapsed a malformed `..` to `None`, so the arm's binders failed the inert-binder
+    /// classifier and the body reference resolved UNBOUND (masking the real fault, v-diagnostics note). Now
+    /// the resolver keeps those binders inert (`map_form_is_malformed_rest`) and both the map matcher and a
+    /// body-reference (resolve Case Mmr, co-anchored at the pattern) surface the SAME coded rest-shape
+    /// message, deduped to ONE diagnostic. Sibling of the record-pattern fix.
+    #[test]
+    fn a_map_match_pattern_with_a_malformed_rest_names_the_shape_not_an_unbound_binder() {
+        // `..` non-final (a further entry after the rest binder). Body references the value binder `v`.
+        let non_final = "(module m (def (f (: mp (Map Int64 Int64))) \
+                         (match mp ((map (1 v) .. rest (2 w)) v) (_ 0))) (export f))";
+        let all = diags_of(non_final);
+        assert!(
+            all.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
+                && d.message.contains("map rest pattern is")
+                && d.message.contains("exactly one binder after")),
+            "the malformed map rest reports the clear rest-shape CDZ0201: {all:?}"
+        );
+        assert!(
+            all.iter().all(|d| d.code.as_deref() != Some("CDZ0101")),
+            "no misleading 'unbound name' for the value/rest binder: {all:?}"
+        );
+        // Two `..` markers — same clear message, no unbound leak.
+        let two_dots = "(module m (def (f (: mp (Map Int64 Int64))) \
+                        (match mp ((map (1 v) .. r1 .. r2) v) (_ 0))) (export f))";
+        let all = diags_of(two_dots);
+        assert!(
+            all.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
+                && d.message.contains("map rest pattern is")),
+            "two `..` markers report the rest-shape CDZ0201: {all:?}"
+        );
+        assert!(
+            all.iter().all(|d| d.code.as_deref() != Some("CDZ0101")),
+            "no unbound-name leak for the two-`..` case: {all:?}"
+        );
+        // NO false alarm: a WELL-FORMED map rest pattern (`.. rest` final, one binder) checks clean.
+        let ok = "(module m (def (f (: mp (Map Int64 Int64))) \
+                  (match mp ((map (1 v) .. rest) v) (_ 0))) (export f))";
+        assert!(
+            diags_of(ok)
+                .iter()
+                .all(|d| d.severity != crate::abi::Severity::Error),
+            "a well-formed map rest pattern still checks clean: {:?}",
+            diags_of(ok)
         );
     }
 
@@ -53112,6 +53254,47 @@ mod stage1 {
             "a real `(try …)` never draws the `?`-head hint: {}",
             ok.message
         );
+    }
+
+    #[test]
+    fn the_rest_marker_dotdot_used_as_a_value_names_the_pattern_only_role() {
+        // `..` is the REST/SPREAD marker of a collection PATTERN (`(list a .. rest)` / `(map (k v) .. r)`).
+        // Used as a VALUE or form HEAD — `(.. xs)`, `(g ..)` — it previously drew "unbound name `..`" (and,
+        // in head position, a misleading "did you mean `.`?" — a rest marker is not a mistyped member `.`).
+        // It now names the pattern-only role (CDZ0201), NO fix (the `.`-rename is a wrong guess; a rest
+        // marker has no value rewrite). The sibling of the `_`-as-value and `?`-as-head sigil messages.
+        for body in ["(.. xs)", "(g ..)"] {
+            let src = format!("(module m (def (g a) a) (def (f xs) {body}) (export f))");
+            let d = compile_component(&crate::codec::encode(&parse(&src)))
+                .expect_err("`..` as a value must be rejected");
+            assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+            assert!(
+                d.message.contains("`..` is a rest/spread marker")
+                    && d.message.contains("PATTERN")
+                    && d.message.contains("(list a .. rest)"),
+                "names the pattern-only role: {}",
+                d.message
+            );
+            assert!(
+                d.fix.is_none(),
+                "no misleading fix for a rest marker: {:?}",
+                d.fix
+            );
+        }
+        // NO false positive: a `..` in its LEGITIMATE list/map PATTERN position (match AND binding) is
+        // untouched — the pattern parser consumes the marker before it could reach the value-ref path.
+        for ok in [
+            "(module m (def (f (: xs (List Int64))) (match xs ((list a .. r) a) (_ 0))) (export f))",
+            "(module m (def (f (: mp (Map Int64 Int64))) (match mp ((map (k v) .. rest) k) (_ 0))) (export f))",
+            "(module m (def (f (: xs (List Int64))) (let (((list a .. r) xs)) a)) (export f))",
+        ] {
+            assert!(
+                !crate::diagnostics(&mut crate::db::Db::load(parse(ok)))
+                    .iter()
+                    .any(|d| d.message.contains("`..` is a rest/spread marker")),
+                "a legitimate pattern `..` is not flagged: {ok}"
+            );
+        }
     }
 
     #[test]

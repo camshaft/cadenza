@@ -781,6 +781,8 @@ fn apply_lambda_uncached(
         );
     }
     trace!(target: "rcdzc::eval", body = body.0, params = params.len(), args = args.len(), "β-reduce lambda application");
+    //= spec/capabilities/core-semantics.md#functions-are-single-arity
+    //# Partial application MUST be natural: applying a curried function to fewer arguments than its full chain returns a closure awaiting the remaining arguments.
     if args.len() < params.len() {
         // PARTIAL APPLICATION — compile-time currying (`core-semantics.md` §Functions Are
         // Single-Arity: "applying a curried function to fewer arguments than its full chain returns a
