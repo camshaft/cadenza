@@ -1071,6 +1071,42 @@
             (export main)))
   (error  CDZ0214))
 
+; The eval-forge fix also respects the PARTIAL point on the abstract↔concrete axis: a module may export
+; SOME constructors (`(export Color.Green)`) but not others. Through eval, the eval-reconstructed ctor ref
+; resolves per-constructor visibility at the consumer file (via `Db::visibility_file_of` + the qualified
+; ctor gate), so the EXPORTED ctor works and a WITHHELD sibling is still CDZ0214 — the same partial surface
+; hand-written code sees. Pins that the fix is not a coarse abstract-vs-concrete flag but the exact
+; per-constructor gate, reached through eval.
+
+(case "eval of a partially-exported type's WITHHELD constructor is rejected"
+  (doc    "`lib` exports only `Color.Green` (not `Red`/`Blue`). `(eval (quote (Color.Red)))` from the entry
+           names a WITHHELD sibling constructor — rejected CDZ0214, exactly as a hand-written `(Color.Red)`
+           would be. Pins that through eval the per-constructor visibility gate still distinguishes the
+           exported ctor from the withheld ones (the fix is precise, not a blanket abstract flag).")
+  (module "lib"
+    (do
+      (type Color (Red) (Green) (Blue))
+      (export Color.Green)))
+  (input  (do
+            (import "lib" (Color))
+            (def (main) (eval (quote (Color.Red))))
+            (export main)))
+  (error  CDZ0214))
+
+(case "eval of a partially-exported type's EXPORTED constructor works"
+  (doc    "The companion: the SAME `lib` exporting only `Color.Green` — `(eval (quote (Color.Green)))` names
+           the EXPORTED ctor, so it folds to a `Color` value the match reads → 1 (no over-reject). Pins that
+           the partial-export gate lets the exported ctor through via eval, exactly as hand-written code.")
+  (module "lib"
+    (do
+      (type Color (Red) (Green) (Blue))
+      (export Color.Green)))
+  (input  (do
+            (import "lib" (Color))
+            (def (main) (match (eval (quote (Color.Green))) ((Color.Green) 1) (_ 0)))
+            (export main)))
+  (output (: 1 Int64)))
+
 (case "an abstract type is used through the module's exported constructor and accessor"
   (doc    "The companion of the reject above: the SAME abstract `lib` (handle `Color` + `mk` + `rank`, no
            constructor exported) used CORRECTLY. The entry never names a `Color` constructor — it obtains a
