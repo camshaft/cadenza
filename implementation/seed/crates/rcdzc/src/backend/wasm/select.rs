@@ -2427,17 +2427,25 @@ fn collect_used_ops_into(
                 collect_used_ops_into(db, arg, out);
             }
         }
-        // A HOST CALL: mirror the `emit` arm's arg handling EXACTLY. A `Ty::String` argument is marshalled
-        // as `(ptr, len)` into the data segment (the emit arm consumes the `Core::ConstStr` there) — it is
-        // NOT built as a runtime byte-leaf, so it uses NO runtime op; descending into it via the generic
-        // walk would wrongly import `bytes-alloc`/`bytes-set` (the ConstStr arm), making the runtime-import
-        // set non-empty and tripping the "host + runtime imports don't yet compose" decline for what is a
-        // host-ONLY program. A `Unit` arg likewise carries no value. So skip a String/Unit host arg; a
-        // scalar/compound host arg (a later increment) recurses as before.
-        Core::HostCall { args, .. } => {
+        // A HOST CALL vs a PEER CALL — mirror the `emit` arm's arg handling EXACTLY, and the two boundaries
+        // treat a String argument DIFFERENTLY:
+        //  - A HOST call marshals a `Ty::String` arg as `(ptr, len)` into the data segment (the emit arm
+        //    consumes the `Core::ConstStr` there) — it is NOT built as a runtime byte-leaf, so it uses NO
+        //    runtime op; descending into it via the generic walk would wrongly import `bytes-alloc`/
+        //    `bytes-set` (the ConstStr arm), making the runtime-import set non-empty and tripping the
+        //    "host + runtime imports don't yet compose" decline for what is a host-ONLY program.
+        //  - A PEER call (a peer-BOUND effect, `db.effect_bindings`) crosses a String/Bytes arg as a runtime
+        //    HANDLE — the emit arm calls `emit(arg)`, which for a `Core::ConstStr` builds the rope on the
+        //    value heap (`bytes-alloc`/`bytes-set`). So a peer String/Bytes arg DOES use runtime ops and MUST
+        //    recurse, or the import section would omit an op the body calls (→ an invalid consumer component).
+        // A `Unit` arg carries no value on either boundary. So: skip a String/Unit HOST arg; recurse into a
+        // peer arg (and any scalar/compound host arg) as before.
+        Core::HostCall { args, effect, .. } => {
+            let peer_bound = db.effect_bindings.contains_key(&effect);
             for arg in args {
                 match crate::infer::type_of(db, arg) {
-                    Ty::String | Ty::Unit => {}
+                    Ty::Unit => {}
+                    Ty::String | Ty::Bytes if !peer_bound => {}
                     _ => collect_used_ops_into(db, arg, out),
                 }
             }
