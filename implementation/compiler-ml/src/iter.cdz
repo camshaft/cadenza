@@ -24,8 +24,13 @@
 /// documented follow-up gated on those fixes.
 ///
 /// HIGHER-ORDER PARAMETERS carry an explicit ARROW annotation (`f: Int64 -> Int64 -> Int64`,
-/// `p: Int64 -> Bool`). That is required, not decoration: an unannotated closure threaded through a
-/// self-recursive HOF fails to infer its parameter types (the same constraint `traverse.cdz` documents).
+/// `p: Int64 -> Bool`). That is still required, but NOT for the reason it once was: an unannotated
+/// closure threaded through a self-recursive HOF used to fail to infer its parameter types (CDZ0203,
+/// "no machine representation" — the constraint `traverse.cdz` documented). That inference gap is now
+/// RESOLVED upstream. What the annotation buys today is the ELEMENT TYPE: dropping it from a self-recursive
+/// consumer like `fold` reports CDZ0201 (the recursive-generic element tie — see the ELEMENT TYPE note
+/// above), not a param-type failure. The arrow pins the element to `Int64` so the monomorphic consumer
+/// type-checks; it is the anchor for the element type, no longer for the closure's param types.
 
 /// The reified iterator. Each variant is a step-shape `next` knows how to interpret.
 ///   - `FromList(xs)`      — yield the list's elements in order.
