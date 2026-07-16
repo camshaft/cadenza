@@ -16142,6 +16142,12 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
     // compound-heap-walk decline.
     //= spec/capabilities/core-semantics.md#floating-point-equality-follows-the-canonical-byte-form
     //# A floating-point value MUST be equal to another floating-point value exactly when their canonical byte forms are identical, so that a negative zero is distinct from a positive zero and all not-a-number values are equal to one another.
+    // Float `< <= > >=` route to the dedicated IEEE-partial-order prims (FLt/FLe/FGt/FGe), NOT the
+    // total-order three-way `Compare` path — float is a distinct partial-order facility, not a total-Ord type.
+    //= spec/capabilities/numeric-model.md#a-floating-point-relational-operator-follows-the-ieee-partial-order
+    //# The floating-point relational operators are the IEEE partial order and are a distinct facility from the total order an orderable type offers under core-semantics.md §"Ordering Where Offered Is Total"; a floating-point type MUST NOT be treated as offering that total order, so that the partial order's not-a-number and signed-zero behavior does not contradict the total-order requirement.
+    //= spec/capabilities/core-semantics.md#ordering-where-offered-is-total
+    //# A floating-point type MUST NOT be treated as offering an ordering in the sense of this section, because its relational operators are the IEEE partial order defined in numeric-model.md §"A Floating-Point Relational Operator Follows The IEEE Partial Order" rather than a total order — so the requirement that an offered ordering be total does not apply to the floating-point relational operators.
     let float_prim = match op {
         Prim::Eq => Some(Prim::FEq),
         Prim::Lt => Some(Prim::FLt),
@@ -16278,10 +16284,13 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
                 trace!(target: "rcdzc::fold", op = intrinsic_name(op), result = r, "folded constant float equality (by canonical bits)");
                 Core::ConstBool(r)
             } else {
-                // IEEE PARTIAL order (operator ruling): an ordered pair gives the relation; an unordered
-                // pair (a NaN reaching here — e.g. a folded `(/ 0.0 0.0)`) yields false, NOT a decline.
-                // `partial_cmp` also treats `-0.0`/`+0.0` as EQUAL, so `(<= -0.0 0.0)` is true — the
-                // ordering's equal-case, which DISAGREES with the byte-form `=` above (there `-0.0 ≠ 0.0`).
+                // IEEE PARTIAL order (operator ruling): an ordered pair gives the relation. Both operands
+                // here are FINITE — a bare `nan` is `ConstFloatNan` (handled above) and constant float
+                // arithmetic DECLINES on a non-finite result (`fold_float_arith`), so a NaN never reaches
+                // this `(ConstFloat, ConstFloat)` arm; the `partial_cmp → None → false` branch is defensive
+                // completeness / parity with the runtime path, not a reachable const case. `partial_cmp`
+                // also treats `-0.0`/`+0.0` as EQUAL, so `(<= -0.0 0.0)` is true — the ordering's
+                // equal-case, which DISAGREES with the byte-form `=` above (there `-0.0 ≠ 0.0`).
                 let r = match f64::from_bits(ba).partial_cmp(&f64::from_bits(bb)) {
                     Some(ord) => compare_ord(op, ord),
                     None => false,

@@ -17,9 +17,10 @@
 //! `textDocument/hover` (← the `TypeAt` query), `textDocument/semanticTokens/full` (← the `Highlight`
 //! query), `textDocument/definition` (← `ResolveOf`), `textDocument/references` (← `UsesOf`),
 //! `textDocument/completion` (← `ScopeAt` + `Symbols`), `textDocument/documentSymbol` (the outline, ←
-//! `Symbols`), and `textDocument/codeAction` (quick-fixes ← the `Diagnostics` fix columns, applied via
-//! the shared `crate::fix::fix_edits` so they match `cdz fix`). Each capability is a read of a column
-//! the query engine already exposes, wired to its LSP request.
+//! `Symbols`), `textDocument/codeAction` (quick-fixes ← the `Diagnostics` fix columns, applied via the
+//! shared `crate::fix::fix_edits` so they match `cdz fix`), and `textDocument/codeLens` (a lens above each
+//! SPECIALIZED generic def listing its concrete monomorphizations, ← the `Instantiations` query). Each
+//! capability is a read of a column the query engine already exposes, wired to its LSP request.
 //!
 //! PROJECT-AWARE: for a `file://` document that declares `(import …)`, the position/analysis features
 //! (diagnostics, hover, definition, references, completion) follow the import CLOSURE — `crate::closure`

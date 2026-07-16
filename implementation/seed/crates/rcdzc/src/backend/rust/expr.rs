@@ -1038,6 +1038,16 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         // MAP construction `(map (k v) …)` → a `BTreeMap` built by inserting each entry in SOURCE ORDER (a
         // later duplicate key overwrites — `BTreeMap::insert` does exactly that, matching the runtime).
         Core::MapNew { entries, .. } => {
+            // `BTreeMap<K,V>` needs `K: Ord` — a FLOAT key declines (only `PartialOrd`; see `SetOf`).
+            // Check the first entry's KEY node type (concrete here); an EMPTY map has no key to inspect
+            // and only fails once an entry is inserted — caught by the `MapInsert` guard.
+            if let Some(&(k0, _)) = entries.first()
+                && !types::ty_is_ord(&type_of(db, k0))
+            {
+                return Err(Reject::decline(
+                    "a Map with a non-Ord (float) key has no BTreeMap rep on the Rust backend",
+                ));
+            }
             let mut lines = String::new();
             for (k, v) in &entries {
                 let ke = emit(db, *k, env, ctx)?;
@@ -1063,6 +1073,13 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         }
         // `Map.insert` → add-or-replace, returning the NEW map (persistent → consume into a `mut` local).
         Core::MapInsert { map, key, val, .. } => {
+            // `BTreeMap<K,V>` needs `K: Ord` — a float key declines (the key node type is concrete even
+            // when the base map is empty, the Map twin of the empty-Set float-insert case).
+            if !types::ty_is_ord(&type_of(db, key)) {
+                return Err(Reject::decline(
+                    "a Map with a non-Ord (float) key has no BTreeMap rep on the Rust backend",
+                ));
+            }
             let m = emit(db, map, env, ctx)?;
             let k = emit(db, key, env, ctx)?;
             let v = emit(db, val, env, ctx)?;
@@ -1098,6 +1115,19 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         // SET construction `(Set.of (list …))` → a `BTreeSet` built by inserting each element (duplicates
         // collapse at insert, matching the runtime dedup).
         Core::SetOf { elems, .. } => {
+            // A `BTreeSet<T>` needs `T: Ord`. A FLOAT element is only `PartialOrd`, so a float (or
+            // float-containing) element makes the set uninstantiable — DECLINE rather than emit an
+            // uncompilable `BTreeSet<f64>` (the runtime orders a float set by canonical bytes; the Rust
+            // backend has no total float order). Check the first ELEMENT node type (concrete here); an
+            // EMPTY `Set.of (list)` has no element to inspect, and only fails once something is inserted —
+            // caught by the `SetInsert` guard below.
+            if let Some(&e0) = elems.first()
+                && !types::ty_is_ord(&type_of(db, e0))
+            {
+                return Err(Reject::decline(
+                    "a Set with a non-Ord (float) element has no BTreeSet rep on the Rust backend",
+                ));
+            }
             let mut lines = String::new();
             for e in &elems {
                 let ee = emit(db, *e, env, ctx)?;
@@ -1124,6 +1154,15 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         // `Set.insert`/`Set.remove` → the new set (persistent → consume into a `mut` local; insert of a
         // present element / remove of an absent one is a total no-op value).
         Core::SetInsert { set, elem, .. } => {
+            // `BTreeSet<T>` needs `T: Ord` — a float element declines (see `SetOf`). The inserted
+            // element's type is concrete here even when the base set is empty (the `Set.of (list)` /
+            // float-insert miscompile: an empty base's element type is an unsolved var, but the insert
+            // fixes it to the float). Check the element node type.
+            if !types::ty_is_ord(&type_of(db, elem)) {
+                return Err(Reject::decline(
+                    "a Set with a non-Ord (float) element has no BTreeSet rep on the Rust backend",
+                ));
+            }
             let s = emit(db, set, env, ctx)?;
             let e = emit(db, elem, env, ctx)?;
             Ok(format!("{{ let mut __s = {s}; __s.insert({e}); __s }}"))

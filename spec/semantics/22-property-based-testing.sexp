@@ -95,6 +95,21 @@
   (call   main (: 5 Int64) (: 5 Int64)) (output (: true Bool))
   (call   main (: 9 Int64) (: -2 Int64)) (output (: true Bool)))
 
+(case "the int-to-float generator is order-preserving (a < b implies of a < of b)"
+  (doc    "A cross-type ordering property tying the integer generator to its FLOAT image: `Float64.of-int`
+           is monotonic, so whenever `a < b` as integers, `of(a) < of(b)` as floats — an order homomorphism.
+           `(if (< a b) (< (of a) (of b)) true)` = true (vacuously true when `a >= b`). Distinct from
+           trichotomy (a within-float total order): this pins that the generator's Int->Float mapping
+           PRESERVES order, exercising both the integer `<` and the runtime float `<` over generated inputs
+           at the boundary. Holds for negatives too (of-int is signed).")
+  (input  (do (def (of (: n Int64)) ((. Float64 of-int) n))
+              (def (main (: a Int64) (: b Int64))
+                (if (< a b) (< (of a) (of b)) true))
+              (export main)))
+  (call   main (: 3 Int64) (: 7 Int64)) (output (: true Bool))
+  (call   main (: 9 Int64) (: 2 Int64)) (output (: true Bool))
+  (call   main (: -8 Int64) (: -2 Int64)) (output (: true Bool)))
+
 ; --- §Refinements Constrain Generation --------------------------------------------------------------
 ; "A generator for a value of a refined type MUST produce only values satisfying that type's
 ; refinement." A bounded generator masks the raw stream into a range: `roll s = next s & (2^k − 1)`

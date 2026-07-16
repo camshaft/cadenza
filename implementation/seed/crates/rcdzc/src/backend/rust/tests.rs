@@ -17,20 +17,25 @@ use crate::{Artifact, compile};
 /// Compile a program's source to the Rust-backend artifact bytes (the emitted `.rs` text), or panic
 /// with the first diagnostic. Mirrors `compile_component` but selects `Target::Rust`.
 fn compile_rust(src: &str) -> String {
+    compile_rust_result(src).unwrap_or_else(|diags| panic!("Rust emit failed: {diags:?}"))
+}
+
+/// Like `compile_rust` but returns `Err(diagnostics)` when the backend DECLINES (emits no Rust
+/// artifact) instead of panicking — for tests asserting a construct declines cleanly (a `todo`), e.g.
+/// a float-keyed `BTreeSet`/`BTreeMap` that has no `Ord` rep on the Rust backend.
+fn compile_rust_result(src: &str) -> Result<String, Vec<String>> {
     let ast_bytes = crate::codec::encode(&parse(src));
     let out = compile(
         &[Artifact::new(Artifact::KIND_AST, "main", ast_bytes)],
         &[Target::Rust],
     );
     match out.artifact(Target::Rust.artifact_kind()) {
-        Some(bytes) => String::from_utf8(bytes.to_vec()).expect("emitted Rust is utf-8"),
-        None => panic!(
-            "Rust emit failed: {:?}",
-            out.diagnostics
-                .iter()
-                .map(|d| d.message.clone())
-                .collect::<Vec<_>>()
-        ),
+        Some(bytes) => Ok(String::from_utf8(bytes.to_vec()).expect("emitted Rust is utf-8")),
+        None => Err(out
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()),
     }
 }
 
@@ -543,6 +548,40 @@ fn rustc_roundtrip_map_and_set_compute_and_enumerate_in_order() {
     if let Some(out) = rustc_run(&uk, "g()") {
         assert_eq!(out, "42", "a user-sum key is looked up by its variant");
     }
+}
+
+#[test]
+fn a_float_keyed_set_or_map_declines_no_btreeset_f64() {
+    // REGRESSION (a corpus case surfaced this as a BUILD FAIL, not a decline): a `Set`/`Map` of a FLOAT
+    // maps to `BTreeSet<f64>`/`BTreeMap<f64,_>`, but `f64` is only `PartialOrd`, NOT `Ord` — the `BTree*`
+    // bound is unsatisfiable (rustc E0277), so the emitted source failed to compile. The runtime orders a
+    // float set/map by canonical bytes (so wasm supports it); the Rust backend has no total float order,
+    // so it must DECLINE (a clean `todo`), not emit uncompilable source. The float-insert into an EMPTY
+    // set is the sharp case: the empty base's element type is an unsolved var, fixed to a float only by
+    // the insert — so the guard is on the ELEMENT/KEY node type, not just the collection's own type.
+    let set_float = compile_rust_result(
+        "(module m (def (main (: d Float64)) (Set.len (Set.insert (Set.of (list)) d))) (export main))",
+    );
+    assert!(
+        set_float.is_err(),
+        "a float-element Set must DECLINE (no BTreeSet<f64>), got:\n{set_float:?}"
+    );
+    // A non-empty float `Set.of` likewise declines (the element is a float literal → runtime float).
+    let map_float = compile_rust_result(
+        "(module m (def (main (: d Float64)) (Map.size (Map.insert (Map.empty) d 1))) (export main))",
+    );
+    assert!(
+        map_float.is_err(),
+        "a float-KEY Map must DECLINE (no BTreeMap<f64,_>), got:\n{map_float:?}"
+    );
+    // CONTROL: an Int-keyed set/map still compiles (the guard is float-specific, not a blanket decline).
+    let set_int = compile_rust(
+        "(module m (def (main (: n Int64)) (Set.len (Set.insert (Set.of (list)) n))) (export main))",
+    );
+    assert!(
+        set_int.contains("BTreeSet"),
+        "an Int-element Set still emits a BTreeSet:\n{set_int}"
+    );
 }
 
 #[test]
