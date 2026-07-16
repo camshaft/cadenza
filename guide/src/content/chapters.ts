@@ -99,6 +99,14 @@ export const CHAPTERS: Chapter[] = [
     Component: lazy(() => import("./chapters/Lists.tsx")),
   },
   {
+    slug: "iterators",
+    title: "Iterators & ranges",
+    blurb: "Lazy pull sequences: describe an endless range, produce only the elements you use.",
+    section: "Fundamentals",
+    exercises: 2,
+    Component: lazy(() => import("./chapters/Iterators.tsx")),
+  },
+  {
     slug: "maps-sets",
     title: "Maps & sets",
     blurb: "Membership and key→value association, without duplicates.",
