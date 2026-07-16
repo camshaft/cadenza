@@ -505,6 +505,8 @@ pass	a capturing unannotated closure in a payload is typed from the declared arr
 pass	a chained Option.expect(Option.expect s) payload consumed per iteration accumulates stably
 pass	a chained access through an if-of-records composes and shields the untaken branch's trap
 pass	a chained float ordering is not foldable by transitivity — a NaN middle breaks the chain
+pass	a char literal list element dispatches a runtime list by its value
+pass	a char literal list element falls through on a non-matching head
 pass	a char literal naming a surrogate is a reader error
 pass	a char not among the literal arms falls through to the wildcard
 pass	a char order agrees with its scalar value
@@ -1973,6 +1975,7 @@ pass	a symbol compared to a number is a kind-boundary type error
 pass	a symbol compared to a string is a type error
 pass	a symbol converts back to its content string
 pass	a symbol is constructed from a string
+pass	a symbol literal list element dispatches a runtime list by its content
 pass	a symbol's identity is its content, not how the content was derived
 pass	a symbol-literal match agrees with its if-(= s lit) chain on the DEFAULT fall-through arm
 pass	a symbol-literal match agrees with the equivalent if-(= s lit) chain

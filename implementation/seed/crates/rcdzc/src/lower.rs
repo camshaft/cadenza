@@ -4161,6 +4161,14 @@ fn is_refutable_literal_element(db: &mut Db, elem_pat: StructId) -> bool {
             | crate::resolved::Resolved::Str(_)
             | crate::resolved::Resolved::Float(_)
             | crate::resolved::Resolved::Bytes(_)
+            // A CHAR (`#\a`) or SYMBOL (`#"go"`) literal is also a refutable scalar element — each matches
+            // one value, and its `=` test lowers exactly as the others (char → codepoint compare, symbol →
+            // shared-`ConstStr` content compare; Inc-45/46). `clone_literal_atom` already copies a `Char`/
+            // `Sym` leaf, so the `(= elem <lit>)` guard the desugar synthesizes just works. Without these,
+            // a `(list #\a .. r)` / `(list #"go" .. r)` element was not recognized as a literal and fell to
+            // `check_binding_pattern` → a spurious CDZ0201 "not a tuple/record/constructor".
+            | crate::resolved::Resolved::Char(_)
+            | crate::resolved::Resolved::SymbolConst(_)
     )
 }
 

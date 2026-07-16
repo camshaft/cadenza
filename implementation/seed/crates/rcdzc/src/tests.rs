@@ -28874,6 +28874,56 @@ mod match_engine {
     }
 
     #[test]
+    fn a_char_or_symbol_literal_list_element_refines_by_value() {
+        // A CHAR (`#\a`) or SYMBOL (`#"go"`) literal is a refutable scalar list element, exactly like an
+        // Int/Bool/String literal — `(list #\a .. r)` matches only a list whose head is `#\a`. The
+        // literal-element desugar (`desugar_refutable_literal_list_elements`) synthesizes a `(= elem <lit>)`
+        // guard; char `=` (codepoint) and symbol `=` (shared-ConstStr content) already lower (Inc-45/46), and
+        // `clone_literal_atom` already copies a Char/Sym leaf. Before, `is_refutable_literal_element` omitted
+        // Char/SymbolConst, so a char/symbol list element fell to `check_binding_pattern` → a spurious CDZ0201
+        // "not a tuple/record/constructor". The list-element analog of the scalar char/symbol-literal support.
+        let ok = |src: &str| assert!(reject_code(src).is_none(), "must compile: {src}");
+        ok(
+            "(module m (def (f (: xs (List Char))) (match xs ((list #\\a .. r) 1) (_ 0))) \
+              (def (main) (f (list #\\a #\\b))) (export main))",
+        );
+        ok(
+            "(module m (def (f (: xs (List Symbol))) (match xs ((list #\"go\" .. r) 1) (_ 0))) \
+              (def (main) (f (list (Symbol.of \"go\")))) (export main))",
+        );
+        // Fixed-arity, char at a non-head position.
+        ok(
+            "(module m (def (f (: xs (List Char))) (match xs ((list a #\\x) 1) (_ 0))) \
+              (def (main) (f (list #\\p #\\x))) (export main))",
+        );
+
+        // RUN: a char literal element hits on the matching head, misses otherwise (over a runtime list).
+        let Some(v) = run_heap_value(
+            "(module m (def (classify (: xs (List Char))) (match xs ((list #\\a .. r) 1) (_ 0))) \
+               (def (main) (classify (list (Option.expect (Char.from-int 97) \"a\") \
+                                            (Option.expect (Char.from-int 98) \"b\")))) (export main))",
+            vec![],
+        ) else {
+            eprintln!("runtime wasm not found; skipping char-literal-list-element run");
+            return;
+        };
+        assert_eq!(
+            v, "1",
+            "a #\\a head (built from a runtime scalar 97) matches the char-literal arm"
+        );
+        assert_eq!(
+            run_heap_value(
+                "(module m (def (classify (: xs (List Char))) (match xs ((list #\\a .. r) 1) (_ 0))) \
+                   (def (main) (classify (list (Option.expect (Char.from-int 122) \"z\")))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "0",
+            "a #\\z head (scalar 122) misses the #\\a arm and falls to the wildcard"
+        );
+    }
+
+    #[test]
     fn two_same_variant_ctor_list_elements_refining_the_payload_by_literal_fall_through() {
         // REGRESSION (silent TRAP miscompile): two list-element arms matching the SAME ctor variant but
         // refining the payload with different LITERALS — `((list (Op.Add 0) .. r) …) ((list (Op.Add n) .. r)

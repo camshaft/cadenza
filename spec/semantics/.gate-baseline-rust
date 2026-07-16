@@ -81,6 +81,9 @@ pass	Type.eq of a type-valued parameter against itself is always true
 pass	Type.eq on a constructed generic sum compares the full instantiated type
 pass	Type.eq on a type-valued parameter against a COMPOUND type is structural
 pass	Type.of carries a quantity's unit into a same-type annotation
+pass	Type.of grounds a RETURNED function's domain — a closure whose result is a function
+pass	Type.of grounds a function nested TWO containers deep — a sum payload inside a list
+pass	Type.of grounds a function nested TWO containers deep — a tuple inside a sum payload
 pass	Type.of grounds a function stored inside a SUM VARIANT payload
 pass	Type.of grounds a function stored inside a compound value's element
 pass	Type.of on a bare nullary variant reflects its element as UNDETERMINED
@@ -306,6 +309,8 @@ pass	a capturing unannotated closure in a payload is typed from the declared arr
 pass	a chained Option.expect(Option.expect s) payload consumed per iteration accumulates stably
 pass	a chained access through an if-of-records composes and shields the untaken branch's trap
 pass	a chained float ordering is not foldable by transitivity — a NaN middle breaks the chain
+pass	a char literal list element dispatches a runtime list by its value
+pass	a char literal list element falls through on a non-matching head
 pass	a char literal naming a surrogate is a reader error
 pass	a char not among the literal arms falls through to the wildcard
 pass	a char order agrees with its scalar value
@@ -1593,6 +1598,7 @@ pass	a supplementary-plane char literal matches by scalar value
 pass	a symbol compared to a number is a kind-boundary type error
 pass	a symbol compared to a string is a type error
 pass	a symbol converts back to its content string
+pass	a symbol literal list element dispatches a runtime list by its content
 pass	a symbol's identity is its content, not how the content was derived
 pass	a symbol-literal match agrees with its if-(= s lit) chain on the DEFAULT fall-through arm
 pass	a symbol-literal match agrees with the equivalent if-(= s lit) chain
