@@ -159,6 +159,20 @@ pub fn emit_body(
     Ok(format!("    {expr}"))
 }
 
+/// Wrap an emitted KEY/element expression for a Set element / Map key SLOT when its type is a bare
+/// `Float`: a `BTreeSet`/`BTreeMap` key is `CdzF64` (the total-order wrapper), so a bare-`f64` key value
+/// must be lifted with `CdzF64::new(<e>)` (NaN-canonicalizing on construction, mirroring the runtime's
+/// `box-float`). A non-float key stays verbatim. This is the emit twin of [`types::ord_key_type`]'s type
+/// substitution — the two MUST agree on which slots become `CdzF64`, or the emitted value's type would
+/// not match the collection's key type. Only a BARE float is wrapped (a float nested in a compound key
+/// declines upstream via `ty_is_ord_key`), so a single `CdzF64::new` at the top wrapping suffices.
+fn wrap_ord_key(expr: String, key_ty: &Ty) -> String {
+    match key_ty {
+        Ty::Float(_) => format!("CdzF64::new({expr})"),
+        _ => expr,
+    }
+}
+
 /// The Rust identifier for lambda-lifted closure slot `k` — the `fn` a `Core::Closure { code: k }` value
 /// calls into. A backend-reserved name (`__`) that cannot collide with a source def.
 pub(super) fn lifted_ident(k: usize) -> String {
@@ -1070,17 +1084,20 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             // `BTreeMap<K,V>` needs `K: Ord` — a FLOAT key declines (only `PartialOrd`; see `SetOf`).
             // Check the first entry's KEY node type (concrete here); an EMPTY map has no key to inspect
             // and only fails once an entry is inserted — caught by the `MapInsert` guard.
+            // A bare `Float` key is OK — it keys via `CdzF64` (`ty_is_ord_key`); a float-carrying compound
+            // key still declines.
             if let Some(&(k0, _)) = entries.first()
                 && let kt = type_of(db, k0)
-                && !types::ty_is_ord(db, &kt)
+                && !types::ty_is_ord_key(db, &kt)
             {
                 return Err(Reject::decline(
-                    "a Map with a non-Ord (float) key has no BTreeMap rep on the Rust backend",
+                    "a Map with a non-Ord (float-carrying) key has no BTreeMap rep on the Rust backend",
                 ));
             }
             let mut lines = String::new();
             for (k, v) in &entries {
                 let ke = emit(db, *k, env, ctx)?;
+                let ke = wrap_ord_key(ke, &type_of(db, *k));
                 let ve = emit(db, *v, env, ctx)?;
                 lines.push_str(&format!("__m.insert({ke}, {ve}); "));
             }
@@ -1106,13 +1123,14 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             // `BTreeMap<K,V>` needs `K: Ord` — a float key declines (the key node type is concrete even
             // when the base map is empty, the Map twin of the empty-Set float-insert case).
             let kt = type_of(db, key);
-            if !types::ty_is_ord(db, &kt) {
+            if !types::ty_is_ord_key(db, &kt) {
                 return Err(Reject::decline(
-                    "a Map with a non-Ord (float) key has no BTreeMap rep on the Rust backend",
+                    "a Map with a non-Ord (float-carrying) key has no BTreeMap rep on the Rust backend",
                 ));
             }
             let m = emit(db, map, env, ctx)?;
             let k = emit(db, key, env, ctx)?;
+            let k = wrap_ord_key(k, &kt);
             let v = emit(db, val, env, ctx)?;
             Ok(format!("{{ let mut __m = {m}; __m.insert({k}, {v}); __m }}"))
         }
@@ -1121,6 +1139,9 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         Core::MapLookup { map, key, .. } => {
             let m = emit(db, map, env, ctx)?;
             let k = emit(db, key, env, ctx)?;
+            // Wrap a bare-float lookup key in `CdzF64::new` to match the map's `CdzF64` key type (and
+            // NaN-canonicalize — a differently-produced NaN finds the stored entry, the corpus case).
+            let k = wrap_ord_key(k, &type_of(db, key));
             Ok(format!("({m}).get(&({k})).cloned()"))
         }
         // `Map.remove` → drop the key, returning the new map (removing an absent key is total, `remove`
@@ -1128,6 +1149,7 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         Core::MapRemove { map, key, .. } => {
             let m = emit(db, map, env, ctx)?;
             let k = emit(db, key, env, ctx)?;
+            let k = wrap_ord_key(k, &type_of(db, key));
             Ok(format!("{{ let mut __m = {m}; __m.remove(&({k})); __m }}"))
         }
         // `Map.len` (the node is `MapSize`) → the distinct-key count as `Int64`.
@@ -1139,9 +1161,21 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         // plain `.iter()` gives that order; clone each key/value into an owned `(K, V)` tuple → `Vec<(K,V)>`.
         Core::MapToList { map, .. } => {
             let m = emit(db, map, env, ctx)?;
-            Ok(format!(
-                "({m}).iter().map(|(__k, __v)| (__k.clone(), __v.clone())).collect::<Vec<_>>()"
-            ))
+            // A float-KEYED map iterates `CdzF64` keys; the `List (Tuple Float64 V)` key element is a bare
+            // `f64`, so UNWRAP the key via `.get()`. The value is unaffected (a float VALUE stays `f64`).
+            let key_is_float = matches!(
+                type_of(db, map),
+                Ty::Map(ref k, _) if matches!(**k, Ty::Float(_))
+            );
+            if key_is_float {
+                Ok(format!(
+                    "({m}).iter().map(|(__k, __v)| (__k.get(), __v.clone())).collect::<Vec<_>>()"
+                ))
+            } else {
+                Ok(format!(
+                    "({m}).iter().map(|(__k, __v)| (__k.clone(), __v.clone())).collect::<Vec<_>>()"
+                ))
+            }
         }
         // SET construction `(Set.of (list …))` → a `BTreeSet` built by inserting each element (duplicates
         // collapse at insert, matching the runtime dedup).
@@ -1152,17 +1186,21 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             // backend has no total float order). Check the first ELEMENT node type (concrete here); an
             // EMPTY `Set.of (list)` has no element to inspect, and only fails once something is inserted —
             // caught by the `SetInsert` guard below.
-            if let Some(&e0) = elems.first()
-                && let et = type_of(db, e0)
-                && !types::ty_is_ord(db, &et)
+            // A bare `Float` element is OK — it keys via the `CdzF64` wrapper (`ty_is_ord_key`). A
+            // float-CARRYING compound element still declines (the wrapper isn't threaded through it).
+            let e0_ty = elems.first().map(|&e0| type_of(db, e0));
+            if let Some(et) = &e0_ty
+                && !types::ty_is_ord_key(db, et)
             {
                 return Err(Reject::decline(
-                    "a Set with a non-Ord (float) element has no BTreeSet rep on the Rust backend",
+                    "a Set with a non-Ord (float-carrying) element has no BTreeSet rep on the Rust backend",
                 ));
             }
             let mut lines = String::new();
             for e in &elems {
                 let ee = emit(db, *e, env, ctx)?;
+                // Wrap a bare-float element in `CdzF64::new` (the set's element type is `CdzF64`).
+                let ee = wrap_ord_key(ee, &type_of(db, *e));
                 lines.push_str(&format!("__s.insert({ee}); "));
             }
             // ANNOTATE `__s` with the node's solved `BTreeSet<T>` type when it maps concretely; when the
@@ -1181,6 +1219,9 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         Core::SetContains { set, elem, .. } => {
             let s = emit(db, set, env, ctx)?;
             let e = emit(db, elem, env, ctx)?;
+            // Wrap a bare-float probe in `CdzF64::new` so it matches the set's `CdzF64` element type (and
+            // NaN-canonicalizes — a NaN probe finds a stored NaN, the corpus's nan-membership case).
+            let e = wrap_ord_key(e, &type_of(db, elem));
             Ok(format!("({s}).contains(&({e}))"))
         }
         // `Set.insert`/`Set.remove` → the new set (persistent → consume into a `mut` local; insert of a
@@ -1191,18 +1232,21 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             // float-insert miscompile: an empty base's element type is an unsolved var, but the insert
             // fixes it to the float). Check the element node type.
             let et = type_of(db, elem);
-            if !types::ty_is_ord(db, &et) {
+            if !types::ty_is_ord_key(db, &et) {
                 return Err(Reject::decline(
-                    "a Set with a non-Ord (float) element has no BTreeSet rep on the Rust backend",
+                    "a Set with a non-Ord (float-carrying) element has no BTreeSet rep on the Rust backend",
                 ));
             }
             let s = emit(db, set, env, ctx)?;
             let e = emit(db, elem, env, ctx)?;
+            let e = wrap_ord_key(e, &et);
             Ok(format!("{{ let mut __s = {s}; __s.insert({e}); __s }}"))
         }
         Core::SetRemove { set, elem, .. } => {
+            let et = type_of(db, elem);
             let s = emit(db, set, env, ctx)?;
             let e = emit(db, elem, env, ctx)?;
+            let e = wrap_ord_key(e, &et);
             Ok(format!("{{ let mut __s = {s}; __s.remove(&({e})); __s }}"))
         }
         // `Set.len` → the cardinality (deduped) as `Int64`.
@@ -1211,9 +1255,22 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             Ok(format!("(({s}).len() as i64)"))
         }
         // `Set.to-list` → a `List` in CANONICAL (sorted) order — `BTreeSet::iter` is sorted; clone each.
+        // A float set iterates `CdzF64` (the wrapper), but the `List Float64` element is a bare `f64`, so
+        // UNWRAP each via `.get()` (the wrapper→f64 read). The iteration order is the wrapper's `Ord` (by
+        // canonical bits), matching the runtime's canonical-byte order for a float `Set.to-list`.
         Core::SetToList { set, .. } => {
             let s = emit(db, set, env, ctx)?;
-            Ok(format!("({s}).iter().cloned().collect::<Vec<_>>()"))
+            let elem_is_float = matches!(
+                type_of(db, set),
+                Ty::Set(ref e) if matches!(**e, Ty::Float(_))
+            );
+            if elem_is_float {
+                Ok(format!(
+                    "({s}).iter().map(|__f| __f.get()).collect::<Vec<_>>()"
+                ))
+            } else {
+                Ok(format!("({s}).iter().cloned().collect::<Vec<_>>()"))
+            }
         }
         // `Set.union`/`intersection`/`difference` → the binary set-algebra ops. Rust's `BTreeSet` methods
         // take a `&other` and yield an iterator of `&T`; clone + collect into a new `BTreeSet`. Both

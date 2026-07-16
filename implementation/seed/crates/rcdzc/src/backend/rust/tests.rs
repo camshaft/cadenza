@@ -518,6 +518,53 @@ fn map_and_set_emit_native_btree_collections() {
 }
 
 #[test]
+fn a_bare_float_set_or_map_key_uses_the_cdz_f64_total_order_wrapper() {
+    // A bare `Float` Set element / Map key is NOT `Ord` as a raw `f64` (NaN breaks totality), so it maps to
+    // the `CdzF64` total-order wrapper (bit-canonical, NaN→one quiet NaN — the runtime's `box-float`). The
+    // struct is emitted (gated on use) and each key/element value is lifted with `CdzF64::new(…)`.
+    let s = compile_rust(
+        "(module m (def (test (: stored Float64) (: probe Float64)) \
+           (Set.contains (Set.of (list stored)) probe)) \
+           (def (main (: d Int64)) (if (test Float64.nan Float64.nan) 1 0)) (export main))",
+    );
+    assert!(
+        s.contains("struct CdzF64(u64)") && s.contains("BTreeSet<CdzF64>"),
+        "a float set emits the CdzF64 wrapper + a BTreeSet<CdzF64>:\n{s}"
+    );
+    assert!(
+        s.contains("CdzF64::new("),
+        "the stored element + the contains probe are lifted through CdzF64::new:\n{s}"
+    );
+    // A float-KEYED map likewise: keys lifted through `CdzF64::new` on insert AND lookup (so the probe
+    // matches the stored key's wrapper type). (The seed map here is `Map.empty`, whose BTreeMap type Rust
+    // INFERS from the typed insert/lookup — a bare `BTreeMap::new()` with no spelled `<CdzF64, _>` — so the
+    // invariant to pin is the key WRAP, which is what makes the inferred key type `CdzF64`.)
+    let m = compile_rust(
+        "(module m (def (main (: x Float64)) \
+           (match (Map.lookup (Map.insert (Map.empty) x 42) x) ((Some v) v) ((None _) -1))) (export main))",
+    );
+    assert!(
+        m.matches("CdzF64::new(").count() >= 2 && m.contains("struct CdzF64(u64)"),
+        "a float-keyed map lifts its insert + lookup keys through CdzF64::new:\n{m}"
+    );
+    // The wrapper is NOT emitted for a float-free program (gated on use — no dead struct).
+    let plain = compile_rust("(module m (def (g (: n Int64)) (+ n 1)) (export g))");
+    assert!(
+        !plain.contains("CdzF64"),
+        "a float-free program does not emit the CdzF64 wrapper:\n{plain}"
+    );
+    // A float-CARRYING COMPOUND key still DECLINES (the wrapper is not threaded through a tuple).
+    let nested = compile_rust_result(
+        "(module m (def (main (: x Float64)) \
+           (Set.len (Set.of (list (tuple x 1))))) (export main))",
+    );
+    assert!(
+        nested.is_err(),
+        "a (Tuple Float Int64) set element still declines (wrapper not threaded through a compound):\n{nested:?}"
+    );
+}
+
+#[test]
 fn rustc_roundtrip_map_and_set_compute_and_enumerate_in_order() {
     // Map: build `{1:10, 2:20, 3:30}` at runtime, sum its size + a lookup. 3 keys + lookup(2)=20 = 23.
     let mp = compile_rust(
@@ -551,30 +598,27 @@ fn rustc_roundtrip_map_and_set_compute_and_enumerate_in_order() {
 }
 
 #[test]
-fn a_float_keyed_set_or_map_declines_no_btreeset_f64() {
-    // REGRESSION (a corpus case surfaced this as a BUILD FAIL, not a decline): a `Set`/`Map` of a FLOAT
-    // maps to `BTreeSet<f64>`/`BTreeMap<f64,_>`, but `f64` is only `PartialOrd`, NOT `Ord` — the `BTree*`
-    // bound is unsatisfiable (rustc E0277), so the emitted source failed to compile. The runtime orders a
-    // float set/map by canonical bytes (so wasm supports it); the Rust backend has no total float order,
-    // so it must DECLINE (a clean `todo`), not emit uncompilable source. The float-insert into an EMPTY
-    // set is the sharp case: the empty base's element type is an unsolved var, fixed to a float only by
-    // the insert — so the guard is on the ELEMENT/KEY node type, not just the collection's own type.
-    let set_float = compile_rust_result(
+fn a_bare_float_set_or_map_uses_cdz_f64_but_float_carrying_sum_declines() {
+    // A `Set`/`Map` of a BARE FLOAT now COMPILES via the `CdzF64` total-order wrapper (a raw `f64` is only
+    // `PartialOrd`; `CdzF64` orders by canonical bits, NaN-canonical — mirroring the runtime's `box-float`).
+    // (WAS a decline — the "no BTreeSet<f64>" era, before the wrapper.) The float-insert into an EMPTY set is
+    // the sharp case: the empty base's element type is an unsolved var, fixed to a float only by the insert —
+    // so both the guard AND the wrapper substitution key off the ELEMENT/KEY node type.
+    let set_float = compile_rust(
         "(module m (def (main (: d Float64)) (Set.len (Set.insert (Set.of (list)) d))) (export main))",
     );
     assert!(
-        set_float.is_err(),
-        "a float-element Set must DECLINE (no BTreeSet<f64>), got:\n{set_float:?}"
+        set_float.contains("CdzF64::new(") && set_float.contains("struct CdzF64"),
+        "a float-element Set now compiles via CdzF64:\n{set_float}"
     );
-    // A non-empty float `Set.of` likewise declines (the element is a float literal → runtime float).
-    let map_float = compile_rust_result(
-        "(module m (def (main (: d Float64)) (Map.size (Map.insert (Map.empty) d 1))) (export main))",
+    let map_float = compile_rust(
+        "(module m (def (main (: d Float64)) (Map.len (Map.insert (Map.empty) d 1))) (export main))",
     );
     assert!(
-        map_float.is_err(),
-        "a float-KEY Map must DECLINE (no BTreeMap<f64,_>), got:\n{map_float:?}"
+        map_float.contains("CdzF64::new("),
+        "a float-KEY Map now compiles via CdzF64:\n{map_float}"
     );
-    // CONTROL: an Int-keyed set/map still compiles (the guard is float-specific, not a blanket decline).
+    // CONTROL: an Int-keyed set/map still compiles (unchanged — Int is natively Ord, no wrapper).
     let set_int = compile_rust(
         "(module m (def (main (: n Int64)) (Set.len (Set.insert (Set.of (list)) n))) (export main))",
     );

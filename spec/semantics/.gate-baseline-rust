@@ -39,6 +39,7 @@ pass	Result propagates errors without trapping
 pass	Result type for fallible operations
 pass	Set.contains does not fold a set whose element is a runtime scalar
 pass	Set.contains finds a runtime STRING-rope element built via Set.of
+pass	Set.contains over nan finds nan
 pass	Set.contains over negative zero does not find positive zero
 pass	Set.insert does not fold a duplicate against a runtime element
 pass	Set.remove does not fold a set whose element is a runtime scalar
@@ -127,7 +128,9 @@ pass	a Char-payload sum value escapes across the boundary in its canonical form
 pass	a DOUBLY-nested projected list, consumed then read, is unchanged (child retain through a proj chain)
 pass	a FLAT runtime string nested in a tuple is unaffected (control)
 pass	a FLOAT-result effect op threads a float state and its resume folds under a float-dispatched operator
+pass	a Float KEY inserted into an empty (runtime) map boxes with box-float, not box-int
 pass	a Float VALUE inserted into an empty (runtime) map boxes with box-float, not box-int
+pass	a Float element inserted into an empty (runtime) set boxes with box-float, not box-int
 pass	a GENERIC recursive sum branching through a tuple folds at a concrete instantiation
 pass	a HOF callback matching a tuple argument computes through the nested reduction
 pass	a HOF callback matching its sum argument reaches the nullary arm
@@ -145,6 +148,7 @@ pass	a MULTI-shot handler arm folds a two-hole body by re-reducing per resume
 pass	a MUTUALLY-recursive effectful group is specialized under a state handler
 pass	a Map.lookup over a map literal with a runtime key finds it by value
 pass	a NON-tail-resumptive arm projects a tuple parameter twice in its pure one-hole context
+pass	a NaN map key is found by a differently-produced NaN
 pass	a NaN nested in a list compares equal under the canonical byte form
 pass	a NaN nested in a sum payload compares equal under the canonical byte form
 pass	a NaN nested in a tuple compares equal under the canonical byte form
@@ -331,6 +335,7 @@ pass	a compound map key containing a Bytes rope is found by its flat-twin key
 pass	a compound map key containing a rope is found by its flat-twin key
 pass	a compound map key whose Bytes element is a rope is found by its flat twin
 pass	a compound map key whose LIST element is a rope is found by its flat-twin key
+pass	a computed float map key is found by its literal twin
 pass	a conditional evaluates only the selected branch
 pass	a conditional inside a function with a constant condition and mismatched branches is a type error
 pass	a conditional on a negated runtime condition selects the correct branch and shields the other
@@ -1441,8 +1446,12 @@ pass	a set chosen by a runtime if is membership-tested with valid wasm
 pass	a set chosen by a runtime if is size-measured with valid wasm
 pass	a set collapses a duplicate element
 pass	a set consumed by Set.insert in one operand is unchanged for a later read of the same binding
+pass	a set dedups NaN elements and keeps zero signs distinct
 pass	a set is constructed from a list of its elements
 pass	a set nested in a tuple compares equal with a runtime element, order-independent
+pass	a set of negative zero and positive zero keeps both (distinct sign bits)
+pass	a set of two NaN floats dedups to one (canonical quiet-NaN)
+pass	a set of two identical positive floats dedups to one
 pass	a set of user-sum elements tests membership by variant
 pass	a set threaded as a recursive accumulator dedups during accumulation
 pass	a set type whose element position holds a value is rejected
@@ -2334,6 +2343,7 @@ pass	negating a runtime narrow integer just above its min is exact
 pass	negating a runtime narrow integer traps at the width's own min, not the Int64 min
 pass	negation inverts a boolean
 pass	negative integer to byte uses two's complement
+pass	negative zero and zero are distinct map keys
 pass	negative zero crosses the parameter boundary preserving its sign
 pass	negative zero encodes to bytes distinct from positive zero
 pass	negative zero is distinct in the canonical value form
@@ -2896,7 +2906,6 @@ todo	MULTI-EXPORT: two two-Tuple-arg closures with a BYTE-ROPE result
 todo	MULTI-EXPORT: two two-Tuple-arg closures with a LIST result share one `call`
 todo	MULTI-EXPORT: two two-Tuple-arg closures with a fixed COMPOUND result
 todo	SUM ARG + LIST RESULT declines cleanly (Option arg, List result)
-todo	Set.contains over nan finds nan
 todo	THREE Tuple args cross the direct-call boundary
 todo	THREE Tuple args with a LIST result
 todo	TRANS should match its middle term up to α-equivalence: aconv-TRANS chains an α-variant a structural equality rejects
@@ -2929,8 +2938,6 @@ todo	a CAPTURING closure taking an Option Int64 ARG crosses the direct-call boun
 todo	a CAPTURING closure taking an Option Int64 ARG — None takes the captured value
 todo	a DOUBLY-nested Tuple ARG (three levels deep) crosses the direct-call boundary
 todo	a FLOAT-field Tuple closure ARG flattens + rebuilds (box-float imported)
-todo	a Float KEY inserted into an empty (runtime) map boxes with box-float, not box-int
-todo	a Float element inserted into an empty (runtime) set boxes with box-float, not box-int
 todo	a Float64 closure captures a Float64 build-time host effect result
 todo	a GENERIC user sum crosses a module boundary at a concrete instantiation
 todo	a List-returning closure alongside a plain export — the closure
@@ -2953,7 +2960,6 @@ todo	a NESTED Tuple arg ALONGSIDE a flat Tuple arg
 todo	a NESTED mixed ARG (a tuple containing a record) crosses the direct-call boundary
 todo	a NESTED-tuple ARG composes with a NESTED-tuple RESULT
 todo	a NOMINAL-over-tuple ARG crosses as the underlying tuple (direct-call)
-todo	a NaN map key is found by a differently-produced NaN
 todo	a RATIONAL compound = has DISCRIMINATING power (1/2 ≠ 1/3, but 0/2 = 0/3)
 todo	a RATIONAL leaf in a compound compares by CANONICAL form (2n/4 = n/2 inside a tuple)
 todo	a RECORD closure ARG among scalars crosses the direct-call boundary (scalar result)
@@ -3045,7 +3051,6 @@ todo	a closure whose CALL returns a user sum crosses as the value form
 todo	a closure whose CALL returns an Option crosses as the value form
 todo	a closure whose body calls a top-level helper function
 todo	a composed proof chains the equational, λ, and logical rule families into one derivation
-todo	a computed float map key is found by its literal twin
 todo	a conditional performs only the taken branch's effect — else
 todo	a conditional performs only the taken branch's effect — then
 todo	a constant-returning closure threads through a recursive-generic HOF
@@ -3168,10 +3173,6 @@ todo	a runtime value is constructed into a fixed-width segment and its length re
 todo	a runtime value narrowed to the segment width constructs without trapping
 todo	a scalar BETWEEN two Tuple args with a LIST result
 todo	a second same-signature closure export shares the one call method
-todo	a set dedups NaN elements and keeps zero signs distinct
-todo	a set of negative zero and positive zero keeps both (distinct sign bits)
-todo	a set of two NaN floats dedups to one (canonical quiet-NaN)
-todo	a set of two identical positive floats dedups to one
 todo	a single-variant abstract theorem's constructor match outside the kernel is a withheld-constructor rejection (CDZ0214)
 todo	a single-variant abstract type's constructor match outside its module is rejected CDZ0214 (withheld-ctor)
 todo	a specific constructor export exposes one variant and keeps the rest private
@@ -3309,7 +3310,6 @@ todo	multi-export compound result — three capturing closures share one call
 todo	multi-export record result — canonical field order
 todo	multi-export record result — the second closure, with a negative leaf
 todo	multiplying a scaled-unit quantity by the literal one keeps its dimension and displays scaled
-todo	negative zero and zero are distinct map keys
 todo	one of several same-signature closure exports is made and called by the host
 todo	one of two DIFFERENT-signature closure exports is made and called
 todo	or performs the right operand's effect when the left is false
