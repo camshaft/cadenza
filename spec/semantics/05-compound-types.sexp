@@ -9054,6 +9054,31 @@
             (export main)))
   (output (: 0 Int64)))
 
+; The case above empties a TYPED map at run time (key/value types fixed by the earlier insert). The
+; distinct hazard is a BARE `Map.empty` LITERAL whose key/value types are UNDETERMINED (no entry ever
+; constrained them): `Map.to-list` would need a canonical-ordering descriptor from those types, which a
+; free `Ty::Var` has none of — so before the empty-map fold the type-checker ACCEPTED the program while
+; the backend DECLINED at emit ("no orderable descriptor"), a check/compile DIVERGENCE. An empty map
+; enumerates to `[]` regardless of key/value type, so `lower_map_to_list` folds an empty `MapNew` straight
+; to the empty `ListNew` (no descriptor) — the Map twin of the empty-`Set.of([])` fold. These pin that a
+; `Map.to-list` of an undetermined-type empty map COMPILES + runs to the empty list (len 0), directly and
+; through an inlined nullary helper (the element/key type is undetermined at the call site too).
+(case "Map.to-list of an undetermined-type empty map literal is the empty list"
+  (doc    "`(List.len (Map.to-list Map.empty))` — a bare `Map.empty` whose key/value types are never
+           constrained. An empty map's entries are `[]` regardless of type, so `Map.to-list` folds to the
+           empty list and `List.len` is 0 — NOT a backend 'no orderable descriptor' decline (the
+           check/compile divergence this closes). Expected: 0.")
+  (input  (do (def (main) (List.len (Map.to-list Map.empty))) (export main)))
+  (output (: 0 Int64)))
+
+(case "Map.to-list of an empty map through an inlined helper is the empty list"
+  (doc    "`(def (em) Map.empty) (List.len (Map.to-list (em)))` — the empty map comes through a nullary
+           helper, so its key/value types are undetermined at the call site too. The empty-map fold sees
+           through the inline to the empty `MapNew` and folds to the empty list → 0. The Map twin of the
+           `Set.to-list` empty-via-helper case.")
+  (input  (do (def (em) Map.empty) (def (main) (List.len (Map.to-list (em)))) (export main)))
+  (output (: 0 Int64)))
+
 ; --- Simultaneously-live sibling operands: the order and shape faces --------------------------------
 ; 0382b3628 fixed the right-to-left liveness fold missing a consume-in-a-RIGHT-sibling while a LEFT
 ; sibling holds the same binding (the threaded-loop drift is its pin). These pin the order symmetry

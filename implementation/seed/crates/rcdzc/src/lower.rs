@@ -17650,12 +17650,31 @@ fn lower_set_to_list(db: &mut Db, set: StructId) -> Core {
     Core::SetToList { set, elem_ty }
 }
 
-/// Lower `(Map.to-list map)` → `Core::MapToList`. Like `Set.to-list`, no const-fold (canonical KEY
-/// order is the runtime sorted walk). The key/value types come from the operand map's solved `Ty::Map`
-/// and bake the map-shape descriptor the runtime orders by.
+/// Lower `(Map.to-list map)` → `Core::MapToList`. Like `Set.to-list`, no const-fold for a NON-EMPTY map
+/// (canonical KEY order is the runtime sorted walk). The key/value types come from the operand map's
+/// solved `Ty::Map` and bake the map-shape descriptor the runtime orders by.
+///
+/// The ONE compile-time fold (the MAP twin of `lower_set_to_list`'s empty-set fold): a provably-EMPTY
+/// constant map (`Core::MapNew` with no entries) folds to the empty `Core::ListNew` — its canonical
+/// enumeration is `[]` regardless of key/value type, so no ordering descriptor is needed. SOUNDNESS-load-
+/// bearing: a bare `Map.empty` leaves its key/value types UNDETERMINED (free `Ty::Var`s — no entry ever
+/// constrained them), and a var has no orderable shape descriptor. Without this fold `Map.to-list` on
+/// such a map declined at the BACKEND ("Map.to-list key/value shape has no orderable descriptor") though
+/// the type-checker accepted the program — a check/compile divergence. Folding it here (the key/value
+/// type is irrelevant to an empty enumeration) keeps the emit total.
 fn lower_map_to_list(db: &mut Db, map: StructId) -> Core {
-    if let Core::Poison(r) = core_of(db, map) {
-        return Core::Poison(r);
+    // Bind the operand's core ONCE — the Poison check and the empty-`MapNew` check reuse the one result.
+    let map_core = core_of(db, map);
+    if let Core::Poison(r) = &map_core {
+        return Core::Poison(r.clone());
+    }
+    // A compile-time-visible EMPTY constant map enumerates to the empty list — no descriptor, no key/value
+    // type needed. (A non-empty `MapNew` must still run the runtime op to observe canonical key order.)
+    if let Core::MapNew { entries, .. } = &map_core
+        && entries.is_empty()
+    {
+        trace!(target: "rcdzc::fold", node = map.0, "Map.to-list folds an empty constant map to the empty list");
+        return Core::ListNew { elems: vec![] };
     }
     let Some((key_ty, val_ty)) = map_kv_types(db, map) else {
         return Core::Poison(Reject::decline(

@@ -100,6 +100,8 @@ pass	MULTI-EXPORT: two two-Tuple-arg closures with a fixed COMPOUND result
 pass	Map.to-list enumerates the entries as a List of (key value) tuples in canonical KEY order
 pass	Map.to-list length is the map's entry count
 pass	Map.to-list of a runtime-empty but key/value-typed map is the empty list
+pass	Map.to-list of an empty map through an inlined helper is the empty list
+pass	Map.to-list of an undetermined-type empty map literal is the empty list
 pass	Map.to-list over a RUNTIME-built map enumerates entries in canonical key order (first key is min)
 pass	N-suffixed literals compose under BigInt arithmetic
 pass	OR-saturation to a full-width mask on an unsigned runtime value
