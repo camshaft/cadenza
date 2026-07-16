@@ -1,4 +1,4 @@
-import { H1, Lede, H2, P, C } from "../../components/Prose.tsx";
+import { H1, Lede, H2, P, C, Note } from "../../components/Prose.tsx";
 import { Runnable } from "../../components/Runnable.tsx";
 import { Exercise } from "../../components/Exercise.tsx";
 import { Why } from "../../components/Why.tsx";
@@ -141,6 +141,25 @@ export default function PropertyTesting() {
         That reproducibility — record the seed, replay the exact failure — is what makes a generated
         counterexample <em>actionable</em> rather than a one-off fluke.
       </P>
+
+      <H2>The built-in test runner</H2>
+      <P>
+        Everything above is hand-rolled to show the mechanism — but you don't have to write the generator
+        and shrinker yourself. Mark a function <C>@test</C> and <C>cdz test</C> (from the toolchain in{" "}
+        <strong>The playground</strong>) runs it, reporting pass/fail: a plain <C>@test def name() = …</C>{" "}
+        is a unit test that passes unless it traps. Give that test <em>parameters</em> and it becomes a
+        property test — the compiler <em>synthesizes a generator from the parameter types</em> (scalars
+        directly; and, derived, compound types like <C>List</C>/<C>Tuple</C>/<C>Record</C>/<C>Set</C>/
+        <C>Map</C> and user sums), runs it over many generated inputs, and on failure shrinks to a minimal
+        counterexample and prints the seed to replay — the whole loop you built by hand, for free.
+      </P>
+      <Note>
+        Two more annotations refine it: <C>@exhaustive</C> drives the <em>entire</em> finite domain of a
+        small-typed parameter (every <C>Bool</C> pair, every <C>UInt8</C>) rather than sampling — a pass is
+        a proof over that domain; and <C>@tag("…")</C> labels a test so <C>cdz test --tag …</C> runs just
+        that group. They're ordinary annotations — the runner is a convenience over the same pattern this
+        chapter builds, not a privileged layer.
+      </Note>
 
       <Why tenet="A property is ordinary code, not a testing DSL">
         Property testing here is a <em>pattern</em>, not a feature. A generator is a function from a seed;
