@@ -41311,6 +41311,11 @@ mod stage1 {
             .all(|d| d.severity != crate::abi::Severity::Error),
             "a lowercase name in a variant payload is a type variable, not an unbound-name fault"
         );
+        // A bare UPPERCASE unknown type at a TOP-LEVEL annotation position now names it a missing TYPE
+        // (not a would-be type variable, not the generic "unbound name"): "unknown type `Widget` — no type
+        // by that name is declared … declare it with `(type Widget …)`". Still CDZ0101. (A nested position
+        // like `(List Widget)` keeps the bare message — the top-level branch does not descend; the
+        // `nested_upper` case above pins that.)
         let widget = crate::diagnostics(&mut crate::db::Db::load(parse(
             "(module m (def (f (: x Widget)) x) (def (main) (f 1)) (export main))",
         )))
@@ -41318,10 +41323,24 @@ mod stage1 {
         .find(|d| d.code.as_deref() == Some("CDZ0101"))
         .expect("Widget is unbound");
         assert!(
-            widget.message.contains("unbound name `Widget`")
+            widget.message.contains("unknown type `Widget`")
+                && widget.message.contains("(type Widget …)")
                 && !widget.message.contains("not a type variable"),
-            "an uppercase missing type keeps the plain unbound message: {}",
+            "an uppercase missing type in an annotation names the missing type + the declare fix: {}",
             widget.message
+        );
+        // A NEAR typo of a real type must still win the did-you-mean (the suggestion pool includes type
+        // names), NOT the generic "unknown type" — the branch is gated on there being no near suggestion.
+        let typo = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def (f (: x Strng)) x) (def (main) (f \"a\")) (export main))",
+        )))
+        .into_iter()
+        .find(|d| d.code.as_deref() == Some("CDZ0101"))
+        .expect("Strng is unbound");
+        assert!(
+            typo.message.contains("did you mean `String`?"),
+            "a near type typo keeps the did-you-mean, not the generic unknown-type: {}",
+            typo.message
         );
     }
 

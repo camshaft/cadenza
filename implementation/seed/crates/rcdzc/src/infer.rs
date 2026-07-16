@@ -1286,6 +1286,33 @@ fn validate_non_type_annotation(db: &mut Db, ty_expr: StructId, lead: &str, out:
         out.push(lowercase_type_var_reject(&name, ty_expr, lead));
         return;
     }
+    // A bare UPPERCASE name in a type position that resolves to NOTHING and is not a declared type —
+    // `(: 5 Widget)`, `(: x Widget)`, a variant payload `(type Box (Mk Widget))`. The generic `collect`
+    // below gives the terse "unbound name `Widget`", which does not convey that a TYPE is what is missing
+    // here (rustc distinguishes "cannot find type `T`" from "cannot find value"). Say so — it is the
+    // uppercase companion of the lowercase-type-var guidance just above. GATED on there being NO near
+    // suggestion: a typo of a real type (`Strng` → `String`, `Colr` → `Color`) must keep the more useful
+    // did-you-mean the ordinary unbound path (`enrich_unbound` → `nearest_unbound_suggestion`, whose pool
+    // includes type names) produces — so defer to it whenever a candidate is in range, and take this branch
+    // only for a genuinely-unknown type. (Lowercase already returned above; a name that is a real VALUE
+    // resolves to a `Ref`, not `Poison`, so it never reaches here.)
+    if let Some(name) = db.ast.as_name(ty_expr).map(str::to_string)
+        && name.starts_with(|c: char| c.is_ascii_uppercase())
+        && matches!(resolved_of(db, ty_expr), Resolved::Poison(_))
+        && crate::resolve::nearest_unbound_suggestion(db, ty_expr, &name).is_none()
+    {
+        out.push(
+            Reject::coded(
+                Code::Unbound,
+                format!(
+                    "unknown type `{name}` — no type by that name is declared ({lead} names an existing \
+                     type); declare it with `(type {name} …)`, or use a type that is in scope"
+                ),
+            )
+            .at(ty_expr),
+        );
+        return;
+    }
     // A COMPOUND type expression carrying a lowercase type-var in a nested position — `(List b)`,
     // `(Tuple a b)`, `(-> a b)`, `(Map k v)`, `(Record (x a))`. The bare-name branch above only catches a
     // top-level `(: x a)`; a nested `b` fell to the generic `collect` below, which reported the terse
