@@ -1980,6 +1980,8 @@ pass	a tagged template whose tag is unbound is a scope error
 pass	a tagged template whose tag returns a non-Ast is a type error at the spliced site
 pass	a tagged template's hole is threaded to the tag function and read
 pass	a tagged template's spliced result folds through the ordinary path
+pass	a tagged-template tag returning a finite Ast.Float expands normally (expander control)
+pass	a tagged-template tag returning a non-canonical Ast.Float declines (the guard fires through the expander)
 pass	a tail list fold reads its scrutinee handle from its own parameter slot
 pass	a tail loop threading a projected boxed-sum accumulator and a projected cursor decodes correctly
 pass	a tail loop threads a boxed-sum accumulator and a cursor projected from one builder tuple
