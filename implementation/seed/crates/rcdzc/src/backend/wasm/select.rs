@@ -13352,6 +13352,10 @@ fn int_ty_of(db: &mut Db, id: StructId) -> IntTy {
 /// The raw IEEE float-ordering machine op for `Prim::FLt/FLe/FGt/FGe` at the given width. IEEE partialOrd:
 /// a NaN operand → 0 (false), `-0.0`/`+0.0` compare equal. (Not for `FEq` — equality uses the canonical-
 /// byte bit compare, a different relation.)
+//= spec/capabilities/numeric-model.md#a-floating-point-relational-operator-follows-the-ieee-partial-order
+//# A floating-point relational operator (`<`, `<=`, `>`, `>=`) MUST follow the IEEE-754 partial order over the operand type, so that a relational operator with a not-a-number operand yields false because a not-a-number value is unordered with respect to every value including itself.
+//= spec/capabilities/numeric-model.md#a-floating-point-relational-operator-follows-the-ieee-partial-order
+//# A negative zero and a positive zero MUST compare as neither less than nor greater than one another under a floating-point relational operator, so that the two zeroes are ordered as equal even though they are distinct under equality.
 fn float_ordering_op(op: Prim, width: u32) -> Lir {
     let f32 = width == 32;
     match op {
