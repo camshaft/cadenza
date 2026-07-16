@@ -10061,13 +10061,22 @@ fn emit_call_or_specialize(db: &mut Db, head: StructId, callee: usize, args: &[S
                 let message = if callee_has_const {
                     "an argument to a `const` parameter must be compile-time-known — it depends on runtime data"
                 } else {
-                    // The recursive-generic (producer) case: name the real cause + the workarounds an
-                    // author can act on now (the tie fix is a tracked inference follow-up).
-                    "this generic function's type variable is undetermined at this call — a recursive-generic \
-                     function whose RESULT type is not tied to its argument (e.g. a producer `List a -> Iter a` \
-                     whose element type is only inferred) cannot be monomorphized at more than one type in one \
-                     program. Use it at a single element type, annotate the result type, or make the type \
-                     concrete (a monomorphic definition)"
+                    // The recursive-generic case: a type variable in the callee's scheme is not tied to any
+                    // argument, so the monomorphizer has no concrete type to bind it to at this call. TWO
+                    // known shapes hit this (both tracked inference follow-ups): a PRODUCER whose RESULT
+                    // element is inferred free of its argument (`List a -> Iter a` used at ≥2 element types),
+                    // and a recursive TRANSFORMER threading a CLOSURE whose parameter type is not tied to the
+                    // element it maps (`(map it f) = Cons (f h) (map rest f)` — the scheme leaves `f`'s
+                    // domain a free variable, so it declines even at a SINGLE element type). Name the real
+                    // cause + the workarounds an author can act on now; do NOT claim "more than one type"
+                    // (the closure case fails at one), and do NOT blame `const` (this callee declares none).
+                    "this generic function has a type variable this call cannot determine — a recursive-generic \
+                     function whose scheme leaves a type variable untied to any argument cannot be \
+                     monomorphized here. This happens with a PRODUCER whose result element is inferred free of \
+                     its argument (`List a -> Iter a` used at more than one element type) and with a recursive \
+                     TRANSFORMER threading a closure whose parameter type is not tied to the element it maps \
+                     (declines even at a single element type). Annotate the result or the closure's parameter \
+                     type, use a single concrete element type, or make the definition monomorphic"
                 };
                 Core::Poison(Reject::coded(Code::Malformed, message))
             }
@@ -19092,11 +19101,12 @@ fn lower_record_merge(db: &mut Db, id: StructId, a: StructId, b: StructId) -> Co
     }
 }
 
-/// Lower `(Record.extend r (z v))` / `(Record.with r (z v))` — INSERT field `z ↦ v` into a constant
+/// Lower `(Record.extend r #z v)` / `(Record.with r #z v)` — INSERT field `z ↦ v` into a constant
 /// `Core::Record` (extend adds an absent field, with replaces a present one; the presence/absence
-/// CDZ0211/0212 is `infer`'s, so the fold is one insert for both). The `(z v)` pair's value occurrence
-/// carries into the new field. A poison operand propagates; a non-constant/non-record operand, or a
-/// malformed pair, declines/rejects.
+/// CDZ0211/0212 is `infer`'s, so the fold is one insert for both). Three operands
+/// (DESIGN-record-update-syntax.md): the record, a `#z` field LABEL (`label_node`, read statically by
+/// `read_label`), and the value `v` (its value occurrence carries into the new field). A poison operand
+/// propagates; a non-constant/non-record operand, or a malformed `#field` label, declines/rejects.
 fn lower_record_insert(
     db: &mut Db,
     id: StructId,

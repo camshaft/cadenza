@@ -3603,6 +3603,41 @@
   (call   main (: 5 Int64)) (output (: 5 Int64))
   (call   main (: 10 Int64)) (output (: 5 Int64)))
 
+; The COMPLEMENT of the producer tie above — a recursive-generic TRANSFORMER that threads a CLOSURE:
+; `(gmap it f) = (Cons (f h) (gmap rest f))` maps `f` over each element. Its principal type SHOULD be
+; `∀a b. (Iter a) → (a → b) → (Iter b)` with the closure DOMAIN `a` tied to the element `it` carries. The
+; seed's scheme solve does NOT yet make that tie: it infers the closure param `f`'s domain as a FREE
+; variable disconnected from `it`'s element (the scheme prints `(-> (Iter Int64) (-> (-> _ _) (Iter _)))`
+; even when `it` is concrete), so a monomorphization at ≥2 element types has no single concrete domain to
+; bind and DECLINES (CDZ0201). This is the sibling gap to the producer element tie (which the
+; rigid-param-var fix closed): the CONSUMER-of-element-via-closure tie, a tracked inference follow-up.
+; Pinned as a DECLINE so the boundary is executable — when the closure-domain tie lands, this flips to a
+; positive run and moves beside the producer case above. (A closure whose body itself fixes its parameter
+; — `(fn (x) (+ x 1))` at ONE type — already monomorphizes by the body-solve; the gap is the closure whose
+; domain only the ELEMENT determines, exercised here by the identity `(fn (s) s)` at the String use.)
+
+(case "a recursive-generic transformer threading a closure declines pending the closure-domain tie"
+  (doc    "`gmap` maps a closure `f` over a generic `Iter`, recursing `(Iter.Cons (f h) (gmap rest f))`. Its
+           closure parameter's domain should be tied to the element type `it` carries, but the seed's
+           recursive-generic scheme solve leaves `f`'s domain a FREE variable (disconnected from the
+           element), so a use at TWO element types (Int64 with `(fn (x) (+ x 1))`, String with the identity
+           `(fn (s) s)`) has no single domain to bind and DECLINES (CDZ0201). Contrast the recursive-generic
+           PRODUCER above, whose result-element tie IS made: the transformer's closure-domain tie is the
+           not-yet-built sibling. A generation that makes that tie runs this (3 + 2 = 5); until then it
+           declines.")
+  (input  (do
+            (type Iter (Nil) (Cons a (Iter a)))
+            (def (from-list xs)
+              (match xs ((list) (Iter.Nil)) ((list h .. t) (Iter.Cons h (from-list t)))))
+            (def (gmap it f)
+              (match it ((Iter.Nil) (Iter.Nil)) ((Iter.Cons h rest) (Iter.Cons (f h) (gmap rest f)))))
+            (def (icount it)
+              (match it ((Iter.Nil) 0) ((Iter.Cons h rest) (+ 1 (icount rest)))))
+            (def (main) (+ (icount (gmap (from-list (list 1 2 3)) (fn (x) (+ x 1))))
+                           (icount (gmap (from-list (list "a" "b")) (fn (s) s)))))
+            (export main)))
+  (error  CDZ0201))
+
 ; TYPE-VALUED PARAMETERS — the spec's model for a generic definition (`type-system.md §Generics Are
 ; Type-Valued Parameters`): a generic def takes the TYPE as an ordinary parameter (annotated `(: t Type)`,
 ; the kind of types), uses it as a type-constructor argument in a later parameter's annotation `(Box t)`,
