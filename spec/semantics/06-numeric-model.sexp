@@ -1038,6 +1038,44 @@
   (input  (: 1.5 (Float 48)))
   (error  CDZ0302))
 
+(case "a non-admitted float width NESTED in a compound annotation is rejected"
+  (doc    "`(: (list 1.0) (List (Float 8)))` carries the non-admitted float width `8` one level down, in a
+           `List` element type. `(Float 8)` reduces to a well-formed container of the sentinel float type,
+           so the top-level annotation LOOKS valid and the ill-formed width slipped past `cdz check` (which
+           exited 0) while the value compiled with a default width — the float twin of the nested-INTEGER
+           -width gap, and one nesting level deeper than the bare `(Float 16)` reject above. The front-end
+           descends the compound annotation and rejects CDZ0302 at the nested float width, exactly as if it
+           were written bare. Set-membership {32,64} is checked wherever a float width appears.")
+  (input  (: (list 1.0) (List (Float 8))))
+  (error  CDZ0302))
+
+(case "a non-admitted float width in a parameter annotation is rejected"
+  (doc    "`(Float 8)` as the type of a parameter of a private, never-called def — `(def (f (: x (Float
+           8))) x)` with `f` unused — is rejected CDZ0302, exactly as the value annotation `(: 1.5 (Float
+           8))` is. Before, the parameter path had NO float-width check at all, so a bad float width in a
+           parameter type slipped past `cdz check` entirely; well-formedness is TOTAL (a width is ill-formed
+           wherever the annotation appears, reachable or not — an unbound name in the same unused def is
+           CDZ0101), so the float admitted-set constraint is checked at the annotation itself, the float
+           companion of the integer parameter-width case.")
+  (input  (do
+            (def (f (: x (Float 8))) x)
+            (def (main) 0)
+            (export main)))
+  (error  CDZ0302))
+
+(case "a non-admitted float width in a type-declaration payload is rejected"
+  (doc    "`(type T (Mk (Float 8)))` puts the non-admitted float width `8` in a variant payload field of a
+           type declaration — a type-expression position the shared front-end validates, not a value
+           annotation. A float width outside {32,64} is rejected CDZ0302 at the declaration, before any
+           value of `T` is constructed, exactly as the same width in a value or parameter annotation is (and
+           as an ill-formed INTEGER width in a payload field is). Pins that the float admitted-set
+           constraint is TOTAL over every type-expression position, declaration payloads included.")
+  (input  (do
+            (type T (Mk (Float 8)))
+            (def (main) 0)
+            (export main)))
+  (error  CDZ0302))
+
 (case "subtraction"
   (input  (- 10 3))
   (output (: 7 Int64)))

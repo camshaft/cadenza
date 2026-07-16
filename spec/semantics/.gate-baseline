@@ -643,6 +643,7 @@ pass	a failure `?` short-circuits BEFORE later computation runs
 pass	a fallible parser threads a Result((value,cursor),String) through mutual recursion, short-circuiting on Err
 pass	a false variant guard shields its arm's trapping body
 pass	a family quantity displays scaled exactly to its reference (Rational)
+pass	a family quantity displays scaled to its reference over Int64, truncating a non-whole ratio
 pass	a far-miss segment kind keeps the plain unrecognized message
 pass	a field is projected from a record chosen across a call boundary by a runtime conditional
 pass	a field is projected from a record returned across a call boundary
@@ -1121,6 +1122,9 @@ pass	a nested unquote pattern matches a sub-AST by shape
 pass	a nested-let chain that reuses each binding folds to one value
 pass	a neutral and-true keeps both the trap and the value of its left operand
 pass	a nominal record compared to a plain record of the same shape is a type error
+pass	a non-admitted float width NESTED in a compound annotation is rejected
+pass	a non-admitted float width in a parameter annotation is rejected
+pass	a non-admitted float width in a type-declaration payload is rejected
 pass	a non-byte-aligned bit-field width takes its exact arbitrary-width unsigned type
 pass	a non-constructor type applied to arguments in type position is rejected
 pass	a non-dividing conversion ratio truncates on an Int magnitude
@@ -1244,6 +1248,7 @@ pass	a quantity over a Rational magnitude compares by its exact value
 pass	a quantity over an exact rational magnitude divides exactly and derives its dimension
 pass	a quantity raised to the zeroth power is a dimensionless one
 pass	a quantity's erased value is the identical numeric value the bare literal has
+pass	a quote inside a tagged-template hole reaches the tag function as an Ast value
 pass	a quote pattern binds an unquoted operand of a compound form
 pass	a quote pattern is equivalent to the Ast.* constructor pattern
 pass	a quote pattern matches a fixed arity
@@ -1566,6 +1571,7 @@ pass	a self-applying term is declined at the reduction budget, not hung on
 pass	a self-comparison less-equal still traps on a zero divisor but folds true for a nonzero one
 pass	a self-comparison of a trapping operand still traps (less-than)
 pass	a self-recursive Bool-returning function whose recursive call is the then-branch
+pass	a self-recursive effectful loop sums a fresh-id draw per step — the gensym idiom
 pass	a self-tail call passing a heap-match argument compiles to valid wasm
 pass	a self-tail loop advancing by a tuple projection while accumulating compound-sum nodes compiles
 pass	a sequencing block discards a pure compound intermediate
@@ -1971,6 +1977,7 @@ pass	an expect of a list index result is an integer usable in arithmetic
 pass	an explicit annotation overrides the default-fraction pragma
 pass	an explicit annotation overrides the default-integer pragma
 pass	an explicit conversion makes the operation well-typed
+pass	an explicit conversion off the truncating-display quantity is still exact (5 foot in inches = 60)
 pass	an explicit float-width conversion makes a mixed-width operation well-typed
 pass	an export and a like-named metadata key do not collide
 pass	an export mixing a scalar and a nested-tuple parameter returns a list from both
@@ -2705,6 +2712,7 @@ pass	the decode error's kind is matchable
 pass	the default-integer pragma is definition-site scoped, not use-site
 pass	the difference contains the elements not in the second set
 pass	the difference of a set with itself is empty
+pass	the display truncation does not lose the stored magnitude (Qty.value reads it back)
 pass	the else-branch of an if threads a performed state to the continuation
 pass	the empty and None arms of a list-payload split dispatch to their own values
 pass	the empty byte sequence has length zero

@@ -92,3 +92,55 @@ fn check_a_single_file_still_checks_only_that_file() {
     assert!(ok, "single-file check still works: {err}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn check_a_project_reports_a_shared_module_error_once() {
+    // A module that is BOTH a manifest `modules` entry AND imported by the entry must be checked ONCE —
+    // its error reported a single time, not doubled (checked standalone + via the entry's closure). The
+    // entry-first ordering + closure-cover dedup in run_check ensures this.
+    let dir = temp_project(
+        "dedup",
+        "def helper(n: Int64) -> Int64 = undefined_xyz\nexport { helper }\n",
+    );
+    let (ok, out, _err) = run_in(&dir, &["check", "."]);
+    assert!(!ok, "the module error still fails the project check");
+    let n = out.matches("undefined_xyz").count();
+    assert_eq!(
+        n, 1,
+        "the shared module's error is reported exactly once, not doubled: {out}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn check_a_project_still_checks_a_module_not_imported_by_the_entry() {
+    // Dedup must NOT drop a module the entry doesn't import: a `modules` entry unreachable from the
+    // entry is still its own check target, so its error is caught (dedup only skips ALREADY-covered
+    // files, never uncovered ones).
+    let dir = std::env::temp_dir().join(format!("cdz-checkproj-orphan-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("Project.cdz"),
+        "def name = \"o\"\ndef entry = \"app.cdz\"\ndef modules = [\"lib.cdz\", \"orphan.cdz\"]\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("lib.cdz"), "def f() -> Int64 = 1\nexport { f }\n").unwrap();
+    std::fs::write(
+        dir.join("orphan.cdz"),
+        "def g() -> Int64 = bad_name\nexport { g }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("app.cdz"),
+        "import { f } from \"lib\"\ndef main() -> Int64 = f()\nexport { main }\n",
+    )
+    .unwrap();
+    let (ok, out, _err) = run_in(&dir, &["check", "."]);
+    assert!(!ok, "the orphan module's error must fail the project check");
+    assert!(
+        out.contains("bad_name"),
+        "an error in a module the entry does NOT import is still caught: {out}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

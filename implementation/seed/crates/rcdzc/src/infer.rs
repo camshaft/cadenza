@@ -762,6 +762,30 @@ fn nested_ill_formed_int_width(
     None
 }
 
+/// The `(Float W)` companion of [`nested_ill_formed_int_width`]: the position of an ill-formed float width
+/// (outside the admitted IEEE set `{32,64}`, or non-natural) at `ty_expr` OR nested in one of its
+/// type-argument positions (`(List (Float 8))`, `(Option (Float 16))`, a record field). `None` if every
+/// float width in the type expression is admitted. Same skip-first descent as the integer helper (child 0
+/// of a `(head arg…)` form is the ctor, never a nested type). Every ill-formed float width shares one
+/// message, so this returns only the POSITION (to anchor the reject); the message is a constant.
+fn nested_ill_formed_float_width(db: &mut Db, ty_expr: StructId) -> Option<StructId> {
+    if crate::eval::is_ill_formed_float_width(db, ty_expr) {
+        return Some(ty_expr);
+    }
+    let crate::ast::Struct::List(children) = db.ast.get(ty_expr) else {
+        return None;
+    };
+    for &child in children.clone().iter().skip(1) {
+        if let Some(found) = nested_ill_formed_float_width(db, child) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+pub(crate) const FLOAT_WIDTH_MESSAGE: &str =
+    "a floating-point width must be one of the admitted IEEE widths (32 or 64)";
+
 /// The CDZ0302 out-of-range range-check EXTENDED through a COMPOUND value's payload/elements. The scalar
 /// `literal_width_fault` above catches a top-level `(: 999 Int8)`, but a NESTED narrow-width literal — the
 /// payload of `(: (Some 999) (Option Int8))`, an element of `(: (tuple 999) (Tuple Int8))`, a list element
@@ -1634,6 +1658,16 @@ pub fn param_annotation_faults(db: &mut Db, param: StructId, out: &mut Vec<Rejec
     if let Some((pos, fault)) = nested_ill_formed_int_width(db, ty_expr) {
         trace!(target: "rcdzc::infer", param = param.0, "fault: ill-formed integer width in a parameter annotation (CDZ0302)");
         out.push(Reject::coded(Code::IntOutOfRange, ill_formed_int_width_message(&fault)).at(pos));
+        return;
+    }
+    // The `(Float W)` companion: an ill-formed float width (outside the admitted IEEE set {32,64}), bare
+    // (`(: x (Float 8))`) or nested in a compound (`(: xs (List (Float 8)))`). The parameter path had NO
+    // float-width check at all, so a bad float width in a parameter type slipped past `cdz check` entirely
+    // — the same totality the integer path already has (a width is ill-formed wherever the annotation
+    // appears, reachable or not).
+    if let Some(pos) = nested_ill_formed_float_width(db, ty_expr) {
+        trace!(target: "rcdzc::infer", param = param.0, "fault: ill-formed float width in a parameter annotation (CDZ0302)");
+        out.push(Reject::coded(Code::IntOutOfRange, FLOAT_WIDTH_MESSAGE).at(pos));
         return;
     }
     // A TYPE CONSTRUCTOR applied to the WRONG number of arguments — a prelude `(List Int64 Int64)` (fails
@@ -10573,15 +10607,14 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 // otherwise let the sentinel slip through against a deferred literal).
                 //= spec/capabilities/numeric-model.md#a-floating-point-type-is-indexed-by-a-compile-time-width
                 //# A floating-point bit width that is outside the set the numeric model admits MUST be rejected at compile time with the machine-readable diagnostic for the unsatisfied width constraint, rather than accepted or trapped at runtime.
-                if let Ty::Float(ft) = &annot_ty
-                    && let crate::ty::Width::Fixed(w) = ft.width
-                    && !crate::ty::ADMITTED_FLOAT_WIDTHS.contains(&w)
-                {
+                // The bare `(Float 16)` reduces to the sentinel `Ty::Float(Fixed(0))`, but a bad width
+                // NESTED in a compound annotation (`(List (Float 8))`, `(Option (Float 16))`) reduces to a
+                // well-formed container of the sentinel element — so the top-level `annot_ty` looks valid and
+                // the ill-formed width slips past `cdz check`, the float twin of the nested-integer-width
+                // gap. Descend the annotation type expression and reject CDZ0302 at the offending position.
+                if let Some(pos) = nested_ill_formed_float_width(db, ty_expr) {
                     trace!(target: "rcdzc::infer", node = id.0, "fault: float width not in the admitted set (CDZ0302)");
-                    out.push(Reject::coded(
-                        Code::IntOutOfRange,
-                        "a floating-point width must be one of the admitted IEEE widths (32 or 64)",
-                    ));
+                    out.push(Reject::coded(Code::IntOutOfRange, FLOAT_WIDTH_MESSAGE).at(pos));
                 }
                 // An OUT-OF-CEILING / zero INTEGER width `(: e (UInt 65))` is ill-formed at the annotation
                 // regardless of what `e` is — the integer analogue of the float admitted-set check just

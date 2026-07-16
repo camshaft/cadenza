@@ -132,3 +132,24 @@
                           (_           0)))
             (export main)))
   (output (: 7 Int64)))
+
+; --- Composition: a hole may itself be a quote/Ast expression ---------------------------------------
+; A `{expr}` hole is an ORDINARY expression, so it may be a `(quote …)` (or any Ast-valued expression) —
+; the two metaprogramming surfaces compose. The hole is parsed as one expression and lowered to `Ast`, so
+; a quote in a hole reaches the tag function as the `Ast` value it denotes, exactly like a hand-written
+; `Ast.*`. Pins that the tagged-template hole surface layers cleanly over quote/quasiquote.
+
+(case "a quote inside a tagged-template hole reaches the tag function as an Ast value"
+  (doc    "A hole's expression may be a `(quote …)`: `first\"a{quote (+ 1 2)}b\"` (canonical
+           `(tagged-template first (chunks \"a\" \"b\") (holes (quote (+ 1 2))))`) passes the quote's `Ast`
+           value — `(Ast.List (Ast.Name \"+\") (Ast.Int 1) (Ast.Int 2))` — as hole 0. The `first` tag
+           returns it; `List.len` of its elements is 3. Pins that the hole surface composes with quote (the
+           hole is an ordinary expression lowered to `Ast`, so a quote reaches the tag fn like a
+           hand-written `Ast.*`).")
+  (input  (do
+            (def (first chunks holes) (match holes ((list h) h) (_ (Ast.Int 0))))
+            (def (main) (match (tagged-template first (chunks "a" "b") (holes (quote (+ 1 2))))
+                          ((Ast.List es) (List.len es))
+                          (_             0)))
+            (export main)))
+  (output (: 3 Int64)))
