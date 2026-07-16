@@ -168,9 +168,9 @@ pass	TWO performs in an if condition both fold on the strict-first spine
 pass	TWO prefix scalars then a Tuple then a suffix scalar cross the direct-call boundary
 pass	Type is a first-class value
 pass	Type.eq branches on a type-valued parameter, monomorphized per passed type
+pass	Type.eq carries an integer type's full width and signedness
 pass	Type.eq compares a RECORD type-value structurally, by field types
 pass	Type.eq compares a TUPLE type-value structurally, by element types
-pass	Type.eq carries an integer type's full width and signedness
 pass	Type.eq compares a reflected type against a written type
 pass	Type.eq compares two type-valued parameters to each other
 pass	Type.eq distinguishes a constructed generic sum by its type argument
@@ -2008,7 +2008,9 @@ pass	a type-name-colliding variant construct coexists with the width type it col
 pass	a type-value in integer-width position is rejected
 pass	a type-valued parameter threaded through a second call reaches Type.eq with its type intact
 pass	a u16 segment encodes an integer big-endian by default
+pass	a u16 segment round-trips at its maximum value
 pass	a u32 segment encodes four big-endian bytes
+pass	a u32 segment round-trips at its maximum value
 pass	a u64 pattern segment reads eight big-endian bytes back into an integer
 pass	a u64 segment encodes eight big-endian bytes
 pass	a unary constructor applied to a runtime value is returned as a program result
@@ -2251,6 +2253,7 @@ pass	an export with two tuple parameters returns a list from both
 pass	an exported closure with a narrow-arg wide-result mismatched body is rejected, not miscompiled
 pass	an exported closure with an annotation-mismatched body is rejected, not emitted invalid
 pass	an expression tree built at run time is evaluated by matching its node variants
+pass	an i16 segment round-trips at its two's-complement minimum
 pass	an identity closure composes at a single Int element type (not only String)
 pass	an identity closure composes over a COMPOUND (tuple) element at one element type
 pass	an identity closure composes through TWO chained recursive-generic maps at one element type
@@ -2353,9 +2356,12 @@ pass	an unimported sibling definition is not in scope
 pass	an unproductive self-recursion is declined, not a compiler crash
 pass	an unquote nested inside a plain quote is a syntax error, not an active unquote
 pass	an unquote of an expression with an unbound name is rejected, not quoted
+pass	an unquoted variable is not captured by a list-rest-pattern binder
 pass	an unquoted variable is not captured by a same-named fn param in the template
 pass	an unquoted variable is not captured by a same-named let binder in the template
 pass	an unquoted variable is not captured by a same-named match-pattern binder in the template
+pass	an unquoted variable is not captured by a tuple-pattern binder
+pass	an unquoted variable is not captured by a variant-payload match-pattern binder
 pass	an unrecognized annotation leaves its wrapped definition in effect
 pass	an unrecognized pragma key is rejected rather than ignored
 pass	an unrecognized string escape is rejected
@@ -2424,6 +2430,7 @@ pass	byte length agrees with the length of the encoded bytes
 pass	byte length counts the normalized form, not the source spelling
 pass	byte length is the UTF-8 byte count
 pass	byte sequences are equal by their bytes in order
+pass	capture-avoiding substitution renames a Forall binder to avoid capture (logical-form subst)
 pass	capture-avoiding substitution renames a binder so the substituted term's free variable is not captured
 pass	chained guards of the same variant are tried in order
 pass	char to-int and from-int round-trip through the scalar value
@@ -2677,6 +2684,9 @@ pass	heap-valued handler state above an inner abort keeps threading
 pass	hexadecimal, binary, and decimal spellings of one value are equal
 pass	host calls are observed in the order they were made
 pass	hygiene fix does not over-reach: a different-named template binder needs no rename
+pass	hygiene: a spliced unquote sits beside the template's own use of the renamed binder
+pass	hygiene: an unquote is uncaptured through two nested same-named template binders
+pass	hygiene: two distinct unquotes each colliding with a different template binder are both renamed
 pass	identical negative zeros nested in a tuple compare equal
 pass	identically-built ropes on both sides of a nested compare are equal (control)
 pass	importing a name a module does not export is rejected
@@ -2973,6 +2983,7 @@ pass	runtime BigInt equality holds for values reached by different arithmetic
 pass	runtime BigInt remainder runs on the arbitrary-precision runtime
 pass	runtime Bytes value-equality distinguishes different content
 pass	runtime Rational arithmetic adds two parameter-built fractions exactly
+pass	runtime String.concat is associative — (a·b)·c equals a·(b·c), both equal the flat concatenation
 pass	runtime float equality compares by canonical byte form
 pass	runtime float inequality compares by canonical byte form
 pass	runtime float ordering is a strict/non-strict partial order over finite values
@@ -3039,6 +3050,7 @@ pass	string to bytes produces the exact UTF-8 byte values, not just the right co
 pass	strings differing only in Unicode normalization are equal
 pass	structural equality holds component-wise
 pass	subset record comparison is explicit projection, not an overloaded equality
+pass	substitution fires inside an implication (subst recurses into Imp)
 pass	subtracting quantities of incompatible dimension is a compile-time error
 pass	subtraction
 pass	subtraction below the minimum integer overflows and traps
@@ -3110,6 +3122,7 @@ pass	the generator reproduces its stream from a runtime seed (same seed, same va
 pass	the greater-than operator on chars follows scalar order
 pass	the guarded-let conditional takes its else-branch when the conjunction is false
 pass	the heap list a handle BUILDS escapes the handle and is consumed outside it
+pass	the hygiene rename recurses into a NESTED compound match pattern
 pass	the identity function applied to a boolean returns the boolean
 pass	the identity function applied to an integer returns the integer
 pass	the implication-extended kernel Thm stays unforgeable — Thm.Seq of a bogus implication outside is CDZ0214

@@ -39,11 +39,15 @@ Read your `$AREA`'s design doc / plan / memory sub-index if unsure of a slice's 
 
 ## Setup (every tick)
 1. Your worktree is `.claude/worktrees/<vertical>` off `trunk`. Read the fleet contract each tick.
-2. `git fetch && git reset --hard trunk` (bare-hub: `trunk` is a LOCAL branch, there is NO
-   `origin/trunk`; reset not rebase, since pr-sync squash-integrates and a plain rebase would replay
-   your already-landed commits as orphans). Trunk moves fast under your peers. Then rebuild the store
-   (`cargo xtask build`) + `cargo xtask codegen`. On a conflict in a shared seam, take `trunk`'s side
-   and re-apply your arm.
+2. **`cargo xtask fleet sync`** — the safe base-sync. It fetches, resets onto `trunk`, then replays
+   only your not-yet-upstream commits by patch-id, so it lands you on the integrated tip WITHOUT
+   orphaning a merge-request you already have queued (a bare `git reset --hard trunk` moves your branch
+   off the commit a queued MR's `--ref` names → pr-sync silently skips it forever). It refuses on a
+   dirty tree (commit or stash scratch first) and restores your HEAD on any conflict, so it never loses
+   work. Bare-hub: `trunk` is a LOCAL branch, there is NO `origin/trunk`; reset not rebase, since
+   pr-sync squash-integrates and a plain rebase would replay already-landed commits as orphans. Trunk
+   moves fast under your peers. Then rebuild the store (`cargo xtask build`) + `cargo xtask codegen`. On
+   a conflict in a shared seam, take `trunk`'s side and re-apply your arm.
 3. Build the runtime FIRST (a missing/stale store makes heap cases false-fail).
 
 ## Pick the slice

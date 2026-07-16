@@ -2406,6 +2406,7 @@ pass	runtime BigInt equality holds for values reached by different arithmetic
 pass	runtime BigInt remainder runs on the arbitrary-precision runtime
 pass	runtime Bytes value-equality distinguishes different content
 pass	runtime Rational arithmetic adds two parameter-built fractions exactly
+pass	runtime String.concat is associative — (a·b)·c equals a·(b·c), both equal the flat concatenation
 pass	runtime float equality compares by canonical byte form
 pass	runtime float inequality compares by canonical byte form
 pass	runtime float ordering is a strict/non-strict partial order over finite values
@@ -2919,6 +2920,7 @@ todo	a Tuple ARG of FLOAT fields crosses the direct-call boundary
 todo	a Tuple ARG of MIXED widths (Int32, Int64) crosses the direct-call boundary
 todo	a Tuple ARG with a Bool field between Int64 fields crosses the direct-call boundary
 todo	a UInt64 closure round-trips through a consumer export
+todo	a base member not re-exported by the middle module is unreachable from the entry
 todo	a bottom-up fold matches a tuple of its recursive results with constructor patterns
 todo	a build-time delegated effect whose result a returned closure captures does not escape
 todo	a built-in comparison on an abstract theorem value outside the kernel is rejected
@@ -3027,6 +3029,7 @@ todo	a kernel rule using α-equivalence accepts an α-variant premise a structur
 todo	a list of closures each keeps its own capture, selected by a runtime index
 todo	a list pattern in a sum-variant payload matches a runtime node by its child count
 todo	a list-arm constructor element over a runtime-built list
+todo	a middle module re-exports a base function and also uses it in its own exported function
 todo	a multi-argument closure among distinct-signature exports
 todo	a multi-argument closure returning a COMPOUND round-trips — flat arrow spelling
 todo	a multi-argument closure round-trips through a consumer
@@ -3118,6 +3121,7 @@ todo	a symbol is constructed from a string
 todo	a three-argument closure exported to the host is called with all three
 todo	a transitive import (app <- lib <- kernel) can use a theorem through re-exported kernel functions
 todo	a transitive import cannot forge a theorem — the kernel's private constructor is unreachable from the app
+todo	a transitive re-export reaches the base module's function through the middle module
 todo	a truncating conversion to an unusual width keeps that width's low bits
 todo	a tuple-returning closure alongside a plain export — the closure
 todo	a tuple-returning closure alongside a plain export — the plain

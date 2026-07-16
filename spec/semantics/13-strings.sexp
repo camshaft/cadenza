@@ -419,6 +419,22 @@
             (export main)))
   (output (: 1 Int64)))
 
+(case "runtime String.concat is associative — (a·b)·c equals a·(b·c), both equal the flat concatenation"
+  (doc    "Concatenation is associative: `(String.concat (String.concat a b) c)` and `(String.concat a
+           (String.concat b c))` build the SAME string. Over runtime operands (`a` via `(if true \"a\"
+           \"z\")` so nothing folds), with a multi-byte scalar in the middle: a=\"a\", b=\"é\" (1 scalar,
+           2 UTF-8 bytes), c=\"bc\" — both groupings yield \"aébc\". Pins that the runtime concat EMIT (a
+           rope build/append) is associative and does not depend on grouping — a rope-rebalance or a
+           left-vs-right append that split the multi-byte scalar or reordered bytes at the join would make
+           the two groupings differ. `(and (= left \"aébc\") (= right \"aébc\"))` → 1, both backends.")
+  (input  (do
+            (def (lft (: a String) (: b String) (: c String)) (String.concat (String.concat a b) c))
+            (def (rgt (: a String) (: b String) (: c String)) (String.concat a (String.concat b c)))
+            (def (main) (if (and (= (lft (if true "a" "z") "é" "bc") "aébc")
+                                 (= (rgt (if true "a" "z") "é" "bc") "aébc")) 1 0))
+            (export main)))
+  (output (: 1 Int64)))
+
 (case "an empty-range slice of a non-empty string is Some of the empty string"
   (doc    "`(String.slice \"hello\" 2 2)` has start = end, so it selects no scalar values — Some of the
            empty string (the in-bounds degenerate companion of the empty-range slice at index 0 already
