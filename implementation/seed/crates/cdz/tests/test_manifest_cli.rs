@@ -579,10 +579,20 @@ fn a_false_property_fails_with_a_shrunk_counterexample_and_a_seed() {
 /// F2 (`@exhaustive`): a property test marked `@exhaustive` is driven over its ENTIRE finite input domain
 /// (every combination of its bounded scalar parameters) rather than by random sampling — a pass is a PROOF
 /// over the domain, and a failure names the exact case. An UNBOUNDED domain (a wide int / float) declines
-/// with a narrow-the-type message. Scalar-only params, so no value-heap store is needed (like the sampled
-/// scalar property tests above — no `store_present` guard).
+/// with a narrow-the-type message.
 #[test]
 fn an_exhaustive_property_is_driven_over_its_whole_domain() {
+    // NOTE: even a scalar-only `@exhaustive`/`@test` here EXECUTES its body under `cdz-run`, which resolves
+    // the value-heap runtime by content-address from the store — so the `anchor` sibling (`if 1==1 then
+    // unit`) FAILS storeless (giving a spurious "0 passed, N failed"). CI's `test` job builds NO store,
+    // so guard like the heap-property tests: skip when the store is absent (the store-having `gate` +
+    // `@test suites` jobs exercise this fully). See `store_present`.
+    if !store_present() {
+        eprintln!(
+            "skipping: no cadenza-store (storeless test job) — @test bodies execute under the runtime"
+        );
+        return;
+    }
     let d = dir("exhaustive");
     // A TRUE property over Bool×Bool (4 cases) — `@exhaustive` reports the case count, not a trial count.
     // (The body is trivially true over the whole domain, exercising the enumeration + report, not a bug.)
