@@ -927,6 +927,17 @@
             (def (main) (+ 1 (bomb))) (export main)))
   (trap   "unreachable"))
 
+(case "a trap message that is not a String is rejected"
+  (doc    "`trap` aborts with a TEXT message, so its argument must be a String; `(trap 42)` supplies an
+           Int64, which is rejected (CDZ0203). The diagnostic names the requirement — a trap message is
+           text — and shows the shape `(trap \"reason\")`, rather than leaking a bare 'Int64 and String'
+           clash from grounding the operator's argument type. The valid-message companion of the
+           diverging-`(trap \"unreachable\")` cases above: those pin that a WELL-FORMED trap has type
+           Never; this pins that a MALFORMED trap message is refused up front, not run.")
+  (input  (do
+            (def (main) (trap 42)) (export main)))
+  (error  CDZ0203))
+
 (case "a match on an uninhabited scrutinee is exhaustive with zero arms"
   (doc    "Witnesses type-system.md #Never Is The Empty Sum (4th sentence: a match on a Never-typed
            scrutinee is exhaustive with zero arms). `never-returns` has result type Never, so matching

@@ -1660,6 +1660,7 @@ pass	a trailing digit separator is a malformed literal, not the digits with it d
 pass	a transformation maps a syntax tree to a syntax tree and preserves meaning
 pass	a transformation observably rewrites the tree, not just its value
 pass	a transformation over the built-in Ast composes across a function call
+pass	a trap message that is not a String is rejected
 pass	a trapping condition of a same-constructor if traps before either arm
 pass	a trapping condition preempts the hoisted operator's trap
 pass	a trapping element in the taken arm of a same-length list if still traps

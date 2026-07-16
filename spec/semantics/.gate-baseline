@@ -2041,6 +2041,7 @@ pass	a transformation over the built-in Ast composes across a function call
 pass	a transitive import (app <- lib <- kernel) can use a theorem through re-exported kernel functions
 pass	a transitive import cannot forge a theorem — the kernel's private constructor is unreachable from the app
 pass	a transitive re-export reaches the base module's function through the middle module
+pass	a trap message that is not a String is rejected
 pass	a trapping condition of a same-constructor if traps before either arm
 pass	a trapping condition preempts the hoisted operator's trap
 pass	a trapping element in the taken arm of a same-length list if still traps
