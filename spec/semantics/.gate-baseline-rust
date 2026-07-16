@@ -1246,6 +1246,7 @@ pass	a recursive sum recurses THROUGH a record-typed payload
 pass	a recursive sum type works with pattern matching
 pass	a recursive tag builds a compound Ast.List at compile-time fold
 pass	a recursive tag function const-folds to a compile-time Ast
+pass	a recursive tag scans its chunk text byte-by-byte and folds to a constant Ast
 pass	a recursive unifier distinguishes arrow components through the payload slots
 pass	a recursive user sum type is built at run time and renders its variant names
 pass	a recursive walk consulting a node's own and its child's String key computes correctly
