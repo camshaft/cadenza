@@ -749,6 +749,27 @@ pub(crate) fn validate_type_position(
     {
         return;
     }
+    // An ILL-FORMED integer WIDTH in this type position — an over-ceiling `(UInt 65)`, a zero `(UInt 0)`,
+    // or a MALFORMED (negative / non-natural) width `(Int -8)`. This must be checked BEFORE the
+    // `typeval_of` early-return below: `reduce_ctor` CLAMPS such a width to the sentinel `Int0`, so
+    // `typeval_of` succeeds with a valid-looking `Ty` and the position would be waved through as "a real
+    // type" — yet the written width is ill-formed. The value-/parameter-annotation checks catch a TOP-LEVEL
+    // ill-formed width (`int_width_fault`), but a width NESTED in a compound annotation (`(List (Int -8))`,
+    // `(Option (UInt 65))`) or a TYPE-DECLARATION variant payload (`(type T (Mk (Int -8)))`) reaches the
+    // front end only through THIS position walk — so without this check it slipped past `cdz check` (silent
+    // exit 0) and crossed into a compiled artifact. Well-formedness is TOTAL (numeric-model.md: a bit width
+    // outside the admitted range MUST be rejected at compile time), so reject it here, with the SAME coded
+    // CDZ0302 + message the annotation sites give, so every position agrees.
+    if let Some(fault) = crate::eval::int_width_fault(db, pos) {
+        out.push(
+            Reject::coded(
+                Code::IntOutOfRange,
+                crate::infer::ill_formed_int_width_message(&fault),
+            )
+            .at(pos),
+        );
+        return;
+    }
     if crate::eval::typeval_of(db, pos).is_some() {
         return; // denotes a real type (self/mutual/forward refs + nested generics resolve)
     }

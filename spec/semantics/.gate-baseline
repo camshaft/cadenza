@@ -482,6 +482,7 @@ pass	a closure whose CALL returns an Option crosses as the value form
 pass	a closure whose body applies a nested lambda in place runs through a recursive HOF
 pass	a closure whose body calls a top-level helper function
 pass	a collection-carrying recursion whose base arm does a fallible indexed read compiles
+pass	a common constructor composes through a hoisted tuple field to build once
 pass	a comparison's trapping shared bound fires under a trap-free condition
 pass	a comparison-predicate function returns its boolean result
 pass	a compile-time type branch reads a runtime parameter's static type
@@ -627,6 +628,7 @@ pass	a factorial that overflows the integer type traps through the recursion
 pass	a factory RETURNS a closure capturing the def's SCALAR parameter
 pass	a factory RETURNS a closure that captures a let-bound inner closure
 pass	a failing guard falls through to a later arm
+pass	a failing nested-list guard falls to a later arm re-binding the inner list
 pass	a failing payload-binder guard falls to a later arm re-binding the payload
 pass	a failing tuple guard falls to a later arm re-binding the elements
 pass	a failure `?` short-circuits BEFORE later computation runs
@@ -1054,6 +1056,8 @@ pass	a negative hexadecimal literal negates its value
 pass	a negative integer literal pattern matches a runtime scrutinee
 pass	a negative integer width is rejected
 pass	a negative power is the reciprocal, deriving an inverse unit
+pass	a negative power over a BigInt magnitude truncates the reciprocal exactly
+pass	a negative power over a Rational magnitude is the EXACT reciprocal
 pass	a negative power over an integer magnitude truncates the reciprocal
 pass	a negative right-shift count traps rather than masking
 pass	a negative runtime BigInt result crosses the host boundary with its sign
@@ -1104,6 +1108,7 @@ pass	a nested unquote pattern matches a Float sub-AST by shape
 pass	a nested unquote pattern matches a Str sub-AST by shape
 pass	a nested unquote pattern matches a sub-AST by shape
 pass	a nested-let chain that reuses each binding folds to one value
+pass	a nested-list guard reads the inner binder and the outer rest together
 pass	a neutral and-true keeps both the trap and the value of its left operand
 pass	a nominal record compared to a plain record of the same shape is a type error
 pass	a non-byte-aligned bit-field width takes its exact arbitrary-width unsigned type
@@ -1984,6 +1989,8 @@ pass	an if-operand arithmetic op with deferred-width branches is Int64, and its 
 pass	an if-tuple returned from a call, let-bound and projected twice
 pass	an if-wrapped self-application is rejected in bounded time, not an inference hang
 pass	an if→SELECT-eligible conditional with a performed condition and pure branches stays sound
+pass	an ill-formed integer width NESTED in a compound annotation is rejected
+pass	an ill-formed integer width in a type-declaration payload is rejected
 pass	an imported helper reaches its own file's private definition when inlined
 pass	an imported name resolves to a sibling file's exported definition
 pass	an in-bounds slice yields Some of the bytes at that range
@@ -2283,6 +2290,8 @@ pass	equality of two tuples of different arity is a type error
 pass	equality over a partly-un-built sum with a free Err type compiles on every backend
 pass	eval is optional for macros and interactive use
 pass	eval of a quasiquote splicing a compile-time-known value
+pass	eval of a quasiquote splicing a string works through String ops
+pass	eval of a quasiquote-built form with a float unquote folds
 pass	eval of a quoted boolean executes it to the boolean value
 pass	eval of a quoted conditional reduces its comparison condition first
 pass	eval of a quoted conditional takes the branch its boolean literal selects
@@ -2486,6 +2495,7 @@ pass	popping a field yields its value and the remaining record
 pass	popping a tuple with a runtime element separates the head from the rest
 pass	popping a tuple yields element zero and the remaining tuple
 pass	popping an absent field is rejected
+pass	print of a quote containing a float renders re-readably
 pass	print of an Ast.Bool renders the bare word and read inverts it
 pass	print of an Ast.Float renders a re-readable decimal and read inverts it
 pass	print of an Ast.Str renders a quoted literal with escapes and read inverts it
@@ -2916,6 +2926,3 @@ todo	a closure-typed closure ARG on the DIRECT-CALL path is declined — host wo
 todo	a producer capturing a host-supplied COMPOUND parameter is declined — host→guest decode
 todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
-pass	eval of a quasiquote-built form with a float unquote folds
-pass	eval of a quasiquote splicing a string works through String ops
-pass	print of a quote containing a float renders re-readably

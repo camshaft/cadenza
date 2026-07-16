@@ -521,6 +521,29 @@
   (call   main (: 4.0 Float64))
   (output (: 0.25 Float64)))
 
+(case "a negative power over a Rational magnitude is the EXACT reciprocal"
+  (doc    "`(Qty.pow (Qty.of (Rational.of 2 3) meter) -2)` over a Rational inner: the unit is meter⁻² and the
+           magnitude is the EXACT reciprocal of (2/3)² = 4/9, i.e. 9/4 — no rounding, because a Rational
+           carries its own denominator. The reciprocal `1 / value²` needs its numerator `1` in the INNER
+           numeric type (`(Rational.of 1 1)`, NOT a bare Int64 `1`): a bare Int over a Rational value is a
+           numeric mismatch that used to slip past the check inside the quantity and surface as a backend
+           ownership error on the reciprocal divide. `1` is built in-type, so the exact rational reciprocal
+           folds. The Rational companion of the Int64-truncating negative-power case above.")
+  (input  (do (def (main)
+                (Qty.value (Qty.pow (Qty.of (Rational.of 2 3) (Unit.base #"meter")) -2))) (export main)))
+  (output (: 9/4 Rational)))
+
+(case "a negative power over a BigInt magnitude truncates the reciprocal exactly"
+  (doc    "`(Qty.pow (Qty.of (BigInt.of 4) meter) -1)` over a BigInt inner: the unit is meter⁻¹ and the
+           reciprocal 1/4 is computed by BigInt division, which truncates toward zero to 0 — a BigInt has no
+           fractions (the Rational above is the exact one). The reciprocal's numerator `1` is `(BigInt.of 1)`
+           (the inner type), not a bare Int64 `1`; building it in-type is what clears the backend ownership
+           error the mixed Int64/BigInt divide raised. Pins the BigInt companion of the negative-power
+           reciprocal — the arithmetic is over the heap-BigInt handle, exact truncation, no fractions.")
+  (input  (do (def (main)
+                (Qty.value (Qty.pow (Qty.of (BigInt.of 4) (Unit.base #"meter")) -1))) (export main)))
+  (output (: 0 BigInt)))
+
 ; ============================================================================================
 ; Comparison — same dimension required (the ordering/equality obligation)
 ; ============================================================================================

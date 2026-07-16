@@ -1158,7 +1158,14 @@ fn check_no_home_walk(
         // resolve their own performs at the arm's definition context (the under-frame) — but for the
         // no-home check, an arm body performing its own effect re-performs OUTWARD, so we walk arm bodies
         // under the OUTER handled set (without this handle's effects added), matching forwarding. The
-        // init is evaluated in the outer context too.
+        // init is evaluated in the outer context too. This is the interpose contract: a perform in the
+        // BODY resolves to THIS handler (a nearer handler wins over any enclosing `host` delegation, so an
+        // otherwise-delegated effect is intercepted); an arm re-performing its own op forwards to the
+        // next-OUTER handler/delegation, never back into this handler.
+        //= spec/capabilities/capabilities-and-effects.md#a-handler-may-interpose-on-an-effect-an-entrypoint-would-delegate
+        //# A program MUST be able to enclose, in a handler that discharges its operations, an effect an entrypoint would otherwise delegate to the host, so that the operation resolves to that handler rather than reaching the boundary, making it possible to observe, mock, cache, or otherwise stand in for a host capability without the performing code being aware — a handler nearer the perform wins over the delegation that encloses it.
+        //= spec/capabilities/capabilities-and-effects.md#a-handler-may-interpose-on-an-effect-an-entrypoint-would-delegate
+        //# A handler arm that re-performs the operation it is discharging MUST resolve that re-performance against the handlers and delegations enclosing the handler's own declaration, not against the handler itself, so that an arm forwards to the next-outer handler — up to and including the host delegation at the entrypoint — rather than recursing into itself.
         Resolved::Handle { init, arms, body } => {
             check_no_home_walk(db, init, entrypoint, handled, followed, out, depth);
             // Arm bodies: outer context (a re-performed op forwards to the next-outer handler).

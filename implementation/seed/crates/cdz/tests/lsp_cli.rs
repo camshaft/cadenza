@@ -471,3 +471,59 @@ fn lsp_hover_types_an_imported_name_across_files() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn lsp_references_span_multiple_files_across_the_closure() {
+    // Cross-file find-references: `helper` is defined + used in lib.sexp AND imported + used in
+    // main.sexp. References on the use in main returns Locations in BOTH files (single-buffer would
+    // only ever see main's).
+    let dir = std::env::temp_dir().join(format!("cdz-lsp-xref-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    std::fs::write(
+        dir.join("lib.sexp"),
+        "(module lib (def (helper x) (+ x 1)) (def (twice y) (helper (helper y))) (export helper twice))",
+    )
+    .expect("write lib");
+    let main_path = dir.join("main.sexp");
+    let main_text = "(do (import \"lib\" (helper)) (def (main) (helper 41)) (export main))";
+    std::fs::write(&main_path, main_text).expect("write main");
+    let main_uri = format!("file://{}", main_path.display());
+    let use_char = main_text
+        .match_indices("helper")
+        .nth(1)
+        .map(|(i, _)| i)
+        .expect("a helper use") as i64;
+
+    let msgs = drive_messages(&[
+        serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{},"processId":null,"rootUri":null}}),
+        serde_json::json!({"jsonrpc":"2.0","method":"initialized","params":{}}),
+        serde_json::json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":main_uri,"languageId":"cadenza","version":1,"text":main_text}}}),
+        serde_json::json!({"jsonrpc":"2.0","id":10,"method":"textDocument/references","params":{"textDocument":{"uri":main_uri},"position":{"line":0,"character":use_char},"context":{"includeDeclaration":false}}}),
+        serde_json::json!({"jsonrpc":"2.0","id":99,"method":"shutdown","params":null}),
+        serde_json::json!({"jsonrpc":"2.0","method":"exit","params":null}),
+    ]);
+    let refs = response(&msgs, 10).expect("a references response");
+    let uris: Vec<String> = refs
+        .pointer("/result")
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|l| {
+                    l.pointer("/uri")
+                        .and_then(|u| u.as_str())
+                        .map(|s| s.to_string())
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(
+        uris.iter().any(|u| u.ends_with("main.sexp")),
+        "references should include a use in main.sexp: {uris:?}"
+    );
+    assert!(
+        uris.iter().any(|u| u.ends_with("lib.sexp")),
+        "references should span into lib.sexp (cross-file): {uris:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

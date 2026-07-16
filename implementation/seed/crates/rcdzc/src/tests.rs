@@ -13856,6 +13856,28 @@ mod match_engine {
             "1",
             "equal 2nd components (Int,Int) unify to 1 — b2 reads b's payload"
         );
+        // A 3-TUPLE of sums (three colliding `[Elem(i), Payload]` prefixes of equal length) — the stronger
+        // guard (v-compiler-ml flagged the sibling shapes). `u3(a2,b2,c2)` recurses to (Int,Int,Bool); not
+        // all TInt → 0. A length-only key would alias all three prefixes to one slot; the full-prefix-STEPS
+        // key keeps them distinct (Elem(0)/Elem(1)/Elem(2) differ). Verified the sum-wrapped-pair sibling
+        // (`P.Mk(a,b)` then `match (a,b)`) resolves too — same steps-key mechanism.
+        assert_eq!(
+            run_heap_value(
+                "(module m (type Ty (TInt) (TBool) (TArrow Ty Ty)) \
+                   (def (u3 (: a Ty) (: b Ty) (: c Ty)) \
+                     (match (tuple a b c) \
+                       ((tuple (Ty.TArrow a1 a2) (Ty.TArrow b1 b2) (Ty.TArrow c1 c2)) (u3 a2 b2 c2)) \
+                       ((tuple (. Ty TInt) (. Ty TInt) (. Ty TInt)) 1) \
+                       ((tuple _ _ _) 0))) \
+                   (def (main) (u3 (Ty.TArrow (Ty.TInt) (Ty.TInt)) (Ty.TArrow (Ty.TInt) (Ty.TInt)) \
+                                   (Ty.TArrow (Ty.TInt) (Ty.TBool)))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "0",
+            "a 3-tuple of sums recurses u3(a2,b2,c2) = u3(Int,Int,Bool) → not all TInt → 0 (three distinct \
+             same-length payload prefixes each read from their own slot)"
+        );
     }
 
     #[test]
@@ -15514,6 +15536,48 @@ mod match_engine {
             reject_code(wide),
             None,
             "a wide-Int64 context param has no narrow width to overflow"
+        );
+    }
+
+    #[test]
+    fn a_provable_constant_integer_trap_names_the_cause_and_the_repair() {
+        // A provable constant-integer trap (CDZ0304) knows there is NO runtime value that rescues it, so
+        // it names the cause AND the actionable repair — matching the bar the runtime-numerator `(/ n 0)`
+        // sibling ("guard the divisor or remove the division") and the checked-conversion message set,
+        // rather than stating only the cause ("divide by zero"). Assert per cause: code stays CDZ0304 and
+        // the message carries a repair clause.
+        for (src, want) in [
+            (
+                "(module m (def x (/ 5 0)) (export x))",
+                "remove it or use a nonzero divisor",
+            ),
+            (
+                "(module m (def x (% 5 0)) (export x))",
+                "remove it or use a nonzero divisor",
+            ),
+            (
+                "(module m (def x (<< 1 200)) (export x))",
+                "a shift count must be 0..=63",
+            ),
+            (
+                "(module m (def x (* 9223372036854775807 2)) (export x))",
+                "compute in a wider type",
+            ),
+        ] {
+            let d =
+                reject_full(src).unwrap_or_else(|| panic!("a provable trap is rejected: {src}"));
+            assert_eq!(d.code.as_deref(), Some("CDZ0304"), "got: {}", d.message);
+            assert!(
+                d.message.contains(want),
+                "the const-trap message names the repair `{want}`: {}",
+                d.message
+            );
+        }
+        // NO over-rejection: a well-formed constant op still folds + compiles.
+        assert_eq!(
+            reject_code("(module m (def x (/ 10 2)) (export x) (def (main) x) (export main))"),
+            None,
+            "a valid constant division still compiles"
         );
     }
 
@@ -32911,6 +32975,43 @@ mod match_engine {
             ),
             9.0,
             "(6m/2s = 3 m/s)^2 = 9.0 (Qty.pow over a computed quantity, not a literal Qty.of)"
+        );
+    }
+
+    #[test]
+    fn qty_pow_negative_over_a_rational_inner_is_the_exact_reciprocal() {
+        // `lower_qty_pow` builds the reciprocal `1 / value^|n|` for a negative exponent; the numerator `1`
+        // must be in q's INNER numeric type, not a bare Int64. Over a Rational inner a bare `1` divided by
+        // the Rational `value` is an Int64/Rational mismatch that slipped past the check inside the quantity
+        // and surfaced as a backend "ownership cannot prove" error on the reciprocal divide. Building `1` as
+        // `(Rational.of 1 1)` clears it: (2/3 m)^-2 = 9/4 EXACTLY (a Rational carries its own denominator).
+        let src = "(do (def (main) ((. Qty value) \
+                   ((. Qty pow) ((. Qty of) ((. Rational of) 2 3) ((. Unit base) #\"meter\")) -2))) \
+                   (export main))";
+        let Some(rendered) = run_heap_value_escape(src) else {
+            return; // no runtime store — the corpus gate is the e2e witness
+        };
+        assert!(
+            rendered.contains("9/4"),
+            "(2/3 m)^-2 = 9/4 exactly (Rational-inner negative Qty.pow, numerator 1 built in-type): {rendered}"
+        );
+    }
+
+    #[test]
+    fn qty_pow_negative_over_a_bigint_inner_truncates_the_reciprocal() {
+        // The BigInt companion of the Rational reciprocal: the negative-exponent numerator `1` is built as
+        // `(BigInt.of 1)` (the inner type), not a bare Int64 `1` — building it in-type is what clears the
+        // mixed Int64/BigInt divide's backend ownership error. (4 m)^-1 = 1/4 truncates toward zero to 0
+        // (a BigInt has no fractions), the documented integer truncation.
+        let src = "(do (def (main) ((. Qty value) \
+                   ((. Qty pow) ((. Qty of) ((. BigInt of) 4) ((. Unit base) #\"meter\")) -1))) \
+                   (export main))";
+        let Some(rendered) = run_heap_value_escape(src) else {
+            return; // no runtime store — the corpus gate is the e2e witness
+        };
+        assert!(
+            rendered.contains('0'),
+            "(4 m)^-1 truncates to 0 (BigInt-inner negative Qty.pow, numerator 1 built in-type): {rendered}"
         );
     }
 

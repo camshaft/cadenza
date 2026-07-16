@@ -2704,6 +2704,32 @@
   (input  (: 5 (UInt 128)))
   (error  CDZ0302))
 
+(case "an ill-formed integer width NESTED in a compound annotation is rejected"
+  (doc    "`(: (list 1) (List (Int -8)))` carries the ill-formed width `-8` one level down, inside a
+           `List` element type rather than at the top of the annotation. Well-formedness is structural: a
+           bit width outside 1..=64 (or non-natural) is rejected wherever it appears in a type expression,
+           not only when it is the whole annotation. `(List (Int -8))` reduces to a well-formed container of
+           an ill-formed element type, so the top-level type LOOKS valid and the annotation slipped past
+           `cdz check` (which exited 0) while the value ran with a default width — the same check-vs-emit gap
+           the bare `(Int -8)` case closes, one nesting level deeper. The front-end descends the compound
+           annotation and rejects CDZ0302 at the nested width, exactly as if it were written bare. Companion
+           to the bare negative-width and the parameter-position cases above.")
+  (input  (: (list 1) (List (Int -8))))
+  (error  CDZ0302))
+
+(case "an ill-formed integer width in a type-declaration payload is rejected"
+  (doc    "`(type T (Mk (Int -8)))` puts the ill-formed width `-8` in a variant payload field of a type
+           declaration — a type-expression position the shared front-end validates, not a value annotation.
+           A width outside 1..=64 is rejected CDZ0302 at the declaration, before any value of `T` is
+           constructed, exactly as the same width in a value or parameter annotation is. Pins that the width
+           constraint is TOTAL over every type-expression position — declaration payloads included — so an
+           ill-formed width cannot enter a compiled artifact through a type definition either.")
+  (input  (do
+            (type T (Mk (Int -8)))
+            (def (main) 0)
+            (export main)))
+  (error  CDZ0302))
+
 (case "an integer width from runtime data is rejected, keeping widths non-dependent"
   (doc    "`(UInt n)` with `n` a runtime function parameter puts a runtime value in a type-determining
            position, which the type system forbids (numeric-model.md #An Integer Type Is Indexed By A

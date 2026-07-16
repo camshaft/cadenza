@@ -453,12 +453,13 @@ fn run_compile(args: compiler_cli::CompileArgs) -> ExitCode {
 /// package `entry` named and output written to `out` — the in-process source-compile core `cdz build`
 /// drives (a manifest-resolved package) and the shared spine `run_compile` uses for a source input.
 /// Each spec is parsed keeping spans (so a diagnostic locates as `path:line:col`), the `entry` becomes a
-/// `KIND_ENTRY` artifact, the default `wasm` target applies, and `opt_level` selects the optimization
-/// tier. Returns the process exit code.
+/// `KIND_ENTRY` artifact, `targets` names the backend(s) to emit (empty ⇒ the `[Wasm]` default), and
+/// `opt_level` selects the optimization tier. Returns the process exit code.
 fn compile_source_specs(
     specs: &[String],
     entry: Option<&str>,
     out: Option<PathBuf>,
+    targets: &[rcdzc::Target],
     opt_level: rcdzc::OptLevel,
 ) -> ExitCode {
     let mut inputs: Vec<rcdzc::Artifact> = Vec::new();
@@ -486,9 +487,9 @@ fn compile_source_specs(
     if let Some(entry) = entry {
         inputs.push(compiler_cli::entry_artifact(entry));
     }
-    // Default target (`wasm`) — `run_prepared` applies the `[Wasm]` default when the target list is
-    // empty, matching a bare `cdz compile`. `opt_level` is the resolved build tier.
-    compiler_cli::run_prepared(inputs, &[], out, opt_level, PROG)
+    // `run_prepared` applies the `[Wasm]` default when `targets` is empty, matching a bare `cdz compile`.
+    // `opt_level` is the resolved build tier.
+    compiler_cli::run_prepared(inputs, targets, out, opt_level, PROG)
 }
 
 /// `cdz build [DIR]` — the manifest-driven compile (the `cargo build` analogue). Resolves the project's
@@ -598,7 +599,14 @@ fn run_build(args: &BuildArgs) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    compile_source_specs(&specs, Some(&entry_name), args.out.clone(), opt_level)
+    let targets = [rcdzc::Target::from(args.target)];
+    compile_source_specs(
+        &specs,
+        Some(&entry_name),
+        args.out.clone(),
+        &targets,
+        opt_level,
+    )
 }
 
 /// Resolve `cdz build`'s optimization tier by precedence (v-core-opt design §7 — the canonical mapping):
@@ -1655,6 +1663,30 @@ struct BuildArgs {
     /// Omitted → the manifest's `opt-level`, else `--release`'s `O2`, else the default `O1`.
     #[arg(long, value_name = "LEVEL")]
     opt_level: Option<String>,
+    /// The backend target to emit. `wasm` (the default) → a WebAssembly component; `rust` → a `.rs`
+    /// module. Same targets as `cdz compile`, chosen here at the project level.
+    #[arg(long, value_enum, default_value_t = BuildTargetArg::Wasm)]
+    target: BuildTargetArg,
+}
+
+/// The backend target for `cdz build` — a small clap `ValueEnum` mapping to `rcdzc::Target` (the two a
+/// project build picks between; `cdz compile` still offers the debug/dwarf/async targets for a
+/// finer-grained single-file build). Its own enum so `--help` lists `wasm`/`rust` and clap validates it.
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum BuildTargetArg {
+    /// A WebAssembly component (the default).
+    Wasm,
+    /// A Rust source module (`.rs`).
+    Rust,
+}
+
+impl From<BuildTargetArg> for rcdzc::Target {
+    fn from(t: BuildTargetArg) -> rcdzc::Target {
+        match t {
+            BuildTargetArg::Wasm => rcdzc::Target::Wasm,
+            BuildTargetArg::Rust => rcdzc::Target::Rust,
+        }
+    }
 }
 
 // ── unit testing ───────────────────────────────────────────────────────────────────────────────────

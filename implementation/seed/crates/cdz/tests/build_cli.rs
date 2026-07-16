@@ -251,3 +251,53 @@ fn build_rejects_a_bad_manifest_opt_level() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn build_target_rust_emits_a_rust_module() {
+    // `cdz build --target rust` emits a `.rs` module instead of a wasm component; default is wasm.
+    let dir = temp_opt_project("targetrust", "");
+    let (ok, _o, err) = run(&[
+        "build",
+        dir.to_str().unwrap(),
+        "--target",
+        "rust",
+        "-o",
+        dir.to_str().unwrap(),
+    ]);
+    assert!(ok, "cdz build --target rust failed: {err}");
+    assert!(
+        dir.join("main.rs").is_file(),
+        "the rust target emits main.rs: {err}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn build_defaults_to_the_wasm_target() {
+    // With no --target, `cdz build` emits a wasm component (the default).
+    let dir = temp_opt_project("targetwasm", "");
+    let (ok, _o, err) = run(&["build", dir.to_str().unwrap(), "-o", dir.to_str().unwrap()]);
+    assert!(ok, "default build failed: {err}");
+    assert!(
+        dir.join("main.wasm").is_file(),
+        "default target is wasm: {err}"
+    );
+    assert!(
+        !dir.join("main.rs").is_file(),
+        "no rust module without --target rust"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn build_rejects_an_unknown_target_naming_the_choices() {
+    // A bogus --target is a clap value error listing the valid targets.
+    let dir = temp_opt_project("targetbad", "");
+    let (ok, _o, err) = run(&["build", dir.to_str().unwrap(), "--target", "elf"]);
+    assert!(!ok, "a bad --target should fail");
+    assert!(
+        err.contains("invalid value") && err.contains("wasm") && err.contains("rust"),
+        "error lists the valid targets: {err}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

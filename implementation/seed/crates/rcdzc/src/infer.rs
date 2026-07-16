@@ -715,7 +715,7 @@ fn literal_width_fault(db: &mut Db, value: StructId, ty_expr: StructId) -> Optio
 /// WRITTEN width (`(UInt 65)` → "`UInt65` is not a valid integer type …"); a MALFORMED (negative /
 /// non-natural) width has NO width number to name, so it states the constraint the width violated (a width
 /// must be a compile-time NATURAL in 1..=64) — the case that used to slip past `cdz check` entirely.
-fn ill_formed_int_width_message(fault: &crate::eval::IntWidthFault) -> String {
+pub(crate) fn ill_formed_int_width_message(fault: &crate::eval::IntWidthFault) -> String {
     match *fault {
         crate::eval::IntWidthFault::OverCeiling { signed, width } => format!(
             "`{}{width}` is not a valid integer type: a width must be in 1..=64 (a fixed-size integer \
@@ -728,6 +728,38 @@ fn ill_formed_int_width_message(fault: &crate::eval::IntWidthFault) -> String {
             if signed { "Int" } else { "UInt" }
         ),
     }
+}
+
+/// The FIRST ill-formed integer width ANYWHERE in the type-expression `ty_expr` — the top-level type OR a
+/// NESTED type-argument position (`(Option (UInt 65))`, `(List (Int -8))`, `(Tuple Int8 (Int -8))`,
+/// `(Map (Int -8) v)`). A top-level `int_width_fault` catches `(: 5 (Int -8))`, but a width nested in a
+/// compound annotation reduces to a valid-looking `Ty` (the ctor clamps the bad width to sentinel `Int0`),
+/// so the top-level check + `typeval_of` both wave it through — it slipped past `cdz check` while the emit
+/// path caught it (a check-vs-emit gap). Recurse every type-ctor ARGUMENT position (the tail elements of a
+/// `(head arg…)` type form; the head `List`/`Option`/`Map`/`->`/`Int`/… is the ctor, not a nested type)
+/// and return the first arg that is itself an ill-formed-width integer type. Reuses `eval::int_width_fault`
+/// per position, so the message + code match the top-level check exactly. A record `(Record (f T)…)` field
+/// TYPE is a tail element of its `(f T)` pair — descended too (skipping the label). Returns `(pos, fault)`.
+fn nested_ill_formed_int_width(
+    db: &mut Db,
+    ty_expr: StructId,
+) -> Option<(StructId, crate::eval::IntWidthFault)> {
+    // This position itself — an `(Int W)`/`(UInt W)` with an ill-formed width.
+    if let Some(fault) = crate::eval::int_width_fault(db, ty_expr) {
+        return Some((ty_expr, fault));
+    }
+    // Otherwise descend its type-argument positions. A type form is `(head arg…)`; the head is the ctor
+    // (a name/prim), never a nested type, so skip child 0. A `(name Type)` record-field pair's TYPE is its
+    // second child (skip the label at child 0 via the same skip-first rule, recursively).
+    let crate::ast::Struct::List(children) = db.ast.get(ty_expr) else {
+        return None;
+    };
+    for &child in children.clone().iter().skip(1) {
+        if let Some(found) = nested_ill_formed_int_width(db, child) {
+            return Some(found);
+        }
+    }
+    None
 }
 
 /// The CDZ0302 out-of-range range-check EXTENDED through a COMPOUND value's payload/elements. The scalar
@@ -1596,11 +1628,12 @@ pub fn param_annotation_faults(db: &mut Db, param: StructId, out: &mut Vec<Rejec
     // outside the admitted range (1..=64) is rejected at compile time, never accepted or trapped at run.
     //= spec/capabilities/numeric-model.md#an-integer-type-is-indexed-by-a-compile-time-width
     //# A bit width that is outside the range the numeric model admits MUST be rejected at compile time with the machine-readable diagnostic for the unsatisfied width constraint, rather than accepted or trapped at runtime.
-    if let Some(fault) = crate::eval::int_width_fault(db, ty_expr) {
+    // Checks the top-level type AND every nested type-argument position (`(UInt 65)`, `(Option (Int -8))`,
+    // `(List (UInt 0))`), so an ill-formed width buried in a compound annotation is rejected too (it
+    // reduces to a clamped-sentinel `Ty` that `typeval_of` would otherwise wave through).
+    if let Some((pos, fault)) = nested_ill_formed_int_width(db, ty_expr) {
         trace!(target: "rcdzc::infer", param = param.0, "fault: ill-formed integer width in a parameter annotation (CDZ0302)");
-        out.push(
-            Reject::coded(Code::IntOutOfRange, ill_formed_int_width_message(&fault)).at(ty_expr),
-        );
+        out.push(Reject::coded(Code::IntOutOfRange, ill_formed_int_width_message(&fault)).at(pos));
         return;
     }
     // A TYPE CONSTRUCTOR applied to the WRONG number of arguments — a prelude `(List Int64 Int64)` (fails
@@ -10523,12 +10556,12 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 // misleading clamped `UInt0`; catch it HERE by reading the ORIGINAL width, so a NON-literal
                 // value (`(: x (UInt 65))`) is rejected too and the message names the written width. Same
                 // CDZ0302 + wording as the parameter-annotation path (`param_annotation_faults`).
-                if let Some(fault) = crate::eval::int_width_fault(db, ty_expr) {
+                if let Some((pos, fault)) = nested_ill_formed_int_width(db, ty_expr) {
                     trace!(target: "rcdzc::infer", node = id.0, "fault: ill-formed integer width in a value annotation (CDZ0302)");
-                    out.push(Reject::coded(
-                        Code::IntOutOfRange,
-                        ill_formed_int_width_message(&fault),
-                    ));
+                    out.push(
+                        Reject::coded(Code::IntOutOfRange, ill_formed_int_width_message(&fault))
+                            .at(pos),
+                    );
                 }
                 // A bare integer LITERAL annotated with an integer type is a GROUNDING, not a
                 // unification: the literal has no intrinsic signedness/width to conflict, so the
