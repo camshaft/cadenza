@@ -208,6 +208,45 @@
   (call   main)
   (output (: true Bool)))
 
+(case "a runtime Rational MAP KEY is found by a normalized-equal key"
+  (doc    "The CHAMP-KEY face of Rational equality (distinct from the tuple-element walk): insert a map under
+           the key `(Rational.of 1 2)`, look it up with `(Rational.of 2 4)` — both normalize to the same
+           lowest-terms `1/2` node, so `champ_hash`/`champ_eq` place + find them in the same slot → the
+           stored 42. Pins that a Rational KEY hashes+matches by its canonical normalized form, not its
+           as-written num/den — the path a CAD `Map Rational V` / a Rational-keyed table rests on.")
+  (input  (do (def (main) (Option.expect (Map.lookup (Map.insert (Map.empty) (Rational.of 1 2) 42) (Rational.of 2 4)) "found")) (export main)))
+  (call   main)
+  (output (: 42 Int64)))
+
+(case "equality over a Rational carried in a SUM payload respects normalization"
+  (doc    "The variant-payload face (a `Vec3r`-shaped value): a Rational in a sum variant is compared by its
+           canonical normalized form through the value-eq walk. `(V.Mk (Rational.of 1 2))` equals
+           `(V.Mk (Rational.of 2 4))` → true (both normalize to `1/2`); vs `(Rational.of 1 3)` → false. Pins
+           that `ty_heap_walkable` admits a Rational leaf through a sum payload, not just a tuple position.")
+  (input  (do (type V (Mk Rational))
+              (def (eq (: a Rational) (: b Rational)) (= (V.Mk a) (V.Mk b)))
+              (def (main) (if (eq (Rational.of 1 2) (Rational.of 2 4)) 1 0)) (export main)))
+  (call   main)
+  (output (: 1 Int64)))
+
+(case "a runtime BigInt is found as a Set element by value"
+  (doc    "The Set/CHAMP-element face of BigInt equality: `(BigInt.of 5)` IS a member of a set built with
+           `(BigInt.of 5)` → true, `(BigInt.of 9)` is NOT → false. The BigInt element/query compares by its
+           canonical sign-magnitude bytes through `champ_eq`/`champ_hash`, so a runtime BigInt key hashes+
+           matches its equal — the BigInt companion of the Rational map-key case.")
+  (input  (do (def (mem (: x BigInt)) (Set.contains (Set.of (list (BigInt.of 5))) x))
+              (def (main) (mem (BigInt.of 5))) (export main)))
+  (call   main)
+  (output (: true Bool)))
+
+(case "a runtime BigInt absent from a Set is not found"
+  (doc    "The negative companion: `(BigInt.of 9)` is NOT in a set holding `(BigInt.of 5)` → false. Confirms
+           the BigInt Set-membership is a genuine canonical-byte match, not always-present.")
+  (input  (do (def (mem (: x BigInt)) (Set.contains (Set.of (list (BigInt.of 5))) x))
+              (def (main) (mem (BigInt.of 9))) (export main)))
+  (call   main)
+  (output (: false Bool)))
+
 (case "equality over a compound mixing a float and a Bytes leaf walks both"
   (doc    "A compound value-eq whose leaves span TWO of the newly-walkable types at once — a Float64 and a
            Bytes — exercises the heap-walk over a heterogeneous compound: `(= (tuple f b) (tuple f b'))`

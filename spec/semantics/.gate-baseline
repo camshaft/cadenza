@@ -1484,11 +1484,13 @@ pass	a round-trip consumer that does NOT apply the closure on the taken branch
 pass	a run's result is a deterministic function of a host call's recorded response
 pass	a run-time-index String.at result compares equal to the same character as a literal
 pass	a run-time-index scalar read is present in bounds and absent out of bounds
+pass	a runtime BigInt absent from a Set is not found
 pass	a runtime BigInt accumulator threaded through recursion grows past Int64
 pass	a runtime BigInt comparison sees an intermediate that overflows Int64
 pass	a runtime BigInt divide crosses the host boundary as its truncated quotient
 pass	a runtime BigInt in an Option payload crosses the host boundary
 pass	a runtime BigInt intermediate that overflows Int64 does not trap
+pass	a runtime BigInt is found as a Set element by value
 pass	a runtime BigInt operation does not silently promote a fixed-width operand
 pass	a runtime BigInt ordering compares by the arbitrary-precision value
 pass	a runtime BigInt remainder takes the dividend's sign
@@ -1512,6 +1514,7 @@ pass	a runtime MIXED-SCALE Rational-magnitude sum converts to the reference EXAC
 pass	a runtime NaN equals a runtime NaN under the canonical byte form
 pass	a runtime NaN leaf in a tuple compares equal, a runtime -0.0 leaf stays distinct
 pass	a runtime Option carrying a user sum is matched by a nested constructor pattern
+pass	a runtime Rational MAP KEY is found by a normalized-equal key
 pass	a runtime Rational built from a parameter compares by its exact value
 pass	a runtime Rational comparison of a parameter is false when it should be
 pass	a runtime Result carrying a String error is matched
@@ -2487,6 +2490,7 @@ pass	equality of an integer and a float is rejected, not silently promoted
 pass	equality of an integer and a string is a type error
 pass	equality of two records with different field sets is a type error
 pass	equality of two tuples of different arity is a type error
+pass	equality over a Rational carried in a SUM payload respects normalization
 pass	equality over a compound mixing a float and a Bytes leaf walks both
 pass	equality over a partly-un-built sum with a free Err type compiles on every backend
 pass	equality over a runtime float in a SUM payload compares by the float leaf
