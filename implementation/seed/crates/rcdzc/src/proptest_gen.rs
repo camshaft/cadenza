@@ -282,13 +282,16 @@ fn classify_ty_at(ast: &Arenas, ty: StructId, items: &[StructId], depth: usize) 
         }
         let mut fields = Vec::with_capacity(rec_tail.len());
         for &field in rec_tail {
-            // `field` = `(NAME TYPE)` — a two-element list.
-            let field_items = match ast.get(field) {
-                crate::ast::Struct::List(items) if items.len() == 2 => items,
+            // `field` = `(NAME TYPE)` — a two-element list. Bind its children as `field_pair` (NOT `items`,
+            // which would SHADOW the top-level `items` param this arm's recursion must keep passing — the
+            // shadow is scoped to the arm so behavior was already correct, but the reused name reads as a
+            // bug, PR #419; renamed for clarity).
+            let field_pair = match ast.get(field) {
+                crate::ast::Struct::List(field_pair) if field_pair.len() == 2 => field_pair,
                 _ => return None,
             };
-            let fname = ast.as_name(field_items[0])?.to_string();
-            let fty = classify_ty_at(ast, field_items[1], items, depth + 1)?;
+            let fname = ast.as_name(field_pair[0])?.to_string();
+            let fty = classify_ty_at(ast, field_pair[1], items, depth + 1)?;
             fields.push((fname, fty));
         }
         return Some(GenTy::Record(fields));
@@ -853,6 +856,16 @@ mod tests {
                 "(do (@ test (def (lr (: xs (List (Record (a Int64) (b Bool)))))  (List.len xs))) (def (o) 1))",
                 "lr",
                 "lr-gen",
+            ),
+            // A bare-name USER SUM inside a record FIELD must resolve — the field-classify recursion must
+            // keep passing the TOP-LEVEL `items` (not the field's own list) so `Ty` finds its `(type …)`
+            // decl (PR #419: the arm bound `items` shadowing the param; renamed to `field_pair`). If the
+            // recursion passed the field list, `Ty` would not resolve and this would decline (no wrapper).
+            (
+                "(do (type Ty (A Int64) (B Bool)) \
+                   (@ test (def (rs (: v (Record (t Ty) (n Int64)))) 0)) (def (o) 1))",
+                "rs",
+                "rs-gen",
             ),
         ] {
             let db = Db::load(crate::testkit::parse(src));
