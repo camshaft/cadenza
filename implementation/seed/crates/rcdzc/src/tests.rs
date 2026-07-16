@@ -66491,6 +66491,70 @@ mod cross_component_oracle {
     }
 
     // ------------------------------------------------------------------------------------------------
+    // PL19 — the ELEMENT read of a peer-returned list, USED (matched to a scalar). The common pattern:
+    // a peer op returns a `(List Int64)`, the consumer indexes it with `List.at` and matches the
+    // resulting `Option` down to a scalar the entrypoint returns. main(7) = match (List.at [8,9] 0) →
+    // Some 8 → 8. This WORKS and is worth pinning.
+    //
+    // ⚠ THE BOUNDARY (root-caused this tick, filed queue/peerbug-list-at-of-peer-returned-list-declines…):
+    // if the entrypoint RETURNS the raw `Option` (i.e. `List.at` IS the whole body), the export escapes a
+    // compound RESULT via `emit_runtime_resource`, which does NOT thread the peer extern-import set (never
+    // calls `with_extern_order`) → the peer op declines "not in the extern-import set". So the gap is NOT
+    // `List.at` per se — it is a peer-bound HostCall in a body whose EXPORT RESULT escapes as a resource.
+    // The common case (read the element, return a scalar — this test) takes the normal `emit` path and
+    // WORKS. Pinning the working shape; the resource-escape+peer fusion is the filed follow-up.
+    // ------------------------------------------------------------------------------------------------
+    #[test]
+    fn an_element_of_a_peer_returned_list_is_read_and_used() {
+        use crate::testkit::parse;
+        // PROVIDER: mklist(x) = [x+1, x+2].
+        let provider = compile_provider(
+            "(do (def (mklist (: x Int64)) (list (+ x 1) (+ x 2))) (export mklist))",
+            "cadenza:l/api",
+        );
+        // CONSUMER: reads element 0 with List.at, matches the Option to a SCALAR the entrypoint returns
+        // (so the export result is Int64 — the normal emit path, not the resource escape).
+        let src = "(do \
+            (effect L (op mklist (-> Int64 (List Int64)))) \
+            (bind L \"cadenza:l/api\") \
+            (def (main (: x Int64)) \
+              (host (L) (match (List.at (L.mklist x) 0) ((Some v) v) (None 0)))) \
+            (export main))";
+        let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .unwrap_or_else(|d| {
+                panic!(
+                    "element-read consumer compiles: {} [{:?}]",
+                    d.message, d.code
+                )
+            });
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("[PL19] runtime wasm not found; skipping");
+            return;
+        };
+        let peers = vec![cdz_run::Peer {
+            bytes: provider,
+            interface: "cadenza:l/api".to_string(),
+        }];
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec!["7".to_string()],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run_with_peers(&consumer, &peers, &opts)
+            .expect("an element of a peer-returned list is read + used")
+        {
+            // mklist(7) = [8,9]; List.at 0 = Some 8; the Some arm yields 8.
+            cdz_run::Outcome::Value(s) => assert_eq!(
+                s, "8",
+                "an element read from a peer-returned list crosses + is used (scalar-return path)"
+            ),
+            cdz_run::Outcome::Trap(t) => panic!("element-read run trapped: {t}"),
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------------
     // U17 — HANDLE PASS-THROUGH: peer A produces a compound, the consumer passes it DIRECTLY to peer B
     // WITHOUT inspecting it. Composes U16 (compound arg in) with U5 (compound result out) across TWO
     // boundary crossings in one body, exercising ownership-transfer-on-argument: the handle A mints flows
