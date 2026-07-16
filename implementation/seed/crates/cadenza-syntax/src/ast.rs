@@ -688,4 +688,104 @@ mod tests {
         assert_eq!(b.as_form(root, "if"), None); // wrong head
         assert_eq!(b.structure_len(), 3); // do, stmt, root
     }
+
+    /// A tiny deterministic PRNG (SplitMix64) — reproducible generation without a dependency (mirrors
+    /// the unit-test PRNGs in `codec.rs`/`lexer.rs`).
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+            z ^ (z >> 31)
+        }
+        fn below(&mut self, n: usize) -> usize {
+            (self.next() % n as u64) as usize
+        }
+    }
+
+    /// A random leaf spanning EVERY `Leaf` variant — the shapes only a hand-built arena reaches (the
+    /// reader never produces a `Bytes`/`Char`/`BadEscape`/`Sym` freely mixed with numbers), so this
+    /// stresses the codec's per-kind serialization in combinations the corpus can't.
+    fn gen_leaf(rng: &mut Rng) -> Leaf {
+        match rng.below(11) {
+            0 => Leaf::Int {
+                value: BigInt::from(rng.next() as i64),
+                radix: [Radix::Dec, Radix::Hex, Radix::Bin][rng.below(3)],
+            },
+            1 => Leaf::Float(Decimal {
+                negative: rng.next() & 1 == 0,
+                significand: BigInt::from(rng.next() % 10_000),
+                exponent: (rng.next() % 9) as i64 - 4,
+            }),
+            2 => Leaf::Str(["", "hi", "a\nb", "λ中🎉"][rng.below(4)].to_string()),
+            3 => Leaf::Char(['a', 'é', '\n', '🎉'][rng.below(4)]),
+            4 => Leaf::Bytes(vec![(rng.next() & 0xff) as u8, (rng.next() & 0xff) as u8]),
+            5 => Leaf::Bool(rng.next() & 1 == 0),
+            6 => Leaf::Sym(["meter", "x", ""][rng.below(3)].to_string()),
+            7 => Leaf::Name(["f", "x", "+", "list", "record"][rng.below(5)].to_string()),
+            8 => Leaf::BadEscape(['q', 'z'][rng.below(2)]),
+            9 => Leaf::BadChar("u+D800".to_string()),
+            _ => Leaf::Suffixed {
+                value: SuffixBody::Int {
+                    value: BigInt::from(rng.next() % 1000),
+                    radix: Radix::Dec,
+                },
+                kind: [SuffixKind::BigInt, SuffixKind::Rational][rng.below(2)],
+            },
+        }
+    }
+
+    /// Build a random subtree into `b` (atoms across all leaf kinds + lists of random arity), returning
+    /// its root id. Bounded by `depth`.
+    fn gen_node(rng: &mut Rng, b: &mut Builder, depth: usize) -> StructId {
+        if depth == 0 || rng.below(3) == 0 {
+            let leaf = gen_leaf(rng);
+            b.atom_leaf(leaf)
+        } else {
+            // A list of 0..=4 children (an empty list is a shape the reader never makes, but a hand-built
+            // or decoded arena can — the codec must handle it).
+            let n = rng.below(5);
+            let kids: Vec<StructId> = (0..n).map(|_| gen_node(rng, b, depth - 1)).collect();
+            b.list(kids)
+        }
+    }
+
+    #[test]
+    fn builder_arena_survives_the_codec_and_structurally_eq_is_reflexive_over_generated_trees() {
+        // The core invariant every surface reader rests on, exercised at the BUILDER level (not via a
+        // surface parse): an arbitrary `Builder`-built arena — atoms across ALL `Leaf` variants (incl.
+        // `Bytes`/`Char`/`BadEscape`/`Sym`/`Suffixed` freely mixed) + lists of arbitrary arity incl.
+        // EMPTY — round-trips through the binary codec (`encode` → `decode`) to a STRUCTURALLY-EQUAL
+        // arena, and `structurally_eq` is reflexive on the result. The corpus roundtrip only covers
+        // reader-producible trees; this reaches the leaf-kind/arity combinations only a hand-built or
+        // decoded arena takes, stressing the codec's per-kind serialization + the structurally_eq walk.
+        let mut rng = Rng(0xa57_c0de_a57_c0de);
+        for _ in 0..4000 {
+            let mut b = Builder::new();
+            let depth = 1 + rng.below(4);
+            let root = gen_node(&mut rng, &mut b, depth);
+            let arena = b.finish(root);
+            // Reflexive: an arena is structurally equal to itself.
+            assert!(
+                arena.structurally_eq(&arena),
+                "structurally_eq not reflexive"
+            );
+            // Codec round-trip: encode → decode reproduces a structurally-equal arena.
+            let bytes = crate::codec::encode(&arena);
+            let decoded = crate::codec::decode(&bytes)
+                .expect("a Builder-built arena always encodes to a decodable canonical form");
+            assert!(
+                arena.structurally_eq(&decoded),
+                "Builder arena not preserved through the codec"
+            );
+            // And re-encoding the decoded arena is byte-identical (the encoding is canonical + stable).
+            assert_eq!(
+                bytes,
+                crate::codec::encode(&decoded),
+                "re-encode of the decoded arena is not byte-identical"
+            );
+        }
+    }
 }
