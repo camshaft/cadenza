@@ -111,6 +111,24 @@ fn main() -> ExitCode {
         m.vertex_count(),
         args.output.display()
     );
+
+    // Report the model's bounding box (extents / size / center) — the "how big is it / does it fit the bed?"
+    // answer a printer workflow wants. Computed by manifold from the evaluated geometry (rotations + booleans
+    // included), so it needs no language-side fold.
+    match cdz_cad::bounds_with_segments(&solid, args.segments) {
+        Some(b) => {
+            let d = b.dimensions();
+            let c = b.center();
+            eprintln!(
+                "cdz-cad: bounds min [{:.3}, {:.3}, {:.3}] max [{:.3}, {:.3}, {:.3}] size [{:.3}, {:.3}, {:.3}] center [{:.3}, {:.3}, {:.3}]",
+                b.min[0], b.min[1], b.min[2],
+                b.max[0], b.max[1], b.max[2],
+                d[0], d[1], d[2],
+                c[0], c[1], c[2],
+            );
+        }
+        None => eprintln!("cdz-cad: bounds: (empty — no geometry)"),
+    }
     ExitCode::SUCCESS
 }
 
