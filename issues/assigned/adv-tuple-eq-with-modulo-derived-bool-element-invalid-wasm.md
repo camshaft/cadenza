@@ -28,3 +28,25 @@ PRECISE TRIGGER = [checked DIV or REM by a CONSTANT divisor] → [Bool] → [ele
 So the CONST-DIVISOR optimized div/rem form is mis-emitted specifically inside the SYNTHESIZED per-element compare
 function of a compound `=` (not in normal expression position, where it's fine). Seam narrows to: compound-= compare-fn
 synthesis × the const-divisor div/rem lowering. wasm-only; rust fine.
+
+## DIAGNOSIS (v-runtime, 2026-07-16) — slot-TYPE collision, NOT a rem mis-emit; localized, fix pending
+Reproduced on trunk@40a57b74c. `wasm-tools validate` → `func 6 (main) failed: type mismatch: expected
+i32, found i64 (at offset 0x206)`. func 6 = MAIN (funcs 0-5 are the runtime imports), NOT a synthesized
+compare fn — the two tuples + `value-eq` are built inline in main.
+
+func 6 decl: `(param i64) (local i64 i32 i32 i32)` = locals 0=s(i64),1(i64),2(i32),3(i32),4(i32). The
+signed-const-power-of-two rem sequence (emit_div_rem, select.rs ~12637) tee's its DIVIDEND scratch into
+**local 2** and reads it as i64 (`local.tee 2; local.get 2; i64.const 63; i64.shr_s; …`) — but local 2 is
+declared **i32**. So slot 2 is claimed by TWO producers with different types: the rem dividend (i64) AND
+something i32 (the packed-bool element result / a tuple-build handle slot), and the scratch_ty→declared
+merge keeps i32 → the i64 tee is invalid.
+
+ROOT: a slot-index aliasing between `emit_div_rem`'s dividend scratch and the enclosing tuple-element /
+value-eq slot accounting — NOT the rem arithmetic (it's value-correct in isolation; only the slot TYPE
+collides). ⚠ First fix attempt (change emit_div_rem `sa = base` → `sa = *high`) did NOT resolve it — the
+collision persists at slot 2, so `*high` there already equals the bool-element's slot. The real fix needs
+tracing WHY the div/rem dividend slot and the bool-element slot coincide: likely the `Core::Tuple` emit's
+per-element `elem_base = *high` is NOT bumped past a scalar element's transient scratch before the next
+element, OR emit_div_rem's `scratch_ty.insert` races the bool result's slot. NEXT: trace the Tuple emit's
+base/high threading for `(tuple 5 <bool-with-rem>)` — instrument the slot each of {rem-dividend,
+bool-result, element-handle} gets. wasm-only (rust backend fine). Fix is in select.rs slot allocation.
