@@ -1077,8 +1077,9 @@ mod tests {
         // (bypassing the reader's MAX_NESTING_DEPTH cap) and clone it into a fresh Md builder — a
         // native-recursive clone would overflow the stack. `Arenas` is FLAT (no recursive drop), so this
         // needs no big-stack thread; only clone_subtree's own recursion was the concern, now an explicit
-        // stack. Assert the clone completes, is structurally equal to the source, and its span table is
-        // 1:1 (the push order is preserved).
+        // stack. Assert the clone completes, is structurally equal to the source, and — since span
+        // tracking is ON — its span table stays 1:1 with the arena (one span pushed per emitted node, in
+        // id order, so the table is TOTAL: `get(id)` is `Some` for every structure id and `len` matches).
         let depth = 60_000usize;
         let mut sb = Builder::new();
         let mut cur = sb.name("x");
@@ -1087,13 +1088,29 @@ mod tests {
         }
         let src = sb.finish(cur);
 
+        // Extract the span table before `b.finish` reclaims the builder (the `Md` borrows it mutably).
         let mut b = Builder::new();
-        let mut md = super::Md::new(&mut b, Some(SpanTable::new(FileId(0))));
-        let root = md.clone_subtree(&src, src.root, Span::new(0, 0)); // must NOT overflow
+        let (root, spans) = {
+            let mut md = super::Md::new(&mut b, Some(SpanTable::new(FileId(0))));
+            let root = md.clone_subtree(&src, src.root, Span::new(0, 0)); // must NOT overflow
+            let spans = md.spans.take().expect("span tracking is on");
+            (root, spans)
+        };
         let cloned = b.finish(root);
         assert!(
             cloned.structurally_eq(&src),
             "deep clone preserves the tree"
+        );
+        // The span table is 1:1 with the cloned arena: exactly one entry per node...
+        assert_eq!(
+            spans.len(),
+            cloned.structure.len(),
+            "span table has one entry per cloned node"
+        );
+        // ...and TOTAL — every structure id resolves to a span (push order preserved, no gaps).
+        assert!(
+            (0..cloned.structure.len() as u32).all(|i| spans.get(StructId(i)).is_some()),
+            "span table is total over every cloned node id"
         );
     }
 

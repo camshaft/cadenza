@@ -591,12 +591,46 @@ mod tests {
                 }
             }
         }
-        // And the forward direction, restated on the interned representatives: a program re-read fresh
-        // canonicalizes to bytes ALREADY present (so `by_bytes` never double-counts an identical tree).
-        // The sweep necessarily produces repeats given the small alphabet, so we actually exercise hits.
+        // The sweep's hit-count is only a coverage HINT — not a hard invariant, since it couples to
+        // gen_prog's output distribution + iteration count (a benign generator tweak that stops producing
+        // a duplicate would fail a `>= 1` assert though canonicalization is fine). So we DON'T assert on
+        // it; instead we exercise the collision branch DETERMINISTICALLY on CONSTRUCTED inputs below.
+        let _ = collisions_checked; // (kept as a readable coverage hint, intentionally not asserted)
+
+        // Deterministic guarantee that the "same bytes ⟹ same tree" branch is real: build the SAME tree
+        // two different ways (head-first vs operand-first, the s-expr vs ML occurrence orders). Their raw
+        // arenas differ, but canonicalization must make the bytes identical — so a bytes-keyed map DOES
+        // collide, and the collision is between structurally-EQUAL trees (the branch's assertion holds).
+        let mut b1 = Builder::new();
+        let (p1, x1, y1) = (b1.name("+"), b1.name("a"), b1.name("b"));
+        let r1 = b1.list(vec![p1, x1, y1]);
+        let head_first = b1.finish(r1);
+        let mut b2 = Builder::new();
+        let (x2, p2, y2) = (b2.name("a"), b2.name("+"), b2.name("b"));
+        let r2 = b2.list(vec![p2, x2, y2]);
+        let operand_first = b2.finish(r2);
+        assert_ne!(
+            head_first.structure, operand_first.structure,
+            "the two builds really differ before canon"
+        );
+        assert_eq!(
+            codec::encode(&canonicalize(&head_first)),
+            codec::encode(&canonicalize(&operand_first)),
+            "equal trees canonicalize to identical bytes (the forward direction the collision branch relies on)"
+        );
         assert!(
-            collisions_checked >= 1,
-            "the sweep never produced a repeated canonical form — alphabet too sparse to test injectivity"
+            head_first.structurally_eq(&operand_first),
+            "the collision is between structurally-equal trees"
+        );
+        // ...and the reverse, on a constructed DISTINCT pair: a different tree MUST get different bytes.
+        let mut b3 = Builder::new();
+        let (p3, x3, y3) = (b3.name("-"), b3.name("a"), b3.name("b"));
+        let r3 = b3.list(vec![p3, x3, y3]);
+        let different = b3.finish(r3); // `(- a b)` vs `(+ a b)`
+        assert_ne!(
+            codec::encode(&canonicalize(&head_first)),
+            codec::encode(&canonicalize(&different)),
+            "structurally-distinct trees canonicalize to DISTINCT bytes"
         );
     }
 }
