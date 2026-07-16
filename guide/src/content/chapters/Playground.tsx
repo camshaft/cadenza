@@ -18,6 +18,15 @@ function CalculatorLink({ children }: { children: React.ReactNode }) {
   );
 }
 
+/// A router-aware internal link to another chapter (respects the Pages sub-path basename).
+function Ch({ to, children }: { to: string; children: React.ReactNode }) {
+  return (
+    <Link to={to} className="text-cadenza-300 underline-offset-2 hover:underline">
+      {children}
+    </Link>
+  );
+}
+
 export default function Playground() {
   return (
     <article>
@@ -130,6 +139,16 @@ export default function Playground() {
         highlighting by role, go-to-definition and find-references, name completion from what's actually in
         scope, one-click quick-fixes from the compiler's suggested repairs, and an outline of a file's
         definitions.
+      </P>
+      <P>
+        One of those is unique to Cadenza's compiler. Above every generic definition the compiler{" "}
+        <em>specialized</em>, the editor shows a <em>CodeLens</em> naming its concrete instances — a label
+        like <C>2 instances: [n: Int64, x: Int64] · [n: Int64, x: String]</C> above a generic <C>loopn</C>{" "}
+        used at both types. Cadenza monomorphizes generics (see{" "}
+        <Ch to="/ad-hoc-polymorphism">Ad-hoc polymorphism</Ch>), and this makes that normally-invisible
+        specialization visible right in the source — it's the in-editor face of the same query{" "}
+        <C>cdz instantiations</C> answers on the command line. A plain, non-generic definition gets no
+        lens, because nothing was specialized.
       </P>
       <Note>
         It's the same principle as the playground's editor, carried to your own tools: the colours, the
