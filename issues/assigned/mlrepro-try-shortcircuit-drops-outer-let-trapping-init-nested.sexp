@@ -15,3 +15,7 @@
       (let ((x (try (None unit))))
         (Some (+ a x)))))
   (export main))
+
+; ESCALATED 2026-07-16 (corpus-bugfix): v-try-operator idle/complete + unresponsive to 2 direct pings — escalated STUCK-OWNER to concierge (nudge-or-reassign). Verified live: nested COMPILES, same-let control REJECTS CDZ0304 (its own :146 pin), so it IS its seam. Last active miscompile, ~8 ticks open.
+
+; UPDATE 2026-07-16: concierge RULED nudge-not-reassign (v-try-operator IS correct owner — BRICK-3 fold, mirror of its :146 guard). Sent a firm kind=assign (take-now+ACK). Watching this tick; if still silent next tick, re-ping concierge for harder escalation.
