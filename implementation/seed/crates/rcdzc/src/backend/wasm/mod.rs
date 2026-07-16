@@ -1356,6 +1356,24 @@ fn host_param_abi(p: &host::HostParam) -> Option<runtime_abi::AbiValType> {
     }
 }
 
+/// Convert a host-import set into the `ExternImport`-shaped slice the resource core-module builder
+/// (`runtime_resource_core_module_form_ex2`) takes for its LEADING ops — the host effect name stands in for
+/// the peer interface, and each scalar param maps through `host_param_abi`. Used by the host-resource-escape
+/// arms with `leading_is_host = true`, which flips the import module to `"host"`. BYTE-IDENTICAL to a host
+/// functype for a SCALAR op (a String param would be dropped by `host_param_abi` → the caller declines a
+/// string-param host op up front via `set_needs_memory`, so no arity mismatch reaches here).
+fn host_as_extern_for(host_imports: &[host::HostImport]) -> Vec<host::ExternImport> {
+    host_imports
+        .iter()
+        .map(|hi| host::ExternImport {
+            interface: hi.effect.clone(),
+            op: hi.op.clone(),
+            params: hi.params.iter().filter_map(host_param_abi).collect(),
+            result: hi.result,
+        })
+        .collect()
+}
+
 /// The COMPONENT functype of a cross-component extern op (X4b) — the shape declared in the peer
 /// interface's instance-type AND in the boundary the consumer imports against. Param NAMES are `p0,p1,…`
 /// (the convention `assemble_extern` + a matching provider both use — a component-model interface import
@@ -7045,11 +7063,102 @@ fn emit_runtime_sum_resource(
             }
         });
     }
+    // HOST-DELEGATED effect in a SUM resource escape — the host mirror (increment 2), same as the Flat site.
+    // Scalar/unit host ops compose via `assemble_host_runtime_resource`; a String-param host op or a
+    // host-alongside-peer shape declines.
     if !host_imports.is_empty() {
-        return Err(Reject::decline(
-            "a host-delegated effect in an entrypoint whose result escapes as a runtime resource is not \
-             yet emitted (only a peer-bound effect is); consume the host op's result into a scalar the \
-             entrypoint returns",
+        if !extern_imports.is_empty() {
+            return Err(Reject::decline(
+                "a host effect composed with a peer effect in a resource-escaping entrypoint is not yet \
+                 emitted (host+peer+resource triple fusion)",
+            ));
+        }
+        if host::set_needs_memory(&host_imports) {
+            return Err(Reject::decline(
+                "a host op with a STRING parameter in a resource-escaping entrypoint is not yet emitted \
+                 (the shared-memory host-resource `_mem` variant is a later increment); a scalar/unit host \
+                 op result-escaping as a resource IS emitted",
+            ));
+        }
+        let h = host_imports.len() as u32;
+        let k = imports.len() as u32;
+        let host_order: Vec<(String, String)> = host_imports
+            .iter()
+            .map(|hi| (hi.effect.clone(), hi.op.clone()))
+            .collect();
+        let iface = host_imports[0].effect.clone();
+        let host_layout = layout
+            .with_import_base(h + k + 2)
+            .with_host_order(host_order);
+        let host_layout = &host_layout;
+        let mut funcs: Vec<SelectedFunc> = Vec::new();
+        for &def in &host_layout.order {
+            let body = def_body(db, def)?;
+            let params = match host_layout.export_plan(def) {
+                Some(e) => e.params.clone(),
+                None => crate::layout::def_params(db, def),
+            };
+            funcs.push(select_function_of(
+                db,
+                body,
+                &params,
+                host_layout,
+                Some(def),
+            )?);
+        }
+        let export_abs = host_layout.abs(export_def).ok_or_else(|| {
+            Reject::decline("the escaping sum export is not in the emission order")
+        })?;
+        let (make_param_vts, make_param_bytes) =
+            export_make_params(db, host_layout, export_def)?.scalars_only()?;
+        let make_core_slots: Vec<serialize::MakeCoreSlot> = make_param_vts
+            .iter()
+            .map(|_| serialize::MakeCoreSlot::Scalar)
+            .collect();
+        let host_as_extern: Vec<host::ExternImport> = host_imports
+            .iter()
+            .map(|hi| host::ExternImport {
+                interface: hi.effect.clone(),
+                op: hi.op.clone(),
+                params: hi.params.iter().filter_map(host_param_abi).collect(),
+                result: hi.result,
+            })
+            .collect();
+        let mut main_core = serialize::runtime_resource_core_module_form_ex2(
+            &funcs,
+            &imports,
+            &host_as_extern,
+            true, // leading ops are HOST — import from "host"
+            export_abs,
+            serialize::EscapeForm::Sum(tpl),
+            &[],
+            &make_param_vts,
+            &make_core_slots,
+        )
+        .map_err(Reject::decline)?;
+        append_debug_sections(db, host_layout, &funcs, &imports, spans, &mut main_core);
+        let dtor_core = serialize::resource_dtor_module_with_drop();
+        let import_name = runtime_import_name();
+        let make_slots: Vec<envelope::ArgSlot> = make_param_bytes
+            .iter()
+            .map(|&b| envelope::ArgSlot::Scalar(b))
+            .collect();
+        let host_fns: Vec<envelope::HostFn> = host_imports
+            .iter()
+            .map(|hi| envelope::HostFn {
+                op: hi.op.clone(),
+                comp_functype: host_op_comp_functype(hi),
+                core_functype: Vec::new(),
+            })
+            .collect();
+        return Ok(envelope::assemble_host_runtime_resource(
+            &main_core,
+            &dtor_core,
+            &imports,
+            &import_name,
+            &iface,
+            &host_fns,
+            &make_slots,
         ));
     }
     // The fused envelope supports MULTIPLE distinct peer interfaces (grouped into g imported instances).
@@ -7215,11 +7324,82 @@ fn emit_recursive_sum_resource(
             }
         });
     }
+    // HOST-DELEGATED effect in a RECURSIVE-SUM resource escape — the host mirror (increment 2). Scalar/unit
+    // host ops compose via `assemble_host_runtime_resource`; a String-param or host-alongside-peer declines.
     if !host_imports.is_empty() {
-        return Err(Reject::decline(
-            "a host-delegated effect in an entrypoint whose result escapes as a runtime resource is not \
-             yet emitted (only a peer-bound effect is); consume the host op's result into a scalar the \
-             entrypoint returns",
+        if !extern_imports.is_empty() {
+            return Err(Reject::decline(
+                "a host effect composed with a peer effect in a resource-escaping entrypoint is not yet \
+                 emitted (host+peer+resource triple fusion)",
+            ));
+        }
+        if host::set_needs_memory(&host_imports) {
+            return Err(Reject::decline(
+                "a host op with a STRING parameter in a resource-escaping entrypoint is not yet emitted \
+                 (the shared-memory host-resource `_mem` variant is a later increment); a scalar/unit host \
+                 op result-escaping as a resource IS emitted",
+            ));
+        }
+        let h = host_imports.len() as u32;
+        let k = imports.len() as u32;
+        let host_order: Vec<(String, String)> = host_imports
+            .iter()
+            .map(|hi| (hi.effect.clone(), hi.op.clone()))
+            .collect();
+        let iface = host_imports[0].effect.clone();
+        let host_layout = layout
+            .with_import_base(h + k + 2)
+            .with_host_order(host_order);
+        let host_layout = &host_layout;
+        let mut funcs: Vec<SelectedFunc> = Vec::new();
+        for &def in &host_layout.order {
+            let body = def_body(db, def)?;
+            let params = match host_layout.export_plan(def) {
+                Some(e) => e.params.clone(),
+                None => crate::layout::def_params(db, def),
+            };
+            funcs.push(select_function_of(
+                db,
+                body,
+                &params,
+                host_layout,
+                Some(def),
+            )?);
+        }
+        let export_abs = host_layout.abs(export_def).ok_or_else(|| {
+            Reject::decline("the escaping recursive-sum export is not in the emission order")
+        })?;
+        let mut main_core = serialize::runtime_resource_core_module_form_ex2(
+            &funcs,
+            &imports,
+            &host_as_extern_for(&host_imports),
+            true, // leading ops are HOST — import from "host"
+            export_abs,
+            serialize::EscapeForm::RecursiveSum(descriptor),
+            &[],
+            &make_params.leaf_vts,
+            &make_params.core_slots(),
+        )
+        .map_err(Reject::decline)?;
+        append_debug_sections(db, host_layout, &funcs, &imports, spans, &mut main_core);
+        let dtor_core = serialize::resource_dtor_module_with_drop();
+        let import_name = runtime_import_name();
+        let host_fns: Vec<envelope::HostFn> = host_imports
+            .iter()
+            .map(|hi| envelope::HostFn {
+                op: hi.op.clone(),
+                comp_functype: host_op_comp_functype(hi),
+                core_functype: Vec::new(),
+            })
+            .collect();
+        return Ok(envelope::assemble_host_runtime_resource(
+            &main_core,
+            &dtor_core,
+            &imports,
+            &import_name,
+            &iface,
+            &host_fns,
+            &make_params.boundary_slots(),
         ));
     }
     // The fused envelope supports MULTIPLE distinct peer interfaces (grouped into g imported instances).

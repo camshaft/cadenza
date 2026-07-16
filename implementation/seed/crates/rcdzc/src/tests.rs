@@ -48673,6 +48673,30 @@ mod stage1 {
     }
 
     #[test]
+    fn a_scalar_host_op_result_escaping_as_a_sum_or_list_resource_emits() {
+        // HOST-RESOURCE-ESCAPE, increment 2: the SUM (Option) and RECURSIVE-SUM (List) resource-escape
+        // sites — `emit_runtime_sum_resource` / `emit_recursive_sum_resource` — get the same host arm as the
+        // Flat/tuple site (increment 1): a scalar host op whose result escapes inside a `Some`/a `List` push
+        // composes via `assemble_host_runtime_resource` (`leading_is_host = true`). Both previously declined.
+        // Emits a VALID component for each. Scalar-only (a String-param host op still declines to the `_mem`
+        // follow-up). v-peer-linking byte-review offered for these sites (mirror the peer sum/recursive-sum).
+        for src in [
+            // SUM (non-recursive, Option): Some(H.h x) escapes
+            "(do (effect H (op h (-> Int64 Int64))) (type Opt (None) (Some Int64)) \
+             (def (main (: x Int64)) (host (H) (Some (H.h x)))) (export main))",
+            // RECURSIVE-SUM (List): List.push [] (H.h x) escapes
+            "(do (effect H (op h (-> Int64 Int64))) \
+             (def (main (: x Int64)) (host (H) ((. List push) (list) (H.h x)))) (export main))",
+        ] {
+            let bytes = compile_component(&crate::codec::encode(&parse(src)))
+                .expect("a scalar host op result-escaping as a sum/list resource now emits");
+            let engine = wasmtime::Engine::default();
+            wasmtime::component::Component::from_binary(&engine, &bytes)
+                .expect("the host+sum/list-resource-escape component must be valid");
+        }
+    }
+
+    #[test]
     fn two_performs_across_a_let_fold_via_the_one_shot_refold() {
         // E5 TWO-HOLE across a `let`: a hole in a let INIT and another in the BODY. The one-shot refold
         // (`leading_strict_hole` descends the `let`'s inits then body) folds it: leading flip in the INIT →
