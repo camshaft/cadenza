@@ -9307,3 +9307,43 @@
             (export main)))
   (call   main (: 0 Int64))
   (output (: 52 Int64)))
+
+; --- Nested-list guard binders: the composition faces of the third guard-binder fix ----------------
+; 24e84c90e lets a guard read a NESTED-LIST element's inner binder (the third member of the
+; guard-binder family after the ctor-list fold and the tuple descent; its pin covers the flat inner
+; head). These pin the compositions, promoted from passing breaker probes.
+
+(case "a nested-list guard reads the inner binder and the outer rest together"
+  (doc    "`(guard (list (list a .. r1) .. r2) (> a (List.len r2)))` — the cond mixes the INNER
+           list's head binder with the OUTER rest binder: [[5]] → r2 = [] → 5 > 0 → 5; [[0], [1]] →
+           r2 has one element → 0 > 1 fails → -1 → 4. The two binders live at different desugar
+           levels (the inner body re-match vs the outer arm), so the relocated cond must see both.")
+  (input  (do
+            (def (f (: xs (List (List Int64))))
+              (match xs
+                ((guard (list (list a .. r1) .. r2) (> a (List.len r2))) a)
+                (_ -1)))
+            (def (main (: v Int64))
+              (+ (f (List.push (list) (List.push (list) 5)))
+                 (f (List.push (List.push (list) (List.push (list) v)) (List.push (list) 1)))))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 4 Int64)))
+
+(case "a failing nested-list guard falls to a later arm re-binding the inner list"
+  (doc    "Arm one guards `(> a 9)` (→ 100+a), arm two re-binds the same nested-list head unguarded
+           (→ a): [[15]] passes → 115; [[2]] fails → falls to arm two → 2 → 117. The fall-through
+           face over the nested-list desugar (both arms desugar their inner re-match independently;
+           the failing cond reaches arm two's binding, never a residual trap).")
+  (input  (do
+            (def (f (: xs (List (List Int64))))
+              (match xs
+                ((guard (list (list a .. r1) .. r2) (> a 9)) (+ 100 a))
+                ((list (list a .. r1) .. r2) a)
+                (_ -1)))
+            (def (main (: v Int64))
+              (+ (f (List.push (list) (List.push (list) 15)))
+                 (f (List.push (list) (List.push (list) v)))))
+            (export main)))
+  (call   main (: 2 Int64))
+  (output (: 117 Int64)))
