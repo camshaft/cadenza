@@ -55,10 +55,12 @@ VNOTE=""
 # the loop both SCHEDULES the recurring cron AND runs the role body each fire.
 TICK="Run one tick of your role ($ROLE)$VNOTE: (1) 'cargo xtask fleet heartbeat $AGENT' (stop cleanly \
 if a stop-file exists); (2) drain your inbox $FLEET/inbox/$AGENT/ oldest-first — act on each message, \
-then move it to processed/; (3) sync (git fetch && rebase trunk), then do ONE well-scoped unit of work \
-per $SRC/loops/$ROLE.md and gate it green before sending pr-sync a merge-request. Coordinate with peers \
-only via 'cargo xtask fleet send'; if you need a human decision send the concierge an 'ask' and keep \
-working — never wait for a reply."
+then move it to processed/; (3) sync your base with 'cargo xtask fleet sync' (the safe base-sync: \
+resets onto trunk + replays only your not-yet-upstream commits by patch-id, so it never orphans a \
+queued merge-request's --ref like a bare 'git reset --hard trunk' would), then do ONE well-scoped unit \
+of work per $SRC/loops/$ROLE.md and gate it green before sending pr-sync a merge-request. Coordinate \
+with peers only via 'cargo xtask fleet send'; if you need a human decision send the concierge an 'ask' \
+and keep working — never wait for a reply."
 
 KICKOFF="You are the fleet agent named '$AGENT' (role: $ROLE), running UNATTENDED.$VNOTE \
 FIRST read $SRC/AGENTS-fleet.md (the fleet contract — inbox protocol, the single-writer/no-CAS land \
