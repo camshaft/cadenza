@@ -2188,10 +2188,33 @@ fn run_check(args: &CheckArgs) -> ExitCode {
         }
     };
     // Check each; a project fails if ANY file has an error-severity fault (OR the per-file results). Every
-    // file is checked (not short-circuited) so the user sees ALL diagnostics in one run.
+    // file is checked (not short-circuited) so the user sees ALL diagnostics in one run. But a module
+    // that is BOTH a manifest target AND imported by another target would be checked twice — once
+    // standalone, once via the importer's closure — DOUBLE-reporting its diagnostics. So skip a target
+    // whose file was already pulled into an EARLIER target's import closure: `check_one(entry)` links +
+    // checks the entry's whole closure (its imported modules included), so a later standalone check of
+    // one of those modules is redundant. Dedup by canonical path (so `./util.cdz` and `util.cdz` match).
+    let canon = |p: &str| {
+        std::fs::canonicalize(p)
+            .map(|c| c.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| p.to_string())
+    };
+    let mut covered: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut any_error = false;
     for f in &files {
+        if covered.contains(&canon(f)) {
+            continue; // already checked via an earlier target's closure — don't double-report
+        }
         any_error |= check_one(f, args.json, args.verify_fixes);
+        // Mark f AND every file its closure pulled in as covered, so a later target that is one of those
+        // imported modules is skipped. A load error here just means f alone is covered (check_one already
+        // reported it).
+        covered.insert(canon(f));
+        if let Ok(closure) = load_import_closure_with(f, &|_| None) {
+            for lf in &closure {
+                covered.insert(canon(&lf.path));
+            }
+        }
     }
     if any_error {
         ExitCode::FAILURE
@@ -2240,11 +2263,15 @@ fn resolve_check_targets(target: Option<&str>) -> Result<Vec<String>, String> {
     // A directory: prefer its manifest's file set; else walk every source file under it.
     match load_manifest(&dir)? {
         Some((mpath, m)) => {
-            // The manifest's checkable files: its library `modules` + the `entry` (the whole package).
-            let mut pats = m.modules.clone();
+            // The manifest's checkable files: the `entry` FIRST, then its library `modules`. Entry-first
+            // so the dedup in `run_check` works: `check_one(entry)` links + checks the entry's whole
+            // import closure (the modules it uses), marking them covered — so a module reached that way is
+            // then skipped rather than re-checked standalone (which would double-report its diagnostics).
+            let mut pats = Vec::new();
             if let Some(entry) = &m.entry {
                 pats.push(entry.clone());
             }
+            pats.extend(m.modules.iter().cloned());
             if pats.is_empty() {
                 return Err(format!(
                     "{}: the manifest declares no `entry`/`modules` to check",
