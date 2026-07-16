@@ -2855,7 +2855,7 @@ mod tests {
     #[test]
     fn shell_quote_wraps_and_escapes_for_eval() {
         // `describe` emits KEY='<value>' lines that window.sh `eval`s, so shell_quote MUST produce a
-        // literal a POSIX shell reads back as the exact input — no expansion, no injection. A plain
+        // literal that a POSIX shell reads back as the exact input — no expansion, no injection. A plain
         // value is just single-quoted; an embedded single quote uses the POSIX close-reopen idiom
         // ('\'') since a single-quoted string can't contain a quote. (Each expected literal below was
         // verified to round-trip through a real `sh -c` in this slice.)
@@ -2935,5 +2935,32 @@ mod tests {
                 "role {unattended:?} is unattended and MUST disallow AskUserQuestion"
             );
         }
+    }
+
+    #[test]
+    fn count_dir_counts_matching_top_level_files_only() {
+        // count_dir backs the board's inbox-depth (`N msg`). Its invariants matter: it must count only
+        // immediate FILES matching `keep`, and must NOT descend into subdirs — the inbox holds a
+        // `processed/` archive, and counting it would massively over-report the live backlog.
+        let base = std::env::temp_dir().join("cdz-count-dir-test");
+        let _ = std::fs::remove_dir_all(&base); // clean any prior run
+        std::fs::create_dir_all(&base).unwrap();
+        // Two live .json messages + a non-.json file (should be skipped by the `keep` predicate).
+        std::fs::write(base.join("000000000001-1-merge-request.json"), "{}").unwrap();
+        std::fs::write(base.join("000000000001-2-note.json"), "{}").unwrap();
+        std::fs::write(base.join("README.txt"), "x").unwrap();
+        // A processed/ subdir with its own .json files — count_dir must NOT descend into it.
+        std::fs::create_dir_all(base.join("processed")).unwrap();
+        std::fs::write(base.join("processed/000000000001-0-old.json"), "{}").unwrap();
+        std::fs::write(base.join("processed/000000000001-9-old.json"), "{}").unwrap();
+
+        // Only the two top-level .json files count (not README.txt, not the subdir or its contents).
+        assert_eq!(count_dir(&base, |f| f.ends_with(".json")), 2);
+        // A predicate that matches nothing → 0 (not an error).
+        assert_eq!(count_dir(&base, |f| f.ends_with(".sexp")), 0);
+        // A missing dir → 0, never a panic (an agent with no inbox yet reads as empty).
+        assert_eq!(count_dir(&base.join("does-not-exist"), |_| true), 0);
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 }
