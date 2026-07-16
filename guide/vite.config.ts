@@ -108,6 +108,10 @@ export default defineConfig({
         //   - codemirror: the editor stack (@codemirror/*, @uiw/react-codemirror, @lezer/*) — pulled in
         //     eagerly by every <Runnable>; the single largest slice of the entry chunk.
         //   - react-vendor: react + react-dom + react-router, the framework core.
+        // NOTE: the 3D stack (three/@react-three/manifold-3d) is deliberately NOT manualChunk'd — the
+        // lazy CadPage route already splits it into its own chunk, and forcing a manual chunk pulled a
+        // shared Vite helper into it, which made the ENTRY depend on (and modulepreload) the 908 kB 3D
+        // bundle. Leaving Rollup's automatic lazy-route splitting alone keeps three OFF first paint.
         manualChunks(id) {
           if (/node_modules\/(@codemirror|@uiw|@lezer)\//.test(id)) return "codemirror";
           if (/node_modules\/(react|react-dom|react-router|react-router-dom|scheduler)\//.test(id))

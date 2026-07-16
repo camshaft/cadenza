@@ -1476,6 +1476,25 @@
   (call   main (: 0 Int64))
   (output (: 2 Int64)))
 
+; `quote` is HEAD-AGNOSTIC: it reifies a parenthesized form to an `Ast.List` whose head is an `Ast.Name`
+; whatever the head SPELLS — a grammar keyword (`if`), a collection constructor (`list`/`tuple`/`record`),
+; or an ordinary identifier all reify identically (head → `Ast.Name`, elements → their leaves). `quote`
+; produces syntax WITHOUT interpreting it (metaprogramming.md #Quote Produces An AST Value), so it must NOT
+; special-case a keyword or constructor head — a quote that did would tag `(if …)`'s head differently from
+; `(f …)`'s and leak grammar semantics into the reified structure. Pins that the reifier keys on syntactic
+; ROLE (head position → Name), never on the head's MEANING.
+
+(case "quote reifies a grammar-keyword head as an ordinary Ast.Name"
+  (doc    "`(quote (if a b c))` reifies to an `Ast.List` whose head is `(Ast.Name \"if\")` — `quote` does
+           NOT interpret `if` as a conditional, it is a bare name in head position like any other. Matching
+           the head binds the Name and `String.byte-len` is 2. Pins that `quote` is head-agnostic (syntactic,
+           not semantic): a keyword head reifies exactly as an ordinary identifier head does, so no grammar
+           meaning leaks into the AST value.")
+  (input  (match (quote (if a b c))
+            ((Ast.List (list (Ast.Name h) .. _)) (String.byte-len h))
+            (_                                    -1)))
+  (output (: 2 Int64)))
+
 (case "three leaf variants in one quoted form each dispatch their own tag"
   (doc    "`(quote (\"s\" 5 true))` reifies a list whose three elements are DISTINCT leaf variants —
            Ast.Str, Ast.Int, Ast.Bool — bound by one list pattern and classified by a shared `kind`

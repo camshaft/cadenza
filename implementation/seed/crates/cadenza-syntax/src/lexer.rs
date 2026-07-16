@@ -119,7 +119,17 @@ impl<'a> Lexer<'a> {
             // fractional `.` is consumed inside `number` (it needs a digit after the `.`), so it never
             // reaches here — `1..n` therefore lexes `1` `..` `n`, not `1.` `.n`.
             '.' if self.peek() == Some('.') => {
-                let b = self.bump().unwrap();
+                let b = self.bump().unwrap(); // the second `.`
+                // `..=` is the CLOSED range operator (`lo..=hi`) — one token distinct from `..`, so the
+                // parser can desugar it to the dedicated inclusive-range head. A `..=` is only meaningful
+                // as this operator (there is no `..=` rest-marker), so gluing the `=` is unambiguous.
+                if self.peek() == Some('=') {
+                    let c = self.bump().unwrap();
+                    return Some(Token {
+                        kind: Kind::DotDotEq,
+                        span: a.span.merge(c.span),
+                    });
+                }
                 return Some(Token {
                     kind: Kind::DotDot,
                     span: a.span.merge(b.span),
@@ -956,6 +966,24 @@ mod tests {
         assert_eq!(kinds("1..n"), vec![Kind::Int, Kind::DotDot, Kind::Ident]);
         // `...` is `..` then `.` (greedy two-char), harmless — no collection uses it.
         assert_eq!(kinds("..."), vec![Kind::DotDot, Kind::Dot]);
+    }
+
+    #[test]
+    fn dotdoteq_is_the_closed_range_operator() {
+        // `..=` is its OWN token (the closed-range operator `lo..=hi`), glued greedily from `..` + `=`.
+        assert_eq!(kinds("..="), vec![Kind::DotDotEq]);
+        // `1..=n` lexes `Int DotDotEq Ident` — the inclusive-range reading (the grammar/desugar lands
+        // once the prelude Range module exists; the token is the surface piece prepped now).
+        assert_eq!(kinds("1..=n"), vec![Kind::Int, Kind::DotDotEq, Kind::Ident]);
+        // A `..` NOT followed by `=` stays the plain `DotDot` (the `=` glue is only after exactly `..`).
+        assert_eq!(kinds("1..n"), vec![Kind::Int, Kind::DotDot, Kind::Ident]);
+        // `..==` is `..=` then a lone `=` (greedy: `..=` wins, the trailing `=` is its own token).
+        assert_eq!(kinds("..=="), vec![Kind::DotDotEq, Kind::Eq]);
+        // `.. =` (a space between) is NOT `..=` — the `=` must be glued.
+        assert_eq!(kinds(".. ="), vec![Kind::DotDot, Kind::Eq]);
+        // `..=>` — the `=` glues to `..` first (`..=`), leaving `>` a lone `Gt`; `=>` does NOT re-form
+        // across the token boundary (documents the greedy-`..=` precedence over a would-be `=>`).
+        assert_eq!(kinds("..=>"), vec![Kind::DotDotEq, Kind::Gt]);
     }
 
     #[test]

@@ -71,12 +71,16 @@ pub enum Kind {
     BinOpen, // `b[` — opens a binary literal `b[<segment>, …]` (desugars to `(bin …)`); glued like `b"`
     Comma,   // arg/binding/arm separator, and the `,` unquote prefix
     Dot,     // `.`
-    DotDot,  // `..` — the rest/spread marker in a collection literal or pattern (`[x, .. rest]`)
-    Colon,   // `:`
-    Semi,    // `;` — the sequence separator (`a; b; c` -> `(do a b c)`)
-    FatArrow, // `=>`
-    Arrow,   // `->`
-    Hash,    // `#`
+    DotDot,  // `..` — the rest/spread marker in a collection literal or pattern (`[x, .. rest]`),
+    // AND the half-open range operator `lo..hi` (surface sugar → a prelude `Range.of` call; the parse
+    // + desugar land once v-iterators publishes the prelude `Range` module — approved range-sugar D1).
+    DotDotEq, // `..=` — the CLOSED range operator `lo..=hi` (→ `Range.incl`); its own token so inclusive
+    // range semantics never route through `lo..(hi+1)` (which would overflow at `hi == Int64.max`).
+    Colon,         // `:`
+    Semi,          // `;` — the sequence separator (`a; b; c` -> `(do a b c)`)
+    FatArrow,      // `=>`
+    Arrow,         // `->`
+    Hash,          // `#`
     At, // `@` — the ANNOTATION sigil (`@name form` -> `(@ name form)`); distinct from `,@` below
     AtBang, // `@!` — the PRAGMA sugar (`@!key arg` -> `(pragma key arg)`); the inner-attribute twin of `@`
     Backtick, // `` ` `` beginning a `` `{ … } `` quasiquote

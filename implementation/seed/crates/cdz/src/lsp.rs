@@ -2767,6 +2767,36 @@ mod tests {
     }
 
     #[test]
+    fn completion_local_shadows_a_top_level_of_the_same_name() {
+        // A local binding SHADOWS a top-level of the same spelling: `x` is BOTH a top-level `def` (a
+        // value/Constant) AND a parameter of `g` (a Variable). Inside g's body, completion must offer `x`
+        // exactly ONCE, as the LOCAL (Variable, with the param's type) — the local wins, matching how
+        // resolution would bind the name. `completions_at` inserts top-level first then lets locals
+        // OVERWRITE by name; this pins that dedup + precedence (the doc-comment's claim, previously
+        // untested).
+        let text = "def x = 42\ndef g(x: Int64) -> Int64 = x";
+        // The `x` use in g's body — line 1, col 27 (the last char of the 28-char line).
+        let items = completions_at(text, true, Position::new(1, 27));
+        let xs: Vec<&CompletionItem> = items.iter().filter(|i| i.label == "x").collect();
+        assert_eq!(
+            xs.len(),
+            1,
+            "`x` must appear exactly once (deduped), got {xs:?}"
+        );
+        assert_eq!(
+            xs[0].kind,
+            Some(CompletionItemKind::VARIABLE),
+            "the LOCAL param must win over the top-level value (Variable, not Constant): {:?}",
+            xs[0]
+        );
+        assert!(
+            xs[0].detail.as_deref().is_some_and(|d| d.contains("Int")),
+            "the winning candidate is the local, shown with its type: {:?}",
+            xs[0].detail
+        );
+    }
+
+    #[test]
     fn completion_is_total_on_malformed_source() {
         // A buffer that does not parse yields a defined (possibly empty) candidate set, never a panic.
         let _ = completions_at("def (f x = (", true, Position::new(0, 5));

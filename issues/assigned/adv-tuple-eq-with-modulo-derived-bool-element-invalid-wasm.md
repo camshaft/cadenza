@@ -19,3 +19,12 @@ wasm backend structural-equality emission (backend/wasm/select.rs, the compound-
 miscompile within the working tuple-`=` path.
 
 Graded case Fails-wasm. v-property-testing has a `<`-based workaround for its own corpus witness (unblocked).
+
+## SHARPENED 2026-07-16 (v-property-testing): it's CONST-DIVISOR div/rem, not modulo-specific
+FAILS (invalid wasm): (% s 2) AND (/ s 2) — checked DIV or REM by a CONSTANT divisor — feeding a Bool in a compared tuple.
+WORKS: (% s s) non-constant divisor (runtime zero-check lowering) → OK; %-result as the INT element (not bool) → OK;
+  non-div bool subexprs → OK; the same bool as a SCALAR (no tuple) → OK.
+PRECISE TRIGGER = [checked DIV or REM by a CONSTANT divisor] → [Bool] → [element of a structurally-=-compared tuple].
+So the CONST-DIVISOR optimized div/rem form is mis-emitted specifically inside the SYNTHESIZED per-element compare
+function of a compound `=` (not in normal expression position, where it's fine). Seam narrows to: compound-= compare-fn
+synthesis × the const-divisor div/rem lowering. wasm-only; rust fine.

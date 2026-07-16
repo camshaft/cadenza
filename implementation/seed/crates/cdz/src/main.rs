@@ -127,6 +127,14 @@ enum Cmd {
     /// files without re-implementing glob resolution.
     Metadata(MetadataArgs),
 
+    // ── project clean ─────────────────────────────────────────────────────────────────────────────
+    /// Remove the build artifacts a `cdz build`/`cdz run` produces (the `cargo clean` analogue): the
+    /// project's `<entry>.wasm`/`.rs`/`.dwarf`, `link-map.txt`, and any leftover `cdz run` temp component,
+    /// in the manifest directory. PRECISE — derived from the entry name, so a source file or an unrelated
+    /// `.wasm` is never touched. `--dry-run` lists what would be removed. `cdz clean` with no argument
+    /// searches up for the nearest `Project.cdz`.
+    Clean(CleanArgs),
+
     // ── project scaffold ────────────────────────────────────────────────────────────────────────
     /// Scaffold a new PROJECT (the `cargo new` analogue): create `<name>/` with a `Project.cdz`
     /// manifest naming the entry, and a minimal buildable entry file. `cdz new my-app` then `cd my-app
@@ -245,6 +253,7 @@ fn main() -> ExitCode {
         Cmd::Calc(a) => cdz_calc::cli::run(&a, PROG),
         Cmd::Build(a) => run_build(&a),
         Cmd::Metadata(a) => run_metadata(&a),
+        Cmd::Clean(a) => run_clean(&a),
         Cmd::New(a) => run_new(&a),
         Cmd::Init(a) => run_init(&a),
         Cmd::Completions(a) => run_completions(&a),
@@ -909,6 +918,96 @@ fn run_metadata(args: &MetadataArgs) -> ExitCode {
     obj.raw("exclude", &str_array(&m.exclude));
     println!("{}", obj.finish());
     ExitCode::SUCCESS
+}
+
+// ── project clean ────────────────────────────────────────────────────────────────────────────────
+
+#[derive(clap::Args)]
+struct CleanArgs {
+    /// The project to clean: a `Project.cdz` manifest, or a DIRECTORY holding one. OMITTED → search up
+    /// from the current directory for the nearest `Project.cdz` (like `cdz build`/`cdz test`).
+    dir: Option<String>,
+    /// List what WOULD be removed without deleting anything (the preview / CI shape).
+    #[arg(long)]
+    dry_run: bool,
+}
+
+/// `cdz clean [DIR]` — remove the build artifacts a `cdz build`/`cdz run` of this project produces (the
+/// `cargo clean` analogue). It sweeps the manifest directory for build OUTPUTS and removes them: every
+/// `.wasm` / `.rs` / `.dwarf` (the component / Rust module / detached DWARF sidecar), `link-map.txt` (the
+/// directory-mode diagnostics-demux table), and thereby any leftover `.cdz-run-*.wasm` temp a crashed
+/// `cdz run` orphaned.
+///
+/// SAFE by construction, and CORRECT without predicting the output filename: the removal set is keyed on
+/// the OUTPUT EXTENSIONS, none of which is a Cadenza source surface (`.cdz`/`.ml`/`.sexp`/`.sexpr`), so a
+/// source file and the `Project.cdz` manifest are never touched. Keying on the extension is what makes it
+/// correct — the component's on-disk name is the compiler's export-derived name (not the entry stem), so
+/// a name guess would miss it while the extension sweep catches it regardless. Only the manifest's own
+/// directory is swept (a build writes its outputs beside the manifest). `--dry-run` lists the targets
+/// without deleting; a missing artifact is silently fine (nothing to clean).
+fn run_clean(args: &CleanArgs) -> ExitCode {
+    let project = match resolve_project_specs(args.dir.as_deref(), "cdz clean") {
+        Ok(p) => p,
+        Err(code) => return code,
+    };
+    let dir = project
+        .mpath
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    // Sweep the manifest dir for BUILD-OUTPUT files: any `.wasm`/`.rs`/`.dwarf` (never a source extension),
+    // plus the fixed `link-map.txt`. The output component's name is the compiler's export-derived name
+    // (not the entry stem), so keying on the OUTPUT EXTENSION — which no source ever uses — removes the
+    // right files without predicting that name, and can never hit a `.cdz`/`.ml`/`.sexp` source.
+    let mut targets: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for e in entries.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let is_artifact = name.ends_with(".wasm")
+                || name.ends_with(".rs")
+                || name.ends_with(".dwarf")
+                || name == "link-map.txt";
+            if is_artifact && e.path().is_file() {
+                targets.push(e.path());
+            }
+        }
+    }
+    targets.sort();
+    // Remove each that exists; a missing artifact is not an error (nothing to clean). `--dry-run` lists
+    // without deleting. Report what was (or would be) removed so the action is visible.
+    let mut removed = 0usize;
+    let mut had_error = false;
+    for t in &targets {
+        if !t.exists() {
+            continue;
+        }
+        if args.dry_run {
+            println!("would remove {}", t.display());
+            removed += 1;
+            continue;
+        }
+        match std::fs::remove_file(t) {
+            Ok(()) => {
+                println!("removed {}", t.display());
+                removed += 1;
+            }
+            Err(e) => {
+                eprintln!("{PROG}: removing {}: {e}", t.display());
+                had_error = true;
+            }
+        }
+    }
+    if removed == 0 && !had_error {
+        println!(
+            "nothing to clean ({} has no build artifacts)",
+            dir.display()
+        );
+    }
+    if had_error {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
 }
 
 // ── project scaffold ─────────────────────────────────────────────────────────────────────────────
