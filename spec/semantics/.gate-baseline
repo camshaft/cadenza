@@ -1704,6 +1704,11 @@ pass	a runtime-element set's equality is independent of written order
 pass	a runtime-index list read out of bounds is None, not a trap
 pass	a runtime-index list read yields the element at that index
 pass	a runtime-index read of a runtime-built list
+pass	a runtime-index string slice compares equal to the expected multi-byte scalar by content
+pass	a runtime-index string slice isolates a multi-byte scalar by its scalar offset
+pass	a runtime-index string slice isolates a supplementary-plane scalar (four UTF-8 bytes)
+pass	a runtime-index string slice of the ASCII prefix before a multi-byte scalar
+pass	a runtime-index string slice spanning ASCII and a multi-byte scalar
 pass	a runtime-index update leaves the other elements unchanged
 pass	a runtime-index update replaces exactly that element, read back at the same index
 pass	a runtime-keyed map entry enumerates as its key-value tuple
