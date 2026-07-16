@@ -1,0 +1,137 @@
+// session-loop.cdz — the agent loop that BOTH multi-routes tools AND builds a transcript (Increment 2e).
+//
+// The earlier modules each proved one capability: transcript-loop.cdz builds a String accumulator via
+// String.concat; dispatch-loop.cdz routes the model's chosen tool among a set via a `route` table. A real
+// agent session does BOTH at once — each turn the model names a tool, the loop routes it, and the tool's
+// output is appended to the running transcript. This module composes the two: a `label` table maps the
+// chosen tool NAME to the transcript TOKEN that tool contributes, and the loop concatenates that token
+// onto the transcript each turn. So it exercises multi-tool String-equality routing AND String transcript
+// construction together, through the effect+recursion loop — the closest scalar-free shape yet to the
+// real read→route→append cycle the harness runs.
+//
+// Same single-shot tail-resumptive recursion, fuel-bounded, transcript threaded through run's own `acc`
+// PARAMETER (a String; handler state is inert Int64, resumed with a fresh `0` per the aligned convention).
+// Mock model in-program; the SAME loop swaps to the cadenza:bedrock/api + tool-dispatch peers with no code
+// change once those shims land (a nearer handler wins over the peer binding).
+//
+// NOTE (v-effects, ACKED + owned): the mock names a LITERAL tool per test rather than a `run-with(fuel,
+// tool)` PARAMETER — a handler arm capturing an outer fn param is dropped (CDZ0101) in the merged nested-
+// context path when two effects are both reached by the recursive driver. v-effects owns the fix and will
+// ping when it lands; then these literal-per-tool runs collapse to one parameterized run-with.
+// The model effect: a turn's prompt in, the model's chosen tool NAME out (the string the loop routes).
+effect Model =
+  | converse : String -> String
+
+// The tools effect: `dispatch` runs the named tool and returns its TRANSCRIPT TOKEN (a String appended to
+// the running transcript); `done` ends the loop with the final transcript. Both return String now — the
+// tool's textual contribution, not a scalar score.
+effect Tools =
+  | dispatch : String -> String
+  | done : String -> String
+
+// Map a chosen tool NAME to the transcript TOKEN it contributes: a chained String-equality routing table,
+// with an unknown name contributing "?" (the "no such tool" marker a transcript should still record). The
+// distinct tokens let a test read back WHICH tools ran, in order.
+def label(name: String) =
+  if name == "search" then
+    "S"
+  else
+    if name == "calc" then "C" else if name == "write" then "W" else "?"
+
+// One agent RUN: drive up to `fuel` turns; each turn the model names a tool, and unless it says "stop" the
+// loop routes that tool (`dispatch` → its token via `label`) and APPENDS the token to the transcript
+// `acc`. `fuel` is the max-turns guard; "stop" is the terminal completion, returning the transcript so far.
+def run(fuel: Int64, acc: String) =
+  if fuel == 0 then
+    Tools.done(acc)
+  else
+    let choice = Model.converse("turn") in
+    if choice == "stop" then
+      Tools.done(acc)
+    else
+      run(fuel - 1, String.concat(acc, Tools.dispatch(choice)))
+
+// Run `fuel` turns with a mock naming "search" every turn → the transcript is "S" repeated fuel times.
+// Handler state is inert (the transcript lives in `run`'s `acc`), so each resumes with a fresh `0`.
+def run-search(fuel: Int64) =
+  handle Model(0) with
+    | converse(q, s) => resume("search", 0)
+  in
+  handle Tools(0) with
+    | dispatch(a, s) => resume(label(a), 0)
+    | done(a, s) => resume(a, 0)
+  in
+  run(fuel, "")
+
+// As above but naming "write" every turn → transcript of fuel "W"s.
+def run-write(fuel: Int64) =
+  handle Model(0) with
+    | converse(q, s) => resume("write", 0)
+  in
+  handle Tools(0) with
+    | dispatch(a, s) => resume(label(a), 0)
+    | done(a, s) => resume(a, 0)
+  in
+  run(fuel, "")
+
+// As above but naming an UNKNOWN tool every turn → transcript of fuel "?"s (the unknown-tool marker still
+// gets recorded in the transcript — the session isn't silently empty on an unrecognized selection).
+def run-unknown(fuel: Int64) =
+  handle Model(0) with
+    | converse(q, s) => resume("mystery", 0)
+  in
+  handle Tools(0) with
+    | dispatch(a, s) => resume(label(a), 0)
+    | done(a, s) => resume(a, 0)
+  in
+  run(fuel, "")
+
+@test
+def label-maps-each-tool-to-its-token() =
+  if String.byte-len(label("search")) == 1 then
+    if String.byte-len(label("mystery")) == 1 then unit else trap("unknown → ?")
+  else
+    trap("search → S")
+
+@test
+def session-builds-a-transcript-of-routed-tokens() =
+  if String.byte-len(run-search(3)) == 3 then
+    unit
+  else
+    trap("3 search turns build a 3-token transcript")
+
+@test
+def session-zero-fuel-is-empty-transcript() =
+  if String.byte-len(run-search(0)) == 0 then
+    unit
+  else
+    trap("zero fuel yields the empty transcript")
+
+@test
+def session-records-a-different-tools-token() =
+  if String.byte-len(run-write(4)) == 4 then
+    unit
+  else
+    trap("4 write turns build a 4-token transcript")
+
+@test
+def session-records-unknown-tool-marker() =
+  if String.byte-len(run-unknown(2)) == 2 then
+    unit
+  else
+    trap("unknown tools still record a marker per turn")
+
+@test
+def session-stops-on-stop-completion() =
+  let stopped = handle Model(0) with
+      | converse(q, s) => resume("stop", 0)
+    in
+    handle Tools(0) with
+      | dispatch(a, s) => resume(label(a), 0)
+      | done(a, s) => resume(a, 0)
+    in
+    run(5, "") in
+  if String.byte-len(stopped) == 0 then
+    unit
+  else
+    trap("a \"stop\" completion ends with the empty transcript")
