@@ -37887,6 +37887,31 @@ mod diagnostics {
             "a well-formed map rest pattern still checks clean: {:?}",
             diags_of(ok)
         );
+        // NESTED: a malformed-rest map INSIDE a variant payload (`(Wrap (map … .. r (j w)))`) gets the
+        // SAME specific rest-shape message (not the vague "a malformed map pattern") and NO unbound leak —
+        // the `pattern_constraints` + Case-Mmr nested twin of the top-level fix.
+        let nested = "(module m (type W (Wrap (Map Int64 Int64))) \
+                      (def (f (: w W)) (match w ((Wrap (map (1 v) .. r (2 x))) v) (_ 0))) (export f))";
+        let all = diags_of(nested);
+        assert!(
+            all.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
+                && d.message.contains("map rest pattern is")),
+            "a nested malformed-rest map gets the specific rest-shape message: {all:?}"
+        );
+        assert!(
+            all.iter().all(|d| d.code.as_deref() != Some("CDZ0101")),
+            "no misleading 'unbound name' for a nested malformed-map binder: {all:?}"
+        );
+        // NO false alarm: a WELL-FORMED nested map (`.. r` final) still checks clean.
+        let nested_ok = "(module m (type W (Wrap (Map Int64 Int64))) \
+                         (def (f (: w W)) (match w ((Wrap (map (1 v) .. r)) v) (_ 0))) (export f))";
+        assert!(
+            diags_of(nested_ok)
+                .iter()
+                .all(|d| d.severity != crate::abi::Severity::Error),
+            "a well-formed nested map rest pattern still checks clean: {:?}",
+            diags_of(nested_ok)
+        );
     }
 
     /// A malformed match PATTERN's CDZ0201 anchors at the OFFENDING PATTERN node (`(tuple a b c)`,

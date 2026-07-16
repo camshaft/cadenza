@@ -9695,3 +9695,17 @@
                 (match mp ((map (1 v) .. rest (2 w)) v) (_ 0)))
               (export f)))
   (error CDZ0201))
+
+(case "a nested map pattern with a malformed rest names the shape, not an unbound binder (CDZ0201)"
+  (doc    "The NESTED twin of the top-level malformed-map-rest case: a `(map (k v) .. rest (j w))` with a
+           `..` not followed by exactly one binder, sitting INSIDE a variant payload `(Wrap (map …))`,
+           reports the SAME specific rest-shape CDZ0201 — not the vague `a malformed map pattern` the
+           nested `pattern_constraints` path used to give — and NO misleading `unbound name v` (the resolver
+           now finds the malformed-rest map through the variant payload and resolves its binder reference to
+           the rest-shape decline). Pins that the nested path matches the top-level one both in message and
+           in suppressing the unbound cascade. Sibling of the top-level map-rest + record-pattern cases.")
+  (input  (do (type W (Wrap (Map Int64 Int64)))
+              (def (f (: w W))
+                (match w ((Wrap (map (1 v) .. r (2 x))) v) (_ 0)))
+              (export f)))
+  (error CDZ0201))

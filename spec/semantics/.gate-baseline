@@ -1128,6 +1128,7 @@ pass	a nested lambda captures+applies a closure-typed def PARAMETER (inline lamb
 pass	a nested list element composes over a runtime list of lists
 pass	a nested literal pattern of the wrong type is a type error
 pass	a nested map pattern falls through when its key is absent
+pass	a nested map pattern with a malformed rest names the shape, not an unbound binder (CDZ0201)
 pass	a nested match missing an inner variant under a DISC-≥1 variant is non-exhaustive
 pass	a nested match on a runtime scrutinee
 pass	a nested module's function export is applied through the projection chain

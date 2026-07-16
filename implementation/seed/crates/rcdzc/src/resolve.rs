@@ -1643,15 +1643,12 @@ fn match_arm_malformed_map_binds(
     if pb.len() != 2 {
         return None;
     }
-    // Peel a `(guard <map-pattern> <cond>)` wrapper — a guard-cond reference binds the same names.
-    let (map_pat, guard_cond) = match db.ast.as_form(pb[0], "guard") {
+    // Peel a `(guard <pattern> <cond>)` wrapper — a guard-cond reference binds the same names.
+    let (arm_pat, guard_cond) = match db.ast.as_form(pb[0], "guard") {
         Some(g) if g.len() == 2 => (g[0], Some(g[1])),
         _ => (pb[0], None),
     };
     if from != pb[1] && Some(from) != guard_cond {
-        return None;
-    }
-    if !map_form_is_malformed_rest(db, map_pat) {
         return None;
     }
     // Must be a genuine match arm (parent is `(match scrutinee arm…)`, `form` an arm, not the scrutinee).
@@ -1661,7 +1658,36 @@ fn match_arm_malformed_map_binds(
         Some(&scrutinee) if scrutinee != form => {}
         _ => return None,
     }
-    map_form_binds_name(db, map_pat, name).then_some(map_pat)
+    // Find a MALFORMED-rest `(map …)` binding `name` — DIRECTLY (the arm pattern IS the map) or NESTED
+    // inside a tuple/variant/list payload (`(Wrap (map (k v) .. r (j w)))`). The nested descent mirrors
+    // `find_map_binder_in_pattern`, but here we want the MALFORMED map (which that valid-binding walker
+    // bails on) so its body reference resolves to the rest-shape decline instead of leaking unbound.
+    find_malformed_map_binding_name(db, arm_pat, name)
+}
+
+/// The MALFORMED-rest `(map …)` sub-pattern of `pattern` that binds `name` (at a value/rest position),
+/// searched DIRECTLY and through nested tuple/variant/list payloads; `None` if none. Companion of
+/// [`match_arm_malformed_map_binds`] — lets a body reference to a nested malformed-map binder resolve to
+/// the rest-shape decline (not a leaked unbound name), the nested twin of the direct case.
+fn find_malformed_map_binding_name(db: &Db, pattern: StructId, name: &str) -> Option<StructId> {
+    // A `(map …)` here: if its rest is malformed AND it binds `name`, this is the node.
+    if map_form_is_malformed_rest(db, pattern) && map_form_binds_name(db, pattern, name) {
+        return Some(pattern);
+    }
+    // Descend a compound pattern's element/payload positions (a well-formed map sub-pattern is handled by
+    // the ordinary Case Mn; only a malformed one reaches here). Bounded by the arena's tree depth.
+    let Struct::List(children) = db.ast.get(pattern) else {
+        return None;
+    };
+    for &child in children {
+        // Skip a compound HEAD (`tuple`/`list`/`map`/`record` marker, a `(. Sum V)` variant head) — it is
+        // not a sub-pattern. A recursive descent into every child is safe (a head is a name/`.`-form, so
+        // the recursion bottoms out).
+        if let Some(found) = find_malformed_map_binding_name(db, child, name) {
+            return Some(found);
+        }
+    }
+    None
 }
 
 /// If `form` is a match ARM `(pattern body)` (ascended from its BODY) whose pattern is a `(map (k v) …
