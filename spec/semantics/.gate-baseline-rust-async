@@ -570,10 +570,14 @@ pass	a generic unwrap helper consumes a fallible Bytes.at result
 pass	a genuinely-narrow op with a wrapped-down MATCH-operand yields the exact value
 pass	a genuinely-narrow op with a wrapped-down if-operand still traps on overflow
 pass	a genuinely-narrow op with a wrapped-down if-operand yields the exact value when in range
+pass	a genuinely-runtime addition overflow traps on the emitted operation
 pass	a genuinely-runtime in-range shift count works
 pass	a genuinely-runtime left-shift count beyond the bit width traps rather than masking to a small count
 pass	a genuinely-runtime left-shift count equal to the bit width traps rather than masking
+pass	a genuinely-runtime multiplication overflow traps on the emitted operation
+pass	a genuinely-runtime negation of the minimum integer traps
 pass	a genuinely-runtime negative right-shift count traps rather than masking
+pass	a genuinely-runtime subtraction underflow at the minimum traps
 pass	a grafted template is structurally equal to the directly-quoted tree
 pass	a guard combines the payload binder with the rest binder
 pass	a guard compares two distinct sum payloads from one tuple
@@ -725,6 +729,7 @@ pass	a list of maps: a runtime index then looks a runtime key up in the found ma
 pass	a list of records with different field sets is a type error
 pass	a list of records: a runtime index then reads a field of the found record
 pass	a list of tuples with different arities is a type error
+pass	a list operation applied to a non-list names the expected argument type
 pass	a list pattern over a map scrutinee is a type error
 pass	a list pattern over a non-list scrutinee is a type error
 pass	a list type whose element position holds a value is rejected
@@ -1703,6 +1708,7 @@ pass	a tuple-pattern parameter over a tuple threaded from a helper call
 pass	a tuple-projected loop invariant consumed per iteration accumulates stably
 pass	a tuple-wrapped self-application is rejected in bounded time, not a compiler stack overflow
 pass	a twenty-deep push chain retains the still-live source binding
+pass	a two-argument list operation applied to a non-list names the expected argument type
 pass	a two-arm Bool match selects its second (false) arm
 pass	a two-arm if selecting between two runtime FLOAT values computes the chosen one (float select-ification)
 pass	a two-arm if selecting between two runtime NARROW UInt8 values computes the chosen one at the payload width

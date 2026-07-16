@@ -347,4 +347,101 @@ mod tests {
             assert!(!is_valid_interface_name(n), "should reject `{n}`");
         }
     }
+
+    #[test]
+    fn is_valid_interface_name_is_total_and_accepts_only_wellformed_names() {
+        // `is_valid_interface_name` is the guard that turns a silent invalid-component miscompile into a
+        // CDZ diagnostic — it runs on UNTRUSTED author strings (`(bind E "ns:pkg/iface")`), so it must be
+        // TOTAL: never panic, whatever garbage (multibyte, control chars, pathological runs of the three
+        // delimiters `:`/`/`/`@`). The hand tests pin specific accept/reject cases; nothing swept that it
+        // can't PANIC, nor that ACCEPTANCE actually implies the structural contract the emit path trusts.
+        // Sweep a delimiter-rich alphabet and assert both: (a) no panic, and (b) whenever it ACCEPTS a
+        // name, that name really decomposes as `ns(:seg)+ / proj(/proj)* [@ver]` with every package
+        // segment a LOWERCASE-kebab word and every projection segment a kebab word — i.e. the predicate
+        // and the grammar it documents agree, so a name it blesses is one wasmtime's extern-name grammar
+        // also accepts.
+        let alphabet: Vec<char> = "abcABC01-:/@. λ中".chars().collect();
+        // SplitMix64 inline (crate house style — no dep; matches the other surfaces' test PRNGs).
+        let mut state: u64 = 0x1f7e_a5e0_c0de_face;
+        let mut next = || {
+            state = state.wrapping_add(0x9e37_79b9_7f4a_7c15);
+            let mut z = state;
+            z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+            z ^ (z >> 31)
+        };
+        let mut accepted = 0usize;
+        for len in 0..=8usize {
+            for _ in 0..400 {
+                let s: String = (0..len)
+                    .map(|_| alphabet[(next() as usize) % alphabet.len()])
+                    .collect();
+                // (a) TOTALITY — must not panic on arbitrary input.
+                if is_valid_interface_name(&s) {
+                    accepted += 1;
+                    // (b) ACCEPTANCE CONTRACT — re-derive the decomposition independently and check the
+                    // structural grammar holds, so a bless from the predicate is a real interface name.
+                    let path = match s.split_once('@') {
+                        Some((p, ver)) => {
+                            assert!(!ver.is_empty(), "accepted `{s}` with an empty @version");
+                            p
+                        }
+                        None => &s,
+                    };
+                    let (pkg, proj) = path
+                        .split_once('/')
+                        .unwrap_or_else(|| panic!("accepted `{s}` with no `/` projection"));
+                    let pkg_segs: Vec<&str> = pkg.split(':').collect();
+                    assert!(
+                        pkg_segs.len() >= 2,
+                        "accepted `{s}` with a single-segment package `{pkg}`"
+                    );
+                    assert!(
+                        pkg_segs.iter().all(|seg| is_lowercase_kebab_word(seg)),
+                        "accepted `{s}` but a package segment is not lowercase-kebab"
+                    );
+                    assert!(
+                        proj.split('/').all(is_kebab_word),
+                        "accepted `{s}` but a projection segment is not a kebab word"
+                    );
+                }
+            }
+        }
+        // A few deliberately pathological delimiter runs — the shapes likeliest to trip an index/split
+        // assumption — must also just return a bool, never panic.
+        for s in [
+            "@",
+            "/",
+            ":",
+            "::",
+            "//",
+            "@@",
+            ":/@",
+            "a:b/c@",
+            "@1",
+            "///",
+            "a::b//c@@v",
+            ":::///@@@",
+            "λ:中/x",
+            "a:b/λ",
+            "\u{0}:\u{0}/\u{0}",
+        ] {
+            let _ = is_valid_interface_name(s); // must not panic
+        }
+        // The `accepted` count is only a coverage HINT (couples to the alphabet/iteration count), so it
+        // is NOT asserted — instead exercise the acceptance path DETERMINISTICALLY on constructed valid
+        // names, so the accept-branch contract is checked every run regardless of the sweep's luck.
+        let _ = accepted;
+        for s in [
+            "ns:pkg/iface",
+            "a:b/c/d",
+            "cadenza:math/api@1.0.0",
+            "wasi:cli/run",
+        ] {
+            assert!(
+                is_valid_interface_name(s),
+                "constructed valid name `{s}` must be accepted"
+            );
+        }
+    }
 }

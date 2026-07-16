@@ -131,9 +131,9 @@ enum Cmd {
     /// Print the resolved project manifest as JSON (the `cargo metadata` analogue) — a machine-readable
     /// description of the project for editors, build tools, and scripts. Resolves the same `Project.cdz`
     /// as `cdz build`/`cdz test` and emits one object: the manifest's raw fields (`name`, `entry`,
-    /// `opt_level`, and the `modules`/`tests`/`exclude` PATTERNS) plus their RESOLVED glob-expanded file
-    /// sets (`entry_file`, `module_files`, `test_files`), so a consumer sees both intent and concrete
-    /// files without re-implementing glob resolution.
+    /// `opt_level`, the `modules`/`tests`/`exclude` PATTERNS, and the `deps` path-dependencies) plus their
+    /// RESOLVED glob-expanded file sets (`entry_file`, `module_files`, `test_files`), so a consumer sees
+    /// both intent and concrete files (and the project graph) without re-implementing glob resolution.
     Metadata(MetadataArgs),
 
     // ── project clean ─────────────────────────────────────────────────────────────────────────────
@@ -602,6 +602,18 @@ fn compile_project_component_bytes(
     entry: &str,
     opt_level: rcdzc::OptLevel,
 ) -> Result<Option<Vec<u8>>, ()> {
+    compile_project_component_bytes_named(specs, entry, opt_level, None)
+}
+
+/// [`compile_project_component_bytes`] plus an optional `--component-name` — the interface a
+/// cross-component PROVIDER publishes its exports under (`cadenza:<pkg>/<iface>`). A path-dep is compiled
+/// with its interface name so the consumer can peer-bind it; a plain `cdz run`/`cdz build` passes `None`.
+fn compile_project_component_bytes_named(
+    specs: &[String],
+    entry: &str,
+    opt_level: rcdzc::OptLevel,
+    component_name: Option<&str>,
+) -> Result<Option<Vec<u8>>, ()> {
     let mut inputs: Vec<rcdzc::Artifact> = Vec::new();
     for spec in specs {
         let (source, arenas, spantable) = match load_program_spanned(spec) {
@@ -625,6 +637,11 @@ fn compile_project_component_bytes(
         ));
     }
     inputs.push(compiler_cli::entry_artifact(entry));
+    // A path-dep publishes its exports under an interface name (the same `--component-name` a manual
+    // cross-component provider uses), so the consumer's `--peer <iface>=<path>` binds it by that name.
+    if let Some(iface) = component_name {
+        inputs.push(compiler_cli::component_name_artifact(iface));
+    }
     // Compile on the compiler-stack worker (deep-recursion guard), same as `check_one`/`run_prepared`.
     let out = rcdzc::run_with_compiler_stack(|| {
         rcdzc::compile_with_opt(&inputs, &[rcdzc::Target::Wasm], opt_level)
@@ -718,13 +735,109 @@ fn run_project(args: &cdz_run::cli::RunArgs) -> ExitCode {
         eprintln!("{PROG}: writing {}: {e}", out_wasm.display());
         return ExitCode::FAILURE;
     }
+    // PATH DEPENDENCIES: build each `def deps` sibling project to its own component (published under
+    // `cadenza:<dep>/api`) and hand them to the runner as PEERS — `run_with_peers` composes them with the
+    // consumer in one wasmtime store (v-peer-linking's cross-component binding). A build/resolve failure
+    // is reported and aborts the run; the temp dep components are cleaned up afterward.
+    let dep_peers = match build_path_deps(&project, opt_level) {
+        Ok(p) => p,
+        Err(()) => {
+            let _ = std::fs::remove_file(&out_wasm);
+            return ExitCode::FAILURE;
+        }
+    };
     // Run the freshly-built component through the SAME `cdz-run` path as a direct `cdz run <file>`: clone
-    // the parsed args, but point `component` at the built wasm (the other flags pass through unchanged).
+    // the parsed args, point `component` at the built wasm, and append each dep as a `--peer iface=path`
+    // (the other flags pass through unchanged). A CLI-given `--peer` is preserved; deps are added on top.
     let mut run_args = args.clone();
     run_args.component = Some(out_wasm.clone());
+    for (iface, path) in &dep_peers {
+        run_args.peers.push(format!("{iface}={}", path.display()));
+    }
     let code = cdz_run::cli::run(&run_args, PROG);
     let _ = std::fs::remove_file(&out_wasm); // best-effort cleanup of the temp artifact
+    for (_iface, path) in &dep_peers {
+        let _ = std::fs::remove_file(path); // clean up each temp dep component
+    }
     code
+}
+
+/// Build each PATH DEPENDENCY of `project` to its own component and return the `(interface, temp-wasm-path)`
+/// peer list `run_project` hands to the runner. For each `def deps` entry (a sibling project dir), resolve
+/// its `Project.cdz`, compile its entry to a component published under `cadenza:<dep-name>/api`, and write
+/// that to a pid-stamped temp `.wasm` beside the dep's manifest. The dep is built at the SAME opt tier as
+/// the consumer so they pin the same value-heap runtime hash (a prerequisite for `run_with_peers` to
+/// compose them — v-peer-linking's shared-runtime rule). Returns `Err(())` (diagnostics already printed) on
+/// any dep-resolve/build failure; the caller cleans up whatever temps were produced.
+fn build_path_deps(
+    project: &ProjectSpecs,
+    opt_level: rcdzc::OptLevel,
+) -> Result<Vec<(String, std::path::PathBuf)>, ()> {
+    if project.m.deps.is_empty() {
+        return Ok(Vec::new());
+    }
+    let manifest_dir = project
+        .mpath
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let mut peers = Vec::new();
+    for dep in &project.m.deps {
+        // Resolve the dep dir RELATIVE to the consumer's manifest dir (so `../lib` means a sibling of the
+        // consumer, not of the cwd).
+        let dep_dir = manifest_dir.join(dep);
+        let dep_specs =
+            match resolve_project_specs(Some(&dep_dir.to_string_lossy()), "cdz run (dep)") {
+                Ok(s) => s,
+                Err(_) => {
+                    eprintln!("{PROG}: dependency `{dep}`: could not resolve its Project.cdz");
+                    return Err(());
+                }
+            };
+        // The published interface name: `cadenza:<dep-name>/api`, where <dep-name> is the dep's manifest
+        // `name` (falling back to its directory name). This is the ONE string both sides agree on — the
+        // consumer's source binds `(bind E "cadenza:<dep-name>/api")` and we pass it as the peer key.
+        let dep_name = dep_specs.m.name.clone().unwrap_or_else(|| {
+            dep_dir
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("dep")
+                .to_string()
+        });
+        let iface = format!("cadenza:{dep_name}/api");
+        let dep_bytes = match compile_project_component_bytes_named(
+            &dep_specs.specs,
+            &dep_specs.entry_name,
+            opt_level,
+            Some(&iface),
+        ) {
+            Ok(Some(b)) => b,
+            Ok(None) => {
+                eprintln!("{PROG}: dependency `{dep}` built no runnable component");
+                return Err(());
+            }
+            Err(()) => return Err(()),
+        };
+        let dep_out_dir = dep_specs
+            .mpath
+            .parent()
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_else(|| std::path::PathBuf::from("."));
+        let dep_wasm = dep_out_dir.join(format!(
+            ".cdz-run-dep-{}-{}.wasm",
+            dep_specs.entry_name,
+            std::process::id()
+        ));
+        if let Err(e) = std::fs::write(&dep_wasm, &dep_bytes) {
+            eprintln!(
+                "{PROG}: writing dependency component {}: {e}",
+                dep_wasm.display()
+            );
+            return Err(());
+        }
+        peers.push((iface, dep_wasm));
+    }
+    Ok(peers)
 }
 
 /// A project resolved from its `Project.cdz`: the manifest (`m`) + its path (`mpath`), plus the compile
@@ -1111,6 +1224,10 @@ fn run_metadata(args: &MetadataArgs) -> ExitCode {
         &str_array(&existing(expand_manifest_globs(&dir, &m.tests, &m.exclude))),
     );
     obj.raw("exclude", &str_array(&m.exclude));
+    // The PATH DEPENDENCIES (`def deps`) — the sibling project dirs this project links across the
+    // component boundary, so a tool sees the project graph. Reported as the raw manifest paths (relative
+    // to this manifest's dir); empty `[]` for a standalone project.
+    obj.raw("deps", &str_array(&m.deps));
     // The build ARTIFACTS currently present in the manifest directory — EXACTLY the set `cdz clean` would
     // remove, via the SAME `project_artifact_files` helper `cdz clean` uses, so the two never diverge. That
     // set is this project's own emitted outputs BY NAME (the entry's export-derived `<output>.{wasm,rs,
@@ -4733,6 +4850,8 @@ fn is_ml_source(file: &str) -> bool {
 /// - `def tests = ["*.cdz", …]`   — the modules whose `@test` defs `cdz test` runs.
 /// - `def exclude = ["x.cdz", …]` — files REMOVED from `modules`/`tests` after glob expansion (skip a
 ///   demo/fixture a wildcard would otherwise sweep up).
+/// - `def deps = ["../lib", …]`   — PATH dependencies: sibling project dirs `cdz run` builds + peer-binds
+///   across the component boundary (each published as `cadenza:<dep>/api`).
 #[derive(Default, Debug)]
 struct Manifest {
     name: Option<String>,
@@ -4744,6 +4863,13 @@ struct Manifest {
     /// string — parsed via `rcdzc::OptLevel::FromStr` at use. A `--opt-level`/`--release` flag overrides
     /// it. `None` = no manifest default (the build falls back to `--release`'s `O2` or the default `O1`).
     opt_level: Option<String>,
+    /// PATH DEPENDENCIES (`def deps = ["../mathlib", …]`) — sibling project directories this project links
+    /// across the component boundary. `cdz run` builds each dep's `Project.cdz` entry to its own component
+    /// and PEER-BINDS its exported interface into this project's consumer (the cross-component interop
+    /// v-peer-linking owns — a runtime compose via `run_with_peers`, NOT a compile-time merge). The dep's
+    /// interface is published as `cadenza:<dep-name>/api` (derived from the dep's own `name`/dir), which
+    /// the consumer's source binds with `(bind E "cadenza:<dep-name>/api")`. Empty = a standalone project.
+    deps: Vec<String>,
 }
 
 /// The file name of a project manifest (looked up in a directory).
@@ -4939,6 +5065,7 @@ fn parse_manifest(arenas: &cadenza_syntax::Arenas) -> Manifest {
             "tests" => m.tests = manifest_strings(arenas, value_id),
             "exclude" => m.exclude = manifest_strings(arenas, value_id),
             "opt-level" => m.opt_level = manifest_strings(arenas, value_id).into_iter().next(),
+            "deps" => m.deps = manifest_strings(arenas, value_id),
             _ => {} // an unrecognized def — ignore (forward-compatible)
         }
     }

@@ -355,6 +355,29 @@
   (input  (do (def (main) (match (Map.insert Map.empty 1 2) ((tuple a b) a) (_ 0))) (export main)))
   (error  CDZ0203))
 
+; A built-in MEMBER OPERATION applied to the WRONG ARGUMENT TYPE names the type the operation expects (as
+; opposed to the wrong-MEMBER-NAME reject, which suggests a closer member). `(List.len 5)` gives the Int64
+; `5` where `List.len` expects a `(List _)` — CDZ0203, naming the operation and the expected argument type
+; ("`List.len` expects an argument of type (List _), but a value of type Int64 was given"), rather than a
+; bare "Int64 and (List _) must be the same type" clash that hides WHICH operation imposed the requirement.
+; This is the member-op form of the actionable operand-type message the arithmetic/bitwise operators carry.
+
+(case "a list operation applied to a non-list names the expected argument type"
+  (doc    "`(List.len 5)` applies `List.len` to the Int64 `5` — `List.len` expects a `(List _)`, so it is
+           rejected CDZ0203, naming the OPERATION and the type it expects rather than a bare type clash. Pins
+           the member-op wrong-argument-type diagnostic: the reader sees `List.len` imposed the `(List _)`
+           requirement, not just that two types differ. The program's outcome is the rejection.")
+  (input  (do (def (main) (List.len 5)) (export main)))
+  (error  CDZ0203))
+
+(case "a two-argument list operation applied to a non-list names the expected argument type"
+  (doc    "`(List.concat 5 6)` applies the two-argument `List.concat` to Int64 operands — each expects a
+           `(List _)`, so it is rejected CDZ0203, naming `List.concat` and the `(List _)` requirement. The
+           two-argument companion of the `List.len` case; pins that the member-op argument-type check names
+           the expected type for a multi-argument operation, not only a unary one.")
+  (input  (do (def (main) (List.concat 5 6)) (export main)))
+  (error  CDZ0203))
+
 ; Projecting a tuple that arrives as a FUNCTION PARAMETER (a runtime tuple whose shape is not the
 ; inline literal at the projection site) must either compute the projection or DECLINE — never emit an
 ; invalid component. `(def (fst t) (. t 0))` applied to `(tuple 7 8)` is well-typed and its value is

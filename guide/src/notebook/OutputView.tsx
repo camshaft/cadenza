@@ -5,6 +5,40 @@
 import type { CellOutput } from "./renderOutput.ts";
 import type { Series } from "./extractChart.ts";
 import type { Table } from "./extractTable.ts";
+import type { Formula } from "./formula.ts";
+
+/// Render a classified formula (hand-rolled, no KaTeX): a rational as a stacked fraction, a quantity as
+/// value + unit, a plain scalar large, and an unrenderable compound as a surfaced gap (not a fake).
+function FormulaView({ formula }: { formula: Formula }) {
+  switch (formula.kind) {
+    case "fraction":
+      return (
+        <span className="my-2 inline-flex items-center gap-1 text-cadenza-200" data-testid="formula">
+          {formula.negative && <span className="text-lg">−</span>}
+          <span className="inline-flex flex-col items-center leading-tight">
+            <span className="px-2">{formula.num}</span>
+            <span className="border-t border-cadenza-400 px-2">{formula.den}</span>
+          </span>
+        </span>
+      );
+    case "quantity":
+      return (
+        <span className="my-2 inline-flex items-baseline gap-1 text-base text-cadenza-200" data-testid="formula">
+          <span className="font-mono">{formula.value}</span>
+          <span className="text-slate-400">{formula.unit}</span>
+        </span>
+      );
+    case "plain":
+      return <span className="my-2 inline-block font-mono text-base text-cadenza-200" data-testid="formula">{formula.text}</span>;
+    case "unrenderable":
+      return (
+        <div data-testid="formula">
+          <pre className="overflow-x-auto font-mono text-sm text-slate-200">{formula.text}</pre>
+          <p className="mt-1 text-xs text-amber-400/80">{formula.reason}</p>
+        </div>
+      );
+  }
+}
 
 function TableView({ table }: { table: Table }) {
   if (table.columns.length === 0) return <p className="text-sm text-slate-500">empty table</p>;
@@ -126,7 +160,7 @@ export function OutputView({ output }: { output: CellOutput }) {
         </div>
       );
     case "formula":
-      return <pre className="overflow-x-auto font-mono text-base text-cadenza-200">{output.text}</pre>;
+      return <FormulaView formula={output.formula} />;
     case "trap":
       return <p className="font-mono text-sm text-rose-400">trap: {output.message}</p>;
     case "timeout":

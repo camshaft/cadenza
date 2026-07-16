@@ -211,13 +211,19 @@ fn action_uid(tag: &str) -> String {
 #[cfg(feature = "bedrock")]
 pub fn bedrock_converse(model_id: String, max_tokens: u32) -> impl Fn(String) -> String {
     move |prompt: String| {
-        // FAIL FAST on a malformed model id: an empty / whitespace-bearing / control-char id is a caller
-        // mistake that Bedrock only rejects AFTER a full SigV4 + HTTPS round-trip (an opaque
-        // ValidationException). Catching it here returns a clear error-marker immediately, without a
-        // network call — cheaper and far more legible than the SDK's rejection. (A well-formed-but-unknown
-        // id still round-trips; we only reject shapes that CANNOT be a valid id.)
+        // FAIL FAST on caller mistakes Bedrock only rejects AFTER a full SigV4 + HTTPS round-trip (an
+        // opaque ValidationException) — catching them here returns a clear error-marker immediately, with
+        // no network call. (1) A malformed model id (empty / whitespace-bearing / control-char); we reject
+        // only shapes that CANNOT be a valid id, so a well-formed-but-unknown id still round-trips.
         if let Err(why) = validate_model_id(&model_id) {
             return format!("{MODEL_ERROR_PREFIX}{why}");
+        }
+        // (2) max_tokens == 0: the Anthropic Messages API requires max_tokens >= 1, so a 0 can never yield
+        // a completion — reject it up front rather than round-trip to a ValidationException.
+        if max_tokens == 0 {
+            return format!(
+                "{MODEL_ERROR_PREFIX}max_tokens must be >= 1 (the model needs a nonzero completion budget)"
+            );
         }
         // The loop's converse is sync (a wasmtime host-call closure); run the async SDK on a per-call
         // current-thread runtime. A model call is seconds-scale + one-per-turn, so the runtime setup cost
@@ -440,6 +446,24 @@ mod bedrock_tests {
         assert!(
             out.contains("empty model id"),
             "the failure names the empty-model-id cause: {out}"
+        );
+    }
+
+    #[test]
+    fn bedrock_converse_fails_fast_on_zero_max_tokens_without_a_network_call() {
+        // max_tokens == 0 can never yield a completion (Anthropic requires >= 1); like the bad-model-id
+        // path it fails fast as a model-error before any SDK call — a well-formed model id here so the
+        // model-id check passes and the max_tokens guard is what fires.
+        let converse =
+            bedrock_converse("us.anthropic.claude-haiku-4-5-20251001-v1:0".to_string(), 0);
+        let out = converse("hi".to_string());
+        assert!(
+            is_model_error(&out),
+            "max_tokens 0 must fail fast as a model-error, not attempt a call: {out}"
+        );
+        assert!(
+            out.contains("max_tokens must be >= 1"),
+            "the failure names the zero-max-tokens cause: {out}"
         );
     }
 }

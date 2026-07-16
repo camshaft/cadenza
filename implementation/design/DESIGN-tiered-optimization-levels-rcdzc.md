@@ -239,3 +239,52 @@ resting state, or is there a specific backend-independent O2 transform the opera
 Core-level global value-numbering that BOTH backends keep, accepting the redundancy with rustc's)? Until
 that is answered, v-core-opt holds the framework here and continues hardening the fold family's gate
 coverage (which is what actually protects the emitted-code quality both backends share).
+
+## 9. OPERATOR MANDATE (via concierge, 2026-07-16): ADD MORE OPS, HIGHER IN THE PIPELINE + proof-guided elision
+
+§8's open question is ANSWERED. The operator's direction (relayed by concierge):
+1. **NOT "ready but empty" as a resting state — keep adding optimizations, and favor HIGHER-IN-PIPELINE
+   ones.** Verbatim steer: *"the more optimizations we can do higher in the pipeline the better"* — i.e.
+   Core-IR / pre-backend transforms that benefit BOTH backends are preferred over late backend-specific
+   ones. This is precisely v-core-opt's charter, so it is the mandate now (not marginal corpus pins).
+2. **Proof-guided elision (a v-core-opt × v-verification seam).** The verification vertical is building
+   pre/post-condition machinery (operator just greenlit it). The directive: *"if we can prove an integer
+   never overflows, elide the overflow checks entirely."* So a checked/guarded operation's check is the
+   DEFAULT, and a discharged proof (from the verification layer) REMOVES it. Checked-arith is therefore not
+   merely a runtime feature — it is the canonical proof-elidable check. **Do NOT build the full
+   `Core::CheckedArith` node speculatively yet** — coordinate with v-verification as their pre/post design
+   firms up — but SHAPE any checked/bounds/guard op so a proof obligation can be attached and discharged.
+
+### 9a. The REAL blocker to registering a pass: the core column has NO override/rewrite seam yet
+`CorePass::run(&mut Db)` is documented to "transform the core column in place", but the core column is a
+DEMAND-DRIVEN MEMOIZED query (`lower::core_of`), not a mutable store — there is no `Db::set_core`/
+`override_core`. So a pass cannot today rewrite what `core_of` returns; the backends read `core_of`
+directly. **Before any real Core pass can fire, we need a core-override layer the `core_of` query consults**
+(e.g. `Db` holds an `Option<HashMap<Id, Core>>` of pass-installed overrides; `core_of` returns the override
+if present, else computes as now; `PassManager::run` populates it). This is the first implementation slice —
+without it the pass seam is inert. Design constraints: overrides must be keyed by the same `Id` space
+`core_of` uses; the override must be visited-consistently by the poison/escape walks (compile.rs:3601 VISITED-set);
+and installing an override must NOT break incremental re-lowering (clear overrides on input change).
+
+### 9b. First concrete pass proposal — Core-level algebraic simplification of a REDUNDANT guarded/if shape
+Once 9a exists, the first `CorePass` (O1) should be one whose win BOTH backends keep and that `lower.rs`
+does NOT already do eagerly. Candidate: a Core-tier **redundant-`if`/select canonicalization** that my
+corpus family already proves behavior-preserving (identical-branch collapse over a trap-free cond,
+double-negation unwind, `(= b true)`→b coercion) — LIFTED from being only witnessed in the corpus to
+actually FIRING as a registered pass, so the rewrite happens once at Core and both emits inherit it.
+Precondition to check first: confirm `lower.rs` does NOT already collapse these (my pins witness the
+OUTCOME is correct, not necessarily that a Core pass does it vs the backend). If lower already folds them,
+pick a transform it does not — the proof-guided-elision (9.2) is the eventual flagship, but a smaller
+value-numbering / redundant-compare-elimination that rustc-and-wasm both keep is the safe first pass.
+
+### 9c. Near-term plan (one gated slice per tick, under the §5 level-equivalence gate)
+- **Slice 1 (next):** implement 9a — the `core_of` override seam + `PassManager::run` populating it +
+  a trivial identity pass (a no-op override that reinstalls the same Core) to prove the seam is
+  behavior-preserving end-to-end (byte-identical emit, both backends). This de-risks the mechanism before
+  any real rewrite.
+- **Slice 2+:** register the first REAL simplification pass (9b), gated, with a level-equivalence + both-backend
+  corpus witness. Each pass lands with its `min_level` + a gate case proving O0-vs-O_n behavior identity.
+- **Ongoing design:** coordinate the proof-guided-elision seam (9.2) with v-verification; when their
+  pre/post-condition query exists, add the checked-op-with-discharged-proof → unchecked-op pass.
+This section supersedes §8's "hold" — the framework is no longer empty by choice; it is being FILLED per
+the operator mandate, starting with the override seam (9a) that makes a pass able to fire at all.
