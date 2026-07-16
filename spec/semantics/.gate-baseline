@@ -438,6 +438,7 @@ pass	a capturing closure with a let binding in its body
 pass	a capturing unannotated closure in a payload is typed from the declared arrow
 pass	a chained Option.expect(Option.expect s) payload consumed per iteration accumulates stably
 pass	a chained access through an if-of-records composes and shields the untaken branch's trap
+pass	a chained float ordering is not foldable by transitivity — a NaN middle breaks the chain
 pass	a char literal naming a surrogate is a reader error
 pass	a char order agrees with its scalar value
 pass	a checked addition of two runtime-wrapped bytes still guards at the narrow width
