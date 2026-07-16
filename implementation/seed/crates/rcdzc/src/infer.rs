@@ -3452,9 +3452,27 @@ fn compute_def_scheme(db: &mut Db, def: usize) -> Option<Scheme> {
         }
         param_tys.push(ty);
     }
+    // RIGID PARAM VARS for the body solve: the whole-type variables of this def's OWN parameter types are
+    // the tie a recursive-generic producer must keep (`xs : List ?a` → the result must stay `Iter ?a`, not
+    // a freshened `Iter ?b`). Mark them rigid so `apply_type`'s recursive-call arg-freshen (`freshen_arg`)
+    // preserves them, while a genuinely-fresh local placeholder (`(None) : Option ?0`, `Map.empty : Map ?k
+    // ?v` — NOT a param var) still freshens. This is the var-PROVENANCE distinction a shape-based check
+    // cannot make. Collected from `param_tys` (only whole-type `Ty::Var`s — a numeric width/sign var grounds
+    // to a default and is not a generic-element tie). Cleared after the solve; never nested.
+    let mut rigid: crate::fxhash::FxHashSet<u32> = crate::fxhash::FxHashSet::default();
+    for pt in &param_tys {
+        let mut vs = Vec::new();
+        pt.collect_free_vars(&mut vs);
+        rigid.extend(vs);
+    }
+    let prev_rigid = db.scheme_rigid_vars.take();
+    if !rigid.is_empty() {
+        db.scheme_rigid_vars = Some(rigid);
+    }
     // The result type is the body's solved type. `Any` here means the body could not be typed without
     // reducing a self-call (recursion) — defer to the fixpoint A2 adds.
     let result = type_of(db, body);
+    db.scheme_rigid_vars = prev_rigid;
     if matches!(result, Ty::Any) {
         trace!(target: "rcdzc::infer", def, "def_scheme: undetermined result (recursive?) → defer (A2)");
         return None;
@@ -3597,6 +3615,20 @@ fn tuple_constructor_ty(db: &mut Db, id: StructId) -> Option<Ty> {
         _ => return None,
     };
     Some(Ty::Tuple(elems.iter().map(|&e| type_of(db, e)).collect()))
+}
+
+/// Freshen an application argument's type past the head's instantiation counter (the occurs-check
+/// dodge — see the call sites), BUT preserve the def's own parameter type vars while a
+/// `compute_def_scheme` body solve is active (`db.scheme_rigid_vars`). Preserving those vars keeps a
+/// recursive-generic producer's param↔result element TIE connected across the recursive-call arg-freshen
+/// (`List a -> Iter a` stays tied, not a disjoint `∀a b`); a genuinely-fresh local placeholder (`(None)`,
+/// `Map.empty`) is NOT a param var, so it still freshens — the var-provenance distinction. Outside a
+/// scheme solve (`None` — every ordinary application) this is byte-identical to a plain `freshen_free`.
+fn freshen_arg(db: &Db, at: &Ty, fresh: &mut crate::unify::Fresh) -> Ty {
+    match &db.scheme_rigid_vars {
+        Some(rigid) => crate::unify::freshen_free_except(at, fresh, rigid),
+        None => crate::unify::freshen_free(at, fresh),
+    }
 }
 
 fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
@@ -4227,7 +4259,8 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
                 // numbers with the head's instantiation (`Some : (-> ?0 (Option ?0))`). Without freshening
                 // the two `?0`s alias and `?0 = Option ?0` trips the occurs-check, spuriously rejecting a
                 // well-typed `(Some (None))`. Freshening makes them disjoint (`?0 = Option ?1`).
-                let at = crate::unify::freshen_free(&type_of(db, arg), &mut fresh);
+                let arg_ty = type_of(db, arg);
+                let at = freshen_arg(db, &arg_ty, &mut fresh);
                 // A unify failure here is a real type fault; ignore it for the VALUE (reported by
                 // `type_errors`) and continue with the declared result so the shape stays sane.
                 let _ = crate::unify::unify(&mut subst, &param, &at);
@@ -8371,7 +8404,8 @@ fn check_application(
                 // the same step in `apply_type`. Without it, an under-constrained arg (a bare nullary
                 // variant `(None) : Option ?0`) shares variable numbers with the head scheme and the
                 // occurs-check spuriously FAULTS a well-typed `(Some (None))` (CDZ0203 "infinite type").
-                let at = crate::unify::freshen_free(&type_of(db, arg), &mut fresh);
+                let arg_ty = type_of(db, arg);
+                let at = freshen_arg(db, &arg_ty, &mut fresh);
                 if let Err(reject) = crate::unify::unify(&mut subst, &param, &at) {
                     trace!(target: "rcdzc::infer", head = head.0, arg = arg.0, "apply: argument conflicts with parameter (type fault)");
                     // A wrong-type payload to a VARIANT CONSTRUCTOR — `(T.Mk "x")` for `(Mk Int64)` — is a

@@ -3570,23 +3570,27 @@
   (call   main (: 2 Int64)) (output (: 6 Int64))
   (call   main (: 4 Int64)) (output (: 12 Int64)))
 
-; The KNOWN LIMIT: a recursive-generic PRODUCER whose RESULT type variable is not tied to its ARGUMENT —
-; `from-list : List a -> Iter a` is inferred `∀a b. List a -> Iter b` (the produced element `b` comes from
-; `(Iter.Cons h …)` whose var is severed from the argument element `a`) — cannot be MONOMORPHIZED at more
-; than one element type in one program: with two instantiations the monomorphizer has no single value to
-; bind the loose result var. Rejected CDZ0201 with a message that NAMES this cause + the workarounds (single
-; element type, annotate the result, or a monomorphic type), NOT the misleading `const`-parameter message it
-; used to share (the decline conflated a `const`-contract violation with an undetermined generic type arg;
-; the message now branches on whether the callee declares a `const` param). A SINGLE instantiation compiles
-; + runs (the cases above); tying the result var across instantiations is a tracked inference follow-up.
+; THE RECURSIVE-GENERIC PRODUCER TIE (was the known ≥2-type limit; LANDED): `from-list : List a -> Iter a`
+; builds a generic `Iter` from a generic `List` — a recursive-generic PRODUCER. Its result element must be
+; TIED to its argument element (`List a -> Iter a`, ONE `a`), so it can be MONOMORPHIZED independently at
+; each element type. The tie was previously SEVERED — `compute_def_scheme`'s body solve types the arm
+; `(Iter.Cons h (from-list t))` through `apply_type`, whose recursive-call arg-freshen renamed the param's
+; `a` to a fresh var → the scheme inferred `∀a b. List a -> Iter b`, and composing `icount(from-list(xs))`
+; at BOTH Int64 AND String had no single value for the loose result var → CDZ0201. FIX: during the scheme's
+; body solve, the def's OWN parameter type vars are RIGID (`db.scheme_rigid_vars` → `freshen_free_except`
+; preserves them), so the recursive call keeps `a` tied while a genuinely-fresh local placeholder (`(None)`,
+; `Map.empty`) still freshens — the var-PROVENANCE distinction. Now `from-list` infers `∀a. List a -> Iter
+; a` and composes at ≥2 element types, compiling + running. (The mutual-recursion group variant is a
+; strictly-harder follow-up — no shared subst across the group yet.)
 
-(case "a recursive-generic producer at two element types is rejected with a tied-result-var diagnostic"
+(case "a recursive-generic producer composes at two element types (the tied result var)"
   (doc    "`from-list : List a -> Iter a` builds a generic `Iter` from a generic `List` — a recursive-generic
-           PRODUCER. Its result element var is not tied to its argument's (inferred `∀a b. List a -> Iter b`),
-           so composing `icount(from-list(xs))` at BOTH Int64 AND String in one program has no single type to
-           bind the loose result var → CDZ0201. A single instantiation compiles + runs; this is the ≥2-type
-           limit. The rejection names the recursive-generic-producer cause + workarounds (not the old
-           misleading `const`-parameter message). `cdz check` accepts it; the decline is at monomorphization.")
+           PRODUCER whose result element is TIED to its argument's (`∀a. List a -> Iter a`, was the severed
+           `∀a b` ≥2-type limit). Composing `icount(from-list(xs))` at BOTH Int64 (a runtime `[n, n+1]`) AND
+           String (`[\"a\",\"b\",\"c\"]`) in one program now monomorphizes `from-list`/`icount` independently
+           at each element type and runs: with n=5 → icount[5,6]=2 + icount[\"a\",\"b\",\"c\"]=3 = 5; n=10 →
+           2 + 3 = 5. Pins the producer element tie (the scheme-solve rigid-param-var fix): the recursive
+           call keeps `a` tied, so the two instantiations each bind a concrete element.")
   (input  (do
             (type Iter (Nil) (Cons a (Iter a)))
             (def (from-list xs)
@@ -3596,7 +3600,8 @@
             (def (main (: n Int64))
               (+ (icount (from-list (list n (+ n 1)))) (icount (from-list (list "a" "b" "c")))))
             (export main)))
-  (error  CDZ0201))
+  (call   main (: 5 Int64)) (output (: 5 Int64))
+  (call   main (: 10 Int64)) (output (: 5 Int64)))
 
 ; TYPE-VALUED PARAMETERS — the spec's model for a generic definition (`type-system.md §Generics Are
 ; Type-Valued Parameters`): a generic def takes the TYPE as an ordinary parameter (annotated `(: t Type)`,
