@@ -2071,6 +2071,7 @@ pass	a trapping payload in the taken arm of a same-constructor match still traps
 pass	a trapping payload in the untaken arm of a same-constructor if does not trap
 pass	a trapping scrutinee of a same-constructor match traps before any arm
 pass	a trapping shared payload before the differing position must not preempt a trapping cond
+pass	a trivially-true guard does not make its variant arm unconditional
 pass	a truncating conversion keeps the low bits rather than trapping
 pass	a truncating conversion of a negative value uses two's complement
 pass	a truncating conversion to an unusual width keeps that width's low bits
@@ -2877,6 +2878,7 @@ pass	integer to byte wraps on overflow
 pass	interning the same string twice yields equal symbols
 pass	intersection cardinality with a runtime-element operand
 pass	intersection with the empty set is the empty set
+pass	jointly-total guards over one variant are still non-exhaustive (guards are opaque to the checker)
 pass	keyed lookups at different keys are not shared
 pass	left shift
 pass	less-than at the integer extremes is signed, not unsigned

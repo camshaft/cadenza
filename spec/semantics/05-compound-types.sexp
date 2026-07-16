@@ -5999,6 +5999,36 @@
               ((None) 0)))
   (error    CDZ0210))
 
+; The single-guarded-arm case above pins that a guarded arm covers no variant. These pin that the checker
+; treats guards as fully OPAQUE — it does NOT reason about whether a SET of guards is jointly total, nor
+; treat a trivially-`true` guard as unconditional. The classic exhaustiveness-soundness trap is a checker
+; that "gets clever" (`(> x 0)` ∪ `(<= x 0)` covers all Int64 → exhaustive), which is UNSOUND in general
+; (guard totality is undecidable); the checker must require an UNGUARDED arm for the variant regardless.
+
+(case "jointly-total guards over one variant are still non-exhaustive (guards are opaque to the checker)"
+  (doc    "Two guarded `Some` arms whose guards `(> x 0)` and `(<= x 0)` are JOINTLY TOTAL over Int64, plus
+           `(None)`, but NO unguarded `Some` arm. The match is STILL non-exhaustive (CDZ0210): the checker
+           treats each guard as possibly-false and does NOT prove the guard SET total (guard totality is
+           undecidable in general — arithmetic reasoning here would be unsound for a checker that can't do
+           it for arbitrary guards). Pins that no combination of guards covers a variant — only an unguarded
+           arm does. A checker that reasoned `>0 ∪ <=0 = all` and accepted this would be unsound.")
+  (input    (match (Some 5)
+              ((guard (Some x) (> x 0)) x)
+              ((guard (Some x) (<= x 0)) x)
+              ((None) 0)))
+  (error    CDZ0210))
+
+(case "a trivially-true guard does not make its variant arm unconditional"
+  (doc    "The degenerate case: `(guard (Some x) true)` — a guard that is the literal `true` — still counts
+           as GUARDED, so it does not cover the `Some` variant unconditionally; with only `(None)` besides,
+           the match is non-exhaustive (CDZ0210). Pins that the checker keys on the arm being SYNTACTICALLY
+           guarded, not on whether the guard expression happens to fold true — it does not special-case a
+           constant-true guard into an unguarded arm (which would be an inconsistent, fold-dependent rule).")
+  (input    (match (Some 5)
+              ((guard (Some x) true) x)
+              ((None) 0)))
+  (error    CDZ0210))
+
 (case "a variant-payload binder shadowing a param in a called def binds the payload"
   (doc    "A match-arm payload binder that SHADOWS the enclosing def's parameter, in a def reached via a
            CALL. `(def (f (: n Int64)) (match (W.V (+ n 1)) ((W.V n) n) ((W.Z) 0)))` binds the payload as
