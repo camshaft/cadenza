@@ -269,7 +269,10 @@ mod tests {
         // regression guard for the minimality check (a `shift`/`payload==0` off-by-one would let some
         // non-canonical string through, and this catches it as an accepted-but-non-canonical input).
         let mut rng = Rng(0x1eb1_28fa_ce5e_ed01);
-        for _ in 0..200_000 {
+        // 20k iterations over the small 1..=11-byte space amply covers it (matches the crate's other
+        // mutation-sweep norm — a fresh Vec + canon re-encode per iter makes a larger count a gate-time
+        // cost with no added coverage; PR#474 review nit).
+        for _ in 0..20_000 {
             // 1..=11 bytes (11 > the 10-byte max, so over-length inputs are exercised too).
             let len = 1 + (rng.next() % 11) as usize;
             let buf: Vec<u8> = (0..len).map(|_| (rng.next() & 0xff) as u8).collect();
