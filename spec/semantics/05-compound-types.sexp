@@ -3745,6 +3745,70 @@
   (call   main (: 4 Int64)) (output (: 100 Int64))
   (call   main (: 6 Int64)) (output (: 7 Int64)))
 
+; The Int64 spill case above pins the width the bug first surfaced at. The spill slot takes the SCRUTINEE'S
+; machine width, which differs by payload type — so a NARROW erased newtype (UInt8/Int32, raw rep i32) and a
+; Bool newtype (i32) must spill at their own width too, not the hardcoded i32 that happened to match a narrow
+; scalar by luck yet mismatched the i64. These pin the call-returned (spilling) scrutinee across the payload
+; widths + a double-call (two spills), the exact class where a width fix verified only at Int64 recurs at a
+; sibling width. (On the RUST backend the single-variant newtype path DECLINES — a known rust gap the fix
+; notes — so these are wasm-executing / rust-declining, matching the landed Int64 spill case.)
+
+(case "a call-returned UInt8 newtype literal-payload arm spills at the narrow width"
+  (doc    "The narrow-width spill sibling: the scrutinee `(mk d)` is a CALL result over `(type W (Wrap
+           UInt8))`, so the sum-match SPILLS it — and a UInt8 newtype's raw payload is an i32, so the spill
+           slot must take i32 (the scrutinee's width), not the boxed-handle default that only coincidentally
+           matches. `f` matches `(W.Wrap 0)`→100 else the payload: d=0 → 100, d=5 → 5. Pins the spill width
+           tracks a narrow erased newtype, the UInt8 companion of the landed Int64 spill case.")
+  (input  (do
+            (type W (Wrap UInt8))
+            (def (mk (: n UInt8)) (W.Wrap n))
+            (def (f (: w W)) (match w ((W.Wrap 0) 100) ((W.Wrap n) n)))
+            (def (main (: d UInt8)) (f (mk d)))
+            (export main)))
+  (call   main (: 0 UInt8)) (output (: 100 Int64))
+  (call   main (: 5 UInt8)) (output (: 5 Int64)))
+
+(case "a call-returned Int32 newtype literal-payload arm spills at the narrow width"
+  (doc    "The Int32 narrow-width spill: same call-returned erased newtype over `(Wrap Int32)` (raw rep
+           i32) — d=0 → 100, d=5 → 5. Pins the spill width tracks the signed narrow newtype too, alongside
+           the UInt8 case.")
+  (input  (do
+            (type W (Wrap Int32))
+            (def (mk (: n Int32)) (W.Wrap n))
+            (def (f (: w W)) (match w ((W.Wrap 0) 100) ((W.Wrap n) n)))
+            (def (main (: d Int32)) (f (mk d)))
+            (export main)))
+  (call   main (: 0 Int32)) (output (: 100 Int64))
+  (call   main (: 5 Int32)) (output (: 5 Int64)))
+
+(case "a call-returned Bool newtype literal-payload arm spills correctly"
+  (doc    "The Bool spill: a call-returned `(Wrap Bool)` newtype (i32-backed) matched with a literal-payload
+           arm `(W.Wrap true)` — b=true → 1, b=false → the wildcard 0. Pins the spill width handles a Bool
+           newtype scrutinee, the Bool companion of the narrow-int spill cases.")
+  (input  (do
+            (type W (Wrap Bool))
+            (def (mk (: b Bool)) (W.Wrap b))
+            (def (f (: w W)) (match w ((W.Wrap true) 1) ((W.Wrap _) 0)))
+            (def (main (: d Bool)) (f (mk d)))
+            (export main)))
+  (call   main (: true Bool)) (output (: 1 Int64))
+  (call   main (: false Bool)) (output (: 0 Int64)))
+
+(case "a doubly-call-returned narrow newtype spills correctly through two calls"
+  (doc    "The double-spill: the scrutinee passes through TWO calls `(f (mk d))` where `f` matches `(g w)`
+           (another call) — two spill points over a `(Wrap UInt8)` erased newtype. d=0 → 100, d=5 → 5. Pins
+           the spill width is taken at each spill point, so a chain of call-returned narrow-newtype
+           scrutinees stays width-correct, not just a single spill.")
+  (input  (do
+            (type W (Wrap UInt8))
+            (def (mk (: n UInt8)) (W.Wrap n))
+            (def (g (: w W)) w)
+            (def (f (: w W)) (match (g w) ((W.Wrap 0) 100) ((W.Wrap n) n)))
+            (def (main (: d UInt8)) (f (mk d)))
+            (export main)))
+  (call   main (: 0 UInt8)) (output (: 100 Int64))
+  (call   main (: 5 UInt8)) (output (: 5 Int64)))
+
 (case "a recursive resolver transforms one runtime sum tree into another, then consumes it"
   (doc    "The compiler's reader→pipeline JOIN shape: a recursive function that transforms a runtime-built
            value of ONE sum type into a value of a DIFFERENT sum type, whose result is then consumed. A
