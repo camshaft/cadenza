@@ -93,12 +93,25 @@ to Bedrock, and what's missing? Answer, from reading the host/peer ABI surface
 - **A peer boundary, unified with effects (v-peer-linking's U1–U4).** `(effect Math …)` + `(bind Math
   "cadenza:pkg/iface")` routes an escaping effect to a *separately-compiled Cadenza peer* over a shared
   runtime. Precedence: in-source default < compile-request `--bind` override < in-program `(handle …)`.
-- **Compound values cross between PEERS by handle.** `extern_abi_val_type` gives a runtime-owned
-  compound (String/List/Record/tuple/sum/Map/Set/Bytes/BigInt/Rational) an opaque `u32` heap handle
-  into the shared runtime — **so a Cadenza peer op CAN take and return a String today.**
-- **Scalar host params/results + String PARAMETERS.** `abi_val_type` maps every aliased scalar
-  (Bool/Char/f32/f64/s8…u64). A host op can take a `String` argument (`HostParam::Str`, the (ptr,len)
-  lift). The runner can even coerce a `String` *response* (`bind_host_imports` handles `Val::String`).
+- **A peer op's String RESULT crosses by handle.** `extern_abi_val_type` gives a runtime-owned compound
+  (String/List/Record/tuple/sum/Map/Set/Bytes/BigInt/Rational) an opaque `u32` heap handle into the
+  shared runtime — a peer op can **return** a String today (probed e2e — see §2.1a).
+- **Scalar host params/results + a CONST String argument.** `abi_val_type` maps every aliased scalar
+  (Bool/Char/f32/f64/s8…u64). A host op can take a *constant* `String` argument (`HostParam::Str`, the
+  (ptr,len) lift, const-fold path). The runner can coerce a `String` *response* (`bind_host_imports`
+  handles `Val::String`) — but the compiler-side host RESULT ABI (§2.2) doesn't emit one.
+
+### 2.1a ⚠ CORRECTION (probed e2e 2026-07-16) — the String-crossing matrix is ASYMMETRIC
+
+An earlier draft of §2.1 claimed "a peer op CAN take and return a String today." **That is wrong — only
+the RESULT direction works.** Built `cdz`/`cdz-run` and probed every crossing; results
+(`issues/string-crossing-matrix-blocks-model-call-shape.md` has the full table + repros):
+`✅ peer RESULT=String` (ran to a value); `🔴 peer ARG=String` (CDZ0201, inbound rope handle not emitted);
+`🔴 entrypoint RESULT escapes String` (resource-escape lacks the peer import); `🔴 host ARG=String
+non-const`; `🔴 host RESULT=String` (§2.2); `🔴 entrypoint PARAM=String`. **A `String` crosses NO boundary
+in a runnable `(String -> String)` model-call shape today except a peer RESULT** — so BOTH routes below
+need ABI work, and Route B's real critical-path unblock is the **peer String-ARGUMENT** cell, not the
+host-result widening. §2.2–§2.3 below are kept for the host-result cell but read them through this matrix.
 
 ### 2.2 What's MISSING — the gate to Bedrock-direct
 
@@ -123,17 +136,22 @@ a String** (the completion text, or a JSON body to parse). Today that op decline
   compiler change between the spike and tools-compose-as-host-capabilities" the spike named. It is the
   clean, general fix and unblocks every future host op that returns text — but it is a non-trivial
   ABI widening in a frozen-ish surface, and needs v-peer-linking / v-effects coordination.
-- **Route B — model Bedrock as a Cadenza PEER, not a host op.** Since a *peer* op already returns a
-  String by handle (`extern_abi_val_type`), write a tiny non-Cadenza "Bedrock shim" component that
-  exposes `cadenza:bedrock/api` with `(converse (-> String String))`, and `(bind Bedrock
-  "cadenza:bedrock/api")`. The shim does the actual SigV4 + HTTPS. This needs NO compiler change today
-  — but it pushes the SigV4/TLS into a non-Cadenza edge (the shim), so the harness isn't *fully*
-  Cadenza-native until Route A lands and the shim's logic can migrate inward.
+- **Route B — model Bedrock as a Cadenza PEER, not a host op.** A `cadenza:bedrock/api` peer that
+  exposes `converse`, `(bind Bedrock "cadenza:bedrock/api")`, and a shim doing SigV4 + HTTPS. A peer op's
+  String RESULT works today (§2.1a), so the **completion** comes back fine — but per the matrix the
+  **prompt ARGUMENT** (`String` in) declines (CDZ0201, cell #2), so a naive `(converse (-> String
+  String))` does NOT compile yet. Route B's critical-path unblock is the **peer String-argument** emit
+  (the mirror of the working result path) — a smaller lift than the host-result widening. Interim
+  workaround until #2 lands: pass the prompt as a tuple/record of scalars or via a side channel, take the
+  completion back as the peer String RESULT, and consume it IN-PROGRAM (so the entrypoint returns a
+  scalar, sidestepping cell #3).
 
-**Recommendation to the operator:** start on **Route B** to get an end-to-end agent loop calling a real
-Bedrock model THIS quarter (proves the loop, Cedar, and self-mod against a live model), and pursue
-**Route A** in parallel as the durable fix (coordinated with v-peer-linking) so the SigV4 edge can move
-into Cadenza. They are not mutually exclusive — B is the bring-up, A is the end state.
+**Recommendation to the operator (revised post-probe):** Route B is still the right bring-up, but it is
+NOT zero-compiler-change as first stated — it needs the **peer String-argument** cell built (route to
+v-peer-linking; it's the mirror of the working result path, a focused lift). Route A (host String result)
+is the parallel durable fix. Neither alone yields `String -> String` today. Sequence: (1) v-peer-linking
+builds the peer String-arg emit; (2) Route B ships a real Bedrock call; (3) Route A follows so the SigV4
+edge can migrate into Cadenza. All three tracked in the matrix issue.
 
 ### 2.4 The SigV4 / TLS reality regardless of route
 
