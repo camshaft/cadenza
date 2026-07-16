@@ -8209,7 +8209,22 @@ fn emit(
             // `CallExternImport`, exactly as a `Core::ExternCall` did. An unbound effect stays a host call.
             if let Some(iface) = db.effect_bindings.get(&effect).cloned() {
                 let index = layout.extern_index(&iface, &op).ok_or_else(|| {
-                    Reject::decline("a peer-bound effect op is not in the extern-import set")
+                    // The peer op is not in `extern_order` — which the RESOURCE-ESCAPE emit paths
+                    // (`emit_runtime_resource`/`emit_recursive_sum_resource`) do not populate: they carry
+                    // the runtime import but not the peer extern envelope. So a peer-bound op reached in a
+                    // body whose ENTRYPOINT RESULT escapes as a runtime resource (the entrypoint RETURNS
+                    // the compound/Option a peer produced) has no import to call. This is a known gap (a
+                    // resource×peer-extern envelope fusion is the fix); until then, the workaround is to
+                    // consume the peer's value into a SCALAR the entrypoint returns (e.g. read the field/
+                    // element and return it, or `List.len`) rather than returning the raw compound, OR
+                    // handle the effect in-program instead of binding it to a peer.
+                    Reject::decline(format!(
+                        "a peer-bound effect op (`{op}` on `{iface}`) is reached in an entrypoint whose \
+                         RESULT escapes as a runtime resource (it returns the compound/collection the peer \
+                         produced) — the resource-escape boundary does not yet carry the peer import. \
+                         Consume the peer's value into a scalar the entrypoint returns, or handle the \
+                         effect in-program instead of binding it to a peer"
+                    ))
                 })?;
                 for &arg in &args {
                     if matches!(crate::infer::type_of(db, arg), Ty::Unit) {
