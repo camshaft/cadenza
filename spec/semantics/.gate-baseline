@@ -643,6 +643,7 @@ pass	a failure `?` short-circuits BEFORE later computation runs
 pass	a fallible parser threads a Result((value,cursor),String) through mutual recursion, short-circuiting on Err
 pass	a false variant guard shields its arm's trapping body
 pass	a family quantity displays scaled exactly to its reference (Rational)
+pass	a family quantity displays scaled to its reference over Int64, truncating a non-whole ratio
 pass	a far-miss segment kind keeps the plain unrecognized message
 pass	a field is projected from a record chosen across a call boundary by a runtime conditional
 pass	a field is projected from a record returned across a call boundary
@@ -1976,6 +1977,7 @@ pass	an expect of a list index result is an integer usable in arithmetic
 pass	an explicit annotation overrides the default-fraction pragma
 pass	an explicit annotation overrides the default-integer pragma
 pass	an explicit conversion makes the operation well-typed
+pass	an explicit conversion off the truncating-display quantity is still exact (5 foot in inches = 60)
 pass	an explicit float-width conversion makes a mixed-width operation well-typed
 pass	an export and a like-named metadata key do not collide
 pass	an export mixing a scalar and a nested-tuple parameter returns a list from both
@@ -2710,6 +2712,7 @@ pass	the decode error's kind is matchable
 pass	the default-integer pragma is definition-site scoped, not use-site
 pass	the difference contains the elements not in the second set
 pass	the difference of a set with itself is empty
+pass	the display truncation does not lose the stored magnitude (Qty.value reads it back)
 pass	the else-branch of an if threads a performed state to the continuation
 pass	the empty and None arms of a list-payload split dispatch to their own values
 pass	the empty byte sequence has length zero

@@ -118,6 +118,37 @@
   (input  (Qty.of 1 (Unit.prefix kibi (Unit.base #"byte"))))
   (output (: (Qty.of 1024 (Unit.base #"byte")) (Qty Int64 (Unit.base #"byte")))))
 
+(case "a family quantity displays scaled to its reference over Int64, truncating a non-whole ratio"
+  (doc    "`5 foot` = `(Qty.of 5 (Unit.of #\"foot\"))` DISPLAYS as `1 meter` over Int64: foot = 381/1250 m,
+           so 5 foot = 1905/1250 = 1.524 m, and the reference-normalized DISPLAY truncates toward zero to
+           1 (the numeric core's Int rule — `Int truncates on a non-whole ratio`, contrast the exact
+           Rational `5 mile` above and the whole-ratio Int64 `1 KiB` above). The truncation is a DISPLAY
+           concern ONLY — the stored magnitude is kept exactly (`Qty.value` reads back 5, the foot-unit
+           magnitude) and an explicit `Unit.in` converts by the exact direct ratio (5 foot in inches = 60,
+           no rounding), so no value is lost at construction or conversion — only the Int reference render
+           rounds, exactly as the same 1.524 over Float would display 1.524 and over Rational 1905/1250.")
+  (input  (Qty.of 5 (Unit.of #"foot")))
+  (output (: (Qty.of 1 (Unit.base #"meter")) (Qty Int64 (Unit.base #"meter")))))
+
+(case "the display truncation does not lose the stored magnitude (Qty.value reads it back)"
+  (doc    "`(Qty.value (Qty.of 5 (Unit.of #\"foot\")))` = 5 : Int64 — the value recovered is the stored
+           foot-unit magnitude 5, NOT the truncated reference render `1` from the display case above. Pins
+           that reference-normalization is a DISPLAY concern only: the stored magnitude is the number the
+           source wrote, in the unit the source named, and `Qty.value` (the explicit exit) returns it
+           unchanged — the Int display truncation never reaches back into the stored value.")
+  (input  (Qty.value (Qty.of 5 (Unit.of #"foot"))))
+  (output (: 5 Int64)))
+
+(case "an explicit conversion off the truncating-display quantity is still exact (5 foot in inches = 60)"
+  (doc    "`(Unit.in (Unit.of #\"inch\") (Qty.of 5 (Unit.of #\"foot\")))` = 60 : Int64 — 5 foot is exactly
+           60 inches (foot = 12 inch), and the explicit conversion computes it by the exact direct ratio
+           off the stored 5, with NO intermediate truncation to the `1 meter` reference display. Pins that
+           the lossy Int reference DISPLAY (the case above) does not corrupt an EXACT conversion — the two
+           are independent: display normalizes to reference and truncates, `Unit.in` converts by the
+           direct source-to-target ratio and here stays whole.")
+  (input  (Unit.in (Unit.of #"inch") (Qty.of 5 (Unit.of #"foot"))))
+  (output (: 60 Int64)))
+
 ; Unit extraction — `(Qty.unit q)` recovers a quantity's UNIT as a first-class compile-time unit value,
 ; the inverse of `Qty.of`'s unit argument. It lets a program construct another quantity in the SAME unit
 ; as an existing one — `(Qty.of new (Qty.unit y))` — without re-spelling the unit expression. The unit is
