@@ -2948,6 +2948,7 @@ pass	multiplication
 pass	multiplication of an integer and a float does not silently promote
 pass	multiplication of the minimum integer by -1 overflows and traps
 pass	multiplication past the maximum integer overflows and traps
+pass	multiply-by-zero is NOT an annihilator for FLOAT — nan * 0.0 is nan, not 0.0
 pass	multiplying a scaled-unit quantity by the literal one keeps its dimension and displays scaled
 pass	multiplying quantities multiplies their dimensions
 pass	narrowing a BigInt-valued if back to Int64 works over both branches
