@@ -19,3 +19,8 @@ re-parent the captured outer-arm free var into the merged spec scope. Same re-pa
 
 ## Status
 v-effects reproduced + bisected + ACKed to reporter; building the fix. Gate adversarially (miscompile-prone).
+
+## ✅ FIX SENT (2026-07-16): MR `cafc159de` to pr-sync — thread the captured enclosing-fn param as an
+extra spec param (`captured_enclosing_params` in specialize_recursive; Ref-chain resolution; extra
+param after originals/before states; `Db.effect_spec_captures` carries names to the self-call rewrite).
+Corpus case + rcdzc test (→12), double-call verified per-call; full `cargo xtask check` green. Awaiting merge.
