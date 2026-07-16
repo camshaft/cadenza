@@ -2053,15 +2053,7 @@ fn emit_runtime_resource(
 
         // The host ops as the core module's leading-import slot (ExternImport-shaped; byte-identical to a
         // host functype for a scalar op — see the `leading_is_host` review). A String param declined above.
-        let host_as_extern: Vec<host::ExternImport> = host_imports
-            .iter()
-            .map(|hi| host::ExternImport {
-                interface: hi.effect.clone(),
-                op: hi.op.clone(),
-                params: hi.params.iter().filter_map(host_param_abi).collect(),
-                result: hi.result,
-            })
-            .collect();
+        let host_as_extern = host_as_extern_for(&host_imports);
         let mut main_core = serialize::runtime_resource_core_module_form_ex2(
             &funcs,
             &imports,
@@ -7151,15 +7143,7 @@ fn emit_runtime_sum_resource(
             .iter()
             .map(|_| serialize::MakeCoreSlot::Scalar)
             .collect();
-        let host_as_extern: Vec<host::ExternImport> = host_imports
-            .iter()
-            .map(|hi| host::ExternImport {
-                interface: hi.effect.clone(),
-                op: hi.op.clone(),
-                params: hi.params.iter().filter_map(host_param_abi).collect(),
-                result: hi.result,
-            })
-            .collect();
+        let host_as_extern = host_as_extern_for(&host_imports);
         let mut main_core = serialize::runtime_resource_core_module_form_ex2(
             &funcs,
             &imports,
