@@ -9167,6 +9167,12 @@ fn heap_operand_ownership(db: &mut Db, id: StructId) -> Result<HandleOwnership, 
             Ok(join_arm_ownership(db, arms.iter().map(|a| a.body)))
         }
         Core::MatchSum { root, .. } => Ok(sum_cont_ownership(db, &root)),
+        // When the operand's ownership (its aliasing status — whether the enclosing op may reclaim it or must
+        // leave it to another owner) cannot be established by any arm above, DECLINE rather than emit a
+        // component whose dup/drop placement would be a guess: the aliasing discipline could not be proven
+        // safe here, so refusing is the sound outcome, not an unchecked emit with unspecified aliasing.
+        //= spec/capabilities/memory-and-resource-model.md#aliasing-is-statically-disciplined
+        //# The compiler MUST reject a program whose aliasing the memory discipline cannot establish as safe, rather than emit a component with unspecified aliasing behavior.
         _ => Err(Reject::decline(
             "borrowing op operand has an ownership this backend cannot yet prove",
         )),
