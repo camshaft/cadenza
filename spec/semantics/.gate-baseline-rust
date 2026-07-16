@@ -3407,6 +3407,7 @@ todo	a tuple-returning closure alongside a plain export — the plain
 todo	a two-argument closure exported to the host is called with both arguments
 todo	a wildcard-exported variant whose name shadows a prelude type is constructible in an importer
 todo	an 8-bit-integer closure crosses the host boundary
+todo	an @param site generates a Param accessor a host delegation reads at run time
 todo	an INFINITY-axiom theorem is unforgeable — its Thm cannot be fabricated outside the kernel
 todo	an abortive handler abandons a host call in the path it discards
 todo	an abstract theorem is obtained only through the kernel's exported inference rule and accessor
@@ -3581,6 +3582,7 @@ todo	the ETA axiom is minted via new_axiom as a hypothesis-free theorem
 todo	the INFINITY axiom is minted via new_axiom (an infinite type exists)
 todo	the SELECT (choice) axiom is minted via new_axiom as a hypothesis-free theorem
 todo	the empty and None arms of a list-payload split dispatch to their own values
+todo	the generated Param accessor carries the @param's declared type into arithmetic
 todo	the implication-extended kernel Thm stays unforgeable — Thm.Seq of a bogus implication outside is CDZ0214
 todo	the kernel defines T (truth) as a constant and DERIVES |- T through the rules
 todo	the kernel proves reflexivity end-to-end: refl t yields a theorem whose conclusion is (t = t)

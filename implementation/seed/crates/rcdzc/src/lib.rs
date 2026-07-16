@@ -57,6 +57,10 @@ pub mod quote;
 // `(eval AST)` desugar — the INVERSE of quote reification: reconstruct the source form an `Ast` value
 // denotes and splice it in, so `(eval (quote (+ 1 2)))` folds to `3` through the ordinary path.
 pub mod eval_ast;
+// `@param` sidecar — scan every `@param(widget: …) name : Type` site and GENERATE a `Param` effect with
+// one typed accessor op per param (the runtime-parameter host-effect codegen; v-effects binds it, v-syntax
+// parses the annotation). Runs before the top-level scan so the generated effect is picked up as a decl.
+pub mod param_sidecar;
 // Tagged-template expansion — `(tagged-template <tag> (chunks …) (holes …))` (the reader's form for
 // `tag"…{expr}…"`) rewritten to the binding-dispatched application `(<tag> (list …) (list …))`, which the
 // one-tier evaluator reduces and splices — an embedded DSL grows at the AST level via an ordinary function.
