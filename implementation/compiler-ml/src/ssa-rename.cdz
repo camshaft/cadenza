@@ -1,0 +1,142 @@
+/// ssa-rename.cdz — SSA VARIABLE RENAMING over a straight-line block: the second half of SSA construction
+/// (after φ-placement, `ssa-phi.cdz`). Renaming gives every DEFINITION a fresh version so that each name is
+/// assigned exactly once, and rewrites every USE to refer to the version live at that point. On a
+/// straight-line block (the base case of the dominator-tree walk a full builder does), the rule is simple:
+/// scan top to bottom keeping a "current version" per variable; a use reads the current version, then a
+/// definition BUMPS its variable's version.
+///
+///   x := …        -- def x_0
+///   y := x        -- use x_0 ; def y_0
+///   x := y        -- use y_0 ; def x_1   (x re-defined → new version)
+///   z := x        -- use x_1 ; def z_0
+///
+/// A statement is `Assign(d, uses)` (define `d`, read `uses`, all `Int64` ids). Renaming produces
+/// `RStmt(dvar, dver, ruses)` — the def's variable + its assigned version, and the list of uses as
+/// `(var, version)` pairs. A use of a variable never yet defined gets version -1 (a live-in / undefined
+/// read — in a full CFG that value would come from a φ or the function's entry).
+///
+///   - `rename stmts`        — the renamed straight-line block (`List(RStmt)`).
+///   - `def-version i`       — the version assigned by the i-th statement's definition.
+///   - `use-version-at`      — the version a given use resolves to.
+///   - `total-defs` / `max-version` — structural checks that every def got a distinct version per variable.
+
+type Stmt =
+  | Assign(Int64, List(Int64))
+
+/// A renamed statement: the def var + its new version, and the uses as (var, version) pairs.
+type RStmt =
+  | RStmt(Int64, Int64, List(Tuple(Int64, Int64)))
+
+/// The current version of `v` in the version map (-1 if never defined yet).
+def cur(env: Map(Int64, Int64), v: Int64) = match Map.lookup(env, v) with
+  | Option.Some(k) => k
+  | Option.None(_) => 0 - 1
+
+/// Resolve a use list to (var, current-version) pairs.
+def resolve-uses(env: Map(Int64, Int64), us: List(Int64)) = match us with
+  | [] => []
+  | [u, .. rest] => List.concat([(u, cur(env, u))], resolve-uses(env, rest))
+
+/// Rename a straight-line block: for each statement, resolve its uses at the current versions, then bump
+/// the def's version. Threads the version map; returns the renamed statements in order.
+def rename-go(stmts: List(Stmt), env: Map(Int64, Int64)) = match stmts with
+  | [] => []
+  | [s, .. rest] => (match s with | Stmt.Assign(d, us) =>
+    let ruses = resolve-uses(env, us) in
+    let dver = cur(env, d) + 1 in
+    let env2 = Map.insert(env, d, dver) in
+    List.concat([RStmt.RStmt(d, dver, ruses)], rename-go(rest, env2)))
+
+def rename(stmts: List(Stmt)) = rename-go(stmts, Map.empty)
+
+/// The version assigned by the def of the i-th renamed statement (-1 if out of range).
+def def-version(rs: List(RStmt), i: Int64) = match rs with
+  | [] => 0 - 1
+  | [r, .. rest] => if i == 0 then (match r with | RStmt.RStmt(_, ver, _) => ver) else def-version(rest, i - 1)
+
+/// The def VARIABLE of the i-th renamed statement (-1 if out of range).
+def def-var(rs: List(RStmt), i: Int64) = match rs with
+  | [] => 0 - 1
+  | [r, .. rest] => if i == 0 then (match r with | RStmt.RStmt(d, _, _) => d) else def-var(rest, i - 1)
+
+/// The version the j-th use of the i-th statement resolves to (-1 if out of range).
+def use-version-at(rs: List(RStmt), i: Int64, j: Int64) = match rs with
+  | [] => 0 - 1
+  | [r, .. rest] => if i == 0 then (match r with | RStmt.RStmt(_, _, us) => nth-ver(us, j)) else use-version-at(rest, i - 1, j)
+
+def nth-ver(us: List(Tuple(Int64, Int64)), j: Int64) = match us with
+  | [] => 0 - 1
+  | [u, .. rest] => if j == 0 then (match u with | (_, ver) => ver) else nth-ver(rest, j - 1)
+
+/// The highest version assigned to variable `v` across the renamed block (-1 if `v` never defined).
+def max-version(rs: List(RStmt), v: Int64) = mv(rs, v, 0 - 1)
+
+def mv(rs: List(RStmt), v: Int64, best: Int64) = match rs with
+  | [] => best
+  | [r, .. rest] => (match r with | RStmt.RStmt(d, ver, _) =>
+    mv(rest, v, (if d == v then (if ver > best then ver else best) else best)))
+
+def total-defs(rs: List(RStmt)) = List.len(rs)
+
+/// Builders.
+def asg(d: Int64, us: List(Int64)) = Stmt.Assign(d, us)
+
+@test
+def rn-first-def-version-zero() =
+  // x := [] → x gets version 0.
+  let rs = rename([asg(0, [])]) in
+  if def-version(rs, 0) == 0 then (if def-var(rs, 0) == 0 then unit else trap("def var 0")) else trap("first def is version 0")
+
+@test
+def rn-use-reads-current-version() =
+  // x := [] (x_0) ; y := x → the use of x resolves to version 0.
+  let rs = rename([asg(0, []), asg(1, [0])]) in
+  if use-version-at(rs, 1, 0) == 0 then unit else trap("y:=x reads x version 0")
+
+@test
+def rn-redef-bumps-version() =
+  // x := [] (x_0) ; x := x (uses x_0, defines x_1). the second def is version 1.
+  let rs = rename([asg(0, []), asg(0, [0])]) in
+  if def-version(rs, 1) == 1 then (if use-version-at(rs, 1, 0) == 0 then unit else trap("x:=x reads the OLD x_0")) else trap("redef is version 1")
+
+@test
+def rn-use-after-redef-reads-new() =
+  // x := [] (x_0) ; x := x (x_1) ; y := x → y reads x version 1 (the latest).
+  let rs = rename([asg(0, []), asg(0, [0]), asg(1, [0])]) in
+  if use-version-at(rs, 2, 0) == 1 then unit else trap("use after redef reads x_1")
+
+@test
+def rn-undefined-use-is-minus-one() =
+  // y := x where x was NEVER defined → the use resolves to version -1 (a live-in / undefined read).
+  let rs = rename([asg(1, [0])]) in
+  if use-version-at(rs, 0, 0) == 0 - 1 then unit else trap("undefined use is version -1")
+
+@test
+def rn-distinct-vars-independent() =
+  // x := [] (x_0) ; y := [] (y_0) — distinct vars each start at version 0.
+  let rs = rename([asg(0, []), asg(1, [])]) in
+  if def-version(rs, 0) == 0 then (if def-version(rs, 1) == 0 then unit else trap("y_0")) else trap("x_0")
+
+@test
+def rn-classic-chain() =
+  // x := [] (x_0) ; y := x (use x_0) ; x := y (use y_0, def x_1) ; z := x (use x_1).
+  let rs = rename([asg(0, []), asg(1, [0]), asg(0, [1]), asg(2, [0])]) in
+  if use-version-at(rs, 1, 0) == 0 then                 // y reads x_0
+    (if use-version-at(rs, 2, 0) == 0 then              // x:=y reads y_0
+      (if def-version(rs, 2) == 1 then                  // that x def is x_1
+        (if use-version-at(rs, 3, 0) == 1 then unit else trap("z reads x_1")) else trap("x_1"))
+    else trap("x:=y reads y_0")) else trap("y reads x_0")
+
+@test
+def rn-max-version-counts-redefs() =
+  // x defined three times → max version 2 (x_0, x_1, x_2).
+  let rs = rename([asg(0, []), asg(0, [0]), asg(0, [0])]) in
+  if max-version(rs, 0) == 2 then (if total-defs(rs) == 3 then unit else trap("3 defs")) else trap("x max version 2")
+
+@test
+def rn-multi-use-both-resolved() =
+  // x := [] (x_0) ; y := [] (y_0) ; z := (x, y) → both uses resolve to version 0.
+  let rs = rename([asg(0, []), asg(1, []), asg(2, [0, 1])]) in
+  if use-version-at(rs, 2, 0) == 0 then (if use-version-at(rs, 2, 1) == 0 then unit else trap("y use v0")) else trap("x use v0")
+
+export { rename, def-version, def-var, use-version-at, max-version, total-defs }
