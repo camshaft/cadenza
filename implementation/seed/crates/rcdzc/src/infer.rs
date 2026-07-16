@@ -6992,6 +6992,28 @@ fn check_application(
         let a0 = type_of(db, args[0]);
         let b0 = type_of(db, args[1]);
         let any_qty = matches!(a0, Ty::Qty { .. }) || matches!(b0, Ty::Qty { .. });
+        // `%` (remainder) on a QUANTITY operand is NOT DEFINED — the units surface enumerates `+`/`-`/`*`/
+        // `/`/comparison, not `%`, and unlike those `%` has no dimensional rule wired here. Reject it with
+        // a CLEAN, intentional decline naming that, rather than letting it fall through to the generic
+        // scheme-unify below — which unifies the operator's `∀a. (Int a) → …` scheme against the `Ty::Qty`
+        // and leaks a confusing "type mismatch: Int64 and (Qty Int64 meter) must be the same type" (the
+        // `Int64` is the scheme's, an internal detail the author never wrote). Whether `%` SHOULD be a
+        // quantity operation (a same-dimension remainder `7m % 3m = 1m` is arithmetically sensible) is a
+        // language-design call held for the operator; until then this is the correct shipped behavior — a
+        // clear decline, not a leaked scheme mismatch. (`is_rem` was already excluded from the `*`/`/`
+        // dimensional skip; this replaces the fall-through with an explicit message.)
+        if is_rem && any_qty {
+            trace!(target: "rcdzc::infer", node = head.0, "reject: remainder (%) is not defined on a quantity operand");
+            out.push(Reject::decline(
+                "remainder (%) is not defined on quantities — the units surface supports \
+                 +/-/*/`/`/comparison; recover the numeric value with `Qty.value` first if you need \
+                 the remainder of the underlying number",
+            ));
+            for &arg in args {
+                collect(db, arg, out);
+            }
+            return;
+        }
         // `*`/`/` on a quantity is ALWAYS well-formed DIMENSIONALLY (the dimensions compose, not required
         // equal), so it must NOT reach the generic scheme-unify below (which would unify a `Ty::Qty`
         // against `(Int a)` → a spurious CDZ0203). But the INNER NUMERIC TYPES must still agree: scaling a

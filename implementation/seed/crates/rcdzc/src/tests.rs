@@ -33269,6 +33269,45 @@ mod match_engine {
     }
 
     #[test]
+    fn remainder_on_a_quantity_declines_cleanly_not_a_leaked_scheme_mismatch() {
+        // `%` (remainder) on a quantity operand is not defined (the units surface has no `%` rule). It must
+        // DECLINE with a clear message, NOT leak the operator's `∀a.(Int a)→…` scheme as a confusing
+        // "type mismatch: Int64 and (Qty Int64 meter)" (the Int64 is the scheme's — an internal detail the
+        // author never wrote). Whether a same-dimension remainder should be supported is a design call
+        // held for the operator; the clean decline is today's shipped behavior.
+        let diag = reject_full(
+            "(module m (def (main) ((. Qty value) \
+             (% ((. Qty of) 7 ((. Unit base) #\"meter\")) ((. Qty of) 3 ((. Unit base) #\"meter\"))))) \
+             (export main))",
+        )
+        .expect("remainder on a quantity is rejected");
+        assert!(
+            diag.message
+                .contains("remainder (%) is not defined on quantities"),
+            "the message must name the real cause (% not defined on quantities): {}",
+            diag.message
+        );
+        assert!(
+            !diag.message.contains("must be the same type here"),
+            "the leaky scheme-unify mismatch must NOT surface for % on a quantity: {}",
+            diag.message
+        );
+        // The repair the message suggests works: take the remainder of the recovered numeric values.
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(
+                    "(do (def (main) (% ((. Qty value) ((. Qty of) 7 ((. Unit base) #\"meter\"))) \
+                     ((. Qty value) ((. Qty of) 3 ((. Unit base) #\"meter\"))))) (export main))"
+                )))
+                .expect("the Qty.value-first repair compiles"),
+                "main"
+            ),
+            1,
+            "(% (Qty.value 7m) (Qty.value 3m)) = 1 — the suggested repair"
+        );
+    }
+
+    #[test]
     fn annotating_a_quantity_at_a_same_dimension_different_unit_is_accepted_keeping_its_scale() {
         // A quantity annotation checks the DIMENSION, not the unit's scale (a unit is construction sugar
         // for a magnitude at the reference — DESIGN §Interaction With Annotations). So `(: (Qty.of 1 km)
