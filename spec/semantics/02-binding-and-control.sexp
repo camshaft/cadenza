@@ -3992,3 +3992,50 @@
             (export main)))
   (call   main (: 7 Int64))
   (output (: 8 Int64)))
+
+; --- Leading-rest list patterns are REFUTABLE by length (the memory-flagged unsoundness, resolved) --
+; A `(list a b .. r)` arm requires AT LEAST 2 elements — it is REFUTABLE, not irrefutable (a
+; too-short list must fall through, and a let-binder that cannot match must trap, never run the body
+; on unbound head elements). These pin that length-refutation, promoted from passing breaker probes.
+
+(case "a too-short list refutes a leading-rest arm and falls through"
+  (doc    "`(match (list 5) ((list a b .. r) 1) (_ 2))` → 2 — the 1-element list has FEWER than the
+           two head elements the pattern binds, so the leading-rest arm REFUTES and control reaches
+           the wildcard. Pins that a leading-rest pattern is length-refutable (an implementation
+           treating it as irrefutable — binding `a`=5 and `b`/`r` from thin air — would return 1 on
+           garbage; the historically-flagged unsoundness).")
+  (input  (do
+            (def (main (: d Int64))
+              (match (list 5) ((list a b .. r) 1) (_ 2)))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 2 Int64)))
+
+(case "a leading-rest arm matches an exactly-minimum list with an empty rest"
+  (doc    "`(match (list 7 8) ((list a b .. r) (+ (* (+ a b) 10) (List.len r))) (_ -1))` → 150: the
+           2-element list is exactly the pattern's minimum, so it MATCHES with `a`=7, `b`=8, and
+           `r`=[] (len 0) → (7+8)·10 + 0. The boundary between refute and match — one element fewer
+           refutes (above), exactly-minimum matches with an empty rest.")
+  (input  (do
+            (def (main (: d Int64))
+              (match (list 7 8) ((list a b .. r) (+ (* (+ a b) 10) (List.len r))) (_ -1)))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 150 Int64)))
+
+(case "a runtime-length list dispatches a leading-rest arm by its actual length"
+  (doc    "The length test is a RUNTIME check: a list built to length n by a recursive appender
+           takes the `(list a b .. r)` arm only when n ≥ 2. n=4 → a+b = the two heads (7 over
+           [4,3,2,1]... a=4? built by push so [4,3,2,1], heads 4+3=7); n=1 → refutes → -1. Pins that
+           the refutation is decided at run time against the actual length, not a compile-time
+           assumption.")
+  (input  (do
+            (def (build (: n Int64) (: acc (List Int64)))
+              (if (= n 0) acc (build (- n 1) (List.push acc n))))
+            (def (main (: n Int64))
+              (match (build n (list)) ((list a b .. r) (+ a b)) (_ -1)))
+            (export main)))
+  (call   main (: 4 Int64))
+  (output (: 7 Int64))
+  (call   main (: 1 Int64))
+  (output (: -1 Int64)))
