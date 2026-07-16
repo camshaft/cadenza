@@ -58,6 +58,8 @@ pass	DISTINCT-SIG: two-Tuple-arg closures of different signatures ALONGSIDE a pl
 pass	DOMINATOR CSE does not reuse a condition's perform-product in the taken branch
 pass	Int64.min crosses the parameter boundary and back unchanged
 pass	Int64.min crossing the boundary is still negative
+pass	Int8.wrap at the sign-bit boundary is the most-negative Int8
+pass	Int8.wrap of all-ones-byte is negative one
 pass	List.len of a concat of call-site lists with runtime elements folds to the summed arity
 pass	List.len of a list built at the call site from runtime elements folds to the arity
 pass	MIXED among-scalars: a scalar-then-Tuple closure ALONGSIDE a plain export — driving the closure
@@ -184,6 +186,8 @@ pass	Type.of carries a quantity's unit into a same-type annotation
 pass	Type.of on a bare nullary variant reflects its element as UNDETERMINED
 pass	Type.of reflects a runtime parameter's type at compile time
 pass	Type.of reflects a value's type for use as an annotation
+pass	UInt16.wrap at exactly two-to-the-sixteenth is zero
+pass	UInt16.wrap one past two-to-the-sixteenth is one
 pass	UInt64.max crosses the parameter boundary and back unchanged
 pass	UInt64.max crossing the boundary compares as a large unsigned, not -1
 pass	Unit.in converts a quantity to a chosen larger unit (Float)
