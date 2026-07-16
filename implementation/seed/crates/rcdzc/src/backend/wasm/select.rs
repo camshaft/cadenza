@@ -4795,7 +4795,14 @@ fn emit_tail(
             } else {
                 let slot = *high;
                 *high = slot + 1;
-                scratch_ty.insert(slot, ValType::I32);
+                // The spill slot's width is the SCRUTINEE'S machine type, NOT always i32: a real boxed sum is
+                // an i32 handle, but an ERASED single-variant newtype over a SCALAR (`(type W (Wrap Int64))`)
+                // is a bare i64 (no box) — spilling that i64 into a hardcoded-i32 slot re-types one wasm local
+                // to two widths → `type mismatch: expected i32, found i64`, an invalid module (a literal-
+                // payload arm `(match (mk d) ((Wrap 5) …))` over a runtime-built erased newtype). Default to
+                // i32 for a rep-less type (a handle-shaped scrutinee).
+                let scrut_vt = valtype_of(&type_of(db, scrutinee)).unwrap_or(ValType::I32);
+                scratch_ty.insert(slot, scrut_vt);
                 emit(
                     db,
                     scrutinee,
@@ -8137,7 +8144,14 @@ fn emit(
                 // i64 arm temp.
                 let slot = *high;
                 *high = slot + 1;
-                scratch_ty.insert(slot, ValType::I32);
+                // The spill slot's width is the SCRUTINEE'S machine type, NOT always i32: a real boxed sum is
+                // an i32 handle, but an ERASED single-variant newtype over a SCALAR (`(type W (Wrap Int64))`)
+                // is a bare i64 (no box) — spilling that i64 into a hardcoded-i32 slot re-types one wasm local
+                // to two widths → `type mismatch: expected i32, found i64`, an invalid module (a literal-
+                // payload arm `(match (mk d) ((Wrap 5) …))` over a runtime-built erased newtype). Default to
+                // i32 for a rep-less type (a handle-shaped scrutinee).
+                let scrut_vt = valtype_of(&type_of(db, scrutinee)).unwrap_or(ValType::I32);
+                scratch_ty.insert(slot, scrut_vt);
                 emit(
                     db,
                     scrutinee,

@@ -3726,6 +3726,25 @@
   (call   main (: 0 UInt8))
   (output (: 100 Int64)))
 
+(case "a CALL-returned single-variant newtype with a literal-payload arm spills at the right width"
+  (doc    "The SPILL-path sibling of the inline erased-newtype cases above: the match scrutinee is a
+           CALL RESULT (`(f (mk d))`), not an inline `(W.Wrap n)` construction — so it is NOT a reusable
+           handle and the sum-match emit SPILLS it into a fresh scratch slot before probing. That spill slot
+           was hardcoded i32 (assuming a boxed-sum handle), but an erased single-variant newtype over a
+           scalar (`(type W (Wrap Int64))`) is a bare i64 — storing the i64 into an i32 slot re-typed one
+           wasm local to two widths → `type mismatch: expected i32, found i64`, an invalid component. (The
+           inline cases pass a directly-constructed scrutinee that need not spill, so they did NOT catch
+           this.) Fix: the spill slot takes the SCRUTINEE'S machine width (`valtype_of`), i64 here. `mk d` =
+           `Wrap (d+1)`; `f` matches `(Wrap 5)`→100 else the payload. d=4 → Wrap 5 → 100; d=6 → Wrap 7 → 7.")
+  (input  (do
+            (type W (Wrap Int64))
+            (def (mk (: n Int64)) (W.Wrap (+ n 1)))
+            (def (f (: w W)) (match w ((W.Wrap 5) 100) ((W.Wrap n) n)))
+            (def (main (: d Int64)) (f (mk d)))
+            (export main)))
+  (call   main (: 4 Int64)) (output (: 100 Int64))
+  (call   main (: 6 Int64)) (output (: 7 Int64)))
+
 (case "a recursive resolver transforms one runtime sum tree into another, then consumes it"
   (doc    "The compiler's reader→pipeline JOIN shape: a recursive function that transforms a runtime-built
            value of ONE sum type into a value of a DIFFERENT sum type, whose result is then consumed. A

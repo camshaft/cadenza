@@ -234,6 +234,7 @@ pass	a Bool match with only the true arm is non-exhaustive
 pass	a Bytes-returning closure alongside a plain export — the closure runs
 pass	a Bytes-returning closure alongside a plain export — the plain runs
 pass	a Bytes-returning closure on a different argument
+pass	a CALL-returned single-variant newtype with a literal-payload arm spills at the right width
 pass	a CAPTURING closure carried in a sum payload keeps its capture through the match binder
 pass	a CAPTURING closure returning a List
 pass	a CAPTURING closure returning a tuple
