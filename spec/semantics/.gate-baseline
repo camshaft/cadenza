@@ -2074,6 +2074,7 @@ pass	a tuple-wrapped self-application is rejected in bounded time, not a compile
 pass	a twenty-deep push chain retains the still-live source binding
 pass	a two-argument closure exported to the host is called with both arguments
 pass	a two-arm Bool match selects its second (false) arm
+pass	a two-arm if selecting between two runtime FLOAT values computes the chosen one (float select-ification)
 pass	a two-arm list match reading an element binder keeps the branch — no speculative empty read
 pass	a two-arm list match with constant arms dispatches branchlessly on the length — empty
 pass	a two-arm match does not evaluate the unselected arm's trapping body

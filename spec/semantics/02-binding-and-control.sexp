@@ -185,6 +185,20 @@
   (call   main (: 7 Int64))
   (output (: 30 Int64)))
 
+(case "a two-arm if selecting between two runtime FLOAT values computes the chosen one (float select-ification)"
+  (doc    "The select-ification cases above select between INT leaves; this pins the FLOAT-leaf face. A
+           2-arm `(if (> b 0) x y)` over runtime Float64 `x`/`y` may be lowered to a branchless `select`
+           (an `f64.select` on wasm / a Rust conditional move) — both operands are trap-free float values,
+           so evaluating both is safe. b=5 → the then-value `x` = 1.5; b=-5 → the else-value `y` = 2.5. Pins
+           that the if→select conversion carries the correct FLOAT operand to the result (a select on the
+           wrong width, or one that swapped the operands, would return the other value), both backends. The
+           float leaf exercises the `f64.select` emit path distinct from the int-leaf select cases above.")
+  (input  (do (def (main (: b Int64) (: x Float64) (: y Float64)) (if (> b 0) x y)) (export main)))
+  (call   main (: 5 Int64) (: 1.5 Float64) (: 2.5 Float64))
+  (output (: 1.5 Float64))
+  (call   main (: -5 Int64) (: 1.5 Float64) (: 2.5 Float64))
+  (output (: 2.5 Float64)))
+
 (case "a dense zero-based jump-table match routes an out-of-range scrutinee to the default"
   (doc    "`(def (main (: x Int64)) (match x (0 10) (1 20) (2 30) (3 40) (_ 50)))` — a dense match over
            0..3 compiles to a `br_table` jump. Because the covered range starts at 0, the table index is
