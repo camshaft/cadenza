@@ -1261,6 +1261,84 @@ fn a_common_float_equality_hoists_out_of_both_if_arms() {
     );
 }
 
+/// The common-operator hoist AND the value-numbering CSE also cover a FLOAT ORDERING compare — the same
+/// `Core::FloatCompare` node the equality above uses, now carrying an ordering prim (`<`/`>`/`<=`/`>=`,
+/// implemented as the raw IEEE machine compare `f64.lt`/… — NaN compares false, no trap). Because the hoist
+/// and `core_eq` match `FloatCompare` on its operator GENERICALLY (`op == op && width == width`), the
+/// ordering variants are covered for FREE by the equality machinery — this pins that. `(if c (< a k) (< b
+/// k))` hoists to `(< (if c a b) k)` — ONE `f64.lt` over the selected operand — and a repeated `(< a b)`
+/// CSEs to one. Value parity includes the NaN case: `f64.lt` is TOTAL (NaN → false), and the hoist selects
+/// the same operand the taken arm would compare, so the hoisted result is identical for every input,
+/// INCLUDING a NaN operand (which the ordering landing 88f15533d fixed as the IEEE partial order).
+#[test]
+fn a_common_float_ordering_hoists_and_cses_like_equality() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+    // HOIST: `(if c (< a k) (< b k))` → one `f64.lt` (the differing operand becomes a select).
+    let hsrc = "(module m \
+                  (def (main (: c Bool) (: a Float64) (: b Float64) (: k Float64)) \
+                    (if (if c (< a k) (< b k)) 1 0)) \
+                  (export main))";
+    let hbytes = compile_component(&crate::codec::encode(&parse(hsrc))).expect("compile");
+    let lts = count_opcode(&hbytes, |op| matches!(op, wasmparser::Operator::F64Lt));
+    assert_eq!(
+        lts, 1,
+        "the common-float-ORDERING hoist compares once over the selected operand, got {lts} f64.lt"
+    );
+    let hrun = |c: bool, a: f64, b: f64, k: f64| -> i64 {
+        run_returns_with::<i64>(
+            &hbytes,
+            "main",
+            &[
+                Val::Bool(c),
+                Val::Float64(a),
+                Val::Float64(b),
+                Val::Float64(k),
+            ],
+        )
+    };
+    assert_eq!(
+        hrun(true, 1.0, 9.0, 5.0),
+        1,
+        "c=true → (< a k) = (< 1 5) = true → 1"
+    );
+    assert_eq!(
+        hrun(false, 1.0, 9.0, 5.0),
+        0,
+        "c=false → (< b k) = (< 9 5) = false → 0"
+    );
+    // NaN value-parity: `(< NaN k)` is false (IEEE), and the hoist must reproduce that on the SELECTED arm.
+    assert_eq!(
+        hrun(true, f64::NAN, 1.0, 5.0),
+        0,
+        "c=true selects a=NaN → (< NaN 5) = false → 0 (total IEEE compare, no trap, hoist-identical)"
+    );
+    assert_eq!(
+        hrun(false, 1.0, f64::NAN, 5.0),
+        0,
+        "c=false selects b=NaN → (< NaN 5) = false → 0"
+    );
+    // CSE: a repeated `(< a b)` computes one `f64.lt` (value-numbering via the `core_eq` FloatCompare arm).
+    let csrc = "(module m \
+                  (def (main (: a Float64) (: b Float64)) (+ (if (< a b) 10 0) (if (< a b) 20 0))) \
+                  (export main))";
+    let cbytes = compile_component(&crate::codec::encode(&parse(csrc))).expect("compile");
+    let clts = count_opcode(&cbytes, |op| matches!(op, wasmparser::Operator::F64Lt));
+    assert_eq!(
+        clts, 1,
+        "the repeated float-ordering compare is CSE'd to one f64.lt, got {clts}"
+    );
+    let crun = |a: f64, b: f64| -> i64 {
+        run_returns_with::<i64>(&cbytes, "main", &[Val::Float64(a), Val::Float64(b)])
+    };
+    assert_eq!(
+        crun(1.0, 2.0),
+        30,
+        "1<2 true → 10+20 = 30 (one compare, two uses)"
+    );
+    assert_eq!(crun(2.0, 1.0), 0, "2<1 false → 0+0 = 0");
+}
+
 /// The common-constructor hoist also fires for a RECORD: `(if c (record (a x) (b 1)) (record (a y) (b
 /// 1)))` builds the record ONCE and pushes the DIFFERING field `a` into a branchless `(if c x y)` select
 /// while the SHARED field `b` (the constant `1`) is emitted once — instead of duplicating the whole
@@ -7892,6 +7970,32 @@ mod runtime_ops {
         // Bare signed divide (bias kept) still rounds toward zero for negatives — soundness.
         assert_eq!(run::<i64>("(: x Int64)", "(/ x 2)", &[Val::S64(-7)]), -3);
         assert_eq!(run::<i64>("(: x Int64)", "(/ x 2)", &[Val::S64(-1)]), 0);
+    }
+
+    #[test]
+    fn a_tuple_eq_with_a_const_divisor_bool_element_emits_valid_wasm() {
+        // MISCOMPILE (invalid wasm): a compound (tuple) `=` whose Bool element derives from a CONST-DIVISOR
+        // `%`/`/` — `(= (tuple 5 (= (% s 2) 0)) (tuple 5 (= (% s 2) 0)))` — emitted an invalid module
+        // (`type mismatch: expected i32, found i64`). The two identical Bool elements are `core_eq`, so the
+        // non-loop CSE pass materialized the shared `(% s 2)` into an i64 slot but did NOT advance the scratch
+        // floor past the const-divisor strength-reduction's transient i64 dividend scratch — so the i32 Bool
+        // slot of `(= … 0)` reused that i64 slot (one wasm local, two widths). Fix: the CSE materialization
+        // raises `body_base` past `high` after emitting the rep (+ `emit_div_rem` reserves its scratch above
+        // `*high`). `component` compiles + validates the module (it `.expect("compile")`s and the backend
+        // validates), so a bare call is the regression guard. NOT modulo-specific — const-`/` reproduces.
+        let valid = |src: &str| {
+            compile_component(&crate::codec::encode(&crate::testkit::parse(src))).expect("compile")
+        };
+        let _ = valid(
+            "(module m (def (main (: s Int64)) (= (tuple 5 (= (% s 2) 0)) (tuple 5 (= (% s 2) 0)))) (export main))",
+        );
+        let _ = valid(
+            "(module m (def (main (: s Int64)) (= (tuple 5 (= (/ s 2) 1)) (tuple 5 (= (/ s 2) 1)))) (export main))",
+        );
+        // Differing const divisors (two distinct `%` subexpressions) must each emit valid wasm too.
+        let _ = valid(
+            "(module m (def (main (: s Int64)) (= (tuple 5 (= (% s 2) 0)) (tuple 5 (= (% s 3) 0)))) (export main))",
+        );
     }
 
     #[test]
@@ -33577,6 +33681,43 @@ mod match_engine {
             ),
             cdz_run::Outcome::Trap(t) => panic!("computed-operand combine trapped: {t}"),
         }
+    }
+
+    #[test]
+    fn a_runtime_same_unit_float_quantity_comparison_rides_the_scalar_float_compare() {
+        // A same-unit Float-inner quantity comparison erases to a plain scalar float compare (the
+        // `(Qty Float64 meter)` erases to its f64), so at RUNTIME it must route to the IEEE float compare,
+        // NOT decline as "a compound value needs a heap walk". Fixed by peeling `Ty::Qty` in `float_operand`
+        // (mirrors `bigint_operand`/`rational_operand`) — a gap masked until runtime float ordering landed
+        // (before that even the bare float compare declined). Uses the FULL runtime; skips if absent.
+        let src = "(do (def (main (: x Float64)) \
+                   (if (< ((. Qty of) x ((. Unit base) #\"meter\")) \
+                          ((. Qty of) 5.0 ((. Unit base) #\"meter\"))) 1 0)) (export main))";
+        let comp = compile_component(&crate::codec::encode(&parse(src))).expect(
+            "a same-unit Float-inner quantity comparison compiles (was a heap-walk decline)",
+        );
+        let Some(runtime) = super::find_runtime_wasm() else {
+            return; // no runtime store — the corpus gate is the e2e witness
+        };
+        let call = |x: &str, want: i64| {
+            let opts = cdz_run::RunOpts {
+                export: None,
+                args: vec![x.to_string()],
+                runtime: Some(runtime.clone()),
+                runtime_cache_dir: None,
+                host_responses: Vec::new(),
+            };
+            match cdz_run::run(&comp, &opts).expect("run") {
+                cdz_run::Outcome::Value(s) => assert!(
+                    s.contains(&want.to_string()),
+                    "(x m) < (5.0 m) at x={x} should be {want}: {s}"
+                ),
+                cdz_run::Outcome::Trap(t) => panic!("float-qty comparison trapped at x={x}: {t}"),
+            }
+        };
+        call("3.0", 1); // 3 < 5 → true
+        call("7.0", 0); // 7 < 5 → false
+        call("nan", 0); // NaN < 5 → false (IEEE partial order, inherited from the numeric core)
     }
 
     #[test]

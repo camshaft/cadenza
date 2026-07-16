@@ -3051,6 +3051,25 @@ mod tests {
         // A buffer that does not parse yields no lenses, never a panic.
         let _ = code_lenses_for("def (f x = (", true);
         let _ = code_lenses_for("", true);
+        // Mid-edit s-expr / truncated buffers are also total.
+        let _ = code_lenses_for("(do (def (f", false);
+        let _ = code_lenses_for("def f(x:", true);
+    }
+
+    #[test]
+    fn code_lens_is_total_on_an_import_declaring_buffer() {
+        // `code_lenses_for` is SINGLE-buffer (it does not follow the `(import …)` closure — instantiations
+        // are a whole-program fact and a lone opened buffer only sees its own uses). A buffer that
+        // declares an import whose library is NOT loaded must still be total: the unresolved import faults
+        // as a diagnostic elsewhere, and the lens pass returns without a lens (or a panic) here.
+        let text = "(do (import \"lib\" (helper)) (def (main) (helper 1)))";
+        // Just must not panic; a specialized def could in principle still appear, but the point is totality.
+        let _ = code_lenses_for(text, false);
+        // The ML surface's import form too.
+        let _ = code_lenses_for(
+            "import { helper } from \"lib\"\ndef main() -> Int64 = helper(1)",
+            true,
+        );
     }
 
     #[test]

@@ -3092,6 +3092,15 @@ pub fn select_function_of(
                 )?;
                 code.push(Lir::LocalSet(slot));
             }
+            // Raise the scratch floor past ANY transient slot the rep's emit touched (not just the persistent
+            // CSE slot), exactly like the LICM-hoist arm above. A rep with its OWN scratch — a const-divisor
+            // `%`/`/` stashes the dividend `$a` at an i64 slot, a checked-arith tees a guard — records that
+            // slot in `scratch_ty` at the rep's width. If a LATER allocation (the next CSE class, or the body
+            // emit) reused it at a DIFFERENT width — the i32 Bool slot of a `(= (% s 2) 0)` element beside the
+            // i64 `%` scratch, the tuple-`=` const-divisor miscompile — one wasm local would be declared at
+            // two widths → `type mismatch: expected i32, found i64`, an invalid module. Skipping past `high`
+            // hands every later slot a fresh, single-width local.
+            body_base = body_base.max(high);
             // Point EVERY member of the class at this one slot — each occurrence, wherever it is in the
             // body, now reads the slot via `emit`'s node-keyed `slots.get(&id)` fast path instead of
             // recomputing. (Members already slotted keep their own slot — harmless; they are `core_eq` so
@@ -12687,13 +12696,20 @@ fn emit_div_rem(
             return Ok(());
         }
         let w = m.slot_bits() as i64;
-        let sa = base;
-        if sa + 1 > *high {
-            *high = sa + 1;
-        }
+        // The dividend scratch `$a` must be a slot of THIS op's machine width (i64 for Int64, i32 for a
+        // narrow int). Reserve it ABOVE the running high-water, NOT at `base`: when this `%`/`/` is emitted
+        // as a SUB-EXPRESSION whose enclosing context already typed `base` at a DIFFERENT width — e.g. the
+        // bool element `(= (% s 2) 0)` of a compound-`=` tuple, where the synthesized compare-fn allocates
+        // `base` as the i32 Bool slot — writing the i64 dividend into `base` re-types one wasm local to two
+        // widths → `type mismatch: expected i32, found i64`, an invalid module (the tuple-`=` const-divisor
+        // miscompile). A slot at `*high` is guaranteed never pre-typed. Mirrors the `ValueEq`/`SumExpect`
+        // "float above `*high`" discipline for exactly this hazard.
+        let sa = *high;
+        *high = sa + 1;
         scratch_ty.insert(sa, m.slot());
-        // `$a = x` (emit the dividend once; later reads are cheap `local.get`s).
-        emit_operand(db, lhs, ot, slots, base + 1, high, scratch_ty, layout, out)?;
+        // `$a = x` (emit the dividend once; later reads are cheap `local.get`s). Its own transient scratch
+        // floats above the reserved `sa`.
+        emit_operand(db, lhs, ot, slots, *high, high, scratch_ty, layout, out)?;
         out.push(Lir::LocalSet(sa));
         // `q = (x + bias) >>ₛ k`, bias = `(x >>ₛ (W−1)) >>ᵤ (W−k)`.
         let emit_quotient = |out: &mut Emit| {
@@ -12744,13 +12760,14 @@ fn emit_div_rem(
         });
         return Ok(());
     }
-    // Narrow signed `/`: compute into `$r`, then range-check.
-    let sr = base;
-    if sr + 1 > *high {
-        *high = sr + 1;
-    }
+    // Narrow signed `/`: compute into `$r`, then range-check. Reserve `$r` ABOVE `*high` (not at `base`):
+    // as a compound-`=` element (or any sub-expression whose enclosing context typed `base` differently)
+    // a `base`-anchored slot would re-type one wasm local to two widths → invalid module (see the signed
+    // pow2 branch above — the tuple-`=` const-divisor hazard).
+    let sr = *high;
+    *high = sr + 1;
     scratch_ty.insert(sr, m.slot());
-    let operand_base = base + 1;
+    let operand_base = *high;
     emit_operand(
         db,
         lhs,
@@ -13352,6 +13369,10 @@ fn int_ty_of(db: &mut Db, id: StructId) -> IntTy {
 /// The raw IEEE float-ordering machine op for `Prim::FLt/FLe/FGt/FGe` at the given width. IEEE partialOrd:
 /// a NaN operand → 0 (false), `-0.0`/`+0.0` compare equal. (Not for `FEq` — equality uses the canonical-
 /// byte bit compare, a different relation.)
+//= spec/capabilities/numeric-model.md#a-floating-point-relational-operator-follows-the-ieee-partial-order
+//# A floating-point relational operator (`<`, `<=`, `>`, `>=`) MUST follow the IEEE-754 partial order over the operand type, so that a relational operator with a not-a-number operand yields false because a not-a-number value is unordered with respect to every value including itself.
+//= spec/capabilities/numeric-model.md#a-floating-point-relational-operator-follows-the-ieee-partial-order
+//# A negative zero and a positive zero MUST compare as neither less than nor greater than one another under a floating-point relational operator, so that the two zeroes are ordered as equal even though they are distinct under equality.
 fn float_ordering_op(op: Prim, width: u32) -> Lir {
     let f32 = width == 32;
     match op {

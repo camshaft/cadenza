@@ -162,3 +162,11 @@ A floating-point literal whose magnitude exceeds the largest finite value its ty
 A floating-point operation MUST produce a result consistent with the emission constraints in the determinism-and-fuel contract.
 
 A floating-point value MUST serialize under the canonical form fixed by the deterministic-value-form contract.
+
+### A Floating-Point Relational Operator Follows The IEEE Partial Order
+
+A floating-point relational operator (`<`, `<=`, `>`, `>=`) MUST follow the IEEE-754 partial order over the operand type, so that a relational operator with a not-a-number operand yields false because a not-a-number value is unordered with respect to every value including itself.
+
+A negative zero and a positive zero MUST compare as neither less than nor greater than one another under a floating-point relational operator, so that the two zeroes are ordered as equal even though they are distinct under equality.
+
+The floating-point relational operators are the IEEE partial order and are a distinct facility from the total order an orderable type offers under core-semantics.md §"Ordering Where Offered Is Total"; a floating-point type MUST NOT be treated as offering that total order, so that the partial order's not-a-number and signed-zero behavior does not contradict the total-order requirement.

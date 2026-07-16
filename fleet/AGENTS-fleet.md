@@ -138,6 +138,15 @@ races the librarian + other writers) — it is NOT your job. Add what you learne
 `[[slug]]`, keep your own note tight, and move on to your actual work. If a memory file is wrong or
 sprawling, leave it for the librarian (or `note` the librarian) — don't fix it yourself.
 
+**Keep your `MEMORY.md` root line a POINTER, not a changelog.** `MEMORY.md` is the root index that
+loads into EVERY agent's context every session, so it must stay a scannable map. Your vertical's
+live-state line there is 1–2 lines: current status + next step + key traps + `[[link-to-your-log]]`.
+Landing shas, increment-by-increment history, and detail belong in your vertical's OWN log/sub-index
+(which you can grow freely) — NEVER accreted onto the root line. When you land a slice, update the sha
+in your log, not the root index; the root line changes only when your *current focus* or a *trap*
+changes. (This is the write-side complement of "don't reorganize memory" above: you still own your
+line, but keep it small so the shared entry point stays under its read limit for everyone.)
+
 ## Standing down
 
 When your role's work is done (`merged` received for the last unit, or your stop condition hit),

@@ -112,7 +112,11 @@ slice a little better every tick.
    know your feature best — hand the guide the raw material rather than making it reverse-engineer it.
    `cargo xtask fleet send --to v-guide --kind note --subject "docs: <feature>" --body "<what/why +
    runnable examples + where it fits>"`. Skip this only for changes with no user-facing surface.
-7. Record a one-line landing note (sha + gate count + slice) wherever your vertical's log lives.
+7. Record a one-line landing note (sha + gate count + slice) in your vertical's OWN log/sub-index —
+   NOT the `MEMORY.md` root line. The root index loads into every agent's context each session, so
+   your root live-state line stays a 1–2 line POINTER (current status + next step + key traps +
+   `[[link-to-your-log]]`); landing shas + increment history live in the log. Touch the root line only
+   when your *current focus* or a *trap* changes (see the contract's "keep your root line a POINTER").
 
 ## Coordination
 - **Feed `v-guide` documentation suggestions for every user-visible feature you land** (tick step 6):

@@ -14,13 +14,11 @@ import { ri, mm, cm, inch, foot } from "units"
 /// ---- constructors: exact primitives dimensioned in the model unit (mm), built from length values -------
 
 /// An axis-aligned box of the given width/depth/height (each an exact mm coordinate — pass `mm 50` / `inch
-/// 2` etc). NOTE: `Cuber`'s stored vector is the HALF-extent (the box spans [-v, v]); `box` takes the FULL
-/// size and halves it exactly (Rational /2 is exact), so `box (mm 50) …` is a 50 mm-wide box.
-def box(w: Rational, d: Rational, h: Rational) =
-  Solidr.Cuber(v3r(w / ri(2), d / ri(2), h / ri(2)))
+/// 2` etc). `Cuber` stores the FULL size (centred at origin), so `box (mm 50) …` is a 50 mm-wide box.
+def box(w: Rational, d: Rational, h: Rational) = Solidr.Cuber(v3r(w, d, h))
 
-/// A cylinder of the given full height + radius (exact mm).
-def cyl(height: Rational, radius: Rational) = Solidr.Cylinderr(height / ri(2), radius)
+/// A cylinder of the given full height + radius (exact mm). `Cylinderr` stores the full height.
+def cyl(height: Rational, radius: Rational) = Solidr.Cylinderr(height, radius)
 
 /// Translate a solid by exact mm offsets.
 def move(x: Rational, y: Rational, z: Rational, s: Solidr) = Solidr.Translater(v3r(x, y, z), s)

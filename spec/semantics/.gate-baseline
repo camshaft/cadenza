@@ -1266,6 +1266,7 @@ pass	a predicate closure returning Bool drives an early-exit recursive HOF
 pass	a prefixed quantity displays scaled to its reference unit (Float)
 pass	a prefixed unit combines with its base by converting to the reference (Float)
 pass	a prelude Option value crosses a module boundary as an export result
+pass	a private constructor cannot be MATCHED from outside its module either
 pass	a private module member is still visible to a sibling
 pass	a private module member participates in mutual recursion with an exported sibling
 pass	a private sibling defined after its exported caller still resolves
@@ -1465,6 +1466,7 @@ pass	a runtime Bytes rope is found as a Set element by its flat twin
 pass	a runtime Bytes rope map key is looked up by its flat twin
 pass	a runtime Bytes rope nested in a tuple compares equal to its flat twin
 pass	a runtime FLOAT width nested in a compound annotation is rejected
+pass	a runtime Float quantity comparison against NaN is the IEEE partial order (false)
 pass	a runtime Float32 addition emits the f32 machine add
 pass	a runtime Float32 division emits f32.div
 pass	a runtime Float32 equality compares by the canonical byte form
@@ -1816,6 +1818,8 @@ pass	a trapping shared payload before the differing position must not preempt a 
 pass	a truncating conversion keeps the low bits rather than trapping
 pass	a truncating conversion of a negative value uses two's complement
 pass	a truncating conversion to an unusual width keeps that width's low bits
+pass	a tuple = whose Bool element derives from a const-divisor rem is emitted as valid wasm
+pass	a tuple = with differing const-divisor Bool elements compares unequal
 pass	a tuple access out of arity on a function-returned tuple is a type error, not a trap
 pass	a tuple annotated as a scalar type is rejected
 pass	a tuple annotated with the wrong arity is rejected
@@ -2283,6 +2287,7 @@ pass	comparing sums with disjoint variant sets is a type error
 pass	comparing tuples of different lengths is a type error
 pass	comparing two quantities of the same dimension yields a Bool
 pass	comparing two same-shape nominal sum types is a type error, not false
+pass	comparing two same-unit Float-inner quantities at RUNTIME rides the scalar float compare
 pass	comparing two units of one dimension converts before comparing
 pass	compound equality over a runtime NaN float leaf: nan equals nan
 pass	compound equality over a runtime float leaf: different floats compare unequal
@@ -2436,6 +2441,7 @@ pass	equality of two tuples of different arity is a type error
 pass	equality over a compound mixing a float and a Bytes leaf walks both
 pass	equality over a partly-un-built sum with a free Err type compiles on every backend
 pass	equality over a runtime float in a SUM payload compares by the float leaf
+pass	eval does not forge a private constructor NESTED in a compound
 pass	eval does not see through a splice whose operand is itself an Ast value
 pass	eval is optional for macros and interactive use
 pass	eval of a quasiquote splicing a compile-time-known value
@@ -2471,6 +2477,7 @@ pass	floating-point uses the fixed rounding mode
 pass	four same-signature closure exports share one resource
 pass	function arguments are evaluated left to right
 pass	functions are single-arity and curried
+pass	generated FLOAT values are totally ordered (a trichotomy property over two generated floats)
 pass	greater-than at the integer extremes is signed
 pass	greater-than comparison
 pass	greater-than of an integer and a float is rejected
@@ -2763,6 +2770,9 @@ pass	round-trip: a scalar consumer + a compound consumer of the same closure —
 pass	round-trip: a scalar consumer and a byte-rope consumer of the same closure — the byte-rope one
 pass	round-trip: a scalar consumer and a byte-rope consumer of the same closure — the scalar one
 pass	round-trip: an UNANNOTATED inner closure with a List param via the context arrow
+pass	runtime < on a self operand is false for finite AND NaN (irreflexive, stays false)
+pass	runtime <= on a self operand is true for finite but FALSE for NaN (no reflexivity fold)
+pass	runtime >= and > on a self operand mirror <= and < including the NaN self case
 pass	runtime BigInt addition runs on the arbitrary-precision runtime
 pass	runtime BigInt equality holds for values reached by different arithmetic
 pass	runtime BigInt remainder runs on the arbitrary-precision runtime

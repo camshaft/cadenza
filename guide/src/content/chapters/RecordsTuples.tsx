@@ -1,4 +1,4 @@
-import { H1, Lede, H2, P, C } from "../../components/Prose.tsx";
+import { H1, Lede, H2, P, C, Note } from "../../components/Prose.tsx";
 import { Runnable } from "../../components/Runnable.tsx";
 import { Exercise } from "../../components/Exercise.tsx";
 import { Why } from "../../components/Why.tsx";
@@ -32,6 +32,12 @@ export default function RecordsTuples() {
         <C>2</C> becomes <C>9</C>:
       </P>
       <Runnable source={`(. (Record.with (record (item 1) (price 2)) (price 9)) price)`} />
+      <Note>
+        The way you name the field is being revised: today it's the <C>(price 9)</C> pair shown above,
+        and it's moving to a <C>#price</C> field-selector — <C>(Record.with rec #price 9)</C>. When that
+        lands, this chapter's examples update to the newer spelling; the meaning (a copy with one field
+        replaced) is unchanged.
+      </Note>
       <P>
         "Hands back a copy" is the important part — the original is untouched. Bind a record, make an
         updated version, then read the <em>original</em> back and you'll see it never moved:

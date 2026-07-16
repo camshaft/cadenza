@@ -214,7 +214,7 @@
             (export main)))
   (output (: 46 Int64)))
 
-; --- The expander is a STRUCTURAL rewrite, not a validator: the chunks==holes+1 invariant is the READER's -
+; --- The expander is a STRUCTURAL rewrite, not a validator: the chunks==holes+1 invariant is the READER's
 ; The chunks/holes count invariant (`chunks.len() == holes.len() + 1`) is guaranteed by the READER on the
 ; surface path (a `tag"…{}…"` literal always yields well-balanced chunks/holes); `tagged_template::expand`
 ; deliberately DOES NOT re-check it (its docstring says so) — it rewrites any well-SHAPED 4-child

@@ -1173,6 +1173,29 @@ fn scaffold_project(dir: &std::path::Path, sexpr: bool, created: bool) -> ExitCo
             return ExitCode::FAILURE;
         }
     }
+    // Scaffold a `.gitignore` covering the build OUTPUTS a `cdz build`/`cdz run` writes beside the manifest
+    // — the exact set `cdz clean` removes — so a fresh project doesn't git-track its artifacts (the
+    // `cargo new`→`/target` convention). Only WRITE it if absent: `cdz init` adopts an existing directory,
+    // which may already have a `.gitignore` the user maintains — never clobber it (a missing manifest was
+    // the sole `init` refusal; the same non-destructive spirit applies here). A write failure is non-fatal:
+    // the project is already scaffolded + buildable, so warn and continue rather than fail the command.
+    let gitignore = dir.join(".gitignore");
+    if !gitignore.exists() {
+        // Kept in sync with `run_clean`'s sweep: the component/rust/dwarf outputs, the link-map, and a
+        // `cdz run` temp component. One entry per line, newline-terminated.
+        let body = "# Cadenza build artifacts (see `cdz clean`)\n\
+                    *.wasm\n\
+                    *.rs\n\
+                    *.dwarf\n\
+                    link-map.txt\n\
+                    .cdz-run-*.wasm\n";
+        if let Err(e) = std::fs::write(&gitignore, body) {
+            eprintln!(
+                "{PROG}: warning: could not write {}: {e}",
+                gitignore.display()
+            );
+        }
+    }
     let verb = if created { "created" } else { "initialized" };
     println!(
         "{verb} project `{proj_name}` in {} ({MANIFEST_NAME} + {entry_file})\n  next: cd {} && cdz build",

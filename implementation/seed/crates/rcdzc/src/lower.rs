@@ -13509,8 +13509,21 @@ fn bigint_operand(db: &mut Db, args: &[StructId]) -> bool {
 /// Rational operands. (A `Float`/int mix never reaches lowering — `check_application` rejected it CDZ0301
 /// — so if ONE operand is a Float the other is too.)
 fn float_operand(db: &mut Db, args: &[StructId]) -> bool {
-    args.iter()
-        .any(|&a| matches!(crate::infer::type_of(db, a), crate::ty::Ty::Float(_)))
+    // Peel `Ty::Qty` before reading the inner type — a `(Qty Float64 u)` erases to a bare f64, so a
+    // comparison of two same-unit Float-inner quantities is a plain scalar float compare and must route to
+    // the float path (`lower_comparison`'s FloatCompare), NOT decline as "a compound value needs a heap
+    // walk". Without the peel a `(< (Qty x meter) (Qty 5.0 meter))` saw `Ty::Qty` (not `Ty::Float`), missed
+    // this dispatch, and fell through to the compound-comparison decline — a gap masked until runtime float
+    // ordering landed (before that even the bare float compare declined). Mirrors `bigint_operand`/
+    // `rational_operand`, which already peel `Ty::Qty` for the same reason. (A mixed-scale quantity
+    // comparison is handled earlier by `lower_quantity_combine`, which converts to the reference; this
+    // covers the SAME-scale case that falls through to the generic comparison dispatch.)
+    args.iter().any(|&a| {
+        matches!(
+            peel_qty_inner_ty(crate::infer::type_of(db, a)),
+            crate::ty::Ty::Float(_)
+        )
+    })
 }
 
 /// Lower a BigInt `+`/`-`/`*`/`/` to a runtime `Core::BigIntBinOp` (the runtime `bigint-*` op). Unlike

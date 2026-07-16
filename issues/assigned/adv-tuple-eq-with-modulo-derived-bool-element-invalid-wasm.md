@@ -50,3 +50,20 @@ per-element `elem_base = *high` is NOT bumped past a scalar element's transient 
 element, OR emit_div_rem's `scratch_ty.insert` races the bool result's slot. NEXT: trace the Tuple emit's
 base/high threading for `(tuple 5 <bool-with-rem>)` — instrument the slot each of {rem-dividend,
 bool-result, element-handle} gets. wasm-only (rust backend fine). Fix is in select.rs slot allocation.
+
+## UPDATE 2 (v-runtime, 2026-07-16) — RULED OUT emit_div_rem slot; the tee is elsewhere
+Probes (trunk@42099b395): `emit_div_rem` signed-pow2 REM path fires with `sa(dividend)=base=2, *high→3, i64`.
+Changed `sa = base` → `sa = *high` (fresh slot, permanently bumped, operand floats above) — did NOT fix
+it (still `expected i32, found i64 @ 0x206`). So the colliding `local.tee 2` (i64 value into i32-declared
+slot 2) is NOT emit_div_rem's `local.set sa`. KEY DISASM DETAIL: the fault instruction is `local.TEE 2`
+(not set) at the START of the bias sequence — `local.tee 2; local.get 2; local.get 2; i64.const 63;
+shr_s; i64.const 63; shr_u; add; i64.const 1; shr_s; i64.const 1; shl; sub; local.set 1`. That is the REM
+result computed into slot 1, but the DIVIDEND is tee'd into slot 2 by a DIFFERENT emit than emit_div_rem
+(which uses local.SET, and whose sa I moved off slot 2 with no effect). HYPOTHESIS for next tick: the
+`local.tee 2` dividend comes from `emit_operand`/`emit_scalar` teeing the operand into a slot the ENCLOSING
+tuple/value-eq context declared i32 — i.e. the collision is at the OPERAND-emit or bool-materialization
+layer, not the div/rem body. Also note: `(= (% s 2) 0)` should hit the `rem_pow2_mask` EVEN-TEST peephole
+(`s & 1; eqz`, no dividend tee) — the disasm shows BOTH a bias-sequence rem AND `s&1;eqz`, so the peephole
+and the full div/rem may BOTH emit (one dead), and the dead one's tee lands in an i32 slot. NEXT: find
+what emits `local.tee 2` for the dividend (grep LocalTee near div/rem/rem_pow2/operand-emit); check if the
+even-test peephole and emit_div_rem both run for the same node.

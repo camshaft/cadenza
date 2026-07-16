@@ -2489,6 +2489,11 @@ fn parse_left_right_count(s: &str) -> Option<(usize, usize)> {
     let mut it = s.split_whitespace();
     let behind = it.next()?.parse().ok()?; // left  = origin/main-only ⟹ trunk is behind
     let ahead = it.next()?.parse().ok()?; // right = trunk-only        ⟹ trunk is ahead
+    // Reject trailing tokens: the expected output is EXACTLY two counts, so `"3\t5 extra"` is
+    // malformed → None (PR #449), matching the doc rather than silently ignoring the surplus.
+    if it.next().is_some() {
+        return None;
+    }
     Some((ahead, behind))
 }
 
@@ -3120,6 +3125,10 @@ mod tests {
         assert!(parse_left_right_count("").is_none());
         assert!(parse_left_right_count("5").is_none()); // only one count
         assert!(parse_left_right_count("x\ty").is_none()); // non-numeric
+        // Trailing tokens are malformed → None (PR #449): the output must be EXACTLY two counts, not
+        // two-plus-surplus that we silently ignore.
+        assert!(parse_left_right_count("3\t5 extra").is_none());
+        assert!(parse_left_right_count("3 5 7").is_none());
     }
 
     #[test]

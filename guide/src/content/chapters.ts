@@ -219,6 +219,14 @@ export const CHAPTERS: Chapter[] = [
     Component: lazy(() => import("./chapters/TypesAsValues.tsx")),
   },
   {
+    slug: "ad-hoc-polymorphism",
+    title: "Ad-hoc polymorphism",
+    blurb: "One name, a per-type meaning: operators dispatch on operand type, generics specialize per type — all at compile time.",
+    section: "What makes Cadenza different",
+    exercises: 2,
+    Component: lazy(() => import("./chapters/AdHocPolymorphism.tsx")),
+  },
+  {
     slug: "metaprogramming",
     title: "Metaprogramming",
     blurb: "Code is data: quote a program to an AST value, take it apart, build it up, eval it.",
