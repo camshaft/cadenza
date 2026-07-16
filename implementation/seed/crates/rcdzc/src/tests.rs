@@ -25195,6 +25195,26 @@ mod match_engine {
                 "a chained Option.expect(Option.expect s) consumed per iteration must not drift"
             );
         }
+        // UNIT-PAYLOAD guard (Copilot PR#441): `get_op` returns `None` for BOTH a compound handle AND a
+        // `Unit` payload. The SumExpect/SumPayload child-dup fast path keys on `unboxed.is_none()`, so a
+        // Unit-typed extraction that got marked a dup-site would SKIP `emit_heap_read_tail` — leaving the
+        // `IMM_UNIT` sentinel un-dropped on the stack → INVALID WASM. The `!unit_leaf` guard routes a Unit
+        // payload through `emit_heap_read_tail` (which drops the sentinel). These Unit-payload SumExpect /
+        // sum-match shapes must COMPILE to valid wasm (a Unit has no heap cell to alias, so no dup is ever
+        // needed for it).
+        let unit_expect = "(module m \
+               (def (u2 (: x Unit) (: y Int64)) y) \
+               (def (go (: s (Option Unit)) (: n Int64) (: acc Int64)) \
+                 (if (= n 0) acc (go s (- n 1) (+ acc (u2 ((. Option expect) s \"v\") (match s ((Some _) 1) ((None) 0))))))) \
+               (def (main) (go (Option.Some unit) 4 0)) (export main))";
+        // `component` asserts a valid, linkable module (it `.expect("compile")`s + the harness validates).
+        let _ = component(unit_expect);
+        let unit_chained = "(module m \
+               (def (u (: x Unit)) 1) \
+               (def (go (: s (Option (Option Unit))) (: n Int64) (: acc Int64)) \
+                 (if (= n 0) acc (go s (- n 1) (+ acc (u ((. Option expect) ((. Option expect) s \"v\") \"w\")))))) \
+               (def (main) (go (Option.Some (Option.Some unit)) 4 0)) (export main))";
+        let _ = component(unit_chained);
     }
 
     #[test]

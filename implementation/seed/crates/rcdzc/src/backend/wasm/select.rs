@@ -7384,9 +7384,15 @@ fn emit(
             // corrupting the still-live scrutinee (matched again / threaded to a self-call). `dup` the child
             // (rc++ → 2) so the consumer takes the persistent copy path and the scrutinee's payload stays
             // intact; the consumer's own drop reclaims the extra reference. Only a COMPOUND leaf (`unboxed`
-            // None — a handle) aliases; a scalar `unboxed` COPIES out and is never a marked site. `dup` POPS
-            // its arg and returns nothing, so tee the child, dup the copy, leave the original for the consumer.
-            if unboxed.is_none() && out.dup_sites.contains(&id) {
+            // None AND not Unit — a real handle) aliases; a scalar `unboxed` COPIES out and is never a marked
+            // site. ⚠ `get_op` returns `None` for BOTH a compound handle AND a `Unit` payload (Unit has no
+            // machine value — the walk lands on the `IMM_UNIT` sentinel that `emit_heap_read_tail` DROPS). A
+            // Unit has no heap cell to alias, so it must NOT take the dup fast path (which would `dup` +
+            // return, leaving the sentinel un-dropped → an extra stack value → INVALID WASM). Route Unit
+            // through `emit_heap_read_tail` as usual. `dup` POPS its arg and returns nothing, so tee the child,
+            // dup the copy, leave the original for the consumer.
+            let unit_leaf = matches!(type_of(db, id).strip_nominal(), Ty::Unit);
+            if unboxed.is_none() && !unit_leaf && out.dup_sites.contains(&id) {
                 let child_slot = base;
                 if child_slot + 1 > *high {
                     *high = child_slot + 1;
@@ -7485,10 +7491,15 @@ fn emit(
             // (`mark_binder_dups`' `SumExpect` arm) is a compound payload consumed while its scrutinee stays
             // live, so `dup` the child (rc++) before it flows into the consuming op — else the shared payload
             // is FBIP-mutated at rc==1 and the still-live scrutinee drifts. Only a COMPOUND leaf (`unboxed`
-            // None — a handle) aliases; a scalar unboxes/copies and is never a site. `dup` POPS + returns
-            // nothing, so tee the child, dup the copy, leave the original for the consumer. A fresh scratch
-            // slot at `*high` (never `base`, which a width-different sibling may claim).
-            if unboxed.is_none() && out.dup_sites.contains(&id) {
+            // None AND not Unit — a real handle) aliases; a scalar unboxes/copies and is never a site. ⚠
+            // `get_op` returns `None` for BOTH a compound handle AND a `Unit` payload; a Unit has no heap cell
+            // to alias and its `IMM_UNIT` sentinel must be DROPPED by `emit_heap_read_tail` — taking the dup
+            // fast path would leave the sentinel un-dropped → an extra stack value in the block → INVALID
+            // WASM (Copilot PR#441). Route Unit through the `else`. `dup` POPS + returns nothing, so tee the
+            // child, dup the copy, leave the original for the consumer. A fresh scratch slot at `*high`
+            // (never `base`, which a width-different sibling may claim).
+            let unit_leaf = matches!(type_of(db, id).strip_nominal(), Ty::Unit);
+            if unboxed.is_none() && !unit_leaf && out.dup_sites.contains(&id) {
                 let child_slot = *high;
                 *high = child_slot + 1;
                 scratch_ty.insert(child_slot, ValType::I32);

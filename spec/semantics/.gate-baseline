@@ -2860,6 +2860,8 @@ pass	the entrypoint multiplies its runtime argument
 pass	the entrypoint returns its runtime argument unchanged
 pass	the entrypoint returns its runtime boolean argument
 pass	the entrypoint sums its two runtime arguments
+pass	the expander rewrites a directly-written node even when chunks != holes+1 (no re-check)
+pass	the expander threads the hole list to the tag even with zero chunks and zero holes
 pass	the exponent marker is case-insensitive
 pass	the first failing `?` short-circuits; a later `?` never runs
 pass	the generated-set convergence property has discriminating power — two different generated sets are NOT equal
