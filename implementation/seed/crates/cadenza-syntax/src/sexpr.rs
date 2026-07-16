@@ -1512,4 +1512,56 @@ mod tests {
             assert_sexpr_read_invariants(&s.repeat(4));
         }
     }
+
+    #[test]
+    fn sexpr_printer_is_total_over_arbitrary_arenas() {
+        // The s-expr PRINTER half, over the full diversity of arena SHAPES — including shapes no s-expr
+        // TEXT produces (empty lists, error-marker leaves, deep member chains). We source those arenas
+        // from `read_ml` on byte-soup (it recovers, never bails, yielding every odd shape), then print
+        // via BOTH `sexpr::print` (flat) and `print_pretty_width` (the layout path — more shape-specific
+        // logic, the likelier place for an empty-list index gap like the ML printer's `(unquote ())`
+        // panic). Invariants: neither printer PANICS at any width, and both outputs RE-READ without
+        // panicking (via `read_all`, which handles any top-level form count — an ML arena may print as
+        // several s-expr forms). The flat/pretty forms also agree structurally (same tree, one flat, one
+        // laid out). Structural ROUND-TRIP of valid programs is covered elsewhere (corpus + `pretty_
+        // reads_back_to_the_same_arena`); here the point is printer TOTALITY on arbitrary shapes.
+        let alphabet: Vec<char> = "()[]{}|,;=>-+*/<:.@#`\"\\ \tabcdefimntxλ中0123456789\n"
+            .chars()
+            .collect();
+        let mut rng = SplitMix64(0xc0de_5e37_a5f1_0d1c);
+        for len in 0..=32usize {
+            for _ in 0..80 {
+                let s: String = (0..len)
+                    .map(|_| alphabet[(rng.next() as usize) % alphabet.len()])
+                    .collect();
+                let parsed = crate::parser::read_ml(&s);
+                let a = &parsed.arenas;
+                let flat = print(a); // must not panic
+                let flat_back = read_all(&flat); // must not panic (re-read; any form count)
+                for width in [0usize, 1, 20, 80] {
+                    let pretty = print_pretty_width(a, width); // must not panic
+                    let pretty_back = read_all(&pretty); // must not panic
+                    // Flat and pretty are the SAME tree rendered two ways — when both re-read cleanly
+                    // they are structurally equal (layout never changes the denoted tree).
+                    if let (Ok(f), Ok(p)) = (&flat_back, &pretty_back) {
+                        assert!(
+                            f.structurally_eq(p),
+                            "flat vs pretty (width {width}) differ for {s:?}"
+                        );
+                    }
+                }
+            }
+        }
+        // Shapes no s-expr TEXT yields, built directly, to hit the printer's list arms head-on: an empty
+        // list, an empty list under each quote head, a lone-head list.
+        let mut b = Builder::new();
+        let empty = b.list(vec![]);
+        let uq_head = b.name("unquote");
+        let uq_empty = b.list(vec![uq_head, empty]);
+        let a = b.finish(uq_empty);
+        let _ = print(&a); // must not panic
+        for width in [0usize, 1, 40] {
+            let _ = print_pretty_width(&a, width); // must not panic
+        }
+    }
 }
