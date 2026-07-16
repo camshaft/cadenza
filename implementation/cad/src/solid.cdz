@@ -367,6 +367,31 @@ def simplify-never-adds-geometry() =
   let s = simplify(t) in
   if leaf-count(s) == 0 then unit else trap("simplify of an all-empty tree has no geometry")
 
+@test
+def simplify-prunes-a-deep-all-empty-tree() =
+  // a transform over a union of empties (one built from a difference of empties) fully prunes to Empty —
+  // the recursion must collapse every level, not just the top.
+  let t = translate(v3(1.0, 2.0, 3.0), union(empty(), difference(empty(), empty()))) in
+  if is-empty(simplify(t)) then unit else trap("a deep all-empty tree prunes to empty")
+
+@test
+def simplify-difference-with-empty-base-is-empty() =
+  // subtracting from nothing is nothing: difference(Empty, x) simplifies to Empty (x is irrelevant).
+  if is-empty(simplify(difference(empty(), cube-uniform(1.0)))) then unit
+  else trap("difference(Empty, x) simplifies to Empty")
+
+@test
+def difference-all-empty-tools-leaves-base() =
+  // difference-all base [] cuts nothing → the base unchanged (1 leaf).
+  if leaf-count(difference-all(cube-uniform(1.0), [])) == 1 then unit
+  else trap("difference-all base [] = base")
+
+@test
+def simplify-union-all-single-reduces-to-the-element() =
+  // union-all [s] builds Union(s, Empty); simplify absorbs the Empty → just s (a 1-node tree).
+  let s = simplify(union-all([sphere(1.0)])) in
+  if count-nodes(s) == 1 then unit else trap("union-all [s] simplifies to the element")
+
 export { Solid.*, Vec3.*, v3, v3-zero, v3-splat, vx, vy, vz, v3-add, v3-mul, v3-eq,
          cube, cube-uniform, sphere, cylinder, empty,
          union, difference, intersection, union-all, intersection-all, difference-all,
