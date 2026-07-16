@@ -29,6 +29,20 @@ pub mod cedar;
 pub const MODEL_IFACE: &str = "cadenza:model/api";
 pub const MODEL_OP: &str = "converse";
 
+/// The prefix a model backend returns as its "completion" when the underlying call FAILED (a network /
+/// auth / rate-limit error). The `converse` closure is `Fn(String) -> String` — it cannot return a
+/// `Result` (the host-op contract is a String completion) — so a failure is encoded as a completion
+/// STARTING WITH this marker, which a caller checks with [`is_model_error`] to distinguish a genuine
+/// answer from a masked failure (a driver reports it as a FAILURE, not a normal completion). This keeps a
+/// backend error from silently becoming an answer the loop dispatches tools from.
+pub const MODEL_ERROR_PREFIX: &str = "[model-error] ";
+
+/// Whether a model `converse` result is an ERROR marker (a failed call), not a real completion — see
+/// [`MODEL_ERROR_PREFIX`].
+pub fn is_model_error(completion: &str) -> bool {
+    completion.starts_with(MODEL_ERROR_PREFIX)
+}
+
 /// Run a compiled Cadenza agent-loop `consumer` component, answering its `Model.converse` calls with
 /// `converse`. A thin wrapper over [`cdz_run::run_agent`] fixing the model interface/op names. The
 /// caller supplies `opts` (the value-heap runtime bytes + the export to invoke).
@@ -205,7 +219,10 @@ pub fn bedrock_converse(model_id: String, max_tokens: u32) -> impl Fn(String) ->
             .build()
             .expect("build a tokio runtime for the Bedrock call");
         rt.block_on(bedrock_invoke(&model_id, max_tokens, &prompt))
-            .unwrap_or_else(|e| format!("[bedrock error: {e}]"))
+            // A failed call CANNOT return a Result here (the host-op contract is a String completion), so
+            // encode the failure as an error-MARKER completion — the driver checks `is_model_error` and
+            // reports a FAILURE, so a Bedrock error never silently becomes an answer the loop acts on.
+            .unwrap_or_else(|e| format!("{MODEL_ERROR_PREFIX}{e}"))
     }
 }
 
@@ -335,5 +352,26 @@ mod bedrock_tests {
     #[test]
     fn first_text_block_none_when_absent() {
         assert_eq!(first_text_block(r#"{"content":[]}"#), None);
+    }
+}
+
+#[cfg(test)]
+mod model_error_tests {
+    use super::*;
+
+    #[test]
+    fn a_model_error_marker_is_detected_but_a_real_completion_is_not() {
+        // A backend encodes a failed call as a MODEL_ERROR_PREFIX completion (the converse contract is
+        // String->String); the driver must DETECT it so a failure isn't reported as a normal answer.
+        assert!(is_model_error(&format!(
+            "{MODEL_ERROR_PREFIX}bedrock invoke_model: timeout"
+        )));
+        assert!(!is_model_error("a genuine model answer"));
+        assert!(
+            !is_model_error(""),
+            "an empty completion is not an error marker"
+        );
+        // The mock backend never produces the marker (a real answer path).
+        assert!(!is_model_error(&mock_converse("hello".to_string())));
     }
 }
