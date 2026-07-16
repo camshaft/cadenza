@@ -235,7 +235,7 @@ fn main() -> ExitCode {
         // Front-end commands defer to the syntax CLI, reconstructing its command enum (its arg structs
         // are re-exported, so `cdz convert …` and `cdz-syntax convert …` run the SAME code).
         Cmd::Convert(a) => syntax_cli::run(syntax_cli::Cmd::Convert(a), PROG),
-        Cmd::Fmt(a) => syntax_cli::run(syntax_cli::Cmd::Fmt(a), PROG),
+        Cmd::Fmt(a) => run_fmt(a),
         // A `--where` clause makes this a COMBINED structural+semantic query — `cdz` runs it (it needs
         // the compiler). Without `--where` it is the pure structural query, delegated unchanged.
         Cmd::Query(a) if a.where_.is_some() => run_query_where(&a),
@@ -707,6 +707,73 @@ struct ProjectSpecs {
     m: Manifest,
     entry_name: String,
     specs: Vec<String>,
+}
+
+/// `cdz fmt` — format program file(s), with a PROJECT mode the bare `cadenza-syntax` `fmt` lacks. Every
+/// other lifecycle command (`build`/`test`/`check`/`metadata`/`clean`) acts on the whole `Project.cdz`
+/// when given a directory / a manifest / no argument; `cdz fmt` now does too, so "format my project" works
+/// without listing files. PROJECT mode triggers when the args name a project — a lone `Project.cdz`, a
+/// DIRECTORY that holds one, or NO argument with a `Project.cdz` found upward — in which case the
+/// manifest's own source set (`entry` + `modules` + `tests`, glob-expanded + `exclude`-filtered, deduped)
+/// is formatted. Otherwise (explicit files, a lone `-`/stdin, or a directory with no manifest) it passes
+/// through UNCHANGED to the syntax CLI — so `cdz fmt a.cdz b.cdz`, `… | cdz fmt -`, and `cdz fmt <dir>`
+/// (recursing a manifest-less tree) keep their existing behavior. All the mode flags (`--check`/`--diff`/
+/// `--stdout`/`--from`/`--width`) carry over via `FmtArgs::with_files`.
+fn run_fmt(args: syntax_cli::FmtArgs) -> ExitCode {
+    // Classify the parsed positionals (read via the `files()` getter; the field is private). PROJECT mode
+    // needs a project target: no args (→ upward search), or a single arg that is a `Project.cdz` or a
+    // directory containing one. A lone `-` (stdin) or any explicit file list is NOT a project → pass through.
+    let files = args.files();
+    let is_stdin = files.len() == 1 && files[0] == "-";
+    let project_target: Option<Option<&str>> = if is_stdin {
+        None // explicit stdin — never project mode
+    } else if files.is_empty() {
+        // No args: project mode ONLY if a `Project.cdz` exists upward (else keep the historical stdin read).
+        find_manifest_upward().map(|_| None)
+    } else if files.len() == 1 {
+        // A single arg: project mode iff it names a `Project.cdz` or a dir holding one. A plain file or a
+        // manifest-less dir is NOT a project (falls through to the syntax CLI's own file/dir handling).
+        let p = std::path::Path::new(&files[0]);
+        let is_manifest =
+            p.file_name().and_then(|n| n.to_str()) == Some(MANIFEST_NAME) && p.is_file();
+        let dir_has_manifest = p.is_dir() && p.join(MANIFEST_NAME).is_file();
+        if is_manifest || dir_has_manifest {
+            Some(Some(files[0].as_str()))
+        } else {
+            None
+        }
+    } else {
+        None // multiple explicit files — pass through
+    };
+    let Some(target_arg) = project_target else {
+        // Not a project target — delegate unchanged (explicit files / stdin / manifest-less dir).
+        return syntax_cli::run(syntax_cli::Cmd::Fmt(args), PROG);
+    };
+    // PROJECT mode: resolve the manifest + format its full declared source set (entry + modules + tests).
+    let (dir, mpath, m) = match resolve_project_manifest(target_arg, "cdz fmt") {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
+    // Every source the manifest declares: entry, library modules, and tests — glob-expanded, exclude-
+    // filtered, deduped. (Unlike build/check, fmt formats the TESTS too — they're project source.)
+    let mut pats: Vec<String> = Vec::new();
+    if let Some(entry) = &m.entry {
+        pats.push(entry.clone());
+    }
+    pats.extend(m.modules.iter().cloned());
+    pats.extend(m.tests.iter().cloned());
+    let mut resolved = expand_manifest_globs(&dir, &pats, &m.exclude);
+    let mut seen = std::collections::HashSet::new();
+    resolved.retain(|s| seen.insert(s.clone()));
+    if resolved.is_empty() {
+        eprintln!(
+            "{PROG}: {}: the manifest declares no `entry`/`modules`/`tests` source to format",
+            mpath.display()
+        );
+        return ExitCode::FAILURE;
+    }
+    // Hand the resolved file list to fmt, preserving every mode flag, and delegate to the same code path.
+    syntax_cli::run(syntax_cli::Cmd::Fmt(args.with_files(resolved)), PROG)
 }
 
 /// Resolve a project's `Project.cdz` to `(dir, manifest-path, manifest)` — the DIR-resolution shared by
