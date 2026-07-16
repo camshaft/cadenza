@@ -2844,3 +2844,77 @@
             (def (main) (Thm.Seq (list) (Term.Imp (Term.Comb (Term.Var 1) (Term.Var 2)) (Term.Comb (Term.Var 1) (Term.Select (Term.Var 1))))))
             (export main)))
   (error  CDZ0214))
+; Increment 17 — the INFINITY axiom, completing HOL's three-axiom set (ETA + SELECT + INFINITY). HOL's
+; axiom of infinity asserts an infinite type exists: |- ∃f. (one-one f) ∧ ¬(onto f) — there is a function
+; on `ind` that is injective but not onto (so `ind` is infinite). Modelled here with the term forms the
+; kernel already has (Exists/Conj/Neg/Comb + Const predicates one-one/onto), minted via new_axiom
+; (hypothesis-free, like ETA + SELECT). With this, all three HOL axioms enter through the single tracked
+; new_axiom door and stay unforgeable — the fusion.ml axiomatic base is complete.
+; ============================================================================================
+
+(case "the INFINITY axiom is minted via new_axiom (an infinite type exists)"
+  (doc    "HOL's third axiom, completing the set. INFINITY_AX asserts an infinite type exists:
+           |- ∃f. (one-one f) ∧ ¬(onto f) — some function is injective but not surjective, so its type
+           (`ind`) is infinite. Built from the kernel's existing term forms (Exists / Conj / Neg / Comb with
+           Const predicates one-one=Const 0, onto=Const 1) and minted via new_axiom (hypothesis-free). The
+           case checks the exact ∃/∧/¬ statement shape and that the axiom carries no hypotheses. Pins the
+           last of HOL's three axioms — all three (ETA, SELECT, INFINITY) now enter through the one tracked
+           new_axiom door.")
+  (module "hol"
+    (do
+      (type Term (Var Int64) (Comb Term Term) (Eq Term Term) (Conj Term Term) (Neg Term) (Exists Int64 Term) (Const Int64))
+      (type Thm (Seq (List Term) Term))
+      (def (term-eq (: a Term) (: b Term))
+        (match a
+          ((Term.Var n)    (match b ((Term.Var m) (= n m)) (_ false)))
+          ((Term.Comb x y) (match b ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) (_ false)))
+          ((Term.Eq x y)   (match b ((Term.Eq p q) (and (term-eq x p) (term-eq y q))) (_ false)))
+          ((Term.Conj x y) (match b ((Term.Conj p q) (and (term-eq x p) (term-eq y q))) (_ false)))
+          ((Term.Neg x)    (match b ((Term.Neg p) (term-eq x p)) (_ false)))
+          ((Term.Exists v x) (match b ((Term.Exists w q) (and (= v w) (term-eq x q))) (_ false)))
+          ((Term.Const c)  (match b ((Term.Const d) (= c d)) (_ false)))))
+      (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
+      (def (hyps (: th Thm)) (match th ((Thm.Seq h _) h)))
+      (def (new-axiom (: tm Term)) (Thm.Seq (list) tm))
+      (def (infinity-ax)
+        (let ((one-one (Term.Const 0)) (onto (Term.Const 1)) (f (Term.Var 0)))
+          (new-axiom (Term.Exists 0 (Term.Conj (Term.Comb one-one f) (Term.Neg (Term.Comb onto f)))))))
+      (export (. Term *))
+      (export Thm)
+      (export term-eq)
+      (export new-axiom)
+      (export infinity-ax)
+      (export concl)
+      (export hyps)))
+  (input  (do
+            (import "hol" (Term Thm term-eq new-axiom infinity-ax concl hyps))
+            (def (main)
+              (let ((one-one (Term.Const 0)) (onto (Term.Const 1)) (f (Term.Var 0)))
+                (let ((th (infinity-ax)))
+                  (and (term-eq (concl th)
+                                (Term.Exists 0 (Term.Conj (Term.Comb one-one f) (Term.Neg (Term.Comb onto f)))))
+                       (match (hyps th) ((list) true) (_ false))))))
+            (export main)))
+  (output (: true Bool)))
+
+(case "an INFINITY-axiom theorem is unforgeable — its Thm cannot be fabricated outside the kernel"
+  (doc    "Completing the axiom set does not weaken the boundary. Like ETA and SELECT, an INFINITY-shaped
+           axiom is minted only through new_axiom; an importer cannot fabricate one by building Thm.Seq
+           directly — a bogus ∃/∧/¬ statement asserted as a theorem outside the kernel is CDZ0214. Pins that
+           all three HOL axioms share the single tracked, unforgeable entry — so a module's axiomatic
+           dependencies remain exactly its new_axiom calls, auditable, with no fabrication path.")
+  (module "hol"
+    (do
+      (type Term (Var Int64) (Comb Term Term) (Eq Term Term) (Conj Term Term) (Neg Term) (Exists Int64 Term) (Const Int64))
+      (type Thm (Seq (List Term) Term))
+      (def (new-axiom (: tm Term)) (Thm.Seq (list) tm))
+      (export (. Term *))
+      (export Thm)
+      (export new-axiom)))
+  (input  (do
+            (import "hol" (Term Thm new-axiom))
+            (def (main)
+              (Thm.Seq (list)
+                (Term.Exists 0 (Term.Conj (Term.Comb (Term.Const 0) (Term.Var 0)) (Term.Neg (Term.Comb (Term.Const 1) (Term.Var 0)))))))
+            (export main)))
+  (error  CDZ0214))
