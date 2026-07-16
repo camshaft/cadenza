@@ -70134,6 +70134,51 @@ mod cross_component_oracle {
     }
 
     // ------------------------------------------------------------------------------------------------
+    // PL38 — the fused resource escape's SCOPE EDGES decline cleanly (report-don't-miscompile). The fused
+    // envelope (PL35-37) supports a SINGLE peer interface and a PEER (not host) effect. The two shapes just
+    // OUTSIDE that scope must DECLINE with an actionable message, NOT emit an invalid component:
+    //   (a) a resource-escaping entrypoint reaching TWO distinct peer interfaces (the envelope images one
+    //       peer instance; a second needs the multi-`g` widening) — names the limit;
+    //   (b) a HOST-delegated effect (not peer-bound) from a resource-escaping entrypoint (host+resource is
+    //       a separate fusion) — names the workaround (consume to a scalar).
+    // These pin the emit boundary so a future widening that forgets to keep the out-of-scope case a clean
+    // decline (emitting a malformed component instead) is caught. Both are compile-time declines (no wasm).
+    // ------------------------------------------------------------------------------------------------
+    #[test]
+    fn the_fused_resource_escape_scope_edges_decline_cleanly() {
+        use crate::testkit::parse;
+        // (a) main RETURNS a tuple built from TWO distinct peers → escapes as a resource reaching 2 ifaces.
+        let two_peer = "(do \
+            (effect A (op pa (-> Int64 Int64))) (bind A \"cadenza:a/api\") \
+            (effect B (op pb (-> Int64 Int64))) (bind B \"cadenza:b/api\") \
+            (def (main (: x Int64)) (host (A B) (tuple (A.pa x) (B.pb x)))) \
+            (export main))";
+        let err = crate::compile::compile_component(&crate::codec::encode(&parse(two_peer)))
+            .expect_err("a two-peer-interface resource escape must DECLINE, not miscompile");
+        assert!(
+            err.message.contains("TWO distinct peer interfaces")
+                && err.message.contains("single peer interface"),
+            "the two-interface decline must name the limit: {}",
+            err.message
+        );
+        // (b) main RETURNS a tuple built from a HOST-delegated effect (H is NOT bound to a peer) → the
+        // host+resource fusion is separate; must decline naming the scalar-consume workaround.
+        let host_res = "(do \
+            (effect H (op h (-> Int64 Int64))) \
+            (def (main (: x Int64)) (host (H) (tuple (H.h x) x))) \
+            (export main))";
+        let err2 = crate::compile::compile_component(&crate::codec::encode(&parse(host_res)))
+            .expect_err("a host-effect resource escape must DECLINE, not miscompile");
+        assert!(
+            err2.message.contains("host-delegated effect")
+                && err2.message.contains("escapes as a runtime resource")
+                && err2.message.contains("scalar"),
+            "the host+resource decline must name the effect kind + workaround: {}",
+            err2.message
+        );
+    }
+
+    // ------------------------------------------------------------------------------------------------
     // U17 — HANDLE PASS-THROUGH: peer A produces a compound, the consumer passes it DIRECTLY to peer B
     // WITHOUT inspecting it. Composes U16 (compound arg in) with U5 (compound result out) across TWO
     // boundary crossings in one body, exercising ownership-transfer-on-argument: the handle A mints flows
