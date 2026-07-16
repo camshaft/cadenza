@@ -166,3 +166,38 @@ fn watch_build_does_not_self_trigger_on_its_own_artifacts() {
         "the build's own artifact writes must NOT re-trigger the watch (no self-trigger loop)"
     );
 }
+
+#[test]
+fn watch_run_executes_the_entry_on_the_initial_pass() {
+    // `--exec run` builds the entry and RUNS it (the live "run on save" loop). The scaffold's `main()`
+    // returns 0, so the initial run prints `0` — and, like build, the `.wasm` it writes must NOT
+    // self-trigger (the positive source filter covers the run path too, since it shares the build's
+    // artifact writes). Assert the banner names `run`, the value prints, and no self-trigger fires.
+    let (root, proj) = scaffold("run");
+    let (mut child, cap) = spawn_watch(&proj, &["--exec", "run"], "run");
+    assert!(
+        wait_for(&cap, "watching", Duration::from_secs(20)),
+        "startup banner: {}",
+        read_cap(&cap)
+    );
+    assert!(
+        read_cap(&cap).contains("cdz run"),
+        "the banner names the run command: {}",
+        read_cap(&cap)
+    );
+    // The initial build+run prints the scalar entry's value (`0`). Build+run is slower than check, so
+    // allow a generous window.
+    let ran = wait_for(&cap, "\n0", Duration::from_secs(30));
+    std::thread::sleep(Duration::from_secs(2));
+    let self_triggers = count(&cap, "change detected");
+
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::remove_file(&cap);
+    assert!(ran, "the initial `run` pass prints the entry's value");
+    assert_eq!(
+        self_triggers, 0,
+        "the run's own build artifacts must NOT re-trigger the watch"
+    );
+}
