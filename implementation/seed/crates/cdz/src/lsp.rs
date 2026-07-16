@@ -554,36 +554,39 @@ impl Server {
     /// LIBRARY refreshes its IMPORTERS' diagnostics live (reverse-dependency invalidation). Without this,
     /// a `didChange` to a library re-lints only the library itself, leaving a stale squiggle (or a
     /// stale-clean) on an importer until the importer is itself touched. `changed` is the just-edited
-    /// document's on-disk path; an open doc imports it iff one of its declared `(import …)` paths resolves
-    /// (as a sibling in that doc's own directory) to `changed`. Best-effort + total: an open doc that does
-    /// not parse, has no path, or declares no matching import is skipped.
+    /// document's on-disk path; an open doc depends on it iff `changed` appears in that doc's TRANSITIVE
+    /// import closure (`closure::load` with the open-buffer overlay), so an indirect dependency (A imports
+    /// B imports the edited C) is refreshed too, not just direct importers. Best-effort + total: an open
+    /// doc that has no path, or whose closure does not load / does not include `changed`, is skipped.
     fn republish_importers_of(
         &mut self,
         changed: &std::path::Path,
     ) -> Result<(), Box<dyn std::error::Error + Sync + Send>> {
-        // Collect the importer URIs first (an immutable borrow of `docs`), then publish (a mutable
-        // borrow), so the two borrows don't overlap.
-        let importers: Vec<Uri> =
+        // Collect the importer URIs first (an immutable borrow of `docs` via `open`), then publish (a
+        // mutable borrow). The `open` resolver borrows `self.docs`, so scope it in a block that ends
+        // BEFORE the publish loop — otherwise the immutable borrow would outlive the mutable one.
+        let importers: Vec<Uri> = {
+            let open = self.open_resolver();
             self.docs
-                .iter()
-                .filter_map(|(uri, doc)| {
-                    let path = uri_to_path(uri)?;
+                .keys()
+                .filter(|uri| {
+                    let Some(path) = uri_to_path(uri) else {
+                        return false;
+                    };
                     if path == changed {
-                        return None; // the changed doc itself is already (re)published by the caller
+                        return false; // the changed doc itself is already (re)published by the caller
                     }
-                    let dir = path.parent()?;
-                    let (arenas, _spans, _errs) = parse_surface(&doc.text, doc.is_ml).ok()?;
-                    // Does any declared import resolve (as a sibling in this importer's dir) to `changed`?
-                    let imports_changed = crate::closure::declared_import_paths(&arenas)
-                        .iter()
-                        .any(|name| {
-                            crate::closure::resolve_import_file(dir, name)
-                                .map(|p| std::path::Path::new(&p) == changed)
-                                .unwrap_or(false)
-                        });
-                    imports_changed.then(|| uri.clone())
+                    // Load this open doc's TRANSITIVE closure (overlay-aware); is `changed` in it?
+                    match crate::closure::load(&path.to_string_lossy(), &open) {
+                        Ok(files) => files
+                            .iter()
+                            .any(|f| std::path::Path::new(&f.path) == changed),
+                        Err(_) => false,
+                    }
                 })
-                .collect();
+                .cloned()
+                .collect()
+        };
         for uri in importers {
             self.publish(&uri)?;
         }

@@ -542,6 +542,56 @@ fn lsp_editing_an_open_library_re_lints_its_open_importers() {
 }
 
 #[test]
+fn lsp_editing_a_transitive_dependency_re_lints_the_indirect_importer() {
+    // Reverse-dep invalidation is TRANSITIVE: main imports mid imports leaf. Editing the OPEN leaf to
+    // drop its export must re-lint `main` (an INDIRECT importer, main→mid→leaf), not just mid — because
+    // `republish_importers_of` checks each open doc's full transitive closure, not only direct imports.
+    let dir = std::env::temp_dir().join(format!("cdz-lsp-transdep-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    std::fs::write(
+        dir.join("leaf.sexp"),
+        "(module leaf (def (base x) (+ x 1)) (export base))",
+    )
+    .expect("leaf");
+    std::fs::write(
+        dir.join("mid.sexp"),
+        "(do (import \"leaf\" (base)) (def (mid y) (base y)) (export mid))",
+    )
+    .expect("mid");
+    let main_path = dir.join("main.sexp");
+    let main_text = "(do (import \"mid\" (mid)) (def (main) (mid 1)) (export main))";
+    std::fs::write(&main_path, main_text).expect("main");
+    let leaf_uri = format!("file://{}", dir.join("leaf.sexp").display());
+    let mid_uri = format!("file://{}", dir.join("mid.sexp").display());
+    let main_uri = format!("file://{}", main_path.display());
+    let mid_text = "(do (import \"leaf\" (base)) (def (mid y) (base y)) (export mid))";
+
+    let msgs = drive_messages(&[
+        serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{},"processId":null,"rootUri":null}}),
+        serde_json::json!({"jsonrpc":"2.0","method":"initialized","params":{}}),
+        serde_json::json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":leaf_uri,"languageId":"cadenza","version":1,"text":"(module leaf (def (base x) (+ x 1)) (export base))"}}}),
+        serde_json::json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":mid_uri,"languageId":"cadenza","version":1,"text":mid_text}}}),
+        serde_json::json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":main_uri,"languageId":"cadenza","version":1,"text":main_text}}}),
+        // Edit the OPEN leaf to drop its export — main (transitive importer) must be re-linted.
+        serde_json::json!({"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":leaf_uri,"version":2},"contentChanges":[{"text":"(module leaf (def (base x) (+ x 1)))"}]}}),
+        serde_json::json!({"jsonrpc":"2.0","id":99,"method":"shutdown","params":null}),
+        serde_json::json!({"jsonrpc":"2.0","method":"exit","params":null}),
+    ]);
+    let pushes = diagnostic_pushes_by_uri(&msgs);
+    let main_pushes = pushes
+        .iter()
+        .filter(|(u, _)| u.ends_with("main.sexp"))
+        .count();
+    assert!(
+        main_pushes >= 2,
+        "the INDIRECT importer `main` should be re-published after the transitive `leaf` edit \
+         (>=2 main pushes), got {main_pushes}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn lsp_goto_definition_jumps_across_files_to_an_imported_def() {
     // Cross-file go-to-definition: from the `helper` USE in main.sexp, jump to its DEFINITION in
     // lib.sexp — the target Location is in the OTHER file. Before this increment definition was
