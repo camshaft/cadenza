@@ -4913,6 +4913,110 @@ mod tests {
         use crate::query::hash::{hash_tree, node_size};
 
         #[test]
+        fn hash_tree_agrees_with_tree_eq_over_every_generated_subtree() {
+            // The SOUNDNESS invariant clone-detection stands on: `find_clones` groups subtrees BY
+            // `hash_tree` and treats a shared bucket as a clone class, so the digest must agree with
+            // structural equality in BOTH directions —
+            //   hash_tree(a) == hash_tree(b)  ⟺  tree_eq(a, b)
+            // A COLLISION (distinct trees, equal hash) reports a FALSE clone / merges two classes; the
+            // reverse mismatch (equal trees, distinct hash) MISSES a real clone. Only a handful of hand
+            // `assert_ne!` cases pinned this (radix, alpha-inequivalence, atom-vs-list); nothing swept the
+            // whole space. Generate programs over an alphabet rich in near-misses (same shape/different
+            // leaf, same leaves/different shape, distinct radices, string-vs-name), collect EVERY subtree
+            // (via `node_size`-covering pre-order), and check the biconditional pairwise through a
+            // hash-keyed bucket: within a hash bucket every tree must be `tree_eq`; across buckets any two
+            // must NOT be `tree_eq`. O(Σ bucket²) — bounded because buckets stay tiny for distinct trees.
+            use super::{SplitMix64, Tree, tree_eq};
+            use std::collections::HashMap;
+
+            fn collect<'t>(t: &'t Tree, out: &mut Vec<&'t Tree>) {
+                out.push(t);
+                if let Tree::List(items, _) = t {
+                    for c in items {
+                        collect(c, out);
+                    }
+                }
+            }
+            let src_of = |t: &Tree| crate::sexpr::print(&t.to_arena());
+            // An alphabet that makes near-miss subtrees actually occur: two heads, two operand names, a
+            // shared name to force cross-position equal subtrees, the SAME numeric value in two radices
+            // (`10` vs `0xA` — distinct leaves, must NOT collide), and a string literal vs a bare name.
+            let atoms = ["f", "g", "a", "b", "x", "10", "0xA", "\"a\""];
+            let mut rng = SplitMix64(0x0d1c_a5f0_c0de_5eed);
+            // hash → representatives already seen with that hash (owned so they outlive one iteration).
+            let mut buckets: HashMap<u64, Vec<Tree>> = HashMap::new();
+            let mut pairs_checked = 0usize;
+            let mut equal_pairs = 0usize;
+            for _ in 0..4000 {
+                // Build a small random program textually so it routes through the real reader.
+                fn gen_prog(rng: &mut SplitMix64, atoms: &[&str], depth: usize) -> String {
+                    if depth == 0 || rng.next().is_multiple_of(3) {
+                        return atoms[(rng.next() as usize) % atoms.len()].to_string();
+                    }
+                    let n = 1 + (rng.next() as usize) % 3;
+                    let kids: Vec<String> =
+                        (0..n).map(|_| gen_prog(rng, atoms, depth - 1)).collect();
+                    format!("({})", kids.join(" "))
+                }
+                let depth = 1 + (rng.next() as usize) % 4;
+                let src = gen_prog(&mut rng, &atoms, depth);
+                let Ok(arena) = crate::sexpr::read(&src) else {
+                    continue;
+                };
+                let tree = Tree::of(&arena);
+                let mut subs = Vec::new();
+                collect(&tree, &mut subs);
+                for sub in subs {
+                    let h = hash_tree(sub);
+                    let reps = buckets.entry(h).or_default();
+                    // Same hash MUST mean structurally equal (no collision).
+                    for rep in reps.iter() {
+                        assert!(
+                            tree_eq(rep, sub),
+                            "hash COLLISION between structurally-distinct subtrees:\n  {}\n  {}",
+                            src_of(rep),
+                            src_of(sub)
+                        );
+                        pairs_checked += 1;
+                        equal_pairs += 1;
+                    }
+                    // Only stash a fresh representative once per structural class (keeps buckets O(1)).
+                    if reps.iter().all(|rep| !tree_eq(rep, sub)) {
+                        reps.push(sub.clone());
+                    }
+                }
+            }
+            // Reverse direction: any two DISTINCT-hash representatives must NOT be tree_eq (equal trees
+            // always share a hash, so a cross-bucket tree_eq would be a determinism bug in hash_tree).
+            let all: Vec<(&u64, &Tree)> = buckets
+                .iter()
+                .flat_map(|(h, v)| v.iter().map(move |t| (h, t)))
+                .collect();
+            for i in 0..all.len() {
+                for j in (i + 1)..all.len() {
+                    if all[i].0 != all[j].0 {
+                        assert!(
+                            !tree_eq(all[i].1, all[j].1),
+                            "two structurally-EQUAL subtrees hashed DIFFERENTLY (missed clone):\n  {}\n  {}",
+                            src_of(all[i].1),
+                            src_of(all[j].1)
+                        );
+                        pairs_checked += 1;
+                    }
+                }
+            }
+            assert!(
+                equal_pairs >= 1,
+                "the sweep never hit two equal subtrees in one bucket — alphabet too sparse to test the \
+                 no-collision direction"
+            );
+            assert!(
+                pairs_checked >= 100,
+                "swept a meaningful digest-agreement space, got {pairs_checked} pairs"
+            );
+        }
+
+        #[test]
         fn equal_subtrees_hash_equal_regardless_of_position() {
             // the two `(g x)` occurrences are structurally equal → equal hash.
             let s = subj("(f (g x) (g x))");
