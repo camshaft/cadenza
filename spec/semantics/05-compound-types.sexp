@@ -3322,15 +3322,24 @@
   (call   main (: 0 UInt8))
   (output (: 100 Int64)))
 
-(case "a narrow newtype boxed as a map value stores at the widened cell"
-  (doc    "The MAP-VALUE nested-box position: `(Map.insert Map.empty 1 (W.Wrap n))` with `W = (Wrap UInt8)`
-           boxes the narrow newtype as a map value — the same i32→i64 box-widen the tuple/list/sum positions
-           need. `Map.len` = 1. Pins the shared box-int helper covers the map-value store, not only the
-           tuple/list/sum element positions the fix's own cases exercise.")
+(case "a narrow newtype boxed as a map value round-trips through lookup at the widened cell"
+  (doc    "The MAP-VALUE nested-box position, READ BACK: `(Map.insert Map.empty 1 (W.Wrap n))` with `W =
+           (Wrap UInt8)` boxes the narrow newtype as a map value (the same i32→i64 box-widen the tuple/list/
+           sum positions need), then `Map.lookup` reads it and the arm unwraps `(W.Wrap x)`, converting the
+           widened payload to Int64 — `n = 200` → 200. This OBSERVES the stored value, so a mis-boxed/mis-
+           widened cell fails; the earlier `Map.len`-only assertion never read the value back and so could
+           not catch a wrong box-widen (a Copilot weak-assertion finding). Pins the shared box-int helper
+           covers the map-value store AND the lookup/unbox round-trip, not only the tuple/list/sum element
+           positions — both width decisions (the box widen and the value-literal grounding) must agree on the
+           `strip_nominal`-ed inner type.")
   (input  (do (type W (Wrap UInt8))
-              (def (main (: n UInt8)) (Map.len (Map.insert Map.empty 1 (W.Wrap n)))) (export main)))
-  (call   main (: 5 UInt8))
-  (output (: 1 Int64)))
+              (def (main (: n UInt8))
+                (match (Map.lookup (Map.insert Map.empty 1 (W.Wrap n)) 1)
+                  ((Some (W.Wrap x)) (Int64.of x))
+                  ((None _)          -1)))
+              (export main)))
+  (call   main (: 200 UInt8))
+  (output (: 200 Int64)))
 
 (case "a narrow newtype boxed in a list round-trips two payloads through binder reads"
   (doc    "The READ/unbox side: a list of two `(W.Wrap n)` narrow newtypes matched with binder payloads

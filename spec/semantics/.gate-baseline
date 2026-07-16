@@ -1223,7 +1223,7 @@ pass	a narrow addition reconciles a constant LEFT operand to the variable's widt
 pass	a narrow comparison reconciles a constant LEFT operand to the variable's width
 pass	a narrow match binder used in arithmetic with the scrutinee
 pass	a narrow multiplication reconciles a constant LEFT operand to the variable's width
-pass	a narrow newtype boxed as a map value stores at the widened cell
+pass	a narrow newtype boxed as a map value round-trips through lookup at the widened cell
 pass	a narrow newtype boxed in a list round-trips two payloads through binder reads
 pass	a narrow value in the else branch opposite a bare literal computes at the narrow width
 pass	a narrow-UInt8-guarded div is not select-ified — the guard shields the trap
