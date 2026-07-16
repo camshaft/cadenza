@@ -168,10 +168,11 @@ enum Cmd {
 
     // ── toolchain health ────────────────────────────────────────────────────────────────────────
     /// Diagnose the `cdz` TOOLCHAIN environment (a `cargo`-doctor-style preflight): the `cdz` version +
-    /// path, whether the sibling `cdz-run` binary is present (needed to run/`test` compiled components),
-    /// and whether the value-heap runtime store holds the runtime `cdz` compiles against (needed to run a
-    /// program that builds heap values). Exits non-zero if a component that would break `cdz run`/`test`
-    /// is missing — so CI/setup scripts can gate on `cdz doctor`. `--store <DIR>` checks a specific store.
+    /// path, whether the standalone `cdz-run` binary is present (INFORMATIONAL only — `cdz run`/`cdz test`
+    /// run in-process, so it is optional), and whether the value-heap runtime store holds the runtime
+    /// `cdz` compiles against (needed to run a program that builds heap values). Exits non-zero only if the
+    /// runtime STORE is missing/stale — the sole toolchain fault that breaks `cdz run`/`test` — so CI/setup
+    /// scripts can gate on `cdz doctor`. `--store <DIR>` checks a specific store.
     Doctor(DoctorArgs),
 
     // ── unit testing ─────────────────────────────────────────────────────────────────────────────
@@ -1513,8 +1514,8 @@ struct DoctorArgs {
     #[arg(long)]
     store: Option<PathBuf>,
     /// Emit the health report as a machine-readable JSON object instead of human lines — for CI/setup
-    /// scripts (the `cdz metadata`/`cdz check --json` shape). The exit code is unchanged (non-zero iff a
-    /// run/test-breaking component is missing).
+    /// scripts (the `cdz metadata`/`cdz check --json` shape). The exit code is unchanged (non-zero iff the
+    /// runtime STORE is missing/stale; the `cdz-run` presence is informational and never affects it).
     #[arg(long)]
     json: bool,
 }

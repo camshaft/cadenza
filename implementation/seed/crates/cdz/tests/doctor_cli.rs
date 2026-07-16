@@ -1,11 +1,13 @@
 //! End-to-end tests for `cdz doctor` — the toolchain-health preflight (a `cargo`-doctor analogue).
 //!
-//! `cdz doctor` reports the `cdz` version + path, whether the sibling `cdz-run` runner is present, and
-//! whether the value-heap runtime store holds the runtime `cdz` compiles against. It exits non-zero if a
-//! component that would break `cdz run`/`cdz test` is missing — so a setup/CI script can gate on it.
-//! Drives the built binary. The `cdz-run`/store presence is ENVIRONMENT-dependent (built locally, absent
-//! on CI's bare `cargo test`), so the always-on tests assert the doctor REPORTS its checks (not a specific
-//! verdict); the verdict-under-a-controlled-input tests drive an explicit `--store <missing>` override.
+//! `cdz doctor` reports the `cdz` version + path, whether the standalone `cdz-run` runner is present
+//! (INFORMATIONAL — `cdz run`/`cdz test` run in-process, so it never affects the verdict), and whether
+//! the value-heap runtime store holds the runtime `cdz` compiles against. It exits non-zero ONLY when the
+//! runtime STORE is missing/stale — the sole toolchain fault that breaks `cdz run`/`cdz test` — so a
+//! setup/CI script can gate on it. Drives the built binary. The `cdz-run`/store presence is
+//! ENVIRONMENT-dependent (built locally, absent on CI's bare `cargo test`), so the always-on tests assert
+//! the doctor REPORTS its checks (not a specific verdict); the verdict-under-a-controlled-input tests
+//! drive an explicit `--store <missing>` override.
 
 use std::process::Command;
 
@@ -40,6 +42,25 @@ fn doctor_reports_version_and_the_runner() {
     assert!(
         out.contains("cdz-run: present") || out.contains("cdz-run: not present"),
         "reports the standalone-runner check (present or not present per environment): {out}"
+    );
+}
+
+#[test]
+fn doctor_help_describes_cdz_run_as_informational_not_required() {
+    // `cdz doctor --help` must describe the standalone `cdz-run` check as INFORMATIONAL/optional — NOT
+    // "needed to run/test". Regression: after `cdz run`/`cdz test` moved in-process, the help text (and
+    // the doctor's own verdict) stopped depending on `cdz-run`, but the `--help` prose lagged, telling
+    // users a missing `cdz-run` breaks run/test. Pin the corrected wording so it can't silently regress.
+    let (ok, out, err) = run(&["doctor", "--help"]);
+    assert!(ok, "cdz doctor --help should succeed: {err}");
+    let help = format!("{out}{err}"); // clap may route --help to stdout
+    assert!(
+        help.contains("in-process"),
+        "help explains run/test are in-process (so cdz-run is optional): {help}"
+    );
+    assert!(
+        !help.contains("needed to run/`test`") && !help.contains("needed to run/test"),
+        "help must NOT claim cdz-run is needed to run/test (it's informational): {help}"
     );
 }
 
