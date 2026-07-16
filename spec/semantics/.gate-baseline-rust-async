@@ -2076,6 +2076,7 @@ pass	applying the result of a match whose arms return payload-capturing closures
 pass	arithmetic between a char and a BigInt is rejected with a working two-step conversion fix
 pass	arithmetic between a char and a FLOAT is rejected with a working two-step conversion fix
 pass	arithmetic between a char and a Rational is rejected with a working two-step conversion fix
+pass	arithmetic between a char and an Int64 is rejected with the plain Char.to-int fix
 pass	arithmetic on a bound Rational payload computes and escapes exactly
 pass	arithmetic right shift
 pass	arithmetic right shift of negative one is negative one
