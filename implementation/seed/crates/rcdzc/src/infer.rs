@@ -9641,16 +9641,24 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                                 // `_`. An `Option` operand → `(Option <payload>)`; a `Result` operand →
                                 // `(Result <payload> <err>)`. Falls back to the generic form when the
                                 // operand's fallible shape isn't (yet) definite.
+                                // The suggested annotation, ALREADY BACKTICK-WRAPPED here (not by the
+                                // message template) so each option is exactly one balanced code span. A
+                                // DEFINITE operand kind → one concrete form (`(Option T)` / `(Result T e)`);
+                                // the fallback (operand kind not yet definite) → BOTH generic forms, each
+                                // its own span. (Copilot PR #453: the old fallback embedded its own
+                                // backticks INTO a template-wrapped `{suggested}`, coupling its rendering to
+                                // the template's exact quoting; wrapping here keeps every arm balanced and
+                                // self-contained.)
                                 let suggested = match &operand_fallible {
                                     Some((FallibleKind::Option, payload, _)) => {
-                                        format!("(Option {})", payload.render_name())
+                                        format!("`(Option {})`", payload.render_name())
                                     }
                                     Some((FallibleKind::Result, payload, err)) => format!(
-                                        "(Result {} {})",
+                                        "`(Result {} {})`",
                                         payload.render_name(),
                                         err.as_ref().map_or("e".to_string(), |e| e.render_name())
                                     ),
-                                    None => "(Result _ e)` / `(Option _)".to_string(),
+                                    None => "`(Result _ e)` or `(Option _)`".to_string(),
                                 };
                                 out.push(
                                     Reject::coded(
@@ -9658,7 +9666,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                                         format!(
                                             "`?` has no fallible boundary — the enclosing function's \
                                              result type is `{}`, neither `Result` nor `Option`. \
-                                             Annotate it as `{suggested}` (the kind the `?`'d value \
+                                             Annotate it as {suggested} (the kind the `?`'d value \
                                              requires), or wrap the expression in a `try {{ … }}` block.",
                                             bt.render_name()
                                         ),

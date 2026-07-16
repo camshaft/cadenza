@@ -54090,6 +54090,36 @@ mod stage1 {
             "the hint names the concrete Result type to annotate: {}",
             d.message
         );
+        // The backticks in the hint must be BALANCED (Copilot PR #453: the generic fallback used to smuggle
+        // its own backticks through a template-wrapped `{suggested}`, so the code spans could render oddly).
+        // Every arm — the concrete Result/Option forms AND the generic fallback — is now self-wrapped, so
+        // the message always has an even number of backticks.
+        assert_eq!(
+            d.message.matches('`').count() % 2,
+            0,
+            "the ?-boundary hint has balanced backticks: {}",
+            d.message
+        );
+        // The GENERIC fallback (operand kind not yet definite) names BOTH forms, each its own balanced code
+        // span — `(Result _ e)` or `(Option _)` — not a backtick-smuggling single string.
+        let fallback = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def (f x) (+ 1 (try x))) (export f))",
+        )))
+        .into_iter()
+        .find(|d| d.code.as_deref() == Some("CDZ0230"))
+        .expect("the ?-boundary fallback is CDZ0230");
+        assert!(
+            fallback.message.contains("`(Result _ e)`")
+                && fallback.message.contains("`(Option _)`"),
+            "the generic ?-boundary fallback names both forms as balanced spans: {}",
+            fallback.message
+        );
+        assert_eq!(
+            fallback.message.matches('`').count() % 2,
+            0,
+            "the fallback hint has balanced backticks too: {}",
+            fallback.message
+        );
     }
 
     #[test]
