@@ -111,6 +111,12 @@ pub enum Prim {
     FSub,
     FMul,
     FDiv,
+    /// Runtime FLOAT EQUALITY `== : Float^w → Float^w → Bool` under the CANONICAL BYTE FORM
+    /// (`core-semantics.md` §Floating-Point Equality Follows The Canonical Byte Form): `nan == nan` TRUE,
+    /// `-0.0 != +0.0`, all NaN equal. Distinct from the integer/bool `Eq` prim because the machine emit is
+    /// a NaN-canonicalizing BIT compare, not IEEE `f64.eq`. A constant pair folds in `lower`; a runtime
+    /// operand emits `Core::FloatCompare`. Equality only — float ordering awaits the totalOrder ruling.
+    FEq,
     /// The TRUNCATING integer conversion `T.wrap : ∀(w,s). Int^s_w → T` — keeps the low `N` bits of the
     /// source's two's-complement value and interprets them at the TARGET width `N` and signedness. The
     /// source is a fully-polymorphic integer (any width/sign, via the operator record's type-lambda); the

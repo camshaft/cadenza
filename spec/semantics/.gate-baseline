@@ -1428,12 +1428,15 @@ pass	a runtime BigInt ordering compares by the arbitrary-precision value
 pass	a runtime BigInt remainder takes the dividend's sign
 pass	a runtime Float32 addition emits the f32 machine add
 pass	a runtime Float32 division emits f32.div
+pass	a runtime Float32 equality compares by the canonical byte form
 pass	a runtime Float32 multiplication emits f32.mul
 pass	a runtime Float32 subtraction emits f32.sub
+pass	a runtime Float64 equality compares by the canonical byte form
 pass	a runtime List built past 32 elements reads correctly by index across the RRB leaf-to-trie boundary
 pass	a runtime MIXED-SCALE BigInt comparison converts to the reference before comparing
 pass	a runtime MIXED-SCALE BigInt-magnitude sum converts to the reference in unbounded arithmetic
 pass	a runtime MIXED-SCALE Rational-magnitude sum converts to the reference EXACTLY
+pass	a runtime NaN equals a runtime NaN under the canonical byte form
 pass	a runtime Option carrying a user sum is matched by a nested constructor pattern
 pass	a runtime Rational built from a parameter compares by its exact value
 pass	a runtime Rational comparison of a parameter is false when it should be
@@ -1493,6 +1496,7 @@ pass	a runtime modulo of the minimum integer by -1 is zero on every backend
 pass	a runtime multiplication that overflows traps
 pass	a runtime negative dividend divided by a constant power of two truncates toward zero
 pass	a runtime negative dividend mod a constant power of two takes the dividend's sign
+pass	a runtime negative zero is not equal to positive zero
 pass	a runtime negative-const-multiply one past its lower fitting boundary traps
 pass	a runtime nibble truncation keeps the low four bits
 pass	a runtime out-of-bounds list update traps rather than aliasing a valid slot

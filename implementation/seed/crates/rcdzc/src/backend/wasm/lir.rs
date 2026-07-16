@@ -102,6 +102,13 @@ pub enum Lir {
     F64Ne,
     F32Eq,
     F32Ne,
+    /// REINTERPRET a float's bits as the same-width integer (`i64.reinterpret_f64` 0xBD /
+    /// `i32.reinterpret_f32` 0xBC) — no numeric conversion, just the bit pattern. Used by the
+    /// canonical-byte float EQUALITY (`Core::FloatCompare`): after canonicalizing a NaN, the two floats
+    /// compare as integers (`i64.eq`/`i32.eq`), giving `nan == nan` true and `-0.0 != +0.0` — NOT IEEE
+    /// `f64.eq`.
+    I64ReinterpretF64,
+    I32ReinterpretF32,
     /// Float width conversion — `f32.demote_f64` (Float64→Float32, rounds) / `f64.promote_f32`
     /// (Float32→Float64, exact). Emitted by the width-conversion `Float32.of`/`Float64.of` (F5).
     F32DemoteF64,

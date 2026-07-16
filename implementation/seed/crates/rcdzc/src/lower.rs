@@ -15740,6 +15740,7 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         // (`lower_schema_decode`), never an integer binary operation.
         | Prim::SchemaOf
         | Prim::PayloadOf
+        | Prim::FEq
         | Prim::SchemaDecode => {
             return Core::Poison(Reject::decline("not an integer binary operation"));
         }
@@ -15940,6 +15941,46 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
     // runtime `rational-cmp` op, R3b). Checked before the scalar folds (a Rational is not `is_scalar`).
     if rational_operand(db, args) {
         return lower_rational_cmp(db, op, args[0], args[1]);
+    }
+    // A comparison over FLOAT operands. EQUALITY (`=`) under the canonical byte form is realized: a
+    // constant pair folds in the `ConstFloat`/`ConstFloatNan` arms below (by raw bits — `nan = nan` true,
+    // `-0.0 ≠ 0.0`), and a RUNTIME operand emits `Core::FloatCompare`, whose backend does a
+    // NaN-canonicalizing BIT compare (NOT IEEE `f64.eq`). Float is NOT `is_scalar` (Int/Bool only), so
+    // without this a runtime float `=` fell to the compound-heap-walk decline. Float ORDERING (`<`/`>`)
+    // is a separate ruling (IEEE totalOrder pending) — it still declines below (the const NaN arms decline
+    // ordering, and a runtime float `<` is not routed here), so ONLY `Prim::Eq` takes this path.
+    //= spec/capabilities/core-semantics.md#floating-point-equality-follows-the-canonical-byte-form
+    //# A floating-point value MUST be equal to another floating-point value exactly when their canonical byte forms are identical, so that a negative zero is distinct from a positive zero and all not-a-number values are equal to one another.
+    if matches!(op, Prim::Eq) && float_operand(db, args) {
+        let lhs = core_of(db, args[0]);
+        let rhs = core_of(db, args[1]);
+        // A constant pair (including NaN) still folds via the constant arms — defer to them.
+        let both_const = matches!(
+            (&lhs, &rhs),
+            (
+                Core::ConstFloat(_) | Core::ConstFloatNan,
+                Core::ConstFloat(_) | Core::ConstFloatNan
+            )
+        );
+        if !both_const {
+            if let Core::Poison(r) = lhs {
+                return Core::Poison(r);
+            }
+            if let Core::Poison(r) = rhs {
+                return Core::Poison(r);
+            }
+            let width = match crate::infer::type_of(db, args[0]) {
+                crate::ty::Ty::Float(ft) => ft.ground_width(),
+                _ => crate::ty::DEFAULT_FLOAT_WIDTH,
+            };
+            trace!(target: "rcdzc::lower", width, "float equality stays runtime (FloatCompare, canonical-byte bit compare)");
+            return Core::FloatCompare {
+                op: Prim::FEq,
+                lhs: args[0],
+                rhs: args[1],
+                width,
+            };
+        }
     }
     let lhs = core_of(db, args[0]);
     let rhs = core_of(db, args[1]);
@@ -20425,6 +20466,7 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::FSub => "-",
         Prim::FMul => "*",
         Prim::FDiv => "/",
+        Prim::FEq => "=",
         Prim::FloatCtor => "Float",
         Prim::FloatOfInt => "of-int",
         Prim::FloatOf => "of",

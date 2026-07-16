@@ -571,6 +571,7 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
         }
         Core::Arith { lhs, rhs, .. }
         | Core::Compare { lhs, rhs, .. }
+        | Core::FloatCompare { lhs, rhs, .. }
         | Core::And { lhs, rhs, .. } => {
             binding_escapes(db, lhs, binder, false) || binding_escapes(db, rhs, binder, false)
         }
@@ -786,6 +787,7 @@ pub fn core_child_ids(db: &mut Db, id: StructId) -> Vec<StructId> {
         | Core::SetAlgebra { lhs: a, rhs: b, .. }
         | Core::Arith { lhs: a, rhs: b, .. }
         | Core::Compare { lhs: a, rhs: b, .. }
+        | Core::FloatCompare { lhs: a, rhs: b, .. }
         | Core::And { lhs: a, rhs: b, .. } => {
             cs.push(a);
             cs.push(b);
@@ -1206,6 +1208,7 @@ fn mark_binder_dups_inner(
         // reach here through a producer, which resets to consuming — matches `binding_escapes`'s `false`).
         Core::Arith { lhs, rhs, .. }
         | Core::Compare { lhs, rhs, .. }
+        | Core::FloatCompare { lhs, rhs, .. }
         | Core::And { lhs, rhs, .. } => seq(db, &[(lhs, false), (rhs, false)], live_after, sites),
         Core::Convert { operand, .. } | Core::Not { operand } => {
             consume(db, operand, live_after, sites)
@@ -2300,6 +2303,7 @@ fn collect_used_ops_into(
         }
         Core::Arith { lhs, rhs, .. }
         | Core::Compare { lhs, rhs, .. }
+        | Core::FloatCompare { lhs, rhs, .. }
         | Core::And { lhs, rhs, .. } => {
             collect_used_ops_into(db, lhs, out);
             collect_used_ops_into(db, rhs, out);
@@ -3394,7 +3398,9 @@ fn licm_invariant(
         Core::ConstInt(_) | Core::ConstBool(_) | Core::Unit => true,
         Core::Param { binder } => inv_params.contains(&binder),
         // Pure scalar operators — invariant iff every operand is.
-        Core::Arith { lhs, rhs, .. } | Core::Compare { lhs, rhs, .. } => {
+        Core::Arith { lhs, rhs, .. }
+        | Core::Compare { lhs, rhs, .. }
+        | Core::FloatCompare { lhs, rhs, .. } => {
             licm_invariant(db, lhs, inv_params) && licm_invariant(db, rhs, inv_params)
         }
         Core::Convert { operand, .. } | Core::Not { operand } => {
@@ -3476,6 +3482,7 @@ fn licm_children(db: &mut Db, id: StructId) -> Vec<StructId> {
     match core_of(db, id) {
         Core::Arith { lhs, rhs, .. }
         | Core::Compare { lhs, rhs, .. }
+        | Core::FloatCompare { lhs, rhs, .. }
         | Core::ValueEq { lhs, rhs }
         | Core::And { lhs, rhs, .. }
         | Core::ListConcat { lhs, rhs }
@@ -3843,7 +3850,9 @@ fn is_cse_shareable(db: &mut Db, id: StructId) -> bool {
         // enclosing subexpression is never hoisted. (The `let`-binding-level CSE — `should_keep_binding`
         // — already names a multiply-used let value; a computation OVER a let-local stays in place.)
         Core::LocalRef { .. } => false,
-        Core::Arith { lhs, rhs, .. } | Core::Compare { lhs, rhs, .. } => {
+        Core::Arith { lhs, rhs, .. }
+        | Core::Compare { lhs, rhs, .. }
+        | Core::FloatCompare { lhs, rhs, .. } => {
             is_cse_shareable(db, lhs) && is_cse_shareable(db, rhs)
         }
         Core::Convert { operand, .. } | Core::Not { operand } | Core::Proj { operand, .. } => {
@@ -7875,6 +7884,23 @@ fn emit(
             out.push(compare_op(op, it));
             Ok(())
         }
+        // RUNTIME FLOAT EQUALITY under the CANONICAL BYTE FORM — `nan == nan` TRUE, `-0.0 != +0.0`, all
+        // NaN equal (core-semantics.md §Floating-Point Equality Follows The Canonical Byte Form). NOT IEEE
+        // `f64.eq` (which says `nan != nan` and `-0.0 == 0.0` — a miscompile). Each operand is
+        // CANONICALIZED to its integer bit pattern with NaN folded to one canonical form
+        // (`canon(x) = select(x != x, CANON_NAN_BITS, reinterpret_int(x))`), then the two canonical bit
+        // patterns compare with an INTEGER `eq` — so any two NaNs compare equal and the sign bit of a zero
+        // is significant. `x != x` is the isnan test (true only for NaN); a bare f64 param can carry a
+        // non-canonical NaN across the host boundary, so the canonicalize is load-bearing (it matches
+        // `op_box_float`'s runtime canonicalization and the constant fold's `to_f64_bits` basis).
+        Core::FloatCompare {
+            lhs, rhs, width, ..
+        } => {
+            emit_canon_float_bits(db, lhs, width, slots, base, high, scratch_ty, layout, out)?;
+            emit_canon_float_bits(db, rhs, width, slots, base, high, scratch_ty, layout, out)?;
+            out.push(if width == 32 { Lir::I32Eq } else { Lir::I64Eq });
+            Ok(())
+        }
         // RUNTIME STRUCTURAL EQUALITY on two COMPOUND heap values — a `value-eq` (`champ_eq`) call. The
         // op BORROWS both operands, so refcounts are balanced by DROPPING each OWNED-temporary operand
         // after the compare (a bare reference — a parameter/binding the owner reclaims — is NOT dropped).
@@ -10903,6 +10929,86 @@ fn emit_float_operand(
     Ok(())
 }
 
+/// Emit a float operand at width `w` and leave its CANONICAL INTEGER BIT PATTERN on the stack — the basis
+/// of the canonical-byte float equality (`Core::FloatCompare`). Every NaN (any payload, any sign) folds to
+/// ONE canonical bit pattern so `nan == nan` is true, while a zero's sign bit is preserved so `-0.0` and
+/// `+0.0` have distinct patterns. Emits `select(x != x /*isnan*/, CANON_NAN_BITS, reinterpret_int(x))`:
+/// the operand is `tee`d into a fresh float scratch slot so it can be read twice (once for the `x != x`
+/// isnan test, once to reinterpret), then wasm `select` (`t1 t2 c → c ? t1 : t2`) picks the canonical NaN
+/// bits when `x` is NaN, else `x`'s own bits. A constant operand is materialized at width first (via
+/// `emit_float_operand`'s literal path). Width 32 uses i32/f32 ops + the binary32 canonical NaN
+/// `0x7FC00000`; width 64 uses i64/f64 + `0x7FF8000000000000`.
+#[allow(clippy::too_many_arguments)]
+fn emit_canon_float_bits(
+    db: &mut Db,
+    id: StructId,
+    w: u32,
+    slots: &HashMap<StructId, u32>,
+    base: u32,
+    high: &mut u32,
+    scratch_ty: &mut HashMap<u32, ValType>,
+    layout: &Layout,
+    out: &mut Emit,
+) -> Result<(), Reject> {
+    // A CONSTANT float operand has no NaN ambiguity at runtime — fold its canonical bits directly. A
+    // constant NaN uses the canonical quiet-NaN bits; a finite constant uses its own bits (sign-preserving).
+    match core_of(db, id) {
+        Core::ConstFloatNan => {
+            if w == 32 {
+                out.push(Lir::ConstI32(0x7FC0_0000u32 as i32));
+            } else {
+                out.push(Lir::ConstI64(0x7FF8_0000_0000_0000u64 as i64));
+            }
+            return Ok(());
+        }
+        Core::ConstFloat(d) => {
+            if w == 32 {
+                let bits = (f64::from_bits(d.to_f64_bits()) as f32).to_bits();
+                out.push(Lir::ConstI32(bits as i32));
+            } else {
+                out.push(Lir::ConstI64(d.to_f64_bits() as i64));
+            }
+            return Ok(());
+        }
+        _ => {}
+    }
+    // Materialize the runtime float at the op width, then tee into a fresh float scratch slot to read twice.
+    emit_float_operand(db, id, w, slots, base, high, scratch_ty, layout, out)?;
+    let slot = *high;
+    *high = slot + 1;
+    let (vt, reinterpret, ne, canon_nan) = if w == 32 {
+        (
+            ValType::F32,
+            Lir::I32ReinterpretF32,
+            Lir::F32Ne,
+            Lir::ConstI32(0x7FC0_0000u32 as i32),
+        )
+    } else {
+        (
+            ValType::F64,
+            Lir::I64ReinterpretF64,
+            Lir::F64Ne,
+            Lir::ConstI64(0x7FF8_0000_0000_0000u64 as i64),
+        )
+    };
+    scratch_ty.insert(slot, vt);
+    // CONSUME the materialized float into `slot` (set, not tee — leave nothing stray on the stack), then
+    // rebuild the three `select` inputs from the slot.
+    out.push(Lir::LocalSet(slot));
+    // t1 = CANON_NAN_BITS (chosen when x is NaN)
+    out.push(canon_nan);
+    // t2 = reinterpret_int(x) — x's own bit pattern
+    out.push(Lir::LocalGet(slot));
+    out.push(reinterpret);
+    // c = (x != x) → 1 iff x is NaN
+    out.push(Lir::LocalGet(slot));
+    out.push(Lir::LocalGet(slot));
+    out.push(ne);
+    // select: c ? CANON_NAN_BITS : reinterpret(x)
+    out.push(Lir::Select);
+    Ok(())
+}
+
 /// Emit an `if`/`match` branch (or arm) body producing the construct's RESULT type. Both branches must
 /// leave the same machine slot on the stack (the block's result type), so a bare-literal branch — a
 /// width-polymorphic `ConstInt` that defaults to Int64 — is GROUNDED to the result's integer width
@@ -11331,7 +11437,7 @@ fn is_branchless_bool_rhs(db: &mut Db, id: StructId) -> bool {
         Core::Param { .. } | Core::LocalRef { .. } | Core::ConstInt(_) | Core::ConstBool(_) => true,
         // A comparison never traps — safe if its operands are (they are always trap-free scalars, but
         // recurse for uniformity: a comparison operand is a leaf/arith, and only a trap-free one qualifies).
-        Core::Compare { lhs, rhs, .. } => {
+        Core::Compare { lhs, rhs, .. } | Core::FloatCompare { lhs, rhs, .. } => {
             is_branchless_bool_rhs(db, lhs) && is_branchless_bool_rhs(db, rhs)
         }
         // Bitwise `&`/`|`/`^` are total; `not` is `i32.eqz`; `wrap` truncates — all trap-free.

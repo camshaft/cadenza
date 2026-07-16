@@ -733,6 +733,32 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                 }
             }
         }
+        // RUNTIME FLOAT EQUALITY under the CANONICAL BYTE FORM — `nan == nan` TRUE, `-0.0 != +0.0`, all
+        // NaN equal (core-semantics.md §Floating-Point Equality Follows The Canonical Byte Form). NOT
+        // Rust's `==` on floats (IEEE: `nan != nan`, `-0.0 == 0.0` — a miscompile). Canonicalize each
+        // operand to its integer bit pattern with NaN folded to one canonical form
+        // (`if x.is_nan() { CANON_NAN_BITS } else { x.to_bits() }`), then compare the bit patterns with
+        // integer `==`. Must be byte-identical to the wasm backend's `select`-based bit compare (the
+        // differential sweep checks this). Equality only — float ordering is a separate ruling.
+        Core::FloatCompare { lhs, rhs, width, .. } => {
+            // Both operands share the op's float type (equality unifies their widths), so they emit as-is
+            // — the same as float arithmetic (`emit_arith`'s `is_float_arith` path), no width grounding.
+            let l = emit(db, lhs, env, ctx)?;
+            let r = emit(db, rhs, env, ctx)?;
+            let (canon_nan, bits_ty) = if width == 32 {
+                ("0x7FC0_0000u32", "u32")
+            } else {
+                ("0x7FF8_0000_0000_0000u64", "u64")
+            };
+            // A closure per operand canonicalizes then the two `{bits_ty}` compare. Written inline so no
+            // helper fn is required in the emitted module.
+            let canon = |v: &str| {
+                format!(
+                    "({{ let __f = {v}; if __f.is_nan() {{ {canon_nan} }} else {{ __f.to_bits() as {bits_ty} }} }})"
+                )
+            };
+            Ok(format!("({} == {})", canon(&l), canon(&r)))
+        }
         // A runtime arithmetic op.
         Core::Arith { op, lhs, rhs } => emit_arith(db, id, op, lhs, rhs, env, ctx),
         // A float CONSTANT → a Rust float literal at the node's width. Emitted via `f64::from_bits`/

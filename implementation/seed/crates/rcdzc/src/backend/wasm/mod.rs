@@ -1126,6 +1126,7 @@ fn collect_host_arg_strings_at(db: &mut Db, id: crate::ast::StructId, out: &mut 
         Core::Break { value } => collect_host_arg_strings(db, value, out),
         Core::Arith { lhs, rhs, .. }
         | Core::Compare { lhs, rhs, .. }
+        | Core::FloatCompare { lhs, rhs, .. }
         | Core::ValueEq { lhs, rhs }
         | Core::And { lhs, rhs, .. }
         | Core::ListConcat { lhs, rhs }

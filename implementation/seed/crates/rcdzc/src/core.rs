@@ -831,6 +831,23 @@ pub enum Core {
         lhs: StructId,
         rhs: StructId,
     },
+    /// A runtime FLOAT comparison on two float operands — result is a `Bool` (an i32). Kept DISTINCT from
+    /// `Compare` (which is integer/bool-specialized: `eqz`, divisibility, type-bound + refinement folds,
+    /// all invalid for a float) so the float path has its own clean emit. Only `Prim::FEq` today —
+    /// EQUALITY under the CANONICAL BYTE FORM (`core-semantics.md` §Floating-Point Equality Follows The
+    /// Canonical Byte Form): `nan == nan` is TRUE, `-0.0 != +0.0`, all NaN equal. The backend emits a
+    /// NaN-CANONICALIZING BIT compare (`canon(x) = select(x != x, CANON_NAN_BITS, reinterpret_int(x))`
+    /// then integer `eq`), NOT IEEE `f64.eq` (which says `nan != nan`, `-0.0 == 0.0` — a miscompile). A
+    /// constant float pair folds to `ConstBool` in `lower` (via the `ConstFloat`/`ConstFloatNan` arms), so
+    /// this is present only for a runtime operand. Float ORDERING (`<`/`>`) is a separate ruling and does
+    /// not lower here yet. `width` is the operand float width (32 or 64) — the reinterpret/const picks i32
+    /// vs i64.
+    FloatCompare {
+        op: Prim,
+        lhs: StructId,
+        rhs: StructId,
+        width: u32,
+    },
     /// A runtime STRUCTURAL EQUALITY on two COMPOUND operands (a sum/tuple/record/list heap value) —
     /// result is a `Bool`. Present only for `=` when the fold could not decide it because at least one
     /// operand is a runtime compound (two constant compounds fold to `ConstBool` via `const_compound_eq`
