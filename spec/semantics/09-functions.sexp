@@ -4527,3 +4527,52 @@
             (def (main) (icount (gmap (from-list (list "p" "q")) (fn (s) (let ((x s)) x)))))
             (export main)))
   (output (: 2 Int64)))
+
+; ============================================================================================
+; NON-SCALAR entry arguments across the exported-entry / (call …) boundary. The rust GATE DRIVER used to
+; write the RAW Cadenza literal/expr text (`100N`, `1R`, `((. Bytes of) …)`, `(list …)`, `(Some …)`) into
+; Rust source — none valid Rust (invalid `N`/`R` suffix, a stray `.`, a bare list) — while the emitted
+; LIBRARY was correct. Fixed in the rust gate harness (`rust_call_arg` now lowers each non-scalar arg via
+; the SAME construction the library body uses: `cdz_num::Big`/`Rational`, a `Vec<u8>`/`vec!`, `Option`).
+; breaker-found CLUSTER (corpus-bugfix); the surface was wholly untested (every case built the value INSIDE
+; the program). On wasm these DECLINE (a non-scalar across the component entry boundary is unrealized — a
+; sound todo); on rust they now run, matching the recorded value. (The String member is pinned in
+; 13-strings.sexp.)
+
+(case "a BigInt entry argument is marshalled through the value's own constructor"
+  (doc    "`(def (main (: a BigInt)) (= a 100N))` called with `100N` → true. The rust driver marshals the
+           BigInt arg as `cdz_num::Big::from_i64(100)` (the in-body constructor), NOT the raw `100N` text
+           (which is an invalid Rust suffix). wasm declines the BigInt entry arg (a sound todo).")
+  (input  (do (def (main (: a BigInt)) (= a 100N)) (export main)))
+  (call   main (: 100N BigInt))
+  (output (: true Bool)))
+
+(case "a Rational entry argument is marshalled through Rational::new"
+  (doc    "`(def (main (: r Rational)) (= r 1R))` called with `1R` → true. The driver marshals it as
+           `cdz_num::Rational::new(Big::from_i64(1), Big::from_i64(1))`, not the invalid `1R` literal.")
+  (input  (do (def (main (: r Rational)) (= r 1R)) (export main)))
+  (call   main (: 1R Rational))
+  (output (: true Bool)))
+
+(case "a Bytes entry argument is marshalled as a Vec<u8>"
+  (doc    "`(def (main (: b Bytes)) (Bytes.len b))` called with `(Bytes.of (list 1 2 3))` → 3. The driver
+           marshals it as `vec![1u8, 2u8, 3u8]` (the Vec the body builds), not the raw `((. Bytes of) …)`
+           text (a stray `.`).")
+  (input  (do (def (main (: b Bytes)) (Bytes.len b)) (export main)))
+  (call   main (: (Bytes.of (list 1 2 3)) Bytes))
+  (output (: 3 Int64)))
+
+(case "a List entry argument is marshalled as a vec!"
+  (doc    "`(def (main (: xs (List Int64))) (List.len xs))` called with `(list 1 2 3)` → 3. The driver
+           marshals it as `vec![1, 2, 3]`, not the bare `(list 1 2 3)` text.")
+  (input  (do (def (main (: xs (List Int64))) (List.len xs)) (export main)))
+  (call   main (: (list 1 2 3) (List Int64)))
+  (output (: 3 Int64)))
+
+(case "an Option (sum) entry argument is marshalled as a native Option"
+  (doc    "`(def (main (: o (Option Int64))) (match o ((Some n) n) ((None _) -1)))` called with `(Some 5)`
+           → 5. The driver marshals it as `Some(5)` (the native enum the backend emits), not the bare
+           `(Some 5)` text.")
+  (input  (do (def (main (: o (Option Int64))) (match o ((Some n) n) ((None _) -1))) (export main)))
+  (call   main (: (Some 5) (Option Int64)))
+  (output (: 5 Int64)))

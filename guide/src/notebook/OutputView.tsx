@@ -57,11 +57,22 @@ function ChartView({ chart, series }: { chart: "line" | "bar" | "scatter"; serie
   const maxPoints = Math.max(1, ...series.map((s) => s.points.length));
   const barSlot = ((W - 2 * PAD) / maxPoints) * 0.7;
 
+  // Short numeric tick label (a rational-ish value trimmed to ≤2 decimals, integers bare) so the axes
+  // read with a scale instead of bare lines.
+  const tick = (v: number) => (Number.isInteger(v) ? `${v}` : v.toFixed(2).replace(/\.?0+$/, ""));
+
   return (
     <svg viewBox={`0 0 ${W} ${H}`} className="w-full max-w-2xl" role="img" aria-label="chart">
       {/* axes */}
       <line x1={PAD} y1={H - PAD} x2={W - PAD} y2={H - PAD} stroke="#475569" strokeWidth={1} />
       <line x1={PAD} y1={PAD} x2={PAD} y2={H - PAD} stroke="#475569" strokeWidth={1} />
+      {/* axis ticks: x min/max along the bottom, y min/max up the left — so the scale is legible */}
+      <g fontSize={10} fill="#94a3b8">
+        <text x={PAD} y={H - PAD + 14} textAnchor="start">{tick(minX)}</text>
+        <text x={W - PAD} y={H - PAD + 14} textAnchor="end">{tick(maxX)}</text>
+        <text x={PAD - 4} y={H - PAD} textAnchor="end">{tick(minY)}</text>
+        <text x={PAD - 4} y={PAD + 4} textAnchor="end">{tick(maxY)}</text>
+      </g>
       {series.map((s, si) => {
         const hue = HUES[si % HUES.length];
         if (chart === "bar") {

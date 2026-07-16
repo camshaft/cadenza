@@ -3343,6 +3343,29 @@
   (call   main (: 100 UInt8))
   (output (: 200 Int64)))
 
+; The cases above box a narrow newtype whose payload is a PARAMETER `(W.Wrap n)` — read from an i32 slot, so
+; the widen-before-box is exercised but the LITERAL-materialization path is not. A narrow-newtype element
+; whose payload is a LITERAL `(W.Wrap 5)` must also ground to the INNER width: the constant emitter picks its
+; slot width from the value's solved int type, which must see THROUGH the newtype (an erased newtype IS its
+; inner narrow int). Missing that materialized the literal as an i64 const while the widen (correctly) added
+; an i32→i64 extend — the two disagreed → an invalid component. It only surfaces when the list is ACTUALLY
+; CONSTRUCTED (not constant-folded): a live-after scrutinee (`List.len xs` in the arm) forces the build.
+
+(case "a literal narrow-width newtype list element in a constructed list grounds to its inner width"
+  (doc    "`(let ((xs (list (W.Wrap 5) (W.Wrap 7)))) (match xs ((list (W.Wrap 5) .. r) (List.len xs)) (_ 0)))`
+           with `W = (Wrap UInt8)`: the head is a `(W.Wrap 5)` LITERAL, so the arm hits; the scrutinee `xs` is
+           read (`List.len`) AFTER the match, which forces the list to be genuinely CONSTRUCTED (not constant-
+           folded away). The literal element `(W.Wrap 5)` must materialize at its inner UInt8 (i32) width so
+           the widen-before-box that boxes it into the i64 cell matches; before, the literal emitted as an i64
+           const while the widen expected an i32 → an invalid component (`expected i32, found i64`). The
+           literal-payload companion of the parameter-payload narrow-newtype-box cases above → 2.")
+  (input  (do (type W (Wrap UInt8))
+              (def (main)
+                (let ((xs (list (W.Wrap 5) (W.Wrap 7))))
+                  (match xs ((list (W.Wrap 5) .. r) (List.len xs)) (_ 0))))
+              (export main)))
+  (output (: 2 Int64)))
+
 ; A list-arm element may also be a MAP key-value pattern — a list of key-value records destructured by key
 ; in one arm. Like a refutable constructor element, a `(map (k v)…)` element is refutable (it matches only a
 ; map containing the named keys) AND binds the values, so it desugars to a fresh binder + a key-presence
@@ -5996,6 +6019,36 @@
            The control `((Some y) y)` fall-through (below, not shown) restores exhaustiveness and folds to 5.")
   (input    (match (Some 5)
               ((guard (Some x) (> x 0)) x)
+              ((None) 0)))
+  (error    CDZ0210))
+
+; The single-guarded-arm case above pins that a guarded arm covers no variant. These pin that the checker
+; treats guards as fully OPAQUE — it does NOT reason about whether a SET of guards is jointly total, nor
+; treat a trivially-`true` guard as unconditional. The classic exhaustiveness-soundness trap is a checker
+; that "gets clever" (`(> x 0)` ∪ `(<= x 0)` covers all Int64 → exhaustive), which is UNSOUND in general
+; (guard totality is undecidable); the checker must require an UNGUARDED arm for the variant regardless.
+
+(case "jointly-total guards over one variant are still non-exhaustive (guards are opaque to the checker)"
+  (doc    "Two guarded `Some` arms whose guards `(> x 0)` and `(<= x 0)` are JOINTLY TOTAL over Int64, plus
+           `(None)`, but NO unguarded `Some` arm. The match is STILL non-exhaustive (CDZ0210): the checker
+           treats each guard as possibly-false and does NOT prove the guard SET total (guard totality is
+           undecidable in general — arithmetic reasoning here would be unsound for a checker that can't do
+           it for arbitrary guards). Pins that no combination of guards covers a variant — only an unguarded
+           arm does. A checker that reasoned `>0 ∪ <=0 = all` and accepted this would be unsound.")
+  (input    (match (Some 5)
+              ((guard (Some x) (> x 0)) x)
+              ((guard (Some x) (<= x 0)) x)
+              ((None) 0)))
+  (error    CDZ0210))
+
+(case "a trivially-true guard does not make its variant arm unconditional"
+  (doc    "The degenerate case: `(guard (Some x) true)` — a guard that is the literal `true` — still counts
+           as GUARDED, so it does not cover the `Some` variant unconditionally; with only `(None)` besides,
+           the match is non-exhaustive (CDZ0210). Pins that the checker keys on the arm being SYNTACTICALLY
+           guarded, not on whether the guard expression happens to fold true — it does not special-case a
+           constant-true guard into an unguarded arm (which would be an inconsistent, fold-dependent rule).")
+  (input    (match (Some 5)
+              ((guard (Some x) true) x)
               ((None) 0)))
   (error    CDZ0210))
 

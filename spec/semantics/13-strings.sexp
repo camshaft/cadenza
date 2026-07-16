@@ -1491,6 +1491,18 @@
   (input  (compare #\a #\a))
   (output (: (Equal unit) Ordering)))
 
+(case "arithmetic between a char and an Int64 is rejected with the plain Char.to-int fix"
+  (doc    "The Int64 BASE CASE of the char-with-number family the float/BigInt/Rational cases below refer to
+           ('the integer sibling `(+ #\\a 1)` keeps the plain `Char.to-int` wrap'). `(+ #\\a 1)` mixes a
+           `Char` with an Int64 — a Char is not a number (collections-and-text.md #A Char Is A Single Unicode
+           Scalar Value), so it is CDZ0203. Unlike the wider-numeric siblings, the repair is the PLAIN
+           `(Char.to-int #\\a)` — `Char.to-int` yields Int64, which is exactly the sibling operand's type, so
+           NO second conversion step is needed (the float/BigInt/Rational cases wrap it further because Int64
+           does not implicitly promote to those). Pins the one-step fix for the Int64 mix, the base the
+           two-step-fix cases are measured against. The program's outcome is the rejection.")
+  (input  (do (def (main) (+ #\a 1)) (export main)))
+  (error  CDZ0203))
+
 (case "comparing a char to a FLOAT is rejected with a working two-step conversion fix"
   (doc    "A `Char` is not a number, so `(< #\\a 1.0)` is CDZ0203 (collections-and-text.md #A Char Is A
            Single Unicode Scalar Value — a char compares to a char, not to a raw number). The DIAGNOSTIC's

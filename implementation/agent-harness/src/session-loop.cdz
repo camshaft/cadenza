@@ -14,10 +14,10 @@
 // Mock model in-program; the SAME loop swaps to the cadenza:bedrock/api + tool-dispatch peers with no code
 // change once those shims land (a nearer handler wins over the peer binding).
 //
-// NOTE (v-effects, ACKED + owned): the mock names a LITERAL tool per test rather than a `run-with(fuel,
-// tool)` PARAMETER — a handler arm capturing an outer fn param is dropped (CDZ0101) in the merged nested-
-// context path when two effects are both reached by the recursive driver. v-effects owns the fix and will
-// ping when it lands; then these literal-per-tool runs collapse to one parameterized run-with.
+// The mock names the tool via a `run-with(fuel, tool)` PARAMETER captured in the model handler arm. That
+// capture (a handler arm closing over an enclosing fn param while the loop performs a second effect in the
+// recursive driver) was a CDZ0101 miscompile this module's sibling dogfood surfaced; v-effects fixed it
+// (trunk 4da9e70bd), so the parameterized form lowers and drives every tool from one function.
 // The model effect: a turn's prompt in, the model's chosen tool NAME out (the string the loop routes).
 effect Model =
   | converse : String -> String
@@ -51,34 +51,13 @@ def run(fuel: Int64, acc: String) =
     else
       run(fuel - 1, String.concat(acc, Tools.dispatch(choice)))
 
-// Run `fuel` turns with a mock naming "search" every turn → the transcript is "S" repeated fuel times.
-// Handler state is inert (the transcript lives in `run`'s `acc`), so each resumes with a fresh `0`.
-def run-search(fuel: Int64) =
+// Run `fuel` turns with a mock naming `tool` every turn → the transcript is that tool's token repeated
+// fuel times. The tool name is a PARAMETER captured in the model handler arm (`resume(tool, 0)`), so one
+// function drives ANY tool. Handler state is inert (the transcript lives in `run`'s `acc`), so each
+// resumes with a fresh `0`. So `run-with(fuel, "write")` = "W" repeated fuel times.
+def run-with(fuel: Int64, tool: String) =
   handle Model(0) with
-    | converse(q, s) => resume("search", 0)
-  in
-  handle Tools(0) with
-    | dispatch(a, s) => resume(label(a), 0)
-    | done(a, s) => resume(a, 0)
-  in
-  run(fuel, "")
-
-// As above but naming "write" every turn → transcript of fuel "W"s.
-def run-write(fuel: Int64) =
-  handle Model(0) with
-    | converse(q, s) => resume("write", 0)
-  in
-  handle Tools(0) with
-    | dispatch(a, s) => resume(label(a), 0)
-    | done(a, s) => resume(a, 0)
-  in
-  run(fuel, "")
-
-// As above but naming an UNKNOWN tool every turn → transcript of fuel "?"s (the unknown-tool marker still
-// gets recorded in the transcript — the session isn't silently empty on an unrecognized selection).
-def run-unknown(fuel: Int64) =
-  handle Model(0) with
-    | converse(q, s) => resume("mystery", 0)
+    | converse(q, s) => resume(tool, 0)
   in
   handle Tools(0) with
     | dispatch(a, s) => resume(label(a), 0)
@@ -101,19 +80,19 @@ def label-maps-each-tool-to-its-exact-token() =
 
 @test
 def session-builds-the-exact-search-transcript() =
-  if run-search(3) == "SSS" then unit else trap("3 search turns build exactly \"SSS\"")
+  if run-with(3, "search") == "SSS" then unit else trap("3 search turns build exactly \"SSS\"")
 
 @test
 def session-zero-fuel-is-the-empty-transcript() =
-  if run-search(0) == "" then unit else trap("zero fuel yields exactly \"\"")
+  if run-with(0, "search") == "" then unit else trap("zero fuel yields exactly \"\"")
 
 @test
 def session-records-the-exact-different-tool-transcript() =
-  if run-write(4) == "WWWW" then unit else trap("4 write turns build exactly \"WWWW\"")
+  if run-with(4, "write") == "WWWW" then unit else trap("4 write turns build exactly \"WWWW\"")
 
 @test
 def session-records-the-exact-unknown-marker() =
-  if run-unknown(2) == "??" then unit else trap("unknown tools record exactly \"??\"")
+  if run-with(2, "mystery") == "??" then unit else trap("unknown tools record exactly \"??\"")
 
 @test
 def session-stops-on-stop-completion-with-empty-transcript() =

@@ -13850,8 +13850,15 @@ fn operand_int_ty(db: &mut Db, lhs: StructId, rhs: StructId) -> IntTy {
 /// width at selection. Defaults to the signed-64 instance when the node is not an integer (a
 /// defensive fallback; a `ConstInt` node always types as an integer).
 fn int_ty_of(db: &mut Db, id: StructId) -> IntTy {
-    match type_of(db, id) {
-        Ty::Int(it) => it,
+    // `strip_nominal`: an ERASED single-variant newtype over an int — `(type W (Wrap UInt8))` — has the SAME
+    // machine int width as its inner int, so a literal `(W.Wrap 5)` must ground to the INNER width (u8 → an
+    // i32 slot), NOT the `_ => i64` default. WITHOUT the strip, a `Nominal(W, Int(u8))` literal fell to the
+    // i64 default → `ConstI64` — while `is_narrow_int` (which DOES strip_nominal) prepended `i64.extend_i32_u`
+    // before `box-int`, so the widen expected an i32 but got the i64 const → an INVALID component (`expected
+    // i32, found i64`) when the erased narrow newtype was boxed into a tuple/sum/list element. The two width
+    // decisions MUST agree on the same stripped type. (Mirrors the `is_narrow_int` strip_nominal fix.)
+    match type_of(db, id).strip_nominal() {
+        Ty::Int(it) => *it,
         _ => IntTy::i64(),
     }
 }

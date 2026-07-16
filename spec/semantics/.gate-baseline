@@ -677,6 +677,7 @@ pass	a contradictory ARROW annotation on a function value is rejected
 pass	a contradictory arrow annotation on a function INSIDE a compound is rejected
 pass	a contradictory arrow annotation on a function in a SUM payload is rejected
 pass	a contradictory arrow annotation on a function in a runtime Map value is rejected
+pass	a contradictory arrow annotation on a function stored as a Map KEY is rejected
 pass	a correctly-annotated function parameter is accepted
 pass	a cross-type variant pattern whose payload width differs is rejected, not miscompiled
 pass	a crossing text-literal arm is rejected even beside a same-kind sibling arm
@@ -1044,6 +1045,7 @@ pass	a literal inside a constructor pattern matches a runtime payload
 pass	a literal inside a tuple pattern matches a runtime element
 pass	a literal inside an Ok pattern refines a Result match
 pass	a literal list element dispatches a runtime list by its value
+pass	a literal narrow-width newtype list element in a constructed list grounds to its inner width
 pass	a literal nested in a compound payload that overflows the annotated width is rejected
 pass	a literal nested in a tuple def-parameter is refutable and rejected
 pass	a literal nested in a tuple let-binder is refutable and rejected
@@ -2071,6 +2073,7 @@ pass	a trapping payload in the taken arm of a same-constructor match still traps
 pass	a trapping payload in the untaken arm of a same-constructor if does not trap
 pass	a trapping scrutinee of a same-constructor match traps before any arm
 pass	a trapping shared payload before the differing position must not preempt a trapping cond
+pass	a trivially-true guard does not make its variant arm unconditional
 pass	a truncating conversion keeps the low bits rather than trapping
 pass	a truncating conversion of a negative value uses two's complement
 pass	a truncating conversion to an unusual width keeps that width's low bits
@@ -2535,6 +2538,7 @@ pass	applying the result of a match whose arms return payload-capturing closures
 pass	arithmetic between a char and a BigInt is rejected with a working two-step conversion fix
 pass	arithmetic between a char and a FLOAT is rejected with a working two-step conversion fix
 pass	arithmetic between a char and a Rational is rejected with a working two-step conversion fix
+pass	arithmetic between a char and an Int64 is rejected with the plain Char.to-int fix
 pass	arithmetic on a bound Rational payload computes and escapes exactly
 pass	arithmetic right shift
 pass	arithmetic right shift of negative one is negative one
@@ -2877,6 +2881,7 @@ pass	integer to byte wraps on overflow
 pass	interning the same string twice yields equal symbols
 pass	intersection cardinality with a runtime-element operand
 pass	intersection with the empty set is the empty set
+pass	jointly-total guards over one variant are still non-exhaustive (guards are opaque to the checker)
 pass	keyed lookups at different keys are not shared
 pass	left shift
 pass	less-than at the integer extremes is signed, not unsigned
@@ -3573,6 +3578,11 @@ pass	wrapping-sub wraps a boundary-crossing runtime Int64 at the min boundary
 pass	α-equivalence (aconv) recognizes (λx.x) and (λy.y) as the same term up to bound-variable renaming
 pass	α-equivalence handles nesting and distinguishes a bound variable from a same-numbered free variable
 todo	SUM ARG + LIST RESULT declines cleanly (Option arg, List result)
+todo	a BigInt entry argument is marshalled through the value's own constructor
+todo	a Bytes entry argument is marshalled as a Vec<u8>
+todo	a List entry argument is marshalled as a vec!
+todo	a Rational entry argument is marshalled through Rational::new
+todo	an Option (sum) entry argument is marshalled as a native Option
 todo	an exported entry with a String parameter is called with a string argument
 todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional

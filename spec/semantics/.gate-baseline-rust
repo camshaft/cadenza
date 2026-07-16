@@ -117,6 +117,7 @@ pass	`try` takes exactly one operand — a two-operand form is malformed
 pass	`try` takes exactly one operand — a zero-operand form is malformed
 pass	a 2-arm match→SELECT with a performed scrutinee and pure arms stays sound
 pass	a BOOL-result effect op threads state across two performs on a boolean connective's operands
+pass	a BigInt entry argument is marshalled through the value's own constructor
 pass	a BigInt factorial accumulator computes 25! exactly
 pass	a BigInt is usable as a map key, matched by its arbitrary-precision value
 pass	a BigInt is usable as a set element, deduplicated by its arbitrary-precision value
@@ -128,6 +129,7 @@ pass	a Bool argument to a parameter used in integer addition is rejected
 pass	a Bool generator derived from the seed is reproducible (same seed, same Bool)
 pass	a Bool match with its arms in either order is exhaustive
 pass	a Bool match with only the true arm is non-exhaustive
+pass	a Bytes entry argument is marshalled as a Vec<u8>
 pass	a CAPTURING closure carried in a sum payload keeps its capture through the match binder
 pass	a CBOR atom decodes each scalar major type to its value
 pass	a CBOR head decodes its major type and big-endian argument from the input bytes
@@ -149,6 +151,7 @@ pass	a HOF callback matching a tuple argument computes through the nested reduct
 pass	a HOF callback matching its sum argument reaches the nullary arm
 pass	a LEB128 final byte is the shifted remainder masked to seven bits
 pass	a LEB128 non-final byte composes mask, continuation bit, and truncation
+pass	a List entry argument is marshalled as a vec!
 pass	a MATCH-dispatched mutual group with the perform in one arm and the mutual call in another folds
 pass	a MULTI-PAYLOAD variant with a nested same-sum variant reads the right payload depth (known outer disc)
 pass	a MULTI-payload struct newtype escapes as its payload tuple under the type header
@@ -178,6 +181,7 @@ pass	a RUNTIME string scrutinee matches string literals by equality
 pass	a RUNTIME-built Rational is usable as a map key, matched by its exact value
 pass	a RUNTIME-built Rational set deduplicates by exact value
 pass	a Rational accumulator threaded through recursion sums exactly
+pass	a Rational entry argument is marshalled through Rational::new
 pass	a Rational is usable as a map key, matched by its exact value
 pass	a Rational set deduplicates by exact value regardless of how each was written
 pass	a Rational-annotated literal composes with exact rational arithmetic
@@ -1687,6 +1691,7 @@ pass	a trapping payload in the taken arm of a same-constructor match still traps
 pass	a trapping payload in the untaken arm of a same-constructor if does not trap
 pass	a trapping scrutinee of a same-constructor match traps before any arm
 pass	a trapping shared payload before the differing position must not preempt a trapping cond
+pass	a trivially-true guard does not make its variant arm unconditional
 pass	a truncating conversion keeps the low bits rather than trapping
 pass	a truncating conversion of a negative value uses two's complement
 pass	a tuple = whose Bool element derives from a const-divisor rem is emitted as valid wasm
@@ -1838,6 +1843,7 @@ pass	an N suffix lets a huge literal need no annotation
 pass	an N-suffixed integer literal is a BigInt
 pass	an Ok and an Err decode compose through one shared handler
 pass	an Ok carrying a bare None type-checks under a whole-expression annotation
+pass	an Option (sum) entry argument is marshalled as a native Option
 pass	an Option built by an if with the nullary branch first type-checks
 pass	an Option built by an if with the payload branch first type-checks (the control)
 pass	an Option carrying a Result is matched across two different sum types
@@ -2113,6 +2119,7 @@ pass	applying the result of a match whose arms return payload-capturing closures
 pass	arithmetic between a char and a BigInt is rejected with a working two-step conversion fix
 pass	arithmetic between a char and a FLOAT is rejected with a working two-step conversion fix
 pass	arithmetic between a char and a Rational is rejected with a working two-step conversion fix
+pass	arithmetic between a char and an Int64 is rejected with the plain Char.to-int fix
 pass	arithmetic on a bound Rational payload computes and escapes exactly
 pass	arithmetic right shift
 pass	arithmetic right shift of negative one is negative one
@@ -2384,6 +2391,7 @@ pass	integer to byte wraps on overflow
 pass	interning the same string twice yields equal symbols
 pass	intersection cardinality with a runtime-element operand
 pass	intersection with the empty set is the empty set
+pass	jointly-total guards over one variant are still non-exhaustive (guards are opaque to the checker)
 pass	keyed lookups at different keys are not shared
 pass	left shift
 pass	less-than at the integer extremes is signed, not unsigned
@@ -3251,6 +3259,7 @@ todo	a kernel rule using α-equivalence accepts an α-variant premise a structur
 todo	a list of closures each keeps its own capture, selected by a runtime index
 todo	a list pattern in a sum-variant payload matches a runtime node by its child count
 todo	a list-arm constructor element over a runtime-built list
+todo	a literal narrow-width newtype list element in a constructed list grounds to its inner width
 todo	a middle module re-exports a base function and also uses it in its own exported function
 todo	a multi-argument closure among distinct-signature exports
 todo	a multi-argument closure returning a COMPOUND round-trips — flat arrow spelling
