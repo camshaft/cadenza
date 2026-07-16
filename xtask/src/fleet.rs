@@ -2006,30 +2006,45 @@ fn archive(fleet: &Fleet, no_commit: bool) {
 /// (in `cwd`, the caller's worktree). Standing = active + a role that belongs in the reproducible
 /// fleet (everything except the ephemeral `fix`/`design` roles). Only machine-independent fields are
 /// written; runtime state (worktree path, status, window) is re-derived by `up`. Returns the count.
+/// Render ONE agent as its tracked-roster JSON line, or `None` if it should NOT be persisted.
+///
+/// The tracked `roster.json` is the STANDING fleet that reproduces on any machine, so only agents
+/// worth reviving belong in it: an agent that is `active` AND whose role is not ephemeral. `fix` and
+/// `design` are ephemeral (a fix agent is minted per bug and removed when done; design is interactive
+/// and hand-started), so persisting them would make `fleet up` try to recreate dead/transient agents.
+/// Optional fields (`vertical`/`area`) are omitted when empty so the tracked file stays minimal +
+/// diff-stable. Pure (no I/O) so the exclusion + field-omission rules are unit-testable.
+fn roster_entry_json(a: &Agent) -> Option<String> {
+    if a.status != "active" || matches!(a.role.as_str(), "fix" | "design") {
+        return None;
+    }
+    let mut s = String::from("    { ");
+    s.push_str(&format!("\"name\": {:?}, \"role\": {:?}", a.name, a.role));
+    if !a.vertical.is_empty() {
+        s.push_str(&format!(", \"vertical\": {:?}", a.vertical));
+    }
+    if !a.area.is_empty() {
+        s.push_str(&format!(", \"area\": {:?}", a.area));
+    }
+    s.push_str(&format!(
+        ", \"model\": {:?}, \"effort\": {:?}, \"interval\": {:?} }}",
+        a.model, a.effort, a.interval
+    ));
+    Some(s)
+}
+
 fn sync_roster(fleet: &Fleet, cwd: &Path) -> usize {
     let reg = fleet.load();
     let mut entries = String::new();
     let mut n = 0usize;
     for a in &reg.agents {
-        if a.status != "active" || matches!(a.role.as_str(), "fix" | "design") {
+        let Some(line) = roster_entry_json(a) else {
             continue;
-        }
+        };
         if n > 0 {
             entries.push_str(",\n");
         }
-        // Compact one-line object per agent (readable + stable diffs). Optional fields omitted empty.
-        entries.push_str("    { ");
-        entries.push_str(&format!("\"name\": {:?}, \"role\": {:?}", a.name, a.role));
-        if !a.vertical.is_empty() {
-            entries.push_str(&format!(", \"vertical\": {:?}", a.vertical));
-        }
-        if !a.area.is_empty() {
-            entries.push_str(&format!(", \"area\": {:?}", a.area));
-        }
-        entries.push_str(&format!(
-            ", \"model\": {:?}, \"effort\": {:?}, \"interval\": {:?} }}",
-            a.model, a.effort, a.interval
-        ));
+        entries.push_str(&line);
         n += 1;
     }
     let doc = format!(
@@ -2962,5 +2977,56 @@ mod tests {
         assert_eq!(count_dir(&base.join("does-not-exist"), |_| true), 0);
 
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn roster_entry_json_excludes_ephemeral_and_omits_empty_fields() {
+        let agent = |name: &str, role: &str, status: &str, vertical: &str, area: &str| Agent {
+            name: name.into(),
+            role: role.into(),
+            vertical: vertical.into(),
+            area: area.into(),
+            worktree: format!("/wt/{name}"),
+            branch: format!("fleet/{name}"),
+            interval: "10m".into(),
+            model: "opus".into(),
+            effort: "high".into(),
+            status: status.into(),
+            disallow_ask: true,
+        };
+
+        // An active vertical is persisted, with its vertical+area fields present.
+        let line = roster_entry_json(&agent(
+            "v-iterators",
+            "vertical",
+            "active",
+            "iterators",
+            "rcdzc",
+        ))
+        .expect("active vertical is persisted");
+        assert!(line.contains("\"name\": \"v-iterators\""));
+        assert!(line.contains("\"role\": \"vertical\""));
+        assert!(line.contains("\"vertical\": \"iterators\""));
+        assert!(line.contains("\"area\": \"rcdzc\""));
+        assert!(line.contains("\"model\": \"opus\""));
+
+        // EXCLUSION invariant: ephemeral roles must NOT be persisted (else `fleet up` revives dead/
+        // transient agents). fix = minted-per-bug; design = interactive/hand-started.
+        assert!(roster_entry_json(&agent("fix-x", "fix", "active", "", "")).is_none());
+        assert!(roster_entry_json(&agent("design", "design", "active", "", "")).is_none());
+        // A non-active agent (stopped/removed) is not persisted either.
+        assert!(roster_entry_json(&agent("v-old", "vertical", "stopped", "", "")).is_none());
+
+        // Field omission: an agent with no vertical/area omits those keys (minimal, diff-stable file).
+        let bare = roster_entry_json(&agent("pr-sync", "pr-sync", "active", "", ""))
+            .expect("active pr-sync is persisted");
+        assert!(
+            !bare.contains("\"vertical\""),
+            "empty vertical must be omitted: {bare}"
+        );
+        assert!(
+            !bare.contains("\"area\""),
+            "empty area must be omitted: {bare}"
+        );
     }
 }
