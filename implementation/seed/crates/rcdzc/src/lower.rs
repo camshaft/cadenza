@@ -9459,6 +9459,40 @@ pub(crate) fn runtime_fn_spine(db: &mut Db, id: StructId) -> Option<(StructId, V
     }
 }
 
+/// Peel a nested-`Apply` SPINE to its ULTIMATE (bottom) head and the full left-to-right argument list,
+/// REGARDLESS of what the bottom head is — a builtin operation, a constructor, a lambda, a def, anything.
+/// `((f a) b)` → `(f, [a, b])`; a non-`Apply` `id` → `(id, [])`. Unlike `runtime_fn_spine`/`ctor_spine`
+/// (which return `None` unless the bottom head is a runtime-fn-value / constructor), this ALWAYS returns
+/// the bottom head, so a caller can inspect it (its `meta_apply_of`/`scheme_of`) uniformly across the flat
+/// `(f a b)` and nested-parens `((f a) b)` surfaces — the same application, so treated identically. Peels
+/// through `Ref`/`Annot` wrappers on the head (via `peel_ref_annot`) so a `let`-bound partial is flattened
+/// too. Used by the builtin-partial-application check so a nested spine reaches the same gate + arity test
+/// the flat form does (the flat form's head IS the bottom head; the nested form's immediate head is an
+/// inner `Apply` whose `meta_apply_of` is `None`, which would otherwise skip the check).
+pub(crate) fn apply_spine(db: &mut Db, id: StructId) -> (StructId, Vec<StructId>) {
+    // FUEL bounds the peel, exactly as `ctor_spine` does: a RECURSIVE nullary def `(def (f) (f))` has its
+    // head-ref point back to the SAME apply, so an unfueled peel-and-recurse cycles forever (a stack
+    // overflow / SIGABRT). A real application spine is a handful deep; 64 is far above any genuine spine
+    // and stops the pathological cycle by returning the current node as the bottom head (a false-negative
+    // for the partial-builtin check on a >64-deep spine — never a real program, and never a false reject).
+    apply_spine_fueled(db, id, 64)
+}
+
+fn apply_spine_fueled(db: &mut Db, id: StructId, fuel: u32) -> (StructId, Vec<StructId>) {
+    if fuel == 0 {
+        return (id, Vec::new());
+    }
+    match resolved_of(db, id) {
+        Resolved::Apply { head, args } => {
+            let peeled = peel_ref_annot(db, head);
+            let (bottom, mut spine_args) = apply_spine_fueled(db, peeled, fuel - 1);
+            spine_args.extend_from_slice(&args);
+            (bottom, spine_args)
+        }
+        _ => (id, Vec::new()),
+    }
+}
+
 /// Peel a CURRIED CONSTRUCTOR SPINE `((V a) b)` into the variant-constructor head `V` and the full
 /// left-to-right payload list `[a, b]`. A sum constructor is a single-arity function (core-semantics.md
 /// §A Sum Type Constructor Is A Single-Arity Function; §Functions Are Single-Arity: `(f a b)` desugars to

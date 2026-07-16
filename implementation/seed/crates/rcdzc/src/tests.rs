@@ -24399,6 +24399,12 @@ mod match_engine {
         for src in [
             "(module m (def (f (: s String)) (String.slice s 0)) (def (main) 0) (export main))",
             "(module m (def (f (: s String)) (String.at s)) (export f))",
+            // NESTED-PARENS spine `((String.slice s) 0)` — the SAME application as the flat form (`(f a b)`
+            // desugars to `((f a) b)`), so it must reject identically. The immediate head here is the inner
+            // `Apply` `(String.slice s)` (whose `meta_apply_of` is `None`), which formerly SKIPPED the check
+            // — the PR#491 hole (Copilot-flagged, v-inference-verified). The predicate now flattens the
+            // spine to its bottom head first, so the nested and flat surfaces are treated identically.
+            "(module m (def (f (: s String)) ((String.slice s) 0)) (def (main) 0) (export main))",
         ] {
             assert!(
                 reject(src).is_some(),

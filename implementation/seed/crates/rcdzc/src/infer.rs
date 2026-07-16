@@ -7090,18 +7090,39 @@ fn atom_surface(db: &Db, id: StructId) -> Option<String> {
 fn is_builtin_partial_application(
     db: &mut Db,
     app: StructId,
-    head: StructId,
-    args: &[StructId],
+    _head: StructId,
+    _args: &[StructId],
 ) -> bool {
-    // (a) SPINE-TOP. If a parent Apply feeds `app` as its head, an outer level supplies more args — `app`
-    // is an inner node of a larger spine, not its top; skip (the top is checked on its own visit).
-    if let Some(parent) = db.parent_of(app) {
-        let parent = crate::lower::peel_ref_annot(db, parent);
-        if let Resolved::Apply { head: ph, .. } = resolved_of(db, parent)
-            && crate::lower::peel_ref_annot(db, ph) == app
-        {
-            return false;
-        }
+    // (a) SPINE-TOP. If `app` sits in the HEAD position of an enclosing APPLICATION form, an outer level
+    // supplies more args — `app` is an inner node of a larger spine, not its top; skip (the top is checked
+    // on its own visit). Test this STRUCTURALLY on the AST: `app` is the FIRST child (index 0) of its
+    // parent list, and that parent is an application (not a grammar/ctor-string head). The resolver
+    // FLATTENS a curried spine `((f a) b)` into ONE `Apply { head: f, args: [a, b] }`, so the parent's
+    // RESOLVED head is `f` (the bottom), NOT this inner node — a resolved-form `head == app` test misses
+    // it. The raw-AST head-position test is exact for both the nested-parens and any flatten. (`peel_ref_
+    // annot` on `app` handles a `let`-bound spine whose parent points at the binding.)
+    if let Some(parent) = db.parent_of(app)
+        && let crate::ast::Struct::List(kids) = db.ast.get(parent)
+        && kids.first() == Some(&app)
+        && db.ast.head_ctor(parent).is_none()
+        && db
+            .ast
+            .head_name(parent)
+            .is_none_or(|h| !crate::resolve::is_grammar_head(h))
+    {
+        return false;
+    }
+    // FLATTEN THE SPINE to its BOTTOM head + full gathered args. The flat `(String.slice s 0)` and the
+    // nested-parens `((String.slice s) 0)` are the SAME application (`(f a b)` desugars to `((f a) b)`), so
+    // both must be treated identically. Driving the checks off the IMMEDIATE head skipped the nested form:
+    // its head is the inner `Apply` `(String.slice s)`, whose `meta_apply_of`/`scheme_of` is `None`. Peel to
+    // the bottom head (a builtin op / ctor / anything) and gather every arg across the spine, then gate +
+    // exclude + arity all off THAT — so the two surfaces reject identically (Copilot PR#491 / v-inference).
+    let (head, args) = crate::lower::apply_spine(db, app);
+    // The check applies only to a BUILT-IN OPERATION head (a prim). A user fn / module member has no
+    // `(meta apply)` prim — its partial application is legitimate currying, not flagged.
+    if crate::eval::meta_apply_of(db, head).is_none() {
+        return false;
     }
     // UNARY NEGATION `(- e)` — `Sub` applied to ONE arg. `Sub`'s scheme is BINARY (`∀a.(Int a)→(Int a)→
     // (Int a)`), so the arity check below would read it as under-applied; but arity-1 `Sub` is the LEGIT
@@ -7120,19 +7141,15 @@ fn is_builtin_partial_application(
         return false;
     }
     if crate::eval::variant_disc_of(db, head).is_some() {
-        // A ctor head at THIS node: partial iff it neither completed above nor eta-lifts. If it eta-lifts,
-        // it is a first-class closure value — not the unbuilt-partial hole.
+        // A ctor bottom head: partial iff it neither completed above nor eta-lifts. If it eta-lifts, it is a
+        // first-class closure value — not the unbuilt-partial hole.
         if crate::lower::eta_ctor_closure(db, head).is_some() {
             return false;
         }
     }
-    // (c) UNDER-APPLIED against the head's VALUE-param arity. Gather the full spine's args (a ctor/op spine
-    // may nest); fall back to this level's args when no deeper spine. Arity from the INSTANTIATED scheme's
-    // arrow chain — instantiate first so `∀` quantifiers become fresh vars, not counted as params.
-    let gathered = crate::lower::ctor_spine(db, app)
-        .or_else(|| crate::lower::runtime_fn_spine(db, app))
-        .map(|(_, a)| a.len())
-        .unwrap_or(args.len());
+    // (c) UNDER-APPLIED against the bottom head's VALUE-param arity. `args` is the flattened spine's full
+    // arg count. Arity from the INSTANTIATED scheme's arrow chain — instantiate first so `∀` quantifiers
+    // become fresh vars, not counted as params.
     let mut fresh = crate::unify::Fresh::new();
     let Some(scheme) = crate::eval::scheme_of(db, head, &mut fresh) else {
         return false; // no scheme (malformed / not typed) — never a false reject
@@ -7144,7 +7161,7 @@ fn is_builtin_partial_application(
         ty = *r;
     }
     // Under-applied is the partial; exactly-applied builds; over-applied is the coded CDZ0203 elsewhere.
-    gathered < arity
+    args.len() < arity
 }
 
 fn check_application(
@@ -7260,10 +7277,24 @@ fn check_application(
     // NOT partially applicable (needs a runtime closure, unbuilt); a CONSTRUCTOR is (curried spine completes
     // / eta-lifts) — so exclude a ctor-headed spine that reaches its payload arity or eta-lifts. `Var`/`Any`
     // arities and non-prim heads (user fn / module member currying — legitimate) never reach the reject.
-    if crate::eval::meta_apply_of(db, head).is_some()
-        && is_builtin_partial_application(db, app, head, args)
-    {
-        let named = member_op_head_name(db, head)
+    // NB: the gate is `is_builtin_partial_application` ALONE — no immediate-head `meta_apply_of` pre-gate.
+    // The predicate flattens the spine to its BOTTOM head and gates on THAT, so the nested-parens surface
+    // `((String.slice s) 0)` (immediate head an `Apply`, `meta_apply_of` None) reaches the same test the
+    // flat `(String.slice s 0)` does. A pre-gate on the immediate head would skip the nested form (the
+    // PR#491 hole). The predicate returns fast-false for a non-op bottom head, so this is not costly.
+    if is_builtin_partial_application(db, app, head, args) {
+        // Name the operation off the spine's bottom `(. Module member)` head — the flat `(String.slice s
+        // 0)` has that head directly; the nested `((String.slice s) 0)` reaches it by peeling the AST head
+        // children. Peel on the RAW AST (a `List` whose first child is the deeper head), NOT the resolved
+        // form (whose bottom is the op-prim value, not the `(. …)` node `member_op_head_name` reads).
+        let mut name_head = app;
+        while let crate::ast::Struct::List(kids) = db.ast.get(name_head) {
+            match kids.first() {
+                Some(&h) if matches!(db.ast.get(h), crate::ast::Struct::List(_)) => name_head = h,
+                _ => break,
+            }
+        }
+        let named = member_op_head_name(db, name_head)
             .map(|(m, k)| format!("`{m}.{k}`"))
             .unwrap_or_else(|| "a built-in operation".to_string());
         trace!(target: "rcdzc::infer", app = app.0, head = head.0, "fault: built-in operation partially applied as an unconsumed value (surfaced in check)");
