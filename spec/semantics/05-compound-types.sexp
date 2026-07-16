@@ -2441,6 +2441,44 @@
             (export main)))
   (output (: 49 Int64)))
 
+; The multi-payload `Payload`+`Elem` fold above resolves ONE level of nesting (a multi-arg variant whose
+; second payload is itself a variant). These push the fold DEEPER and WIDER: a multi-arg variant nesting
+; ANOTHER multi-arg variant three levels down (each carrying two payloads), and a single multi-arg variant
+; whose payloads are MIXED kinds (Int64 + String + Bool). Both construct at run time and destructure through
+; the nested constructor patterns — the semantic companion of the parse/round-trip landing (be1fefd5e),
+; which pinned that a nested multi-arg ctor PARSES; these pin that it EVALUATES to the right payloads.
+
+(case "a three-level nested multi-arg constructor destructures to every leaf payload"
+  (doc    "`MkC (MkB (MkA a b) c) (MkA d e)` — a multi-arg variant nesting a multi-arg variant three levels
+           deep, each level carrying two payloads — constructs and destructures through the nested
+           constructor pattern, binding all five leaves. With x=0: a,b,c,d,e = 0,1,2,3,4, sum = 10. Pins that
+           the `Payload`+`Elem` fold resolves the right position at EACH of three nesting levels, not only
+           one — a deeper form of the multi-payload nested-variant cases above.")
+  (input  (do
+            (type A (MkA Int64 Int64))
+            (type B (MkB A Int64))
+            (type C (MkC B A))
+            (def (main (: x Int64))
+              (match (C.MkC (B.MkB (A.MkA x (+ x 1)) (+ x 2)) (A.MkA (+ x 3) (+ x 4)))
+                ((C.MkC (B.MkB (A.MkA a b) c) (A.MkA d e)) (+ (+ (+ a b) (+ c d)) e))))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 10 Int64)))
+
+(case "a multi-arg constructor with mixed-kind payloads binds each by its own kind"
+  (doc    "`Mk Int64 String Bool` — a single multi-arg variant whose three payloads are DIFFERENT kinds.
+           Constructing `(Rec.Mk n \"hi\" true)` and matching binds a:Int64, s:String, b:Bool, each read from
+           its own payload slot at its own kind. With n=40, b=true: `40 + byte-len(\"hi\")` = 42. Pins that the
+           payload `Elem(i)` fold unboxes each slot to the RIGHT kind across a heterogeneous payload list,
+           not a uniform width — the mixed-kind companion of the same-kind multi-payload cases above.")
+  (input  (do
+            (type Rec (Mk Int64 String Bool))
+            (def (main (: n Int64))
+              (match (Rec.Mk n "hi" true) ((Rec.Mk a s b) (if b (+ a (String.byte-len s)) 0))))
+            (export main)))
+  (call   main (: 40 Int64))
+  (output (: 42 Int64)))
+
 (case "a variant carrying a Symbol payload constructs, matches, and binds it"
   (doc    "The Symbol companion: `(type T (Mk Symbol) (No))` carries a `Symbol` payload. Constructing
            `(T.Mk (Symbol.of \"hi\"))` and matching binds the symbol to `s`, and `(Symbol.to-string s)`

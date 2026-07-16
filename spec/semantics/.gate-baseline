@@ -1071,6 +1071,7 @@ pass	a module value definition registers a reachable export field
 pass	a module with two definitions of the same name is rejected
 pass	a module's delegated capability is reachable as metadata, not as an export
 pass	a monomorphic user sum applied to a type argument in an annotation is rejected
+pass	a multi-arg constructor with mixed-kind payloads binds each by its own kind
 pass	a multi-argument call node is evaluated by iterating its payload arg list
 pass	a multi-argument closure among distinct-signature exports
 pass	a multi-argument closure returning a COMPOUND round-trips — flat arrow spelling
@@ -1881,6 +1882,7 @@ pass	a three-deep known-disc nested match reads the right payload at every level
 pass	a three-deep tuple projection chain retains the innermost consumed child
 pass	a three-element runtime tuple is returned as a result
 pass	a three-level curried spine applies through both intermediate closures
+pass	a three-level nested multi-arg constructor destructures to every leaf payload
 pass	a three-parameter closure is applied at full arity through a recursive HOF
 pass	a three-payload constructor fully curried builds the variant
 pass	a three-payload constructor partially applied in a runtime tuple completes via eta-closure
