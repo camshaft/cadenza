@@ -6918,6 +6918,35 @@ fn check_application(
     if crate::eval::prim_of(db, head) == Some(crate::resolved::Prim::AstLift) && args.len() == 1 {
         return;
     }
+    // `(trap MESSAGE)` — the abort primitive `trap : ∀a. String → a`. Its message MUST be a String; a
+    // non-String message (`(trap 5)`, `(trap true)`) is a type error. But `trap`'s RESULT is the polymorphic
+    // `a` (it inhabits any type), so the generic scheme-unify grounds the operand parameter to `String` and
+    // reports the OPAQUE "type mismatch: String and Int64 must be the same type here" — reads like an
+    // internal clash, not "the message you passed is not a String". Name the real fault (the operand-type
+    // twin of the member-op "`String.at` expects an argument of type Int64, but a value of type String was
+    // given" message). Fires only on a definite non-String message (a `Var`/`Any` operand is unsolved —
+    // never a false reject); the wrong-ARITY `(trap "a" "b")` keeps its coded CDZ0203 (the over-application
+    // path). Descend into the operand for its own faults, then return so the scheme-unify does not re-fault.
+    if crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::Trap) && args.len() == 1
+    {
+        let msg_ty = type_of(db, args[0]);
+        if !matches!(msg_ty, Ty::String | Ty::Any | Ty::Var(_)) {
+            trace!(target: "rcdzc::infer", head = head.0, ty = %msg_ty.render_name(), "fault: trap message is not a String (CDZ0203)");
+            out.push(
+                Reject::coded(
+                    Code::TypeMismatch,
+                    format!(
+                        "`trap`'s message must be a String, but a value of type {} was given — \
+                         `trap` aborts with a text message, e.g. `(trap \"reason\")`",
+                        msg_ty.render_name()
+                    ),
+                )
+                .at(args[0]),
+            );
+        }
+        collect(db, args[0], out);
+        return;
+    }
     // `Qty.of <value> <unit>` — the SECOND argument must be a compile-time UNIT expression (`Unit.one`,
     // `(Unit.base #"m")`, `(Unit.of #"m")`, or a `Unit.*`/`Unit./`/`Unit.^` composition), read by
     // `eval::unit_of`. A second arg that is NOT a unit-builder form at all — a plain literal `(Qty.of 5
