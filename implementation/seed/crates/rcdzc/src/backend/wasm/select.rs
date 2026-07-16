@@ -1909,6 +1909,13 @@ fn collect_used_ops_into(
             out.insert(OP_VEC_GET);
             out.insert(OP_DUP);
             out.insert(OP_SUM_NEW);
+            // RECLAMATION: an OWNED-temporary list operand is dropped after the borrowing len/get (the emit
+            // reclaims it). This collect pass has no `slots` to test `reusable_handle_slot`, so import `drop`
+            // whenever the operand's ownership is Owned — a superset of the emit's condition (a declared-but-
+            // unused import is harmless; the emit only actually emits the drop for a non-reused owned list).
+            if matches!(heap_operand_ownership(db, list), Ok(HandleOwnership::Owned)) {
+                out.insert(OP_DROP);
+            }
             collect_used_ops_into(db, list, out);
             collect_used_ops_into(db, index, out);
         }
@@ -2105,6 +2112,15 @@ fn collect_used_ops_into(
             out.insert(OP_BYTES_GET);
             out.insert(OP_BOX_INT);
             out.insert(OP_SUM_NEW);
+            // RECLAMATION: an OWNED-temporary bytes operand is dropped after the borrowing len/get (see the
+            // emit + the `ListAt` collect arm — import `drop` for an Owned operand; harmless if the emit's
+            // reused-slot condition suppresses the actual drop).
+            if matches!(
+                heap_operand_ownership(db, bytes),
+                Ok(HandleOwnership::Owned)
+            ) {
+                out.insert(OP_DROP);
+            }
             collect_used_ops_into(db, bytes, out);
             collect_used_ops_into(db, index, out);
         }
@@ -5936,6 +5952,13 @@ fn emit(
             // at each use instead of copying it into a fresh scratch slot — the heap analogue of the scalar
             // operand-slot reuse. A computed list is stashed in scratch once, as before.
             let reuse_list = reusable_handle_slot(db, list, slots);
+            // RECLAMATION: `vec-len`/`vec-get` only BORROW the list; the read element is `dup`'d into the
+            // `Some` payload (so it survives independently). If the list operand is a fresh OWNED TEMPORARY
+            // (`List.at (build …) i` — not a reused param/kept-local slot), nothing else drops it → it LEAKS.
+            // Drop `list_slot` after the if/else (the Option result is on top; `drop` pops only the list).
+            // A reused-slot (param/kept-local) list is BORROWED — its owner reclaims; never drop it here.
+            let reclaim_list = reuse_list.is_none()
+                && matches!(heap_operand_ownership(db, list), Ok(HandleOwnership::Owned));
             // Scratch above `base`: the list handle (i32, only when NOT reusing an owner slot), the index
             // (i64), and — in the in-bounds arm — the borrowed element handle (i32). Reusing the list slot
             // frees one scratch slot (the index/elem shift down), shrinking the high-water. The operand
@@ -6002,6 +6025,11 @@ fn emit(
             out.push(Lir::ConstI32(super::runtime_abi::IMM_UNIT as i32)); // [disc_none, unit-payload]
             out.push(Lir::CallImport(OP_SUM_NEW)); // [None-handle]
             out.push(Lir::End);
+            if reclaim_list {
+                // [Option] — drop the owned-temporary list now that both borrows (len + get) are done.
+                out.push(Lir::LocalGet(list_slot));
+                out.push(Lir::CallImport(OP_DROP)); // → [Option] (list reclaimed)
+            }
             Ok(())
         }
         // A MAP construction — `(map …)` or `Map.empty`. `map-empty` leaves a fresh empty map; then for
@@ -6398,6 +6426,15 @@ fn emit(
             // the in-bounds `bytes-get`), both BORROWING. A reusable handle already in a stable slot is read
             // directly; a computed one is stashed in scratch once.
             let reuse_bytes = reusable_handle_slot(db, bytes, slots);
+            // RECLAMATION (see `ListAt`): an OWNED-temporary bytes operand (`Bytes.at (build …) i`, not a
+            // reused param/kept-local) is dropped after the borrowing len/get — the read byte is a COPIED
+            // i32 value (nothing borrows from the bytes), so the sequence can be freed. A borrowed
+            // param/kept-local is left to its owner.
+            let reclaim_bytes = reuse_bytes.is_none()
+                && matches!(
+                    heap_operand_ownership(db, bytes),
+                    Ok(HandleOwnership::Owned)
+                );
             let (bytes_slot, index_slot, floor) = match reuse_bytes {
                 Some(s) => (s, base, base + 1),
                 None => (base, base + 1, base + 2),
@@ -6454,6 +6491,11 @@ fn emit(
             out.push(Lir::ConstI32(super::runtime_abi::IMM_UNIT as i32)); // [disc_none, unit-payload]
             out.push(Lir::CallImport(OP_SUM_NEW)); // [None-handle]
             out.push(Lir::End);
+            if reclaim_bytes {
+                // [Option] — drop the owned-temporary bytes now that both borrows (len + get) are done.
+                out.push(Lir::LocalGet(bytes_slot));
+                out.push(Lir::CallImport(OP_DROP)); // → [Option] (bytes reclaimed)
+            }
             Ok(())
         }
         // `String.at(str, index)` on a RUNTIME string — read the i-th UNICODE SCALAR as a one-scalar

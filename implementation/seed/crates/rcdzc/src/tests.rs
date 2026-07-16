@@ -24538,6 +24538,39 @@ mod match_engine {
     }
 
     #[test]
+    fn list_at_and_bytes_at_over_an_owned_temporary_reclaim_the_collection_but_keep_a_borrowed_one()
+    {
+        // The READ-op face of the owned-temporary reclaim: `List.at`/`Bytes.at` BORROW the collection
+        // (vec-len/vec-get, bytes-len/bytes-get) and the read element is COPIED/dup'd into the `Some`, so an
+        // OWNED-TEMPORARY collection (`List.at (build …) i`) must be dropped after the borrows or it leaks.
+        // A BORROWED param/kept-local collection read alongside a later use must NOT be freed early.
+        let list_owned = "(module m \
+               (def (build i n acc) (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc)) \
+               (def (main) ((. Option expect) ((. List at) (build 0 3 (list)) 1) \"v\")) (export main))";
+        assert!(
+            component_imports_op(&component(list_owned), "drop"),
+            "List.at over an owned-temporary list must import `drop` (reclaim — leak fix)"
+        );
+        if let Some(out) = run_on_heap(list_owned) {
+            assert_eq!(
+                out, "1",
+                "List.at value unchanged by the reclaim (leak-only)"
+            );
+        }
+        // A BORROWED list — read by List.at AND List.len — must not be freed by the at (else double-free).
+        let list_borrowed = "(module m \
+               (def (build i n acc) (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc)) \
+               (def (main) (let ((xs (build 0 3 (list)))) \
+                             (+ ((. Option expect) ((. List at) xs 1) \"v\") ((. List len) xs)))) (export main))";
+        if let Some(out) = run_on_heap(list_borrowed) {
+            assert_eq!(
+                out, "4",
+                "a borrowed list read by List.at must not be freed early (at=1 + len=3)"
+            );
+        }
+    }
+
+    #[test]
     fn a_projected_list_consumed_then_reprojected_is_retained_not_mutated() {
         // The PROJECTION face of the still-live-binding retain (repeated-proj-of-let-consumed-then-read): the
         // shared value is a nested-compound PROJECTION `(. t 0)` of a `let`-bound tuple, not the binding
