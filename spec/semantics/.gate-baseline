@@ -2211,6 +2211,8 @@ pass	an active unquote lifts a RUNTIME float operand, not only a constant
 pass	an active unquote lifts a RUNTIME integer operand, not only a constant
 pass	an active unquote of a boolean literal lifts to an Ast.Bool node
 pass	an active unquote of a computed boolean expression lifts to Ast.Bool
+pass	an active unquote of a constant NaN declines (the ast-lift path, consistent with the ctor)
+pass	an active unquote of a finite float lifts to Ast.Float (ast-lift control)
 pass	an active unquote of a float literal lifts to an Ast.Float node
 pass	an active unquote of a let-bound boolean lifts to Ast.Bool by inferred type
 pass	an active unquote of a let-bound float lifts to Ast.Float by inferred type

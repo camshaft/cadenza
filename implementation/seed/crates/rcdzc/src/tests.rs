@@ -33836,6 +33836,31 @@ mod match_engine {
             ),
             "a finite Ast.Float (2.5) reifies normally — the non-canonical guard does not touch it"
         );
+        // The ACTIVE-UNQUOTE lift path (`,expr` → `ast-lift`) shares the rule: a constant NaN operand
+        // declines rather than lifting into an `Ast.Float` (which would reproduce the split via the lift
+        // path, not just the ctor). A finite unquote still lifts (the `,2.5` control folds to 2.5).
+        assert!(
+            compile_component(&crate::codec::encode(&crate::testkit::parse(
+                "(module m (def (main) (quasiquote (f (unquote Float64.nan)))) (export main))"
+            )))
+            .is_err(),
+            "an active unquote of a constant NaN declines — the ast-lift path is consistent with the ctor"
+        );
+        assert!(
+            run_returns::<f64>(
+                &compile_component(&crate::codec::encode(&crate::testkit::parse(
+                    "(module m (def (main) \
+                       (match (quasiquote (f (unquote 2.5))) \
+                         ((Ast.List xs) (match (List.at xs 1) \
+                                          ((Option.Some (Ast.Float v)) v) (_ 0.0))) \
+                         (_ 0.0))) \
+                     (export main))"
+                )))
+                .expect("a finite unquote lift still compiles"),
+                "main"
+            ) == 2.5,
+            "an active unquote of a finite float (2.5) lifts to Ast.Float — the guard only rejects a NaN"
+        );
     }
 
     #[test]

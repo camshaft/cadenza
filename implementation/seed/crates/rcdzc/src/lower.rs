@@ -2245,6 +2245,18 @@ fn lower_ast_lift(db: &mut Db, operand: StructId) -> Core {
             disc: disc.int,
             payloads: vec![operand],
         },
+        // A CONSTANT non-canonical float operand (a NaN) has no canonical value form — lifting it into an
+        // `Ast.Float` would reproduce the wasm-traps/rust-accepts split the direct-ctor guard (lower_sum_new)
+        // and the splice-lift already close. Decline it here too, so the active-unquote lift `,nan` is
+        // consistent with `(Ast.Float nan)` and `,@(list nan)`. A RUNTIME float operand still lifts (a finite
+        // runtime float is the common case; a runtime NaN traps uniformly at the escape boundary — the
+        // runtime residual owned by the rust-encode side, not compile-declinable). Checked before the wrap.
+        crate::ty::Ty::Float(_) if matches!(core_of(db, operand), Core::ConstFloatNan) => {
+            Core::Poison(Reject::decline(
+                "an active unquote of a non-canonical float (a NaN has no canonical value form) cannot lift \
+                 into an `Ast.Float`; a finite float lifts, matching `(Ast.Float nan)` and `,@` of a NaN list",
+            ))
+        }
         // `Ast.Float`'s payload is Float64, so a width-64-grounded float operand lifts to `Ast.Float`.
         crate::ty::Ty::Float(ft) if ft.ground_width() == 64 => Core::SumNew {
             disc: disc.float,
