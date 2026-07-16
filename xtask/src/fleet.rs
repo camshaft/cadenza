@@ -3472,18 +3472,33 @@ fn message_kind_is_actionable(kind: &str) -> bool {
     !matches!(kind, "note" | "merged" | "backlog" | "status" | "reply")
 }
 
-/// The message `kind` of a bus filename `<seq>-<pid>-<kind>.json`, or `None` if it doesn't match the
-/// pattern. Parses the trailing dash-segment before `.json` — kinds are lowercase words that may
-/// contain a dash (`merge-request`), so take everything after the LAST `-` that precedes `.json`.
+/// The message `kind` of a bus filename `<seq>-<pid>-<kind>.json`, or `None` if it doesn't match that
+/// pattern (see `deliver`: `format!("{:012}-{}-{}.json", seq, pid, kind)`). The `kind` itself may
+/// contain a dash (`merge-request`, `merge-request`-style), so we CANNOT just take the last
+/// dash-segment (that yields `request`, and a dash-free non-bus file like `registry.json` would
+/// wrongly parse to `Some("registry")` instead of `None`). Instead, strip `.json`, then split off the
+/// first two fields (the NUMERIC seq and pid) and return everything after them as the full kind. A name
+/// without a `.json` suffix, without at least three fields, or whose seq/pid aren't all-digits → `None`
+/// (a stray non-bus file must NOT be miscounted as a message; see `actionable_inbox_depth`).
 fn message_kind_from_filename(name: &str) -> Option<&str> {
-    name.strip_suffix(".json")?.rsplit('-').next()
+    let stem = name.strip_suffix(".json")?;
+    let mut parts = stem.splitn(3, '-');
+    let seq = parts.next()?;
+    let pid = parts.next()?;
+    let kind = parts.next()?; // the remainder — keeps an embedded dash (`merge-request`)
+    let numeric = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    if numeric(seq) && numeric(pid) && !kind.is_empty() {
+        Some(kind)
+    } else {
+        None
+    }
 }
 
 /// Count only the ACTIONABLE queued messages in `dir` (non-recursive; ignores `processed/`). This is
 /// the drain-stall signal's numerator: informational mail (notes/merged acks) an agent hasn't archived
-/// is untidy, not stalled work. NOTE: `merge-request` and `redelivery` end in `-request`/`-redelivery`,
-/// whose LAST dash-segment is `request`/`redelivery` — both actionable, so the simple last-segment
-/// parse classifies them correctly without special-casing the embedded dash.
+/// is untidy, not stalled work. `message_kind_from_filename` returns `None` for any non-bus file (e.g. a
+/// stray `registry.json`), so such a file is NOT miscounted as an actionable message — only real
+/// `<seq>-<pid>-<kind>.json` entries with an actionable kind count.
 fn actionable_inbox_depth(dir: &Path) -> usize {
     count_dir(dir, |f| {
         message_kind_from_filename(f).is_some_and(message_kind_is_actionable)
@@ -4671,10 +4686,11 @@ mod tests {
     }
 
     #[test]
-    fn message_kind_from_filename_parses_the_trailing_segment() {
+    fn message_kind_from_filename_parses_the_full_kind_after_seq_and_pid() {
+        // The kind KEEPS its embedded dash — `merge-request`, not the last segment `request`.
         assert_eq!(
             message_kind_from_filename("000000002045-3804702-merge-request.json"),
-            Some("request") // last dash-segment; `request` is actionable, which is what matters
+            Some("merge-request")
         );
         assert_eq!(
             message_kind_from_filename("000000001905-4025075-merged.json"),
@@ -4684,10 +4700,18 @@ mod tests {
             message_kind_from_filename("000000000652-1961391-note.json"),
             Some("note")
         );
-        // A non-bus .json with no dash → the whole stem (won't appear in an inbox; harmless).
+        // A non-bus .json (no seq/pid structure) → None, so a stray `registry.json` in an inbox dir is
+        // NOT miscounted as an actionable message (the bug Copilot flagged on PR #504).
+        assert_eq!(message_kind_from_filename("registry.json"), None);
+        // Missing the third (kind) field, or a non-numeric seq/pid → None.
         assert_eq!(
-            message_kind_from_filename("registry.json"),
-            Some("registry")
+            message_kind_from_filename("000000000652-1961391.json"),
+            None
+        );
+        assert_eq!(message_kind_from_filename("abc-123-note.json"), None);
+        assert_eq!(
+            message_kind_from_filename("000000000652-xyz-note.json"),
+            None
         );
         // Not a .json at all → None (never counted).
         assert_eq!(message_kind_from_filename("not-a-message.txt"), None);
@@ -4711,6 +4735,14 @@ mod tests {
         std::fs::write(tmp.join("000000000004-13-reject.json"), "{}").unwrap();
         std::fs::write(tmp.join("000000000005-14-merge-request.json"), "{}").unwrap();
         assert_eq!(actionable_inbox_depth(&tmp), 3);
+        // A stray non-bus file (no seq/pid structure) must NOT count as actionable (PR #504 fix): the
+        // old last-dash-segment parse read `registry.json` → `Some("registry")` → a false actionable.
+        std::fs::write(tmp.join("registry.json"), "{}").unwrap();
+        assert_eq!(
+            actionable_inbox_depth(&tmp),
+            3,
+            "a stray non-bus file must not be counted"
+        );
         std::fs::remove_dir_all(&tmp).ok();
     }
 
