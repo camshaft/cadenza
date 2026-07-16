@@ -22,3 +22,14 @@ spec/semantics/.gate-baseline-rust-async merge=union
 # union-merged. Each `(case …)` is a multi-line s-expression BLOCK; unioning interleaved lines from two
 # branches would corrupt the s-expr structure (mismatched parens / spliced cases). Those need
 # case-level (block) merging or per-vertical file splitting, not line-union — a separate change.
+#
+# ── Coverage-floor max-merge ─────────────────────────────────────────────────────────────────────
+# `.duvet/coverage-floor.json` is a single monotone counter ({cited,total}) that EVERY citation-adding
+# agent bumps, so concurrent slices textually CONFLICT on it (cited 644 vs 645) — a recurring tax on
+# exactly the coverage growth the gate encourages. It's JSON, so `union` (line-keep) would corrupt it.
+# Instead use the custom `fleet-maxfloor` driver (registered by `fleet up` in the hub's .git/config;
+# see `register_merge_drivers`): it resolves a conflict by taking the field-wise MAX of the two sides
+# (`xtask fleet merge-floor`). The floor only ever moves UP, so max(ours,theirs) is always the correct
+# merged floor — concurrent bumps merge cleanly, never conflict. If the driver isn't registered (config
+# missing), git falls back to a normal conflict — safe, just the old behavior.
+.duvet/coverage-floor.json               merge=fleet-maxfloor
