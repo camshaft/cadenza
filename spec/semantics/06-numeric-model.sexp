@@ -3431,3 +3431,34 @@
            generation that does not yet cover unary negation declines (reject-don't-miscompile).")
   (input  (let ((s "hi")) (- s)))
   (error  CDZ0201))
+
+; --- The subtraction family at the extremes: wrap parity and the checked/wrapping split ------------
+; acc93bcf5 added checked-sub/wrapping-sub (pins: constant fits/underflow/wrap). These pin the
+; RUNTIME extremes and the behavioral split against checked `-` on identical inputs, promoted from
+; passing breaker probes.
+
+(case "runtime wrapping subtraction wraps at both sign extremes"
+  (doc    "`(Int64.wrapping-sub a b)` over PARAMETERS at the two extreme pairs: min - 1 wraps to max
+           (the two's-complement cycle downward) and max - (-1) wraps to min (upward). The runtime
+           companion of the constant wrap pin — the emitted op must be the plain i64.sub with no
+           guard, agreeing with the fold at both boundary directions.")
+  (input  (do
+            (def (main (: a Int64) (: b Int64))
+              (Int64.wrapping-sub a b))
+            (export main)))
+  (call   main (: -9223372036854775808 Int64) (: 1 Int64))
+  (output (: 9223372036854775807 Int64))
+  (call   main (: 9223372036854775807 Int64) (: -1 Int64))
+  (output (: -9223372036854775808 Int64)))
+
+(case "checked minus traps where wrapping-sub wraps on the same inputs"
+  (doc    "`(- min 1)` TRAPS 'integer overflow' — the same inputs `(Int64.wrapping-sub min 1)` wraps
+           to max (the case above). The behavioral split pinned on IDENTICAL operands: the checked
+           default and the explicit wrapping op are different operations, not different spellings (a
+           lowering that shared one subtract for both loses one behavior or the other).")
+  (input  (do
+            (def (main (: a Int64) (: b Int64))
+              (- a b))
+            (export main)))
+  (call   main (: -9223372036854775808 Int64) (: 1 Int64))
+  (trap   "integer overflow"))

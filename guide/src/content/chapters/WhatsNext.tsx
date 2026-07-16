@@ -26,7 +26,8 @@ export default function WhatsNext() {
         reading, nesting, and functionally updating it (<Ch to="/data">Tuples &amp; records</Ch>,{" "}
         <Ch to="/records-tuples">Working with records &amp; tuples</Ch>). You decide by shape with{" "}
         <Ch to="/pattern-matching">pattern matching</Ch>, and you've met the collections —{" "}
-        <Ch to="/lists">lists</Ch>, <Ch to="/maps-sets">maps &amp; sets</Ch> — and the text and binary
+        <Ch to="/lists">lists</Ch>, <Ch to="/maps-sets">maps &amp; sets</Ch>, and lazy{" "}
+        <Ch to="/iterators">iterators &amp; ranges</Ch> — and the text and binary
         types, <Ch to="/strings">strings</Ch>, <Ch to="/bytes">bytes</Ch> (and{" "}
         <Ch to="/binary-matching">binary matching</Ch> to build and destructure them), and{" "}
         <Ch to="/symbols">symbols</Ch>. You handle{" "}

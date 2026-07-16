@@ -89,3 +89,48 @@ fn every_example_centers_on_the_origin() {
         );
     }
 }
+
+// ── The manifold `Empty` identity, cross-checked against the library's `simplify` algebra ──────────
+// The library's `simplify` absorbs `Empty` (union Empty x = x; intersection _ Empty = Empty; …). The
+// driver must MESH consistently: `Empty` is the boolean identity in manifold too. These pin that the mesh
+// backend agrees with the library's algebra, so a model and its `simplify`d form mesh to the same thing —
+// a driver that mis-handled `Empty` (e.g. treated it as a unit cube) would fail here.
+
+fn tri_count(src: &str) -> usize {
+    mesh(&parse_solid(src).unwrap()).triangle_count()
+}
+
+#[test]
+fn union_with_empty_meshes_like_the_operand_alone() {
+    let cube = "(: (Cube (: (tuple 2.0 2.0 2.0) Vec3)) Solid)";
+    let union_left = "(: (Union (Empty unit) (Cube (: (tuple 2.0 2.0 2.0) Vec3))) Solid)";
+    let union_right = "(: (Union (Cube (: (tuple 2.0 2.0 2.0) Vec3)) (Empty unit)) Solid)";
+    assert_eq!(
+        tri_count(union_left),
+        tri_count(cube),
+        "union(Empty, cube) ≡ cube"
+    );
+    assert_eq!(
+        tri_count(union_right),
+        tri_count(cube),
+        "union(cube, Empty) ≡ cube"
+    );
+}
+
+#[test]
+fn difference_of_empty_tool_meshes_like_the_base() {
+    // subtracting nothing leaves the base unchanged.
+    let cube = "(: (Cube (: (tuple 2.0 2.0 2.0) Vec3)) Solid)";
+    let diff = "(: (Difference (Cube (: (tuple 2.0 2.0 2.0) Vec3)) (Empty unit)) Solid)";
+    assert_eq!(
+        tri_count(diff),
+        tri_count(cube),
+        "difference(cube, Empty) ≡ cube"
+    );
+}
+
+#[test]
+fn intersection_with_empty_meshes_to_nothing() {
+    let inter = "(: (Intersection (Cube (: (tuple 2.0 2.0 2.0) Vec3)) (Empty unit)) Solid)";
+    assert_eq!(tri_count(inter), 0, "intersection(x, Empty) is empty");
+}

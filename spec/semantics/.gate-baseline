@@ -2173,6 +2173,7 @@ pass	chained guards of the same variant are tried in order
 pass	char to-int and from-int round-trip through the scalar value
 pass	checked addition yields None on overflow instead of trapping
 pass	checked addition yields Some of the sum when it fits
+pass	checked minus traps where wrapping-sub wraps on the same inputs
 pass	checked multiplication reports overflow as None
 pass	checked multiplication yields Some when it fits
 pass	checked subtraction yields None on underflow instead of trapping
@@ -2329,6 +2330,7 @@ pass	encoding and decoding a constructor-built compound AST round-trips
 pass	encoding and decoding an Ast.Bool round-trips to an equal value
 pass	encoding and decoding an Ast.Float round-trips to an equal value
 pass	encoding and decoding an Ast.Str round-trips to an equal value
+pass	end-to-end: a property run finds a failing input, then the shrinker converges to the minimal failing value
 pass	equality across incompatible dimensions is a compile-time error
 pass	equality across types is rejected regardless of operand order
 pass	equality against zero answers by value in both operand orders
@@ -2659,6 +2661,7 @@ pass	runtime float inequality compares by canonical byte form
 pass	runtime structural equality over a GENERIC RECURSIVE sum walks the whole tree
 pass	runtime structural equality over a payload-carrying sum agrees on both backends
 pass	runtime tuple concatenation preserves element order across the seam
+pass	runtime wrapping subtraction wraps at both sign extremes
 pass	same-arity tuple match arms share an equal element and sink the differing one
 pass	same-key-set record match arms share an equal field and sink the differing one
 pass	same-length list match arms share an equal element and sink the differing one

@@ -44,7 +44,12 @@ def cp-env(env: Map(String, Int64), e: Ex) = match e with
     let rhs2 = cp-env(env, rhs) in
     (match rhs2 with
       | Ex.Num(v) => cp-env(Map.insert(env, x, v), body)   // constant binding: propagate + drop the `let`
-      | _ => Ex.Let(x, rhs2, cp-env(env, body)))           // non-constant: keep the `let`, propagate body
+      // non-constant binding: keep the `let`; the body sees `x` bound to this NON-constant, so REMOVE any
+      // outer constant `x` from the env before propagating the body — else a shadowing inner
+      // `let x = <non-const>` would wrongly fold the body's `x` to the outer constant
+      // (`let x = 5 in let x = w in x + 1` must NOT fold the inner `x` to 5). Map.remove is a no-op when
+      // `x` was not bound, so a non-shadowing case is unaffected.
+      | _ => Ex.Let(x, rhs2, cp-env(Map.remove(env, x), body)))
 
 /// Constant-propagate a whole (top-level) expression.
 def cp(e: Ex) = cp-env(Map.empty, e)
@@ -95,6 +100,15 @@ def cp-shadowing() =
   let inner = Ex.Let("x", Ex.Num(10), Ex.Var("x")) in
   let e = Ex.Let("x", Ex.Num(1), Ex.Add(inner, Ex.Var("x"))) in
   if eval(cp(e)) == 11 then (if eval(e) == 11 then unit else trap("eval 11")) else trap("shadowing = 11")
+
+@test
+def cp-shadow-by-nonconstant-not-folded() =
+  // REGRESSION (PR #430 Copilot): let x = 5 in let x = w in x + 1. The inner `let x = w` (w free, NOT
+  // constant) SHADOWS the outer x=5, so the body's `x` must NOT fold to 5. eval: outer x=5, inner x=w
+  // (unbound → -1), so x + 1 = -1 + 1 = 0. The bug propagated the body under the same env (still holding
+  // x=5), wrongly folding to 5 + 1 = 6 — a wrong-value fold. cp must agree with eval (0).
+  let e = Ex.Let("x", Ex.Num(5), Ex.Let("x", Ex.Var("w"), Ex.Add(Ex.Var("x"), Ex.Num(1)))) in
+  if eval(cp(e)) == eval(e) then (if eval(cp(e)) == 0 then unit else trap("value 0")) else trap("shadowing non-constant must not fold the outer constant")
 
 @test
 def cp-free-var-untouched() =
