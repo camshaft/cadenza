@@ -57,7 +57,12 @@ fn temp_project(tag: &str) -> std::path::PathBuf {
         "def t() -> Int64 = 3\nexport { t }\n",
     )
     .unwrap();
-    dir
+    // Canonicalize so every test sees the SAME resolved path the no-arg upward search reports. On macOS
+    // `std::env::temp_dir()` is `/var/folders/...`, a symlink to `/private/var/folders/...`; the no-arg
+    // metadata search canonicalizes through that symlink while an explicit absolute-path arg does not, so
+    // without this the two forms differ only by the `/var`→`/private/var` prefix and the
+    // byte-identical-JSON assertion fails on macOS (green on Linux, where temp_dir has no such symlink).
+    std::fs::canonicalize(&dir).unwrap_or(dir)
 }
 
 /// Minimal JSON string-value lookup for a top-level `"key":"value"` — avoids a serde dep in the test.
