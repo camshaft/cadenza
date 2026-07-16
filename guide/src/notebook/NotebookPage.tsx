@@ -190,6 +190,7 @@ export default function NotebookPage() {
           value={doc}
           onChange={(e) => setDoc(e.target.value)}
           spellCheck={false}
+          aria-label="Notebook source (markdown + Cadenza code cells)"
           className="mb-4 h-64 w-full resize-y rounded-lg border border-slate-700 bg-slate-900 p-3 font-mono text-sm text-slate-200"
           data-testid="doc-editor"
         />
