@@ -205,7 +205,8 @@ enum Cmd {
     /// `file:line:col`.
     Def(DefArgs),
     /// The bindings visible at a source BYTE OFFSET in FILE — "variable scope tracking". Each visible
-    /// binding as `file:line:col: name : type` (innermost first).
+    /// binding as `file:line:col: name : type` (innermost first; `--json` emits one structured object per
+    /// binding for an editor's scope/completion view).
     Scope(ScopeArgs),
     /// The module's exported interface: each `(export …)` name and its type, as
     /// `file:line:col: name : type` (`--json` emits one structured object per export for a tool).
@@ -2903,6 +2904,13 @@ struct ScopeArgs {
     file: String,
     /// The source BYTE OFFSET whose visible bindings to list (0-based, UTF-8 bytes).
     offset: usize,
+    /// Emit each visible binding as a machine-readable JSON object (one per line) instead of the human
+    /// `file:line:col: name : type` text — the shape an editor consumes for a scope/completion view
+    /// without re-parsing the text layout. Each object has `file`, `name`, `type`, and — when the binder
+    /// has a known span (the normal case) — `line` + `col` (omitted for a span-less binder) — the `cdz
+    /// symbols --json`/`cdz check --json` machine-readable convention.
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(clap::Args)]
@@ -4106,6 +4114,8 @@ fn run_scope(args: &ScopeArgs) -> ExitCode {
     }
     // Each line is `name<TAB>type<TAB>binder-node-id`; map the binder node to its source location.
     // One line-start index (binary-searched line:col) so many bindings stay linear, not O(bindings×len).
+    // Both output shapes — the human `file:line:col: name : type` and the `--json` object — are computed
+    // from the SAME resolved `(name, type, line, col)` so they can't drift (mirrors `cdz exports`).
     let index = cadenza_syntax::query::driver::LineIndex::new(&source);
     for line in text.lines() {
         let mut cols = line.splitn(3, '\t');
@@ -4113,18 +4123,29 @@ fn run_scope(args: &ScopeArgs) -> ExitCode {
             (Some(n), Some(t), Some(b)) => (n, t, b),
             _ => continue,
         };
-        let loc = match binder
+        let line_col = binder
             .parse::<u32>()
             .ok()
             .and_then(|b| spans.get(cadenza_syntax::StructId(b)))
-        {
-            Some(span) => {
-                let (l, c) = index.line_col(&source, span.start);
-                format!("{}:{l}:{c}", args.file)
+            .map(|span| index.line_col(&source, span.start));
+        if args.json {
+            use cadenza_syntax::query::json;
+            let mut obj = json::Object::new();
+            obj.string("file", &args.file);
+            if let Some((l, c)) = line_col {
+                obj.raw("line", &l.to_string());
+                obj.raw("col", &c.to_string());
             }
-            None => args.file.clone(),
-        };
-        println!("{loc}: {name} : {ty}");
+            obj.string("name", name);
+            obj.string("type", ty);
+            println!("{}", obj.finish());
+        } else {
+            let loc = match line_col {
+                Some((l, c)) => format!("{}:{l}:{c}", args.file),
+                None => args.file.clone(),
+            };
+            println!("{loc}: {name} : {ty}");
+        }
     }
     ExitCode::SUCCESS
 }
