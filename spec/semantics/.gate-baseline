@@ -1334,6 +1334,7 @@ pass	a nested unquote pattern matches a Str sub-AST by shape
 pass	a nested unquote pattern matches a sub-AST by shape
 pass	a nested-let chain that reuses each binding folds to one value
 pass	a neutral and-true keeps both the trap and the value of its left operand
+pass	a no-overflow obligation is DISCHARGED: for x <= 100, (x + 1) <= MAXINT via monotonicity + a numeral fact
 pass	a nominal record compared to a plain record of the same shape is a type error
 pass	a non-admitted float width NESTED in a compound annotation is rejected
 pass	a non-admitted float width in a parameter annotation is rejected
@@ -2271,6 +2272,7 @@ pass	an R-suffixed decimal literal is its exact fraction
 pass	an R-suffixed integer literal is that integer over one
 pass	an R-suffixed literal composes with exact rational arithmetic
 pass	an SI decimal prefix scales a unit by a power of ten
+pass	an UNCONSTRAINED add is NOT dischargeable: with no precondition bound, the no-overflow obligation cannot be closed (the check must stay)
 pass	an abort abandons a pending borrowed map lookup and the map survives
 pass	an abort abandons a pending consuming op and the shared binding survives
 pass	an abortive handler abandons a host call in the path it discards
