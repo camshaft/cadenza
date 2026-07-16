@@ -116,16 +116,24 @@ pub fn rust_type(ty: &Ty) -> Option<String> {
         // `HashMap`) because it ITERATES IN SORTED KEY ORDER, which is exactly the CANONICAL order Cadenza's
         // `Map.to-list` yields — so enumeration matches the runtime for free (a `HashMap` would need an
         // explicit sort). Keys compare BY VALUE (`BTreeMap` uses `Ord`), matching the language's by-value
-        // key semantics. `K` must be `Ord`: a scalar/tuple/record/`String`/`Vec` key is (a float key is
-        // NOT — it declines, rare). Key/value map recursively; either unmapped declines the whole map.
-        Ty::Map(k, v) => Some(format!(
+        // key semantics. `K` must be `Ord`: a scalar/tuple/record/`String`/`Vec` key is — but a FLOAT is
+        // NOT `Ord` in Rust (only `PartialOrd`), so a float-keyed `BTreeMap` fails to compile (E0277). The
+        // runtime orders a float key by its canonical bytes, so the wasm backend supports it; the Rust
+        // backend cannot, so a float (or float-containing) KEY DECLINES here. Key/value map recursively;
+        // either unmapped (or a non-`Ord` key) declines the whole map.
+        Ty::Map(k, v) if ty_is_ord(k) => Some(format!(
             "std::collections::BTreeMap<{}, {}>",
             rust_type(k)?,
             rust_type(v)?
         )),
         // A SET is a persistent collection of unique elements — Rust's ordered `BTreeSet<T>` (sorted
         // iteration = the canonical `Set.to-list` order; `Ord` element compares by value, dedup at insert).
-        Ty::Set(elem) => Some(format!("std::collections::BTreeSet<{}>", rust_type(elem)?)),
+        // Like a Map key, the element must be `Ord`: a FLOAT element is only `PartialOrd`, so a
+        // `BTreeSet<f64>` fails to compile (E0277) — the runtime orders it by canonical bytes (wasm
+        // supports it), the Rust backend cannot, so a float (or float-containing) element DECLINES.
+        Ty::Set(elem) if ty_is_ord(elem) => {
+            Some(format!("std::collections::BTreeSet<{}>", rust_type(elem)?))
+        }
         // A BYTES value is a raw byte sequence — Rust's owned `Vec<u8>`. Non-Copy (owned heap buffer) →
         // clone-on-read covers a shared bytes value. (Cadenza's `Bytes` is a persistent rope at run time;
         // the native rep is a flat `Vec<u8>`, and every emitted bytes op produces a NEW `Vec` — the
@@ -138,6 +146,38 @@ pub fn rust_type(ty: &Ty) -> Option<String> {
         Ty::String => Some("String".to_string()),
         // Functions and type/erased values have no native mapping.
         _ => None,
+    }
+}
+
+/// Whether `ty` maps to a Rust type that implements `Ord` — the bound `BTreeSet<T>`/`BTreeMap<K,_>`
+/// requires of its element/key. Every scalar/text/compound the backend represents IS `Ord` EXCEPT a
+/// FLOAT: Rust's `f64`/`f32` are `PartialOrd` but NOT `Ord` (NaN breaks totality), so a float in an
+/// ordered position (the Set element or Map key, or nested inside a tuple/record/list/set/map used
+/// there) makes the `BTree*` uninstantiable (E0277). This is the ORDERED-position twin of
+/// `enums::ty_derives_eq`'s `Ty::Float => false` — the runtime orders a float by its canonical bytes
+/// (so wasm supports a float key/element), but the Rust backend has no total float order, so it
+/// DECLINES rather than emit an uncompilable `BTreeSet<f64>`.
+///
+/// Pure (no `Db`) — floats are detected structurally. A `Sum`/`Nominal` is treated as `Ord` here
+/// (its emitted enum derives `Ord` when its payloads are `Eq`-derivable, which already excludes a
+/// float payload; a float-carrying sum used as a key is not exercised and would be caught by the
+/// enum-derive path, not here). A `Fn`/`Var`/other type has no native rep and never reaches an
+/// ordered position through `rust_type` (it declines earlier).
+pub(super) fn ty_is_ord(ty: &Ty) -> bool {
+    match ty {
+        // A float is `PartialOrd` but NOT `Ord` — the one scalar that cannot key a `BTree*`.
+        Ty::Float(_) => false,
+        // Compounds are `Ord` iff every ordered component is (a tuple/record derives `Ord` element-
+        // wise; a `Vec`/`BTreeSet`/`BTreeMap` is `Ord` iff its element/key(+value) are). Recurse so a
+        // float ANYWHERE inside an ordered key/element is caught (e.g. `Set (Tuple Int64 Float64)`).
+        Ty::Tuple(elems) => elems.iter().all(ty_is_ord),
+        Ty::Record(fields) => fields.values().all(ty_is_ord),
+        Ty::Nominal { inner, .. } => ty_is_ord(inner),
+        Ty::List(e) | Ty::Set(e) => ty_is_ord(e),
+        Ty::Map(k, v) => ty_is_ord(k) && ty_is_ord(v),
+        // Every other representable type (Int/Bool/Unit/Char/String/Bytes/Sum) maps to an `Ord` Rust
+        // type. A non-representable type (`Fn`, free `Var`) declines in `rust_type` before this matters.
+        _ => true,
     }
 }
 

@@ -2599,6 +2599,7 @@ todo	a CAPTURING closure taking an Option Int64 ARG crosses the direct-call boun
 todo	a CAPTURING closure taking an Option Int64 ARG — None takes the captured value
 todo	a DOUBLY-nested Tuple ARG (three levels deep) crosses the direct-call boundary
 todo	a FLOAT-field Tuple closure ARG flattens + rebuilds (box-float imported)
+todo	a Float element inserted into an empty (runtime) set boxes with box-float, not box-int
 todo	a Float64 closure captures a Float64 build-time host effect result
 todo	a GENERIC user sum crosses a module boundary at a concrete instantiation
 todo	a List-returning closure alongside a plain export — the closure
