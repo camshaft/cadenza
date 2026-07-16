@@ -387,4 +387,124 @@ mod tests {
         assert_eq!(infix_prec("Unit./"), infix_prec("/"));
         assert_eq!(infix_prec("Unit.^"), infix_prec("^"));
     }
+
+    // The full set of keyword spellings the parser recognizes — kept in sync with the `keyword` match
+    // and the `Keyword` enum. `all_keyword_spellings_classify` pins that each spelling maps to a
+    // keyword; `every_keyword_variant_has_a_spelling` pins the reverse (no enum variant is unreachable).
+    const KEYWORD_SPELLINGS: &[(&str, Keyword)] = &[
+        ("let", Keyword::Let),
+        ("in", Keyword::In),
+        ("if", Keyword::If),
+        ("then", Keyword::Then),
+        ("else", Keyword::Else),
+        ("fn", Keyword::Fn),
+        ("def", Keyword::Def),
+        ("type", Keyword::Type),
+        ("match", Keyword::Match),
+        ("with", Keyword::With),
+        ("module", Keyword::Module),
+        ("import", Keyword::Import),
+        ("export", Keyword::Export),
+        ("effect", Keyword::Effect),
+        ("handle", Keyword::Handle),
+        ("host", Keyword::Host),
+        ("as", Keyword::As),
+    ];
+
+    #[test]
+    fn all_keyword_spellings_classify() {
+        // Each listed spelling classifies as its keyword; a non-keyword word (and an ordinary
+        // kebab-case identifier) classifies as None.
+        for &(text, kw) in KEYWORD_SPELLINGS {
+            assert_eq!(keyword(text), Some(kw), "{text:?} is a keyword");
+        }
+        for text in [
+            "and", "or", "byte-at", "letx", "iff", "As", "LET", "", "let ",
+        ] {
+            assert_eq!(keyword(text), None, "{text:?} is not a keyword");
+        }
+    }
+
+    #[test]
+    fn keywords_are_case_sensitive_and_exact() {
+        // Keyword classification is exact-match: no case-folding, no prefix match. A capitalized or
+        // substring'd spelling is an ordinary identifier (so `Let`, `Type`-prefixed names are free).
+        assert_eq!(keyword("As"), None);
+        assert_eq!(keyword("Type"), None);
+        assert_eq!(keyword("matches"), None);
+        assert_eq!(keyword("in-scope"), None);
+    }
+
+    #[test]
+    fn keyword_and_word_op_are_disjoint() {
+        // A spelling is at most ONE of {keyword, word-operator} — the parser's contextual decision
+        // relies on these two classifiers never both firing for the same text. `and`/`or` are the two
+        // word operators and must NOT also be keywords.
+        for &(text, _) in KEYWORD_SPELLINGS {
+            assert!(
+                word_op(text).is_none(),
+                "{text:?} is a keyword and must not also be a word-operator"
+            );
+        }
+        for w in ["and", "or"] {
+            assert_eq!(keyword(w), None, "{w:?} is a word-operator, not a keyword");
+            assert_eq!(word_op(w), Some(w));
+        }
+        assert_eq!(word_op("nand"), None); // not a word operator
+    }
+
+    #[test]
+    fn is_reserved_is_exactly_keyword_union_word_op() {
+        // `is_reserved` (what the printer backtick-escapes so a reserved word survives as a bare name)
+        // MUST be exactly keyword ∪ word_op — no more, no less. Every keyword and word-op is reserved;
+        // an ordinary identifier is not.
+        for &(text, _) in KEYWORD_SPELLINGS {
+            assert!(is_reserved(text), "{text:?} (keyword) is reserved");
+        }
+        for w in ["and", "or"] {
+            assert!(is_reserved(w), "{w:?} (word-op) is reserved");
+        }
+        for text in ["byte-at", "foo", "let-binding", "and-then", "x"] {
+            assert!(
+                !is_reserved(text),
+                "{text:?} is an ordinary name, not reserved"
+            );
+        }
+    }
+
+    #[test]
+    fn every_keyword_variant_has_a_spelling() {
+        // Guard against adding a `Keyword` enum variant without a `keyword()` spelling (it would be
+        // unreachable — a dead keyword). The `canonical_spelling` match below is EXHAUSTIVE, so adding
+        // a variant is a compile error until it is given a spelling; then this asserts that spelling
+        // round-trips back through `keyword()` to the same variant.
+        fn canonical_spelling(kw: Keyword) -> &'static str {
+            match kw {
+                Keyword::Let => "let",
+                Keyword::In => "in",
+                Keyword::If => "if",
+                Keyword::Then => "then",
+                Keyword::Else => "else",
+                Keyword::Fn => "fn",
+                Keyword::Def => "def",
+                Keyword::Type => "type",
+                Keyword::Match => "match",
+                Keyword::With => "with",
+                Keyword::Module => "module",
+                Keyword::Import => "import",
+                Keyword::Export => "export",
+                Keyword::Effect => "effect",
+                Keyword::Handle => "handle",
+                Keyword::Host => "host",
+                Keyword::As => "as",
+            }
+        }
+        for &(_, kw) in KEYWORD_SPELLINGS {
+            assert_eq!(
+                keyword(canonical_spelling(kw)),
+                Some(kw),
+                "{kw:?} round-trips through its spelling"
+            );
+        }
+    }
 }
