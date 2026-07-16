@@ -127,6 +127,15 @@ carry the gate summary (fail-set diff, test count) so pr-sync can trust it fast.
 state the concrete options so the human can decide in one line — the concierge is a router, not an
 investigator.
 
+**A `merge-request` integrates the SINGLE `--ref` commit, NOT your branch range.** pr-sync applies
+just the one commit you name in `--ref` onto `trunk` (verified empirically: every per-MR landing is a
+single linear commit) — it does NOT pull in the other commits reachable from your branch below that
+`--ref`. So if you have a LOCAL STACK of N commits, do NOT send one merge-request for the tip and
+expect the whole stack to land — only the tip would. Send **one merge-request per commit, oldest-first,
+and wait for each `merged` before sending the next**. After one lands, `cargo xtask fleet sync` cleanly
+drops it by patch-id and replays the rest of your stack, giving you the next commit to send as a fresh
+`--ref`. (Keep each commit independently green so this per-commit cadence never lands a broken `trunk`.)
+
 **Delivery wakes the recipient.** `fleet send` doesn't just drop the JSON — after delivering it
 nudges the recipient's tmux window into an immediate tick (`send-keys`), so a message is reacted to
 within seconds instead of waiting for the next scheduled `/loop`. Delivery == wake. This means when

@@ -3270,6 +3270,17 @@ fn thread_bounded(
                 Some(r) => r,
                 None => crate::eval::lambda_body_of_nullary(db, head)?,
             };
+            // DEEP-FRESH the reduced body before threading it. `apply_lambda`/`beta_reduce` SUBSTITUTES the
+            // (threaded) args for the callee's params by returning each arg node AS-IS (its pinned-name fast
+            // path), so a substituted arg that is a RESOLVE-PINNED reference to a DRIVER param — the caller's
+            // `acc` spliced into an inlined helper `turn(a, acc) = acc + …` — keeps its pin to the caller's
+            // (now-dead) scope. When this inline happens INSIDE a recursive self-call's arg, the reduced body
+            // lands in the synthesized `f#ctx` def, where that pinned `acc` no longer resolves → CDZ0101
+            // unbound (v-agent-harness Inc-3, the helper-references-a-driver-param sub-case). A fully-fresh
+            // copy drops the stale pins so every name re-resolves against the specialized def's sig (which
+            // carries the driver's params). Harmless for the non-nested inline (a fresh copy of a body whose
+            // refs already resolve re-resolves to the same bindings).
+            let reduced = deep_fresh_copy(db, reduced);
             thread_bounded(db, reduced, cur, ctx, inline_depth + 1)
         }
         // An `(if cond then else)` — the condition is evaluated (thread state through it), then BOTH

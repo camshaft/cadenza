@@ -3464,3 +3464,25 @@
                 (run 4 0)))
             (export main)))
   (output (: 10 Int64)))
+
+(case "an effectful helper that also reads an outer/driver parameter folds in a self-call arg"
+  (doc    "The follow-up to the single-param effectful-helper-in-a-self-call-arg case: here the helper
+           `turn` performs AND references a DRIVER parameter in its own body — `turn(a, acc) = acc +
+           Tools.dispatch a`, called as `(run (- fuel 1) (turn fuel acc))`, where `acc` is also `run`'s
+           param. Inlining `turn` β-substitutes the driver's `acc` into the helper body by returning the arg
+           node AS-IS (the pinned-name fast path), so that `acc` kept a pin to `run`'s now-dead scope; when
+           the inline happens INSIDE the recursive self-call's arg, the reduced body lands in the synthesized
+           `f#ctx` def where the pinned `acc` no longer resolves → CDZ0101 `unbound name acc`. Deep-fresh-
+           copying the reduced inline body drops the stale pins so every name re-resolves against the
+           specialized def's sig (carrying the driver's params). `run 4 0` = 4+3+2+1 = 10. (v-agent-harness
+           Inc-3 follow-up.)")
+  (input  (do
+            (effect Tools (op dispatch (-> Int64 Int64)) (op done (-> Int64 Int64)))
+            (def (turn (: a Int64) (: acc Int64)) (+ acc (Tools.dispatch a)))
+            (def (run (: fuel Int64) (: acc Int64))
+              (if (= fuel 0) (Tools.done acc) (run (- fuel 1) (turn fuel acc))))
+            (def (main)
+              (handle Tools 0 ((dispatch (a) s (resume a a)) (done (a) s (resume a a)))
+                (run 4 0)))
+            (export main)))
+  (output (: 10 Int64)))

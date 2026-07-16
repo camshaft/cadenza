@@ -3800,6 +3800,85 @@
             (export main)))
   (output (: 60 Int64)))
 
+; scan (RUNNING FOLD) behavioral edges (breaker): the just-landed giter.cdz scan (slice 7) emits each
+; intermediate accumulator — the seed first, one per element, so n+1 outputs — threading an accumulator AND
+; a closure. The landed giter.cdz @tests cover running-sum at two types; these pin the uncovered behavior as
+; corpus: the n+1 count, the accumulator threaded LEFT-TO-RIGHT (an order-sensitive folder, which a plain
+; sum can't distinguish from a wrong order), a specific intermediate by index, and the empty-input base case
+; (emits just the seed — needs an annotated element type, since a bare empty (list) leaves `a` unconstrained).
+
+(case "scan emits the seed plus one accumulator per element (n+1 outputs)"
+  (doc    "`scan` is a running fold that emits the seed THEN one accumulator per element, so over a 4-element
+           list it yields 5 outputs. `scan [1,2,3,4] 0 (+)` → [0,1,3,6,10], icount 5. Pins the n+1 length —
+           the seed is emitted (not skipped) and each element contributes exactly one accumulator.")
+  (input  (do
+            (type Iter (Nil) (Cons a (Iter a)))
+            (def (from-list xs)
+              (match xs ((list) (Iter.Nil)) ((list h .. t) (Iter.Cons h (from-list t)))))
+            (def (scan it acc f)
+              (match it
+                ((Iter.Nil) (Iter.Cons acc (Iter.Nil)))
+                ((Iter.Cons h rest) (Iter.Cons acc (scan rest (f acc h) f)))))
+            (def (icount it) (match it ((Iter.Nil) 0) ((Iter.Cons h rest) (+ 1 (icount rest)))))
+            (def (main) (icount (scan (from-list (list 1 2 3 4)) 0 (fn (a x) (+ a x)))))
+            (export main)))
+  (output (: 5 Int64)))
+
+(case "scan threads its accumulator left-to-right (an order-sensitive folder)"
+  (doc    "The accumulator is threaded LEFT-TO-RIGHT: with an order-sensitive folder `(a*10 + x)` over
+           [1,2,3] the running accumulators are [0,1,12,123], whose LAST is 123. A running SUM cannot
+           distinguish left-to-right from right-to-left (addition is commutative); this folder can, so it
+           pins the fold direction — a scan that threaded the accumulator the other way would yield a
+           different last value.")
+  (input  (do
+            (type Iter (Nil) (Cons a (Iter a)))
+            (def (from-list xs)
+              (match xs ((list) (Iter.Nil)) ((list h .. t) (Iter.Cons h (from-list t)))))
+            (def (scan it acc f)
+              (match it
+                ((Iter.Nil) (Iter.Cons acc (Iter.Nil)))
+                ((Iter.Cons h rest) (Iter.Cons acc (scan rest (f acc h) f)))))
+            (def (last it) (match it ((Iter.Nil) -1) ((Iter.Cons h rest) (match rest ((Iter.Nil) h) (_ (last rest))))))
+            (def (main) (last (scan (from-list (list 1 2 3)) 0 (fn (a x) (+ (* a 10) x)))))
+            (export main)))
+  (output (: 123 Int64)))
+
+(case "scan's kth emitted accumulator is the running fold of the first k elements"
+  (doc    "Indexing INTO the running fold: the accumulator at index 2 of `scan [10,20,30] 0 (+)` is the sum
+           of the first TWO elements (10+20 = 30) — index 0 is the seed 0, index 1 is 10, index 2 is 30. Pins
+           that each intermediate is the fold of exactly the elements consumed before it, not an off-by-one.")
+  (input  (do
+            (type Iter (Nil) (Cons a (Iter a)))
+            (def (from-list xs)
+              (match xs ((list) (Iter.Nil)) ((list h .. t) (Iter.Cons h (from-list t)))))
+            (def (scan it acc f)
+              (match it
+                ((Iter.Nil) (Iter.Cons acc (Iter.Nil)))
+                ((Iter.Cons h rest) (Iter.Cons acc (scan rest (f acc h) f)))))
+            (def (nth it n) (match it ((Iter.Nil) -1) ((Iter.Cons h rest) (if (= n 0) h (nth rest (- n 1))))))
+            (def (main) (nth (scan (from-list (list 10 20 30)) 0 (fn (a x) (+ a x))) 2))
+            (export main)))
+  (output (: 30 Int64)))
+
+(case "scan over an empty iterator emits just the seed"
+  (doc    "The base case: `scan` over an EMPTY iterator emits only the seed accumulator — one output, length
+           1 (the `(Iter.Nil)` arm returns `(Cons acc Nil)`). The empty list is annotated `(List Int64)` so
+           the element type `a` is determined (a bare empty `(list)` leaves `a` unconstrained → CDZ0201, the
+           general empty-polymorphic-literal ambiguity, not a scan issue). Pins that even with no elements
+           the seed is still emitted — scan never yields the empty iterator.")
+  (input  (do
+            (type Iter (Nil) (Cons a (Iter a)))
+            (def (from-list (: xs (List Int64)))
+              (match xs ((list) (Iter.Nil)) ((list h .. t) (Iter.Cons h (from-list t)))))
+            (def (scan it acc f)
+              (match it
+                ((Iter.Nil) (Iter.Cons acc (Iter.Nil)))
+                ((Iter.Cons h rest) (Iter.Cons acc (scan rest (f acc h) f)))))
+            (def (icount it) (match it ((Iter.Nil) 0) ((Iter.Cons h rest) (+ 1 (icount rest)))))
+            (def (main) (icount (scan (from-list (list)) 0 (fn (a x) (+ a x)))))
+            (export main)))
+  (output (: 1 Int64)))
+
 (case "a recursive-generic transformer threading an IDENTITY closure composes at a single element type"
   (doc    "A pure IDENTITY closure `(fn (s) s)`, whose RESULT is determined only by its DOMAIN (not fixed by
            the body bottom-up), now composes through a recursive-generic transformer at a single element

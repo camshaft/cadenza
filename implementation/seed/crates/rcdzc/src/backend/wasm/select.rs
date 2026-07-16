@@ -7190,7 +7190,12 @@ fn emit(
         // width's value is always < 2^63 so both paths agree, but keying on signedness is uniform + correct.)
         Core::BigIntOfI64 { value } => {
             if int_ty_of(db, value).ground_signed() {
-                emit(db, value, slots, base, high, scratch_ty, layout, out)?; // [x : i64]
+                emit(db, value, slots, base, high, scratch_ty, layout, out)?; // [x]
+                // A NARROW signed source (Int8/16/32) lives in an i32 SLOT, but `bigint-of-i64` takes an i64
+                // — sign-extend the i32 to i64 first, or the module fails wasm validation ("expected i64,
+                // found i32"). A full-width Int64 is already i64 and this is a no-op. (`emit_box_i32_to_i64_
+                // extend` is the same widen every `box-int` payload site uses; it extends by the source sign.)
+                emit_box_i32_to_i64_extend(db, value, out); // [x : i64]
                 out.push(Lir::CallImport(OP_BIGINT_OF_I64)); // → [bigint handle : i32]
                 return Ok(());
             }
@@ -7199,7 +7204,12 @@ fn emit(
             let val_slot = *high;
             *high = val_slot + 1;
             scratch_ty.insert(val_slot, ValType::I64);
-            emit(db, value, slots, base, high, scratch_ty, layout, out)?; // [x : i64]
+            emit(db, value, slots, base, high, scratch_ty, layout, out)?; // [x]
+            // A NARROW unsigned source (UInt8/16/32) is in an i32 slot — ZERO-extend to i64 before stashing
+            // in the i64 scratch (else the `local.set` type-mismatches, and the high magnitude bytes would be
+            // garbage). `emit_box_i32_to_i64_extend` zero-extends an unsigned narrow int; a full-width UInt64
+            // is already i64 (no-op). This keeps the byte-extraction loop reading a correct 64-bit magnitude.
+            emit_box_i32_to_i64_extend(db, value, out); // [x : i64]
             out.push(Lir::LocalSet(val_slot)); // [] — x stashed
             out.push(Lir::ConstI32(9)); // [9] — 1 sign byte + 8 magnitude bytes
             out.push(Lir::CallImport(OP_BYTES_ALLOC)); // → [buf]

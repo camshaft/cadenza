@@ -3402,6 +3402,45 @@
   (call   main (: 42 UInt64))
   (output (: 42 Int64)))
 
+; A NARROW-width int (Int8/16/32, UInt8/16/32) lives in an i32 MACHINE SLOT, but `bigint-of-i64` takes an
+; i64 — so `BigInt.of` on a narrow source MUST widen the i32 to i64 (sign-extend for a signed width,
+; zero-extend for an unsigned one) before the call. Omitting the extend fed an i32 into the i64 param and
+; the compiler EMITTED an INVALID COMPONENT (`type mismatch: expected i64, found i32` — a decline-don't-
+; miscompile violation, worse than a clean decline). breaker-found neighbor of the UInt64 fix above; the
+; full-width path was unaffected (already i64). The zero-extend is load-bearing for an unsigned high bit.
+(case "BigInt.of a UInt32 at its high bit is a positive BigInt (narrow zero-extend, not sign)"
+  (doc    "`main(2^31)` widens a `UInt32` whose high bit is set. The value is in an i32 slot; a signed
+           extend would read the high bit as a sign and yield a negative BigInt, and NO extend emitted an
+           invalid component. Zero-extending to i64 (unsigned source) makes it the positive 2^31, so
+           `(> (BigInt.of x) 0)` is true.")
+  (input  (do (def (main (: x UInt32)) (> (BigInt.of x) (BigInt.of 0))) (export main)))
+  (call   main (: 2147483648 UInt32))
+  (output (: true Bool)))
+
+(case "BigInt.of a signed Int32 is a positive BigInt (the narrow path breaks regardless of sign)"
+  (doc    "The signed narrow companion: `BigInt.of (5:Int32)` — a small positive Int32 in an i32 slot. The
+           bug was NOT unsigned-specific: with no i32→i64 extend the module was invalid for a SIGNED narrow
+           width too. Sign-extending the i32 yields the positive 5, `> 0` is true.")
+  (input  (do (def (main (: x Int32)) (> (BigInt.of x) (BigInt.of 0))) (export main)))
+  (call   main (: 5 Int32))
+  (output (: true Bool)))
+
+(case "BigInt.of a UInt8 at its high bit widens to the exact value (smallest-width zero-extend)"
+  (doc    "The smallest width: `BigInt.of (200:UInt8)` — 200 has the UInt8 high bit set. The zero-extension
+           must not read that bit as a sign (which would give a negative value); it widens to the exact
+           positive 200, equal to `BigInt.of 200`.")
+  (input  (do (def (main (: x UInt8)) (= (BigInt.of x) (BigInt.of 200))) (export main)))
+  (call   main (: 200 UInt8))
+  (output (: true Bool)))
+
+(case "BigInt.of a UInt64 at its high bit still works (the full-width control)"
+  (doc    "The control: the FULL-WIDTH UInt64 path is already an i64 slot, so it never needed the extend
+           and was unaffected by the narrow bug. Pins that the fix is specifically the NARROW (≤32-bit)
+           i32-slot path — `main(2^63)` remains a positive BigInt.")
+  (input  (do (def (main (: x UInt64)) (> (BigInt.of x) (BigInt.of 0))) (export main)))
+  (call   main (: 9223372036854775808 UInt64))
+  (output (: true Bool)))
+
 (case "a parameterized export returns a runtime Rational computed from its argument"
   (doc    "The Rational companion: `main(1) = 1/6 + 1/6 = 1/3` exactly, the runtime rational built from
            the argument crossing the boundary via the param-forwarding resource escape.")

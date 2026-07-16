@@ -166,3 +166,76 @@ fn cedar_authorizer_maps_decision_to_gate_value_fail_closed() {
         "a malformed policy must FAIL CLOSED (deny), never silently allow"
     );
 }
+
+#[test]
+fn the_embedder_gates_the_loop_on_an_on_behalf_of_delegation() {
+    // ON-BEHALF-OF end-to-end: an agent acting for a user is gated by the INTERSECTION of its own
+    // policies AND the user's delegation grant (the narrower bound wins, DESIGN §4.2). Same authz-model
+    // consumer (authorizes "tool:chat" then converses → byte-len 2 on allow, else 0), but the authorizer
+    // is a DELEGATED one. This is the operator's explicit ask: "grant an agent to work on behalf of a
+    // user, scoped by policy."
+    let consumer = include_bytes!("fixtures/authz-model-consumer.wasm");
+    let req = cdz_run::required_runtime(consumer)
+        .expect("read runtime requirement")
+        .expect("fixture imports the runtime");
+    let Some(runtime) = find_runtime(&req.hash) else {
+        eprintln!(
+            "[cdz-agent] runtime {} absent or stale fixture; skipping",
+            req.hash
+        );
+        return;
+    };
+    let opts = cdz_run::RunOpts {
+        export: Some("main".to_string()),
+        args: Vec::new(),
+        runtime: Some(runtime),
+        runtime_cache_dir: None,
+        host_responses: Vec::new(),
+    };
+    let principal = r#"Agent::"agent:harness""#;
+    let resource = r#"Tool::"chat""#;
+    let on_behalf = r#"{"on_behalf_of":"user:cameron"}"#;
+
+    // (a) BOTH allow: the agent may chat, and the user delegated chat (when acting for that user) →
+    // allow → converse → byte-len 2.
+    let both = cdz_agent::cedar_delegated_authorizer(
+        r#"permit(principal, action, resource);"#.to_string(), // agent: anything
+        r#"permit(principal, action == Action::"tool:chat", resource) when { context.on_behalf_of == "user:cameron" };"#.to_string(),
+        principal.to_string(),
+        resource.to_string(),
+        on_behalf.to_string(),
+    );
+    match cdz_agent::run_authorized_agent_loop(consumer, &opts, cdz_agent::mock_converse, both) {
+        Ok(cdz_run::Outcome::Value(s)) => {
+            assert_eq!(
+                s, "2",
+                "agent allows AND delegation allows (for this user) → allow"
+            )
+        }
+        Ok(cdz_run::Outcome::Trap(t)) => panic!("delegated allow trapped: {t}"),
+        Err(e) => panic!("delegated allow errored: {e}"),
+    }
+
+    // (b) The DELEGATION does not cover chat (grants a different tool) → intersection denies → 0, even
+    // though the agent itself could. The narrower bound (the delegation) wins.
+    let narrow_delegation = cdz_agent::cedar_delegated_authorizer(
+        r#"permit(principal, action, resource);"#.to_string(), // agent: anything
+        r#"permit(principal, action == Action::"tool:other", resource) when { context.on_behalf_of == "user:cameron" };"#.to_string(),
+        principal.to_string(),
+        resource.to_string(),
+        on_behalf.to_string(),
+    );
+    match cdz_agent::run_authorized_agent_loop(
+        consumer,
+        &opts,
+        cdz_agent::mock_converse,
+        narrow_delegation,
+    ) {
+        Ok(cdz_run::Outcome::Value(s)) => assert_eq!(
+            s, "0",
+            "a delegation that doesn't cover the action denies even a broad agent (narrower wins)"
+        ),
+        Ok(cdz_run::Outcome::Trap(t)) => panic!("delegated deny trapped: {t}"),
+        Err(e) => panic!("delegated deny errored: {e}"),
+    }
+}

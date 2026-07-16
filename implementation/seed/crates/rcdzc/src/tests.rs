@@ -5683,6 +5683,33 @@ fn an_effectful_helper_in_a_selfcall_arg_folds() {
     }
 }
 
+/// The follow-up sub-case: an effectful helper that ALSO reads a DRIVER parameter in its own body —
+/// `turn(a, acc) = acc + Tools.dispatch a`, called `(run (- fuel 1) (turn fuel acc))` where `acc` is also
+/// `run`'s param. Inlining `turn` β-substitutes the driver's `acc` by returning the arg node as-is (the
+/// pinned-name fast path), so `acc` kept a pin to `run`'s dead scope; inside the recursive self-call arg,
+/// the reduced body landed in the synthesized `f#ctx` def where the pinned `acc` no longer resolved →
+/// CDZ0101 `unbound acc`. Deep-fresh-copying the reduced inline body (in the cross-function-inline arm)
+/// drops the stale pins so every name re-resolves against the specialized def's sig. `run 4 0` = 10.
+/// (A NESTED two-effect variant — an outer `Cedar` handler around the `Tools` one — still declines with a
+/// `run#eff$s0` leak: the merged-context manifestation, queued separately.)
+#[test]
+fn an_effectful_helper_reading_a_driver_param_in_a_selfcall_arg_folds() {
+    use crate::testkit::parse;
+    let src = "(do \
+        (effect Tools (op dispatch (-> Int64 Int64)) (op done (-> Int64 Int64))) \
+        (def (turn (: a Int64) (: acc Int64)) (+ acc (Tools.dispatch a))) \
+        (def (run (: fuel Int64) (: acc Int64)) \
+          (if (= fuel 0) (Tools.done acc) (run (- fuel 1) (turn fuel acc)))) \
+        (def (main) \
+          (handle Tools 0 ((dispatch (a) s (resume a a)) (done (a) s (resume a a))) \
+            (run 4 0))) (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src)))
+        .expect("an effectful helper reading a driver param folds (deep-fresh inline-body copy)");
+    if let Some(v) = run_linked(&bytes, "main") {
+        assert_eq!(v, "10");
+    }
+}
+
 // --- HOST-COMPOSITION INVARIANT boundary (§4.4: a reified/duplicated continuation must NOT span a host
 // call or an outer handler's effect). These are documented in 14-effects-and-handlers.sexp as a "clean
 // decline" but were not pinned by any test — so a future fold change that admitted the multi-shot /
@@ -69449,6 +69476,78 @@ mod cross_component_oracle {
                 "a let-bound peer compound is read twice (both live) then reclaimed"
             ),
             cdz_run::Outcome::Trap(t) => panic!("let-bound peer-compound run trapped: {t}"),
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // PL45 — MIXED-OWNERSHIP reclamation: a peer compound is projected AND its fields are rebuilt into a
+    // FRESH compound that ESCAPES as a resource. U13/U14/U15 consume a peer compound into a SCALAR; here
+    // the peer tuple is let-bound, both fields read (borrowing projections), then a NEW tuple mixing a
+    // projected field + a local computation is returned → escapes. This exercises the interaction of
+    // peer-result reclamation (the borrowed peer handle must drop once at scope end, NOT be double-counted
+    // against the escaping resource) WITH the resource-escape allocation (the fresh tuple is the escaped
+    // handle) IN ONE body. A mis-count would trap or return garbage under wasmtime (byte-valid ≠
+    // refcount-correct). Provider mk(x)=(x,x); main(5) = (t.0, t.1+100) = (5, 105) → escapes.
+    // ------------------------------------------------------------------------------------------------
+    #[test]
+    fn a_peer_compound_projected_and_rebuilt_into_a_fresh_escaping_compound_reclaims_correctly() {
+        use crate::testkit::parse;
+        let provider = compile_provider(
+            "(do (def (mk (: x Int64)) (tuple x x)) (export mk))",
+            "cadenza:p/api",
+        );
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&provider)
+                .expect("the mk provider validates");
+        }
+        // Peer tuple let-bound, both fields projected (borrows), a FRESH tuple built mixing t.0 + a local
+        // (t.1 + 100), returned → escapes as a resource while the borrowed peer handle drops at scope end.
+        let src = "(do \
+            (effect P (op mk (-> Int64 (Tuple Int64 Int64)))) \
+            (bind P \"cadenza:p/api\") \
+            (def (main (: x Int64)) \
+              (host (P) (let ((t (P.mk x))) (tuple (. t 0) (+ (. t 1) 100))))) \
+            (export main))";
+        let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .unwrap_or_else(|d| {
+                panic!(
+                    "mixed-ownership peer-rebuild consumer compiles: {} [{:?}]",
+                    d.message, d.code
+                )
+            });
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&consumer)
+                .expect("the mixed-ownership peer-rebuild consumer validates");
+        }
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("[PL45] runtime wasm not found; skipping");
+            return;
+        };
+        let peers = vec![cdz_run::Peer {
+            bytes: provider,
+            interface: "cadenza:p/api".to_string(),
+        }];
+        let opts = cdz_run::RunOpts {
+            export: None,
+            args: vec!["5".to_string()],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run_with_peers(&consumer, &peers, &opts).expect(
+            "a peer compound projected + rebuilt into a fresh escaping compound reclaims correctly",
+        ) {
+            // mk(5)=(5,5); main returns (5, 5+100)=(5,105). The peer tuple was reclaimed while the FRESH
+            // tuple escaped — no double-free (would trap) and no garbage (would give wrong fields).
+            cdz_run::Outcome::Value(s) => assert_eq!(
+                s, "(: (tuple 5 105) (Tuple Int64 Int64))",
+                "a peer compound projected + rebuilt into a fresh escaping compound reclaims without a use-after-free"
+            ),
+            cdz_run::Outcome::Trap(t) => {
+                panic!("mixed-ownership peer-rebuild run trapped (double-free?): {t}")
+            }
         }
     }
 

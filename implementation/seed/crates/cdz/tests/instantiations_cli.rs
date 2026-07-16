@@ -133,12 +133,13 @@ fn a_linear_recursion_is_reported_as_transformed_into_an_accumulator() {
 }
 
 #[test]
-fn an_unknown_name_reports_no_such_definition_on_stderr_and_succeeds() {
-    // An unknown name is TOTAL: an empty artifact → a `no such definition` note on stderr, empty stdout,
-    // and a SUCCESS exit (the query ran; the name just names nothing). Pins the exact CLI contract.
+fn an_unknown_name_reports_no_such_definition_on_stderr_and_fails() {
+    // An unknown name: the query runs (total) but the name resolves to NOTHING → a `no such definition`
+    // note on stderr, empty stdout, and a NON-ZERO exit — consistent with `cdz type`/`cdz doc`, so a
+    // script can tell a typo from a real result rather than reading a success exit on "no such definition".
     let file = temp_src("ghost", GENERIC);
     let (ok, out, err) = run(&["instantiations", "ghost", &file]);
-    assert!(ok, "an unknown name still exits successfully: {err}");
+    assert!(!ok, "an unknown name now exits NON-ZERO: {out}");
     assert!(out.trim().is_empty(), "stdout is empty: {out}");
     assert!(
         err.contains("no such definition `ghost`"),

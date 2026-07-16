@@ -3,10 +3,14 @@ pass	Ast.decode converts bytes to an AST sum type value
 pass	Ast.decode decodes bytes that arrive as a function argument
 pass	Ast.encode and Ast.decode round-trip
 pass	BETA over the capture-avoiding substitution still proves the identity theorem (no regression)
+pass	BigInt.of a UInt32 at its high bit is a positive BigInt (narrow zero-extend, not sign)
 pass	BigInt.of a UInt64 at 2^63 - 1 is positive (the sub-high-bit control)
 pass	BigInt.of a UInt64 at 2^63 is a positive BigInt, not a wrong negative
+pass	BigInt.of a UInt64 at its high bit still works (the full-width control)
 pass	BigInt.of a UInt64 at u64::MAX is a positive BigInt
 pass	BigInt.of a UInt64 widens to the exact value (round-trips back through Int64.of where it fits)
+pass	BigInt.of a UInt8 at its high bit widens to the exact value (smallest-width zero-extend)
+pass	BigInt.of a signed Int32 is a positive BigInt (the narrow path breaks regardless of sign)
 pass	COMPOUND RESULT PAYLOAD: (Result (Tuple Int64 Int64) (Tuple Int64 Int64)) — BOTH sides compound
 pass	COMPOUND RESULT PAYLOAD: (Result (Tuple Int64 Int64) Int64) arg, drive Err (scalar side)
 pass	COMPOUND RESULT PAYLOAD: (Result (Tuple Int64 Int64) Int64) arg, drive Ok (tuple side)
@@ -2064,6 +2068,7 @@ pass	an Ast-value-spliced template round-trips through encode and decode
 pass	an IEC binary prefix converts exactly over Int64
 pass	an IEC binary prefix scales a unit by a power of two
 pass	an IEC-prefixed quantity displays scaled to its reference over Int64
+pass	an INFINITY-axiom theorem is unforgeable — its Thm cannot be fabricated outside the kernel
 pass	an Int argument to a Bool-annotated parameter is rejected
 pass	an Int argument to a parameter used as a Bool condition is rejected
 pass	an N suffix lets a huge literal need no annotation
@@ -2168,8 +2173,10 @@ pass	an effect result drives the bound of a PURE recursive helper called in the 
 pass	an effect that declares an operation name twice is rejected
 pass	an effect-built NESTED-compound value escapes the handle and a nested projection reads through it
 pass	an effect-built heap list bound in a let is USED TWICE and retained across both uses
+pass	an effect-performing helper called inside a recursive self-call's argument folds
 pass	an effectful condition is performed exactly once under the operator hoist
 pass	an effectful condition of a same-constructor if is performed exactly once
+pass	an effectful helper that also reads an outer/driver parameter folds in a self-call arg
 pass	an effectful init before a failing `?` performs exactly once
 pass	an effectful match scrutinee is performed exactly once across a two-position sink
 pass	an effectful shared operand performs after the condition, exactly once
@@ -2957,6 +2964,10 @@ pass	scaling a Float64 quantity by a bare integer is a numeric-type mismatch
 pass	scaling a quantity by a bare number of its own numeric type keeps its dimension
 pass	scaling a quantity by a dimensionless quantity keeps its dimension
 pass	scaling an integer quantity by a bare integer of its own type keeps its dimension
+pass	scan emits the seed plus one accumulator per element (n+1 outputs)
+pass	scan over an empty iterator emits just the seed
+pass	scan threads its accumulator left-to-right (an order-sensitive folder)
+pass	scan's kth emitted accumulator is the running fold of the first k elements
 pass	self-operand division is NOT folded to one — it still traps at zero
 pass	self-operand subtraction and xor are zero, and-or are the operand, on a runtime value
 pass	set equality is independent of the order elements are written
@@ -3021,6 +3032,7 @@ pass	the AST is a sum type deconstructible by pattern matching
 pass	the Bool generator covers both values across seeds (it is not a constant)
 pass	the ETA axiom is minted via new_axiom as a hypothesis-free theorem
 pass	the Float codec round-trips a negative value
+pass	the INFINITY axiom is minted via new_axiom (an infinite type exists)
 pass	the Int codec round-trips i64::MIN — the two's-complement boundary
 pass	the LEB128 byte composition runs on a runtime operand
 pass	the SELECT (choice) axiom is minted via new_axiom as a hypothesis-free theorem
@@ -3325,4 +3337,3 @@ pass	α-equivalence handles nesting and distinguishes a bound variable from a sa
 todo	SUM ARG + LIST RESULT declines cleanly (Option arg, List result)
 todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
-pass	an effect-performing helper called inside a recursive self-call's argument folds

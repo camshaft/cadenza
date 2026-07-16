@@ -1,0 +1,99 @@
+/// Unit tests for the widget declaration DSL (design D2) + the current-value→Cadenza-binding splice (the
+/// novel reactive-input mechanism, §5). Pins the `name : Type = control(...)` surface, per-control config,
+/// error collection, and — critically — that a Float64 widget value grounds with a decimal point (else it
+/// would compile as Int64). Run with `npm run test:unit`.
+
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { parseWidgets, bindingFor, literalFor, type Widget } from "./parseWidgets.ts";
+
+test("a slider parses min/max + named step/default", () => {
+  const { widgets, errors } = parseWidgets("principal : Float64 = slider(1000, 100000, step: 1000, default: 10000)");
+  assert.deepEqual(errors, []);
+  assert.deepEqual(widgets[0], {
+    name: "principal", type: "Float64", control: "slider",
+    min: 1000, max: 100000, step: 1000, default: 10000,
+  });
+});
+
+test("a slider defaults step (Int64→1, Float64→range/100) and default (→min) when omitted", () => {
+  const int = parseWidgets("years : Int64 = slider(1, 30)").widgets[0] as Extract<Widget, { control: "slider" }>;
+  assert.equal(int.step, 1);
+  assert.equal(int.default, 1); // → min
+  const flt = parseWidgets("rate : Float64 = slider(0, 100)").widgets[0] as Extract<Widget, { control: "slider" }>;
+  assert.equal(flt.step, 1); // (100-0)/100
+});
+
+test("text / checkbox / dropdown parse their type-appropriate defaults", () => {
+  assert.deepEqual(parseWidgets('label : String = text(default: "balance")').widgets[0], {
+    name: "label", type: "String", control: "text", default: "balance",
+  });
+  assert.deepEqual(parseWidgets("on : Bool = checkbox(default: true)").widgets[0], {
+    name: "on", type: "Bool", control: "checkbox", default: true,
+  });
+  assert.deepEqual(parseWidgets('mode : String = dropdown("annual", "monthly", default: "monthly")').widgets[0], {
+    name: "mode", type: "String", control: "dropdown", options: ["annual", "monthly"], default: "monthly",
+  });
+});
+
+test("dropdown default falls back to the first option when the declared default isn't an option", () => {
+  const w = parseWidgets('m : String = dropdown("a", "b", default: "z")').widgets[0] as Extract<Widget, { control: "dropdown" }>;
+  assert.equal(w.default, "a");
+});
+
+test("multiple widgets in one cell parse in order; comments + blanks are skipped", () => {
+  const src = [
+    "-- inputs",
+    "x : Int64 = slider(0, 10)",
+    "",
+    "# another",
+    "y : Float64 = slider(0, 1)",
+  ].join("\n");
+  const { widgets, errors } = parseWidgets(src);
+  assert.deepEqual(errors, []);
+  assert.deepEqual(widgets.map((w) => w.name), ["x", "y"]);
+});
+
+test("errors are collected per-line, not thrown; valid lines still parse", () => {
+  const src = [
+    "good : Int64 = slider(0, 10)",
+    "bad line with no equals",
+    "wrongtype : Frobnicate = slider(0, 1)",
+    "text-needs-string : Int64 = text(default: \"x\")",
+    "also-good : Bool = checkbox(default: false)",
+  ].join("\n");
+  const { widgets, errors } = parseWidgets(src);
+  assert.deepEqual(widgets.map((w) => w.name), ["good", "also-good"]);
+  assert.equal(errors.length, 3);
+  assert.equal(errors[0].line, 2);
+  assert.match(errors[1].message, /unknown type/);
+  assert.match(errors[2].message, /String/);
+});
+
+test("bindingFor emits a `def name = <literal>` line the assembler can splice", () => {
+  const slider = parseWidgets("p : Float64 = slider(0, 100, default: 42)").widgets[0];
+  assert.equal(bindingFor(slider, 42), "def p = 42.0");
+});
+
+test("Float64 literals ALWAYS carry a decimal point (else they'd ground to Int64)", () => {
+  assert.equal(literalFor("Float64", 10), "10.0");
+  assert.equal(literalFor("Float64", 10.5), "10.5");
+  assert.equal(literalFor("Float64", 0), "0.0");
+});
+
+test("Int64 literals are bare integers; a fractional current value truncates", () => {
+  assert.equal(literalFor("Int64", 7), "7");
+  assert.equal(literalFor("Int64", 7.9), "7");
+});
+
+test("Bool literals are true/false; String literals are quoted + escaped", () => {
+  assert.equal(literalFor("Bool", true), "true");
+  assert.equal(literalFor("Bool", false), "false");
+  assert.equal(literalFor("String", "hi"), '"hi"');
+  assert.equal(literalFor("String", 'a "quote" and a \\ slash'), '"a \\"quote\\" and a \\\\ slash"');
+});
+
+test("a dropdown option containing a comma splits correctly (quote-aware arg split)", () => {
+  const w = parseWidgets('m : String = dropdown("a, b", "c")').widgets[0] as Extract<Widget, { control: "dropdown" }>;
+  assert.deepEqual(w.options, ["a, b", "c"]);
+});
