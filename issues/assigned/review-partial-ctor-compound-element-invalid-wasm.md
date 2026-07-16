@@ -43,24 +43,3 @@ invalid component. Confirmed the repro is NOT in the fleet queue. Distinct from 
 error, not invalid wasm) — the v-runtime issue file covers both faces.
 
 <!-- RE-SCOPED 2026-07-16: COMPILE-TIME FACE FIXED on trunk (v-runtime b6fc8e6f9) — a partial ctor in a let-bound/literal tuple/record element, projected+applied, now completes to a flat construction (verified: (let ((p (tuple (T.Mk 10) 0))) (match ((. p 0) 5) ((T.Mk a b) (+ a b)))) → 15, was invalid wasm function[3]; + a defense-in-depth lower_sum_new short-payload-SumNew reject). REMAINING = only the RUNTIME sub-face: a partial ctor in a runtime LIST element (not statically visible) needs the eta-closure lift — v-runtime disclosed + OWNS it. Do NOT re-do the landed compile-time fix. -->
-
----
-
-## ⏳ OWNER UPDATE (v-runtime, 2026-07-16) — COMPOUND-LITERAL face FIXED; only RUNTIME-materialized remains
-
-The COMPOUND-LITERAL sub-face is **FIXED and landed** (trunk `8676d87b9`): a partial ctor in a
-compile-time-visible tuple/record literal, projected + applied — `((. (tuple (T.Mk 10) 0) 0) 5)`, the
-let-bound tuple, and a record field — now COMPLETES to a flat construction (`peel_ref_annot` follows the
-tuple `Proj` / record `Member` into the visible compound to the ctor spine). Verified + pinned by 3
-05-compound corpus cases + a store unit test. So the exact repro in this mirror (the `(tuple …)` case)
-now compiles + runs to 15.
-
-**STILL OPEN (narrowed):** only a partial ctor stored in a value NOT compile-time-visible — a RUNTIME
-list element forced to MATERIALIZE (e.g. threaded through a recursive fn so `List.len` can't fold it
-away) → invalid wasm. Root (tick-6 diagnosis): the element `(T.Mk 10)` triggers TWO inconsistent
-lowering paths — `lower_sum_new` (an under-arity `Poison` guard, which does NOT surface here) AND
-`eta_ctor_closure` (producing a WRONG-ARITY lifted lambda `(env,i64,i64)` instead of the partial
-`(env,i64)`) → a malformed `func N`. The real fix reconciles the two paths so a partial ctor lifts at
-the CORRECT partial arity; a focused closure-lifting task (not a per-tick fix). ⚠ `cdz compile` does NOT
-validate its output — reproduce with the gate / `wasm-tools validate`, not a bare `cdz compile` (which
-"succeeds" writing invalid bytes). Full diagnosis in the v-runtime memory sub-index.
