@@ -288,6 +288,19 @@ concierge can route a one-line decision:
 > (replace the `claude` subprocess; keep hivemind's daemon/log/tools). Q1 (start Inc-4 now) + Q3
 > (proven-self-mod in the first cut) remain with the operator.
 
+> **DESIGN SESSION (2026-07-16, operator live via concierge) — fleet-convergence fork LOCKED:**
+> cdz-agent is the fleet's own **execution substrate end-state** — fleet agents will *eventually become*
+> cdz-agent instances (operator: "eventually we replace ALL agents with cdz-agents, but we have to build
+> it first"). Explicitly **build-first, migrate-later**: converge the FORMAT + capability NOW (the
+> inbox-driver binary already reads the fleet inbox format — keep it there), but do NOT migrate the fleet
+> yet; the substrate cutover is a later, deliberate, proven migration. **Inc-4 is designed toward "a
+> cdz-agent can eventually run a fleet role"** (drive an inbox loop, author/load tools, be Cedar-gated).
+> Operator-confirmed leans to proceed on: author-**new-tools** MVP before rewrite-own-loop;
+> **content-addressed** Cadenza tool-modules; **gate-first, prove-later**; the Rust embedder as the
+> approved stopgap. STILL OPEN (escalated to operator): the **self-mod SCOPE** fork — (A) author/load new
+> peer TOOLS with a fixed loop [MVP lean] vs (B) the agent rewrites its OWN loop/handlers. No Inc-4 code
+> until that scope call + a greenlight.
+
 1. **Bedrock binding route (§2.3):** (A) widen the host-result ABI to String/compound in `rcdzc` —
    clean/general/durable, non-trivial ABI change, needs v-peer-linking; (B) model Bedrock as a Cadenza
    peer via a tiny non-Cadenza SigV4 shim — zero compiler change, ships now, leaves a non-Cadenza edge;
