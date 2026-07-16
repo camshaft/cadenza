@@ -61,3 +61,18 @@ finding to REPORT, not work around.
 - Meanwhile mode (C): no new modules; Copilot-review/repro/regression-pinning only. Trunk was mid a
   fleet-red revert (5a8e262ae recursive-sum regression → compiler-ml 8/864) at tick 118 — verify green
   before any driver MR.
+
+## Step-1 de-risking spike (tick 130, v-compiler-ml — throwaway, verified then removed)
+
+Built a local `core-ex.cdz`-shaped module + a consumer importing it; ran via `cdz test`, then deleted
+(no MR — mode C). Confirmed the migration mechanics AND surfaced one concrete gotcha:
+
+- **`export { Ex }` (type handle only) is NOT enough** — a consumer that constructs/matches `Ex.Bin(..)`
+  cross-file gets **CDZ0214** ("constructor `Bin` is not exported ... `Ex`'s handle is visible but `Bin`
+  is withheld"). The shared module MUST `export { Ex.* }` to make every constructor public. (This is why
+  `ast.cdz` — the working model — exports the type such that `Ast.Int(..)` etc. work cross-file.)
+- With `export { Ex.* }`, a consumer imports `{ Ex, size, op-of }` and freely builds/matches
+  `Ex.Bin(43, Ex.Num(1), ...)` — verified 2/2 @tests. **Step 1 (land `core-ex.cdz`) is proven.**
+
+So when the operator picks (B): `core-ex.cdz` MUST `export { Ex.* }` (plus helpers). No other blocker found
+for step 1. The `Var(String)` vs `Var(Int64)` reconciliation (step 4) remains the real design work.
