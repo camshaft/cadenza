@@ -173,10 +173,24 @@ pub fn emit(db: &mut Db, layout: &Layout, mode: Mode) -> Result<Vec<u8>, Reject>
     // the preamble — a program may key on either or both width.
     let insert_at = PREAMBLE.len();
     let mut prelude = String::new();
-    if out.contains("__CdzF32::new(") {
+    // Inject each wrapper's decl when the emitted source USES it. A wrapper name appears in exactly two
+    // genuine contexts, so gate on EITHER:
+    //  - a COLLECTION TYPE parameter — `BTreeSet<__CdzF64>` / `BTreeMap<__CdzF64, V>` — always spelled
+    //    `<__CdzF64` (the key/element is the first type arg). This covers the context-typed EMPTY collection
+    //    (`Map.empty`/`Set.of (list)` at a float-keyed type) that annotates the type with NO constructor —
+    //    the gap a `::new(`-only gate missed (rustc "cannot find type `__CdzF64`").
+    //  - the CONSTRUCTOR — `__CdzF64::new(` — for a collection whose type is INFERRED (a bare
+    //    `BTreeMap::new()` seed) so the type name never appears in an annotation, only the wrapped key does.
+    // Both markers are collision-free: `sanitize_ident` escapes a leading `__` in every user ident, so a
+    // user `(type __CdzF64 …)` emits `enum cdz_user___CdzF64` — which contains the BARE substring `__CdzF64`
+    // (why a plain `out.contains("__CdzF64")` would SPURIOUSLY inject the struct) but NEVER `<__CdzF64` (a
+    // set-element user sum is `<cdz_user___CdzF64`) nor `__CdzF64::new(` (its ctor is `cdz_user___CdzF64::A`).
+    // The F32/F64 markers are distinct substrings, so each fires only for its own width.
+    let uses = |w: &str| out.contains(&format!("<{w}")) || out.contains(&format!("{w}::new("));
+    if uses("__CdzF32") {
         prelude.push_str(CDZ_F32_DECL);
     }
-    if out.contains("__CdzF64::new(") {
+    if uses("__CdzF64") {
         prelude.push_str(CDZ_F64_DECL);
     }
     if !prelude.is_empty() {
@@ -464,6 +478,19 @@ pub(crate) fn sanitize_ident(name: &str) -> String {
     }
     if s.is_empty() {
         s.push('_');
+    }
+    // A LEADING `__` is the backend-RESERVED namespace: the emitter injects `__`-prefixed idents for its
+    // own machinery — `__CdzF32`/`__CdzF64` (the float-key wrappers), `__CdzE`/`__cdz_env` (the async gas
+    // env), `__pay`/`__p` (match-payload locals), `__lifted_N`, the render `__r`/`__e{n}`/… locals. A
+    // Cadenza name CAN legally begin with `_` (the lexer's `is_ident_start` accepts it) and would otherwise
+    // pass through here UNCHANGED — so a user `(type __CdzF64 …)` / `(def __pay …)` would emit the SAME
+    // Rust ident as the injected one → rustc E0428 duplicate definition / a captured local. Escape a
+    // leading `__` with a `cdz_user_` prefix so a user ident can NEVER land in the `__`-reserved space
+    // (a generated `__…` never starts with `cdz_user_`, and this map is applied at BOTH the declaration and
+    // every reference — all through `sanitize_ident` — so they still agree). A single leading `_` is left
+    // alone (only the DOUBLE underscore is reserved), keeping the common `_unused`-style name readable.
+    if s.starts_with("__") {
+        return format!("cdz_user_{s}");
     }
     // A Cadenza identifier may be a RUST KEYWORD (`loop`, `type`, `while`, `for`, `mut`, `impl`, …) — a
     // valid Cadenza name but reserved in Rust, so emitting it verbatim as a `fn`/binder name is invalid Rust
