@@ -81,3 +81,5 @@
   (output (: 1 Int64)))
 
 ; ✅ RESOLVED 2026-07-16 — VERIFIED BY CONTENT on trunk 36b486e0d (gate 3478/3/0 green). v-patterns MR 0e1f97547: holds_handle gate in select.rs SumCont::LitTest (erased scalar newtype reads raw payload, no boxed get-int/get-bool). BOTH symptoms fixed: Int64 (Wrap 0)→100/(Wrap 5)→5 now VALID wasm (was invalid-component), Bool (Wrap true)→1 (was silently 0). v-patterns shipped all 5 breaker cases (3 Int+2 Bool) + baseline into 05-compound-types.sexp same-commit. CLOSED.
+
+; ⚠ REOPENED 2026-07-16 — FIX WAS INCOMPLETE (breaker 1781, I verified). The holds_handle fix (91c4296d8/0e1f97547) closed Int64+Bool but NARROW widths (UInt8/Int8/Int16/Int32) STILL emit invalid wasm: the raw-payload read is correct but the literal-equality is emitted at hard-coded i64 width → i64.eqz on an i32 value → func failed to validate (the INVERSE of the original Int64 finding). Verified UInt8 INVALID, Int64 control still VALID. My close last tick was PREMATURE — I verified Int64+Bool but not the WIDTH axis. Re-routed to v-patterns (emit literal-eq at payload actual width, like the bare narrow literal-match template).
