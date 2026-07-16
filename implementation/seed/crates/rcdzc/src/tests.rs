@@ -36873,6 +36873,49 @@ mod match_engine {
     }
 
     #[test]
+    fn chaining_two_unit_in_conversions_is_a_clean_cdz0501_not_a_terse_runtime_decline() {
+        // v-cad report: `Unit.in`/`as` UNWRAPS to a bare number (Q3), so chaining `(Unit.in cm (Unit.in mm
+        // x))` feeds the OUTER Unit.in a bare number, not a quantity. This was a terse uncoded backend
+        // decline ("Unit.in of a non-quantity") at lowering; now it's a clean COMPILE-time CDZ0501 that
+        // explains the unwrap and names the Qty.of-rewrap repair. Caught in check_application before it
+        // reaches lowering.
+        let chained = "(do (def (main) ((. Unit in) ((. Unit of) #\"centimeter\") \
+                       ((. Unit in) ((. Unit of) #\"millimeter\") \
+                        ((. Qty of) ((. Rational of) 1 1) ((. Unit of) #\"inch\"))))) (export main))";
+        let err = compile_component(&crate::codec::encode(&parse(chained)))
+            .expect_err("chaining two Unit.in conversions must reject");
+        assert_eq!(
+            err.code.as_deref(),
+            Some("CDZ0501"),
+            "a chained Unit.in (second operand is a bare number) is a coded CDZ0501, not an uncoded decline"
+        );
+        assert!(
+            err.message.contains("converts a QUANTITY") && err.message.contains("Qty.of"),
+            "the message explains Unit.in converts a quantity + names the Qty.of-rewrap repair: {}",
+            err.message
+        );
+        assert!(
+            !err.message.contains("of a non-quantity"),
+            "the terse backend 'Unit.in of a non-quantity' decline must no longer surface: {}",
+            err.message
+        );
+        // The suggested repair type-checks + computes the exact chained conversion: 1 inch → mm (127/5),
+        // re-wrapped as (Qty.of 127/5 mm), → cm = 127/50 (1 inch = 2.54 cm exactly). The outer `Unit.in cm`
+        // already UNWRAPS to a bare Rational, so no `Qty.value` wrapper is needed on the result.
+        let repaired = "(do (def (main) ((. Unit in) ((. Unit of) #\"centimeter\") \
+                        ((. Qty of) ((. Unit in) ((. Unit of) #\"millimeter\") \
+                          ((. Qty of) ((. Rational of) 1 1) ((. Unit of) #\"inch\"))) \
+                          ((. Unit of) #\"millimeter\")))) (export main))";
+        let Some(rendered) = run_heap_value_escape(repaired) else {
+            return; // no runtime store — the corpus gate is the e2e witness
+        };
+        assert!(
+            rendered.contains("127/50"),
+            "the Qty.of-rewrap repair converts 1 inch → cm = 127/50 exactly: {rendered}"
+        );
+    }
+
+    #[test]
     fn registering_a_family_unit_twice_with_conflicting_conversions_is_an_error() {
         // Operator ask: a name→conversion must be a FUNCTION — registering the same unit name with a
         // DIFFERENT dimension or scale is an error (returns the offending name → CDZ0502 at a future user

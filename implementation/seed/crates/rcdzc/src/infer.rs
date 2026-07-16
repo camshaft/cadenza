@@ -7677,9 +7677,10 @@ fn check_application(
     if args.len() == 2
         && crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::UnitIn)
     {
+        let operand_ty = type_of(db, args[1]);
         if let (Some(target), Ty::Qty { unit: qu, .. }) =
-            (crate::eval::unit_of(db, args[0]), type_of(db, args[1]))
-            && !target.same_dimension(&qu)
+            (crate::eval::unit_of(db, args[0]), &operand_ty)
+            && !target.same_dimension(qu)
         {
             trace!(target: "rcdzc::infer", head = head.0, "fault: Unit.in target dimension differs from the quantity's (CDZ0501)");
             // NAME both units — the quantity's `qu` and the target `target` — instead of the anonymous
@@ -7693,6 +7694,25 @@ fn check_application(
                      silently converted across dimensions",
                     qu.render_human(),
                     target.render_human(),
+                ),
+            ));
+        } else if !matches!(operand_ty, Ty::Qty { .. } | Ty::Any | Ty::Var(_)) {
+            // The second operand is NOT a quantity — a bare number (commonly the result of a PRIOR
+            // `Unit.in`/`as`, which UNWRAPS to a bare number). `Unit.in`/`as` converts a QUANTITY, not a
+            // plain number, so this is rejected at COMPILE time (CDZ0501) rather than leaking the terse
+            // backend "Unit.in of a non-quantity" decline at lowering. The common cause is CHAINING two
+            // conversions (`(Unit.in cm (Unit.in mm x))`): the inner `Unit.in` already stripped the unit,
+            // so the outer sees a bare number — re-wrap with `Qty.of` (`(Unit.in cm (Qty.of (Unit.in mm x)
+            // millimeter))`) if the intermediate is meant to carry a unit. Names the operand's type so the
+            // reader sees it is a plain `T`, not a quantity.
+            trace!(target: "rcdzc::infer", head = head.0, "fault: Unit.in second operand is not a quantity (CDZ0501)");
+            out.push(Reject::coded(
+                Code::DimensionMismatch,
+                format!(
+                    "`Unit.in`/`as` converts a QUANTITY, but this operand is {} — a plain number, not a \
+                     quantity (a conversion UNWRAPS to a bare number, so chaining `Unit.in (Unit.in …)` \
+                     feeds the second one a bare number); wrap it with `Qty.of` if it should carry a unit",
+                    operand_ty.render_with_article(),
                 ),
             ));
         }

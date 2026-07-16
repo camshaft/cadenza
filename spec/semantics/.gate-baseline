@@ -2619,6 +2619,7 @@ pass	byte sequences are equal by their bytes in order
 pass	capture-avoiding substitution renames a Forall binder to avoid capture (logical-form subst)
 pass	capture-avoiding substitution renames a binder so the substituted term's free variable is not captured
 pass	chained guards of the same variant are tried in order
+pass	chaining two Unit.in conversions is a compile-time error — the inner one already unwrapped
 pass	char to-int and from-int round-trip through the scalar value
 pass	checked addition yields None on overflow instead of trapping
 pass	checked addition yields Some of the sum when it fits
@@ -3109,6 +3110,7 @@ pass	raising a BigInt-magnitude quantity to a power runs the unbounded multiply
 pass	raising a COMPUTED (derived) quantity to a power squares its magnitude and dimension
 pass	raising a quantity to a compile-time power composes the unit and the magnitude
 pass	raising a runtime computed quantity to a power squares the runtime magnitude
+pass	re-wrapping the intermediate with Qty.of makes a two-step conversion well-formed
 pass	reaching an effect neither handled nor delegated is rejected at compile time
 pass	read classifies a lone punctuation token as an Ast.Name and it round-trips
 pass	read of text that is not a well-formed s-expression declines
