@@ -120,9 +120,9 @@ impl<'a> Lexer<'a> {
             // reaches here — `1..n` therefore lexes `1` `..` `n`, not `1.` `.n`.
             '.' if self.peek() == Some('.') => {
                 let b = self.bump().unwrap(); // the second `.`
-                // `..=` is the CLOSED range operator (`lo..=hi`) — one token distinct from `..`, so the
-                // parser can desugar it to the dedicated inclusive-range head. A `..=` is only meaningful
-                // as this operator (there is no `..=` rest-marker), so gluing the `=` is unambiguous.
+                // `..=` (the closed-range operator `lo..=hi`) lexes to its OWN token, distinct from `..`.
+                // A `..=` is only ever this operator (there is no `..=` rest-marker), so greedily gluing
+                // the `=` onto `..` is unambiguous — the lexer commits the token; the grammar is elsewhere.
                 if self.peek() == Some('=') {
                     let c = self.bump().unwrap();
                     return Some(Token {
@@ -972,8 +972,7 @@ mod tests {
     fn dotdoteq_is_the_closed_range_operator() {
         // `..=` is its OWN token (the closed-range operator `lo..=hi`), glued greedily from `..` + `=`.
         assert_eq!(kinds("..="), vec![Kind::DotDotEq]);
-        // `1..=n` lexes `Int DotDotEq Ident` — the inclusive-range reading (the grammar/desugar lands
-        // once the prelude Range module exists; the token is the surface piece prepped now).
+        // `1..=n` lexes `Int DotDotEq Ident` (the token boundary a closed-range grammar would consume).
         assert_eq!(kinds("1..=n"), vec![Kind::Int, Kind::DotDotEq, Kind::Ident]);
         // A `..` NOT followed by `=` stays the plain `DotDot` (the `=` glue is only after exactly `..`).
         assert_eq!(kinds("1..n"), vec![Kind::Int, Kind::DotDot, Kind::Ident]);
