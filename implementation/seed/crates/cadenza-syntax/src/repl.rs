@@ -237,6 +237,30 @@ mod tests {
     }
 
     #[test]
+    fn def_name_reads_each_def_shape_and_rejects_non_defs() {
+        // `def_name` extracts the bound name from a top-level item. Exercise its branches directly (each
+        // item is a whole arena whose root IS the item): a function-signature def, a bare value def, and
+        // the guard paths that must return None.
+        let name_of = |s: &str| {
+            let a = parse(s);
+            def_name(&a, a.root)
+        };
+        // `(def (f x y) body)` — a function signature; the sig head is the name.
+        assert_eq!(name_of("(def (f x y) x)"), Some("f".to_string()));
+        // A nullary signature `(def (main) body)` still names `main`.
+        assert_eq!(name_of("(def (main) 0)"), Some("main".to_string()));
+        // `(def y body)` — a bare value binding; the atom is the name.
+        assert_eq!(name_of("(def y 3)"), Some("y".to_string()));
+        // NOT a def — a different head returns None.
+        assert_eq!(name_of("(type T (A unit))"), None);
+        assert_eq!(name_of("(export f)"), None);
+        // An empty signature list `(def () body)` has no name head → None (a guard branch, not a panic).
+        assert_eq!(name_of("(def () 0)"), None);
+        // A bare atom (not a list) is not a def → None.
+        assert_eq!(name_of("42"), None);
+    }
+
+    #[test]
     fn assemble_builds_a_do_block_with_the_entry_and_export() {
         let buf = parse("(do (def (dbl x) (* x 2)) (export dbl))");
         let expr = parse("(dbl 21)");
