@@ -169,10 +169,12 @@ pass	Type is a first-class value
 pass	Type.eq branches on a type-valued parameter, monomorphized per passed type
 pass	Type.eq compares a reflected type against a written type
 pass	Type.eq compares two type-valued parameters to each other
+pass	Type.eq distinguishes a constructed generic sum by its type argument
 pass	Type.eq distinguishes quantities by their unit
 pass	Type.eq is false for values of different types
 pass	Type.eq is true for two values of the same type
 pass	Type.eq of a type-valued parameter against itself is always true
+pass	Type.eq on a constructed generic sum compares the full instantiated type
 pass	Type.eq on a type-valued parameter against a COMPOUND type is structural
 pass	Type.of carries a quantity's unit into a same-type annotation
 pass	Type.of reflects a runtime parameter's type at compile time

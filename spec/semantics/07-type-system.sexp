@@ -1009,6 +1009,31 @@
                    (Type.of (Qty.of 1.0 (Unit.base #"second")))))
   (output (: false Bool)))
 
+(case "Type.eq on a constructed generic sum compares the full instantiated type"
+  (doc    "`Type.of` on a value of a CONSTRUCTED generic sum reflects its full instantiated type, including
+           the type ARGUMENT. `(Type.eq (Type.of (Iter.Cons 1 Iter.Nil)) (Type.of (Iter.Cons 2 Iter.Nil)))`
+           — both are `Iter Int64` — folds to `true`. Pins that a generic type CONSTRUCTOR's type-value
+           carries its arg (a `Ty::Sum{decl, args}`, compared structurally), so reflection over a
+           user-generic value sees the same instantiated type two equal-typed values share.")
+  (input  (do
+            (type Iter (Nil) (Cons a (Iter a)))
+            (def (main) (if (Type.eq (Type.of (Iter.Cons 1 (Iter.Nil)))
+                                     (Type.of (Iter.Cons 2 (Iter.Nil)))) 1 0))
+            (export main)))
+  (output (: 1 Int64)))
+
+(case "Type.eq distinguishes a constructed generic sum by its type argument"
+  (doc    "The type ARGUMENT is part of a generic sum's type, so `(Type.of (Iter.Cons 1 Iter.Nil))` (an
+           `Iter Int64`) and `(Type.of (Iter.Cons true Iter.Nil))` (an `Iter Bool`) compare `false` — same
+           `decl`, different element arg. The generic-sum analogue of the quantity-unit case: type equality
+           carries the full instantiated `Ty::Sum{decl, args}`, not just the decl.")
+  (input  (do
+            (type Iter (Nil) (Cons a (Iter a)))
+            (def (main) (if (Type.eq (Type.of (Iter.Cons 1 (Iter.Nil)))
+                                     (Type.of (Iter.Cons true (Iter.Nil)))) 1 0))
+            (export main)))
+  (output (: 0 Int64)))
+
 (case "an if on Type.eq selects a branch at compile time"
   (doc    "The headline of compile-time reflection: `(if (Type.eq (Type.of 5) Int64) 100 200)` folds the
            condition to the constant `true`, so the whole `if` is `100`. A program BRANCHES on types at
