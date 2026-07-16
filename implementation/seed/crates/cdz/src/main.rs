@@ -1738,8 +1738,11 @@ struct UsesArgs {
 
 #[derive(clap::Args)]
 struct CheckArgs {
-    /// The program file to check (`.cdz`/`.ml` → ml, `.sexp`/`.sexpr` → sexpr).
-    file: String,
+    /// What to check: a FILE (its program + import closure), a DIRECTORY (every source file under it,
+    /// recursively), or a `Project.cdz` (its `modules`+`entry`). OMITTED → search up from the current
+    /// directory for the nearest `Project.cdz` and check its project (like `cdz test`/`cdz build`). A
+    /// single file with no manifest around it just checks that file.
+    file: Option<String>,
     /// Emit each diagnostic as a machine-readable JSON object (one per line), including its structured
     /// fix — the shape an agent or an editor consumes to apply the repair directly, rather than
     /// text-parsing the human `file:line:col` output. Exit code is unchanged (non-zero iff any error).
@@ -2139,22 +2142,131 @@ fn fix_verifies(
     true
 }
 
-/// `cdz check FILE` — report every well-formedness fault, "diagnostics as you type". Drives the
+/// `cdz check [TARGET]` — report every well-formedness fault, "diagnostics as you type". Drives the
 /// compiler's `Query::Diagnostics` (the fault set, NOT gated on export/emit), maps each fault's node id
 /// to `file:line:col` via the span table, and prints `file:line:col: severity [CODE]: message`. Exits
-/// non-zero iff any error-severity fault is present (a clean file prints nothing and exits 0) — the
+/// non-zero iff any error-severity fault is present (a clean check prints nothing and exits 0) — the
 /// CI-gate / editor-lint shape.
+///
+/// TARGET resolves like `cdz test`/`cdz build`: a FILE checks that file (+ its import closure); a
+/// DIRECTORY or `Project.cdz` (or no arg → the nearest `Project.cdz` upward) checks the whole PROJECT —
+/// every source file (a manifest's `modules`+`entry`, else every source file under the dir), aggregating
+/// diagnostics and failing if ANY file has an error. So `cdz check` with no arg lints a whole project in
+/// one call, matching how `cdz test`/`cdz build` treat a project.
 fn run_check(args: &CheckArgs) -> ExitCode {
+    // The set of files to check. A single FILE → just it (check_one follows its closure). A DIRECTORY or
+    // `Project.cdz` (or no arg → upward search) → the project's source files, resolved the same way
+    // `cdz test` resolves its suite (a manifest's `modules`+`entry` globbed, else a source-file walk).
+    let files: Vec<String> = match resolve_check_targets(args.file.as_deref()) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("{PROG}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    // Check each; a project fails if ANY file has an error-severity fault (OR the per-file results). Every
+    // file is checked (not short-circuited) so the user sees ALL diagnostics in one run.
+    let mut any_error = false;
+    for f in &files {
+        any_error |= check_one(f, args.json, args.verify_fixes);
+    }
+    if any_error {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+/// Resolve `cdz check`'s TARGET to the list of files to check. A single FILE → `[file]` (check_one
+/// follows its closure). A `Project.cdz`/DIRECTORY (or `None` → the nearest `Project.cdz` upward) → the
+/// project's source files: a manifest's `modules`+`entry` (glob-expanded, `exclude`-filtered) if a
+/// manifest is present, else every source file under the directory (path-sorted). Mirrors `cdz test`'s
+/// resolution so the three project commands agree on "what is the project".
+fn resolve_check_targets(target: Option<&str>) -> Result<Vec<String>, String> {
+    // No arg → the nearest Project.cdz upward (a project-wide check, like `cdz test`/`cdz build`).
+    let target: String = match target {
+        Some(t) => t.to_string(),
+        None => match find_manifest_upward() {
+            Some(p) => p.to_string_lossy().into_owned(),
+            None => {
+                return Err(format!(
+                    "no `{MANIFEST_NAME}` found in the current directory or any ancestor \
+                     (name a file/dir to check, or add a `{MANIFEST_NAME}`)"
+                ));
+            }
+        },
+    };
+    let path = std::path::Path::new(&target);
+    let is_manifest_arg = path.file_name().and_then(|n| n.to_str()) == Some(MANIFEST_NAME);
+    // A `Project.cdz` (arg or a dir holding one): check the manifest's declared files. Else a plain dir:
+    // walk every source file. Else a single file: just it.
+    let dir: Option<std::path::PathBuf> = if is_manifest_arg {
+        Some(match path.parent() {
+            Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
+            _ => std::path::Path::new(".").to_path_buf(),
+        })
+    } else if path.is_dir() {
+        Some(path.to_path_buf())
+    } else {
+        None
+    };
+    let Some(dir) = dir else {
+        // A single file — check it alone (its import closure is followed by check_one).
+        return Ok(vec![target]);
+    };
+    // A directory: prefer its manifest's file set; else walk every source file under it.
+    match load_manifest(&dir)? {
+        Some((mpath, m)) => {
+            // The manifest's checkable files: its library `modules` + the `entry` (the whole package).
+            let mut pats = m.modules.clone();
+            if let Some(entry) = &m.entry {
+                pats.push(entry.clone());
+            }
+            if pats.is_empty() {
+                return Err(format!(
+                    "{}: the manifest declares no `entry`/`modules` to check",
+                    mpath.display()
+                ));
+            }
+            let files = expand_manifest_globs(&dir, &pats, &m.exclude);
+            if files.is_empty() {
+                return Err(format!(
+                    "{}: the manifest's `entry`/`modules` matched no files",
+                    mpath.display()
+                ));
+            }
+            Ok(files)
+        }
+        // No manifest — walk every source file under the directory (the same collection `cdz compile
+        // <dir>` and `cdz test <dir>` use).
+        None => {
+            let mut out = Vec::new();
+            collect_source_dir(&dir, &mut out)?;
+            if out.is_empty() {
+                return Err(format!(
+                    "{}: no source files (.cdz/.ml/.sexp) to check",
+                    dir.display()
+                ));
+            }
+            Ok(out)
+        }
+    }
+}
+
+/// Check ONE file (following its import closure) — the per-file core of `cdz check`. Returns `true` if
+/// any error-severity fault (including a parse error) was reported, so a project-wide [`run_check`] can
+/// OR the results across many files. `json`/`verify_fixes` are the `cdz check` flags.
+fn check_one(file: &str, json: bool, verify_fixes: bool) -> bool {
     // Follow the entry file's IMPORT CLOSURE so a cross-file reference (an imported type or definition)
     // resolves and checks — `cdz check FILE` then sees the SAME linked program the package compile does.
     // A file that imports nothing loads as a lone file, byte-identical to a standalone check; only a file
     // carrying an `(import …)` pulls its transitively-imported siblings in. A diagnostic that lands in an
     // imported library is reported at THAT library's own `path:line:col` via the `link-map` demux below.
-    let files = match load_import_closure_with(&args.file, &|_| None) {
+    let files = match load_import_closure_with(file, &|_| None) {
         Ok(f) => f,
         Err(e) => {
             eprintln!("{PROG}: {e}");
-            return ExitCode::FAILURE;
+            return true; // load failure = an error
         }
     };
     // A file that did NOT fully parse — an unclosed `(`, an arm-less `match`, a `then` with no `else`.
@@ -2204,7 +2316,7 @@ fn run_check(args: &CheckArgs) -> ExitCode {
     };
     let Some(bytes) = out.artifact(rcdzc::sidecar::KIND_DIAGNOSTICS) else {
         report_errors(&out);
-        return ExitCode::FAILURE;
+        return true; // the diagnostics query itself failed = an error
     };
     let text = String::from_utf8_lossy(bytes);
     let mut any_error = false;
@@ -2238,8 +2350,7 @@ fn run_check(args: &CheckArgs) -> ExitCode {
     // Computed once (a recompile), only when `--verify-fixes` is set AND the check is a single file — a
     // PACKAGE fix would need re-linking the whole package to verify (a follow-up), so a package fix stays
     // heuristic unless the compiler already proved it. Single file: byte-identical to before.
-    let baseline_errors: Option<Vec<(String, String, String)>> = if args.verify_fixes && !is_package
-    {
+    let baseline_errors: Option<Vec<(String, String, String)>> = if verify_fixes && !is_package {
         program_diagnostic_keys(&files[0].source, is_ml_source(&files[0].path))
     } else {
         None
@@ -2258,7 +2369,7 @@ fn run_check(args: &CheckArgs) -> ExitCode {
             Some((l, c, _, _)) => format!("{}:{l}:{c}", files[fi].path),
             None => files[fi].path.clone(),
         },
-        None => args.file.clone(),
+        None => file.to_string(),
     };
     // Fix helpers that demux the fix's TARGET node to its file, then apply against that file's own
     // source / arenas / spans / surface (a fix may land in an imported library, not the entry).
@@ -2394,7 +2505,7 @@ fn run_check(args: &CheckArgs) -> ExitCode {
         // it against a single re-parsed file would miss the cross-file context.
         let verified_flag = if fix_verified == "verified" {
             true
-        } else if args.verify_fixes && !is_package && fix_node != "-" {
+        } else if verify_fixes && !is_package && fix_node != "-" {
             let is_ml = is_ml_source(&files[0].path);
             do_fix_apply(fix_kind, fix_node, fix_repl)
                 .map(|edited| {
@@ -2420,7 +2531,7 @@ fn run_check(args: &CheckArgs) -> ExitCode {
             None
         };
 
-        if args.json {
+        if json {
             // The machine-readable shape: one JSON object per diagnostic, its structured fix nested. The
             // fix carries a STRUCTURAL PATCH — `edits: [{from, to, text}]` — that an agent applies
             // literally: for each edit (already sorted, non-overlapping), `source[from..to] := text`. The
@@ -2498,11 +2609,7 @@ fn run_check(args: &CheckArgs) -> ExitCode {
     // program), even when the truncated arena carries no downstream semantic fault. `check`'s contract is
     // "exits non-zero if any error-severity fault is present", and the parse error was already printed to
     // stderr from the load boundary — so fail here too, closing the "prints an error but exits 0" gap.
-    if any_error || any_parse_error {
-        ExitCode::FAILURE
-    } else {
-        ExitCode::SUCCESS
-    }
+    any_error || any_parse_error
 }
 
 /// `cdz fix FILE` — apply every VERIFIED fix and write the repaired program back. Runs the same
