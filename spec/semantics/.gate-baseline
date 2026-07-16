@@ -2484,6 +2484,7 @@ pass	comparing a Float32 nan to a Float64 nan is a cross-width type error
 pass	comparing a greater value to a lesser yields Greater
 pass	comparing a lesser value to a greater yields Less
 pass	comparing a map to a record is a type error
+pass	comparing an Int64 to a Bool with < is a type error
 pass	comparing an empty map to an empty record is a type error
 pass	comparing equal values yields Equal
 pass	comparing quantities of incompatible dimension is a compile-time error
@@ -3113,6 +3114,7 @@ pass	the ETA axiom is minted via new_axiom as a hypothesis-free theorem
 pass	the Float codec round-trips a negative value
 pass	the INFINITY axiom is minted via new_axiom (an infinite type exists)
 pass	the Int codec round-trips i64::MIN — the two's-complement boundary
+pass	the Int64 total order holds at its extremes
 pass	the LEB128 byte composition runs on a runtime operand
 pass	the SELECT (choice) axiom is minted via new_axiom as a hypothesis-free theorem
 pass	the additive-zero identity preserves a boundary-crossing runtime operand
@@ -3228,6 +3230,7 @@ pass	the remainder takes the sign of the dividend for a negative divisor
 pass	the rest binder carries the unmatched runtime-keyed remainder
 pass	the retired Tuple.cat name is rejected with the Tuple.concat rename fix-it (CDZ0603)
 pass	the retired Tuple.pop name is rejected with the Tuple.remove rename fix-it (CDZ0603)
+pass	the reversed extreme ordering is false
 pass	the round trip tracks the produced closure's captured value
 pass	the runtime UTF-8 encoding of a string equals its exact byte literal
 pass	the runtime-if list takes its else branch and measures that length
