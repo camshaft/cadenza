@@ -1252,6 +1252,28 @@
   (input  (Unit.in (Unit.of #"meter") (Qty.of 3.0 (Unit.of #"second"))))
   (error  CDZ0501))
 
+(case "chaining two Unit.in conversions is a compile-time error — the inner one already unwrapped"
+  (doc    "`(Unit.in centimeter (Unit.in millimeter (Qty.of 1 inch)))` — the INNER `Unit.in` UNWRAPS to a
+           bare number (Q3), so the OUTER `Unit.in` receives a plain number, not a quantity. `Unit.in`/`as`
+           converts a QUANTITY, so this is CDZ0501 at COMPILE time (not the terse backend 'Unit.in of a
+           non-quantity' at lowering). The message explains the unwrap and names the repair: re-wrap the
+           intermediate with `Qty.of` if it should carry a unit. This is the deliberate exit-from-units
+           semantic surfacing as a clean type error rather than a runtime failure.")
+  (input  (Unit.in (Unit.of #"centimeter")
+            (Unit.in (Unit.of #"millimeter") (Qty.of (Rational.of 1 1) (Unit.of #"inch")))))
+  (error  CDZ0501))
+
+(case "re-wrapping the intermediate with Qty.of makes a two-step conversion well-formed"
+  (doc    "The repair for the chained-`Unit.in` error: wrap the first conversion's bare result back into a
+           `Qty.of` at the unit it was converted to, so the second `Unit.in` sees a quantity again. `1 inch
+           → mm` = 127/5 mm, re-wrapped as `(Qty.of 127/5 millimeter)`, then `→ cm` = 127/50 cm (1 inch =
+           2.54 cm exactly). Pins that the Qty.of-rewrap idiom the diagnostic suggests actually type-checks
+           and computes the exact chained conversion.")
+  (input  (Unit.in (Unit.of #"centimeter")
+            (Qty.of (Unit.in (Unit.of #"millimeter") (Qty.of (Rational.of 1 1) (Unit.of #"inch")))
+                    (Unit.of #"millimeter"))))
+  (output (: 127/50 Rational)))
+
 (case "an unwrapped conversion result is a bare number under ordinary numeric rules"
   (doc    "`Unit.in` UNWRAPS: its result is a bare dimensionless number, so ordinary numeric arithmetic
            applies with NO dimension checking (DESIGN-quantity-reference-normalized-unwrap.md §1b —
