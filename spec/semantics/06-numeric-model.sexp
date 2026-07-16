@@ -142,6 +142,22 @@
   (input  (Rational.of 2 4))
   (output (: 1/2 Rational)))
 
+; The exact-arithmetic cases above use SMALL operands (1/3, 1/6) that never leave the i64 range. A Rational
+; is a normalized pair of BigInt handles, so a gcd normalization over NEAR-i64 operands must run on the
+; runtime bigint limbs and stay exact. This pins a large num/den reducing to 2/1 — both backends must agree
+; (the rust backend just gained its Rational emit, cdz_num::Rational, so this differentially pins wasm ≡
+; rust on the big-limb normalization path). (A sum whose numerator EXCEEDS i64 can't be written as a bare
+; literal RHS to compare against — 2^64-2 is past the Int64 literal range, CDZ0201 — so it is left unpinned
+; here; the near-i64 gcd case exercises the same limb path within writable literals.)
+
+(case "a rational with near-Int64 numerator and denominator normalizes by gcd exactly"
+  (doc    "`(Rational.of 9223372036854775806 4611686018427387903)` — numerator (2^63-2) and denominator
+           (2^62-1) — reduces by their gcd to exactly 2/1 (the numerator is twice the denominator). Pins that
+           gcd normalization runs correctly on near-i64 operands (the bigint limb path), producing the
+           canonical 2/1, not an unreduced or wrong pair. Both backends.")
+  (input  (= (Rational.of 9223372036854775806 4611686018427387903) (Rational.of 2 1)))
+  (output (: true Bool)))
+
 (case "an integer literal annotated Rational grounds to that integer over one"
   (doc    "`(: 5 Rational)` grounds the bare integer literal 5 to the exact rational 5/1 — the same
            "Annotations Constrain" rule that fixes `(: 200 UInt8)`, extended to Rational with no range
