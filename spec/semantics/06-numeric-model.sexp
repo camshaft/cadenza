@@ -1076,6 +1076,32 @@
   (input  (do (def (main (: x UInt8)) (Int64.of x)) (export main)))
   (declines))
 
+; The widen decline above is one face of a family: the runtime `.of` fixed-width integer CONVERT does not
+; yet emit in ANY direction. These pin the other two faces so the whole boundary is tracked, not just the
+; Int64-widen: NARROWING a runtime Int64 to a fixed width (`UInt8.of n`, range-checked) and CROSS-WIDTH
+; widening one narrow type to another (`UInt16.of x:UInt8`) both DECLINE too. As with the widen, the
+; CONSTANT forms fold (checked-narrow / exact-widen at compile time) and the `wrap`/`wrapping-*` truncation
+; ops emit fine on runtime narrow values — it is specifically the runtime `.of` CONVERT emit that is the
+; later increment. Sound declines, reject-don't-miscompile; a future runtime `.of` that silently emitted a
+; wrong (unchecked-narrow / sign-extended) result would flip these `(declines)`.
+(case "narrowing a runtime Int64 to a fixed width with .of declines (the checked-narrow emit is pending)"
+  (doc    "`(Int64.of (UInt8.of n))` with `n` a runtime Int64: the inner `(UInt8.of n)` range-checks-narrows
+           the runtime Int64 to a UInt8 — a runtime `.of` CONVERT the seed does not yet emit, so it soundly
+           DECLINES (rather than emitting an unchecked truncation). Contrast the CONSTANT `(UInt8.of
+           (BigInt.of 300))` narrow cases (which fold + range-check at compile time). Grades the runtime
+           narrow-direction `.of` decline, the companion of the widen above.")
+  (input  (do (def (main (: n Int64)) (Int64.of (UInt8.of n))) (export main)))
+  (declines))
+
+(case "cross-width widening a runtime narrow int with .of (UInt16.of a UInt8) declines (emit pending)"
+  (doc    "`(UInt16.of x)` with `x` a runtime `UInt8` widens one fixed-narrow type to a wider fixed type —
+           a runtime `.of` CONVERT between narrow widths, distinct from the Int64-widen and the Int64-narrow
+           above. The seed does not yet emit it, so it soundly DECLINES. Completes the runtime `.of`
+           integer-conversion decline family (widen-to-Int64 / narrow-from-Int64 / cross-narrow-width) as a
+           single tracked boundary pending the convert emit; the `wrap` truncation path is unaffected.")
+  (input  (do (def (main (: x UInt8)) (UInt16.of x)) (export main)))
+  (declines))
+
 ; --- Float is WIDTH-INDEXED: (Float N) over N in {32, 64}, with Float32/Float64 aliases -------------
 ; numeric-model.md #A Floating-Point Type Is Indexed By A Compile-Time Width: a float type is the
 ; width-indexed constructor `Float` applied to a compile-time width, and Float32/Float64 alias

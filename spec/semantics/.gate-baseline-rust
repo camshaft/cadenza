@@ -202,6 +202,7 @@ pass	a bare built-in constructor Some is passed as a first-class function
 pass	a bare conditional keyword is rejected, not a crash
 pass	a bare construct and a qualified match name the same colliding variant
 pass	a bare data-constructor-colliding variant's OTHER arm fires on the other discriminant
+pass	a bare empty list reflects an undetermined element, distinct from a concrete list type
 pass	a bare equality keyword is rejected, not a crash
 pass	a bare literal exceeding the default-integer pragma's narrow type is rejected
 pass	a bare literal that overflows the annotated width does not fit it
@@ -454,6 +455,8 @@ pass	a factory RETURNS a closure that captures a let-bound inner closure
 pass	a failing guard falls through to a later arm
 pass	a failing payload-binder guard falls to a later arm re-binding the payload
 pass	a failing tuple guard falls to a later arm re-binding the elements
+pass	a failure `?` preserves a COMPOUND error value through the short-circuit
+pass	a failure `?` propagates through TWO nested fallible boundaries
 pass	a failure `?` short-circuits BEFORE later computation runs
 pass	a fallible parser threads a Result((value,cursor),String) through mutual recursion, short-circuiting on Err
 pass	a false variant guard shields its arm's trapping body
@@ -2036,6 +2039,8 @@ pass	comparing records with different field-name sets is a type error
 pass	comparing same-shape nominal types is a type error
 pass	comparing sums with disjoint variant sets is a type error
 pass	comparing tuples of different lengths is a type error
+pass	comparing two function literals with = is a type error
+pass	comparing two function-typed parameters with = is a type error
 pass	comparing two quantities of the same dimension yields a Bool
 pass	comparing two same-shape nominal sum types is a type error, not false
 pass	comparing two same-unit Float-inner quantities at RUNTIME rides the scalar float compare
@@ -2088,6 +2093,7 @@ pass	converting a scalar-valued integer to a char yields Some
 pass	converting a surrogate code point to a char yields None
 pass	converting a unit to another unit of the same dimension is an exact rational scale
 pass	converting an out-of-range integer to a char yields None
+pass	cross-width widening a runtime narrow int with .of (UInt16.of a UInt8) declines (emit pending)
 pass	declaring a unit with a conversion conflicting with a built-in is an error
 pass	decode of a Float tag with a non-finite (NaN) bit pattern yields the error case
 pass	decode of a Str tag with an oversized length yields the error case
@@ -2173,6 +2179,7 @@ pass	expect traps on the err case of a RUNTIME result
 pass	expect unwraps the ok case of a runtime result
 pass	expect unwraps the present case of a runtime optional
 pass	extending a record adds a new field
+pass	extending a record then dropping the added field returns the original
 pass	extending a record with an already-present field is rejected
 pass	extracting a high byte composes shift and mask
 pass	false is less than true
@@ -2277,6 +2284,7 @@ pass	membership of an absent element is false, not a trap
 pass	merging records that share a field name is rejected
 pass	merging records with a runtime field value carries both operands' fields
 pass	merging records with runtime values on both sides binds each field to its own value
+pass	merging two disjoint records then projecting one side recovers it
 pass	merging two empty records is the empty record
 pass	merging two records with disjoint fields unions their fields
 pass	merging with the empty record on the left is the identity
@@ -2304,6 +2312,7 @@ pass	multiplication past the maximum integer overflows and traps
 pass	multiplying quantities multiplies their dimensions
 pass	narrowing a BigInt-valued if back to Int64 works over both branches
 pass	narrowing a constant BigInt out of the target range is rejected at compile time
+pass	narrowing a runtime Int64 to a fixed width with .of declines (the checked-narrow emit is pending)
 pass	negating a runtime Int64 near the boundary is exact just above the min
 pass	negating a runtime Int64 overflows at Int64.min
 pass	negating a runtime narrow integer just above its min is exact
@@ -2611,6 +2620,7 @@ pass	the runtime-if list takes its else branch and measures that length
 pass	the runtime-list version of a tail fold compiles and folds correctly
 pass	the same function called under two handlers is discharged by each in turn
 pass	the same mixed-scale comparison is EXACT over Rational (keeps the fractional scale)
+pass	the same nullary variant constrained to different concrete types reflects different types
 pass	the scalar length of a runtime multi-byte string counts scalars, not bytes
 pass	the scalar-len of an in-bounds String.slice equals its span (end - start), independent of byte width
 pass	the second element of a runtime-content fn-return tuple is projected directly
@@ -2664,6 +2674,7 @@ pass	two MUTUALLY-recursive functions dispatching on a recursive sum compute its
 pass	two MUTUALLY-recursive sum types fold across their boundary
 pass	two `?`s in one boundary both unwrap (nested happy path)
 pass	two adjacent modules declared inside a function body compose
+pass	two bare nullary variants reflect the same undetermined type
 pass	two chars with different scalar values are unequal
 pass	two closures from one factory capture distinct values
 pass	two constant records with the same fields in different written order are equal
@@ -2748,6 +2759,7 @@ pass	unsigned subtraction below zero is rejected at compile time
 pass	updating a list index replaces that element, leaving others
 pass	updating a list slot with an element of a different type is a type error
 pass	updating a record field changes its type to the new value's
+pass	updating a record field preserves the other fields' values
 pass	updating a record field replaces its value
 pass	updating an absent record field is rejected
 pass	when two abortive performs sit on one spine the FIRST (leftmost) abort wins

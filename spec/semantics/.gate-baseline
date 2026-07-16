@@ -2524,6 +2524,7 @@ pass	converting a scalar-valued integer to a char yields Some
 pass	converting a surrogate code point to a char yields None
 pass	converting a unit to another unit of the same dimension is an exact rational scale
 pass	converting an out-of-range integer to a char yields None
+pass	cross-width widening a runtime narrow int with .of (UInt16.of a UInt8) declines (emit pending)
 pass	declaring a unit with a conversion conflicting with a built-in is an error
 pass	decode of a Float tag with a non-finite (NaN) bit pattern yields the error case
 pass	decode of a Str tag with an oversized length yields the error case
@@ -2817,6 +2818,7 @@ pass	multiplying a scaled-unit quantity by the literal one keeps its dimension a
 pass	multiplying quantities multiplies their dimensions
 pass	narrowing a BigInt-valued if back to Int64 works over both branches
 pass	narrowing a constant BigInt out of the target range is rejected at compile time
+pass	narrowing a runtime Int64 to a fixed width with .of declines (the checked-narrow emit is pending)
 pass	negating a runtime Int64 near the boundary is exact just above the min
 pass	negating a runtime Int64 overflows at Int64.min
 pass	negating a runtime narrow integer just above its min is exact
