@@ -322,7 +322,9 @@ concierge can route a one-line decision:
 
 ## 7. Increment sequence
 
-> **STATUS (2026-07-16): Inc 0–3 SHIPPED + hardened; Inc 4 held on the operator.** The Bedrock binding
+> **STATUS (2026-07-16): Inc 0–3 SHIPPED + hardened; Inc 4 in DESIGN-ALIGNMENT (operator live).** The
+> fleet-substrate direction is locked (§6); the self-mod SCOPE fork is the last open gate before Inc-4
+> design/build. The Bedrock binding
 > shipped as a THIRD route the fork below didn't list — **option (c): a custom cdz-run EMBEDDER** — not
 > the peer shim (Route B) originally planned here. Why: a Cadenza String peer op crosses as a `u32`
 > runtime HANDLE and the provider imports the value-heap runtime, so a naive WASI `converse(string)->string`
@@ -346,10 +348,16 @@ concierge can route a one-line decision:
   evaluator) + `authz-loop.cdz` (every tool dispatch performs `Cedar.authorize` and dispatches only on
   allow) + `cedar_authorizer`/`cedar_delegated_authorizer` (fail-closed; on-behalf-of = agent ∩ user
   delegation intersection). Pinned e2e: permit, forbid, on-behalf-of both directions, malformed→deny.
-- **Inc 4 — self-modification / evolvable toolchains (§5).** ⏸️ HELD pending the operator (whether to
-  pull it forward, and whether proven-self-mod is in the first cut — routed via the concierge). When it
-  starts: add `rcdzc` as a `cdz-agent` dep (concierge pre-cleared) for runtime compile-a-new-tool +
-  the compile-repair loop; Cedar-gate every self-mod; v-verification for the proven form.
+- **Inc 4 — self-modification / evolvable toolchains (§5).** ⏸️ DESIGN-ALIGNMENT IN PROGRESS (operator
+  live via concierge, 2026-07-16). Direction now partly locked (§6 DESIGN SESSION): cdz-agent is the
+  fleet's execution substrate end-state, build-first/migrate-later, and Inc-4 is designed toward "a
+  cdz-agent can eventually run a fleet role." Confirmed leans: author-**new-tools** MVP, content-addressed
+  Cadenza tool-modules, gate-first-prove-later, Rust embedder stopgap. THE remaining gate is the **self-mod
+  SCOPE** call (escalated to the operator): (A) author/load new peer TOOLS with a fixed loop [MVP lean] vs
+  (B) the agent rewrites its OWN loop/handlers. **No Inc-4 code until that scope call + a greenlight.** When
+  it starts: add `rcdzc` as a `cdz-agent` dep (concierge pre-cleared) for runtime compile-a-new-tool + the
+  compile-repair loop; Cedar-gate every self-mod (`Action::"self:add-tool"` …); v-verification for the
+  proven form (§5).
 
 Each increment reports language gaps it hits (REPORT/FIX, not work-around) and lands with gate coverage
 that pins its invariant. (This vertical's probes drove several v-effects + v-peer-linking fixes: the
