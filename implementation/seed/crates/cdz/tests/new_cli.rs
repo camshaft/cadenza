@@ -155,3 +155,29 @@ fn new_scaffolds_a_gitignore_covering_the_build_artifacts() {
     );
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn new_rejects_an_in_place_name_and_points_to_init() {
+    // HARDENING: `cdz new` NAMES A FRESH SUBDIRECTORY — a name that instead means the current/parent dir
+    // (empty, `.`, `..`) used to silently scaffold into the CWD (empty name → a bogus "created project
+    // `app` in " with an empty path). Those are now rejected with a pointer to `cdz init` (the in-place
+    // command). A real name still works (covered by the other tests).
+    let root = scratch("inplace");
+    for bad in ["", ".", ".."] {
+        let (ok, _o, err) = run_in(&root, &["new", bad]);
+        assert!(
+            !ok,
+            "`cdz new {bad:?}` should be rejected (names no fresh subdir)"
+        );
+        assert!(
+            err.contains("cdz init") && err.contains("NEW project directory"),
+            "the error points to `cdz init` for the in-place case: {err}"
+        );
+    }
+    // The rejection wrote nothing into the cwd.
+    assert!(
+        !root.join("Project.cdz").is_file() && !root.join("main.cdz").is_file(),
+        "a rejected `cdz new .` must not scaffold into the current directory"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}

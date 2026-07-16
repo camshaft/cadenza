@@ -1,0 +1,48 @@
+/// mlrepro — `take-while` declines at ≥2 element types: the bare `GIter.Nil(unit)` STOP leaf has an untied
+/// result element on that path (the "untied result element" family v-inference is fixing). (2026-07-16)
+///
+/// CONTEXT. The recursive-generic-transformer closure tie is fixed (map/filter/drop-while/find/all/any all
+/// compose at ≥2 element types in giter.cdz). `take-while` is the one closure-storing transformer that still
+/// declines — v-inference identified it as the SAME "untied RESULT element" family as the identity-closure
+/// residual: its STOP branch returns a bare `GIter.Nil(unit)` whose element is untied ON THAT PATH, so at a
+/// SECOND instantiation the result element has no single value → CDZ0201.
+///
+/// ISOLATION (matches v-inference's multi-instantiation-result-tie description):
+///   - take-while at ONE element type → COMPILES + RUNS (see the sibling one-type file / the `twi` face
+///     alone passes).
+///   - take-while at TWO element types in one program → CDZ0201 (both faces below).
+///   - The distinguishing feature vs the WORKING transformers: `filter`/`drop-while` recurse in every
+///     branch (element tied via the recursion / predicate); `take-while`'s ELSE branch is a bare
+///     `GIter.Nil(unit)` — a nullary producer leaf whose element is not tied on that path.
+///
+/// FIX DIRECTION (v-inference): tie the untied `Nil`-leaf result element from the surrounding instantiation
+/// — same root as the identity-closure result-from-context tie. Once that lands, `take-while` joins the
+/// closure-storing family in giter.cdz (currently deferred with an inline NOTE).
+
+type GIter =
+  | Nil
+  | Cons(a, GIter(a))
+
+def from-list(xs) = match xs with
+  | [] => GIter.Nil(unit)
+  | [h, .. t] => GIter.Cons(h, from-list(t))
+
+def count(it) = match it with
+  | GIter.Nil(_) => 0
+  | GIter.Cons(_, rest) => 1 + count(rest)
+
+/// The stop branch `else => GIter.Nil(unit)` is the untied leaf.
+def take-while(it, p) = match it with
+  | GIter.Nil(_) => GIter.Nil(unit)
+  | GIter.Cons(h, rest) => if p(h) then GIter.Cons(h, take-while(rest, p)) else GIter.Nil(unit)
+
+/// FACE 1: Int64 source. Alone, this compiles + runs (take-while [1,2,3,4] (< 3) = [1,2], count 2).
+@test
+def take-while-int() =
+  if count(take-while(from-list([1, 2, 3, 4]), fn(x) => x < 3)) == 2 then unit else trap("tw int")
+
+/// FACE 2: String source, SAME PROGRAM. The second instantiation triggers CDZ0201 — the untied `Nil`-leaf
+/// result element cannot be monomorphized at two element types.
+@test
+def take-while-string() =
+  if count(take-while(from-list(["a", "b"]), fn(s) => s == "a")) == 1 then unit else trap("tw str")

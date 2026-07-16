@@ -1988,3 +1988,116 @@
                ((Option.None _) -2)))
            (export main)))
   (call main (: 0 Int64)) (output (: 3 Int64)))
+
+; ============================================================================================
+; Increment 12 — the HOL-FAITHFUL LOGICAL LAYER: logical constants as DEFINED constants (via
+; new_basic_definition, which returns a defining theorem |- (Const c) = rhs), plus intro/elim rules,
+; deriving theorems ABOUT them through the kernel. Where Inc-7/8 modelled ⇒/∀ as PRIMITIVE term forms
+; (the natural-deduction shortcut), this increment shows the fusion.ml presentation: a constant is
+; introduced by a definitional axiom and its theorems are DERIVED. Slice 1: truth T (defined + |- T
+; derived) and conjunction ∧ (CONJ intro unions hypotheses — soundness-correct per Inc-11 — and
+; CONJUNCT1/CONJUNCT2 elim preserve them). Later slices: ∨/¬/∃ and the three axioms (ETA/SELECT/INFINITY).
+; ============================================================================================
+
+(case "the kernel defines T (truth) as a constant and DERIVES |- T through the rules"
+  (doc    "The HOL-faithful way to introduce truth: T is a defined CONSTANT, not a primitive. HOL defines
+           T := ((λp.p) = (λp.p)); new_basic_definition returns the defining theorem |- (Const T) = rhs.
+           |- T is then DERIVED (not asserted): REFL of (λp.p) gives |- rhs (i.e. |- (λp.p)=(λp.p)); SYM of
+           the definition gives |- rhs = T; EQ_MP of those gives |- T. The case checks the derived theorem's
+           conclusion is exactly (Const T). Pins that a constant can be defined by a definitional theorem
+           and a theorem about it derived purely through the kernel's rules — the fusion.ml presentation
+           (vs the primitive-Imp/Forall shortcut of Inc-7/8).")
+  (module "hol"
+    (do
+      (type Term (Var Int64) (Comb Term Term) (Eq Term Term) (Abs Int64 Term) (Const Int64))
+      (type Thm (Seq (List Term) Term))
+      (def (term-eq (: a Term) (: b Term))
+        (match a
+          ((Term.Var n)    (match b ((Term.Var m) (= n m)) (_ false)))
+          ((Term.Comb x y) (match b ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) (_ false)))
+          ((Term.Eq x y)   (match b ((Term.Eq p q) (and (term-eq x p) (term-eq y q))) (_ false)))
+          ((Term.Abs v x)  (match b ((Term.Abs w q) (and (= v w) (term-eq x q))) (_ false)))
+          ((Term.Const c)  (match b ((Term.Const d) (= c d)) (_ false)))))
+      (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
+      (def (hyps (: th Thm)) (match th ((Thm.Seq h _) h)))
+      (def (refl (: t Term)) (Thm.Seq (list) (Term.Eq t t)))
+      (def (sym (: th Thm))
+        (match (concl th) ((Term.Eq a b) (Option.Some (Thm.Seq (hyps th) (Term.Eq b a)))) (_ (Option.None))))
+      (def (eq-mp (: eq Thm) (: th Thm))
+        (match (concl eq) ((Term.Eq p q) (if (term-eq (concl th) p) (Option.Some (Thm.Seq (List.concat (hyps eq) (hyps th)) q)) (Option.None))) (_ (Option.None))))
+      (def (new-basic-def (: c Int64) (: rhs Term)) (Thm.Seq (list) (Term.Eq (Term.Const c) rhs)))
+      (export (. Term *))
+      (export Thm)
+      (export term-eq)
+      (export refl)
+      (export sym)
+      (export eq-mp)
+      (export new-basic-def)
+      (export concl)))
+  (input  (do
+            (import "hol" (Term Thm term-eq refl sym eq-mp new-basic-def concl))
+            (def (main)
+              (let ((idp (Term.Abs 0 (Term.Var 0))))
+                (let ((rhs (Term.Eq idp idp))
+                      (tc (Term.Const 0)))
+                  (let ((defn (new-basic-def 0 rhs))
+                        (rhs-thm (refl idp)))
+                    (match (sym defn)
+                      ((Option.Some rhs-eq-t)
+                        (match (eq-mp rhs-eq-t rhs-thm)
+                          ((Option.Some t-thm) (term-eq (concl t-thm) tc))
+                          ((Option.None) false)))
+                      ((Option.None) false))))))
+            (export main)))
+  (output (: true Bool)))
+
+(case "the kernel's conjunction: CONJ unions hypotheses, CONJUNCT1/2 project (hyps survive)"
+  (doc    "Conjunction as an intro/elim connective. CONJ takes A ⊢ a and B ⊢ b and derives A∪B ⊢ a∧b —
+           UNIONING the operand hypotheses (soundness-correct, per the Inc-11 breaker rule that a rule
+           consuming multiple theorems must carry the union). CONJUNCT1/CONJUNCT2 take G ⊢ a∧b and derive
+           G ⊢ a / G ⊢ b, PRESERVING the hypotheses. From ASSUME(a) : {a}⊢a and ASSUME(b) : {b}⊢b, CONJ →
+           {a,b} ⊢ a∧b; CONJUNCT1 → ⊢ a with BOTH a,b still hypotheses. The case asserts the conjunction
+           conclusion and that both hypotheses survive the projection. Pins that a binary logical intro
+           rule unions hypotheses and its elim rules preserve them.")
+  (module "hol"
+    (do
+      (type Term (Var Int64) (Comb Term Term) (Eq Term Term) (Conj Term Term))
+      (type Thm (Seq (List Term) Term))
+      (def (term-eq (: a Term) (: b Term))
+        (match a
+          ((Term.Var n)    (match b ((Term.Var m) (= n m)) (_ false)))
+          ((Term.Comb x y) (match b ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) (_ false)))
+          ((Term.Eq x y)   (match b ((Term.Eq p q) (and (term-eq x p) (term-eq y q))) (_ false)))
+          ((Term.Conj x y) (match b ((Term.Conj p q) (and (term-eq x p) (term-eq y q))) (_ false)))))
+      (def (assume (: p Term)) (Thm.Seq (list p) p))
+      (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
+      (def (hyps (: th Thm)) (match th ((Thm.Seq h _) h)))
+      (def (conj (: th1 Thm) (: th2 Thm))
+        (Thm.Seq (List.concat (hyps th1) (hyps th2)) (Term.Conj (concl th1) (concl th2))))
+      (def (conjunct1 (: th Thm))
+        (match (concl th) ((Term.Conj a b) (Option.Some (Thm.Seq (hyps th) a))) (_ (Option.None))))
+      (def (conjunct2 (: th Thm))
+        (match (concl th) ((Term.Conj a b) (Option.Some (Thm.Seq (hyps th) b))) (_ (Option.None))))
+      (export (. Term *))
+      (export Thm)
+      (export term-eq)
+      (export assume)
+      (export conj)
+      (export conjunct1)
+      (export conjunct2)
+      (export concl)
+      (export hyps)))
+  (input  (do
+            (import "hol" (Term Thm term-eq assume conj conjunct1 conjunct2 concl hyps))
+            (def (main)
+              (let ((a (Term.Var 1)) (b (Term.Var 2)))
+                (let ((c (conj (assume a) (assume b))))
+                  (and
+                    (term-eq (concl c) (Term.Conj a b))
+                    (match (conjunct1 c)
+                      ((Option.Some c1)
+                        (and (term-eq (concl c1) a)
+                             (match (hyps c1) ((list h1 h2) (and (term-eq h1 a) (term-eq h2 b))) (_ false))))
+                      ((Option.None) false))))))
+            (export main)))
+  (output (: true Bool)))

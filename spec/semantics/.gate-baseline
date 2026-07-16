@@ -72,8 +72,8 @@ pass	MIXED: driving the PLAIN export alongside a two-Tuple-arg LIST closure
 pass	MIXED: driving the PLAIN export alongside a two-Tuple-arg closure
 pass	MIXED: driving the PLAIN export alongside an Option-arg closure
 pass	MK_COMB unions its operands' hypotheses — an assumption threaded through MK_COMB survives (soundness)
-pass	MP should match its antecedent up to α-equivalence: aconv-MP accepts an α-variant a structural equality rejects
 pass	MK_COMB unions the hypotheses of BOTH operands when each carries a distinct assumption
+pass	MP should match its antecedent up to α-equivalence: aconv-MP accepts an α-variant a structural equality rejects
 pass	MULTI-EXPORT: THREE tuple args with a LIST result, shared `call`
 pass	MULTI-EXPORT: a nested-Tuple-arg closure with a LIST result
 pass	MULTI-EXPORT: among-scalars tuple arg with a BYTE-ROPE result
@@ -121,6 +121,8 @@ pass	Result propagates errors without trapping
 pass	Result type for fallible operations
 pass	Set.contains does not fold a set whose element is a runtime scalar
 pass	Set.contains finds a runtime STRING-rope element built via Set.of
+pass	Set.contains over nan finds nan
+pass	Set.contains over negative zero does not find positive zero
 pass	Set.insert does not fold a duplicate against a runtime element
 pass	Set.remove does not fold a set whose element is a runtime scalar
 pass	Set.remove of a rope-element set built via Set.of lowers the cardinality
@@ -141,9 +143,9 @@ pass	String.to-bytes of a genuinely-runtime string yields its UTF-8 byte length
 pass	String.to-bytes of a runtime string threaded through recursion round-trips its bytes
 pass	THREE Tuple args cross the direct-call boundary
 pass	THREE Tuple args with a LIST result
-pass	TRANS should match its middle term up to α-equivalence: aconv-TRANS chains an α-variant a structural equality rejects
 pass	TRANS carries a hypothesis borne by the RIGHT operand only (mirror of the left-only pin)
 pass	TRANS chained three deep accumulates every operand's hypotheses
+pass	TRANS should match its middle term up to α-equivalence: aconv-TRANS chains an α-variant a structural equality rejects
 pass	TRANS unions its operands' hypotheses — an assumption threaded through TRANS survives (soundness)
 pass	TRANS unions the hypotheses of BOTH operands when each carries a distinct assumption
 pass	TWO Record args cross the direct-call boundary
@@ -238,6 +240,7 @@ pass	a List-returning closure alongside a plain export — the closure
 pass	a List-returning closure alongside a plain export — the plain
 pass	a MATCH-dispatched mutual group with the perform in one arm and the mutual call in another folds
 pass	a MIXED Int-and-Float Tuple closure ARG flattens + rebuilds (box-int + box-float)
+pass	a MULTI-PAYLOAD variant with a nested same-sum variant reads the right payload depth (known outer disc)
 pass	a MULTI-payload struct newtype escapes as its payload tuple under the type header
 pass	a MULTI-shot arm folds a perform in a let-bound lambda applied in the body
 pass	a MULTI-shot arm folds a perform under a CURRIED lambda applied to pure arguments
@@ -768,6 +771,10 @@ pass	a generic unwrap helper consumes a fallible Bytes.at result
 pass	a genuinely-narrow op with a wrapped-down MATCH-operand yields the exact value
 pass	a genuinely-narrow op with a wrapped-down if-operand still traps on overflow
 pass	a genuinely-narrow op with a wrapped-down if-operand yields the exact value when in range
+pass	a genuinely-runtime in-range shift count works
+pass	a genuinely-runtime left-shift count beyond the bit width traps rather than masking to a small count
+pass	a genuinely-runtime left-shift count equal to the bit width traps rather than masking
+pass	a genuinely-runtime negative right-shift count traps rather than masking
 pass	a grafted template is structurally equal to the directly-quoted tree
 pass	a guard combines the payload binder with the rest binder
 pass	a guard compares two distinct sum payloads from one tuple
@@ -1072,6 +1079,7 @@ pass	a multi-export shared call is a repeatable (borrow<t>) callback
 pass	a multi-field record with one param-named key survives the call
 pass	a multi-parameter closure keeps its captured environment distinct from its arguments
 pass	a multi-payload destructure binds the head and recurses on the tail
+pass	a multi-payload nested same-sum match falls through when the nested variant differs
 pass	a multi-payload pattern of the wrong arity is a malformed destructure
 pass	a multi-payload variant destructures its payloads positionally
 pass	a multi-payload variant whose spread element is itself a compound escapes correctly
@@ -1185,8 +1193,6 @@ pass	a nested map pattern with a malformed rest names the shape, not an unbound 
 pass	a nested match missing an inner variant under a DISC-≥1 variant is non-exhaustive
 pass	a nested match on a recursive sum falls through when the inner variant differs (known outer disc)
 pass	a nested match on a recursive sum with a KNOWN outer discriminant reads the right payload depth
-pass	a MULTI-PAYLOAD variant with a nested same-sum variant reads the right payload depth (known outer disc)
-pass	a multi-payload nested same-sum match falls through when the nested variant differs
 pass	a nested match on a runtime scrutinee
 pass	a nested module's function export is applied through the projection chain
 pass	a nested non-exhaustive match names the uncovered inner variant (CDZ0210 not the generic message)
@@ -1279,6 +1285,7 @@ pass	a partial constructor passed to a higher-order function completes the varia
 pass	a partial constructor projected from a tuple literal completes when applied
 pass	a partial constructor stored in a record field completes when applied
 pass	a partially-applied function escapes as a value and runs through a recursive HOF
+pass	a pass-through closure that returns its arg via a trivial let composes at one element type
 pass	a pattern binds a name scoped to its branch
 pass	a pattern that binds the same name across nested sub-patterns is rejected
 pass	a pattern that binds the same name twice is rejected
@@ -1743,6 +1750,9 @@ pass	a set consumed by Set.insert in one operand is unchanged for a later read o
 pass	a set dedups NaN elements and keeps zero signs distinct
 pass	a set is constructed from a list of its elements
 pass	a set nested in a tuple compares equal with a runtime element, order-independent
+pass	a set of negative zero and positive zero keeps both (distinct sign bits)
+pass	a set of two NaN floats dedups to one (canonical quiet-NaN)
+pass	a set of two identical positive floats dedups to one
 pass	a set of user-sum elements tests membership by variant
 pass	a set threaded as a recursive accumulator dedups during accumulation
 pass	a set type whose element position holds a value is rejected
@@ -2180,6 +2190,9 @@ pass	an export with two tuple parameters returns a list from both
 pass	an exported closure with a narrow-arg wide-result mismatched body is rejected, not miscompiled
 pass	an exported closure with an annotation-mismatched body is rejected, not emitted invalid
 pass	an expression tree built at run time is evaluated by matching its node variants
+pass	an identity closure composes at a single Int element type (not only String)
+pass	an identity closure composes over a COMPOUND (tuple) element at one element type
+pass	an identity closure composes through TWO chained recursive-generic maps at one element type
 pass	an identity closure threads through a recursive-generic HOF at one element type
 pass	an identity conversion unwraps the magnitude unchanged
 pass	an if choosing between two nullary enum variants selects branchlessly on the discriminant
@@ -3018,6 +3031,7 @@ pass	the implication-extended kernel Thm stays unforgeable — Thm.Seq of a bogu
 pass	the int-to-float generator is order-preserving (a < b implies of a < of b)
 pass	the intersection contains the elements in both sets
 pass	the intersection of disjoint sets is empty
+pass	the kernel defines T (truth) as a constant and DERIVES |- T through the rules
 pass	the kernel proves reflexivity end-to-end: refl t yields a theorem whose conclusion is (t = t)
 pass	the kernel proves the identity theorem ⊢ (λx.x) y = y via BETA — the first-theorem milestone
 pass	the kernel proves the tautology ⊢ p ⇒ p via DISCH (implication introduction) over ASSUME
@@ -3029,6 +3043,7 @@ pass	the kernel's EQ_MP rule: from |- p=q and G |- p derive G |- q (hypotheses u
 pass	the kernel's GEN (∀-introduction) enforces its free-variable side-condition
 pass	the kernel's MK_COMB rule: equals applied to equals are equal — from f=g and x=y derive (f x)=(g y)
 pass	the kernel's SPEC (∀-elimination) instantiates the quantified body with the witness
+pass	the kernel's conjunction: CONJ unions hypotheses, CONJUNCT1/2 project (hyps survive)
 pass	the kernel's modus ponens (⇒-elimination): from ⊢ p⇒q and ⊢ p derive ⊢ q
 pass	the largest factorial that fits the integer type computes exactly
 pass	the le modifier encodes a u16 little-endian

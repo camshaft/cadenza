@@ -1207,6 +1207,22 @@ struct InitArgs {
 /// build` works immediately. Refuses to overwrite a non-empty directory (never clobbers existing work).
 fn run_new(args: &NewArgs) -> ExitCode {
     let dir = std::path::Path::new(&args.name);
+    // `cdz new` NAMES A FRESH SUBDIRECTORY to create — reject a name that instead points at an existing
+    // in-place directory (empty ``, `.`, `..`, or any path whose final component is `.`/`..`). Those made
+    // `new` silently scaffold into the CURRENT dir (empty name → a bogus "created project `app` in " with
+    // an empty path; `.` → files written beside the cwd) — which is `cdz init`'s job. Point the user there.
+    let final_is_curdir_or_parent = matches!(
+        dir.components().next_back(),
+        None | Some(std::path::Component::CurDir | std::path::Component::ParentDir)
+    );
+    if args.name.is_empty() || final_is_curdir_or_parent {
+        eprintln!(
+            "{PROG}: `cdz new` needs a NEW project directory name (got `{}`). To scaffold into an \
+             EXISTING directory (e.g. the current one), use `cdz init`.",
+            args.name
+        );
+        return ExitCode::FAILURE;
+    }
     // Refuse to clobber existing work. Distinguish the cases so the error is accurate (a `read_dir`
     // failure was previously ALL reported as "not empty", including when the target is a FILE):
     //   - the target is a FILE → can't scaffold a project there;

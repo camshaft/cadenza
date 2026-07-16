@@ -4214,3 +4214,75 @@
             (export main)))
   (call   main (: 0 Int64))
   (output (: 9 Int64)))
+
+; --- PASS-THROUGH closure NEIGHBORS of the domain-tie fix (single element type) ----------------------
+; The domain-tie fix ties a pass-through closure's RESULT to its DOMAIN, so `(fn (s) s)` composes through
+; a recursive-generic transformer at a SINGLE element type (landed above). These pin the UNPINNED
+; single-type neighbors of that face: two chained maps, a compound (tuple) element, an Int element (the
+; landed case used String), and a pass-through whose body threads its arg through a trivial `let`. Like
+; the landed single-type case these are TODO on the rust backend (the whole recursive-generic-closure-
+; through-Iter family is a known rust gap) — they pin the WASM result-flow.
+
+(case "an identity closure composes through TWO chained recursive-generic maps at one element type"
+  (doc    "The composition face of the domain-tie fix: `(fn (s) s)` threaded through gmap TWICE must keep
+           its result←domain flow across the composition. gmap(gmap [1,2,3] id) id then icount = 3. If the
+           result tie held for one map but not a second (the closure re-instantiated at the outer map with
+           a free result), the outer gmap's `Iter b` result would go unsolved and decline.")
+  (input  (do
+            (type Iter (Nil) (Cons a (Iter a)))
+            (def (from-list xs)
+              (match xs ((list) (Iter.Nil)) ((list h .. t) (Iter.Cons h (from-list t)))))
+            (def (gmap it f)
+              (match it ((Iter.Nil) (Iter.Nil)) ((Iter.Cons h rest) (Iter.Cons (f h) (gmap rest f)))))
+            (def (icount it)
+              (match it ((Iter.Nil) 0) ((Iter.Cons h rest) (+ 1 (icount rest)))))
+            (def (main) (icount (gmap (gmap (from-list (list 1 2 3)) (fn (s) s)) (fn (s) s))))
+            (export main)))
+  (output (: 3 Int64)))
+
+(case "an identity closure composes over a COMPOUND (tuple) element at one element type"
+  (doc    "The pass-through result←domain flow over a COMPOUND element, not a scalar: `(fn (s) s)` over an
+           Iter of tuples `[(1,\"x\"),(2,\"y\")]`, icount = 2. Pins that the domain tie carries a tuple-typed
+           domain to the result, not only a primitive — the closure's result is the whole tuple type.")
+  (input  (do
+            (type Iter (Nil) (Cons a (Iter a)))
+            (def (from-list xs)
+              (match xs ((list) (Iter.Nil)) ((list h .. t) (Iter.Cons h (from-list t)))))
+            (def (gmap it f)
+              (match it ((Iter.Nil) (Iter.Nil)) ((Iter.Cons h rest) (Iter.Cons (f h) (gmap rest f)))))
+            (def (icount it)
+              (match it ((Iter.Nil) 0) ((Iter.Cons h rest) (+ 1 (icount rest)))))
+            (def (main) (icount (gmap (from-list (list (tuple 1 "x") (tuple 2 "y"))) (fn (s) s))))
+            (export main)))
+  (output (: 2 Int64)))
+
+(case "an identity closure composes at a single Int element type (not only String)"
+  (doc    "The landed single-type case used a String element; this pins an Int element so the tie is shown
+           element-type-agnostic, not String-specific. gmap [10,20] id, icount = 2.")
+  (input  (do
+            (type Iter (Nil) (Cons a (Iter a)))
+            (def (from-list xs)
+              (match xs ((list) (Iter.Nil)) ((list h .. t) (Iter.Cons h (from-list t)))))
+            (def (gmap it f)
+              (match it ((Iter.Nil) (Iter.Nil)) ((Iter.Cons h rest) (Iter.Cons (f h) (gmap rest f)))))
+            (def (icount it)
+              (match it ((Iter.Nil) 0) ((Iter.Cons h rest) (+ 1 (icount rest)))))
+            (def (main) (icount (gmap (from-list (list 10 20)) (fn (s) s))))
+            (export main)))
+  (output (: 2 Int64)))
+
+(case "a pass-through closure that returns its arg via a trivial let composes at one element type"
+  (doc    "The pass-through body need not be a BARE variable: `(fn (s) (let ((x s)) x))` still has its
+           result determined by its domain (through the let-bound copy). gmap [\"p\",\"q\"] over it, icount = 2.
+           Pins that the result←domain flow survives a let in the closure body, not only a bare identity.")
+  (input  (do
+            (type Iter (Nil) (Cons a (Iter a)))
+            (def (from-list xs)
+              (match xs ((list) (Iter.Nil)) ((list h .. t) (Iter.Cons h (from-list t)))))
+            (def (gmap it f)
+              (match it ((Iter.Nil) (Iter.Nil)) ((Iter.Cons h rest) (Iter.Cons (f h) (gmap rest f)))))
+            (def (icount it)
+              (match it ((Iter.Nil) 0) ((Iter.Cons h rest) (+ 1 (icount rest)))))
+            (def (main) (icount (gmap (from-list (list "p" "q")) (fn (s) (let ((x s)) x)))))
+            (export main)))
+  (output (: 2 Int64)))
