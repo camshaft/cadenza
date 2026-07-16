@@ -628,6 +628,7 @@ pass	a factory RETURNS a closure capturing the def's SCALAR parameter
 pass	a factory RETURNS a closure that captures a let-bound inner closure
 pass	a failing guard falls through to a later arm
 pass	a failing payload-binder guard falls to a later arm re-binding the payload
+pass	a failing tuple guard falls to a later arm re-binding the elements
 pass	a failure `?` short-circuits BEFORE later computation runs
 pass	a fallible parser threads a Result((value,cursor),String) through mutual recursion, short-circuiting on Err
 pass	a false variant guard shields its arm's trapping body
@@ -1705,6 +1706,9 @@ pass	a tuple annotated with too many elements is rejected
 pass	a tuple binding pattern against a non-tuple value is a shape error
 pass	a tuple binding pattern nests to any depth
 pass	a tuple compound export under a non-main name crosses to the host
+pass	a tuple guard mixes an element binder with an enclosing parameter
+pass	a tuple guard reads a ctor payload binder inside a tuple element
+pass	a tuple guard reads a nested tuple's inner binders
 pass	a tuple is constructed with positional elements
 pass	a tuple of bools is exhaustive when every combination is covered
 pass	a tuple of calls to a sibling function on recursive-sum values matches with constructor patterns

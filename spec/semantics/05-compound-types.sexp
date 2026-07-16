@@ -9237,3 +9237,73 @@
             (export main)))
   (call   main (: 0 Int64))
   (output (: 3 Int64)))
+
+; --- Tuple-guard binder scope: the depth, mix, and fall-through compositions -----------------------
+; 05f35bf20 lets a tuple-arm guard read the tuple's element binders (find_binder_in_pattern excluded
+; compound heads; its pin covers the flat two-binder cond). These pin the compositions the descent
+; must also reach, promoted from passing breaker probes — the tuple twins of the ctor-list guard
+; scope pins.
+
+(case "a tuple guard reads a nested tuple's inner binders"
+  (doc    "`(guard (tuple (tuple a b) c) (> a c))` — the cond reads a binder TWO pattern levels deep
+           plus a top-level one: ((5, 1), 2) → 5 > 2 → 8. The descent must recurse through the inner
+           compound head (a one-level fix that enumerated only the outer tuple's direct binders
+           leaves `a` unbound).")
+  (input  (do
+            (def (f (: t (Tuple (Tuple Int64 Int64) Int64)))
+              (match t
+                ((guard (tuple (tuple a b) c) (> a c)) (+ (+ a b) c))
+                (_ -1)))
+            (def (main (: v Int64))
+              (f (tuple (tuple 5 1) 2)))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 8 Int64)))
+
+(case "a tuple guard mixes an element binder with an enclosing parameter"
+  (doc    "`(guard (tuple a _) (> a k))` — the cond mixes the element binder with the function's `k`:
+           passing (5 > 3 → 5) and failing (2 > 3 → -1) both verified → 4. The environment-chaining
+           face (the tuple twin of the ctor-list payload+param pin).")
+  (input  (do
+            (def (f (: t (Tuple Int64 Int64)) (: k Int64))
+              (match t
+                ((guard (tuple a _) (> a k)) a)
+                (_ -1)))
+            (def (main (: v Int64))
+              (+ (f (tuple 5 9) 3) (f (tuple v 9) 3)))
+            (export main)))
+  (call   main (: 2 Int64))
+  (output (: 4 Int64)))
+
+(case "a failing tuple guard falls to a later arm re-binding the elements"
+  (doc    "Arm one guards `(> a 9)` (→ 100+a), arm two re-binds both elements unguarded (→ a+b):
+           (15, 1) passes → 115; (5, 1) fails → falls to arm two → 6 → 121. The fall-through face
+           over the tuple destructure (order preserved; the failing cond reaches the next arm's
+           binding, never a residual trap).")
+  (input  (do
+            (def (f (: t (Tuple Int64 Int64)))
+              (match t
+                ((guard (tuple a b) (> a 9)) (+ 100 a))
+                ((tuple a b) (+ a b))))
+            (def (main (: v Int64))
+              (+ (f (tuple 15 1)) (f (tuple v 1))))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 121 Int64)))
+
+(case "a tuple guard reads a ctor payload binder inside a tuple element"
+  (doc    "`(guard (tuple (Op.Add n) b) (> n b))` — the compound head contains a REFUTABLE ctor
+           element whose payload binder the cond reads alongside the tuple's own: ((Add 5), 2) →
+           5 > 2 → 52. The composition of the two guard-binder fixes (the ctor-list fold and the
+           tuple descent) in one pattern — either half regressing leaves `n` or `b` unbound.")
+  (input  (do
+            (type Op (Add Int64) (Neg Unit))
+            (def (f (: t (Tuple Op Int64)))
+              (match t
+                ((guard (tuple (Op.Add n) b) (> n b)) (+ (* n 10) b))
+                (_ -1)))
+            (def (main (: v Int64))
+              (f (tuple (Op.Add 5) 2)))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 52 Int64)))
