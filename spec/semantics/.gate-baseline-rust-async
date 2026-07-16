@@ -13,6 +13,7 @@ pass	Map.to-list of a runtime-empty but key/value-typed map is the empty list
 pass	Map.to-list of an empty map through an inlined helper is the empty list
 pass	Map.to-list of an undetermined-type empty map literal is the empty list
 pass	Map.to-list over a RUNTIME-built map enumerates entries in canonical key order (first key is min)
+pass	NaN equality survives the hoisted float compare by canonical byte form
 pass	OR-saturation to a full-width mask on an unsigned runtime value
 pass	OR-then-mask absorption does not discard a trapping runtime operand
 pass	OR-then-mask absorption folds to the mask constant on a runtime operand
@@ -617,6 +618,7 @@ pass	a map inserted-into in one recursive sub-call is unchanged for a sibling su
 pass	a map inserted-into on one path and size-read on another keeps copy-on-write across recursion
 pass	a map literal with keys of two different types is a type error
 pass	a map match over a map literal with a runtime key selects by value, not a const fold
+pass	a map match pattern with a malformed rest names the shape, not an unbound binder (CDZ0201)
 pass	a map mixing integer and float values is a type error
 pass	a map operation applies to a map passed as a function parameter
 pass	a map pattern as a list-arm element binds its value binder
@@ -796,6 +798,7 @@ pass	a nested tuple pattern of the wrong arity is a type error
 pass	a nested tuple-arity mismatch in equality is a type error
 pass	a nested tuple-pattern parameter destructures a runtime tuple
 pass	a nested unquote Bool pattern does not match a non-boolean operand
+pass	a nested unquote pattern binds an Ast.Name operand's identifier
 pass	a nested unquote pattern matches a Bool sub-AST by shape
 pass	a nested unquote pattern matches a Float sub-AST by shape
 pass	a nested unquote pattern matches a Str sub-AST by shape
@@ -1733,6 +1736,10 @@ pass	comparing tuples of different lengths is a type error
 pass	comparing two quantities of the same dimension yields a Bool
 pass	comparing two same-shape nominal sum types is a type error, not false
 pass	comparing two units of one dimension converts before comparing
+pass	compound equality over a runtime NaN float leaf: nan equals nan
+pass	compound equality over a runtime float leaf: different floats compare unequal
+pass	compound equality over a runtime float leaf: equal floats compare equal
+pass	compound equality over a runtime float leaf: negative zero is not equal to positive zero
 pass	concatenating an empty byte sequence on the left is the identity
 pass	concatenating an empty byte sequence on the right is the identity
 pass	concatenating an empty string on the left is the identity
@@ -1823,6 +1830,7 @@ pass	equality of an integer and a string is a type error
 pass	equality of two records with different field sets is a type error
 pass	equality of two tuples of different arity is a type error
 pass	equality over a partly-un-built sum with a free Err type compiles on every backend
+pass	equality over a runtime float in a SUM payload compares by the float leaf
 pass	eval is optional for macros and interactive use
 pass	eval of a quasiquote splicing a compile-time-known value
 pass	eval of a quasiquote splicing a string works through String ops
@@ -2460,7 +2468,6 @@ todo	MULTI-EXPORT: two two-Tuple-arg closures with a BYTE-ROPE result
 todo	MULTI-EXPORT: two two-Tuple-arg closures with a LIST result share one `call`
 todo	MULTI-EXPORT: two two-Tuple-arg closures with a fixed COMPOUND result
 todo	N-suffixed literals compose under BigInt arithmetic
-todo	NaN equality survives the hoisted float compare by canonical byte form
 todo	Qty.unit recovers a quantity's unit to build another quantity of the same unit
 todo	SUM ARG + LIST RESULT declines cleanly (Option arg, List result)
 todo	THREE Tuple args cross the direct-call boundary
@@ -2778,6 +2785,7 @@ todo	a runtime BigInt remainder takes the dividend's sign
 todo	a runtime MIXED-SCALE BigInt comparison converts to the reference before comparing
 todo	a runtime MIXED-SCALE BigInt-magnitude sum converts to the reference in unbounded arithmetic
 todo	a runtime MIXED-SCALE Rational-magnitude sum converts to the reference EXACTLY
+todo	a runtime NaN leaf in a tuple compares equal, a runtime -0.0 leaf stays distinct
 todo	a runtime Rational built from a parameter compares by its exact value
 todo	a runtime Rational comparison of a parameter is false when it should be
 todo	a runtime bin match binds the tail after a fixed header via a final rest segment
@@ -2792,6 +2800,7 @@ todo	a runtime division of the minimum integer by -1 overflows and traps
 todo	a runtime exact mixing of inch and millimeter keeps the fractional scale
 todo	a runtime final rest segment binds the empty tail when the scrutinee is only the header
 todo	a runtime fixed-width segment is emitted big-endian and read back by index
+todo	a runtime float leaf in a tuple compares by the canonical byte form
 todo	a runtime function value is manually eta-wrapped and applied through nested recursive HOFs
 todo	a runtime mixed-scale combine converts a COMPUTED BigInt quantity operand
 todo	a runtime nibble truncation keeps the low four bits

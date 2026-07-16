@@ -2496,6 +2496,48 @@ mod tests {
     }
 
     #[test]
+    fn sexpr_semantic_tokens_are_valid_and_non_overlapping() {
+        // Semantic tokens on the s-expr surface: a whole-document leaf walk over the canonicalized arena.
+        // Every token references a legend index, has positive length, and the delta-encoded stream is
+        // ascending + non-overlapping (the LSP wire invariant). Pins the s-expr `Highlight` path (the
+        // single-buffer token tests were ML-only, like the rest of the surface before the canon fix).
+        let toks = semantic_tokens_for("(def (double x) (+ x x))\n(def use (double 21))", false);
+        assert!(
+            !toks.is_empty(),
+            "expected some semantic tokens on the s-expr surface"
+        );
+        for t in &toks {
+            assert!(t.length > 0, "a token must have positive length");
+            assert!(
+                (t.token_type as usize) < SEMANTIC_TOKEN_TYPES.len(),
+                "token_type {} out of legend range",
+                t.token_type
+            );
+        }
+        assert_no_overlap(&toks);
+    }
+
+    #[test]
+    fn sexpr_document_symbols_outline_multiple_forms() {
+        // The outline on the s-expr surface (multi-form): each top-level `def` becomes a symbol with the
+        // right kind + a range on its own line. Pins the last node-id-keyed analysis on the s-expr path.
+        let syms = document_symbols_for("(def (double x) (+ x x))\n(def use (double 21))", false);
+        let by_name: std::collections::HashMap<_, _> =
+            syms.iter().map(|s| (s.name.as_str(), s)).collect();
+        assert!(by_name.contains_key("double"), "double missing: {syms:?}");
+        assert!(by_name.contains_key("use"), "use missing: {syms:?}");
+        assert_eq!(
+            by_name["double"].kind,
+            SymbolKind::FUNCTION,
+            "double is a function"
+        );
+        // Each symbol's range lands on its own declaration line (0 for double, 1 for use) — proving the
+        // remapped span table anchors the outline to the right form, not a neighbour.
+        assert_eq!(by_name["double"].range.start.line, 0);
+        assert_eq!(by_name["use"].range.start.line, 1);
+    }
+
+    #[test]
     fn references_finds_every_use_of_the_name_under_the_cursor() {
         // `helper` is used twice (lines 1 and 2). References from any occurrence finds both uses;
         // excluding the declaration by default (UsesOf excludes the defining occurrence).

@@ -25041,6 +25041,36 @@ mod match_engine {
     }
 
     #[test]
+    fn an_option_expect_payload_consumed_while_the_option_is_live_is_retained() {
+        // The `SumExpect` (`Option.expect`) twin of the sum-payload retain — the shape the compiler-in-ML
+        // port hits threading an env Option through its walkers (breaker finding, wasm-only miscompile).
+        // `Option.expect s` reads `sum-payload` (a BORROW); consuming it with `List.push` while `s` is
+        // threaded UNCHANGED to the self-call FBIP-mutated the shared payload at rc==1 → drift (per-iter len
+        // 3,4,5,6 → 18 not 12; Rust backend was correct). Fix: the `SumExpect` arm of `mark_binder_dups`
+        // marks a child-dup + the `SumExpect` emit dups the extracted compound payload.
+        // `main` is nullary (bakes d=7) so `run_on_heap` drives it directly.
+        let looped = "(module m \
+               (def (go (: s (Option (List Int64))) (: n Int64) (: acc Int64)) \
+                 (if (= n 0) acc (go s (- n 1) (+ acc ((. List len) ((. List push) ((. Option expect) s \"v\") 9)))))) \
+               (def (main) (go (Option.Some ((. List push) ((. List push) (list) 7) 8)) 4 0)) \
+               (export main))";
+        if let Some(out) = run_on_heap(looped) {
+            assert_eq!(
+                out, "12",
+                "an Option.expect payload consumed per iteration must not drift (4 × 3)"
+            );
+        }
+        // FBIP fast path: a single-consume expect with a dead scrutinee must NOT import `dup`.
+        let linear = "(module m \
+               (def (f (: s (Option (List Int64)))) ((. List len) ((. List push) ((. Option expect) s \"v\") 9))) \
+               (def (main (: d Int64)) (f (Some ((. List push) (list) d)))) (export main))";
+        assert!(
+            !component_imports_op(&component(linear), "dup"),
+            "a single-consume Option.expect with a dead scrutinee must not import `dup` (FBIP fast path)"
+        );
+    }
+
+    #[test]
     fn a_loop_invariant_heap_projection_consumed_in_the_body_is_not_licm_hoisted() {
         // MISCOMPILE (found + fixed 2026-07-16, v-memory-safety): LICM hoists a loop-invariant subexpression
         // ONCE into a persistent slot read back each iteration. That is sound for a SCALAR (a count/index),
