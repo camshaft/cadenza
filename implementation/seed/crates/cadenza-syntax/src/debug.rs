@@ -125,7 +125,63 @@ fn radix_name(r: Radix) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ast::{Builder, Decimal, SuffixBody, SuffixKind};
     use crate::sexpr;
+    use num_bigint::BigInt;
+
+    #[test]
+    fn every_leaf_kind_renders_distinctly() {
+        // The debug view is what a compiler engineer reads to answer "what did this binary AST decode
+        // to?" — so `leaf()` must render EVERY `Leaf` variant with its kind tag + value, and the marker
+        // leaves (`BadEscape`/`BadChar`) must be visibly distinct from their well-formed cousins
+        // (`Str`/`Char`). Build one arena holding an atom of each kind and assert each line.
+        let leaves = [
+            (
+                Leaf::Int {
+                    value: BigInt::from(42),
+                    radix: Radix::Hex,
+                },
+                "Int 42 (hex)",
+            ),
+            (
+                Leaf::Float(Decimal {
+                    negative: false,
+                    significand: BigInt::from(15),
+                    exponent: -1,
+                }),
+                "Float 1.5",
+            ),
+            (Leaf::Str("hi\n".to_string()), "Str \"hi\\n\""),
+            (Leaf::Bytes(vec![0, 255]), "Bytes [0, 255]"),
+            (Leaf::Bool(true), "Bool true"),
+            (Leaf::Sym("meter".to_string()), "Sym \"meter\""),
+            (Leaf::Name("foo".to_string()), "Name foo"),
+            (Leaf::BadEscape('q'), "BadEscape 'q'"),
+            (Leaf::Char('a'), "Char 'a'"),
+            (Leaf::BadChar("u+D800".to_string()), "BadChar \"u+D800\""),
+            (
+                Leaf::Suffixed {
+                    value: SuffixBody::Int {
+                        value: BigInt::from(100),
+                        radix: Radix::Dec,
+                    },
+                    kind: SuffixKind::BigInt,
+                },
+                "Suffixed 100N (BigInt)",
+            ),
+        ];
+        for (leaf_val, expected) in leaves {
+            // A single-atom arena for this leaf.
+            let mut b = Builder::new();
+            let root = b.atom_leaf(leaf_val.clone());
+            let a = b.finish(root);
+            let out = print(&a);
+            assert!(
+                out.contains(expected),
+                "leaf {leaf_val:?} should render as {expected:?}; got:\n{out}"
+            );
+        }
+    }
 
     #[test]
     fn renders_the_arena_tree() {

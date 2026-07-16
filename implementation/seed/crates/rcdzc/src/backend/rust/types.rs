@@ -108,6 +108,20 @@ pub fn rust_type(ty: &Ty) -> Option<String> {
         // PERSISTENT/immutable; a `Vec` is owned+`Clone`, and every list op emitted for this backend
         // produces a NEW `Vec` — no in-place mutation — so the value semantics agree.)
         Ty::List(elem) => Some(format!("Vec<{}>", rust_type(elem)?)),
+        // A MAP is a persistent key→value association — Rust's ordered `BTreeMap<K, V>`. `BTree` (not
+        // `HashMap`) because it ITERATES IN SORTED KEY ORDER, which is exactly the CANONICAL order Cadenza's
+        // `Map.to-list` yields — so enumeration matches the runtime for free (a `HashMap` would need an
+        // explicit sort). Keys compare BY VALUE (`BTreeMap` uses `Ord`), matching the language's by-value
+        // key semantics. `K` must be `Ord`: a scalar/tuple/record/`String`/`Vec` key is (a float key is
+        // NOT — it declines, rare). Key/value map recursively; either unmapped declines the whole map.
+        Ty::Map(k, v) => Some(format!(
+            "std::collections::BTreeMap<{}, {}>",
+            rust_type(k)?,
+            rust_type(v)?
+        )),
+        // A SET is a persistent collection of unique elements — Rust's ordered `BTreeSet<T>` (sorted
+        // iteration = the canonical `Set.to-list` order; `Ord` element compares by value, dedup at insert).
+        Ty::Set(elem) => Some(format!("std::collections::BTreeSet<{}>", rust_type(elem)?)),
         // Functions and type/erased values have no native mapping.
         _ => None,
     }

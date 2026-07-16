@@ -321,8 +321,15 @@ fn emit_one_enum(db: &mut Db, i: usize) -> Result<String, Reject> {
     // over the sum emits `a == b`. A payload that is NOT `Eq`-derivable (a float — `PartialEq` but not
     // `Eq`; a fn/closure; a `List`/`Map`/`Set`; a recursive `Box` field IS fine — `Box<T: Eq>: Eq`) keeps
     // `Clone` only, so its `ValueEq` still declines (decline-don't-miscompile), as before.
+    // When every payload is `Eq`-derivable it is ALSO `Ord`-derivable (Rust's `PartialOrd`/`Ord` derives
+    // compose over the same fields `Eq` does — an Int/Bool/nested-comparable payload is `Ord`), so derive
+    // `PartialOrd, Ord` too. That lets a user sum be a `BTreeMap`/`BTreeSet` KEY/element (which needs `Ord`)
+    // — a `(Map C V)` keyed by a nullary/comparable sum. The derived order is lexicographic (variant
+    // declaration order, then payloads) — a valid canonical key order, and the map/set are compared only
+    // for lookup identity, not an observable ordering, so any total order is sound. A non-`Eq` payload (a
+    // float/closure/collection) keeps `Clone` only and such a sum cannot be a map key (it declines).
     let derives = if sum_derives_eq(db, &decl) {
-        "Clone, PartialEq, Eq"
+        "Clone, PartialEq, Eq, PartialOrd, Ord"
     } else {
         "Clone"
     };

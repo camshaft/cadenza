@@ -261,6 +261,20 @@ def index-pairs-from(it, i) = match next(it) with
 /// `take` FIRST (`enumerate(take(iterate(…), n))`).
 def enumerate(it) = EntryIter.EFromList(index-pairs-from(it, 0))
 
+// build the adjacent-pair list `(prev, cur)` by walking with the previous element. `have` = "a previous
+// element exists" (skips emitting until the 2nd element). Eager, like enumerate.
+def adjacent-pairs-from(it, have, prev) = match next(it) with
+  | Option.None(_) => []
+  | Option.Some(p) => (match p with | (v, rest) =>
+      if have then List.concat([(prev, v)], adjacent-pairs-from(rest, true, v))
+      else adjacent-pairs-from(rest, true, v))
+
+/// Pair each element with its PREDECESSOR: `[a, b, c, d]` → `(a,b), (b,c), (c,d)` as an `EntryIter`.
+/// `n` elements yield `n-1` pairs (a 0/1-element source yields none). The sliding-window-of-2 view — walk
+/// consecutive pairs together (`fold-entries(pairwise(it), …, fn(acc, prev, cur) => …)`), e.g. for deltas
+/// `cur - prev`. Reuses the `(Int64, Int64)` EntryIter (no generic element). Eager, like `enumerate`.
+def pairwise(it) = EntryIter.EFromList(adjacent-pairs-from(it, false, 0))
+
 /// Left fold over entries: thread `acc` through `f(acc, key, value)` for every entry, in key order.
 def fold-entries(it, acc, f: Int64 -> Int64 -> Int64 -> Int64) = match entry-next(it) with
   | Option.None(_) => acc
@@ -1330,5 +1344,44 @@ def enumerate-of-bounded-infinite() =
     unit
   else
     trap("index sum 0+1+2 = 3")
+
+// ── pairwise: adjacent (prev, cur) pairs ─────────────────────────────────────────────────────────
+
+@test
+def pairwise-deltas-telescope() =
+  // [1,2,4,7] -> (1,2),(2,4),(4,7); sum of (cur-prev) = 1+2+3 = 6 (telescopes to last-first = 7-1)
+  if fold-entries(pairwise(from-list([1, 2, 4, 7])), 0, fn(acc, prev, cur) => acc + (cur - prev)) == 6 then
+    unit
+  else
+    trap("delta sum = 6")
+
+@test
+def pairwise-count-is-one-less-than-length() =
+  // 5 elements -> 4 adjacent pairs
+  if entry-count(pairwise(from-list([10, 20, 30, 40, 50]))) == 4 then unit else trap("4 pairs")
+
+@test
+def pairwise-singleton-has-no-pairs() =
+  if entry-count(pairwise(from-list([9]))) == 0 then unit else trap("singleton -> 0 pairs")
+
+@test
+def pairwise-empty-has-no-pairs() =
+  if entry-count(pairwise(empty())) == 0 then unit else trap("empty -> 0 pairs")
+
+@test
+def pairwise-first-pair() =
+  // the first pair is (elem0, elem1)
+  match entry-next(pairwise(from-list([3, 5, 8]))) with
+    | Option.None(_) => trap("should have a pair")
+    | Option.Some(p) => (match p with | (kv, _) => (match kv with | (a, b) =>
+        if a == 3 then (if b == 5 then unit else trap("second is 5")) else trap("first is 3")))
+
+@test
+def pairwise-over-a-range() =
+  // pairwise(range(0,5)) deltas are all 1: sum = 4 (four pairs, each cur-prev == 1)
+  if fold-entries(pairwise(range(0, 5)), 0, fn(acc, prev, cur) => acc + (cur - prev)) == 4 then
+    unit
+  else
+    trap("range deltas sum = 4")
 
 export { Iter.* }

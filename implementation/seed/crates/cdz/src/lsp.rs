@@ -1197,8 +1197,10 @@ fn package_hover_at(
 /// A `file://` URI for a local filesystem path — the inverse of `uri_to_path`, for a cross-file
 /// `Location` that points into an imported file. Percent-encodes every path byte that is not an
 /// unreserved URI character (keeping `/` as the path separator), so a path containing a space, a `%`,
-/// or a reserved char (`#`/`?`/…) yields a VALID, unambiguous `file://` URI. `None` for a non-absolute
-/// path (a `Location` needs a resolvable URI).
+/// or a reserved char (`#`/`?`/…) yields a VALID, unambiguous `file://` URI. An ABSOLUTE path becomes
+/// `file://<encoded>`; a relative path (unusual for a closure file, which resolves siblings against the
+/// entry's dir) is handled best-effort by prefixing a slash (`file:///<encoded>`). `None` only if the
+/// assembled string still does not parse as a `Uri` (it does for any real path).
 ///
 /// 🪤 Encoding a literal `%` is LOAD-BEARING for the `uri_to_path`/`percent_decode` round-trip: the
 /// decoder turns any `%XX` back into a byte, so a real path segment like `a%2Fb` MUST be emitted as
@@ -1372,7 +1374,12 @@ fn package_references_at(
     let Ok(files) = crate::closure::load(entry_path, open) else {
         return Vec::new();
     };
-    // Build the spliced package inputs (entry first = base 0) — reused for all three queries below.
+    // Build the spliced package inputs (entry first = base 0), then run ALL THREE fact reads —
+    // `Symbols` (the shadowing-guard authority + the declaration node), `ResolveOf` (does the cursor
+    // resolve to a top-level symbol), and `UsesOf` (the references themselves) — in a SINGLE `compile`.
+    // A query is TOTAL and rides alongside the others, so one linked compile answers all three (and
+    // carries the `link-map` for the demux), instead of one full compile PER query. Distinct query kinds
+    // → distinct artifacts, retrieved by `KIND_*` below.
     let ast_inputs: Vec<rcdzc::Artifact> = files
         .iter()
         .map(|f| {
@@ -1383,15 +1390,19 @@ fn package_references_at(
             )
         })
         .collect();
-    let run_query = |query: rcdzc::sidecar::Query, kind: &str| -> Option<String> {
-        let mut inputs = ast_inputs.clone();
-        inputs.push(rcdzc::Artifact::new(
-            rcdzc::sidecar::KIND_SIDECAR,
-            "drive",
-            rcdzc::sidecar::encode(&[rcdzc::Request::Query(query)]),
-        ));
-        inputs.push(rcdzc::cli::entry_artifact(&files[0].name));
-        let compiled = rcdzc::run_with_compiler_stack(|| rcdzc::compile(&inputs, &[]));
+    let mut inputs = ast_inputs;
+    inputs.push(rcdzc::Artifact::new(
+        rcdzc::sidecar::KIND_SIDECAR,
+        "drive",
+        rcdzc::sidecar::encode(&[
+            rcdzc::Request::Query(rcdzc::sidecar::Query::Symbols),
+            rcdzc::Request::Query(rcdzc::sidecar::Query::ResolveOf { node: cursor.0 }),
+            rcdzc::Request::Query(rcdzc::sidecar::Query::UsesOf { name: name.clone() }),
+        ]),
+    ));
+    inputs.push(rcdzc::cli::entry_artifact(&files[0].name));
+    let compiled = rcdzc::run_with_compiler_stack(|| rcdzc::compile(&inputs, &[]));
+    let artifact_text = |kind: &str| -> Option<String> {
         compiled
             .artifact(kind)
             .map(|b| String::from_utf8_lossy(b).into_owned())
@@ -1409,25 +1420,19 @@ fn package_references_at(
     // 🪤 The earlier `resolves_to.is_some()` test was too permissive: `ResolveOf` succeeds for a LOCAL
     // binder too (it resolves to itself), so a cursor on a shadowing local passed the guard and leaked
     // the top-level's uses. Requiring the resolve TARGET to be a `Symbols` node is what distinguishes a
-    // genuine top-level from a shadowing local.
-    let symbol_nodes: std::collections::HashSet<u32> =
-        run_query(rcdzc::sidecar::Query::Symbols, rcdzc::sidecar::KIND_SYMBOLS)
-            .map(|answer| {
-                answer
-                    .lines()
-                    .filter_map(|line| {
-                        line.rsplit('\t')
-                            .next()
-                            .and_then(|c| c.trim().parse::<u32>().ok())
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-    let resolves_to = run_query(
-        rcdzc::sidecar::Query::ResolveOf { node: cursor.0 },
-        rcdzc::sidecar::KIND_RESOLVE,
-    )
-    .and_then(|a| a.trim().parse::<u32>().ok());
+    // genuine top-level from a shadowing local. `symbols_lines` is parsed once and reused for the
+    // declaration-node lookup below (avoiding a separate entry-only `Symbols` compile).
+    let symbols_answer = artifact_text(rcdzc::sidecar::KIND_SYMBOLS).unwrap_or_default();
+    let symbol_nodes: std::collections::HashSet<u32> = symbols_answer
+        .lines()
+        .filter_map(|line| {
+            line.rsplit('\t')
+                .next()
+                .and_then(|c| c.trim().parse::<u32>().ok())
+        })
+        .collect();
+    let resolves_to =
+        artifact_text(rcdzc::sidecar::KIND_RESOLVE).and_then(|a| a.trim().parse::<u32>().ok());
     // The cursor belongs to a top-level symbol iff it IS a `Symbols` name-node (a declaration occurrence,
     // entry-local == global at base 0) or RESOLVES to one (a use of a top-level/imported name).
     let cursor_is_symbol = symbol_nodes.contains(&cursor.0);
@@ -1435,24 +1440,21 @@ fn package_references_at(
     if !(cursor_is_symbol || resolves_to_symbol) {
         return Vec::new();
     }
-    // The entry-local declaration node (base 0) for the include-declaration fallback below — `None` when
-    // the top-level symbol is defined in an imported file (then `resolves_to` carries its global id).
-    let top_node = top_level_symbol_node(&entry_arenas, &name);
+    // The declaration node named `name` for the include-declaration fallback below — read from the SAME
+    // package `Symbols` answer (its GLOBAL id, whichever file the def lives in), so no extra compile.
+    // `None` when `name` names no top-level declaration (then `resolves_to` carries the target).
+    let top_node = symbols_answer.lines().find_map(|line| {
+        let mut cols = line.splitn(3, '\t');
+        match (cols.next(), cols.next(), cols.next()) {
+            (Some(n), Some(_kind), Some(node)) if n == name => node.trim().parse::<u32>().ok(),
+            _ => None,
+        }
+    });
 
     let files_ref = &files;
     let mut out: Vec<Location> = Vec::new();
 
-    // Run UsesOf and capture the link-map from the SAME compile (so the demux matches the ids).
-    let mut inputs = ast_inputs.clone();
-    inputs.push(rcdzc::Artifact::new(
-        rcdzc::sidecar::KIND_SIDECAR,
-        "drive",
-        rcdzc::sidecar::encode(&[rcdzc::Request::Query(rcdzc::sidecar::Query::UsesOf {
-            name: name.clone(),
-        })]),
-    ));
-    inputs.push(rcdzc::cli::entry_artifact(&files[0].name));
-    let compiled = rcdzc::run_with_compiler_stack(|| rcdzc::compile(&inputs, &[]));
+    // The `link-map` came from the SAME compile as `UsesOf` (so the demux ids match).
     let link_map = compiled
         .artifact(rcdzc::link::KIND_LINK_MAP)
         .map(rcdzc::link::decode_link_map)
@@ -1485,8 +1487,8 @@ fn package_references_at(
             }
         }
     }
-    // include_declaration: add the def's own name occurrence (UsesOf excludes it). Its global id is the
-    // `resolves_to` target (or the entry-local `top_node` when the decl is in the entry, base 0).
+    // include_declaration: add the def's own name occurrence (UsesOf excludes it). Its GLOBAL id is the
+    // `resolves_to` target (or `top_node`, the package `Symbols` name-node for `name` — also global).
     if include_declaration {
         let decl_global = resolves_to.or(top_node);
         if let Some(g) = decl_global

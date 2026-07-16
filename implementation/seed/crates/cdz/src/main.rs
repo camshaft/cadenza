@@ -2244,6 +2244,12 @@ fn resolve_check_targets(target: Option<&str>) -> Result<Vec<String>, String> {
     };
     let path = std::path::Path::new(&target);
     let is_manifest_arg = path.file_name().and_then(|n| n.to_str()) == Some(MANIFEST_NAME);
+    // Naming a `Project.cdz` that DOESN'T EXIST is an error, not a silent fallback: without this, the arg
+    // resolves to its parent dir and `load_manifest` returns `Ok(None)` (no manifest there), so we'd
+    // quietly dir-walk instead of the manifest the user explicitly named. Fail with a clear "no such file".
+    if is_manifest_arg && !path.is_file() {
+        return Err(format!("no such file `{target}`"));
+    }
     // A `Project.cdz` (arg or a dir holding one): check the manifest's declared files. Else a plain dir:
     // walk every source file. Else a single file: just it.
     let dir: Option<std::path::PathBuf> = if is_manifest_arg {

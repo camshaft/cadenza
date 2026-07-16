@@ -100,6 +100,13 @@ impl Mode {
 /// `E::Variant`). Matches the `__pay`/`__p` reserved-local convention the expression emitter uses.
 const ENV_TYPE_PARAM: &str = "__CdzE";
 
+/// The Rust VALUE-PARAMETER name for the async gas/yield env (`async fn f(<this>: &mut __CdzE, …)`),
+/// threaded into every emitted call. A `__`-prefixed RESERVED name — NOT a bare `env` — so it cannot
+/// collide with a SOURCE parameter literally named `env` (`(def (ev e env) …)`), which a bare `env` would
+/// duplicate in the signature (rustc E0415 "bound more than once"). Matches the `__CdzE`/`__pay`/`__p`
+/// reserved-name convention; user idents never begin with `__` (the sanitizer does not emit it).
+pub(super) const ENV_PARAM: &str = "__cdz_env";
+
 /// Emit a Rust-source artifact for the program in `db` under the boundary `layout`. Produces one
 /// `pub fn` per export (verbatim name, native scalar signature), reading the shared columns on demand.
 /// Declines — attributed to this target — for a construct the scalar slice does not yet render.
@@ -239,7 +246,7 @@ fn emit_signature(
     // In async/gas mode, the FIRST parameter is the caller-supplied gas/yield env, threaded into every
     // call. It precedes the source parameters; the source params keep their positions after it.
     if mode.is_async() {
-        param_src.push_str(&format!("env: &mut {ENV_TYPE_PARAM}"));
+        param_src.push_str(&format!("{ENV_PARAM}: &mut {ENV_TYPE_PARAM}"));
     }
     for (i, (binder, ty)) in params.iter().enumerate() {
         if i > 0 || mode.is_async() {
@@ -337,7 +344,7 @@ fn emit_signature(
         // `E` would otherwise shadow the type param, making `E::Variant` unresolvable) — the `__` prefix
         // marks it backend-reserved, matching the emitted `__pay`/`__p` locals.
         Ok(format!(
-            "{ret_note}{vis}async fn {ident}<{ENV_TYPE_PARAM}: CdzEnv>({param_src}) -> {ret} {{\n    env.consume(1).await;\n{body_src}\n}}\n"
+            "{ret_note}{vis}async fn {ident}<{ENV_TYPE_PARAM}: CdzEnv>({param_src}) -> {ret} {{\n    {ENV_PARAM}.consume(1).await;\n{body_src}\n}}\n"
         ))
     } else {
         Ok(format!(

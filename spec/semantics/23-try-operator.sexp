@@ -262,3 +262,15 @@
            Int64))` annotation path already rejects it). CDZ0203.")
   (input  (do (def (main) (: (let ((y (try (Err true)))) (Ok y)) (Result Int64 Int64))) (export main)))
   (error  CDZ0203))
+
+(case "an agreeing Result error type short-circuits through the boundary"
+  (doc    "The positive control of the error-type soundness reject: `(try (Err 7))` under a
+           `(Result Int64 Int64)` boundary — the error type AGREES, so the `?` short-circuits and
+           the caller's Err arm reads 7. Pinned beside the disagreeing-type CDZ0203 so the check is
+           graded from both sides (an over-tight fix that rejected agreeing error types breaks this).")
+  (input  (do
+            (def (f) (: (let ((y (try (Err 7)))) (Ok y)) (Result Int64 Int64)))
+            (def (main)
+              (match (f) ((Ok v) v) ((Err e) e)))
+            (export main)))
+  (output (: 7 Int64)))

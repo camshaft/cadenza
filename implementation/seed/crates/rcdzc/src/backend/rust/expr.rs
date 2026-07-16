@@ -837,19 +837,21 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                             call_args.push(a.clone());
                         }
                     }
+                    let env_param = super::ENV_PARAM;
                     let args = if call_args.is_empty() {
-                        "env".to_string()
+                        env_param.to_string()
                     } else {
-                        format!("env, {}", call_args.join(", "))
+                        format!("{env_param}, {}", call_args.join(", "))
                     };
                     Ok(format!(
                         "{{ {binds}::std::boxed::Box::pin({ident}({args})).await }}"
                     ))
                 } else {
+                    let env_param = super::ENV_PARAM;
                     let args = if rendered.is_empty() {
-                        "env".to_string()
+                        env_param.to_string()
                     } else {
-                        format!("env, {}", rendered.join(", "))
+                        format!("{env_param}, {}", rendered.join(", "))
                     };
                     // Fully-qualify `::std::boxed::Box::pin` so a user sum named `Box` cannot shadow it.
                     Ok(format!("::std::boxed::Box::pin({ident}({args})).await"))
@@ -962,6 +964,136 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             Ok(format!(
                 "{{ let __v = {l}; let __i = ({i}) as usize; \
                  if __i < __v.len() {{ Some(__v[__i].clone()) }} else {{ None }} }}"
+            ))
+        }
+        // MAP construction `(map (k v) …)` → a `BTreeMap` built by inserting each entry in SOURCE ORDER (a
+        // later duplicate key overwrites — `BTreeMap::insert` does exactly that, matching the runtime).
+        Core::MapNew { entries, .. } => {
+            let mut lines = String::new();
+            for (k, v) in &entries {
+                let ke = emit(db, *k, env, ctx)?;
+                let ve = emit(db, *v, env, ctx)?;
+                lines.push_str(&format!("__m.insert({ke}, {ve}); "));
+            }
+            // An EMPTY map (no inserts, no surrounding constraint — e.g. the `rest` of a map pattern that
+            // matched every entry) can't infer its `BTreeMap<K,V>` type params, so ANNOTATE `__m` with the
+            // node's solved map type (rustc E0282 otherwise). A non-empty map infers K/V from its inserts,
+            // so the annotation is optional there. If the map's own type does NOT map (a key/value type the
+            // backend can't represent — a `String` key, a float value), an EMPTY map has nothing to infer
+            // from and no `dyn`/annotation to give → DECLINE (a non-empty such map already declined at its
+            // first insert's key/value emit, so this only catches the empty case).
+            let ann = match types::rust_type(&type_of(db, id)) {
+                Some(t) => format!(": {t}"),
+                None if entries.is_empty() => {
+                    return Err(Reject::decline(
+                        "an empty map whose type is not representable in Rust has no inferable element type",
+                    ));
+                }
+                None => String::new(),
+            };
+            Ok(format!(
+                "{{ let mut __m{ann} = std::collections::BTreeMap::new(); {lines}__m }}"
+            ))
+        }
+        // `Map.insert` → add-or-replace, returning the NEW map (persistent → consume into a `mut` local).
+        Core::MapInsert { map, key, val, .. } => {
+            let m = emit(db, map, env, ctx)?;
+            let k = emit(db, key, env, ctx)?;
+            let v = emit(db, val, env, ctx)?;
+            Ok(format!("{{ let mut __m = {m}; __m.insert({k}, {v}); __m }}"))
+        }
+        // `Map.lookup` → the fallible keyed read → Rust's own `Option`: `BTreeMap::get` borrows, returns
+        // `Option<&V>`; `.cloned()` gives an owned `Option<V>` (the harness renders a native Option).
+        Core::MapLookup { map, key, .. } => {
+            let m = emit(db, map, env, ctx)?;
+            let k = emit(db, key, env, ctx)?;
+            Ok(format!("({m}).get(&({k})).cloned()"))
+        }
+        // `Map.remove` → drop the key, returning the new map (removing an absent key is total, `remove`
+        // just returns the prior value which we discard). Persistent → consume into a `mut` local.
+        Core::MapRemove { map, key, .. } => {
+            let m = emit(db, map, env, ctx)?;
+            let k = emit(db, key, env, ctx)?;
+            Ok(format!("{{ let mut __m = {m}; __m.remove(&({k})); __m }}"))
+        }
+        // `Map.len` (the node is `MapSize`) → the distinct-key count as `Int64`.
+        Core::MapSize { map } => {
+            let m = emit(db, map, env, ctx)?;
+            Ok(format!("(({m}).len() as i64)"))
+        }
+        // `Map.to-list` → a `List (Tuple k v)` in CANONICAL KEY order — a `BTreeMap` iterates sorted, so a
+        // plain `.iter()` gives that order; clone each key/value into an owned `(K, V)` tuple → `Vec<(K,V)>`.
+        Core::MapToList { map, .. } => {
+            let m = emit(db, map, env, ctx)?;
+            Ok(format!(
+                "({m}).iter().map(|(__k, __v)| (__k.clone(), __v.clone())).collect::<Vec<_>>()"
+            ))
+        }
+        // SET construction `(Set.of (list …))` → a `BTreeSet` built by inserting each element (duplicates
+        // collapse at insert, matching the runtime dedup).
+        Core::SetOf { elems, .. } => {
+            let mut lines = String::new();
+            for e in &elems {
+                let ee = emit(db, *e, env, ctx)?;
+                lines.push_str(&format!("__s.insert({ee}); "));
+            }
+            // An EMPTY set can't infer its `BTreeSet<T>` element type — annotate with the node's solved
+            // set type (E0282 otherwise; harmless when non-empty). If the set type doesn't map (an
+            // unrepresentable element) and it is empty, DECLINE (a non-empty one declined at its insert).
+            let ann = match types::rust_type(&type_of(db, id)) {
+                Some(t) => format!(": {t}"),
+                None if elems.is_empty() => {
+                    return Err(Reject::decline(
+                        "an empty set whose type is not representable in Rust has no inferable element type",
+                    ));
+                }
+                None => String::new(),
+            };
+            Ok(format!(
+                "{{ let mut __s{ann} = std::collections::BTreeSet::new(); {lines}__s }}"
+            ))
+        }
+        // `Set.contains` → the total membership predicate → a `bool` directly (unlike `Map.lookup`'s Option).
+        Core::SetContains { set, elem, .. } => {
+            let s = emit(db, set, env, ctx)?;
+            let e = emit(db, elem, env, ctx)?;
+            Ok(format!("({s}).contains(&({e}))"))
+        }
+        // `Set.insert`/`Set.remove` → the new set (persistent → consume into a `mut` local; insert of a
+        // present element / remove of an absent one is a total no-op value).
+        Core::SetInsert { set, elem, .. } => {
+            let s = emit(db, set, env, ctx)?;
+            let e = emit(db, elem, env, ctx)?;
+            Ok(format!("{{ let mut __s = {s}; __s.insert({e}); __s }}"))
+        }
+        Core::SetRemove { set, elem, .. } => {
+            let s = emit(db, set, env, ctx)?;
+            let e = emit(db, elem, env, ctx)?;
+            Ok(format!("{{ let mut __s = {s}; __s.remove(&({e})); __s }}"))
+        }
+        // `Set.len` → the cardinality (deduped) as `Int64`.
+        Core::SetLen { set } => {
+            let s = emit(db, set, env, ctx)?;
+            Ok(format!("(({s}).len() as i64)"))
+        }
+        // `Set.to-list` → a `List` in CANONICAL (sorted) order — `BTreeSet::iter` is sorted; clone each.
+        Core::SetToList { set, .. } => {
+            let s = emit(db, set, env, ctx)?;
+            Ok(format!("({s}).iter().cloned().collect::<Vec<_>>()"))
+        }
+        // `Set.union`/`intersection`/`difference` → the binary set-algebra ops. Rust's `BTreeSet` methods
+        // take a `&other` and yield an iterator of `&T`; clone + collect into a new `BTreeSet`. Both
+        // operands are consumed (a NEW set is returned), matching the runtime's persistent semantics.
+        Core::SetAlgebra { op, lhs, rhs } => {
+            let l = emit(db, lhs, env, ctx)?;
+            let r = emit(db, rhs, env, ctx)?;
+            let method = match op {
+                crate::core::SetAlgebraOp::Union => "union",
+                crate::core::SetAlgebraOp::Intersection => "intersection",
+                crate::core::SetAlgebraOp::Difference => "difference",
+            };
+            Ok(format!(
+                "({l}).{method}(&({r})).cloned().collect::<std::collections::BTreeSet<_>>()"
             ))
         }
         // A SUM VALUE CONSTRUCTION → the Rust enum variant `<Enum>::<Variant>(payloads…)`. The enum +
@@ -1144,19 +1276,6 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         | Core::RationalOfIntWiden { .. }
         | Core::RationalBinOp { .. }
         | Core::RationalCmp { .. }
-        | Core::MapNew { .. }
-        | Core::MapInsert { .. }
-        | Core::MapLookup { .. }
-        | Core::MapRemove { .. }
-        | Core::MapSize { .. }
-        | Core::SetOf { .. }
-        | Core::SetContains { .. }
-        | Core::SetToList { .. }
-        | Core::MapToList { .. }
-        | Core::SetInsert { .. }
-        | Core::SetRemove { .. }
-        | Core::SetLen { .. }
-        | Core::SetAlgebra { .. }
         | Core::BinBuild { .. }
         | Core::BinBitsBuild { .. }
         | Core::BinIntRead { .. }
@@ -1707,8 +1826,9 @@ fn needs_clone_on_read(db: &mut Db, id: StructId) -> bool {
 /// a compound is non-Copy iff any element/field/payload is. Everything else this backend emits is Copy.
 fn ty_is_non_copy(ty: &Ty) -> bool {
     match ty {
-        // A `Vec<T>` is the only leaf non-Copy type the backend emits today.
-        Ty::List(_) => true,
+        // `Vec<T>`/`BTreeMap<K,V>`/`BTreeSet<T>` are heap collections — non-Copy (move-only), so a binding
+        // of one read in more than one position clones (the clone-on-read discipline), like any heap value.
+        Ty::List(_) | Ty::Map(_, _) | Ty::Set(_) => true,
         // A compound is non-Copy iff any component is (a tuple/record of scalars stays Copy).
         Ty::Tuple(elems) => elems.iter().any(ty_is_non_copy),
         Ty::Record(fields) => fields.values().any(ty_is_non_copy),
@@ -1921,7 +2041,15 @@ fn emit_sum_switch(
                 let (pat_tail, arm_ctx) = if arity == 0 {
                     (String::new(), ctx.clone())
                 } else {
-                    let name = format!("__pay_{}_{i}", sw_path.len());
+                    // The binder name MUST be unique across NESTED matches, not just within one switch: a
+                    // path-length+arm-index name (`__pay_{len}_{i}`) COLLIDES when two matches on DIFFERENT
+                    // scrutinees nest at the same relative path — e.g. `(match (lookup m k1) ((Some a) (match
+                    // (lookup m k2) ((Some b) (+ a b)) …)))`, where both `Some` binders are `__pay_0_0`, so
+                    // the inner shadows the outer and `a` silently reads `b` (a wrong value, not a build
+                    // error). Include the SCRUTINEE id (unique per match node) so nested matches get distinct
+                    // identifiers; the bind is still resolved by `(scrutinee, path)`, this only de-collides
+                    // the emitted name.
+                    let name = format!("__pay_{}_{}_{i}", scrutinee.0, sw_path.len());
                     let mut payload_path = sw_path.to_vec();
                     payload_path.push(crate::core::PathStep::Payload);
                     // A RECURSIVE variant's field is a `Box<…>` (the enum boxes it), so the bind is boxed —

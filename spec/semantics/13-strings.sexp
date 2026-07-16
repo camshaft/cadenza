@@ -1479,3 +1479,39 @@
             (export run)))
   (call   run (: 8 Int64))
   (output (: 8 Int64)))
+
+; --- The threaded-String-param retain: the consumption-shape faces ----------------------------------
+; e38228f35 added String/Symbol to the Perceus retain-candidate gate (a param threaded through a
+; self-recursive loop AND consumed by concat each step was freed while referenced — an OOB trap past
+; depth 4; its pin covers the accumulate-into-acc shape). These pin the sibling consumption shapes,
+; promoted from passing breaker probes.
+
+(case "a threaded String param consumed twice per step survives the loop"
+  (doc    "`go(s, n, acc) = go(s, n-1, acc + byte-len(concat s s))` — the threaded `s` is consumed
+           TWICE per iteration (both concat operands) and re-passed: each step adds 4 (\"abab\"),
+           n = 5 → 20. The double-consume face needs TWO retains per step; an off-by-one frees the
+           rope on the second consume and re-trips the OOB walk the fix closed.")
+  (input  (do
+            (def (go (: s String) (: n Int64) (: acc Int64))
+              (if (= n 0) acc
+                  (go s (- n 1) (+ acc (String.byte-len (String.concat s s))))))
+            (def (main (: n Int64))
+              (go "ab" n 0))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 20 Int64)))
+
+(case "a threaded String param consumed as the right concat operand survives the loop"
+  (doc    "`(String.concat \"k\" s)` — the threaded param is the RIGHT operand (the fix's shape
+           consumes it as acc's appendee on the left path): each step adds byte-len(\"k\"+\"abc\") = 4,
+           n = 6 → 24. The operand-position face of the retain (a consume-site scan keyed to one
+           operand slot misses the other).")
+  (input  (do
+            (def (go (: s String) (: n Int64) (: acc Int64))
+              (if (= n 0) acc
+                  (go s (- n 1) (+ acc (String.byte-len (String.concat "k" s))))))
+            (def (main (: n Int64))
+              (go "abc" n 0))
+            (export main)))
+  (call   main (: 6 Int64))
+  (output (: 24 Int64)))

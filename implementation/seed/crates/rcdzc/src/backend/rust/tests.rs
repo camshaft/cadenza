@@ -483,6 +483,86 @@ fn a_closure_crossing_the_export_boundary_declines() {
 }
 
 #[test]
+fn map_and_set_emit_native_btree_collections() {
+    // A `(Map K V)` → `BTreeMap<K,V>`, a `(Set E)` → `BTreeSet<E>` (BTree = sorted = canonical order).
+    let m = compile_rust(
+        "(module m (def (f (: n Int64)) (if (= n 0) (map (1 10) (2 20)) (f (+ n -1)))) \
+           (def (g) (Map.len (f 1))) (export g))",
+    );
+    assert!(
+        m.contains("std::collections::BTreeMap::new()") && m.contains(".insert("),
+        "map builds a BTreeMap:\n{m}"
+    );
+    let s = compile_rust(
+        "(module m (def (f (: n Int64)) (if (= n 0) (Set.of (list 3 1 2)) (f (+ n -1)))) \
+           (def (g) (Set.len (f 1))) (export g))",
+    );
+    assert!(
+        s.contains("std::collections::BTreeSet::new()"),
+        "set builds a BTreeSet:\n{s}"
+    );
+    // Map.lookup → a native Option via `.get(&k).cloned()`; Set.contains → a bool via `.contains(&e)`.
+    let look = compile_rust(
+        "(module m (def (f (: n Int64)) (if (= n 0) (map (1 10)) (f (+ n -1)))) \
+           (def (g (: k Int64)) (match (Map.lookup (f 1) k) ((Some v) v) ((None _) -1))) (export g))",
+    );
+    assert!(
+        look.contains(".get(&(") && look.contains(").cloned()"),
+        "map lookup:\n{look}"
+    );
+}
+
+#[test]
+fn rustc_roundtrip_map_and_set_compute_and_enumerate_in_order() {
+    // Map: build `{1:10, 2:20, 3:30}` at runtime, sum its size + a lookup. 3 keys + lookup(2)=20 = 23.
+    let mp = compile_rust(
+        "(module m \
+           (def (f (: n Int64)) (if (= n 0) (map (1 10) (2 20) (3 30)) (f (+ n -1)))) \
+           (def (look (: k Int64)) (match (Map.lookup (f 1) k) ((Some v) v) ((None _) -1))) \
+           (def (g) (+ (Map.len (f 1)) (look 2))) (export g))",
+    );
+    if let Some(out) = rustc_run(&mp, "g()") {
+        assert_eq!(out, "23", "3 keys + lookup(2)=20");
+    }
+    // Set: dedup + canonical-order to-list. `{30,10,20,10}` → 3 distinct, to-list summed = 60 → 63.
+    let st = compile_rust(
+        "(module m \
+           (def (f (: n Int64)) (if (= n 0) (Set.of (list 30 10 20 10)) (f (+ n -1)))) \
+           (def (suml (: xs (List Int64))) (match xs ((list) 0) ((list h .. t) (+ h (suml t))))) \
+           (def (g) (+ (Set.len (f 1)) (suml (Set.to-list (f 1))))) (export g))",
+    );
+    if let Some(out) = rustc_run(&st, "g()") {
+        assert_eq!(out, "63", "3 distinct + (10+20+30)");
+    }
+    // A user-sum map KEY needs the enum to derive Ord (a nullary enum qualifies) — look up by the variant.
+    let uk = compile_rust(
+        "(module m (type C (R) (G)) \
+           (def (g) (match (Map.lookup (Map.insert (Map.empty) (C.R) 42) (C.R)) \
+              ((Some v) v) ((None _) -1))) (export g))",
+    );
+    if let Some(out) = rustc_run(&uk, "g()") {
+        assert_eq!(out, "42", "a user-sum key is looked up by its variant");
+    }
+}
+
+#[test]
+fn nested_option_matches_bind_distinct_payload_names() {
+    // REGRESSION (a nested-match binder collision the map slice surfaced): two matches on DIFFERENT
+    // scrutinees nesting at the same relative path both minted `__pay_0_0`, so the inner shadowed the
+    // outer and `(+ a b)` silently became `b + b`. The binder name now includes the scrutinee id, so `a`
+    // and `b` are distinct. `main(1,2)` over `{1:10, 2:20}` = 10+20 = 30 (was a wrong 40).
+    let rs = compile_rust(
+        "(module m (def (pick (: k1 Int64) (: k2 Int64)) \
+           (let ((mp (Map.insert (Map.insert (Map.empty) 1 10) 2 20))) \
+              (match (Map.lookup mp k1) ((Some a) (match (Map.lookup mp k2) ((Some b) (+ a b)) (None -1))) \
+                 (None -2)))) (export pick))",
+    );
+    if let Some(out) = rustc_run(&rs, "pick(1, 2)") {
+        assert_eq!(out, "30", "distinct binders: a=10, b=20 → 30 (not b+b=40)");
+    }
+}
+
+#[test]
 fn an_ill_formed_integer_width_is_rejected_not_declined() {
     // An out-of-range integer WIDTH (negative/non-natural, or over-ceiling `(UInt 65)`) is an ILL-FORMED
     // TYPE, not a target limitation — a boundary of that type must REJECT (CDZ0302), the SAME outcome the
@@ -1677,8 +1757,10 @@ fn rustc_roundtrip_runtime_equality_over_a_generic_sum() {
     );
     assert!(rs.contains("enum Box<T0>"), "generic enum:\n{rs}");
     assert!(
-        rs.contains("#[derive(Clone, PartialEq, Eq)]\n#[allow(dead_code)]\npub enum Box<T0>"),
-        "generic enum derives Eq (T0: Eq bound added by derive):\n{rs}"
+        rs.contains(
+            "#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]\n#[allow(dead_code)]\npub enum Box<T0>"
+        ),
+        "generic enum derives Eq + Ord (so it can key a BTreeMap; T0 bounds added by derive):\n{rs}"
     );
     if let Some(out) = rustc_run(&rs, "f(5)") {
         assert_eq!(out, "1");
@@ -1737,16 +1819,20 @@ fn async_mode_emits_env_threaded_gas_metered_fns() {
         !rs.contains("pub trait CdzEnv"),
         "must NOT re-declare the trait:\n{rs}"
     );
-    // The fn is async, takes `env: &mut __CdzE`, and charges gas at entry. The env type param is the
-    // reserved `__CdzE` (not a bare `E`) so it cannot collide with a user sum's Rust type name.
+    // The fn is async, takes `__cdz_env: &mut __CdzE`, and charges gas at entry. Both the env TYPE param
+    // (`__CdzE`) and the env VALUE param (`__cdz_env`) are reserved `__`-names so neither collides with a
+    // user sum's Rust type nor a source parameter literally named `env`.
     assert!(
-        rs.contains("pub async fn sum_to<__CdzE: CdzEnv>(env: &mut __CdzE, n: i64)"),
+        rs.contains("pub async fn sum_to<__CdzE: CdzEnv>(__cdz_env: &mut __CdzE, n: i64)"),
         "signature:\n{rs}"
     );
-    assert!(rs.contains("env.consume(1).await;"), "gas charge:\n{rs}");
-    // The recursive call is boxed-and-awaited, threading `env` first.
     assert!(
-        rs.contains("Box::pin(sum_to(env,"),
+        rs.contains("__cdz_env.consume(1).await;"),
+        "gas charge:\n{rs}"
+    );
+    // The recursive call is boxed-and-awaited, threading the env first.
+    assert!(
+        rs.contains("Box::pin(sum_to(__cdz_env,"),
         "boxed recursive call:\n{rs}"
     );
 }
@@ -1845,7 +1931,7 @@ fn rustc_roundtrip_async_recursive_sum_folds() {
         "boxed payload:\n{module}"
     );
     assert!(
-        module.contains("Box::pin(sm(env,"),
+        module.contains("Box::pin(sm(__cdz_env,"),
         "boxed recursive call:\n{module}"
     );
     let driver = r#"

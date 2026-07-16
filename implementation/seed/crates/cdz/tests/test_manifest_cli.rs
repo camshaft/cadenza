@@ -749,4 +749,19 @@ fn a_list_parameter_test_is_property_tested_by_a_synthesized_generator() {
         !ok && stdout.contains("FAIL never_empty-gen"),
         "a variable-length list generator reaches the empty list (a never-empty property fails): {stdout}"
     );
+
+    // Multi-parameter: a `@test` with a compound + a scalar param generates BOTH args. The wrapper builds
+    // the list and the int and calls `p(xs, n)`.
+    let multi = write(
+        &d,
+        "multi.cdz",
+        "@test def two(xs: List(Int64), n: Int64) = if List.len(xs) >= 0 then unit else trap(\"x\")\n\
+         @test def anchor7() = if 1 == 1 then unit else trap(\"a\")\n",
+    );
+    let (ok, stdout, stderr) = run(&["test", &multi, "--trials", "8"]);
+    assert!(ok, "a multi-param property passes: {stdout}{stderr}");
+    assert!(
+        stdout.contains("PASS two-gen (8 trials)"),
+        "a multi-param @test (compound + scalar) is property-tested via a synthesized wrapper: {stdout}"
+    );
 }

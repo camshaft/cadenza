@@ -1527,6 +1527,32 @@ fn cdz_render_at(
             "{{ let mut __s = String::from(\"(list\"); for {ebind} in ({path}).iter() {{ __s.push(' '); __s.push_str(&({inner})); }} __s.push(')'); __s }}"
         );
     }
+    // A `(Set E)` value is the Rust `BTreeSet<E>` the backend emits — render it as cdz-run's canonical
+    // `((. Set of) (list e0 e1 …))` (empty → `((. Set of) (list))`), each element rendered as its type.
+    // A `BTreeSet` iterates in SORTED order, which IS the canonical element-value order the runtime uses.
+    if let Some(args) = parse_head_type(ty, "Set") {
+        let elem_ty = args.first().map(String::as_str).unwrap_or("");
+        let inner = cdz_render_at(
+            elem_ty, &ebind, sums, newtypes, sum_params, helpers, on_path,
+        );
+        return format!(
+            "{{ let mut __s = String::from(\"((. Set of) (list\"); for {ebind} in ({path}).iter() {{ __s.push(' '); __s.push_str(&({inner})); }} __s.push_str(\"))\"); __s }}"
+        );
+    }
+    // A `(Map K V)` value is the Rust `BTreeMap<K, V>` the backend emits — render it as cdz-run's canonical
+    // `(map (k0 v0) (k1 v1) …)` (empty → `(map)`), each entry a `(<key> <value>)` group with key and value
+    // rendered as their own types. A `BTreeMap` iterates in SORTED KEY order — the canonical key order.
+    if let Some(args) = parse_head_type(ty, "Map") {
+        let key_ty = args.first().map(String::as_str).unwrap_or("");
+        let val_ty = args.get(1).map(String::as_str).unwrap_or("");
+        let kbind = format!("__mk{}", path.len());
+        let vbind = format!("__mv{}", path.len());
+        let kr = cdz_render_at(key_ty, &kbind, sums, newtypes, sum_params, helpers, on_path);
+        let vr = cdz_render_at(val_ty, &vbind, sums, newtypes, sum_params, helpers, on_path);
+        return format!(
+            "{{ let mut __s = String::from(\"(map\"); for ({kbind}, {vbind}) in ({path}).iter() {{ __s.push_str(&format!(\" ({{}} {{}})\", {kr}, {vr})); }} __s.push(')'); __s }}"
+        );
+    }
     // The BUILT-IN `Option`/`Result` map to Rust's OWN `Option`/`Result`, so a value of one is rendered by
     // MATCHING it — the driver knows both variant shapes (`Some`/`None`, `Ok`/`Err`) and cdz-run's canonical
     // BARE form for a built-in variant (`(Some <p>)`, `(None unit)`, `(Ok <p>)`, `(Err <p>)`). The payload

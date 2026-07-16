@@ -49709,8 +49709,10 @@ mod stage1 {
             .expect("rust artifact");
         let rs = String::from_utf8(rs).expect("utf8");
         assert!(
-            rs.contains("#[derive(Clone, PartialEq, Eq)]\n#[allow(dead_code)]\npub enum Color"),
-            "an all-nullary enum must derive PartialEq/Eq so native `==` builds; got:\n{rs}"
+            rs.contains(
+                "#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]\n#[allow(dead_code)]\npub enum Color"
+            ),
+            "an all-nullary enum must derive PartialEq/Eq (+ Ord, so it can key a BTreeMap) so native `==` builds; got:\n{rs}"
         );
 
         // A payload-carrying sum whose payloads are Eq-derivable (Int64) NOW derives PartialEq/Eq too, so a
@@ -49726,8 +49728,10 @@ mod stage1 {
                 .expect("rust artifact");
         let rs2 = String::from_utf8(rs2).expect("utf8");
         assert!(
-            rs2.contains("#[derive(Clone, PartialEq, Eq)]\n#[allow(dead_code)]\npub enum Box"),
-            "a payload sum with Eq-derivable payloads now derives PartialEq/Eq; got:\n{rs2}"
+            rs2.contains(
+                "#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]\n#[allow(dead_code)]\npub enum Box"
+            ),
+            "a payload sum with Eq-derivable payloads now derives PartialEq/Eq (+ Ord); got:\n{rs2}"
         );
 
         // A FLOAT-carrying sum stays Clone-only — `f64` is `PartialEq` but NOT `Eq`, so `#[derive(Eq)]`
@@ -66826,6 +66830,59 @@ mod cross_component_oracle {
                 "a peer-returned list crosses as a handle; List.len reads it over the shared runtime"
             ),
             cdz_run::Outcome::Trap(t) => panic!("list-result run trapped: {t}"),
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // PL22 — a peer op returning a SET (a CHAMP collection) crosses + the consumer reads its size. The
+    // Set companion of PL18's List-result pin: a distinct runtime representation (CHAMP hash-set, not
+    // an RRB vector) crosses as its u32 handle; `Set.len` reads it over the shared runtime. The provider
+    // builds `Set.of([x, x+1, x])` — the duplicate `x` dedups — so mkset(5) = {5,6}, size 2, which also
+    // confirms the SET SEMANTICS (dedup) survive the crossing (it's the real CHAMP, not a raw list).
+    // ------------------------------------------------------------------------------------------------
+    #[test]
+    fn a_peer_op_returning_a_set_crosses_and_its_size_is_read() {
+        use crate::testkit::parse;
+        // PROVIDER: mkset(x) = Set.of([x, x+1, x]) — the dup x dedups to {x, x+1}.
+        let provider = compile_provider(
+            "(do (def (mkset (: x Int64)) (Set.of (list x (+ x 1) x))) (export mkset))",
+            "cadenza:s/api",
+        );
+        // CONSUMER: binds it, reads the crossed set's size over the shared runtime.
+        let src = "(do \
+            (effect S (op mkset (-> Int64 (Set Int64)))) \
+            (bind S \"cadenza:s/api\") \
+            (def (main (: x Int64)) (host (S) (Set.len (S.mkset x)))) \
+            (export main))";
+        let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .unwrap_or_else(|d| {
+                panic!("set-result consumer compiles: {} [{:?}]", d.message, d.code)
+            });
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("[PL22] runtime wasm not found; skipping");
+            return;
+        };
+        let peers = vec![cdz_run::Peer {
+            bytes: provider,
+            interface: "cadenza:s/api".to_string(),
+        }];
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec!["5".to_string()],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run_with_peers(&consumer, &peers, &opts)
+            .expect("a peer op returning a set crosses")
+        {
+            // mkset(5) = Set.of([5,6,5]) = {5,6}; the consumer reads its size over the shared runtime → 2.
+            // The dedup proves the real CHAMP set (not a raw list) survived the handle crossing.
+            cdz_run::Outcome::Value(s) => assert_eq!(
+                s, "2",
+                "a peer-returned CHAMP set crosses as a handle; Set.len reads it (dedup preserved)"
+            ),
+            cdz_run::Outcome::Trap(t) => panic!("set-result run trapped: {t}"),
         }
     }
 

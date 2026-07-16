@@ -3489,6 +3489,31 @@
             (export main)))
   (output (: 5 Int64)))
 
+; The companion of the case above: writing the EXPLICIT polymorphic annotation `(: l (Lst a))` on the
+; same generic `len` — a type VARIABLE `a` nested inside the generic constructor `Lst` in a parameter
+; annotation. Cadenza has no ∀-binder in an annotation (an annotation names an EXISTING type), so the
+; lowercase `a` in type position is an unbound name → CDZ0101. This is NOT the "type, not a function"
+; misread it once gave (which read `(Lst a)` as a call); the diagnostic now names the real situation and
+; the route — leave the parameter UNANNOTATED (inference already carries the element type, as the case
+; above shows) or annotate a concrete type. Pins the rejection of the "type-variable-in-signature"
+; not-yet-built feature at its nested-in-a-generic form (the issue repro), so the good diagnostic and the
+; decline are locked against regression; the bare-type-var forms `(: 5 foo)` / `(: 5 Foo)` are pinned in
+; 07-type-system.sexp.
+(case "a type variable nested in a generic parameter annotation is an unbound name"
+  (doc    "`(def (len (: l (Lst a))) …)` annotates the parameter with `(Lst a)`, where `a` is meant as a
+           type variable — but Cadenza binds a signature's type variables through NO form: an annotation's
+           type position names an existing type, and there is no ∀-binder. The lowercase `a` is therefore
+           an unbound name in type position (CDZ0101), carrying the generic-route hint (leave it
+           unannotated — inference is already polymorphic — or write a concrete type). The idiomatic
+           spelling is the unannotated `(def (len l) …)` of the case above, which monomorphizes per element
+           type. Pins the explicit-polymorphic-annotation rejection at its nested-in-a-generic form.")
+  (input  (do
+            (type Lst (Nil) (Cons a (Lst a)))
+            (def (len (: l (Lst a))) (match l ((Lst.Nil) 0) ((Lst.Cons _ t) (+ 1 (len t)))))
+            (def (main) (len (Lst.Cons 1 (Lst.Nil))))
+            (export main)))
+  (error  CDZ0101))
+
 ; A recursive-generic PRODUCER composed with an element-CONSUMING consumer. The cases above thread a
 ; generic value UNCHANGED or CONSUME a generic input to a concrete result; this one BUILDS a generic
 ; recursive result (`mapl : (a -> b) -> List a -> List b`, transforming each element through a callback)
