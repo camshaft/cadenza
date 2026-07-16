@@ -95,6 +95,33 @@
   (call   main (: 12345 Int64)) (output (: true Bool))
   (call   main (: -7 Int64)) (output (: true Bool)))
 
+(case "a RATIONAL leaf in a compound compares by CANONICAL form (2n/4 = n/2 inside a tuple)"
+  (doc    "Deepens the compound-`=`-over-a-bignum-leaf witness with RATIONAL's distinguishing feature:
+           equality is by NORMALIZED (reduced) form, not by the stored numerator/denominator. Two tuples
+           whose `Rational` element is written differently but denotes the SAME value — `2n/4` and `n/2` —
+           compare EQUAL, because `Rational.of` reduces to lowest terms and the compound `=` walks that
+           canonical form. This is a discriminating property (it would FAIL if `=` compared raw num/den):
+           `(= (tuple (Rational.of 2n 4) …) (tuple (Rational.of n 2) …))` = true. Runs at the boundary.")
+  (input  (do (def (main (: n Int64))
+                (= (tuple ((. Rational of) (Int64.wrapping-mul n 2) 4) true)
+                   (tuple ((. Rational of) n 2) true)))
+              (export main)))
+  (call   main (: 1 Int64)) (output (: true Bool))
+  (call   main (: 3 Int64)) (output (: true Bool)))
+
+(case "a RATIONAL compound = has DISCRIMINATING power (1/2 ≠ 1/3, but 0/2 = 0/3)"
+  (doc    "The counterpart to the canonical-form case: normalizing equality must still DISTINGUISH genuinely
+           different values, or it would be vacuous. `1/2` and `1/3` are different rationals, so a tuple
+           carrying each compares NOT-equal — `(= (tuple (Rational.of n 2) …) (tuple (Rational.of n 3) …))`
+           = false at `n=1`. But `0/2` and `0/3` both reduce to `0`, so at `n=0` the same expression is
+           true — the reduction equates the zeros. Pins that the Rational compound `=` has power in BOTH
+           directions (equates equal values, separates unequal ones).")
+  (input  (do (def (main (: n Int64))
+                (= (tuple ((. Rational of) n 2) true) (tuple ((. Rational of) n 3) true)))
+              (export main)))
+  (call   main (: 1 Int64)) (output (: false Bool))
+  (call   main (: 0 Int64)) (output (: true Bool)))
+
 (case "generated FLOAT values are totally ordered (a trichotomy property over two generated floats)"
   (doc    "A property over GENERATED floats using the runtime float ordering: `of` draws a float from the
            seed (an integer-valued float via `Float64.of-int`, which never produces NaN), so for any two

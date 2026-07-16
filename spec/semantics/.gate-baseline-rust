@@ -2696,6 +2696,8 @@ todo	a NESTED mixed ARG (a tuple containing a record) crosses the direct-call bo
 todo	a NESTED-tuple ARG composes with a NESTED-tuple RESULT
 todo	a NOMINAL-over-tuple ARG crosses as the underlying tuple (direct-call)
 todo	a RADIX literal carries the N type suffix
+todo	a RATIONAL compound = has DISCRIMINATING power (1/2 ≠ 1/3, but 0/2 = 0/3)
+todo	a RATIONAL leaf in a compound compares by CANONICAL form (2n/4 = n/2 inside a tuple)
 todo	a RECORD closure ARG among scalars crosses the direct-call boundary (scalar result)
 todo	a RECORD closure ARG on the MULTI-EXPORT path
 todo	a RECORD closure ARG whose fields are NOT in sorted source order
