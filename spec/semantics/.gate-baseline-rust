@@ -261,6 +261,7 @@ pass	a component's manifest is the union of two entrypoints' distinct rows
 pass	a composed call over a record-transforming function with an arithmetic field compiles
 pass	a compound element projected from a let-bound runtime tuple is matched
 pass	a compound if condition is a type error, not an unbound name
+pass	a compound map key containing a Bytes rope is found by its flat-twin key
 pass	a compound map key containing a rope is found by its flat-twin key
 pass	a compound map key whose Bytes element is a rope is found by its flat twin
 pass	a compound map key whose LIST element is a rope is found by its flat-twin key
@@ -1086,6 +1087,7 @@ pass	a run-time-index String.at result compares equal to the same character as a
 pass	a run-time-index scalar read is present in bounds and absent out of bounds
 pass	a runtime BigInt operation does not silently promote a fixed-width operand
 pass	a runtime Bytes rope in a SUM payload compares equal to its flat twin
+pass	a runtime Bytes rope in a record field compares equal to its flat twin
 pass	a runtime Bytes rope is found as a Set element by its flat twin
 pass	a runtime Bytes rope map key is looked up by its flat twin
 pass	a runtime Bytes rope nested in a tuple compares equal to its flat twin
@@ -1150,7 +1152,7 @@ pass	a runtime mixed-scale combine converts a COMPUTED Float quantity operand
 pass	a runtime mixed-unit sum emits the scale conversion (Int)
 pass	a runtime modulo of the minimum integer by -1 is zero on every backend
 pass	a runtime multiplication that overflows traps
-pass	a runtime nan minus nan is nan, not zero
+pass	a runtime nan subtracted from itself is nan, not zero
 pass	a runtime negative dividend divided by a constant power of two truncates toward zero
 pass	a runtime negative dividend mod a constant power of two takes the dividend's sign
 pass	a runtime negative zero is not equal to positive zero
@@ -2119,6 +2121,7 @@ pass	print of an integer-valued Ast.Float keeps its float form through read
 pass	print renders a nested compound with a string leaf as its exact canonical text
 pass	print renders a template that splices an Ast value — the non-executing path works
 pass	print renders an empty Ast.List as the empty-parens form
+pass	print then read of a digit-led Ast.Name reclassifies it per the number/identifier boundary
 pass	projecting a field is independent of the order fields are written
 pass	projecting a field of a non-compound argument is rejected at the call site
 pass	projecting a just-built tuple does not evaluate the unprojected sibling's trap
@@ -2140,6 +2143,7 @@ pass	quasiquotes unquoting a runtime variable and a literal build equal ASTs
 pass	quote produces an AST value without evaluating
 pass	quote-built and constructor-built equal trees encode byte-identically
 pass	quote-vs-constructor AST equality holds regardless of operand order
+pass	quoting an empty compound produces an empty Ast.List
 pass	raising a COMPUTED (derived) quantity to a power squares its magnitude and dimension
 pass	raising a runtime computed quantity to a power squares the runtime magnitude
 pass	reaching an effect neither handled nor delegated is rejected at compile time
@@ -2256,6 +2260,7 @@ pass	the boolean literals
 pass	the built variant is the multi-arg one, the unbuilt arm still gets its call type
 pass	the built-in Ast is transformed as an ordinary value
 pass	the built-in list is folded by an element-with-rest pattern
+pass	the byte codec round-trips a digit-led Ast.Name that the text path would reclassify
 pass	the byte length of a run-time multibyte string exceeds its scalar length
 pass	the byte length of a run-time-selected string reads the actual handle
 pass	the byte length of a runtime string equals the length of its encoded bytes
@@ -2769,6 +2774,7 @@ todo	a fixed-shape Tuple ARG with a SUM (Option) RESULT crosses the direct-call 
 todo	a fixed-shape Tuple ARG with a Tuple RESULT crosses the direct-call boundary
 todo	a fixed-shape scalar RECORD closure ARG crosses the DIRECT-CALL boundary
 todo	a fixed-shape scalar Tuple closure ARG crosses the DIRECT-CALL boundary (host supplies the tuple)
+todo	a float leaf and a Bytes leaf compare together in one compound
 todo	a function deriving a velocity from a distance and a time
 todo	a host call's response is an ordinary value that feeds a LATER host call
 todo	a host effect with a non-kebab NAME crosses under a normalized interface extern name
