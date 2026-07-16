@@ -679,6 +679,7 @@ pass	a default-integer pragma makes a bare literal take the declared integer typ
 pass	a default-integer pragma naming a non-integer type is rejected
 pass	a default-integer pragma naming an unbound type is rejected as unbound, like an annotation
 pass	a delegated capability is not itself an export field
+pass	a delegated effect performed in a closure passed to a HOF is reached and fires
 pass	a delegated effect performed inside an intra-program handler
 pass	a delegated effect reached only through an if-branch is granted and fires when the branch is taken
 pass	a delegated host effect composes with the value-heap runtime
@@ -2364,6 +2365,7 @@ pass	an underscore export name crosses under a normalized extern name
 pass	an underscore-letter identifier binds and resolves
 pass	an underscore-prefixed function parameter binds its argument
 pass	an underscore-prefixed token is an identifier, not an integer
+pass	an ungranted effect hidden in a closure passed to a HOF is still rejected
 pass	an unimported sibling definition is not in scope
 pass	an unproductive self-recursion is declined, not a compiler crash
 pass	an unquote nested inside a plain quote is a syntax error, not an active unquote
