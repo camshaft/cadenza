@@ -901,6 +901,7 @@ pass	a hexadecimal literal past Int64.max is a malformed literal, not a bit patt
 pass	a hexadecimal literal with digit separators
 pass	a high UInt64 literal operand takes UInt64 from context, not Int64
 pass	a high-bit scrutinee misses an offset jump table whose bias cancels its low bits
+pass	a high-power product cancels exactly to dimensionless (meter^100 * meter^-100)
 pass	a higher-order function applies a callback that matches its own sum argument
 pass	a higher-order left fold applies its combiner, not a fixed operator
 pass	a higher-order left fold over a built-in list with an annotated callback
@@ -2136,8 +2137,10 @@ pass	accessing through an empty-side split-at is usable, like the equivalent lit
 pass	accumulator introduction threads a transformed extra parameter through a multi-parameter recursion
 pass	adding a cubed length to a squared length is a dimension mismatch
 pass	adding a squared length to a plain length is a dimension mismatch
+pass	adding adjacent high-power quantities is a mismatch (meter^100 + meter^101)
 pass	adding quantities of incompatible dimension is a compile-time error
 pass	adding rational-magnitude quantities of incompatible dimension is still a compile-time error
+pass	adding two equal high-power quantities joins (meter^100 + meter^100)
 pass	adding two named family units of one dimension converts to the reference (Float)
 pass	adding two quantities of the same dimension keeps that dimension
 pass	adding two squared-length quantities is well-dimensioned

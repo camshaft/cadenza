@@ -417,6 +417,39 @@
                         (* (Qty.of 1.0 (Unit.base #"meter")) (Qty.of 1.0 (Unit.base #"meter"))))))
   (output (: 5.0 Float64)))
 
+; The same-base power distinctions above go up to exponent 3 via repeated multiplication. These pin the
+; exponent tracking at SCALE through `Qty.pow` — a LARGE exponent (meter^100) must still track the exact
+; exponent (so meter^100 + meter^100 joins but meter^100 + meter^101 is a mismatch), and a high-power
+; product must cancel exactly (meter^100 · meter^-100 = dimensionless). A dimension exponent stored in a
+; too-narrow int, or a cancellation that didn't carry the full exponent, would pass at exponent 3 yet
+; overflow, saturate, or mis-cancel at 100 — these witness the exponent map holds a wide range exactly.
+
+(case "adding two equal high-power quantities joins (meter^100 + meter^100)"
+  (doc    "`(+ (Qty.pow q 100) (Qty.pow q 100))` over meter: two meter^100 quantities share the exact same
+           dimension, so the add joins — 1.0 + 1.0 = 2.0. Pins the dimension exponent tracks meter^100
+           precisely (not saturated or wrapped), so equal high exponents are recognized as one dimension.")
+  (input  (Qty.value (+ (Qty.pow (Qty.of 1.0 (Unit.base #"meter")) 100)
+                        (Qty.pow (Qty.of 1.0 (Unit.base #"meter")) 100))))
+  (output (: 2.0 Float64)))
+
+(case "adding adjacent high-power quantities is a mismatch (meter^100 + meter^101)"
+  (doc    "`(+ (Qty.pow q 100) (Qty.pow q 101))` — meter^100 vs meter^101 — are DISTINCT dimensions one
+           exponent apart at scale, so the compiler rejects it (CDZ0501). Pins the exponent distinction
+           holds far above the exponent-3 cases: the check compares the full exponent even at 100, so a
+           representation that saturated or collided adjacent large exponents would wrongly accept this.")
+  (input  (+ (Qty.pow (Qty.of 1.0 (Unit.base #"meter")) 100)
+             (Qty.pow (Qty.of 1.0 (Unit.base #"meter")) 101)))
+  (error  CDZ0501))
+
+(case "a high-power product cancels exactly to dimensionless (meter^100 * meter^-100)"
+  (doc    "`(* (Qty.pow q 100) (Qty.pow q -100))` over meter: exponent 100 + (-100) = 0, so the product is
+           dimensionless and `Qty.value` reads the bare magnitude 3.0^100 · 3.0^-100 = 1.0. Pins that a
+           high positive exponent and its negative cancel EXACTLY through the exponent map (the dimension
+           returns to Unit.one), the extreme-exponent companion of the unit·inverse cancellation.")
+  (input  (Qty.value (* (Qty.pow (Qty.of 3.0 (Unit.base #"meter")) 100)
+                        (Qty.pow (Qty.of 3.0 (Unit.base #"meter")) -100))))
+  (output (: 1.0 Float64)))
+
 (case "scaling a quantity by a dimensionless quantity keeps its dimension"
   (doc    "`(* (Qty.of 2.0 meter) (Qty.of 3.0 Unit.one))` multiplies a length by a dimensionless scalar:
            meter·one = meter, value 6.0. Pins that `Unit.one` is the group identity — multiplying by it
