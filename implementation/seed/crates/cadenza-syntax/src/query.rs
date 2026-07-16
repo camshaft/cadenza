@@ -4223,6 +4223,54 @@ mod tests {
             assert_eq!(out.output.trim(), "(f a b)");
         }
 
+        // A comment/doc parsed INTO the representation (a leading `(comment …)` wrapper, a def's
+        // `(doc …)` node) is an ordinary arena node the rewrite does not match — so it survives an
+        // unrelated edit even through the whole-tree reprint path (which reserializes everything). This
+        // is the structural-EDIT half of agent-authoring.md — the sidecar `Rewrite` surface (now built)
+        // preserves documentation/comments attached to a part it does not change:
+        //
+        //= spec/capabilities/agent-authoring.md#documentation-survives-round-trip-and-edits
+        //# A structural edit MUST preserve the documentation attached to a part of the program it does not change.
+        //
+        //= spec/capabilities/agent-authoring.md#comments-survive-round-trip-and-edits
+        //# A structural edit MUST preserve a comment attached to a part of the program it does not change.
+        #[test]
+        fn a_rewrite_preserves_untouched_comment_and_doc_nodes() {
+            // A leading comment wraps the following form: `(comment "lead" (def (f) (g 1)))`. Rewrite the
+            // `g` call it wraps; the comment node (and its text) must remain.
+            let (target, _) = driver::load(b"// lead\ndef f() = g(1)", Format::Ml).unwrap();
+            let rules = RuleSet::new(vec![Rule::new(pat("(g ,x)"), tmpl("(h ,x)"))]);
+            let out =
+                driver::apply_rewrite(&rules, Strategy::BottomUp, &target, Format::Ml, 100, false)
+                    .unwrap();
+            assert_eq!(out.count, 1, "the g→h edit fired");
+            assert!(
+                out.output.contains("// lead"),
+                "the leading comment must survive an unrelated rewrite:\n{}",
+                out.output
+            );
+            assert!(
+                out.output.contains("h(1)"),
+                "the edit applied:\n{}",
+                out.output
+            );
+
+            // A doc comment becomes a `(doc "…")` node in the def body; it likewise survives.
+            let (target, _) = driver::load(b"/// docs for f\ndef f() = g(1)", Format::Ml).unwrap();
+            let out =
+                driver::apply_rewrite(&rules, Strategy::BottomUp, &target, Format::Ml, 100, false)
+                    .unwrap();
+            assert_eq!(out.count, 1);
+            assert!(
+                out.output.contains("/// docs for f"),
+                "the doc comment must survive an unrelated rewrite:\n{}",
+                out.output
+            );
+
+            // A comment on a node that IS itself matched is a targeted edit, not our concern here — this
+            // test pins only that an UNTOUCHED comment/doc is never silently dropped.
+        }
+
         #[test]
         fn output_only_format_is_rejected_as_input() {
             let e = driver::load(b"x", Format::Debug).unwrap_err();

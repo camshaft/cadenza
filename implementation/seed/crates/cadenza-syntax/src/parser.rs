@@ -464,7 +464,8 @@ impl<'a> Parser<'a> {
     /// ATTACHED to the part it annotates (its position recovered on printing). Because the node is an
     /// ordinary list node, it survives the binary-AST codec: printing the binary AST back to text and
     /// re-parsing yields the same `(comment …)` (and `(doc …)`) nodes — comments and documentation both
-    /// round-trip. (An intra-program EDIT preserving them is the sidecar `Rewrite` surface, not yet built.)
+    /// round-trip. (An intra-program EDIT preserving them is the sidecar `Rewrite` surface — now built;
+    /// see `query::driver::apply_rewrite` + its `a_rewrite_preserves_untouched_comment_and_doc_nodes` test.)
     //= spec/capabilities/agent-authoring.md#comments-are-parsed-into-the-representation
     //# A textual syntax's parser MUST represent a comment it reads as a node of the canonical representation rather than discard it as lexical trivia, because the canonical stored form is the binary AST and a comment not carried by the tree is not stored.
     //= spec/capabilities/agent-authoring.md#comments-are-parsed-into-the-representation
