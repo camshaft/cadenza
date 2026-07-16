@@ -2427,9 +2427,20 @@ fn trunk_vs_origin_main(repo: &Path) -> Option<(usize, usize)> {
         return None;
     }
     let s = String::from_utf8(out.stdout).ok()?;
+    parse_left_right_count(&s)
+}
+
+/// Parse `git rev-list --left-right --count A...B` output into `(ahead, behind)`.
+///
+/// git prints two whitespace-separated counts: LEFT (commits reachable from A only) then RIGHT
+/// (reachable from B only). We invoke it as `origin/main...trunk`, so LEFT = origin/main-only =
+/// how far trunk is BEHIND the published main, and RIGHT = trunk-only = how far trunk is AHEAD
+/// (unpublished). The ordering is load-bearing for the board's publish state and easy to flip in a
+/// refactor, so it's pinned here as a pure parse. Returns `None` on malformed/short output.
+fn parse_left_right_count(s: &str) -> Option<(usize, usize)> {
     let mut it = s.split_whitespace();
-    let behind = it.next()?.parse().ok()?; // left  = origin/main-only
-    let ahead = it.next()?.parse().ok()?; // right = trunk-only
+    let behind = it.next()?.parse().ok()?; // left  = origin/main-only ⟹ trunk is behind
+    let ahead = it.next()?.parse().ok()?; // right = trunk-only        ⟹ trunk is ahead
     Some((ahead, behind))
 }
 
@@ -2957,8 +2968,11 @@ mod tests {
         // count_dir backs the board's inbox-depth (`N msg`). Its invariants matter: it must count only
         // immediate FILES matching `keep`, and must NOT descend into subdirs — the inbox holds a
         // `processed/` archive, and counting it would massively over-report the live backlog.
-        let base = std::env::temp_dir().join("cdz-count-dir-test");
-        let _ = std::fs::remove_dir_all(&base); // clean any prior run
+        // Unique per-process dir so concurrent `cargo test` runs (or a prior crashed run) can't collide
+        // on a shared fixed name (PR #444). pid is stable within this test process and distinct across
+        // concurrent ones.
+        let base = std::env::temp_dir().join(format!("cdz-count-dir-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base); // clean any stale dir from a prior run of THIS pid
         std::fs::create_dir_all(&base).unwrap();
         // Two live .json messages + a non-.json file (should be skipped by the `keep` predicate).
         std::fs::write(base.join("000000000001-1-merge-request.json"), "{}").unwrap();
@@ -3028,5 +3042,23 @@ mod tests {
             !bare.contains("\"area\""),
             "empty area must be omitted: {bare}"
         );
+    }
+
+    #[test]
+    fn parse_left_right_count_maps_to_ahead_behind() {
+        // git `rev-list --left-right --count origin/main...trunk` prints LEFT<tab>RIGHT where LEFT =
+        // origin/main-only (trunk BEHIND) and RIGHT = trunk-only (trunk AHEAD). The board relies on
+        // this order — a flip would mislabel publish state — so pin (ahead, behind) explicitly.
+        assert_eq!(parse_left_right_count("3\t5"), Some((5, 3))); // 3 behind, 5 ahead
+        assert_eq!(parse_left_right_count("0\t0"), Some((0, 0))); // in sync
+        assert_eq!(parse_left_right_count("0\t7"), Some((7, 0))); // only ahead (unpublished)
+        assert_eq!(parse_left_right_count("4\t0"), Some((0, 4))); // only behind
+        // Space-separated (git uses a tab, but be lenient) parses the same.
+        assert_eq!(parse_left_right_count("2 6"), Some((6, 2)));
+        assert_eq!(parse_left_right_count("  3\t5\n"), Some((5, 3))); // surrounding whitespace ok
+        // Malformed / short / non-numeric → None (never a bogus (0,0) that reads as "in sync").
+        assert!(parse_left_right_count("").is_none());
+        assert!(parse_left_right_count("5").is_none()); // only one count
+        assert!(parse_left_right_count("x\ty").is_none()); // non-numeric
     }
 }
