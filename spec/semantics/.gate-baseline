@@ -104,6 +104,7 @@ pass	Map.to-list of an empty map through an inlined helper is the empty list
 pass	Map.to-list of an undetermined-type empty map literal is the empty list
 pass	Map.to-list over a RUNTIME-built map enumerates entries in canonical key order (first key is min)
 pass	N-suffixed literals compose under BigInt arithmetic
+pass	NaN equality survives the hoisted float compare by canonical byte form
 pass	OR-saturation to a full-width mask on an unsigned runtime value
 pass	OR-then-mask absorption does not discard a trapping runtime operand
 pass	OR-then-mask absorption folds to the mask constant on a runtime operand
@@ -2551,6 +2552,7 @@ pass	negative zero encodes to bytes distinct from positive zero
 pass	negative zero is distinct in the canonical value form
 pass	negative zero is not equal to positive zero
 pass	negative zero round-trips through the codec by byte identity
+pass	negative zero stays distinct from zero through the hoisted float compare
 pass	nested patterns deconstruct recursively
 pass	nested patterns with literals
 pass	nested quasiquote embeds a FLOAT via the inner unquote
@@ -2870,6 +2872,7 @@ pass	the same-core-shape sibling dispatches ITS body, not the first
 pass	the scalar length of a runtime multi-byte string counts scalars, not bytes
 pass	the second distinct-signature closure export returns its own type
 pass	the selected operand decides a hoisted comparison
+pass	the selected operand decides a hoisted float equality
 pass	the shrinking search terminates via its fuel bound rather than searching unboundedly
 pass	the slice overflow guard holds on a chained slice-of-a-slice
 pass	the taken arm's checked add still overflows under the operator hoist
