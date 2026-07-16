@@ -1708,6 +1708,7 @@ pass	a symbol is constructed from a string
 pass	a symbol's identity is its content, not how the content was derived
 pass	a tag-length-value record round-trips through construct then match
 pass	a tagged template expands via its binding-dispatched tag function
+pass	a tagged template nested in another's hole composes — the inner's result reaches the outer tag
 pass	a tagged template threads MULTIPLE holes and an interior chunk to its tag function
 pass	a tagged template weaves a hole into its expansion
 pass	a tagged template whose tag is not a function is rejected
