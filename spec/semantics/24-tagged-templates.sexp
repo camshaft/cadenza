@@ -136,6 +136,30 @@
             (export main)))
   (output (: 10 Int64)))
 
+; The JSX precursor: a recursive tag that BUILDS A COMPOUND `Ast` (not just a scalar) — the shape a real
+; recursive-descent parser tag has (recursively assembling child nodes into an `Ast.List`). `build-list`
+; recursively pushes `(Ast.Int k)` nodes; `mk` wraps them in an `Ast.List`. The compile-time evaluator must
+; reduce the recursion AND fold the compound construction to a constant `(Ast.List (Ast.Int 1) (Ast.Int 2)
+; (Ast.Int 3))`, spliced + read here as length 3. This is a strictly stronger capability than the scalar
+; recursive-tag case above (recursion + compound-Ast build, not recursion + a bare Int).
+
+(case "a recursive tag builds a compound Ast.List at compile-time fold"
+  (doc    "`mk` returns `(Ast.List (build-list 3))` where `build-list` RECURSIVELY pushes `(Ast.Int k)`
+           nodes — so the tag both recurses AND assembles a compound `Ast`. The compile-time evaluator
+           reduces the recursion and folds the whole construction to the constant `Ast.List` of three
+           `Ast.Int` children, read here as length 3. Pins the direct JSX precursor: a recursive-descent
+           parser tag assembling child AST nodes into a list folds to a compile-time constant, not runtime
+           code — a strictly stronger capability than a recursive tag returning a bare scalar.")
+  (input  (do
+            (def (build-list (: n Int64))
+              (if (= n 0) (list) (List.push (build-list (- n 1)) (Ast.Int n))))
+            (def (mk chunks holes) (Ast.List (build-list 3)))
+            (def (main) (match (tagged-template mk (chunks "x") (holes))
+                          ((Ast.List xs) (List.len xs))
+                          (_             0)))
+            (export main)))
+  (output (: 3 Int64)))
+
 ; --- The tag's TYPE is enforced (dispatch by binding requires the right shape) ---------------------
 ; metaprogramming.md: the tag "MUST … require it to be a compile-time function from a list of the chunk
 ; strings and a list of the hole expressions to an abstract syntax tree." A tag bound to a NON-FUNCTION
