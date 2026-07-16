@@ -4373,6 +4373,45 @@ fn a_runtime_closure_leaks_exactly_one_cell_known_gap() {
     );
 }
 
+/// A PARTIALLY-APPLIED CONSTRUCTOR held in a GENUINELY-RUNTIME compound element, projected + applied,
+/// completes via the synthesized runtime eta-closure lift — the WORKING fix for the FACE-B miscompile
+/// (was invalid wasm: a newtype erased `(T.Mk 10)` to the bare `10`, storing a scalar where a closure
+/// handle belonged → `func N: expected i32, found i64`). `mk` builds `(tuple (T.Mk 10) n)` behind a
+/// recursive `if` so the tuple is not fold-visible; `((. p 0) 5)` projects the partial ctor and applies
+/// the last payload. `lower_sum_new`'s partial-arity path synthesizes `(fn (y) (T.Mk 10 y))` (capturing
+/// the supplied `10`), lifts it as an ordinary closure, and the application completes `(T.Mk 10 5)` → 15.
+/// Compiles to a VALID module (the miscompile was an INVALID one) and runs to 15.
+#[test]
+fn a_partial_ctor_in_a_runtime_tuple_completes_via_an_eta_closure_lift() {
+    use crate::testkit::parse;
+    let src = "(module m \
+                 (type T (Mk Int64 Int64)) \
+                 (def (mk (: n Int64)) (if (< n 0) (tuple (T.Mk 0) 0) (tuple (T.Mk 10) n))) \
+                 (def (main) (let ((p (mk 1))) (match ((. p 0) 5) ((T.Mk a b) (+ a b))))) \
+                 (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src)))
+        .expect("a partial ctor in a runtime tuple must compile (eta-closure lift), not decline");
+    let Some(runtime) = find_runtime_wasm() else {
+        eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
+        return;
+    };
+    let opts = cdz_run::RunOpts {
+        export: Some("main".to_string()),
+        args: vec![],
+        runtime: Some(runtime),
+        runtime_cache_dir: None,
+        host_responses: Vec::new(),
+    };
+    match cdz_run::run(&bytes, &opts).expect("run") {
+        cdz_run::Outcome::Value(s) => assert_eq!(
+            s, "15",
+            "the eta-closure captures the supplied 10 and applying 5 completes (T.Mk 10 5) → 15 \
+             (was invalid wasm — the newtype erased the partial to the bare 10)"
+        ),
+        cdz_run::Outcome::Trap(t) => panic!("partial-ctor eta-closure trapped: {t}"),
+    }
+}
+
 /// KNOWN LEAK (tracking probe, the PERVASIVE case): a recursive fold over a HEAP LIST leaks EVERY node —
 /// the recursion-heap-reclamation gap is NOT closure-specific and NOT O(1); it is O(N) in the data. A
 /// `match` reading `sum-payload` does not drop the matched shell, so a list threaded through a recursive

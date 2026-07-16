@@ -4425,25 +4425,26 @@
   (call   main)
   (output (: 10 Int64)))
 
-; --- A partial constructor in a GENUINELY-RUNTIME compound element DECLINES cleanly (reject-don't-miscompile) ---
+; --- A partial constructor in a GENUINELY-RUNTIME compound element completes via a runtime eta-closure lift ---
 ; The cases above hold the partial ctor in a COMPILE-TIME-VISIBLE compound (a literal / let-bound tuple or
-; record), so `peel_ref_annot` follows the projection to the ctor spine and completes it to a flat variant.
-; But when the tuple is built behind a RECURSIVE call (opaque to the fold), the partial ctor `(T.Mk 10)` is a
-; genuine RUNTIME first-class value — completing it needs a runtime eta-closure lift the compiler does not yet
-; build. It DECLINES cleanly (`todo`) rather than emit the malformed value. This was a MISCOMPILE: a
+; record), so `peel_ref_annot` follows the projection to the ctor spine and completes it to a flat variant at
+; compile time. When the tuple is built behind a RECURSIVE call (opaque to the fold), the partial ctor
+; `(T.Mk 10)` is a genuine RUNTIME first-class value: `lower_sum_new`'s partial-arity path synthesizes the
+; equivalent explicit lambda over the REMAINING payloads, CAPTURING the supplied args — `(T.Mk 10)` →
+; `(fn (__eta0) (T.Mk 10 __eta0))`, the exact shape a hand-written lambda lowers+runs correctly — and lifts it
+; as an ordinary runtime closure. Applying the last payload completes the variant. This was a MISCOMPILE: a
 ; single-variant sum (a NEWTYPE) applied SHORT of arity erased to its partial payload (`(T.Mk 10)` → the bare
 ; `10`, dropping the arity check), so the tuple stored a raw i64 where a closure handle belonged and the
 ; downstream project+apply `call_indirect`'d it → INVALID WASM (`func N: type mismatch: expected i32, found
-; i64`, un-instantiable component from a check-clean program). The fix moved the partial-arity guard AHEAD of
-; newtype-erasure in `lower_sum_new`, so a partial ctor of ANY sum (newtype or not) declines. Intended value
-; when the runtime eta-lift lands: `(T.Mk 10 5)` → `(+ a b)` = 15.
-(case "a partial constructor in a runtime tuple element declines cleanly (was invalid wasm)"
+; i64`). The fix moved the partial-arity guard AHEAD of newtype-erasure in `lower_sum_new` and routes a
+; genuine partial to the eta-closure lift rather than the malformed value.
+(case "a partial constructor in a runtime tuple element completes via an eta-closure lift"
   (doc    "`(mk n)` builds `(tuple (T.Mk 10) n)` behind a recursive `if` so the tuple is genuinely runtime;
            `(let ((p (mk 1))) ((. p 0) 5))` projects the partial ctor `(T.Mk 10)` and applies `5`. The value
-           is not statically visible, so the compiler cannot complete the ctor spine — it DECLINES (a `todo`)
-           rather than emit the malformed value. Was a MISCOMPILE: the newtype `T` erased `(T.Mk 10)` to the
-           bare `10`, so the project+apply produced invalid wasm (`func N: expected i32, found i64`). Intended
-           value once the runtime eta-closure lift exists: `(T.Mk 10 5)` → 15.")
+           is not statically visible, so the compiler synthesizes the runtime eta-closure `(fn (y) (T.Mk 10
+           y))` (capturing the supplied `10`), lifts it, and applies `5` → `(T.Mk 10 5)`, `(+ a b)` = 15. Was
+           a MISCOMPILE: the newtype `T` erased `(T.Mk 10)` to the bare `10`, so the project+apply produced
+           invalid wasm (`func N: expected i32, found i64`).")
   (input  (do
             (type T (Mk Int64 Int64))
             (def (mk (: n Int64)) (if (< n 0) (tuple (T.Mk 0) 0) (tuple (T.Mk 10) n)))
@@ -4451,6 +4452,19 @@
             (export main)))
   (call   main)
   (output (: 15 Int64)))
+
+(case "a three-payload constructor partially applied in a runtime tuple completes via eta-closure"
+  (doc    "The multi-remaining-param eta lift: `(mk n)` stashes the one-of-three-applied `(Tri.Mk 1)` in a
+           runtime tuple; projecting it and applying the remaining two payloads `((g 2) 3)` completes
+           `(Tri.Mk 1 2 3)`, `(+ a (+ b c))` = 6. Pins that the synthesized eta-closure abstracts ALL the
+           remaining payloads (a 2-param lambda here), not just one.")
+  (input  (do
+            (type Tri (Mk Int64 Int64 Int64))
+            (def (mk (: n Int64)) (if (< n 0) (tuple (Tri.Mk 0) 0) (tuple (Tri.Mk 1) n)))
+            (def (main) (let ((p (mk 1))) (match (((. p 0) 2) 3) ((Tri.Mk a b c) (+ a (+ b c))))))
+            (export main)))
+  (call   main)
+  (output (: 6 Int64)))
 
 ; --- A compound bound from a sum payload, extracted ACROSS A FUNCTION BOUNDARY, then projected ---
 ; A value bound out of a sum payload carries its shape WITHIN THE MATCH ARM (the payload-bound cases

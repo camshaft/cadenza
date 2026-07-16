@@ -9298,6 +9298,66 @@ fn eta_ctor_closure(db: &mut Db, ctor_head: StructId) -> Option<Core> {
     }
 }
 
+/// A PARTIALLY-applied constructor `(T.Mk 10)` as a runtime value: synthesize the equivalent
+/// explicit lambda over the REMAINING payloads, splicing the already-supplied args into the body so they
+/// are CAPTURED by the closure — `(fn (__eta0 …__eta{r-1}) (ctor <supplied…> __eta0 …))`. This is exactly
+/// the shape a source `(fn (y) (T.Mk 10 y))` takes, which lowers+runs correctly today. The supplied args
+/// become free variables in the lambda body → the lambda-lift captures them into the closure env, and the
+/// lifted func reads them back — no bare-scalar-in-a-handle-slot (the miscompile). `supplied` are the args
+/// already applied (`< arity`); the lambda binds the `arity - supplied.len()` remaining payloads.
+fn partial_ctor_eta_closure(
+    db: &mut Db,
+    ctor_head: StructId,
+    supplied: &[StructId],
+) -> Option<Core> {
+    let mut fresh = crate::unify::Fresh::new();
+    let scheme = crate::eval::scheme_of(db, ctor_head, &mut fresh)?;
+    let inst = crate::unify::instantiate(&scheme, &mut fresh);
+    let mut payload_tys: Vec<crate::ty::Ty> = Vec::new();
+    let mut cur = inst;
+    while let crate::ty::Ty::Fn(p, r) = cur {
+        payload_tys.push(*p);
+        cur = *r;
+    }
+    let m = supplied.len();
+    if m == 0 || m >= payload_tys.len() {
+        return None; // not a genuine partial (bare ctor → eta_ctor_closure; full/over → the build path)
+    }
+    let r = payload_tys.len() - m; // remaining params to eta-abstract
+    // Body: `(ctor supplied[0] … supplied[m-1] __eta0 … __eta{r-1})`. The supplied occurrences are the
+    // caller's own arg nodes (already lowered/typed in this scope), spliced verbatim so they capture.
+    let remaining_occs: Vec<StructId> =
+        (0..r).map(|k| db.push_name(&format!("__eta{k}"))).collect();
+    let mut body_children = Vec::with_capacity(1 + m + r);
+    body_children.push(ctor_head);
+    for &a in supplied {
+        body_children.push(a);
+    }
+    for k in 0..r {
+        body_children.push(db.push_name(&format!("__eta{k}")));
+    }
+    let body = db.push_list(body_children);
+    let params_list = db.push_list(remaining_occs.clone());
+    let fn_head = db.push_name("fn");
+    let lambda = db.push_list(vec![fn_head, params_list, body]);
+    crate::resolve::resolve_subtree(db, lambda);
+    let params = match resolved_of(db, lambda) {
+        Resolved::Lambda { params, .. } => params,
+        _ => return None,
+    };
+    // Seed each remaining param's machine type from the ctor scheme (the payloads AFTER the supplied ones).
+    for (k, &p) in params.iter().enumerate() {
+        let occ = crate::eval::param_name_occ(db, p);
+        db.param_types
+            .entry(occ)
+            .or_insert_with(|| payload_tys[m + k].clone());
+    }
+    match resolved_of(db, lambda) {
+        Resolved::Lambda { params, body } => Some(lower_lambda_value(db, lambda, &params, body)),
+        _ => None,
+    }
+}
+
 fn ctor_spine_fueled(db: &mut Db, id: StructId, fuel: u32) -> Option<(StructId, Vec<StructId>)> {
     if fuel == 0 {
         return None;
@@ -17493,7 +17553,17 @@ fn lower_sum_new(db: &mut Db, head: StructId, args: &[StructId]) -> Core {
     if let Some(arity) = crate::eval::variant_payload_arity(db, head)
         && args.len() < arity
     {
-        trace!(target: "rcdzc::lower", head = head.0, n_args = args.len(), arity, "sum-new: partial constructor as a runtime value — declines (eta-closure lift not yet built)");
+        // Synthesize the equivalent explicit lambda over the REMAINING payloads, CAPTURING the supplied
+        // args — `(T.Mk 10)` → `(fn (__eta0) (T.Mk 10 __eta0))`, the shape a hand-written lambda already
+        // lowers+runs correctly. The supplied args become free vars captured into the closure env; the
+        // lifted func reads them back, so no bare scalar lands in a handle slot (the erstwhile miscompile).
+        if let Some(c) = partial_ctor_eta_closure(db, head, args) {
+            trace!(target: "rcdzc::lower", head = head.0, n_args = args.len(), arity, "sum-new: partial constructor as a runtime value → eta-closure over the remaining payloads");
+            return c;
+        }
+        // Fallback (synthesis could not classify — a non-representable payload/result type): decline cleanly
+        // (reject-don't-miscompile) rather than emit a malformed value.
+        trace!(target: "rcdzc::lower", head = head.0, n_args = args.len(), arity, "sum-new: partial constructor — eta synthesis bailed, declines");
         return Core::Poison(Reject::decline(
             "a partially-applied constructor as a runtime value is not yet lowered to a runtime closure",
         ));

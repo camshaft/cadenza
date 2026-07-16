@@ -1207,6 +1207,7 @@ pass	a parameterized plain export alongside a closure export — the closure cap
 pass	a partial application persists its capture across two applications
 pass	a partial constructor bound in a let completes when applied
 pass	a partial constructor bound in a let-tuple completes when applied to a runtime arg
+pass	a partial constructor in a runtime tuple element completes via an eta-closure lift
 pass	a partial constructor passed to a higher-order function completes the variant
 pass	a partial constructor projected from a tuple literal completes when applied
 pass	a partial constructor stored in a record field completes when applied
@@ -1734,6 +1735,7 @@ pass	a three-element runtime tuple is returned as a result
 pass	a three-level curried spine applies through both intermediate closures
 pass	a three-parameter closure is applied at full arity through a recursive HOF
 pass	a three-payload constructor fully curried builds the variant
+pass	a three-payload constructor partially applied in a runtime tuple completes via eta-closure
 pass	a top-level module is named by a top-level def's body
 pass	a top-level sum value definition may reference a sum value defined later
 pass	a top-level tuple pattern matches a tuple produced by a runtime conditional
@@ -3026,6 +3028,5 @@ pass	wrapping-sub on a runtime Int8 wraps at its signed min boundary
 pass	wrapping-sub on a runtime UInt8 wraps modulo 256
 pass	wrapping-sub wraps a boundary-crossing runtime Int64 at the min boundary
 todo	SUM ARG + LIST RESULT declines cleanly (Option arg, List result)
-todo	a partial constructor in a runtime tuple element declines cleanly (was invalid wasm)
 todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
