@@ -2838,8 +2838,9 @@ struct UsesArgs {
     file: String,
     /// Emit each reference as a machine-readable JSON object (one per line) instead of the human
     /// `file:line:col` text — the shape an editor consumes for a find-all-references result without
-    /// re-parsing the text layout. Each object has `file`, `line`, `col` (the `cdz symbols --json`/`cdz
-    /// exports --json`/`cdz check --json` machine-readable convention).
+    /// re-parsing the text layout. Each object has `file` and, when the referencing node has a known
+    /// span (the normal case), `line` + `col` (a spanless node falls back to a raw `node` id instead) —
+    /// the `cdz symbols --json`/`cdz exports --json`/`cdz check --json` machine-readable convention.
     #[arg(long)]
     json: bool,
 }
@@ -2909,8 +2910,9 @@ struct ExportsArgs {
     file: String,
     /// Emit each export as a machine-readable JSON object (one per line) instead of the human
     /// `file:line:col: name : type` text — the shape a tool consumes to read a module's public interface
-    /// without re-parsing the text layout. Each object has `file`, `line`, `col`, `name`, `type` (the
-    /// `cdz symbols --json`/`cdz check --json` machine-readable convention).
+    /// without re-parsing the text layout. Each object has `file`, `name`, `type`, and — when the export's
+    /// def has a known span (the normal case) — `line` + `col` (omitted for a span-less export) — the
+    /// `cdz symbols --json`/`cdz check --json` machine-readable convention.
     #[arg(long)]
     json: bool,
 }
@@ -2921,8 +2923,10 @@ struct SymbolsArgs {
     file: String,
     /// Emit each declaration as a machine-readable JSON object (one per line) instead of the human
     /// `file:line:col: kind name` text — the shape an editor / tool consumes to build a symbol tree
-    /// without re-parsing the text layout. Each object has `file`, `line`, `col`, `kind`, `name` (the
-    /// `cdz check --json`/`cdz metadata` machine-readable convention). The `documentSymbol` payload.
+    /// without re-parsing the text layout. Each object has `file`, `kind`, `name`, and — when the
+    /// declaration's name node has a known span (the normal case) — `line` + `col` (omitted for a
+    /// span-less declaration) — the `cdz check --json`/`cdz metadata` convention. The `documentSymbol`
+    /// payload.
     #[arg(long)]
     json: bool,
 }
