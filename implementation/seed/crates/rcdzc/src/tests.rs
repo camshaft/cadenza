@@ -1205,6 +1205,62 @@ fn a_common_comparison_hoists_out_of_both_if_arms() {
     );
 }
 
+/// The common-operator hoist also covers a FLOAT equality (`Core::FloatCompare`): `(if c (= a k) (= b k))`
+/// over `Float64` operands → `(= (if c a b) k)` — ONE canonical-byte compare over the selected operand, not
+/// two. `FloatCompare` canonicalizes each operand's NaN then compares the bit patterns (`i64.eq` at width
+/// 64), and is TOTAL (never traps on its own), so the hoist is value-safe exactly like the integer
+/// comparison above. Both arms share the operator and the WIDTH (the `wt == we` guard). Value parity in
+/// both directions proves the single canon-and-compare over the selected operand reproduces the per-arm
+/// compares. (`k` is a distinct param so the compare stays runtime — a constant fold would erase it.)
+#[test]
+fn a_common_float_equality_hoists_out_of_both_if_arms() {
+    use crate::testkit::parse;
+    let src = "(module m \
+                 (def (main (: c Bool) (: a Float64) (: b Float64) (: k Float64)) \
+                   (if (if c (= a k) (= b k)) 1 0)) \
+                 (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    // Exactly one equality survives (the differing operand is a select, not a second canon-and-compare).
+    let eqs = count_opcode(&bytes, |op| matches!(op, wasmparser::Operator::I64Eq));
+    assert_eq!(
+        eqs, 1,
+        "the common-float-equality hoist compares once over the selected operand, got {eqs} compares"
+    );
+    use wasmtime::component::Val;
+    let run = |c: bool, a: f64, b: f64, k: f64| -> i64 {
+        run_returns_with::<i64>(
+            &bytes,
+            "main",
+            &[
+                Val::Bool(c),
+                Val::Float64(a),
+                Val::Float64(b),
+                Val::Float64(k),
+            ],
+        )
+    };
+    assert_eq!(
+        run(true, 1.0, 9.0, 1.0),
+        1,
+        "c=true → (= a k) = (= 1.0 1.0) = true → 1"
+    );
+    assert_eq!(
+        run(false, 1.0, 9.0, 1.0),
+        0,
+        "c=false → (= b k) = (= 9.0 1.0) = false → 0"
+    );
+    assert_eq!(
+        run(false, 1.0, 2.0, 2.0),
+        1,
+        "c=false → (= b k) = (= 2.0 2.0) = true → 1"
+    );
+    assert_eq!(
+        run(true, 9.0, 2.0, 2.0),
+        0,
+        "c=true → (= a k) = (= 9.0 2.0) = false → 0"
+    );
+}
+
 /// The common-constructor hoist also fires for a RECORD: `(if c (record (a x) (b 1)) (record (a y) (b
 /// 1)))` builds the record ONCE and pushes the DIFFERING field `a` into a branchless `(if c x y)` select
 /// while the SHARED field `b` (the constant `1`) is emitted once — instead of duplicating the whole

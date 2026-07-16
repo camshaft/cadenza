@@ -15424,6 +15424,7 @@ fn hoist_common_arith(
     enum Head {
         Arith(Prim),
         Compare(Prim),
+        FloatCompare(Prim, u32),
         Convert(Prim),
     }
     let (head, pairs): (Head, Vec<(StructId, StructId)>) =
@@ -15461,6 +15462,28 @@ fn hoist_common_arith(
                     rhs: re,
                 },
             ) if ot == oe => (Head::Compare(ot), vec![(lt, le), (rt, re)]),
+            // A canonical-byte FLOAT equality (`Core::FloatCompare`) is total exactly like an integer
+            // `Compare` — it canonicalizes each operand's NaN and compares the resulting bit patterns
+            // (`i32.eq`/`i64.eq`), never trapping on its own — so `(if c (= a k) (= b k))` over Float
+            // operands hoists to `(= (if c a b) k)`, ONE canon-and-compare instead of two, on exactly the
+            // same value-safety footing as `Compare`. Both arms must share the operator AND the WIDTH (an
+            // f32 compare canonicalizes to i32 bits and an f64 to i64 bits — mixing them would emit two
+            // different machine ops off one hoisted operand). The shared-operand trap-ORDER guard below
+            // applies identically (a `FloatCompare` operand can still be a trapping `/`).
+            (
+                Core::FloatCompare {
+                    op: ot,
+                    lhs: lt,
+                    rhs: rt,
+                    width: wt,
+                },
+                Core::FloatCompare {
+                    op: oe,
+                    lhs: le,
+                    rhs: re,
+                    width: we,
+                },
+            ) if ot == oe && wt == we => (Head::FloatCompare(ot, wt), vec![(lt, le), (rt, re)]),
             (
                 Core::Convert {
                     op: ot,
@@ -15528,6 +15551,12 @@ fn hoist_common_arith(
             op,
             lhs: operands[0],
             rhs: operands[1],
+        },
+        Head::FloatCompare(op, width) => Core::FloatCompare {
+            op,
+            lhs: operands[0],
+            rhs: operands[1],
+            width,
         },
         Head::Convert(op) => Core::Convert {
             op,
