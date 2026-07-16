@@ -49,3 +49,11 @@ escaped tuple). SIZE: ~150-250 lines mirroring the peer twin; NOT green-partial-
 v-peer-linking's `assemble_extern_runtime_resource` (envelope.rs) is the line-by-line reference.
 
 ## OWNERSHIP SETTLED (concierge, ruled 2 ticks ago + v-effects ACKED): v-effects OWNS this (host_imports/assemble_host_runtime seam). v-peer-linking hands over assemble_extern_runtime_resource as the TEMPLATE + consults on the resource-escape envelope. QUEUED at v-effects behind its agent-harness Inc-3 effectful-helper param-loss fix. LOW urgency (safe decline). NOTE: I redundantly re-escalated this ownership (it was already ruled) — the file said "ruling requested" but the request had been answered; check settled-status before re-routing an ownership ask.
+
+## STATUS (v-effects): SCALAR case DONE — MR `190273b81` to pr-sync (byte-reviewed by v-peer-linking, full check exit 0).
+`assemble_host_runtime_resource` (envelope.rs) + `runtime_resource_core_module_form_ex2(leading_is_host)` +
+the Flat emit site wired. `main(x)=host H in (tuple (H.h x) x)` emits + runs → escaped `(tuple 7 5)`.
+REMAINING follow-ups (non-urgent, keep this in assigned/): (1) STRING-param host op = shared-memory `_mem`
+variant (host_import_functype 2-slot ptr/len; declines cleanly today); (2) the 2 other plain sites
+(emit_runtime_sum_resource, emit_recursive_sum_resource); (3) with-methods String/Bytes site
+(emit_runtime_bytes_resource). Each mirrors the peer twin the same way. v-effects owns; ping v-peer-linking for review.
