@@ -99,7 +99,7 @@ pub const REQUIRED_RUNTIME_HASH: &str =
 /// composes THIS build to assert `live-objects == 0` after a run. Recorded here so the harness
 /// locates the debug runtime by content address (from the store), never by rebuilding it.
 pub const DEBUG_RUNTIME_HASH: &str =
-    "6ee60653baa21118fb3f798ad86fb746780682523a0d43ea4711c7e40cd98973";
+    "86f91d2501f0495b742e236854a142cc8141bd6a70789ee601eac8b56fb2ea9d";
 /// The runtime's INLINE-UNIT handle — the value `arr-alloc(0)` returns (a compile-time-known
 /// handle carrying the empty tuple/unit, no heap node). DERIVED from the runtime's `cdz-abi`
 /// custom section (read at codegen, then stripped), so the compiler can push it as a constant
