@@ -12,6 +12,7 @@
 import type { CellDirective } from "./parseDocument.ts";
 import { extractTable, type Table } from "./extractTable.ts";
 import { extractChart, type Series } from "./extractChart.ts";
+import { formatValue } from "./formatValue.ts";
 
 /// The run outcome shape (structural mirror of runner/client.ts's RunOutcome — mirrored, not imported,
 /// so this module stays worker-free and node-testable). The route passes the real RunOutcome; it's
@@ -43,25 +44,29 @@ export function renderOutput(directive: CellDirective, outcome: RunOutcome): Cel
   // outcome.kind === "value" — a rendered s-expr `(: value type)` string in `outcome.text`.
   const text = outcome.text;
 
+  // The plain-value display is the FRIENDLY form (`42`, `5/2`, `hi`, `2192 meter`), not the raw ascribed
+  // s-expr (`(: 42 Int64)`). The table/chart shape parsers still read the CANONICAL `text` above.
+  const display = formatValue(text);
+
   switch (directive.kind) {
     case "table": {
       const t = extractTable(text);
       if (t.ok) return { render: "table", table: t.table };
-      return { render: "value", text, note: `not shown as a table: ${t.reason}` };
+      return { render: "value", text: display, note: `not shown as a table: ${t.reason}` };
     }
     case "chart": {
       const c = extractChart(text);
       if (c.ok && c.series.length > 0) return { render: "chart", chart: directive.chart, series: c.series };
       const reason = c.ok ? "the value produced no data points" : c.reason;
-      return { render: "value", text, note: `not shown as a chart: ${reason}` };
+      return { render: "value", text: display, note: `not shown as a chart: ${reason}` };
     }
     case "formula":
-      return { render: "formula", text };
+      return { render: "formula", text: display };
     case "none":
     case "widget": // a widget cell's own output (if any) renders as a plain value; its CONTROLS are
                    // rendered separately by the reactive engine from parseWidgets (Inc 4b).
     case "hidden": // a hidden cell shows no source, but if it's asked to render an output it's a value.
     default:
-      return { render: "value", text };
+      return { render: "value", text: display };
   }
 }
