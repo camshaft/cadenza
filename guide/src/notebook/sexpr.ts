@@ -26,6 +26,10 @@ function tokenize(text: string): Tok[] {
   const toks: Tok[] = [];
   let cur = "";
   let inStr = false;
+  // Inside a string, track whether the PREVIOUS char opened an escape. This is correct for runs of
+  // backslashes (`\\"` = an escaped backslash then a CLOSING quote), unlike a one-char lookbehind which
+  // mis-reads `\\"` as an escaped quote and never terminates (PR #475).
+  let escaped = false;
   const flush = () => {
     if (cur) {
       toks.push({ atom: cur });
@@ -36,7 +40,11 @@ function tokenize(text: string): Tok[] {
     const c = text[i];
     if (inStr) {
       cur += c;
-      if (c === '"' && text[i - 1] !== "\\") {
+      if (escaped) {
+        escaped = false; // this char was escaped; it neither opens an escape nor closes the string
+      } else if (c === "\\") {
+        escaped = true;
+      } else if (c === '"') {
         inStr = false;
         flush();
       }
@@ -45,6 +53,7 @@ function tokenize(text: string): Tok[] {
     if (c === '"') {
       flush();
       inStr = true;
+      escaped = false;
       cur = '"';
       continue;
     }
@@ -57,18 +66,27 @@ function tokenize(text: string): Tok[] {
       cur += c;
     }
   }
+  // An unterminated string literal (input ended mid-string) is a hard error — the caller renders a
+  // fallback on throw, which is better than silently accepting a malformed value (PR #475).
+  if (inStr) throw new SyntaxError("unterminated string literal");
   flush();
   return toks;
 }
 
-/// Parse an s-expr string into a single Node. Throws on a malformed/empty/multi-root input (the caller
-/// treats a throw as "not the shape I expected" and renders a fallback). Bounded recursion via an
-/// explicit stack — a deeply nested value can't overflow.
+/// The maximum s-expr nesting depth. `parseNode` is recursive descent, so an adversarially deep value
+/// could overflow the JS call stack; this DEPTH GUARD makes it a clean SyntaxError (the caller renders a
+/// fallback) well before that. A rendered notebook value never nests this deep.
+const MAX_DEPTH = 1000;
+
+/// Parse an s-expr string into a single Node. Throws on a malformed/empty/multi-root input, an
+/// unterminated string, or nesting past MAX_DEPTH (the caller treats a throw as "not the shape I
+/// expected" and renders a fallback). Recursive descent, bounded by the depth guard.
 export function parseSexpr(text: string): Node {
   const toks = tokenize(text.trim());
   if (toks.length === 0) throw new SyntaxError("empty s-expr");
   let pos = 0;
-  const parseNode = (): Node => {
+  const parseNode = (depth: number): Node => {
+    if (depth > MAX_DEPTH) throw new SyntaxError(`s-expr nested past depth ${MAX_DEPTH}`);
     const t = toks[pos];
     if (t === undefined) throw new SyntaxError("unexpected end of s-expr");
     if (t === ")") throw new SyntaxError("unexpected `)`");
@@ -77,7 +95,7 @@ export function parseSexpr(text: string): Node {
       const list: Node[] = [];
       while (toks[pos] !== ")") {
         if (pos >= toks.length) throw new SyntaxError("unclosed `(`");
-        list.push(parseNode());
+        list.push(parseNode(depth + 1));
       }
       pos++; // consume )
       return { list };
@@ -85,7 +103,7 @@ export function parseSexpr(text: string): Node {
     pos++;
     return { atom: (t as { atom: string }).atom };
   };
-  const node = parseNode();
+  const node = parseNode(0);
   if (pos !== toks.length) throw new SyntaxError("trailing tokens after s-expr");
   return node;
 }

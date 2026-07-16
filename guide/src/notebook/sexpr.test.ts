@@ -47,11 +47,29 @@ test("malformed s-exprs throw a SyntaxError (caller renders a fallback, never cr
   assert.throws(() => parseSexpr(")"), SyntaxError);
 });
 
-test("deep nesting parses without overflowing (explicit-stack recursion is bounded by input)", () => {
-  const depth = 500;
-  const deep = "(list ".repeat(depth) + "1" + ")".repeat(depth);
-  const n = parseSexpr(deep);
+test("deep nesting within the depth cap parses; past the cap throws (PR #475)", () => {
+  const ok = 500;
+  const n = parseSexpr("(list ".repeat(ok) + "1" + ")".repeat(ok));
   assert.ok(isList(n));
+  // Past MAX_DEPTH (1000) the recursive descent throws a clean SyntaxError instead of overflowing.
+  const tooDeep = 1200;
+  assert.throws(() => parseSexpr("(".repeat(tooDeep) + ")".repeat(tooDeep)), SyntaxError);
+});
+
+test("a string ending in an escaped backslash terminates correctly (PR #475 escape run)", () => {
+  // `"a\\"` = the two-char content `a\` — the `\\` is an escaped backslash, then the quote CLOSES.
+  const n = parseSexpr('(record (path "a\\\\"))');
+  assert.ok(isList(n));
+  const field = (n as { list: Node[] }).list[1] as { list: Node[] };
+  assert.deepEqual(field.list[1], { atom: '"a\\\\"' });
+  assert.equal(unquoteAtom('"a\\\\"'), "a\\"); // unquote resolves it to `a\`
+});
+
+test("an unterminated string literal throws (not silently accepted) (PR #475)", () => {
+  assert.throws(() => parseSexpr('(list "unclosed)'), SyntaxError);
+  assert.throws(() => parseSexpr('"no end'), SyntaxError);
+  // A string closed by an ESCAPED quote only (never a real close) is also unterminated.
+  assert.throws(() => parseSexpr('"escaped quote \\""'.slice(0, -1)), SyntaxError);
 });
 
 test("isAtom / isList discriminate", () => {
