@@ -556,6 +556,7 @@ fn up(fleet: &Fleet) {
     // agent from the committed roster. Ephemeral fix/design agents live only in the registry.
     fleet.materialize_source();
     register_merge_drivers(fleet);
+    install_git_hooks(fleet);
     let mut reg = fleet.load();
     let roster = fleet.load_roster();
     let mut added = 0usize;
@@ -618,6 +619,97 @@ fn up(fleet: &Fleet) {
 /// working-tree root, which is the cargo workspace root. `%A` = ours (result), `%B` = theirs.
 fn maxfloor_driver_command() -> &'static str {
     "cargo xtask fleet merge-floor %A %B"
+}
+
+/// The fail-OPEN `reference-transaction` hook body. Installed by `fleet up` into the hub's shared
+/// hooks dir; git runs it on EVERY ref update in EVERY worktree, so it is engineered to be incapable
+/// of blocking or wedging anything: it acts only on the post-update `committed` state, touches only
+/// `refs/heads/trunk`, does a couple of cheap `git` reads, appends one line to a log on a detected
+/// backward move, and ALWAYS exits 0. (A `reference-transaction` hook that exits non-zero on the
+/// `prepared` state ABORTS the transaction — that's exactly the fleet-wide git wedge we must avoid, so
+/// this never returns non-zero and never keys off `prepared`.)
+///
+/// Purpose (concierge-approved, log-only): give exact TIMING + confirmation of the recurring
+/// trunk-clobber — an out-of-band job resetting `trunk` backward to `origin/main` (single-writer
+/// invariant violation, latent data-loss). It only records; the `fleet status` alarm reports the
+/// reflog count, and an operator kills the source. Deliberately NOT a blocking guard.
+const REF_TXN_HOOK_MARKER: &str = "# fleet:reference-transaction-clobber-logger";
+fn reference_transaction_hook_body(log_path: &str) -> String {
+    format!(
+        "#!/usr/bin/env bash\n\
+         {REF_TXN_HOOK_MARKER}\n\
+         # Fail-OPEN trunk-clobber logger. NEVER blocks: acts only on the post-update `committed`\n\
+         # state, logs a backward move of refs/heads/trunk, and always exits 0. See install_git_hooks.\n\
+         set +e\n\
+         state=\"$1\"\n\
+         [ \"$state\" = \"committed\" ] || exit 0\n\
+         while read -r old new ref; do\n\
+         \t[ \"$ref\" = \"refs/heads/trunk\" ] || continue\n\
+         \t# Skip creation/deletion (all-zeros) — only real moves matter.\n\
+         \tcase \"$old\" in *[!0]*) : ;; *) continue ;; esac\n\
+         \t# A backward/sideways move: new is NOT a descendant of old (a fast-forward would be).\n\
+         \tif ! git merge-base --is-ancestor \"$old\" \"$new\" 2>/dev/null; then\n\
+         \t\tts=\"$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)\"\n\
+         \t\techo \"$ts trunk NON-FF move ${{old:0:12}} -> ${{new:0:12}} (target=$(git rev-parse --abbrev-ref \"$new\" 2>/dev/null || echo ?)) pid=$$ ppid=$PPID\" >> {log_path} 2>/dev/null || true\n\
+         \tfi\n\
+         done\n\
+         exit 0\n"
+    )
+}
+
+/// Install the fleet's git hooks into the hub's shared hooks dir (idempotent, best-effort). Today:
+/// the fail-open `reference-transaction` clobber logger. Hooks live under `<git-common-dir>/hooks/`
+/// (shared by all worktrees). We only ever (over)write a hook that carries OUR marker line — a
+/// pre-existing foreign hook of the same name is left untouched + a warning printed, so we never
+/// clobber a hand-placed hook (e.g. the existing `pre-commit` trunk guard). This makes the hook
+/// REPRODUCIBLE via `fleet up` rather than hand-placed (the pre-commit guard currently is not).
+fn install_git_hooks(fleet: &Fleet) {
+    // Resolve the shared hooks dir: `<git-common-dir>/hooks`. The hub is bare; its common dir is
+    // `<hub>/.git`. Ask git so we're robust to a non-standard layout.
+    let common = Command::new("git")
+        .current_dir(&fleet.repo)
+        .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| PathBuf::from(s.trim()))
+        .unwrap_or_else(|| fleet.repo.join(".git"));
+    let hooks = common.join("hooks");
+    if std::fs::create_dir_all(&hooks).is_err() {
+        eprintln!(
+            "fleet: WARNING — could not create hooks dir {}; skipping git-hook install.",
+            hooks.display()
+        );
+        return;
+    }
+    let log_path = fleet.root.join("trunk-clobber.log");
+    let hook_path = hooks.join("reference-transaction");
+    // Don't clobber a foreign hook of the same name — only overwrite one we own (marker present).
+    if let Ok(existing) = std::fs::read_to_string(&hook_path)
+        && !existing.contains(REF_TXN_HOOK_MARKER)
+    {
+        eprintln!(
+            "fleet: WARNING — a non-fleet `reference-transaction` hook already exists at {}; leaving \
+             it (not installing the clobber logger). Merge it by hand if you want clobber logging.",
+            hook_path.display()
+        );
+        return;
+    }
+    let body = reference_transaction_hook_body(&log_path.to_string_lossy());
+    if std::fs::write(&hook_path, &body).is_err() {
+        eprintln!(
+            "fleet: WARNING — could not write the reference-transaction hook to {}.",
+            hook_path.display()
+        );
+        return;
+    }
+    // Make it executable (0o755); a non-executable hook is silently ignored by git.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&hook_path, std::fs::Permissions::from_mode(0o755));
+    }
 }
 
 fn register_merge_drivers(fleet: &Fleet) {
@@ -3277,5 +3369,26 @@ mod tests {
             "reset: moving to origin/main-backup"
         ));
         assert!(!trunk_reflog_entry_is_clobber(""));
+    }
+
+    #[test]
+    fn reference_transaction_hook_is_fail_open() {
+        // The hook runs on EVERY ref update in EVERY worktree, so its safety is load-bearing: it must
+        // never be able to block/abort a transaction (that would wedge fleet-wide git) and must only
+        // observe the post-update state. Pin those invariants on the generated body.
+        let body = reference_transaction_hook_body("/hub/.claude/fleet/trunk-clobber.log");
+        assert!(body.starts_with("#!/usr/bin/env bash"));
+        assert!(body.contains(REF_TXN_HOOK_MARKER)); // so re-install recognizes + overwrites only ours
+        // Acts ONLY on the post-update `committed` state (never `prepared`, whose non-zero exit aborts).
+        assert!(body.contains("[ \"$state\" = \"committed\" ] || exit 0"));
+        assert!(!body.contains("prepared"));
+        // Fail-open: the only exits are `exit 0`; there is no non-zero exit anywhere.
+        assert!(body.contains("exit 0"));
+        assert!(!body.contains("exit 1"));
+        // Scoped to trunk, and writes the configured log path.
+        assert!(body.contains("refs/heads/trunk"));
+        assert!(body.contains("/hub/.claude/fleet/trunk-clobber.log"));
+        // Uses a descendant check to classify a backward (non-fast-forward) move.
+        assert!(body.contains("merge-base --is-ancestor"));
     }
 }
