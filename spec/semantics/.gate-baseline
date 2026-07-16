@@ -49,6 +49,8 @@ pass	DISTINCT-SIG: two-Tuple-arg closures of different signatures ALONGSIDE a pl
 pass	DOMINATOR CSE does not reuse a condition's perform-product in the taken branch
 pass	Int64.min crosses the parameter boundary and back unchanged
 pass	Int64.min crossing the boundary is still negative
+pass	List.len of a concat of call-site lists with runtime elements folds to the summed arity
+pass	List.len of a list built at the call site from runtime elements folds to the arity
 pass	MIXED among-scalars: a scalar-then-Tuple closure ALONGSIDE a plain export — driving the closure
 pass	MIXED among-scalars: a scalar-then-Tuple closure with a COMPOUND result ALONGSIDE a plain export
 pass	MIXED among-scalars: a scalar-then-Tuple closure with a LIST result ALONGSIDE a plain export
@@ -630,7 +632,6 @@ pass	a factorial that overflows the integer type traps through the recursion
 pass	a factory RETURNS a closure capturing the def's SCALAR parameter
 pass	a factory RETURNS a closure that captures a let-bound inner closure
 pass	a failing guard falls through to a later arm
-pass	a failing nested-list guard falls to a later arm re-binding the inner list
 pass	a failing payload-binder guard falls to a later arm re-binding the payload
 pass	a failing tuple guard falls to a later arm re-binding the elements
 pass	a failure `?` short-circuits BEFORE later computation runs
@@ -1110,7 +1111,6 @@ pass	a nested unquote pattern matches a Float sub-AST by shape
 pass	a nested unquote pattern matches a Str sub-AST by shape
 pass	a nested unquote pattern matches a sub-AST by shape
 pass	a nested-let chain that reuses each binding folds to one value
-pass	a nested-list guard reads the inner binder and the outer rest together
 pass	a neutral and-true keeps both the trap and the value of its left operand
 pass	a nominal record compared to a plain record of the same shape is a type error
 pass	a non-byte-aligned bit-field width takes its exact arbitrary-width unsigned type

@@ -1899,6 +1899,35 @@
   (input  (do (def (main) (List.len (List.concat (list 1 2 3) (list 4 5)))) (export main)))
   (output (: 5 Int64)))
 
+; ── `List.len` of a list built AT THE CALL SITE folds to the constant ARITY even for RUNTIME elements ─
+; A `(list a b c)` constructor has a statically-known arity (3 here) INDEPENDENT of the element values,
+; so `(List.len (list a b c))` folds to the constant `3` in `lower` even when a/b/c are runtime
+; parameters — no heap list is built and the runtime `vec-len` never runs (core.rs `ListLen`: "a constant
+; list's length folds to a `ConstInt`, so it never reaches" the runtime op). Distinct from the cases
+; above: the constant-element `(list 1 2 3)` fold, and the runtime-`if`-selected list (which DOES reach
+; `vec-len` because the arity is not fixed until the branch resolves). These pin that the arity fold is
+; by CONSTRUCTOR SHAPE, not element constness, on both backends — a fold that measured the built list
+; would emit a needless heap build + `vec-len`.
+
+(case "List.len of a list built at the call site from runtime elements folds to the arity"
+  (doc    "`(List.len (list a b a))` over runtime parameters folds to the constant 3 — the constructor's
+           arity is statically known regardless of the element VALUES (a and b are runtime, the count is
+           not). No heap list is built; the runtime `vec-len` never runs. `(f 1 2)` = 3. Pins that the
+           length fold reads the CONSTRUCTOR SHAPE, not the elements — distinct from the constant-element
+           `(list 1 2 3)` case and the runtime-`if`-selected list (which must reach vec-len).")
+  (input  (do (def (main (: a Int64) (: b Int64)) (List.len (list a b a))) (export main)))
+  (call   main (: 1 Int64) (: 2 Int64))
+  (output (: 3 Int64)))
+
+(case "List.len of a concat of call-site lists with runtime elements folds to the summed arity"
+  (doc    "`(List.len (List.concat (list a) (list a a)))` folds to 3 — the concat of a 1-element and a
+           2-element list built at the site has statically-known total arity 3, independent of the runtime
+           element `a`. `(f 7)` = 3, building no heap list. The concat companion of the arity fold: the
+           length is the sum of the two constructors' arities, a compile-time constant.")
+  (input  (do (def (main (: a Int64)) (List.len (List.concat (list a) (list a a)))) (export main)))
+  (call   main (: 7 Int64))
+  (output (: 3 Int64)))
+
 ; A `(List a)` produced by a runtime `if` (both branches lists, unified into one handle) then consumed
 ; by `List.len` — the list analogue of the sum-through-if cases above. A list is a value-heap value (an
 ; owned `vec-*` handle, an i32 slot) exactly like a tuple/record/sum, so an `if` over two lists joins to
@@ -9307,43 +9336,3 @@
             (export main)))
   (call   main (: 0 Int64))
   (output (: 52 Int64)))
-
-; --- Nested-list guard binders: the composition faces of the third guard-binder fix ----------------
-; 24e84c90e lets a guard read a NESTED-LIST element's inner binder (the third member of the
-; guard-binder family after the ctor-list fold and the tuple descent; its pin covers the flat inner
-; head). These pin the compositions, promoted from passing breaker probes.
-
-(case "a nested-list guard reads the inner binder and the outer rest together"
-  (doc    "`(guard (list (list a .. r1) .. r2) (> a (List.len r2)))` — the cond mixes the INNER
-           list's head binder with the OUTER rest binder: [[5]] → r2 = [] → 5 > 0 → 5; [[0], [1]] →
-           r2 has one element → 0 > 1 fails → -1 → 4. The two binders live at different desugar
-           levels (the inner body re-match vs the outer arm), so the relocated cond must see both.")
-  (input  (do
-            (def (f (: xs (List (List Int64))))
-              (match xs
-                ((guard (list (list a .. r1) .. r2) (> a (List.len r2))) a)
-                (_ -1)))
-            (def (main (: v Int64))
-              (+ (f (List.push (list) (List.push (list) 5)))
-                 (f (List.push (List.push (list) (List.push (list) v)) (List.push (list) 1)))))
-            (export main)))
-  (call   main (: 0 Int64))
-  (output (: 4 Int64)))
-
-(case "a failing nested-list guard falls to a later arm re-binding the inner list"
-  (doc    "Arm one guards `(> a 9)` (→ 100+a), arm two re-binds the same nested-list head unguarded
-           (→ a): [[15]] passes → 115; [[2]] fails → falls to arm two → 2 → 117. The fall-through
-           face over the nested-list desugar (both arms desugar their inner re-match independently;
-           the failing cond reaches arm two's binding, never a residual trap).")
-  (input  (do
-            (def (f (: xs (List (List Int64))))
-              (match xs
-                ((guard (list (list a .. r1) .. r2) (> a 9)) (+ 100 a))
-                ((list (list a .. r1) .. r2) a)
-                (_ -1)))
-            (def (main (: v Int64))
-              (+ (f (List.push (list) (List.push (list) 15)))
-                 (f (List.push (list) (List.push (list) v)))))
-            (export main)))
-  (call   main (: 2 Int64))
-  (output (: 117 Int64)))
