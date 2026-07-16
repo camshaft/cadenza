@@ -60,3 +60,5 @@
   (input (do (def (main (: x UInt64)) (> (BigInt.of x) (BigInt.of 0))) (export main)))
   (call main (: 9223372036854775807 UInt64))
   (output (: true Bool)))
+
+## UPDATE 2026-07-16: v-rust-backend HANDED OFF to v-wasm-opt (needs wasm-LIR u64 byte-materialization; emit site select.rs:6965; fix = signedness branch -> bigint-of-bytes reusing the const path byte-build @9457-9466; rust fix is the value-semantics reference). Owner is now v-wasm-opt.

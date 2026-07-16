@@ -221,12 +221,16 @@ jobs:
         run: cargo xtask build
       - name: Build cdz + cdz-run
         run: cargo build --release -p cdz -p cdz-run
-      - name: Regenerate the consumer fixture (match the current runtime hash)
+      - name: Regenerate the consumer fixtures (match the current runtime hash)
         run: |
           printf '%s' '(do (effect Model (op converse (-> String String))) (bind Model "cadenza:model/api") (def (main) (String.byte-len (host (Model) (Model.converse "hi")))) (export main))' \
             > /tmp/agent-consumer.sexp
           ./target/release/cdz compile /tmp/agent-consumer.sexp \
             -o implementation/seed/crates/cdz-agent/tests/fixtures/model-consumer.wasm
+          printf '%s' '(do (effect Model (op converse (-> String String))) (effect Cedar (op authorize (-> String Int64))) (bind Model "cadenza:model/api") (bind Cedar "cadenza:cedar/api") (def (main) (if (= (host (Cedar) (Cedar.authorize "tool:chat")) 1) (String.byte-len (host (Model) (Model.converse "hi"))) 0)) (export main))' \
+            > /tmp/authz-consumer.sexp
+          ./target/release/cdz compile /tmp/authz-consumer.sexp \
+            -o implementation/seed/crates/cdz-agent/tests/fixtures/authz-model-consumer.wasm
       - name: Test + lint the cdz-agent crate (standalone workspace)
         working-directory: implementation/seed/crates/cdz-agent
         run: |

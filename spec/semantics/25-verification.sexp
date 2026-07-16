@@ -2617,9 +2617,17 @@
               (let ((g (Term.Eq (Term.Var 3) (Term.Var 3))))
                 (match (sym-subgoal g)
                   ((Option.Some sg)
-                    (match (sym-justify (refl (Term.Var 3)))
-                      ((Option.Some proof-of-g) (term-eq (concl proof-of-g) g))
-                      ((Option.None) false)))
+                    ; Prove the subgoal sg ITSELF (not a fresh term): sg is (b=a); when its sides are equal
+                    ; refl of the left side proves exactly sg. Driving the proof FROM sg is what makes this
+                    ; case exercise sym-subgoal's actual output — a wrong subgoal would fail the justify.
+                    (match sg
+                      ((Term.Eq l r)
+                        (if (term-eq l r)
+                            (match (sym-justify (refl l))
+                              ((Option.Some proof-of-g) (term-eq (concl proof-of-g) g))
+                              ((Option.None) false))
+                            false))
+                      (_ false)))
                   ((Option.None) false))))
             (export main)))
   (output (: true Bool)))
@@ -2769,3 +2777,70 @@
                  (match (hyps c) ((list h1 h2) (and (term-eq h1 a) (term-eq h2 a))) (_ false)))))
            (export main)))
   (output (: true Bool)))
+
+; Increment 16 — the SELECT (choice / Hilbert-ε) axiom, the second of HOL's three. SELECT_AX states
+; |- (P x) ⇒ (P (@ P)): if a predicate P holds of some witness x, it holds of the choice element (@ P).
+; Introduced via new_axiom (a hypothesis-free axiom Thm, like ETA), with a Select term form for (@ P).
+; Same discipline: new_axiom is the sole door, so the axiom Thm is unforgeable. (INFINITY, the third
+; axiom, needs the num/ind type constants — a later slice if desired; ETA + SELECT are the two that only
+; need terms.)
+; ============================================================================================
+
+(case "the SELECT (choice) axiom is minted via new_axiom as a hypothesis-free theorem"
+  (doc    "HOL's choice axiom (Hilbert ε). SELECT_AX: |- (P x) ⇒ (P (@ P)) — if P holds of a witness x, it
+           holds of the choice element (@ P), written here with a Select term form. Minted via new_axiom
+           (hypothesis-free, like ETA). For P = (Var 3), x = (Var 4): |- ((Var3 Var4)) ⇒ ((Var3 (@ Var3)))
+           with empty hyps. The case checks the exact implication shape and that the axiom carries no
+           hypotheses. Pins the second of HOL's three axioms, introduced through the same new_axiom door.")
+  (module "hol"
+    (do
+      (type Term (Var Int64) (Comb Term Term) (Eq Term Term) (Imp Term Term) (Select Term))
+      (type Thm (Seq (List Term) Term))
+      (def (term-eq (: a Term) (: b Term))
+        (match a
+          ((Term.Var n)    (match b ((Term.Var m) (= n m)) (_ false)))
+          ((Term.Comb x y) (match b ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) (_ false)))
+          ((Term.Eq x y)   (match b ((Term.Eq p q) (and (term-eq x p) (term-eq y q))) (_ false)))
+          ((Term.Imp x y)  (match b ((Term.Imp p q) (and (term-eq x p) (term-eq y q))) (_ false)))
+          ((Term.Select p) (match b ((Term.Select q) (term-eq p q)) (_ false)))))
+      (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
+      (def (hyps (: th Thm)) (match th ((Thm.Seq h _) h)))
+      (def (new-axiom (: tm Term)) (Thm.Seq (list) tm))
+      (def (select-ax (: p Term) (: x Term))
+        (new-axiom (Term.Imp (Term.Comb p x) (Term.Comb p (Term.Select p)))))
+      (export (. Term *))
+      (export Thm)
+      (export term-eq)
+      (export new-axiom)
+      (export select-ax)
+      (export concl)
+      (export hyps)))
+  (input  (do
+            (import "hol" (Term Thm term-eq new-axiom select-ax concl hyps))
+            (def (main)
+              (let ((p (Term.Var 3)) (x (Term.Var 4)))
+                (let ((th (select-ax p x)))
+                  (and (term-eq (concl th)
+                                (Term.Imp (Term.Comb p x) (Term.Comb p (Term.Select p))))
+                       (match (hyps th) ((list) true) (_ false))))))
+            (export main)))
+  (output (: true Bool)))
+
+(case "a SELECT-axiom theorem is unforgeable — its Thm cannot be fabricated outside the kernel"
+  (doc    "The choice axiom does not weaken the boundary: like every Thm, a SELECT-shaped axiom is minted
+           only through the kernel (new_axiom). An importer cannot fabricate one by building Thm.Seq
+           directly — a bogus |- ((Var 1 Var 2)) ⇒ ((Var 1 (@ Var 1))) outside the kernel is CDZ0214. Pins
+           that adding the Select term form + the choice axiom keeps the unforgeability invariant intact.")
+  (module "hol"
+    (do
+      (type Term (Var Int64) (Comb Term Term) (Eq Term Term) (Imp Term Term) (Select Term))
+      (type Thm (Seq (List Term) Term))
+      (def (new-axiom (: tm Term)) (Thm.Seq (list) tm))
+      (export (. Term *))
+      (export Thm)
+      (export new-axiom)))
+  (input  (do
+            (import "hol" (Term Thm new-axiom))
+            (def (main) (Thm.Seq (list) (Term.Imp (Term.Comb (Term.Var 1) (Term.Var 2)) (Term.Comb (Term.Var 1) (Term.Select (Term.Var 1))))))
+            (export main)))
+  (error  CDZ0214))

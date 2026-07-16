@@ -5655,6 +5655,34 @@ fn a_nested_inner_handler_rethreading_its_state_folds() {
     }
 }
 
+/// An effect-performing HELPER called inside a recursive SELF-CALL's ARGUMENT folds — `(run (- fuel 1) (+
+/// acc (turn fuel)))` where `turn a = Tools.dispatch a`. Threading the self-call arg inlines `turn` and
+/// threads its performing body; the inlined `Tools.dispatch` resumes `(a a)` (value AND next-state the SAME
+/// substituted-arg node, a RESOLVE-PINNED bare param occurrence). The ordinary copy SHARED that one node
+/// across the two splice positions — a single-parent-arena orphan surfacing the driver's own params as
+/// CDZ0101 `unbound name fuel`/`acc` (v-agent-harness Inc-3). A deep-fresh copy of the resume value/next-
+/// state gives each splice its own subtree, re-resolving against the specialized def's sig. `run 4 0`
+/// accumulates dispatch(4..1) = 4+3+2+1 → done(10) → 10. (An effectful helper referencing an OUTER/driver
+/// param inside its own body — `turn(a, acc) = acc + …` — is a further sub-case still declined; see the
+/// queued follow-up.)
+#[test]
+fn an_effectful_helper_in_a_selfcall_arg_folds() {
+    use crate::testkit::parse;
+    let src = "(do \
+        (effect Tools (op dispatch (-> Int64 Int64)) (op done (-> Int64 Int64))) \
+        (def (turn (: a Int64)) (Tools.dispatch a)) \
+        (def (run (: fuel Int64) (: acc Int64)) \
+          (if (= fuel 0) (Tools.done acc) (run (- fuel 1) (+ acc (turn fuel))))) \
+        (def (main) \
+          (handle Tools 0 ((dispatch (a) s (resume a a)) (done (a) s (resume a a))) \
+            (run 4 0))) (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src)))
+        .expect("an effectful helper in a recursive self-call arg folds (deep-fresh resume copy)");
+    if let Some(v) = run_linked(&bytes, "main") {
+        assert_eq!(v, "10");
+    }
+}
+
 // --- HOST-COMPOSITION INVARIANT boundary (§4.4: a reified/duplicated continuation must NOT span a host
 // call or an outer handler's effect). These are documented in 14-effects-and-handlers.sexp as a "clean
 // decline" but were not pinned by any test — so a future fold change that admitted the multi-shot /
@@ -70543,6 +70571,93 @@ mod cross_component_oracle {
             ),
             cdz_run::Outcome::Trap(t) => {
                 panic!("two-peer-interface resource-escape run trapped: {t}")
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // PL44 — TWO peer interfaces + a STRING result escaping: exercises the WITH-METHODS multi-`g` fused
+    // assembler (`assemble_extern_runtime_resource_with_scalar_methods`, g>1). PL43 covered the PLAIN
+    // multi-`g` assembler (a Tuple result); this covers its methods-carrying twin — a String result routes
+    // through emit_runtime_bytes_resource, which lifts make + encode + len/is-empty/to-bytes, and with two
+    // peer interfaces the component-type/instance indices shift by g on top of that. That `g>1` +
+    // with-methods combination was GENERALIZED but never run — this pins it, guarding a latent index bug in
+    // the multi-interface methods envelope. main chains A.ga (Int64->String, returns "hi") into B.gb
+    // (String->String, doubles) and RETURNS the result: gb(ga(x)) = gb("hi") = "hihi" → escapes.
+    // ------------------------------------------------------------------------------------------------
+    #[test]
+    fn two_peer_interfaces_with_a_string_result_escape_via_the_methods_envelope() {
+        use crate::testkit::parse;
+        let a = compile_provider(
+            "(do (def (ga (: _x Int64)) (String.concat \"h\" \"i\")) (export ga))",
+            "cadenza:a/api",
+        );
+        let b = compile_provider(
+            "(do (def (gb (: s String)) (String.concat s s)) (export gb))",
+            "cadenza:b/api",
+        );
+        {
+            let mut va = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            va.validate_all(&a).expect("provider A validates");
+            let mut vb = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            vb.validate_all(&b).expect("provider B validates");
+        }
+        // main chains a String across TWO distinct peers, then RETURNS it → escapes via the with-methods
+        // envelope with g=2 (two peer instance-types before the runtime + resource types).
+        let src = "(do \
+            (effect A (op ga (-> Int64 String))) (bind A \"cadenza:a/api\") \
+            (effect B (op gb (-> String String))) (bind B \"cadenza:b/api\") \
+            (def (main (: x Int64)) (host (A B) (B.gb (A.ga x)))) \
+            (export main))";
+        let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .unwrap_or_else(|d| {
+                panic!(
+                    "two-peer string-result consumer compiles: {} [{:?}]",
+                    d.message, d.code
+                )
+            });
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&consumer)
+                .expect("the two-peer with-methods fused consumer validates");
+        }
+        let text = String::from_utf8_lossy(&consumer);
+        assert!(
+            text.contains("cadenza:a/api") && text.contains("cadenza:b/api"),
+            "the fused consumer imports BOTH peer interfaces"
+        );
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("[PL44] runtime wasm not found; skipping");
+            return;
+        };
+        let peers = vec![
+            cdz_run::Peer {
+                bytes: a,
+                interface: "cadenza:a/api".to_string(),
+            },
+            cdz_run::Peer {
+                bytes: b,
+                interface: "cadenza:b/api".to_string(),
+            },
+        ];
+        let opts = cdz_run::RunOpts {
+            export: None,
+            args: vec!["1".to_string()],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run_with_peers(&consumer, &peers, &opts)
+            .expect("two peer interfaces + a String result escape via the methods envelope")
+        {
+            // A.ga(1) = "hi"; B.gb("hi") = "hihi"; main RETURNS it → escapes as its String value form.
+            // A String flowed peer-A → consumer → peer-B → escape, across TWO interfaces (g=2 with-methods).
+            cdz_run::Outcome::Value(s) => assert_eq!(
+                s, "(: \"hihi\" String)",
+                "a String chained across two distinct peers escapes via the g=2 with-methods envelope"
+            ),
+            cdz_run::Outcome::Trap(t) => {
+                panic!("two-peer string-result run trapped: {t}")
             }
         }
     }

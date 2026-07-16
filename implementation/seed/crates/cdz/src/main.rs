@@ -1025,15 +1025,32 @@ fn run_metadata(args: &MetadataArgs) -> ExitCode {
         Some(n) => obj.string("name", n),
         None => obj.raw("name", "null"),
     }
-    // The entry: its declared pattern, the single file it resolves to (a component has ONE boundary; a
-    // glob matching ≠1 file yields `null`, matching how `cdz build` treats it as an error at build time),
-    // and that file's SURFACE (`ml` for `.cdz`/`.ml`, `sexpr` for `.sexp`/`.sexpr`) — so a consumer knows
-    // which parser the project's boundary uses without re-deriving it from the extension. `null` when the
-    // entry is absent or doesn't resolve to exactly one file.
+    // The RESOLVED file fields (`entry_file`/`module_files`/`test_files`) report files that actually exist
+    // on disk — a consumer can `stat` them. `expand_manifest_globs` passes a NON-glob literal through
+    // VERBATIM (so `cdz build` can fail with a clear "reading X: No such file" when a declared `entry`/
+    // `module` is missing), which is right for the compile path but would make metadata claim a
+    // non-existent file is present. So filter the resolved sets to existing files here — matching how a
+    // GLOB pattern already reports only matches (a missing literal now reads like a zero-match glob:
+    // `entry_file: null`, or an absent module simply omitted). The PATTERN fields are echoed as declared.
+    let existing = |files: Vec<String>| -> Vec<String> {
+        files
+            .into_iter()
+            .filter(|f| std::path::Path::new(f).is_file())
+            .collect()
+    };
+    // The entry: its declared pattern, the single EXISTING file it resolves to (a component has ONE
+    // boundary; a glob matching ≠1 file — or a literal that doesn't exist — yields `null`, matching how
+    // `cdz build` treats it as an error at build time), and that file's SURFACE (`ml` for `.cdz`/`.ml`,
+    // `sexpr` for `.sexp`/`.sexpr`) — so a consumer knows which parser the project's boundary uses. `null`
+    // when the entry is absent, missing on disk, or doesn't resolve to exactly one file.
     match &m.entry {
         Some(e) => {
             obj.string("entry", e);
-            let resolved = expand_manifest_globs(&dir, std::slice::from_ref(e), &m.exclude);
+            let resolved = existing(expand_manifest_globs(
+                &dir,
+                std::slice::from_ref(e),
+                &m.exclude,
+            ));
             match resolved.as_slice() {
                 [one] => {
                     obj.string("entry_file", one);
@@ -1055,16 +1072,18 @@ fn run_metadata(args: &MetadataArgs) -> ExitCode {
         Some(o) => obj.string("opt_level", o),
         None => obj.raw("opt_level", "null"),
     }
-    // The pattern lists PLUS their resolved, glob-expanded, exclude-filtered file sets.
+    // The pattern lists PLUS their resolved, glob-expanded, exclude-filtered, existence-checked file sets.
     obj.raw("modules", &str_array(&m.modules));
     obj.raw(
         "module_files",
-        &str_array(&expand_manifest_globs(&dir, &m.modules, &m.exclude)),
+        &str_array(&existing(expand_manifest_globs(
+            &dir, &m.modules, &m.exclude,
+        ))),
     );
     obj.raw("tests", &str_array(&m.tests));
     obj.raw(
         "test_files",
-        &str_array(&expand_manifest_globs(&dir, &m.tests, &m.exclude)),
+        &str_array(&existing(expand_manifest_globs(&dir, &m.tests, &m.exclude))),
     );
     obj.raw("exclude", &str_array(&m.exclude));
     // The build ARTIFACTS currently present in the manifest directory — EXACTLY the set `cdz clean` would

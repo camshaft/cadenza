@@ -3152,8 +3152,20 @@ fn thread_bounded(
             // (a re-parenting structural copy) so each is detached from the dead resume and receives fresh
             // parentage when spliced into the value/next-state position. (The `do`-wrapped `value` is
             // already a fresh `push_list`; copying it again is a harmless re-parent.)
-            let value = copy_pure(db, value);
-            let next_state = copy_pure(db, next_state);
+            //
+            // DISTINCT DEEP copies are load-bearing when `value` and `next_state` are the SAME node — a
+            // `resume(a, a)` arm (dispatch/done handing the op's arg back AND as the next state) has both
+            // children equal, AND when that shared child (or a leaf within it) is a RESOLVE-PINNED bare name
+            // (`a` substituted by an inlined helper's arg — `turn(fuel)` → `a`↦`fuel`, a pinned occurrence),
+            // `copy_pure`/`beta_reduce` SHARES it (its pinned-name fast-path returns the node as-is to avoid
+            // exponential re-resolution on deep inline chains). Sharing puts ONE node in TWO positions (the
+            // `+` operand AND the self-call's trailing state arg) — a single-parent-arena orphan: `parent_of`
+            // points at only one, so the other occurrence resolves against a foreign scope → CDZ0101 unbound
+            // (the effectful-helper-in-a-self-call-arg bug, v-agent-harness Inc-3). `deep_fresh_copy` re-pushes
+            // EVERY node fresh (no shared leaf), so each splice gets its own subtree that re-resolves against
+            // the specialized def's sig (which carries the driver's own params).
+            let value = deep_fresh_copy(db, value);
+            let next_state = deep_fresh_copy(db, next_state);
             cur[slot] = next_state;
             Some((value, cur))
         }
@@ -4938,6 +4950,34 @@ fn subtree_performs_uncached(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> b
 /// so the copy discipline is identical.)
 fn copy_pure(db: &mut Db, node: StructId) -> StructId {
     crate::eval::beta_reduce(db, node, &HashMap::default())
+}
+
+/// A DEEP structural copy that re-pushes EVERY node fresh — no sharing anywhere in the subtree. Unlike
+/// [`copy_pure`] (`beta_reduce`), which returns a RESOLVE-PINNED name node as-is (its pinned-name
+/// fast-path, avoiding exponential re-resolution on deep inline chains), this forces a genuinely fresh atom
+/// for every leaf, so the result shares NO node with the original — nor with a SIBLING deep copy of the
+/// same source.
+///
+/// Needed at the resume splice: a `resume(v, s)` arm whose value and next-state are the SAME source node —
+/// `resume(a, a)` (dispatch/done handing the op's arg back AND as the next state), or an annotated-param
+/// helper's substituted arg `(: fuel Int64)` — must become TWO INDEPENDENT nodes (one lands in the value
+/// position, one as the self-call's trailing state arg). `copy_pure` alone shares them: for a bare pinned
+/// name it returns the same id; for a compound `(: fuel Int64)` it re-pushes the `(:` list fresh but its
+/// pinned inner `fuel` leaf is still shared. Either way ONE leaf ends up under TWO parents — a single-parent-
+/// arena orphan → CDZ0101 (the effectful-helper-in-a-self-call-arg bug). A fully-fresh copy gives each splice
+/// its own subtree; each fresh name occurrence re-resolves against the scope it lands in (the specialized
+/// def's sig, which carries the driver's own params).
+fn deep_fresh_copy(db: &mut Db, node: StructId) -> StructId {
+    match db.ast.get(node).clone() {
+        Struct::Atom(lid) => {
+            let leaf = db.ast.leaf(lid).clone();
+            db.push_atom(leaf)
+        }
+        Struct::List(children) => {
+            let copied: Vec<StructId> = children.iter().map(|&c| deep_fresh_copy(db, c)).collect();
+            db.push_list(copied)
+        }
+    }
 }
 
 #[cfg(test)]

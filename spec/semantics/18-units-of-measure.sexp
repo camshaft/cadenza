@@ -373,6 +373,50 @@
                               (Qty.of 1 (Unit.base #"meter"))))) (export main)))
   (call   main (: 3 Int64)) (error CDZ0501))
 
+; SAME-BASE POWER dimension distinctions (breaker): the mismatch case above uses a MIXED product
+; (meter·second) vs meter. These pin the subtler SAME-BASE-EXPONENT distinction: meter² (from meter·meter)
+; is a DIFFERENT dimension from meter¹, and meter³ from meter², so adding across exponents is a mismatch —
+; while adding two SAME-exponent quantities is well-dimensioned. A dimension check that merged same-base
+; units without tracking the exponent (meter·meter → meter, not meter²) would wrongly accept meter²+meter.
+
+(case "adding a squared length to a plain length is a dimension mismatch"
+  (doc    "`(+ (* (Qty.of 2.0 meter) (Qty.of 3.0 meter)) (Qty.of 1.0 meter))` adds meter² (the product's
+           derived dimension) to a plain meter — DIFFERENT dimensions (exponent 2 vs 1), so the compiler
+           rejects it (CDZ0501). The same-base-power companion of the mixed meter·second mismatch above: it
+           pins that meter·meter composes the EXPONENT (meter²), not collapsing to meter, so the mismatch
+           check sees them as distinct. A dimension-multiply that merged same-base units to exponent 1 would
+           wrongly accept this.")
+  (input  (+ (* (Qty.of 2.0 (Unit.base #"meter")) (Qty.of 3.0 (Unit.base #"meter")))
+             (Qty.of 1.0 (Unit.base #"meter"))))
+  (error  CDZ0501))
+
+(case "adding two squared-length quantities is well-dimensioned"
+  (doc    "The positive companion: `(+ meter² meter²)` — two areas of the SAME derived dimension — is valid,
+           its magnitudes add. `(2·3) + (1·4)` = 6.0 + 4.0 = 10.0. Pins that same-exponent derived dimensions
+           combine like any matching dimension, so the mismatch above is about the EXPONENT differing, not
+           about derived dimensions being uncombinable in general.")
+  (input  (Qty.value (+ (* (Qty.of 2.0 (Unit.base #"meter")) (Qty.of 3.0 (Unit.base #"meter")))
+                        (* (Qty.of 1.0 (Unit.base #"meter")) (Qty.of 4.0 (Unit.base #"meter"))))))
+  (output (: 10.0 Float64)))
+
+(case "adding a cubed length to a squared length is a dimension mismatch"
+  (doc    "`(+ meter³ meter²)` — meter·meter·meter (exponent 3) vs meter·meter (exponent 2) — is a mismatch
+           (CDZ0501). Pins the exponent distinction ONE step further than meter²-vs-meter¹: the check
+           compares the full exponent, so consecutive powers are distinct dimensions, not just power-vs-linear.")
+  (input  (+ (* (* (Qty.of 2.0 (Unit.base #"meter")) (Qty.of 2.0 (Unit.base #"meter")))
+                (Qty.of 2.0 (Unit.base #"meter")))
+             (* (Qty.of 3.0 (Unit.base #"meter")) (Qty.of 3.0 (Unit.base #"meter")))))
+  (error  CDZ0501))
+
+(case "Qty.pow and repeated multiplication produce the same dimension for a matching add"
+  (doc    "`(+ (Qty.pow (Qty.of 2.0 meter) 2) (* (Qty.of 1.0 meter) (Qty.of 1.0 meter)))` adds a `Qty.pow`-2
+           area to a `*`-derived area — both meter², so the add is well-dimensioned: 4.0 + 1.0 = 5.0. The
+           add-position companion of the existing `(= (Qty.pow q 2) (* q q))` equality: not only do they
+           compare equal, they combine as the SAME dimension under `+`.")
+  (input  (Qty.value (+ (Qty.pow (Qty.of 2.0 (Unit.base #"meter")) 2)
+                        (* (Qty.of 1.0 (Unit.base #"meter")) (Qty.of 1.0 (Unit.base #"meter"))))))
+  (output (: 5.0 Float64)))
+
 (case "scaling a quantity by a dimensionless quantity keeps its dimension"
   (doc    "`(* (Qty.of 2.0 meter) (Qty.of 3.0 Unit.one))` multiplies a length by a dimensionless scalar:
            meter·one = meter, value 6.0. Pins that `Unit.one` is the group identity — multiplying by it

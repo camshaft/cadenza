@@ -322,25 +322,66 @@ fixes unblocked:
 - `src/symtab.cdz` — a SYMBOL TABLE with DETERMINISTIC enumeration via the `Map.to-list`/`Set.to-list`
   ops (canonical-order iteration): ordered names, value sum, indexed lookup, a canonical name Set — the
   shape a back end takes to emit declarations / a symbol dump in a reproducible order.
+- `src/type-env.cdz` — a typed symbol table (`Map String Ty`) for a type checker: bind/lookup/has plus
+  reproducible enumeration (`names`, `total-depth`, `arrow-count`) via `Map.to-list`.
+- `src/strbuild.cdz` — runtime `String` construction/concatenation regression guards (the sibling-fixed
+  `String.concat` over runtime strings).
+- `src/scope-fv.cdz` / `src/scopecheck.cdz` — BINDING-AWARE free-variable analysis over the lambda calculus
+  / the canonical `Ast` (both once withheld by the still-live-binding family; UNBLOCKED and landed).
+- `src/constprop.cdz` — CONSTANT PROPAGATION with `Let` threading (inline a constant binding, drop it),
+  composing a smart `add`/`mul`. (Soundness-fixed: shadowing a constant by a non-constant → `Map.remove`.)
+- `src/deadlet.cdz` — DEAD-LET ELIMINATION: drop a `let` whose bound var is unused (pure language).
+- `src/inline.cdz` — LINEAR (size-safe) inlining: fold `let x = rhs in body` when `x` occurs ≤ 1 time.
+- `src/strength.cdz` — STRENGTH REDUCTION: `e*2^k → e<<k`, `e*2 → e+e`, `*1`/`*0`/`+0`/`-0` identities.
+- `src/optimize.cdz` — the OPTIMIZER CAPSTONE composing constprop + identities + dead-let over one `Ex`.
+- `src/anf.cdz` — A-NORMAL FORM: name every compound primitive operand with a `let` (fresh ids seeded at
+  `max-id+1`); the canonical pre-codegen IR. Eval-preserving; `is-anf` witnesses the invariant.
+- `src/cse.cdz` — COMMON-SUBEXPRESSION detection: structurally hash every subterm (bottom-up, O(n)) and
+  count DISTINCT subterms (the shared-DAG size a CSE pass would build). `node-count`/`distinct-count`/
+  `savings`/`has-sharing`.
+- `src/liveness.cdz` — LIVE-VARIABLE analysis (backward dataflow): `live-in = (live-out \ def) ∪ uses`;
+  `is-dead-store`/`dead-store-count` (single-pass DSE). Over `Set(Int64)` (`Set.union`/`Set.difference`).
+- `src/tailcall.cdz` — TAIL-POSITION analysis (TCO enabler): which calls are in tail position;
+  `is-self-tail-recursive` (the loop-compilation condition).
+- `src/purity.cdz` — EFFECT-FREEDOM analysis: `is-pure` (Print/Div/Call impure) + the transform-safety
+  predicates `safe-to-eliminate`/`safe-to-duplicate`/`safe-to-reorder` the code-motion passes rely on.
+- `src/closure.cdz` — CLOSURE CONVERSION: `Lam(p, body)` with free vars → `Clos(captured, p, body)`;
+  captured = `free(body) \ {p}` (the captured set equals the free-var set — witnessed).
+- `src/match-compile.cdz` — PATTERN-MATCH analysis: `select` (first-matching arm) + EXHAUSTIVENESS
+  (`missing-count`) + REDUNDANCY (`redundant-at`/`first-redundant`).
+- `src/cfg.cdz` — a CONTROL-FLOW GRAPH (blocks + terminators) + worklist REACHABILITY → `dead-blocks`
+  (DCE-over-CFG); terminates on cycles + external targets.
+- `src/dominators.cdz` — DOMINATOR analysis (by definition, via reach-avoiding): `dominates`/
+  `strictly-dominates`/`dominators`/`idom` (immediate dominator).
+- `src/domfront.cdz` — DOMINANCE FRONTIER (the SSA φ-placement input) + `iterated-df` (DF⁺).
+- `src/loops.cdz` — NATURAL-LOOP detection: back edges (`t` dominates `s`) → `natural-loop`/`is-loop-header`.
+- `src/licm.cdz` — LOOP-INVARIANT CODE MOTION: hoist a body statement when its reads are all outside-defined
+  AND it is pure; `hoist` (one pass) + `hoist-fixpoint` (transitive).
+- `src/regalloc.cdz` — REGISTER ALLOCATION by greedy graph coloring (interference edges → k colors, spill
+  at -1); `valid-coloring` witnesses no interfering pair shares a color.
+- `src/ssa-phi.cdz` — SSA φ-PLACEMENT: `phi-blocks(v) = DF⁺(def-blocks(v))` (Cytron).
+- `src/ssa-rename.cdz` — SSA variable RENAMING over a straight-line block (versions per def; uses read the
+  current version; undefined use = version -1).
+- `src/infer.cdz` — HINDLEY-MILNER type inference (Algorithm W): threads `(Ty, subst, counter)`, unifies at
+  every application; `principal-type`/`well-typed`. (The historically borrow-blocked pass — now RUNNING.)
+- `src/type-scheme.cdz` — type-scheme GENERALIZATION + INSTANTIATION (let-polymorphism: `∀ā.τ`).
+- `src/infer-let.cdz` — LET-POLYMORPHIC HM: composes infer + type-scheme so `let id = \x.x in (id id)`
+  type-checks while the monomorphic self-application is rejected (occurs check).
+- `src/core-ex.cdz` — the CANONICAL shared expression type (Int64 var ids; one op-coded `Bin`; Let/Lam/App)
+  the passes will migrate onto for a real end-to-end driver. Lands as an ADDITIVE ISLAND (no importers yet;
+  wiring is gated on the direction ruling). Exports `Ex.*` + `op-of`/`size`/`depth`/`max-id`/`is-atom`.
+- `src/nested-match.cdz` / `src/multi-payload.cdz` — REGRESSION GUARDS for the recursive-sum nested-match
+  miscompile (fixed) and multi-payload variant construct/match/field-extract.
+- `src/giter.cdz` — (generic-iterator work; see the iterators workstream).
 
-A `resolve` pass (lexical scope-check accumulating unbound-variable diagnostics — a `Set String` scope
-threaded down, a `List String` of faults threaded through, `Let` binding + shadowing) is written and
-`cdz check`s clean; its logic runs correctly when exported singly, but the FULL module's `@test` suite
-DECLINES on the borrow-ownership gap at the test-emit layout (threshold-dependent — 1 test compiles, the
-full suite doesn't). Kept as `mlrepro-decline-borrow-scope-resolver-test-emit-threshold.cdz` (queue). A
-SCOPE-CHECKER over the CANONICAL `Ast` (`let`/`fn` binders, a `Set String` scope) was withheld at iter 42
-for the same still-live-binding reason (its `let` tests lost the extended scope through the recursion) —
-🎉 now UNBLOCKED (iter 48, the sibling compiler-side dup fix) and PROMOTED to `src/scopecheck.cdz` (all 10
-tests pass).
-
-The `infer` pass (HM inference over an expression language, composing `unify`) is written and `cdz
-check`s clean but currently lives in `mlrepro-blocked-infer-cross-file-hm-borrow.cdz` (queue) — its `@test`s
-DECLINE at emit on the `Map.lookup`-returned-heap-value borrow bug (see the log). It was the port's
-first genuine cross-file module (importing `unify`), which is what drove the `cdz test` import-following
-fix; only the borrow bug — not the linking — keeps it out of the running suite.
-
-Planned, following the rcdzc pipeline: decode (binary AST → `Ast`, NOW RUNNING for structure + scalar
-leaves) · resolve · infer (Hindley-Milner) · lower (→ core) · encode/emit. Fundamentally bytes → bytes.
+The full CLASSIC compiler pipeline now exists in Cadenza ML: front-end (lex/strlex/parse/parse-checked/
+prec/calc) → analyses (cse/liveness/tailcall/purity/cfg/dominators/domfront/loops) → transforms
+(cfold/constprop/deadlet/inline/strength/licm/optimize/closure) → IR (anf) → SSA (ssa/ssa-phi/ssa-rename) →
+backend (codegen/regalloc/peephole/verify) → a complete HM TYPE STORY (unify/apply-ty/tycheck/type-env +
+infer + type-scheme + infer-let) → metaprogramming (quote-build) + codec (encode/decode/codec-roundtrip).
+The passes each currently declare their own expression type; a shared `core-ex.cdz` is landed as the
+migration target so a single `parse → infer → optimize → codegen` DRIVER can be wired (that reshape is the
+next major direction, gated on the operator's ruling).
 
 ### Decode — RUNNING (structure + scalar leaves), one seed gap remains for string content
 

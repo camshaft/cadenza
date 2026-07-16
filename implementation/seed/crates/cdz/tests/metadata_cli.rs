@@ -274,3 +274,40 @@ fn metadata_omits_absent_fields_as_null() {
     assert!(out.contains("\"tests\":[]"), "empty tests is []: {out}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn metadata_resolved_files_report_only_existing_files() {
+    // HARDENING: the RESOLVED file fields (entry_file / module_files) must report files that actually
+    // exist — `expand_manifest_globs` passes a non-glob literal through verbatim (so `cdz build` can error
+    // "reading X: No such file"), but metadata must not CLAIM a missing declared file is present. A
+    // missing entry → entry_file null (like a zero-match glob); a missing module is omitted.
+    let dir = std::env::temp_dir().join(format!("cdz-metadata-existing-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("Project.cdz"),
+        "def entry = \"ghost.cdz\"\ndef modules = [\"real.cdz\", \"missing.cdz\"]\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("real.cdz"), "def r() -> Int64 = 1\nexport { r }\n").unwrap();
+    // ghost.cdz + missing.cdz deliberately absent.
+    let (ok, out, err) = run_in(&dir, &["metadata", "."]);
+    assert!(ok, "metadata succeeds (read-only report): {err}");
+    // The declared PATTERNS are still echoed.
+    assert!(
+        out.contains("ghost.cdz") && out.contains("missing.cdz"),
+        "declared patterns echoed: {out}"
+    );
+    // But the RESOLVED sets only include existing files.
+    assert!(
+        out.contains("\"entry_file\":null"),
+        "a missing entry → entry_file null: {out}"
+    );
+    assert!(out.contains("\"surface\":null"), "and surface null: {out}");
+    let module_files = json_array(&out, "module_files").expect("module_files present");
+    assert!(
+        module_files.contains("real.cdz") && !module_files.contains("missing.cdz"),
+        "module_files lists the existing module, not the missing one: {module_files}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

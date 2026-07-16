@@ -3441,3 +3441,26 @@
                 (count-ids (Add (Neg (Lit)) (Lit)))))
             (export main)))
   (output (: 6 Int64)))
+
+(case "an effect-performing helper called inside a recursive self-call's argument folds"
+  (doc    "A recursive driver `run` whose SELF-CALL argument contains a call to a separate effect-performing
+           HELPER `turn` — `(run (- fuel 1) (+ acc (turn fuel)))`, where `turn a = Tools.dispatch a`. Threading
+           the self-call's arg inlines `turn` (β-reduces + threads its performing body); the inlined
+           `Tools.dispatch` resumes `(a a)` (hands its arg back AND as the next state). The resume VALUE and
+           NEXT-STATE are the SAME substituted-arg node, and it is RESOLVE-PINNED (a bare param occurrence),
+           so the ordinary copy SHARED one node across the two splice positions — a single-parent-arena
+           orphan that surfaced the driver's own params as CDZ0101 `unbound name fuel`/`acc` (reported by
+           v-agent-harness Inc-3). A DEEP-FRESH copy of the resume value/next-state gives each splice its own
+           subtree, re-resolving against the specialized def's sig. `run 4 0` accumulates dispatch(4..1) =
+           4+3+2+1 → done(10) → 10. Pins the effectful-helper-in-a-self-call-arg shape a self-hosted pass
+           writes (a per-node effectful helper threaded through a recursive walk).")
+  (input  (do
+            (effect Tools (op dispatch (-> Int64 Int64)) (op done (-> Int64 Int64)))
+            (def (turn (: a Int64)) (Tools.dispatch a))
+            (def (run (: fuel Int64) (: acc Int64))
+              (if (= fuel 0) (Tools.done acc) (run (- fuel 1) (+ acc (turn fuel)))))
+            (def (main)
+              (handle Tools 0 ((dispatch (a) s (resume a a)) (done (a) s (resume a a)))
+                (run 4 0)))
+            (export main)))
+  (output (: 10 Int64)))

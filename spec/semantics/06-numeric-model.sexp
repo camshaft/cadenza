@@ -3363,6 +3363,45 @@
   (call   main (: 5000000000 Int64))
   (output (: 15000000000 BigInt)))
 
+; `BigInt.of` is `∀a.(Int a)->BigInt`, so its runtime widening MUST honor the source width's SIGNEDNESS. A
+; SIGNED source (Int8..Int64) widens through `bigint-of-i64`, whose operand is a signed i64 — correct. But a
+; runtime `UInt64` value at/above 2^63 has its high bit set as MAGNITUDE, not sign: routing it through the
+; signed `bigint-of-i64` reads that bit as a sign and yields a WRONG NEGATIVE BigInt. The fix widens an
+; UNSIGNED source through its canonical sign-magnitude bytes (non-negative sign + the 8 LE u64 bytes, then
+; `bigint-of-bytes`) so a big UInt64 is the positive value it denotes. (breaker-found; the rust-backend twin
+; is fe99dd1ec — the wasm twin was handed off to v-wasm-opt as deep emit territory.)
+(case "BigInt.of a UInt64 at 2^63 is a positive BigInt, not a wrong negative"
+  (doc    "`main(2^63)` widens a `UInt64` whose high bit is set. Under the pre-fix signed `bigint-of-i64` it
+           read as `-(2^63)` (negative), so `(> (BigInt.of x) 0)` was false; the sign-magnitude byte widening
+           makes it the positive 2^63, so the comparison is true. The sharp regression for the unsigned
+           high-bit miscompile.")
+  (input  (do (def (main (: x UInt64)) (> (BigInt.of x) (BigInt.of 0))) (export main)))
+  (call   main (: 9223372036854775808 UInt64))
+  (output (: true Bool)))
+
+(case "BigInt.of a UInt64 at u64::MAX is a positive BigInt"
+  (doc    "The extreme: every bit set. `18446744073709551615` (2^64-1) widens to the positive BigInt
+           `2^64-1`, not `-1` — `(> (BigInt.of x) 0)` is true. The all-ones companion of the 2^63 case.")
+  (input  (do (def (main (: x UInt64)) (> (BigInt.of x) (BigInt.of 0))) (export main)))
+  (call   main (: 18446744073709551615 UInt64))
+  (output (: true Bool)))
+
+(case "BigInt.of a UInt64 at 2^63 - 1 is positive (the sub-high-bit control)"
+  (doc    "The control: a `UInt64` value BELOW 2^63 has its high bit clear, so the signed and unsigned
+           widenings agree — it was always positive. Pins that the fix does not disturb the sub-high-bit
+           range (both paths yield the same positive BigInt).")
+  (input  (do (def (main (: x UInt64)) (> (BigInt.of x) (BigInt.of 0))) (export main)))
+  (call   main (: 9223372036854775807 UInt64))
+  (output (: true Bool)))
+
+(case "BigInt.of a UInt64 widens to the exact value (round-trips back through Int64.of where it fits)"
+  (doc    "A small `UInt64` widened via the sign-magnitude byte path round-trips: `BigInt.of 42` then
+           `Int64.of` narrows back to 42. Pins that the unsigned byte-materialization builds the exact
+           magnitude (not just the right sign), for a value that also fits i64.")
+  (input  (do (def (main (: x UInt64)) (Int64.of (BigInt.of x))) (export main)))
+  (call   main (: 42 UInt64))
+  (output (: 42 Int64)))
+
 (case "a parameterized export returns a runtime Rational computed from its argument"
   (doc    "The Rational companion: `main(1) = 1/6 + 1/6 = 1/3` exactly, the runtime rational built from
            the argument crossing the boundary via the param-forwarding resource escape.")

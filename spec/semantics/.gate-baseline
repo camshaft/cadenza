@@ -3,6 +3,10 @@ pass	Ast.decode converts bytes to an AST sum type value
 pass	Ast.decode decodes bytes that arrive as a function argument
 pass	Ast.encode and Ast.decode round-trip
 pass	BETA over the capture-avoiding substitution still proves the identity theorem (no regression)
+pass	BigInt.of a UInt64 at 2^63 - 1 is positive (the sub-high-bit control)
+pass	BigInt.of a UInt64 at 2^63 is a positive BigInt, not a wrong negative
+pass	BigInt.of a UInt64 at u64::MAX is a positive BigInt
+pass	BigInt.of a UInt64 widens to the exact value (round-trips back through Int64.of where it fits)
 pass	COMPOUND RESULT PAYLOAD: (Result (Tuple Int64 Int64) (Tuple Int64 Int64)) — BOTH sides compound
 pass	COMPOUND RESULT PAYLOAD: (Result (Tuple Int64 Int64) Int64) arg, drive Err (scalar side)
 pass	COMPOUND RESULT PAYLOAD: (Result (Tuple Int64 Int64) Int64) arg, drive Ok (tuple side)
@@ -113,6 +117,7 @@ pass	OR-saturation to a full-width mask on an unsigned runtime value
 pass	OR-then-mask absorption does not discard a trapping runtime operand
 pass	OR-then-mask absorption folds to the mask constant on a runtime operand
 pass	Ok carrying a Some keeps both variant tags
+pass	Qty.pow and repeated multiplication produce the same dimension for a matching add
 pass	Qty.unit recovers a derived unit
 pass	Qty.unit recovers a quantity's unit to build another quantity of the same unit
 pass	Qty.unit recovers the unit of a quantity whose magnitude is a runtime value
@@ -159,9 +164,12 @@ pass	TWO prefix scalars then a Tuple then a suffix scalar cross the direct-call 
 pass	Type is a first-class value
 pass	Type.eq branches on a type-valued parameter, monomorphized per passed type
 pass	Type.eq compares a reflected type against a written type
+pass	Type.eq compares two type-valued parameters to each other
 pass	Type.eq distinguishes quantities by their unit
 pass	Type.eq is false for values of different types
 pass	Type.eq is true for two values of the same type
+pass	Type.eq of a type-valued parameter against itself is always true
+pass	Type.eq on a type-valued parameter against a COMPOUND type is structural
 pass	Type.of carries a quantity's unit into a same-type annotation
 pass	Type.of reflects a runtime parameter's type at compile time
 pass	Type.of reflects a value's type for use as an annotation
@@ -302,6 +310,7 @@ pass	a Result built by an if with the Err branch first type-checks
 pass	a Result carrying a Result is matched by a nested pattern to its inner value
 pass	a Result pipeline short-circuits on the first Err
 pass	a Result-valued `?` under an Option boundary is a type error
+pass	a SELECT-axiom theorem is unforgeable — its Thm cannot be fabricated outside the kernel
 pass	a SINGLE-variant open sum still requires an open-tail arm
 pass	a SOLE RECORD closure ARG crosses the direct-call boundary
 pass	a STRING-result effect op resumes with a string that folds through a concat
@@ -1975,6 +1984,7 @@ pass	a type stored in a compound result cannot cross the boundary
 pass	a type variable nested in a generic parameter annotation is an unbound name
 pass	a type-name-colliding variant construct coexists with the width type it collides with
 pass	a type-value in integer-width position is rejected
+pass	a type-valued parameter threaded through a second call reaches Type.eq with its type intact
 pass	a u16 segment encodes an integer big-endian by default
 pass	a u32 segment encodes four big-endian bytes
 pass	a u64 pattern segment reads eight big-endian bytes back into an integer
@@ -2030,10 +2040,13 @@ pass	a zero-bit integer width is rejected
 pass	a zero-length slice is the empty byte sequence
 pass	accessing through an empty-side split-at is usable, like the equivalent literal
 pass	accumulator introduction threads a transformed extra parameter through a multi-parameter recursion
+pass	adding a cubed length to a squared length is a dimension mismatch
+pass	adding a squared length to a plain length is a dimension mismatch
 pass	adding quantities of incompatible dimension is a compile-time error
 pass	adding rational-magnitude quantities of incompatible dimension is still a compile-time error
 pass	adding two named family units of one dimension converts to the reference (Float)
 pass	adding two quantities of the same dimension keeps that dimension
+pass	adding two squared-length quantities is well-dimensioned
 pass	adding two units of one dimension converts to the reference unit exactly
 pass	addition of a string and a byte sequence names both text types
 pass	addition of a string and a list names both non-numeric types
@@ -2998,6 +3011,10 @@ pass	subtraction of two symbols is rejected
 pass	sum type constructors are in scope after declaration
 pass	symbol identity follows String normalization
 pass	symbols interned from different strings are unequal
+pass	take-while composed after a map threads both transformers' closures
+pass	take-while excludes the failing element and everything after it (content, not just count)
+pass	take-while where every element satisfies the predicate keeps the whole run
+pass	take-while where the first element fails the predicate returns the empty run
 pass	textually-identical performs are DISTINCT state-advancing reads, not a common subexpression
 pass	the AST is a sum type deconstructible by pattern matching
 pass	the Bool generator covers both values across seeds (it is not a constant)
@@ -3005,6 +3022,7 @@ pass	the ETA axiom is minted via new_axiom as a hypothesis-free theorem
 pass	the Float codec round-trips a negative value
 pass	the Int codec round-trips i64::MIN — the two's-complement boundary
 pass	the LEB128 byte composition runs on a runtime operand
+pass	the SELECT (choice) axiom is minted via new_axiom as a hypothesis-free theorem
 pass	the additive-zero identity preserves a boundary-crossing runtime operand
 pass	the arithmetic operator rejects a float-first mixed operand pair
 pass	the bitwise-AND-with-zero annihilator does not discard a trapping runtime operand
@@ -3305,3 +3323,4 @@ pass	α-equivalence handles nesting and distinguishes a bound variable from a sa
 todo	SUM ARG + LIST RESULT declines cleanly (Option arg, List result)
 todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
+pass	an effect-performing helper called inside a recursive self-call's argument folds

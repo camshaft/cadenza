@@ -77,3 +77,92 @@ fn mock_converse_uppercases() {
     // on so a mock change that would silently alter the loop test's expected value is caught here too.
     assert_eq!(cdz_agent::mock_converse("hello".to_string()), "HELLO");
 }
+
+#[test]
+fn the_embedder_gates_the_loop_on_a_real_cedar_policy() {
+    // The FULL authorized-agent shape (Inc-3 end-to-end): a Cadenza loop that performs
+    // Cedar.authorize("tool:chat") and, ONLY on allow, Model.converse("hi") — returning the completion's
+    // byte-len (2), else 0. The embedder answers `converse` with the mock model and `authorize` with the
+    // REAL cedar-policy engine (`cedar_authorizer`). So the whole chain runs: Cadenza loop → authz effect
+    // → cedar-policy decision → (allow) model effect → mock → byte-len, all over the shared runtime.
+    let consumer = include_bytes!("fixtures/authz-model-consumer.wasm");
+    let req = cdz_run::required_runtime(consumer)
+        .expect("read the fixture's runtime requirement")
+        .expect("the authz-model-consumer fixture imports the value-heap runtime");
+    let Some(runtime) = find_runtime(&req.hash) else {
+        eprintln!(
+            "[cdz-agent] runtime {} not in any ancestor store (run `cargo xtask build`) or stale fixture; skipping",
+            req.hash
+        );
+        return;
+    };
+    let opts = cdz_run::RunOpts {
+        export: Some("main".to_string()),
+        args: Vec::new(),
+        runtime: Some(runtime),
+        runtime_cache_dir: None,
+        host_responses: Vec::new(),
+    };
+
+    // ALLOW policy: permit the chat tool. The loop authorizes "tool:chat" → allow → converse("hi") →
+    // "HI" → byte-len 2. The action string the loop performs is a bare tag; the authorizer maps it to a
+    // Cedar action UID (`Action::"<action>"`) — here the policy permits exactly that.
+    let allow = cdz_agent::cedar_authorizer(
+        r#"permit(principal, action == Action::"tool:chat", resource);"#.to_string(),
+        r#"Agent::"agent:harness""#.to_string(),
+        r#"Tool::"chat""#.to_string(),
+        "{}".to_string(),
+    );
+    match cdz_agent::run_authorized_agent_loop(consumer, &opts, cdz_agent::mock_converse, allow) {
+        Ok(cdz_run::Outcome::Value(s)) => assert_eq!(
+            s, "2",
+            "allowed: authorize→1 gates the model call → 'HI' byte-len 2"
+        ),
+        Ok(cdz_run::Outcome::Trap(t)) => panic!("authorized-loop run trapped: {t}"),
+        Err(e) => panic!("authorized-loop run errored: {e}"),
+    }
+
+    // DENY policy: permit only a DIFFERENT action, so "tool:chat" has no permit → deny → the model call
+    // is never made → the loop returns 0. This proves the gate is load-bearing e2e through the real
+    // Cedar engine (not just that the allow path runs).
+    let deny = cdz_agent::cedar_authorizer(
+        r#"permit(principal, action == Action::"tool:other", resource);"#.to_string(),
+        r#"Agent::"agent:harness""#.to_string(),
+        r#"Tool::"chat""#.to_string(),
+        "{}".to_string(),
+    );
+    match cdz_agent::run_authorized_agent_loop(consumer, &opts, cdz_agent::mock_converse, deny) {
+        Ok(cdz_run::Outcome::Value(s)) => assert_eq!(
+            s, "0",
+            "denied: authorize→0 blocks the model call → 0 (the gate is load-bearing)"
+        ),
+        Ok(cdz_run::Outcome::Trap(t)) => panic!("authorized-loop deny run trapped: {t}"),
+        Err(e) => panic!("authorized-loop deny run errored: {e}"),
+    }
+}
+
+#[test]
+fn cedar_authorizer_maps_decision_to_gate_value_fail_closed() {
+    // The authorizer bridge: allow → 1, deny → 0, AND a malformed policy → 0 (fail-closed, never a
+    // silent allow). No runtime needed — a pure check of the closure the loop's authorize op calls.
+    let allow = cdz_agent::cedar_authorizer(
+        r#"permit(principal, action == Action::"tool:chat", resource);"#.to_string(),
+        r#"Agent::"a""#.to_string(),
+        r#"Tool::"t""#.to_string(),
+        "{}".to_string(),
+    );
+    // The loop passes a BARE tag; the authorizer wraps it into `Action::"<tag>"`.
+    assert_eq!(allow("tool:chat".to_string()), 1, "permitted action → 1");
+    assert_eq!(allow("tool:nope".to_string()), 0, "unpermitted action → 0");
+    let broken = cdz_agent::cedar_authorizer(
+        "not a policy".to_string(),
+        r#"Agent::"a""#.to_string(),
+        r#"Tool::"t""#.to_string(),
+        "{}".to_string(),
+    );
+    assert_eq!(
+        broken("tool:chat".to_string()),
+        0,
+        "a malformed policy must FAIL CLOSED (deny), never silently allow"
+    );
+}
