@@ -2668,6 +2668,7 @@ pass	quasiquote makes AST construction readable
 pass	quasiquote nests with inner unquote evaluated
 pass	quasiquotes unquoting a runtime variable and a literal build equal ASTs
 pass	quote produces an AST value without evaluating
+pass	quote reifies a grammar-keyword head as an ordinary Ast.Name
 pass	quote-built and constructor-built equal trees encode byte-identically
 pass	quote-vs-constructor AST equality holds regardless of operand order
 pass	quoting an empty compound produces an empty Ast.List
