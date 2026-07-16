@@ -15,6 +15,7 @@
     "check:calculator": "node scripts/check-calculator.mjs",
     "check:prose": "node scripts/check-prose-annotations.mjs",
     "check:visual": "LD_PRELOAD=/usr/lib64/libstdc++.so.6 LD_LIBRARY_PATH=/usr/lib64:/lib64 node scripts/check-visual.mjs",
+    "check:notebook": "LD_PRELOAD=/usr/lib64/libstdc++.so.6 LD_LIBRARY_PATH=/usr/lib64:/lib64 node scripts/notebook-verify.mjs",
     "test:unit": "node --test --experimental-strip-types 'src/**/*.test.ts'"
   },
   "dependencies": {
