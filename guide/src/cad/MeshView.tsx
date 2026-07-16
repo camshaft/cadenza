@@ -3,7 +3,7 @@
 /// slow auto-rotate, orbit controls, and simple lighting. Pulled in only by CadPage (behind the lazy
 /// /cad route), so three.js/@react-three code-splits off the guide's first paint.
 
-import { useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { Canvas, useFrame } from "@react-three/fiber";
 import { OrbitControls } from "@react-three/drei";
 import * as THREE from "three";
@@ -16,9 +16,11 @@ interface Props {
 
 /// Build a three.js BufferGeometry from the mesh buffers. Computes vertex normals when the driver didn't
 /// supply them (flat/faceted shading otherwise looks unlit). Memoized on the buffers so a re-render
-/// (e.g. a resize) doesn't rebuild the geometry.
+/// (e.g. a resize) doesn't rebuild the geometry — and DISPOSED when it changes or the view unmounts: a
+/// BufferGeometry holds GPU buffers the JS GC never reclaims, so re-Running (new buffers → new geometry)
+/// would leak the old one across a long preview session without an explicit dispose.
 function useGeometry({ positions, indices, normals }: Props): THREE.BufferGeometry {
-  return useMemo(() => {
+  const geometry = useMemo(() => {
     const g = new THREE.BufferGeometry();
     g.setAttribute("position", new THREE.BufferAttribute(positions, 3));
     g.setIndex(new THREE.BufferAttribute(indices, 1));
@@ -26,6 +28,10 @@ function useGeometry({ positions, indices, normals }: Props): THREE.BufferGeomet
     else g.computeVertexNormals();
     return g;
   }, [positions, indices, normals]);
+  // Dispose the PREVIOUS geometry when a new one replaces it (the cleanup closes over the old geometry),
+  // and on unmount — freeing its GPU buffers.
+  useEffect(() => () => geometry.dispose(), [geometry]);
+  return geometry;
 }
 
 function Solid(props: Props) {
