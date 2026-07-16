@@ -323,6 +323,37 @@
             (export main)))
   (output (: 16 Int64)))
 
+; A module declaration BINDS its name in the enclosing scope (the case at the top of this file), so two
+; `(module a …)` in ONE scope are a fixed-name-set collision — the same ill-formedness as a duplicate `def`
+; or type, rejected CDZ0201 ('module `a` is declared more than once'). Distinct from two SEPARATE-file
+; modules sharing a private helper name (the per-(file,name) case above): that is cross-module and fine;
+; this is two modules claiming the SAME name in the SAME scope. Two DISTINCT-named modules coexist (control).
+
+(case "a duplicate module declaration in one scope is rejected"
+  (doc    "Two `(module a …)` declarations in the same `(do …)` scope both bind the name `a` — a fixed-name-
+           set collision, so the second rejects CDZ0201, exactly as a duplicate `def a` or a duplicate type
+           `a` does (a module binds its name in the enclosing scope, so the name-uniqueness rule applies).
+           Contrast the two-separate-files same-named-helper case above (per-(file,name), allowed): here both
+           modules are in ONE scope claiming ONE name.")
+  (input  (do
+            (module a (def (g) 1) (export g))
+            (module a (def (h) 2) (export h))
+            (def (main) 0)
+            (export main)))
+  (error  CDZ0201))
+
+(case "two distinct-named modules in one scope coexist"
+  (doc    "The control: two modules with DIFFERENT names `a` and `b` in one scope are both bound and both
+           reachable — `((. a g) unit)` = 1, `((. b h) unit)` = 2, summing to 3. Pins that the duplicate-
+           module rejection fires ONLY on a name collision, never on two legitimately-distinct modules in
+           the same scope (a global over-tight check would wrongly reject this).")
+  (input  (do
+            (module a (def (g) 1) (export g))
+            (module b (def (h) 2) (export h))
+            (def (main) (+ ((. a g) unit) ((. b h) unit)))
+            (export main)))
+  (output (: 3 Int64)))
+
 ; A duplicate EXPORT clause is the export-side analogue of the duplicate definition above: a module's
 ; exports are a record whose fields are the exported names (core-semantics.md #A Module Evaluates To A
 ; Record Of Its Exports), and a record has a fixed set of field names, so exporting the same name twice

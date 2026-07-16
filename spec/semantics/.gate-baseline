@@ -715,6 +715,7 @@ pass	a duplicate export clause for the same name is rejected
 pass	a duplicate export of the entry is rejected
 pass	a duplicate field in a variant's record-type payload is a type error
 pass	a duplicate match arm is dead code but the program still runs
+pass	a duplicate module declaration in one scope is rejected
 pass	a factorial that overflows the integer type traps through the recursion
 pass	a factory RETURNS a closure capturing the def's SCALAR parameter
 pass	a factory RETURNS a closure that captures a let-bound inner closure
@@ -3286,6 +3287,7 @@ pass	two differing runtime Ok values of a multi-parameter sum compare unequal by
 pass	two differing runtime sum values compare unequal by a heap walk
 pass	two distinct map-keys are distinct entries
 pass	two distinct names bound to the same value key the same map entry
+pass	two distinct-named modules in one scope coexist
 pass	two do-local function declarations are mutually recursive
 pass	two effects declared with the same name are distinct, not one merged effect
 pass	two effects each declaring a same-named operation do not collide
