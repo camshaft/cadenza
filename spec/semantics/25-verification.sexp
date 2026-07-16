@@ -2241,3 +2241,111 @@
             (def (concl (: t Thm)) (match t ((Thm.MkThm c) c)))
             (export concl)))
   (error  CDZ0214))
+
+; ============================================================================================
+; Increment 14 — the HOL AXIOMS via new_axiom (the fusion.ml endgame). An axiom is asserted through
+; new_axiom, which mints a HYPOTHESIS-FREE theorem |- tm — the ONE privileged, trusted entry that a
+; kernel adds deliberately (HOL's three: extensionality/ETA, choice/SELECT, infinity/INFINITY). Everything
+; else is DERIVED; new_axiom is the axiomatic base. Crucially, new_axiom is still the ONLY door to an
+; axiom Thm — an importer cannot forge one directly (Thm stays abstract → CDZ0214). This is why a
+; fold-role module can be "certified axiom-free": if new_axiom is a visible/tracked entry, a checker can
+; see whether a proof depends on an axiom. These cases pin ETA (mints an unhypothetical theorem), axiom
+; UNFORGEABILITY, and that an axiom COMPOSES with the inference rules like any other theorem.
+; ============================================================================================
+
+(case "the ETA axiom is minted via new_axiom as a hypothesis-free theorem"
+  (doc    "The axiomatic base. new_axiom asserts a term as an axiom, minting |- tm with NO hypotheses — the
+           one privileged entry a kernel adds deliberately (vs everything else being DERIVED). ETA_AX is
+           HOL's function-extensionality axiom: |- (λx. f x) = f. Here eta-ax for f = (Var 9), bound x0,
+           yields |- (λx0. (f x0)) = f with an EMPTY hypothesis set. The case checks the exact ETA
+           conclusion and that it carries no hypotheses (an axiom holds unconditionally). Pins new_axiom as
+           the axiomatic base + the ETA axiom's shape.")
+  (module "hol"
+    (do
+      (type Term (Var Int64) (Comb Term Term) (Eq Term Term) (Abs Int64 Term))
+      (type Thm (Seq (List Term) Term))
+      (def (term-eq (: a Term) (: b Term))
+        (match a
+          ((Term.Var n)    (match b ((Term.Var m) (= n m)) (_ false)))
+          ((Term.Comb x y) (match b ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) (_ false)))
+          ((Term.Eq x y)   (match b ((Term.Eq p q) (and (term-eq x p) (term-eq y q))) (_ false)))
+          ((Term.Abs v x)  (match b ((Term.Abs w q) (and (= v w) (term-eq x q))) (_ false)))))
+      (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
+      (def (hyps (: th Thm)) (match th ((Thm.Seq h _) h)))
+      (def (new-axiom (: tm Term)) (Thm.Seq (list) tm))
+      (def (eta-ax (: x Int64) (: f Term)) (new-axiom (Term.Eq (Term.Abs x (Term.Comb f (Term.Var x))) f)))
+      (export (. Term *))
+      (export Thm)
+      (export term-eq)
+      (export new-axiom)
+      (export eta-ax)
+      (export concl)
+      (export hyps)))
+  (input  (do
+            (import "hol" (Term Thm term-eq new-axiom eta-ax concl hyps))
+            (def (main)
+              (let ((f (Term.Var 9)))
+                (let ((th (eta-ax 0 f)))
+                  (and (term-eq (concl th) (Term.Eq (Term.Abs 0 (Term.Comb f (Term.Var 0))) f))
+                       (match (hyps th) ((list) true) (_ false))))))
+            (export main)))
+  (output (: true Bool)))
+
+(case "an axiom theorem is unforgeable — new_axiom's Thm cannot be fabricated outside the kernel"
+  (doc    "The axiomatic base does not weaken the trust boundary. new_axiom is the KERNEL's privileged
+           entry for asserting an axiom; an importer cannot bypass it by building a Thm directly. Forging
+           an arbitrary axiom (a bogus |- (Var 1) = (Var 2)) via Thm.Seq outside the kernel is CDZ0214.
+           This is what lets a module be 'certified axiom-free': axioms enter ONLY through the tracked
+           new_axiom entry, never by fabrication — so the axiomatic dependencies of a proof are exactly the
+           new_axiom calls, visible and auditable.")
+  (module "hol"
+    (do
+      (type Term (Var Int64) (Comb Term Term) (Eq Term Term) (Abs Int64 Term))
+      (type Thm (Seq (List Term) Term))
+      (def (new-axiom (: tm Term)) (Thm.Seq (list) tm))
+      (export (. Term *))
+      (export Thm)
+      (export new-axiom)))
+  (input  (do
+            (import "hol" (Term Thm new-axiom))
+            (def (main) (Thm.Seq (list) (Term.Eq (Term.Var 1) (Term.Var 2))))
+            (export main)))
+  (error  CDZ0214))
+
+(case "an axiom composes with the inference rules like any other theorem (SYM of ETA)"
+  (doc    "An axiom is an ordinary theorem once minted — it feeds the inference rules exactly like a
+           derived one. From ETA_AX |- (λx0. (f x0)) = f, SYM derives |- f = (λx0. (f x0)). The case checks
+           the flipped equality. Pins that the axiomatic base integrates with the derivation machinery: a
+           proof mixes axioms (new_axiom) and derived theorems (rules) uniformly, all minted through the
+           kernel, all unforgeable.")
+  (module "hol"
+    (do
+      (type Term (Var Int64) (Comb Term Term) (Eq Term Term) (Abs Int64 Term))
+      (type Thm (Seq (List Term) Term))
+      (def (term-eq (: a Term) (: b Term))
+        (match a
+          ((Term.Var n)    (match b ((Term.Var m) (= n m)) (_ false)))
+          ((Term.Comb x y) (match b ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) (_ false)))
+          ((Term.Eq x y)   (match b ((Term.Eq p q) (and (term-eq x p) (term-eq y q))) (_ false)))
+          ((Term.Abs v x)  (match b ((Term.Abs w q) (and (= v w) (term-eq x q))) (_ false)))))
+      (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
+      (def (hyps (: th Thm)) (match th ((Thm.Seq h _) h)))
+      (def (new-axiom (: tm Term)) (Thm.Seq (list) tm))
+      (def (eta-ax (: x Int64) (: f Term)) (new-axiom (Term.Eq (Term.Abs x (Term.Comb f (Term.Var x))) f)))
+      (def (sym (: th Thm)) (match (concl th) ((Term.Eq a b) (Option.Some (Thm.Seq (hyps th) (Term.Eq b a)))) (_ (Option.None))))
+      (export (. Term *))
+      (export Thm)
+      (export term-eq)
+      (export eta-ax)
+      (export sym)
+      (export concl)))
+  (input  (do
+            (import "hol" (Term Thm term-eq eta-ax sym concl))
+            (def (main)
+              (let ((f (Term.Var 9)))
+                (let ((lam (Term.Abs 0 (Term.Comb f (Term.Var 0)))))
+                  (match (sym (eta-ax 0 f))
+                    ((Option.Some s) (term-eq (concl s) (Term.Eq f lam)))
+                    ((Option.None) false)))))
+            (export main)))
+  (output (: true Bool)))
