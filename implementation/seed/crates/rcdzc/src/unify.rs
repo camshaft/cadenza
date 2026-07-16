@@ -1167,4 +1167,38 @@ mod tests {
         // And the whole reservation advanced the counter past all three (next fresh is 3).
         assert_eq!(fresh.var(), 3);
     }
+
+    #[test]
+    fn a_partway_failing_compound_unify_leaves_a_partial_binding() {
+        // TEETH for the PR#462 call-seed soundness fix (`compute_def_scheme`/`solve_recursive_params`
+        // grounding): `unify` mutates `subst` IN PLACE as it descends a compound, binding earlier
+        // components BEFORE it hits a later mismatch — so a FAILED unify does NOT roll back its partial
+        // work. Here `(-> ?0 Bool)` vs `(-> String Int64)` binds `?0 = String` (the domains unify) and
+        // THEN fails on `Bool` vs `Int64` (the codomains conflict). The call returns `Err`, yet `?0` is
+        // now bound. A caller that does `let _ = unify(&mut subst, …)` and reads `subst` afterward would
+        // see that stale `?0 = String` — the inconsistent-substitution hazard the reviewer flagged. This
+        // test PINS the premise (so nobody "optimizes" the trial-clone away believing unify rolls back).
+        let a = Ty::Fn(Box::new(Ty::Var(0)), Box::new(Ty::Bool));
+        let b = Ty::Fn(Box::new(Ty::String), Box::new(Ty::int64()));
+        let mut s = Subst::new();
+        assert!(unify(&mut s, &a, &b).is_err(), "the codomains conflict");
+        assert_eq!(
+            s.apply(&Ty::Var(0)),
+            Ty::String,
+            "the DOMAIN binding survives the failed unify — unify does NOT roll back (the hazard)"
+        );
+
+        // THE REMEDY the grounding path uses: unify a TRIAL CLONE and commit only on `Ok`. A failing
+        // unify then leaves the original `subst` PRISTINE — no stale binding flows to later inference.
+        let mut committed = Subst::new();
+        let mut trial = committed.clone();
+        if unify(&mut trial, &a, &b).is_ok() {
+            committed = trial; // not taken — the unify fails
+        }
+        assert_eq!(
+            committed.apply(&Ty::Var(0)),
+            Ty::Var(0),
+            "trial-clone-commit-on-Ok leaves the committed subst untouched after a failed unify"
+        );
+    }
 }
