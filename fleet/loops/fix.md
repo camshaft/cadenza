@@ -15,8 +15,10 @@ seed case is in your inbox as the `assign` message (and its file is referenced b
 2. **Drain your inbox.** On the first tick that's your `assign` (read the case). On later ticks it
    may be a `reject` from pr-sync (your merge didn't take — read why and fix it, top priority) or an
    `answer` from the concierge resolving an `ask` you filed.
-3. **Reproduce** on a fresh base: `git fetch && git reset --hard trunk` (bare-hub: `trunk` is a LOCAL
-   branch, there is NO `origin/trunk`; reset not rebase, since pr-sync squash-integrates), `cargo xtask build`, then
+3. **Reproduce** on a fresh base: `cargo xtask fleet sync` (the safe base-sync — resets onto `trunk` +
+   replays only your not-yet-upstream commits by patch-id, so it never orphans a queued MR's `--ref`
+   like a bare `git reset --hard trunk`; bare-hub: `trunk` is a LOCAL branch, NO `origin/trunk`; reset
+   not rebase, since pr-sync squash-integrates), `cargo xtask build`, then
    run the case (`cargo xtask gate --case "<substr>"` or the `.sexp` directly). If it already
    behaves correctly on current `trunk`, it was stale — `note` the PM "stale, already fixed", then
    `cargo xtask fleet remove <you>` and stop.
