@@ -36,6 +36,21 @@ pub struct ParseError {
     pub message: String,
 }
 
+/// The RESERVED set of first-class embedded-syntax grammar tags. A `Ident` matching one of these,
+/// GLUED to a `{` (see the `prefix` guard), switches the parser into that sub-grammar; the region is
+/// parsed by the named surface's own reader and grafted as `(embedded <tag> <subtree>)`. Returning the
+/// canonical grammar name (a `#tag` symbol leaf's word) keeps the set the ONE place a tag is decided —
+/// everything NOT in this set stays an ordinary name / a v-metaprogramming template tag, so the
+/// front-end switch and library-level tagged templates never collide (the reserved-set boundary the
+/// design locks with v-metaprogramming). JSON + TOML first (operator sequencing); markdown/jsx follow.
+fn embedded_grammar(tag: &str) -> Option<&'static str> {
+    match tag {
+        "json" => Some("json"),
+        "toml" => Some("toml"),
+        _ => None,
+    }
+}
+
 /// The result of parsing: the canonical arenas, the span table, and any recovered errors. The
 /// arenas are always well-formed (`root` is valid) even when `errors` is non-empty — error recovery
 /// substitutes `Name` placeholders rather than leaving holes.
@@ -216,6 +231,115 @@ impl<'a> Parser<'a> {
                     .map(|&c| self.graft_subtree(src, c, span))
                     .collect();
                 self.list(kids, span)
+            }
+        }
+    }
+
+    /// Parse a FIRST-CLASS EMBEDDED-SYNTAX region — `<grammar>{ …raw… }` — into an
+    /// `(embedded <grammar> <subtree>)` node. The cursor is on the grammar-tag `Ident`; the next token
+    /// is the opening `{` (the `prefix` guard checked the tag is reserved + glued to the `{`).
+    ///
+    /// The body is handed VERBATIM to the sub-grammar's own reader: we do NOT trust the ML tokenization
+    /// of the body (JSON/TOML have their own lexis), so we find the balanced closing `}` by scanning the
+    /// RAW SOURCE from just after the `{`, tracking brace depth while skipping over string literals (a
+    /// `}` inside `"…"` does not close the region). The raw slice between the braces is parsed by the
+    /// grammar's `read`; on success the returned arena's root subtree is grafted here under
+    /// `(embedded <#grammar> …)`; on a sub-grammar error the diagnostic is lifted into this parse and an
+    /// `<error>` placeholder keeps the arena well-formed (the never-panic contract). Finally the token
+    /// cursor is advanced past every ML token whose span lies within the consumed region.
+    ///
+    /// (Spans: the whole grafted subtree currently shares the region span — same best-effort granularity
+    /// as a tagged-template hole; per-node span remapping from the sub-grammar's own span table is a
+    /// later refinement, tracked for the LSP-transparency goal.)
+    fn embedded_syntax(&mut self) -> StructId {
+        let tag_tok = self.bump().expect("on the grammar-tag ident");
+        let grammar = embedded_grammar(self.text(tag_tok)).expect("guard checked a reserved tag");
+        let brace_tok = self.bump().expect("guard checked the `{`");
+        let open = brace_tok.span; // the `{`
+        let body_start = open.end; // first byte after `{`
+
+        // Scan raw source for the matching `}` (depth 1 at body_start), skipping string literals.
+        let bytes = self.src.as_bytes();
+        let mut i = body_start;
+        let mut depth = 1usize;
+        let mut in_str = false;
+        let mut escaped = false;
+        let mut close: Option<usize> = None;
+        while i < bytes.len() {
+            let c = bytes[i];
+            if in_str {
+                if escaped {
+                    escaped = false;
+                } else if c == b'\\' {
+                    escaped = true;
+                } else if c == b'"' {
+                    in_str = false;
+                }
+            } else {
+                match c {
+                    b'"' => in_str = true,
+                    b'{' => depth += 1,
+                    b'}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            close = Some(i);
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            i += 1;
+        }
+
+        let region_span = match close {
+            Some(end) => Span::new(open.start, end + 1),
+            None => {
+                // Unbalanced — no closing `}`. Record an error, consume to end, emit a placeholder.
+                self.errors.push(ParseError {
+                    span: open,
+                    message: format!("unterminated `{grammar}{{ … }}` embedded-syntax region"),
+                });
+                self.pos = self.tokens.len();
+                let head = self.name("embedded", open);
+                let g = self.atom(Leaf::Sym(grammar.to_string()), open);
+                let err = self.error_node(open);
+                return self.list(vec![head, g, err], open);
+            }
+        };
+        let body = &self.src[body_start..close.expect("Some in this arm")];
+
+        // Advance the ML token cursor past every token inside the consumed region (up to and including
+        // the closing `}`), so the parser resumes AFTER the region regardless of how ML tokenized it.
+        let region_end = region_span.end;
+        while self.pos < self.tokens.len() && self.tokens[self.pos].span.start < region_end {
+            self.pos += 1;
+        }
+
+        // Parse the raw body with the sub-grammar's own reader and graft the result.
+        let head = self.name("embedded", region_span);
+        let g = self.atom(Leaf::Sym(grammar.to_string()), region_span);
+        let sub = self.read_embedded(grammar, body, region_span);
+        self.list(vec![head, g, sub], region_span)
+    }
+
+    /// Dispatch a raw embedded-syntax body to the named sub-grammar's reader and graft the result into
+    /// this arena, returning the grafted subtree root. A reader error is lifted into this parse (anchored
+    /// to the region span) and an `<error>` placeholder is returned — never a panic.
+    fn read_embedded(&mut self, grammar: &str, body: &str, span: Span) -> StructId {
+        let parsed = match grammar {
+            "json" => crate::json::read(body).map_err(|e| e.0),
+            "toml" => crate::toml_surface::read(body).map_err(|e| e.0),
+            _ => Err(format!("unknown embedded grammar `{grammar}`")),
+        };
+        match parsed {
+            Ok(arena) => self.graft_subtree(&arena, arena.root, span),
+            Err(message) => {
+                self.errors.push(ParseError {
+                    span,
+                    message: format!("in a `{grammar}{{ … }}` region: {message}"),
+                });
+                self.error_node(span)
             }
         }
     }
@@ -890,6 +1014,22 @@ impl<'a> Parser<'a> {
                 let arg = self.postfix(arg_prefix, arg_start);
                 let full = span.merge(self.prev_span());
                 self.list(vec![head, key, arg], full)
+            }
+            // FIRST-CLASS EMBEDDED SYNTAX: a reserved grammar tag GLUED to a brace-delimited region —
+            // `json{ … }` — switches the parser into that sub-grammar. The raw region (the text between
+            // the balanced `{`/`}`) is handed VERBATIM to the sub-grammar's own reader and grafted as an
+            // `(embedded <grammar> <subtree>)` node in the shared arena, so every downstream tool (codec,
+            // fmt, LSP, refactor) operates on it as ordinary nodes. This is the front-end, parser-level
+            // switch (operator-greenlit) — distinct from v-metaprogramming's tagged-template macros,
+            // which coexist. A tag is recognized ONLY when immediately followed by `{` (no space — the
+            // `{`'s span start must equal the ident's span end), so a bare name `json` is unaffected.
+            Kind::Ident
+                if embedded_grammar(self.cur_text()).is_some()
+                    && self.nth_kind(1) == Kind::LBrace
+                    && self.tok().map(|t| t.span.end)
+                        == self.tokens.get(self.pos + 1).map(|t| t.span.start) =>
+            {
+                self.embedded_syntax()
             }
             Kind::Ident => match keyword(self.cur_text()) {
                 Some(Keyword::Let) => self.let_expr(),
@@ -3805,5 +3945,136 @@ mod tests {
         let f = a.as_form(g[0], "f").expect("inner call recovered");
         assert_eq!(f.len(), 2, "inner call keeps both args: {f:?}");
         assert_eq!(a.as_name(g[1]), Some("b"), "arg after the bad one survives");
+    }
+
+    // ---- first-class embedded syntaxes (front-end syntax-switch) ----
+
+    #[test]
+    fn json_embedded_region_grafts_the_json_arena_under_an_embedded_node() {
+        // `json{ … }` switches into the JSON sub-grammar: the region parses via `json::read` and lands as
+        // `(embedded #json <json-arena>)` in the SHARED arena, so the whole toolchain sees ordinary nodes.
+        let a = parse_ok(r#"json{ {"a": [1, true], "b": null} }"#);
+        // The root is the embedded wrapper: head `embedded`, a `#json` symbol, then the grafted subtree.
+        let emb = a
+            .as_form(a.root, "embedded")
+            .expect("root is an (embedded …) node");
+        assert_eq!(emb.len(), 2, "embedded node = grammar tag + subtree");
+        // The grammar tag is a `#json` symbol leaf.
+        match a.get(emb[0]) {
+            crate::ast::Struct::Atom(lid) => assert_eq!(
+                a.leaf(*lid),
+                &Leaf::Sym("json".to_string()),
+                "the grammar tag is the #json symbol"
+            ),
+            other => panic!("grammar tag is an atom, got {other:?}"),
+        }
+        // The grafted subtree is STRUCTURALLY EQUAL to parsing that JSON body standalone.
+        let standalone = crate::json::read(r#"{"a": [1, true], "b": null}"#).unwrap();
+        let sub = crate::query::Tree::from_arena(&a, emb[1]).to_arena();
+        assert!(
+            sub.structurally_eq(&standalone),
+            "embedded JSON subtree must equal the standalone parse"
+        );
+    }
+
+    #[test]
+    fn toml_embedded_region_grafts_the_toml_arena() {
+        // TOML is the second reserved grammar — proves the switch is grammar-agnostic (no new machinery).
+        // The region body is sliced VERBATIM between the braces (including the surrounding spaces), so the
+        // standalone comparison must parse the identical bytes — TOML layout is significant.
+        let a = parse_ok("toml{ a = 1\nb = [2, 3] }");
+        let emb = a
+            .as_form(a.root, "embedded")
+            .expect("root is an (embedded …) node");
+        let standalone = crate::toml_surface::read(" a = 1\nb = [2, 3] ").unwrap();
+        let sub = crate::query::Tree::from_arena(&a, emb[1]).to_arena();
+        assert!(
+            sub.structurally_eq(&standalone),
+            "embedded TOML subtree must equal the standalone parse"
+        );
+    }
+
+    #[test]
+    fn embedded_region_round_trips_through_the_printer() {
+        // The ML printer emits the region and the ML reader reads it back to a structurally equal arena —
+        // the round-trip contract the shared AST already guarantees, now spanning an embedded surface.
+        let a = parse_ok(r#"json{ {"x": 1} }"#);
+        let printed = crate::printer::print(&a, 80);
+        let back = read_ml(&printed);
+        assert!(
+            back.ok(),
+            "printed embedded form re-parses clean: {printed:?}"
+        );
+        assert!(
+            back.arenas.structurally_eq(&a),
+            "embedded region round-trips: {printed:?}"
+        );
+    }
+
+    #[test]
+    fn a_grammar_tag_not_glued_to_a_brace_is_an_ordinary_name() {
+        // The switch fires ONLY on a reserved tag GLUED to `{` (no space). A bare `json` — or `json`
+        // followed by a space — stays an ordinary name, so existing programs using such a name are
+        // unaffected. (`json` is not a keyword.)
+        let a = parse_ok("json");
+        assert_eq!(
+            a.as_name(a.root),
+            Some("json"),
+            "bare `json` is a plain name"
+        );
+        // `json` with a space before `{` does NOT switch — it parses as a name (a following record
+        // literal would be a separate form / juxtaposition, never the embedded switch).
+        let spaced = read_ml("json {}");
+        // The point is only that it does NOT become an (embedded …) node.
+        assert!(
+            spaced
+                .arenas
+                .as_form(spaced.arenas.root, "embedded")
+                .is_none(),
+            "a space between the tag and `{{` must NOT trigger the embedded switch"
+        );
+    }
+
+    #[test]
+    fn a_brace_inside_a_json_string_does_not_close_the_region() {
+        // The raw-region scanner tracks string literals: a `}` inside a JSON string must not close the
+        // region early. `{"s": "a}b"}` has a `}` inside the string; the region ends at the FINAL `}`.
+        let a = parse_ok(r#"json{ {"s": "a}b{c"} }"#);
+        let emb = a.as_form(a.root, "embedded").expect("root is (embedded …)");
+        let standalone = crate::json::read(r#"{"s": "a}b{c"}"#).unwrap();
+        let sub = crate::query::Tree::from_arena(&a, emb[1]).to_arena();
+        assert!(
+            sub.structurally_eq(&standalone),
+            "the `}}` inside the string must not close the region early"
+        );
+    }
+
+    #[test]
+    fn a_malformed_embedded_body_is_a_recovered_error_not_a_panic() {
+        // A sub-grammar parse error lifts a diagnostic into this parse and leaves an `<error>` placeholder
+        // under the embedded node — the arena stays well-formed, the parse never panics.
+        let p = read_ml(r#"json{ {"a": } }"#); // missing value → JSON error
+        assert!(!p.ok(), "a malformed JSON body surfaces a parse error");
+        let a = &p.arenas;
+        let emb = a
+            .as_form(a.root, "embedded")
+            .expect("still an (embedded …) node even on a bad body");
+        assert_eq!(
+            a.as_name(emb[1]),
+            Some("<error>"),
+            "a bad body grafts an <error> placeholder, keeping the arena well-formed"
+        );
+    }
+
+    #[test]
+    fn an_unterminated_embedded_region_recovers_without_panicking() {
+        // No closing `}` at all — the scanner reports an unterminated region, consumes to end, and emits a
+        // placeholder. Never a panic, never a hang.
+        let p = read_ml(r#"json{ {"a": 1} "#); // no closing brace for the region
+        assert!(!p.ok(), "an unterminated region is an error");
+        assert!(
+            p.arenas.as_form(p.arenas.root, "embedded").is_some(),
+            "still produces a well-formed (embedded …) node"
+        );
     }
 }
