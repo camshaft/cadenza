@@ -1306,6 +1306,19 @@ pub struct Db {
     /// order. A pure function of the fixed def structure, so it caches like `def_schemes`.
     pub(crate) param_types: crate::fxhash::FxHashMap<StructId, crate::ty::Ty>,
 
+    /// RIGID type variables for the duration of a single `compute_def_scheme` body solve — the def's OWN
+    /// parameter type variables (the free vars of its `param_tys`). While set, `unify::freshen_free` LEAVES
+    /// these vars unchanged instead of renaming them, so the param↔result element TIE survives the
+    /// recursive-call arg-freshen in `apply_type` (a producer `List a -> Iter a` keeps its `a` tied rather
+    /// than the result becoming a disjoint `∀a b`). A var NOT in this set — a genuinely-fresh local
+    /// placeholder like `(None) : Option ?0` or `Map.empty : Map ?k ?v` — still freshens, so the
+    /// occurs-check / branch-tie casualties are unaffected. This is the VAR-PROVENANCE distinction the
+    /// shape-based discriminators could not make: a param/recursion var (rigid) vs a local placeholder
+    /// (freshened). `None`/empty in every other context → `freshen_free` is byte-identical to before, so
+    /// the hot application path pays only an `Option`-is-None check. Set+cleared around the body `type_of`
+    /// in `compute_def_scheme`; never nested (a scheme solve does not recurse into another).
+    pub(crate) scheme_rigid_vars: Option<crate::fxhash::FxHashSet<u32>>,
+
     /// Guard against re-entering the recursive-parameter solve for a def already being solved — the
     /// solve types the body with a LOCAL env (not `type_of`), so a self-call reads the provisional
     /// signature rather than re-triggering; this set is the defensive backstop that a demand landing
@@ -2118,6 +2131,7 @@ impl Db {
             resolved_subtrees: crate::fxhash::FxHashSet::default(),
             def_schemes: crate::fxhash::FxHashMap::default(),
             param_types: crate::fxhash::FxHashMap::default(),
+            scheme_rigid_vars: None,
             solving_params: crate::fxhash::FxHashSet::default(),
             solving_schemes: crate::fxhash::FxHashSet::default(),
             seed_transitive: crate::fxhash::FxHashSet::default(),

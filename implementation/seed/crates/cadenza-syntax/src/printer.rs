@@ -2866,6 +2866,77 @@ mod tests {
     }
 
     #[test]
+    fn ml_printer_is_total_over_sexpr_sourced_arenas() {
+        // The ML printer runs on ANY arena, including ones the ML READER can never build — a bare empty
+        // list `()`, an empty list in head/operand position, a construct head applied to too-few/too-many
+        // children. Those reach the ML printer via `cdz convert --from sexpr --to ml`. The `read_ml`-only
+        // fuzz above misses them (the reader always fills a slot); the `(unquote ())` panic that fuzz
+        // caught was exactly this class, so source arenas from `sexpr::read` too and assert the ML printer
+        // is TOTAL over them: `print` never panics at any width, and its output re-parses (the ML reader
+        // never panics on it either). No idempotence claim — an arena the ML surface can't express need
+        // not round-trip through it; the invariant is no-crash + re-parsable.
+        let alphabet: Vec<char> = "()\"#\\b. ,;|=>-+*/<:@`0123456789abcxeNR_\tλ中\n"
+            .chars()
+            .collect();
+        let mut rng = SplitMix64(0x5153_7e37_c0de_a5f1);
+        let mut clean = 0usize;
+        for len in 0..=32usize {
+            for _ in 0..160 {
+                let s: String = (0..len)
+                    .map(|_| alphabet[(rng.next() as usize) % alphabet.len()])
+                    .collect();
+                // Only well-formed s-expr arenas — the point is arenas the ML surface can't make, not
+                // s-expr parse errors (the s-expr reader's own fuzz covers those).
+                let Ok(arena) = sexpr::read(&s) else { continue };
+                clean += 1;
+                for width in [0usize, 1, 20, 80] {
+                    let printed = print(&arena, width); // must not panic on a sexpr-only shape
+                    let _ = parser::read_ml(&printed); // its output must not panic the ML reader
+                }
+            }
+        }
+        // Directly-built empty/odd shapes that stress the printer's construct-head arms head-on — the
+        // heads with special layout (let/fn/match/if/annotation/member/unquote) given an EMPTY body.
+        for head in [
+            "let",
+            "fn",
+            "match",
+            "if",
+            "def",
+            "module",
+            "do",
+            "@",
+            ".",
+            "unquote",
+            "quasiquote",
+            "->",
+            ":",
+            "list",
+            "tuple",
+            "record",
+            "map",
+        ] {
+            for shape in [
+                format!("({head})"),       // head, no children
+                format!("({head} ())"),    // head + one empty-list child
+                format!("({head} () ())"), // head + two empty-list children
+                format!("(({head}))"),     // empty-headed-by-a-list
+            ] {
+                if let Ok(a) = sexpr::read(&shape) {
+                    for width in [0usize, 1, 40] {
+                        let printed = print(&a, width); // must not panic
+                        let _ = parser::read_ml(&printed);
+                    }
+                }
+            }
+        }
+        assert!(
+            clean > 1000,
+            "swept a meaningful space of sexpr arenas, got {clean}"
+        );
+    }
+
+    #[test]
     fn unquote_over_an_empty_list_does_not_panic() {
         // Regression (found by `printer_is_total_on_arbitrary_input_…`): `unquote_atomic` indexed
         // `items[0]` on a `Struct::List` WITHOUT checking it was non-empty, so an unquote wrapping an

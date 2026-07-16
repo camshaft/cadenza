@@ -782,6 +782,27 @@ pub fn freshen_free(ty: &Ty, fresh: &mut Fresh) -> Ty {
     freshen_free_go(ty, fresh, &mut map, &mut wmap, &mut smap)
 }
 
+/// [`freshen_free`], but a whole-type variable in `rigid` is PRESERVED (left unchanged) instead of
+/// renamed. Implemented by pre-seeding the rename map with the identity (`v → v`) for each rigid var, so
+/// `map.entry(v).or_insert_with(…)` returns `v` — no recursion-signature change, and a NON-rigid var still
+/// freshens exactly as before. Used ONLY by `compute_def_scheme`'s body solve to keep the def's own
+/// parameter type vars tied across the recursive-call arg-freshen in `apply_type` (the recursive-generic
+/// producer element tie). Width/sign vars are NOT made rigid — a generic parameter is generic over its
+/// WHOLE type, and the tie is a whole-type-var relationship; the numeric-axis maps stay independent.
+pub fn freshen_free_except(
+    ty: &Ty,
+    fresh: &mut Fresh,
+    rigid: &crate::fxhash::FxHashSet<u32>,
+) -> Ty {
+    let mut map: crate::fxhash::FxHashMap<u32, u32> = crate::fxhash::FxHashMap::default();
+    for &v in rigid {
+        map.insert(v, v);
+    }
+    let mut wmap: crate::fxhash::FxHashMap<u32, u32> = crate::fxhash::FxHashMap::default();
+    let mut smap: crate::fxhash::FxHashMap<u32, u32> = crate::fxhash::FxHashMap::default();
+    freshen_free_go(ty, fresh, &mut map, &mut wmap, &mut smap)
+}
+
 fn freshen_free_go(
     ty: &Ty,
     fresh: &mut Fresh,

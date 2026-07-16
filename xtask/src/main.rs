@@ -1576,10 +1576,10 @@ fn cdz_render_at(
         return format!("format!(\"\\\"{{}}\\\"\", {path})");
     }
     // A `Char` value is the Rust `char` the backend emits — render it as cdz-run's canonical `#\<…>` form,
-    // matching `cadenza-syntax`'s `char_literal_text`: the named specials (`#\space`/`#\newline`/`#\tab`/
+    // matching `cadenza-syntax`'s `literal::render_char`: the named specials (`#\space`/`#\newline`/`#\tab`/
     // `#\return`/`#\null`), a control scalar → `#\u+HHHH` (uppercase hex, ≥4 digits), else `#\<char>`. The
-    // emitted Rust block matches `char` against those cases. `{path}` is a `char`/`&char`; deref-copy via
-    // `*` in the block (a `&char` derefs to `char`).
+    // emitted Rust block matches `char` against those cases. `{path}` is a `char`/`&char`; the block binds
+    // an owned `char` via `.clone()` (a `&char` clones to `char`; `char` is Copy+Clone).
     if ty == "Char" {
         // `.clone()` (not a bare bind): `{path}` may be a `char` value OR a `&char` payload binder; `char`
         // is Copy+Clone, so `.clone()` yields an owned `char` from either (a bare `let __c: char = &char`
