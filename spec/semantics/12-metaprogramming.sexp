@@ -61,6 +61,38 @@
             (export main)))
   (output (: 7 Int64)))
 
+; The eval-of-quasiquote macro idiom composes with the FLOAT and STRING leaves, and `print` renders a
+; quoted float re-readably — pinning that the eval/print paths handle the leaves this vertical realized,
+; not only integers/names. A float unquote lifts + reconstructs + folds like an integer one; a string
+; splices through ordinary String ops; and `print` of a quoted float carries a `.` so it re-reads.
+
+(case "eval of a quasiquote-built form with a float unquote folds"
+  (doc    "The float companion of the eval-splice idiom: `(let ((x 2.5)) (eval `(+ ,x 1.5)))` lifts the
+           float `x` into the reconstructed `(+ x 1.5)` and folds to 4.0 — the active-unquote float lift
+           (Ast.Float) composes with `eval`'s source reconstruction exactly as the integer case does.")
+  (input  (do
+            (def (main) (let ((x 2.5)) (eval (quasiquote (+ (unquote x) 1.5)))))
+            (export main)))
+  (output (: 4.0 Float64)))
+
+(case "eval of a quasiquote splicing a string works through String ops"
+  (doc    "The string companion: `(let ((s \"hi\")) (String.byte-len (eval `(String.concat ,s \"x\"))))`
+           splices the runtime string `s` into the reconstructed `(String.concat s \"x\")`, evaluates it to
+           `\"hix\"`, and reads its length 3. Pins that a string unquote reconstructs + folds through
+           ordinary String operations in the eval'd source.")
+  (input  (do
+            (def (main) (let ((s "hi")) (String.byte-len (eval (quasiquote (String.concat (unquote s) "x"))))))
+            (export main)))
+  (output (: 3 Int64)))
+
+(case "print of a quote containing a float renders re-readably"
+  (doc    "`print : Ast → String` renders a quoted compound containing a float as its canonical re-readable
+           s-expression: `(quote (f 1.5))` prints `\"(f 1.5)\"` — the `Ast.Float` leaf renders with a `.` so
+           the text re-reads as a float (not an integer). Pins that `print` handles the float leaf inside a
+           compound, the companion of the leaf-level print/read round-trip cases.")
+  (input  (= (print (quote (f 1.5))) "(f 1.5)"))
+  (output (: true Bool)))
+
 (case "the AST is a sum type deconstructible by pattern matching"
   (doc    "Witnesses metaprogramming.md #Quote Produces An AST Value (2nd sentence): the AST is a
            sum type with variants for each syntactic form. Pattern matching over (quote 42) binds

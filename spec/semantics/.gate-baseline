@@ -2909,3 +2909,6 @@ todo	a closure-typed closure ARG on the DIRECT-CALL path is declined — host wo
 todo	a producer capturing a host-supplied COMPOUND parameter is declined — host→guest decode
 todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
+pass	eval of a quasiquote-built form with a float unquote folds
+pass	eval of a quasiquote splicing a string works through String ops
+pass	print of a quote containing a float renders re-readably
