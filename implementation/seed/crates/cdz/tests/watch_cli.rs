@@ -109,7 +109,7 @@ fn watch_reruns_check_when_a_source_file_changes() {
     );
 
     // Touch a source file → a re-run must fire. (Rewrite the entry so the mtime + content both change.)
-    std::thread::sleep(Duration::from_millis(300)); // let the initial run settle before editing
+    std::thread::sleep(Duration::from_millis(800)); // let the initial run settle before editing
     std::fs::write(
         proj.join("main.cdz"),
         "def main() -> Int64 = 0\n\nexport { main }\n",
@@ -187,7 +187,7 @@ fn watch_reports_diagnostics_from_the_rerun() {
     );
 
     // Introduce a syntax error → the re-run's `cdz check` must surface a diagnostic.
-    std::thread::sleep(Duration::from_millis(300));
+    std::thread::sleep(Duration::from_millis(800));
     std::fs::write(proj.join("main.cdz"), "def broken( = 1\n").expect("write broken source");
     let saw_err = wait_for(&cap, "error:", Duration::from_secs(20));
     let captured = read_cap(&cap);
@@ -217,7 +217,7 @@ fn watch_does_not_drop_edits_made_across_successive_saves() {
     );
 
     // A first edit (clean) → at least one re-run fires.
-    std::thread::sleep(Duration::from_millis(300));
+    std::thread::sleep(Duration::from_millis(800));
     std::fs::write(
         proj.join("main.cdz"),
         "def main() -> Int64 = 1\n\nexport { main }\n",
@@ -231,7 +231,7 @@ fn watch_does_not_drop_edits_made_across_successive_saves() {
 
     // A later edit introducing a UNIQUELY-named unbound reference — its diagnostic must eventually show
     // up, proving the watch is still live and reflected the LATEST source state (not stuck on a drop).
-    std::thread::sleep(Duration::from_millis(300));
+    std::thread::sleep(Duration::from_millis(800));
     std::fs::write(
         proj.join("main.cdz"),
         "def main() -> Int64 = zzz_unique_marker\n\nexport { main }\n",

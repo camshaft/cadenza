@@ -2348,6 +2348,17 @@ fn run_watch(args: &WatchArgs) -> ExitCode {
     // 1. Initial run (once — the initial feedback, like `cargo watch`).
     let _ = rerun();
 
+    // Drain the STARTUP event burst before arming the change loop. macOS FSEvents delivers a spurious
+    // create/coalesced event for the pre-existing watched directory right after the watch begins (Linux
+    // inotify does not) — without this drain, that event would trip the loop's change path and fire a
+    // SPURIOUS extra run on startup (a real double-build on macOS). Give FSEvents a brief moment to emit
+    // that burst, then discard everything queued. The settle is SHORT + FIXED (not per-event) and bounded
+    // to the startup window, so it can't swallow a user's later edit — a real change after this returns to
+    // the normal blocking `recv` below. (The startup burst lands within a few ms of arming the watch; a
+    // 150ms settle covers it well under the test/debounce windows without adding meaningful startup lag.)
+    std::thread::sleep(Duration::from_millis(150));
+    while rx.try_recv().is_ok() {}
+
     // 2/3. Event loop: block for a change, debounce-coalesce, re-run, then check whether MORE source
     // edits arrived DURING the run — if so, run again (a mid-run save must not be lost).
     let mut pending = false; // a source edit seen while a run was in flight, not yet acted on
