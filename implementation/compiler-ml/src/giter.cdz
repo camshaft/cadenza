@@ -19,21 +19,20 @@
 /// `next` is still the pull interface (`GIter(a) -> Option((a, GIter(a)))`), total (never traps) and pure
 /// (re-stepping yields the same element); the cons-cell IS the reified rest, so `next` just projects it.
 ///
-/// SCOPE (slices 1–5). CLOSURE-FREE (Part C shape): producers (`from-list`, `singleton`), `next`, consumers
+/// SCOPE (slices 1–6). CLOSURE-FREE (Part C shape): producers (`from-list`, `singleton`), `next`, consumers
 /// (`count`, `collect`, `nth`, `last`), transformers (`chain`, `take`, `drop`, `zip`). CLOSURE-STORING
-/// (unblocked by the recursive-generic-transformer closure tie): `map`, `filter`, `drop-while`, `find`,
-/// `all`, `any` — each threads a closure and monomorphizes per element type. Every function composes at
-/// Int64 AND String in one program (the tests pin this). ELEMENT-CHANGING is supported too: `zip` yields a
-/// tuple element, and `map` maps `a -> b` at a DIFFERENT result type (int→Bool, int→String — see the tests);
-/// no `∀`-annotation is needed because the new element type is INFERRED from the (unannotated) closure /
-/// tuple, never WRITTEN — so the "no-∀-binder-in-annotation" surface gap does not bite here.
+/// (unblocked by the recursive-generic-transformer closure tie + the rigid-biased if-join): `map`, `filter`,
+/// `drop-while`, `take-while`, `find`, `all`, `any` — each threads a closure and monomorphizes per element
+/// type. Every function composes at Int64 AND String in one program (the tests pin this). ELEMENT-CHANGING
+/// is supported too: `zip` yields a tuple element, and `map` maps `a -> b` at a DIFFERENT result type
+/// (int→Bool, int→String — see the tests); no `∀`-annotation is needed because the new element type is
+/// INFERRED from the (unannotated) closure / tuple, never WRITTEN — so the "no-∀-binder-in-annotation"
+/// surface gap does not bite here.
 ///
-/// NOT YET (residual inference gaps, filed + routed to v-inference; land the tick they merge):
-///   - `take-while`: its stop branch yields a bare `GIter.Nil(unit)` whose element is untied on that path,
-///     which (with the threaded closure) still declines CDZ0201 — the nullary-producer edge intersecting the
-///     closure tie. See the NOTE by the closure-storing block below.
-///   - An UNUSED/identity closure (`fn (s) => s`) still declines (closure-body-result-from-domain gap,
-///     v-inference); the closures here all USE their parameter, so this does not bite in practice.
+/// NOT YET (residual inference gap, filed + routed to v-inference):
+///   - An UNUSED/identity closure (`fn (s) => s`) at TWO element types still declines (the closure-body-
+///     result-from-domain multi-instantiation residual — single-type identity works). The closures here all
+///     USE their parameter, so this does not bite in practice.
 ///
 /// KNOWN EDGE this module steers around (NOT Part C, NOT a miscompile):
 ///   - NULLARY generic producer (`empty : Unit -> GIter(a)`) has NO argument to tie its element to, so a use
@@ -181,11 +180,15 @@ def any(it, p) = match it with
   | GIter.Nil(_) => false
   | GIter.Cons(h, rest) => if p(h) then true else any(rest, p)
 
-/// NOTE — `take-while` is deliberately NOT here yet: its stop branch yields a bare `GIter.Nil(unit)` whose
-/// element is untied on that path, which (combined with the threaded closure) still declines CDZ0201 — the
-/// nullary-producer edge intersecting the closure tie. Filed as a follow-up; lands once the untied-`Nil`
-/// leaf gets its element from context. `map`/`filter`/`drop-while`/`find`/`all`/`any` do not hit it (their
-/// leaves either recurse, tie via the predicate, or return a non-`GIter` result).
+/// `take-while(it, p)` — the longest leading run of elements satisfying `p`, stopping at the first that
+/// fails. Threads `p`. Its stop branch is a bare `GIter.Nil(unit)` whose element used to be untied on that
+/// path (the nullary-producer edge intersecting the closure tie), so this declined CDZ0201 at ≥2 element
+/// types until rcdzc's `rigid-bias the if-branch join` fix: when an `if`'s two branches are the same sum
+/// with a single-`Var` element and one side is the rigid param-tied element, the join keeps the rigid one,
+/// so the bare-`Nil` else-branch no longer severs the result-element tie. It now composes like the others.
+def take-while(it, p) = match it with
+  | GIter.Nil(_) => GIter.Nil(unit)
+  | GIter.Cons(h, rest) => if p(h) then GIter.Cons(h, take-while(rest, p)) else GIter.Nil(unit)
 
 /// TESTS ----------------------------------------------------------------------------------------------
 
@@ -414,6 +417,23 @@ def any-finds-a-matching-string() =
 @test
 def any-false-when-none-match() =
   if any(from-list([1, 2, 3]), fn(x) => x > 9) then trap("any should be false") else unit
+
+/// `take-while` — unblocked by the rigid-biased if-join fix; pinned at two element types.
+
+@test
+def take-while-leading-run-ints() =
+  if int-list-eq(collect(take-while(from-list([1, 2, 3, 1]), fn(x) => x < 3)), [1, 2])
+  then unit else trap("take-while < 3")
+
+@test
+def take-while-strings() =
+  if str-list-eq(collect(take-while(from-list(["a", "a", "b"]), fn(s) => s == "a")), ["a", "a"])
+  then unit else trap("take-while == a")
+
+@test
+def take-while-stops-at-first-failure() =
+  if int-list-eq(collect(take-while(from-list([5, 1, 6]), fn(x) => x > 3)), [5])
+  then unit else trap("take-while stops at first fail")
 
 /// Compose closure-storing + closure-free: filter then map then collect, at Int64.
 @test
