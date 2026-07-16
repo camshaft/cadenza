@@ -36,8 +36,9 @@ function TableView({ table }: { table: Table }) {
   );
 }
 
-/// A dependency-free SVG chart. Line/scatter plot points at their (x,y); bar draws a column per point of
-/// the first series. Axes are auto-scaled to the data extent. Multiple series get distinct stroke hues.
+/// A dependency-free SVG chart. Line/scatter plot points at their (x,y); bar draws a column per point,
+/// with MULTIPLE series grouped side-by-side per x (each series its own hue) — no series is dropped.
+/// Axes are auto-scaled to the data extent.
 const HUES = ["#38bdf8", "#f472b6", "#a3e635", "#fbbf24", "#c084fc"];
 const W = 520, H = 240, PAD = 32;
 
@@ -59,10 +60,19 @@ function ChartView({ chart, series }: { chart: "line" | "bar" | "scatter"; serie
       {series.map((s, si) => {
         const hue = HUES[si % HUES.length];
         if (chart === "bar") {
-          const bw = Math.max(2, ((W - 2 * PAD) / Math.max(1, s.points.length)) * 0.7);
-          return s.points.map((p, i) => (
-            <rect key={i} x={sx(p.x) - bw / 2} y={sy(p.y)} width={bw} height={H - PAD - sy(p.y)} fill={hue} opacity={0.8} />
-          ));
+          // Group the series' bars side-by-side within each x slot so multiple series don't overlap.
+          // The full slot is `slot` wide; each of `series.length` series gets an equal sub-column. Keys
+          // are series-unique (`${si}-${i}`) so React keys never collide across series.
+          const slot = ((W - 2 * PAD) / Math.max(1, s.points.length)) * 0.7;
+          const bw = Math.max(1, slot / series.length);
+          const off = si * bw - slot / 2;
+          return (
+            <g key={si}>
+              {s.points.map((p, i) => (
+                <rect key={`${si}-${i}`} x={sx(p.x) + off} y={sy(p.y)} width={bw} height={H - PAD - sy(p.y)} fill={hue} opacity={0.8} />
+              ))}
+            </g>
+          );
         }
         const dots = s.points.map((p, i) => <circle key={`c${i}`} cx={sx(p.x)} cy={sy(p.y)} r={2.5} fill={hue} />);
         if (chart === "scatter") return <g key={si}>{dots}</g>;
