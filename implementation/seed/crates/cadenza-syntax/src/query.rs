@@ -62,14 +62,39 @@ pub enum Tree {
 
 impl Tree {
     /// Deep-copy the subtree at `id` out of `a` into an owned `Tree`, recording provenance.
-    pub fn from_arena(a: &Arenas, id: StructId) -> Tree {
-        match a.get(id) {
-            Struct::Atom(l) => Tree::Atom(a.leaf(*l).clone(), Some(id)),
-            Struct::List(items) => Tree::List(
-                items.iter().map(|&c| Tree::from_arena(a, c)).collect(),
-                Some(id),
-            ),
+    ///
+    /// EXPLICIT stack, not native recursion: this is the FIRST thing every codemod op does to a subject,
+    /// which can originate POST-DECODE — and `codec::decode` accepts arbitrarily-deep valid-tree arenas
+    /// (no cap, unlike the reader's `MAX_NESTING_DEPTH`), so a recursive copy overflowed the native stack
+    /// on a deep tree. A `Job{Visit|Emit}` work-stack + a `results` stack builds the owned tree post-order
+    /// (children before parent), children pushed reversed so they land in source order.
+    pub fn from_arena(a: &Arenas, root: StructId) -> Tree {
+        enum Job {
+            Visit(StructId),
+            // Assemble a `List` node for `id` once its `n` children sit atop `results`.
+            Emit(StructId, usize),
         }
+        let mut jobs: Vec<Job> = vec![Job::Visit(root)];
+        let mut results: Vec<Tree> = Vec::new();
+        while let Some(job) = jobs.pop() {
+            match job {
+                Job::Visit(id) => match a.get(id) {
+                    Struct::Atom(l) => results.push(Tree::Atom(a.leaf(*l).clone(), Some(id))),
+                    Struct::List(items) => {
+                        jobs.push(Job::Emit(id, items.len()));
+                        for &c in items.iter().rev() {
+                            jobs.push(Job::Visit(c));
+                        }
+                    }
+                },
+                Job::Emit(id, n) => {
+                    // The n child trees sit on top in source order (reversed push → in-order pop).
+                    let kids = results.split_off(results.len() - n);
+                    results.push(Tree::List(kids, Some(id)));
+                }
+            }
+        }
+        results.pop().expect("from_arena leaves the root tree")
     }
 
     /// The whole program: `Tree` rooted at the arena's `root`.
@@ -85,13 +110,34 @@ impl Tree {
     }
 
     fn build(&self, b: &mut Builder) -> StructId {
-        match self {
-            Tree::Atom(l, _) => b.atom_leaf(l.clone()),
-            Tree::List(items, _) => {
-                let kids: Vec<StructId> = items.iter().map(|t| t.build(b)).collect();
-                b.list(kids)
+        // EXPLICIT stack (dual of `from_arena`): materialize this owned tree into the arena post-order —
+        // native recursion overflowed on a deep tree (a codemod's output can be as deep as its input).
+        // `Visit(&Tree)` emits an atom immediately or defers a list via `Emit(n)`; children are pushed
+        // reversed so their new ids land on `results` in source order for the parent's `b.list`.
+        enum Job<'t> {
+            Visit(&'t Tree),
+            Emit(usize),
+        }
+        let mut jobs: Vec<Job> = vec![Job::Visit(self)];
+        let mut results: Vec<StructId> = Vec::new();
+        while let Some(job) = jobs.pop() {
+            match job {
+                Job::Visit(t) => match t {
+                    Tree::Atom(l, _) => results.push(b.atom_leaf(l.clone())),
+                    Tree::List(items, _) => {
+                        jobs.push(Job::Emit(items.len()));
+                        for item in items.iter().rev() {
+                            jobs.push(Job::Visit(item));
+                        }
+                    }
+                },
+                Job::Emit(n) => {
+                    let kids = results.split_off(results.len() - n);
+                    results.push(b.list(kids));
+                }
             }
         }
+        results.pop().expect("build leaves the root id")
     }
 
     /// The source id this node came from, if any.
@@ -3412,6 +3458,47 @@ mod tests {
     fn subj(src: &str) -> Tree {
         let a = sexpr::read(src).unwrap_or_else(|e| panic!("subject parse {src:?}: {}", e.0));
         Tree::of(&a)
+    }
+
+    #[test]
+    fn tree_from_arena_and_to_arena_are_iterative_on_a_deep_arena() {
+        // `Tree::of`/`from_arena` is the FIRST thing every codemod op (`cdz query`/`rewrite`/`lint`/
+        // `clones`) does to a subject arena, and `to_arena`/`build` is the dual on the way out. Both were
+        // native-recursive, and `codec::decode` accepts arbitrarily-deep valid-tree arenas (no cap,
+        // unlike the reader's MAX_NESTING_DEPTH), so a deep subject overflowed the stack (SIGABRT) before
+        // any matching even ran. Build a 100k-deep chain (past any native-stack limit) and assert the
+        // round-trip arena → Tree → arena completes without overflow and preserves the tree (byte-equal
+        // via codec::encode, itself a flat loop — the arena is already canonical so re-encode is stable).
+        // Run on a 64 MB stack: `Tree::of`/`to_arena` are iterative (that's what this pins), but the deep
+        // `Tree`/`Builder` structures this test BUILDS then DROPS are native-recursive on drop (a 100k-deep
+        // nested chain drops one frame per level), which SIGABRTs a default ~2 MB test-worker stack before
+        // the assertion — the same reason the sibling ML-printer deep test uses a big-stack worker.
+        // (`run_with_compiler_stack` lives in rcdzc, not reachable here; spawn an inline big-stack thread +
+        // resume_unwind so an assertion failure inside still fails the test.)
+        let h = std::thread::Builder::new()
+            .stack_size(64 * 1024 * 1024)
+            .spawn(|| {
+                let depth = 100_000usize;
+                let mut b = Builder::new();
+                let mut cur = b.name("x");
+                for _ in 0..depth {
+                    cur = b.list(vec![cur]);
+                }
+                let a = b.finish(cur);
+                let a_bytes = crate::codec::encode(&a);
+
+                let t = Tree::of(&a); // from_arena: must NOT overflow
+                let back = t.to_arena(); // build: must NOT overflow
+                assert_eq!(
+                    crate::codec::encode(&back),
+                    a_bytes,
+                    "arena -> Tree -> arena preserves the deep tree"
+                );
+            })
+            .expect("spawn big-stack arena-roundtrip worker");
+        if let Err(p) = h.join() {
+            std::panic::resume_unwind(p);
+        }
     }
 
     #[test]

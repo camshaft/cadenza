@@ -2236,13 +2236,22 @@ fn count_gen_calls(observed: &[String]) -> usize {
         .count()
 }
 
-/// The assertion message a trapping test reported, from the OBSERVED host-op list: the FIRST entry that
-/// carries string arguments (an `op\t<message>`) — a `Test.fail("…")`/`report.fail("…")` — yielding the
-/// message after the tab. `None` if no reporting op carried a message (a bare trap with no assertion text).
+/// The assertion message a trapping test reported, from the OBSERVED host-op list. `run_capturing`
+/// records each string-carrying host call as `<op>\t<message>`, but that is EVERY string-arg op — a
+/// `log.emit("…")` a test performs before it fails carries a message too. So match ONLY a REPORTING op
+/// (one whose dotted name ends in `.fail` — `test.fail`/`report.fail`, the ops a failing assertion
+/// performs), not just the first tab-carrying entry, or a benign log line would be misreported as the
+/// failure message. The LAST such `.fail` wins (the one closest to the trap). `None` if no reporting op
+/// carried a message (a bare trap with no assertion text).
 fn observed_failure_message(observed: &[String]) -> Option<String> {
-    observed
-        .iter()
-        .find_map(|entry| entry.split_once('\t').map(|(_op, msg)| msg.to_string()))
+    observed.iter().rev().find_map(|entry| {
+        let (op, msg) = entry.split_once('\t')?;
+        // The op field is a dotted `E.op`; a reporting op ends in `.fail` (case-insensitive, since the
+        // observed op label preserves the boundary spelling — `Test.fail`/`test.fail`).
+        op.to_ascii_lowercase()
+            .ends_with(".fail")
+            .then(|| msg.to_string())
+    })
 }
 
 /// Resolve the value-heap runtime bytes the test `component` requires, BY CONTENT ADDRESS from `store` —

@@ -13,6 +13,8 @@ pass	BigInt.of a signed Int32 is a positive BigInt (the narrow path breaks regar
 pass	DOMINATOR CSE does not reuse a condition's perform-product in the taken branch
 pass	Int64.min crosses the parameter boundary and back unchanged
 pass	Int64.min crossing the boundary is still negative
+pass	Int8.wrap at the sign-bit boundary is the most-negative Int8
+pass	Int8.wrap of all-ones-byte is negative one
 pass	List.len of a concat of call-site lists with runtime elements folds to the summed arity
 pass	List.len of a list built at the call site from runtime elements folds to the arity
 pass	MK_COMB unions the hypotheses of BOTH operands when each carries a distinct assumption
@@ -78,6 +80,8 @@ pass	Type.of carries a quantity's unit into a same-type annotation
 pass	Type.of on a bare nullary variant reflects its element as UNDETERMINED
 pass	Type.of reflects a runtime parameter's type at compile time
 pass	Type.of reflects a value's type for use as an annotation
+pass	UInt16.wrap at exactly two-to-the-sixteenth is zero
+pass	UInt16.wrap one past two-to-the-sixteenth is one
 pass	UInt64.max crosses the parameter boundary and back unchanged
 pass	UInt64.max crossing the boundary compares as a large unsigned, not -1
 pass	Unit.in converts a quantity to a chosen larger unit (Float)
@@ -364,6 +368,8 @@ pass	a constant multi-payload variant match binds both payloads and folds to a s
 pass	a constant multi-payload variant match on the IA-variant nested payload folds to the right depth
 pass	a constant multi-payload variant match reaches each payload and dispatches a nested variant
 pass	a constant tuple is returned as a program result
+pass	a constant-failure `?` in a NESTED let elides a trapping OUTER-let init it discards
+pass	a constant-failure `?` short-circuit ELIDES an earlier trapping let-init whose value it discards
 pass	a constant-index String.at result compares equal to a literal by content
 pass	a constant-index String.at result compares unequal to a different literal
 pass	a constructed Ast.Bool leaf drives an evaluated conditional
@@ -449,6 +455,7 @@ pass	a duplicate export clause for the same name is rejected
 pass	a duplicate export of the entry is rejected
 pass	a duplicate field in a variant's record-type payload is a type error
 pass	a duplicate match arm is dead code but the program still runs
+pass	a duplicate module declaration in one scope is rejected
 pass	a factorial that overflows the integer type traps through the recursion
 pass	a factory RETURNS a closure capturing the def's SCALAR parameter
 pass	a factory RETURNS a closure that captures a let-bound inner closure
@@ -1559,7 +1566,6 @@ pass	a transformation observably rewrites the tree, not just its value
 pass	a transformation over the built-in Ast composes across a function call
 pass	a trapping condition of a same-constructor if traps before either arm
 pass	a trapping condition preempts the hoisted operator's trap
-pass	a trapping earlier let-init is NOT dropped by a constant-failure `?` short-circuit
 pass	a trapping element in the taken arm of a same-length list if still traps
 pass	a trapping element in the untaken arm of a same-arity tuple if does not trap
 pass	a trapping element in the untaken arm of a same-length list if does not trap
@@ -1982,6 +1988,7 @@ pass	arithmetic right shift
 pass	arithmetic right shift of negative one is negative one
 pass	arithmetic right shift preserves the sign bit for a negative operand
 pass	arithmetic within one integer type
+pass	at min times -1 the three overflow families diverge: checked None, wrapping min
 pass	binding the same effect to a peer twice is rejected
 pass	bit-field segments pack sub-byte values into one byte
 pass	bitwise AND masks bits
@@ -2685,6 +2692,7 @@ pass	two differing runtime Ok values of a multi-parameter sum compare unequal by
 pass	two differing runtime sum values compare unequal by a heap walk
 pass	two distinct map-keys are distinct entries
 pass	two distinct names bound to the same value key the same map entry
+pass	two distinct-named modules in one scope coexist
 pass	two do-local function declarations are mutually recursive
 pass	two effects declared with the same name are distinct, not one merged effect
 pass	two effects each declaring a same-named operation do not collide
@@ -2776,9 +2784,11 @@ pass	wrapping subtraction wraps modulo two to the sixty-fourth on underflow
 pass	wrapping-add on a runtime Int8 wraps at its signed boundary
 pass	wrapping-add on a runtime UInt8 wraps modulo 256
 pass	wrapping-add wraps a boundary-crossing runtime Int64 at the max boundary
+pass	wrapping-mul of the minimum integer by -1 wraps back to the minimum
 pass	wrapping-mul on a runtime UInt8 wraps modulo 256
 pass	wrapping-mul wraps a boundary-crossing runtime Int64
 pass	wrapping-sub of a runtime value from itself is zero at every input
+pass	wrapping-sub of the minimum integer from zero wraps back to the minimum
 pass	wrapping-sub on a runtime Int8 wraps at its signed min boundary
 pass	wrapping-sub on a runtime UInt8 wraps modulo 256
 pass	wrapping-sub wraps a boundary-crossing runtime Int64 at the min boundary
@@ -3037,6 +3047,7 @@ todo	a consumer takes the handed-back closure as its SECOND parameter
 todo	a cycle of module imports is rejected
 todo	a decoded field re-encodes into the same-width segment without an explicit narrow
 todo	a delegated effect performed inside an intra-program handler
+todo	a delegated effect reached only through an if-branch is granted and fires when the branch is taken
 todo	a delegated host effect composes with the value-heap runtime
 todo	a distinct-signature per-group call-g is a repeatable (borrow<t>) callback
 todo	a distinct-signature round-trip alongside a plain export — the Int64->Bool side runs
@@ -3369,6 +3380,7 @@ todo	the kernel's existential introduction (EXISTS) checks the witness and prese
 todo	the kernel's modus ponens (⇒-elimination): from ⊢ p⇒q and ⊢ p derive ⊢ q
 todo	the program manifest is the union of its entrypoints' delegations
 todo	the round trip tracks the produced closure's captured value
+todo	the same conditional delegation makes no host call when the branch is not taken
 todo	the same declared effect is handled in-program by one entrypoint and delegated by another
 todo	the same program with a different response gives a different deterministic result
 todo	the same-core-shape sibling dispatches ITS body, not the first

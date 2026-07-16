@@ -120,6 +120,18 @@ export default function Playground() {
         interactive — reach for it when you want a number now, and the playground when you want a program.
       </P>
 
+      <H2>More to explore</H2>
+      <P>
+        Two more surfaces run the same in-browser compiler, each showing off a different corner of the
+        language. The <Ch to="/cad">CAD preview</Ch> renders a solid modelled in Cadenza — a 3D shape built
+        from exact rational coordinates and real units (the <strong>exact CAD</strong> worked example in{" "}
+        <Ch to="/units">Units of measure</Ch> made visible), which you can orbit and inspect. And the{" "}
+        <Ch to="/notebook">notebook</Ch> is a live document: markdown prose interleaved with runnable code
+        cells and interactive widgets — drag a slider and every dependent cell recomputes, so a
+        compound-interest model or a data table stays parametric. Both are ordinary Cadenza under the hood;
+        they just render its results as geometry, tables, and charts instead of a single value.
+      </P>
+
       <H2>Beyond the browser: the <C>cdz</C> toolchain</H2>
       <P>
         Everything here runs the real compiler in your browser — but the same compiler ships as a single

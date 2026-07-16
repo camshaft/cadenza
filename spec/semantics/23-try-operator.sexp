@@ -143,17 +143,27 @@
   (input  (do (def (main) (let ((x (try (Some 10)))) (Some (+ x 5)))) (export main)))
   (output (: (Some 15) (Option Int64))))
 
-(case "a trapping earlier let-init is NOT dropped by a constant-failure `?` short-circuit"
-  (doc    "Regression pin (PR #409): `(let ((a (/ 1 0)) (x (try (None unit)))) (Some (+ a x)))` — the FIRST
-           binding `a` provably traps (÷0), and `x`'s init is a `?` on a constant `None` that would
-           short-circuit the boundary. `a` is on the UNCONDITIONAL strict spine BEFORE the `?`, so its trap
-           is OBSERVED and MUST fire (§283/§285, dead-binding-drops-a-defined-trap /
-           trap-kind-is-observable) — the short-circuit MUST NOT elide it. A bug guarded the fast-path fold
-           only on host-call-freedom, so a trapping earlier init was folded away, yielding `(None unit)`
-           instead of trapping. The `÷0` is compile-provable, so it is CDZ0304 (a compile-provable trap
-           fails the build); the fold now requires earlier inits to be trap-free too.")
+(case "a constant-failure `?` short-circuit ELIDES an earlier trapping let-init whose value it discards"
+  (doc    "OPERATOR §283 RULING (2026-07-16): `we don't emit the trap unless it's reachable; a detected
+           unreachable trap is a WARNING.` `(let ((a (/ 1 0)) (x (try (None unit)))) (Some (+ a x)))` — `a`
+           traps (÷0) and is referenced only in `(+ a x)`, but `x`'s `?` sees a constant `None` and SHORT-
+           CIRCUITS, so `(+ a x)` never runs and `a`'s value is UNOBSERVED (§285 laziness of an unselected
+           branch — its value reaches neither the result nor a host call). So the trap is ELIDED, the whole
+           expression folds to `(None unit)`, and the ÷0 is a §285 SHOULD-diagnose CDZ0305 WARNING (build
+           succeeds), NOT a CDZ0304 reject. (Earlier this pinned CDZ0304 — an over-strict `is_trap_free`
+           guard the operator ruling reverted; a host call, being observable, still bails the fold.) This
+           keeps the same-let, nested-let, and `if false` shapes CONSISTENT-elide with the landed §283 DCE.")
   (input  (do (def (main) (let ((a (/ 1 0)) (x (try (None unit)))) (Some (+ a x)))) (export main)))
-  (error  CDZ0304))
+  (output (: (None unit) (Option Int64))))
+
+(case "a constant-failure `?` in a NESTED let elides a trapping OUTER-let init it discards"
+  (doc    "The nested-let companion (same §283 operator ruling): `(let ((a (/ 1 0))) (let ((x (try (None
+           unit)))) (Some (+ a x))))` — `a` is bound in the OUTER let, referenced only in `(+ a x)`, and
+           the inner `?` short-circuits before it runs, so `a`'s value is UNOBSERVED. Its ÷0 trap is ELIDED
+           (→ `(None unit)`) with a CDZ0305 warning, exactly like the same-let case — observation, not the
+           syntactic nesting or evaluation-order, governs (§285). Consistent-elide.")
+  (input  (do (def (main) (let ((a (/ 1 0))) (let ((x (try (None unit)))) (Some (+ a x))))) (export main)))
+  (output (: (None unit) (Option Int64))))
 
 (case "a `?` in a CALLED (inlined, non-exported) helper finds its boundary"
   (doc    "Regression pin: `(def (f) (let ((x (try (Some 7)))) (Some (+ x 3))))` is CALLED by `main` (only

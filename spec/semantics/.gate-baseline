@@ -613,6 +613,8 @@ pass	a constant multi-payload variant match binds both payloads and folds to a s
 pass	a constant multi-payload variant match on the IA-variant nested payload folds to the right depth
 pass	a constant multi-payload variant match reaches each payload and dispatches a nested variant
 pass	a constant tuple is returned as a program result
+pass	a constant-failure `?` in a NESTED let elides a trapping OUTER-let init it discards
+pass	a constant-failure `?` short-circuit ELIDES an earlier trapping let-init whose value it discards
 pass	a constant-index String.at result compares equal to a literal by content
 pass	a constant-index String.at result compares unequal to a different literal
 pass	a constant-returning closure threads through a recursive-generic HOF
@@ -678,6 +680,7 @@ pass	a default-integer pragma naming a non-integer type is rejected
 pass	a default-integer pragma naming an unbound type is rejected as unbound, like an annotation
 pass	a delegated capability is not itself an export field
 pass	a delegated effect performed inside an intra-program handler
+pass	a delegated effect reached only through an if-branch is granted and fires when the branch is taken
 pass	a delegated host effect composes with the value-heap runtime
 pass	a delegation naming an effect that is never reached is rejected as latent authority
 pass	a dense zero-based jump-table match hits a covered arm
@@ -1943,7 +1946,6 @@ pass	a transitive import cannot forge a theorem — the kernel's private constru
 pass	a transitive re-export reaches the base module's function through the middle module
 pass	a trapping condition of a same-constructor if traps before either arm
 pass	a trapping condition preempts the hoisted operator's trap
-pass	a trapping earlier let-init is NOT dropped by a constant-failure `?` short-circuit
 pass	a trapping element in the taken arm of a same-length list if still traps
 pass	a trapping element in the untaken arm of a same-arity tuple if does not trap
 pass	a trapping element in the untaken arm of a same-length list if does not trap
@@ -3208,6 +3210,7 @@ pass	the round trip tracks the produced closure's captured value
 pass	the runtime UTF-8 encoding of a string equals its exact byte literal
 pass	the runtime-if list takes its else branch and measures that length
 pass	the runtime-list version of a tail fold compiles and folds correctly
+pass	the same conditional delegation makes no host call when the branch is not taken
 pass	the same declared effect is handled in-program by one entrypoint and delegated by another
 pass	the same function called under two handlers is discharged by each in turn
 pass	the same mixed-scale comparison is EXACT over Rational (keeps the fractional scale)

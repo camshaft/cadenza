@@ -33,7 +33,9 @@ This is the source of truth for "have I already handled this" — GitHub labels 
 
 ## Each tick
 1. `cargo xtask fleet heartbeat github-liaison`. If a stop-file exists, stop cleanly.
-2. **Drain your inbox** (`.claude/fleet/inbox/github-liaison/`), oldest-first. You mainly receive:
+2. **Drain your inbox** — list it with `cargo xtask fleet inbox github-liaison` (resolves the canonical
+   HUB path; a bare relative `.claude/fleet/inbox/...` glob from your worktree silently matches
+   nothing), oldest-first. You mainly receive:
    - `note` from the PM / a fix agent / pr-sync saying a piece of work is **merged/complete** —
      carrying (in `--ref` or `--body`) the GitHub issue number or the queue-file name it resolved.
      On such a note: verify the work really landed (see step 6), then **close the GitHub issue**.

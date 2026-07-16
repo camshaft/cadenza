@@ -375,3 +375,43 @@ mod model_error_tests {
         assert!(!is_model_error(&mock_converse("hello".to_string())));
     }
 }
+
+#[cfg(test)]
+mod authorizer_injection_tests {
+    use super::*;
+
+    #[test]
+    fn a_quote_in_a_tool_tag_cannot_break_out_of_the_action_uid() {
+        // SECURITY: the loop performs Cedar.authorize with a bare tool tag; the authorizer wraps it into
+        // Action::"<tag>". If the tag contained an unescaped `"`, a malicious tag like
+        // `x","tool:admin` could break out and match a `tool:admin` permit (privilege escalation). The
+        // `"`/`\` escaping in action_uid prevents that: the odd tag becomes a single (non-matching) UID,
+        // so it is DENIED, never granted via an injected action.
+        let policies = r#"permit(principal, action == Action::"tool:admin", resource);"#;
+        let authz = cedar_authorizer(
+            policies.to_string(),
+            r#"Agent::"a""#.to_string(),
+            r#"Tool::"t""#.to_string(),
+            "{}".to_string(),
+        );
+        // The legitimate admin tag → allowed (sanity).
+        assert_eq!(
+            authz("tool:admin".to_string()),
+            1,
+            "the real admin action is permitted"
+        );
+        // An injection attempt that would, unescaped, form `Action::"x" || Action::"tool:admin"` or
+        // otherwise match the admin permit → must be DENIED (the whole thing is one opaque tag).
+        assert_eq!(
+            authz(r#"x","tool:admin"#.to_string()),
+            0,
+            "a quote-injection tag must NOT escalate to the tool:admin permit — it is one non-matching UID"
+        );
+        // A backslash-laden tag is likewise contained (no UID-syntax breakage → deny, never a panic).
+        assert_eq!(
+            authz(r#"a\b\"c"#.to_string()),
+            0,
+            "a backslash/quote tag is contained → deny"
+        );
+    }
+}

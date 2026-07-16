@@ -566,6 +566,35 @@ fn a_false_property_fails_with_a_shrunk_counterexample_and_a_seed() {
     );
 }
 
+#[test]
+fn a_non_fail_string_op_before_the_failure_is_not_reported_as_the_assertion_message() {
+    // REGRESSION (Copilot PR #481): the runner reads the failure message from the OBSERVED host-op list,
+    // but `run_capturing` records EVERY string-carrying host call as `<op>\t<msg>` — not just the failing
+    // assertion's. A test that performs a NON-fail string op (a log/note line) before it fails would, under
+    // the old "first tab-carrying entry" extractor, get that benign line misreported as its failure
+    // message. The extractor must match only a REPORTING op (dotted name ends in `.fail`). Here the test
+    // performs `Test.note("…")` THEN fails via `Test.fail("the real reason")`; the reported FAIL message
+    // must be the latter. (Both ops live on ONE effect — the compiler emits a single host interface per
+    // envelope, so two separate effects can't both be delegated here.)
+    let d = dir("notethenfail");
+    let src = "effect Test =\n\
+        \x20 | note : String -> Unit\n\
+        \x20 | fail : String -> Unit\n\
+        @test def notes_then_fails() =\n\
+        \x20 host Test in (Test.note(\"a benign note line\"); Test.fail(\"the real reason\"); trap(\"assertion failed\"))\n";
+    let f = write(&d, "m.cdz", src);
+    let (ok, stdout, stderr) = run(&["test", &f]);
+    assert!(!ok, "the test fails → non-zero exit: {stdout}{stderr}");
+    assert!(
+        stdout.contains("FAIL notes_then_fails: the real reason"),
+        "the reported message is the Test.fail text, NOT the earlier note line: {stdout}"
+    );
+    assert!(
+        !stdout.contains("a benign note line"),
+        "the non-fail note line must not be reported as the failure message: {stdout}"
+    );
+}
+
 /// F2 (`@exhaustive`): a property test marked `@exhaustive` is driven over its ENTIRE finite input domain
 /// (every combination of its bounded scalar parameters) rather than by random sampling — a pass is a PROOF
 /// over the domain, and a failure names the exact case. An UNBOUNDED domain (a wide int / float) declines

@@ -3170,19 +3170,21 @@ fn lower_let(
         if matches!(resolved_of(db, init), Resolved::Try { .. })
             && let Core::Break { value } = core_of(db, init)
         {
-            // Every earlier init must be DISCARDABLE — its value is dropped when the break fires, so it may
-            // carry NO observable effect. Two observability channels, both of which the break would elide:
-            //   * a HOST CALL / perform (`subtree_reaches_host_call`) — an ordered observable effect, and
-            //   * a TRAP (`(trap …)`, checked overflow, ÷0 — NOT trap-free) — a strict earlier init on the
-            //     unconditional spine is OBSERVED before the `?`, so its trap MUST fire (§283/§285,
-            //     `dead-binding-drops-a-defined-trap` / `trap-kind-is-observable`); folding it away drops a
-            //     defined trap (the exact PR #409 miscompile: `(let ((a (/ 1 0))) (let ((x (try None))) …))`
-            //     wrongly yielded `None` instead of trapping). So the fast path requires earlier inits to be
-            //     BOTH host-call-free AND trap-free; otherwise the break is left to a later brick (the
-            //     runtime `Core::Block`/`Break` emit sequences the earlier init's effect before the break).
+            // Every earlier init must be free of an OBSERVABLE EFFECT — its value is discarded when the
+            // break fires, so an ordered side effect (a HOST CALL / perform) would be wrongly elided. A
+            // host call IS observable (ordered in the trace), so bail to a later brick if any earlier init
+            // reaches one. A TRAP is NOT observable when its value is unobserved: the OPERATOR RULED on §283
+            // (concierge answer #622465) that "we don't emit the trap unless it's reachable; a detected
+            // unreachable trap is a WARNING." The `?` short-circuits its binding's ONLY use, so an earlier
+            // (or enclosing) init whose value flows only into the discarded continuation is UNOBSERVED —
+            // its trap is ELIDED (the §285 laziness of an unselected branch), NOT forced. So the fold does
+            // NOT gate on trap-freedom: `(let ((a (/ 1 0)) (x (try None))) (+ a x))` folds to `None` (with
+            // a §285 CDZ0305 SHOULD-diagnose warning that the ÷0 is a detected-unreachable trap), NOT
+            // CDZ0304. This makes the same-let, nested-let, and `if false` shapes all consistently elide,
+            // aligning with the landed §283 DCE (`dead-binding-drops-a-defined-trap`).
             if bindings[..i]
                 .iter()
-                .all(|&(_, prev)| !subtree_reaches_host_call(db, prev) && is_trap_free(db, prev))
+                .all(|&(_, prev)| !subtree_reaches_host_call(db, prev))
             {
                 return core_of(db, value);
             }

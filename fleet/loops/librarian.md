@@ -26,8 +26,10 @@ context each session. It MUST stay small. Its stated discipline (top of the file
 
 ## Each tick — pick ONE well-scoped cleanup, do it, commit
 1. `cargo xtask fleet heartbeat librarian`. Stop if a stop-file exists.
-2. **Drain your inbox** (`.claude/fleet/inbox/librarian/`): agents or the concierge may point you at a
-   specific mess (a bloated section, a stale live-state line). Move handled msgs to `processed/`.
+2. **Drain your inbox** — list it with `cargo xtask fleet inbox librarian` (resolves the canonical HUB
+   path; a bare relative `.claude/fleet/inbox/...` glob from your worktree silently matches nothing).
+   Agents or the concierge may point you at a specific mess (a bloated section, a stale live-state
+   line). Move handled msgs to `processed/`.
 3. **Assess + pick one improvement** (smallest that leaves memory better — you are a strong owner,
    never idle if there's tidying to do):
    - **Shrink the entry point.** If MEMORY.md has grown a DONE-log on a live-state line, or a landing

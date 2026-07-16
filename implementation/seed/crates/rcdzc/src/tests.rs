@@ -16254,6 +16254,46 @@ mod match_engine {
         }
     }
 
+    /// A MALFORMED `@tag` — `(@ (tag …) def)` whose argument is not exactly ONE STRING — must be REJECTED,
+    /// not silently dropped. `strip_annotations` records the tag only for `(tag "string")`; any other arg
+    /// shape (`(tag 5)`, `(tag foo)`, `(tag)`, `(tag "a" "b")`) recorded the tag NOWHERE, so the def was
+    /// untagged with no signal — masking the author's mistake (a `cdz test --tag` filter then matches
+    /// nothing). `collect_faults` now rejects each, naming the required one-string shape. (Flagged by
+    /// v-diagnostics; annotation semantics are v-property-testing's charter.)
+    #[test]
+    fn a_malformed_tag_annotation_is_rejected_not_silently_dropped() {
+        use crate::testkit::parse;
+        for src in [
+            "(module m (@ (tag 5) (def (c) 3)) (export c))", // non-string (number)
+            "(module m (@ (tag foo) (def (c) 3)) (export c))", // non-string (bare name)
+            "(module m (@ (tag) (def (c) 3)) (export c))",   // zero args
+            "(module m (@ (tag \"a\" \"b\") (def (c) 3)) (export c))", // two args
+        ] {
+            let d = crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| {
+                    d.message
+                        .contains("`@tag` annotation takes exactly one STRING")
+                })
+                .unwrap_or_else(|| panic!("a malformed `@tag` must be rejected: {src}"));
+            assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+        }
+        // NO false positive: a VALID `@tag("string")` (bare, or stacked with `@test`) is accepted silently.
+        for ok in [
+            "(module m (@ (tag \"slow\") (def (c) 3)) (export c))",
+            "(module m (@ (tag \"slow\") (@ test (def (c) 3))) (export c))",
+        ] {
+            assert!(
+                !crate::diagnostics(&mut crate::db::Db::load(parse(ok)))
+                    .iter()
+                    .any(|d| d
+                        .message
+                        .contains("`@tag` annotation takes exactly one STRING")),
+                "a valid @tag is not flagged: {ok}"
+            );
+        }
+    }
+
     /// A SHAPE-valid constructor-export `(export (. T A))` / `(export (. T *))` must ALSO be SEMANTICALLY
     /// valid: `T` a declared sum, `A` one of its variants. The linker's `as_ctor_export` recorded the
     /// (type, ctor) names WITHOUT checking they exist, so `(export (. T Nonesuch))` (a ctor `T` lacks),
@@ -23624,6 +23664,66 @@ mod match_engine {
                 "a valid Qty.of unit is not flagged: {ok}"
             );
         }
+    }
+
+    #[test]
+    fn a_non_string_trap_message_names_the_string_requirement_not_a_phantom_clash() {
+        use crate::testkit::parse;
+        // `trap : ∀a. String → a` — its message MUST be a String. A non-String message (`(trap 5)`,
+        // `(trap true)`) is a type error, but `trap`'s polymorphic RESULT `a` made the generic scheme-unify
+        // ground the operand to `String` and report the OPAQUE "type mismatch: String and Int64 must be the
+        // same type here" (reads like an internal clash). It now names the real fault — the operand-type
+        // twin of the member-op wrong-type-arg message — with the `(trap "reason")` example.
+        for (src, ty) in [
+            ("(module m (def (f) (trap 5)) (export f))", "Int64"),
+            ("(module m (def (f) (trap true)) (export f))", "Bool"),
+            (
+                "(module m (def (f) (trap (tuple 1 2))) (export f))",
+                "(Tuple Int64 Int64)",
+            ),
+        ] {
+            let d = crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.message.contains("`trap`'s message must be a String"))
+                .unwrap_or_else(|| panic!("a non-String trap message must be named: {src}"));
+            assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
+            assert!(
+                d.message
+                    .contains(&format!("a value of type {ty} was given"))
+                    && !d.message.contains("must be the same type here"),
+                "names the message-type, not a phantom clash: {}",
+                d.message
+            );
+        }
+        // NO false positive: a String message, a String-typed param message, and a `trap` in a polymorphic
+        // position (an `if` branch whose other branch fixes the result type) are all clean; the wrong-ARITY
+        // `(trap "a" "b")` keeps its own over-application CDZ0203 (not the message-type reject).
+        for ok in [
+            "(module m (def (f) (trap \"boom\")) (export f))",
+            "(module m (def (f (: msg String)) (trap msg)) (export f))",
+            "(module m (def (f (: x Bool)) (if x 1 (trap \"no\"))) (def (main) (f true)) (export main))",
+        ] {
+            assert!(
+                !crate::diagnostics(&mut crate::db::Db::load(parse(ok)))
+                    .iter()
+                    .any(|d| d.message.contains("`trap`'s message must be a String")),
+                "a well-formed trap is not flagged: {ok}"
+            );
+        }
+        // The wrong-arity trap keeps the over-application message, NOT the message-type one.
+        let arity = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def (f) (trap \"a\" \"b\")) (export f))",
+        )));
+        assert!(
+            arity
+                .iter()
+                .any(|d| d.message.contains("function of arity 1"))
+                && !arity
+                    .iter()
+                    .any(|d| d.message.contains("`trap`'s message must be a String")),
+            "a wrong-arity trap keeps the over-application message: {:?}",
+            arity.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -55104,24 +55204,31 @@ mod stage1 {
     }
 
     #[test]
-    fn a_trapping_earlier_let_init_is_not_dropped_by_a_try_short_circuit() {
-        // REGRESSION (PR #409): the constant-failure `?` fast-path (BRICK 3a) folds a `let` whose init is a
-        // `Core::Break` to the break value, discarding earlier bindings. It guarded only host-call-freedom,
-        // so a trapping earlier init `(a (/ 1 0))` was folded AWAY when short-circuiting — dropping a
-        // DEFINED trap that is OBSERVED before the `?` (§283/§285, dead-binding-drops-a-defined-trap). The
-        // fast path now also requires earlier inits to be `is_trap_free`. The `÷0` is compile-provable, so
-        // the program is rejected CDZ0304 (a compile-provable trap fails the build) rather than yielding
-        // `None`.
+    fn a_constant_failure_try_elides_an_earlier_trapping_let_init_it_discards() {
+        // OPERATOR §283 RULING (2026-07-16): "we don't emit the trap unless it's reachable; a detected
+        // unreachable trap is a WARNING." `(let ((a (/ 1 0)) (x (try (None unit)))) (Some (+ a x)))` — `a`
+        // traps (÷0) but is referenced only in `(+ a x)`, which the `?` short-circuits, so `a`'s value is
+        // UNOBSERVED → the trap ELIDES and the program COMPILES to `None` (with a §285 CDZ0305 warning),
+        // NOT CDZ0304. (Earlier this expected CDZ0304 via an over-strict is_trap_free guard the operator
+        // ruling reverted.) A host call, being observable, would still bail the fold.
         let src = "(module m (def (main) (let ((a (/ 1 0)) (x (try (None unit)))) (Some (+ a x)))) \
                    (export main))";
-        let d = compile_component(&crate::codec::encode(&parse(src))).expect_err(
-            "a trapping earlier init must not be dropped — the ÷0 is CDZ0304, not folded to None",
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_ok(),
+            "an unobserved trapping earlier init is ELIDED (folds to None), not CDZ0304-rejected"
         );
-        assert_eq!(
-            d.code.as_deref(),
-            Some("CDZ0304"),
-            "the trapping earlier init is a compile-provable trap (CDZ0304), got: {}",
-            d.message
+    }
+
+    #[test]
+    fn a_constant_failure_try_in_a_nested_let_elides_a_trapping_outer_init() {
+        // The nested-let companion of the §283 elide ruling: `(let ((a (/ 1 0))) (let ((x (try (None
+        // unit)))) (Some (+ a x))))` — `a` (outer let) is referenced only in the short-circuited `(+ a x)`,
+        // so its ÷0 is unobserved → elided → compiles to None. Observation, not the nesting, governs (§285).
+        let src = "(module m (def (main) (let ((a (/ 1 0))) (let ((x (try (None unit)))) (Some (+ a x))))) \
+                   (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_ok(),
+            "an unobserved trapping OUTER-let init is ELIDED by a nested `?` short-circuit, not rejected"
         );
     }
 
