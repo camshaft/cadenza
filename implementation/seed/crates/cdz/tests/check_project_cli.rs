@@ -113,6 +113,32 @@ fn check_a_project_reports_a_shared_module_error_once() {
 }
 
 #[test]
+fn check_a_named_manifest_that_does_not_exist_errors_not_dir_walks() {
+    // `cdz check Project.cdz` when that file DOESN'T EXIST must error clearly ("no such file"), not
+    // silently fall back to walking the directory (PR #422). The dir here has OTHER source files, so a
+    // dir-walk would spuriously "succeed" — the guard is what makes this fail.
+    let dir = std::env::temp_dir().join(format!("cdz-checkproj-nomanifest-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    // A clean source file present, but NO Project.cdz.
+    std::fs::write(
+        dir.join("app.cdz"),
+        "def main() -> Int64 = 1\nexport { main }\n",
+    )
+    .unwrap();
+    let (ok, _o, err) = run_in(&dir, &["check", "Project.cdz"]);
+    assert!(
+        !ok,
+        "naming a non-existent manifest must error, not dir-walk to success"
+    );
+    assert!(
+        err.contains("no such file"),
+        "the error names the missing manifest: {err}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn check_a_project_still_checks_a_module_not_imported_by_the_entry() {
     // Dedup must NOT drop a module the entry doesn't import: a `modules` entry unreachable from the
     // entry is still its own check target, so its error is caught (dedup only skips ALREADY-covered
