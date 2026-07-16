@@ -2984,7 +2984,9 @@ pass	the kernel's ASSUME rule yields the sequent {p} |- p
 pass	the kernel's BETA rule reduces an application of a lambda: (λv.body) arg = body[arg/v]
 pass	the kernel's DEDUCT_ANTISYM rule: from A |- p and B |- q derive (A-q)++(B-p) |- p=q
 pass	the kernel's EQ_MP rule: from |- p=q and G |- p derive G |- q (hypotheses unioned)
+pass	the kernel's GEN (∀-introduction) enforces its free-variable side-condition
 pass	the kernel's MK_COMB rule: equals applied to equals are equal — from f=g and x=y derive (f x)=(g y)
+pass	the kernel's SPEC (∀-elimination) instantiates the quantified body with the witness
 pass	the kernel's modus ponens (⇒-elimination): from ⊢ p⇒q and ⊢ p derive ⊢ q
 pass	the largest factorial that fits the integer type computes exactly
 pass	the le modifier encodes a u16 little-endian
@@ -3073,6 +3075,7 @@ pass	the width-indexed and aliased annotations of one value do not conflict
 pass	the width-indexed and aliased float annotations of one value do not conflict
 pass	the wrapping additive and multiplicative identities preserve a boundary operand exactly
 pass	the λ-extended kernel Thm stays unforgeable — Thm.Seq with an Abs term outside is CDZ0214
+pass	the ∀-extended kernel Thm stays unforgeable — Thm.Seq of a bogus universal outside is CDZ0214
 pass	three closures with a SHARED signature cross as two resource types
 pass	three distinct closure signatures cross as three resource types
 pass	three leaf variants in one quoted form each dispatch their own tag

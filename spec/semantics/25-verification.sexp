@@ -1054,3 +1054,201 @@
             (def (main) (Thm.Seq (list) (Term.Imp (Term.Var 1) (Term.Var 2))))
             (export main)))
   (error  CDZ0214))
+
+; ============================================================================================
+; Increment 8 — the UNIVERSAL QUANTIFIER (∀). Term gains a `Forall v body` form; the kernel gains GEN
+; (∀-introduction — from G ⊢ P, if the variable is NOT free in any hypothesis, derive G ⊢ ∀x.P) and SPEC
+; (∀-elimination — from ⊢ ∀x.P derive ⊢ P[t/x], instantiating with the witness t via the Inc-5
+; capture-avoiding substitution). This takes the kernel from propositional to FIRST-ORDER logic. GEN's
+; free-variable side-condition is the soundness guard (generalizing a variable that a hypothesis constrains
+; would be unsound); the case pins that GEN DECLINES when it is violated. SPEC reuses the capture-avoiding
+; subst extended to descend under Forall.
+; ============================================================================================
+
+(case "the kernel's GEN (∀-introduction) enforces its free-variable side-condition"
+  (doc    "∀-introduction with its soundness guard. GEN x (G ⊢ P) derives G ⊢ (∀x.P) — BUT only if x is
+           not free in any hypothesis G (generalizing a variable a hypothesis constrains would be unsound).
+           Two faces: (a) GEN over a variable FREE in the hypotheses DECLINES (Option.None) — here x0 is
+           free in the hyp {x0=x0} of ASSUME(x0=x0); (b) GEN over a variable NOT free in the hyps SUCCEEDS
+           — x0 is not free in the hyp {x5} of ASSUME(x5), so GEN 0 yields ∀x0.(x5), then SPEC (x9) brings
+           it back to (x5) (x0 not in the body, so the instantiation is identity). Pins that GEN carries the
+           side-condition — the guard that keeps ∀-introduction sound — and composes with SPEC.")
+  (module "hol"
+    (do
+      (type Term (Var Int64) (Comb Term Term) (Eq Term Term) (Abs Int64 Term) (Forall Int64 Term))
+      (type Thm (Seq (List Term) Term))
+      (def (term-eq (: a Term) (: b Term))
+        (match a
+          ((Term.Var n)    (match b ((Term.Var m) (= n m)) (_ false)))
+          ((Term.Comb x y) (match b ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) (_ false)))
+          ((Term.Eq x y)   (match b ((Term.Eq p q) (and (term-eq x p) (term-eq y q))) (_ false)))
+          ((Term.Abs v x)  (match b ((Term.Abs w q) (and (= v w) (term-eq x q))) (_ false)))
+          ((Term.Forall v x) (match b ((Term.Forall w q) (and (= v w) (term-eq x q))) (_ false)))))
+      (def (free-in (: v Int64) (: t Term))
+        (match t
+          ((Term.Var n)   (= n v))
+          ((Term.Comb f x) (or (free-in v f) (free-in v x)))
+          ((Term.Eq a b)  (or (free-in v a) (free-in v b)))
+          ((Term.Abs w body) (if (= w v) false (free-in v body)))
+          ((Term.Forall w body) (if (= w v) false (free-in v body)))))
+      (def (max-id (: t Term))
+        (match t
+          ((Term.Var n) n)
+          ((Term.Comb f x) (let ((a (max-id f)) (b (max-id x))) (if (> a b) a b)))
+          ((Term.Eq a b) (let ((p (max-id a)) (q (max-id b))) (if (> p q) p q)))
+          ((Term.Abs w body) (let ((m (max-id body))) (if (> w m) w m)))
+          ((Term.Forall w body) (let ((m (max-id body))) (if (> w m) w m)))))
+      (def (rename (: from Int64) (: to Int64) (: t Term))
+        (match t
+          ((Term.Var n) (if (= n from) (Term.Var to) (Term.Var n)))
+          ((Term.Comb f x) (Term.Comb (rename from to f) (rename from to x)))
+          ((Term.Eq a b) (Term.Eq (rename from to a) (rename from to b)))
+          ((Term.Abs w body) (if (= w from) (Term.Abs w body) (Term.Abs w (rename from to body))))
+          ((Term.Forall w body) (if (= w from) (Term.Forall w body) (Term.Forall w (rename from to body))))))
+      (def (subst (: v Int64) (: s Term) (: t Term))
+        (match t
+          ((Term.Var n) (if (= n v) s (Term.Var n)))
+          ((Term.Comb f x) (Term.Comb (subst v s f) (subst v s x)))
+          ((Term.Eq a b) (Term.Eq (subst v s a) (subst v s b)))
+          ((Term.Abs w body)
+            (if (= w v) (Term.Abs w body)
+                (if (free-in w s)
+                    (let ((fresh (+ 1 (let ((ms (max-id s)) (mt (max-id body))) (if (> ms mt) ms mt)))))
+                      (Term.Abs fresh (subst v s (rename w fresh body))))
+                    (Term.Abs w (subst v s body)))))
+          ((Term.Forall w body)
+            (if (= w v) (Term.Forall w body)
+                (if (free-in w s)
+                    (let ((fresh (+ 1 (let ((ms (max-id s)) (mt (max-id body))) (if (> ms mt) ms mt)))))
+                      (Term.Forall fresh (subst v s (rename w fresh body))))
+                    (Term.Forall w (subst v s body)))))))
+      (def (assume (: p Term)) (Thm.Seq (list p) p))
+      (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
+      (def (hyps (: th Thm)) (match th ((Thm.Seq h _) h)))
+      (def (free-in-hyps (: v Int64) (: hs (List Term)))
+        (match hs ((list) false) ((list h .. rest) (or (free-in v h) (free-in-hyps v rest)))))
+      (def (gen (: x Int64) (: th Thm))
+        (match th ((Thm.Seq g p)
+          (if (free-in-hyps x g) (Option.None) (Option.Some (Thm.Seq g (Term.Forall x p)))))))
+      (def (spec (: t Term) (: th Thm))
+        (match (concl th)
+          ((Term.Forall x body) (Option.Some (Thm.Seq (hyps th) (subst x t body))))
+          (_ (Option.None))))
+      (export (. Term *))
+      (export Thm)
+      (export term-eq)
+      (export assume)
+      (export gen)
+      (export spec)
+      (export concl)))
+  (input  (do
+            (import "hol" (Term Thm term-eq assume gen spec concl))
+            (def (main)
+              (and
+                (match (gen 0 (assume (Term.Eq (Term.Var 0) (Term.Var 0))))
+                  ((Option.None) true) ((Option.Some _) false))
+                (match (gen 0 (assume (Term.Var 5)))
+                  ((Option.Some g)
+                    (match (spec (Term.Var 9) g)
+                      ((Option.Some s) (term-eq (concl s) (Term.Var 5)))
+                      ((Option.None) false)))
+                  ((Option.None) false))))
+            (export main)))
+  (output (: true Bool)))
+
+(case "the kernel's SPEC (∀-elimination) instantiates the quantified body with the witness"
+  (doc    "∀-elimination: from ⊢ ∀x.P derive ⊢ P[t/x], substituting the witness t for the bound variable
+           through the body via the capture-avoiding subst. From ⊢ ∀x0.(x0 = x0) (a universally-quantified
+           reflexivity, built here as a self-contained witness), SPEC (Var 42) yields ⊢ (Var 42 = Var 42) —
+           the substitution FIRES, replacing both occurrences of the bound x0. Pins that SPEC genuinely
+           instantiates (not a no-op) and reuses the Inc-5 capture-avoiding substitution under a binder.")
+  (module "hol"
+    (do
+      (type Term (Var Int64) (Comb Term Term) (Eq Term Term) (Abs Int64 Term) (Forall Int64 Term))
+      (type Thm (Seq (List Term) Term))
+      (def (term-eq (: a Term) (: b Term))
+        (match a
+          ((Term.Var n)    (match b ((Term.Var m) (= n m)) (_ false)))
+          ((Term.Comb x y) (match b ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) (_ false)))
+          ((Term.Eq x y)   (match b ((Term.Eq p q) (and (term-eq x p) (term-eq y q))) (_ false)))
+          ((Term.Abs v x)  (match b ((Term.Abs w q) (and (= v w) (term-eq x q))) (_ false)))
+          ((Term.Forall v x) (match b ((Term.Forall w q) (and (= v w) (term-eq x q))) (_ false)))))
+      (def (free-in (: v Int64) (: t Term))
+        (match t
+          ((Term.Var n) (= n v))
+          ((Term.Comb f x) (or (free-in v f) (free-in v x)))
+          ((Term.Eq a b) (or (free-in v a) (free-in v b)))
+          ((Term.Abs w body) (if (= w v) false (free-in v body)))
+          ((Term.Forall w body) (if (= w v) false (free-in v body)))))
+      (def (max-id (: t Term))
+        (match t
+          ((Term.Var n) n)
+          ((Term.Comb f x) (let ((a (max-id f)) (b (max-id x))) (if (> a b) a b)))
+          ((Term.Eq a b) (let ((p (max-id a)) (q (max-id b))) (if (> p q) p q)))
+          ((Term.Abs w body) (let ((m (max-id body))) (if (> w m) w m)))
+          ((Term.Forall w body) (let ((m (max-id body))) (if (> w m) w m)))))
+      (def (rename (: from Int64) (: to Int64) (: t Term))
+        (match t
+          ((Term.Var n) (if (= n from) (Term.Var to) (Term.Var n)))
+          ((Term.Comb f x) (Term.Comb (rename from to f) (rename from to x)))
+          ((Term.Eq a b) (Term.Eq (rename from to a) (rename from to b)))
+          ((Term.Abs w body) (if (= w from) (Term.Abs w body) (Term.Abs w (rename from to body))))
+          ((Term.Forall w body) (if (= w from) (Term.Forall w body) (Term.Forall w (rename from to body))))))
+      (def (subst (: v Int64) (: s Term) (: t Term))
+        (match t
+          ((Term.Var n) (if (= n v) s (Term.Var n)))
+          ((Term.Comb f x) (Term.Comb (subst v s f) (subst v s x)))
+          ((Term.Eq a b) (Term.Eq (subst v s a) (subst v s b)))
+          ((Term.Abs w body)
+            (if (= w v) (Term.Abs w body)
+                (if (free-in w s)
+                    (let ((fresh (+ 1 (let ((ms (max-id s)) (mt (max-id body))) (if (> ms mt) ms mt)))))
+                      (Term.Abs fresh (subst v s (rename w fresh body))))
+                    (Term.Abs w (subst v s body)))))
+          ((Term.Forall w body)
+            (if (= w v) (Term.Forall w body)
+                (if (free-in w s)
+                    (let ((fresh (+ 1 (let ((ms (max-id s)) (mt (max-id body))) (if (> ms mt) ms mt)))))
+                      (Term.Forall fresh (subst v s (rename w fresh body))))
+                    (Term.Forall w (subst v s body)))))))
+      (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
+      (def (hyps (: th Thm)) (match th ((Thm.Seq h _) h)))
+      (def (refl-all (: x Int64)) (Thm.Seq (list) (Term.Forall x (Term.Eq (Term.Var x) (Term.Var x)))))
+      (def (spec (: t Term) (: th Thm))
+        (match (concl th)
+          ((Term.Forall x body) (Option.Some (Thm.Seq (hyps th) (subst x t body))))
+          (_ (Option.None))))
+      (export (. Term *))
+      (export Thm)
+      (export term-eq)
+      (export refl-all)
+      (export spec)
+      (export concl)))
+  (input  (do
+            (import "hol" (Term Thm term-eq refl-all spec concl))
+            (def (main)
+              (match (spec (Term.Var 42) (refl-all 0))
+                ((Option.Some s) (term-eq (concl s) (Term.Eq (Term.Var 42) (Term.Var 42))))
+                ((Option.None) false)))
+            (export main)))
+  (output (: true Bool)))
+
+(case "the ∀-extended kernel Thm stays unforgeable — Thm.Seq of a bogus universal outside is CDZ0214"
+  (doc    "Re-asserts the soundness boundary after adding the Forall term form and GEN/SPEC: first-order
+           quantification opens no forge path. An importer cannot fabricate a false universally-quantified
+           theorem — building Thm.Seq directly (a bogus ⊢ ∀x0.(x0 = (Var 1)), which does NOT hold) outside
+           the kernel is CDZ0214. Quantified propositions are terms an importer may build; asserting one as
+           a THEOREM remains the exclusive province of the kernel's rules (GEN).")
+  (module "hol"
+    (do
+      (type Term (Var Int64) (Comb Term Term) (Eq Term Term) (Abs Int64 Term) (Forall Int64 Term))
+      (type Thm (Seq (List Term) Term))
+      (def (assume (: p Term)) (Thm.Seq (list p) p))
+      (export (. Term *))
+      (export Thm)
+      (export assume)))
+  (input  (do
+            (import "hol" (Term Thm assume))
+            (def (main) (Thm.Seq (list) (Term.Forall 0 (Term.Eq (Term.Var 0) (Term.Var 1)))))
+            (export main)))
+  (error  CDZ0214))
