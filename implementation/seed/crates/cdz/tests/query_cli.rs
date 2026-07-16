@@ -2287,6 +2287,44 @@ fn scope_lists_the_visible_bindings_with_types() {
 }
 
 #[test]
+fn scope_json_emits_one_structured_object_per_binding() {
+    // `--json` emits one machine-readable object per visible binding — {file,line,col,name,type} — the
+    // shape an editor consumes for a scope/completion view without re-parsing the `file:line:col: name :
+    // type` text. Both output shapes are computed from the SAME resolved bindings, so they keep row parity.
+    let dir = scratch_dir("scope_json");
+    let f = dir.join("prog.sexp");
+    let src = "(module m (def (f (: p Int64)) (let ((q (: 5 Int64))) (+ p q))) (export main))\n";
+    std::fs::write(&f, src).unwrap();
+    let off = src.find("(+ p q)").unwrap();
+    let (ok, stdout, err) = run(
+        &["scope", f.to_str().unwrap(), &off.to_string(), "--json"],
+        "",
+    );
+    assert!(ok, "cdz scope --json should succeed: {err}");
+    let rows: Vec<&str> = stdout.lines().filter(|l| !l.trim().is_empty()).collect();
+    assert_eq!(
+        rows.len(),
+        2,
+        "one JSON object per visible binding (p, q): {stdout}"
+    );
+    for row in &rows {
+        assert!(
+            row.trim_start().starts_with('{') && row.trim_end().ends_with('}'),
+            "each row is a JSON object: {row}"
+        );
+        for key in ["\"file\"", "\"line\"", "\"col\"", "\"name\"", "\"type\""] {
+            assert!(row.contains(key), "row has {key}: {row}");
+        }
+    }
+    // The bindings ride through as structured fields (same facts as the human form).
+    assert!(
+        stdout.contains("\"name\":\"p\"") && stdout.contains("\"name\":\"q\""),
+        "both bindings p + q are emitted as structured objects: {stdout}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn scope_at_top_level_is_empty() {
     let dir = scratch_dir("scope_top");
     let f = dir.join("prog.sexp");

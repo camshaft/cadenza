@@ -2102,6 +2102,40 @@ pub fn solved_lambda_arrow(db: &mut Db, params: &[StructId], body: StructId) -> 
 /// the compound-element facet of the function-domain reflection miscompile). A non-function, non-compound
 /// value takes the plain `type_of` (unchanged). Element joins/products mirror `type_of`'s own compound
 /// arms exactly, so a value with no fn element reflects byte-identically to before.
+/// Whether `reflected_ty` would ground a fn DOMAIN inside `id` that the bottom-up `type_of` leaves `Any`
+/// — i.e. `id` is (syntactically, without reducing) a FUNCTION VALUE or a COMPOUND LITERAL that can hold a
+/// fn element. A caller uses this to choose `reflected_ty` (the grounded arrow) over `type_of` ONLY when
+/// grounding can matter, so a plain `let`/call/scalar keeps its exact `type_of` behaviour — notably the
+/// annotation-agreement check, where reflecting a `(let …)`/call expr would trigger a speculative
+/// reduction with side effects that suppress a sibling reject (the `?`-error-type soundness pin). Checked
+/// on the RESOLVED shape (a `(fn …)` lambda / a def-ref to one, or a compound-value ctor `Apply` / the
+/// symbol-headed compound node), never by reducing.
+pub fn reflection_may_ground(db: &mut Db, id: StructId) -> bool {
+    use crate::resolved::Prim;
+    // A function value — a bare/named lambda whose bottom-up type is an arrow (an unannotated param leaks
+    // `Any`). `type_of` is memoized, so this is cheap and does not reduce.
+    if matches!(type_of(db, id), Ty::Fn(_, _)) {
+        return true;
+    }
+    // A compound-value LITERAL — the name-alias `Apply(TupleNew/ListNew/RecordNew/MapNew)` or the
+    // symbol-headed `Resolved::Tuple`/`List`/`Record`/`Map` — or a variant CONSTRUCTOR application (a
+    // payload may be a fn). These are the shapes `reflected_ty` recurses; anything else (a `let`, a call,
+    // a scalar, a bare variant) it hands straight to `type_of`, so gating on them changes nothing.
+    match resolved_of(db, id) {
+        Resolved::Tuple { .. }
+        | Resolved::List { .. }
+        | Resolved::Record { .. }
+        | Resolved::Map { .. } => true,
+        Resolved::Apply { head, .. } => {
+            matches!(
+                crate::eval::meta_apply_of(db, head),
+                Some(Prim::TupleNew | Prim::ListNew | Prim::RecordNew | Prim::MapNew)
+            ) || crate::eval::variant_disc_of(db, head).is_some()
+        }
+        _ => false,
+    }
+}
+
 pub fn reflected_ty(db: &mut Db, id: StructId) -> Ty {
     use crate::resolved::Prim;
     // A FUNCTION value — bare `(fn …)`, a named def-ref, an annotated/`let`-wrapped lambda — grounds via
@@ -7056,18 +7090,39 @@ fn atom_surface(db: &Db, id: StructId) -> Option<String> {
 fn is_builtin_partial_application(
     db: &mut Db,
     app: StructId,
-    head: StructId,
-    args: &[StructId],
+    _head: StructId,
+    _args: &[StructId],
 ) -> bool {
-    // (a) SPINE-TOP. If a parent Apply feeds `app` as its head, an outer level supplies more args — `app`
-    // is an inner node of a larger spine, not its top; skip (the top is checked on its own visit).
-    if let Some(parent) = db.parent_of(app) {
-        let parent = crate::lower::peel_ref_annot(db, parent);
-        if let Resolved::Apply { head: ph, .. } = resolved_of(db, parent)
-            && crate::lower::peel_ref_annot(db, ph) == app
-        {
-            return false;
-        }
+    // (a) SPINE-TOP. If `app` sits in the HEAD position of an enclosing APPLICATION form, an outer level
+    // supplies more args — `app` is an inner node of a larger spine, not its top; skip (the top is checked
+    // on its own visit). Test this STRUCTURALLY on the AST: `app` is the FIRST child (index 0) of its
+    // parent list, and that parent is an application (not a grammar/ctor-string head). The resolver
+    // FLATTENS a curried spine `((f a) b)` into ONE `Apply { head: f, args: [a, b] }`, so the parent's
+    // RESOLVED head is `f` (the bottom), NOT this inner node — a resolved-form `head == app` test misses
+    // it. The raw-AST head-position test is exact for both the nested-parens and any flatten. (`peel_ref_
+    // annot` on `app` handles a `let`-bound spine whose parent points at the binding.)
+    if let Some(parent) = db.parent_of(app)
+        && let crate::ast::Struct::List(kids) = db.ast.get(parent)
+        && kids.first() == Some(&app)
+        && db.ast.head_ctor(parent).is_none()
+        && db
+            .ast
+            .head_name(parent)
+            .is_none_or(|h| !crate::resolve::is_grammar_head(h))
+    {
+        return false;
+    }
+    // FLATTEN THE SPINE to its BOTTOM head + full gathered args. The flat `(String.slice s 0)` and the
+    // nested-parens `((String.slice s) 0)` are the SAME application (`(f a b)` desugars to `((f a) b)`), so
+    // both must be treated identically. Driving the checks off the IMMEDIATE head skipped the nested form:
+    // its head is the inner `Apply` `(String.slice s)`, whose `meta_apply_of`/`scheme_of` is `None`. Peel to
+    // the bottom head (a builtin op / ctor / anything) and gather every arg across the spine, then gate +
+    // exclude + arity all off THAT — so the two surfaces reject identically (Copilot PR#491 / v-inference).
+    let (head, args) = crate::lower::apply_spine(db, app);
+    // The check applies only to a BUILT-IN OPERATION head (a prim). A user fn / module member has no
+    // `(meta apply)` prim — its partial application is legitimate currying, not flagged.
+    if crate::eval::meta_apply_of(db, head).is_none() {
+        return false;
     }
     // UNARY NEGATION `(- e)` — `Sub` applied to ONE arg. `Sub`'s scheme is BINARY (`∀a.(Int a)→(Int a)→
     // (Int a)`), so the arity check below would read it as under-applied; but arity-1 `Sub` is the LEGIT
@@ -7086,19 +7141,15 @@ fn is_builtin_partial_application(
         return false;
     }
     if crate::eval::variant_disc_of(db, head).is_some() {
-        // A ctor head at THIS node: partial iff it neither completed above nor eta-lifts. If it eta-lifts,
-        // it is a first-class closure value — not the unbuilt-partial hole.
+        // A ctor bottom head: partial iff it neither completed above nor eta-lifts. If it eta-lifts, it is a
+        // first-class closure value — not the unbuilt-partial hole.
         if crate::lower::eta_ctor_closure(db, head).is_some() {
             return false;
         }
     }
-    // (c) UNDER-APPLIED against the head's VALUE-param arity. Gather the full spine's args (a ctor/op spine
-    // may nest); fall back to this level's args when no deeper spine. Arity from the INSTANTIATED scheme's
-    // arrow chain — instantiate first so `∀` quantifiers become fresh vars, not counted as params.
-    let gathered = crate::lower::ctor_spine(db, app)
-        .or_else(|| crate::lower::runtime_fn_spine(db, app))
-        .map(|(_, a)| a.len())
-        .unwrap_or(args.len());
+    // (c) UNDER-APPLIED against the bottom head's VALUE-param arity. `args` is the flattened spine's full
+    // arg count. Arity from the INSTANTIATED scheme's arrow chain — instantiate first so `∀` quantifiers
+    // become fresh vars, not counted as params.
     let mut fresh = crate::unify::Fresh::new();
     let Some(scheme) = crate::eval::scheme_of(db, head, &mut fresh) else {
         return false; // no scheme (malformed / not typed) — never a false reject
@@ -7110,7 +7161,7 @@ fn is_builtin_partial_application(
         ty = *r;
     }
     // Under-applied is the partial; exactly-applied builds; over-applied is the coded CDZ0203 elsewhere.
-    gathered < arity
+    args.len() < arity
 }
 
 fn check_application(
@@ -7226,10 +7277,24 @@ fn check_application(
     // NOT partially applicable (needs a runtime closure, unbuilt); a CONSTRUCTOR is (curried spine completes
     // / eta-lifts) — so exclude a ctor-headed spine that reaches its payload arity or eta-lifts. `Var`/`Any`
     // arities and non-prim heads (user fn / module member currying — legitimate) never reach the reject.
-    if crate::eval::meta_apply_of(db, head).is_some()
-        && is_builtin_partial_application(db, app, head, args)
-    {
-        let named = member_op_head_name(db, head)
+    // NB: the gate is `is_builtin_partial_application` ALONE — no immediate-head `meta_apply_of` pre-gate.
+    // The predicate flattens the spine to its BOTTOM head and gates on THAT, so the nested-parens surface
+    // `((String.slice s) 0)` (immediate head an `Apply`, `meta_apply_of` None) reaches the same test the
+    // flat `(String.slice s 0)` does. A pre-gate on the immediate head would skip the nested form (the
+    // PR#491 hole). The predicate returns fast-false for a non-op bottom head, so this is not costly.
+    if is_builtin_partial_application(db, app, head, args) {
+        // Name the operation off the spine's bottom `(. Module member)` head — the flat `(String.slice s
+        // 0)` has that head directly; the nested `((String.slice s) 0)` reaches it by peeling the AST head
+        // children. Peel on the RAW AST (a `List` whose first child is the deeper head), NOT the resolved
+        // form (whose bottom is the op-prim value, not the `(. …)` node `member_op_head_name` reads).
+        let mut name_head = app;
+        while let crate::ast::Struct::List(kids) = db.ast.get(name_head) {
+            match kids.first() {
+                Some(&h) if matches!(db.ast.get(h), crate::ast::Struct::List(_)) => name_head = h,
+                _ => break,
+            }
+        }
+        let named = member_op_head_name(db, name_head)
             .map(|(m, k)| format!("`{m}.{k}`"))
             .unwrap_or_else(|| "a built-in operation".to_string());
         trace!(target: "rcdzc::infer", app = app.0, head = head.0, "fault: built-in operation partially applied as an unconsumed value (surfaced in check)");
@@ -11968,28 +12033,28 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                     // arrow. The `type_of` Lambda arm leaves an UNANNOTATED parameter `Any` (`h x = x + 1`
                     // types `(-> Any Int64)`), and `Any` UNIFIES WITH ANYTHING — so a CONTRADICTORY arrow
                     // annotation `(: h (-> Bool Int64))` / `(: h (-> String Int64))` unified against `(-> Any
-                    // Int64)` and SUCCEEDED, silently accepting a mismatch the check exists to reject (an
-                    // annotated-domain fn `(: (: x Int64) …)` or a RESULT contradiction was caught — only the
-                    // un-annotated DOMAIN slipped, via the `Any`). `solved_lambda_arrow` grounds each param
-                    // from the body (the same solve reflection + lowering use), so the domain is its real
-                    // type and the contradiction is caught. A genuinely-unconstrained param stays `Any` (a
-                    // polymorphic `(fn (x) x)`), which still unifies — honest, no false reject. GATE on the
-                    // bottom-up type ALREADY being a `Ty::Fn`: `lambda_params_and_body` follows a `let`/`apply`
-                    // through to an inner body (its `lambda_of` peels `Resolved::Let`/`Apply`), so a
-                    // NON-function annotated expr like `(: (let ((y …)) (Ok y)) (Result …))` would otherwise
-                    // wrongly enter the fn-grounding path and mis-solve. Only re-solve when `type_of` already
-                    // says it IS a function (then `solved_lambda_arrow` grounds its `Any` domains); every
-                    // other expr keeps its plain `type_of`.
-                    let base_ty = type_of(db, expr);
-                    let expr_ty = if matches!(base_ty, Ty::Fn(_, _)) {
-                        match crate::eval::lambda_params_and_body(db, expr) {
-                            Some((params, body)) => {
-                                solved_lambda_arrow(db, &params, body).unwrap_or(base_ty)
-                            }
-                            None => base_ty,
-                        }
+                    // Int64)` and SUCCEEDED, silently accepting a mismatch the check exists to reject. The
+                    // SAME leak reaches a fn stored INSIDE a compound/sum being annotated — `(: (tuple h 0)
+                    // (Tuple (-> Bool Int64) Int64))` / `(: (Some h) (Option (-> Bool Int64)))` — because the
+                    // compound's bottom-up `type_of` renders its fn element as `(-> Any …)`, so the domain
+                    // contradiction is masked (a RESULT contradiction was caught, since the codomain is
+                    // concrete). `reflected_ty` grounds a fn's domain from its body for a BARE fn AND
+                    // recursively through tuple/list/record/map elements + sum-variant payloads (the same
+                    // grounding `Type.of` uses), so the annotation check sees each fn's real domain wherever
+                    // it sits. It falls back to the plain `type_of` for a non-function, non-compound value —
+                    // including a `(let …)`/call whose result is not itself a fn, so the error-type reject of
+                    // `(: (let ((y (try (Err true)))) (Ok y)) (Result …))` is unaffected (`reflected_ty`'s fn
+                    // check needs the value to REDUCE to a lambda, which a `(Ok y)` body does not). A
+                    // genuinely-unconstrained param stays `Any` (polymorphic `(fn (x) x)`) and still unifies —
+                    // honest, no false reject. GATED by `reflection_may_ground`: only a fn value or a
+                    // compound/variant LITERAL takes the grounded `reflected_ty`; a plain `let`/call/scalar
+                    // keeps its exact `type_of`, so reflecting a `(: (let ((y (try (Err …)))) (Ok y)) (Result
+                    // …))` — which would speculatively reduce and suppress the `?`-error-type soundness reject
+                    // — is avoided (that expr is a `let`, not a fn/compound literal).
+                    let expr_ty = if reflection_may_ground(db, expr) {
+                        reflected_ty(db, expr)
                     } else {
-                        base_ty
+                        type_of(db, expr)
                     };
                     let mut subst = Subst::new();
                     if crate::unify::unify(&mut subst, &annot_ty, &expr_ty).is_err() {

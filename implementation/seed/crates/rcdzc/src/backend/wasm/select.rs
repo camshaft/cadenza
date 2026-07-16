@@ -9545,6 +9545,14 @@ fn heap_operand_ownership(db: &mut Db, id: StructId) -> Result<HandleOwnership, 
         | Core::BytesCompact { .. }
         | Core::StrFromBytes { .. }
         | Core::StrToBytes { .. }
+        // A runtime `(bin …)` construction builds a FRESH owned Bytes on the rope heap (`bytes-alloc` +
+        // per-segment range-check-and-write, exactly like `BytesOf`), so as a `value-eq` operand it is
+        // Owned and the emit drops it after the borrowing compare. WITHOUT this a runtime `(bin …)` result
+        // — spec'd a Bytes value — fell to the `_ => decline` below, so `(= (bin (u8 v)) b"…")` DECLINED
+        // "an ownership this backend cannot yet prove" even though a `Bytes.of` of the same content compares
+        // fine (a completeness gap, not a miscompile). `BinBitsBuild` (a `(bits v k)` run) is the same.
+        | Core::BinBuild { .. }
+        | Core::BinBitsBuild { .. }
         // A set construction/update/algebra (`set-empty`+inserts, `set-insert`, `set-remove`, union/
         // intersection/difference) returns a fresh owned set handle — the `value-eq` emit drops it.
         | Core::SetOf { .. }

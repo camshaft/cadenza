@@ -24399,6 +24399,12 @@ mod match_engine {
         for src in [
             "(module m (def (f (: s String)) (String.slice s 0)) (def (main) 0) (export main))",
             "(module m (def (f (: s String)) (String.at s)) (export f))",
+            // NESTED-PARENS spine `((String.slice s) 0)` — the SAME application as the flat form (`(f a b)`
+            // desugars to `((f a) b)`), so it must reject identically. The immediate head here is the inner
+            // `Apply` `(String.slice s)` (whose `meta_apply_of` is `None`), which formerly SKIPPED the check
+            // — the PR#491 hole (Copilot-flagged, v-inference-verified). The predicate now flattens the
+            // spine to its bottom head first, so the nested and flat surfaces are treated identically.
+            "(module m (def (f (: s String)) ((String.slice s) 0)) (def (main) 0) (export main))",
         ] {
             assert!(
                 reject(src).is_some(),
@@ -26240,6 +26246,36 @@ mod match_engine {
             ),
             "49",
             "runtime bit-field run then an int segment: (3<<4)|1 = 0x31 = 49"
+        );
+        // A runtime `(bin …)` result IS a Bytes value (16-binary-matching: "`(bin …)` CONSTRUCTS a Bytes
+        // value"), so it must be `=`-comparable like any Bytes — `Core::BinBuild`/`BinBitsBuild` build a
+        // FRESH owned Bytes on the rope heap exactly as `Core::BytesOf` does. Before, a runtime bin result
+        // as a `value-eq` operand fell to the "ownership this backend cannot yet prove" decline (its Core
+        // node was absent from `heap_operand_ownership`'s Owned list), so `(= (bin …) b"…")` DECLINED even
+        // though a runtime `Bytes.of` of the same content compared fine. These pin it compares by content.
+        assert_eq!(
+            val(
+                "(module m (def (main (: v Int64)) (if (= (bin (u8 ((. UInt8 wrap) v))) ((. Bytes of) (list 5))) 1 0)) (export main))",
+                &["5"]
+            ),
+            "1",
+            "a runtime (bin (u8 …)) result compares equal to the Bytes it builds (BinBuild is Owned)"
+        );
+        assert_eq!(
+            val(
+                "(module m (def (main (: v Int64)) (if (= (bin (u8 ((. UInt8 wrap) v))) ((. Bytes of) (list 5))) 1 0)) (export main))",
+                &["9"]
+            ),
+            "0",
+            "a runtime bin result unequal to different content is false (genuine content compare)"
+        );
+        assert_eq!(
+            val(
+                "(module m (def (main (: v Int64)) (if (= (bin (bits ((. UInt8 wrap) v) 8)) ((. Bytes of) (list 5))) 1 0)) (export main))",
+                &["5"]
+            ),
+            "1",
+            "a runtime bit-field (bin (bits …)) result compares equal too (BinBitsBuild is Owned)"
         );
     }
 
@@ -33835,6 +33871,31 @@ mod match_engine {
                 "main"
             ),
             "a finite Ast.Float (2.5) reifies normally — the non-canonical guard does not touch it"
+        );
+        // The ACTIVE-UNQUOTE lift path (`,expr` → `ast-lift`) shares the rule: a constant NaN operand
+        // declines rather than lifting into an `Ast.Float` (which would reproduce the split via the lift
+        // path, not just the ctor). A finite unquote still lifts (the `,2.5` control folds to 2.5).
+        assert!(
+            compile_component(&crate::codec::encode(&crate::testkit::parse(
+                "(module m (def (main) (quasiquote (f (unquote Float64.nan)))) (export main))"
+            )))
+            .is_err(),
+            "an active unquote of a constant NaN declines — the ast-lift path is consistent with the ctor"
+        );
+        assert!(
+            run_returns::<f64>(
+                &compile_component(&crate::codec::encode(&crate::testkit::parse(
+                    "(module m (def (main) \
+                       (match (quasiquote (f (unquote 2.5))) \
+                         ((Ast.List xs) (match (List.at xs 1) \
+                                          ((Option.Some (Ast.Float v)) v) (_ 0.0))) \
+                         (_ 0.0))) \
+                     (export main))"
+                )))
+                .expect("a finite unquote lift still compiles"),
+                "main"
+            ) == 2.5,
+            "an active unquote of a finite float (2.5) lifts to Ast.Float — the guard only rejects a NaN"
         );
     }
 

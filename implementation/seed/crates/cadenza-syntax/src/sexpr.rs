@@ -1236,6 +1236,63 @@ mod tests {
         }
     }
 
+    /// Generate a random VALID s-expr program (bounded by `depth`) — atoms, infix, calls, `let`, `if`,
+    /// nested lists, and `record`/`match` shapes that stress the pretty-printer's layout branches.
+    fn gen_pretty_prog(rng: &mut SplitMix64, depth: usize) -> String {
+        let names = ["a", "b", "x", "y", "f", "+", "g", "\"s\"", "42", "true"];
+        if depth == 0 || rng.next().is_multiple_of(3) {
+            return names[(rng.next() as usize) % names.len()].to_string();
+        }
+        let sub = |rng: &mut SplitMix64| gen_pretty_prog(rng, depth - 1);
+        match rng.next() % 6 {
+            0 => format!("(+ {} {})", sub(rng), sub(rng)),
+            1 => format!("(f {} {} {})", sub(rng), sub(rng), sub(rng)),
+            2 => format!("(if {} {} {})", sub(rng), sub(rng), sub(rng)),
+            3 => format!("(let ((x {}) (y {})) {})", sub(rng), sub(rng), sub(rng)),
+            4 => format!("(record (x {}) (y {}))", sub(rng), sub(rng)),
+            _ => format!(
+                "(match {} ((Some n) {}) ((None _) {}))",
+                sub(rng),
+                sub(rng),
+                sub(rng)
+            ),
+        }
+    }
+
+    #[test]
+    fn pretty_round_trip_is_faithful_over_generated_programs_and_widths() {
+        // `pretty_reads_back_to_the_same_arena` pins ~6 hand-picked programs at one width; this sweeps the
+        // FIDELITY property over random VALID programs at a RANGE of widths: `read(print_pretty_width(a,
+        // w))` is structurally equal to `a`, for every width — a broken layout only shows at a width that
+        // forces the offending break, so varying the width is essential. Complements
+        // `sexpr_printer_is_total_over_arbitrary_arenas` (which sources RECOVERED arenas from byte-soup and
+        // pins TOTALITY + flat/pretty agreement, not round-trip fidelity of valid programs). Also asserts
+        // pretty is idempotent at each width (the laid-out form re-reads + re-prints to itself).
+        let mut rng = SplitMix64(0xbead_c0de_face_1234);
+        for _ in 0..3000 {
+            let depth = 1 + (rng.next() % 4) as usize;
+            let src = gen_pretty_prog(&mut rng, depth);
+            let a =
+                read(&src).unwrap_or_else(|e| panic!("generated s-expr {src:?} reads: {}", e.0));
+            for &width in &[0usize, 1, 8, 30, 100] {
+                let pretty = print_pretty_width(&a, width);
+                let b = read(&pretty).unwrap_or_else(|e| {
+                    panic!("pretty(w={width}) of {src:?} re-reads: {}\n{pretty}", e.0)
+                });
+                assert!(
+                    a.structurally_eq(&b),
+                    "pretty(w={width}) not faithful for {src:?}\n--- pretty ---\n{pretty}"
+                );
+                // Idempotent at this width: the laid-out tree re-prints identically.
+                assert_eq!(
+                    print_pretty_width(&b, width),
+                    pretty,
+                    "pretty(w={width}) not idempotent for {src:?}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn bigint_no_ceiling() {
         let a = read("123456789012345678901234567890").unwrap();

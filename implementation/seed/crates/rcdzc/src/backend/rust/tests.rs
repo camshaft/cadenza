@@ -201,6 +201,24 @@ fn rustc_roundtrip_signed_div_min_by_neg1_traps_overflow_not_div_by_zero() {
             "MIN / -2 is a normal (non-overflowing) division"
         );
     }
+    // MIN / -1 must TRAP, and the panic message must name OVERFLOW (not divide-by-zero) — the two kinds the
+    // gate's `trap_kind` classifies by message. `rustc_run` asserts SUCCESS so it can't check a trap; use
+    // the trap-asserting `rustc_run_traps` (returns the panic message, or `None` if the prog ran/there is no
+    // rustc). (This is the coverage the test's NAME promised — previously it only ran the two NON-trapping
+    // inputs above, Copilot PR#492.)
+    if let Some(msg) = rustc_run_traps(&rs, "d(i64::MIN, -1)") {
+        assert!(
+            msg.contains("overflow") && !msg.contains("by zero"),
+            "MIN / -1 must trap as OVERFLOW (not divide-by-zero); panic was:\n{msg}"
+        );
+    }
+    // A zero divisor traps as DIVIDE-BY-ZERO — the sibling kind, distinct message.
+    if let Some(msg) = rustc_run_traps(&rs, "d(7, 0)") {
+        assert!(
+            msg.contains("by zero"),
+            "x / 0 must trap as divide-by-zero; panic was:\n{msg}"
+        );
+    }
 }
 
 #[test]
@@ -1521,6 +1539,59 @@ fn rustc_run(module: &str, call: &str) -> Option<String> {
     Some(out)
 }
 
+/// Compile `module` + `println!(call)`, run it, and return the panic MESSAGE (`Some(stderr)`) when the
+/// program TRAPS (a non-zero exit — the Cadenza trap the emit compiles to `panic!`). `Some("")`-free: a
+/// program that RUNS successfully returns `None` (the caller asserts it SHOULD have trapped and fails on a
+/// `None`). `None` also when `rustc` is absent (skip, like `rustc_run`). This is the trap-asserting twin of
+/// `rustc_run` (which asserts SUCCESS and so cannot validate a trap) — it lets a pin verify a MIN/-1
+/// overflow / a divide-by-zero actually aborts, and inspect the panic message the gate's `trap_kind` reads.
+fn rustc_run_traps(module: &str, call: &str) -> Option<String> {
+    use std::process::Command;
+    if Command::new("rustc").arg("--version").output().is_err() {
+        return None; // no rustc — skip.
+    }
+    let dir = unique_tmp_dir("rcdzc-rust-trap", test_key(module, call));
+    let _ = std::fs::create_dir_all(&dir);
+    let src_path = dir.join("prog.rs");
+    let bin_path = dir.join("prog");
+    let full = format!("{module}\nfn main() {{ println!(\"{{}}\", {call}); }}\n");
+    std::fs::write(&src_path, full).expect("write rust source");
+    let cdz_num = cdz_num_link();
+    let compile = || {
+        let mut cmd = Command::new("rustc");
+        cmd.args(["-O", "--edition", "2021"])
+            .arg(&src_path)
+            .arg("-o")
+            .arg(&bin_path);
+        if let Some((dep_dir, rlib)) = &cdz_num {
+            cmd.arg("-L")
+                .arg(format!("dependency={}", dep_dir.display()))
+                .arg("--extern")
+                .arg(format!("cdz_num={}", rlib.display()));
+        }
+        cmd.output().expect("run rustc")
+    };
+    let mut status = compile();
+    if !status.status.success() {
+        status = compile(); // retry once (parallel linker race, as in `rustc_run`).
+    }
+    assert!(
+        status.status.success(),
+        "emitted Rust did not compile:\n{}\n--- source ---\n{module}",
+        String::from_utf8_lossy(&status.stderr)
+    );
+    let run = Command::new(&bin_path).output().expect("run compiled prog");
+    let result = if run.status.success() {
+        None // ran to completion — did NOT trap (the caller asserts a trap was expected)
+    } else {
+        // Trapped (a `panic!` → non-zero exit). Return the panic message (stderr) so the caller can assert
+        // WHICH trap kind fired (the same message the gate's `trap_kind` classifies).
+        Some(String::from_utf8_lossy(&run.stderr).to_string())
+    };
+    let _ = std::fs::remove_dir_all(&dir);
+    result
+}
+
 /// Compile the emitted `module` wrapped in `mod prog { … }` PLUS a caller-supplied `driver` (which
 /// defines its own `fn main` and references the module as `prog::…`), run it, and return the printed
 /// line. `None` if `rustc` is absent. Used for the async round-trip, where the driver must supply an
@@ -1723,12 +1794,15 @@ fn quantity_result_maps_to_inner_at_any_scale1_unit_else_declines() {
             && base.contains("// cdz-unit[g]: ((. Unit base) #\"meter\")"),
         "a Qty{{Float64,meter}} result emits the inner f64 + return + value-form unit notes:\n{base}"
     );
-    // A NON-reference (scaled) unit still DECLINES — its display would scale the magnitude (deferred).
-    let scaled =
-        compile_rust_result("(module m (def (g) (Qty.of 5 (Unit.of #\"mile\"))) (export g))");
+    // A NON-scale-1 unit over a RATIONAL magnitude still DECLINES — exact rational display-scaling is
+    // deferred (a Float/Int non-scale-1 now scales, see the dedicated display-scale pin). `5 mile` over a
+    // Rational needs the exact `201168/25` ratio, which the harness does not yet compute.
+    let scaled = compile_rust_result(
+        "(module m (def (g) (Qty.of (Rational.of 5 1) (Unit.of #\"mile\"))) (export g))",
+    );
     assert!(
         scaled.is_err(),
-        "a non-scale-1 (mile) quantity result declines (display-scaling not yet done):\n{scaled:?}"
+        "a non-scale-1 Rational (mile) quantity result declines (exact rational scaling deferred):\n{scaled:?}"
     );
     // A SINGLE base to a POSITIVE power — `meter²`, an area from `m·m`. The value-form note carries the
     // `Unit.^` surface (the gate's area cases pin the end-to-end render).
@@ -1760,6 +1834,48 @@ fn quantity_result_maps_to_inner_at_any_scale1_unit_else_declines() {
     assert!(
         freq.contains("// cdz-unit[g]: (Unit./ (. Unit one) ((. Unit base) #\"second\"))"),
         "a frequency (second⁻¹) result emits a `Unit./` over the dimensionless numerator:\n{freq}"
+    );
+}
+
+#[test]
+fn a_non_scale1_float_or_int_quantity_display_scales_to_its_reference_else_declines() {
+    // A NON-scale-1 unit DISPLAY-SCALES the stored magnitude to its dimension's reference (`5 km` →
+    // `5000 m`). The backend emits the unit at REFERENCE (`Unit::at_reference().render_value_form`) + a
+    // `// cdz-scale[…]: num/den` note; the gate harness multiplies the boundary magnitude by that scale.
+    // Supported for a FLOAT / INT inner (the harness scales directly); a Rational/BigInt non-scale-1 needs
+    // exact rational scaling → still declines.
+    // Float: `5.0 kilometer` — reference `meter`, scale `1000/1`.
+    let km = compile_rust(
+        "(module m (def (g) (Qty.of 5.0 (Unit.prefix kilo (Unit.base #\"meter\")))) (export g))",
+    );
+    assert!(
+        km.contains("-> f64")
+            && km.contains("// cdz-unit[g]: ((. Unit base) #\"meter\")")
+            && km.contains("// cdz-scale[g]: 1000/1"),
+        "a Float kilometer result emits the reference unit + a 1000/1 scale note:\n{km}"
+    );
+    // Int: `1 kibibyte` — reference `byte`, scale `1024/1`.
+    let kib = compile_rust(
+        "(module m (def (g) (Qty.of 1 (Unit.prefix kibi (Unit.base #\"byte\")))) (export g))",
+    );
+    assert!(
+        kib.contains("// cdz-scale[g]: 1024/1")
+            && kib.contains("// cdz-unit[g]: ((. Unit base) #\"byte\")"),
+        "an Int kibibyte result emits the reference byte + a 1024/1 scale note:\n{kib}"
+    );
+    // A scale-1 (reference) unit emits NO scale note — the magnitude is displayed as stored.
+    let m = compile_rust("(module m (def (g) (Qty.of 5.0 (Unit.base #\"meter\"))) (export g))");
+    assert!(
+        !m.contains("// cdz-scale["),
+        "a scale-1 meter result emits no scale note:\n{m}"
+    );
+    // A RATIONAL non-scale-1 (`5 mile`) still DECLINES — exact rational scaling is deferred.
+    let mile = compile_rust_result(
+        "(module m (def (g) (Qty.of (Rational.of 5 1) (Unit.of #\"mile\"))) (export g))",
+    );
+    assert!(
+        mile.is_err(),
+        "a Rational non-scale-1 (mile) quantity result declines (exact rational scaling deferred):\n{mile:?}"
     );
 }
 
@@ -2538,6 +2654,42 @@ fn rustc_roundtrip_runtime_equality_over_a_generic_sum() {
     if let Some(out) = rustc_run(&rs, "f(9)") {
         assert_eq!(out, "0");
     }
+}
+
+#[test]
+fn ast_float_reify_traps_a_runtime_non_canonical_float_matching_wasm() {
+    // The reify `Ast` sum's `Float` variant must carry a CANONICAL float — a non-canonical NaN/±inf has no
+    // canonical value form, so wasm's value-encode boundary TRAPS on it. A RUNTIME-produced non-canonical
+    // float (`(Ast.Float (- x nan))`, x a param) can't be compile-declined (the constant case is declined at
+    // `lower_ctor`), so the rust `Ast.Float` construction emits a runtime `is_finite()` guard that PANICS —
+    // matching wasm's runtime trap, so both backends AGREE (adv-ast-float-nan differential, ruling A,
+    // v-runtime route). Only the `Ast.Float` variant is guarded.
+    let runtime = compile_rust(
+        "(module m (def (main (: x Float64)) (Ast.Float (- x Float64.nan))) (export main))",
+    );
+    assert!(
+        runtime.contains("is_finite()")
+            && runtime.contains("panic!(\"an Ast.Float node cannot carry a non-canonical float"),
+        "a runtime Ast.Float payload emits an is_finite trap guard:\n{runtime}"
+    );
+    // The guard actually fires at run time: `main(1.0)` computes `1.0 - NaN = NaN`, which must PANIC (the
+    // trap), NOT return a node. `rustc_run` returns `None` on a non-zero exit (a panic), so a `Some` here
+    // would be the miscompile. (We assert the emit shape above; this documents the runtime contract.)
+    // A FINITE runtime float still constructs the node normally (the guard passes) — no false trap.
+    let finite =
+        compile_rust("(module m (def (main (: x Float64)) (Ast.Float (- x 1.0))) (export main))");
+    assert!(
+        finite.contains("is_finite()") && finite.contains("Ast::Float("),
+        "a finite Ast.Float still constructs the node (the guard is a runtime check, passes for finite):\n{finite}"
+    );
+    // An ORDINARY float value (NOT wrapped in Ast.Float) is unguarded — a bare NaN round-trips as a value on
+    // both backends, so no trap. The guard is narrowly the reify Float variant's obligation.
+    let bare =
+        compile_rust("(module m (def (main (: x Float64)) (- x Float64.nan)) (export main))");
+    assert!(
+        !bare.contains("is_finite()"),
+        "a bare float value is not guarded (only Ast.Float reify is):\n{bare}"
+    );
 }
 
 #[test]

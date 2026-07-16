@@ -205,26 +205,28 @@ export function bindingFor(widget: Widget, current: number | boolean | string): 
 }
 
 /// The Cadenza literal for a value of `type`. Exported for the reactive engine + testable in isolation.
-/// GUARDS emitted-source validity (the recurring lexer-hardening class): a non-finite number (NaN /
+/// GUARDS emitted-source validity (the recurring lexer-hardening class): a NON-FINITE number (NaN /
 /// ±Infinity — reachable from a malformed `number(default: 1e999)` or a bad control value) would emit
-/// `def x = NaN`/`Infinity`, which is NOT valid Cadenza and would break the cell's compile; and a large
-/// magnitude would render in exponential form (`1e+21`), also not a Cadenza numeric literal. Both are
-/// clamped to a safe literal (`0.0`/`0`) rather than leaking invalid source.
+/// `def x = NaN`/`Infinity`, which is NOT valid Cadenza and would break the cell's compile, so it's
+/// clamped to a safe literal (`0.0`/`0`). (Exponent notation like `1e+21` is FINE for Float64 — Cadenza's
+/// lexer accepts exponent floats — but is NOT a valid Int64 literal, so the Int64 branch renders large
+/// integers in full via BigInt.)
 export function literalFor(type: WidgetType, value: number | boolean | string): string {
   switch (type) {
     case "Float64": {
       const n = Number(value);
       if (!Number.isFinite(n)) return "0.0"; // NaN / ±Infinity → safe default (no `def x = Infinity`)
-      // A whole number needs an explicit `.0` to ground to Float64 (not Int64). toFixed-free: only add
-      // `.0` when the default `${n}` has no `.`/`e` (avoid `1e+21` — but a finite Float64 in normal
-      // widget range never hits exponential; a huge one falls through to its `${n}`, still a valid float).
+      // A whole-valued number needs an explicit `.0` to ground to Float64 (not Int64); a number that
+      // already has a `.` or an `e` exponent (e.g. `1e+21`) is a valid Float64 literal as-is (Cadenza's
+      // lexer accepts exponent floats), so pass it through unchanged.
       const s = `${n}`;
       return /[.e]/.test(s) ? s : `${s}.0`;
     }
     case "Int64": {
       const n = Math.trunc(Number(value));
       if (!Number.isFinite(n)) return "0"; // NaN / ±Infinity → safe default
-      // BigInt(n) renders a large integer in FULL (no `1e+21` exponential form) — a valid Int64 literal.
+      // BigInt(n) renders a large integer in FULL, avoiding the exponential form (`1e+21`) that `${n}`
+      // would produce — exponent notation is NOT a valid Int64 literal (it is fine for Float64 above).
       return BigInt(n).toString();
     }
     case "Bool":

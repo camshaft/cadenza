@@ -30,6 +30,27 @@
   (input  (do (def (h x) (+ x 1)) (def (main) (: h (-> Bool Int64))) (export main)))
   (error  CDZ0203))
 
+(case "a contradictory arrow annotation on a function INSIDE a compound is rejected"
+  (doc    "The bare-function domain check above, extended to a function stored INSIDE the annotated
+           compound: `(: (tuple h 0) (Tuple (-> Bool Int64) Int64))` where `h : Int64 -> Int64` is a
+           contradiction — the tuple's element function has domain `Int64`, not the annotated `Bool`. It
+           slipped through because the compound's bottom-up type rendered its fn element as `(-> Any Int64)`
+           (the unannotated domain leaks `Any` through the container, and `Any` unifies with `Bool`); the
+           annotation check now grounds a fn element's domain from its body wherever it sits — through
+           tuple/list/record/map elements and sum-variant payloads — so the nested contradiction is caught.
+           A non-fn element mismatch and a fn RESULT mismatch through a compound were already caught (the
+           element/result types are concrete); only the nested un-annotated DOMAIN slipped. CDZ0203.")
+  (input  (do (def (h x) (+ x 1)) (def (main) (: (tuple h 0) (Tuple (-> Bool Int64) Int64))) (export main)))
+  (error  CDZ0203))
+
+(case "a contradictory arrow annotation on a function in a SUM payload is rejected"
+  (doc    "The sum-payload sibling of the compound-element annotation check: `(: (Some h) (Option (-> Bool
+           Int64)))` with `h : Int64 -> Int64` is a contradiction — the payload function's domain is `Int64`,
+           not `Bool`. Same root as the tuple case (the payload's fn domain leaked `Any` through the `Option`
+           type argument, masking the mismatch); the grounded annotation check catches it. CDZ0203.")
+  (input  (do (def (h x) (+ x 1)) (def (main) (: (Some h) (Option (-> Bool Int64)))) (export main)))
+  (error  CDZ0203))
+
 ; The TYPE OPERAND of an annotation `(: expr T)` must itself DENOTE A TYPE — validating what stands in
 ; type position is the dual of checking it against the value. A non-type there (an unbound name, an
 ; integer/compound VALUE, an arbitrary expression, a non-constructor type applied to arguments) is

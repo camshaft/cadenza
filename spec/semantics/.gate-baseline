@@ -475,6 +475,9 @@ pass	a byte-decode loop advancing by a tuple projection while accumulating sum n
 pass	a byte-string literal equals the explicit byte sequence it desugars to
 pass	a byte-string literal with escapes equals its explicit byte sequence
 pass	a bytes value chosen by a runtime if is length-measured with valid wasm
+pass	a call-returned Bool newtype literal-payload arm spills correctly
+pass	a call-returned Int32 newtype literal-payload arm spills at the narrow width
+pass	a call-returned UInt8 newtype literal-payload arm spills at the narrow width
 pass	a camelCase round-trip resolves through kebab boundary-name normalization
 pass	a camelCase same-signature multi-export normalizes each make-<name>
 pass	a capture-free de Bruijn beta-reduction over a nameless term sum reduces correctly
@@ -656,6 +659,8 @@ pass	a context-typed empty float map needs no key inserted to ground its wrapper
 pass	a context-typed empty float set grounds its element wrapper type
 pass	a context-typed empty float32 map grounds the narrow-float wrapper
 pass	a contradictory ARROW annotation on a function value is rejected
+pass	a contradictory arrow annotation on a function INSIDE a compound is rejected
+pass	a contradictory arrow annotation on a function in a SUM payload is rejected
 pass	a correctly-annotated function parameter is accepted
 pass	a cross-type variant pattern whose payload width differs is rejected, not miscompiled
 pass	a crossing text-literal arm is rejected even beside a same-kind sibling arm
@@ -731,6 +736,7 @@ pass	a dotted nullary arm whose body nests a same-type sum match dispatches corr
 pass	a double same-dimension annotation preserves the original scale
 pass	a double-negated condition unwinds to the original selection
 pass	a double-negated float compare unwinds to the compare, preserving NaN-false
+pass	a doubly-call-returned narrow newtype spills correctly through two calls
 pass	a doubly-nested strength-reduced multiply chains shift into shift
 pass	a doubly-nested tuple map key containing a rope is found by its flat twin
 pass	a duplicate NESTED-CONSTRUCTOR arm is dead code but the program still runs
@@ -1606,6 +1612,7 @@ pass	a runtime Bytes rope in a record field compares equal to its flat twin
 pass	a runtime Bytes rope is found as a Set element by its flat twin
 pass	a runtime Bytes rope map key is looked up by its flat twin
 pass	a runtime Bytes rope nested in a tuple compares equal to its flat twin
+pass	a runtime Bytes.of value is equality-comparable (the runtime-Bytes control)
 pass	a runtime FLOAT width nested in a compound annotation is rejected
 pass	a runtime Float quantity comparison against NaN is the IEEE partial order (false)
 pass	a runtime Float32 addition emits the f32 machine add
@@ -1634,6 +1641,8 @@ pass	a runtime String match and its (= s literal) if-chain agree on the DEFAULT 
 pass	a runtime String match on a hit arm agrees with its desugared (= s literal) if-chain
 pass	a runtime Unit.in conversion emits the scale multiply (Int)
 pass	a runtime arithmetic right shift preserves the sign
+pass	a runtime bin construction result compares equal to the Bytes it builds
+pass	a runtime bin construction result unequal to different content is false
 pass	a runtime bin match binds the tail after a fixed header via a final rest segment
 pass	a runtime bin match dispatches on a literal tag across arms
 pass	a runtime bin pattern decodes a fixed-width segment from a runtime scrutinee
@@ -2065,6 +2074,7 @@ pass	a tuple-wrapped self-application is rejected in bounded time, not a compile
 pass	a twenty-deep push chain retains the still-live source binding
 pass	a two-argument closure exported to the host is called with both arguments
 pass	a two-arm Bool match selects its second (false) arm
+pass	a two-arm if selecting between two runtime FLOAT values computes the chosen one (float select-ification)
 pass	a two-arm list match reading an element binder keeps the branch — no speculative empty read
 pass	a two-arm list match with constant arms dispatches branchlessly on the length — empty
 pass	a two-arm match does not evaluate the unselected arm's trapping body
@@ -2211,6 +2221,8 @@ pass	an active unquote lifts a RUNTIME float operand, not only a constant
 pass	an active unquote lifts a RUNTIME integer operand, not only a constant
 pass	an active unquote of a boolean literal lifts to an Ast.Bool node
 pass	an active unquote of a computed boolean expression lifts to Ast.Bool
+pass	an active unquote of a constant NaN declines (the ast-lift path, consistent with the ctor)
+pass	an active unquote of a finite float lifts to Ast.Float (ast-lift control)
 pass	an active unquote of a float literal lifts to an Ast.Float node
 pass	an active unquote of a let-bound boolean lifts to Ast.Bool by inferred type
 pass	an active unquote of a let-bound float lifts to Ast.Float by inferred type
@@ -2314,6 +2326,7 @@ pass	an escaping closure whose body is a match hits the literal arm
 pass	an escaping closure whose body is a match hits the wildcard arm
 pass	an escaping tuple evaluates its trapping element
 pass	an expect of a list index result is an integer usable in arithmetic
+pass	an explicit Bytes annotation on a runtime bin result compares the same
 pass	an explicit annotation overrides the default-fraction pragma
 pass	an explicit annotation overrides the default-integer pragma
 pass	an explicit conversion makes the operation well-typed

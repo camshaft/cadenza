@@ -2245,6 +2245,18 @@ fn lower_ast_lift(db: &mut Db, operand: StructId) -> Core {
             disc: disc.int,
             payloads: vec![operand],
         },
+        // A CONSTANT non-canonical float operand (a NaN) has no canonical value form — lifting it into an
+        // `Ast.Float` would reproduce the wasm-traps/rust-accepts split the direct-ctor guard (lower_sum_new)
+        // and the splice-lift already close. Decline it here too, so the active-unquote lift `,nan` is
+        // consistent with `(Ast.Float nan)` and `,@(list nan)`. A RUNTIME float operand still lifts (a finite
+        // runtime float is the common case; a runtime NaN traps uniformly at the escape boundary — the
+        // runtime residual owned by the rust-encode side, not compile-declinable). Checked before the wrap.
+        crate::ty::Ty::Float(_) if matches!(core_of(db, operand), Core::ConstFloatNan) => {
+            Core::Poison(Reject::decline(
+                "an active unquote of a non-canonical float (a NaN has no canonical value form) cannot lift \
+                 into an `Ast.Float`; a finite float lifts, matching `(Ast.Float nan)` and `,@` of a NaN list",
+            ))
+        }
         // `Ast.Float`'s payload is Float64, so a width-64-grounded float operand lifts to `Ast.Float`.
         crate::ty::Ty::Float(ft) if ft.ground_width() == 64 => Core::SumNew {
             disc: disc.float,
@@ -2706,6 +2718,25 @@ struct AstDiscs {
     list: u32,
     ty: crate::ty::Ty,
 }
+/// Whether a `Core::SumNew { disc }` at result type `ty` constructs the reify `Ast` sum's `Float` variant
+/// — the ONE variant whose payload is a float that must be CANONICAL to cross the value-encode boundary (a
+/// non-canonical NaN/±inf has no canonical value form). The rust backend uses this to guard a RUNTIME
+/// non-canonical float at construction (a compile-time-constant NaN is already declined at `lower_ctor`),
+/// matching wasm's runtime value-encode trap. Only the `Ast` sum's Float variant — an ordinary float value
+/// (or any other sum's float payload) crosses fine, so this is narrowly the reify escape's obligation.
+pub(crate) fn is_ast_float_variant(db: &mut Db, ty: &crate::ty::Ty, disc: u32) -> bool {
+    let crate::ty::Ty::Sum { decl, .. } = ty else {
+        return false;
+    };
+    match ast_variant_discs(db) {
+        Some(a) => {
+            disc == a.float
+                && matches!(&a.ty, crate::ty::Ty::Sum { decl: ast_decl, .. } if ast_decl == decl)
+        }
+        None => false,
+    }
+}
+
 fn ast_variant_discs(db: &mut Db) -> Option<AstDiscs> {
     let ty = {
         let occ = db.type_decls.iter().find(|t| t.name == "Ast")?.occ;
@@ -9444,6 +9475,40 @@ pub(crate) fn runtime_fn_spine(db: &mut Db, id: StructId) -> Option<(StructId, V
             None
         }
         _ => None,
+    }
+}
+
+/// Peel a nested-`Apply` SPINE to its ULTIMATE (bottom) head and the full left-to-right argument list,
+/// REGARDLESS of what the bottom head is — a builtin operation, a constructor, a lambda, a def, anything.
+/// `((f a) b)` → `(f, [a, b])`; a non-`Apply` `id` → `(id, [])`. Unlike `runtime_fn_spine`/`ctor_spine`
+/// (which return `None` unless the bottom head is a runtime-fn-value / constructor), this ALWAYS returns
+/// the bottom head, so a caller can inspect it (its `meta_apply_of`/`scheme_of`) uniformly across the flat
+/// `(f a b)` and nested-parens `((f a) b)` surfaces — the same application, so treated identically. Peels
+/// through `Ref`/`Annot` wrappers on the head (via `peel_ref_annot`) so a `let`-bound partial is flattened
+/// too. Used by the builtin-partial-application check so a nested spine reaches the same gate + arity test
+/// the flat form does (the flat form's head IS the bottom head; the nested form's immediate head is an
+/// inner `Apply` whose `meta_apply_of` is `None`, which would otherwise skip the check).
+pub(crate) fn apply_spine(db: &mut Db, id: StructId) -> (StructId, Vec<StructId>) {
+    // FUEL bounds the peel, exactly as `ctor_spine` does: a RECURSIVE nullary def `(def (f) (f))` has its
+    // head-ref point back to the SAME apply, so an unfueled peel-and-recurse cycles forever (a stack
+    // overflow / SIGABRT). A real application spine is a handful deep; 64 is far above any genuine spine
+    // and stops the pathological cycle by returning the current node as the bottom head (a false-negative
+    // for the partial-builtin check on a >64-deep spine — never a real program, and never a false reject).
+    apply_spine_fueled(db, id, 64)
+}
+
+fn apply_spine_fueled(db: &mut Db, id: StructId, fuel: u32) -> (StructId, Vec<StructId>) {
+    if fuel == 0 {
+        return (id, Vec::new());
+    }
+    match resolved_of(db, id) {
+        Resolved::Apply { head, args } => {
+            let peeled = peel_ref_annot(db, head);
+            let (bottom, mut spine_args) = apply_spine_fueled(db, peeled, fuel - 1);
+            spine_args.extend_from_slice(&args);
+            (bottom, spine_args)
+        }
+        _ => (id, Vec::new()),
     }
 }
 

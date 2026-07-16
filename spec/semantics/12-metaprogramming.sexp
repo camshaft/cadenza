@@ -918,6 +918,26 @@
             (_             false)))
   (output (: true Bool)))
 
+(case "an active unquote of a constant NaN declines (the ast-lift path, consistent with the ctor)"
+  (doc    "The active-unquote lift `,expr` shares the non-canonical-float rule with the direct `Ast.Float`
+           ctor: `(quasiquote (f (unquote Float64.nan)))` EVALUATES the NaN and would lift it into an
+           `Ast.Float` node, which has no canonical value form. It DECLINES uniformly on both backends,
+           closing the same wasm-traps/rust-accepts split via the `ast-lift` path (not just the ctor path).
+           A finite unquote (`,2.5`) and a runtime finite float still lift — the guard is surgical.")
+  (input  (do (def (main) (quasiquote (f (unquote Float64.nan)))) (export main)))
+  (declines))
+
+(case "an active unquote of a finite float lifts to Ast.Float (ast-lift control)"
+  (doc    "The control for the ast-lift guard: `,2.5` lifts to `(Ast.Float 2.5)` normally — reading child 1
+           of `(quasiquote (f (unquote 2.5)))` back gives 2.5. Pins that the non-canonical guard on the lift
+           path only rejects a NaN, not a finite float.")
+  (input  (match (quasiquote (f (unquote 2.5)))
+            ((Ast.List xs) (match (List.at xs 1)
+                             ((Option.Some (Ast.Float v)) v)
+                             (_ 0.0)))
+            (_ 0.0)))
+  (output (: 2.5 Float64)))
+
 (case "eval of a quoted float executes it to the float value"
   (doc    "eval executes an AST value as code; a float form evaluates to itself, so `(eval (quote 1.5))`
            runs to `1.5` — the float companion of `(eval (quote true))`.")

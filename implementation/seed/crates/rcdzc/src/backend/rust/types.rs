@@ -51,16 +51,20 @@ pub fn rust_type(ty: &Ty) -> Option<String> {
         // computes the same rational value. Non-Copy (owns two limb `Vec`s) → clone-on-read.
         Ty::Rational => Some("cdz_num::Rational".to_string()),
         // A QUANTITY is a COMPILE-TIME-only dimension over an inner numeric magnitude — `lower` erases the
-        // `Ty::Qty` wrapper, so the emitted VALUE is just the inner magnitude. Map to `rust_type(inner)`;
-        // the unit is recovered for the boundary render from the `cdz-return` note's `render_name` and
-        // rendered as `((. Qty of) <magnitude> <unit-value-form>)` by the gate harness, which splices the
-        // unit from the backend's `// cdz-unit[…]` note (`Unit::render_value_form`) — so ANY unit SHAPE is
-        // renderable (a simple base, a power `meter²`, a product, a `Unit./` quotient for a velocity). The
-        // one remaining restriction is SCALE-1: a non-scale-1 unit (`5 mile`, `5 kilometer`) DISPLAY-scales
-        // its magnitude to the reference (`5 mile` → `201168/25 meter`), which needs per-inner-type magnitude
-        // arithmetic in the emit — a later increment — so it still declines here. A scale-1 unit stores the
-        // magnitude RAW (the displayed number IS the stored one), so the value emit is just the inner type.
-        Ty::Qty { inner, unit } if unit.scale() == (1, 1) => rust_type(inner),
+        // `Ty::Qty` wrapper, so the emitted VALUE is just the inner magnitude (stored RAW at the SOURCE
+        // unit). Map to `rust_type(inner)`; the unit is recovered for the boundary render from the backend's
+        // `// cdz-unit[…]` note (`Unit::render_value_form`, at the REFERENCE unit — scale dropped) and any
+        // non-1 scale from the `// cdz-scale[…]` note, so the gate harness renders `((. Qty of) <scaled
+        // magnitude> <reference-unit>)`.
+        //   - SCALE-1 (a reference unit): the stored magnitude IS the displayed one — any inner type.
+        //   - NON-SCALE-1 (`5 kilometer`, `5 foot`): the display SCALES the magnitude to the reference
+        //     (`5 km` → `5000 m`), applied in the harness in the inner numeric type. Supported for a FLOAT
+        //     or INT inner (the harness scales `× num/den` — Float rounds, Int truncates). A RATIONAL/BigInt
+        //     non-scale-1 needs EXACT rational scaling (`5 mile` → `201168/25 meter`) — deferred, still
+        //     declines (`ord_scale_supported` is false for those).
+        Ty::Qty { inner, unit } if unit.scale() == (1, 1) || qty_scale_supported(inner) => {
+            rust_type(inner)
+        }
         // A CHAR is a single Unicode scalar value — Rust's native `char` (which IS a Unicode scalar,
         // exactly the Cadenza model). Copy, so no clone-on-read needed. Lets a `Char` cross as a sum
         // payload / tuple element (a `(Tok (Ch Char))` enum) and a `ConstChar` emit as a `'…'` literal.
@@ -393,6 +397,16 @@ fn int_type(it: IntTy) -> Option<&'static str> {
         // Any other width (non-aliased/odd) has no native Rust primitive — decline.
         _ => return None,
     })
+}
+
+/// Whether a NON-scale-1 quantity over inner type `inner` can DISPLAY-SCALE its magnitude on the Rust
+/// backend. The display multiplies the stored magnitude by the unit's `num/den` scale in the inner numeric
+/// type; supported for a FLOAT (`× num/den` as f64, rounds) or a fixed-width INT (`× num / den`, truncates)
+/// — the harness scales the boundary value directly. A RATIONAL/BigInt needs EXACT rational scaling
+/// (`5 mile` → `201168/25 meter`, no rounding), which is a later increment, so it still declines. Mirrors
+/// the wasm `const_value_ast_scaled` per-inner-type rule, restricted to the two arithmetic-simple inners.
+pub(super) fn qty_scale_supported(inner: &Ty) -> bool {
+    matches!(inner, Ty::Int(_) | Ty::Float(_))
 }
 
 /// Whether an integer type is SIGNED — a fixed unsigned sign is `false`; a fixed signed, or a

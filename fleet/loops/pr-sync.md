@@ -19,10 +19,18 @@ anyone — and a saturated context is the fleet's worst failure: at ~100% even `
 (it needs headroom the full window lacks), so the SOLE integrator wedges *unrecoverably* and stalls
 ALL integration. Two disciplines keep that from ever happening — follow BOTH every tick:
 
-- **(a) Compact BEFORE you fill up.** At the TOP of each tick, if your context usage is past ~70%,
-  run `/compact` FIRST (a compact at 70% submits fine; at 100% it cannot). Don't wait to feel full —
-  a big batch can cross 70%→100% within one tick. When in doubt near the end of a long batch,
-  `/compact` between requests.
+- **(a) Compact BEFORE you fill up — at tick-top AND mid-batch.** Two checkpoints, both mandatory:
+  - **Tick-top:** if context is past ~70% at the start of a tick, run `/compact` FIRST (a compact at
+    70% submits fine; at 100% it cannot).
+  - **⚠ MID-BATCH (the load-bearing one under a big queue):** the tick-top check is NECESSARY BUT NOT
+    SUFFICIENT — one tick can integrate 40+ merge-requests back-to-back WITHOUT ever returning to the
+    tick-top check, so context climbs to 100% mid-batch and starves its own compact (this HAS crept
+    pr-sync to 99%; an external `/compact` can't preempt a busy pane either). So **after EACH
+    merge-request integration (step 2, alongside the per-MR heartbeat in 2e), CHECK your context and if
+    it's past ~70% run `/compact` BEFORE starting the next MR.** A long batch must have a compact
+    checkpoint per unit, not just per tick — never let a continuous batch run the window to 100%
+    without compacting. (Other roles return to a prompt between units so tick-top alone suffices; only
+    pr-sync's continuous-batch pattern needs the per-MR check.)
 - **(b) NEVER paste full gate/test output into your context or a reply.** `cargo xtask check` and
   `cargo xtask gate` write their full output to `target/xtask-logs/check-*.log` (and print only a
   short verdict — the pass/todo/fail counts, the fail-set diff, `check: all green ✓` / `FAILED at
@@ -93,6 +101,14 @@ ALL integration. Two disciplines keep that from ever happening — follow BOTH e
       the watchdog, don't special-case you via trunk-advance) and triggers false "nudge/compact pr-sync!"
       escalations (someone could interrupt your live integration). A per-MR heartbeat keeps the mtime
       honest: fresh whenever you're working, stale only when you're genuinely idle.
+   f. **Check context after EACH request and `/compact` if past ~70% — BEFORE starting the next MR**
+      (discipline (a), mid-batch). This is the SAME cadence as the per-MR heartbeat (2e) and just as
+      load-bearing: a continuous batch never returns to the tick-top compact check, so without a per-MR
+      checkpoint the window climbs to 100% mid-batch and your self-`/compact` can never fire (and an
+      external `/compact` can't preempt your busy pane). So between MRs, if context > ~70%, `/compact`
+      NOW — a 70% compact submits fine; a 100% one cannot, and at 100% the sole integrator freezes ALL
+      fleet integration. Do it BEFORE the next `git merge`, so you never carry a near-full window into
+      another full gate cycle.
 3. **Publish to the remote** (the PR half — unchanged in spirit from the old staging loop). When
    `trunk` is ahead of `origin/main` and clean:
    - **🚫 INVARIANT: NEVER move the `trunk` ref backward. Do NOT run `git reset --hard origin/main`

@@ -213,6 +213,7 @@ pass	a `?` on an ill-typed operand reports the operand's error, not a `?`-shape 
 pass	a `?` result is usable mid-body, not only in tail position
 pass	a `?` whose Result error type disagrees with the boundary's is rejected
 pass	a `?` with no fallible enclosing function boundary is rejected
+pass	a bare UInt8 literal-match (no newtype) is the width template
 pass	a bare arithmetic keyword is rejected, not a crash
 pass	a bare binding form with no bindings and no body is rejected, not a crash
 pass	a bare built-in constructor Some is passed as a first-class function
@@ -393,6 +394,8 @@ pass	a context-typed empty float map needs no key inserted to ground its wrapper
 pass	a context-typed empty float set grounds its element wrapper type
 pass	a context-typed empty float32 map grounds the narrow-float wrapper
 pass	a contradictory ARROW annotation on a function value is rejected
+pass	a contradictory arrow annotation on a function INSIDE a compound is rejected
+pass	a contradictory arrow annotation on a function in a SUM payload is rejected
 pass	a correctly-annotated function parameter is accepted
 pass	a cross-type variant pattern whose payload width differs is rejected, not miscompiled
 pass	a crossing text-literal arm is rejected even beside a same-kind sibling arm
@@ -473,6 +476,7 @@ pass	a failure `?` propagates through TWO nested fallible boundaries
 pass	a failure `?` short-circuits BEFORE later computation runs
 pass	a fallible parser threads a Result((value,cursor),String) through mutual recursion, short-circuiting on Err
 pass	a false variant guard shields its arm's trapping body
+pass	a family quantity displays scaled to its reference over Int64, truncating a non-whole ratio
 pass	a far-miss segment kind keeps the plain unrecognized message
 pass	a field is projected from a record chosen across a call boundary by a runtime conditional
 pass	a field is projected from a record returned across a call boundary
@@ -1056,6 +1060,7 @@ pass	a possibly-out-of-range runtime integer conversion still declines (checked 
 pass	a post-order effectful walk draws each node's id AFTER both children (SSA reg-alloc shape)
 pass	a post-order labeling walk returns a labeled tree (heap result, id drawn after children)
 pass	a prefix literal does not shadow a longer string arm
+pass	a prefixed quantity displays scaled to its reference unit (Float)
 pass	a prefixed unit combines with its base by converting to the reference (Float)
 pass	a private module member is still visible to a sibling
 pass	a private module member participates in mutual recursion with an exported sibling
@@ -1645,6 +1650,7 @@ pass	a tuple-projected loop invariant consumed per iteration accumulates stably
 pass	a tuple-wrapped self-application is rejected in bounded time, not a compiler stack overflow
 pass	a twenty-deep push chain retains the still-live source binding
 pass	a two-arm Bool match selects its second (false) arm
+pass	a two-arm if selecting between two runtime FLOAT values computes the chosen one (float select-ification)
 pass	a two-arm list match reading an element binder keeps the branch — no speculative empty read
 pass	a two-arm list match with constant arms dispatches branchlessly on the length — empty
 pass	a two-arm match does not evaluate the unselected arm's trapping body
@@ -1742,6 +1748,7 @@ pass	an AST from quasiquoting a runtime value equals the same AST built by quote
 pass	an Ast-value-spliced template round-trips through encode and decode
 pass	an IEC binary prefix converts exactly over Int64
 pass	an IEC binary prefix scales a unit by a power of two
+pass	an IEC-prefixed quantity displays scaled to its reference over Int64
 pass	an Int argument to a Bool-annotated parameter is rejected
 pass	an Int argument to a parameter used as a Bool condition is rejected
 pass	an N suffix lets a huge literal need no annotation
@@ -1781,6 +1788,8 @@ pass	an active unquote lifts a RUNTIME float operand, not only a constant
 pass	an active unquote lifts a RUNTIME integer operand, not only a constant
 pass	an active unquote of a boolean literal lifts to an Ast.Bool node
 pass	an active unquote of a computed boolean expression lifts to Ast.Bool
+pass	an active unquote of a constant NaN declines (the ast-lift path, consistent with the ctor)
+pass	an active unquote of a finite float lifts to Ast.Float (ast-lift control)
 pass	an active unquote of a float literal lifts to an Ast.Float node
 pass	an active unquote of a let-bound boolean lifts to Ast.Bool by inferred type
 pass	an active unquote of a let-bound float lifts to Ast.Float by inferred type
@@ -2350,6 +2359,7 @@ pass	multiplication
 pass	multiplication of an integer and a float does not silently promote
 pass	multiplication of the minimum integer by -1 overflows and traps
 pass	multiplication past the maximum integer overflows and traps
+pass	multiplying a scaled-unit quantity by the literal one keeps its dimension and displays scaled
 pass	multiplying quantities multiplies their dimensions
 pass	narrowing a BigInt-valued if back to Int64 works over both branches
 pass	narrowing a constant BigInt out of the target range is rejected at compile time
@@ -2965,6 +2975,7 @@ todo	a BOOL-field Tuple closure ARG, false discriminant
 todo	a Bytes-returning closure alongside a plain export — the closure runs
 todo	a Bytes-returning closure alongside a plain export — the plain runs
 todo	a Bytes-returning closure on a different argument
+todo	a CALL-returned single-variant newtype with a literal-payload arm spills at the right width
 todo	a CAPTURING closure carried in a sum payload keeps its capture through the match binder
 todo	a CAPTURING closure returning a List
 todo	a CAPTURING closure returning a tuple
@@ -3034,6 +3045,9 @@ todo	a branching recursive tree fold infers its unannotated callback across both
 todo	a build-time delegated effect whose result a returned closure captures does not escape
 todo	a built-in comparison on an abstract theorem value outside the kernel is rejected
 todo	a built-in comparison on an abstract type's value is rejected outside its module
+todo	a call-returned Bool newtype literal-payload arm spills correctly
+todo	a call-returned Int32 newtype literal-payload arm spills at the narrow width
+todo	a call-returned UInt8 newtype literal-payload arm spills at the narrow width
 todo	a camelCase round-trip resolves through kebab boundary-name normalization
 todo	a camelCase same-signature multi-export normalizes each make-<name>
 todo	a capturing 32-bit-integer closure crosses and is called
@@ -3127,8 +3141,8 @@ todo	a distinct-signature round-trip alongside a plain export — the plain expo
 todo	a distinct-signature round-trip applies the Int64->Bool closure
 todo	a distinct-signature round-trip applies the Int64->Int64 closure
 todo	a distinct-signature round-trip's Bool closure on a nonzero input
+todo	a doubly-call-returned narrow newtype spills correctly through two calls
 todo	a family quantity displays scaled exactly to its reference (Rational)
-todo	a family quantity displays scaled to its reference over Int64, truncating a non-whole ratio
 todo	a fixed-shape Tuple ARG with a Bytes RESULT crosses the direct-call boundary
 todo	a fixed-shape Tuple ARG with a List RESULT crosses the direct-call boundary
 todo	a fixed-shape Tuple ARG with a Map RESULT crosses the direct-call boundary
@@ -3183,7 +3197,6 @@ todo	a partial constructor in a runtime tuple element completes via an eta-closu
 todo	a partially-applied function escapes as a value and runs through a recursive HOF
 todo	a pass-through closure that returns its arg via a trivial let composes at one element type
 todo	a predicate closure returning Bool drives an early-exit recursive HOF
-todo	a prefixed quantity displays scaled to its reference unit (Float)
 todo	a prelude Option value crosses a module boundary as an export result
 todo	a private constructor cannot be MATCHED from outside its module either
 todo	a produced closure is handed back into a consumer export (the round trip)
@@ -3245,6 +3258,10 @@ todo	a runtime-selected closure survives as a value threaded through a recursive
 todo	a runtime-selected closure survives as a value threaded through a recursive HOF (true branch)
 todo	a scalar BETWEEN two Tuple args with a LIST result
 todo	a second same-signature closure export shares the one call method
+todo	a single-variant Int32 newtype literal-payload arm compiles at the payload width
+todo	a single-variant Int64 newtype literal-payload arm still compiles (the wide control)
+todo	a single-variant UInt8 newtype literal-payload arm compiles at the payload width
+todo	a single-variant UInt8 newtype literal-payload arm falls through to the binding arm on a miss
 todo	a single-variant abstract theorem's constructor match outside the kernel is a withheld-constructor rejection (CDZ0214)
 todo	a single-variant abstract type's constructor match outside its module is rejected CDZ0214 (withheld-ctor)
 todo	a single-variant newtype BOOL literal-payload arm falls through on false
@@ -3268,7 +3285,6 @@ todo	a two-argument closure exported to the host is called with both arguments
 todo	a two-parameter closure is applied at full arity through a recursive HOF
 todo	a wildcard-exported variant whose name shadows a prelude type is constructible in an importer
 todo	an 8-bit-integer closure crosses the host boundary
-todo	an IEC-prefixed quantity displays scaled to its reference over Int64
 todo	an INFINITY-axiom theorem is unforgeable — its Thm cannot be fabricated outside the kernel
 todo	an abortive handler abandons a host call in the path it discards
 todo	an abstract theorem is obtained only through the kernel's exported inference rule and accessor
@@ -3389,7 +3405,6 @@ todo	multi-export compound result — the second closure's tuple
 todo	multi-export compound result — three capturing closures share one call
 todo	multi-export record result — canonical field order
 todo	multi-export record result — the second closure, with a negative leaf
-todo	multiplying a scaled-unit quantity by the literal one keeps its dimension and displays scaled
 todo	one of several same-signature closure exports is made and called by the host
 todo	one of two DIFFERENT-signature closure exports is made and called
 todo	or performs the right operand's effect when the left is false
