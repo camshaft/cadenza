@@ -404,6 +404,35 @@ mod bedrock_tests {
     }
 
     #[test]
+    fn first_text_block_decodes_a_unicode_escape() {
+        // A Bedrock completion can carry a `\uXXXX` escape (JSON-escaping a control char or a BMP
+        // codepoint). The decoder reads the 4 hex digits and emits the char: A -> 'A',
+        // é -> 'é', 中 -> '中'. This path was previously unexercised (the escape test covered
+        // \t \n \" only). The literal chars around the escapes still pass through intact. The body is a
+        // RAW string so `A` reaches the reader as the four-char escape, not a Rust-decoded char.
+        let body = r#"{"text":"x\u0041\u00e9\u4e2d y"}"#;
+        assert_eq!(
+            first_text_block(body).as_deref(),
+            Some("xAé中 y"),
+            "a \\uXXXX escape decodes to its BMP char"
+        );
+    }
+
+    #[test]
+    fn first_text_block_skips_a_malformed_short_unicode_escape() {
+        // A malformed/short `\uXX"` (non-hex or fewer than 4 digits before the closing quote) is a
+        // best-effort SKIP, not a panic or a corrupt char — the minimal reader stays total. Here `\u00zz`
+        // has non-hex digits, so from_str_radix fails and the escape contributes nothing; the rest of the
+        // value ("ok") still decodes and the scan still stops at the closing quote.
+        let body = r#"{"text":"x\u00zzok"}"#;
+        assert_eq!(
+            first_text_block(body).as_deref(),
+            Some("xok"),
+            "a malformed \\u escape is skipped, the reader stays total"
+        );
+    }
+
+    #[test]
     fn validate_model_id_accepts_a_real_inference_profile_id() {
         // A region-prefixed inference-profile id (the documented shape) is well-formed → Ok, so it
         // round-trips to Bedrock (which alone knows if it's live).
