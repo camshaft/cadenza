@@ -103,3 +103,5 @@
   (input (do (def (main (: p (Tuple Int64 Int64))) (+ (. p 0) (. p 1))) (export main)))
   (call main (: (tuple 3 4) (Tuple Int64 Int64)))
   (output (: 7 Int64)))
+
+; STATUS 2026-07-16 (breaker + I verified, trunk 776893af6): PARTIALLY fixed. String entry-arg LANDED (5ad7c66a1, owned-String in gate driver) → RUNS 3 on rust. Family gate 3 pass (Int64+Tuple+String) / 5 FAIL. STILL BROKEN (same driver-marshalling root, need per-type construction form): BigInt (Big::from_sign_magnitude_bytes), Rational (cdz_num::Rational::new), Bytes (Bytes builder), List/Option/sum (value construction not raw Cadenza expr). String fix = the template; v-rust-backend actively working the rest (one rust_call_arg dispatch per my nudge). KEEP OPEN until all 5 pass on rust; then promote family reproducer. Non-scalar RETURNS all work — gap is strictly the arg-input boundary.
