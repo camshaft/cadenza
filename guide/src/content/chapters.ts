@@ -227,6 +227,14 @@ export const CHAPTERS: Chapter[] = [
     Component: lazy(() => import("./chapters/AdHocPolymorphism.tsx")),
   },
   {
+    slug: "const-parameters",
+    title: "Const parameters",
+    blurb: "Arguments known at compile time: inlined into a specialized copy and erased — a constant, a type, or a dictionary of behaviour.",
+    section: "What makes Cadenza different",
+    exercises: 2,
+    Component: lazy(() => import("./chapters/ConstParameters.tsx")),
+  },
+  {
     slug: "metaprogramming",
     title: "Metaprogramming",
     blurb: "Code is data: quote a program to an AST value, take it apart, build it up, eval it.",

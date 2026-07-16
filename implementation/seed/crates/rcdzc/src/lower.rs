@@ -16145,9 +16145,9 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
     // Float `< <= > >=` route to the dedicated IEEE-partial-order prims (FLt/FLe/FGt/FGe), NOT the
     // total-order three-way `Compare` path — float is a distinct partial-order facility, not a total-Ord type.
     //= spec/capabilities/numeric-model.md#a-floating-point-relational-operator-follows-the-ieee-partial-order
-    //# The floating-point relational operators are the IEEE partial order and are a distinct facility from the total order an orderable type offers under core-semantics.md §"Ordering Where Offered Is Total"; a floating-point type MUST NOT be treated as offering that total order, so that the partial order's not-a-number and signed-zero behavior does not contradict the total-order requirement.
+    //# The floating-point relational operators are the IEEE partial order and are a distinct facility from the total order an orderable type offers under §"Ordering Where Offered Is Total"; a floating-point type MUST NOT be treated as offering that total order, so that the partial order's not-a-number and signed-zero behavior does not contradict the total-order requirement.
     //= spec/capabilities/core-semantics.md#ordering-where-offered-is-total
-    //# A floating-point type MUST NOT be treated as offering an ordering in the sense of this section, because its relational operators are the IEEE partial order defined in numeric-model.md §"A Floating-Point Relational Operator Follows The IEEE Partial Order" rather than a total order — so the requirement that an offered ordering be total does not apply to the floating-point relational operators.
+    //# A floating-point type MUST NOT be treated as offering an ordering in the sense of this section, because its relational operators are the IEEE partial order defined for the floating-point type rather than a total order — so the requirement that an offered ordering be total does not apply to the floating-point relational operators.
     let float_prim = match op {
         Prim::Eq => Some(Prim::FEq),
         Prim::Lt => Some(Prim::FLt),

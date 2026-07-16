@@ -45,7 +45,9 @@ export default function WhatsNext() {
         vanish before the program runs; <Ch to="/types-as-values">types as values</Ch> you can reflect,
         compare, and branch on at compile time; <Ch to="/ad-hoc-polymorphism">ad-hoc polymorphism</Ch>{" "}
         where one operator name dispatches on operand type and a generic function specializes per type,
-        all resolved at compile time; <Ch to="/metaprogramming">metaprogramming</Ch> where a
+        all resolved at compile time; <Ch to="/const-parameters">const parameters</Ch> that fix an
+        argument at compile time — a constant, a type, or a dictionary — inlined into a specialized copy
+        and then erased; <Ch to="/metaprogramming">metaprogramming</Ch> where a
         program is an ordinary AST value you can quote, take apart, build, and eval; and{" "}
         <Ch to="/property-testing">testing</Ch>, where <C>@test</C> marks a function as a test and
         parameters make it generative — the runner synthesizes the inputs and shrinks any failure, no

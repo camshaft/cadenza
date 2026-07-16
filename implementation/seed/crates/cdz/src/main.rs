@@ -952,19 +952,87 @@ struct CleanArgs {
     dry_run: bool,
 }
 
+/// The exact output NAME(s) a build of `entry_file` emits (`<name>.wasm`/`.rs`/`.dwarf`) — the entry's
+/// EXPORT names, which the compiler names the component after (NOT the entry file stem). Read from the
+/// entry via the Exports query, so `cdz clean`'s removal set is precisely what a build writes. `entry_file`
+/// is `None` (or unreadable/unparseable/exports-nothing) → EMPTY: the caller then considers only the
+/// unambiguous `link-map.txt` + `.cdz-run-*` temps, never guessing a name (so a user file is never at
+/// risk). Best-effort: this drives an ordinary sidecar query, no build.
+fn clean_output_stems(entry_file: Option<&str>) -> Vec<String> {
+    let Some(entry) = entry_file else {
+        return Vec::new();
+    };
+    let Ok((_source, arenas)) = load_program(entry) else {
+        return Vec::new();
+    };
+    let out = run_sidecar(
+        &arenas,
+        rcdzc::Request::Query(rcdzc::sidecar::Query::Exports),
+    );
+    let Some(bytes) = out.artifact(rcdzc::sidecar::KIND_EXPORTS) else {
+        return Vec::new();
+    };
+    // Each line is `name<TAB>type<TAB>def-node`. The output component is named after the export; collect
+    // EVERY export name (deduped) so a multi-export entry's output — whichever the compiler picks — is
+    // covered. A blank/`-` name is skipped.
+    let text = String::from_utf8_lossy(bytes);
+    let mut stems: Vec<String> = Vec::new();
+    for line in text.lines() {
+        if let Some(name) = line.split('\t').next()
+            && !name.is_empty()
+            && name != "-"
+            && !stems.contains(&name.to_string())
+        {
+            stems.push(name.to_string());
+        }
+    }
+    stems
+}
+
+/// The build-artifact files THIS project has on disk in `dir` — the "what a build emitted / what `cdz
+/// clean` removes" set. PRECISE, never a blanket extension sweep: a file qualifies iff its name is
+/// `<output>.wasm`/`.rs`/`.dwarf` for one of the entry's EXPORT-derived output names, or `link-map.txt`,
+/// or a `.cdz-run-*.wasm` temp — so a user's hand-authored `helper.rs` / checked-in `asset.wasm` is NEVER
+/// included. Returns the sorted absolute paths. Propagates a `read_dir` error (the caller surfaces it)
+/// rather than masking it as an empty set.
+fn project_artifact_files(
+    entry_file: Option<&str>,
+    dir: &std::path::Path,
+) -> std::io::Result<Vec<std::path::PathBuf>> {
+    // The exact output name(s) a build emits — the entry's export names (see `clean_output_stems`), each as
+    // `<name>.{wasm,rs,dwarf}` — plus the fixed `link-map.txt`.
+    let mut exact: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for stem in clean_output_stems(entry_file) {
+        for ext in ["wasm", "rs", "dwarf"] {
+            exact.insert(format!("{stem}.{ext}"));
+        }
+    }
+    exact.insert("link-map.txt".to_string());
+    let mut out: Vec<std::path::PathBuf> = Vec::new();
+    for e in std::fs::read_dir(dir)?.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        // A `.cdz-run-*.wasm` temp (our prefix) OR an exact-named output. Never an extension match alone.
+        let is_temp = name.starts_with(".cdz-run-") && name.ends_with(".wasm");
+        if (exact.contains(&name) || is_temp) && e.path().is_file() {
+            out.push(e.path());
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+
 /// `cdz clean [DIR]` — remove the build artifacts a `cdz build`/`cdz run` of this project produces (the
-/// `cargo clean` analogue). It sweeps the manifest directory for build OUTPUTS and removes them: every
-/// `.wasm` / `.rs` / `.dwarf` (the component / Rust module / detached DWARF sidecar), `link-map.txt` (the
-/// directory-mode diagnostics-demux table), and thereby any leftover `.cdz-run-*.wasm` temp a crashed
-/// `cdz run` orphaned.
+/// `cargo clean` analogue).
 ///
-/// SAFE by construction, and CORRECT without predicting the output filename: the removal set is keyed on
-/// the OUTPUT EXTENSIONS, none of which is a Cadenza source surface (`.cdz`/`.ml`/`.sexp`/`.sexpr`), so a
-/// source file and the `Project.cdz` manifest are never touched. Keying on the extension is what makes it
-/// correct — the component's on-disk name is the compiler's export-derived name (not the entry stem), so
-/// a name guess would miss it while the extension sweep catches it regardless. Only the manifest's own
-/// directory is swept (a build writes its outputs beside the manifest). `--dry-run` lists the targets
-/// without deleting; a missing artifact is silently fine (nothing to clean).
+/// PRECISE — never a blanket extension sweep: it removes only the files THIS project's build emits, in the
+/// manifest directory — `<output>.wasm`/`.rs`/`.dwarf` (where `<output>` is each name the compiler emits,
+/// i.e. the entry's EXPORT names — a component is named after its export, not the entry file stem — read
+/// via the Exports query), `link-map.txt`, and any `.cdz-run-*.wasm` temp (its `cdz-run-` prefix is ours).
+/// A USER-authored file is NEVER deleted by extension: a hand-written `helper.rs`, a checked-in
+/// `asset.wasm`, or an unrelated `.dwarf` in the project directory SURVIVES (an earlier version keyed on
+/// the extension alone and could silently delete a user's `.rs`/`.wasm` — a data-loss bug this fixes).
+/// Only the manifest's own directory is swept. `--dry-run` lists the targets without deleting; a missing
+/// artifact is silently fine. A `read_dir` failure is SURFACED (not masked as "nothing to clean").
 fn run_clean(args: &CleanArgs) -> ExitCode {
     let project = match resolve_project_specs(args.dir.as_deref(), "cdz clean") {
         Ok(p) => p,
@@ -975,24 +1043,16 @@ fn run_clean(args: &CleanArgs) -> ExitCode {
         .parent()
         .map(std::path::Path::to_path_buf)
         .unwrap_or_else(|| std::path::PathBuf::from("."));
-    // Sweep the manifest dir for BUILD-OUTPUT files: any `.wasm`/`.rs`/`.dwarf` (never a source extension),
-    // plus the fixed `link-map.txt`. The output component's name is the compiler's export-derived name
-    // (not the entry stem), so keying on the OUTPUT EXTENSION — which no source ever uses — removes the
-    // right files without predicting that name, and can never hit a `.cdz`/`.ml`/`.sexp` source.
-    let mut targets: Vec<std::path::PathBuf> = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(&dir) {
-        for e in entries.flatten() {
-            let name = e.file_name().to_string_lossy().into_owned();
-            let is_artifact = name.ends_with(".wasm")
-                || name.ends_with(".rs")
-                || name.ends_with(".dwarf")
-                || name == "link-map.txt";
-            if is_artifact && e.path().is_file() {
-                targets.push(e.path());
-            }
+    // The precise removal set (this project's own emitted outputs by exact name + our temps), NOT a blanket
+    // extension sweep — so a user's hand-authored `.rs`/`.wasm` is never deleted. A `read_dir` failure is a
+    // real error — SURFACE it (don't mask it as "nothing to clean").
+    let targets = match project_artifact_files(project.specs.first().map(String::as_str), &dir) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("{PROG}: reading {}: {e}", dir.display());
+            return ExitCode::FAILURE;
         }
-    }
-    targets.sort();
+    };
     // Remove each that exists; a missing artifact is not an error (nothing to clean). `--dry-run` lists
     // without deleting. Report what was (or would be) removed so the action is visible.
     let mut removed = 0usize;

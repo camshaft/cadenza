@@ -748,6 +748,21 @@ fn status(fleet: &Fleet) {
     if let Some((ahead, behind)) = trunk_vs_origin_main(&fleet.repo) {
         println!("  trunk: {ahead} ahead / {behind} behind origin/main");
     }
+
+    // Single-writer-invariant alarm: `trunk` should only ever be advanced (cherry-picked) by pr-sync.
+    // A `reset: moving to origin/main` in its recent reflog means a SECOND writer clobbered it backward
+    // (an out-of-band sync running `git reset --hard origin/main` in pr-sync's worktree) — latent
+    // data-loss (a clobber inside pr-sync's replay window drops a batch). Surface it; read-only.
+    if let Some(n) = trunk_clobber_count(&fleet.repo, 40)
+        && n > 0
+    {
+        println!(
+            "  ⚠ trunk CLOBBER: {n} `reset: moving to origin/main` in the last 40 reflog entries — a \
+             non-pr-sync writer is resetting trunk backward (single-writer invariant violated). Find \
+             the ~9min sync job doing `git reset --hard origin/main` in the pr-sync worktree and stop \
+             it touching the trunk ref."
+        );
+    }
 }
 
 // ── add / remove ──────────────────────────────────────────────────────────────────────────────
@@ -2469,6 +2484,43 @@ fn count_dir(dir: &Path, keep: impl Fn(&str) -> bool) -> usize {
         .unwrap_or(0)
 }
 
+/// Count `reset: moving to origin/main` entries in `trunk`'s recent reflog (the last `window` entries).
+///
+/// The fleet's core invariant is that ONLY pr-sync writes `trunk`, and it only ever CHERRY-PICKS
+/// (forward). A `reset: moving to origin/main` on `trunk` is therefore a SECOND writer clobbering the
+/// branch backward to the published main — an out-of-band sync job running `git reset --hard
+/// origin/main` while cwd'd in pr-sync's worktree (which is the only worktree with `trunk` checked
+/// out). pr-sync recovers via reflog each time, but a clobber inside its read→reset→replay window can
+/// silently drop a whole batch. This is a pure READ of the reflog (never blocks anything) so `status`
+/// can SURFACE the violation instead of it being silently self-healed. `None` if the reflog is
+/// unreadable; `Some(n)` with the count of clobbers seen in the window (0 = clean).
+fn trunk_clobber_count(repo: &Path, window: usize) -> Option<usize> {
+    let out = Command::new("git")
+        .current_dir(repo)
+        .args(["reflog", "show", "trunk", "--format=%gs"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8(out.stdout).ok()?;
+    Some(
+        s.lines()
+            .take(window)
+            .filter(|line| trunk_reflog_entry_is_clobber(line))
+            .count(),
+    )
+}
+
+/// Whether a `trunk` reflog subject line is a backward-clobber to `origin/main` (a non-pr-sync writer
+/// resetting the branch), vs a legit pr-sync `cherry-pick`/`commit` or a self-recovery reset to a
+/// `trunk@{…}` reflog point. Pure so it's unit-testable.
+fn trunk_reflog_entry_is_clobber(subject: &str) -> bool {
+    // git writes `reset: moving to <target>`; the clobber targets origin/main. pr-sync's own recovery
+    // resets to a `trunk@{N}` reflog spec, not `origin/main`, so it's correctly NOT flagged.
+    subject.trim() == "reset: moving to origin/main"
+}
+
 /// `(ahead, behind)` of `trunk` relative to `origin/main`, or `None` if either ref is unresolvable.
 fn trunk_vs_origin_main(repo: &Path) -> Option<(usize, usize)> {
     let out = Command::new("git")
@@ -3169,5 +3221,31 @@ mod tests {
         assert_eq!(next_delivery_seq(&fleet), 1);
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn trunk_reflog_clobber_flags_only_the_origin_main_reset() {
+        // The clobber signature: a reset moving trunk backward to origin/main (a non-pr-sync writer).
+        assert!(trunk_reflog_entry_is_clobber(
+            "reset: moving to origin/main"
+        ));
+        assert!(trunk_reflog_entry_is_clobber(
+            "  reset: moving to origin/main  "
+        )); // trimmed
+        // pr-sync's legit ops must NOT be flagged: cherry-picks (forward) and its OWN recovery reset
+        // to a trunk@{N} reflog point (not origin/main).
+        assert!(!trunk_reflog_entry_is_clobber(
+            "cherry-pick: rcdzc: some fix"
+        ));
+        assert!(!trunk_reflog_entry_is_clobber(
+            "commit: fleet: mirror the queue"
+        ));
+        assert!(!trunk_reflog_entry_is_clobber("reset: moving to trunk@{1}"));
+        assert!(!trunk_reflog_entry_is_clobber("reset: moving to HEAD~1"));
+        // A reset to some other branch/main-ish string isn't THIS clobber (be precise, avoid false +).
+        assert!(!trunk_reflog_entry_is_clobber(
+            "reset: moving to origin/main-backup"
+        ));
+        assert!(!trunk_reflog_entry_is_clobber(""));
     }
 }

@@ -107,7 +107,7 @@ mod tests {
     #[test]
     fn a_cube_meshes_to_twelve_triangles() {
         // an axis-aligned box has 6 faces × 2 triangles = 12.
-        let s = parse_solid("(: (Cube (: (tuple 2.0 2.0 2.0) Vec3)) Solid)").unwrap();
+        let s = parse_solid("(: (Cuber (: (tuple 2.0 2.0 2.0) Vec3r)) Solidr)").unwrap();
         let m = mesh(&s);
         assert_eq!(m.triangle_count(), 12);
         assert!(!m.is_empty());
@@ -117,7 +117,7 @@ mod tests {
 
     #[test]
     fn empty_meshes_to_nothing() {
-        let s = parse_solid("(: (Empty unit) Solid)").unwrap();
+        let s = parse_solid("(: (Emptyr unit) Solidr)").unwrap();
         let m = mesh(&s);
         assert!(m.is_empty());
         assert_eq!(m.triangle_count(), 0);
@@ -126,9 +126,10 @@ mod tests {
     #[test]
     fn a_difference_produces_a_watertight_hole() {
         // cube minus a sphere → more triangles than the bare cube (the boolean carved a cavity).
-        let s =
-            parse_solid("(: (Difference (Cube (: (tuple 4.0 4.0 4.0) Vec3)) (Sphere 1.5)) Solid)")
-                .unwrap();
+        let s = parse_solid(
+            "(: (Differencer (Cuber (: (tuple 4.0 4.0 4.0) Vec3r)) (Spherer 1.5)) Solidr)",
+        )
+        .unwrap();
         let m = mesh(&s);
         assert!(
             m.triangle_count() > 12,
@@ -140,7 +141,7 @@ mod tests {
     #[test]
     fn the_plate_example_meshes_non_empty() {
         // the DESIGN marquee: a 10×4×1 plate with two Ø1 bolt holes.
-        let plate = "(: (Difference (Difference (Cube (: (tuple 10.0 4.0 1.0) Vec3)) (Translate (: (tuple 2.5 2.0 0.0) Vec3) (Cylinder 1.0 0.5))) (Translate (: (tuple 7.5 2.0 0.0) Vec3) (Cylinder 1.0 0.5))) Solid)";
+        let plate = "(: (Differencer (Differencer (Cuber (: (tuple 10.0 4.0 1.0) Vec3r)) (Translater (: (tuple 2.5 2.0 0.0) Vec3r) (Cylinderr 1.0 0.5))) (Translater (: (tuple 7.5 2.0 0.0) Vec3r) (Cylinderr 1.0 0.5))) Solidr)";
         let m = mesh(&parse_solid(plate).unwrap());
         assert!(!m.is_empty());
         assert!(m.triangle_count() > 12);
@@ -148,9 +149,9 @@ mod tests {
 
     #[test]
     fn a_transform_chain_meshes() {
-        // scale ∘ rotate ∘ cube — the transform arms all evaluate.
+        // scale ∘ translate ∘ cube — the transform arms all evaluate (the exact model has no Rotate).
         let s = parse_solid(
-            "(: (Scale (: (tuple 2.0 2.0 2.0) Vec3) (Rotate (: (tuple 0.0 0.0 45.0) Vec3) (Cube (: (tuple 1.0 1.0 1.0) Vec3)))) Solid)",
+            "(: (Scaler (: (tuple 2/1 2/1 2/1) Vec3r) (Translater (: (tuple 1/1 0/1 0/1) Vec3r) (Cuber (: (tuple 1/1 1/1 1/1) Vec3r)))) Solidr)",
         )
         .unwrap();
         let m = mesh(&s);
@@ -159,7 +160,7 @@ mod tests {
 
     #[test]
     fn segment_count_controls_sphere_tessellation() {
-        let s = parse_solid("(: (Sphere 1.0) Solid)").unwrap();
+        let s = parse_solid("(: (Spherer 1.0) Solidr)").unwrap();
         let coarse = mesh_with_segments(&s, 8);
         let fine = mesh_with_segments(&s, 64);
         assert!(
@@ -171,10 +172,10 @@ mod tests {
     #[test]
     fn union_of_disjoint_solids_keeps_both() {
         // two spheres far apart → the union keeps both shells (roughly double a single sphere's tris).
-        let one = mesh(&parse_solid("(: (Sphere 1.0) Solid)").unwrap());
+        let one = mesh(&parse_solid("(: (Spherer 1.0) Solidr)").unwrap());
         let two = mesh(
             &parse_solid(
-                "(: (Union (Sphere 1.0) (Translate (: (tuple 10.0 0.0 0.0) Vec3) (Sphere 1.0))) Solid)",
+                "(: (Unionr (Spherer 1.0) (Translater (: (tuple 10.0 0.0 0.0) Vec3r) (Spherer 1.0))) Solidr)",
             )
             .unwrap(),
         );

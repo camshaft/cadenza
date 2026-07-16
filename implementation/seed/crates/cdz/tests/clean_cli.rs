@@ -138,3 +138,44 @@ fn clean_a_project_with_no_artifacts_reports_nothing_to_clean() {
     assert!(dir.join("app.cdz").is_file(), "sources untouched");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn clean_never_deletes_user_authored_rs_or_wasm_files() {
+    // DATA-LOSS REGRESSION (Copilot PR #451): `cdz clean` must remove only THIS project's own emitted
+    // outputs (by the compiler's export-derived NAME) + `link-map.txt` + `.cdz-run-*` temps — NEVER a
+    // blanket `.rs`/`.wasm`/`.dwarf` sweep, which silently destroyed a user's hand-authored `helper.rs`
+    // or a checked-in `asset.wasm`. Build (so the project's own `<export>.wasm` exists), drop user files
+    // beside it, clean, and assert the user files SURVIVE while the project's output is gone.
+    let dir = temp_project("userfiles"); // entry app.cdz exports `go` → build emits `go.wasm`
+    let (bok, _bo, be) = run_in(&dir, &["build"]);
+    assert!(bok, "build failed: {be}");
+    // User-authored files that must survive (unrelated to the project's `go` output).
+    std::fs::write(dir.join("helper.rs"), "fn helper() {}\n").unwrap();
+    std::fs::write(dir.join("asset.wasm"), b"a checked-in wasm asset").unwrap();
+    std::fs::write(dir.join("notes.dwarf"), b"not really dwarf").unwrap();
+    let (ok, _o, err) = run_in(&dir, &["clean"]);
+    assert!(ok, "clean failed: {err}");
+    // The user files SURVIVE — this is the whole point.
+    assert!(
+        dir.join("helper.rs").is_file(),
+        "a user-authored helper.rs must NOT be deleted"
+    );
+    assert!(
+        dir.join("asset.wasm").is_file(),
+        "a checked-in asset.wasm must NOT be deleted"
+    );
+    assert!(
+        dir.join("notes.dwarf").is_file(),
+        "an unrelated .dwarf must NOT be deleted"
+    );
+    // The project's OWN output (go.wasm) + link-map are gone.
+    assert!(
+        !dir.join("go.wasm").is_file(),
+        "the project's own component output is removed"
+    );
+    assert!(
+        !dir.join("link-map.txt").is_file(),
+        "link-map.txt is removed"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

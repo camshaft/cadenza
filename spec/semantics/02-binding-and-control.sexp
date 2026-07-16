@@ -1016,6 +1016,54 @@
   (call   main (: 0 Int64))
   (trap   "divide by zero"))
 
+; ── The SAME if-simplification rewrites over a FLOAT partial-order condition (NaN → false) ────────────
+; The double-negation unwind, identical-branches collapse, and connective folds above all use an INTEGER
+; `>` condition, which is a total order (classical two-valued Bool). A float ordering (`< <= > >=`, landed
+; as an IEEE PARTIAL order) is the adversarial case for these SAME rewrites: a NaN operand makes the
+; comparison FALSE, so the condition is not classically-complete (`(< x y)` and `(< y x)` and `(= x y)`
+; can ALL be false at once). A fold that assumed a total-order/two-valued condition — e.g. rewriting
+; `not (not (< a b))` by a boolean-algebra identity that presumes `c ∨ ¬c`, or collapsing a branch on the
+; ASSUMPTION the float condition partitions the space — would MISCOMPILE the NaN case. These pin that each
+; rewrite stays behavior-preserving with a float partial-order condition, on BOTH backends: the fold acts
+; on the `if`/`not` STRUCTURE, never on assumed condition completeness.
+(case "an if with identical branches folds even when the condition is a NaN-false float compare"
+  (doc    "`(if (< a b) 7 7)` — identical branches collapse to `7` regardless of the condition, and the
+           condition `(< a b)` is a TRAP-FREE float compare (float ops never trap; NaN → false, not a
+           halt), so eliding it drops nothing. Finite (1.0,2.0) → 7 AND the unordered NaN case (nan,nan,
+           where `<` is false) → 7. Pins the identical-branches fold does not depend on the float
+           condition's value — the NaN-false partial order is still trap-free, both backends.")
+  (input  (do (def (run (: a Float64) (: b Float64)) (if (< a b) 7 7)) (export run)))
+  (call   run (: 1.0 Float64) (: 2.0 Float64))
+  (output (: 7 Int64))
+  (call   run (: nan Float64) (: nan Float64))
+  (output (: 7 Int64)))
+
+(case "a double-negated float compare unwinds to the compare, preserving NaN-false"
+  (doc    "`(if (not (not (< a b))) 1 0)` — the two `not` layers cancel to `(if (< a b) 1 0)`, and that
+           must hold for the PARTIAL order: (1.0,2.0) → `1<2` true → 1, and (nan,1.0) → `nan<1` FALSE → 0.
+           A boolean-algebra double-negation that folded via a `c ∨ ¬c`-style identity (assuming a
+           two-valued condition) would wrongly flip the NaN case; pins the unwind acts on the `not`
+           structure only, so NaN → false survives, both backends.")
+  (input  (do (def (run (: a Float64) (: b Float64)) (if (not (not (< a b))) 1 0)) (export run)))
+  (call   run (: 1.0 Float64) (: 2.0 Float64))
+  (output (: 1 Int64))
+  (call   run (: nan Float64) (: 1.0 Float64))
+  (output (: 0 Int64)))
+
+(case "a conjunction of two float compares preserves NaN-false through the connective fold"
+  (doc    "`(if (and (< a b) (> b a)) 1 0)` — the short-circuit `and` (a nested conditional) of two float
+           partial-order compares. Finite ordered (1.0,2.0): `1<2` and `2>1` both true → 1. The NaN case
+           (nan,1.0): `nan<1` is false → the `and` short-circuits false → 0 (a de-morgan/connective fold
+           must not turn the unordered pair true). Reversed finite (2.0,1.0): `2<1` false → 0. Pins the
+           connective fold over float compares preserves the NaN-false partial order, both backends.")
+  (input  (do (def (run (: a Float64) (: b Float64)) (if (and (< a b) (> b a)) 1 0)) (export run)))
+  (call   run (: 1.0 Float64) (: 2.0 Float64))
+  (output (: 1 Int64))
+  (call   run (: nan Float64) (: 1.0 Float64))
+  (output (: 0 Int64))
+  (call   run (: 2.0 Float64) (: 1.0 Float64))
+  (output (: 0 Int64)))
+
 (case "a conjunction guards a let over a runtime value inside a conditional"
   (doc    "An INTEGRATION case: several control constructs composed in one function over a runtime
            parameter, the way a real program (not an isolated feature test) uses the language.

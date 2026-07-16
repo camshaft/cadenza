@@ -85,6 +85,7 @@ pass	a Char-payload sum value escapes across the boundary in its canonical form
 pass	a DOUBLY-nested projected list, consumed then read, is unchanged (child retain through a proj chain)
 pass	a FLAT runtime string nested in a tuple is unaffected (control)
 pass	a FLOAT-result effect op threads a float state and its resume folds under a float-dispatched operator
+pass	a Float VALUE inserted into an empty (runtime) map boxes with box-float, not box-int
 pass	a GENERIC recursive sum branching through a tuple folds at a concrete instantiation
 pass	a HOF callback matching a tuple argument computes through the nested reduction
 pass	a HOF callback matching its sum argument reaches the nullary arm
@@ -133,6 +134,8 @@ pass	a UInt32 holds a wasm section size at the width boundary
 pass	a UInt64 holds a value above the signed 64-bit maximum
 pass	a Unit element between two Int64s in a tuple, a later element read
 pass	a Unit element in a multi-payload sum variant compiles to valid wasm
+pass	a Unit payload MATCH-bound from a still-live sum at a dup-site drops the sentinel
+pass	a Unit payload expected from a still-live sum at a dup-site drops the sentinel
 pass	a Unit projected from a function-returned tuple (owned-reclaim path)
 pass	a Unit projected out of a multi-payload sum and bound to a name
 pass	a Unit record field beside an Int64 field, the Int64 read
@@ -273,6 +276,7 @@ pass	a conditional's condition may itself be a conditional
 pass	a conditionally-selected nullary variant is returned as a runtime sum result
 pass	a conditionally-selected variant is returned as a runtime sum result
 pass	a conjunction guards a let over a runtime value inside a conditional
+pass	a conjunction of two float compares preserves NaN-false through the connective fold
 pass	a consistent annotation type-checks against the inferred type
 pass	a const collection recursively folded is rejected, not compiled to an infinite loop
 pass	a const parameter rejects an argument that depends on runtime data
@@ -353,6 +357,7 @@ pass	a do-sequence of unit-returning performs runs each for effect, then yields 
 pass	a dotted nullary arm whose body nests a same-type sum match dispatches correctly
 pass	a double same-dimension annotation preserves the original scale
 pass	a double-negated condition unwinds to the original selection
+pass	a double-negated float compare unwinds to the compare, preserving NaN-false
 pass	a doubly-nested strength-reduced multiply chains shift into shift
 pass	a doubly-nested tuple map key containing a rope is found by its flat twin
 pass	a duplicate NESTED-CONSTRUCTOR arm is dead code but the program still runs
@@ -1029,6 +1034,7 @@ pass	a recursive walk threads THREE nested handlers' states at once
 pass	a recursive walk threads TWO effects at once — a fresh-index counter and a running total
 pass	a recursive-generic producer composes at two element types (the tied result var)
 pass	a recursive-generic producer wrapping elements in a user sum is consumed at one type
+pass	a recursive-generic producer's element is usable at each instantiation
 pass	a recursive-sum payload projected more than once folds to a scalar
 pass	a recursively-built MULTI-PAYLOAD-variant list renders its spine FLAT
 pass	a recursively-built binary tree renders its full runtime structure
@@ -1067,6 +1073,7 @@ pass	a runtime Bytes rope is found as a Set element by its flat twin
 pass	a runtime Bytes rope map key is looked up by its flat twin
 pass	a runtime Bytes rope nested in a tuple compares equal to its flat twin
 pass	a runtime FLOAT width nested in a compound annotation is rejected
+pass	a runtime Float quantity comparison against NaN is the IEEE partial order (false)
 pass	a runtime Float32 addition emits the f32 machine add
 pass	a runtime Float32 division emits f32.div
 pass	a runtime Float32 equality compares by the canonical byte form
@@ -1376,6 +1383,8 @@ pass	a trapping scrutinee of a same-constructor match traps before any arm
 pass	a trapping shared payload before the differing position must not preempt a trapping cond
 pass	a truncating conversion keeps the low bits rather than trapping
 pass	a truncating conversion of a negative value uses two's complement
+pass	a tuple = whose Bool element derives from a const-divisor rem is emitted as valid wasm
+pass	a tuple = with differing const-divisor Bool elements compares unequal
 pass	a tuple access out of arity on a function-returned tuple is a type error, not a trap
 pass	a tuple annotated as a scalar type is rejected
 pass	a tuple annotated with the wrong arity is rejected
@@ -1501,6 +1510,7 @@ pass	an Option built by an if with the nullary branch first type-checks
 pass	an Option built by an if with the payload branch first type-checks (the control)
 pass	an Option carrying a Result is matched across two different sum types
 pass	an Option pipeline short-circuits on the first None
+pass	an Option-producing recursive generic ties its payload to the list element
 pass	an Option.expect payload consumed per iteration while the option is threaded accumulates stably
 pass	an abort abandons a pending borrowed map lookup and the map survives
 pass	an abort abandons a pending consuming op and the shared binding survives
@@ -1639,6 +1649,7 @@ pass	an if returning false/true folds to the negation of a runtime condition
 pass	an if returning true/false folds to the runtime condition itself
 pass	an if whose untaken arm would trap keeps the branch (no select of checked arith)
 pass	an if with a narrow branch and a bare-literal branch computes at the narrow width
+pass	an if with identical branches folds even when the condition is a NaN-false float compare
 pass	an if with identical branches folds to the branch when the condition is trap-free
 pass	an if with identical branches still evaluates a TRAPPING condition
 pass	an if-operand arithmetic op with deferred-width branches is Int64, and its wide result is correct
@@ -1790,6 +1801,7 @@ pass	comparing sums with disjoint variant sets is a type error
 pass	comparing tuples of different lengths is a type error
 pass	comparing two quantities of the same dimension yields a Bool
 pass	comparing two same-shape nominal sum types is a type error, not false
+pass	comparing two same-unit Float-inner quantities at RUNTIME rides the scalar float compare
 pass	comparing two units of one dimension converts before comparing
 pass	compound equality over a runtime NaN float leaf: nan equals nan
 pass	compound equality over a runtime float leaf: different floats compare unequal
@@ -2244,6 +2256,7 @@ pass	the default-integer pragma is definition-site scoped, not use-site
 pass	the difference contains the elements not in the second set
 pass	the difference of a set with itself is empty
 pass	the display truncation does not lose the stored magnitude (Qty.value reads it back)
+pass	the element tie survives producer self-composition
 pass	the else-branch of an if threads a performed state to the continuation
 pass	the empty byte sequence has length zero
 pass	the empty reader literal is the empty symbol
@@ -2822,6 +2835,7 @@ todo	a partially-applied function escapes as a value and runs through a recursiv
 todo	a predicate closure returning Bool drives an early-exit recursive HOF
 todo	a prefixed quantity displays scaled to its reference unit (Float)
 todo	a prelude Option value crosses a module boundary as an export result
+todo	a private constructor cannot be MATCHED from outside its module either
 todo	a produced closure is handed back into a consumer export (the round trip)
 todo	a program that makes a host call has that call in its observable behavior
 todo	a program uses a response-returning delegated host function's return value
@@ -3010,6 +3024,9 @@ todo	distinct-signature closures alongside a plain export — the Int64->Int64 c
 todo	distinct-signature closures alongside a plain export — the plain export runs
 todo	dividing quantities divides their dimensions
 todo	equality over a compound mixing a float and a Bytes leaf walks both
+todo	eval does not forge a private constructor NESTED in a compound
+todo	eval of a quoted private constructor is withheld exactly as a direct reference — no forge
+todo	eval of an exported smart constructor still works — the forge fix does not over-reject
 todo	exact rational arithmetic is exact and normalized
 todo	exact rational division is total and exact for a nonzero divisor
 todo	expect on an overflowing checked add traps

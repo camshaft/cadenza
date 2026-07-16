@@ -17,13 +17,13 @@ fn approx(a: f64, b: f64) -> bool {
 
 /// `plate(4, 2, 1, 0.3)` — a 4×2×1 plate with two Ø0.6 bolt holes. Box = the base cube (holes are internal
 /// cutouts, so they don't extend the extent): centred 4×2×1.
-const PLATE: &str = "(: (Difference (Difference (Cube (: (tuple 4.0 2.0 1.0) Vec3)) (Translate (: (tuple 1.0 1.0 0.0) Vec3) (Cylinder 1.0 0.3))) (Translate (: (tuple 3.0 1.0 0.0) Vec3) (Cylinder 1.0 0.3))) Solid)";
+const PLATE: &str = "(: (Differencer (Differencer (Cuber (: (tuple 4.0 2.0 1.0) Vec3r)) (Translater (: (tuple 1.0 1.0 0.0) Vec3r) (Cylinderr 1.0 0.3))) (Translater (: (tuple 3.0 1.0 0.0) Vec3r) (Cylinderr 1.0 0.3))) Solidr)";
 
 /// `washer(1, 2, 1)` — a thickness-1 ring, outer radius 2, bore radius 1. Box = the outer cylinder: 4×4×1.
-const WASHER: &str = "(: (Difference (Cylinder 1.0 2.0) (Cylinder 1.0 1.0)) Solid)";
+const WASHER: &str = "(: (Differencer (Cylinderr 1.0 2.0) (Cylinderr 1.0 1.0)) Solidr)";
 
 /// `tube(3, 2, 1)` — a length-3 pipe, outer radius 2, bore 1. Box = the outer cylinder: 4×4×3.
-const TUBE: &str = "(: (Difference (Cylinder 3.0 2.0) (Cylinder 3.0 1.0)) Solid)";
+const TUBE: &str = "(: (Differencer (Cylinderr 3.0 2.0) (Cylinderr 3.0 1.0)) Solidr)";
 
 #[test]
 fn plate_meshes_and_bounds_match_the_base_cube() {
@@ -102,9 +102,9 @@ fn tri_count(src: &str) -> usize {
 
 #[test]
 fn union_with_empty_meshes_like_the_operand_alone() {
-    let cube = "(: (Cube (: (tuple 2.0 2.0 2.0) Vec3)) Solid)";
-    let union_left = "(: (Union (Empty unit) (Cube (: (tuple 2.0 2.0 2.0) Vec3))) Solid)";
-    let union_right = "(: (Union (Cube (: (tuple 2.0 2.0 2.0) Vec3)) (Empty unit)) Solid)";
+    let cube = "(: (Cuber (: (tuple 2.0 2.0 2.0) Vec3r)) Solidr)";
+    let union_left = "(: (Unionr (Emptyr unit) (Cuber (: (tuple 2.0 2.0 2.0) Vec3r))) Solidr)";
+    let union_right = "(: (Unionr (Cuber (: (tuple 2.0 2.0 2.0) Vec3r)) (Emptyr unit)) Solidr)";
     assert_eq!(
         tri_count(union_left),
         tri_count(cube),
@@ -120,8 +120,8 @@ fn union_with_empty_meshes_like_the_operand_alone() {
 #[test]
 fn difference_of_empty_tool_meshes_like_the_base() {
     // subtracting nothing leaves the base unchanged.
-    let cube = "(: (Cube (: (tuple 2.0 2.0 2.0) Vec3)) Solid)";
-    let diff = "(: (Difference (Cube (: (tuple 2.0 2.0 2.0) Vec3)) (Empty unit)) Solid)";
+    let cube = "(: (Cuber (: (tuple 2.0 2.0 2.0) Vec3r)) Solidr)";
+    let diff = "(: (Differencer (Cuber (: (tuple 2.0 2.0 2.0) Vec3r)) (Emptyr unit)) Solidr)";
     assert_eq!(
         tri_count(diff),
         tri_count(cube),
@@ -131,6 +131,6 @@ fn difference_of_empty_tool_meshes_like_the_base() {
 
 #[test]
 fn intersection_with_empty_meshes_to_nothing() {
-    let inter = "(: (Intersection (Cube (: (tuple 2.0 2.0 2.0) Vec3)) (Empty unit)) Solid)";
+    let inter = "(: (Intersectionr (Cuber (: (tuple 2.0 2.0 2.0) Vec3r)) (Emptyr unit)) Solidr)";
     assert_eq!(tri_count(inter), 0, "intersection(x, Empty) is empty");
 }
