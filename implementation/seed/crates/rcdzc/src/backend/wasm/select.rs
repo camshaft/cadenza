@@ -2302,9 +2302,17 @@ fn collect_used_ops_into(
             collect_used_ops_into(db, lhs, out);
             collect_used_ops_into(db, rhs, out);
         }
-        // `bigint-of-i64` mints a leaf from an i64 scalar — no handle operand, no drop.
+        // `bigint-of-i64` mints a leaf from an i64 scalar — no handle operand, no drop. An UNSIGNED source
+        // instead materializes a sign-magnitude byte leaf (`bytes-alloc`/`bytes-set` → `bigint-of-bytes`),
+        // so declare those imports to match the emit's signedness branch (see the `Core::BigIntOfI64` emit).
         Core::BigIntOfI64 { value } => {
-            out.insert(OP_BIGINT_OF_I64);
+            if int_ty_of(db, value).ground_signed() {
+                out.insert(OP_BIGINT_OF_I64);
+            } else {
+                out.insert(OP_BYTES_ALLOC);
+                out.insert(OP_BYTES_SET);
+                out.insert(OP_BIGINT_OF_BYTES);
+            }
             collect_used_ops_into(db, value, out);
         }
         // The borrowing BigInt ops also import `drop` (to reclaim an OWNED-temporary handle operand after
@@ -7166,11 +7174,49 @@ fn emit(
             out.push(Lir::CallImport(OP_BYTES_CONCAT)); // → [a++b]
             Ok(())
         }
-        // `BigInt.of x` on a runtime i64 — widen to a BigInt heap leaf (an i32 handle). `x` is an i64
+        // `BigInt.of x` on a runtime `Int a` — widen to a BigInt heap leaf (an i32 handle). `x` is an i64
         // SCALAR (no heap ref), so nothing to drop — a fresh owned handle is left on the stack.
+        //
+        // SIGNEDNESS: `bigint-of-i64`'s operand is a SIGNED i64, so it reads the high bit as a sign. That is
+        // correct for a SIGNED source width (Int8..Int64), but a runtime `UInt64` value ≥ 2^63 has its high
+        // bit SET as MAGNITUDE, not sign — passing it through `bigint-of-i64` yields the WRONG NEGATIVE
+        // BigInt (`BigInt.of` is `∀a.(Int a)->BigInt`, and a big UInt64 is a positive value). So for an
+        // UNSIGNED source, build the BigInt from its canonical sign-magnitude BYTES instead: a non-negative
+        // sign byte (0) + the 8 little-endian magnitude bytes of the u64, then `bigint-of-bytes` (the runtime
+        // analogue of the beyond-i64 CONSTANT path `emit_const_bigint_leaf`). `from_sign_magnitude_bytes`
+        // re-normalizes, so trailing-zero magnitude bytes are fine — a fixed 9-byte leaf needs no runtime
+        // stripping. (A signed source keeps the one-instruction `bigint-of-i64`; only unsigned pays the
+        // ~9-op byte materialization, and only Int64/UInt64's top bit can even differ — a narrower unsigned
+        // width's value is always < 2^63 so both paths agree, but keying on signedness is uniform + correct.)
         Core::BigIntOfI64 { value } => {
+            if int_ty_of(db, value).ground_signed() {
+                emit(db, value, slots, base, high, scratch_ty, layout, out)?; // [x : i64]
+                out.push(Lir::CallImport(OP_BIGINT_OF_I64)); // → [bigint handle : i32]
+                return Ok(());
+            }
+            // UNSIGNED source: materialize `[sign=0][8 LE magnitude bytes]` then `bigint-of-bytes`. Stash the
+            // u64 value in a scratch i64 local so each byte-extraction re-reads it (the operand emits once).
+            let val_slot = *high;
+            *high = val_slot + 1;
+            scratch_ty.insert(val_slot, ValType::I64);
             emit(db, value, slots, base, high, scratch_ty, layout, out)?; // [x : i64]
-            out.push(Lir::CallImport(OP_BIGINT_OF_I64)); // → [bigint handle : i32]
+            out.push(Lir::LocalSet(val_slot)); // [] — x stashed
+            out.push(Lir::ConstI32(9)); // [9] — 1 sign byte + 8 magnitude bytes
+            out.push(Lir::CallImport(OP_BYTES_ALLOC)); // → [buf]
+            out.push(Lir::ConstI32(0)); // [buf, index=0]
+            out.push(Lir::ConstI32(0)); // [buf, 0, sign=0 (non-negative)]
+            out.push(Lir::CallImport(OP_BYTES_SET)); // → [buf]
+            for i in 0..8u32 {
+                out.push(Lir::ConstI32((i + 1) as i32)); // [buf, index=i+1]
+                out.push(Lir::LocalGet(val_slot)); // [buf, i+1, x]
+                out.push(Lir::ConstI64((i * 8) as i64)); // [buf, i+1, x, shift]
+                out.push(Lir::I64ShrU); // [buf, i+1, x >>u (8*i)] — LOGICAL shift (magnitude, not sign)
+                out.push(Lir::I32WrapI64); // [buf, i+1, low32] — wrap keeps the low byte in the low bits
+                out.push(Lir::ConstI32(0xFF)); // [buf, i+1, low32, 0xFF]
+                out.push(Lir::I32And); // [buf, i+1, byte_i]
+                out.push(Lir::CallImport(OP_BYTES_SET)); // → [buf]
+            }
+            out.push(Lir::CallImport(OP_BIGINT_OF_BYTES)); // consumes buf → [fresh owned BigInt handle : i32]
             Ok(())
         }
         // `Int64.of b` on a runtime BigInt — checked narrow back to i64 (traps out of range at run time).
