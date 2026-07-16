@@ -2176,6 +2176,7 @@ pass	an effect-built heap list bound in a let is USED TWICE and retained across 
 pass	an effect-performing helper called inside a recursive self-call's argument folds
 pass	an effectful condition is performed exactly once under the operator hoist
 pass	an effectful condition of a same-constructor if is performed exactly once
+pass	an effectful helper that also reads an outer/driver parameter folds in a self-call arg
 pass	an effectful init before a failing `?` performs exactly once
 pass	an effectful match scrutinee is performed exactly once across a two-position sink
 pass	an effectful shared operand performs after the condition, exactly once
@@ -3336,5 +3337,3 @@ pass	α-equivalence handles nesting and distinguishes a bound variable from a sa
 todo	SUM ARG + LIST RESULT declines cleanly (Option arg, List result)
 todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
-pass	an effect-performing helper called inside a recursive self-call's argument folds
-pass	an effectful helper that also reads an outer/driver parameter folds in a self-call arg
