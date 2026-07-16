@@ -817,6 +817,30 @@ fn resolve_name(db: &Db, id: StructId, name: &str) -> Resolved {
             .at(id),
         );
     }
+    // `?` used as the HEAD of a form — `(? e)`. The diagnostics for the fallible short-circuit operator
+    // consistently call it "`?`/`try`", and `?` is the sigil many languages spell it with, so an author
+    // reaches for `(? e)`; but the s-expr surface head is the KEYWORD `try` (`(try e)`), and `?` is not a
+    // bound name, so it resolves unbound — a misleading "unbound name `?`" (a did-you-mean scan over scope
+    // is nonsense for a sigil). Name the real spelling + carry a VERIFIED head-rewrite `?` → `try` (the
+    // operand is preserved; the rewrite is the exact form the author meant). Only in HEAD position — a bare
+    // `?` elsewhere keeps the ordinary unbound path. `try` is a grammar keyword, so this never shadows a
+    // user name.
+    if name == "?"
+        && db.parent_of(id).is_some_and(
+            |p| matches!(db.ast.get(p), Struct::List(kids) if kids.first() == Some(&id)),
+        )
+    {
+        trace!(target: "rcdzc::resolve", node = id.0, "`?` head → the try operator is spelled `(try e)`");
+        return Resolved::Poison(
+            Reject::coded(
+                Code::Unbound,
+                "the fallible short-circuit operator is spelled `(try <expression>)` in this surface, \
+                 not `(? …)` — write `try` as the head",
+            )
+            .at(id)
+            .with_fix(crate::diag::Fix::replace_verified(id, "try", "replace `?` with `try`")),
+        );
+    }
     trace!(target: "rcdzc::resolve", node = id.0, %name, "name UNBOUND (CDZ0101)");
     // The "did you mean?" typo suggestion (the nearest in-scope name) is computed LAZILY, at the ONE site
     // that SURFACES an unbound name as a user fault (`infer::collect_node`) — NOT here. `resolved_of` is
