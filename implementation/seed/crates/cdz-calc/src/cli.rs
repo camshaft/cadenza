@@ -20,7 +20,9 @@ use crate::{Calculator, Eval};
 pub struct CalcArgs {
     /// Evaluate ONE expression, print its value, and exit — the one-shot mode a launcher/script uses
     /// (`cdz calc --once "1/3 + 1/3 + 1/3"`). Without it, `cdz calc` starts the interactive loop.
-    #[arg(long, value_name = "EXPR")]
+    /// `allow_hyphen_values` so a LEADING-MINUS expression (`--once "-5"`, `--once "-3 kilometer"`) is
+    /// taken as the value rather than parsed as an unknown flag — a negation is an ordinary expression.
+    #[arg(long, value_name = "EXPR", allow_hyphen_values = true)]
     once: Option<String>,
 
     /// Read + render in the s-expression surface instead of the default ML surface.

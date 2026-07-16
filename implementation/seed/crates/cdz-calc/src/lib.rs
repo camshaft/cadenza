@@ -364,9 +364,16 @@ fn plain_value(sexpr_value: &str, surface: Format) -> String {
     let Some(&value_id) = tail.first() else {
         return render_value(sexpr_value, surface);
     };
-    // Copy the value subtree into its own arena + render it in the surface.
+    // Copy the value subtree into its own arena + render it in the surface. Use the DISPLAY options (as
+    // `render_value` does), so a quantity renders in its human form (`3000 meter`) rather than the raw
+    // constructor (`Qty.of(3000, Unit.base(#meter))`) — the plain path must be at least as legible as the
+    // full render, not a raw-AST leak.
     let value_arena = cadenza_syntax::query::Tree::from_arena(&arenas, value_id).to_arena();
-    let rendered = match cadenza_syntax::convert::write(&value_arena, surface) {
+    let opts = cadenza_syntax::convert::Options {
+        display: true,
+        ..Default::default()
+    };
+    let rendered = match cadenza_syntax::convert::write_with(&value_arena, surface, opts) {
         Ok(bytes) => String::from_utf8_lossy(&bytes).trim().to_string(),
         Err(_) => return render_value(sexpr_value, surface),
     };
@@ -437,6 +444,16 @@ mod tests {
         // ML render of the rational value now resugars to `Rational.of(1, 3)` (the landed printer fix),
         // but plain mode extracts the VALUE subtree first, so it stays the bare `1/3`.
         assert_eq!(plain_value("(: 1/3 Rational)", Format::Ml), "1/3");
+    }
+
+    #[test]
+    fn plain_value_renders_a_quantity_in_its_display_form_not_the_raw_ctor() {
+        // A QUANTITY under `--plain` must render in its human form (`5 meter`), NOT leak the raw
+        // constructor (`Qty.of(5, Unit.base(#"meter"))`). Plain mode now uses the DISPLAY options (like
+        // the full render), so a launcher sees `5 meter`. (Regression: reported by v-quantity — a plain
+        // quantity printed `Qty.of(…)`.)
+        let q = "(: (Qty.of 5 (Unit.base #\"meter\")) (Qty Int64 (Unit.base #\"meter\")))";
+        assert_eq!(plain_value(q, Format::Ml), "5 meter");
     }
 
     #[test]

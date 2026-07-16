@@ -57,3 +57,50 @@ fn cdz_calc_sexpr_surface_evaluates() {
     assert!(ok, "--sexpr --once failed: {err}");
     assert_eq!(out.trim(), "5", "(+ 2 3) in s-expr = 5: {out}");
 }
+
+#[test]
+fn cdz_calc_once_accepts_a_leading_minus_expression() {
+    // A leading-minus expression (`-5`) must be taken as the `--once` VALUE, not parsed as an unknown
+    // flag (`allow_hyphen_values`). Reported by v-quantity: `cdz calc --once "-5"` previously errored with
+    // "try --help". Both a bare negation and a later flag after the value now parse.
+    let (ok, out, err) = run(&["calc", "--once", "-5", "--plain"]);
+    assert!(
+        ok,
+        "a leading-minus --once expression should evaluate: {err}"
+    );
+    assert_eq!(out.trim(), "-5", "`-5` evaluates to -5: {out}");
+}
+
+#[test]
+fn cdz_calc_once_accepts_a_leading_minus_subtraction() {
+    // A leading-minus in a larger expression (`-3 * 4`) is also taken as the value, not a flag.
+    let (ok, out, err) = run(&["calc", "--once", "-3 * 4", "--plain"]);
+    assert!(
+        ok,
+        "a leading-minus arithmetic --once should evaluate: {err}"
+    );
+    assert_eq!(out.trim(), "-12", "`-3 * 4` = -12: {out}");
+}
+
+#[test]
+fn cdz_calc_once_plain_renders_a_quantity_in_its_display_form() {
+    // `--plain` on a QUANTITY shows the human form (`3000 meter`), not the raw constructor
+    // (`Qty.of(3000, Unit.base(#"meter"))`) — the plain path uses the display render. (Regression
+    // surfaced probing negative quantities; the sign is incidental — plain mode leaked the ctor for any
+    // quantity.)
+    let (ok, out, err) = run(&["calc", "--once", "3 kilometer", "--plain"]);
+    assert!(ok, "plain quantity --once failed: {err}");
+    assert_eq!(
+        out.trim(),
+        "3000 meter",
+        "plain quantity is human-form: {out}"
+    );
+    // And a NEGATIVE quantity (the two fixes together): leading-minus parses AND renders in display form.
+    let (nok, nout, nerr) = run(&["calc", "--once", "-3 kilometer", "--plain"]);
+    assert!(nok, "plain negative quantity --once failed: {nerr}");
+    assert_eq!(
+        nout.trim(),
+        "-3000 meter",
+        "plain negative quantity: {nout}"
+    );
+}
