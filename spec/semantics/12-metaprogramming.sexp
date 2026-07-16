@@ -1478,6 +1478,26 @@
   (call   main (: 0 Int64))
   (output (: 7 Int64)))
 
+; eval folds the ORDERING comparisons and the boolean CONNECTIVES too, not only `=`: a quoted `(< 3 5)`
+; reduces to a boolean the branch consumes, and a quoted `(and true false)` short-circuits. The `=`-condition
+; case above pins equality; these pin that eval reconstructs + reduces the OTHER boolean-producing operator
+; families (an ordering relop, a logical connective), so an evaluator that handled `=` but mis-reduced `<` or
+; `and` would flip them.
+
+(case "eval of a quoted ordering comparison drives the branch"
+  (doc    "`(eval (quote (if (< 3 5) 1 0)))` = 1: the quoted condition `(< 3 5)` is an ORDERING relop (not
+           `=`); eval reduces it to `true` and the branch selects 1. Pins that eval folds ordering
+           comparisons, the relop companion of the `=`-condition case above.")
+  (input  (eval (quote (if (< 3 5) 1 0))))
+  (output (: 1 Int64)))
+
+(case "eval of a quoted boolean connective short-circuits"
+  (doc    "`(eval (quote (and true false)))` = false: the quoted `and` connective reduces over its operands.
+           Pins that eval reconstructs + folds a logical connective (distinct from a comparison or arithmetic
+           form) — the boolean-algebra companion of the ordering/equality cases.")
+  (input  (eval (quote (and true false))))
+  (output (: false Bool)))
+
 ; eval reconstructs + folds every CORE CONTROL FORM, not only arithmetic and `if`: a quoted `let` (a binder-
 ; introducing form), a quoted `match` (a scrutinee + arms), and a quoted lambda APPLICATION all reconstruct
 ; to the source they denote and fold through the ordinary compile-time path (`metaprogramming.md` §Eval Is
