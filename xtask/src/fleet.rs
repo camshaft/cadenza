@@ -432,8 +432,9 @@ pub enum FleetCmd {
     /// `/loop <interval> <tick>` (with the same kickoff contract), which ARMS a cron instead of running
     /// one inline tick — converting that stall from permanent to self-healing. The `--stale-cap` bound is what keeps a
     /// long-interval agent (e.g. 30m) from getting an hour-long dead window. Skips: agents with no live
-    /// tmux window, agents mid-tick
-    /// ("esc to interrupt" — real work in flight), agents re-armed within `--grace-secs` (anti-thrash),
+    /// tmux window, agents mid-tick ("esc to interrupt" — real work in flight, but ONLY trusted for an
+    /// agent that has EVER stamped a heartbeat; a never-heartbeated agent past the cold-start window
+    /// with a busy pane is FLAILING, not working, so it re-arms), agents re-armed within `--grace-secs` (anti-thrash),
     /// and `pr-sync` when `trunk` advanced within the stale window (it does minutes-long synchronous
     /// gate work per MR, so its heartbeat legitimately goes stale mid-batch while it's alive — a recent
     /// commit on `trunk`, which only pr-sync writes, proves liveness). REAP: any genuinely-DONE agent
@@ -1568,7 +1569,19 @@ fn watchdog(fleet: &Fleet, dry_run: bool, stale_mult: u32, stale_cap: u64, grace
 
         // Don't interrupt a real tick: if the pane shows Claude working ("esc to interrupt"), the loop
         // is alive and mid-work — a stale heartbeat just means a long tick, not a dead loop.
-        if window_is_working(&session, &a.name) {
+        //
+        // BUT this pane-busy guard is only trustworthy for an agent that has EVER stamped a heartbeat.
+        // A genuine tick stamps its heartbeat at step 1 (`fleet heartbeat`) BEFORE any long work, so a
+        // has-looped agent with a busy pane is genuinely mid-tick. A NEVER-heartbeated agent past the
+        // cold-start window, by contrast, is FLAILING (e.g. stuck retrying a failed command) — its busy
+        // pane is not progress, and skipping it here is exactly the false-positive that let the
+        // origin/trunk-flail mints sit forever (corpus-bugfix's capture). So: honor the busy pane only
+        // when the agent has stamped a heartbeat at least once; a never-heartbeated agent re-arms even
+        // if the pane looks busy. (`busy pane + zero heartbeats ever` = stuck, not a long tick.)
+        // Only capture the pane when the agent has looped before (never-heartbeated → pane can't be
+        // trusted, so don't even bother reading it).
+        let pane_busy = hb_age.is_some() && window_is_working(&session, &a.name);
+        if pane_busy_means_working(hb_age.is_some(), pane_busy) {
             println!(
                 "  = {} heartbeat stale but pane shows work in flight — left alone",
                 a.name
@@ -1774,6 +1787,17 @@ fn stale_window_secs(interval_secs: u64, mult: u32, cap: u64) -> u64 {
 
 /// Does the agent's tmux pane show Claude actively working? Claude Code prints an "esc to interrupt"
 /// affordance in its status line while a turn is in flight; its presence means the loop is alive and
+/// Whether a busy-looking pane should be TRUSTED as "genuinely mid-tick, leave alone" for a stale
+/// agent. Pure so the invariant is unit-tested. A pane only counts as real work if the agent has EVER
+/// stamped a heartbeat (`hb_ever` = `heartbeat_age_secs(...).is_some()`): a genuine tick stamps its
+/// heartbeat at step 1 before any long work, so a has-looped agent with a busy pane is mid-tick. A
+/// never-heartbeated agent past the cold-start window with a busy pane is FLAILING (stuck retrying),
+/// not working — so its pane must NOT be trusted, else it's skipped forever (the origin/trunk-flail
+/// false-positive). Returns true ⇒ honor the busy pane and skip re-arm; false ⇒ ignore the pane.
+fn pane_busy_means_working(hb_ever: bool, pane_busy: bool) -> bool {
+    hb_ever && pane_busy
+}
+
 /// mid-tick, so a stale heartbeat is just a long tick — don't re-arm (that would inject a `/loop`
 /// into the middle of real work). Captures only the visible pane (no scrollback).
 fn window_is_working(session: &str, agent: &str) -> bool {
@@ -2706,6 +2730,20 @@ mod tests {
         // still stale ⇒ the one-shot didn't establish a self-sustaining loop (fresh-mint no-cron
         // signature) ⇒ escalate to re-issuing `/loop` to ARM a cron.
         assert_eq!(rearm_action(true), RearmAction::ReissueLoop);
+    }
+
+    #[test]
+    fn pane_busy_is_trusted_only_when_the_agent_has_ever_heartbeated() {
+        // A has-looped agent (heartbeat stamped ≥once) with a busy pane is genuinely mid-tick → trust
+        // the pane, skip re-arm (never interrupt real work).
+        assert!(pane_busy_means_working(true, true));
+        // A has-looped agent whose pane is idle → not working → don't skip on this guard.
+        assert!(!pane_busy_means_working(true, false));
+        // A NEVER-heartbeated agent (past cold-start) with a BUSY pane is FLAILING, not working — the
+        // origin/trunk-flail false-positive. Its pane must NOT be trusted, so re-arm proceeds.
+        assert!(!pane_busy_means_working(false, true));
+        // Never-heartbeated + idle pane: also not "working"; re-arm proceeds.
+        assert!(!pane_busy_means_working(false, false));
     }
 
     #[test]
