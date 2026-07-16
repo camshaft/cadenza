@@ -143,9 +143,10 @@ async function runComponent(componentBytes, program, surface) {
   const fn = Object.values(root).find((v) => typeof v === "function");
   if (!fn) return null;
   const value = String(fn());
-  if (program == null) return value;
-  const resultType = resultTypeOf(export_types(program, surface));
-  return formatScalarByType(value, resultType);
+  // Only an integer-looking render could need the Float `.0`; skip the export-types query otherwise
+  // (mirrors the app run path's gate).
+  if (program == null || !/^-?\d+$/.test(value.trim())) return value;
+  return formatScalarByType(value, resultTypeOf(export_types(program, surface)));
 }
 
 // ---- extract `source=`/`solution=`/`expected=`/`expect=` from a chapter's TSX ----
