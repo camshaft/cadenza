@@ -73,13 +73,14 @@ export default function Bytes() {
 
       <H2>From text to bytes</H2>
       <P>
-        The <em>Strings</em> chapter noted that <C>"café"</C> is 4 characters but 5 bytes in UTF-8.{" "}
-        <C>String.to-bytes</C> gives you exactly those encoded bytes, and their length is the byte count:
+        <C>String.to-bytes</C> — the crossing the <em>Strings</em> chapter covered — hands you a string's
+        UTF-8 encoding as a <C>Bytes</C>, which lets us see what <C>Bytes.len</C> measures: octets, not
+        characters. The 4-character <C>"café"</C> encodes to <C>5</C> bytes:
       </P>
       <Runnable source={`(Bytes.len (String.to-bytes "café"))`} />
       <P>
-        <C>5</C>, not <C>4</C>: the <C>é</C> encodes to two bytes, so the byte length runs one past the
-        character count. (Use <C>String.scalar-len</C> if you want the <C>4</C> characters instead.)
+        <C>Bytes.len</C> counts the octets it's given — here <C>5</C>, because <C>é</C> takes two of them —
+        whatever the character count of the text that produced them.
       </P>
 
       <Why tenet="Text and bytes are different types">
