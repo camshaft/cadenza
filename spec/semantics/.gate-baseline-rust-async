@@ -2395,7 +2395,7 @@ pass	the guarded-let conditional takes its else-branch when the conjunction is f
 pass	the heap list a handle BUILDS escapes the handle and is consumed outside it
 pass	the identity function applied to a boolean returns the boolean
 pass	the identity function applied to an integer returns the integer
-pass	the int-to-float generator is order-preserving (a < b implies of a < of b)
+pass	the int-to-float generator is order-preserving (a < b implies of a <= of b — NON-decreasing)
 pass	the intersection contains the elements in both sets
 pass	the intersection of disjoint sets is empty
 pass	the largest factorial that fits the integer type computes exactly

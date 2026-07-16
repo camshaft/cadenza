@@ -139,20 +139,25 @@
   (call   main (: 5 Int64) (: 5 Int64)) (output (: true Bool))
   (call   main (: 9 Int64) (: -2 Int64)) (output (: true Bool)))
 
-(case "the int-to-float generator is order-preserving (a < b implies of a < of b)"
+(case "the int-to-float generator is order-preserving (a < b implies of a <= of b — NON-decreasing)"
   (doc    "A cross-type ordering property tying the integer generator to its FLOAT image: `Float64.of-int`
-           is monotonic, so whenever `a < b` as integers, `of(a) < of(b)` as floats — an order homomorphism.
-           `(if (< a b) (< (of a) (of b)) true)` = true (vacuously true when `a >= b`). Distinct from
-           trichotomy (a within-float total order): this pins that the generator's Int->Float mapping
-           PRESERVES order, exercising both the integer `<` and the runtime float `<` over generated inputs
-           at the boundary. Holds for negatives too (of-int is signed).")
+           is monotonic NON-DECREASING (the IEEE i64->f64 round-to-nearest), so whenever `a < b` as
+           integers, `of(a) <= of(b)` as floats. It is NOT strictly increasing: two DISTINCT i64 beyond
+           2^53 round to the SAME f64 (the mantissa runs out of bits), so `of(a) < of(b)` is FALSE there —
+           `of(2^53) == of(2^53 + 1)`. The correct invariant is `<=`, and the last call PINS exactly that
+           boundary (a<b holds but the floats are EQUAL, so a strict `<` would wrongly report false — this
+           case would be a vacuous false-green if it only tested small ints). Distinct from trichotomy
+           (a within-float total order): this pins the generator's Int->Float mapping preserves order
+           NON-strictly, exercising the integer `<` and the runtime float `<=` at the boundary. Holds for
+           negatives (of-int is signed) and across the 2^53 rounding threshold.")
   (input  (do (def (of (: n Int64)) ((. Float64 of-int) n))
               (def (main (: a Int64) (: b Int64))
-                (if (< a b) (< (of a) (of b)) true))
+                (if (< a b) (<= (of a) (of b)) true))
               (export main)))
   (call   main (: 3 Int64) (: 7 Int64)) (output (: true Bool))
   (call   main (: 9 Int64) (: 2 Int64)) (output (: true Bool))
-  (call   main (: -8 Int64) (: -2 Int64)) (output (: true Bool)))
+  (call   main (: -8 Int64) (: -2 Int64)) (output (: true Bool))
+  (call   main (: 9007199254740992 Int64) (: 9007199254740993 Int64)) (output (: true Bool)))
 
 ; --- §Refinements Constrain Generation --------------------------------------------------------------
 ; "A generator for a value of a refined type MUST produce only values satisfying that type's
