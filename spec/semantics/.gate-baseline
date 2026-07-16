@@ -1778,6 +1778,7 @@ pass	a two-variant enum match with constant arms dispatches branchlessly — fir
 pass	a two-variant enum match with constant arms dispatches branchlessly — second variant
 pass	a type annotation consistent with the value is transparent
 pass	a type stored in a compound result cannot cross the boundary
+pass	a type variable nested in a generic parameter annotation is an unbound name
 pass	a type-name-colliding variant construct coexists with the width type it collides with
 pass	a type-value in integer-width position is rejected
 pass	a u16 segment encodes an integer big-endian by default
