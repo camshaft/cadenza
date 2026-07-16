@@ -42,9 +42,12 @@ port-compiler-to-cadenza-ml rule: report, don't work around.)
 ## The type model
 
 ```
-type Len  = (Qty Rational Length)      // a coordinate/size: an exact length. (millimetre at the edge)
+type Len  = (Qty Rational meter)       // a coordinate/size: an exact length in the base METER unit
 type Vec3q = V3q(Len, Len, Len)        // the units-carrying position/size vector
 ```
+Internal store = exact Rational METERS (operator ruling, below). Authors write any unit (`5 inch`,
+`50 mm`); the language converts to exact Rational meters; display/export converts back. The mesh edge
+lowers meter→mm→f64.
 
 `Solidr` arms, retyped:
 - `Cuber(Vec3q)` — size is three lengths.
@@ -95,13 +98,24 @@ enabler.
 5. **S5 — retire** the bare-Rational `Vec3r` geometry ctors once nothing depends on them (drivers +
    examples all on `Vec3q`).
 
-## Open questions for the operator
+## Operator ruling (2026-07-16) — RESOLVED
 
-1. **`Len` = millimetre-referenced, or dimension-only (`Length`, unit chosen at the edge)?** Recommend
-   dimension-only `Length` internally (the exact model shouldn't privilege mm); the mesh edge picks mm.
-2. **Should the model expose `Qty` directly to authors, or a thin `Len` alias?** Recommend a `Len`
-   alias for ergonomics + a stable name the `@param` layer can target.
-3. **`Scaler` factors bare-Rational — confirm.** (The alternative, a dimensionless-`Qty`, buys nothing
-   and complicates the type.)
+1. **Q1 RESOLVED — internal model = exact Rational METERS (the language's base length unit).** Operator:
+   "it should just use the base meter unit in the language and then the application can build it in
+   whatever units it'd like … since the language knows how to convert then it just works." So `Len` =
+   meter-`Qty` over `Rational`; the APP authors in any unit (inch/mm/foot) and the language's exact
+   conversions store it as exact Rational meters; display/export converts back. NOT mm-privileged (old
+   option A), NOT abstract-dimensionless (old option B) — base=meter, exact, app-authors-in-any-unit.
+   - **CONFIRMED VIABLE + exact (probed on trunk):** `1 inch → 127/5000 m` exactly; `m → mm = 127/5`
+     exactly; author-inch → store-meters → display-mm/inch is a **lossless** round-trip, no f64. This is
+     the pattern `units.cdz` already uses (unwrap to bare Rational between conversions).
+   - ⚠ **FINDING (filed to v-quantity, does NOT block P1):** chaining `Unit.in` DIRECTLY twice fails at
+     runtime ("Unit.in of a non-quantity" — repro `inch→mm→cm`); a single `Unit.in` + `Qty.value` are
+     fine. WORKAROUND = the sound path anyway: unwrap to bare Rational + reconstruct a fresh `Qty.of`
+     before the next conversion (store-in-base-meters does exactly this). CAD never chains `Unit.in`.
+2. **Q2 — `Len` alias over meter-`Qty`: stands (ergonomic + a stable name the `@param` layer targets).**
+3. **Q3 — `Scaler` factors bare-`Rational` (dimensionless): stands** (length×length=area, probed).
 
-No code until this is ruled. On a green-light I ship S1 (the pragma) first.
+**Proceeding.** S1 (the `default-fraction` pragma, gate-safe, ruling-independent) ships first; the model
+is `Len` = meter-`Qty`, authoring/display in any unit via unwrap-to-base + reconstruct, f64 only at the
+manifold edge (meter→mm).

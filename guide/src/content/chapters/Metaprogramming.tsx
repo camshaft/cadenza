@@ -117,8 +117,8 @@ export default function Metaprogramming() {
       </P>
 
       <Note>
-        The conventional surface has lighter sugar for this: <C>quasiquote</C> (a backtick template) quotes
-        a form but lets an <C>unquote</C> (a comma) drop a value into a hole — <C>{"`(+ ,x 10)"}</C> with{" "}
+        The ML surface has lighter sugar for this: a <em>quasiquote</em> is a backtick-brace template,
+        and an <em>unquote</em> (a comma) drops a value into a hole — <C>{"`{ ,x + 10 }"}</C> with{" "}
         <C>x = 2</C> builds the AST for <C>(+ 2 10)</C>, i.e.{" "}
         <C>{`Ast.List([Ast.Name("+"), Ast.Int(2), Ast.Int(10)])`}</C>. It's exactly the constructor call
         above, written as a template — construction, not execution: the <C>,x</C> evaluates <em>x</em> to
@@ -170,8 +170,8 @@ export default function Metaprogramming() {
       />
       <P>
         The <C>(Ast.Int x)</C> lifts the runtime value <C>x</C> into a leaf of the tree — this is
-        interpolation: the shape is fixed, one piece comes from a computation. The conventional surface
-        writes exactly this with a quasiquote and an unquote — <C>{"`(+ ,x 4)"}</C> — the comma marking the
+        interpolation: the shape is fixed, one piece comes from a computation. The ML surface writes
+        exactly this with a quasiquote and an unquote — <C>{"`{ ,x + 4 }"}</C> — the comma marking the
         spot the value <C>x</C> drops into. Template with holes, holes filled by values.
       </P>
 
@@ -214,10 +214,10 @@ export default function Metaprogramming() {
       />
       <P>
         The pattern binds <C>op</C> to the head's name (<C>"+"</C>) and <C>rest</C> to the arguments, so a
-        macro can dispatch on what a form <em>is</em> before rewriting it. The conventional surface offers a
-        quasiquote <em>pattern</em> for the common shapes — <C>{"`(+ ,a ,b)"}</C> as a match arm binds the
-        two operands <C>a</C> and <C>b</C> directly — the mirror image of building with{" "}
-        <C>{"`(+ ,x 4)"}</C>.
+        macro can dispatch on what a form <em>is</em> before rewriting it. There's also a quasiquote{" "}
+        <em>pattern</em> for the common shapes — a <C>quasiquote</C> form with <C>unquote</C> holes as a
+        match arm binds the operands directly — the mirror image of building with a quasiquote template.
+        The next section puts it to work.
       </P>
 
       <H2>A quasiquote pattern, and an interpreter</H2>
@@ -226,9 +226,9 @@ export default function Metaprogramming() {
         <C>match</C> arm, a <C>quasiquote</C> form with <C>unquote</C> holes matches a tree of that shape
         and <em>binds</em> what's in each hole — <C>(unquote x)</C> in a pattern is a binder, the dual of{" "}
         <C>(unquote x)</C> in a template (which embeds a value). Match a runtime <C>Ast</C> against{" "}
-        <C>{"`(+ ,x ,y)"}</C> and you get its two operands as sub-trees, ready to recurse on. Here's a
-        complete little evaluator over an arithmetic <C>Ast</C> — integers evaluate to themselves, and each
-        operator shape recurses into its operands:
+        <C>{"(quasiquote (+ (unquote x) (unquote y)))"}</C> and you get its two operands as sub-trees, ready
+        to recurse on. Here's a complete little evaluator over an arithmetic <C>Ast</C> — integers evaluate
+        to themselves, and each operator shape recurses into its operands:
       </P>
       <Runnable
         source={`(def (eval-expr (: a Ast))
@@ -241,12 +241,12 @@ export default function Metaprogramming() {
       />
       <P>
         The quoted <C>(* (+ 1 2) 4)</C> is a real tree, and <C>eval-expr</C> walks it: the outer{" "}
-        <C>{"`(* ,x ,y)"}</C> arm binds <C>x</C> to the sub-tree <C>(+ 1 2)</C> and <C>y</C> to <C>4</C>,
+        <C>*</C> arm binds <C>x</C> to the sub-tree <C>(+ 1 2)</C> and <C>y</C> to <C>4</C>,
         recurses into each, and multiplies — <C>(1 + 2) * 4 = 12</C>. This is exactly how the compiler and a
         macro take apart the code handed to them: the same <C>match</C> you use on any sum type, with a
         template-shaped pattern for the syntax you care about. Note the arms dispatch on the operator too —
-        a <C>{"`(+ ,x ,y)"}</C> arm won't match a <C>*</C> form — so distinguishing one operator from
-        another is just two arms.
+        the <C>+</C> arm won't match a <C>*</C> form — so distinguishing one operator from another is just
+        two arms.
       </P>
 
       <Why tenet="One representation for code, and it's an ordinary value">

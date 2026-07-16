@@ -87,6 +87,17 @@ fn reduction_bound_element(db: &mut Db, elems: &[StructId]) -> Option<Reject> {
 /// value heap exists). This is the one compile-time reduction tier acting through lowering
 /// (`reference-compiler.md` §A Construct Whose Value Is Fully Determined At Compile Time).
 pub fn core_of(db: &mut Db, id: StructId) -> Core {
+    // A pass-installed CORE OVERRIDE (the `crate::opt` `CorePass` seam) wins over the lowered form, so a
+    // backend-independent optimization rewrites the Core-IR once and both backends inherit it
+    // (`DESIGN-tiered-optimization-levels-rcdzc.md` §9a). Checked FIRST — before the memoized column — so an
+    // override installed after the column was filled still takes effect. EMPTY in the default pipeline, so
+    // this is a single O(1) miss and `core_of` is byte-identical to before the seam.
+    if !db.core_override.is_empty()
+        && let Some(c) = db.core_override.get(&id)
+    {
+        trace!(target: "rcdzc::lower", node = id.0, "core override hit");
+        return c.clone();
+    }
     if let Slot::Filled(c) = db.core.get(id) {
         trace!(target: "rcdzc::lower", node = id.0, "memo hit");
         return c.clone();

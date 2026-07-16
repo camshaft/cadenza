@@ -286,4 +286,74 @@ mod tests {
         }
         assert_eq!(pm.enabled().count(), 4);
     }
+
+    // ── The core-override seam (§9a) — the mechanism a real CorePass uses to rewrite the Core-IR ──
+    // These prove: (1) an empty override map leaves `core_of` behavior unchanged (the level-equivalence
+    // baseline — the whole corpus gate exercises this path); (2) an installed override WINS over the
+    // lowered/memoized form; (3) an IDENTITY override (reinstalling the node's own core) is behavior-
+    // preserving. Together they de-risk the seam before any real rewrite pass registers.
+
+    #[test]
+    fn empty_override_map_leaves_core_of_unchanged() {
+        let mut db = crate::db::Db::load(crate::testkit::parse(
+            "(module m (def (main) 42) (export main))",
+        ));
+        assert!(!db.has_core_overrides(), "fresh Db has no overrides");
+        let d = db.def_by_name("main").expect("def main");
+        let body = db.defs[d].body.expect("main body");
+        let natural = crate::lower::core_of(&mut db, body);
+        // Still no overrides after a normal lowering.
+        assert!(!db.has_core_overrides());
+        match natural {
+            crate::core::Core::ConstInt(ref v) => assert_eq!(v.to_i64(), Some(42)),
+            other => panic!("main's body lowers to ConstInt(42), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_installed_override_wins_over_the_lowered_form() {
+        let mut db = crate::db::Db::load(crate::testkit::parse(
+            "(module m (def (main) 42) (export main))",
+        ));
+        let d = db.def_by_name("main").expect("def main");
+        let body = db.defs[d].body.expect("main body");
+        // Lower it once (fills the column) so we prove the override wins even over a FILLED slot.
+        let natural = crate::lower::core_of(&mut db, body);
+        assert!(matches!(&natural, crate::core::Core::ConstInt(v) if v.to_i64() == Some(42)));
+        // A pass installs a (deliberately distinct) override for this node.
+        db.install_core_override(
+            body,
+            crate::core::Core::ConstInt(crate::ast::IntValue::from_i64(999)),
+        );
+        assert!(db.has_core_overrides());
+        let after = crate::lower::core_of(&mut db, body);
+        match after {
+            crate::core::Core::ConstInt(ref v) => assert_eq!(
+                v.to_i64(),
+                Some(999),
+                "core_of returns the pass-installed override"
+            ),
+            other => panic!("expected the override ConstInt(999), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_identity_override_is_behavior_preserving() {
+        let mut db = crate::db::Db::load(crate::testkit::parse(
+            "(module m (def (main) 42) (export main))",
+        ));
+        let d = db.def_by_name("main").expect("def main");
+        let body = db.defs[d].body.expect("main body");
+        let natural = crate::lower::core_of(&mut db, body);
+        // An identity pass reinstalls the node's OWN core as its override — the seam is exercised but
+        // the result is unchanged (the byte-identical de-risking case the design's slice-1 calls for).
+        db.install_core_override(body, natural.clone());
+        assert!(db.has_core_overrides());
+        let after = crate::lower::core_of(&mut db, body);
+        assert_eq!(
+            format!("{natural:?}"),
+            format!("{after:?}"),
+            "an identity override leaves core_of's result unchanged"
+        );
+    }
 }

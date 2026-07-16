@@ -74,14 +74,18 @@ export default function NotebookPage() {
   useEffect(() => {
     setValues((prev) => {
       const names = new Set(widgets.map((w) => w.name));
-      const next: WidgetValues = {};
+      // NULL-prototype object + hasOwnProperty/Object.keys (not `in`/`for...in`): a widget may legally be
+      // named `toString`/`__proto__`/`constructor` (IDENT_RE allows them), and a plain `{}` + prototype-
+      // chain checks would misreconcile those (spurious changed / prototype value) — PR #510.
+      const next: WidgetValues = Object.create(null);
       let changed = false;
       for (const w of widgets) {
-        next[w.name] = w.name in prev ? prev[w.name] : w.default;
-        if (!(w.name in prev)) changed = true;
+        const had = Object.prototype.hasOwnProperty.call(prev, w.name);
+        next[w.name] = had ? prev[w.name] : w.default;
+        if (!had) changed = true;
       }
       // A previously-held value whose widget is gone → dropped (changed if `prev` had an extra key).
-      for (const k in prev) if (!names.has(k)) changed = true;
+      for (const k of Object.keys(prev)) if (!names.has(k)) changed = true;
       return changed ? next : prev;
     });
   }, [widgets]);
@@ -139,7 +143,9 @@ export default function NotebookPage() {
   useEffect(() => {
     const token = ++runToken.current;
     setStates({});
-    runCells(initialRunOrder(cells), { ...defaultsOf(widgets), ...values }, surface, token);
+    // Null-prototype merge (defaults ∪ live values) so `__proto__`/`toString`-named widgets are plain keys.
+    const runValues: WidgetValues = Object.assign(Object.create(null), defaultsOf(widgets), values);
+    runCells(initialRunOrder(cells), runValues, surface, token);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cells, surface]);
 
@@ -161,13 +167,13 @@ export default function NotebookPage() {
     (name: string, value: number | boolean | string) => {
       // Commit the control's value immediately (the slider thumb tracks the drag). valuesRef keeps a live
       // mirror so the debounced recompute reads the latest committed values without a state read.
-      setValues((v) => ({ ...v, [name]: value }));
+      setValues((v) => withValue(v, name, value));
       if (debounce.current) clearTimeout(debounce.current);
       debounce.current = setTimeout(() => {
         const token = ++runToken.current;
         // Build the recompute values from the live ref (+ this change) and kick the run OUTSIDE any state
         // updater — a side effect in a setState updater can double-fire under StrictMode/batching.
-        const next = { ...valuesRef.current, [name]: value };
+        const next = withValue(valuesRef.current, name, value);
         runCells(recomputePlan(cells, widgets, name, surface), next, surface, token);
       }, 150);
     },
@@ -223,9 +229,17 @@ export default function NotebookPage() {
 }
 
 function defaultsOf(widgets: Widget[]): WidgetValues {
-  const v: WidgetValues = {};
+  // Null-prototype: a widget named `__proto__`/`toString` must be an ordinary data key, not touch the
+  // prototype chain (PR #510). Same reason as the reconcile effect.
+  const v: WidgetValues = Object.create(null);
   for (const w of widgets) v[w.name] = w.default;
   return v;
+}
+
+/// A copy of `values` with one widget's value set, preserving the null-prototype (a plain `{...v}` spread
+/// would create an Object.prototype-carrying object again, re-exposing the `__proto__`/`toString` footgun).
+function withValue(values: WidgetValues, name: string, value: number | boolean | string): WidgetValues {
+  return Object.assign(Object.create(null), values, { [name]: value });
 }
 
 /// A code cell: its source (unless hidden) + its computed output.

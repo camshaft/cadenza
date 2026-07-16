@@ -59174,6 +59174,86 @@ mod sidecar_driven {
     }
 
     #[test]
+    fn the_copied_interface_name_validator_agrees_with_cadenza_syntax_over_a_fuzz_corpus() {
+        // COPY-INVARIANT GUARD. `cadenza-syntax` is a DEV-only dependency for the pure-lib core, so the
+        // wasm backend keeps its OWN copy of the peer-BINDING validator
+        // (`crate::backend::wasm::is_valid_interface_name`) rather than call the reference at emit time —
+        // this is the guard that turns a silent invalid-component miscompile (an author's malformed
+        // `(bind E "ns:pkg/iface")` string) into a compile-time CDZ0201. Nothing ENFORCED that the copy
+        // stays faithful to `cadenza_syntax::extern_name::is_valid_interface_name` — a drift in either
+        // (e.g. cadenza-syntax tightening the grammar as in `1a2b9333a`, or a local edit) would silently
+        // make the compiler accept/reject a binding string differently from the wasmtime load-time
+        // reality, re-opening the miscompile. This differential test pins the two to AGREE on every input:
+        // hand cases bracketing each grammar edge + a delimiter-rich deterministic fuzz (`:` `/` `@` `-`
+        // multibyte + control chars — the structural delimiters the grammar keys on). A future divergence
+        // fails HERE (caught), not at a user's component load.
+        //
+        // NB: this pins ONLY `is_valid_interface_name`. The sibling `kebab_extern_name` normalizer is
+        // INTENTIONALLY not asserted equal — the backend copy DELIBERATELY diverges from the reference on
+        // a word-separator-immediately-before-a-digit name (`step-2`): the copy keeps it verbatim (invalid
+        // kebab) so `invalid_kebab_export_name` DECLINES it with an actionable rename (v-iterators' policy,
+        // `emit_tests_declines_a_digit_led_kebab_segment_name`), whereas the reference silently collapses
+        // it to `step2`. That is a live cross-vertical policy question (surfaced to the concierge), not a
+        // bug to unify here — both choices are miscompile-safe.
+        use crate::backend::wasm::is_valid_interface_name;
+        use cadenza_syntax::extern_name as reference;
+
+        // Hand cases bracketing the grammar edges (valid names, and each rejection cause).
+        let seeds: &[&str] = &[
+            "cadenza:pkg/api",       // valid: ns:label/iface
+            "cadenza:pkg/api@1.0.0", // valid: + version
+            "a:b:c/d/e",             // valid: multi-namespace pkg + multi projection
+            "cadenza:pkg/Api",       // valid: projection may be uppercase-kebab
+            "Cadenza:pkg/api",       // INVALID: package segment not lowercase
+            "cadenza/api",           // INVALID: <2 package segments
+            "cadenza:pkg",           // INVALID: no projection
+            "cadenza:pkg/api@",      // INVALID: empty version
+            "cadenza:pkg/-api",      // INVALID: projection segment hyphen-led
+            "cadenza:pkg/api-",      // INVALID: projection segment trailing hyphen
+            "cadenza:0pkg/api",      // INVALID: package segment digit-led
+            "cadenza::pkg/api",      // INVALID: empty package segment
+            "",                      // INVALID: empty
+            "café:pkg/api",          // INVALID: non-ASCII in package
+            "cadenza:pkg/apé",       // INVALID: non-ASCII in projection
+        ];
+        for &s in seeds {
+            assert_eq!(
+                is_valid_interface_name(s),
+                reference::is_valid_interface_name(s),
+                "copy vs cadenza-syntax DISAGREE on is_valid_interface_name({s:?}) — the copy has \
+                 drifted from the reference grammar",
+            );
+        }
+
+        // Deterministic fuzz: build delimiter-rich strings from the alphabet the grammar keys on, so the
+        // two validators are compared on the structurally-interesting inputs (not just random noise). A
+        // tiny xorshift PRNG seeded from a fixed constant keeps it reproducible (no wall-clock / rng).
+        let alphabet: &[char] = &[
+            'a', 'b', 'z', 'A', 'Z', '0', '9', '-', ':', '/', '@', 'π', 'é', '·', '\u{7f}', ' ',
+        ];
+        let mut state: u32 = 0x9E37_79B9;
+        let mut next = || {
+            // xorshift32 — deterministic, no external entropy.
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            state
+        };
+        for _ in 0..20_000 {
+            let len = (next() % 12) as usize;
+            let s: String = (0..len)
+                .map(|_| alphabet[(next() as usize) % alphabet.len()])
+                .collect();
+            // (a) neither implementation may PANIC on any input; (b) they must AGREE.
+            assert_eq!(
+                is_valid_interface_name(&s),
+                reference::is_valid_interface_name(&s),
+                "copy vs cadenza-syntax DISAGREE on fuzz input is_valid_interface_name({s:?})",
+            );
+        }
+    }
+
+    #[test]
     fn a_host_op_result_crosses_at_every_aliased_int_width() {
         // The host-op boundary ABI (`host::abi_val_type`) crosses EVERY aliased INT width — the narrow
         // ints `Int8`/`Int16`/`Int32` + unsigned `UInt8`, not only the earlier `Int64`/`UInt32`. Each

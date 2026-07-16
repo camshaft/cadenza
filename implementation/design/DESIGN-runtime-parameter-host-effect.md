@@ -104,11 +104,21 @@ automatically (reads the result type via `op_result_type`), so the plain op decl
 **Bind-by-name = member name** (confirmed): the host binds `Param.<name>` by the string `<name>`, which is the
 op member name AND the manifest key — all the same string, so the generated interface and the host bind agree.
 
-### Fork-A refinement (v-metaprogramming, agreed): HYBRID A2-mechanism / A1-artifact. The scan+generate runs as
-an in-compiler pass over the RESOLVED Ast (A2 — a strongly-typed accessor needs the `@param`'s declared type,
-known only post-resolve; a pure standalone tool would re-run the front-end anyway), but the generated effect
-module + widget manifest stay first-class INSPECTABLE artifacts (the A1 virtue the operator wanted). So: a
-distinct generate step v-metaprogramming owns, running post-resolve, emitting inspectable outputs.
+### Fork-A refinement (v-metaprogramming, agreed): HYBRID A2-mechanism / A1-artifact, GENERATE-BEFORE-RESOLVE.
+The scan+generate is a distinct step v-metaprogramming owns, emitting the effect module (`.cdz`) + widget
+manifest (JSON) as first-class INSPECTABLE artifacts (the A1 virtue). Its ORDERING is generate-BEFORE the main
+resolve: `(Param.width)` in guest code is unbound until `Param` is generated, so a full program resolve first
+would CDZ0101 on the `Param` ref (a circularity). Instead the scan reads each `@param`'s EXPLICIT type annotation
+(resolving only that local type expression, not the whole program), generates `Param` first, then the user
+program + generated `Param` compile together normally — so at the normal compile `Param` is present exactly like
+a hand-written effect, and v-effects' host-bind path sees it unchanged (no special-casing; a generated-then-
+present `Param` is indistinguishable from a hand-written `(effect Param (op width (-> Unit Length)) …)`).
+
+**Hard B-invariant (from this ordering):** `@param` MUST carry an EXPLICIT type annotation (`width : Length`);
+infer-from-use is REJECTED. Two reasons: (1) it would reintroduce the generate-order circularity (the type
+couldn't be read without resolving the program that references the not-yet-generated `Param`); (2) the generated
+op's result type IS the annotation type, so an un-typed `@param` has no result type to generate. The strawman
+satisfies this (every example is `: Type`).
 
 ## FORKS (v1 — superseded by the resolutions above; kept for the record)
 

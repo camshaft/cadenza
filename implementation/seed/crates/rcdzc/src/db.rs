@@ -1493,6 +1493,17 @@ pub struct Db {
     pub(crate) types: Column<StructId, Ty>,
     /// The core-form column. Filled only by [`crate::lower`].
     pub(crate) core: Column<StructId, Core>,
+    /// Pass-installed CORE OVERRIDES (the `PassManager`/`CorePass` seam, `crate::opt`). A backend-independent
+    /// Core-IR optimization pass rewrites a node's core form by installing an override here; `lower::core_of`
+    /// consults this map FIRST (before the memoized column), so the override wins and both backends inherit
+    /// the rewrite (`DESIGN-tiered-optimization-levels-rcdzc.md` §9a). Keyed by the SAME `StructId` the core
+    /// column uses, so a pass keys by the node's stable id. EMPTY in the default (O0/unoptimized) pipeline —
+    /// then `core_of` behaves exactly as before (byte-identical emit), which is the level-equivalence
+    /// baseline. A pass MUST keep every override behavior-preserving (the `CorePass` correctness bar); the
+    /// override is consulted by the same producers/walks that read `core_of`, so an installed rewrite is seen
+    /// uniformly. Cleared whenever the core column would be (incremental re-lower), since an override is a
+    /// derived fact over the same input.
+    pub(crate) core_override: crate::fxhash::FxHashMap<StructId, Core>,
     /// Memo of RECURSIVE-EFFECTFUL SPECIALIZATIONS (`crate::effects` E3): a recursive function called
     /// under a handler context is emitted ONCE per `(def-body-occ, handler-context-key)` as a synthesized
     /// `f#ctx` def — its state threaded as trailing parameters (`DESIGN-effects-rcdzc.md` §4.3). The key
@@ -1664,6 +1675,22 @@ impl Db {
     /// it.
     pub fn load(ast: Arenas) -> Db {
         Db::load_linked(ast, None)
+    }
+
+    /// Install a pass-computed CORE OVERRIDE for `id` (the `crate::opt` `CorePass` seam). After this,
+    /// `lower::core_of(db, id)` returns `core` instead of the lowered/memoized form, so a backend-independent
+    /// optimization pass rewrites the Core-IR once and BOTH backends inherit it
+    /// (`DESIGN-tiered-optimization-levels-rcdzc.md` §9a). The caller (a `CorePass`) MUST keep the override
+    /// behavior-preserving — this is pure mechanism, no correctness check. Overriding a node whose column
+    /// slot is already filled is fine: the override is consulted first, so it wins on the next read.
+    pub fn install_core_override(&mut self, id: StructId, core: Core) {
+        self.core_override.insert(id, core);
+    }
+
+    /// Whether any core override is installed (a pass has run and rewritten at least one node). `false` for
+    /// the default/unoptimized pipeline — then `core_of` is byte-identical to before the seam existed.
+    pub fn has_core_overrides(&self) -> bool {
+        !self.core_override.is_empty()
     }
 
     /// Build a database over a decoded program that MAY be a linked multi-file package. `linkage` is
@@ -2163,6 +2190,7 @@ impl Db {
             resolved: Column::new(),
             types: Column::new(),
             core: Column::new(),
+            core_override: crate::fxhash::FxHashMap::default(),
             effect_specializations: crate::fxhash::FxHashMap::default(),
             multivalue_specs: std::collections::HashSet::new(),
             effect_spec_captures: std::collections::HashMap::new(),

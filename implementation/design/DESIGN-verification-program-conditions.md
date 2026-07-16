@@ -1,7 +1,8 @@
 # DESIGN: Program verification — pre/post-conditions on Cadenza programs, with proofs that feed the optimizer
 
-Status: **Increment (b) DESIGN — proposed; opt-seam (fork #3) SETTLED with v-core-opt; forks 2/3/4 open to
-the operator.** Follows the LCF kernel
+Status: **Increment (b) DESIGN — ALL FORKS RESOLVED (operator 2026-07-16): `@requires`/`@ensures` GREENLIT;
+opt-seam SETTLED with v-core-opt; `@requires`/`@ensures` parse SETTLED with v-syntax. NEXT: b1.** Follows
+the LCF kernel
 ([DESIGN-verification-hol-kernel.md](DESIGN-verification-hol-kernel.md), CHARTER DELIVERED: a working,
 unforgeable `Thm` on trunk). Vertical `v-verification`, subsystem `rcdzc`. Operator greenlight
 (2026-07-16, via concierge, verbatim intent): *"Adding pre/post-conditions would be amazing … keep in
@@ -88,25 +89,34 @@ natural home and a real stress test of that `Ast` (expect gaps → REPORT/FIX).
 
 ---
 
-## 2. The annotation surface — what a condition looks like in source (fork #2, route to operator)
+## 2. The annotation surface — `@requires`/`@ensures` (fork #2, GREENLIT + parse SETTLED)
 
-This is product taste, so it routes to the operator. Options, cheapest first:
+**Operator ruling (2026-07-16): `@requires`/`@ensures`** — *"I like requires/ensures. That's very
+consistent with the other languages."* Sequencing per my recommendation: build the pipeline under
+verify-blocks first (no surface change while the semantics bridge firms up), then surface as
+`@requires`/`@ensures` on a `def`. Options considered:
 
-- **2A. A `verify`/`theorem` block in the corpus (NO surface change).** Conditions are written as kernel
-  obligations directly, the way Inc-a cases already are. Zero compiler work; validates the whole pipeline
-  (denotation + discharge + elision-query) before asking for syntax. **This is where b1–b3 live regardless
-  of the eventual surface** — it de-risks the design.
-- **2B. `@requires` / `@ensures` annotations** on a `def`, checked at compile time (the operator's own
-  phrasing). Ergonomic, familiar (Dafny/SPARK/JML). Needs: a parser/annotation feature (likely a
-  `v-syntax` + `v-metaprogramming` seam — annotations are already a language concept, cf. `@property`,
-  `@tag`, `@cite`), an elaboration that runs the denotation, and a diagnostic when the obligation can't be
-  discharged ("CDZ-VERIFY: cannot prove `@ensures` … ").
-- **2C. A refinement-type surface** (`Int64 where (> it 0)`). Most powerful, most invasive; defer.
-
-**Recommendation (fork #2): build the pipeline under 2A first (no surface), then adopt 2B as the shipping
-surface once b1–b3 prove the pipeline.** Route the *exact* `@requires`/`@ensures` spelling to the operator
-— it's syntax taste, and it touches `v-syntax`'s territory. I'll draft a strawman for the operator to
-react to rather than block.
+- **2A. A `verify` block in the corpus (NO surface change) — the b1–b3 vehicle.** Conditions are written as
+  kernel obligations directly, the way Inc-a cases already are. Zero compiler work; validates the whole
+  pipeline (denotation + discharge + elision) before any syntax. **b1–b3 live here regardless of the
+  eventual surface** — it de-risks the design.
+- **2B. `@requires` / `@ensures` annotations on a `def` — the SHIPPING surface (b4).** Ergonomic, familiar
+  (Eiffel/Dafny/SPARK/JML), the operator's stated consistency bar. **Parse SETTLED with v-syntax
+  (2026-07-16):** the surface fits the EXISTING glued-annotation form with NO new parser primitive —
+  `@requires(pred) @ensures(pred) def f x = body` parses today to
+  `(@ (requires <pred>) (@ (ensures <pred>) (def (f x) body)))` via the existing `@` head rule;
+  `@requires`/`@ensures` are ordinary annotation NAMES (like `@param`/`@cite`/`@test`), needing no
+  reservation. What's mine: the elaboration that runs the denotation and the diagnostic when an obligation
+  can't be discharged ("CDZ-VERIFY: cannot prove `@ensures` …").
+  - **Result binding = `it`** (v-syntax's call, on consistency): `@ensures(> it 0)`. `it` is NOT a new
+    parsed form — it is a plain name the front-end blesses nothing extra for; MY elaboration binds it to
+    the function's result. If the refinement-type `where`-sugar (`Int64 where (> it 0)`, 2C) later lands,
+    `it` is the same implicit-subject binder — one convention across refinements and post-conditions.
+  - **Pre-state (`old()`): deferred to the effect-ful increment (1B), agreed with v-syntax.** The pure
+    fragment's args are immutable, so `@ensures` names params directly — no `old()` needed. A pre-state
+    operator gets co-designed when 1B needs it.
+- **2C. A refinement-type surface** (`Int64 where (> it 0)`). Most powerful, most invasive; defer — but
+  note it shares the `it` binder with 2B, so the two stay consistent when it lands.
 
 ---
 
@@ -206,27 +216,26 @@ Front-load the design validation BEFORE any compiler change, exactly as Inc-a di
   override; all others unchanged. Elision fires at the CORE tier so BOTH backends inherit it — differential-
   gate wasm + rust: a proven-safe add computes the same value unchecked as checked, and an UNproven add
   must still trap. This is the operator's headline deliverable.
-- **b4+ — the annotation SURFACE (2B, `@requires`/`@ensures`), pending operator syntax ruling; then wider
+- **b4+ — the annotation SURFACE (2B, `@requires`/`@ensures`) — GREENLIT + parse SETTLED (§2); then wider
   obligations (bounds checks, exhaustiveness), then effect-ful conditions (1B) if wanted.**
 
-Each increment is one gated unit; b1 is the next tick's work if the operator doesn't redirect the forks.
+Each increment is one gated unit; b1 is the next unit of work now that all forks are resolved.
 
 ---
 
-## 6. Forks — routed to the operator (2026-07-16); I proceed on the recommended defaults meanwhile
+## 6. Forks — ALL RESOLVED (operator 2026-07-16; v-core-opt + v-syntax seams settled)
 
-Per the contract (never wait on a human), I proceed on b1 under the recommended defaults and adjust if the
-operator redirects:
-1. **Semantics→logic bridge: shallow denotation (1A) on the pure arithmetic fragment first.** (Craft call;
-   proceeding.)
-2. **Annotation surface: pipeline under `verify`-blocks (2A) first; `@requires`/`@ensures` (2B) as the
-   shipping surface.** ⟵ EXACT SYNTAX is product taste — routed to operator; I'll draft a strawman.
+1. **Semantics→logic bridge: shallow denotation (1A) on the pure arithmetic fragment first.** ✅ operator
+   default confirmed — proceeding at b1.
+2. **Annotation surface: `@requires`/`@ensures`.** ✅ operator GREENLIT ("very consistent with the other
+   languages"); verify-blocks (2A) for b1–b3, `@requires`/`@ensures` (2B) as the shipping surface at b4.
+   **Parse SETTLED with v-syntax** — no new primitive, result binding `it`, `old()` deferred to 1B (§2).
 3. **Proof→opt interface: pure oracle query `Id → Option<Thm-handle>` keyed by stable Core-`Id`, elision a
    `CorePass` at the Core tier (both backends inherit), optimizer's trusted action = a single
-   conclusion-match against a real `Thm`.** ⟵ novel bit — SEAM SETTLED with v-core-opt (§3); routed to
-   operator for confirmation of the shape.
+   conclusion-match against a real `Thm`.** ✅ operator confirmed the "prove no-overflow → elide" shape;
+   SEAM SETTLED with v-core-opt (§3) — prototype at b2.
 4. **Ownership: stays under v-verification through b1–b3; revisit a co-scoped vertical at the 2B surface.**
-   ⟵ routed to operator for timing.
+   ✅ operator confirmed.
 
 ## 7. Coordination
 
@@ -238,8 +247,10 @@ operator redirects:
   `DESIGN-tiered-optimization-levels-rcdzc.md` §9.2 carries the identical default=check invariant.
 - **v-metaprogramming** — the denotation `Ast → Term` (§1) lives on their reflected `Ast`. Expect gaps →
   REPORT/FIX. Confirm the `Ast` exposes every construct the arithmetic fragment needs.
-- **v-syntax** — the annotation surface (2B) is their territory (annotations are a language concept, cf.
-  `@property`/`@tag`/`@cite`). No action until the operator rules on fork #2.
+- **v-syntax** — the `@requires`/`@ensures` parse (2B) is **SETTLED** (2026-07-16): fits the existing
+  glued-annotation `@name(args)` form with NO new primitive; result binding `it` (a plain name my
+  elaboration binds, front-end blesses nothing extra); `old()` pre-state deferred to 1B. Nothing more from
+  them until b4, when the parse is already ready (they're registered names). I ping them at b4.
 - **breaker** — from b2 on, adversarial cases against the NEW trusted surface: the match predicate. "Supply
   a `Thm` proven under different assumptions that superficially matches `@Id` — does the elision wrongly
   fire?" This is Inc-b's soundness boundary, the analogue of the §3 forge vectors.
