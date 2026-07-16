@@ -1263,6 +1263,7 @@ pass	a runtime conjunction still shields a comparison right operand whose subexp
 pass	a runtime const-multiply at its exact fitting boundary does not trap
 pass	a runtime const-multiply one past its fitting boundary traps
 pass	a runtime division by zero traps
+pass	a runtime division of the minimum integer by -1 overflows and traps
 pass	a runtime division truncates toward zero
 pass	a runtime element collapses against a constant one at build
 pass	a runtime exact mixing of inch and millimeter keeps the fractional scale
@@ -3196,7 +3197,6 @@ todo	a runtime bit-field run spans two bytes and composes with an int segment
 todo	a runtime bytes value is spliced into a length-prefixed frame
 todo	a runtime closure compares its argument to a captured value in a branch
 todo	a runtime closure whose body calls a recursive top-level function
-todo	a runtime division of the minimum integer by -1 overflows and traps
 todo	a runtime final rest segment binds the empty tail when the scrutinee is only the header
 todo	a runtime fixed-width segment is emitted big-endian and read back by index
 todo	a runtime float leaf in a tuple compares by the canonical byte form

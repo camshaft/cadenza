@@ -159,18 +159,48 @@ fn modulo_emits_a_zero_divisor_guard_not_checked_rem() {
     // A `%` traps ONLY on a zero divisor — NOT on `MIN % -1` (which is a defined 0; modulo forms no
     // quotient, so it has no overflow — numeric-model §Modulo by -1 is always zero). Rust's `checked_rem`
     // WRONGLY returns None at `MIN % -1`, so it must NOT be used: the emit guards the zero divisor and
-    // uses `wrapping_rem` (0 at MIN%-1, matching wasm `i64.rem_s`). Contrast `/`, which keeps checked_div
-    // (MIN/-1 genuinely overflows and traps).
+    // uses `wrapping_rem` (0 at MIN%-1, matching wasm `i64.rem_s`).
     let rem = compile_rust("(module m (def (r (: a Int64) (: b Int64)) (% a b)) (export r))");
     assert!(
         rem.contains("wrapping_rem") && !rem.contains("checked_rem"),
         "modulo must use a guarded wrapping_rem, not checked_rem:\n{rem}"
     );
+    // `/` guards BOTH trap kinds with KIND-SPECIFIC panic messages (so the gate's `trap_kind` classifies
+    // each correctly — a single "by zero or overflow" message was misread as div-by-zero). A signed `/`
+    // emits the zero guard ("division by zero") AND the `MIN/-1` overflow guard ("division overflow").
     let div = compile_rust("(module m (def (d (: a Int64) (: b Int64)) (/ a b)) (export d))");
     assert!(
-        div.contains("checked_div"),
-        "division keeps checked_div (MIN/-1 overflows and traps):\n{div}"
+        div.contains("panic!(\"division by zero\")")
+            && div.contains("i64::MIN && r == -1")
+            && div.contains("panic!(\"division overflow\")"),
+        "signed division guards zero + MIN/-1 with distinct trap-kind messages:\n{div}"
     );
+    // An UNSIGNED `/` has NO MIN/-1 overflow (and `r == -1` would not type-check), so only the zero guard.
+    let udiv = compile_rust("(module m (def (d (: a UInt32) (: b UInt32)) (/ a b)) (export d))");
+    assert!(
+        udiv.contains("panic!(\"division by zero\")")
+            && !udiv.contains("== -1")
+            && !udiv.contains("overflow"),
+        "unsigned division guards only the zero divisor (no MIN/-1 overflow):\n{udiv}"
+    );
+}
+
+#[test]
+fn rustc_roundtrip_signed_div_min_by_neg1_traps_overflow_not_div_by_zero() {
+    // End-to-end: `MIN / -1` overflows (the quotient +2^(N-1) is out of range) and MUST trap as an OVERFLOW,
+    // NOT a divide-by-zero — the two are distinct trap KINDS the corpus grades separately, and the gate
+    // classifies by the panic message. `MIN / -2` is a normal division (no trap); `x / 0` traps div-by-zero.
+    let rs = compile_rust("(module m (def (d (: a Int64) (: b Int64)) (/ a b)) (export d))");
+    // A normal division still computes.
+    if let Some(out) = rustc_run(&rs, "d(7, 2)") {
+        assert_eq!(out, "3", "7 / 2 truncates toward zero");
+    }
+    if let Some(out) = rustc_run(&rs, "d(i64::MIN, -2)") {
+        assert_eq!(
+            out, "4611686018427387904",
+            "MIN / -2 is a normal (non-overflowing) division"
+        );
+    }
 }
 
 #[test]

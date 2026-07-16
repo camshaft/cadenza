@@ -1939,12 +1939,33 @@ fn emit_arith(
             ))
         }
         Prim::Div => {
-            // `checked_div` returns `None` on a zero divisor AND on `MIN / -1` — precisely the two cases
-            // the numeric model traps for division (`MIN / -1` overflows: the quotient +2^(N-1) is out of
-            // range). Panic on either, mirroring the wasm `i64.div_s` native trap.
+            // `/` traps on a zero divisor AND (for a SIGNED type) on `MIN / -1` — the two cases the numeric
+            // model traps for division (`MIN / -1` overflows: the quotient +2^(N-1) is out of range),
+            // mirroring the wasm `i64.div_s` native trap. But those are DISTINCT trap KINDS the corpus grades
+            // separately (`divide by zero` vs `overflow`), and the gate's `trap_kind` classifies by the panic
+            // MESSAGE — a single "by zero or overflow" message contains BOTH substrings and is misread as
+            // div-by-zero (checked first), so a `MIN / -1` case that must grade `overflow` graded wrong. So
+            // GUARD the conditions explicitly and panic with a KIND-SPECIFIC message: `r == 0` → "divide by
+            // zero"; `l == <T>::MIN && r == -1` → "overflow". An UNSIGNED type has NO MIN/-1 overflow (and
+            // `r == -1` would not type-check), so it emits only the zero guard. Otherwise the plain `/`
+            // (neither condition holds). Each operand binds once so a side-effecting operand runs once.
+            let overflow_guard = match types::int_type_is_signed(it) {
+                // `<T>::MIN` names the value type's minimum (the width `it` fixed the operands to). A
+                // divisor of `-1` only exists for a signed type, so this arm is signed-only.
+                true => match types::rust_type(&Ty::Int(it)) {
+                    Some(t) => format!(
+                        "else if l == {t}::MIN && r == -1 {{ panic!(\"{} overflow\") }} ",
+                        op_name(op)
+                    ),
+                    None => String::new(),
+                },
+                false => String::new(),
+            };
             Ok(format!(
-                "({l}).checked_div({r}).unwrap_or_else(|| panic!(\"{} by zero or overflow\"))",
-                op_name(op),
+                "{{ let (l, r) = ({l}, {r}); \
+                 if r == 0 {{ panic!(\"{op} by zero\") }} \
+                 {overflow_guard}else {{ l / r }} }}",
+                op = op_name(op),
             ))
         }
         Prim::Rem => {
