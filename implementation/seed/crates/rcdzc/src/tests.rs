@@ -16424,11 +16424,9 @@ mod match_engine {
             "a @tag on a non-def is the wraps-no-definition mistake: {non_def:?}"
         );
         assert!(
-            !non_def
-                .iter()
-                .any(|d| d
-                    .message
-                    .contains("`@tag` annotation takes exactly one STRING")),
+            !non_def.iter().any(|d| d
+                .message
+                .contains("`@tag` annotation takes exactly one STRING")),
             "a @tag on a non-def must NOT also record a malformed-tag fault (no double-diagnostic): {non_def:?}"
         );
     }

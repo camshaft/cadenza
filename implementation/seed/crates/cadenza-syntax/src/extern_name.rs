@@ -256,12 +256,11 @@ mod tests {
             );
         }
         // The ASCII precondition still holds unconditionally: an ASCII-letter-led name is always valid.
-        for name in ["café".chars().filter(|c| c.is_ascii()).collect::<String>()] {
-            assert!(
-                is_kebab_word(&kebab_extern_name(&name)),
-                "ASCII residue stays valid"
-            );
-        }
+        let name = "café".chars().filter(|c| c.is_ascii()).collect::<String>();
+        assert!(
+            is_kebab_word(&kebab_extern_name(&name)),
+            "ASCII residue stays valid"
+        );
     }
 
     #[test]
