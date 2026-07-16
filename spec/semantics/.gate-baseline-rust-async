@@ -230,6 +230,8 @@ pass	a bare prelude-colliding variant name matches as the local variant
 pass	a bare type-name-colliding variant name constructs as the local variant
 pass	a bare user constructor is passed as a first-class function to a higher-order function
 pass	a bare variant reusing a prelude DATA-constructor name constructs and matches as the local variant
+pass	a bare-scalar if guarding a MIN/-1 overflow is not select-ified
+pass	a bare-scalar if guarding a div-by-zero is not select-ified — the divisor guard shields the trap
 pass	a beyond-i64 constant BigInt is an operand of a runtime bigint op
 pass	a bin arm whose fixed-width segment overruns the input falls through
 pass	a bin pattern binds an integer read from a fixed-width segment
@@ -878,6 +880,7 @@ pass	a narrow comparison reconciles a constant LEFT operand to the variable's wi
 pass	a narrow match binder used in arithmetic with the scrutinee
 pass	a narrow multiplication reconciles a constant LEFT operand to the variable's width
 pass	a narrow value in the else branch opposite a bare literal computes at the narrow width
+pass	a narrow-UInt8-guarded div is not select-ified — the guard shields the trap
 pass	a narrow-body arithmetic on an in-range constant arg overflows the parameter width
 pass	a narrow-width Int quantity add that fits the inner width runs normally
 pass	a narrow-width Int quantity add that overflows the inner width traps at compile time
