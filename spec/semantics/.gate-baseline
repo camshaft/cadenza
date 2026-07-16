@@ -717,6 +717,7 @@ pass	a genuinely-narrow op with a wrapped-down MATCH-operand yields the exact va
 pass	a genuinely-narrow op with a wrapped-down if-operand still traps on overflow
 pass	a genuinely-narrow op with a wrapped-down if-operand yields the exact value when in range
 pass	a guard combines the payload binder with the rest binder
+pass	a guard compares two distinct sum payloads from one tuple
 pass	a guard on a ctor list element reads the constructor's payload binder
 pass	a guard on a literal-element list pattern reads an enclosing let binding through inlining
 pass	a guard on a nested-list-in-list element reads the inner list's binder
@@ -1350,6 +1351,7 @@ pass	a recursive sum built then folded by a NESTED recursive call composes on ev
 pass	a recursive sum consumer whose arguments are recursive sum producers compiles
 pass	a recursive sum recurses THROUGH a record-typed payload
 pass	a recursive sum type works with pattern matching
+pass	a recursive unifier distinguishes arrow components through the payload slots
 pass	a recursive user sum built in a lib is folded by the entry over the imported type
 pass	a recursive user sum type is built at run time and renders its variant names
 pass	a recursive walk consulting a node's own and its child's String key computes correctly
@@ -2827,6 +2829,7 @@ pass	three closures with a SHARED signature cross as two resource types
 pass	three distinct closure signatures cross as three resource types
 pass	three leaf variants in one quoted form each dispatch their own tag
 pass	three same-variant literal arms fall through in order
+pass	three sums in a tuple bind three distinct payloads
 pass	triple negation of a runtime boolean is a single negation
 pass	true is greater than false
 pass	true is not less than false
@@ -2919,6 +2922,7 @@ pass	unary negation of a runtime integer parameter negates at run time
 pass	unary negation of an arbitrary-precision integer
 pass	unary negation of an exact rational negates the numerator
 pass	under-applying a unary constructor is a type error, not a fabricated unit payload
+pass	unequal-depth payload paths bind distinctly
 pass	union cardinality with a runtime-element operand
 pass	union is commutative
 pass	union of a set with itself is the set (idempotent)

@@ -9361,3 +9361,77 @@
             (export main)))
   (call   main (: 0 Int64))
   (output (: 52 Int64)))
+
+; --- Payload-prefix CSE slot identity: the shape family beyond the two-sums pin ---------------------
+; 49c4feec2 keyed the shared-payload-prefix CSE slot on the full PATH (was (scrutinee, length) — two
+; same-length paths off one tuple collided, aliasing both sums' payloads to one slot). Its pin covers
+; the two-sums HM shape; these pin the family, promoted from passing breaker probes.
+
+(case "three sums in a tuple bind three distinct payloads"
+  (doc    "`(match (tuple (A x) (A y) (A z)) ((tuple (T.A a) (T.A b) (T.A c)) …))` — THREE same-length
+           payload paths ([E0,P], [E1,P], [E2,P]) off one scrutinee: 1·100 + 2·10 + 3 = 123. The
+           length-keyed collision collapsed all three to one slot (111 or 333 depending on
+           registration order); a path key must keep N distinct same-length prefixes distinct for any
+           N, not just two.")
+  (input  (do
+            (type T (A Int64) (B Int64))
+            (def (main (: x Int64) (: y Int64) (: z Int64))
+              (match (tuple (T.A x) (T.A y) (T.A z))
+                ((tuple (T.A a) (T.A b) (T.A c)) (+ (+ (* a 100) (* b 10)) c))
+                (_ -1)))
+            (export main)))
+  (call   main (: 1 Int64) (: 2 Int64) (: 3 Int64))
+  (output (: 123 Int64)))
+
+(case "unequal-depth payload paths bind distinctly"
+  (doc    "One payload two levels deep ([E0, E0, P]) and one at the top ([E1, P]) — DIFFERENT lengths,
+           the control complement of the same-length collision: 3·10 + 7 = 37. Together with the
+           three-sums case this pins the slot key on the full path (depth alone was never the
+           discriminator; the path is).")
+  (input  (do
+            (type T (A Int64) (B Int64))
+            (def (main (: x Int64) (: y Int64))
+              (match (tuple (tuple (T.A x) 0) (T.A y))
+                ((tuple (tuple (T.A a) _) (T.A b)) (+ (* a 10) b))
+                (_ -1)))
+            (export main)))
+  (call   main (: 3 Int64) (: 7 Int64))
+  (output (: 37 Int64)))
+
+(case "a guard compares two distinct sum payloads from one tuple"
+  (doc    "`(guard (tuple (T.A a) (T.A b)) (> a b))` — the GUARD reads both payloads before any body
+           runs: (5, 2) → 5 > 2 → 3. Aliased payloads make the cond compare a with itself (never >),
+           silently falling every pair through to the catch-all — the guard face of the slot-identity
+           fix composed with the guard-binder relocation.")
+  (input  (do
+            (type T (A Int64) (B Int64))
+            (def (main (: x Int64) (: y Int64))
+              (match (tuple (T.A x) (T.A y))
+                ((guard (tuple (T.A a) (T.A b)) (> a b)) (- a b))
+                (_ -1)))
+            (export main)))
+  (call   main (: 5 Int64) (: 2 Int64))
+  (output (: 3 Int64)))
+
+(case "a recursive unifier distinguishes arrow components through the payload slots"
+  (doc    "The full HM-unify shape run END TO END: `unify (TArrow (TInt, TBool)) (TArrow (TInt, TInt))`
+           recurses component-wise — first components agree (TInt/TInt → 1), SECOND components differ
+           (TBool vs TInt → 0) → 0. The aliasing bug made every arrow unify with itself (returned 1
+           here), silently corrupting a self-hosted type checker. This is the integration pin over the
+           fix's minimal two-payload case: the misread propagates through recursion and the answer is
+           a semantic verdict, not a packed digit.")
+  (input  (do
+            (type Ty (TInt Unit) (TBool Unit) (TArrow (Tuple Ty Ty)))
+            (def (unify (: x Ty) (: y Ty))
+              (match (tuple x y)
+                ((tuple (Ty.TInt _) (Ty.TInt _)) 1)
+                ((tuple (Ty.TBool _) (Ty.TBool _)) 1)
+                ((tuple (Ty.TArrow p) (Ty.TArrow q))
+                  (if (= (unify (. p 0) (. q 0)) 1) (unify (. p 1) (. q 1)) 0))
+                (_ 0)))
+            (def (main (: d Int64))
+              (unify (Ty.TArrow (tuple (Ty.TInt unit) (Ty.TBool unit)))
+                     (Ty.TArrow (tuple (Ty.TInt unit) (Ty.TInt unit)))))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 0 Int64)))
