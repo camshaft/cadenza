@@ -2180,7 +2180,10 @@ pass	an effect-built heap list bound in a let is USED TWICE and retained across 
 pass	an effect-performing helper called inside a recursive self-call's argument folds
 pass	an effectful condition is performed exactly once under the operator hoist
 pass	an effectful condition of a same-constructor if is performed exactly once
+pass	an effectful helper called twice (nested) in a self-call arg folds each inline independently
+pass	an effectful helper reading TWO driver parameters folds in a self-call arg
 pass	an effectful helper that also reads an outer/driver parameter folds in a self-call arg
+pass	an effectful helper whose own parameter name shadows a driver parameter folds in a self-call arg
 pass	an effectful init before a failing `?` performs exactly once
 pass	an effectful match scrutinee is performed exactly once across a two-position sink
 pass	an effectful shared operand performs after the condition, exactly once

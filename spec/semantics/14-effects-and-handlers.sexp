@@ -3486,3 +3486,61 @@
                 (run 4 0)))
             (export main)))
   (output (: 10 Int64)))
+
+; NEIGHBORS of the effectful-helper-in-a-self-call-arg deep-fresh-copy fix (breaker): the case above pins
+; ONE driver param (acc) read by the inlined helper. These push the same deep-fresh-copy path: TWO driver
+; params read at once, the helper called TWICE (nested) in the self-call arg (each inline must get fresh
+; pins), and a helper whose OWN param NAME shadows a driver param. All fold cleanly and re-resolve against
+; the specialized def's sig — a stale pin from any of these shapes would surface as CDZ0101 unbound name.
+
+(case "an effectful helper reading TWO driver parameters folds in a self-call arg"
+  (doc    "The two-driver-param extension: `turn(a, acc, fuel) = acc + fuel + Tools.dispatch a` reads BOTH
+           `acc` and `fuel` (both `run`'s params), called `(run (- fuel 1) (turn fuel acc fuel))`. Inlining
+           β-substitutes two driver pins into the helper body inside the self-call arg; the deep-fresh-copy
+           must drop BOTH stale pins so each re-resolves against the specialized def's sig. With dispatch a →
+           a, turn = acc + 2*fuel; run 3 0 = 6, 10, 12 → 12. A copy that missed one pin → CDZ0101.")
+  (input  (do
+            (effect Tools (op dispatch (-> Int64 Int64)) (op done (-> Int64 Int64)))
+            (def (turn (: a Int64) (: acc Int64) (: fuel Int64)) (+ (+ acc fuel) (Tools.dispatch a)))
+            (def (run (: fuel Int64) (: acc Int64))
+              (if (= fuel 0) (Tools.done acc) (run (- fuel 1) (turn fuel acc fuel))))
+            (def (main)
+              (handle Tools 0 ((dispatch (a) s (resume a a)) (done (a) s (resume a a)))
+                (run 3 0)))
+            (export main)))
+  (output (: 12 Int64)))
+
+(case "an effectful helper called twice (nested) in a self-call arg folds each inline independently"
+  (doc    "The helper appears TWICE in the self-call arg — `(turn fuel (turn fuel acc))` — so the inliner
+           reduces two copies of the effectful body into the same self-call arg. Each inline must be
+           deep-fresh-copied independently; a shared or stale pin across the two copies would collide or fail
+           to resolve. With turn(a,acc) = acc + a: run 2 0 → inner turn(2,0)=2, outer turn(2,2)=4; then
+           inner turn(1,4)=5, outer turn(1,5)=6 → done 6. Pins that repeated inlining in one arg is sound.")
+  (input  (do
+            (effect Tools (op dispatch (-> Int64 Int64)) (op done (-> Int64 Int64)))
+            (def (turn (: a Int64) (: acc Int64)) (+ acc (Tools.dispatch a)))
+            (def (run (: fuel Int64) (: acc Int64))
+              (if (= fuel 0) (Tools.done acc) (run (- fuel 1) (turn fuel (turn fuel acc)))))
+            (def (main)
+              (handle Tools 0 ((dispatch (a) s (resume a a)) (done (a) s (resume a a)))
+                (run 2 0)))
+            (export main)))
+  (output (: 6 Int64)))
+
+(case "an effectful helper whose own parameter name shadows a driver parameter folds in a self-call arg"
+  (doc    "Name-collision edge: the helper's OWN param is named `acc` — the same name as `run`'s driver
+           param — and the helper performs on it: `turn(acc) = acc + Tools.dispatch acc`, called `(turn acc)`
+           in the self-call arg. The deep-fresh-copy + re-resolve must bind the inlined body's `acc` to the
+           helper's param, not leave a stale pin to `run`'s `acc`. With dispatch acc → acc, turn doubles:
+           run 3 1 = 2, 4, 8 → done 8. A mis-resolution to the driver's `acc` (or a stale pin) would give a
+           wrong value or CDZ0101.")
+  (input  (do
+            (effect Tools (op dispatch (-> Int64 Int64)) (op done (-> Int64 Int64)))
+            (def (turn (: acc Int64)) (+ acc (Tools.dispatch acc)))
+            (def (run (: fuel Int64) (: acc Int64))
+              (if (= fuel 0) (Tools.done acc) (run (- fuel 1) (turn acc))))
+            (def (main)
+              (handle Tools 0 ((dispatch (a) s (resume a a)) (done (a) s (resume a a)))
+                (run 3 1)))
+            (export main)))
+  (output (: 8 Int64)))
