@@ -74,10 +74,10 @@ export default function AdHocPolymorphism() {
         type at each call site, with no runtime type tag.
       </P>
       <Note>
-        The specialization is normally invisible, but the toolchain can show it: <C>cdz instantiations len</C>{" "}
-        lists the concrete types <C>len</C> was compiled at, and the editor's LSP puts the same information
-        in a small label above the definition. It's the one place you can <em>see</em> that a single{" "}
-        generic <C>len</C> became several machine functions.
+        The specialization is normally invisible, but the toolchain can show it:{" "}
+        <C>cdz instantiations len some-file.cdz</C> lists the concrete types <C>len</C> was compiled at,
+        each with its source location. It's the one place you can <em>see</em> that a single generic{" "}
+        <C>len</C> became several machine functions.
       </Note>
 
       <H2>What Cadenza deliberately does not have</H2>
