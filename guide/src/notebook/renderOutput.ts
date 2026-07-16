@@ -13,6 +13,7 @@ import type { CellDirective } from "./parseDocument.ts";
 import { extractTable, type Table } from "./extractTable.ts";
 import { extractChart, type Series } from "./extractChart.ts";
 import { formatValue } from "./formatValue.ts";
+import { classifyFormula, type Formula } from "./formula.ts";
 
 /// The run outcome shape (structural mirror of runner/client.ts's RunOutcome — mirrored, not imported,
 /// so this module stays worker-free and node-testable). The route passes the real RunOutcome; it's
@@ -29,7 +30,7 @@ export type CellOutput =
   | { render: "value"; text: string; note?: string }
   | { render: "table"; table: Table }
   | { render: "chart"; chart: "line" | "bar" | "scatter"; series: Series[]; note?: string }
-  | { render: "formula"; text: string }
+  | { render: "formula"; formula: Formula }
   | { render: "trap"; message: string }
   | { render: "timeout" }
   | { render: "error"; message: string };
@@ -61,7 +62,9 @@ export function renderOutput(directive: CellDirective, outcome: RunOutcome): Cel
       return { render: "value", text: display, note: `not shown as a chart: ${reason}` };
     }
     case "formula":
-      return { render: "formula", text: display };
+      // Classify the RAW value (not the friendly display string) so a rational becomes a stacked fraction,
+      // a quantity value+unit, etc. — an unrenderable compound surfaces a gap rather than faking it.
+      return { render: "formula", formula: classifyFormula(text) };
     case "none":
     case "widget": // a widget cell's own output (if any) renders as a plain value; its CONTROLS are
                    // rendered separately by the reactive engine from parseWidgets (Inc 4b).

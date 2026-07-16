@@ -28,9 +28,11 @@ test("a `chart:line` directive over (x,y) tuples → a chart render carrying the
   }
 });
 
-test("a `formula` directive renders the FRIENDLY value text (ascription stripped)", () => {
-  const out = renderOutput({ kind: "formula" }, value("(: 42 Int64)"));
-  assert.deepEqual(out, { render: "formula", text: "42" });
+test("a `formula` directive classifies the value shape (scalar → plain, rational → fraction)", () => {
+  const scalar = renderOutput({ kind: "formula" }, value("(: 42 Int64)"));
+  assert.deepEqual(scalar, { render: "formula", formula: { kind: "plain", text: "42" } });
+  const rat = renderOutput({ kind: "formula" }, value("(: 5/2 Rational)"));
+  assert.deepEqual(rat, { render: "formula", formula: { kind: "fraction", num: "5", den: "2", negative: false } });
 });
 
 test("no directive → a plain value render in FRIENDLY form (`(: 7 Int64)` → `7`)", () => {
