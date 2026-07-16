@@ -89,3 +89,30 @@ fn doc_of_a_misspelled_name_fails_with_a_did_you_mean() {
     );
     let _ = std::fs::remove_dir_all(f.parent().unwrap());
 }
+
+#[test]
+fn doc_of_a_definition_whose_doc_text_looks_like_the_sentinel_still_succeeds() {
+    // BRITTLENESS REGRESSION (Copilot PR #467): `cdz doc` must NOT decide failure by a loose `starts_with`
+    // on the doc STDOUT — a legitimate doc string that begins with "no such definition `…`" would be
+    // misclassified. The verdict is keyed to the EXACT sidecar sentinel for the QUERIED name, so a real
+    // def (`tricky`) whose doc text happens to read "no such definition `ghost`" still SUCCEEDS.
+    let dir = std::env::temp_dir().join(format!("cdz-doc-sentinel-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let f = dir.join("m.sexp");
+    std::fs::write(
+        &f,
+        "(module m (def (tricky (: n Int64)) (doc \"no such definition `ghost`\") n) (export tricky))\n",
+    )
+    .unwrap();
+    let (ok, out, err) = run(&["doc", "tricky", f.to_str().unwrap()]);
+    assert!(
+        ok,
+        "a real def whose DOC TEXT starts with the sentinel must still succeed: {err}{out}"
+    );
+    assert!(
+        out.contains("no such definition `ghost`"),
+        "and its doc text is printed verbatim: {out}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

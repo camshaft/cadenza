@@ -2836,9 +2836,20 @@ fn run_doc(args: &DocArgs) -> ExitCode {
             // definition `X`" line (the name resolves to NOTHING — a typo). The first two are a SUCCESS
             // (`X` exists; asking for its doc is a legitimate answer), but an unresolvable name is a
             // FAILURE — a caller/script should be able to tell "you misspelled the name" from "this exists
-            // but is undocumented". Key off the sidecar's distinct "no such definition `" prefix (it also
-            // carries an optional "— did you mean `Y`?" hint, so match the prefix, not the whole line).
-            if text.trim_start().starts_with("no such definition `") {
+            // but is undocumented".
+            //
+            // Detect the unresolvable-name verdict by RECONSTRUCTING the sidecar's EXACT one-line sentinel
+            // for THIS requested name — `no such definition `<name>`` (optionally followed by a
+            // ` — did you mean `<near>`?` hint) — and matching the WHOLE output against it, rather than a
+            // loose `starts_with` on arbitrary doc prose: a legitimate doc string that merely began with
+            // "no such definition `" would otherwise be misclassified as a failure. Tying the match to the
+            // queried `args.name` and the exact sentinel shape makes a false positive effectively
+            // impossible (a real doc would have to be verbatim this sentence for the exact name asked).
+            let sentinel = format!("no such definition `{}`", args.name);
+            let trimmed = text.trim();
+            let is_unresolvable =
+                trimmed == sentinel || trimmed.starts_with(&format!("{sentinel} — did you mean `"));
+            if is_unresolvable {
                 ExitCode::FAILURE
             } else {
                 ExitCode::SUCCESS
