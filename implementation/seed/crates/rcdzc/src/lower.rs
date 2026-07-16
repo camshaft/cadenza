@@ -17405,6 +17405,29 @@ fn lower_sum_new(db: &mut Db, head: StructId, args: &[StructId]) -> Core {
             "a sum constructor has no discriminant metadata",
         ));
     };
+    // A PARTIALLY-APPLIED constructor — FEWER args than the payload arity — reaching here is a first-class
+    // FUNCTION value (the curried residual `(-> …remaining… Sum)`), NOT a constructed sum. Building a
+    // `SumNew` (or, for a NEWTYPE, erasing to the short payload — the `10`) MISCOMPILES: the node's type is
+    // an ARROW, but the emitted core is a bare value / short sum, so a downstream site that projects +
+    // applies this value `call_indirect`s a malformed handle → INVALID WASM (`func N failed to validate:
+    // expected i32, found i64` — the list/tuple-element case `(list (T.Mk 10))` / `(tuple (T.Mk 10) …)` +
+    // project + apply). CHECKED FIRST — before newtype-erasure and the nullary-unit arm — because a
+    // single-variant sum (a NEWTYPE) applied SHORT of arity would otherwise erase to its partial payload
+    // (`args.len()==1` on a 2-payload newtype → `core_of(args[0])`), silently dropping the arity check and
+    // treating the partial as if fully applied (the runtime miscompile v-runtime localized). A partial
+    // ctor held in a COMPILE-TIME-VISIBLE compound (a tuple/record literal projected + applied in scope) is
+    // COMPLETED to full arity by `peel_ref_annot` BEFORE reaching here, so it never trips this guard. The
+    // genuine RUNTIME case (a partial ctor stored where its value is not statically visible) needs a runtime
+    // eta-closure lift (not yet built — the naive synthesis miscompiles through the reducer's half-inline);
+    // until then DECLINE cleanly (reject-don't-miscompile) rather than emit the malformed value.
+    if let Some(arity) = crate::eval::variant_payload_arity(db, head)
+        && args.len() < arity
+    {
+        trace!(target: "rcdzc::lower", head = head.0, n_args = args.len(), arity, "sum-new: partial constructor as a runtime value — declines (eta-closure lift not yet built)");
+        return Core::Poison(Reject::decline(
+            "a partially-applied constructor as a runtime value is not yet lowered to a runtime closure",
+        ));
+    }
     // NEWTYPE ERASURE: if the constructor's owning sum is an erasable NEWTYPE (a single-variant sum), the
     // value IS its payload — NO `sum-new` box, no discriminant (`type-system.md §156`, the tag adds
     // nothing to the runtime representation). Emit the payload directly: 0 payloads → unit, 1 → the
@@ -17436,25 +17459,6 @@ fn lower_sum_new(db: &mut Db, head: StructId, args: &[StructId]) -> Core {
             disc,
             payloads: Vec::new(),
         };
-    }
-    // A PARTIALLY-APPLIED constructor — FEWER args than the payload arity — reaching here is a first-class
-    // FUNCTION value (the curried residual `(-> …remaining… Sum)`), NOT a constructed sum. Building a
-    // `SumNew` with the short payload list MISCOMPILES: the node's type is an ARROW, but a downstream site
-    // that projects + applies this value would `call_indirect` a malformed sum handle → INVALID WASM (the
-    // list-element case `(list (T.Mk 10))` + `List.at` + apply). A partial ctor held in a COMPILE-TIME
-    // -VISIBLE compound (a tuple/record literal, projected + applied in scope) is COMPLETED at compile time
-    // — `peel_ref_annot` now follows the projection to the ctor spine, so those reach `lower_sum_new` at
-    // FULL arity and never hit this guard. The genuine RUNTIME case (a partial ctor stored where its value
-    // is not statically visible — a list element, a runtime param) needs a runtime eta-closure lift (not
-    // yet built — the naive synthesis miscompiles through the reducer's half-inline); until then DECLINE
-    // cleanly (reject-don't-miscompile) rather than emit the malformed sum.
-    if let Some(arity) = crate::eval::variant_payload_arity(db, head)
-        && args.len() < arity
-    {
-        trace!(target: "rcdzc::lower", head = head.0, n_args = args.len(), arity, "sum-new: partial constructor as a runtime value — declines (eta-closure lift not yet built)");
-        return Core::Poison(Reject::decline(
-            "a partially-applied constructor as a runtime value is not yet lowered to a runtime closure",
-        ));
     }
     Core::SumNew {
         disc,

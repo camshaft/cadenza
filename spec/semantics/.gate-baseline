@@ -3005,5 +3005,6 @@ pass	wrapping-sub on a runtime Int8 wraps at its signed min boundary
 pass	wrapping-sub on a runtime UInt8 wraps modulo 256
 pass	wrapping-sub wraps a boundary-crossing runtime Int64 at the min boundary
 todo	SUM ARG + LIST RESULT declines cleanly (Option arg, List result)
+todo	a partial constructor in a runtime tuple element declines cleanly (was invalid wasm)
 todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
