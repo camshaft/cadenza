@@ -67284,6 +67284,62 @@ mod cross_component_oracle {
     }
 
     // ------------------------------------------------------------------------------------------------
+    // PL25 — a peer op returning a BIGINT (a bignum handle, distinct from the CHAMP collections) crosses
+    // + the consumer compares it. BigInt/Rational are `is_extern_heap_type` (cross as u32 handles like a
+    // compound), but no cross-component test exercised a bignum result. The consumer compares the peer's
+    // BigInt to a locally-built `BigInt.of(x)` → equal → 1, reducing to a scalar (no resource escape).
+    // Confirms the bignum handle crosses + value-equality holds across the boundary. main(42)=1.
+    // ------------------------------------------------------------------------------------------------
+    #[test]
+    fn a_peer_op_returning_a_bigint_crosses_and_compares_equal() {
+        use crate::testkit::parse;
+        // PROVIDER: big(x) = BigInt.of(x) — widens the fixed-width int to a bignum handle.
+        let provider = compile_provider(
+            "(do (def (big (: x Int64)) (BigInt.of x)) (export big))",
+            "cadenza:big/api",
+        );
+        // CONSUMER: compares the crossed BigInt to a local BigInt.of(x); equal → 1 (scalar result).
+        let src = "(do \
+            (effect B (op big (-> Int64 BigInt))) \
+            (bind B \"cadenza:big/api\") \
+            (def (main (: x Int64)) (host (B) (if (= (B.big x) (BigInt.of x)) 1 0))) \
+            (export main))";
+        let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .unwrap_or_else(|d| {
+                panic!(
+                    "bigint-result consumer compiles: {} [{:?}]",
+                    d.message, d.code
+                )
+            });
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("[PL25] runtime wasm not found; skipping");
+            return;
+        };
+        let peers = vec![cdz_run::Peer {
+            bytes: provider,
+            interface: "cadenza:big/api".to_string(),
+        }];
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec!["42".to_string()],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run_with_peers(&consumer, &peers, &opts)
+            .expect("a peer op returning a bigint crosses")
+        {
+            // big(42) = BigInt.of(42); the consumer's local BigInt.of(42) compares EQUAL → 1. The bignum
+            // handle crossed the boundary and value-equality holds over the shared runtime.
+            cdz_run::Outcome::Value(s) => assert_eq!(
+                s, "1",
+                "a peer-returned BigInt crosses as a handle; value-equality holds across the boundary"
+            ),
+            cdz_run::Outcome::Trap(t) => panic!("bigint-result run trapped: {t}"),
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------------
     // PL19 — the ELEMENT read of a peer-returned list, USED (matched to a scalar). The common pattern:
     // a peer op returns a `(List Int64)`, the consumer indexes it with `List.at` and matches the
     // resulting `Option` down to a scalar the entrypoint returns. main(7) = match (List.at [8,9] 0) →
