@@ -1863,6 +1863,10 @@ pass	a single-scalar String.slice equals the String.at of the same index (the tw
 pass	a single-variant NEWTYPE escapes with its tag ERASED, only the type header naming it
 pass	a single-variant abstract theorem's constructor match outside the kernel is a withheld-constructor rejection (CDZ0214)
 pass	a single-variant abstract type's constructor match outside its module is rejected CDZ0214 (withheld-ctor)
+pass	a single-variant newtype BOOL literal-payload arm falls through on false
+pass	a single-variant newtype BOOL literal-payload arm is reached, not silently dead
+pass	a single-variant newtype literal-payload arm falls through to the binding arm on a miss
+pass	a single-variant newtype literal-payload arm is selected when the payload matches
 pass	a single-variant newtype over a COMPOUND escapes the bare compound under its type header
 pass	a single-variant open sum with an open-tail arm dispatches its named variant
 pass	a single-variant-sum binding pattern destructures a multi-payload constructor positionally
@@ -3264,6 +3268,7 @@ pass	the runtime-list version of a tail fold compiles and folds correctly
 pass	the same conditional delegation makes no host call when the branch is not taken
 pass	the same declared effect is handled in-program by one entrypoint and delegated by another
 pass	the same function called under two handlers is discharged by each in turn
+pass	the same literal-payload refinement on a MULTI-variant sum works (the boxed control)
 pass	the same mixed-scale comparison is EXACT over Rational (keeps the fractional scale)
 pass	the same nullary variant constrained to different concrete types reflects different types
 pass	the same program with a different response gives a different deterministic result

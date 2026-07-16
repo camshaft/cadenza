@@ -15008,6 +15008,65 @@ mod match_engine {
     }
 
     #[test]
+    fn a_single_variant_newtype_literal_payload_arm_reads_the_erased_payload_directly() {
+        // A single-variant sum `(type W (Wrap Int64))` is a NEWTYPE — it ERASES to its inner type, so its
+        // runtime value IS the bare payload (a raw scalar, no heap box). A literal-payload arm `(W.Wrap 0)`
+        // plus a binding arm `(W.Wrap x)` must read the payload the SAME way in both arms — directly, since
+        // it is already the raw scalar. The wasm emit's `SumCont::LitTest` leaf read previously always
+        // called the boxed-sum accessor (`get-int`/`get-bool`) over the erased payload: an Int64 payload
+        // emitted an INVALID component (`func failed to validate: expected i32, found i64` — the boxed
+        // i32-handle unwrap over the raw i64), and a Bool payload SILENTLY took the wildcard (a VALID module
+        // returning the wrong answer — worse). The `holds_handle` gate reads the leaf directly for an
+        // unboxed-scalar (erased) payload, matching the binding arm. breaker-found via corpus-bugfix.
+        if super::find_runtime_wasm().is_none() {
+            eprintln!("runtime wasm not found; skipping single-variant-newtype-payload heap-runs");
+            return;
+        }
+        // Int64 payload (the invalid-component symptom): the literal arm hits (n=0→100) and misses to the
+        // binding arm (n=5→5) — both compile to a VALID module now.
+        assert_eq!(
+            run_heap_value(
+                "(do (type W (Wrap Int64)) (def (main) (match (W.Wrap 0) ((W.Wrap 0) 100) ((W.Wrap x) x))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "100",
+            "an erased Int64 newtype literal-payload arm is selected on a hit (was an invalid component)"
+        );
+        assert_eq!(
+            run_heap_value(
+                "(do (type W (Wrap Int64)) (def (main) (match (W.Wrap 5) ((W.Wrap 0) 100) ((W.Wrap x) x))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "5",
+            "an erased Int64 newtype literal-payload arm falls through to the binding arm on a miss"
+        );
+        // Bool payload (the SILENT-WRONG-VALUE symptom): the `(W.Wrap true)` arm must be REACHED (→1), not
+        // silently dead → the wildcard 0. This is the dangerous witness — a valid module, wrong answer.
+        assert_eq!(
+            run_heap_value(
+                "(do (type W (Wrap Bool)) (def (main) (match (W.Wrap true) ((W.Wrap true) 1) ((W.Wrap _) 0))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "1",
+            "an erased Bool newtype `(W.Wrap true)` arm is reached, not silently dead (was 0)"
+        );
+        // The BOXED control: a MULTI-variant sum (a real box) with the same literal-payload refinement was
+        // always correct — the boxed `get-int` at the right width. Pins the fix did not disturb it.
+        assert_eq!(
+            run_heap_value(
+                "(do (type W (A Int64) (B Int64)) (def (main) (match (W.A 0) ((W.A 0) 100) ((W.A x) x) ((W.B y) y))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "100",
+            "a MULTI-variant boxed sum literal-payload refinement still dispatches (boxed control)"
+        );
+    }
+
+    #[test]
     fn a_tail_loop_threading_a_projected_boxed_sum_accumulator_decodes_correctly() {
         // A tuple-projected boxed sum threaded through a self-tail loop must SURVIVE the loop step. `one`
         // returns `(tuple (W.Atom <byte>) (+ pos 1))`; `loop` threads `(. r 0)` (the nested-compound boxed
