@@ -374,13 +374,32 @@ impl Server {
     /// `None`/empty when the cursor is not on a name or the name has no references — total.
     fn references(&self, params: &ReferenceParams) -> Option<Vec<Location>> {
         let pos = &params.text_document_position;
-        let doc = self.docs.get(&pos.text_document.uri)?;
+        let uri = &pos.text_document.uri;
+        let doc = self.docs.get(uri)?;
         let include_decl = params.context.include_declaration;
+        // PACKAGE path: a `file://` doc that declares imports finds references to a TOP-LEVEL name ACROSS
+        // the closure — a use of an imported/exported name is referenced from other files too, each a
+        // cross-file `Location`. Falls back to single-buffer when not a package or the package yields
+        // nothing (e.g. a local binder — the single-buffer path applies the shadowing guard).
+        if let Some(entry_path) = uri_to_path(uri).filter(|_| self.doc_declares_import(doc)) {
+            let open = self.open_resolver();
+            let refs = package_references_at(
+                &entry_path.to_string_lossy(),
+                &open,
+                &doc.text,
+                doc.is_ml,
+                pos.position,
+                include_decl,
+            );
+            if !refs.is_empty() {
+                return Some(refs);
+            }
+        }
         Some(references_at(
             &doc.text,
             doc.is_ml,
             pos.position,
-            &pos.text_document.uri,
+            uri,
             include_decl,
         ))
     }
@@ -1267,6 +1286,143 @@ fn top_level_symbol_node(arenas: &cadenza_syntax::Arenas, name: &str) -> Option<
         }
     }
     None
+}
+
+/// Cross-file find-references: every occurrence of the TOP-LEVEL name under the cursor, ACROSS the
+/// `(import …)` closure — a use in an importing/imported file is a cross-file `Location`. Like def/hover,
+/// the entry is spliced FIRST (base 0), so the cursor's entry-local node id feeds `ResolveOf`/`UsesOf`
+/// directly; `UsesOf` answers GLOBAL node ids across all files, each demuxed via the link-map to its
+/// owning file's URI + span. The shadowing guard runs against the PACKAGE `Symbols`/`ResolveOf` (a local
+/// binder shadowing a top-level name → empty, single-buffer fallback applies). Empty when not a
+/// navigable top-level name or the closure can't load (caller falls back to single-buffer).
+fn package_references_at(
+    entry_path: &str,
+    open: &dyn Fn(&std::path::Path) -> Option<String>,
+    entry_text: &str,
+    entry_is_ml: bool,
+    pos: Position,
+    include_declaration: bool,
+) -> Vec<Location> {
+    let Ok((entry_arenas, entry_spans, _e)) = parse_surface(entry_text, entry_is_ml) else {
+        return Vec::new();
+    };
+    let byte = position_to_byte(entry_text, pos);
+    let Some(cursor) = entry_spans.node_at_offset(byte) else {
+        return Vec::new();
+    };
+    // `UsesOf` is by NAME — the cursor must be a name atom.
+    let Some(name) = entry_arenas.as_name(cursor).map(str::to_string) else {
+        return Vec::new();
+    };
+
+    let Ok(files) = crate::closure::load(entry_path, open) else {
+        return Vec::new();
+    };
+    // Build the spliced package inputs (entry first = base 0) — reused for all three queries below.
+    let ast_inputs: Vec<rcdzc::Artifact> = files
+        .iter()
+        .map(|f| {
+            rcdzc::Artifact::new(
+                rcdzc::Artifact::KIND_AST,
+                f.name.clone(),
+                cadenza_syntax::codec::encode(&f.arenas),
+            )
+        })
+        .collect();
+    let run_query = |query: rcdzc::sidecar::Query, kind: &str| -> Option<String> {
+        let mut inputs = ast_inputs.clone();
+        inputs.push(rcdzc::Artifact::new(
+            rcdzc::sidecar::KIND_SIDECAR,
+            "drive",
+            rcdzc::sidecar::encode(&[rcdzc::Request::Query(query)]),
+        ));
+        inputs.push(rcdzc::cli::entry_artifact(&files[0].name));
+        let compiled = rcdzc::run_with_compiler_stack(|| rcdzc::compile(&inputs, &[]));
+        compiled
+            .artifact(kind)
+            .map(|b| String::from_utf8_lossy(b).into_owned())
+    };
+
+    // SHADOWING GUARD (package flavor). `UsesOf` is NAME-keyed, so a LOCAL binder shadowing a top-level
+    // name would leak the top-level's refs. Proceed only when the cursor genuinely belongs to a
+    // top-level symbol: it IS the entry's own top-level declaration node (entry-local, base 0), OR it
+    // RESOLVES to a def (a use of a top-level/imported name resolves; a purely-local binder still
+    // resolves, but then `UsesOf{name}` returning the top-level's uses is the very leak — so also
+    // require the name to BE a top-level symbol somewhere in the package). Otherwise return empty and
+    // let the single-buffer path (its own guard) handle it.
+    let top_node = top_level_symbol_node(&entry_arenas, &name);
+    let resolves_to = run_query(
+        rcdzc::sidecar::Query::ResolveOf { node: cursor.0 },
+        rcdzc::sidecar::KIND_RESOLVE,
+    )
+    .and_then(|a| a.trim().parse::<u32>().ok());
+    let is_entry_top_decl = top_node == Some(cursor.0);
+    // The name names a top-level symbol somewhere in the package iff `UsesOf` (below) would be
+    // meaningful; the entry's own Symbols covers entry decls, and a resolves-to into an imported file's
+    // range means it resolved to an imported top-level def. Require one of these.
+    let name_is_package_top_level = top_node.is_some() || resolves_to.is_some();
+    if !(is_entry_top_decl || name_is_package_top_level) {
+        return Vec::new();
+    }
+
+    let files_ref = &files;
+    let mut out: Vec<Location> = Vec::new();
+
+    // Run UsesOf and capture the link-map from the SAME compile (so the demux matches the ids).
+    let mut inputs = ast_inputs.clone();
+    inputs.push(rcdzc::Artifact::new(
+        rcdzc::sidecar::KIND_SIDECAR,
+        "drive",
+        rcdzc::sidecar::encode(&[rcdzc::Request::Query(rcdzc::sidecar::Query::UsesOf {
+            name: name.clone(),
+        })]),
+    ));
+    inputs.push(rcdzc::cli::entry_artifact(&files[0].name));
+    let compiled = rcdzc::run_with_compiler_stack(|| rcdzc::compile(&inputs, &[]));
+    let link_map = compiled
+        .artifact(rcdzc::link::KIND_LINK_MAP)
+        .map(rcdzc::link::decode_link_map)
+        .unwrap_or_default();
+    let loc_of_global = |global: u32| -> Option<Location> {
+        let (file_ix, local) = if link_map.is_empty() {
+            (0usize, global)
+        } else {
+            let fs = link_map
+                .iter()
+                .find(|fs| global >= fs.struct_base && global < fs.struct_base + fs.struct_count)?;
+            (
+                files_ref.iter().position(|f| f.name == fs.path)?,
+                global - fs.struct_base,
+            )
+        };
+        let file = &files_ref[file_ix];
+        let span = file.spans.get(cadenza_syntax::StructId(local))?;
+        Some(Location {
+            uri: path_to_uri(&file.path)?,
+            range: byte_range_to_range(&file.source, span.start, span.end),
+        })
+    };
+    if let Some(bytes) = compiled.artifact(rcdzc::sidecar::KIND_USES) {
+        for line in String::from_utf8_lossy(bytes).lines() {
+            if let Ok(global) = line.trim().parse::<u32>()
+                && let Some(loc) = loc_of_global(global)
+            {
+                out.push(loc);
+            }
+        }
+    }
+    // include_declaration: add the def's own name occurrence (UsesOf excludes it). Its global id is the
+    // `resolves_to` target (or the entry-local `top_node` when the decl is in the entry, base 0).
+    if include_declaration {
+        let decl_global = resolves_to.or(top_node);
+        if let Some(g) = decl_global
+            && let Some(loc) = loc_of_global(g)
+            && !out.contains(&loc)
+        {
+            out.push(loc);
+        }
+    }
+    out
 }
 
 // ── the analysis: cursor → completion candidates, via the `ScopeAt` + `Symbols` queries ──────────────
