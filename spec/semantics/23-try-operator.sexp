@@ -3,17 +3,18 @@
 ; (`Some a` / `Ok a` → `a`), and on the failure variant it SHORT-CIRCUITS the enclosing fallible boundary
 ; (the enclosing function's `Result`/`Option` result type), making the boundary's value the failure
 ; itself. It is NOT a monad — it desugars onto the effects system's within-function abortive lowering (a
-; synthesized `Mir::Block` + `Mir::Break`), so it adds no user-visible effect and nothing to the effect
-; row. See README.md for the case vocabulary.
+; `Core::Block` boundary + a `Core::Break` short-circuit), so it adds no user-visible effect and nothing to
+; the effect row. See README.md for the case vocabulary.
 ;
-; STAGE STATUS. T0a+T0b (landed): `(try e)` is carried first-class through resolve/infer — its type is
-; the operand's success payload; an operand that is not a fallible sum is CDZ0203; a wrong-arity `(try …)`
-; is CDZ0201; a `?` with no enclosing `Result`/`Option` function boundary is CDZ0230; and a `Result`-`?`
-; under an `Option` boundary (or vice-versa) is CDZ0203 (no coercion). The function-boundary DESUGAR (a
-; value executing through wasmtime, both the happy and the short-circuit path) is the next slice; until it
-; lands a well-formed `(try e)` DECLINES (scored *todo* by the gate, never a miscompile). The executing
-; cases below are the ones that matter most once T1 lands — a value must come out the far side, since `?`
-; is control.
+; STAGE STATUS (2026-07-16). LARGELY LANDED. Front-half: `(try e)` is carried first-class through
+; resolve/infer — its type is the operand's success payload; an operand that is not a fallible sum is
+; CDZ0203; a wrong-arity `(try …)` is CDZ0201; a `?` with no enclosing `Result`/`Option` function boundary
+; is CDZ0230; a `Result`-`?` under an `Option` boundary (or vice-versa) is CDZ0203 (no coercion). Lowering:
+; a CONSTANT `?` compiles and EXECUTES both paths — the success fold (BRICK 2a) and the constant-failure
+; short-circuit (BRICK 3a, via `Core::Block`/`Break` + the `lower_let` break-fold), so the executing Option
+; cases below PASS (a value comes out the far side). REMAINING: a RUNTIME `?` (a non-constant operand →
+; the `Core::MatchSum` / `block`-`br` emit, BRICK 3b) still DECLINES (scored *todo*); the ML postfix `?`
+; surface; the `try { }` block boundary (v2); and the T3 conversion-idiom prelude ops.
 
 ; ── T0a: rejections (these PASS today) ──────────────────────────────────────────────────────────────
 
@@ -67,11 +68,11 @@
   (input  (do (def (main) (let ((x (try (Ok 1)))) (Some x))) (export main)))
   (error  CDZ0203))
 
-; ── T1 target: executing cases (DECLINE → *todo* until the boundary desugar lands) ──────────────────
-; These are the operator's actual ask — the nested-`match`-collapse shapes, run through wasmtime. They
-; are recorded here now so the gate pins the intended VALUE; the current generation declines them (the
-; desugar is the next slice), which the differential gate scores as *todo*, not disagreement. When T1
-; lands they flip from todo to pass with no corpus edit.
+; ── T1 executing cases (the operator's actual ask — these PASS: a value comes out the far side) ───────
+; The nested-`match`-collapse shapes, executed through wasmtime. Both operands here fold at compile time
+; (a checked-arith over constants → `Some v` / `None`), so the constant `?` desugar selects the arm and
+; the whole program folds to its value — the happy path and the short-circuit path both produce a value.
+; (A RUNTIME `?` — a non-constant operand — is BRICK 3b, still todo.)
 
 (case "`?` on the success variant unwraps the payload (Option, happy path)"
   (doc    "`parse-pair`-shaped Option chain collapsed with `?`: both `?`s see a `Some`, so the boundary
