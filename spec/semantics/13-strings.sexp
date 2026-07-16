@@ -1503,6 +1503,17 @@
   (input  (do (def (main) (< #\a 1.0)) (export main)))
   (error  CDZ0203))
 
+(case "arithmetic between a char and a FLOAT is rejected with a working two-step conversion fix"
+  (doc    "The ARITHMETIC twin of the char-vs-float comparison case: `(+ #\\a 1.0)` mixes a `Char` with a
+           `Float64`, which is CDZ0301 (numeric-model.md #An Arithmetic Operator Requires Both Operands To
+           Be One Numeric Type — a Char is not a number, and Cadenza never silently promotes). As with the
+           comparison, the fix must type-check: `Char.to-int` yields Int64, and Int64 + Float64 re-fails, so
+           the repair is the two-step `(Float64.of-int (Char.to-int #\\a))` matching the sibling float's
+           width. Pins fix PARITY between arithmetic and comparison for a char-with-float mix (the integer
+           sibling `(+ #\\a 1)` keeps the plain `Char.to-int` wrap). The program's outcome is the rejection.")
+  (input  (do (def (main) (+ #\a 1.0)) (export main)))
+  (error  CDZ0301))
+
 ; --- Char-LITERAL patterns: a `match` dispatches by scalar value ----------------------------------
 ; A char is a scalar whose identity IS its Unicode scalar value (collections-and-text.md #A Char Is A
 ; Single Unicode Scalar Value), so a char-literal pattern `(#\a …)` matches by that value — the Char

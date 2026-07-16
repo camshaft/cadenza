@@ -1240,6 +1240,7 @@ pass	a runtime Bytes rope in a record field compares equal to its flat twin
 pass	a runtime Bytes rope is found as a Set element by its flat twin
 pass	a runtime Bytes rope map key is looked up by its flat twin
 pass	a runtime Bytes rope nested in a tuple compares equal to its flat twin
+pass	a runtime Bytes.of value is equality-comparable (the runtime-Bytes control)
 pass	a runtime FLOAT width nested in a compound annotation is rejected
 pass	a runtime Float quantity comparison against NaN is the IEEE partial order (false)
 pass	a runtime Float32 addition emits the f32 machine add
@@ -1651,6 +1652,7 @@ pass	a tuple-wrapped self-application is rejected in bounded time, not a compile
 pass	a twenty-deep push chain retains the still-live source binding
 pass	a two-arm Bool match selects its second (false) arm
 pass	a two-arm if selecting between two runtime FLOAT values computes the chosen one (float select-ification)
+pass	a two-arm if selecting between two runtime NARROW UInt8 values computes the chosen one at the payload width
 pass	a two-arm list match reading an element binder keeps the branch — no speculative empty read
 pass	a two-arm list match with constant arms dispatches branchlessly on the length — empty
 pass	a two-arm match does not evaluate the unselected arm's trapping body
@@ -2021,6 +2023,7 @@ pass	applying a boolean is a type error
 pass	applying a float is a type error
 pass	applying a non-function is a type error
 pass	applying the result of a match whose arms return payload-capturing closures
+pass	arithmetic between a char and a FLOAT is rejected with a working two-step conversion fix
 pass	arithmetic on a bound Rational payload computes and escapes exactly
 pass	arithmetic right shift
 pass	arithmetic right shift of negative one is negative one
@@ -3234,6 +3237,8 @@ todo	a round-trip consumer takes the non-applying match arm
 todo	a round-trip consumer that does NOT apply the closure on the taken branch
 todo	a run's result is a deterministic function of a host call's recorded response
 todo	a runtime NaN leaf in a tuple compares equal, a runtime -0.0 leaf stays distinct
+todo	a runtime bin construction result compares equal to the Bytes it builds
+todo	a runtime bin construction result unequal to different content is false
 todo	a runtime bin match binds the tail after a fixed header via a final rest segment
 todo	a runtime bin match dispatches on a literal tag across arms
 todo	a runtime bin pattern decodes a fixed-width segment from a runtime scrutinee
@@ -3300,6 +3305,7 @@ todo	an escaping closure captures two values and takes three arguments
 todo	an escaping closure whose body binds a multi-variable let
 todo	an escaping closure whose body is a match hits the literal arm
 todo	an escaping closure whose body is a match hits the wildcard arm
+todo	an explicit Bytes annotation on a runtime bin result compares the same
 todo	an export name with a digit-led kebab segment is rejected, not silently invalid
 todo	an identity closure composes at a single Int element type (not only String)
 todo	an identity closure composes over a COMPOUND (tuple) element at one element type

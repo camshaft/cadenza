@@ -359,20 +359,45 @@ impl<'b> Md<'b> {
     /// Deep-clone the subtree rooted at `id` in `src` into this builder, giving every synthesized
     /// occurrence the same best-effort `span` (the fence's range — the source coordinates of the
     /// program's own spans do not map onto the document).
-    fn clone_subtree(&mut self, src: &Arenas, id: StructId, span: Span) -> StructId {
-        match src.get(id) {
-            crate::ast::Struct::Atom(l) => {
-                let leaf = src.leaf(*l).clone();
-                self.mk_atom_leaf(leaf, span)
-            }
-            crate::ast::Struct::List(items) => {
-                let children: Vec<StructId> = items
-                    .iter()
-                    .map(|&c| self.clone_subtree(src, c, span))
-                    .collect();
-                self.mk_list(children, span)
+    ///
+    /// Uses an EXPLICIT `Job{Visit|Emit}` stack (post-order), not native recursion — the standing rule
+    /// that every arena-tree walk in the crate is iterative (an embedded fence body is depth-capped by
+    /// its reader today, but keeping the walk iterative is consistent + defensive). The push order is
+    /// IDENTICAL to the recursive form: a child's `mk_atom_leaf`/`mk_list` (and its span push) happens
+    /// before its parent's `mk_list`, so the span table stays 1:1 and in structure order.
+    fn clone_subtree(&mut self, src: &Arenas, root: StructId, span: Span) -> StructId {
+        enum Job {
+            Visit(StructId),
+            // Emit a `List` node for `n` already-cloned children sitting atop `results`.
+            Emit(usize),
+        }
+        let mut jobs: Vec<Job> = vec![Job::Visit(root)];
+        let mut results: Vec<StructId> = Vec::new();
+        while let Some(job) = jobs.pop() {
+            match job {
+                Job::Visit(id) => match src.get(id) {
+                    crate::ast::Struct::Atom(l) => {
+                        let leaf = src.leaf(*l).clone();
+                        results.push(self.mk_atom_leaf(leaf, span));
+                    }
+                    crate::ast::Struct::List(items) => {
+                        jobs.push(Job::Emit(items.len()));
+                        // Push children reversed so they pop (and thus clone + span-push) left-to-right →
+                        // their new ids land on `results` in source order for the parent's `mk_list`.
+                        for &c in items.iter().rev() {
+                            jobs.push(Job::Visit(c));
+                        }
+                    }
+                },
+                Job::Emit(n) => {
+                    let children = results.split_off(results.len() - n);
+                    results.push(self.mk_list(children, span));
+                }
             }
         }
+        results
+            .pop()
+            .expect("clone_subtree leaves the root's new id")
     }
 
     // ---- span-recording arena helpers (mirror sexpr's `mk_*`; push one span per StructId) ----
@@ -1044,6 +1069,32 @@ mod tests {
                 "embedded subtree != standalone parse for {body:?}"
             );
         }
+    }
+
+    #[test]
+    fn clone_subtree_is_iterative_not_recursive_on_a_deep_source() {
+        // `clone_subtree` (the embed-program deep-copy) is iterative. Build a deep source arena DIRECTLY
+        // (bypassing the reader's MAX_NESTING_DEPTH cap) and clone it into a fresh Md builder — a
+        // native-recursive clone would overflow the stack. `Arenas` is FLAT (no recursive drop), so this
+        // needs no big-stack thread; only clone_subtree's own recursion was the concern, now an explicit
+        // stack. Assert the clone completes, is structurally equal to the source, and its span table is
+        // 1:1 (the push order is preserved).
+        let depth = 60_000usize;
+        let mut sb = Builder::new();
+        let mut cur = sb.name("x");
+        for _ in 0..depth {
+            cur = sb.list(vec![cur]);
+        }
+        let src = sb.finish(cur);
+
+        let mut b = Builder::new();
+        let mut md = super::Md::new(&mut b, Some(SpanTable::new(FileId(0))));
+        let root = md.clone_subtree(&src, src.root, Span::new(0, 0)); // must NOT overflow
+        let cloned = b.finish(root);
+        assert!(
+            cloned.structurally_eq(&src),
+            "deep clone preserves the tree"
+        );
     }
 
     #[test]

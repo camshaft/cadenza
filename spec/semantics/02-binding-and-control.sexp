@@ -199,6 +199,21 @@
   (call   main (: -5 Int64) (: 1.5 Float64) (: 2.5 Float64))
   (output (: 2.5 Float64)))
 
+(case "a two-arm if selecting between two runtime NARROW UInt8 values computes the chosen one at the payload width"
+  (doc    "The narrow-int-leaf face of select-ification (the int cases above select Int64 leaves, the case
+           above selects Float64): a 2-arm `(if (> b 0) x y)` over runtime `UInt8` `x`/`y` may lower to a
+           branchless `select` at the NARROW payload width — both operands are trap-free, so evaluating both
+           is safe. `x`/`y` are 100/200 (200 has the high bit set, where a select at the wrong width could
+           corrupt or sign-extend): b=5 → 100, b=-5 → 200. Pins the if→select carries the correct UInt8
+           operand at its own width (a select hardcoded to i32/i64, or one that swapped the operands, would
+           give a wrong value) — the narrow-width companion of the Int64/Float64 select cases, and the
+           select-shape twin of the sum-match-scrutinee-spill-at-payload-width fix. Both backends.")
+  (input  (do (def (main (: b Int64) (: x UInt8) (: y UInt8)) (if (> b 0) x y)) (export main)))
+  (call   main (: 5 Int64) (: 100 UInt8) (: 200 UInt8))
+  (output (: 100 UInt8))
+  (call   main (: -5 Int64) (: 100 UInt8) (: 200 UInt8))
+  (output (: 200 UInt8)))
+
 (case "a dense zero-based jump-table match routes an out-of-range scrutinee to the default"
   (doc    "`(def (main (: x Int64)) (match x (0 10) (1 20) (2 30) (3 40) (_ 50)))` — a dense match over
            0..3 compiles to a `br_table` jump. Because the covered range starts at 0, the table index is
