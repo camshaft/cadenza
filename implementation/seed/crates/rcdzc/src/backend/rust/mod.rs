@@ -337,6 +337,20 @@ fn emit_signature(
     } else {
         format!("// cdz-return[{ident}]: {}\n", result.render_name())
     };
+    // For a QUANTITY result, ALSO emit the unit's canonical VALUE-form spelling (`// cdz-unit[ident]:
+    // <value-form>`) beside the type note. `render_name` carries the unit as `Unit::render` — the TYPE
+    // surface (bare `(Unit.base …)`, `Unit.*`/`Unit.^ -1` for a derived unit) — but cdz-run prints a
+    // quantity VALUE with the DOTTED value-form unit (`((. Unit base) …)`, a `Unit./` quotient for a
+    // derived unit). The gate's boundary render needs THAT spelling, and reconstructing it from the type
+    // string is fragile; `render_value_form` produces it directly (mirroring `lower::unit_value_ast`), so
+    // the driver splices it verbatim. Inert to rustc; keyed by ident like the return note.
+    let unit_note = match result {
+        crate::ty::Ty::Qty { unit, .. } => {
+            format!("// cdz-unit[{ident}]: {}\n", unit.render_value_form())
+        }
+        _ => String::new(),
+    };
+    let ret_note = format!("{ret_note}{unit_note}");
     if mode.is_async() {
         // `async fn <name><__CdzE: CdzEnv>(env: &mut __CdzE, …) -> <ret> { env.consume(1).await; <body> }`
         // — the per-call fuel charge + cooperative-yield point at entry. The env TYPE PARAMETER is named

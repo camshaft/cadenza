@@ -1034,6 +1034,12 @@ fn run_program_rust(tools: &Tools, program: &str, call: Option<&Call>, async_mod
     // …and the per-generic-sum parameter COUNT (`// cdz-sum-params[Box]: 1`) — the driver substitutes a
     // generic sum's `T{k}` payload placeholders with the result type's concrete args when it renders one.
     let sum_params = cdz_sum_params(&module);
+    // …and the QUANTITY result's unit VALUE-FORM (`// cdz-unit[<ident>]: <value-form>`) — the dotted
+    // `((. Unit base) …)` / `Unit./`-quotient surface cdz-run prints a quantity value with, which the type
+    // note's `render_name` (the bare `(Unit.base …)` / `Unit.*` TYPE surface) does NOT carry. The backend
+    // emits it via `Unit::render_value_form` for every Qty result, so the top-level Qty render splices it
+    // verbatim rather than reconstructing it from the type string. Keyed by the export's ident.
+    let unit_form = cdz_unit_form(&module, &export);
     // A DIVERGING export — its Cadenza result type is `Never`, which the `cdz-return` note renders as the
     // fresh var/`Any` a `(trap …)` / never-returning body carries: either `Any` (a grounded hole) or a bare
     // type variable `?N` (an unconstrained result var — e.g. `Option.expect` on a statically-None value,
@@ -1050,7 +1056,7 @@ fn run_program_rust(tools: &Tools, program: &str, call: Option<&Call>, async_mod
     } else {
         match ret_ty
             .as_deref()
-            .map(|ty| cdz_render_expr(ty, &sums, &newtypes, &sum_params))
+            .map(|ty| cdz_render_expr(ty, &sums, &newtypes, &sum_params, unit_form.as_deref()))
         {
             Some(render) => {
                 format!(
@@ -1415,6 +1421,20 @@ fn cdz_return_type(module: &str, name: &str) -> Option<String> {
     None
 }
 
+/// The `// cdz-unit[<name>]: <value-form>` note for a QUANTITY export — the unit's canonical VALUE-form
+/// s-expr (`Unit::render_value_form`, byte-identical to what cdz-run prints inside `((. Qty of) …)`). Only
+/// a Qty-returning fn emits one; `None` for any other result. Spliced verbatim by the top-level Qty render.
+fn cdz_unit_form(module: &str, name: &str) -> Option<String> {
+    let prefix = format!("// cdz-unit[{name}]:");
+    for line in module.lines() {
+        let t = line.trim_start();
+        if let Some(rest) = t.strip_prefix(&prefix) {
+            return Some(rest.trim().to_string());
+        }
+    }
+    None
+}
+
 /// A Rust EXPRESSION that renders the driver's result binding `__r` (whose CADENZA type is `ty`, in
 /// `render_name` form) to cdz-run's canonical text form — the value the gate grades against. Type-
 /// directed and recursive over the Cadenza type:
@@ -1429,6 +1449,7 @@ fn cdz_render_expr(
     sums: &std::collections::HashMap<String, Vec<(String, Vec<String>)>>,
     newtypes: &std::collections::HashMap<String, String>,
     sum_params: &std::collections::HashMap<String, usize>,
+    unit_form: Option<&str>,
 ) -> String {
     let mut helpers = Vec::new();
     let mut on_path = Vec::new();
@@ -1438,6 +1459,7 @@ fn cdz_render_expr(
         sums,
         newtypes,
         sum_params,
+        unit_form,
         &mut helpers,
         &mut on_path,
     );
@@ -1461,12 +1483,18 @@ fn cdz_render_expr(
 /// instead of inlining, moving the recursion from gate-codegen-time (over the infinite type) to Rust
 /// runtime (over the FINITE value — a `Nil` leaf terminates it). Mirrors the wasm value-encode, which walks
 /// the value, not the type.
+#[allow(clippy::too_many_arguments)]
 fn cdz_render_at(
     ty: &str,
     path: &str,
     sums: &std::collections::HashMap<String, Vec<(String, Vec<String>)>>,
     newtypes: &std::collections::HashMap<String, String>,
     sum_params: &std::collections::HashMap<String, usize>,
+    // The QUANTITY unit VALUE-form (`Unit::render_value_form`), present only when THIS `path` is a Qty and
+    // its unit note reached here. Threaded ONLY to the TOP-LEVEL result (`__r`): the corpus has no Qty
+    // nested inside a compound result, so a descent into a tuple/record/sum element passes `None`, and a
+    // Qty reached with no form falls back to converting the type-string unit. Consumed by the Qty arm.
+    unit_form: Option<&str>,
     helpers: &mut Vec<String>,
     on_path: &mut Vec<String>,
 ) -> String {
@@ -1480,7 +1508,11 @@ fn cdz_render_at(
     // to the scalar `Display` of the erased Rust tuple `(i64, i64)` (rustc E0277). Checked before the user-
     // sum arm (a newtype has no `cdz-sum` descriptor) and the scalar fallthrough.
     if let Some(inner) = newtypes.get(ty) {
-        return cdz_render_at(inner, path, sums, newtypes, sum_params, helpers, on_path);
+        // Same value/path — a newtype-over-Qty forwards the unit form (the tag is erased, so a `Pt = Mk Qty`
+        // renders as its inner quantity).
+        return cdz_render_at(
+            inner, path, sums, newtypes, sum_params, unit_form, helpers, on_path,
+        );
     }
     // `(Tuple T0 T1 …)` → `(tuple …)`. The EMPTY tuple `(Tuple)` (a variant's explicit empty-tuple payload,
     // distinct from `Unit`) renders the literal `(tuple)` — no elements, no `path` read, and NO trailing
@@ -1500,6 +1532,7 @@ fn cdz_render_at(
                     sums,
                     newtypes,
                     sum_params,
+                    None,
                     helpers,
                     on_path,
                 )
@@ -1537,6 +1570,7 @@ fn cdz_render_at(
                 sums,
                 newtypes,
                 sum_params,
+                None,
                 helpers,
                 on_path,
             ));
@@ -1555,7 +1589,7 @@ fn cdz_render_at(
     if let Some(args) = parse_head_type(ty, "List") {
         let elem_ty = args.first().map(String::as_str).unwrap_or("");
         let inner = cdz_render_at(
-            elem_ty, &ebind, sums, newtypes, sum_params, helpers, on_path,
+            elem_ty, &ebind, sums, newtypes, sum_params, None, helpers, on_path,
         );
         // Build `(list <e0> <e1> …)`: seed with "(list", push a space + each element's render, close ")".
         return format!(
@@ -1568,7 +1602,7 @@ fn cdz_render_at(
     if let Some(args) = parse_head_type(ty, "Set") {
         let elem_ty = args.first().map(String::as_str).unwrap_or("");
         let inner = cdz_render_at(
-            elem_ty, &ebind, sums, newtypes, sum_params, helpers, on_path,
+            elem_ty, &ebind, sums, newtypes, sum_params, None, helpers, on_path,
         );
         return format!(
             "{{ let mut __s = String::from(\"((. Set of) (list\"); for {ebind} in ({path}).iter() {{ __s.push(' '); __s.push_str(&({inner})); }} __s.push_str(\"))\"); __s }}"
@@ -1582,44 +1616,47 @@ fn cdz_render_at(
         let val_ty = args.get(1).map(String::as_str).unwrap_or("");
         let kbind = format!("__mk{}", path.len());
         let vbind = format!("__mv{}", path.len());
-        let kr = cdz_render_at(key_ty, &kbind, sums, newtypes, sum_params, helpers, on_path);
-        let vr = cdz_render_at(val_ty, &vbind, sums, newtypes, sum_params, helpers, on_path);
+        let kr = cdz_render_at(
+            key_ty, &kbind, sums, newtypes, sum_params, None, helpers, on_path,
+        );
+        let vr = cdz_render_at(
+            val_ty, &vbind, sums, newtypes, sum_params, None, helpers, on_path,
+        );
         return format!(
             "{{ let mut __s = String::from(\"(map\"); for ({kbind}, {vbind}) in ({path}).iter() {{ __s.push_str(&format!(\" ({{}} {{}})\", {kr}, {vr})); }} __s.push(')'); __s }}"
         );
     }
     // A QUANTITY result `(Qty <inner> <unit>)` — the rust backend maps a `Ty::Qty { inner }` at a scale-1
-    // simple (base/dimensionless) unit to its INNER magnitude's type (the wrapper erases), so `{path}` is
-    // the magnitude. cdz-run renders it `(Qty.of <magnitude> <unit>)`: render the magnitude by its inner
-    // type, splice the unit s-expr from the return note VERBATIM (it is already the canonical shorthand
-    // `(Unit.base #"…")` / `Unit.one` the corpus records), escaping the embedded `"` for the Rust literal.
+    // unit to its INNER magnitude's type (the wrapper erases), so `{path}` is the magnitude. cdz-run renders
+    // it `((. Qty of) <magnitude> <unit-value-form>)`: render the magnitude by its inner type, then splice
+    // the unit's VALUE-form s-expr. The canonical value form (`((. Unit base) …)`, a `Unit./` quotient for a
+    // derived unit) comes from the backend's `// cdz-unit` note (`unit_form`) — byte-identical to cdz-run.
     // Scale-1 only reaches here, so the stored magnitude IS the displayed one (no scaling in the render).
     if let Some(args) = parse_head_type(ty, "Qty") {
         let inner_ty = args.first().map(String::as_str).unwrap_or("");
-        // cdz-run's canonical VALUE form is the fully DOTTED member-access spelling — `((. Qty of) <mag>
-        // <unit>)` with `((. Unit base) #"m")` / `(. Unit one)` — NOT the `(Qty.of …)`/`(Unit.base …)`
-        // shorthand the type note carries. Convert the unit to the dotted value form (only the simple
-        // base/dimensionless shapes reach here — the backend declines derived units), then escape `"` for
-        // the Rust literal.
-        let unit = match args.get(1).map(String::as_str).unwrap_or("") {
-            "Unit.one" => "(. Unit one)".to_string(),
-            u if u.starts_with("(Unit.base ") => {
-                // `(Unit.base #"meter")` → `((. Unit base) #"meter")`.
-                format!("((. Unit base) {}", &u["(Unit.base ".len()..])
-            }
-            // A single base to a POSITIVE power: `(Unit.^ (Unit.base #"meter") 2)` →
-            // `(Unit.^ ((. Unit base) #"meter") 2)` — the `Unit.^` head stays verbatim (cdz-run's value
-            // form uses it), only the inner `(Unit.base …)` leaf dots. The backend's `types.rs` guard only
-            // admits THIS derived shape (single base, positive exponent), so a naive base-substring replace
-            // is safe: there is exactly one `(Unit.base ` to rewrite. (A product/quotient/negative-power
-            // unit declines at the backend and never reaches here.)
-            u if u.starts_with("(Unit.^ (Unit.base ") => {
-                u.replacen("(Unit.base ", "((. Unit base) ", 1)
-            }
-            other => other.to_string(), // shouldn't occur (backend declines other derived units); pass through.
+        // Prefer the backend's value-form note (handles EVERY unit shape — base, power, product, quotient).
+        // Fall back to converting the type-string unit (a Qty reached WITHOUT a note — only the simple
+        // base/dimensionless/single-positive-power shapes the type-string convert covers; the corpus has no
+        // note-less Qty result, so the fallback is belt-and-suspenders for a nested Qty a future case adds).
+        let unit = match unit_form {
+            Some(v) => v.to_string(),
+            None => match args.get(1).map(String::as_str).unwrap_or("") {
+                "Unit.one" => "(. Unit one)".to_string(),
+                u if u.starts_with("(Unit.base ") => {
+                    format!("((. Unit base) {}", &u["(Unit.base ".len()..])
+                }
+                u if u.starts_with("(Unit.^ (Unit.base ") => {
+                    u.replacen("(Unit.base ", "((. Unit base) ", 1)
+                }
+                other => other.to_string(),
+            },
         };
         let unit_lit = unit.replace('\\', "\\\\").replace('"', "\\\"");
-        let inner = cdz_render_at(inner_ty, path, sums, newtypes, sum_params, helpers, on_path);
+        // The magnitude renders by its inner type; a Qty nested in the magnitude position is impossible (an
+        // inner is a numeric scalar), so pass `None` for the descent's unit form.
+        let inner = cdz_render_at(
+            inner_ty, path, sums, newtypes, sum_params, None, helpers, on_path,
+        );
         return format!("format!(\"((. Qty of) {{}} {unit_lit})\", {inner})");
     }
     // A `BigInt` value is the Rust `cdz_num::Big` the backend emits — render it as its exact decimal, the
@@ -1696,7 +1733,7 @@ fn cdz_render_at(
     if let Some(args) = parse_head_type(ty, "Option") {
         let payload = args.first().map(String::as_str).unwrap_or("");
         let inner = cdz_render_at(
-            payload, &vbind, sums, newtypes, sum_params, helpers, on_path,
+            payload, &vbind, sums, newtypes, sum_params, None, helpers, on_path,
         );
         return format!(
             "match &{path} {{ Some({vbind}) => format!(\"(Some {{}})\", {inner}), None => \"(None unit)\".to_string() }}"
@@ -1709,6 +1746,7 @@ fn cdz_render_at(
             sums,
             newtypes,
             sum_params,
+            None,
             helpers,
             on_path,
         );
@@ -1718,6 +1756,7 @@ fn cdz_render_at(
             sums,
             newtypes,
             sum_params,
+            None,
             helpers,
             on_path,
         );
@@ -1755,7 +1794,7 @@ fn cdz_render_at(
                 )),
                 1 => {
                     let inner = cdz_render_at(
-                        &subst[0], &vbind, sums, newtypes, sum_params, helpers, on_path,
+                        &subst[0], &vbind, sums, newtypes, sum_params, None, helpers, on_path,
                     );
                     arms.push(format!(
                         "prog::{head_ident}::{vident}({vbind}) => format!(\"({vname} {{}})\", {inner})"
@@ -1773,6 +1812,7 @@ fn cdz_render_at(
                                 sums,
                                 newtypes,
                                 sum_params,
+                                None,
                                 helpers,
                                 on_path,
                             )
@@ -1851,6 +1891,7 @@ fn cdz_render_at(
                                 sums,
                                 newtypes,
                                 sum_params,
+                                None,
                                 helpers,
                                 on_path,
                             );
@@ -1874,6 +1915,7 @@ fn cdz_render_at(
                                         sums,
                                         newtypes,
                                         sum_params,
+                                        None,
                                         helpers,
                                         on_path,
                                     )
@@ -3684,6 +3726,7 @@ mod trap_grading_tests {
             &sums,
             &std::collections::HashMap::new(),
             &std::collections::HashMap::new(),
+            None,
         );
         // A recursive helper `fn __render_IntList` is generated and the value is rendered by CALLING it —
         // the self-referential `IntList` payload position becomes a recursive call, not another inline match.
@@ -3716,6 +3759,7 @@ mod trap_grading_tests {
             &mono,
             &std::collections::HashMap::new(),
             &std::collections::HashMap::new(),
+            None,
         );
         assert!(
             s.contains("fn __render_Sign(") && s.contains("(Pos unit)"),
@@ -3737,6 +3781,7 @@ mod trap_grading_tests {
             &sums,
             &std::collections::HashMap::new(),
             &std::collections::HashMap::new(),
+            None,
         );
         assert!(
             expr.contains("(record (") && expr.contains("(__r).0") && expr.contains("(__r).1"),
@@ -3752,6 +3797,7 @@ mod trap_grading_tests {
             &sums,
             &std::collections::HashMap::new(),
             &std::collections::HashMap::new(),
+            None,
         );
         assert!(
             nested.contains("(record (") && nested.contains("(tuple "),
@@ -3768,7 +3814,13 @@ mod trap_grading_tests {
         let sums = std::collections::HashMap::new();
         let mut newtypes = std::collections::HashMap::new();
         newtypes.insert("Pt".to_string(), "(Tuple Int64 Int64)".to_string());
-        let expr = cdz_render_expr("Pt", &sums, &newtypes, &std::collections::HashMap::new());
+        let expr = cdz_render_expr(
+            "Pt",
+            &sums,
+            &newtypes,
+            &std::collections::HashMap::new(),
+            None,
+        );
         assert!(
             expr.contains("(tuple ") && expr.contains("(__r).0") && expr.contains("(__r).1"),
             "a newtype over a tuple renders the bare inner tuple, not Display: {expr}"
@@ -3780,7 +3832,13 @@ mod trap_grading_tests {
         // A newtype over a SCALAR resolves to that scalar (Display is correct for an Int64).
         let mut nt2 = std::collections::HashMap::new();
         nt2.insert("UserId".to_string(), "Int64".to_string());
-        let s = cdz_render_expr("UserId", &sums, &nt2, &std::collections::HashMap::new());
+        let s = cdz_render_expr(
+            "UserId",
+            &sums,
+            &nt2,
+            &std::collections::HashMap::new(),
+            None,
+        );
         assert!(
             s.contains("format!(\"{}\""),
             "a newtype over Int64 renders the scalar: {s}"
@@ -3801,7 +3859,13 @@ mod trap_grading_tests {
             Some(&[][..]),
             "an empty (Tuple) parses as a zero-arg Tuple head"
         );
-        let expr = cdz_render_expr("(Tuple)", &sums, &nt, &std::collections::HashMap::new());
+        let expr = cdz_render_expr(
+            "(Tuple)",
+            &sums,
+            &nt,
+            &std::collections::HashMap::new(),
+            None,
+        );
         assert_eq!(
             expr, "\"(tuple)\".to_string()",
             "an empty tuple renders the literal `(tuple)`, no path read, no trailing space: {expr}"
@@ -3838,7 +3902,7 @@ mod trap_grading_tests {
         );
 
         // The multi-payload variant renders its two payloads FLAT — `(P {} {})` reading `(__p).0`/`(__p).1`.
-        let expr = cdz_render_expr("W", &ds, &nt, &std::collections::HashMap::new());
+        let expr = cdz_render_expr("W", &ds, &nt, &std::collections::HashMap::new(), None);
         assert!(
             expr.contains("(P {} {})") && expr.contains("(__p).0") && expr.contains("(__p).1"),
             "a multi-payload variant spreads its payloads flat under the name: {expr}"
@@ -3848,7 +3912,7 @@ mod trap_grading_tests {
             "a multi-payload variant must NOT render as one nested tuple payload: {expr}"
         );
         // A single-tuple-payload variant keeps the nested tuple — `(Q {})` where `{}` is `(tuple …)`.
-        let vexpr = cdz_render_expr("V", &ds, &nt, &std::collections::HashMap::new());
+        let vexpr = cdz_render_expr("V", &ds, &nt, &std::collections::HashMap::new(), None);
         assert!(
             vexpr.contains("(Q {})") && vexpr.contains("(tuple "),
             "a single tuple payload stays nested: {vexpr}"

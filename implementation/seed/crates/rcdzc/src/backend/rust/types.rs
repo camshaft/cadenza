@@ -53,32 +53,14 @@ pub fn rust_type(ty: &Ty) -> Option<String> {
         // A QUANTITY is a COMPILE-TIME-only dimension over an inner numeric magnitude — `lower` erases the
         // `Ty::Qty` wrapper, so the emitted VALUE is just the inner magnitude. Map to `rust_type(inner)`;
         // the unit is recovered for the boundary render from the `cdz-return` note's `render_name` and
-        // rendered as `(Qty.of <magnitude> <unit>)` by the gate harness. RESTRICTED to a SCALE-1 reference
-        // unit whose render STRUCTURALLY matches cdz-run's canonical value form (the gate harness only dots
-        // the `(Unit.base …)`/`Unit.one` leaves, leaving the `Unit.^`/`Unit.*`/`Unit./` head verbatim):
-        //   - `Unit.one` (dimensionless),
-        //   - a SIMPLE base `(Unit.base #"…")`,
-        //   - a SINGLE base to a POSITIVE integer power `(Unit.^ (Unit.base #"…") n)` (`meter²` — an area).
-        // A non-scale-1 unit DISPLAY-scales the magnitude (`5 mile`→`201168/25 meter` — per-inner-type
-        // scaling, a later increment). A PRODUCT of distinct bases renders `(Unit.* …)` but cdz-run's value
-        // form uses `Unit./` for a quotient / a NEGATIVE power renders `(Unit.^ … -1)` where cdz-run shows
-        // `(Unit./ (. Unit one) …)` — those structures DIVERGE from `render()`, so they still decline (they
-        // need a render→value-form reconstruction from the exponent map, a later increment).
-        Ty::Qty { inner, unit }
-            if unit.scale() == (1, 1) && {
-                let r = unit.render();
-                r == "Unit.one"
-                    || (r.starts_with("(Unit.base ") && !r.contains("Unit.*"))
-                    // A single base to a positive power: `(Unit.^ (Unit.base #"…") n)`, n ≥ 1. Exclude a
-                    // product (`Unit.*`) and a negative exponent (a ` -` before the exponent) — both render
-                    // in a form cdz-run's value spelling does not use.
-                    || (r.starts_with("(Unit.^ (Unit.base ")
-                        && !r.contains("Unit.*")
-                        && !r.contains(" -"))
-            } =>
-        {
-            rust_type(inner)
-        }
+        // rendered as `((. Qty of) <magnitude> <unit-value-form>)` by the gate harness, which splices the
+        // unit from the backend's `// cdz-unit[…]` note (`Unit::render_value_form`) — so ANY unit SHAPE is
+        // renderable (a simple base, a power `meter²`, a product, a `Unit./` quotient for a velocity). The
+        // one remaining restriction is SCALE-1: a non-scale-1 unit (`5 mile`, `5 kilometer`) DISPLAY-scales
+        // its magnitude to the reference (`5 mile` → `201168/25 meter`), which needs per-inner-type magnitude
+        // arithmetic in the emit — a later increment — so it still declines here. A scale-1 unit stores the
+        // magnitude RAW (the displayed number IS the stored one), so the value emit is just the inner type.
+        Ty::Qty { inner, unit } if unit.scale() == (1, 1) => rust_type(inner),
         // A CHAR is a single Unicode scalar value — Rust's native `char` (which IS a Unicode scalar,
         // exactly the Cadenza model). Copy, so no clone-on-read needed. Lets a `Char` cross as a sum
         // payload / tuple element (a `(Tok (Ch Char))` enum) and a `ConstChar` emit as a `'…'` literal.
