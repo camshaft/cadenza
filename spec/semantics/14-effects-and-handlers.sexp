@@ -3423,3 +3423,51 @@
                   (loop 3 0))))
             (export main)))
   (output (: 6 Int64)))
+
+(case "a post-order labeling walk returns a labeled tree (heap result, id drawn after children)"
+  (doc    "The canonical compiler NODE-NUMBERING pass: walk a `Tree`, draw a fresh `Fresh.next` id per node,
+           and RETURN a new labeled `Ann` tree (a HEAP result, not a scalar sum). Post-order — each node's
+           own id is drawn AFTER labeling both children via `let`-bound sibling recursion, so the two
+           sibling self-calls thread the id supply and the parent's id follows its subtrees'. Exercises the
+           multi-value return carrying a heap-constructed result across siblings PLUS the parent draw last.
+           Tree `(Node (Node Leaf Leaf) Leaf)`: inner-left Leaf=0, inner-right Leaf=1, inner Node=2, outer
+           Leaf=3, root Node=4 → the root's label is 4. The real 'label every node, return the labeled
+           tree' shape the compiler-ml port's numbering pass writes.")
+  (input  (do
+            (effect Fresh (op next (-> Unit Int64)))
+            (type Tree (Leaf) (Node Tree Tree))
+            (type Ann (ALeaf Int64) (ANode Int64 Ann Ann))
+            (def (relabel (: t Tree))
+              (match t
+                ((Leaf) (ALeaf (Fresh.next)))
+                ((Node l r)
+                  (let ((la (relabel l)))
+                    (let ((ra (relabel r)))
+                      (ANode (Fresh.next) la ra))))))
+            (def (root-id (: a Ann)) (match a ((ALeaf i) i) ((ANode i l r) i)))
+            (def (main)
+              (handle Fresh 0 ((next (u) s (resume s (+ s 1))))
+                (root-id (relabel (Node (Node (Leaf) (Leaf)) (Leaf))))))
+            (export main)))
+  (output (: 4 Int64)))
+
+(case "a fresh-id walk over a THREE-constructor sum threads state across mixed-arity arms"
+  (doc    "The gensym walk generalized to a real `Expr` sum with THREE constructors of DIFFERENT arities —
+           `Lit` (nullary, one id), `Neg` (one child + its own id), `Add` (two children + its own id). Each
+           arm performs `Fresh.next` and recurses on its children with the id supply threaded left-to-right
+           across the (0, 1, or 2) sibling self-calls. Confirms the multi-value sibling-threading is not
+           special to a 2-constructor Leaf/Node tree — a match arm with a perform-then-N-siblings folds for
+           any arity. `Add (Neg Lit) Lit`: Add=0, Neg=1, Lit-under-Neg=2, right-Lit=3 → sum 6.")
+  (input  (do
+            (effect Fresh (op next (-> Unit Int64)))
+            (type Expr (Lit) (Add Expr Expr) (Neg Expr))
+            (def (count-ids (: e Expr))
+              (match e
+                ((Lit) (Fresh.next))
+                ((Neg x) (+ (Fresh.next) (count-ids x)))
+                ((Add l r) (+ (Fresh.next) (+ (count-ids l) (count-ids r))))))
+            (def (main)
+              (handle Fresh 0 ((next (u) s (resume s (+ s 1))))
+                (count-ids (Add (Neg (Lit)) (Lit)))))
+            (export main)))
+  (output (: 6 Int64)))

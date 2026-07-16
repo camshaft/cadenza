@@ -3214,3 +3214,5 @@ pass	α-equivalence handles nesting and distinguishes a bound variable from a sa
 todo	SUM ARG + LIST RESULT declines cleanly (Option arg, List result)
 todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
+pass	a post-order labeling walk returns a labeled tree (heap result, id drawn after children)
+pass	a fresh-id walk over a THREE-constructor sum threads state across mixed-arity arms
