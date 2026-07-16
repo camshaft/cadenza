@@ -1481,8 +1481,10 @@ fn audit(fleet: &Fleet, verbose: bool, strict: bool) {
             "\n  ⚠ QUEUED-BUT-ALREADY-LANDED — a merge-request still in pr-sync's inbox whose --ref is \
              already on trunk by patch-id (would gate to an empty merge):"
         );
-        for (fname, from, r#ref) in &landed_queued {
-            eprintln!("    • {fname}  (from '{from}', ref {ref} landed) — reject as superseded");
+        for (fname, from, ref_sha) in &landed_queued {
+            eprintln!(
+                "    • {fname}  (from '{from}', ref {ref_sha} landed) — reject as superseded"
+            );
         }
         eprintln!(
             "  pr-sync: clear each with `cargo xtask fleet ack <file> --outcome reject --body \
