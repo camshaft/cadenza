@@ -1206,6 +1206,30 @@
   (call   main (: 0 Int64))
   (output (: 4 Int64)))
 
+; --- The active-unquote lift is a RUNTIME operation, not only a constant fold ----------------------
+; The `ast-lift` intrinsic behind an active `,e` is deliberately a RUNTIME lift (`lower::lower_ast_lift`
+; — "the operand core need not be constant, which is the whole point over the literal-only reify"): it
+; wraps the operand's VALUE in the `Ast` leaf its inferred type denotes, so a genuinely runtime scalar
+; lifts too. Every eval-splice case ABOVE lifts a bare literal or a `(let ((x 3)) …)` const that the
+; compiler folds at compile time, so none actually EXERCISES the runtime lift — a regression to a
+; const-only reify (or a lift that mis-wraps a non-constant payload) would pass them all yet break real
+; macro use. These pin the lift over a value that arrives at RUN TIME through the export boundary: the
+; scalar reaches `ast-lift` as a live operand, is wrapped, reconstructed by eval, and computed on.
+
+(case "an active unquote lifts a RUNTIME integer operand, not only a constant"
+  (doc    "`(main n) = (eval `(+ ,n 1))` called with n=41 → 42. `n` is a runtime parameter (arrives via
+           the `(call)`, so it is NOT compile-time-constant), and the active unquote lifts its live value
+           through `ast-lift` — the runtime lift path (`lower_ast_lift`), distinct from the literal/let-
+           const cases above which fold away before the runtime lift runs. Pins that the lift is a real
+           runtime operation: a reversion to a constant-only reify declines this, and a lift that mis-
+           wraps the non-constant Int64 payload computes garbage instead of 42.")
+  (input  (do
+            (def (main (: n Int64))
+              (eval (quasiquote (+ (unquote n) 1))))
+            (export main)))
+  (call   main (: 41 Int64))
+  (output (: 42 Int64)))
+
 ; --- `quote` is a grammar head in EXPRESSION position, not a reserved DEFINITION name -------------
 ; `quote`/`quasiquote` are grammar forms the resolver dispatches STRUCTURALLY only when they head an
 ; EXPRESSION — exactly as `if`/`match`/`bin`, all of which are freely definable as ordinary function

@@ -299,6 +299,27 @@ fn diagnostic_pushes(msgs: &[serde_json::Value]) -> Vec<&Vec<serde_json::Value>>
         .collect()
 }
 
+/// Every `publishDiagnostics` push as `(uri, diagnostics)` — for a multi-document session where the
+/// pushes must be told apart by their target file.
+fn diagnostic_pushes_by_uri(msgs: &[serde_json::Value]) -> Vec<(String, Vec<serde_json::Value>)> {
+    msgs.iter()
+        .filter(|m| {
+            m.get("method").and_then(|v| v.as_str()) == Some("textDocument/publishDiagnostics")
+        })
+        .filter_map(|m| {
+            let uri = m
+                .pointer("/params/uri")
+                .and_then(|v| v.as_str())?
+                .to_string();
+            let diags = m
+                .pointer("/params/diagnostics")
+                .and_then(|v| v.as_array())?
+                .clone();
+            Some((uri, diags))
+        })
+        .collect()
+}
+
 #[test]
 fn lsp_didchange_re_lints_and_didclose_clears() {
     // The core "diagnostics as you type" loop: open a BROKEN buffer (unbound name) → a non-empty
@@ -381,6 +402,52 @@ fn lsp_follows_the_import_closure_for_a_multi_file_package() {
     assert!(
         opened.is_empty(),
         "the importer should have NO diagnostics — helper resolves across files (no false CDZ0201): {opened:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn lsp_package_analysis_uses_the_open_buffer_overlay_not_the_stale_disk_lib() {
+    // The open-buffer OVERLAY: an imported library that is ITSELF OPEN contributes its LIVE (unsaved)
+    // text to the importer's cross-file analysis, not its stale on-disk version. On disk, lib does NOT
+    // export `helper` (so a disk-only read would fault the importer with a CDZ0201 "does not export").
+    // We open BOTH the lib buffer (WITH the export) and the importer; the importer must be CLEAN —
+    // proving `open_resolver` fed the lib's live buffer text into the closure, overriding disk.
+    let dir = std::env::temp_dir().join(format!("cdz-lsp-overlay-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    // On DISK: helper is defined but NOT exported (a disk read → importer faults).
+    let lib_path = dir.join("lib.sexp");
+    std::fs::write(&lib_path, "(module lib (def (helper x) (+ x 1)))").expect("write lib");
+    let main_path = dir.join("main.sexp");
+    let main_text = "(do (import \"lib\" (helper)) (def (main) (helper 41)) (export main))";
+    std::fs::write(&main_path, main_text).expect("write main");
+    let lib_uri = format!("file://{}", lib_path.display());
+    let main_uri = format!("file://{}", main_path.display());
+    // The OPEN lib buffer DOES export helper (the unsaved edit not yet on disk).
+    let lib_open_text = "(module lib (def (helper x) (+ x 1)) (export helper))";
+
+    let msgs = drive_messages(&[
+        serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{},"processId":null,"rootUri":null}}),
+        serde_json::json!({"jsonrpc":"2.0","method":"initialized","params":{}}),
+        // Open the LIB buffer first (its live text has the export), then the importer.
+        serde_json::json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":lib_uri,"languageId":"cadenza","version":1,"text":lib_open_text}}}),
+        serde_json::json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":main_uri,"languageId":"cadenza","version":1,"text":main_text}}}),
+        serde_json::json!({"jsonrpc":"2.0","id":99,"method":"shutdown","params":null}),
+        serde_json::json!({"jsonrpc":"2.0","method":"exit","params":null}),
+    ]);
+    let pushes = diagnostic_pushes_by_uri(&msgs);
+    // The importer's push (main.sexp) must be empty — the live lib overlay resolved the import.
+    let main_push = pushes
+        .iter()
+        .rev()
+        .find(|(u, _)| u.ends_with("main.sexp"))
+        .map(|(_, d)| d.clone())
+        .expect("a diagnostics push for the opened importer");
+    assert!(
+        main_push.is_empty(),
+        "the importer should be clean — the OPEN lib buffer (with the export) overrides the stale disk \
+         lib (without it); got {main_push:?}"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -1889,6 +1889,26 @@
   (call   main (: 127 Int8)) (output (: -128 Int8))
   (call   main (: -5 Int8)) (output (: -4 Int8)))
 
+(case "wrapping-sub on a runtime UInt8 wraps modulo 256"
+  (doc    "The subtraction companion of the narrow wrapping-add: `(UInt8.wrapping-sub x 1)` on a runtime
+           UInt8 wraps at the LOW end — 0 - 1 = 255 (mod 256), 10 - 1 = 9. The wraparound modulus is the
+           TYPE's width (2^8); a narrow wrap that reused the i64 op without masking to 8 bits would give
+           -1 (not a UInt8). Pins per-width wraparound for the newly-added wrapping-sub on the unsigned
+           narrow type.")
+  (input  (do (def (main (: x UInt8)) (UInt8.wrapping-sub x 1)) (export main)))
+  (call   main (: 0 UInt8)) (output (: 255 UInt8))
+  (call   main (: 10 UInt8)) (output (: 9 UInt8)))
+
+(case "wrapping-sub on a runtime Int8 wraps at its signed min boundary"
+  (doc    "`(Int8.wrapping-sub x 1)` on a SIGNED narrow type: -128 (Int8.min) - 1 wraps to 127 (Int8.max),
+           5 - 1 = 4. The signed narrow underflow wraps at the ±128 boundary and sign-extends the low 8
+           bits (min-1's low byte is 0x7F = 127, not +128). The signed-narrow subtraction companion of the
+           `wrapping-add on a runtime Int8` case, and the narrow face of the Int64 `wrapping-sub` min-wrap
+           above.")
+  (input  (do (def (main (: x Int8)) (Int8.wrapping-sub x 1)) (export main)))
+  (call   main (: -128 Int8)) (output (: 127 Int8))
+  (call   main (: 5 Int8)) (output (: 4 Int8)))
+
 ; The runtime narrow-wrap cases above wrap modulo the TYPE's width. Their CONSTANT-fold twins must give the
 ; IDENTICAL result — a wrapping op has a defined modular outcome regardless of whether its operands are
 ; constant. A narrow-width const-fold that reused the trapping/checked width-fit gate would REJECT CDZ0302

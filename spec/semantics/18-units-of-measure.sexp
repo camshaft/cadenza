@@ -603,6 +603,41 @@
   (error  CDZ0501))
 
 ; ============================================================================================
+; Join sites — an if/match/list of quantities must share ONE quantity type (unit AND scale)
+; ============================================================================================
+; A quantity join (the two branches of an `if`, the arms of a `match`, the elements of a `list`) must
+; agree on the WHOLE `(Qty T u)` type, including the unit's SCALE — a quantity does NOT auto-normalize
+; to the reference at a join (the no-silent-promotion rule; a conversion is explicit via `in`/`as`). Two
+; same-dimension quantities at DIFFERENT units (km vs m) are DIFFERENT types, so a join rejects them
+; (CDZ0203) — the diagnostic names the scale difference (both render to the reference-unit name, so the
+; generic "same name, different type" hint would misread it as a shadowed declaration). SAME-unit
+; branches join normally.
+
+(case "an if over two same-dimension quantities at different units is a type mismatch (no auto-convert)"
+  (doc    "`(if b (Qty.of 1 kilometer) (Qty.of 500 meter))` — the two branches are the SAME dimension
+           (length) but DIFFERENT units (km vs m), which are DIFFERENT `(Qty T u)` types (their unit's
+           scale to the reference differs: km is 1000/1, m is 1/1). A quantity join does not auto-convert
+           to the reference — a unit conversion is explicit (`in`/`as`, the no-silent-promotion rule) —
+           so the join is rejected CDZ0203. (Both branches RENDER to `(Qty Int64 (Unit.base meter))` —
+           the reference-unit name with the scale dropped — so the diagnostic must name the SCALE
+           difference, not misread it as a shadowed-declaration same-name clash.)")
+  (input  (do (def (main (: b Bool))
+                (Qty.value (if b (Qty.of 1 (Unit.prefix kilo (Unit.base #"meter")))
+                                 (Qty.of 500 (Unit.base #"meter"))))) (export main)))
+  (error  CDZ0203))
+
+(case "an if over two quantities at the SAME unit joins normally"
+  (doc    "`(if b (Qty.of 1000 meter) (Qty.of 500 meter))` — both branches are the SAME `(Qty Int64
+           meter)` type, so the join is well-typed and runs: b=true yields 1000. The control beside the
+           different-unit rejection above — a same-unit quantity join is an ordinary well-typed join, no
+           conversion needed.")
+  (input  (do (def (main (: b Bool))
+                (Qty.value (if b (Qty.of 1000 (Unit.base #"meter"))
+                                 (Qty.of 500 (Unit.base #"meter"))))) (export main)))
+  (call   main (: true Bool))
+  (output (: 1000 Int64)))
+
+; ============================================================================================
 ; Dimensional equality is by canonical form, not syntax — differently-written equal dimensions
 ; ============================================================================================
 ; Two units are the same dimension exactly when their canonical exponent maps agree; the written form
