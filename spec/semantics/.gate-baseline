@@ -1121,6 +1121,9 @@ pass	a nested unquote pattern matches a sub-AST by shape
 pass	a nested-let chain that reuses each binding folds to one value
 pass	a neutral and-true keeps both the trap and the value of its left operand
 pass	a nominal record compared to a plain record of the same shape is a type error
+pass	a non-admitted float width NESTED in a compound annotation is rejected
+pass	a non-admitted float width in a parameter annotation is rejected
+pass	a non-admitted float width in a type-declaration payload is rejected
 pass	a non-byte-aligned bit-field width takes its exact arbitrary-width unsigned type
 pass	a non-constructor type applied to arguments in type position is rejected
 pass	a non-dividing conversion ratio truncates on an Int magnitude

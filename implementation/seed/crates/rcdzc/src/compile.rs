@@ -770,6 +770,15 @@ pub(crate) fn validate_type_position(
         );
         return;
     }
+    // The `(Float W)` companion — an ill-formed float width (outside the admitted IEEE set {32,64}) in a
+    // type-declaration payload (`(type T (Mk (Float 8)))`) reaches the front end only through this walk,
+    // same as the integer case above. `reduce_ctor` clamps a bad float width to the sentinel `Float0`, so
+    // `typeval_of` would wave it through; reject it here with the same coded CDZ0302 the annotation sites
+    // give.
+    if crate::eval::is_ill_formed_float_width(db, pos) {
+        out.push(Reject::coded(Code::IntOutOfRange, crate::infer::FLOAT_WIDTH_MESSAGE).at(pos));
+        return;
+    }
     if crate::eval::typeval_of(db, pos).is_some() {
         return; // denotes a real type (self/mutual/forward refs + nested generics resolve)
     }

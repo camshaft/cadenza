@@ -2787,6 +2787,30 @@ pub fn int_width_fault(db: &mut Db, id: StructId) -> Option<IntWidthFault> {
     }
 }
 
+/// If the type expression at `id` is a `(Float W)` with a CONCRETE width OUTSIDE the admitted IEEE set
+/// `{32, 64}` — a `(Float 8)` / `(Float 16)` / `(Float 128)`, or a non-natural width `(Float -8)` /
+/// `(Float true)` — return `true`. The float analogue of `int_width_fault`, but the admitted set is a
+/// MEMBERSHIP (`ADMITTED_FLOAT_WIDTHS`) not a range, and every ill-formed float width shares ONE message
+/// ("must be one of the admitted IEEE widths (32 or 64)"), so this is a bool rather than a fault enum. A
+/// NON-CONSTANT / runtime width (`WidthRead::NotConst`) is `false` here — `is_runtime_width_type`-style
+/// paths and the sentinel-0 reduction already reject a runtime float width at the annotation. Keyed on the
+/// `FloatCtor` prim + `read_width`; no width literal special-cased. Used to descend a COMPOUND annotation
+/// (`(List (Float 8))`) where the reduced container type looks well-formed and the bad width would
+/// otherwise slip past `cdz check` — the check-vs-emit gap the bare `(Float 8)` reject already closes.
+pub fn is_ill_formed_float_width(db: &mut Db, id: StructId) -> bool {
+    let Resolved::Apply { head, args } = resolved_of(db, id) else {
+        return false;
+    };
+    if meta_apply_of(db, head) != Some(Prim::FloatCtor) || args.len() != 1 {
+        return false;
+    }
+    match read_width(db, args[0]) {
+        WidthRead::Fixed(w) => !crate::ty::ADMITTED_FLOAT_WIDTHS.contains(&w),
+        WidthRead::Malformed => true,
+        WidthRead::NotConst => false,
+    }
+}
+
 /// Encode a `Ty` as a `(typeval …)` arena node the resolver decodes back to `Resolved::TypeVal`.
 /// Compact and total over the type shapes the evaluator builds (integers, bool, unit, function).
 pub fn encode_typeval(db: &mut Db, ty: &crate::ty::Ty) -> StructId {
