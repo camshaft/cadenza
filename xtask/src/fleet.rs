@@ -2843,6 +2843,14 @@ mod tests {
         assert!(recipient_from_subject("some unrelated subject").is_none());
         // A traversal-y agent token is rejected by the name charset → None (never route to garbage).
         assert!(recipient_from_subject("merged: fleet/../etc").is_none());
+        // The `[reconciled from unknown/]`-PREFIXED subject that `reroute_unknown` itself produces must
+        // STILL resolve — else a re-routed note (if it ever re-hit unknown/) couldn't be re-derived, and
+        // an anchored-at-start rewrite of this fn would silently break the reconciler. Pin the round-trip.
+        assert_eq!(
+            recipient_from_subject("[reconciled from unknown/] merged: fleet/v-quantity")
+                .as_deref(),
+            Some("v-quantity")
+        );
     }
 
     #[test]
