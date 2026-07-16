@@ -1398,7 +1398,7 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                 // node's solved type args (`Option::<(Vec<Term>, Term)>::None`) so the type is explicit.
                 // A MONOMORPHIC sum (no args) keeps the bare path. This is the nullary-generic-variant twin
                 // of the empty-collection annotation — a construct with no operand to carry its element type.
-                0 => nullary_variant_path(&ty, disc, &path),
+                0 => Ok(nullary_variant_path(&ty, disc, &path)),
                 // A one-payload variant carries its payload directly (`Some(x)`), boxed if recursive.
                 1 => Ok(format!("{path}({})", wrap(args[0].clone()))),
                 // A MULTI-payload variant carries ONE TUPLE (matching the enum decl's `V((T0, T1))` and the
@@ -2295,33 +2295,33 @@ fn sum_variant_path(db: &mut Db, id: StructId, disc: u32) -> Result<String, Reje
 /// (an uncompilable artifact). So DECLINE — decline-don't-miscompile. (A later increment that threads the
 /// expected type from the enclosing `def` result / match subject into the branch emit would lift this; the
 /// wasm backend has the type at the value-encode boundary, so it does not hit this.)
-fn nullary_variant_path(ty: &Ty, disc: u32, bare: &str) -> Result<String, Reject> {
+fn nullary_variant_path(ty: &Ty, disc: u32, bare: &str) -> String {
     let _ = disc; // the disc already selected `bare`; kept for call-site symmetry with sum_variant_path.
     let Ty::Sum { args, .. } = ty.strip_nominal() else {
-        return Ok(bare.to_string());
+        return bare.to_string();
     };
     if args.is_empty() {
-        return Ok(bare.to_string()); // monomorphic sum — bare path, no annotation needed.
+        return bare.to_string(); // monomorphic sum — bare path, no annotation needed.
     }
     // Generic sum: build the turbofish from the SOLVED args — a pure improvement over the bare path when
     // every arg has a native rep. If ANY arg is unsolved (`Ty::Var`) or unrepresentable, `rust_type`
-    // returns `None`: fall back to the BARE path (the status-quo emit). rustc infers the bare form in most
-    // contexts; the residual case where it CANNOT (the None branch typed before its sibling Some, with the
-    // concrete arg living only in the enclosing context) is a known gap — a FALSE decline here would
-    // regress the many cases rustc DOES infer, so keep bare and leave that one E0282 to a later
-    // expected-type-threading increment. (Annotate-when-known, don't-decline-when-unknown.)
+    // returns `None`: fall back to the BARE path. This is INFALLIBLE — it NEVER declines (returns `String`,
+    // not `Result`). rustc infers the bare form in most contexts; the one residual case it CANNOT (a
+    // nullary generic variant in a branch typed before its type-fixing sibling, args living only in the
+    // enclosing context) is caught EARLIER by `Core::If`'s generic-sum result annotation, not by declining
+    // here — a FALSE decline regressed 22 cases rustc DOES infer (annotate-when-known, never decline).
+    // [Reconciles PR#467: the `Result` return + a "decline" doc were leftovers from an abandoned
+    //  decline-when-unsolved attempt; the behavior always fell back to bare, so the type is now `String`.]
     let mut params = Vec::with_capacity(args.len());
     for a in args.iter() {
         match types::rust_type(a) {
             Some(p) => params.push(p),
-            None => return Ok(bare.to_string()),
+            None => return bare.to_string(),
         }
     }
     match bare.rsplit_once("::") {
-        Some((enum_path, variant)) => {
-            Ok(format!("{enum_path}::<{}>::{variant}", params.join(", ")))
-        }
-        None => Ok(bare.to_string()),
+        Some((enum_path, variant)) => format!("{enum_path}::<{}>::{variant}", params.join(", ")),
+        None => bare.to_string(),
     }
 }
 
