@@ -9082,6 +9082,33 @@ fn peel_ref_annot(db: &mut Db, id: StructId) -> StructId {
         match resolved_of(db, cur) {
             Resolved::Ref { value } => cur = value,
             Resolved::Annot { expr, .. } => cur = expr,
+            // A tuple PROJECTION `(. c i)` whose operand `c` reduces to a compile-time-visible tuple
+            // follows to that element's occurrence — so a partial ctor stashed in a COMPOUND LITERAL and
+            // then projected + applied (`((. (tuple (T.Mk 10) 0) 0) 5)`, or the `let`-bound
+            // `(let ((p (tuple (T.Mk 10) 0))) ((. p 0) 5))`) reaches the constructor spine and COMPLETES to
+            // a flat `(T.Mk 10 5)` construction — the compound analogue of the `let`-ref follow, so a
+            // partial ctor in a static tuple flattens like the inline `((T.Mk 10) 5)`. Without this the
+            // projected partial ctor was lowered as a MALFORMED `SumNew` (too-few payloads) and the
+            // application `call_indirect`'d it as a closure → INVALID WASM. Only a STATICALLY-VISIBLE
+            // operand tuple folds here; a runtime tuple (a param / kept binding) has no visible element,
+            // so `reduce_to_tuple_elems` returns `None` and the projection stays a runtime `Core::Proj`
+            // (the genuine runtime-closure case, handled elsewhere / declines).
+            Resolved::Proj { operand, index } => {
+                match crate::eval::reduce_to_tuple_elems(db, operand) {
+                    Some(elems) if index < elems.len() => cur = elems[index],
+                    _ => break,
+                }
+            }
+            // A record field access `(. r f)` whose operand `r` is a compile-time-visible record follows to
+            // the field's value occurrence — the record-field analogue of the tuple-projection follow above,
+            // so a partial ctor stashed in a record field (`(record (f (T.Mk 7)))` then `((. r f) 3)`) also
+            // reaches the ctor spine and completes. `member_value` returns the field value occurrence for a
+            // visible record (a runtime record has none → `None` → the access stays a runtime read).
+            Resolved::Member { operand, key } => match crate::eval::member_value(db, operand, &key)
+            {
+                crate::eval::Member::Field(field) => cur = field,
+                _ => break,
+            },
             _ => break,
         }
     }
@@ -17119,6 +17146,25 @@ fn lower_sum_new(db: &mut Db, head: StructId, args: &[StructId]) -> Core {
             disc,
             payloads: Vec::new(),
         };
+    }
+    // A PARTIALLY-APPLIED constructor — FEWER args than the payload arity — reaching here is a first-class
+    // FUNCTION value (the curried residual `(-> …remaining… Sum)`), NOT a constructed sum. Building a
+    // `SumNew` with the short payload list MISCOMPILES: the node's type is an ARROW, but a downstream site
+    // that projects + applies this value would `call_indirect` a malformed sum handle → INVALID WASM (the
+    // list-element case `(list (T.Mk 10))` + `List.at` + apply). A partial ctor held in a COMPILE-TIME
+    // -VISIBLE compound (a tuple/record literal, projected + applied in scope) is COMPLETED at compile time
+    // — `peel_ref_annot` now follows the projection to the ctor spine, so those reach `lower_sum_new` at
+    // FULL arity and never hit this guard. The genuine RUNTIME case (a partial ctor stored where its value
+    // is not statically visible — a list element, a runtime param) needs a runtime eta-closure lift (not
+    // yet built — the naive synthesis miscompiles through the reducer's half-inline); until then DECLINE
+    // cleanly (reject-don't-miscompile) rather than emit the malformed sum.
+    if let Some(arity) = crate::eval::variant_payload_arity(db, head)
+        && args.len() < arity
+    {
+        trace!(target: "rcdzc::lower", head = head.0, n_args = args.len(), arity, "sum-new: partial constructor as a runtime value — declines (eta-closure lift not yet built)");
+        return Core::Poison(Reject::decline(
+            "a partially-applied constructor as a runtime value is not yet lowered to a runtime closure",
+        ));
     }
     Core::SumNew {
         disc,

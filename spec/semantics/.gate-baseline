@@ -1161,7 +1161,10 @@ pass	a parameterized plain export alongside a closure export applies its argumen
 pass	a parameterized plain export alongside a closure export — the closure captures and applies
 pass	a partial application persists its capture across two applications
 pass	a partial constructor bound in a let completes when applied
+pass	a partial constructor bound in a let-tuple completes when applied to a runtime arg
 pass	a partial constructor passed to a higher-order function completes the variant
+pass	a partial constructor projected from a tuple literal completes when applied
+pass	a partial constructor stored in a record field completes when applied
 pass	a partially-applied function escapes as a value and runs through a recursive HOF
 pass	a pattern binds a name scoped to its branch
 pass	a pattern that binds the same name across nested sub-patterns is rejected

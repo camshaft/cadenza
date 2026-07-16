@@ -4286,6 +4286,52 @@
   (call   main)
   (output (: 6 Int64)))
 
+; --- A partial constructor stashed in a COMPOUND LITERAL, projected + applied, completes ---------------
+; A partially-applied ctor `(T.Mk 10)` held as a TUPLE element or RECORD field of a compile-time-visible
+; compound, then PROJECTED and APPLIED (`((. (tuple (T.Mk 10) 0) 0) 5)`), completes to the flat variant.
+; The projection is followed at compile time (`peel_ref_annot` reduces `(. tuple i)` / `(. record f)` into
+; the visible compound to the element occurrence), so the ctor spine reaches full arity and builds a flat
+; `(T.Mk 10 5)` — no runtime closure. Before this, the projected partial ctor was lowered as a MALFORMED
+; `SumNew` (too-few payloads) and the application `call_indirect`'d a sum handle as a closure → INVALID
+; WASM. Companion of the let-bound / HOF partial-ctor cases above (a ref / call boundary); this is the
+; compound-element boundary. (A partial ctor whose value is NOT statically visible — a runtime list
+; element — needs a genuine runtime eta-closure lift, not yet built; it declines cleanly, not miscompiles.)
+(case "a partial constructor projected from a tuple literal completes when applied"
+  (doc    "`((. (tuple (T.Mk 10) 0) 0) 5)` — element 0 of the inline tuple is the partial ctor `(T.Mk 10)`;
+           projecting it and applying `5` completes the 2-payload variant `(T.Mk 10 5)`, so `(+ a b)` = 15.
+           Pins that a partial ctor in a compound LITERAL is followed through the projection to the ctor
+           spine and flattened (was invalid wasm — a malformed sum applied as a closure).")
+  (input  (do
+            (type T (Mk Int64 Int64))
+            (def (main) (match ((. (tuple (T.Mk 10) 0) 0) 5) ((T.Mk a b) (+ a b))))
+            (export main)))
+  (call   main)
+  (output (: 15 Int64)))
+
+(case "a partial constructor bound in a let-tuple completes when applied to a runtime arg"
+  (doc    "`(let ((p (tuple (T.Mk 10) 0))) ((. p 0) x))` binds a tuple whose element 0 is `(T.Mk 10)`, then
+           projects + applies the RUNTIME arg `x`. The projection follows through the let-bound tuple literal
+           to the partial ctor, completing to `(T.Mk 10 x)`; x=5 → 15, x=2 → 12. Pins the let-bound compound
+           form with a runtime completing argument.")
+  (input  (do
+            (type T (Mk Int64 Int64))
+            (def (main (: x Int64)) (let ((p (tuple (T.Mk 10) 0))) (match ((. p 0) x) ((T.Mk a b) (+ a b)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 15 Int64))
+  (call   main (: 2 Int64)) (output (: 12 Int64)))
+
+(case "a partial constructor stored in a record field completes when applied"
+  (doc    "The record-field companion: `(let ((r (record (f (T.Mk 7)) (g 0)))) ((. r f) 3))` — field `f`
+           holds the partial ctor `(T.Mk 7)`; accessing it and applying `3` completes `(T.Mk 7 3)`, so
+           `(+ a b)` = 10. Pins that a record-field member access (not only a tuple projection) is followed
+           into the visible record to the ctor spine.")
+  (input  (do
+            (type T (Mk Int64 Int64))
+            (def (main) (let ((r (record (f (T.Mk 7)) (g 0)))) (match ((. r f) 3) ((T.Mk a b) (+ a b)))))
+            (export main)))
+  (call   main)
+  (output (: 10 Int64)))
+
 ; --- A compound bound from a sum payload, extracted ACROSS A FUNCTION BOUNDARY, then projected ---
 ; A value bound out of a sum payload carries its shape WITHIN THE MATCH ARM (the payload-bound cases
 ; above project fields, index lists, and re-match variants inside the arm). But when the payload
