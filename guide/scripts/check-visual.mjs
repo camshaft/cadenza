@@ -127,6 +127,20 @@ const ROUTES = [
       } else {
         check(false, `${label}: widget-rate slider present`);
       }
+      // The source editor must be the shared CodeMirror IDE component (Cadenza highlighting), not a plain
+      // textarea. It's revealed by the "Edit source" toggle, then mounts (lazily) inside [data-testid=
+      // doc-editor] as a .cm-editor — so click the toggle first, then wait for the editor to upgrade.
+      const editToggle = page.locator('[data-testid="edit-toggle"]');
+      if ((await editToggle.count()) > 0) {
+        await editToggle.first().click();
+        const cm = await page
+          .waitForSelector('[data-testid="doc-editor"] .cm-editor', { timeout: 20000 })
+          .then(() => true)
+          .catch(() => false);
+        check(cm, `${label}: source editor is the CodeMirror IDE component (Cadenza highlighting)`);
+      } else {
+        check(false, `${label}: edit-source toggle present`);
+      }
     },
   },
 ];
