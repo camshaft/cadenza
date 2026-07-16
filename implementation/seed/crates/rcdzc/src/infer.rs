@@ -2061,7 +2061,21 @@ pub fn solve_lambda_param_ty(db: &mut Db, binder: StructId, body: StructId) -> T
 /// `Unit` and mistype the copy (`(-> Unit … R)` → spurious CDZ0203). The per-param body-solve is exactly
 /// what `lower_lambda_value` runs, so the recovered arrow agrees with how the closure itself lowers.
 pub fn solved_lambda_arrow(db: &mut Db, params: &[StructId], body: StructId) -> Option<Ty> {
-    let result = type_of(db, body);
+    // The RESULT: when the body is ITSELF a function value — a CURRIED / higher-order def that returns a
+    // lambda (`(def (adder n) (fn (x) (+ x n)))`) — recurse so the RETURNED function's params are body-
+    // solved too, not left `Any` by the bottom-up `type_of` Lambda arm. Without this, `adder :
+    // Int64 → Int64 → Int64` and `pick n = (fn (b) (if b n 0)) : Int64 → Bool → Int64` both recover
+    // `Int64 → (-> Any Int64)`, so a returned-function's domain is dropped (the same reflection-soundness
+    // hole one currying level deeper — `Type.eq` would call them equal). `lambda_params_and_body` follows
+    // the body through a `Ref`/`let`/annotation to the lambda, matching how the value actually lowers; a
+    // non-function body takes the plain `type_of`. Each recursion strips one lambda layer (finite currying
+    // depth); a reduction loop is bounded by `lambda_of`'s own depth guard (returns `None` → `type_of`).
+    let result = match crate::eval::lambda_params_and_body(db, body) {
+        Some((inner_params, inner_body)) => {
+            solved_lambda_arrow(db, &inner_params, inner_body).unwrap_or_else(|| type_of(db, body))
+        }
+        None => type_of(db, body),
+    };
     // Curry right-to-left: each param's solved machine type onto the accumulated result.
     Some(params.iter().rev().fold(result, |acc, &p| {
         let occ = crate::eval::param_name_occ(db, p);

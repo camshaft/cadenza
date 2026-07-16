@@ -1166,6 +1166,23 @@
             (export main)))
   (output (: 1 Int64)))
 
+(case "Type.of reflects a RETURNED function's body-solved domain, at every currying level"
+  (doc    "Reflection solves the parameters of a RETURNED function too, not just the outer ones. `adder n =
+           (fn (x) (+ x n))` is `(-> Int64 (-> Int64 Int64))` and `pick n = (fn (b) (if b n 0))` is
+           `(-> Int64 (-> Bool Int64))` — same OUTER domain, but the returned function's domain differs
+           (`Int64` vs `Bool`). Their reflected arrows differ there, so `Type.eq` is false — `0 + 0 = 0`.
+           Guards the curried facet of the function-domain reflection fix: solving only the outer params left
+           the returned lambda's domain `Any` (the bottom-up `type_of` again), so a curried `Int64->Int64->
+           Int64` and `Int64->Bool->Int64` reflected the SAME `Int64->(-> Any Int64)` and `Type.eq` returned
+           a wrong `true` — the reflection miscompile one currying level deeper.")
+  (input  (do
+            (def (adder n) (fn (x) (+ x n)))
+            (def (pick n) (fn (b) (if b n 0)))
+            (def (main) (+ (if (Type.eq (Type.of adder) (Type.of pick)) 1 0)
+                           (if (Type.eq (Type.of pick) (Type.of adder)) 10 0)))
+            (export main)))
+  (output (: 0 Int64)))
+
 (case "an if on Type.eq selects a branch at compile time"
   (doc    "The headline of compile-time reflection: `(if (Type.eq (Type.of 5) Int64) 100 200)` folds the
            condition to the constant `true`, so the whole `if` is `100`. A program BRANCHES on types at
