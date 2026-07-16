@@ -1350,6 +1350,48 @@
             (def (main) (sub -9223372036854775808 1)) (export main)))
   (error  CDZ0304))
 
+; The runtime-overflow cases above supply CONSTANT arguments to a helper, so the compiler β-reduces them to
+; a provable overflow → compile-time CDZ0304 (never reaching the emitted op). These pin the GENUINELY-RUNTIME
+; path: `main` ITSELF takes the operands and they arrive via `(call …)`, so no constant is available to fold —
+; the overflow must trap on the EMITTED checked-arithmetic operation at run time. The trap must fire on BOTH
+; backends (a rust backend that emitted a plain `+`/`*` where wasm emits a checked op would silently WRAP to
+; a wrong value where wasm traps — a differential the trap-detection guard exists to catch). Covers add, mul,
+; sub-underflow, and negate-of-the-minimum, each over true entry parameters.
+
+(case "a genuinely-runtime addition overflow traps on the emitted operation"
+  (doc    "`(def (main (: a Int64) (: b Int64)) (+ a b))` called `(call main Int64.max 1)`: the operands are
+           the exported entry's OWN parameters, so no β-reduction folds them — the overflow must trap on the
+           emitted checked add at run time (not a compile-time CDZ0304). Traps on both backends. Pins the
+           emitted `+` is checked; a backend emitting a wrapping add would return Int64.min here instead.")
+  (input  (do (def (main (: a Int64) (: b Int64)) (+ a b)) (export main)))
+  (call   main (: 9223372036854775807 Int64) (: 1 Int64))
+  (trap   "overflow"))
+
+(case "a genuinely-runtime multiplication overflow traps on the emitted operation"
+  (doc    "The mul companion over entry parameters: `(* a b)` with a = Int64.max, b = 2 overflows and traps
+           on the emitted checked multiply at run time. Both backends. The runtime-emit twin of the
+           β-reduced `(* Int64.max 2)` CDZ0304 case above.")
+  (input  (do (def (main (: a Int64) (: b Int64)) (* a b)) (export main)))
+  (call   main (: 9223372036854775807 Int64) (: 2 Int64))
+  (trap   "overflow"))
+
+(case "a genuinely-runtime subtraction underflow at the minimum traps"
+  (doc    "`(- a b)` with a = Int64.min, b = 1 underflows past the checked range and traps on the emitted
+           subtract at run time, over true entry parameters. Both backends. The runtime-emit twin of the
+           β-reduced `(- Int64.min 1)` CDZ0304 case above.")
+  (input  (do (def (main (: a Int64) (: b Int64)) (- a b)) (export main)))
+  (call   main (: -9223372036854775808 Int64) (: 1 Int64))
+  (trap   "overflow"))
+
+(case "a genuinely-runtime negation of the minimum integer traps"
+  (doc    "`(- 0 a)` with a = Int64.min negates the minimum, whose magnitude +2^63 is out of range, so it
+           overflows and traps at run time. The negate face of the overflow set, over an entry parameter —
+           `-Int64.min` is the classic two's-complement asymmetry a wrapping negate would return as Int64.min
+           (a wrong value); the checked negate traps on both backends.")
+  (input  (do (def (main (: a Int64)) (- 0 a)) (export main)))
+  (call   main (: -9223372036854775808 Int64))
+  (trap   "overflow"))
+
 (case "multiplication"
   (input  (* 6 7))
   (output (: 42 Int64)))
