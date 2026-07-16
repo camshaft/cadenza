@@ -73,6 +73,29 @@ def gear(n: Int64, hub-r: Float64, hub-h: Float64, tooth: Float64) =
 def tube(len: Float64, ro: Float64, ri: Float64) =
   difference(cylinder(len, ro), cylinder(len, ri))
 
+/// A hollow box / open container: an outer cube with a smaller inner cube removed, leaving walls of
+/// thickness `wall` on each side (so the cavity is `size - 2·wall` per axis). The `difference` idiom for a
+/// shelled solid — a box, a case, an enclosure. 2 primitive leaves (outer − inner).
+def hollow-box(w: Float64, d: Float64, h: Float64, wall: Float64) =
+  difference(cube(w, d, h), cube(w - wall - wall, d - wall - wall, h - wall - wall))
+
+/// One row of `cols` holes (cylinders) spaced `pitch` apart along +x at height `y` — the inner recursion of
+/// `hole-grid`. Guards `cols <= 0` (terminates on any non-positive count; the negative-n lesson from PR#412).
+def hole-row(cols: Int64, i: Int64, y: Float64, pitch: Float64, r: Float64, t: Float64) =
+  if cols <= 0 then empty()
+  else union(
+    translate(v3(i2f(i) * pitch, y, 0.0), cylinder(t, r)),
+    hole-row(cols - 1, i + 1, y, pitch, r, t))
+
+/// A `rows × cols` GRID of holes (cylinders), pitch-spaced in x and y — a nested double recursion (rows of
+/// rows), the "perforated plate / breadboard" pattern. `rows·cols` primitive leaves. A caller `difference`s
+/// this against a plate to drill it. Guards `rows <= 0`.
+def hole-grid(rows: Int64, j: Int64, cols: Int64, pitch: Float64, r: Float64, t: Float64) =
+  if rows <= 0 then empty()
+  else union(
+    hole-row(cols, 0, i2f(j) * pitch, pitch, r, t),
+    hole-grid(rows - 1, j + 1, cols, pitch, r, t))
+
 /// ============================ @test suite (pins the example shapes) ============================
 
 @test
@@ -153,4 +176,34 @@ def gear-tooth-count-scales() =
 def tube-is-two-cylinders() =
   if leaf-count(tube(5.0, 2.0, 1.5)) == 2 then unit else trap("tube = outer - bore = 2 leaves")
 
-export { plate, washer, capsule, cube-row, radial-pattern, gear, tube }
+@test
+def hollow-box-is-outer-minus-inner() =
+  if leaf-count(hollow-box(10.0, 10.0, 5.0, 1.0)) == 2 then unit else trap("hollow-box = 2 cubes")
+
+@test
+def hole-grid-counts-rows-times-cols() =
+  // a 3×4 grid → 12 holes (primitive leaves)
+  if leaf-count(hole-grid(3, 0, 4, 2.0, 0.4, 1.0)) == 12 then unit else trap("3×4 grid = 12 holes")
+
+@test
+def hole-grid-single-row_and_col() =
+  // a 1×1 grid → exactly one hole
+  if leaf-count(hole-grid(1, 0, 1, 2.0, 0.4, 1.0)) == 1 then unit else trap("1×1 grid = 1 hole")
+
+@test
+def hole-grid-empty-dimensions-are-empty() =
+  // any non-positive dimension → no geometry (the <= 0 guards terminate, no infinite recursion)
+  if is-empty(hole-grid(0, 0, 4, 2.0, 0.4, 1.0)) then
+    (if is-empty(hole-grid(3, 0, 0, 2.0, 0.4, 1.0)) then
+      (if is-empty(hole-grid(0 - 2, 0, 4, 2.0, 0.4, 1.0)) then unit else trap("negative rows empty"))
+     else trap("zero cols empty"))
+  else trap("zero rows empty")
+
+@test
+def perforated-plate-drills-the-grid() =
+  // the real use: difference a plate by a hole grid → base + rows·cols holes leaves
+  let plate-blank = cube(10.0, 8.0, 1.0) in
+  let drilled = difference(plate-blank, hole-grid(2, 0, 3, 2.0, 0.4, 1.0)) in
+  if leaf-count(drilled) == 7 then unit else trap("plate + 2×3 holes = 7 leaves")
+
+export { plate, washer, capsule, cube-row, radial-pattern, gear, tube, hollow-box, hole-row, hole-grid }
