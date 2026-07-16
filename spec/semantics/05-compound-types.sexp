@@ -3212,6 +3212,45 @@
             (def (main) (f (list (A.I 1) (A.I 2)))) (export main)))
   (output (: -1 Int64)))
 
+; A SINGLE-variant (newtype) constructor element with a LITERAL payload also refines a list arm. A newtype
+; has NO discriminant, so with a bare-binder payload `(Wrap x)` the element is IRREFUTABLE (always matches
+; once the length holds) — but a LITERAL payload makes it refutable: `(list (Wrap 0) .. r)` matches only a
+; list whose head is a `Wrap` carrying `0`. It refines by the payload VALUE (not a discriminant), the same
+; way the sum-match single-variant literal-payload arm does — a fresh binder plus a payload-value test in
+; the arm guard, falling through on a mismatch. The value-refinement companion of the discriminant-refined
+; multi-variant ctor elements above.
+
+(case "a single-variant newtype list element with a literal payload matches by value"
+  (doc    "`((list (Wrap 0) .. r) 1)` with `W = (Wrap Int64)`: the head must be a `Wrap` whose payload is
+           `0`. `(list (Wrap 0) (Wrap 9))` has head `(Wrap 0)` → 1. A newtype element has no discriminant,
+           so this refines by the payload VALUE — the length-dispatch matcher gets a fresh binder plus a
+           `(= payload 0)` test. Before, a single-variant ctor with a literal payload DECLINED 'needs
+           element-value refinement'; a bare-binder payload `(Wrap x)` was already irrefutable. The
+           list-element analog of the single-variant sum-match literal-payload arm.")
+  (input  (do (type W (Wrap Int64))
+              (def (f (: xs (List W))) (match xs ((list (Wrap 0) .. r) 1) (_ 0)))
+              (def (main) (f (list (Wrap 0) (Wrap 9)))) (export main)))
+  (output (: 1 Int64)))
+
+(case "a single-variant newtype list element falls through on a non-matching payload"
+  (doc    "The refutability: the same `((list (Wrap 0) .. r) 1)` arm against `(list (Wrap 5))` — head payload
+           5 ≠ 0 — does NOT match and falls to the wildcard → 0. Pins the single-variant literal element is a
+           genuine payload-value test, not an irrefutable binder that always matches on length.")
+  (input  (do (type W (Wrap Int64))
+              (def (f (: xs (List W))) (match xs ((list (Wrap 0) .. r) 1) (_ 0)))
+              (def (main) (f (list (Wrap 5)))) (export main)))
+  (output (: 0 Int64)))
+
+(case "a single-variant newtype list element with a binder payload stays irrefutable"
+  (doc    "The control: a bare-binder payload `(list (Wrap x) .. r)` is IRREFUTABLE (a newtype with a binder
+           payload always matches once the length holds), binding `x` to the head's payload — `(list (Wrap
+           7))` → 7. Pins that only a REFUTABLE (literal) payload triggers the value-refinement desugar; a
+           binder payload keeps the pre-existing irrefutable-element path.")
+  (input  (do (type W (Wrap Int64))
+              (def (f (: xs (List W))) (match xs ((list (Wrap x) .. r) x) (_ -1)))
+              (def (main) (f (list (Wrap 7)))) (export main)))
+  (output (: 7 Int64)))
+
 ; A list-arm element may also be a MAP key-value pattern — a list of key-value records destructured by key
 ; in one arm. Like a refutable constructor element, a `(map (k v)…)` element is refutable (it matches only a
 ; map containing the named keys) AND binds the values, so it desugars to a fresh binder + a key-presence

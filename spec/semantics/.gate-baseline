@@ -1896,6 +1896,9 @@ pass	a single-variant abstract theorem's constructor match outside the kernel is
 pass	a single-variant abstract type's constructor match outside its module is rejected CDZ0214 (withheld-ctor)
 pass	a single-variant newtype BOOL literal-payload arm falls through on false
 pass	a single-variant newtype BOOL literal-payload arm is reached, not silently dead
+pass	a single-variant newtype list element falls through on a non-matching payload
+pass	a single-variant newtype list element with a binder payload stays irrefutable
+pass	a single-variant newtype list element with a literal payload matches by value
 pass	a single-variant newtype literal-payload arm falls through to the binding arm on a miss
 pass	a single-variant newtype literal-payload arm is selected when the payload matches
 pass	a single-variant newtype over a COMPOUND escapes the bare compound under its type header

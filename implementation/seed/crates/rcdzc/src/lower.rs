@@ -4517,7 +4517,50 @@ fn refutable_ctor_element_head(db: &mut Db, elem_pat: StructId) -> Option<Struct
     let resolve_head = clone_ctor_head(db, head);
     let decl = crate::eval::variant_owner_decl(db, resolve_head)?;
     let variant_count = db.type_decl_by_occ(decl).map(|d| d.variants.len())?;
-    (variant_count > 1).then_some(head)
+    if variant_count > 1 {
+        // A MULTI-variant ctor is refutable by its DISCRIMINANT — the classic case.
+        return Some(head);
+    }
+    // A SINGLE-variant ctor (a newtype `(Wrap …)`) has no discriminant, so it is IRREFUTABLE when its
+    // payload is — a bare binder `(Wrap x)` always matches once the length holds (handled inline by
+    // `list_element_irrefutable_or_decline`). But a REFUTABLE PAYLOAD makes the whole element refutable:
+    // `(Wrap 0)` matches only a `Wrap` whose payload is `0`. The SAME desugar handles it — the synthesized
+    // guard `(match __lc ((Wrap 0) …) (_ false))` tests the payload value (no disc test, but the kept
+    // literal payload refines it; `ctor_pattern_with_wildcard_payloads` keeps a refutable payload), and the
+    // body re-match binds nothing extra. So route a single-variant ctor with a refutable payload arg here
+    // too. (The list-element analog of the single-variant sum-match literal-payload support, Inc-48/49.)
+    let has_refutable_payload = match db.ast.get(elem_pat) {
+        crate::ast::Struct::List(children) => children
+            .clone()
+            .iter()
+            .skip(1) // skip the ctor head; the rest are payload args
+            .any(|&arg| !ctor_payload_arg_is_irrefutable(db, arg)),
+        // A bare-atom / bare-member single-variant ctor has no payload arg → irrefutable, not routed here.
+        crate::ast::Struct::Atom(_) => false,
+    };
+    has_refutable_payload.then_some(head)
+}
+
+/// Whether a constructor-payload sub-pattern `arg` is IRREFUTABLE (always matches its sub-value): a bare
+/// binder / `_`, or a tuple/record whose parts are irrefutable. A literal (`Int`/`Bool`/`Str`/`Float`/
+/// `Bytes`/`Sym`/`Char`) or a nested constructor pattern is REFUTABLE. Used to decide whether a
+/// single-variant ctor list-element needs the refutable-ctor desugar (a refutable payload makes the
+/// otherwise-irrefutable newtype element refutable). A bare name in payload position resolves INERT in a
+/// pattern (a fresh binder), so `as_name` detects it structurally without consulting resolve.
+fn ctor_payload_arg_is_irrefutable(db: &mut Db, arg: StructId) -> bool {
+    // A bare name (`x`) or `_` is the trivial irrefutable payload binder.
+    if db.ast.as_name(arg).is_some() {
+        return true;
+    }
+    // A tuple payload `(tuple a b)` is irrefutable iff every element is (recursively). Any other compound
+    // (a nested ctor, a list pattern) or a literal is refutable.
+    if let Some(elems) = db.ast.as_form(arg, "tuple") {
+        let elems = elems.to_vec();
+        return elems
+            .iter()
+            .all(|&e| ctor_payload_arg_is_irrefutable(db, e));
+    }
+    false
 }
 
 /// PRE-PASS for `lower_match_list` (the CONSTRUCTOR analogue of Inc-23's `desugar_saturating_bool_list_

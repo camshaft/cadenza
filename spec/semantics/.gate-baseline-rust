@@ -1523,6 +1523,9 @@ pass	a signed-byte entrypoint returns its runtime argument
 pass	a single-form body admits a sequence by holding a do block
 pass	a single-scalar String.slice equals the String.at of the same index (the two scalar-addressing paths agree)
 pass	a single-variant NEWTYPE escapes with its tag ERASED, only the type header naming it
+pass	a single-variant newtype list element falls through on a non-matching payload
+pass	a single-variant newtype list element with a binder payload stays irrefutable
+pass	a single-variant newtype list element with a literal payload matches by value
 pass	a single-variant newtype over a COMPOUND escapes the bare compound under its type header
 pass	a single-variant open sum with an open-tail arm dispatches its named variant
 pass	a single-variant-sum binding pattern destructures a multi-payload constructor positionally
