@@ -10,93 +10,109 @@ export default function OpaqueTypes() {
       <Lede>
         A module can export a type's <em>name</em> while keeping its <em>constructor</em> private. The
         result is an <em>opaque</em> type (also called an abstract data type): code elsewhere can hold and
-        pass its values and call the module's functions on them, but can't build or take one apart. That's
-        how an invariant becomes unbreakable.
+        pass its values and call the module's functions on them, but can't build or take one apart — so an
+        invariant established when the value is made holds <em>everywhere</em>, forever.
       </Lede>
 
       <P>
         Exporting a type and exporting its <em>constructors</em> are two independent decisions. A bare{" "}
-        <C>(export Color)</C> publishes only the type's <em>handle</em> — enough to name it, but not to
-        construct it. Adding <C>(export Color.*)</C> (or naming a specific variant) publishes the
+        <C>(export Percent)</C> publishes only the type's <em>handle</em> — enough to name it, but not to
+        construct it. Adding <C>(export Percent.*)</C> (or naming a specific variant) publishes the
         constructors too, making the type <em>concrete</em>. So opacity is the <em>default</em> of
         exporting a type; concreteness is opt-in. Withholding the constructor is what makes a type opaque.
       </P>
 
-      <H2>The smart constructor</H2>
+      <H2>A validated type: Percent</H2>
       <P>
-        Why hold a constructor back? Because then the <em>only</em> way to make a value is to go through a
-        function the module <em>does</em> export — a "smart constructor" that can enforce an invariant every
-        value must satisfy. Establish the invariant once, there, and no caller can ever produce a value that
-        skips it. Here a <C>Counter</C> that must never be negative: <C>mk</C> clamps, and <C>value</C>{" "}
-        reads it back out:
+        Here's where it earns its keep. A <em>percentage</em> should always be between 0 and 100 — a
+        discount of 150% or −20% is nonsense. Model it as an opaque <C>Percent</C> whose only maker,{" "}
+        <C>percent</C>, <em>validates</em>: it clamps anything out of range into <C>[0, 100]</C>. Feed it a
+        wild <C>150</C> and what comes back is a legitimate <C>100</C>:
       </P>
       <Runnable
-        source={`(type Counter (MkCounter Int64))
-(def (mk (: n Int64)) (if (< n 0) (Counter.MkCounter 0) (Counter.MkCounter n)))
-(def (value (: c Counter)) (match c ((Counter.MkCounter v) v)))
-(def (main) (value (mk 5)))`}
+        source={`(type Percent (Pct Int64))
+(def (percent (: n Int64))
+  (if (< n 0) (Percent.Pct 0)
+    (if (> n 100) (Percent.Pct 100) (Percent.Pct n))))
+(def (rate (: p Percent)) (match p ((Percent.Pct v) v)))
+(def (main) (rate (percent 150)))`}
       />
       <P>
-        That reads <C>5</C>. The point is what happens with a bad input: hand <C>mk</C> a negative and the
-        invariant holds — it clamps to <C>0</C> rather than storing nonsense:
+        The payoff isn't the clamping itself — it's what every <em>downstream</em> function can now assume.
+        Because a <C>Percent</C> can only come from <C>percent</C>, any code that receives one <em>knows</em>{" "}
+        it's in range, with no re-checking. Here <C>apply-discount</C> takes a price and a <C>Percent</C> and
+        subtracts that fraction — a 25% discount off 200 is 150:
       </P>
       <Runnable
-        source={`(type Counter (MkCounter Int64))
-(def (mk (: n Int64)) (if (< n 0) (Counter.MkCounter 0) (Counter.MkCounter n)))
-(def (value (: c Counter)) (match c ((Counter.MkCounter v) v)))
-(def (main) (value (mk -3)))`}
+        source={`(type Percent (Pct Int64))
+(def (percent (: n Int64))
+  (if (< n 0) (Percent.Pct 0)
+    (if (> n 100) (Percent.Pct 100) (Percent.Pct n))))
+(def (rate (: p Percent)) (match p ((Percent.Pct v) v)))
+(def (apply-discount (: price Int64) (: p Percent))
+  (- price (/ (* price (rate p)) 100)))
+(def (main) (apply-discount 200 (percent 25)))`}
       />
       <P>
-        Every operation you offer routes through <C>mk</C>, so the invariant is preserved by construction —
-        a <C>bump</C> that increments can't produce a negative because it, too, goes through the smart
-        constructor:
+        And the invariant is what makes <C>apply-discount</C> <em>safe</em>: a discount can never exceed
+        100%, so a price can never go negative. Try to discount by a nonsensical 150% — the <C>percent</C>{" "}
+        maker already clamped it to 100%, so the worst case is a free item (price <C>0</C>), never a negative
+        one:
       </P>
       <Runnable
-        source={`(type Counter (MkCounter Int64))
-(def (mk (: n Int64)) (if (< n 0) (Counter.MkCounter 0) (Counter.MkCounter n)))
-(def (value (: c Counter)) (match c ((Counter.MkCounter v) v)))
-(def (bump (: c Counter)) (mk (+ (value c) 1)))
-(def (main) (value (bump (mk 5))))`}
+        source={`(type Percent (Pct Int64))
+(def (percent (: n Int64))
+  (if (< n 0) (Percent.Pct 0)
+    (if (> n 100) (Percent.Pct 100) (Percent.Pct n))))
+(def (rate (: p Percent)) (match p ((Percent.Pct v) v)))
+(def (apply-discount (: price Int64) (: p Percent))
+  (- price (/ (* price (rate p)) 100)))
+(def (main) (apply-discount 200 (percent 150)))`}
       />
       <P>
-        These run in one file, where the constructor <C>MkCounter</C> is visible — so you can see the whole
-        mechanism at once. The <em>enforcement</em>, though, is a property of the module boundary, which is
-        where the interesting part lives.
+        <C>apply-discount</C> never validates its <C>Percent</C> — it doesn't have to. The type is a{" "}
+        <em>proof</em> the value was checked once, at the only place it could be made. That's the difference
+        between a bare <C>Int64</C> (which every consumer must defensively re-check) and an opaque{" "}
+        <C>Percent</C> (checked once, trusted everywhere).
       </P>
 
       <H2>The boundary is what enforces it</H2>
       <P>
-        When <C>Counter</C> lives in its own module and exports only its handle plus <C>mk</C> and{" "}
-        <C>value</C>, another module that imports it may name <C>Counter</C>, hold a <C>Counter</C>, pass one
-        around, and call <C>mk</C>/<C>value</C>/<C>bump</C> on it — but it may <em>not</em> reach the
-        constructor. An attempt to build one directly is a compile error:
+        These run in one file, where the constructor <C>Pct</C> is visible, so you can see the whole
+        mechanism. The <em>enforcement</em> lives at the module boundary. When <C>Percent</C> is its own
+        module exporting only its handle plus <C>percent</C>, <C>rate</C>, and <C>apply-discount</C>, another
+        module may name <C>Percent</C>, hold one, and call those functions — but it may <em>not</em> reach
+        the constructor to forge an out-of-range one. An attempt is a compile error:
       </P>
       <Note>
-        <C>{`// in module "counter": (export Counter)  — the handle only, MkCounter stays private`}</C>
+        <C>{`// module "percent" does (export Percent)  — the handle only, Pct stays private`}</C>
         <br />
-        <C>{`// in another module: (Counter.MkCounter 999)`}</C>
+        <C>{`// another module tries: (Percent.Pct 150)   — a 150% "percentage", skipping the validator`}</C>
         <br />
-        <C>cdz</C> reports: <C>CDZ0214</C> — the constructor <C>MkCounter</C> is withheld; a{" "}
-        <C>Counter</C> can be built only through the module's exported functions.
+        <C>cdz</C> reports: <C>CDZ0214</C> — the constructor <C>Pct</C> is withheld; a <C>Percent</C> can be
+        built only through the module's exported functions.
       </Note>
       <P>
-        The same wall stops an importer from <em>taking a value apart</em>: it can't match on the private
-        constructor, strip it, or structurally compare two values. Everything a <C>Counter</C> can do flows
-        through the doors the module opened — which is exactly why the invariant can't be dodged. (The guide
-        runs a single module at a time, so the runnable examples above show the mechanism from{" "}
-        <em>inside</em>; the <C>CDZ0214</C> rejection is what the compiler prints when the very same
-        construction is attempted from <em>outside</em>.)
+        The same wall stops an importer from taking a value apart — it can't match on <C>Pct</C>, strip it,
+        or structurally compare two <C>Percent</C>s to reverse-engineer the representation. Every{" "}
+        <C>Percent</C> that exists anywhere in the program came from <C>percent</C> and is therefore in
+        range: the invariant is not a convention the caller must remember, it's a fact the type system
+        guarantees. (The guide runs one module at a time, so the runnables above show the mechanism from{" "}
+        <em>inside</em>; the <C>CDZ0214</C> rejection is what the compiler prints when the forge is attempted
+        from <em>outside</em>.)
       </P>
 
       <Why tenet="Hide the representation, and the invariant can't be broken">
         Data hiding here isn't a convention or a naming trick — it's checked by the type system. Because a
-        type's handle and its constructors are exported independently, a module can publish a fully usable
-        type whose <em>representation</em> is genuinely unreachable: the only values that exist are the ones
-        its own functions made. So an invariant established in a smart constructor — non-negative, sorted,
-        validated, normalized — is guaranteed for <em>every</em> value of that type, everywhere, with no
-        trust in callers required. That's the foundation the more ambitious uses build on: a parser that
-        only yields well-formed trees, a units library whose quantities can't be forged, a proof kernel
-        whose theorems can only come from its inference rules.
+        type's handle and its constructors export independently, a module can publish a fully usable type
+        whose <em>representation</em> is genuinely unreachable: the only values that exist are the ones its
+        own functions made. So an invariant established in a smart constructor — in range, non-empty, sorted,
+        normalized, validated — holds for <em>every</em> value of that type, everywhere, with zero trust in
+        callers. Cadenza leans on this at the highest stakes: its machine-checked proof kernel makes a{" "}
+        <C>Thm</C> (theorem) an opaque type whose constructor is private, so the <em>only</em> way to obtain
+        a <C>Thm</C> is to call one of the kernel's sound inference rules — a bug in a tactic literally
+        cannot forge a false theorem, because it cannot construct a <C>Thm</C> at all. Same mechanism as{" "}
+        <C>Percent</C>, protecting soundness itself.
       </Why>
 
       <H2>Your turn</H2>
@@ -104,23 +120,28 @@ export default function OpaqueTypes() {
         id="opaque-types:1"
         prompt={
           <>
-            The smart constructor enforces the invariant. This <C>mk</C> clamps negatives to <C>0</C>; fill
-            the input so that reading the result back gives <C>0</C> — a value the invariant had to correct.
+            The validator clamps out-of-range input into <C>[0, 100]</C>. Fill an input that's{" "}
+            <em>too large</em> so that reading the rate back gives <C>100</C> — the ceiling the invariant
+            enforces.
           </>
         }
-        starter={`(type Counter (MkCounter Int64))
-(def (mk (: n Int64)) (if (< n 0) (Counter.MkCounter 0) (Counter.MkCounter n)))
-(def (value (: c Counter)) (match c ((Counter.MkCounter v) v)))
-(def (main) (value (mk ?)))`}
-        solution={`(type Counter (MkCounter Int64))
-(def (mk (: n Int64)) (if (< n 0) (Counter.MkCounter 0) (Counter.MkCounter n)))
-(def (value (: c Counter)) (match c ((Counter.MkCounter v) v)))
-(def (main) (value (mk -8)))`}
-        expected="0"
+        starter={`(type Percent (Pct Int64))
+(def (percent (: n Int64))
+  (if (< n 0) (Percent.Pct 0)
+    (if (> n 100) (Percent.Pct 100) (Percent.Pct n))))
+(def (rate (: p Percent)) (match p ((Percent.Pct v) v)))
+(def (main) (rate (percent ?)))`}
+        solution={`(type Percent (Pct Int64))
+(def (percent (: n Int64))
+  (if (< n 0) (Percent.Pct 0)
+    (if (> n 100) (Percent.Pct 100) (Percent.Pct n))))
+(def (rate (: p Percent)) (match p ((Percent.Pct v) v)))
+(def (main) (rate (percent 250)))`}
+        expected="100"
         hint={
           <>
-            Any negative works — <C>mk</C> replaces it with <C>0</C>. For example <C>-8</C> clamps to{" "}
-            <C>0</C>, so <C>value</C> reads <C>0</C>. A non-negative input would come back unchanged.
+            Any value above <C>100</C> clamps to <C>100</C> — e.g. <C>250</C>. The maker is the one place the
+            ceiling is enforced, so <C>rate</C> can never read more than <C>100</C>.
           </>
         }
       />
@@ -129,26 +150,31 @@ export default function OpaqueTypes() {
         id="opaque-types:2"
         prompt={
           <>
-            Because <C>bump</C> routes through <C>mk</C>, the invariant survives every step. Start from{" "}
-            <C>(mk 0)</C> and fill how many times to <C>bump</C> so the result reads <C>3</C>.
+            Because a <C>Percent</C> is always in range, <C>apply-discount</C> is safe. Fill the discount so
+            that 300 becomes 210 — a 30% discount off 300.
           </>
         }
-        starter={`(type Counter (MkCounter Int64))
-(def (mk (: n Int64)) (if (< n 0) (Counter.MkCounter 0) (Counter.MkCounter n)))
-(def (value (: c Counter)) (match c ((Counter.MkCounter v) v)))
-(def (bump (: c Counter)) (mk (+ (value c) 1)))
-(def (main) (value (bump (bump (bump (mk ?))))))`}
-        solution={`(type Counter (MkCounter Int64))
-(def (mk (: n Int64)) (if (< n 0) (Counter.MkCounter 0) (Counter.MkCounter n)))
-(def (value (: c Counter)) (match c ((Counter.MkCounter v) v)))
-(def (bump (: c Counter)) (mk (+ (value c) 1)))
-(def (main) (value (bump (bump (bump (mk 0))))))`}
-        expected="3"
+        starter={`(type Percent (Pct Int64))
+(def (percent (: n Int64))
+  (if (< n 0) (Percent.Pct 0)
+    (if (> n 100) (Percent.Pct 100) (Percent.Pct n))))
+(def (rate (: p Percent)) (match p ((Percent.Pct v) v)))
+(def (apply-discount (: price Int64) (: p Percent))
+  (- price (/ (* price (rate p)) 100)))
+(def (main) (apply-discount 300 (percent ?)))`}
+        solution={`(type Percent (Pct Int64))
+(def (percent (: n Int64))
+  (if (< n 0) (Percent.Pct 0)
+    (if (> n 100) (Percent.Pct 100) (Percent.Pct n))))
+(def (rate (: p Percent)) (match p ((Percent.Pct v) v)))
+(def (apply-discount (: price Int64) (: p Percent))
+  (- price (/ (* price (rate p)) 100)))
+(def (main) (apply-discount 300 (percent 30)))`}
+        expected="210"
         hint={
           <>
-            Three <C>bump</C>s add <C>3</C>, so starting from <C>(mk 0)</C> gives <C>3</C>. Every
-            intermediate value still went through <C>mk</C>, so the never-negative invariant held the whole
-            way.
+            30% of 300 is 90, and 300 − 90 is 210 — so the discount is <C>30</C>. Because the type
+            guarantees the rate is at most 100, the discounted price is never negative.
           </>
         }
       />
