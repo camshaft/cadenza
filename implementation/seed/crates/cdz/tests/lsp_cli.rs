@@ -407,6 +407,37 @@ fn lsp_follows_the_import_closure_for_a_multi_file_package() {
 }
 
 #[test]
+fn lsp_untitled_buffer_with_imports_degrades_to_single_buffer_not_a_package_load() {
+    // A non-`file://` URI (an UNTITLED, never-saved buffer) that DECLARES an import has no on-disk path
+    // to resolve sibling files against, so the server must NOT attempt package analysis — it degrades to
+    // the single-buffer path (where the import is simply unfollowed, so the imported name reads as
+    // unbound). This must be TOTAL: a diagnostics push, no crash, no hang. Pins the `uri_to_path(uri)`
+    // guard on all the package paths (a `None` path → single-buffer).
+    let uri = "untitled:Untitled-1";
+    let text = "import { helper } from \"lib\"\ndef main() -> Int64 = helper(1)";
+    let msgs = drive_messages(&[
+        serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{},"processId":null,"rootUri":null}}),
+        serde_json::json!({"jsonrpc":"2.0","method":"initialized","params":{}}),
+        serde_json::json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":uri,"languageId":"cadenza","version":1,"text":text}}}),
+        serde_json::json!({"jsonrpc":"2.0","id":99,"method":"shutdown","params":null}),
+        serde_json::json!({"jsonrpc":"2.0","method":"exit","params":null}),
+    ]);
+    let pushes = diagnostic_pushes(&msgs);
+    let opened = pushes
+        .last()
+        .expect("a diagnostics push for the opened untitled buffer (server must not crash/hang)");
+    // Single-buffer analysis leaves the imported name unbound (the import is not followed for a pathless
+    // buffer) — so there IS a diagnostic, and the server stayed total.
+    assert!(
+        opened.iter().any(|d| d
+            .get("message")
+            .and_then(|m| m.as_str())
+            .is_some_and(|m| m.contains("helper") || m.contains("import"))),
+        "an untitled buffer's unfollowed import should surface a single-buffer diagnostic: {opened:?}"
+    );
+}
+
+#[test]
 fn lsp_package_analysis_uses_the_open_buffer_overlay_not_the_stale_disk_lib() {
     // The open-buffer OVERLAY: an imported library that is ITSELF OPEN contributes its LIVE (unsaved)
     // text to the importer's cross-file analysis, not its stale on-disk version. On disk, lib does NOT
