@@ -742,3 +742,57 @@
             (export main)))
   (call   main (: 1.25 Float64))
   (output (: 42 Int64)))
+
+; --- CHAMP Set DEDUP follows the canonical FLOAT byte form (float-form × dedup intersection) ----------
+; A Set dedups by hash+eq, and both must follow the SAME canonical byte form that scalar/compound `=`
+; pins (03-equality NaN==NaN, -0.0 != +0.0). If the Set hashed/compared floats by IEEE == instead
+; (nan != nan, -0.0 == +0.0), dedup would disagree with equality. Runtime float params (def args) keep
+; the set off the const-fold path so the CHAMP heap dedup actually runs. NOTE: float-in-set currently
+; declines on the RUST backend (a known coverage gap, same as the box-float insert case above) — these
+; pin the WASM path.
+
+(case "a set of two NaN floats dedups to one (canonical quiet-NaN)"
+  (doc    "CHAMP dedup follows the canonical float byte form: two runtime NaN elements both canonicalize
+           to the one quiet-NaN (box-float), so `(Set.of (list nan nan))` has ONE element, `Set.len` = 1.
+           IEEE == would treat nan != nan and keep both (len 2); the canonical byte form the scalar
+           `nan == nan` case pins (03-equality) says one. Runtime Float64 params keep it off const-fold.")
+  (input  (do (def (build (: x Float64) (: y Float64)) (Set.len (Set.of (list x y))))
+              (def (main (: d Int64)) (build Float64.nan Float64.nan)) (export main)))
+  (call   main (: 0 Int64))
+  (output (: 1 Int64)))
+
+(case "a set of negative zero and positive zero keeps both (distinct sign bits)"
+  (doc    "The `-0.0 != +0.0` companion for CHAMP dedup: distinct sign bits are distinct canonical bytes,
+           so `(Set.of (list -0.0 0.0))` keeps BOTH, `Set.len` = 2. IEEE == would treat -0.0 == +0.0 and
+           dedup to 1; the canonical byte form the scalar `-0.0 != 0.0` case pins says two. Confirms Set
+           dedup agrees with `=`, not with IEEE ==.")
+  (input  (do (def (build (: x Float64) (: y Float64)) (Set.len (Set.of (list x y))))
+              (def (main (: d Int64)) (build -0.0 0.0)) (export main)))
+  (call   main (: 0 Int64))
+  (output (: 2 Int64)))
+
+(case "a set of two identical positive floats dedups to one"
+  (doc    "The plain positive control: two identical runtime floats share canonical bytes, so
+           `(Set.of (list 3.5 3.5))` dedups to ONE, `Set.len` = 1. Rules out an always-keep-both bug that
+           would make the NaN case pass for the wrong reason.")
+  (input  (do (def (build (: x Float64) (: y Float64)) (Set.len (Set.of (list x y))))
+              (def (main (: d Int64)) (build 3.5 3.5)) (export main)))
+  (call   main (: 0 Int64))
+  (output (: 1 Int64)))
+
+(case "Set.contains over negative zero does not find positive zero"
+  (doc    "`Set.contains` uses the same canonical hash+eq as dedup: a set holding -0.0 does NOT contain
+           +0.0 (distinct canonical bytes) → false. The membership analogue of the -0.0 != +0.0 dedup
+           case, pinning that contains and dedup share the float byte-form rule.")
+  (input  (do (def (test (: stored Float64) (: probe Float64)) (Set.contains (Set.of (list stored)) probe))
+              (def (main (: d Int64)) (if (test -0.0 0.0) 1 0)) (export main)))
+  (call   main (: 0 Int64))
+  (output (: 0 Int64)))
+
+(case "Set.contains over nan finds nan"
+  (doc    "The membership positive: a set holding a NaN DOES contain a NaN (both canonicalize to the one
+           quiet-NaN) → true. The contains analogue of the NaN-dedup case.")
+  (input  (do (def (test (: stored Float64) (: probe Float64)) (Set.contains (Set.of (list stored)) probe))
+              (def (main (: d Int64)) (if (test Float64.nan Float64.nan) 1 0)) (export main)))
+  (call   main (: 0 Int64))
+  (output (: 1 Int64)))

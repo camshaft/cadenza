@@ -121,6 +121,8 @@ pass	Result propagates errors without trapping
 pass	Result type for fallible operations
 pass	Set.contains does not fold a set whose element is a runtime scalar
 pass	Set.contains finds a runtime STRING-rope element built via Set.of
+pass	Set.contains over nan finds nan
+pass	Set.contains over negative zero does not find positive zero
 pass	Set.insert does not fold a duplicate against a runtime element
 pass	Set.remove does not fold a set whose element is a runtime scalar
 pass	Set.remove of a rope-element set built via Set.of lowers the cardinality
@@ -1743,6 +1745,9 @@ pass	a set consumed by Set.insert in one operand is unchanged for a later read o
 pass	a set dedups NaN elements and keeps zero signs distinct
 pass	a set is constructed from a list of its elements
 pass	a set nested in a tuple compares equal with a runtime element, order-independent
+pass	a set of negative zero and positive zero keeps both (distinct sign bits)
+pass	a set of two NaN floats dedups to one (canonical quiet-NaN)
+pass	a set of two identical positive floats dedups to one
 pass	a set of user-sum elements tests membership by variant
 pass	a set threaded as a recursive accumulator dedups during accumulation
 pass	a set type whose element position holds a value is rejected
