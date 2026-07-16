@@ -998,13 +998,16 @@
   (call   main (: 6.0 Float64) (: 2.0 Float64))
   (output (: true Bool)))
 
-(case "a runtime nan minus nan is nan, not zero"
-  (doc    "`(- Float64.nan Float64.nan)` is NaN, NOT 0 — subtraction of equal NaNs does not cancel to zero
+(case "a runtime nan subtracted from itself is nan, not zero"
+  (doc    "`(- x x)` with `x` = NaN is NaN, NOT 0 — subtracting a NaN from ITSELF does not cancel to zero
            (a NaN is not equal to itself under IEEE arithmetic identity; every NaN-operand op is NaN).
-           `(= (- x-forced-nan …) nan)` → 1. Uses a runtime `x` to keep the subtraction off the const-fold
-           path. Pins that a runtime float subtraction with NaN operands propagates NaN rather than
-           applying the `x - x = 0` integer identity, both backends.")
-  (input  (do (def (main (: x Float64)) (if (= (- x Float64.nan) Float64.nan) 1 0)) (export main)))
+           `(= (- y y) nan)` → 1 where `y` is a runtime NaN. A finite runtime `x` is forced to NaN via
+           `(- x Float64.nan)` (keeps it off the const-fold path), bound to `y`, then subtracted from
+           ITSELF — precisely the SAME-OPERAND shape an `x - x = 0` identity rewrite would fire on. Pins
+           that a runtime float subtraction of a value with itself, when that value is NaN, propagates NaN
+           rather than applying the integer `x - x = 0` identity — so a backend wrongly extending that
+           rewrite to floats is caught (the prior form `(- x nan)` never fed the same-operand shape). Both backends.")
+  (input  (do (def (main (: x Float64)) (let ((y (- x Float64.nan))) (if (= (- y y) Float64.nan) 1 0))) (export main)))
   (call   main (: 5.0 Float64))
   (output (: 1 Int64)))
 
