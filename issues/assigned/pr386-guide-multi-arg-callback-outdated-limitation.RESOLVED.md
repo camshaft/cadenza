@@ -13,3 +13,5 @@
 Guide text is now stale: this batch landed inference for an unannotated two-arg closure through a
 generic recursive HOF, but the Functions chapter still teaches that multi-arg callbacks require type
 annotations. Doc-update in guide territory (v-guide). Route as a note. Fix on `trunk`.
+
+<!-- RESOLVED 2026-07-16 (trunk@b706d3b76, v-guide 67b7a8a4): Functions.tsx stale "needs a type annotation" text REMOVED + replaced with a fully-inferred two-arg fold-list example. Verified on trunk: fold-list present (L122-130), zero old-limitation occurrences. -->

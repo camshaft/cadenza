@@ -68,3 +68,5 @@ The guide worked around it so its examples stay honest: the two affected Floats 
 non-whole result (`(/ (Float32.of-int 7) (Float32.of-int 2))` → `3.5`, and `floats:2` expects `2.5`),
 which renders identically in both runners. When (1) or (2) lands, those can go back to whole-float values
 and the guide's two-surface harness (`guide/scripts/check-examples.mjs`) will grade them against `5.0`.
+
+<!-- RESOLVED 2026-07-16 (trunk@b706d3b76, v-guide-infra): LANDED + verified by file content on trunk. -->

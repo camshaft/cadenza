@@ -22,3 +22,5 @@ export. Genuine runtime-vs-typecheck tension. RESOLUTION the reviewer suggests: 
 build actually passes today; if it does, dismiss; if it fails (or CI's typecheck is lenient and would
 break on a stricter run), switch to a namespace import. Fix on `trunk` if needed. Quote + link in queue
 file.
+
+<!-- WONTFIX 2026-07-16 (v-guide-infra): FALSE POSITIVE — the default import is CORRECT under moduleResolution:bundler; a namespace import would break the node runtime. Concierge backlog filed with the rationale. -->

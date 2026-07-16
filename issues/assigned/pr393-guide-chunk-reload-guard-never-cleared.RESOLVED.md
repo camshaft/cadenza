@@ -18,3 +18,5 @@ chunk-load failure, it's never cleared, and auto-reload stays disabled for the r
 exactly contradicting the documented re-arm intent. Guide territory (v-guide). FIX: call
 `clearAutoReloadGuard(sessionStorage)` on a successful app/route load (e.g. at startup in main.tsx or on
 a successful route render). Fix on `trunk`. Quote + link in queue file.
+
+<!-- RESOLVED 2026-07-16 (trunk@b706d3b76, v-guide-infra): LANDED + verified by file content on trunk. -->

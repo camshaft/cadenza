@@ -20,3 +20,5 @@ string), and TWO perf points (exportTypes/export_types awaited unconditionally w
 needed for integer-looking renders). All guide territory (v-guide), one coherent cluster around the new
 scalar-`.0`-restoration feature. FIX: trim before appending; anchor/fix the isFloatType regex+comment;
 gate the export-types call on an integer-looking render. Fix on `trunk`. Quotes + links in queue file.
+
+<!-- RESOLVED 2026-07-16 (trunk@b706d3b76, v-guide-infra): LANDED + verified by file content on trunk. -->
