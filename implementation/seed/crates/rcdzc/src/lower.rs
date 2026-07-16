@@ -15553,16 +15553,29 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
 /// cause — every trap is decided by the op and the divisor/shift-count `y`.)
 fn const_trap_cause(op: Prim, y: i64) -> String {
     match op {
-        Prim::Div | Prim::Rem if y == 0 => "divide by zero".to_string(),
+        // Name the cause AND the repair — a provable constant trap has a definite fix (there is no runtime
+        // value that rescues it), so match the actionable bar the runtime-numerator `(/ n 0)` sibling and
+        // the checked-conversion message already set, rather than stating only the cause.
+        Prim::Div | Prim::Rem if y == 0 => {
+            "divide by zero — a division by the constant 0 has no value; remove it or use a nonzero divisor"
+                .to_string()
+        }
         // The only non-zero-divisor `Div` trap is `Int64.min / -1` (the quotient overflows Int64).
-        Prim::Div => "the quotient overflows Int64 (Int64.min / -1)".to_string(),
-        Prim::Add | Prim::Sub | Prim::Mul => "the result overflows Int64".to_string(),
+        Prim::Div => {
+            "the quotient overflows Int64 (Int64.min / -1 has no Int64 value) — the only overflowing division"
+                .to_string()
+        }
+        Prim::Add | Prim::Sub | Prim::Mul => {
+            "the result overflows Int64 — compute in a wider type, or check the operands fit".to_string()
+        }
         Prim::Shl | Prim::Shr => {
             if !(0..64).contains(&y) {
-                format!("shift count {y} is out of range 0..64")
+                format!(
+                    "shift count {y} is out of range 0..64 — a shift count must be 0..=63 (the bit width)"
+                )
             } else {
                 // An in-range Shl whose exact result overflows the width.
-                "the shifted result overflows Int64".to_string()
+                "the shifted result overflows Int64 — shift a smaller value or use a wider type".to_string()
             }
         }
         _ => "the operation has no defined value on these operands".to_string(),
