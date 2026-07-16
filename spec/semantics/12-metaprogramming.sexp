@@ -1527,6 +1527,23 @@
             (_                                    -1)))
   (output (: 2 Int64)))
 
+; The CONSTRUCTION side of the eval-of-a-control-form cases: quoting a binder-introducing form (`let`) is
+; head-agnostic like any compound — it reifies to an `Ast.List` whose head is `(Ast.Name "let")` and whose
+; binding group + body are ordinary reified sub-trees — and it round-trips through the byte codec. Pairs with
+; `(eval (quote (let …)))` → 10 (the eval side): `quote` builds the control-form AST as inert data, `eval`
+; reconstructs and runs it. A reifier that special-cased `let` (or dropped its binding group) would flip this.
+
+(case "quote of a let reifies as an Ast.List with a let head and round-trips"
+  (doc    "`(quote (let ((x 1)) x))` reifies to an `Ast.List` headed `(Ast.Name \"let\")` (byte-len 3) — the
+           binder-introducing form is inert data, its head a bare name like any other — and encode/decode
+           round-trips it to an equal AST. The construction companion of the `eval (quote (let …))` fold:
+           `quote` builds a control-form AST without interpreting it, and the codec preserves it whole.")
+  (input  (match (Ast.decode (Ast.encode (quote (let ((x 1)) x))))
+            ((Ok (Ast.List (list (Ast.Name h) .. _))) (String.byte-len h))
+            ((Ok _)  -2)
+            ((Err _) -1)))
+  (output (: 3 Int64)))
+
 (case "three leaf variants in one quoted form each dispatch their own tag"
   (doc    "`(quote (\"s\" 5 true))` reifies a list whose three elements are DISTINCT leaf variants —
            Ast.Str, Ast.Int, Ast.Bool — bound by one list pattern and classified by a shared `kind`
