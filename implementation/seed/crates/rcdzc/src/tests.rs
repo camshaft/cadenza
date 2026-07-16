@@ -20382,6 +20382,24 @@ mod match_engine {
                 "a well-formed program must not be flagged: {ok} -> {bad:?}"
             );
         }
+        // (d) NAMELESS signature — `(def () <body>)` (empty sig list) / `(def (5 x) …)` (non-name head)
+        // register a def with an EMPTY name (unreachable, unexportable) and were SILENTLY ACCEPTED (the
+        // arity is well-formed, so the body-count check passed; nothing checked the name). Now CDZ0201.
+        for src in [
+            "(module m (def () 1) (def (main) 0) (export main))",
+            "(module m (def (5 x) 1) (def (main) 0) (export main))",
+        ] {
+            let d = crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.message.contains("has no name"))
+                .unwrap_or_else(|| panic!("a nameless definition must be rejected: {src}"));
+            assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+            assert!(
+                d.message.contains("must name it"),
+                "the nameless-def message names the fix: {}",
+                d.message
+            );
+        }
     }
 
     #[test]

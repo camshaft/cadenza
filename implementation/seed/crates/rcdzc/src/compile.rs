@@ -1506,7 +1506,33 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
                     .at(form),
                 );
             }
-            2 => {} // well-formed: exactly one body
+            2 => {
+                // Well-formed ARITY, but the SIGNATURE must name the definition. `(def () <body>)` (an
+                // empty signature list) and `(def (5 x) …)` (a non-name head) register a def with an EMPTY
+                // name (db.rs `scan_top_level` falls to the `String::new()` arm) — which was SILENTLY
+                // ACCEPTED: the def is unreachable (nothing can name it) and unexportable, a dead
+                // declaration. Reject it CDZ0201 — a def is `(def <name> …)` / `(def (<name> <param>…) …)`.
+                // (A bare-NAME value-def sig `(def answer 42)` and a proper function sig `(def (f x) …)`
+                // both yield a name and pass; only a nameless sig fails.)
+                let sig = tail[0];
+                let has_name = match db.ast.get(sig) {
+                    crate::ast::Struct::Atom(_) => db.ast.as_name(sig).is_some(),
+                    crate::ast::Struct::List(children) => children
+                        .first()
+                        .is_some_and(|&h| db.ast.as_name(h).is_some()),
+                };
+                if !has_name {
+                    faults.push(
+                        Reject::coded(
+                            Code::Malformed,
+                            "this definition has no name — a definition is `(def <name> <value>)` or \
+                             `(def (<name> <param>…) <body>)`; the signature must name it (an empty `()` \
+                             or a non-name head binds nothing)",
+                        )
+                        .at(form),
+                    );
+                }
+            }
             _ => {
                 // TOO MANY bodies — delete the first surplus (tail[2]); `fixed_arity_reject`'s
                 // surplus-delete, the same as let/fn/resume/host. The message names `(do …)` as the way to
