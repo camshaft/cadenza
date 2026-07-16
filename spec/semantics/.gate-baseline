@@ -1070,12 +1070,14 @@ pass	a narrow-width wrapping-mul constant folds by wrapping, not by rejecting
 pass	a narrower-typed runtime value is not silently widened into a wider segment
 pass	a nearer handler on the call chain shadows an outer one
 pass	a negated zero equality composes with the negation fold
+pass	a negative and its positive twin encode to distinct bytes
 pass	a negative constant BigInt crosses the boundary with its sign
 pass	a negative constant argument to an unsigned parameter is rejected, not laundered
 pass	a negative decimal literal annotated Rational normalizes its sign onto the numerator
 pass	a negative exponent scales the mantissa down
 pass	a negative hexadecimal literal negates its value
 pass	a negative integer literal pattern matches a runtime scrutinee
+pass	a negative integer nested in a compound round-trips by byte identity
 pass	a negative integer width is rejected
 pass	a negative power is the reciprocal, deriving an inverse unit
 pass	a negative power over a BigInt magnitude truncates the reciprocal exactly
@@ -2733,6 +2735,7 @@ pass	symbols interned from different strings are unequal
 pass	textually-identical performs are DISTINCT state-advancing reads, not a common subexpression
 pass	the AST is a sum type deconstructible by pattern matching
 pass	the Bool generator covers both values across seeds (it is not a constant)
+pass	the Int codec round-trips i64::MIN — the two's-complement boundary
 pass	the LEB128 byte composition runs on a runtime operand
 pass	the additive-zero identity preserves a boundary-crossing runtime operand
 pass	the arithmetic operator rejects a float-first mixed operand pair

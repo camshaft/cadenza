@@ -683,6 +683,46 @@
             ((Err _) false)))
   (output (: true Bool)))
 
+; --- The Int payload is a SIGNED two's-complement i64: negatives and the range boundary round-trip ---
+; ast-encoding.md: an `Ast.Int n` encodes as tag 0x00 then `n` as 8 bytes little-endian TWO'S-COMPLEMENT
+; i64 (`encode_ast_value`/`decode_ast_value` in lower.rs). The round-trip case above uses only the small
+; positive `7`, which never exercises the sign bit or the full 8-byte width — so a decoder that mis-reads
+; the payload as UNSIGNED, or a re-emit that sign-extends wrongly (the recurring hand-emitted-const class
+; the house rules warn about), would pass `7` yet corrupt a negative or large value. These pin the SIGNED
+; boundary: `i64::MIN` (-9223372036854775808 — the asymmetric two's-complement extreme, whose magnitude
+; is not representable as a positive i64), and that `-1` and `1` encode to DISTINCT bytes (a decoder that
+; drops the sign collapses them). A negative nested in a compound pins the same through the recursive
+; encoder. Promoted from passing probes (breaker rule: pin the invariant so a future codec change can't
+; quietly flip it).
+
+(case "the Int codec round-trips i64::MIN — the two's-complement boundary"
+  (doc    "`Ast.Int -9223372036854775808` (i64::MIN) encodes+decodes to an equal AST. This is the extreme
+           of the signed 8-byte payload — its magnitude has no positive i64 representation, so a decoder
+           that reads the bytes as unsigned, or negates during re-encode, corrupts it. The negative
+           companion of the `Ast.Int 7` round-trip: pins the SIGNED two's-complement contract at its
+           hardest value. `Ast.decode` is total, so the round-trip matches the `Ok` arm.")
+  (input  (match (Ast.decode (Ast.encode (Ast.Int -9223372036854775808)))
+            ((Ok a)  (= a (Ast.Int -9223372036854775808)))
+            ((Err _) false)))
+  (output (: true Bool)))
+
+(case "a negative and its positive twin encode to distinct bytes"
+  (doc    "`Ast.encode (Ast.Int -1)` ≠ `Ast.encode (Ast.Int 1)`: the sign is carried in the two's-
+           complement byte form (all-ones vs a single low bit), so a codec that dropped or ignored the
+           sign would collapse them to equal bytes. Pins that the encoding distinguishes sign — the
+           byte-level companion of the i64::MIN round-trip.")
+  (input  (= (Ast.encode (Ast.Int -1)) (Ast.encode (Ast.Int 1))))
+  (output (: false Bool)))
+
+(case "a negative integer nested in a compound round-trips by byte identity"
+  (doc    "`(quote (f -42 \"s\"))` — a negative Int leaf beside a string, inside a list — decodes to an
+           AST that re-encodes to identical bytes (the bijection's byte-identity face). Pins that the
+           RECURSIVE encoder threads the signed payload through a compound, not only a bare leaf.")
+  (input  (match (Ast.decode (Ast.encode (quote (f -42 "s"))))
+            ((Ok a)  (= (Ast.encode a) (Ast.encode (quote (f -42 "s")))))
+            ((Err _) false)))
+  (output (: true Bool)))
+
 (case "encoding and decoding a constructor-built compound AST round-trips"
   (doc    "The compound companion: a hand-built `(Ast.List (list (Ast.Name \"g\") (Ast.Int 5)))` MUST
            encode and decode back to an equal AST, exactly as a quote-built list does. Pins that the
