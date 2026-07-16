@@ -1048,6 +1048,7 @@ pass	a plain quote does not evaluate a quasiquote's unquote nested inside it
 pass	a plain record compared to a nominal record of the same shape is a type error
 pass	a plural family-unit spelling names the same unit as its singular
 pass	a positional tuple access out of the tuple's static arity is a type error
+pass	a possibly-out-of-range runtime integer conversion still declines (checked emit pending)
 pass	a post-order effectful walk draws each node's id AFTER both children (SSA reg-alloc shape)
 pass	a post-order labeling walk returns a labeled tree (heap result, id drawn after children)
 pass	a predicate closure returning Bool drives an early-exit recursive HOF
@@ -2105,7 +2106,7 @@ pass	converting a scalar-valued integer to a char yields Some
 pass	converting a surrogate code point to a char yields None
 pass	converting a unit to another unit of the same dimension is an exact rational scale
 pass	converting an out-of-range integer to a char yields None
-pass	cross-width widening a runtime narrow int with .of (UInt16.of a UInt8) declines (emit pending)
+pass	cross-width widening a runtime narrow int with .of (UInt16.of a UInt8) emits (total)
 pass	declaring a unit with a conversion conflicting with a built-in is an error
 pass	decode of a Float tag with a non-finite (NaN) bit pattern yields the error case
 pass	decode of a Str tag with an oversized length yields the error case
@@ -2778,7 +2779,8 @@ pass	updating a record field preserves the other fields' values
 pass	updating a record field replaces its value
 pass	updating an absent record field is rejected
 pass	when two abortive performs sit on one spine the FIRST (leftmost) abort wins
-pass	widening a runtime narrow-width integer to Int64 declines (the emit is a later increment)
+pass	widening a runtime narrow-width unsigned integer to Int64 zero-extends (total, emits)
+pass	widening a runtime signed narrow integer to Int64 sign-extends (total, emits)
 pass	wrapping addition of in-range operands is ordinary addition
 pass	wrapping addition wraps modulo two to the sixty-fourth on overflow
 pass	wrapping an unwrapped number re-enters the units world at the new unit
@@ -3159,6 +3161,8 @@ todo	a runtime nibble truncation keeps the low four bits
 todo	a runtime out-of-bounds list update traps rather than aliasing a valid slot
 todo	a runtime signed little-endian segment lays the low byte first
 todo	a runtime signed little-endian segment round-trips a negative value
+todo	a runtime string interns to a symbol matched by content
+todo	a runtime symbol round-trips back to its string
 todo	a runtime value is constructed into a fixed-width segment and its length read
 todo	a runtime value narrowed to the segment width constructs without trapping
 todo	a scalar BETWEEN two Tuple args with a LIST result

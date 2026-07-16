@@ -2522,6 +2522,52 @@ fn a_wrap_whose_source_fits_the_target_is_the_identity() {
     assert_eq!(run_returns_with::<i8>(&b, "f", &[Val::U8(100)]), 100);
 }
 
+/// A runtime CHECKED conversion `T.of x` whose SOURCE type provably fits the target is TOTAL — no value
+/// can be out of range, so it can never trap and is emitted as the widening `wrap` (extend-and-
+/// reinterpret). This is the runtime `Int64.of (x:UInt8)` gap the corpus pinned as a decline; it now
+/// runs. A NON-total `of` (a narrowing, or a sign-change that overflows) still DECLINES — that needs the
+/// range-check-then-trap emit, a later increment. `of` and `wrap` differ only on an out-of-range value,
+/// and totality proves there is none, so reusing the `wrap` emit is sound.
+#[test]
+fn a_runtime_integer_of_whose_source_fits_the_target_widens_totally() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+    // UInt8 → Int64: the pinned gap. A UInt8 (0..255) always fits Int64, so `Int64.of` is total; the max
+    // 255 and the top-bit 200 widen to the same non-negative Int64 (zero-extend, NOT sign-extend).
+    let u8_to_i64 = "(module m (def (f (: a UInt8)) (Int64.of a)) (export f))";
+    let b = compile_component(&crate::codec::encode(&parse(u8_to_i64))).expect("compile");
+    assert_eq!(run_returns_with::<i64>(&b, "f", &[Val::U8(255)]), 255);
+    assert_eq!(run_returns_with::<i64>(&b, "f", &[Val::U8(200)]), 200);
+    assert_eq!(run_returns_with::<i64>(&b, "f", &[Val::U8(0)]), 0);
+    // Int8 → Int64: a signed widening SIGN-extends — -1 stays -1, -128 stays -128 (not 128 or a big u).
+    let i8_to_i64 = "(module m (def (f (: a Int8)) (Int64.of a)) (export f))";
+    let b = compile_component(&crate::codec::encode(&parse(i8_to_i64))).expect("compile");
+    assert_eq!(run_returns_with::<i64>(&b, "f", &[Val::S8(-1)]), -1);
+    assert_eq!(run_returns_with::<i64>(&b, "f", &[Val::S8(-128)]), -128);
+    assert_eq!(run_returns_with::<i64>(&b, "f", &[Val::S8(127)]), 127);
+    // UInt8 → UInt16: a same-sign narrow widening also totals (0..255 ⊂ 0..65535).
+    let u8_to_u16 = "(module m (def (f (: a UInt8)) (UInt16.of a)) (export f))";
+    let b = compile_component(&crate::codec::encode(&parse(u8_to_u16))).expect("compile");
+    assert_eq!(run_returns_with::<u16>(&b, "f", &[Val::U8(255)]), 255);
+    // UInt8 → UInt64: a full-width unsigned widening zero-extends (255 stays 255, no sign confusion).
+    let u8_to_u64 = "(module m (def (f (: a UInt8)) (UInt64.of a)) (export f))";
+    let b = compile_component(&crate::codec::encode(&parse(u8_to_u64))).expect("compile");
+    assert_eq!(run_returns_with::<u64>(&b, "f", &[Val::U8(255)]), 255);
+    // NON-total `of` still DECLINES (the checked-narrowing emit is a later increment): a UInt8 → Int8
+    // could hold 255 which overflows Int8 (-128..127), so `Int8.of (x:UInt8)` must trap-check → declines.
+    let not_total = "(module m (def (f (: a UInt8)) (Int8.of a)) (export f))";
+    assert!(
+        compile_component(&crate::codec::encode(&parse(not_total))).is_err(),
+        "a non-total (possibly out-of-range) runtime T.of must still decline, not emit a truncating wrap"
+    );
+    // A genuine narrowing UInt64 → UInt8 likewise declines (most values overflow UInt8).
+    let narrowing = "(module m (def (f (: a UInt64)) (UInt8.of a)) (export f))";
+    assert!(
+        compile_component(&crate::codec::encode(&parse(narrowing))).is_err(),
+        "a runtime narrowing T.of must still decline"
+    );
+}
+
 /// `T.wrap(U.wrap x)` where the outer width N ≤ the inner width M — the inner wrap is redundant (the
 /// outer keeps only the low N ≤ M bits, unchanged by the inner). The inner Convert is elided; VALUE
 /// parity is preserved (the composed wrap gives the same low bits as the single outer wrap).
@@ -19352,13 +19398,74 @@ mod match_engine {
         );
     }
 
+    /// `Symbol.of` on a GENUINELY-RUNTIME string interns by CANONICALIZING its bytes — a Symbol is a String
+    /// byte-leaf at run time (tagless heap, no intern table), so two symbols of equal content compare equal
+    /// because both are canonical flat leaves. The runtime-string→Symbol intern gap corpus-bugfix filed;
+    /// the intern analogue of the runtime String.slice byte-walk. `Symbol.to-string` of a runtime symbol is
+    /// the inverse retag. Both reuse `bytes-compact` (no new op, frozen hash unchanged). The runtime string
+    /// is built with a `rep` concat loop (a byte-rope, unfoldable) — the same idiom the runtime `String.at`
+    /// tests use — so the operand genuinely reaches the runtime emit rather than const-folding.
+    #[test]
+    fn a_runtime_string_interns_to_a_symbol_by_content() {
+        use crate::testkit::parse;
+        // Compose against the real runtime wasm (the string-op path needs `bytes-alloc`/`bytes-compact`);
+        // skip gracefully if it is not built, exactly like the sibling runtime-String.concat test.
+        let run = |src: &str| -> Option<String> {
+            let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+            let runtime = crate::tests::find_runtime_wasm()?;
+            let opts = cdz_run::RunOpts {
+                export: Some("main".to_string()),
+                args: vec![],
+                runtime: Some(runtime),
+                runtime_cache_dir: None,
+                host_responses: Vec::new(),
+            };
+            match cdz_run::run(&bytes, &opts).expect("run") {
+                cdz_run::Outcome::Value(s) => Some(s),
+                cdz_run::Outcome::Trap(t) => panic!("runtime Symbol op trapped (miscompile?): {t}"),
+            }
+        };
+        // `(rep "" 3)` builds "xxx" as a runtime rope; `Symbol.of` interns it, compared to `#"xxx"` by
+        // CONTENT → true (both canonical byte leaves). A different-length build → not equal.
+        let rep = "(def (rep s n) (if (< n 1) s (rep ((. String concat) s \"x\") (- n 1))))";
+        let Some(eq_same) = run(&format!(
+            "(module m {rep} (def (main) (if (= (Symbol.of (rep \"\" 3)) #\"xxx\") 1 0)) (export main))"
+        )) else {
+            eprintln!(
+                "runtime wasm not found (run `cargo xtask build`); skipping runtime Symbol.of run"
+            );
+            return;
+        };
+        assert_eq!(
+            eq_same, "1",
+            "runtime Symbol.of of \"xxx\" matches #\"xxx\" by content"
+        );
+        assert_eq!(
+            run(&format!(
+                "(module m {rep} (def (main) (if (= (Symbol.of (rep \"\" 2)) #\"xxx\") 1 0)) (export main))"
+            )).unwrap(),
+            "0",
+            "runtime Symbol.of of \"xx\" does NOT match #\"xxx\""
+        );
+        // The round-trip: `Symbol.to-string (Symbol.of s)` recovers the String from the runtime rope,
+        // observed via byte-len — exercises BOTH runtime retags in one chain. "xx"+3 → "xxxxx" → 5 bytes.
+        assert_eq!(
+            run(&format!(
+                "(module m {rep} (def (main) ((. String byte-len) (Symbol.to-string (Symbol.of (rep \"xx\" 3))))) (export main))"
+            )).unwrap(),
+            "5",
+            "Symbol.of then Symbol.to-string of a runtime rope round-trips to the same bytes"
+        );
+    }
+
     #[test]
     fn symbol_of_a_non_string_reports_one_error_not_a_misleading_runtime_string_decline() {
         // `(Symbol.of 5)` is a type error (`Symbol.of : String → Symbol`, applied to Int64) — CDZ0203.
         // It used to ALSO emit the emit-path decline "Symbol.of on a runtime string is not yet interned",
         // which is a LIE (5 is not a string at all) AND a second `error:`. Now the decline is suppressed
         // (an uncoded decline at a node that carries a coded reject is shadowed by it), so the type error
-        // is the ONE story. A genuine runtime STRING still declines honestly elsewhere.
+        // is the ONE story. (A genuine runtime STRING now interns via a byte-compact retag — see
+        // `a_runtime_string_interns_to_a_symbol_by_content`; the non-string case here is still a type error.)
         let out = crate::compile::compile(
             &[crate::abi::Artifact::new(
                 crate::abi::Artifact::KIND_AST,

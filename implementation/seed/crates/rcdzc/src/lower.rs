@@ -1747,15 +1747,28 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 // to a constant symbol, which shares the underlying `Core::ConstStr` REP (identity is
                 // content-derived); only the static TYPE differs (`Ty::Symbol`, off this node's solved
                 // type). So the fold is the identity on the `ConstStr` — `(= (Symbol.of "a") (Symbol.of
-                // "a"))` then folds via `const_compound_eq(ConstStr, ConstStr)`. A runtime string interns
-                // at run time (a later increment) — declines here.
+                // "a"))` then folds via `const_compound_eq(ConstStr, ConstStr)`. A RUNTIME string is
+                // interned by CANONICALIZING its byte-rope to a flat leaf (`Core::StrToBytes` = the runtime
+                // `bytes-compact`): a Symbol IS a String byte-leaf at run time (the value heap is tagless —
+                // there is NO `Shape::Sym` and NO integer intern table; a Symbol renders through `Shape::Str`
+                // and compares via `champ_eq` over its physical bytes, exactly like a String). So the
+                // compacted handle IS a valid runtime Symbol value, and two symbols of equal content compare
+                // equal because both are canonical flat leaves — that IS interning under a by-content
+                // representation, no `str-intern` op or symbol table needed. The node's solved `Ty::Symbol`
+                // carries the Symbol typing for rendering/equality; the rep is shared with String, exactly as
+                // `String.to-bytes` reuses `bytes-compact` to retag a runtime string as Bytes. Frozen hash
+                // unchanged (reuses an existing runtime op).
                 Some(Prim::SymbolOf) if args.len() == 1 => match core_of(db, args[0]) {
                     c @ Core::ConstStr(_) => c,
                     Core::Poison(r) => Core::Poison(r),
+                    _ if matches!(crate::infer::type_of(db, args[0]), crate::ty::Ty::String) => {
+                        trace!(target: "rcdzc::lower", "Symbol.of on a runtime string → compact its byte-rope to a canonical Symbol leaf");
+                        Core::StrToBytes { string: args[0] }
+                    }
                     _ => runtime_string_op_decline(
                         db,
                         args[0],
-                        "Symbol.of on a runtime string is not yet interned (constant strings only)",
+                        "Symbol.of needs a String operand (a runtime symbol interns by canonicalizing its bytes)",
                     ),
                 },
                 // `BigInt.of x` — the EXACT widening from a fixed-width integer to `BigInt`. A CONSTANT
@@ -1786,12 +1799,21 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 Some(Prim::RationalValue) if args.len() == 1 => core_of(db, args[0]),
                 // `Symbol.to-string` — recover a Symbol's content String (`Symbol → String`, the inverse of
                 // `Symbol.of`). A constant symbol IS its `Core::ConstStr`, so this folds to that same node
-                // retyped `String` (the node's solved type); the rep is unchanged.
+                // retyped `String` (the node's solved type); the rep is unchanged. A RUNTIME symbol is a
+                // byte-leaf identical to a String (tagless heap; see `Symbol.of`), so recovering the String
+                // is the same CANONICALIZING retag — `Core::StrToBytes` (`bytes-compact`) flattens the
+                // handle to a canonical leaf the node's `Ty::String` renders/compares as a String. Guarded
+                // on a genuine `Ty::Symbol` operand (a non-symbol is a type error `infer` already coded).
+                // Frozen hash unchanged.
                 Some(Prim::SymbolToString) if args.len() == 1 => match core_of(db, args[0]) {
                     c @ Core::ConstStr(_) => c,
                     Core::Poison(r) => Core::Poison(r),
+                    _ if matches!(crate::infer::type_of(db, args[0]), crate::ty::Ty::Symbol) => {
+                        trace!(target: "rcdzc::lower", "Symbol.to-string on a runtime symbol → compact its bytes to a canonical String leaf");
+                        Core::StrToBytes { string: args[0] }
+                    }
                     _ => Core::Poison(Reject::decline(
-                        "Symbol.to-string on a runtime symbol is not yet computed (constant symbols only)",
+                        "Symbol.to-string needs a Symbol operand (its runtime read recovers the byte leaf)",
                     )),
                 },
                 // `Bytes.at` — the FALLIBLE indexed read `Bytes → Int64 → (Option Int64)`. Mirrors
@@ -20704,14 +20726,34 @@ fn lower_conversion(db: &mut Db, id: StructId, op: Prim, args: &[StructId]) -> C
             {
                 return Core::BigIntToI64 { operand: args[0] };
             }
-            // `T.of` on a RUNTIME operand needs a range-check-then-trap emitted at select — not yet built,
-            // so decline rather than emit a truncating `Convert` (that would be `wrap`'s semantics — a
-            // MISCOMPILE for `of`, silently keeping the low bits where `of` must trap). No corpus case
-            // exercises a runtime `T.of` (they all convert constants); a runtime one waits on the checked
-            // emit (the `Core::CheckedArith` companion, task follow-up).
+            // `T.of` on a RUNTIME integer whose SOURCE type provably fits the target is TOTAL — no source
+            // value can be out of range, so no trap can ever fire and the conversion is a pure
+            // representation change IDENTICAL to `T.wrap` (extend-and-reinterpret; the target-width
+            // normalize is a no-op for a same-sign widening, or a value-preserving reshape for a
+            // sign-change that still fits). So emit it as the already-built `Prim::Wrap` convert (the
+            // widening `Int64.of x:UInt8`, `UInt16.of x:UInt8`, `Int64.of x:Int8`, …). This is SOUND
+            // precisely because totality is proven: a checked `of` and a truncating `wrap` differ ONLY on
+            // an out-of-range value, and there is none. A NON-total runtime `of` (a genuine narrowing, or
+            // `Int8.of x:UInt8` where 255 overflows) still declines below — it needs the range-check-then-
+            // trap emit that is a later increment (emitting `wrap` there WOULD be a miscompile: silently
+            // keeping the low bits where `of` must trap).
+            if matches!(op, Prim::CheckedOf)
+                && let crate::ty::Ty::Int(src) = crate::infer::type_of(db, args[0])
+                && src.fits_within(crate::ty::IntTy::fixed(signed, width))
+            {
+                trace!(target: "rcdzc::lower", op = intrinsic_name(op), signed, width, "runtime T.of is provably total → emit as a widening Wrap convert");
+                return Core::Convert {
+                    op: Prim::Wrap,
+                    operand: args[0],
+                };
+            }
+            // A NON-total `T.of` on a RUNTIME operand needs a range-check-then-trap emitted at select — not
+            // yet built, so decline rather than emit a truncating `Convert` (that would be `wrap`'s
+            // semantics — a MISCOMPILE for `of`, silently keeping the low bits where `of` must trap). The
+            // checked-narrowing emit (the `Core::CheckedArith` companion) is a task follow-up.
             if matches!(op, Prim::CheckedOf) {
                 return Core::Poison(Reject::decline(
-                    "a runtime checked integer conversion (T.of) is not yet emitted (convert a constant, or use T.wrap)",
+                    "a runtime checked integer conversion (T.of) that could be out of range is not yet emitted (convert a constant, widen instead of narrow, or use T.wrap)",
                 ));
             }
             if is_scalar(db, args[0]) {

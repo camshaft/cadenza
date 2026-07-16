@@ -1345,11 +1345,22 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             let b = emit(db, bytes, env, ctx)?;
             Ok(format!("String::from_utf8({b}).ok()"))
         }
-        // `String.to-bytes` on a RUNTIME `String` → the UTF-8 encoding `String → Bytes`. A String IS a
-        // UTF-8 byte sequence, so `String::into_bytes` is the total, no-op-cost encoding (consumes the
-        // String, yields the `Vec<u8>` the `Ty::Bytes` result maps to). The rust-native twin of the
-        // runtime's `bytes-compact`-based flatten (no rope to materialize — a `String` is already flat).
+        // `Core::StrToBytes` is the "canonicalize a runtime text leaf" op. On the wasm side it backs THREE
+        // surface ops (all a `bytes-compact` byte-rope flatten): `String.to-bytes` (String → Bytes),
+        // `Symbol.of` (String → Symbol, intern), and `Symbol.to-string` (Symbol → String). On the RUST
+        // backend only the `String.to-bytes` case is representable today: `String::into_bytes` (total,
+        // no-op-cost, yields the `Vec<u8>` the `Ty::Bytes` result maps to). A Symbol-typed result OR a
+        // Symbol operand has NO rust rep yet (Symbol → `None` in the type map — a separate v-rust-backend
+        // increment), so it declines cleanly here rather than emitting a `Vec<u8>`/`String` mismatch. The
+        // wasm side emits all three; a runtime-Symbol program is simply rust-`todo` until the rep lands.
         Core::StrToBytes { string } => {
+            if matches!(type_of(db, id).strip_nominal(), Ty::Symbol)
+                || matches!(type_of(db, string).strip_nominal(), Ty::Symbol)
+            {
+                return Err(Reject::decline(
+                    "a runtime Symbol conversion has no rust representation yet (String↔Symbol retag is a later rust-backend increment)",
+                ));
+            }
             let s = emit(db, string, env, ctx)?;
             Ok(format!("({s}).into_bytes()"))
         }

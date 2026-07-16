@@ -245,6 +245,33 @@
             (def (main) (dispatch (Symbol.of (String.concat "map" "-insert")))) (export main)))
   (output (: true Bool)))
 
+; The case above interns a Symbol from a string the compiler can still FOLD (`(String.concat "map"
+; "-insert")` = the constant `"map-insert"`). Interning a GENUINELY-RUNTIME string — one arriving at
+; the call boundary, unfoldable — also works: a Symbol IS a String byte-leaf at run time (the value
+; heap is tagless; a Symbol has no separate intern table, it compares via its physical bytes like a
+; String), so `Symbol.of` on a runtime string CANONICALIZES its byte-rope to a flat leaf, and two
+; symbols of equal content compare equal because both are canonical. That IS interning under a
+; by-content representation — no runtime `str-intern` op needed. These pin the runtime-string→Symbol
+; path (the intern analogue of the runtime String.slice byte-walk).
+(case "a runtime string interns to a symbol matched by content"
+  (doc    "`Symbol.of` on a GENUINELY-RUNTIME string — built by the `rep` concat loop `(rep \"\" 3)` =
+           \"xxx\", a byte-rope the compiler cannot fold — interns it, and the resulting Symbol compares
+           EQUAL to the constant `#\"xxx\"` of the same content: a runtime Symbol is a canonical byte leaf
+           compared by its bytes, not a compile-time intern id. Pins that a name assembled from genuinely-
+           runtime data still dispatches to the same identity (the intern analogue of runtime String.slice).")
+  (input  (do (def (rep s n) (if (< n 1) s (rep (String.concat s "x") (- n 1))))
+              (def (main) (= (Symbol.of (rep "" 3)) #"xxx")) (export main)))
+  (output (: true Bool)))
+
+(case "a runtime symbol round-trips back to its string"
+  (doc    "`Symbol.to-string (Symbol.of s)` on a runtime string `s` recovers the SAME content String —
+           both directions are a byte-leaf retag (a Symbol and its String share the tagless rep). `s` is
+           the runtime rope `(rep \"xx\" 3)` = \"xxxxx\"; observed by the recovered string's byte length
+           (5), exercising both runtime retags in one chain. The inverse of the intern above.")
+  (input  (do (def (rep s n) (if (< n 1) s (rep (String.concat s "x") (- n 1))))
+              (def (main) (String.byte-len (Symbol.to-string (Symbol.of (rep "xx" 3))))) (export main)))
+  (output (: 5 Int64)))
+
 ; ============================================================================================
 ; The nominal boundary — a Symbol is not comparable to the underlying String (CDZ0202)
 ; ============================================================================================
