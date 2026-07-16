@@ -207,6 +207,37 @@
   (call   main (: 3 Int64)) (output (: true Bool))
   (call   main (: 9 Int64)) (output (: false Bool)))
 
+; --- RUNTIME compound equality with a FLOAT leaf — the canonical-byte rule through the heap walk -------
+; The nested-float cases far above are CONSTANT compounds (they fold via const_compound_eq). These pin the
+; RUNTIME heap-walk over a float leaf: a compound built from a boundary Float parameter cannot fold, so the
+; `value-eq`/`champ_eq` walk must compare the float leaf. That walk is a RAW-BYTE compare — correct ONLY
+; because a float boxed into a heap value is CANONICALIZED at construction (`op_box_float` normalizes a NaN
+; to one canonical byte form and preserves a zero's sign), so the nested-runtime answer matches the scalar
+; `Core::FloatCompare` and the constant fold: `nan == nan` TRUE, `-0.0 != +0.0`. Before, `Ty::Float` was
+; excluded from `ty_heap_walkable` (the decline predated the canonicalize-on-construct invariant), so a
+; runtime float leaf in a compound `=` declined "comparison of a compound value needs a heap walk".
+;= spec/capabilities/core-semantics.md#floating-point-equality-follows-the-canonical-byte-form
+
+(case "a runtime float leaf in a tuple compares by the canonical byte form"
+  (doc    "`(= (tuple a) (tuple b))` over two Float64 boundary parameters — the tuples cannot fold, so the
+           `value-eq` heap walk compares the boxed float leaves. Equal floats → the tuples are equal (1);
+           unequal → 0. Pins that a runtime float leaf in a compound is walkable (was a decline), the
+           compound companion of runtime scalar float equality.")
+  (input  (do (def (main (: a Float64) (: b Float64)) (if (= (tuple a) (tuple b)) 1 0)) (export main)))
+  (call   main (: 1.5 Float64) (: 1.5 Float64)) (output (: 1 Int64))
+  (call   main (: 1.5 Float64) (: 2.5 Float64)) (output (: 0 Int64)))
+
+(case "a runtime NaN leaf in a tuple compares equal, a runtime -0.0 leaf stays distinct"
+  (doc    "The sharp canonical-byte cases through the RUNTIME heap walk: `(= (tuple a) (tuple b))` with a,b
+           runtime Float64. Two NaN leaves compare EQUAL (1) — box-float canonicalized both to one byte
+           form, so the raw-byte `champ_eq` sees identical bytes — and a -0.0 leaf against a +0.0 leaf
+           stays UNEQUAL (0), their sign bits preserved. A heap walk using a raw IEEE compare would answer
+           the OPPOSITE for both. Pins the nested-runtime float rule agrees with the scalar `FloatCompare`
+           and the constant fold.")
+  (input  (do (def (main (: a Float64) (: b Float64)) (if (= (tuple a) (tuple b)) 1 0)) (export main)))
+  (call   main (: nan Float64) (: nan Float64)) (output (: 1 Int64))
+  (call   main (: -0.0 Float64) (: 0.0 Float64)) (output (: 0 Int64)))
+
 (case "a NaN nested in a list compares equal under the canonical byte form"
   (doc    "The list companion: `(= (list Float64.nan 1.0) (list Float64.nan 1.0))` = true — element-wise
            equality compares nan against nan (equal, canonical byte form) and 1.0 against 1.0 (equal), so the

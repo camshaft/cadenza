@@ -17532,7 +17532,19 @@ fn ty_heap_walkable(db: &mut Db, ty: &crate::ty::Ty, seen: &mut Vec<StructId>) -
             let inner = (**inner).clone();
             ty_heap_walkable(db, &inner, seen)
         }
-        // A collection / bytes-rope / char / float / function / type-value / unresolved leaf is NOT
+        // A FLOAT leaf IS walkable: a float boxed into a heap compound is CANONICALIZED at construction
+        // (`op_box_float`/`op_box_float32` normalize a NaN to one canonical byte form — runtime test
+        // `box_float_canonicalizes_nan_to_one_byte_form` — and preserve a zero's sign bit), so the tagless
+        // `champ_eq` raw-byte walk compares a nested float by its canonical bytes: `nan == nan` TRUE,
+        // `-0.0 != +0.0` — the SAME canonical-byte-form rule the scalar `Core::FloatCompare` gives at top
+        // level. This is the compound companion of runtime scalar float equality; the constant-compound
+        // fold (`const_compound_eq`) already applies the canonical-byte float rule to a nested constant
+        // float, and this makes the RUNTIME heap-walk agree. (The old decline here predated both the
+        // canonicalize-on-construct invariant and scalar `FloatCompare`.)
+        //= spec/capabilities/core-semantics.md#floating-point-equality-follows-the-canonical-byte-form
+        //# A floating-point value MUST be equal to another floating-point value exactly when their canonical byte forms are identical, so that a negative zero is distinct from a positive zero and all not-a-number values are equal to one another.
+        Ty::Float(_) => true,
+        // A collection / bytes-rope / char / function / type-value / unresolved leaf is NOT
         // walkable here (its canonical form needs machinery this increment does not emit, or it is not a
         // runtime value that reaches a compound equality — `Ty::Type`/`Ty::Any`/`Ty::Fn` never cross `=`).
         // A `Char` has no runtime machine rep yet (its equality folds at compile time). `Bytes` can be a
@@ -17547,7 +17559,6 @@ fn ty_heap_walkable(db: &mut Db, ty: &crate::ty::Ty, seen: &mut Vec<StructId>) -
         | Ty::Char
         | Ty::BigInt
         | Ty::Rational
-        | Ty::Float(_)
         | Ty::Fn(_, _)
         | Ty::Type
         | Ty::Any => false,

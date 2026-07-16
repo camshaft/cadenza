@@ -1446,6 +1446,7 @@ pass	a runtime MIXED-SCALE BigInt comparison converts to the reference before co
 pass	a runtime MIXED-SCALE BigInt-magnitude sum converts to the reference in unbounded arithmetic
 pass	a runtime MIXED-SCALE Rational-magnitude sum converts to the reference EXACTLY
 pass	a runtime NaN equals a runtime NaN under the canonical byte form
+pass	a runtime NaN leaf in a tuple compares equal, a runtime -0.0 leaf stays distinct
 pass	a runtime Option carrying a user sum is matched by a nested constructor pattern
 pass	a runtime Rational built from a parameter compares by its exact value
 pass	a runtime Rational comparison of a parameter is false when it should be
@@ -1483,6 +1484,7 @@ pass	a runtime float addition emits the machine add
 pass	a runtime float division rounds under the fixed mode
 pass	a runtime float equality feeds the true-literal boolean coercion
 pass	a runtime float equality negated by the false-literal coercion
+pass	a runtime float leaf in a tuple compares by the canonical byte form
 pass	a runtime float multiplication emits the machine mul
 pass	a runtime float promotes to a wider width with the machine promote
 pass	a runtime float subtraction emits the machine sub
