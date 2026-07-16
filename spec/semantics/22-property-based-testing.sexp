@@ -78,6 +78,23 @@
   (call   main (: 12345 Int64)) (output (: true Bool))
   (call   main (: -7 Int64)) (output (: true Bool)))
 
+(case "generated FLOAT values are totally ordered (a trichotomy property over two generated floats)"
+  (doc    "A property over GENERATED floats using the runtime float ordering: `of` draws a float from the
+           seed (an integer-valued float via `Float64.of-int`, which never produces NaN), so for any two
+           generated floats exactly one of `<`, `=`, `>` holds — `(if (< x y) true (if (= x y) true (< y x)))`
+           = true. This is trichotomy, the total-order law that would FAIL for NaN (all comparisons false);
+           the generator producing only non-NaN floats is what makes it hold. Exercises the runtime float
+           ordering (`<`) over the compiler's float generator at the boundary, not a fold.")
+  (input  (do (def (of (: n Int64)) ((. Float64 of-int) n))
+              (def (main (: a Int64) (: b Int64))
+                (let ((x (of a)))
+                  (let ((y (of b)))
+                    (if (< x y) true (if (= x y) true (< y x))))))
+              (export main)))
+  (call   main (: 3 Int64) (: 7 Int64)) (output (: true Bool))
+  (call   main (: 5 Int64) (: 5 Int64)) (output (: true Bool))
+  (call   main (: 9 Int64) (: -2 Int64)) (output (: true Bool)))
+
 ; --- §Refinements Constrain Generation --------------------------------------------------------------
 ; "A generator for a value of a refined type MUST produce only values satisfying that type's
 ; refinement." A bounded generator masks the raw stream into a range: `roll s = next s & (2^k − 1)`

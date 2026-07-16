@@ -2477,6 +2477,7 @@ pass	floating-point uses the fixed rounding mode
 pass	four same-signature closure exports share one resource
 pass	function arguments are evaluated left to right
 pass	functions are single-arity and curried
+pass	generated FLOAT values are totally ordered (a trichotomy property over two generated floats)
 pass	greater-than at the integer extremes is signed
 pass	greater-than comparison
 pass	greater-than of an integer and a float is rejected
