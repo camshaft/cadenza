@@ -203,6 +203,42 @@ export default function Units() {
         expect="error"
       />
 
+      <H2>Worked example: exact CAD</H2>
+      <P>
+        Here's where units and <em>exact</em> numbers pay off together. Every quantity so far used a{" "}
+        <C>Float64</C> value, but a <C>Qty</C> can carry a <em>rational</em> just as well — and then a
+        conversion is <em>exact</em>, no rounding. This is exactly how Cadenza's CAD library models solids:
+        rational coordinates in real units, so a metric body and imperial fasteners coexist with no float
+        drift. A quarter-inch hole in a millimetre plate converts to precisely <C>127/20</C> mm — that's{" "}
+        <C>6.35</C> mm, exactly, as a fraction:
+      </P>
+      <Runnable
+        source={`(def (main)
+  (if (= (Qty.value (Unit.in (Unit.of #"millimeter")
+                     (Qty.of (Rational.of 1 4) (Unit.of #"inch"))))
+         (Rational.of 127 20))
+    1 0))`}
+      />
+      <P>
+        That reads <C>1</C>: the converted value is the exact rational <C>127/20</C>, not a float
+        approximation of 6.35. The exactness comes from the <em>value</em> type — the same conversion with a
+        rational never accumulates the drift a float would. Sum a third of a millimetre three times and you
+        land back on exactly <C>1</C>, which floating point can't promise:
+      </P>
+      <Runnable
+        source={`(def (main)
+  (let ((t (Rational.of 1 3)))
+    (if (= (+ (+ t t) t) (Rational.of 1 1)) 1 0)))`}
+      />
+      <P>
+        This is the split that makes the CAD model trustworthy: the <em>model</em> — coordinates,
+        dimensions, bolt positions — stays exact in rationals and units, so a bounding box reports true
+        dimensions and a metric-plus-imperial assembly is precise to the fraction. Float only appears at the
+        very end, in the <em>mesh</em> the renderer draws (an arbitrary-angle rotation needs sine and cosine,
+        which aren't rational). Exact where it matters, float only at the geometry kernel — and the{" "}
+        <C>/cad</C> page lets you see a model like this rendered.
+      </P>
+
       <Why tenet="Dimensions are checked, then erased">
         Units live entirely at compile time. <C>(Qty.of 5.0 meter)</C> and the bare <C>5.0</C> emit{" "}
         <em>byte-identical</em> code — the unit is a static claim the checker verifies and then throws
@@ -295,6 +331,34 @@ export default function Units() {
           <>
             The ratio is numerator then denominator — a span is <C>3 / 1</C> meters. Then <C>4.0</C> spans
             convert to <C>4 × 3 = 12</C> meters.
+          </>
+        }
+      />
+
+      <Exercise
+        id="units:5"
+        prompt={
+          <>
+            Exact conversion, no rounding. A <C>1/4</C>-inch length is exactly <C>127/20</C> mm. Fill the
+            numerator of the rational quarter-inch so the exactness check passes — the answer is <C>1</C>.
+          </>
+        }
+        starter={`(def (main)
+  (if (= (Qty.value (Unit.in (Unit.of #"millimeter")
+                     (Qty.of (Rational.of ? 4) (Unit.of #"inch"))))
+         (Rational.of 127 20))
+    1 0))`}
+        solution={`(def (main)
+  (if (= (Qty.value (Unit.in (Unit.of #"millimeter")
+                     (Qty.of (Rational.of 1 4) (Unit.of #"inch"))))
+         (Rational.of 127 20))
+    1 0))`}
+        expected="1"
+        hint={
+          <>
+            A quarter inch is <C>(Rational.of 1 4)</C> — numerator <C>1</C>. One inch is <C>25.4</C> mm, so a
+            quarter is <C>6.35</C> mm, which as an exact fraction is <C>127/20</C>. The check confirms the
+            conversion landed on that rational exactly.
           </>
         }
       />
