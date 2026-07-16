@@ -170,6 +170,7 @@ pass	Type is a first-class value
 pass	Type.eq branches on a type-valued parameter, monomorphized per passed type
 pass	Type.eq compares a RECORD type-value structurally, by field types
 pass	Type.eq compares a TUPLE type-value structurally, by element types
+pass	Type.eq carries an integer type's full width and signedness
 pass	Type.eq compares a reflected type against a written type
 pass	Type.eq compares two type-valued parameters to each other
 pass	Type.eq distinguishes a constructed generic sum by its type argument

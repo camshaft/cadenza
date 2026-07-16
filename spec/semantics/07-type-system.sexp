@@ -992,6 +992,20 @@
   (input  (Type.eq (Type.of 5) (Type.of true)))
   (output (: false Bool)))
 
+(case "Type.eq carries an integer type's full width and signedness"
+  (doc    "An integer type is identified by BOTH its width and its signedness, and `Type.eq` compares the
+           whole thing. `(Type.of (Int8.of 5))` is `Int8`: equal to the written `Int8` (→ true), distinct
+           from `Int64` (different WIDTH → false), and distinct from `UInt8` (same width, different SIGN →
+           false). `1 + 0 + 0 = 1`. Pins that a numeric type-value carries the exact `(sign, width)` — the
+           numeric-model no-silent-promotion rule at the type-value level, so a program can branch on a
+           value's exact integer type.")
+  (input  (do
+            (def (main) (+ (if (Type.eq (Type.of (Int8.of 5)) Int8) 1 0)
+                           (+ (if (Type.eq (Type.of (Int8.of 5)) Int64) 10 0)
+                              (if (Type.eq (Type.of (Int8.of 5)) (Type.of (UInt8.of 5))) 100 0))))
+            (export main)))
+  (output (: 1 Int64)))
+
 (case "Type.eq compares a reflected type against a written type"
   (doc    "`(Type.eq (Type.of 5) Int64)` compares a reflected type with a WRITTEN one — both are
            type-values, so the operation is symmetric over reflection and syntax — and is `true`. Pins
