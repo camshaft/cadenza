@@ -114,4 +114,35 @@ def cf-count-passing-partial() =
   (let mixed = [Case.Case([Tok.TNum(1)], Expect.Runs(1)), Case.Case([Tok.TNum(1)], Expect.Runs(2))] in
    (if count-passing(mixed, 0, 0) == 1 then unit else trap("one of two passes")))
 
+// ---- PER-CASE conformance @tests (v-fleet-tooling's gate seam) ----
+// Each corpus case is ALSO its own @test, so the existing `cdz test implementation/compiler-ml` gate step
+// (already run by `check`) reports conformance X/N FOR FREE — N conformance @tests, X passing — AND names
+// the exact failing case on a widening regression, rather than burying it in an aggregate count. The
+// aggregate `conformance()`/`all-pass()` API stays for the Cadenza-side scoreboard; the GATE drives off
+// these. Naming convention: `conformance-<case>` so they group in the test output. Widening the language =
+// add a `c-<case>()` to the corpus AND a `conformance-<case>` @test here.
+
+@test
+def conformance-literal() = (if check-case(c-literal()) then unit else trap("5 → 5"))
+@test
+def conformance-add() = (if check-case(c-add()) then unit else trap("1 + 2 → 3"))
+@test
+def conformance-sub() = (if check-case(c-sub()) then unit else trap("10 - 3 → 7"))
+@test
+def conformance-mul() = (if check-case(c-mul()) then unit else trap("4 * 6 → 24"))
+@test
+def conformance-precedence() = (if check-case(c-precedence()) then unit else trap("1 + 2 * 3 → 7"))
+@test
+def conformance-let-trivial() = (if check-case(c-let-trivial()) then unit else trap("let x = 2 in x → 2"))
+@test
+def conformance-milestone() = (if check-case(c-milestone()) then unit else trap("let x = 2 in x * 3 + 1 → 7"))
+@test
+def conformance-nested-lets() = (if check-case(c-nested-lets()) then unit else trap("let x = 1 in let y = 2 in x + y → 3"))
+@test
+def conformance-shadowing() = (if check-case(c-shadowing()) then unit else trap("let x = 1 in let x = 2 in x → 2"))
+@test
+def conformance-unbound-declines() = (if check-case(c-unbound-declines()) then unit else trap("unbound x declines"))
+@test
+def conformance-unbound-in-arith-declines() = (if check-case(c-unbound-in-arith-declines()) then unit else trap("unbound x in arith declines"))
+
 export { Expect.*, Case.*, case-passes, check-case, count-passing, corpus, conformance, all-pass }
