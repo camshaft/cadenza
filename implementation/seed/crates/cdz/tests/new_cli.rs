@@ -85,3 +85,39 @@ fn new_refuses_to_clobber_a_non_empty_directory() {
     );
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn new_refuses_a_file_target_with_a_clear_error() {
+    // REGRESSION (Copilot PR #420): the non-empty guard treated a `read_dir` failure — including the
+    // target being a FILE — as "not empty", a misleading message. A file target now gets its own clear
+    // error ("exists as a file"), distinct from a non-empty directory.
+    let root = scratch("filetarget");
+    std::fs::write(root.join("app"), "i am a file\n").unwrap();
+    let (ok, _o, err) = run_in(&root, &["new", "app"]);
+    assert!(!ok, "scaffolding onto a file should fail");
+    assert!(
+        err.contains("as a file"),
+        "error says the target is a file (not the generic 'not empty'): {err}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn new_escapes_the_project_name_in_the_manifest() {
+    // REGRESSION (Copilot PR #420): the dir name was raw-interpolated into `def name = "…"`, so a name
+    // with a `"` malformed the Project.cdz. It must be ESCAPED — and the resulting manifest must still
+    // build. Uses a directory name containing a double-quote (valid on the filesystem).
+    let root = scratch("escape");
+    let (ok, _o, err) = run_in(&root, &["new", "q\"x"]);
+    assert!(ok, "cdz new with a quote in the name failed: {err}");
+    let manifest = std::fs::read_to_string(root.join("q\"x").join("Project.cdz")).unwrap();
+    assert!(
+        manifest.contains("def name = \"q\\\"x\""),
+        "the `\"` in the name is escaped in the manifest: {manifest}"
+    );
+    // The escaped manifest must still be a valid project — build it.
+    let proj = root.join("q\"x");
+    let (bok, _bo, be) = run_in(&proj, &["build", "-o", "."]);
+    assert!(bok, "the escaped-name project must still build: {be}");
+    let _ = std::fs::remove_dir_all(&root);
+}

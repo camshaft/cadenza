@@ -650,12 +650,27 @@ struct NewArgs {
 /// build` works immediately. Refuses to overwrite a non-empty directory (never clobbers existing work).
 fn run_new(args: &NewArgs) -> ExitCode {
     let dir = std::path::Path::new(&args.name);
-    // Refuse a non-empty target — never destroy existing files. A missing dir (the common case) or an
-    // empty one is fine.
-    if dir.exists() {
-        let non_empty = std::fs::read_dir(dir)
-            .map(|mut d| d.next().is_some())
-            .unwrap_or(true);
+    // Refuse to clobber existing work. Distinguish the cases so the error is accurate (a `read_dir`
+    // failure was previously ALL reported as "not empty", including when the target is a FILE):
+    //   - the target is a FILE → can't scaffold a project there;
+    //   - the target is a non-empty DIRECTORY → refuse (never overwrite);
+    //   - a missing target, or an empty directory → fine (the common case).
+    if dir.is_file() {
+        eprintln!(
+            "{PROG}: `{}` already exists as a file — `cdz new` scaffolds a project DIRECTORY",
+            dir.display()
+        );
+        return ExitCode::FAILURE;
+    }
+    if dir.is_dir() {
+        // A read failure on an existing dir is a real error (permissions) — surface it, don't guess.
+        let non_empty = match std::fs::read_dir(dir) {
+            Ok(mut entries) => entries.next().is_some(),
+            Err(e) => {
+                eprintln!("{PROG}: reading {}: {e}", dir.display());
+                return ExitCode::FAILURE;
+            }
+        };
         if non_empty {
             eprintln!(
                 "{PROG}: `{}` already exists and is not empty — refusing to overwrite",
@@ -682,7 +697,15 @@ fn run_new(args: &NewArgs) -> ExitCode {
         )
     };
     let entry_file = format!("main.{ext}");
-    let manifest_src = format!("def name = \"{proj_name}\"\ndef entry = \"{entry_file}\"\n");
+    // ESCAPE the project name for the `"…"` string literal — the dir name is user-controlled, so a name
+    // with a `"`, `\`, or control char would otherwise inject into (and malform) the generated
+    // Project.cdz. `entry_file` is always `main.cdz`/`main.sexp` (no escaping needed), but escape it too
+    // for uniformity. Uses the canonical `cadenza_syntax` escaper so the manifest re-parses exactly.
+    let manifest_src = format!(
+        "def name = \"{}\"\ndef entry = \"{}\"\n",
+        cadenza_syntax::literal::escape_string(proj_name),
+        cadenza_syntax::literal::escape_string(&entry_file),
+    );
     // Write the manifest + entry. A write failure (permissions, a race) is a clean tool error.
     for (rel, contents) in [
         (MANIFEST_NAME, manifest_src),
