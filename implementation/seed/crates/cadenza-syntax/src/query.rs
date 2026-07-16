@@ -991,45 +991,79 @@ pub fn rewrite_rules(rules: &RuleSet, subject: &Tree, strategy: Strategy) -> Rew
     Rewrite { tree, count }
 }
 
-fn rewrite_node(rules: &RuleSet, node: &Tree, strategy: Strategy, count: &mut usize) -> Tree {
-    match strategy {
-        Strategy::BottomUp => {
-            // Rewrite children first, then fire at this node's rewritten form.
-            let rewritten = match node {
-                Tree::Atom(l, o) => Tree::Atom(l.clone(), *o),
-                Tree::List(items, o) => Tree::List(
-                    items
-                        .iter()
-                        .map(|c| rewrite_node(rules, c, strategy, count))
-                        .collect(),
-                    *o,
-                ),
-            };
-            if let Some(new_tree) = rules.fire(&rewritten) {
-                *count += 1;
-                new_tree
-            } else {
-                rewritten
+fn rewrite_node(rules: &RuleSet, root: &Tree, strategy: Strategy, count: &mut usize) -> Tree {
+    // EXPLICIT stack, not native recursion: `rewrite_node` descends the ENTIRE subject, which can be a
+    // decoded arbitrarily-deep arena (no cap, unlike the reader's `MAX_NESTING_DEPTH`), so a recursive
+    // rewrite overflowed the native stack on a deep subject via `cdz rewrite`. A `Job{Visit|EmitList}`
+    // work-stack + a `results` stack rebuilds the tree; children are pushed reversed so their rewritten
+    // forms land on `results` in source order for the parent's re-assembly. The observable semantics are
+    // preserved exactly: BottomUp fires at the REBUILT node (its replacement is taken as-is, not
+    // re-descended); TopDown fires FIRST and, if it fires, keeps the replacement whole (never descends).
+    enum Job<'t> {
+        Visit(&'t Tree),
+        // Re-assemble a `List` (origin `o`) once its `n` rewritten children sit atop `results`.
+        EmitList(Option<StructId>, usize),
+    }
+    let mut jobs: Vec<Job> = vec![Job::Visit(root)];
+    let mut results: Vec<Tree> = Vec::new();
+    while let Some(job) = jobs.pop() {
+        match job {
+            Job::Visit(node) => match strategy {
+                Strategy::BottomUp => match node {
+                    // An atom has no children — its "rewritten form" is itself; fire on it directly.
+                    Tree::Atom(l, o) => {
+                        let atom = Tree::Atom(l.clone(), *o);
+                        results.push(fire_counting(rules, atom, count));
+                    }
+                    Tree::List(items, o) => {
+                        jobs.push(Job::EmitList(*o, items.len()));
+                        for c in items.iter().rev() {
+                            jobs.push(Job::Visit(c));
+                        }
+                    }
+                },
+                Strategy::TopDown => {
+                    // Fire at this node FIRST; if it fires, keep the replacement as-is (don't descend).
+                    if let Some(new_tree) = rules.fire(node) {
+                        *count += 1;
+                        results.push(new_tree);
+                    } else {
+                        match node {
+                            Tree::Atom(l, o) => results.push(Tree::Atom(l.clone(), *o)),
+                            Tree::List(items, o) => {
+                                // No fire on re-assembly for TopDown — just rebuild from rewritten kids.
+                                jobs.push(Job::EmitList(*o, items.len()));
+                                for c in items.iter().rev() {
+                                    jobs.push(Job::Visit(c));
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            Job::EmitList(o, n) => {
+                let kids = results.split_off(results.len() - n);
+                let rebuilt = Tree::List(kids, o);
+                match strategy {
+                    // BottomUp: fire at the fully-rewritten node; replacement taken as-is.
+                    Strategy::BottomUp => results.push(fire_counting(rules, rebuilt, count)),
+                    // TopDown already fired (or didn't) on the way DOWN; the rebuilt node is final.
+                    Strategy::TopDown => results.push(rebuilt),
+                }
             }
         }
-        Strategy::TopDown => {
-            // Fire at this node first; if it fires, keep the replacement as-is (don't re-descend this
-            // pass — run to a fixpoint for saturation). Otherwise descend into children.
-            if let Some(new_tree) = rules.fire(node) {
-                *count += 1;
-                return new_tree;
-            }
-            match node {
-                Tree::Atom(l, o) => Tree::Atom(l.clone(), *o),
-                Tree::List(items, o) => Tree::List(
-                    items
-                        .iter()
-                        .map(|c| rewrite_node(rules, c, strategy, count))
-                        .collect(),
-                    *o,
-                ),
-            }
-        }
+    }
+    results.pop().expect("rewrite_node leaves the root")
+}
+
+/// Fire the rule set at `node`; if a rule matches, count it and return the replacement, else return
+/// `node` unchanged. Factored out so both the atom and the re-assembled-list BottomUp paths share it.
+fn fire_counting(rules: &RuleSet, node: Tree, count: &mut usize) -> Tree {
+    if let Some(new_tree) = rules.fire(&node) {
+        *count += 1;
+        new_tree
+    } else {
+        node
     }
 }
 
@@ -3522,6 +3556,39 @@ mod tests {
         assert!(
             err.contains(" at 2:") && !err.contains("byte"),
             "a malformed s-expr query error must be line:col, not a byte offset; got {err}"
+        );
+    }
+
+    #[test]
+    fn rewrite_is_iterative_not_recursive_on_a_deep_subject() {
+        // `rewrite_node` descends the ENTIRE subject (both strategies), and a subject can be a decoded
+        // arbitrarily-deep arena (from_arena is now iterative, so a deep subject BUILDS — and then this
+        // walk must not overflow). A native-recursive rewrite overflowed the stack (SIGABRT) on a deep
+        // subject via `cdz rewrite`. Assert a rewrite over a 100k-deep chain completes without overflow,
+        // for a rule that matches at EVERY level (max work) and one that matches nowhere (pure descent).
+        let depth = 100_000usize;
+        let mut b = Builder::new();
+        let mut cur = b.name("x");
+        for _ in 0..depth {
+            cur = b.list(vec![cur]);
+        }
+        let a = b.finish(cur);
+        let t = Tree::of(&a);
+        // No-match rule: pure full-depth descent, nothing rewritten.
+        let none = rewrite(&pat("(nomatch ,x)"), &tmpl(",x"), &t);
+        assert_eq!(none.count, 0, "a non-matching rule rewrites nothing");
+        assert!(
+            tree_eq(&none.tree, &t),
+            "a no-op rewrite returns the subject unchanged"
+        );
+        // Match-every-level rule: `(,c)` (a 1-element list) matches every List node in the chain; unwrap
+        // it to its child. Bottom-up, every one of the `depth` list levels fires — maximal work, deepest
+        // stack. Must complete without overflow; the whole chain collapses to the bare leaf `x`.
+        let all = rewrite(&pat("(,c)"), &tmpl(",c"), &t);
+        assert_eq!(all.count, depth, "every list level is rewritten");
+        assert!(
+            matches!(all.tree, Tree::Atom(Leaf::Name(ref n), _) if n == "x"),
+            "chain collapses to x"
         );
     }
 
