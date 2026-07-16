@@ -2504,6 +2504,8 @@ pass	extending a record adds a new field
 pass	extending a record with an already-present field is rejected
 pass	extracting a high byte composes shift and mask
 pass	false is less than true
+pass	float <= is NOT (< or =): they diverge on NaN because canonical-byte equality says nan = nan
+pass	float >= is NOT (> or =): the same NaN divergence mirrors on the greater-or-equal side
 pass	float division rounds under the fixed mode
 pass	float division that does not divide evenly rounds to nearest
 pass	float multiplication uses the arithmetic operator

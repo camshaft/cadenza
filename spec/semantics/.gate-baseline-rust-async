@@ -808,6 +808,8 @@ pass	a nested literal pattern of the wrong type is a type error
 pass	a nested map pattern falls through when its key is absent
 pass	a nested map pattern with a malformed rest names the shape, not an unbound binder (CDZ0201)
 pass	a nested match missing an inner variant under a DISC-≥1 variant is non-exhaustive
+pass	a nested match on a recursive sum falls through when the inner variant differs (known outer disc)
+pass	a nested match on a recursive sum with a KNOWN outer discriminant reads the right payload depth
 pass	a nested match on a runtime scrutinee
 pass	a nested module's function export is applied through the projection chain
 pass	a nested option value annotated with the wrong inner payload type is rejected
@@ -1914,6 +1916,9 @@ pass	eval of a quoted conditional reduces its comparison condition first
 pass	eval of a quoted conditional takes the branch its boolean literal selects
 pass	eval of a quoted float executes it to the float value
 pass	eval of a quoted float feeds ordinary float arithmetic
+pass	eval of a quoted lambda application folds
+pass	eval of a quoted let-binding form folds
+pass	eval of a quoted match form folds to the selected arm
 pass	eval of a quoted string executes it to the string value
 pass	eval of a template splicing a runtime VALUE folds — the working side of the boundary
 pass	eval on malformed AST traps
@@ -1927,6 +1932,8 @@ pass	extending a record adds a new field
 pass	extending a record with an already-present field is rejected
 pass	extracting a high byte composes shift and mask
 pass	false is less than true
+pass	float <= is NOT (< or =): they diverge on NaN because canonical-byte equality says nan = nan
+pass	float >= is NOT (> or =): the same NaN divergence mirrors on the greater-or-equal side
 pass	float division rounds under the fixed mode
 pass	float division that does not divide evenly rounds to nearest
 pass	float multiplication uses the arithmetic operator
@@ -3037,6 +3044,7 @@ todo	distinct-signature closures alongside a plain export — the plain export r
 todo	dividing quantities divides their dimensions
 todo	equality over a compound mixing a float and a Bytes leaf walks both
 todo	eval does not forge a private constructor NESTED in a compound
+todo	eval of a fully-concrete imported constructor is legal from outside
 todo	eval of a partially-exported type's EXPORTED constructor works
 todo	eval of a partially-exported type's WITHHELD constructor is rejected
 todo	eval of a quoted private constructor is withheld exactly as a direct reference — no forge
