@@ -294,6 +294,20 @@ pub struct FmtArgs {
     stdout: bool,
 }
 
+impl FmtArgs {
+    /// Build a `FmtArgs` over an EXPLICIT, already-resolved file list, preserving the mode flags of a
+    /// parsed `FmtArgs`. The `files`/`from`/`width`/mode fields are private (clap-derived), so a caller
+    /// that resolves its own target set — the `cdz` bin expanding a `Project.cdz` manifest into its
+    /// concrete entry+modules+tests files for `cdz fmt` with no argument — cannot construct one directly.
+    /// This lets that caller keep the project-manifest knowledge on its side and hand `fmt` the resolved
+    /// list, while formatting stays surface-only here (v-cdz-tooling coordination: the one lifecycle
+    /// command that lacked no-arg/project resolution). `self`'s `from`/`width`/`check`/`diff`/`stdout` are
+    /// carried over unchanged; only the target list is replaced.
+    pub fn with_files(self, files: Vec<String>) -> FmtArgs {
+        FmtArgs { files, ..self }
+    }
+}
+
 /// The surface formats, as a clap `ValueEnum`. Mirrors [`Format`]. `pub` because it appears in the
 /// (now-`pub`) `QueryArgs::from` field that the `cdz` bin reads.
 #[derive(Clone, Copy, ValueEnum)]
@@ -1157,6 +1171,30 @@ mod tests {
             diff,
             stdout,
         }
+    }
+
+    #[test]
+    fn with_files_replaces_the_target_list_and_preserves_mode_flags() {
+        // `FmtArgs::with_files` is the API `cdz` uses to hand a resolved project file set to `fmt` while
+        // keeping the parsed flags (the v-cdz-tooling no-arg/project-fmt coordination). Only the file list
+        // changes; from/width/check/diff/stdout carry over.
+        let base = FmtArgs {
+            files: vec!["-".to_string()], // e.g. the no-arg stdin default cdz would override
+            from: Some(Fmt::Ml),
+            width: 100,
+            check: true,
+            diff: false,
+            stdout: false,
+        };
+        let resolved = base.with_files(vec!["a.cdz".to_string(), "b.cdz".to_string()]);
+        assert_eq!(
+            resolved.files,
+            vec!["a.cdz".to_string(), "b.cdz".to_string()]
+        );
+        assert!(matches!(resolved.from, Some(Fmt::Ml)), "from preserved");
+        assert_eq!(resolved.width, 100, "width preserved");
+        assert!(resolved.check, "check preserved");
+        assert!(!resolved.diff && !resolved.stdout, "diff/stdout preserved");
     }
 
     #[test]
