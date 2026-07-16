@@ -1,4 +1,4 @@
-//! Arbitrary-precision signed integers — a small, hand-written `no_std` limb library for the runtime
+//! Arbitrary-precision signed integers — a small, hand-written `no_std` limb library.
 //! (DESIGN-bigint-and-rational-rcdzc.md §5). Pure over `alloc::vec::Vec`, no I/O, no dependency: the
 //! runtime's wasm bytes are content-hashed (`REQUIRED_RUNTIME_HASH`), so pulling `num-bigint` (+
 //! `num-integer`/`num-traits`) into the frozen runtime would be a large, hard-to-audit hash-changing
@@ -7,6 +7,17 @@
 //! asymptotics for the seed). Independently unit-testable natively, with a differential test against
 //! `num-bigint` (a dev-dependency) as the safety net — the analogue of the CHAMP-vs-BTreeMap oracle.
 //!
+//! # A standalone crate (extracted 2026-07-16)
+//! This was `cdz-runtime::bigint` (a module); it was extracted VERBATIM into its own `rlib` crate so
+//! TWO consumers can share ONE bignum with zero duplication: (1) `cdz-runtime` (the wasm value-heap,
+//! whose `bigint-*` ops box/unbox `Big` — it depends on this crate, so the extraction is a pure
+//! relocation of the same bytes, a one-time `REQUIRED_RUNTIME_HASH` reshuffle owned by v-runtime); and
+//! (2) the `rcdzc` RUST backend, which emits `cdz_num::Big` value ops and links this rlib into its
+//! `rustc`-compiled programs (the numeric-tower reuse the operator directed — reuse, don't hand-roll a
+//! second bignum). `#![no_std]` + `alloc` so it stays usable by the wasm runtime; builds under `std`
+//! host too (`alloc` is always present) for the native rust-backend gate. Rational/Qty wrappers built
+//! ON `Big` come in a later increment.
+//!
 //! # Representation
 //! `Big { neg: bool, mag: Vec<u32> }` — base-2³² limbs, LITTLE-ENDIAN (`mag[0]` is the least-significant
 //! limb), with NO trailing zero limbs. Zero is the canonical `{ neg: false, mag: [] }`. Every operation
@@ -14,6 +25,27 @@
 //! so a value has exactly ONE in-memory form — required because the heap-leaf byte form (below) is what
 //! `champ_hash`/`champ_eq`/`value-eq` compare, so a `BigInt` used as a map key / compared with `=` must be
 //! canonical.
+
+// `no_std` in the shipped build (so the wasm runtime consumer stays `no_std`); plain `std` under
+// `cargo test` so the differential-oracle test module keeps the `std` prelude (`ToString`, etc.) it
+// had when this was `cdz-runtime::bigint` (that crate is `#![cfg_attr(not(test), no_std)]` too). The
+// bignum code itself is `alloc`-only either way.
+#![cfg_attr(not(test), no_std)]
+// This code was moved BYTE-FOR-BYTE from `cdz-runtime::bigint` (a module in an EXCLUDED standalone
+// workspace, so `cargo clippy --workspace -D warnings` never lint-checked it). As a native-workspace
+// member it now hits that gate. Rather than rewrite the differential-tested limb arithmetic (v-runtime
+// requires a pure relocation — no logic edits — so the frozen-hash reshuffle stays provable), suppress
+// the handful of style lints the verbatim code trips: the schoolbook `sub_mag` indexes two slices in
+// lockstep (a range loop reads clearer than a zip); `Big::cmp` is an inherent method by design (the type
+// is used as a value, not via `Ord` — a later increment may add the trait); the byte-encoders write `-1
+// * x` for symmetry with the sign math. All intentional; none is a defect.
+#![allow(
+    clippy::needless_range_loop,
+    clippy::should_implement_trait,
+    clippy::neg_multiply
+)]
+
+extern crate alloc;
 
 use alloc::vec::Vec;
 use core::cmp::Ordering;
@@ -32,7 +64,10 @@ pub struct Big {
 impl Big {
     /// The canonical zero.
     pub fn zero() -> Big {
-        Big { neg: false, mag: Vec::new() }
+        Big {
+            neg: false,
+            mag: Vec::new(),
+        }
     }
 
     /// Whether this is zero (canonical: empty magnitude).
@@ -186,13 +221,22 @@ impl Big {
     pub fn add(&self, other: &Big) -> Big {
         let mut r = if self.neg == other.neg {
             // Same sign: add magnitudes, keep the sign.
-            Big { neg: self.neg, mag: Big::add_mag(&self.mag, &other.mag) }
+            Big {
+                neg: self.neg,
+                mag: Big::add_mag(&self.mag, &other.mag),
+            }
         } else {
             // Opposite signs: subtract the smaller magnitude from the larger; sign follows the larger.
             match Big::cmp_mag(&self.mag, &other.mag) {
                 Ordering::Equal => Big::zero(),
-                Ordering::Greater => Big { neg: self.neg, mag: Big::sub_mag(&self.mag, &other.mag) },
-                Ordering::Less => Big { neg: other.neg, mag: Big::sub_mag(&other.mag, &self.mag) },
+                Ordering::Greater => Big {
+                    neg: self.neg,
+                    mag: Big::sub_mag(&self.mag, &other.mag),
+                },
+                Ordering::Less => Big {
+                    neg: other.neg,
+                    mag: Big::sub_mag(&other.mag, &self.mag),
+                },
             }
         };
         r.normalize();
@@ -204,7 +248,10 @@ impl Big {
         if self.is_zero() {
             return Big::zero();
         }
-        Big { neg: !self.neg, mag: self.mag.clone() }
+        Big {
+            neg: !self.neg,
+            mag: self.mag.clone(),
+        }
     }
 
     /// `self - other`.
@@ -215,7 +262,10 @@ impl Big {
     /// `self * other`.
     pub fn mul(&self, other: &Big) -> Big {
         let mag = Big::mul_mag(&self.mag, &other.mag);
-        let mut r = Big { neg: self.neg != other.neg, mag };
+        let mut r = Big {
+            neg: self.neg != other.neg,
+            mag,
+        };
         r.normalize();
         r
     }
@@ -229,8 +279,14 @@ impl Big {
         }
         let (qmag, rmag) = divmod_mag(&self.mag, &divisor.mag);
         // Quotient sign = XOR of operand signs; remainder sign = dividend sign (truncated division).
-        let mut q = Big { neg: self.neg != divisor.neg, mag: qmag };
-        let mut r = Big { neg: self.neg, mag: rmag };
+        let mut q = Big {
+            neg: self.neg != divisor.neg,
+            mag: qmag,
+        };
+        let mut r = Big {
+            neg: self.neg,
+            mag: rmag,
+        };
         q.normalize();
         r.normalize();
         Some((q, r))
@@ -265,7 +321,10 @@ impl Big {
             return String::from("0");
         }
         let ten = Big::from_i64(10);
-        let mut cur = Big { neg: false, mag: self.mag.clone() }; // work over the magnitude
+        let mut cur = Big {
+            neg: false,
+            mag: self.mag.clone(),
+        }; // work over the magnitude
         let mut digits: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
         while !cur.is_zero() {
             let (q, r) = cur.divmod(&ten).expect("divisor 10 is nonzero");
@@ -467,7 +526,10 @@ impl Big {
             mag.push(u32::from_le_bytes(limb));
             i += 4;
         }
-        let mut b = Big { neg: sign != 0, mag };
+        let mut b = Big {
+            neg: sign != 0,
+            mag,
+        };
         b.normalize();
         b
     }
@@ -513,10 +575,7 @@ impl Big {
                 carry = v >> 8;
             }
             // Trim redundant 0xff top bytes (keep one that preserves the sign bit).
-            while ext.len() > 1
-                && *ext.last().unwrap() == 0xff
-                && ext[ext.len() - 2] & 0x80 != 0
-            {
+            while ext.len() > 1 && *ext.last().unwrap() == 0xff && ext[ext.len() - 2] & 0x80 != 0 {
                 ext.pop();
             }
             ext
@@ -699,14 +758,21 @@ mod tests {
             // Rational/BigInt decimal, but shipped WITHOUT a reference check. Pin it against num-bigint's
             // `to_string` over the same random values — the per-digit divmod base conversion is exactly
             // where an off-by-one (a dropped/extra leading digit, a sign slip) hides.
-            assert_eq!(a.to_decimal_string(), ra.to_string(), "to_decimal_string {a:?}");
+            assert_eq!(
+                a.to_decimal_string(),
+                ra.to_string(),
+                "to_decimal_string {a:?}"
+            );
 
             let ord = a.cmp(&b);
             assert_eq!(ord, ra.cmp(&rb), "cmp {a:?} {b:?}");
             // The BYTE-form compare (what `bigint-cmp` runs on the operands' raw slices, no `Big` decode)
             // must give the SAME ordering as `Big::cmp` for every pair.
             assert_eq!(
-                Big::cmp_sign_magnitude_bytes(&a.to_sign_magnitude_bytes(), &b.to_sign_magnitude_bytes()),
+                Big::cmp_sign_magnitude_bytes(
+                    &a.to_sign_magnitude_bytes(),
+                    &b.to_sign_magnitude_bytes()
+                ),
                 ord,
                 "byte-form cmp agrees with Big::cmp {a:?} {b:?}"
             );
@@ -764,7 +830,10 @@ mod tests {
                 assert!(a.divmod(&g).unwrap().1.is_zero(), "gcd divides a exactly");
                 assert!(b.divmod(&g).unwrap().1.is_zero(), "gcd divides b exactly");
             } else {
-                assert!(a.is_zero() && b.is_zero(), "gcd is 0 only when both operands are 0");
+                assert!(
+                    a.is_zero() && b.is_zero(),
+                    "gcd is 0 only when both operands are 0"
+                );
             }
         }
     }
@@ -783,12 +852,24 @@ mod tests {
     fn canonical_form_invariants() {
         // Zero is unique and non-negative.
         assert!(Big::zero().is_zero());
-        assert_eq!(Big::zero(), Big { neg: false, mag: Vec::new() });
+        assert_eq!(
+            Big::zero(),
+            Big {
+                neg: false,
+                mag: Vec::new()
+            }
+        );
         // A "-0" or trailing-zero-limb input normalizes to canonical zero / minimal form.
-        let mut z = Big { neg: true, mag: alloc::vec![0, 0] };
+        let mut z = Big {
+            neg: true,
+            mag: alloc::vec![0, 0],
+        };
         z.normalize();
         assert_eq!(z, Big::zero());
-        let mut t = Big { neg: false, mag: alloc::vec![5, 0, 0] };
+        let mut t = Big {
+            neg: false,
+            mag: alloc::vec![5, 0, 0],
+        };
         t.normalize();
         assert_eq!(t.mag, alloc::vec![5]);
         // Subtraction that reaches zero canonicalizes the sign.
@@ -809,7 +890,10 @@ mod tests {
         // Normalize (num, den) → lowest terms, denominator > 0, sign on numerator. `den != 0` (the
         // Rational.of trap handles zero before this). Returns the canonical (num', den').
         fn normalize(num: &Big, den: &Big) -> (Big, Big) {
-            assert!(!den.is_zero(), "the caller rejects a zero denominator before normalizing");
+            assert!(
+                !den.is_zero(),
+                "the caller rejects a zero denominator before normalizing"
+            );
             let g = num.gcd(den); // non-negative; gcd(0, d) = |d|
             // Divide both by the gcd (exact — g divides both). divmod's quotient carries each operand's sign.
             let (mut n, _) = num.divmod(&g).expect("gcd is nonzero when den != 0");
@@ -822,37 +906,80 @@ mod tests {
             (n, d)
         }
         // Build a rational's value as num/den in exact arithmetic (for the cross-check: a/b == c/d iff a*d == c*b).
-        let cross_eq = |n1: &Big, d1: &Big, n2: &Big, d2: &Big| n1.mul(d2).cmp(&n2.mul(d1)) == Ordering::Equal;
+        let cross_eq =
+            |n1: &Big, d1: &Big, n2: &Big, d2: &Big| n1.mul(d2).cmp(&n2.mul(d1)) == Ordering::Equal;
         let cases: &[(i64, i64)] = &[
-            (1, 2), (2, 4), (6, 8), (-1, 2), (1, -2), (-6, -8), (0, 5), (10, 5), (-10, 5), (7, 1),
-            (100, -35), (-100, 35), (i64::MAX, 3), (3, i64::MAX),
+            (1, 2),
+            (2, 4),
+            (6, 8),
+            (-1, 2),
+            (1, -2),
+            (-6, -8),
+            (0, 5),
+            (10, 5),
+            (-10, 5),
+            (7, 1),
+            (100, -35),
+            (-100, 35),
+            (i64::MAX, 3),
+            (3, i64::MAX),
         ];
         for &(n, d) in cases {
             let (nn, nd) = normalize(&Big::from_i64(n), &Big::from_i64(d));
             // (1) denominator strictly positive (never zero — den != 0 — and never negative).
-            assert!(!nd.neg && !nd.is_zero(), "normalized denominator is strictly positive for {n}/{d}");
+            assert!(
+                !nd.neg && !nd.is_zero(),
+                "normalized denominator is strictly positive for {n}/{d}"
+            );
             // (2) lowest terms: gcd(|num'|, den') == 1 (or num' == 0 with den' == 1).
             let g = nn.gcd(&nd);
             if nn.is_zero() {
                 assert_eq!(nd, Big::from_i64(1), "0/d normalizes to 0/1 for {n}/{d}");
             } else {
-                assert_eq!(g, Big::from_i64(1), "num'/den' is in lowest terms for {n}/{d}");
+                assert_eq!(
+                    g,
+                    Big::from_i64(1),
+                    "num'/den' is in lowest terms for {n}/{d}"
+                );
             }
             // (3) value preserved: num'/den' == n/d (cross-multiply).
-            assert!(cross_eq(&nn, &nd, &Big::from_i64(n), &Big::from_i64(d)), "value preserved for {n}/{d}");
+            assert!(
+                cross_eq(&nn, &nd, &Big::from_i64(n), &Big::from_i64(d)),
+                "value preserved for {n}/{d}"
+            );
             // (4) canonical: normalizing an already-normalized pair is a fixpoint.
             let (nn2, nd2) = normalize(&nn, &nd);
-            assert_eq!((nn2, nd2), (nn, nd), "normalization is idempotent for {n}/{d}");
+            assert_eq!(
+                (nn2, nd2),
+                (nn, nd),
+                "normalization is idempotent for {n}/{d}"
+            );
         }
         // Two equal-value pairs normalize to the SAME canonical form (the map-key property Rational needs).
         let (a_n, a_d) = normalize(&Big::from_i64(6), &Big::from_i64(8));
         let (b_n, b_d) = normalize(&Big::from_i64(-9), &Big::from_i64(-12)); // == 6/8 == 3/4
-        assert_eq!((a_n, a_d), (b_n, b_d), "6/8 and -9/-12 normalize identically (both 3/4)");
+        assert_eq!(
+            (a_n, a_d),
+            (b_n, b_d),
+            "6/8 and -9/-12 normalize identically (both 3/4)"
+        );
     }
 
     #[test]
     fn i64_round_trip_and_bounds() {
-        for &v in &[0i64, 1, -1, 42, -42, i64::MAX, i64::MIN, 1 << 40, -(1 << 40), 0xffff_ffff, -0xffff_ffff] {
+        for &v in &[
+            0i64,
+            1,
+            -1,
+            42,
+            -42,
+            i64::MAX,
+            i64::MIN,
+            1 << 40,
+            -(1 << 40),
+            0xffff_ffff,
+            -0xffff_ffff,
+        ] {
             let b = Big::from_i64(v);
             assert_eq!(b.to_i64_checked(), Some(v), "i64 round-trip {v}");
             assert_eq!(to_ref(&b), Ref::from(v), "i64 vs ref {v}");
@@ -872,7 +999,11 @@ mod tests {
         for _ in 0..2000 {
             let b = rng.big();
             let bytes = b.to_sign_magnitude_bytes();
-            assert_eq!(Big::from_sign_magnitude_bytes(&bytes), b, "sign-mag round-trip {b:?}");
+            assert_eq!(
+                Big::from_sign_magnitude_bytes(&bytes),
+                b,
+                "sign-mag round-trip {b:?}"
+            );
             // Canonical: equal values → identical bytes (the champ-key requirement).
             assert_eq!(bytes, b.clone().to_sign_magnitude_bytes());
         }
@@ -888,7 +1019,11 @@ mod tests {
             let b = rng.big();
             let bytes = b.to_le_twos_complement_bytes();
             // Round-trips through our own parser.
-            assert_eq!(Big::from_le_twos_complement_bytes(&bytes), b, "2c round-trip {b:?}");
+            assert_eq!(
+                Big::from_le_twos_complement_bytes(&bytes),
+                b,
+                "2c round-trip {b:?}"
+            );
             // Matches num-bigint's signed LE two's-complement encoding.
             let rbytes = to_ref(&b).to_signed_bytes_le();
             // num-bigint encodes 0 as [0]; we encode 0 as [] — normalize both to "value" via re-parse.
@@ -923,7 +1058,14 @@ mod tests {
             assert_eq!(a, q.mul(&b).add(&r), "wide divmod identity");
             // |remainder| < |divisor| (the division invariant).
             assert_eq!(
-                Big { neg: false, mag: r.mag.clone() }.cmp(&Big { neg: false, mag: b.mag.clone() }),
+                Big {
+                    neg: false,
+                    mag: r.mag.clone()
+                }
+                .cmp(&Big {
+                    neg: false,
+                    mag: b.mag.clone()
+                }),
                 core::cmp::Ordering::Less,
                 "|rem| < |divisor| {a:?} {b:?}"
             );
@@ -946,8 +1088,16 @@ mod tests {
         // (2^200 - 1) / 2^64 → quotient 2^136 - 1, remainder 2^64 - 1 (all low bits set).
         let big = pow2(200).sub(&Big::from_i64(1));
         let (q2, r2) = big.divmod(&pow2(64)).unwrap();
-        assert_eq!(to_ref(&q2), to_ref(&big) / to_ref(&pow2(64)), "(2^200-1)/2^64 vs ref");
-        assert_eq!(to_ref(&r2), to_ref(&big) % to_ref(&pow2(64)), "(2^200-1)%2^64 vs ref");
+        assert_eq!(
+            to_ref(&q2),
+            to_ref(&big) / to_ref(&pow2(64)),
+            "(2^200-1)/2^64 vs ref"
+        );
+        assert_eq!(
+            to_ref(&r2),
+            to_ref(&big) % to_ref(&pow2(64)),
+            "(2^200-1)%2^64 vs ref"
+        );
 
         // Single-limb divisor of a huge dividend (the common `n / small` shape).
         let huge = pow2(300).add(&Big::from_i64(12345));
@@ -959,13 +1109,28 @@ mod tests {
         // Dividend just-below / at / just-above the divisor.
         let d = pow2(128);
         let below = d.sub(&Big::from_i64(1));
-        assert_eq!(below.divmod(&d).unwrap(), (Big::zero(), below.clone()), "a<d → (0, a)");
-        assert_eq!(d.divmod(&d).unwrap(), (Big::from_i64(1), Big::zero()), "a==d → (1, 0)");
+        assert_eq!(
+            below.divmod(&d).unwrap(),
+            (Big::zero(), below.clone()),
+            "a<d → (0, a)"
+        );
+        assert_eq!(
+            d.divmod(&d).unwrap(),
+            (Big::from_i64(1), Big::zero()),
+            "a==d → (1, 0)"
+        );
         let above = d.add(&Big::from_i64(1));
-        assert_eq!(above.divmod(&d).unwrap(), (Big::from_i64(1), Big::from_i64(1)), "a=d+1 → (1, 1)");
+        assert_eq!(
+            above.divmod(&d).unwrap(),
+            (Big::from_i64(1), Big::from_i64(1)),
+            "a=d+1 → (1, 1)"
+        );
 
         // All-0xffffffff limbs (max limb values — carry propagation stress).
-        let maxes = Big { neg: false, mag: alloc::vec![0xffff_ffff; 8] };
+        let maxes = Big {
+            neg: false,
+            mag: alloc::vec![0xffff_ffff; 8],
+        };
         let mref = to_ref(&maxes);
         for div in [Big::from_i64(3), pow2(32), pow2(100), maxes.clone()] {
             let (q, r) = maxes.divmod(&div).unwrap();

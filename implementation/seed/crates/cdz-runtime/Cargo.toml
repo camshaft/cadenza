@@ -33,6 +33,13 @@ debug-counters = []
 [dependencies]
 wit-bindgen-rt = { version = "0.44", features = ["bitflags"] }
 
+# The arbitrary-precision bignum, extracted (2026-07-16) from this crate's former `src/bigint.rs` into a
+# shared rlib so the rcdzc RUST backend reuses the SAME `Big` (no 2nd bignum). `no_std` + `alloc`, so it
+# links into this wasm runtime unchanged; the runtime's `bigint-*`/`rational-*` ops box/unbox `Big` via
+# the `bigint` alias (`use cdz_num as bigint;`). A pure relocation of the same code → a one-time
+# REQUIRED_RUNTIME_HASH reshuffle (no semantic change).
+cdz-num = { path = "../cdz-num" }
+
 # The embedded wasm allocator (see src/allocator.rs) — the runtime ships its own allocator. Gated to
 # wasm only: native `cargo test` uses the system allocator, so the Handle-typed core stays testable
 # natively without pulling talc in. Swappable in one file — the heap core never references it.
@@ -55,8 +62,5 @@ codegen-units = 1
 
 [dev-dependencies]
 bolero = "0.13.4"
-# The differential oracle for the hand-written `bigint.rs` limb library (native tests only — NOT a
-# runtime dependency, so the shipped wasm bytes / content hash are unaffected). Analogue of the
-# CHAMP-vs-BTreeMap reference oracle.
-num-bigint = "0.4"
-num-traits = "0.2"
+# (The `num-bigint`/`num-traits` differential-oracle dev-deps moved WITH `bigint.rs` into the `cdz-num`
+# crate — nothing left in this crate's tests uses them.)

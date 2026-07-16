@@ -1,0 +1,28 @@
+# cdz-num — the Cadenza arbitrary-precision numeric library (bignum; rational/quantity later).
+#
+# Extracted VERBATIM (2026-07-16) from `cdz-runtime::bigint` so ONE bignum is shared by both
+# consumers with zero duplication:
+#   - cdz-runtime (the wasm value-heap) — its `bigint-*` ops box/unbox `Big`. Depending on this crate
+#     is a pure relocation of the same bytes (a one-time REQUIRED_RUNTIME_HASH reshuffle).
+#   - rcdzc's RUST backend — emits `cdz_num::Big` value ops and links this rlib into its rustc-compiled
+#     programs (the operator-directed numeric-tower reuse: reuse, don't hand-roll a 2nd bignum).
+#
+# `#![no_std]` + `alloc` (like cdz-runtime) so the wasm runtime can use it; builds under `std` host too
+# (alloc is always present) for the native rust-backend gate. A plain `rlib` (like cdz-rt) so the gate
+# links it via `rustc --extern`. In the native workspace (unlike cdz-runtime's standalone cdylib) so a
+# plain `cargo build`/`cargo test` compiles + tests it.
+[package]
+name = "cdz-num"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["rlib"]
+
+[dev-dependencies]
+# The differential oracle for the hand-written limb library (native tests only — NOT a runtime
+# dependency, so a wasm consumer's bytes / content hash are unaffected). Moved with `bigint.rs` from
+# cdz-runtime. Analogue of the CHAMP-vs-BTreeMap reference oracle.
+num-bigint = "0.4"
+num-traits = "0.2"
