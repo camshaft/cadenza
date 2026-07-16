@@ -33,6 +33,10 @@ cdz-corpus = { path = "../cdz-corpus" }
 # only the CLI surface (`cdz_calc::cli`). Pulls in cdz-run transitively (it runs compiled exprs).
 cdz-calc = { path = "../cdz-calc" }
 clap = { version = "4", features = ["derive"] }
+# Generate shell completion scripts (`cdz completions <shell>`) from the clap command tree — the
+# standard cargo-parity way (`clap_complete::generate`), so the completions never drift from the actual
+# subcommands/flags. Codegen only; no runtime cost on any other path.
+clap_complete = "4"
 # The property-testing generator engine for `cdz test`: `bolero-generator` produces values from a seeded
 # driver (`driver::Rng`) — reproducible + shrinkable — used as a LIBRARY (not the `check!` cargo-test
 # harness), so `cdz test` loops trials itself. (The old seed-vs-bolero lockfile conflict the cdz-smith
