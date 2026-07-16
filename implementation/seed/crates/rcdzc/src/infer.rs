@@ -71,7 +71,35 @@ pub fn type_of(db: &mut Db, id: StructId) -> Ty {
     // recompute, so leave it unmemoized and let the solved type win. Every FULLY-GROUND type is memoized as
     // before (the solve-once discipline holds for real types; `has_free_var` treats a deferred int
     // width/sign as ground — those default, they are not undetermined).
-    if !matches!(t, Ty::Any) && !ty_has_free_var(db, &t) {
+    // Skip caching a provisional NESTED-`Any` type born from a SELF-NESTED-GENERIC-PRODUCER re-entrancy.
+    // `(from-list (list (inner) (inner)))` — where each `(inner)` is itself a `from-list` call — types
+    // its argument `(list (inner) (inner))` WHILE `from-list`'s own param/scheme solve is on the stack;
+    // the re-entry guard (which returns `None`/`Any` to break the solve cycle) collapses each `(inner)`
+    // to `Any`, so the list types `(List Any)`. That is a NESTED `Any` (not a bare `Any`/`Var`, so the
+    // ordinary guard below memoizes it) — and cached, the stale `(List Any)` wins on every later CLEAN
+    // read, freezing the outer producer's result element undetermined → a spurious CDZ0201 monomorphize
+    // decline. Leaving it UNcached lets a later read — after the producer's scheme completes — recompute
+    // the grounded `(List (Iter Int64))`, so the outer call monomorphizes and the program runs.
+    //
+    // SCOPED to a node EXTERNAL to every in-flight def's body (`node_external_to_inflight_solves`): the
+    // poisoned `(List Any)` sits in a CALLER (`main`) re-entering `from-list`'s solve, not inside
+    // `from-list`. This is load-bearing — it must NOT touch a MONOMORPHIC recursive def's OWN self-call
+    // result, typed INSIDE that def's body. A bottom-up fold's tuple scrutinee `(tuple (fold a) (fold b))`
+    // (`fold : E -> E`) is typed inside `fold`'s body while `fold`'s solve is on the stack → INTERNAL →
+    // still cached, so `(fold a)`'s concrete `E` stays resolved. That matters: the rust sum-match emit
+    // reads `type_of(scrutinee element)` and REQUIRES the concrete `Ty::Sum{E}` (else it lowers a wrong
+    // variant path); a blunter "skip any nested-`Any` mid-solve" gate grounded those to a wrong shape and
+    // turned that fold's clean `todo`-decline into a rust MISCOMPILE.
+    //
+    // Also gated on `has_any_in_data_element` — the `Any` must be a collapsed DATA-CONTAINER element
+    // (`(List Any)`), NOT one under a function arrow (`(-> Int64 (-> Any Any))`, a curried closure's
+    // not-yet-solved domain/result). An arrow's `Any` is a legitimate intermediate the transformer-closure
+    // tie grounds, and a module-member generic monomorphization caches that arrow signature — skipping it
+    // regressed `across_def_flavors` to a "closure parameter has no machine representation" CDZ0203.
+    let skip_reentrant_nested_any = t.has_any_in_data_element()
+        && (!db.solving_params.is_empty() || !db.solving_schemes.is_empty())
+        && node_external_to_inflight_solves(db, id);
+    if !matches!(t, Ty::Any) && !ty_has_free_var(db, &t) && !skip_reentrant_nested_any {
         db.types.fill(id, t.clone());
     }
     t
@@ -2492,6 +2520,32 @@ fn def_of_param(db: &mut Db, binder: StructId) -> Option<usize> {
         .position(|d| d.internal && d.params.contains(&binder))
 }
 
+/// Is `id` OUTSIDE the body of every def whose param/scheme solve is currently on the stack? True when
+/// `id` sits in NO in-flight def's body subtree — i.e. a CALLER re-entering a producer's solve (typing an
+/// argument in `main` whose element is a call to the producer being solved), NOT the producer's own
+/// self-recursion. Distinguishes the self-nested-generic-PRODUCER re-entrancy (`(from-list (list (inner)
+/// (inner)))` typed in `main` while `from-list`'s param solve is on the stack — external) from a
+/// MONOMORPHIC recursive self-call (`(tuple (fold a) (fold b))` typed inside `fold`'s own body while
+/// `fold`'s solve is on the stack — internal). Used by the memo guard: only skip caching a nested-`Any`
+/// born EXTERNALLY (a re-entrant caller read), leaving an internal self-call's concrete result cached.
+fn node_external_to_inflight_solves(db: &mut Db, id: StructId) -> bool {
+    if db.solving_params.is_empty() && db.solving_schemes.is_empty() {
+        return false;
+    }
+    // Walk `id`'s ancestor chain; if it passes through the body occurrence of any in-flight def, `id` is
+    // INTERNAL to that def (a self-call typing). Reaching the root without hitting one → EXTERNAL.
+    let mut cur = Some(id);
+    while let Some(n) = cur {
+        if let Some(d) = db.def_index_by_body(n)
+            && (db.solving_params.contains(&d) || db.solving_schemes.contains(&d))
+        {
+            return false; // inside an in-flight def's own body
+        }
+        cur = db.parent_of(n);
+    }
+    true
+}
+
 /// Solve the parameter types of a RECURSIVE def by a single connected, threaded-`Subst` unification
 /// over its body — the one place inference is a connected solve rather than a per-node column read
 /// (ANF step 2 / A2). Fills `db.param_types` for EVERY parameter of the def at once.
@@ -4696,6 +4750,7 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
 /// the instantiated return type after substitution. Used to type a RECURSIVE call by its callee's
 /// signature (which β-reduction can't type). Mirrors the operator-scheme application in `apply_type`.
 fn apply_scheme_to_args(db: &mut Db, scheme: &Scheme, args: &[StructId]) -> Ty {
+    let generic = !scheme.ty_vars.is_empty();
     // Type each argument up front so a GENERIC scheme can seed its instantiation counter PAST every
     // variable the args carry (below). A MONOMORPHIC scheme (no `ty_vars`) is unaffected by this.
     let arg_tys: Vec<Ty> = args.iter().map(|&a| type_of(db, a)).collect();
@@ -4712,7 +4767,6 @@ fn apply_scheme_to_args(db: &mut Db, scheme: &Scheme, args: &[StructId]) -> Ty {
     // the arg's canonical param var flows through the unify untouched. A generic def scheme has EMPTY
     // width/sign var lists (`compute_def_scheme`), so only ty-vars can collide, and `collect_free_vars`
     // finds them. A MONOMORPHIC scheme keeps the exact old freshen path (byte-identical).
-    let generic = !scheme.ty_vars.is_empty();
     let mut fresh = Fresh::new();
     if generic {
         let mut arg_vars = Vec::new();
