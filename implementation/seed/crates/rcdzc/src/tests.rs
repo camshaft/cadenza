@@ -68876,6 +68876,79 @@ mod cross_component_oracle {
     }
 
     // ------------------------------------------------------------------------------------------------
+    // PL30 — a MIXED String + scalar argument list crosses to a peer in ONE op (the Bedrock `converse`
+    // shape: a prompt String + a scalar like `max-tokens`). PL28/PL29 pin a lone String arg; u2 pins
+    // scalar args; this pins that the two DISTINCT arg-emit paths INTERLEAVE correctly in a single call —
+    // the String lowers to a rope HANDLE (an i32 handle on the stack) while the Int64 lowers DIRECTLY (an
+    // i64), pushed in declaration order, and the peer reads both. A regression that mis-orders the mixed
+    // push (e.g. treating the String slot as a scalar, or vice versa) would misalign the peer's params;
+    // this is the exact call shape a `(-> String Int64 …)` model op takes. Provider `blen-plus : (String,
+    // Int64) -> Int64` = byte-len(s) + n. main = S.blen-plus("hello", 7) = 5 + 7 = 12.
+    // ------------------------------------------------------------------------------------------------
+    #[test]
+    fn a_mixed_string_and_scalar_argument_cross_to_a_peer_in_one_op() {
+        use crate::backend::wasm::runtime_abi::{REQUIRED_RUNTIME_HASH, RUNTIME_IFACE};
+        use crate::testkit::parse;
+        let import_name = format!("{RUNTIME_IFACE}@0.0.0+{REQUIRED_RUNTIME_HASH}");
+        // PROVIDER: reads a String arg (byte-len) AND a scalar arg, summing them — so BOTH crossed + were
+        // read. The String is a rope handle; the Int64 is a direct scalar.
+        let provider = compile_provider(
+            "(do (def (blen-plus (: s String) (: n Int64)) (+ (String.byte-len s) n)) (export blen-plus))",
+            "cadenza:mix/api",
+        );
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&provider)
+                .expect("the mixed-arg provider validates");
+        }
+        // CONSUMER: passes a String LITERAL and a scalar in ONE call — the two arg-emit paths interleave.
+        let src = "(do \
+            (effect S (op blen-plus (-> String Int64 Int64))) \
+            (bind S \"cadenza:mix/api\") \
+            (def (main) (host (S) (S.blen-plus \"hello\" 7))) \
+            (export main))";
+        let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .unwrap_or_else(|d| {
+                panic!("mixed-arg consumer compiles: {} [{:?}]", d.message, d.code)
+            });
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&consumer)
+                .expect("mixed-arg consumer validates");
+        }
+        assert!(
+            String::from_utf8_lossy(&consumer).contains(&import_name),
+            "a mixed String+scalar peer consumer imports the value-heap runtime (it builds the rope handle)"
+        );
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("[PL30] runtime wasm not found; skipping");
+            return;
+        };
+        let peers = vec![cdz_run::Peer {
+            bytes: provider,
+            interface: "cadenza:mix/api".to_string(),
+        }];
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: Vec::new(),
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run_with_peers(&consumer, &peers, &opts)
+            .expect("a mixed string+scalar argument list crosses to a peer")
+        {
+            // byte-len("hello") + 7 = 5 + 7 = 12. The String crossed as a handle, the Int64 as a scalar,
+            // in one call, in declaration order — the `(-> String Int64 …)` model-op call shape.
+            cdz_run::Outcome::Value(s) => assert_eq!(
+                s, "12",
+                "a mixed String+scalar argument list crosses to a peer, each in its own ABI lane"
+            ),
+            cdz_run::Outcome::Trap(t) => panic!("mixed-argument run trapped: {t}"),
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------------
     // PL18 — a peer op returning a LIST (a variable-length collection) crosses + the consumer reads its
     // LENGTH. The rich-interface north star names lists crossing the peer boundary; the List RESULT read
     // was untested e2e (U5d built a list peer but did not run a source consumer reading it). A List
