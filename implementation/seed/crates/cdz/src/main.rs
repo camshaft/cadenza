@@ -2125,9 +2125,11 @@ fn is_watch_trigger(path: &std::path::Path) -> bool {
 /// manifest) changes. The loop runs the command once up front (initial feedback, like `cargo watch`),
 /// then blocks on the filesystem event channel; on a source-file event it DEBOUNCES (keeps draining
 /// events for `debounce_ms` so a burst of saves — or an editor's write-then-rename — coalesces into ONE
-/// run), re-runs SYNCHRONOUSLY (so runs never overlap — the concierge guard), then drains any events that
-/// arrived DURING the run (already reflected in what we just ran) before blocking again. Ctrl-C exits.
-/// The re-run itself is the ordinary in-process `run_check`/`run_test`/`run_build`.
+/// run), re-runs SYNCHRONOUSLY (so runs never overlap — the concierge guard), then inspects the events
+/// that arrived DURING the run: artifact-only churn (the run's own outputs) is discarded, but a SOURCE
+/// edit made mid-run is NOT reflected in the run that just finished, so it triggers one more re-run
+/// rather than being dropped until the next event. Ctrl-C exits. The re-run itself is the ordinary
+/// in-process `run_check`/`run_test`/`run_build`/`run_project`.
 fn run_watch(args: &WatchArgs) -> ExitCode {
     use notify::{RecursiveMode, Watcher};
     use std::sync::mpsc;
@@ -2141,8 +2143,9 @@ fn run_watch(args: &WatchArgs) -> ExitCode {
         Err(code) => return code,
     };
 
-    // The re-run closure: construct the chosen command's Args (threading `--store` through to test/build)
-    // targeted at the resolved manifest dir, and invoke the ordinary handler in-process. Returns its code.
+    // The re-run closure: construct the chosen command's Args targeted at the resolved manifest dir, and
+    // invoke the ordinary handler in-process. `--store` threads through to the commands that resolve the
+    // value-heap runtime (`test`/`run`); `check`/`build` don't take a store. Returns the command's code.
     let store = args.store.clone();
     let dir_str = dir.to_string_lossy().into_owned();
     let rerun = move || -> ExitCode {
@@ -2217,33 +2220,63 @@ fn run_watch(args: &WatchArgs) -> ExitCode {
     // 1. Initial run.
     let _ = rerun();
 
-    // 2/3. Event loop: block for a change, debounce-coalesce, re-run, drain, repeat.
-    loop {
-        // Block until SOME event arrives (or the channel closes → exit).
-        let first = match rx.recv() {
-            Ok(ev) => ev,
-            Err(_) => return ExitCode::SUCCESS, // watcher dropped
-        };
-        // Collect this event plus everything that lands within the debounce window.
-        let mut batch = vec![first];
-        while let Ok(ev) = rx.recv_timeout(debounce) {
-            batch.push(ev);
-        }
-        // Re-run only if at least one event touched a SOURCE file / the manifest (ignore artifact writes
-        // + editor temp churn, which would otherwise self-trigger a `watch build`/`test`).
-        let touched_source = batch.iter().any(|res| {
+    // Whether a batch of filesystem events touched a SOURCE file / the manifest — the only changes that
+    // warrant a re-run. Artifact writes (a `build`/`run`'s own `.wasm`/`link-map.txt`) and editor temp
+    // churn are ignored, so they never self-trigger.
+    let batch_touches_source = |batch: &[notify::Result<notify::Event>]| -> bool {
+        batch.iter().any(|res| {
             res.as_ref()
                 .map(|ev| ev.paths.iter().any(|p| is_watch_trigger(p)))
                 .unwrap_or(false)
-        });
-        if !touched_source {
+        })
+    };
+
+    // 1. Initial run.
+    let _ = rerun();
+
+    // 2/3. Event loop: block for a change, debounce-coalesce, re-run, then check whether MORE source
+    // edits arrived DURING the run — if so, run again (a mid-run save must not be lost).
+    let mut pending = false; // a source edit seen while a run was in flight, not yet acted on
+    loop {
+        // If a source edit landed during the last run, act on it now WITHOUT blocking (don't wait for the
+        // next event — that edit is real and unreflected). Otherwise block until some event arrives.
+        let batch = if pending {
+            pending = false;
+            // Still coalesce a burst that's mid-flight: collect whatever is immediately queued.
+            let mut b = Vec::new();
+            while let Ok(ev) = rx.try_recv() {
+                b.push(ev);
+            }
+            b
+        } else {
+            let first = match rx.recv() {
+                Ok(ev) => ev,
+                Err(_) => return ExitCode::SUCCESS, // watcher dropped
+            };
+            // Collect this event plus everything that lands within the debounce window.
+            let mut b = vec![first];
+            while let Ok(ev) = rx.recv_timeout(debounce) {
+                b.push(ev);
+            }
+            b
+        };
+        // Re-run only if at least one event touched a SOURCE file / the manifest.
+        if !batch_touches_source(&batch) {
             continue;
         }
         eprintln!("{PROG}: ⟳ change detected — re-running `cdz {label}`");
         let _ = rerun();
-        // Drain any events that arrived DURING the re-run — they're already reflected in what we just ran,
-        // so discard them rather than triggering an immediate redundant re-run.
-        while rx.try_recv().is_ok() {}
+        // Drain events that arrived DURING the re-run. An artifact-only batch (the run's own outputs) is
+        // discarded — those are already reflected. But a SOURCE edit made mid-run is NOT reflected in the
+        // run we just finished, so flag it (`pending`) to re-run once more rather than silently dropping
+        // that save until some future event happens to arrive.
+        let mut during = Vec::new();
+        while let Ok(ev) = rx.try_recv() {
+            during.push(ev);
+        }
+        if batch_touches_source(&during) {
+            pending = true;
+        }
     }
 }
 
@@ -2995,10 +3028,12 @@ enum WatchCmd {
 #[derive(clap::Args)]
 struct WatchArgs {
     /// The project to watch: a `Project.cdz` or a directory holding one. OMITTED → search up from the
-    /// current directory for the nearest `Project.cdz` (like `cdz build`/`test`). The watched file set is
-    /// the manifest's declared sources (entry + modules + tests), plus the manifest itself.
+    /// current directory for the nearest `Project.cdz` (like `cdz build`/`test`). The manifest's DIRECTORY
+    /// is watched RECURSIVELY; a change re-runs only when it touches a Cadenza source file
+    /// (`.cdz`/`.ml`/`.sexp`/`.sexpr`) or the manifest itself (build artifacts + editor temp files are
+    /// ignored, so they never self-trigger).
     target: Option<String>,
-    /// Which command to re-run on each change: `check` (default), `test`, or `build`.
+    /// Which command to re-run on each change: `check` (default), `test`, `build`, or `run`.
     #[arg(long, value_enum, default_value_t = WatchCmd::Check)]
     exec: WatchCmd,
     /// The debounce window in milliseconds — filesystem events within this window of each other are

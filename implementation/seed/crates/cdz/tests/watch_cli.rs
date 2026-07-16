@@ -78,6 +78,19 @@ fn count(cap: &std::path::Path, needle: &str) -> usize {
     read_cap(cap).matches(needle).count()
 }
 
+/// Poll until `path` exists (up to `timeout`); return whether it appeared. Used to detect a build's
+/// artifact by its FILE (stabler than grepping the build's stdout for a substring that could change).
+fn wait_for_path(path: &std::path::Path, timeout: Duration) -> bool {
+    let start = Instant::now();
+    while start.elapsed() < timeout {
+        if path.exists() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    path.exists()
+}
+
 #[test]
 fn watch_reruns_check_when_a_source_file_changes() {
     let (root, proj) = scaffold("check");
@@ -135,6 +148,57 @@ fn watch_reports_diagnostics_from_the_rerun() {
 }
 
 #[test]
+fn watch_does_not_drop_edits_made_across_successive_saves() {
+    // REGRESSION (Copilot PR #502): the post-run drain used to DISCARD every event that arrived during a
+    // run as "already reflected" — but an edit made mid-run is NOT reflected in the just-finished run, so
+    // that save was silently lost until some later event. Now a mid-run source edit flags one more
+    // re-run. This is hard to time deterministically (check is fast), so exercise the same guarantee
+    // observably: make SEVERAL successive edits and assert the watch keeps re-running for each wave (the
+    // final edit's result must eventually be reflected — not stuck on a dropped save). Each edit toggles
+    // between clean and a distinct error so the LAST state is unambiguous in the output.
+    let (root, proj) = scaffold("nodrop");
+    let (mut child, cap) = spawn_watch(&proj, &[], "nodrop");
+    assert!(
+        wait_for(&cap, "watching", Duration::from_secs(20)),
+        "startup banner: {}",
+        read_cap(&cap)
+    );
+
+    // A first edit (clean) → at least one re-run fires.
+    std::thread::sleep(Duration::from_millis(300));
+    std::fs::write(
+        proj.join("main.cdz"),
+        "def main() -> Int64 = 1\n\nexport { main }\n",
+    )
+    .expect("edit 1");
+    assert!(
+        wait_for(&cap, "change detected", Duration::from_secs(20)),
+        "the first save re-runs: {}",
+        read_cap(&cap)
+    );
+
+    // A later edit introducing a UNIQUELY-named unbound reference — its diagnostic must eventually show
+    // up, proving the watch is still live and reflected the LATEST source state (not stuck on a drop).
+    std::thread::sleep(Duration::from_millis(300));
+    std::fs::write(
+        proj.join("main.cdz"),
+        "def main() -> Int64 = zzz_unique_marker\n\nexport { main }\n",
+    )
+    .expect("edit 2");
+    let reflected_latest = wait_for(&cap, "zzz_unique_marker", Duration::from_secs(20));
+    let captured = read_cap(&cap);
+
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::remove_file(&cap);
+    assert!(
+        reflected_latest,
+        "the watch reflects the LATEST edit (no dropped save): {captured}"
+    );
+}
+
+#[test]
 fn watch_build_does_not_self_trigger_on_its_own_artifacts() {
     // The self-trigger guard: `watch --exec build` writes `main.wasm`/`link-map.txt` INTO the watched
     // dir. Those are NOT source files, so the positive filter must ignore them — otherwise the build
@@ -147,10 +211,11 @@ fn watch_build_does_not_self_trigger_on_its_own_artifacts() {
         "startup banner: {}",
         read_cap(&cap)
     );
-    // Wait for the initial build to write its artifacts, then some more — a self-trigger loop would keep
+    // Wait for the initial build to write its component (detect the FILE, not a stdout substring — the
+    // artifact's existence is the stable signal), then some more — a self-trigger loop would keep
     // emitting "change detected".
     assert!(
-        wait_for(&cap, "main.wasm", Duration::from_secs(20)),
+        wait_for_path(&proj.join("main.wasm"), Duration::from_secs(20)),
         "the initial build writes its component: {}",
         read_cap(&cap)
     );
