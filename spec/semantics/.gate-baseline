@@ -1897,6 +1897,8 @@ pass	an absorbing or-true keeps an effectful left operand's perform
 pass	an abstract type is used through the module's exported constructor and accessor
 pass	an abstract type's constructor is not reachable outside its module
 pass	an absurd runtime width is rejected, not silently ignored
+pass	an active unquote lifts a RUNTIME boolean operand, not only a constant
+pass	an active unquote lifts a RUNTIME float operand, not only a constant
 pass	an active unquote lifts a RUNTIME integer operand, not only a constant
 pass	an active unquote of a boolean literal lifts to an Ast.Bool node
 pass	an active unquote of a computed boolean expression lifts to Ast.Bool
