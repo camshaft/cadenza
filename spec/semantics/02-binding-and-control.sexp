@@ -3867,3 +3867,51 @@
             (export main)))
   (call   main (: 1 Int64) (: 0 Int64) (: 1 Int64) (: 2 Int64))
   (trap   "divide by zero"))
+
+; --- Constant propagation vs shadowing: the fold must respect the re-binding -----------------------
+; The ML port's constprop just fixed exactly this (a shadowing non-constant let folded the body's x
+; to the OUTER constant — 3c7f75dd9's soundness bug). These grade the seed's own fold at the same
+; seams, promoted from passing breaker probes: a constant binding followed by a same-named RUNTIME
+; re-binding must not leak the constant into the shadowed scope, at every binder kind.
+
+(case "an inner runtime shadow defeats the outer constant fold"
+  (doc    "`(let ((x 5)) (let ((x w)) (+ x 1)))` at w = -1 → 0 — the inner `x` re-binds to the
+           RUNTIME w, so the body's x is w, not the foldable outer 5 (a fold propagating the outer
+           constant under the same environment answers 6). The exact shape of the ML constprop
+           soundness bug, graded against the seed.")
+  (input  (do
+            (def (main (: w Int64))
+              (let ((x 5))
+                (let ((x w))
+                  (+ x 1))))
+            (export main)))
+  (call   main (: -1 Int64))
+  (output (: 0 Int64)))
+
+(case "a lambda parameter shadows the outer constant for its body"
+  (doc    "`(let ((x 5)) ((fn (x) (+ x 1)) w))` at w = -1 → 0 — the lambda's parameter is a NEW
+           binder; its body's x is the argument, never the enclosing constant (a fold substituting
+           into the lambda body before β answers 6). The function-binder face of the shadow-vs-fold
+           discipline.")
+  (input  (do
+            (def (main (: w Int64))
+              (let ((x 5))
+                ((fn (x) (+ x 1)) w)))
+            (export main)))
+  (call   main (: -1 Int64))
+  (output (: 0 Int64)))
+
+(case "a captured pre-shadow value survives the re-binding"
+  (doc    "`(let ((x 1)) (let ((y x)) (let ((x w)) (+ x y))))` at w = 7 → 8 — `y` captures the OLD x
+           (1) before the re-binding; the final body reads the NEW x (w) plus the captured y. Pins
+           the fold's environment as a proper scope chain: the constant is usable exactly until the
+           shadow, and values bound FROM it are independent of the re-binding.")
+  (input  (do
+            (def (main (: w Int64))
+              (let ((x 1))
+                (let ((y x))
+                  (let ((x w))
+                    (+ x y)))))
+            (export main)))
+  (call   main (: 7 Int64))
+  (output (: 8 Int64)))

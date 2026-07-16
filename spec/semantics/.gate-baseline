@@ -409,6 +409,7 @@ pass	a byte-string literal with escapes equals its explicit byte sequence
 pass	a camelCase round-trip resolves through kebab boundary-name normalization
 pass	a camelCase same-signature multi-export normalizes each make-<name>
 pass	a capture-free de Bruijn beta-reduction over a nameless term sum reduces correctly
+pass	a captured pre-shadow value survives the re-binding
 pass	a capturing 32-bit-integer closure crosses and is called
 pass	a capturing closure crosses as a repeatable (borrow<t>) callback handle
 pass	a capturing closure export tracks both the captured value and the call argument
@@ -804,6 +805,7 @@ pass	a keyed lookup of an updated map is not shared with the original's
 pass	a known-constructor match selects the NON-first arm, eliding the other arms' bodies
 pass	a lambda applied in the scope of the binding it captures observes that binding
 pass	a lambda captures an enclosing function parameter and is applied in its body
+pass	a lambda parameter shadows the outer constant for its body
 pass	a lambda's return type ascription agreeing with the body is transparent
 pass	a large multiply-called definition is emitted once by the cost heuristic
 pass	a large whole float crosses the boundary preserving its full value
@@ -2066,6 +2068,7 @@ pass	an inner binding shadows an outer one only within its scope
 pass	an inner handler's INIT state is computed by performing an enclosing effect
 pass	an inner lambda captures an enclosing match-arm binder and is applied
 pass	an inner lambda captures an enclosing tuple-pattern binder and is applied
+pass	an inner runtime shadow defeats the outer constant fold
 pass	an int match on a constant scrutinee is non-exhaustive even when the constant hits the sole arm
 pass	an integer if condition is a type error, not a running conditional
 pass	an integer literal annotated Rational grounds to that integer over one
