@@ -33,8 +33,10 @@ def digit-val(c: String) =
   else (if c == "4" then 4 else (if c == "5" then 5 else (if c == "6" then 6 else (if c == "7" then 7
   else (if c == "8" then 8 else 9))))))))
 
-/// Scan a digit run from `i` → `(value, next-index)`. `String.at` matched INLINE (a returned char compared
-/// in a loop declines — see `mlrepro-decline-returned-string-at-compared-in-a-loop.cdz` (queue)).
+/// Scan a digit run from `i` → `(value, next-index)`. `String.at` is matched INLINE here. (This once had
+/// to be inline: a `char-at` helper returning the char, `==`-compared in a loop, used to decline — now
+/// FIXED, `mlrepro-decline-returned-string-at-compared-in-a-loop` is resolved — so the inline form is a
+/// style choice today, not a necessity; a `char-at` helper would compile equally well.)
 def scan-number(s: String, i: Int64, acc: Int64) =
   if i == String.byte-len(s) then
     (acc, i)
