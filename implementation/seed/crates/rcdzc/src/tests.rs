@@ -15675,13 +15675,14 @@ mod match_engine {
             "the no-runtime-form declines must not accompany the coded reject: {:?}",
             out.diagnostics
         );
-        // A NULLARY export whose body is a `(: <TypeName> Type)` annotation — a type-value that
-        // `typeval_of` does not reduce to a bakeable concrete type — hits the SAME reject branch. Its
-        // message previously said "is a TYPE that cannot cross …", which did NOT contain
-        // `TYPE_EXPORT_MARKER`, so the three no-runtime-form declines LEAKED (the coded reject plus a
-        // built-in-as-value / nullary-lambda / type-value cascade). The reworded message embeds the marker,
-        // so `dedup_faults` drops the cascade here too — one coded error, exactly like the parameterized
-        // case above.
+        // A NULLARY export whose body is a `(: <TypeName> Type)` annotation — a `Type`-KINDED annotation
+        // of a concrete type — is a BAKEABLE type-value: it reduces to `Int64` (a fully compile-time-known
+        // type with nil runtime footprint) and crosses the boundary exactly as the bare `(def (main)
+        // Int64)` export does. It is NOT rejected. (Before `typeval_of` gained its `Annot` arm — added so a
+        // type-valued parameter is a `Type.eq` operand — the annotated form did NOT reduce, so it was
+        // spuriously non-bakeable and rejected; the annotated and bare forms now agree, both bakeable.) The
+        // genuinely non-bakeable case is the PARAMETERIZED export above (its result would depend on a
+        // runtime argument), which stays the one-coded-error rejection.
         let ann = crate::compile::compile(
             &[crate::abi::Artifact::new(
                 crate::abi::Artifact::KIND_AST,
@@ -15699,16 +15700,9 @@ mod match_engine {
             .collect();
         assert_eq!(
             ann_errors.len(),
-            1,
-            "a nullary `(: T Type)` type-value export = one error, got: {:?}",
+            0,
+            "a nullary `(: Int64 Type)` type-value export is BAKEABLE (crosses like bare `Int64`), got: {:?}",
             ann.diagnostics
-        );
-        assert!(
-            ann_errors[0]
-                .message
-                .contains(crate::diag::TYPE_EXPORT_MARKER),
-            "the nullary-annotated reject also names the marker: {}",
-            ann_errors[0].message
         );
     }
 

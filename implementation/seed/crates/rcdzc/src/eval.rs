@@ -2396,6 +2396,21 @@ pub fn typeval_of(db: &mut Db, id: StructId) -> Option<crate::ty::Ty> {
         // through), so the `let`'s type-value IS its body's. Reduce the body (its `t` reference follows to
         // the binding's init `Int64` via the `Ref` arm above). Lets a bound type flow to a boundary export.
         Resolved::Let { body, .. } => typeval_of(db, body),
+        // An ANNOTATED occurrence `(: e T)` whose annotation is the KIND OF TYPES (`T` reduces to
+        // `Ty::Type`) — the node denotes a TYPE-VALUE, so follow through to `e` and reduce THAT. This is
+        // how a TYPE-VALUED PARAMETER reference reaches `typeval_of` when it sits in a VALUE-argument
+        // position (`(Type.eq t Int64)`): unlike a bare type-position use (`(: b (Box t))`, which resolves
+        // straight to the `Param` and hits `type_valued_param_binder` at the top), a value-argument
+        // occurrence of `t` resolves to `Annot { expr: <t param ref>, ty_expr: Type }`. Without following
+        // it, `typeval_of` returned `None` and `Type.eq t Int64` declined "requires two type-values" even
+        // though `t` is a compile-time type-value (monomorphization substitutes the concrete type). Only a
+        // `Type`-KINDED annotation follows through — an ordinary value annotation `(: 5 Int64)` is NOT a
+        // type-value (its `ty_expr` reduces to `Int64`, not `Ty::Type`), so it still returns `None`.
+        Resolved::Annot { expr, ty_expr }
+            if typeval_of(db, ty_expr) == Some(crate::ty::Ty::Type) =>
+        {
+            typeval_of(db, expr)
+        }
         // A type-constructor application — reduce it, then read the built value's type.
         Resolved::Apply { head, args } => {
             let prim = meta_apply_of(db, head)?;

@@ -50,6 +50,7 @@ pass	TRANS carries a hypothesis borne by the RIGHT operand only (mirror of the l
 pass	TRANS chained three deep accumulates every operand's hypotheses
 pass	TRANS unions the hypotheses of BOTH operands when each carries a distinct assumption
 pass	TWO performs in an if condition both fold on the strict-first spine
+pass	Type.eq branches on a type-valued parameter, monomorphized per passed type
 pass	Type.eq compares a reflected type against a written type
 pass	Type.eq distinguishes quantities by their unit
 pass	Type.eq is false for values of different types
