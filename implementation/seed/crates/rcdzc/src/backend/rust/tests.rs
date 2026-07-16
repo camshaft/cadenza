@@ -201,6 +201,24 @@ fn rustc_roundtrip_signed_div_min_by_neg1_traps_overflow_not_div_by_zero() {
             "MIN / -2 is a normal (non-overflowing) division"
         );
     }
+    // MIN / -1 must TRAP, and the panic message must name OVERFLOW (not divide-by-zero) — the two kinds the
+    // gate's `trap_kind` classifies by message. `rustc_run` asserts SUCCESS so it can't check a trap; use
+    // the trap-asserting `rustc_run_traps` (returns the panic message, or `None` if the prog ran/there is no
+    // rustc). (This is the coverage the test's NAME promised — previously it only ran the two NON-trapping
+    // inputs above, Copilot PR#492.)
+    if let Some(msg) = rustc_run_traps(&rs, "d(i64::MIN, -1)") {
+        assert!(
+            msg.contains("overflow") && !msg.contains("by zero"),
+            "MIN / -1 must trap as OVERFLOW (not divide-by-zero); panic was:\n{msg}"
+        );
+    }
+    // A zero divisor traps as DIVIDE-BY-ZERO — the sibling kind, distinct message.
+    if let Some(msg) = rustc_run_traps(&rs, "d(7, 0)") {
+        assert!(
+            msg.contains("by zero"),
+            "x / 0 must trap as divide-by-zero; panic was:\n{msg}"
+        );
+    }
 }
 
 #[test]
@@ -1519,6 +1537,59 @@ fn rustc_run(module: &str, call: &str) -> Option<String> {
     // (On an assert-panic above the dir is intentionally LEFT, as a debugging artifact — a rare failure.)
     let _ = std::fs::remove_dir_all(&dir);
     Some(out)
+}
+
+/// Compile `module` + `println!(call)`, run it, and return the panic MESSAGE (`Some(stderr)`) when the
+/// program TRAPS (a non-zero exit — the Cadenza trap the emit compiles to `panic!`). `Some("")`-free: a
+/// program that RUNS successfully returns `None` (the caller asserts it SHOULD have trapped and fails on a
+/// `None`). `None` also when `rustc` is absent (skip, like `rustc_run`). This is the trap-asserting twin of
+/// `rustc_run` (which asserts SUCCESS and so cannot validate a trap) — it lets a pin verify a MIN/-1
+/// overflow / a divide-by-zero actually aborts, and inspect the panic message the gate's `trap_kind` reads.
+fn rustc_run_traps(module: &str, call: &str) -> Option<String> {
+    use std::process::Command;
+    if Command::new("rustc").arg("--version").output().is_err() {
+        return None; // no rustc — skip.
+    }
+    let dir = unique_tmp_dir("rcdzc-rust-trap", test_key(module, call));
+    let _ = std::fs::create_dir_all(&dir);
+    let src_path = dir.join("prog.rs");
+    let bin_path = dir.join("prog");
+    let full = format!("{module}\nfn main() {{ println!(\"{{}}\", {call}); }}\n");
+    std::fs::write(&src_path, full).expect("write rust source");
+    let cdz_num = cdz_num_link();
+    let compile = || {
+        let mut cmd = Command::new("rustc");
+        cmd.args(["-O", "--edition", "2021"])
+            .arg(&src_path)
+            .arg("-o")
+            .arg(&bin_path);
+        if let Some((dep_dir, rlib)) = &cdz_num {
+            cmd.arg("-L")
+                .arg(format!("dependency={}", dep_dir.display()))
+                .arg("--extern")
+                .arg(format!("cdz_num={}", rlib.display()));
+        }
+        cmd.output().expect("run rustc")
+    };
+    let mut status = compile();
+    if !status.status.success() {
+        status = compile(); // retry once (parallel linker race, as in `rustc_run`).
+    }
+    assert!(
+        status.status.success(),
+        "emitted Rust did not compile:\n{}\n--- source ---\n{module}",
+        String::from_utf8_lossy(&status.stderr)
+    );
+    let run = Command::new(&bin_path).output().expect("run compiled prog");
+    let result = if run.status.success() {
+        None // ran to completion — did NOT trap (the caller asserts a trap was expected)
+    } else {
+        // Trapped (a `panic!` → non-zero exit). Return the panic message (stderr) so the caller can assert
+        // WHICH trap kind fired (the same message the gate's `trap_kind` classifies).
+        Some(String::from_utf8_lossy(&run.stderr).to_string())
+    };
+    let _ = std::fs::remove_dir_all(&dir);
+    result
 }
 
 /// Compile the emitted `module` wrapped in `mod prog { … }` PLUS a caller-supplied `driver` (which
