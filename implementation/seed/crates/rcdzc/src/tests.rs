@@ -59188,14 +59188,15 @@ mod sidecar_driven {
         // multibyte + control chars — the structural delimiters the grammar keys on). A future divergence
         // fails HERE (caught), not at a user's component load.
         //
-        // NB: this pins ONLY `is_valid_interface_name`. The sibling `kebab_extern_name` normalizer is
-        // INTENTIONALLY not asserted equal — the backend copy DELIBERATELY diverges from the reference on
-        // a word-separator-immediately-before-a-digit name (`step-2`): the copy keeps it verbatim (invalid
-        // kebab) so `invalid_kebab_export_name` DECLINES it with an actionable rename (v-iterators' policy,
-        // `emit_tests_declines_a_digit_led_kebab_segment_name`), whereas the reference silently collapses
-        // it to `step2`. That is a live cross-vertical policy question (surfaced to the concierge), not a
-        // bug to unify here — both choices are miscompile-safe.
-        use crate::backend::wasm::is_valid_interface_name;
+        // BOTH copied functions are pinned: `is_valid_interface_name` (the peer-binding-string guard) AND
+        // `kebab_extern_name` (the export/member-name normalizer). They agree on the whole class including
+        // a word-separator-immediately-before-a-digit name (`step-2`, `a_0`): per the operator ruling
+        // (2026-07-16) BOTH keep it VERBATIM as an invalid `-`-led segment so `invalid_kebab_export_name`
+        // DECLINES it with an actionable rename — NOT a silent collapse to `step2`/`a0` (which would
+        // rename the author's identifier across the component / path-deps boundary). Earlier the reference
+        // silently collapsed; this test drove the discovery, the concierge ruled decline-with-rename, and
+        // the reference was conformed to the backend copy — so the two now agree here too and stay pinned.
+        use crate::backend::wasm::{is_valid_interface_name, kebab_extern_name};
         use cadenza_syntax::extern_name as reference;
 
         // Hand cases bracketing the grammar edges (valid names, and each rejection cause).
@@ -59216,12 +59217,37 @@ mod sidecar_driven {
             "café:pkg/api",          // INVALID: non-ASCII in package
             "cadenza:pkg/apé",       // INVALID: non-ASCII in projection
         ];
-        for &s in seeds {
+        // Extra hand cases for the normalizer's separator-before-digit class (the one the ruling settled).
+        let normalizer_seeds: &[&str] = &[
+            "inc",
+            "my-func",
+            "myFunc",
+            "fA",
+            "Foo",
+            "parseHTTPResponse",
+            "foo-bar2",
+            "a__b",
+            "a_",
+            "step-2",
+            "a_0",
+            "my_2nd",
+            "x_1y",
+            "a-0",
+            "A0",
+            "foo2",
+        ];
+        for &s in seeds.iter().chain(normalizer_seeds) {
             assert_eq!(
                 is_valid_interface_name(s),
                 reference::is_valid_interface_name(s),
                 "copy vs cadenza-syntax DISAGREE on is_valid_interface_name({s:?}) — the copy has \
                  drifted from the reference grammar",
+            );
+            assert_eq!(
+                kebab_extern_name(s),
+                reference::kebab_extern_name(s),
+                "copy vs cadenza-syntax DISAGREE on kebab_extern_name({s:?}) — the copy has drifted \
+                 from the reference normalizer",
             );
         }
 
@@ -59244,11 +59270,16 @@ mod sidecar_driven {
             let s: String = (0..len)
                 .map(|_| alphabet[(next() as usize) % alphabet.len()])
                 .collect();
-            // (a) neither implementation may PANIC on any input; (b) they must AGREE.
+            // (a) neither implementation may PANIC on any input; (b) they must AGREE (both functions).
             assert_eq!(
                 is_valid_interface_name(&s),
                 reference::is_valid_interface_name(&s),
                 "copy vs cadenza-syntax DISAGREE on fuzz input is_valid_interface_name({s:?})",
+            );
+            assert_eq!(
+                kebab_extern_name(&s),
+                reference::kebab_extern_name(&s),
+                "copy vs cadenza-syntax DISAGREE on fuzz input kebab_extern_name({s:?})",
             );
         }
     }
