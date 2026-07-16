@@ -1718,16 +1718,30 @@ fn cdz_render_at(
         let scaled_path = match unit_scale {
             Some((num, den)) => {
                 let bind = format!("__q{}", path.len());
-                // The magnitude's Rust scalar type (`Float64`→`f64`, `Int64`→`i64`, `UInt32`→`u32`, …).
-                let inner_rust = rust_scalar_type_name(inner_ty);
-                // Float multiplies in f64/f32 (num/den cast to the float type, IEEE rounds); an integer
-                // multiplies then truncating-divides in its own width (a `{n}{ty}` literal fixes the width).
-                let scaled_expr = if inner_rust == "f64" || inner_rust == "f32" {
-                    format!("(({path}) * ({num} as {inner_rust}) / ({den} as {inner_rust}))")
+                let (letbind_ty, scaled_expr) = if inner_ty.trim() == "Rational" {
+                    // A RATIONAL magnitude scales EXACTLY (no rounding): multiply by the scale as a Rational
+                    // `num/den` — `Rational::mul` normalizes to lowest terms, so `5 mile` = `5/1 · 201168/125`
+                    // = `201168/25 meter` exactly. `Big::from_i64` builds the ratio's limbs (a real
+                    // prefix/family scale fits i64). The exact twin of the Float(rounds)/Int(truncates) cases.
+                    (
+                        "cdz_num::Rational".to_string(),
+                        format!(
+                            "({path}).mul(&cdz_num::Rational::new(cdz_num::Big::from_i64({num}i64), cdz_num::Big::from_i64({den}i64)))"
+                        ),
+                    )
                 } else {
-                    format!("(({path}) * ({num}{inner_rust}) / ({den}{inner_rust}))")
+                    // The magnitude's Rust scalar type (`Float64`→`f64`, `Int64`→`i64`, `UInt32`→`u32`, …).
+                    let inner_rust = rust_scalar_type_name(inner_ty);
+                    // Float multiplies in f64/f32 (num/den cast to the float type, IEEE rounds); an integer
+                    // multiplies then truncating-divides in its own width (a `{n}{ty}` literal fixes width).
+                    let expr = if inner_rust == "f64" || inner_rust == "f32" {
+                        format!("(({path}) * ({num} as {inner_rust}) / ({den} as {inner_rust}))")
+                    } else {
+                        format!("(({path}) * ({num}{inner_rust}) / ({den}{inner_rust}))")
+                    };
+                    (inner_rust.to_string(), expr)
                 };
-                let letbind = format!("let {bind}: {inner_rust} = {scaled_expr};");
+                let letbind = format!("let {bind}: {letbind_ty} = {scaled_expr};");
                 Some((bind, letbind))
             }
             None => None,

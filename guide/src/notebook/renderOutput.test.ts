@@ -28,21 +28,26 @@ test("a `chart:line` directive over (x,y) tuples → a chart render carrying the
   }
 });
 
-test("a `formula` directive renders the value text as a formula", () => {
+test("a `formula` directive renders the FRIENDLY value text (ascription stripped)", () => {
   const out = renderOutput({ kind: "formula" }, value("(: 42 Int64)"));
-  assert.deepEqual(out, { render: "formula", text: "(: 42 Int64)" });
+  assert.deepEqual(out, { render: "formula", text: "42" });
 });
 
-test("no directive → a plain value render", () => {
+test("no directive → a plain value render in FRIENDLY form (`(: 7 Int64)` → `7`)", () => {
   const out = renderOutput({ kind: "none" }, value("(: 7 Int64)"));
-  assert.deepEqual(out, { render: "value", text: "(: 7 Int64)" });
+  assert.deepEqual(out, { render: "value", text: "7" });
 });
 
-test("a `table` directive over a NON-list value → value render + explanatory note (no error)", () => {
+test("a rational value renders bare (`(: 5/2 Rational)` → `5/2`)", () => {
+  const out = renderOutput({ kind: "none" }, value("(: 5/2 Rational)"));
+  assert.deepEqual(out, { render: "value", text: "5/2" });
+});
+
+test("a `table` directive over a NON-list value → friendly value render + explanatory note (no error)", () => {
   const out = renderOutput({ kind: "table" }, value("(: 42 Int64)"));
   assert.equal(out.render, "value");
   if (out.render === "value") {
-    assert.equal(out.text, "(: 42 Int64)");
+    assert.equal(out.text, "42");
     assert.match(out.note!, /not shown as a table/);
   }
 });

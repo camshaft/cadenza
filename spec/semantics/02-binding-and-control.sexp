@@ -214,6 +214,20 @@
   (call   main (: -5 Int64) (: 100 UInt8) (: 200 UInt8))
   (output (: 200 UInt8)))
 
+(case "a two-arm if selecting between two runtime SIGNED Int8 values preserves the sign of the chosen leaf"
+  (doc    "The SIGNED-narrow face of select-ification: a 2-arm `(if (> b 0) x y)` over runtime `Int8` `x`/`y`
+           lowers to a branchless `select` at the narrow payload width, and must preserve the operand's SIGN
+           — a select that zero-extended (instead of sign-extending) the narrow leaf would corrupt a NEGATIVE
+           value. `x` = -50 (sign bit set), `y` = 120: b=5 → -50 (the negative then-value survives intact),
+           b=-5 → 120. Pins the if→select carries the correct SIGNED Int8 operand at its own width with its
+           sign — the signed companion of the UInt8 select above (which used an unsigned high-bit value); the
+           negative leaf is what a sign-mishandling select would get wrong. Both backends.")
+  (input  (do (def (main (: b Int64) (: x Int8) (: y Int8)) (if (> b 0) x y)) (export main)))
+  (call   main (: 5 Int64) (: -50 Int8) (: 120 Int8))
+  (output (: -50 Int8))
+  (call   main (: -5 Int64) (: -50 Int8) (: 120 Int8))
+  (output (: 120 Int8)))
+
 (case "a dense zero-based jump-table match routes an out-of-range scrutinee to the default"
   (doc    "`(def (main (: x Int64)) (match x (0 10) (1 20) (2 30) (3 40) (_ 50)))` — a dense match over
            0..3 compiles to a `br_table` jump. Because the covered range starts at 0, the table index is
@@ -957,6 +971,46 @@
   (input  (do (def (main (: b Bool) (: z Int64)) (if b (/ 10 z) 42)) (export main)))
   (call   main (: true Bool) (: 2 Int64))
   (output (: 5 Int64)))
+
+; The shield cases above use INDEPENDENT condition/divisor (`(if b (/ 10 z) 42)`) or COMPOUND arms
+; (record/Option payloads). The select-ification pass (if→branchless select over two same-typed bare
+; scalar arms — Int64/Float64/narrow-UInt8, pinned elsewhere) is only sound when BOTH arms are trap-free;
+; a select evaluates both. These pin the NEGATIVE case that pass must respect: a BARE-SCALAR `if` whose
+; condition GUARDS a trapping arm (`(if (= d 0) 0 (/ 100 d))` — the guard is correlated to the divisor)
+; must NOT be select-ified, or the guarded divide would evaluate at d=0 and trap, defeating the guard.
+; This is the exact shape select-ification most aggressively targets (two Int64 arms, cheap condition), so
+; the `is_trap_free` guard on the select is what keeps it a branch — the trap-safety complement of the
+; landed narrow/Int64/Float64 select pins (which all use trap-free value arms).
+
+(case "a bare-scalar if guarding a div-by-zero is not select-ified — the divisor guard shields the trap"
+  (doc    "`(if (= d 0) 0 (/ 100 d))` — the condition `(= d 0)` guards the else arm's `(/ 100 d)`, which
+           would trap at d = 0. Both arms are bare Int64, the shape select-ification targets, but the else
+           arm is NOT trap-free, so the compiler must keep a BRANCH (not a branchless select that evaluates
+           both). d = 0 → 0 (the guard shields the ÷0, no trap); d = 5 → 100/5 = 20 (the divide arm runs).
+           A select-ification that fired here would trap at d = 0, defeating the guard — the trap-safety
+           complement of the landed bare-scalar select cases.")
+  (input  (do (def (main (: d Int64)) (if (= d 0) 0 (/ 100 d))) (export main)))
+  (call   main (: 0 Int64)) (output (: 0 Int64))
+  (call   main (: 5 Int64)) (output (: 20 Int64)))
+
+(case "a bare-scalar if guarding a MIN/-1 overflow is not select-ified"
+  (doc    "The overflow-guard companion: `(if (= d -1) 0 (/ Int64.min d))` guards the OVERFLOW trap
+           `Int64.min / -1` (the quotient +2^63 is out of range). d = -1 → 0 (guard shields the overflow);
+           d = 2 → Int64.min/2 = -4611686018427387904 (the divide runs). Pins the select-ification trap
+           guard covers an overflow-trapping arm too, not only ÷0 — both are traps a branchless select
+           would fire unconditionally.")
+  (input  (do (def (main (: d Int64)) (if (= d -1) 0 (/ -9223372036854775808 d))) (export main)))
+  (call   main (: -1 Int64)) (output (: 0 Int64))
+  (call   main (: 2 Int64)) (output (: -4611686018427387904 Int64)))
+
+(case "a narrow-UInt8-guarded div is not select-ified — the guard shields the trap"
+  (doc    "The narrow-condition companion: a UInt8 `d` guards a divide `(/ 100 (Int64.of d))`. Since the
+           narrow-value select-ification pins a UInt8 two-arm if lowering to a branchless select, this pins
+           that a narrow-guarded TRAPPING arm still branches. d = 0 → 0 (guard shields ÷0); d = 4 → 100/4 =
+           25. Pins the trap-safety holds when the guard condition is over a narrow width.")
+  (input  (do (def (main (: d UInt8)) (if (= d 0) 0 (/ 100 (Int64.of d)))) (export main)))
+  (call   main (: 0 UInt8)) (output (: 0 Int64))
+  (call   main (: 4 UInt8)) (output (: 25 Int64)))
 
 (case "a conditional's condition may itself be a conditional"
   (doc    "`(if (if true false true) 1 2)`: the condition is an `if` that evaluates to `false`, so the

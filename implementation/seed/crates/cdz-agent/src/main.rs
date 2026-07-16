@@ -351,64 +351,80 @@ fn read_inbox(dir: &Path) -> Result<Vec<Msg>> {
 }
 
 /// Extract the string value of top-level JSON field `key` from `body` — a minimal reader (no serde):
-/// find `"<key>"`, skip the `:` and any surrounding whitespace, then read the quoted value honoring
-/// backslash escapes, iterating by CHAR so multi-byte UTF-8 survives (the same discipline as the Bedrock
-/// decoder). Returns None if absent.
+/// find a `"<key>"` token that is followed by `:` and a quoted value (skipping surrounding whitespace),
+/// then read that value honoring backslash escapes, iterating by CHAR so multi-byte UTF-8 survives (the
+/// same discipline as the Bedrock decoder). Returns None if no such field is present.
 ///
 /// Whitespace tolerance is REQUIRED, not cosmetic: `cargo xtask fleet` delivers messages via
 /// `serde_json::to_string_pretty`, so a real inbox message is `"body": "…"` — a SPACE after the colon
 /// (and pretty JSON puts each field on its own line). A fixed `"key":"` needle (no space) matched only
 /// COMPACT JSON, so `body`/`from` parsed empty against real fleet inboxes → the driver sent an empty
-/// prompt and `--reply-to` refused (empty `from`). Copilot PR#494. We now scan for the key, then step
-/// over optional whitespace, the `:`, more optional whitespace, and the opening quote.
+/// prompt and `--reply-to` refused (empty `from`). Copilot PR#494.
+///
+/// We must also try EVERY `"<key>"` occurrence, not just the first: the key text can appear inside an
+/// EARLIER string value (a body mentioning the word `from`, or a subject containing `"body"`), where it
+/// is NOT followed by `: "…"`. Bailing on the first non-field occurrence re-introduced the empty parse
+/// for otherwise-valid messages (Copilot PR#496). So on a structural miss we resume searching for the
+/// NEXT `"<key>"` token rather than giving up. (A full parse would use serde_json; this stays dep-free.)
 fn json_string_field(body: &str, key: &str) -> Option<String> {
     let key_pat = format!("\"{key}\"");
-    // Advance past the key token, then the `:` separator with optional surrounding whitespace, then the
-    // opening quote. JSON structural whitespace (space/tab/newline/CR), `:` and `"` are all single-byte
-    // ASCII, so this prefix scan works on bytes; the VALUE itself is then read by CHAR below for UTF-8.
-    // A `:`/`"` not found after skipping whitespace means this wasn't a `"key": "…"` string field (e.g.
-    // the key appeared inside another value), so bail rather than mis-read.
     let bytes = body.as_bytes();
-    let mut i = body.find(&key_pat)? + key_pat.len();
     let skip_ws = |i: &mut usize| {
         while *i < bytes.len() && bytes[*i].is_ascii_whitespace() {
             *i += 1;
         }
     };
-    skip_ws(&mut i);
-    if bytes.get(i) != Some(&b':') {
-        return None;
-    }
-    i += 1;
-    skip_ws(&mut i);
-    if bytes.get(i) != Some(&b'"') {
-        return None;
-    }
-    i += 1; // step past the opening quote to the first byte of the value
-    let start = i;
-    let mut chars = body[start..].chars();
-    let mut out = String::new();
-    while let Some(c) = chars.next() {
-        match c {
-            '\\' => match chars.next() {
-                Some('"') => out.push('"'),
-                Some('\\') => out.push('\\'),
-                Some('/') => out.push('/'),
-                Some('n') => out.push('\n'),
-                Some('r') => out.push('\r'),
-                Some('t') => out.push('\t'),
-                Some('u') => {
-                    let hex: String = chars.by_ref().take(4).collect();
-                    if let Some(ch) = u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32) {
-                        out.push(ch);
-                    }
-                }
-                Some(other) => out.push(other),
-                None => return Some(out),
-            },
-            '"' => return Some(out),
-            c => out.push(c),
+    // Scan every `"<key>"` occurrence. `search` is the byte offset to look from; on a structural miss we
+    // advance it just past the current match's opening quote and try the next occurrence.
+    let mut search = 0;
+    while let Some(rel) = body[search..].find(&key_pat) {
+        let match_start = search + rel;
+        // Advance the NEXT search past this match's opening quote, so a miss can't loop forever.
+        search = match_start + 1;
+        // Step over the key token, then the `:` separator with optional surrounding whitespace, then the
+        // opening quote. JSON structural whitespace / `:` / `"` are all single-byte ASCII, so this prefix
+        // scan works on bytes; the VALUE itself is read by CHAR below for UTF-8. A `:`/`"` not found here
+        // means this `"<key>"` wasn't a field (it sat inside another value) → try the next occurrence.
+        let mut i = match_start + key_pat.len();
+        skip_ws(&mut i);
+        if bytes.get(i) != Some(&b':') {
+            continue;
         }
+        i += 1;
+        skip_ws(&mut i);
+        if bytes.get(i) != Some(&b'"') {
+            continue;
+        }
+        i += 1; // step past the opening quote to the first byte of the value
+        let mut chars = body[i..].chars();
+        let mut out = String::new();
+        while let Some(c) = chars.next() {
+            match c {
+                '\\' => match chars.next() {
+                    Some('"') => out.push('"'),
+                    Some('\\') => out.push('\\'),
+                    Some('/') => out.push('/'),
+                    Some('n') => out.push('\n'),
+                    Some('r') => out.push('\r'),
+                    Some('t') => out.push('\t'),
+                    Some('u') => {
+                        let hex: String = chars.by_ref().take(4).collect();
+                        if let Some(ch) =
+                            u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32)
+                        {
+                            out.push(ch);
+                        }
+                    }
+                    Some(other) => out.push(other),
+                    None => return Some(out),
+                },
+                '"' => return Some(out),
+                c => out.push(c),
+            }
+        }
+        // An unterminated value after a VALID `"key": "` opening — take what we read (matches the prior
+        // behavior for a truncated message).
+        return Some(out);
     }
     None
 }

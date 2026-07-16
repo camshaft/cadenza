@@ -231,6 +231,8 @@ pass	a bare prelude-colliding variant name matches as the local variant
 pass	a bare type-name-colliding variant name constructs as the local variant
 pass	a bare user constructor is passed as a first-class function to a higher-order function
 pass	a bare variant reusing a prelude DATA-constructor name constructs and matches as the local variant
+pass	a bare-scalar if guarding a MIN/-1 overflow is not select-ified
+pass	a bare-scalar if guarding a div-by-zero is not select-ified — the divisor guard shields the trap
 pass	a beyond-i64 constant BigInt is an operand of a runtime bigint op
 pass	a bin arm whose fixed-width segment overruns the input falls through
 pass	a bin pattern binds an integer read from a fixed-width segment
@@ -495,6 +497,7 @@ pass	a failure `?` propagates through TWO nested fallible boundaries
 pass	a failure `?` short-circuits BEFORE later computation runs
 pass	a fallible parser threads a Result((value,cursor),String) through mutual recursion, short-circuiting on Err
 pass	a false variant guard shields its arm's trapping body
+pass	a family quantity displays scaled exactly to its reference (Rational)
 pass	a family quantity displays scaled to its reference over Int64, truncating a non-whole ratio
 pass	a far-miss segment kind keeps the plain unrecognized message
 pass	a field is projected from a record chosen across a call boundary by a runtime conditional
@@ -902,6 +905,7 @@ pass	a narrow comparison reconciles a constant LEFT operand to the variable's wi
 pass	a narrow match binder used in arithmetic with the scrutinee
 pass	a narrow multiplication reconciles a constant LEFT operand to the variable's width
 pass	a narrow value in the else branch opposite a bare literal computes at the narrow width
+pass	a narrow-UInt8-guarded div is not select-ified — the guard shields the trap
 pass	a narrow-body arithmetic on an in-range constant arg overflows the parameter width
 pass	a narrow-width Int quantity add that fits the inner width runs normally
 pass	a narrow-width Int quantity add that overflows the inner width traps at compile time
@@ -1698,6 +1702,7 @@ pass	a twenty-deep push chain retains the still-live source binding
 pass	a two-arm Bool match selects its second (false) arm
 pass	a two-arm if selecting between two runtime FLOAT values computes the chosen one (float select-ification)
 pass	a two-arm if selecting between two runtime NARROW UInt8 values computes the chosen one at the payload width
+pass	a two-arm if selecting between two runtime SIGNED Int8 values preserves the sign of the chosen leaf
 pass	a two-arm list match reading an element binder keeps the branch — no speculative empty read
 pass	a two-arm list match with constant arms dispatches branchlessly on the length — empty
 pass	a two-arm match does not evaluate the unselected arm's trapping body
@@ -2272,6 +2277,7 @@ pass	eval of a quoted match form folds to the selected arm
 pass	eval of a quoted ordering comparison drives the branch
 pass	eval of a quoted string executes it to the string value
 pass	eval of a template splicing a runtime VALUE folds — the working side of the boundary
+pass	eval of an Ast.Float NaN node executes to the NaN value — it does NOT construct an escaping node
 pass	eval on malformed AST traps
 pass	every not-a-number value is equal to every not-a-number value
 pass	exact rational arithmetic is exact and normalized
@@ -3177,7 +3183,6 @@ todo	a distinct-signature round-trip applies the Int64->Bool closure
 todo	a distinct-signature round-trip applies the Int64->Int64 closure
 todo	a distinct-signature round-trip's Bool closure on a nonzero input
 todo	a doubly-call-returned narrow newtype spills correctly through two calls
-todo	a family quantity displays scaled exactly to its reference (Rational)
 todo	a fixed-shape Tuple ARG with a Bytes RESULT crosses the direct-call boundary
 todo	a fixed-shape Tuple ARG with a List RESULT crosses the direct-call boundary
 todo	a fixed-shape Tuple ARG with a Map RESULT crosses the direct-call boundary

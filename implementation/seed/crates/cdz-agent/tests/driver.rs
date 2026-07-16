@@ -454,6 +454,68 @@ fn the_driver_reads_real_pretty_printed_fleet_messages_and_writes_a_readable_rep
 }
 
 #[test]
+fn the_driver_parses_a_field_whose_key_text_appears_in_an_earlier_value() {
+    // REGRESSION for Copilot PR#496: json_string_field must try EVERY `"<key>"` occurrence, not just the
+    // first. Here the `subject` value literally contains the word "from" (and the token `"body"`), which
+    // appears in the JSON text BEFORE the real `"from"`/`"body"` fields. A first-occurrence-only reader
+    // would match inside the subject value, find no `: "…"` there, and bail → empty from/body → the driver
+    // refuses to reply. With the fix it scans past the non-field occurrence to the real field.
+    let Some(fixture) =
+        consumer_and_runtime_or_skip("tests/fixtures/inbox-model-return-consumer.wasm")
+    else {
+        eprintln!("[cdz-agent driver] runtime absent; skipping");
+        return;
+    };
+    let dir = std::env::temp_dir().join(format!("cdz-agent-keyinval-{}", std::process::id()));
+    let replies =
+        std::env::temp_dir().join(format!("cdz-agent-keyinvalout-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&replies);
+    std::fs::create_dir_all(&dir).expect("mkdir inbox");
+    // `subject` (which precedes `from`/`body` in the object) mentions the words `from` and `"body"` inside
+    // its VALUE, so the naive first-`"from"`/first-`"body"` match lands inside the subject string.
+    let msg = r#"{"subject":"a note from ops about the \"body\" field","from":"v-peer","kind":"note","body":"do the task","seq":1}"#;
+    std::fs::write(dir.join("001-msg.json"), msg).unwrap();
+
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_cdz-agent"))
+        .args([
+            "--consumer",
+            fixture.to_str().unwrap(),
+            "--inbox",
+            dir.to_str().unwrap(),
+            "--reply-to",
+            replies.to_str().unwrap(),
+        ])
+        .output()
+        .expect("spawn");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert!(
+        out.status.success(),
+        "the driver must exit 0: stdout=<{stdout}> stderr=<{stderr}>"
+    );
+    // `from` parsed the REAL field (not the mention inside subject) → the reply is addressed to v-peer.
+    assert!(
+        stdout.contains("replied to v-peer"),
+        "the real `from` field parsed past the key-word in the subject value: stdout=<{stdout}> stderr=<{stderr}>"
+    );
+    let reply = std::fs::read_to_string(replies.join("reply-001-msg.json"))
+        .expect("the reply message was written");
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&replies);
+    // `body` parsed the REAL field ("do the task") past the `"body"` mention in subject → uppercased.
+    assert!(
+        reply.contains(r#""body":"DO THE TASK""#),
+        "the real `body` field parsed past the `\"body\"` token inside the subject value: {reply}"
+    );
+    assert!(
+        reply.contains(r#""to":"v-peer""#),
+        "the reply is addressed to the sender parsed from the real `from` field: {reply}"
+    );
+}
+
+#[test]
 fn the_driver_does_not_reply_when_the_model_was_denied() {
     // A Cedar-DENIED run never calls the model, so there is nothing to answer — no reply is written even
     // with --reply-to. The authz consumer returns byte-len on allow / 0 on deny; drive it with a

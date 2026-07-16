@@ -1794,15 +1794,14 @@ fn quantity_result_maps_to_inner_at_any_scale1_unit_else_declines() {
             && base.contains("// cdz-unit[g]: ((. Unit base) #\"meter\")"),
         "a Qty{{Float64,meter}} result emits the inner f64 + return + value-form unit notes:\n{base}"
     );
-    // A NON-scale-1 unit over a RATIONAL magnitude still DECLINES — exact rational display-scaling is
-    // deferred (a Float/Int non-scale-1 now scales, see the dedicated display-scale pin). `5 mile` over a
-    // Rational needs the exact `201168/25` ratio, which the harness does not yet compute.
+    // A NON-scale-1 unit over a BIGINT magnitude still DECLINES — a bignum scaled by a non-integer ratio is
+    // not a BigInt (Float/Int/Rational non-scale-1 all scale now; see the dedicated display-scale pin).
     let scaled = compile_rust_result(
-        "(module m (def (g) (Qty.of (Rational.of 5 1) (Unit.of #\"mile\"))) (export g))",
+        "(module m (def (g) (Qty.of (BigInt.of 5) (Unit.of #\"mile\"))) (export g))",
     );
     assert!(
         scaled.is_err(),
-        "a non-scale-1 Rational (mile) quantity result declines (exact rational scaling deferred):\n{scaled:?}"
+        "a non-scale-1 BigInt (mile) quantity result declines (not a BigInt after scaling):\n{scaled:?}"
     );
     // A SINGLE base to a POSITIVE power — `meter²`, an area from `m·m`. The value-form note carries the
     // `Unit.^` surface (the gate's area cases pin the end-to-end render).
@@ -1838,12 +1837,12 @@ fn quantity_result_maps_to_inner_at_any_scale1_unit_else_declines() {
 }
 
 #[test]
-fn a_non_scale1_float_or_int_quantity_display_scales_to_its_reference_else_declines() {
+fn a_non_scale1_float_int_or_rational_quantity_display_scales_to_its_reference() {
     // A NON-scale-1 unit DISPLAY-SCALES the stored magnitude to its dimension's reference (`5 km` →
     // `5000 m`). The backend emits the unit at REFERENCE (`Unit::at_reference().render_value_form`) + a
     // `// cdz-scale[…]: num/den` note; the gate harness multiplies the boundary magnitude by that scale.
-    // Supported for a FLOAT / INT inner (the harness scales directly); a Rational/BigInt non-scale-1 needs
-    // exact rational scaling → still declines.
+    // Supported for FLOAT (rounds) / INT (truncates) / RATIONAL (EXACT via `Rational::mul`) inners. (BigInt
+    // still declines — a bignum scaled by a non-integer ratio isn't a BigInt.)
     // Float: `5.0 kilometer` — reference `meter`, scale `1000/1`.
     let km = compile_rust(
         "(module m (def (g) (Qty.of 5.0 (Unit.prefix kilo (Unit.base #\"meter\")))) (export g))",
@@ -1869,13 +1868,25 @@ fn a_non_scale1_float_or_int_quantity_display_scales_to_its_reference_else_decli
         !m.contains("// cdz-scale["),
         "a scale-1 meter result emits no scale note:\n{m}"
     );
-    // A RATIONAL non-scale-1 (`5 mile`) still DECLINES — exact rational scaling is deferred.
-    let mile = compile_rust_result(
+    // A RATIONAL non-scale-1 (`5 mile`) scales EXACTLY: reference `meter`, scale `201168/125`, so the
+    // harness multiplies the stored `5/1` by `201168/125` (as a `cdz_num::Rational`) = `201168/25 meter`.
+    // The result type is `cdz_num::Rational`; the scale note carries the exact ratio.
+    let mile = compile_rust(
         "(module m (def (g) (Qty.of (Rational.of 5 1) (Unit.of #\"mile\"))) (export g))",
     );
     assert!(
-        mile.is_err(),
-        "a Rational non-scale-1 (mile) quantity result declines (exact rational scaling deferred):\n{mile:?}"
+        mile.contains("-> cdz_num::Rational")
+            && mile.contains("// cdz-scale[g]: 201168/125")
+            && mile.contains("// cdz-unit[g]: ((. Unit base) #\"meter\")"),
+        "a Rational mile result emits the reference meter + the exact 201168/125 scale note:\n{mile}"
+    );
+    // A BigInt non-scale-1 still DECLINES (a bignum scaled by a non-integer ratio is not a BigInt).
+    let bigmile = compile_rust_result(
+        "(module m (def (g) (Qty.of (BigInt.of 5) (Unit.of #\"mile\"))) (export g))",
+    );
+    assert!(
+        bigmile.is_err(),
+        "a BigInt non-scale-1 (mile) quantity result declines (not a BigInt after scaling):\n{bigmile:?}"
     );
 }
 
