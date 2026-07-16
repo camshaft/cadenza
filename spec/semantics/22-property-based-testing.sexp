@@ -80,6 +80,21 @@
   (call   main (: 12345 Int64)) (output (: true Bool))
   (call   main (: -7 Int64)) (output (: true Bool)))
 
+(case "a generated value with a BIGINT leaf is reproducible (compound = walks the bignum)"
+  (doc    "Witnesses §Generation Is Seeded And Reproducible for a compound value carrying an ARBITRARY-
+           PRECISION leaf: `gen` draws a `(Tuple BigInt Bool)` — the int is lifted to a `BigInt` via
+           `BigInt.of` — and `(= (gen seed) (gen seed))` = true. This exercises runtime structural equality
+           over a compound whose element is a bignum (a heap value whose `=` walks the digit limbs, not a
+           fixed-width scalar compare); admitting a `BigInt`/`Rational` leaf into the whole-compound `=`
+           walk is what makes it hold. Runs at the boundary so the lift + the compound compare are real
+           instructions, not a fold.")
+  (input  (do (def (next (: s Int64)) (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
+              (def (gen (: s Int64)) (tuple ((. BigInt of) (& (next s) 255)) (= (% (& (next (next s)) 255) 2) 0)))
+              (def (main (: seed Int64)) (= (gen seed) (gen seed)))
+              (export main)))
+  (call   main (: 12345 Int64)) (output (: true Bool))
+  (call   main (: -7 Int64)) (output (: true Bool)))
+
 (case "generated FLOAT values are totally ordered (a trichotomy property over two generated floats)"
   (doc    "A property over GENERATED floats using the runtime float ordering: `of` draws a float from the
            seed (an integer-valued float via `Float64.of-int`, which never produces NaN), so for any two
