@@ -157,6 +157,7 @@ pass	TWO Tuple args with a scalar BETWEEN them (tuple, scalar, tuple)
 pass	TWO performs in an if condition both fold on the strict-first spine
 pass	TWO prefix scalars then a Tuple then a suffix scalar cross the direct-call boundary
 pass	Type is a first-class value
+pass	Type.eq branches on a type-valued parameter, monomorphized per passed type
 pass	Type.eq compares a reflected type against a written type
 pass	Type.eq distinguishes quantities by their unit
 pass	Type.eq is false for values of different types
@@ -1070,6 +1071,7 @@ pass	a module value definition registers a reachable export field
 pass	a module with two definitions of the same name is rejected
 pass	a module's delegated capability is reachable as metadata, not as an export
 pass	a monomorphic user sum applied to a type argument in an annotation is rejected
+pass	a multi-arg constructor with mixed-kind payloads binds each by its own kind
 pass	a multi-argument call node is evaluated by iterating its payload arg list
 pass	a multi-argument closure among distinct-signature exports
 pass	a multi-argument closure returning a COMPOUND round-trips — flat arrow spelling
@@ -1177,6 +1179,7 @@ pass	a nested chain of function calls compiles in linear time and folds to a con
 pass	a nested conditional (the sign idiom) folds to branchless nested selects — negative
 pass	a nested conditional (the sign idiom) folds to branchless nested selects — positive
 pass	a nested conditional (the sign idiom) folds to branchless nested selects — zero
+pass	a nested conjunction accumulates all three operand hypotheses
 pass	a nested constant multiply preserves the inner overflow rather than combining the factors
 pass	a nested constructor in a multi-payload position destructures two levels
 pass	a nested constructor match on a variant past the first dispatches on that variant's payload
@@ -1702,6 +1705,11 @@ pass	a runtime-element set's equality is independent of written order
 pass	a runtime-index list read out of bounds is None, not a trap
 pass	a runtime-index list read yields the element at that index
 pass	a runtime-index read of a runtime-built list
+pass	a runtime-index string slice compares equal to the expected multi-byte scalar by content
+pass	a runtime-index string slice isolates a multi-byte scalar by its scalar offset
+pass	a runtime-index string slice isolates a supplementary-plane scalar (four UTF-8 bytes)
+pass	a runtime-index string slice of the ASCII prefix before a multi-byte scalar
+pass	a runtime-index string slice spanning ASCII and a multi-byte scalar
 pass	a runtime-index update leaves the other elements unchanged
 pass	a runtime-index update replaces exactly that element, read back at the same index
 pass	a runtime-keyed map entry enumerates as its key-value tuple
@@ -1783,6 +1791,7 @@ pass	a signed pattern segment reads a two's-complement integer as negative
 pass	a signed segment reads the sign-bit-only byte as the minimum, not its magnitude
 pass	a signed-byte entrypoint returns its runtime argument
 pass	a single-form body admits a sequence by holding a do block
+pass	a single-scalar String.slice equals the String.at of the same index (the two scalar-addressing paths agree)
 pass	a single-variant NEWTYPE escapes with its tag ERASED, only the type header naming it
 pass	a single-variant abstract theorem's constructor match outside the kernel is a withheld-constructor rejection (CDZ0214)
 pass	a single-variant abstract type's constructor match outside its module is rejected CDZ0214 (withheld-ctor)
@@ -1874,6 +1883,7 @@ pass	a three-deep known-disc nested match reads the right payload at every level
 pass	a three-deep tuple projection chain retains the innermost consumed child
 pass	a three-element runtime tuple is returned as a result
 pass	a three-level curried spine applies through both intermediate closures
+pass	a three-level nested multi-arg constructor destructures to every leaf payload
 pass	a three-parameter closure is applied at full arity through a recursive HOF
 pass	a three-payload constructor fully curried builds the variant
 pass	a three-payload constructor partially applied in a runtime tuple completes via eta-closure
@@ -2431,7 +2441,10 @@ pass	concatenating with the empty list on the right yields the operand by value
 pass	concatenation is associative by content
 pass	concatenation with a run-time-selected operand joins the actual strings
 pass	conditional propagation respects a shadowing rebind of the condition variable
+pass	conjunction elimination CONJUNCT2 preserves both operand hypotheses
+pass	conjunction elimination keeps BOTH operand hypotheses, not just the projected conjunct's
 pass	conjunction is true exactly when both operands are true
+pass	conjunction of two theorems sharing a hypothesis concatenates without dedup
 pass	conjunction shields a trapping right operand when the left is false
 pass	constructing a bit-field from a value wider than its width is rejected
 pass	constructing a byte sequence with a negative value is a type error

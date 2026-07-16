@@ -360,6 +360,14 @@ pub enum FleetCmd {
         #[arg(long)]
         no_commit: bool,
     },
+    /// Safely sync the current worktree onto the integrated `trunk` tip (contract step 4) WITHOUT
+    /// orphaning an in-flight merge-request. A bare `git reset --hard trunk` moves your branch off the
+    /// commit a queued MR's `--ref` points at, so pr-sync can't fetch it and silently SKIPS the MR
+    /// forever. This resets onto `trunk`, then cherry-picks back ONLY the local commits not yet upstream
+    /// by patch-id (dropping any pr-sync already landed, even under a re-parented sha), so the branch tip
+    /// keeps containing your unlanded work + any queued `--ref` stays reachable. Refuses on a dirty tree
+    /// and restores your pre-sync HEAD on any cherry-pick conflict, so it can never lose work.
+    Sync,
     /// Resolve a `merge-request` ATOMICALLY: reply to its sender AND archive the request in one step.
     /// This closes a reliability hole in the single-integrator model — pr-sync used to reply and move
     /// the request to `processed/` as two decoupled manual steps, so a missed reply left the sender
@@ -533,6 +541,7 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
         FleetCmd::Heartbeat { name } => heartbeat(&fleet, &name),
         FleetCmd::Describe { name } => describe(&fleet, &name),
         FleetCmd::Archive { no_commit } => archive(&fleet, no_commit),
+        FleetCmd::Sync => sync(),
         FleetCmd::Watchdog {
             dry_run,
             stale_mult,
@@ -2227,6 +2236,98 @@ fn archive(fleet: &Fleet, no_commit: bool) {
     }
 }
 
+/// Safe base-sync for the tick's "sync your base" step (contract step 4). Encodes the ONE correct way
+/// to land on the integrated tip WITHOUT orphaning an in-flight merge-request — a footgun that has cost
+/// several agents multiple ticks of silent non-integration (a bare `git reset --hard trunk` moves the
+/// agent's branch off the commit its queued `--ref` points at, and pr-sync then can't fetch it and
+/// SKIPS the MR forever, with no reject; see the ref-reachability trap).
+///
+/// The recipe: fetch, then reset onto `trunk`, then cherry-pick back ONLY the local commits that are
+/// not yet upstream by PATCH-ID (`git cherry trunk <old-head>` → the `+` lines via `commits_to_replay`).
+/// A commit pr-sync already integrated — even under a re-parented sha — has an equivalent patch upstream,
+/// so `git cherry` marks it `-` and we DROP it (no empty/duplicate cherry-pick). The remaining `+`
+/// commits are genuinely-unlanded local work, replayed so the branch tip still CONTAINS them and any
+/// queued `--ref` stays reachable.
+///
+/// Safety: refuses on a dirty worktree (a reset would clobber uncommitted work — the OTHER half of the
+/// footgun); and if any cherry-pick fails (e.g. a real conflict against the advanced trunk), it aborts
+/// the pick and RESTORES the pre-sync HEAD, so the worst case is exactly where the agent started —
+/// `fleet sync` can never lose or half-apply work. On a conflict it exits non-zero with guidance.
+fn sync() {
+    let cwd = std::env::current_dir().expect("cwd");
+    let git = |args: &[&str]| -> std::process::Output {
+        Command::new("git")
+            .current_dir(&cwd)
+            .args(args)
+            .output()
+            .unwrap_or_else(|e| panic!("failed to spawn git {args:?}: {e}"))
+    };
+    let git_ok = |args: &[&str]| -> bool { git(args).status.success() };
+    let git_stdout = |args: &[&str]| -> String {
+        String::from_utf8_lossy(&git(args).stdout)
+            .trim()
+            .to_string()
+    };
+
+    // Refuse on a dirty tree — a reset --hard would silently discard uncommitted work. (The tick
+    // contract expects the agent to commit before syncing; guard it rather than trust that.)
+    if !git_ok(&["diff", "--quiet"]) || !git_ok(&["diff", "--cached", "--quiet"]) {
+        eprintln!(
+            "fleet sync: worktree is DIRTY — refusing to reset (it would discard uncommitted work). \
+             Commit or stash your changes first, then re-run `cargo xtask fleet sync`."
+        );
+        std::process::exit(1);
+    }
+
+    let old_head = git_stdout(&["rev-parse", "HEAD"]);
+    if old_head.is_empty() {
+        eprintln!("fleet sync: could not resolve HEAD.");
+        std::process::exit(1);
+    }
+
+    // Bring trunk current (the hub shares the object store, but `fetch` refreshes origin for the
+    // ahead/behind reporting and is harmless if there's nothing new).
+    let _ = git_ok(&["fetch", "-q", "origin"]);
+
+    // Which local commits are genuinely unlanded (patch-id not upstream)? `git cherry trunk <head>`.
+    let cherry = git_stdout(&["cherry", TRUNK, &old_head]);
+    let replay = commits_to_replay(&cherry);
+
+    // Land on the integrated tip.
+    if !git_ok(&["reset", "--hard", TRUNK]) {
+        eprintln!("fleet sync: `git reset --hard {TRUNK}` failed.");
+        std::process::exit(1);
+    }
+    let trunk_sha = git_stdout(&["rev-parse", "--short", "HEAD"]);
+
+    if replay.is_empty() {
+        println!("fleet sync: on trunk ({trunk_sha}); no unlanded local commits to replay.");
+        return;
+    }
+
+    // Replay only the not-yet-upstream commits, oldest-first, so the branch tip contains them again
+    // (keeping any queued merge-request --ref reachable). On ANY failure, restore the pre-sync HEAD.
+    for sha in &replay {
+        if !git_ok(&["cherry-pick", sha]) {
+            let _ = git_ok(&["cherry-pick", "--abort"]);
+            let _ = git_ok(&["reset", "--hard", &old_head]);
+            eprintln!(
+                "fleet sync: cherry-pick of {sha} onto trunk ({trunk_sha}) FAILED (likely a real \
+                 conflict with the advanced trunk). Restored your pre-sync HEAD ({}) — nothing lost. \
+                 Resolve the conflict by hand: `git reset --hard {TRUNK}` then cherry-pick + fix.",
+                &old_head[..old_head.len().min(9)]
+            );
+            std::process::exit(1);
+        }
+    }
+    let new_head = git_stdout(&["rev-parse", "--short", "HEAD"]);
+    println!(
+        "fleet sync: reset onto trunk ({trunk_sha}) and replayed {} unlanded commit(s) → {new_head}. \
+         (Dropped any already-landed commit by patch-id, incl. re-parented merges.)",
+        replay.len()
+    );
+}
+
 /// Write the STANDING agents from the live runtime registry into the tracked `fleet/roster.json`
 /// (in `cwd`, the caller's worktree). Standing = active + a role that belongs in the reproducible
 /// fleet (everything except the ephemeral `fix`/`design` roles). Only machine-independent fields are
@@ -2740,6 +2841,32 @@ fn trunk_reflog_entry_is_clobber(subject: &str) -> bool {
     // git writes `reset: moving to <target>`; the clobber targets origin/main. pr-sync's own recovery
     // resets to a `trunk@{N}` reflog spec, not `origin/main`, so it's correctly NOT flagged.
     subject.trim() == "reset: moving to origin/main"
+}
+
+/// Parse `git cherry <upstream> <head>` output into the list of local commits (oldest-first) that
+/// are NOT yet upstream and so must be replayed after a reset onto `<upstream>`. `git cherry` marks
+/// each commit reachable from `<head>` but not `<upstream>` with a leading `+` (no equivalent patch
+/// upstream) or `-` (an equivalent patch — same patch-id — IS already upstream). Only `+` lines need
+/// replaying; `-` lines already landed (this is exactly what catches a commit pr-sync integrated under
+/// a RE-PARENTED sha — same patch-id, so `git cherry` prints `-` and we correctly DROP it rather than
+/// re-applying a now-empty/duplicate cherry-pick). Pure + patch-id-aware so `fleet sync` can never
+/// re-stack an already-landed commit. Returns shas in the order git emits them (oldest-first — the
+/// order they must be cherry-picked). Malformed/blank lines are ignored.
+fn commits_to_replay(cherry_output: &str) -> Vec<String> {
+    cherry_output
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            // Expect `+ <sha>` / `- <sha>`; take only the `+` (not-yet-upstream) ones.
+            let rest = line.strip_prefix("+ ")?;
+            let sha = rest.split_whitespace().next()?;
+            if sha.is_empty() {
+                None
+            } else {
+                Some(sha.to_string())
+            }
+        })
+        .collect()
 }
 
 /// `(ahead, behind)` of `trunk` relative to `origin/main`, or `None` if either ref is unresolvable.
@@ -3568,6 +3695,41 @@ mod tests {
         std::fs::write(ib.join("000000000002-2-note.json"), "{}").unwrap();
         assert_eq!(inbox_depth(&fleet, "v-x"), "2 msg");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn commits_to_replay_keeps_only_not_yet_upstream() {
+        // `git cherry` marks not-yet-upstream commits `+` and already-landed (same patch-id) `-`.
+        // Only the `+` shas must be replayed after a reset onto trunk — the `-` ones already landed,
+        // INCLUDING a commit pr-sync integrated under a re-parented sha (same patch-id → `-` → dropped).
+        let out = "\
++ 1111111111111111111111111111111111111111
+- 2222222222222222222222222222222222222222
++ 3333333333333333333333333333333333333333";
+        assert_eq!(
+            commits_to_replay(out),
+            vec![
+                "1111111111111111111111111111111111111111".to_string(),
+                "3333333333333333333333333333333333333333".to_string(),
+            ]
+        );
+        // All upstream (every commit landed, e.g. via re-parent) → nothing to replay.
+        assert!(commits_to_replay("- aaaa\n- bbbb").is_empty());
+        // Empty output (branch == trunk) → nothing to replay.
+        assert!(commits_to_replay("").is_empty());
+        // Order is preserved oldest-first (the order git emits = the cherry-pick order).
+        assert_eq!(
+            commits_to_replay("+ aaaa\n+ bbbb\n+ cccc"),
+            vec!["aaaa", "bbbb", "cccc"]
+        );
+        // Blank / malformed lines are ignored; only a leading `+ ` counts (a bare `+sha` with no space,
+        // or a `-`/other prefix, is not a replay target).
+        assert_eq!(
+            commits_to_replay("\n+ dddd\n  \n+eeee\nnoise\n- ffff"),
+            vec!["dddd".to_string()]
+        );
+        // A `+ <sha> <subject>` form (some git configs append the subject) keeps just the sha.
+        assert_eq!(commits_to_replay("+ 9999 wip: something"), vec!["9999"]);
     }
 
     #[test]

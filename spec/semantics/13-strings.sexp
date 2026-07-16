@@ -605,6 +605,89 @@
             (def (main) (f "hello")) (export main)))
   (output (: 0 Int64)))
 
+; --- String.slice with RUNTIME scalar-index arguments over a MULTI-BYTE string --------------------
+; The runtime-slice cases above supply CONSTANT slice indices (the seed emits the runtime UTF-8 byte-walk
+; for the string, but the offsets fold). When the slice INDICES are runtime values (fn parameters at the
+; call boundary), the byte-walk must map each SCALAR offset to a byte offset at run time — the multi-byte
+; correctness the scalar `String.at` cases pin, now on the runtime-index slice path. Over "café" (scalars
+; c,a,f,é; é is 2 UTF-8 bytes, byte-len 5) a byte-indexing slice would split é or read the wrong span; the
+; scalar semantics must isolate whole scalars. These pin runtime-index slice on both a 2-byte scalar (é)
+; and a 4-byte supplementary-plane scalar (😀), by byte-length and by content.
+
+(case "a runtime-index string slice isolates a multi-byte scalar by its scalar offset"
+  (doc    "`(String.slice \"café\" a b)` with RUNTIME indices a=3, b=4 selects scalar 3 — é, which occupies
+           2 UTF-8 bytes — so the slice's `String.byte-len` is 2. A byte-indexing lowering would take byte
+           offset 3 (the middle of é) and split the code unit; the scalar semantics map scalar offset → byte
+           offset at run time and isolate the whole é. Pins the runtime-index slice's scalar-vs-byte mapping
+           on a 2-byte scalar (the runtime-index companion of the constant-index `String.at \"café\" 3` = é).")
+  (input  (do (def (main (: a Int64) (: b Int64))
+                (String.byte-len (Option.expect (String.slice "café" a b) "in range")))
+              (export main)))
+  (call   main (: 3 Int64) (: 4 Int64))
+  (output (: 2 Int64)))
+
+(case "a runtime-index string slice of the ASCII prefix before a multi-byte scalar"
+  (doc    "`(String.slice \"café\" 0 3)` with runtime indices selects scalars 0..2 (c,a,f — all ASCII), byte-len
+           3. The prefix companion: the walk stops exactly at the scalar-3 boundary (byte 3), not inside é.")
+  (input  (do (def (main (: a Int64) (: b Int64))
+                (String.byte-len (Option.expect (String.slice "café" a b) "in range")))
+              (export main)))
+  (call   main (: 0 Int64) (: 3 Int64))
+  (output (: 3 Int64)))
+
+(case "a runtime-index string slice spanning ASCII and a multi-byte scalar"
+  (doc    "`(String.slice \"café\" 1 4)` with runtime indices selects scalars 1..3 — a,f (1 byte each) and é
+           (2 bytes) — byte-len 4. Pins that the runtime walk accumulates the correct byte span across a
+           mix of single- and multi-byte scalars, not a fixed bytes-per-scalar assumption.")
+  (input  (do (def (main (: a Int64) (: b Int64))
+                (String.byte-len (Option.expect (String.slice "café" a b) "in range")))
+              (export main)))
+  (call   main (: 1 Int64) (: 4 Int64))
+  (output (: 4 Int64)))
+
+(case "a runtime-index string slice compares equal to the expected multi-byte scalar by content"
+  (doc    "The content companion (not only byte-length): `(String.slice \"café\" a b)` with runtime a=3, b=4
+           equals the string \"é\" by content. Confirms the isolated slice is the RIGHT scalar, not merely a
+           2-byte span that happens to have the right length.")
+  (input  (do (def (main (: a Int64) (: b Int64))
+                (= (Option.expect (String.slice "café" a b) "in range") "é"))
+              (export main)))
+  (call   main (: 3 Int64) (: 4 Int64))
+  (output (: true Bool)))
+
+(case "a runtime-index string slice isolates a supplementary-plane scalar (four UTF-8 bytes)"
+  (doc    "`(String.slice \"a😀b\" a b)` with runtime a=1, b=2 selects scalar 1 — 😀 (U+1F600), ONE scalar
+           occupying FOUR UTF-8 bytes — so byte-len is 4. A byte- or UTF-16-index walk would land inside the
+           emoji's encoding; the scalar walk maps scalar offset 1..2 to the whole four-byte span. Pins the
+           runtime-index slice at the supplementary-plane boundary that most tempts a code-unit miscount.")
+  (input  (do (def (main (: a Int64) (: b Int64))
+                (String.byte-len (Option.expect (String.slice "a😀b" a b) "in range")))
+              (export main)))
+  (call   main (: 1 Int64) (: 2 Int64))
+  (output (: 4 Int64)))
+; --- `String.at i` and `String.slice i (i+1)` are the SAME single-scalar addressing — they must agree ---
+; `String.at` and `String.slice` are the two runtime scalar-addressing String ops (both byte-walk the UTF-8
+; leaf, mapping scalar offsets to byte offsets). A single-scalar slice `[i, i+1)` selects exactly the one
+; scalar `String.at i` returns — so `String.slice s i (i+1)` and `String.at s i` MUST produce the equal
+; one-scalar substring for the same runtime `s`/`i`. They lower through separate emit paths (String.at's
+; one-scalar read vs String.slice's start..end byte-walk), so this pins the two paths AGREE — a lowering
+; that computed a different byte span for one (an off-by-one scalar→byte map, or slicing bytes not scalars)
+; would diverge them. Checked over a MULTI-BYTE scalar (é = 1 scalar, 2 bytes) so a byte/scalar confusion
+; in either path is observable, on both backends.
+(case "a single-scalar String.slice equals the String.at of the same index (the two scalar-addressing paths agree)"
+  (doc    "`(String.slice s i (+ i 1))` and `(String.at s i)` both address the single scalar at index `i`,
+           so their one-scalar substrings are equal. Over a runtime `s = \"aébc\"` (é is one scalar, TWO
+           UTF-8 bytes) at `i = 1`: both yield \"é\" — `(= (slice…) (at…))` → true (1). Pins that the
+           String.slice byte-walk and the String.at read map scalar→byte identically for a single scalar
+           (a byte/scalar off-by-one in either path would make them unequal), both backends. `s` is built
+           via `(if true …)` so it is a runtime value, not a folded constant.")
+  (input  (do
+            (def (viaslice (: s String) (: i Int64)) (Option.expect (String.slice s i (+ i 1)) "in bounds"))
+            (def (viaat (: s String) (: i Int64)) (Option.expect (String.at s i) "in bounds"))
+            (def (main) (if (= (viaslice (if true "aébc" "x") 1) (viaat (if true "aébc" "x") 1)) 1 0))
+            (export main)))
+  (output (: 1 Int64)))
+
 ; --- A string operation consumes a string SELECTED by runtime control flow -----------------
 ; A string operation (String.scalar-len/at/slice/concat) takes a string ARGUMENT; that argument may be a
 ; string SELECTED at run time by an `if` or a `match`, not only a literal. The seed resolves a string

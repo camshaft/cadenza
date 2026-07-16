@@ -1029,6 +1029,21 @@
   (call   main (: 7 Int64))
   (output (: 8 Int64)))
 
+(case "Type.eq branches on a type-valued parameter, monomorphized per passed type"
+  (doc    "`Type.eq` accepts a TYPE-VALUED PARAMETER `t` as an operand: `(def (is-int (: t Type) (: x
+           Int64)) (if (Type.eq t Int64) 1 0))`. At each instantiation `t` is a concrete compile-time
+           type-value (monomorphization substitutes it), so `(Type.eq t Int64)` folds to a constant per
+           call — `(is-int Int64 5)` folds `true` → 1, `(is-int Bool 5)` folds `false` → 0, so their sum
+           is 1. Pins that a type-valued parameter is a first-class `Type.eq` operand (types-as-values:
+           a program branches on a passed type), not only a written type or a `Type.of` result — the
+           operand in a VALUE position reduces through its `Type`-kinded annotation to the parameter's
+           substituted type-value.")
+  (input  (do
+            (def (is-int (: t Type) (: x Int64)) (if (Type.eq t Int64) 1 0))
+            (def (main) (+ (is-int Int64 5) (is-int Bool 5)))
+            (export main)))
+  (output (: 1 Int64)))
+
 ; A TYPE-VALUE is compile-time-only (`type-system.md §A Type Parameter Is Resolvable At Compile Time`: a
 ; type-value never flows from runtime data into a position that determines a type). So a value that would
 ; carry a type-value into RUNTIME data — a compound storing a type, returned across the component boundary

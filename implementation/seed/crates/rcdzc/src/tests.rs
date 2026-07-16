@@ -15675,13 +15675,14 @@ mod match_engine {
             "the no-runtime-form declines must not accompany the coded reject: {:?}",
             out.diagnostics
         );
-        // A NULLARY export whose body is a `(: <TypeName> Type)` annotation — a type-value that
-        // `typeval_of` does not reduce to a bakeable concrete type — hits the SAME reject branch. Its
-        // message previously said "is a TYPE that cannot cross …", which did NOT contain
-        // `TYPE_EXPORT_MARKER`, so the three no-runtime-form declines LEAKED (the coded reject plus a
-        // built-in-as-value / nullary-lambda / type-value cascade). The reworded message embeds the marker,
-        // so `dedup_faults` drops the cascade here too — one coded error, exactly like the parameterized
-        // case above.
+        // A NULLARY export whose body is a `(: <TypeName> Type)` annotation — a `Type`-KINDED annotation
+        // of a concrete type — is a BAKEABLE type-value: it reduces to `Int64` (a fully compile-time-known
+        // type with nil runtime footprint) and crosses the boundary exactly as the bare `(def (main)
+        // Int64)` export does. It is NOT rejected. (Before `typeval_of` gained its `Annot` arm — added so a
+        // type-valued parameter is a `Type.eq` operand — the annotated form did NOT reduce, so it was
+        // spuriously non-bakeable and rejected; the annotated and bare forms now agree, both bakeable.) The
+        // genuinely non-bakeable case is the PARAMETERIZED export above (its result would depend on a
+        // runtime argument), which stays the one-coded-error rejection.
         let ann = crate::compile::compile(
             &[crate::abi::Artifact::new(
                 crate::abi::Artifact::KIND_AST,
@@ -15699,16 +15700,9 @@ mod match_engine {
             .collect();
         assert_eq!(
             ann_errors.len(),
-            1,
-            "a nullary `(: T Type)` type-value export = one error, got: {:?}",
+            0,
+            "a nullary `(: Int64 Type)` type-value export is BAKEABLE (crosses like bare `Int64`), got: {:?}",
             ann.diagnostics
-        );
-        assert!(
-            ann_errors[0]
-                .message
-                .contains(crate::diag::TYPE_EXPORT_MARKER),
-            "the nullary-annotated reject also names the marker: {}",
-            ann_errors[0].message
         );
     }
 
@@ -23313,6 +23307,69 @@ mod match_engine {
             )))
             .iter()
             .any(|d| d.message.contains("not a unit")),
+            "a well-formed Qty unit is not flagged"
+        );
+    }
+
+    #[test]
+    fn a_bare_symbol_in_a_qty_unit_position_names_it_a_unit_and_offers_the_wrap_fix() {
+        use crate::testkit::parse;
+        // The bare-SYMBOL twin of the bare-name unit slip: `(Qty Float64 #"meter")` writes the unit's NAME
+        // directly (as a symbol) where a unit EXPRESSION belongs. It used to fall through the bare-name
+        // check (a symbol is not `as_name`) to the generic "requires a type, but found a non-type" — which
+        // misleads (the position is a UNIT, not a type) and gives no repair. It now names the unit misuse
+        // AND — because the symbol text is in hand — carries the exact `(Unit.base #"meter")` replace fix.
+        let find = |src: &str| {
+            crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.message.contains("is not a unit"))
+        };
+        // At a parameter site, a value-annotation site, and NESTED inside a `(List …)` — the nested walk
+        // reaches each.
+        for src in [
+            "(module m (def (g (: q (Qty Float64 #\"meter\"))) q) (def (main) 0) (export main))",
+            "(module m (def (main) (: 5 (Qty Int64 #\"sec\"))) (export main))",
+            "(module m (def (g (: xs (List (Qty Float64 #\"kg\")))) xs) (def (main) 0) (export main))",
+        ] {
+            let d = find(src).unwrap_or_else(|| panic!("expected a unit-position fault for {src}"));
+            assert_eq!(d.code.as_deref(), Some("CDZ0201"), "{src}: {}", d.message);
+            assert!(
+                d.message
+                    .contains("is a UNIT expression, not a bare symbol"),
+                "names the bare-symbol misuse: {}",
+                d.message
+            );
+            // The fix wraps the symbol in `(Unit.base #"…")`, the exact repair.
+            let fix = d.fix.as_ref().expect("carries a wrap-in-Unit.base fix");
+            assert_eq!(fix.kind, crate::abi::FixKind::Replace);
+            assert!(
+                fix.replacement.starts_with("(Unit.base #\"") && fix.replacement.ends_with("\")"),
+                "the fix spells the base-unit wrap: {}",
+                fix.replacement
+            );
+            // The generic "requires a type" is SUPPRESSED — only the unit message shows for this node.
+            assert!(
+                !crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                    .iter()
+                    .any(|d| d.message.contains("requires a type, but found a non-type")),
+                "the misleading generic type message is superseded: {src}"
+            );
+        }
+        // NO regression: the bare-NAME case keeps its own CDZ0101 message, and a well-formed unit is clean.
+        assert!(
+            crate::diagnostics(&mut crate::db::Db::load(parse(
+                "(module m (def (g (: q (Qty Int64 meter))) q) (export g))"
+            )))
+            .iter()
+            .any(|d| d.code.as_deref() == Some("CDZ0101") && d.message.contains("not a unit")),
+            "the bare-name unit case is unchanged"
+        );
+        assert!(
+            !crate::diagnostics(&mut crate::db::Db::load(parse(
+                "(module m (def (g (: q (Qty Float64 (Unit.base #\"meter\")))) q) (export g))"
+            )))
+            .iter()
+            .any(|d| d.message.contains("is not a unit")),
             "a well-formed Qty unit is not flagged"
         );
     }
