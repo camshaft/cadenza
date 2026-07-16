@@ -2946,7 +2946,7 @@ mod tests {
     /// to print AS ML; keeping generation in s-expr avoids depending on the ML printer we are testing.
     fn gen_ml_expressible(rng: &mut SplitMix64, depth: usize) -> String {
         let atoms = ["a", "b", "x", "y", "f", "g", "1", "42", "true"];
-        if depth == 0 || (rng.next() % 3) == 0 {
+        if depth == 0 || rng.next().is_multiple_of(3) {
             return atoms[(rng.next() as usize) % atoms.len()].to_string();
         }
         let sub = |rng: &mut SplitMix64| gen_ml_expressible(rng, depth - 1);

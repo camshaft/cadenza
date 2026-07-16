@@ -1240,7 +1240,7 @@ mod tests {
     /// nested lists, and `record`/`match` shapes that stress the pretty-printer's layout branches.
     fn gen_pretty_prog(rng: &mut SplitMix64, depth: usize) -> String {
         let names = ["a", "b", "x", "y", "f", "+", "g", "\"s\"", "42", "true"];
-        if depth == 0 || (rng.next() % 3) == 0 {
+        if depth == 0 || rng.next().is_multiple_of(3) {
             return names[(rng.next() as usize) % names.len()].to_string();
         }
         let sub = |rng: &mut SplitMix64| gen_pretty_prog(rng, depth - 1);
