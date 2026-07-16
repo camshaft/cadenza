@@ -61,6 +61,26 @@ export default function ConstParameters() {
         handing the implementation to the function as a compile-time argument.
       </P>
 
+      <H2>A const type parameter</H2>
+      <P>
+        The const argument can even be a <em>type</em>. A <C>(const (: t Type))</C> parameter takes a
+        type-value at compile time (types are ordinary values — see <em>Types as values</em>), and the body
+        can branch on it with <C>Type.eq</C>, folding to a constant per specialization. Here <C>is-int</C>{" "}
+        asks whether the type it was handed is <C>Int64</C>:
+      </P>
+      <Runnable
+        source={`(def (is-int (const (: t Type)) (: x Int64))
+  (if (Type.eq t Int64) 1 0))
+(def (main) (is-int Int64 5))`}
+      />
+      <P>
+        Called with <C>Int64</C> it folds to <C>1</C>; call it with <C>Bool</C> and the same code folds to{" "}
+        <C>0</C> — each call site is specialized for the type it named, and the comparison is settled at
+        compile time, not run time. This is the <em>explicit</em> counterpart to the automatic dispatch in{" "}
+        <em>Ad-hoc polymorphism</em>: there the compiler picks by inferred type; here the caller hands the
+        type in as an argument.
+      </P>
+
       <Note>
         This is the third face of the compile-time-argument idea, and it ties the last few chapters
         together. Passing a <C>const</C> <em>type</em> (a <C>(const (: t Type))</C> parameter) is the
