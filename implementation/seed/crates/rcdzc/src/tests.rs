@@ -70479,6 +70479,84 @@ mod cross_component_oracle {
     }
 
     // ------------------------------------------------------------------------------------------------
+    // PL41 — THE REALISTIC BEDROCK SHAPE: a peer op `converse : (-> (Tuple String Int64) String)` — a
+    // REQUEST RECORD argument {prompt: String, max-tokens: Int64} in, a String completion out that the
+    // entrypoint RETURNS (escapes). This is the shape the live-Bedrock embedder (cdz-agent, Inc-1b) uses —
+    // not the toy `(-> String String)`. Composes PL31 (a record-carrying-a-String argument crossing as one
+    // handle) with the String-result resource escape (the with-methods fused envelope). Provider reads the
+    // request's prompt field + doubles it; main sends {"hi", 64} and RETURNS the completion → escapes as
+    // (: "hihi" String). Pins the actual production model-call signature end-to-end.
+    // ------------------------------------------------------------------------------------------------
+    #[test]
+    fn the_realistic_bedrock_request_struct_converse_crosses_a_peer_end_to_end() {
+        use crate::backend::wasm::runtime_abi::{REQUIRED_RUNTIME_HASH, RUNTIME_IFACE};
+        use crate::testkit::parse;
+        let import_name = format!("{RUNTIME_IFACE}@0.0.0+{REQUIRED_RUNTIME_HASH}");
+        // PROVIDER: converse reads the request tuple's prompt field (element 0) + doubles it. It IGNORES
+        // max-tokens here (element 1) — the point is the compound-with-String arg crosses + is projected,
+        // and a String completion is built + returned.
+        let provider = compile_provider(
+            "(do (def (converse (: r (Tuple String Int64))) (String.concat (. r 0) (. r 0))) \
+                 (export converse))",
+            "cadenza:model/api",
+        );
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&provider)
+                .expect("the request-struct converse provider validates");
+        }
+        // main builds the request record {"hi", 64} and RETURNS the peer's String completion → escapes.
+        let src = "(do \
+            (effect M (op converse (-> (Tuple String Int64) String))) \
+            (bind M \"cadenza:model/api\") \
+            (def (main) (host (M) (M.converse (tuple \"hi\" 64)))) \
+            (export main))";
+        let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .unwrap_or_else(|d| {
+                panic!(
+                    "request-struct converse consumer compiles: {} [{:?}]",
+                    d.message, d.code
+                )
+            });
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&consumer)
+                .expect("the request-struct converse consumer validates");
+        }
+        assert!(
+            String::from_utf8_lossy(&consumer).contains(&import_name),
+            "the request-struct converse consumer imports the value-heap runtime"
+        );
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("[PL41] runtime wasm not found; skipping");
+            return;
+        };
+        let peers = vec![cdz_run::Peer {
+            bytes: provider,
+            interface: "cadenza:model/api".to_string(),
+        }];
+        let opts = cdz_run::RunOpts {
+            export: None,
+            args: Vec::new(),
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run_with_peers(&consumer, &peers, &opts)
+            .expect("the realistic Bedrock request-struct converse crosses a peer end to end")
+        {
+            // The request record {"hi", 64} crossed as ONE handle; the peer read prompt="hi", doubled it →
+            // "hihi"; main RETURNED that completion → escapes as its String value form. The production
+            // model-call signature: a request struct in, a String completion out, both over the peer.
+            cdz_run::Outcome::Value(s) => assert_eq!(
+                s, "(: \"hihi\" String)",
+                "a request-struct {{prompt,max-tokens}} crosses to a peer + its String completion escapes main"
+            ),
+            cdz_run::Outcome::Trap(t) => panic!("request-struct converse run trapped: {t}"),
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------------
     // U17 — HANDLE PASS-THROUGH: peer A produces a compound, the consumer passes it DIRECTLY to peer B
     // WITHOUT inspecting it. Composes U16 (compound arg in) with U5 (compound result out) across TWO
     // boundary crossings in one body, exercising ownership-transfer-on-argument: the handle A mints flows
