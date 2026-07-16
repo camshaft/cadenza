@@ -1,8 +1,9 @@
 # DESIGN: Program verification — pre/post-conditions on Cadenza programs, with proofs that feed the optimizer
 
 Status: **Increment (b) DESIGN — ALL FORKS RESOLVED (operator 2026-07-16): `@requires`/`@ensures` GREENLIT;
-opt-seam SETTLED with v-core-opt; `@requires`/`@ensures` parse SETTLED with v-syntax. NEXT: b1.** Follows
-the LCF kernel
+`@requires`/`@ensures` parse SETTLED with v-syntax; opt-seam SETTLED as a FOUR-WAY division (v-core-opt +
+v-wasm-opt + v-rust-backend + me — §7), with a known Core-representability prerequisite v-core-opt lands
+before my b3 (§3). NEXT: b1.** Follows the LCF kernel
 ([DESIGN-verification-hol-kernel.md](DESIGN-verification-hol-kernel.md), CHARTER DELIVERED: a working,
 unforgeable `Thm` on trunk). Vertical `v-verification`, subsystem `rcdzc`. Operator greenlight
 (2026-07-16, via concierge, verbatim intent): *"Adding pre/post-conditions would be amazing … keep in
@@ -125,13 +126,27 @@ verify-blocks first (no surface change while the semantics bridge firms up), the
 The operator's headline: *proven no-overflow → elide the check entirely.* Design so a discharged
 obligation is a fact the optimizer QUERIES, keyed to the node whose guard it licenses.
 
-**Keying + tier (SETTLED with v-core-opt, 2026-07-16).** Key the obligation by the **stable Core-level
-`Id`** (the same `Id` space `lower::core_of` uses), NOT a MIR/Lir node, and run the elision as a **`CorePass`
-at the CORE tier**. Two reasons, both from v-core-opt: (1) eliding high in the pipeline means BOTH backends
-(wasm + rust) inherit ONE elision, rather than each backend re-eliding at its own emit — this also matches
-the operator's explicit "higher is better" optimization steer; (2) a MIR/Lir-keyed annotation would be
-backend-specific and would not survive node regeneration. So the obligation is `no-overflow@<core-Id>` and
-the elision is a Core pass that, for each checked-arith Core node, queries the proof oracle by that `Id`.
+**Keying + tier (SETTLED with v-core-opt, 2026-07-16).** Key the obligation by the **stable `StructId`**
+(the same `Id` space `lower::core_of` and the poison/escape VISITED walks use), NOT a MIR/Lir node, and run
+the elision as a **`CorePass` at the CORE tier**. Two reasons, both from v-core-opt: (1) eliding high in the
+pipeline means BOTH backends (wasm + rust) inherit ONE elision, rather than each backend re-eliding at its
+own emit — this also matches the operator's explicit "higher is better" optimization steer; (2) a MIR/Lir-
+keyed annotation would be backend-specific and would not survive node regeneration. So the obligation is
+`no-overflow@<StructId>` and the elision is a Core pass that, for each checked-arith Core node, queries the
+proof oracle by that `Id` and, on a discharge, calls `db.install_core_override(N, <unchecked Core>)` (the
+override map is EMPTY in the default pipeline → byte-identical no-proof emit; no-proof is literally the
+no-override path).
+
+**⚠️ ARCHITECTURAL PREREQUISITE (v-core-opt, 2026-07-16) — the elision target is NOT Core-representable
+today.** The overflow guard is currently emitted PURELY IN THE BACKEND (`emit_machine_overflow_guard`,
+wasm `select.rs`) off the operands' solved width; the Core node is just `Core::Arith{op,lhs,rhs}`
+(`core.rs`) with NO checked/unchecked bit. A Core-tier override therefore cannot yet say "emit this add
+UNCHECKED" — checkedness isn't in the node. For the elision to live HIGH (both backends inherit, per the
+operator mandate), v-core-opt will add a Core-level unchecked representation — either an `unchecked: bool`
+flag on `Core::Arith` or a paired `Core::UncheckedArith` node — as their **Slice-2a** (after their Slice-1
+override seam merges, BEFORE my b3 wires the real guard). This is their change (they own `core.rs`/`opt.rs`/
+emit gating). My b2 match predicate is unaffected; b3 ASSUMES a Core-level unchecked variant exists (not a
+backend-only guard to reach into).
 
 ### The seam
 - The compiler emits checked arithmetic (an overflow trap) at a Core node with stable `Id`. Call the guard
@@ -159,7 +174,7 @@ the elision is a Core pass that, for each checked-arith Core node, queries the p
   path and inverts the trust story (search is untrusted and precomputed; the oracle only looks up a
   already-discharged result).
 
-**Recommendation (fork #3): 3A as refined — a pure oracle query keyed by stable Core-`Id`, the elision a
+**Recommendation (fork #3): 3A as refined — a pure oracle query keyed by stable `StructId`, the elision a
 `CorePass`, the optimizer's trusted action a single conclusion-match against a real `Thm`.** This makes an
 unsound elision *impossible by construction*: the pass cannot install an unchecked override without a `Thm`
 in hand, and it cannot forge one (Inc-a unforgeability). The elision target is the overflow-trap emit; the
@@ -167,6 +182,30 @@ mechanism is v-core-opt's core-override layer. **Seam SETTLED with v-core-opt** 
 `DESIGN-tiered-optimization-levels-rcdzc.md` §9.2 carries the identical default=check invariant); we sync
 at my b2 (match predicate + toy prototype) ↔ their slice-2 (real passes), by which point their slice-1
 override seam exists so the prototype is a real `CorePass`.
+
+### How the discharge reaches the EXISTING elision predicate (v-wasm-opt, 2026-07-16 — with a rust caveat)
+The overflow guard is already elided where a range analysis proves safety: `lower::arith_provably_in_range`
+(defined at the Core tier). The oracle does NOT introduce a new elision node — it feeds that predicate as a
+**disjunction**:
+
+> `provably_no_overflow(id) = arith_provably_in_range(op, lhs, rhs, ty)  OR  oracle(id).is_some()`
+
+so range analysis and proof COMPOSE (either suffices), and the discharged-`Thm` case reuses the tested,
+corpus-armored elision path. The disjunction only ever ADDS elisions (a proof licenses what range analysis
+could not); it never removes a check range analysis would keep — the default-is-check invariant is
+preserved. The one new trust obligation is that `oracle(id) = Some` implies the same range-safety
+`arith_provably_in_range` would certify — which is exactly what the match predicate checks.
+
+**⚠️ RUST CAVEAT (v-wasm-opt correction, 2026-07-16): the elision is WASM-ONLY today.**
+`arith_provably_in_range` is Core-defined, but only the **wasm** backend consults it (`select.rs`); the
+**rust** backend's `emit_arith` (`backend/rust/expr.rs`) emits `checked_add(…).unwrap_or_else(panic)`
+UNCONDITIONALLY — no elision path. So a discharged proof will not elide on rust until **v-rust-backend adds
+the symmetric consult** (a 4th touch on the seam, flagged to v-core-opt). Two consequences for my plan:
+(1) the fork-#3 mechanism is unchanged, but the seam is now **four-way** (v-core-opt: Core unchecked node +
+override pass; v-wasm-opt: wasm emit predicate; v-rust-backend: rust emit consult; me: oracle + match
+predicate); (2) **my b2/b3 differential gate MUST include a rust case**, not only wasm — otherwise a
+proof-driven elision passes the gate while silently doing nothing (or diverging) on rust. v-wasm-opt will
+co-verify both-backend byte-identity once my oracle (b2) + v-core-opt's pass exist.
 
 ### What the optimizer must trust (and what it must NOT)
 - **Trusted:** the kernel `Thm` type (unforgeable), and the *predicate* "this `Thm`'s conclusion is the
@@ -212,10 +251,14 @@ Front-load the design validation BEFORE any compiler change, exactly as Inc-a di
   core-override seam exists, so this is a real `CorePass`, not a toy. Adversarially pinned (breaker) BEFORE
   it gates anything real. Sync point ↔ v-core-opt slice-2.
 - **b3 — proof-guided elision on the real overflow guard (opt-in, proven cases only).** Wire b2's oracle
-  into the Core-tier checked-arith emit: a node with a matching discharged `Thm` installs an unchecked
-  override; all others unchanged. Elision fires at the CORE tier so BOTH backends inherit it — differential-
-  gate wasm + rust: a proven-safe add computes the same value unchecked as checked, and an UNproven add
-  must still trap. This is the operator's headline deliverable.
+  into the Core-tier checked-arith emit via the disjunction (`arith_provably_in_range OR oracle(id)`): a
+  node with a matching discharged `Thm` installs an unchecked override; all others unchanged. **ASSUMES
+  v-core-opt's Slice-2a landed a Core-level unchecked `Arith` representation** (the guard is backend-only
+  today — §3 prerequisite). Elision fires at the CORE tier so BOTH backends *should* inherit it — but the
+  **differential gate MUST include a RUST case, not only wasm** (§3 rust caveat: rust's `emit_arith` won't
+  consult the predicate until v-rust-backend adds the symmetric consult). Gate assertion: a proven-safe add
+  computes the same value unchecked as checked on BOTH backends, and an UNproven add must still trap on
+  both. This is the operator's headline deliverable; it depends on the four-way seam (§7) being complete.
 - **b4+ — the annotation SURFACE (2B, `@requires`/`@ensures`) — GREENLIT + parse SETTLED (§2); then wider
   obligations (bounds checks, exhaustiveness), then effect-ful conditions (1B) if wanted.**
 
@@ -237,14 +280,25 @@ Each increment is one gated unit; b1 is the next unit of work now that all forks
 4. **Ownership: stays under v-verification through b1–b3; revisit a co-scoped vertical at the 2B surface.**
    ✅ operator confirmed.
 
-## 7. Coordination
+## 7. Coordination — the opt seam is FOUR-WAY (settled 2026-07-16)
 
-- **v-core-opt** — the proof-guided-elision seam (§3, fork #3) is **SETTLED** (2026-07-16, both notes
-  exchanged): key by stable Core-`Id`, elision a `CorePass` at the Core tier (both backends inherit), oracle
-  a pure `Id → Option<Thm-handle>` query. Division of labor: they own the core-override mechanism (`core_of`
-  consults an override table a `PassManager` populates — their slice-1, landing first) + the checked-arith
-  emit; I own the oracle + the trusted match predicate. Sync ↔ my b2 / their slice-2. Their
-  `DESIGN-tiered-optimization-levels-rcdzc.md` §9.2 carries the identical default=check invariant.
+- **v-core-opt** — owns the **Core-override mechanism** (`db.install_core_override(N, …)`, keyed by
+  `StructId`; `core_of` consults it) — their **Slice-1** (queued, ref `7976cee70`) — AND the **Core-level
+  unchecked `Arith` representation** their **Slice-2a** adds (an `unchecked` flag or a `Core::UncheckedArith`
+  node), because the guard is backend-only today and NOT Core-representable (§3 prerequisite). Slice-2a
+  lands before my b3. Default=check invariant matches their `DESIGN-tiered-optimization-levels-rcdzc.md`
+  §9.2. Sync ↔ my b2 / their slice-2.
+- **v-wasm-opt** — owns the **wasm emit predicate**: the oracle feeds a disjunction into the existing
+  `lower::arith_provably_in_range` (consulted at `select.rs`), reusing the corpus-armored elision path (§3).
+  Will co-verify both-backend byte-identity at b2/b3.
+- **v-rust-backend** — a **4th touch** flagged by v-wasm-opt: rust's `emit_arith` (`backend/rust/expr.rs`)
+  emits `checked_add(…).unwrap_or_else(panic)` UNCONDITIONALLY and does NOT consult
+  `arith_provably_in_range`. They must add the symmetric consult for proof-driven elision to fire on rust
+  (v-wasm-opt has flagged it to v-core-opt). Until then, elision is wasm-only — **my b2/b3 gate includes a
+  rust case** to catch a silent no-op/divergence.
+- **me (v-verification)** — own the **oracle** (`StructId → Option<discharged-Thm-handle>`, pure) + the
+  **trusted match predicate** (does this `Thm` license `no-overflow@Id`). This is Inc-b's only new trusted
+  surface.
 - **v-metaprogramming** — the denotation `Ast → Term` (§1) lives on their reflected `Ast`. Expect gaps →
   REPORT/FIX. Confirm the `Ast` exposes every construct the arithmetic fragment needs.
 - **v-syntax** — the `@requires`/`@ensures` parse (2B) is **SETTLED** (2026-07-16): fits the existing

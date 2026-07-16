@@ -147,14 +147,6 @@ export const CHAPTERS: Chapter[] = [
     Component: lazy(() => import("./chapters/Symbols.tsx")),
   },
   {
-    slug: "errors",
-    title: "Errors & absence",
-    blurb: "Option, Result, safe indexing, and checked arithmetic.",
-    section: "Fundamentals",
-    exercises: 2,
-    Component: lazy(() => import("./chapters/Errors.tsx")),
-  },
-  {
     slug: "numbers",
     title: "The numeric model",
     blurb: "Checked integers and no silent promotion.",
@@ -185,6 +177,14 @@ export const CHAPTERS: Chapter[] = [
     section: "Fundamentals",
     exercises: 2,
     Component: lazy(() => import("./chapters/Rationals.tsx")),
+  },
+  {
+    slug: "errors",
+    title: "Errors & absence",
+    blurb: "Option, Result, safe indexing, and checked arithmetic.",
+    section: "Fundamentals",
+    exercises: 2,
+    Component: lazy(() => import("./chapters/Errors.tsx")),
   },
   {
     slug: "effects",

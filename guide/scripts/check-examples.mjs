@@ -205,6 +205,33 @@ const examples = files.flatMap((f) => {
   }
 });
 
+// ---- the playground's Examples-dropdown programs (src/playground/examples.ts) ----
+// These are FULL modules (the playground compiles its buffer verbatim, no wrapping) authored in the
+// s-expr surface — the reader loads one, then may toggle to ML. They ship in the dropdown, so they're
+// exactly the "every example is a test" surface: each must compile AND run. Loaded via node's
+// type-stripping (like wrapModule.ts above; needs Node ≥ 22.6 / ≥ 20.19). Marked `noWrap` (already whole
+// modules) and their authored surface, so `checkProgram` compiles+runs each in the surface it's written
+// in — the same real browser compiler the reader hits.
+try {
+  const { EXAMPLES: PLAYGROUND } = await import(join(guideRoot, "src/playground/examples.ts"));
+  for (const p of PLAYGROUND) {
+    // The intentional "see the squiggle" example is authored to NOT compile — check it as expect="error".
+    const expect = /\(\+\s+1\s+true\)/.test(p.source) ? "error" : "value";
+    examples.push({
+      file: "src/playground/examples.ts",
+      kind: "Runnable",
+      snippet: p.source,
+      surface: p.surface,
+      expect,
+      expected: null,
+      noWrap: true,
+    });
+  }
+} catch (e) {
+  console.error(`check-examples: could not load playground examples — ${String(e && e.message ? e.message : e)}`);
+  process.exit(1);
+}
+
 // ---- check one program (already wrapped) in one surface, returning null on success or a reason ----
 async function checkProgram(program, surface, ex, where) {
   const brief = ex.snippet.replace(/\n/g, " ").slice(0, 80);
@@ -257,6 +284,25 @@ async function checkProgram(program, surface, ex, where) {
 
 // ---- check one example in BOTH surfaces (the reader can toggle); null on success, else a reason ----
 async function checkExample(ex) {
+  // A PLAYGROUND example is a FULL module authored in its own `surface`; the reader loads it, then may
+  // toggle. It's compiled verbatim (`noWrap`) in its authored surface, then RE-RENDERED whole to the
+  // other surface (`render_syntax`) and compiled again — so a broken toggle round-trip is caught. This
+  // is a distinct path from the chapter-snippet wrap/strip path below (which is UNCHANGED).
+  if (ex.surface) {
+    const authored = ex.surface;
+    const authoredFail = await checkProgram(ex.snippet.trim(), authored, ex, authored === "ml" ? "ML" : "s-expr");
+    if (authoredFail) return authoredFail;
+    const other = authored === "ml" ? "sexpr" : "ml";
+    try {
+      const otherProgram = render_syntax(ex.snippet.trim(), authored, other);
+      const otherFail = await checkProgram(otherProgram, other, ex, `${other === "ml" ? "ML" : "s-expr"} toggle`);
+      if (otherFail) return otherFail;
+    } catch (e) {
+      return `${ex.file} [${ex.kind}] (${other} toggle): render threw — ${String(e.message || e).slice(0, 80)}`;
+    }
+    return null;
+  }
+
   // 1. s-expr — the authored surface.
   const sexprProgram = ex.noWrap ? ex.snippet.trim() : wrapModule(ex.snippet, "sexpr");
   const sexprFail = await checkProgram(sexprProgram, "sexpr", ex, "s-expr");

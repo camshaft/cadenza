@@ -783,14 +783,23 @@ fn build_path_deps(
         .unwrap_or_else(|| std::path::PathBuf::from("."));
     let mut peers = Vec::new();
     for dep in &project.m.deps {
+        // Today the only dep source is a PATH; a future registry source would branch here to fetch+build
+        // instead of resolving a sibling dir. (The `DepSource` enum is what lets that slot in later.) The
+        // explicit `match` — not a `let`-destructure — is deliberate: adding a `Registry` variant makes
+        // THIS arm non-exhaustive, forcing a compile error here so the resolve path can't silently ignore
+        // the new source. (clippy's single-pattern suggestion would erase that guard.)
+        #[allow(clippy::infallible_destructuring_match)]
+        let dep_path = match dep {
+            DepSource::Path(p) => p,
+        };
         // Resolve the dep dir RELATIVE to the consumer's manifest dir (so `../lib` means a sibling of the
         // consumer, not of the cwd).
-        let dep_dir = manifest_dir.join(dep);
+        let dep_dir = manifest_dir.join(dep_path);
         let dep_specs =
             match resolve_project_specs(Some(&dep_dir.to_string_lossy()), "cdz run (dep)") {
                 Ok(s) => s,
                 Err(_) => {
-                    eprintln!("{PROG}: dependency `{dep}`: could not resolve its Project.cdz");
+                    eprintln!("{PROG}: dependency `{dep_path}`: could not resolve its Project.cdz");
                     return Err(());
                 }
             };
@@ -813,7 +822,7 @@ fn build_path_deps(
         ) {
             Ok(Some(b)) => b,
             Ok(None) => {
-                eprintln!("{PROG}: dependency `{dep}` built no runnable component");
+                eprintln!("{PROG}: dependency `{dep_path}` built no runnable component");
                 return Err(());
             }
             Err(()) => return Err(()),
@@ -1224,10 +1233,15 @@ fn run_metadata(args: &MetadataArgs) -> ExitCode {
         &str_array(&existing(expand_manifest_globs(&dir, &m.tests, &m.exclude))),
     );
     obj.raw("exclude", &str_array(&m.exclude));
-    // The PATH DEPENDENCIES (`def deps`) — the sibling project dirs this project links across the
-    // component boundary, so a tool sees the project graph. Reported as the raw manifest paths (relative
-    // to this manifest's dir); empty `[]` for a standalone project.
-    obj.raw("deps", &str_array(&m.deps));
+    // The DEPENDENCIES (`def deps`) — the projects this project links across the component boundary, so a
+    // tool sees the project graph. Reported as the raw manifest refs (a path today; a registry ref later);
+    // empty `[]` for a standalone project.
+    let dep_texts: Vec<String> = m
+        .deps
+        .iter()
+        .map(|d| d.as_manifest_text().to_string())
+        .collect();
+    obj.raw("deps", &str_array(&dep_texts));
     // The build ARTIFACTS currently present in the manifest directory — EXACTLY the set `cdz clean` would
     // remove, via the SAME `project_artifact_files` helper `cdz clean` uses, so the two never diverge. That
     // set is this project's own emitted outputs BY NAME (the entry's export-derived `<output>.{wasm,rs,
@@ -4874,13 +4888,43 @@ struct Manifest {
     /// string — parsed via `rcdzc::OptLevel::FromStr` at use. A `--opt-level`/`--release` flag overrides
     /// it. `None` = no manifest default (the build falls back to `--release`'s `O2` or the default `O1`).
     opt_level: Option<String>,
-    /// PATH DEPENDENCIES (`def deps = ["../mathlib", …]`) — sibling project directories this project links
-    /// across the component boundary. `cdz run` builds each dep's `Project.cdz` entry to its own component
-    /// and PEER-BINDS its exported interface into this project's consumer (the cross-component interop
-    /// v-peer-linking owns — a runtime compose via `run_with_peers`, NOT a compile-time merge). The dep's
-    /// interface is published as `cadenza:<dep-name>/api` (derived from the dep's own `name`/dir), which
-    /// the consumer's source binds with `(bind E "cadenza:<dep-name>/api")`. Empty = a standalone project.
-    deps: Vec<String>,
+    /// DEPENDENCIES (`def deps = ["../mathlib", …]`) — the projects this project links across the component
+    /// boundary. Each is a [`DepSource`]; today the only source is a PATH (a sibling project dir), but the
+    /// type is an enum so a REGISTRY source (npm first — operator direction) can slot in LATER without a
+    /// rewrite. `cdz run` builds each dep's `Project.cdz` entry to its own component and PEER-BINDS its
+    /// exported interface into this project's consumer (the cross-component interop v-peer-linking owns — a
+    /// runtime compose via `run_with_peers`, NOT a compile-time merge). Empty = a standalone project.
+    deps: Vec<DepSource>,
+}
+
+/// WHERE a dependency comes from. A dep SOURCE abstraction (operator direction): path is the first — and
+/// today only — implementation, but making it an enum leaves room for a REGISTRY-backed source (npm the
+/// first registry) to be added as a variant later WITHOUT reworking the manifest model or the resolve
+/// flow. Not yet built: only `Path` resolves; a future `Registry` variant would carry `{ name, version
+/// req, registry }` and `build_path_deps` would grow an arm that fetches + builds it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DepSource {
+    /// A PATH dependency: a sibling project directory (relative to the consumer's manifest dir). Its
+    /// `Project.cdz` entry is built to a component published as `cadenza:<dep-name>/api` (derived from the
+    /// dep's `name`/dir), which the consumer's source binds with `(bind E "cadenza:<dep-name>/api")`.
+    Path(String),
+    // Registry { name: String, version: String, registry: Option<String> },  // LATER (npm first)
+}
+
+impl DepSource {
+    /// Parse a manifest dep entry into a `DepSource`. Today a bare string is a PATH (the only form) — this
+    /// is where a structured form (e.g. `(dep (registry "pkg" "^1"))`) would branch to `Registry` later.
+    fn from_manifest_string(s: String) -> DepSource {
+        DepSource::Path(s)
+    }
+
+    /// The raw manifest text of this dep — for `cdz metadata`'s `deps` array + diagnostics. A path is its
+    /// path string; a future registry source would render its package ref.
+    fn as_manifest_text(&self) -> &str {
+        match self {
+            DepSource::Path(p) => p,
+        }
+    }
 }
 
 /// The file name of a project manifest (looked up in a directory).
@@ -5076,7 +5120,12 @@ fn parse_manifest(arenas: &cadenza_syntax::Arenas) -> Manifest {
             "tests" => m.tests = manifest_strings(arenas, value_id),
             "exclude" => m.exclude = manifest_strings(arenas, value_id),
             "opt-level" => m.opt_level = manifest_strings(arenas, value_id).into_iter().next(),
-            "deps" => m.deps = manifest_strings(arenas, value_id),
+            "deps" => {
+                m.deps = manifest_strings(arenas, value_id)
+                    .into_iter()
+                    .map(DepSource::from_manifest_string)
+                    .collect()
+            }
             _ => {} // an unrecognized def — ignore (forward-compatible)
         }
     }

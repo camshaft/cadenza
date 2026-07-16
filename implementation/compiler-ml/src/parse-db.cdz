@@ -1,0 +1,168 @@
+/// parse-db.cdz — Increment 1 of the Cadenza-in-Cadenza compiler: the PARSE COLUMN. Source tokens → an
+/// AST stored as an ARENA of nodes keyed by a stable `NodeId` (Int64), mirroring rcdzc's arena where every
+/// node has an identity (`StructId`) that the downstream query columns (resolve/infer/lower) key by.
+///
+/// The AST is not a pointer tree but a `Map(NodeId, Node)` where a `Bin` node references its children BY
+/// ID — exactly the shape the lazy query-DB needs: a fact about a node is keyed by its id, and a producer
+/// walks children by demanding their ids. NodeIds are assigned by a counter threaded through the build
+/// (the `fresh`/`anf` discipline), so they are stable and dense (0..n-1) for a given parse.
+///
+/// The grammar is the integer language the re-charter targets: `Int` literals, `+ - *` with precedence
+/// (`*` binds tighter than `+`/`-`), and parentheses. `parse-tokens` returns `(rootId, Tree)` — the root
+/// node's id plus the arena — so a caller (the compiler driver / the DB's `ast` column) has both the entry
+/// point and the store. (This intentionally re-declares its own `Tok`/`Node` rather than importing lex's —
+/// lex does not export its `Token` type, and a self-contained column keeps the Inc-1 surface minimal.)
+
+/// A token (the lexer's output; here constructed directly by tests / a future lex adapter).
+type Tok =
+  | TNum(Int64)
+  | TOp(Int64)      // 43 = +, 45 = -, 42 = *
+  | TLParen
+  | TRParen
+  | TEnd
+
+/// An AST node in the arena. A `Bin` references its operands BY NodeId (not inline) — the arena shape.
+type Node =
+  | NLit(Int64)
+  | NBin(Int64, Int64, Int64)     // NBin(op, leftId, rightId)
+
+/// The arena: nodes keyed by NodeId, plus the next fresh id. (Named `Tree`, NOT `Ast` — a type named `Ast`
+/// collides with the built-in metaprog `Ast`, drawing CDZ0201 "two types with the same name".)
+type Tree =
+  | Arena(Map(Int64, Node), Int64)
+
+def empty-tree() = Tree.Arena(Map.empty, 0)
+
+/// Intern a node into the arena, returning `(its fresh NodeId, tree')`.
+def add-node(tree: Tree, n: Node) = match tree with
+  | Tree.Arena(m, next) => (next, Tree.Arena(Map.insert(m, next, n), next + 1))
+
+/// The node at `id`, or `None` (absence — a caller that requires it declines).
+def node-at(tree: Tree, id: Int64) = match tree with
+  | Tree.Arena(m, _) => Map.lookup(m, id)
+
+/// How many nodes the arena holds (also the next fresh id).
+def node-count(tree: Tree) = match tree with | Tree.Arena(m, _) => Map.len(m)
+
+/// The token at index `i`, or `TEnd` past the end (a total indexed read).
+def tok-at(ts: List(Tok), i: Int64) = match List.at(ts, i) with
+  | Option.Some(t) => t
+  | Option.None(_) => Tok.TEnd
+
+/// The op code of a token if it is `TOp op` (else -1).
+def op-code(t: Tok) = match t with | Tok.TOp(op) => op | _ => 0 - 1
+
+/// parse-factor: an Int literal, or a parenthesized expression. Returns `(nodeId, nextIndex, tree')`.
+def parse-factor(ts: List(Tok), i: Int64, tree: Tree) = match tok-at(ts, i) with
+  | Tok.TNum(v) => (match add-node(tree, Node.NLit(v)) with | (id, t1) => (id, i + 1, t1))
+  | Tok.TLParen =>
+    (match parse-expr(ts, i + 1, tree) with | (inner, j, t1) =>
+      // consume the matching ')' if present (j points at it); tolerate a missing one.
+      (match tok-at(ts, j) with | Tok.TRParen => (inner, j + 1, t1) | _ => (inner, j, t1)))
+  | _ => (match add-node(tree, Node.NLit(0)) with | (id, t1) => (id, i + 1, t1))   // error recovery: 0
+
+/// parse-term: factor (`*` factor)* — `*` binds tighter than `+`/`-`.
+def parse-term(ts: List(Tok), i: Int64, tree: Tree) =
+  (match parse-factor(ts, i, tree) with | (lhs, j, t1) => parse-term-tail(ts, j, lhs, t1))
+
+def parse-term-tail(ts: List(Tok), i: Int64, lhs: Int64, tree: Tree) =
+  (if op-code(tok-at(ts, i)) == 42 then
+    (match parse-factor(ts, i + 1, tree) with | (rhs, j, t1) =>
+      (match add-node(t1, Node.NBin(42, lhs, rhs)) with | (id, t2) => parse-term-tail(ts, j, id, t2)))
+   else (lhs, i, tree))
+
+/// parse-expr: term ((`+`|`-`) term)* — left-associative additive layer.
+def parse-expr(ts: List(Tok), i: Int64, tree: Tree) =
+  (match parse-term(ts, i, tree) with | (lhs, j, t1) => parse-expr-tail(ts, j, lhs, t1))
+
+def parse-expr-tail(ts: List(Tok), i: Int64, lhs: Int64, tree: Tree) =
+  (let op = op-code(tok-at(ts, i)) in
+   if op == 43 then add-tail(ts, i, lhs, tree, 43)
+   else (if op == 45 then add-tail(ts, i, lhs, tree, 45) else (lhs, i, tree)))
+
+def add-tail(ts: List(Tok), i: Int64, lhs: Int64, tree: Tree, op: Int64) =
+  (match parse-term(ts, i + 1, tree) with | (rhs, j, t1) =>
+    (match add-node(t1, Node.NBin(op, lhs, rhs)) with | (id, t2) => parse-expr-tail(ts, j, id, t2)))
+
+/// The parse COLUMN entry: tokens → `(rootId, Tree)` — the root node id and the arena.
+def parse-tokens(ts: List(Tok)) = match parse-expr(ts, 0, empty-tree()) with | (root, _, tree) => (root, tree)
+
+/// A structural probe: is the node at `id` a `Bin` with op `op`?
+def is-bin-op(tree: Tree, id: Int64, op: Int64) = match node-at(tree, id) with
+  | Option.Some(Node.NBin(o, _, _)) => o == op
+  | _ => false
+
+def is-lit(tree: Tree, id: Int64, v: Int64) = match node-at(tree, id) with
+  | Option.Some(Node.NLit(x)) => x == v
+  | _ => false
+
+/// Builders (test ergonomics).
+def n(v: Int64) = Tok.TNum(v)
+def plus() = Tok.TOp(43)
+def minus() = Tok.TOp(45)
+def times() = Tok.TOp(42)
+
+@test
+def pd-single-literal() =
+  // "5" → one NLit node, root is it.
+  (match parse-tokens([n(5)]) with | (root, tree) =>
+    (if node-count(tree) == 1 then (if is-lit(tree, root, 5) then unit else trap("root is Lit 5")) else trap("one node")))
+
+@test
+def pd-simple-add() =
+  // "1 + 2" → NLit 1, NLit 2, NBin(+, ..) ; 3 nodes, root is a + Bin.
+  (match parse-tokens([n(1), plus(), n(2)]) with | (root, tree) =>
+    (if node-count(tree) == 3 then (if is-bin-op(tree, root, 43) then unit else trap("root is + Bin")) else trap("3 nodes")))
+
+@test
+def pd-precedence-mul-tighter() =
+  // "1 + 2 * 3" → root is + , whose RIGHT child is a * Bin (mul binds tighter). Verify the shape by ids.
+  (match parse-tokens([n(1), plus(), n(2), times(), n(3)]) with | (root, tree) =>
+    (match node-at(tree, root) with
+      | Option.Some(Node.NBin(op, _, r)) =>
+        (if op == 43 then (if is-bin-op(tree, r, 42) then unit else trap("+ 's right child is * ")) else trap("root is +"))
+      | _ => trap("root is a Bin")))
+
+@test
+def pd-parens-override() =
+  // "(1 + 2) * 3" → root is * , whose LEFT child is a + Bin (parens grouped the add under the mul).
+  (match parse-tokens([Tok.TLParen, n(1), plus(), n(2), Tok.TRParen, times(), n(3)]) with | (root, tree) =>
+    (match node-at(tree, root) with
+      | Option.Some(Node.NBin(op, l, _)) =>
+        (if op == 42 then (if is-bin-op(tree, l, 43) then unit else trap("* 's left child is + ")) else trap("root is * "))
+      | _ => trap("root is a Bin")))
+
+@test
+def pd-left-assoc-subtraction() =
+  // "10 - 3 - 2" → left-associative: ((10 - 3) - 2), so root is - whose LEFT child is also a - Bin.
+  (match parse-tokens([n(10), minus(), n(3), minus(), n(2)]) with | (root, tree) =>
+    (match node-at(tree, root) with
+      | Option.Some(Node.NBin(op, l, _)) =>
+        (if op == 45 then (if is-bin-op(tree, l, 45) then unit else trap("left child is the inner - ")) else trap("root is - "))
+      | _ => trap("root is a Bin")))
+
+@test
+def pd-node-ids-stable-and-dense() =
+  // node ids are dense 0..n-1: "1 + 2" has 3 nodes at ids 0,1,2 — every id in range resolves to a node.
+  (match parse-tokens([n(1), plus(), n(2)]) with | (_, tree) =>
+    (match node-at(tree, 0) with | Option.Some(_) =>
+      (match node-at(tree, 1) with | Option.Some(_) =>
+        (match node-at(tree, 2) with | Option.Some(_) =>
+          (match node-at(tree, 3) with | Option.None(_) => unit | Option.Some(_) => trap("no node at 3")) | Option.None(_) => trap("node at 2")) | Option.None(_) => trap("node at 1")) | Option.None(_) => trap("node at 0")))
+
+@test
+def pd-deep-nesting() =
+  // "((1))" → parens collapse to just the literal; one node.
+  (match parse-tokens([Tok.TLParen, Tok.TLParen, n(1), Tok.TRParen, Tok.TRParen]) with | (root, tree) =>
+    (if is-lit(tree, root, 1) then (if node-count(tree) == 1 then unit else trap("one node")) else trap("root is Lit 1")))
+
+@test
+def pd-children-by-id-not-inline() =
+  // the arena shape: a Bin's children are ID references into the same arena, resolvable via node-at.
+  (match parse-tokens([n(7), times(), n(8)]) with | (root, tree) =>
+    (match node-at(tree, root) with
+      | Option.Some(Node.NBin(_, l, r)) =>
+        (if is-lit(tree, l, 7) then (if is-lit(tree, r, 8) then unit else trap("right child id → Lit 8")) else trap("left child id → Lit 7"))
+      | _ => trap("root is a Bin")))
+
+export { Tok.*, Node.*, Tree.*, empty-tree, add-node, node-at, node-count, parse-tokens, is-bin-op, is-lit }

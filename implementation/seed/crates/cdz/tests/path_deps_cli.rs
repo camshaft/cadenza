@@ -130,3 +130,47 @@ fn metadata_reports_the_declared_path_dependencies() {
     );
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn cdz_run_binds_multiple_path_dependencies() {
+    // `def deps` is a LIST — a consumer can depend on several projects at once, each peer-bound under its
+    // own `cadenza:<dep>/api`. Build two deps (`inclib` exports `inc`, `neglib` exports `neg`) and a
+    // consumer that binds BOTH; `main(5)` = neg(inc(5)) = neg(6) = -6, proving both compose in one run.
+    let root = std::env::temp_dir().join(format!("cdz-pathdep-multi-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    for (name, op, body) in [("inclib", "inc", "(+ x 1)"), ("neglib", "neg", "(- 0 x)")] {
+        std::fs::create_dir_all(root.join(name)).unwrap();
+        std::fs::write(
+            root.join(name).join("Project.cdz"),
+            format!("def name = \"{name}\"\ndef entry = \"lib.sexp\"\n"),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join(name).join("lib.sexp"),
+            format!("(do (def ({op} (: x Int64)) {body}) (export {op}))"),
+        )
+        .unwrap();
+    }
+    std::fs::create_dir_all(root.join("app")).unwrap();
+    std::fs::write(
+        root.join("app/Project.cdz"),
+        "def name = \"app\"\ndef entry = \"main.sexp\"\ndef deps = [\"../inclib\", \"../neglib\"]\n",
+    )
+    .unwrap();
+    // Consumer binds BOTH deps' interfaces and composes them: neg(inc(x)).
+    std::fs::write(
+        root.join("app/main.sexp"),
+        "(do (effect Inc (op inc (-> Int64 Int64))) (bind Inc \"cadenza:inclib/api\") \
+         (effect Neg (op neg (-> Int64 Int64))) (bind Neg \"cadenza:neglib/api\") \
+         (def (main (: x Int64)) (host (Inc Neg) (Neg.neg (Inc.inc x)))) (export main))",
+    )
+    .unwrap();
+    let (ok, out, err) = run_in(&root.join("app"), &["run", "--call", "main", "--arg", "5"]);
+    assert!(ok, "cdz run with two path-deps should succeed: {out}{err}");
+    assert_eq!(
+        out.trim(),
+        "-6",
+        "both deps compose: neg(inc(5)) = neg(6) = -6: {out}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}

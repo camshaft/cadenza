@@ -712,6 +712,39 @@
                 (let ((k (fn (y) (* y 2)))) (+ (k 3) (Amb.flip))))) (export main)))
   (output (: 15 Int64)))
 
+; The multi-shot cases above duplicate a continuation containing only SCALARS or a pure lambda. These pin the
+; Perceus × multi-shot intersection: a continuation that reads or CONSUMES a captured HEAP value, re-reduced
+; per resumption, must give EACH resume its own valid copy — the multi-shot duplication must `dup` the
+; captured heap value, not share one that the first resume frees (or FBIP-mutates in place at rc==1) out from
+; under the second. A shared-and-freed heap value would use-after-free / corrupt the second resumption.
+
+(case "a MULTI-shot arm re-reduces a continuation that reads a captured heap list per resume"
+  (doc    "The arm `(+ (resume 1 s) (resume 2 s))` resumes TWICE; the continuation `(+ (Amb.flip) (List.len
+           xs))` reads a captured heap list `xs = [10 20 30]`. Each re-reduction must see `xs` alive:
+           resume-1 → (1 + 3), resume-2 → (2 + 3), so `(+ 4 5)` = 9. Pins the captured heap value is retained
+           (dup'd) across BOTH continuation re-reductions — a value freed after the first resume would make
+           `List.len xs` in the second read freed memory (a wrong length / crash).")
+  (input  (do (effect Amb (op flip (-> Unit Int64)))
+              (def (main)
+                (let ((xs (list 10 20 30)))
+                  (handle Amb 0 ((flip (u) s (+ (resume 1 s) (resume 2 s)))) (+ (Amb.flip) (List.len xs)))))
+              (export main)))
+  (output (: 9 Int64)))
+
+(case "a MULTI-shot arm whose each resume CONSUMES a captured heap list dups it per resume"
+  (doc    "The sharper case: each resumption CONSUMES the captured `xs = [1 2]` via `List.push` (a persistent
+           op that FBIP-mutates in place at rc==1). Under multi-shot, both re-reductions consume `xs`, so the
+           duplication MUST dup it — else the first resume's `List.push` grows the shared `xs` in place and
+           the second resume sees `[1 2 99]` (len 4, wrong). `List.len (List.push xs 99)` = 3 each resume:
+           resume-1 → (1 + 3), resume-2 → (2 + 3) → `(+ 4 5)` = 9. Pins the multi-shot duplication dups a
+           CONSUMED captured heap value, the Perceus-correct multi-shot semantics.")
+  (input  (do (effect Amb (op flip (-> Unit Int64)))
+              (def (main)
+                (let ((xs (list 1 2)))
+                  (handle Amb 0 ((flip (u) s (+ (resume 1 s) (resume 2 s)))) (+ (Amb.flip) (List.len (List.push xs 99))))))
+              (export main)))
+  (output (: 9 Int64)))
+
 (case "a MULTI-shot arm folds a perform under a CURRIED lambda applied to pure arguments"
   (doc    "The applied-lambda pre-reduction reduces a CURRIED redex — nested applications — as long as each
            argument is pure. `(((fn (a) (fn (b) (+ a (+ b (Amb.flip))))) 10) 20)` applies the outer lambda to

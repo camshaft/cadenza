@@ -235,6 +235,37 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Like [`graft_subtree`], but each copied node keeps its OWN source span from `src`'s span table,
+    /// SHIFTED by `offset` into this document's coordinate system. This is what makes an embedded region
+    /// LSP-transparent: a cursor inside a `json{ … }` body resolves to the exact JSON node, because the
+    /// grafted node's span is the sub-grammar's real span (relative to the body) plus the body's start
+    /// offset in the outer source. A node the sub-grammar left un-spanned (should not happen — the
+    /// surfaces keep a total table) falls back to `whole` (the region span), so the graft stays total.
+    fn graft_subtree_spanned(
+        &mut self,
+        src: &Arenas,
+        id: StructId,
+        spans: &SpanTable,
+        offset: usize,
+        whole: Span,
+    ) -> StructId {
+        let span = spans
+            .get(id)
+            .map(|s| Span::new(s.start + offset, s.end + offset))
+            .unwrap_or(whole);
+        match src.get(id) {
+            crate::ast::Struct::Atom(leaf) => self.atom(src.leaf(*leaf).clone(), span),
+            crate::ast::Struct::List(children) => {
+                let children = children.clone();
+                let kids: Vec<StructId> = children
+                    .iter()
+                    .map(|&c| self.graft_subtree_spanned(src, c, spans, offset, whole))
+                    .collect();
+                self.list(kids, span)
+            }
+        }
+    }
+
     /// Parse a FIRST-CLASS EMBEDDED-SYNTAX region — `<grammar>{ …raw… }` — into an
     /// `(embedded <grammar> <subtree>)` node. The cursor is on the grammar-tag `Ident`; the next token
     /// is the opening `{` (the `prefix` guard checked the tag is reserved + glued to the `{`).
@@ -316,24 +347,36 @@ impl<'a> Parser<'a> {
             self.pos += 1;
         }
 
-        // Parse the raw body with the sub-grammar's own reader and graft the result.
+        // Parse the raw body with the sub-grammar's own reader and graft the result. `body_start` is the
+        // body's offset in the outer source, so each grafted node's span lands in document coordinates.
         let head = self.name("embedded", region_span);
         let g = self.atom(Leaf::Sym(grammar.to_string()), region_span);
-        let sub = self.read_embedded(grammar, body, region_span);
+        let sub = self.read_embedded(grammar, body, body_start, region_span);
         self.list(vec![head, g, sub], region_span)
     }
 
-    /// Dispatch a raw embedded-syntax body to the named sub-grammar's reader and graft the result into
-    /// this arena, returning the grafted subtree root. A reader error is lifted into this parse (anchored
-    /// to the region span) and an `<error>` placeholder is returned — never a panic.
-    fn read_embedded(&mut self, grammar: &str, body: &str, span: Span) -> StructId {
+    /// Dispatch a raw embedded-syntax body to the named sub-grammar's SPANNED reader and graft the result
+    /// into this arena, returning the grafted subtree root. Each grafted node keeps its own source span
+    /// (the sub-grammar's span shifted by `body_start` into document coordinates) so the region is
+    /// LSP-transparent — a cursor inside resolves to the exact embedded node, not the whole region. A
+    /// reader error is lifted into this parse (anchored to the region span) and an `<error>` placeholder
+    /// is returned — never a panic (the surface contract).
+    fn read_embedded(
+        &mut self,
+        grammar: &str,
+        body: &str,
+        body_start: usize,
+        span: Span,
+    ) -> StructId {
         let parsed = match grammar {
-            "json" => crate::json::read(body).map_err(|e| e.0),
-            "toml" => crate::toml_surface::read(body).map_err(|e| e.0),
+            "json" => crate::json::read_spanned(body).map_err(|e| e.0),
+            "toml" => crate::toml_surface::read_spanned(body).map_err(|e| e.0),
             _ => Err(format!("unknown embedded grammar `{grammar}`")),
         };
         match parsed {
-            Ok(arena) => self.graft_subtree(&arena, arena.root, span),
+            Ok((arena, spans)) => {
+                self.graft_subtree_spanned(&arena, arena.root, &spans, body_start, span)
+            }
             Err(message) => {
                 self.errors.push(ParseError {
                     span,
@@ -4064,6 +4107,52 @@ mod tests {
             Some("<error>"),
             "a bad body grafts an <error> placeholder, keeping the arena well-formed"
         );
+    }
+
+    #[test]
+    fn embedded_node_spans_are_document_coordinates_that_slice_back_to_the_embedded_source() {
+        // LSP-transparency: an embedded region's nodes keep their OWN spans, shifted into the OUTER
+        // document's coordinates — so a cursor inside a `json{ … }` body resolves to the exact JSON node,
+        // not the whole region. Assert every grafted node's span is a valid in-bounds slice of the OUTER
+        // source (not the body), and that a known interior leaf's span slices to its literal text.
+        let src = r#"json{ {"key": 42} }"#;
+        let p = read_ml(src);
+        assert!(p.ok(), "parses clean: {:?}", p.errors);
+        let a = &p.arenas;
+        let spans = &p.spans;
+        // Every node's span is a valid slice of the OUTER document source (geometry preserved through the
+        // offset shift — the whole point is these are document coordinates, safe to slice for an editor).
+        for id in (0..a.structure.len() as u32).map(StructId) {
+            let sp = spans.get(id).expect("total span table");
+            assert!(
+                sp.start <= sp.end
+                    && sp.end <= src.len()
+                    && src.is_char_boundary(sp.start)
+                    && src.is_char_boundary(sp.end),
+                "embedded node {id:?} span {sp:?} is not a valid slice of the outer source {src:?}"
+            );
+        }
+        // The `42` value leaf inside the JSON must span the literal `42` IN THE OUTER SOURCE (offset, not
+        // body-relative). Find it: the embedded subtree is emb[1]; walk to the number leaf.
+        let emb = a.as_form(a.root, "embedded").expect("root is (embedded …)");
+        // The subtree root is a JSON object `(object (member "key" 42))`-ish; locate the leaf whose outer
+        // span slices to "42".
+        let mut found_42 = false;
+        for id in (0..a.structure.len() as u32).map(StructId) {
+            if let crate::ast::Struct::Atom(lid) = a.get(id)
+                && matches!(a.leaf(*lid), Leaf::Int { .. })
+            {
+                let sp = spans.get(id).unwrap();
+                assert_eq!(
+                    &src[sp.start..sp.end],
+                    "42",
+                    "the JSON number leaf's span must slice to `42` in the OUTER source"
+                );
+                found_42 = true;
+            }
+        }
+        assert!(found_42, "the embedded JSON `42` leaf was grafted");
+        let _ = emb;
     }
 
     #[test]

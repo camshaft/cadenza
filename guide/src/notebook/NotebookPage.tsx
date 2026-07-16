@@ -23,6 +23,7 @@ import { ProseView } from "./ProseView.tsx";
 import { OutputView } from "./OutputView.tsx";
 import { WidgetControls } from "./WidgetControls.tsx";
 import { DEFAULT_EXAMPLE } from "./examples.ts";
+import { LazyCodeEditor } from "../editor/LazyCodeEditor.tsx";
 
 /// The starter notebook the route opens with — the flagship compound-interest example (from the shared
 /// `examples` module, so the route, the docs, and check:visual all draw from one source of truth).
@@ -34,6 +35,14 @@ const STARTER = DEFAULT_EXAMPLE.markdown;
 /// errors (an ML compile of an s-expr cell fails "expected a name"). Per-surface starters / an editable
 /// surface toggle are a later slice.
 const NOTEBOOK_SURFACE: Surface = "sexpr";
+
+/// IDE config for the shared editor (v-guide-infra's LazyCodeEditor): Cadenza lexical + semantic
+/// highlighting, inline squiggles, type-on-hover. The notebook is surface-pinned s-expr and the doc is
+/// self-contained, so `prepare` is identity (no wrapping) — the same shape /cad uses.
+const NOTEBOOK_IDE = {
+  surface: () => NOTEBOOK_SURFACE,
+  prepare: (t: string) => ({ compiled: t, wrapPrefixBytes: 0 }),
+};
 
 /// Per-code-cell run state, keyed by the cell's index in the parsed cell list.
 type CellState = { phase: "idle" } | { phase: "running" } | { phase: "done"; output: CellOutput };
@@ -200,14 +209,15 @@ export default function NotebookPage() {
       </div>
 
       {editing && (
-        <textarea
-          value={doc}
-          onChange={(e) => setDoc(e.target.value)}
-          spellCheck={false}
+        <div
+          className="mb-4 overflow-hidden rounded-lg border border-slate-700"
           aria-label="Notebook source (markdown + Cadenza code cells)"
-          className="mb-4 h-64 w-full resize-y rounded-lg border border-slate-700 bg-slate-900 p-3 font-mono text-sm text-slate-200"
           data-testid="doc-editor"
-        />
+        >
+          {/* The shared IDE editor (v-guide-infra's LazyCodeEditor) — Cadenza highlighting + squiggles +
+              type-on-hover, code-split behind React.lazy so it never touches first paint. */}
+          <LazyCodeEditor value={doc} onChange={setDoc} ide={NOTEBOOK_IDE} minHeight="16rem" />
+        </div>
       )}
 
       <div className="space-y-2" data-testid="notebook">

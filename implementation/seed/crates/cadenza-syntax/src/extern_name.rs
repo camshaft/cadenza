@@ -20,14 +20,18 @@
 ///     is empty or already ends in `-`), then it is lowercased (`fA` → `f-a`, `myFunc` → `my-func`,
 ///     `Foo` → `foo`);
 ///   * an UNDERSCORE `_` becomes a `-` word separator (`my_func` → `my-func`);
-///   * a `-`, a lowercase letter, or a digit is kept as-is — EXCEPT a digit immediately after a word
-///     separator, which cannot START a kebab word (`[a-z][a-z0-9]*`): the pending `-` is dropped so the
-///     digit joins the PRECEDING word (`a_0` → `a0`, `my_2nd` → `my2nd`), never the invalid `a-0`;
-///   * runs of separators are collapsed and leading/trailing separators trimmed, so the result is a
-///     well-formed kebab name (no `--`, no edge `-`).
+///   * a `-`, a lowercase letter, or a digit is kept as-is;
+///   * runs of separators are collapsed and leading/trailing separators trimmed (no `--`, no edge `-`).
 ///
-/// An ASCII-letter-led source identifier always starts with an ASCII letter (a digit-led token is a
-/// numeric literal, rejected earlier), so the result always starts with a letter — a valid kebab word.
+/// This is a PURE TEXT MAPPING that does NOT guarantee a valid kebab word for every input (see the
+/// precondition below). In particular a DIGIT IMMEDIATELY AFTER A WORD SEPARATOR (`a_0`, `step-2`) yields
+/// a `-`-led segment (`a-0`, `step-2`) that is NOT a valid kebab word — a kebab word cannot START with a
+/// digit (`[a-z][a-z0-9]*`). Such a name is NOT silently collapsed to a valid one (`a_0` → `a0`): per the
+/// operator ruling (2026-07-16), a separator-before-digit boundary name is DECLINED at the compile
+/// boundary with a CDZ0201 + an actionable rename, rather than silently rewritten to a DIFFERENT name
+/// (which would mean two different things across the component / path-deps boundary). The invalid result
+/// is caught upstream by `invalid_kebab_export_name` (rcdzc backend/wasm/mod.rs), the same guard that
+/// catches a non-ASCII char — see the precondition.
 ///
 /// ⚠ PRECONDITION — the "always a valid kebab word" guarantee holds ONLY for names over ASCII letters,
 /// digits, `_` and `-`. A Cadenza identifier may contain NON-ASCII letters (the ML lexer's
@@ -57,18 +61,16 @@ pub fn kebab_extern_name(name: &str) -> String {
             if !out.is_empty() && !out.ends_with('-') {
                 out.push('-');
             }
-        } else if c.is_ascii_digit() {
-            // A digit CANNOT start a kebab word (a word is `[a-z][a-z0-9]*`), so a digit landing right
-            // after a word separator (`a_0`, `my_2nd`) must NOT begin a new word — drop the pending `-`
-            // so the digit joins the PRECEDING word (`a_0` → `a0`). Emitting `a-0` produced an INVALID
-            // extern name that `wasmtime` rejects at load with no diagnostic (the recurring
-            // invalid-component miscompile). A digit after a letter is already fine (`a1`, `foo-bar2`).
-            if out.ends_with('-') {
-                out.pop();
-            }
-            out.push(c);
         } else {
-            // A lowercase letter — kept verbatim (a valid word-start char after a separator).
+            // A lowercase letter or a digit — kept verbatim. A digit that lands right after a word
+            // separator (`a_0`, `step-2`) thus produces a `-`-led segment (`a-0`, `step-2`), which is NOT
+            // a valid kebab word (a word is `[a-z][a-z0-9]*` — a segment cannot START with a digit). We do
+            // NOT silently collapse the separator to make it valid (the earlier behavior: `a_0` → `a0`):
+            // per the operator ruling (2026-07-16), a separator-before-digit name is DECLINED at the
+            // compile boundary with a CDZ0201 + an actionable rename, NOT silently mangled to a different
+            // name — silent-collapse would make the author's chosen name mean something else across the
+            // component/path-deps boundary. The invalid result is caught UPSTREAM by
+            // `invalid_kebab_export_name` (rcdzc backend/wasm/mod.rs), exactly like a non-ASCII char.
             out.push(c);
         }
     }
@@ -194,19 +196,28 @@ mod tests {
     }
 
     #[test]
-    fn kebab_extern_name_always_yields_a_valid_kebab_word() {
-        // The LOAD-BEARING invariant: for ANY letter-led source identifier, `kebab_extern_name` must
-        // produce a string `wasmtime` accepts as a kebab extern-name word (`is_kebab_word`), and be
-        // idempotent (normalizing the result is a fixed point). A violation is the recurring
-        // invalid-component miscompile — a name emitted verbatim that fails to load with no diagnostic
-        // (see the module header). This sweeps every letter-led identifier over a stress alphabet
-        // (mixed case, digits, `_`, `-`) up to length 4 — the shapes source names actually take — so a
-        // regression that lets some identifier normalize to a non-kebab word (a `--`, an edge `-`, a
-        // stray char) is caught. Digit-led tokens are numeric literals (rejected earlier), so a source
-        // identifier always starts with a letter; the sweep starts each name with a letter accordingly.
+    fn kebab_extern_name_yields_a_valid_kebab_word_unless_a_separator_precedes_a_digit() {
+        // The invariant, as narrowed by the operator ruling (2026-07-16): for ANY letter-led source
+        // identifier, `kebab_extern_name` produces a valid kebab extern-name word (`is_kebab_word`) —
+        // EXCEPT the one class where an explicit word separator (`_`/`-`) is immediately followed by a
+        // digit (`a_0`, `x-0y`): a kebab word cannot START with a digit, and we deliberately do NOT
+        // silently collapse the separator (that would rename the author's identifier). That class yields
+        // a `-`-led segment that is NOT a valid kebab word and is DECLINED at the compile boundary
+        // (`invalid_kebab_export_name`), not emitted. So the sweep asserts: either the result is a valid
+        // kebab word, OR the source name contains a separator-immediately-before-a-digit (the declined
+        // class). A regression that lets some OTHER identifier normalize to a non-kebab word (a `--`, an
+        // edge `-`, a stray char) is still caught. Names are letter-led (a digit-led token is a numeric
+        // literal, rejected earlier). Idempotence holds for the valid results.
         let alphabet = ['a', 'B', 'z', 'Q', '0', '9', '_', '-'];
         let first = ['a', 'Z', 'm', 'A']; // a source identifier is letter-led
+        // Does `name` have an explicit separator (`_`/`-`) immediately followed by an ASCII digit? (That
+        // is the exact class the mapping keeps verbatim as an invalid `-`-led segment, declined upstream.)
+        let has_separator_before_digit = |name: &str| {
+            let b = name.as_bytes();
+            (1..b.len()).any(|i| (b[i - 1] == b'_' || b[i - 1] == b'-') && b[i].is_ascii_digit())
+        };
         let mut count = 0usize;
+        let mut declined = 0usize;
         for &f in &first {
             // lengths 1..=4: the leading letter plus 0..=3 alphabet chars, enumerated exhaustively.
             for len in 0..=3usize {
@@ -219,24 +230,36 @@ mod tests {
                         n /= alphabet.len();
                     }
                     let k = kebab_extern_name(&name);
-                    // The result is a valid kebab word (or empty — impossible for a letter-led name, but
-                    // an empty string is trivially not emitted as an extern name).
-                    assert!(
-                        !k.is_empty() && is_kebab_word(&k),
-                        "{name:?} normalized to {k:?}, which is NOT a valid kebab extern-name word"
-                    );
-                    // Idempotent: the normalized form is a fixed point (so a re-normalization anywhere
-                    // downstream cannot drift it).
-                    assert_eq!(
-                        kebab_extern_name(&k),
-                        k,
-                        "normalization not idempotent for {name:?}"
-                    );
+                    if has_separator_before_digit(&name) {
+                        // The declined class: the result is (correctly) NOT a valid kebab word — the
+                        // boundary guard rejects it rather than the mapping silently fixing it.
+                        assert!(
+                            !k.is_empty(),
+                            "{name:?} normalized to empty (a letter-led name cannot)"
+                        );
+                        declined += 1;
+                    } else {
+                        // Every OTHER letter-led identifier still normalizes to a valid kebab word, and
+                        // the normalization is idempotent (a re-normalization downstream cannot drift it).
+                        assert!(
+                            !k.is_empty() && is_kebab_word(&k),
+                            "{name:?} normalized to {k:?}, which is NOT a valid kebab extern-name word"
+                        );
+                        assert_eq!(
+                            kebab_extern_name(&k),
+                            k,
+                            "normalization not idempotent for {name:?}"
+                        );
+                    }
                     count += 1;
                 }
             }
         }
         assert!(count > 2_000, "swept a meaningful space, got {count}");
+        assert!(
+            declined > 0,
+            "the sweep must exercise the separator-before-digit declined class at least once"
+        );
     }
 
     #[test]
@@ -276,26 +299,37 @@ mod tests {
     }
 
     #[test]
-    fn a_digit_after_a_separator_joins_the_previous_word_not_a_new_one() {
-        // Regression: a digit cannot START a kebab word, so a digit right after a word separator
-        // (`_`/`-`/an uppercase boundary) must join the PRECEDING word, not begin a new (invalid) one.
-        // The old rule emitted `a-0` / `my-2nd` — extern names `wasmtime` REJECTS at load with no
-        // compiler diagnostic (the recurring invalid-component miscompile). Found by the property sweep.
-        assert_eq!(kebab_extern_name("a_0"), "a0");
-        assert_eq!(kebab_extern_name("my_2nd"), "my2nd");
-        assert_eq!(kebab_extern_name("x_1y"), "x1y");
-        assert_eq!(kebab_extern_name("a-0"), "a0");
-        // An uppercase boundary immediately before a digit likewise joins (the `-` from the boundary is
-        // dropped): `A0` → `a0` (the `A` starts the word, `0` extends it — no separator between them).
+    fn a_digit_after_an_explicit_separator_is_kept_verbatim_and_declined_not_silently_collapsed() {
+        // OPERATOR RULING (2026-07-16): a digit right after an EXPLICIT word separator (`_`/`-`) cannot
+        // START a kebab word (a word is `[a-z][a-z0-9]*`), so the mapping keeps it VERBATIM as a `-`-led
+        // segment (`a_0` → `a-0`, `step-2` → `step-2`) that is NOT a valid kebab word. It is deliberately
+        // NOT silently collapsed to a valid different name (`a_0` → `a0`) — the compile boundary DECLINES
+        // it with a CDZ0201 + an actionable rename instead (aligning to the backend copy + v-iterators'
+        // shipped policy `emit_tests_declines_a_digit_led_kebab_segment_name`), because a silent rewrite
+        // would make the author's chosen name mean a DIFFERENT name across the component / path-deps
+        // boundary. Here we pin the PURE MAPPING (the reject is tested on rcdzc's side).
+        assert_eq!(kebab_extern_name("a_0"), "a-0");
+        assert_eq!(kebab_extern_name("my_2nd"), "my-2nd");
+        assert_eq!(kebab_extern_name("x_1y"), "x-1y");
+        assert_eq!(kebab_extern_name("a-0"), "a-0");
+        // Each such result is NOT a valid kebab word — the boundary guard `invalid_kebab_export_name`
+        // rejects it, exactly like a non-ASCII char (see `non_ascii_names_pass_through_verbatim_*`).
+        for n in ["a_0", "my_2nd", "x_1y", "a-0", "step-2"] {
+            assert!(
+                !is_kebab_word(&kebab_extern_name(n)),
+                "{n} → must NOT be a valid kebab word (it is declined at the boundary, not collapsed)"
+            );
+        }
+        // NO separator between the two: an uppercase-then-digit boundary is NOT a separator-before-digit
+        // (the uppercase starts the word, the digit extends it) — `A0` → `a0`, still valid.
         assert_eq!(kebab_extern_name("A0"), "a0");
         // A digit after a LETTER is unaffected — it extends the current word normally.
         assert_eq!(kebab_extern_name("foo2"), "foo2");
         assert_eq!(kebab_extern_name("fooBar2"), "foo-bar2");
-        // Every result is a valid kebab word.
-        for n in ["a_0", "my_2nd", "x_1y", "a-0", "A0", "foo2", "fooBar2"] {
+        for n in ["A0", "foo2", "fooBar2"] {
             assert!(
                 is_kebab_word(&kebab_extern_name(n)),
-                "{n} → not a kebab word"
+                "{n} → must stay a kebab word"
             );
         }
     }
