@@ -20616,21 +20616,21 @@ mod match_engine {
     #[test]
     fn record_extend_with_pop_are_derived_row_ops_with_presence_checks() {
         // 15-rows extend/with/pop — the DERIVED row ops (rewrites of merge/without). `Record.extend r
-        // (z v)` ADDS an absent field (present → CDZ0211); `Record.with r (z v)` REPLACES a present field
+        // #z v` ADDS an absent field (present → CDZ0211); `Record.with r #z v` REPLACES a present field
         // (absent → CDZ0212), retyping to the new value's type; `Record.pop r z` yields `(value,
-        // remaining-record)` (absent → CDZ0212). Each second operand is a `(name value)` pair (extend/with)
-        // or a bare name (pop), NOT a label list.
+        // remaining-record)` (absent → CDZ0212). extend/with take a `#z` field LABEL and a value operand
+        // (DESIGN-record-update-syntax.md, 3-operand); pop takes a bare name.
         // extend adds an ABSENT field (well-formed); a PRESENT field is CDZ0211.
         assert_eq!(
             reject_code(
-                "(module m (def (main) (Record.extend (record (a 1)) (b 2))) (export main))"
+                "(module m (def (main) (Record.extend (record (a 1)) #\"b\" 2)) (export main))"
             ),
             None,
             "extend of an absent field is well-formed"
         );
         assert_eq!(
             reject_code(
-                "(module m (def (main) (Record.extend (record (a 1)) (a 2))) (export main))"
+                "(module m (def (main) (Record.extend (record (a 1)) #\"a\" 2)) (export main))"
             )
             .as_deref(),
             Some("CDZ0211"),
@@ -20639,14 +20639,16 @@ mod match_engine {
         // with replaces a PRESENT field (well-formed, may retype); an ABSENT field is CDZ0212.
         assert_eq!(
             reject_code(
-                "(module m (def (main) (Record.with (record (a 1) (b 2)) (b true))) (export main))"
+                "(module m (def (main) (Record.with (record (a 1) (b 2)) #\"b\" true)) (export main))"
             ),
             None,
             "with of a present field (even retyping) is well-formed"
         );
         assert_eq!(
-            reject_code("(module m (def (main) (Record.with (record (a 1)) (z 5))) (export main))")
-                .as_deref(),
+            reject_code(
+                "(module m (def (main) (Record.with (record (a 1)) #\"z\" 5)) (export main))"
+            )
+            .as_deref(),
             Some("CDZ0212"),
             "with of an absent field is CDZ0212 (use extend)"
         );
@@ -20676,7 +20678,7 @@ mod match_engine {
             dp.message
         );
         let dw = reject_full(
-            "(module m (def (main) (Record.with (record (alpha 1) (beta 2)) (alpa 9))) (export main))",
+            "(module m (def (main) (Record.with (record (alpha 1) (beta 2)) #\"alpa\" 9)) (export main))",
         )
         .expect("with of an absent field is CDZ0212");
         assert!(
@@ -20722,7 +20724,7 @@ mod match_engine {
 
         // extend a PRESENT field → CDZ0211 + a VERIFIED swap `extend`→`with`.
         let de = reject_full(
-            "(module m (def (main) (Record.extend (record (a 1)) (a 2))) (export main))",
+            "(module m (def (main) (Record.extend (record (a 1)) #\"a\" 2)) (export main))",
         )
         .expect("extend of a present field is CDZ0211");
         assert_eq!(de.code.as_deref(), Some("CDZ0211"), "got: {}", de.message);
@@ -20740,7 +20742,7 @@ mod match_engine {
 
         // with an ABSENT field that is NOT a near typo → CDZ0212 + a VERIFIED swap `with`→`extend`.
         let dw = reject_full(
-            "(module m (def (main) (Record.with (record (alpha 1)) (zzzzz 5))) (export main))",
+            "(module m (def (main) (Record.with (record (alpha 1)) #\"zzzzz\" 5)) (export main))",
         )
         .expect("with of an absent field is CDZ0212");
         assert_eq!(dw.code.as_deref(), Some("CDZ0212"), "got: {}", dw.message);
@@ -20757,7 +20759,7 @@ mod match_engine {
 
         // A NEAR-miss field still prefers the label typo-fix (the likelier intent), NOT the op swap.
         let dn = reject_full(
-            "(module m (def (main) (Record.with (record (alpha 1)) (alpXa 5))) (export main))",
+            "(module m (def (main) (Record.with (record (alpha 1)) #\"alpXa\" 5)) (export main))",
         )
         .expect("with of a near-miss field is CDZ0212");
         let fn_ = dn

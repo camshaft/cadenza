@@ -150,9 +150,9 @@
 (case "extending a record adds a new field"
   (doc    "Witnesses type-system.md #A Field Is Added To Or Replaced In A Record By A Derived Operation:
            `Record.extend` adds a field ABSENT from the operand, defined as `(Record.merge r (record (z v)))`.
-           `(Record.extend (record (a 1)) (b 2))` yields `(record (a 1) (b 2))`. The added field may hold
-           any type.")
-  (input  (Record.extend (record (a 1)) (b 2)))
+           `(Record.extend (record (a 1)) #"b" 2)` yields `(record (a 1) (b 2))`. The added field may hold
+           any type. The field name is a `#field` label operand (a static label, not a runtime value).")
+  (input  (Record.extend (record (a 1)) #"b" 2))
   (output (: (record (a 1) (b 2)) (Record (a Int64) (b Int64)))))
 
 (case "extending a record with an already-present field is rejected"
@@ -161,24 +161,24 @@
            so `extend` never silently overwrites. `a` is already present, so this is a clobber `extend`
            forbids — the author means `Record.with` to replace. Rides the strict `Record.merge` disjointness
            its rewrite uses.")
-  (input  (Record.extend (record (a 1)) (a 2)))
+  (input  (Record.extend (record (a 1)) #"a" 2))
   (error  CDZ0211))
 
 (case "updating a record field replaces its value"
   (doc    "Witnesses type-system.md #A Field Is Added To Or Replaced In A Record By A Derived Operation
            (2nd sentence): `Record.with` replaces a field PRESENT in the operand, defined as `(Record.merge
-           (Record.without r (z)) (record (z v)))`. `(Record.with (record (a 1) (b 2)) (b 9))` yields
+           (Record.without r (z)) (record (z v)))`. `(Record.with (record (a 1) (b 2)) #"b" 9)` yields
            `(record (a 1) (b 9))` — an explicit update distinct from `extend`.")
-  (input  (Record.with (record (a 1) (b 2)) (b 9)))
+  (input  (Record.with (record (a 1) (b 2)) #"b" 9))
   (output (: (record (a 1) (b 9)) (Record (a Int64) (b Int64)))))
 
 (case "updating a record field changes its type to the new value's"
   (doc    "Witnesses type-system.md #A Field Is Added To Or Replaced In A Record By A Derived Operation
            (2nd sentence: 'a new value of a possibly different type'): the result is a new closed record
-           whose field `b` has whatever type the new value holds. `(Record.with (record (a 1) (b 2)) (b
-           true))` retypes `b` from Int64 to Bool, yielding `(record (a 1) (b true))` of type `(Record (a
+           whose field `b` has whatever type the new value holds. `(Record.with (record (a 1) (b 2)) #"b"
+           true)` retypes `b` from Int64 to Bool, yielding `(record (a 1) (b true))` of type `(Record (a
            Int64) (b Bool))`. Pins that `with` is not constrained to the field's prior type.")
-  (input  (Record.with (record (a 1) (b 2)) (b true)))
+  (input  (Record.with (record (a 1) (b 2)) #"b" true))
   (output (: (record (a 1) (b true)) (Record (a Int64) (b Bool)))))
 
 (case "updating an absent record field is rejected"
@@ -187,7 +187,7 @@
            not an addition, so `with` and `extend` stay distinct. `z` is not a field of `(record (a 1))`,
            so `Record.with` REJECTS — the author means `Record.extend` to add. Rides the `Record.without`
            presence check its rewrite uses.")
-  (input  (Record.with (record (a 1)) (z 5)))
+  (input  (Record.with (record (a 1)) #"z" 5))
   (error  CDZ0212))
 
 (case "popping a field yields its value and the remaining record"

@@ -41,7 +41,7 @@ Three design decisions carried the weight:
   ([[2026-07-04-immutable-heap-is-acyclic-so-reference-counting-is-complete]]).
 
 Because these are row operations, a definition over them is row-polymorphic and inference assigns a
-principal type — `(def (stamp r) (Record.extend r (v 0)))` is `∀ρ. (ρ ∌ v) ⇒ {ρ} → {v: Int64 | ρ}`,
+principal type — `(def (stamp r) (Record.extend r #v 0))` is `∀ρ. (ρ ∌ v) ⇒ {ρ} → {v: Int64 | ρ}`,
 monomorphized to a concrete closed shape per call site — so `CDZ0211`/`CDZ0212` are the ground cases
 of the lacks/contains row constraints, dual to a failed generic constraint being a compile-time
 rejection.

@@ -333,16 +333,17 @@ pub enum Prim {
     /// MUST be DISJOINT: a shared field name is CDZ0211 (the combined record never chooses which operand's
     /// value a shared field takes). Folds two constant `Core::Record`s to their union.
     RecordMerge,
-    /// The RECORD ROW-EXTEND operation — `(Record.extend r (z v))` adds a field ABSENT from `r`
+    /// The RECORD ROW-EXTEND operation — `(Record.extend r #z v)` adds a field ABSENT from `r`
     /// (`type-system.md` §A Field Is Added To Or Replaced In A Record By A Derived Operation, 1st
-    /// sentence), the meaning-preserving rewrite of `(Record.merge r (record (z v)))`. Its second operand
-    /// is a SINGLE `(name value)` PAIR (the value IS evaluated, unlike `project`/`without`'s label list).
-    /// An already-present field is CDZ0211 (never a silent overwrite — the author means `with`).
+    /// sentence), the meaning-preserving rewrite of `(Record.merge r (record (z v)))`. Three operands
+    /// (DESIGN-record-update-syntax.md): the record `r`, a `#z` field LABEL (static, read at resolve time),
+    /// and the value `v` (evaluated, unlike `project`/`without`'s label list). An already-present field is
+    /// CDZ0211 (never a silent overwrite — the author means `with`).
     RecordExtend,
-    /// The RECORD ROW-UPDATE operation — `(Record.with r (z v))` REPLACES a field PRESENT in `r` with a
+    /// The RECORD ROW-UPDATE operation — `(Record.with r #z v)` REPLACES a field PRESENT in `r` with a
     /// new value of a possibly-different type (`type-system.md` §…2nd sentence), the rewrite of
-    /// `(Record.merge (Record.without r (z)) (record (z v)))`. Same `(name value)` pair operand as
-    /// `extend`. An absent field is CDZ0212 (stays distinct from `extend`, which ADDS).
+    /// `(Record.merge (Record.without r (z)) (record (z v)))`. Same three operands as `extend` (record,
+    /// `#z` LABEL, value). An absent field is CDZ0212 (stays distinct from `extend`, which ADDS).
     RecordWith,
     /// The RECORD ROW-POP operation — `(Record.pop r z)` takes a field OFF `r`, yielding `(tuple (. r z)
     /// (Record.without r (z)))` — the field's value paired with the record of the remaining fields
