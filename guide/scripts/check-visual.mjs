@@ -27,8 +27,11 @@ const VIEWPORTS = [
   { name: "desktop-1280", width: 1280, height: 900 },
 ];
 
-// Each route + an optional interaction that exercises the overflow-prone content. `waitFor` is a
-// selector that must appear before we measure (the route's shell has mounted).
+// Each route entry: `path`, `label`, `waitFor` (selector that must appear before we measure), and any of
+// the optional hooks — `surface` (seed ML/s-expr before boot), `onlyViewports`, `interact(page)` (exercise
+// content before measuring), `expectCanvas` (assert a <canvas> mounted), and `assert(page, check, label)`
+// (arbitrary route-specific assertions reported through the shared pass/fail tally, e.g. /notebook: a
+// widget drag recomputes a cell's output). Every route always gets the baseline overflow + console checks.
 const ROUTES = [
   { path: "/", waitFor: "a[href]", label: "home" },
   {
@@ -145,6 +148,11 @@ try {
           const hasCanvas = await page.evaluate(() => !!document.querySelector("canvas"));
           check(hasCanvas, `${route.label}: 3D preview rendered a <canvas> on first load`);
         }
+
+        // A route can run arbitrary custom assertions via the shared `check(ok, msg)` helper — for
+        // route-specific behavior the flags above don't cover (e.g. /notebook: a widget drag recomputes a
+        // cell's output). `assert(page, check, label)` reports through the same pass/fail tally.
+        if (route.assert) await route.assert(page, check, route.label);
       } catch (e) {
         check(false, `${route.label}: driver error — ${e.message.split("\n")[0]}`);
       } finally {

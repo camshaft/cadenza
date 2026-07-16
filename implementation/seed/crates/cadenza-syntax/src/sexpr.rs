@@ -161,25 +161,44 @@ pub fn print_from(arenas: &Arenas, id: StructId) -> String {
 }
 
 fn print_node(a: &Arenas, id: StructId, out: &mut String) {
-    match a.get(id) {
-        Struct::Atom(l) => print_leaf(a.leaf(*l), out),
-        Struct::List(items) => {
-            // RESUGAR: a `(: <suffixed-literal> BigInt|Rational)` node is the desugared form of a type
-            // suffix (`100N`), so print just the suffixed atom — the suffix already carries the type.
-            // (A bare `(: 100 BigInt)` value-output, whose value child is a plain `Int` not a
-            // `Suffixed`, is NOT matched, so it still prints the explicit annotation.)
-            if let Some(atom) = suffixed_annotation_atom(a, items) {
-                print_node(a, atom, out);
-                return;
-            }
-            out.push('(');
-            for (i, &child) in items.iter().enumerate() {
-                if i > 0 {
-                    out.push(' ');
+    // An EXPLICIT work stack, not native recursion: `print` runs on arenas from ANY source — a decoded
+    // binary AST in particular, which `codec::decode` accepts at arbitrary nesting depth (no cap, unlike
+    // the reader's `MAX_NESTING_DEPTH`). A recursive walk overflowed the native stack (SIGABRT) on such a
+    // deep-but-valid tree, crashing the process on `cdz convert binary → sexpr`; the printer must stay
+    // total. `Node(id)` renders an occurrence; `Str(" ")`/`Str(")")` are the separators/closers queued
+    // AFTER a list's children. Items pop LIFO, so a list pushes (in reverse): `)`, then child_n, sep,
+    // …, child_0 — yielding `(` child_0 ` ` child_1 … `)` in output order.
+    enum Work<'a> {
+        Node(StructId),
+        Str(&'a str),
+    }
+    let mut stack: Vec<Work> = vec![Work::Node(id)];
+    while let Some(w) = stack.pop() {
+        match w {
+            Work::Str(s) => out.push_str(s),
+            Work::Node(id) => match a.get(id) {
+                Struct::Atom(l) => print_leaf(a.leaf(*l), out),
+                Struct::List(items) => {
+                    // RESUGAR: a `(: <suffixed-literal> BigInt|Rational)` node is the desugared form of a
+                    // type suffix (`100N`), so print just the suffixed atom — the suffix already carries
+                    // the type. (A bare `(: 100 BigInt)` value-output, whose value child is a plain `Int`
+                    // not a `Suffixed`, is NOT matched, so it still prints the explicit annotation.)
+                    if let Some(atom) = suffixed_annotation_atom(a, items) {
+                        stack.push(Work::Node(atom));
+                        continue;
+                    }
+                    out.push('(');
+                    // Push in reverse: closing paren first (popped last), then children interleaved with
+                    // single-space separators so they pop child_0, " ", child_1, …, ")".
+                    stack.push(Work::Str(")"));
+                    for (i, &child) in items.iter().enumerate().rev() {
+                        stack.push(Work::Node(child));
+                        if i > 0 {
+                            stack.push(Work::Str(" "));
+                        }
+                    }
                 }
-                print_node(a, child, out);
-            }
-            out.push(')');
+            },
         }
     }
 }
@@ -930,6 +949,31 @@ mod tests {
         if let Err(payload) = h.join() {
             std::panic::resume_unwind(payload);
         }
+    }
+
+    #[test]
+    fn print_is_iterative_not_recursive_on_a_deep_arena() {
+        // `print`/`print_node` runs on arenas from ANY source — a decoded binary AST in particular, which
+        // `codec::decode` accepts at ARBITRARY nesting depth (no cap, unlike the reader's
+        // MAX_NESTING_DEPTH). A native-recursive walk overflowed the stack (SIGABRT) on such a deep tree,
+        // crashing the process on `cdz convert binary → sexpr`. Build a deep single-child chain DIRECTLY
+        // (bypassing the reader cap) and assert `print` completes and is correct. 12k levels is well past
+        // the native recursion limit; the output here is O(depth) (one `(`/`)` per level, no cumulative
+        // indent — unlike the debug tree view), so a deep chain is cheap.
+        let depth = 12_000usize;
+        let mut b = Builder::new();
+        let mut cur = b.name("x");
+        for _ in 0..depth {
+            cur = b.list(vec![cur]);
+        }
+        let a = b.finish(cur);
+        let out = print(&a); // must NOT overflow (a recursive walk did)
+        // The rendering is `(((…(x)…)))`: `depth` opens, then `x`, then `depth` closes — correct shape,
+        // proving the iterative walk emits the same nesting a recursive one would. (Re-reading it is not
+        // asserted here: `read` is intentionally depth-capped at MAX_NESTING_DEPTH=1024, so a 12k-deep
+        // form is not round-trippable through the READER — that cap is the reader's own guarantee, tested
+        // in `deeply_nested_input_is_diagnosed_not_crashed`. THIS test pins the PRINTER's totality.)
+        assert_eq!(out, format!("{}x{}", "(".repeat(depth), ")".repeat(depth)));
     }
 
     /// The text a span covers, for span assertions.

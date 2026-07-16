@@ -170,6 +170,7 @@ pass	Type is a first-class value
 pass	Type.eq branches on a type-valued parameter, monomorphized per passed type
 pass	Type.eq compares a RECORD type-value structurally, by field types
 pass	Type.eq compares a TUPLE type-value structurally, by element types
+pass	Type.eq carries an integer type's full width and signedness
 pass	Type.eq compares a reflected type against a written type
 pass	Type.eq compares two type-valued parameters to each other
 pass	Type.eq distinguishes a constructed generic sum by its type argument
@@ -211,6 +212,7 @@ pass	a BigInt factorial accumulator computes 25! exactly
 pass	a BigInt is usable as a map key, matched by its arbitrary-precision value
 pass	a BigInt is usable as a set element, deduplicated by its arbitrary-precision value
 pass	a BigInt operation does not silently promote a fixed-width operand
+pass	a BigInt-inner quantity ADDITION past Int64.max stays exact through the wrapper
 pass	a BigInt-inner quantity grows past Int64.max without trapping
 pass	a BigInt-inner quantity scales by a bare BigInt on the bigint path
 pass	a Bool argument to a parameter used in integer addition is rejected
@@ -1834,6 +1836,7 @@ pass	a sparse three-arm match's terminal pair dispatches branchlessly — the mi
 pass	a specific constructor export exposes one variant and keeps the rest private
 pass	a spliced boolean drives an evaluated conditional through the lifted leaf
 pass	a spliced string participates in an evaluated equality
+pass	a squared BigInt-inner quantity added to a linear one is a dimension mismatch
 pass	a squared quantity does not add to a linear quantity
 pass	a stateful handler threads its counter across a function boundary
 pass	a straight-line tuple built from callee params is projected in the caller
@@ -2350,6 +2353,9 @@ pass	an unimported sibling definition is not in scope
 pass	an unproductive self-recursion is declined, not a compiler crash
 pass	an unquote nested inside a plain quote is a syntax error, not an active unquote
 pass	an unquote of an expression with an unbound name is rejected, not quoted
+pass	an unquoted variable is not captured by a same-named fn param in the template
+pass	an unquoted variable is not captured by a same-named let binder in the template
+pass	an unquoted variable is not captured by a same-named match-pattern binder in the template
 pass	an unrecognized annotation leaves its wrapped definition in effect
 pass	an unrecognized pragma key is rejected rather than ignored
 pass	an unrecognized string escape is rejected
@@ -2670,6 +2676,7 @@ pass	heap string elements of a hoisted list if select by branch
 pass	heap-valued handler state above an inner abort keeps threading
 pass	hexadecimal, binary, and decimal spellings of one value are equal
 pass	host calls are observed in the order they were made
+pass	hygiene fix does not over-reach: a different-named template binder needs no rename
 pass	identical negative zeros nested in a tuple compare equal
 pass	identically-built ropes on both sides of a nested compare are equal (control)
 pass	importing a name a module does not export is rejected

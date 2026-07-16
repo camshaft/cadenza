@@ -85,6 +85,52 @@
             (export main)))
   (output (: 3 Int64)))
 
+; --- HYGIENE: an unquoted variable is NOT captured by a same-named binder introduced in the template -----
+; `,x` (an active unquote of a VARIABLE) splices x's value resolved in the quasiquote's ENCLOSING scope
+; (metaprogramming.md §Quasiquote Constructs AST With Selective Evaluation — ",<expr> evaluates <expr>
+; normally and inserts its result"). When the template ITSELF introduces a binder of the same name — `(let
+; ((x 1)) (+ ,x 99))` — that inner binder MUST NOT capture the unquoted `x`: `,x` is the outer variable,
+; the template's `x=1` is a separate (here unused) binding. `eval`'s desugar reconstructs source and, before
+; the fix, spliced the unquoted variable as its bare NAME node, which the template's inner binder then
+; lexically captured → silent WRONG value (100 = `(+ 1 99)` instead of 109 = `(+ 10 99)`), a variable-capture
+; hygiene miscompile on both backends (breaker-found). The fix (`eval_ast::rename_captured_binders`)
+; alpha-renames any template-introduced binder that collides with a spliced (enclosing-scope) name — so a
+; template binder can never capture an unquoted variable. Binder-kind-agnostic: `let`, `fn`/lambda param,
+; and `match`-pattern binders all covered.
+
+(case "an unquoted variable is not captured by a same-named let binder in the template"
+  (doc    "`(let ((x 10)) (eval `(let ((x 1)) (+ ,x 99))))` = 109: the `,x` splices the OUTER x's value 10
+           (its enclosing-scope binding), and the template's inner `(let ((x 1)) …)` — a same-named binder —
+           MUST NOT capture it (the inner x=1 is a dead binding here). Pins the hygiene fix: eval-reconstruct
+           alpha-renames the capturing template binder, so `,x`→10 gives `(+ 10 99)` = 109, not the captured
+           `(+ 1 99)` = 100. Classic macro variable-capture, silent wrong value on both backends before the fix.")
+  (input  (let ((x 10)) (eval (quasiquote (let ((x 1)) (+ (unquote x) 99))))))
+  (output (: 109 Int64)))
+
+(case "an unquoted variable is not captured by a same-named fn param in the template"
+  (doc    "The lambda-param companion: `(let ((z 7)) (eval `((fn (z) (+ ,z 99)) 3)))` = 106. The `,z` splices
+           the enclosing z=7, and the template's `(fn (z) …)` param — same name — must not capture it (the
+           param z=3 is a separate binding). Pins that the hygiene fix is binder-kind-agnostic: a fn/lambda
+           param cannot capture an unquoted variable either (captured → `(+ 3 99)` = 102, wrong).")
+  (input  (let ((z 7)) (eval (quasiquote ((fn (z) (+ (unquote z) 99)) 3)))))
+  (output (: 106 Int64)))
+
+(case "an unquoted variable is not captured by a same-named match-pattern binder in the template"
+  (doc    "The match-binder companion: `(let ((x 10)) (eval `(match 1 (x (+ ,x x)))))` = 11. The `,x` splices
+           the enclosing x=10; the template's `match` arm binds `x` to the scrutinee 1 — a same-named
+           binder — which must not capture the unquoted x. So `(+ ,x x)` = `(+ 10 1)` = 11, not the captured
+           `(+ 1 1)` = 2. Pins the fix over a match-pattern binder.")
+  (input  (let ((x 10)) (eval (quasiquote (match 1 (x (+ (unquote x) x)))))))
+  (output (: 11 Int64)))
+
+(case "hygiene fix does not over-reach: a different-named template binder needs no rename"
+  (doc    "The control: an unquoted `x` into a template binding a DIFFERENT name `y` — `(let ((x 10)) (eval
+           `(let ((y 1)) (+ ,x 99))))` = 109 — is already correct (no collision, no capture), and the
+           hygiene pass leaves it untouched. Pins that the alpha-rename fires ONLY on a genuine name
+           collision, never renaming an innocent binder.")
+  (input  (let ((x 10)) (eval (quasiquote (let ((y 1)) (+ (unquote x) 99))))))
+  (output (: 109 Int64)))
+
 (case "print of a quote containing a float renders re-readably"
   (doc    "`print : Ast → String` renders a quoted compound containing a float as its canonical re-readable
            s-expression: `(quote (f 1.5))` prints `\"(f 1.5)\"` — the `Ast.Float` leaf renders with a `.` so

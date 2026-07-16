@@ -125,7 +125,15 @@ ALL integration. Two disciplines keep that from ever happening — follow BOTH e
    otherwise lose them) and keeps both `issues/` and the standing roster reproducible on any machine
    (so a vertical the concierge spun up persists). The commit rides to `origin/main` with the rest
    of your publish cycle. A no-op tick commits nothing.
-5. If nothing is pending, idle this tick.
+5. **Sweep queued-but-already-landed no-ops** (cheap; every few ticks or when the inbox looks padded).
+   Run `cargo xtask fleet audit` — besides the silent-drop check, it flags any `merge-request` still in
+   your inbox whose `--ref` is ALREADY on trunk by patch-id (you integrated the content under a
+   re-parented/squashed sha but the original file never got acked). These are no-ops that would each
+   gate to an empty merge and pad your batch. Clear each the audit lists with `cargo xtask fleet ack
+   <file> --outcome reject --body "already landed by patch-id; superseded"` — no gate needed (the
+   content is provably already integrated). This keeps your inbox honest so its depth reflects real
+   pending work, not landed leftovers. (`--strict` exits non-zero if any are found, handy for a guard.)
+6. If nothing is pending, idle this tick.
 
 ## Coordination
 - You never send `merge-request`s (you ARE the target). You send `merged`/`reject`.
