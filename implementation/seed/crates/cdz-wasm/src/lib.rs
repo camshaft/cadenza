@@ -1146,6 +1146,50 @@ mod tests {
         );
     }
 
+    #[test]
+    fn ml_nested_ctor_in_type_def_block_has_no_syntax_error_through_the_browser_entrypoints() {
+        // Regression for a reported native-vs-browser divergence (v-guide-infra): a multi-line ML sum-
+        // type-def block with a NESTED multi-arg constructor application —
+        // `Solidr.Differencer(Solidr.Cuber(V3r(r(4), r(4), r(4))), Solidr.Spherer(Rational.of(5, 2)))` —
+        // was reported to fail in the browser with "unexpected ')' at byte N" (which is the S-EXPR
+        // reader's error, sexpr.rs:484). This pins that the WASM browser entrypoints handle it via the ML
+        // reader with NO syntax error: `parse_spanned`/`diagnostics`/`compile` at `from="ml"` never route
+        // ML source through the s-expr reader. (cadenza-syntax's `parser::read_ml` correctness is pinned
+        // separately in parser.rs; THIS pins the cdz-wasm compile layer the guide actually calls.) A
+        // future change that made an ML path re-read through the s-expr surface would fail here.
+        let src = "type Vec3r = | V3r(Rational, Rational, Rational)\n\
+                   type Solidr =\n\
+                   \x20\x20| Cuber(Vec3r)\n\
+                   \x20\x20| Spherer(Rational)\n\
+                   \x20\x20| Differencer(Solidr, Solidr)\n\
+                   def r(n: Int64) = Rational.of(n, 1)\n\
+                   def main() =\n\
+                   \x20\x20Solidr.Differencer(\n\
+                   \x20\x20\x20\x20Solidr.Cuber(V3r(r(4), r(4), r(4))),\n\
+                   \x20\x20\x20\x20Solidr.Spherer(Rational.of(5, 2)))\n";
+        // parse_spanned (the shared front-end leg of every compile/diagnostics call) succeeds.
+        let (bytes, _spans) =
+            parse_spanned(src, Format::Ml).expect("ML parses through parse_spanned");
+        assert!(!bytes.is_empty(), "produced a non-empty AST");
+        // diagnostics: NO syntax/parse error — only the expected unused-`main` warning (the snippet
+        // exports nothing). Crucially, NONE mentions the s-expr reader's "unexpected ')'".
+        let ds = diagnostics(src, "ml").expect("diagnostics runs");
+        for d in &ds {
+            assert!(
+                !d.message.contains("unexpected ')'") && !d.message.contains("trailing input"),
+                "no s-expr-reader syntax error should appear on the ML path, got: {}",
+                d.message
+            );
+            // The only diagnostic on this well-formed (if unexported) program is the unused-def warning.
+            assert!(
+                !d.error || d.code == "CDZ0306",
+                "unexpected hard error on a syntactically-valid ML program: [{}] {}",
+                d.code,
+                d.message
+            );
+        }
+    }
+
     /// The byte offset of the FIRST occurrence of `needle` in `src` — a hover target for `disposition`.
     fn offset_of(src: &str, needle: &str) -> u32 {
         src.find(needle).expect("needle present") as u32
