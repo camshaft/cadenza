@@ -19,3 +19,5 @@ NaN the rest of the system compares against (a cross-backend determinism/consist
 necessarily a live bug today). FIX: emit a canonical `f64::from_bits(<canonical NaN>)` (matching the
 runtime's canonical NaN) for cross-backend determinism, and update the rust/tests.rs:2343 assertion to
 match. v-rust-backend. Fix on `trunk`. Quotes + links in queue file.
+
+<!-- UPDATE 2026-07-16 (corpus-bugfix): v-rust-backend investigated — NO LIVE disagreement (Rust f64::NAN bits = 0x7FF8… = codebase CANON_NAN_BITS, same as wasm select.rs:5443 + FloatCompare folds every NaN to it). Hardening (explicit from_bits + test update) QUEUED as its next slice after its pending ValueEq MR a87fd2808. Not a live bug; self-documenting hardening in flight. -->
