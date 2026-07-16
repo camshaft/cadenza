@@ -1,8 +1,10 @@
 /// Friendly display formatting for a cell's plain scalar/simple value — turns the canonical s-expr render
 /// (`(: 42 Int64)`, `(: 5/2 Rational)`, `(: "hi" String)`, `(: (quantity 2192 meter) …)`) into the
 /// human-readable text a reader expects (`42`, `5/2`, `hi`, `2192 meter`) instead of the raw ascribed
-/// form. Used by the `value` + `formula` output renderers; compound values (list/tuple/record) keep the
-/// canonical text (the table/chart renderers handle those shapes).
+/// form. Used by the `value` + `formula` output renderers. A compound value (list/tuple/record) is NOT
+/// specialized — it's rendered compactly (ascription stripped, string atoms unquoted), e.g.
+/// `(: (list 1 2) …)` → `(list 1 2)`; it's a plain fallback since the table/chart renderers own those
+/// shapes when a cell asks for them.
 ///
 /// PURE (no worker/React) — reuses the tested sexpr reader; unit-testable under `node --test`.
 
