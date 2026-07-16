@@ -15,13 +15,39 @@
 //! future `cdz cad` can shell out to this bin (the `cdz calc` precedent), or the pipeline can be driven as
 //! `cdz run … | cdz-cad - -o out.stl` directly.
 //!
-//! Only STL is written in this sub-slice (the universal printer format, zero-dependency); 3MF/glTF follow.
+//! Output format is chosen by the `-o` file EXTENSION: `.stl` → binary STL (printer convenience), `.glb` →
+//! binary glTF (design-primary, watertight-preserving). 3MF (a ZIP+XML format needing extra deps) is later.
 
 use std::io::Read;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use cdz_cad::{mesh_with_segments, parse_solid, stl};
+use cdz_cad::{gltf, mesh_with_segments, parse_solid, stl};
+
+/// The mesh file format, resolved from the output extension.
+enum Format {
+    Stl,
+    Glb,
+}
+
+impl Format {
+    /// Pick a format from the output path's extension (case-insensitive). Unknown/absent → an error listing
+    /// the supported set (so a typo is a clear message, not a silently-wrong file).
+    fn from_path(p: &std::path::Path) -> Result<Format, String> {
+        match p
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase())
+        {
+            Some(e) if e == "stl" => Ok(Format::Stl),
+            Some(e) if e == "glb" => Ok(Format::Glb),
+            Some(e) => Err(format!(
+                "unsupported output extension `.{e}` (use .stl or .glb)"
+            )),
+            None => Err("output has no extension (use .stl or .glb)".to_string()),
+        }
+    }
+}
 
 struct Args {
     input: String, // a path, or "-" for stdin
@@ -34,7 +60,7 @@ fn main() -> ExitCode {
         Ok(a) => a,
         Err(msg) => {
             eprintln!(
-                "cdz-cad: {msg}\n\nusage: cdz-cad <input.sexp|-> -o <out.stl> [--segments N]"
+                "cdz-cad: {msg}\n\nusage: cdz-cad <input.sexp|-> -o <out.stl|out.glb> [--segments N]"
             );
             return ExitCode::FAILURE;
         }
@@ -58,9 +84,21 @@ fn main() -> ExitCode {
         }
     };
 
-    // 3. Mesh it with manifold, then 4. serialize to binary STL and write.
+    // Resolve the output format from the extension BEFORE meshing (fail fast on a bad -o).
+    let format = match Format::from_path(&args.output) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("cdz-cad: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    // 3. Mesh it with manifold, then 4. serialize to the chosen format and write.
     let m = mesh_with_segments(&solid, args.segments);
-    let bytes = stl::to_binary_stl(&m);
+    let bytes = match format {
+        Format::Stl => stl::to_binary_stl(&m),
+        Format::Glb => gltf::to_glb(&m),
+    };
     if let Err(e) = std::fs::write(&args.output, &bytes) {
         eprintln!("cdz-cad: writing `{}`: {e}", args.output.display());
         return ExitCode::FAILURE;
