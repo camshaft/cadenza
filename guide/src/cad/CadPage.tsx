@@ -28,6 +28,15 @@ import { wrapModule } from "../components/wrapModule.ts";
 import { meshFromSolid, type MeshResult } from "./index.ts";
 import { MeshView } from "./MeshView.tsx";
 import type { Surface } from "../compiler/client.ts";
+import { LazyCodeEditor } from "../editor/LazyCodeEditor.tsx";
+
+// /cad's IDE config for the shared editor: the program is a self-contained module (no wrapping), so the
+// compiled text IS the editor text (prefix 0), and the surface is fixed to CAD_SURFACE. This turns on the
+// Cadenza lexical + semantic highlighting + squiggles/hover — the operator-requested IDE editor.
+const CAD_IDE = {
+  surface: () => "sexpr" as Surface,
+  prepare: (editorText: string) => ({ compiled: editorText, wrapPrefixBytes: 0 }),
+};
 
 /// The starter Solid model per surface — a 4mm cube with a 2.5-radius spherical dent (the classic CSG
 /// difference). Self-contained (inline `type` defs + `def main`): the CAD library modules aren't resolvable
@@ -138,12 +147,9 @@ export default function CadPage() {
       <div className="flex min-h-0 flex-1 flex-col gap-4 md:flex-row">
         {/* Editor + Run */}
         <div className="flex min-h-0 flex-1 flex-col rounded-lg border border-slate-800 bg-slate-900/40">
-          <textarea
-            value={source}
-            onChange={(e) => setSource(e.target.value)}
-            spellCheck={false}
-            className="min-h-[8rem] flex-1 resize-none bg-transparent p-3 font-mono text-sm text-slate-100 focus:outline-none"
-          />
+          <div className="min-h-[8rem] flex-1 overflow-auto">
+            <LazyCodeEditor value={source} onChange={setSource} ide={CAD_IDE} minHeight="8rem" />
+          </div>
           <div className="flex items-center justify-between border-t border-slate-800 px-3 py-2">
             <span className="font-mono text-xs text-slate-500">
               {status.phase === "error" ? (
