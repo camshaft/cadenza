@@ -16,6 +16,7 @@
 import { replEval, type Surface } from "../compiler/client.ts";
 import { run as runComponent } from "../runner/client.ts";
 import { classify } from "./classify.ts";
+import { type Binding, visibleBindings, wrapInLets } from "./letChain.ts";
 
 // `classify`/`isIdentifier` moved to the React-free `./classify.ts` so `node --test` can cover them
 // (this module transitively imports the wasm runtime). Re-exported for existing importers.
@@ -33,14 +34,8 @@ export type Eval =
   | { kind: "timeout" }
   | { kind: "error"; message: string };
 
-/// A stored binding: a name, the SOURCE expression it was assigned (never a value form — see the header
-/// on why), and the rendered value it evaluated to at assignment time (for the variables panel, so the
-/// panel never has to RE-run — re-running would collide with the run worker's one-at-a-time guard).
-interface Binding {
-  name: string;
-  src: string;
-  display: string;
-}
+/// `Binding`, `wrapInLets`, and the variables-panel dedup moved to the React-free `./letChain.ts` so
+/// `node --test` can cover the state model (this module transitively imports the wasm runtime).
 
 /// The calculator's session state. One surface per instance (ML by default), matching the native crate.
 export class Calculator {
@@ -65,17 +60,7 @@ export class Calculator {
   /// Reads the STORED display captured at assignment time; does NOT re-run (a re-run would contend with
   /// the run worker's one-at-a-time guard and race the next input). Synchronous.
   values(): { name: string; text: string }[] {
-    const seen = new Set<string>();
-    const out: { name: string; text: string }[] = [];
-    for (let i = this.bindings.length - 1; i >= 0; i--) {
-      const b = this.bindings[i];
-      if (!seen.has(b.name)) {
-        seen.add(b.name);
-        out.push({ name: b.name, text: b.display });
-      }
-    }
-    out.reverse();
-    return out;
+    return visibleBindings(this.bindings);
   }
 
   /// Evaluate one typed line, updating state. An assignment commits its source (and echoes the value);
@@ -130,15 +115,7 @@ export class Calculator {
   /// re-binding shadows. ML `let x = 5 in …`, s-expr `(let ((x 5)) …)`. No bindings → `expr` unwrapped.
   /// Mirrors the native crate's `wrap_in_lets`.
   wrapInLets(expr: string): string {
-    let wrapped = expr;
-    for (let i = this.bindings.length - 1; i >= 0; i--) {
-      const { name, src } = this.bindings[i];
-      wrapped =
-        this.surface === "ml"
-          ? `let ${name} = ${src} in ${wrapped}`
-          : `(let ((${name} ${src})) ${wrapped})`;
-    }
-    return wrapped;
+    return wrapInLets(this.surface, this.bindings, expr);
   }
 
   /// Reset the session (clear all bindings). The surface is unchanged.
