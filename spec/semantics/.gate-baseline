@@ -2609,6 +2609,9 @@ pass	raising a COMPUTED (derived) quantity to a power squares its magnitude and 
 pass	raising a quantity to a compile-time power composes the unit and the magnitude
 pass	raising a runtime computed quantity to a power squares the runtime magnitude
 pass	reaching an effect neither handled nor delegated is rejected at compile time
+pass	read of text that is not a well-formed s-expression declines
+pass	read of text with trailing content after the first s-expression declines
+pass	read of the empty string declines
 pass	reading a byte from a sequence built with a RUNTIME element widens it to the Option payload
 pass	reading a field of a record built from runtime elements folds to the field
 pass	reading a member from an if-of-records resolves each branch's field by its own sorted order
