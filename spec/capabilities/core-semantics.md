@@ -316,7 +316,7 @@ A floating-point value MUST be equal to another floating-point value exactly whe
 
 A type that offers an ordering MUST offer a total order over its values.
 
-A floating-point type MUST NOT be treated as offering an ordering in the sense of this section, because its relational operators are the IEEE partial order defined in numeric-model.md §"A Floating-Point Relational Operator Follows The IEEE Partial Order" rather than a total order — so the requirement that an offered ordering be total does not apply to the floating-point relational operators.
+A floating-point type MUST NOT be treated as offering an ordering in the sense of this section, because its relational operators are the IEEE partial order defined for the floating-point type rather than a total order — so the requirement that an offered ordering be total does not apply to the floating-point relational operators.
 
 The ordering a type offers MUST be a deterministic function of the values compared.
 

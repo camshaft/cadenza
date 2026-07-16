@@ -169,4 +169,4 @@ A floating-point relational operator (`<`, `<=`, `>`, `>=`) MUST follow the IEEE
 
 A negative zero and a positive zero MUST compare as neither less than nor greater than one another under a floating-point relational operator, so that the two zeroes are ordered as equal even though they are distinct under equality.
 
-The floating-point relational operators are the IEEE partial order and are a distinct facility from the total order an orderable type offers under core-semantics.md §"Ordering Where Offered Is Total"; a floating-point type MUST NOT be treated as offering that total order, so that the partial order's not-a-number and signed-zero behavior does not contradict the total-order requirement.
+The floating-point relational operators are the IEEE partial order and are a distinct facility from the total order an orderable type offers under §"Ordering Where Offered Is Total"; a floating-point type MUST NOT be treated as offering that total order, so that the partial order's not-a-number and signed-zero behavior does not contradict the total-order requirement.
