@@ -1380,6 +1380,44 @@
   (input  (Char.from-int 1114112))
   (output (: (None unit) (Option Char))))
 
+; The cases above use U+D800 (first surrogate) and U+110000 (one PAST the max). These pin the EXACT
+; boundaries where an off-by-one in the range/surrogate check surfaces: U+10FFFF (the MAXIMUM valid scalar,
+; one below the U+110000 rejection) is Some; U+DFFF (the LAST surrogate, the block's upper endpoint) is
+; None; and U+E000 (the first scalar AFTER the surrogate block) is Some. A check written `< 0x110000`
+; instead of `<= 0x10FFFF`, or a surrogate block off by one at either end, flips one of these.
+
+(case "Char.from-int at the maximum valid scalar U+10FFFF is Some"
+  (doc    "`(Char.from-int 1114111)` — 1114111 is U+10FFFF, the MAXIMUM Unicode scalar value — is a valid
+           scalar, so from-int yields Some. The just-below-the-ceiling companion of the U+110000 (1114112)
+           rejection above: 10FFFF is IN range, 110000 is one PAST. Pins the exact upper boundary of the
+           valid-scalar check (`<= 0x10FFFF`, not `< 0x110000` off-by-one — both reject 110000 but only the
+           correct bound accepts 10FFFF).")
+  (input  (match (Char.from-int 1114111) ((Some _) 1) ((None _) 0)))
+  (output (: 1 Int64)))
+
+(case "Char.from-int at the last surrogate U+DFFF is None"
+  (doc    "`(Char.from-int 57343)` — 57343 is U+DFFF, the LAST (highest) surrogate code point — is not a
+           scalar, so from-int yields None. The upper-endpoint companion of the U+D800 (55296, the FIRST
+           surrogate) case: the surrogate block is [U+D800, U+DFFF] inclusive, so both endpoints reject.
+           Pins the block's upper edge (a block ending at 0xDFFE would wrongly accept 0xDFFF).")
+  (input  (match (Char.from-int 57343) ((Some _) 1) ((None _) 0)))
+  (output (: 0 Int64)))
+
+(case "Char.from-int at U+E000 (first scalar after the surrogate block) is Some"
+  (doc    "`(Char.from-int 57344)` — 57344 is U+E000, the FIRST scalar value immediately after the surrogate
+           block (which ends at U+DFFF) — is valid, so from-int yields Some. Pins that the surrogate
+           exclusion ends exactly at U+DFFF: U+E000 is accepted, so the block is [D800, DFFF] and not one
+           wider. The lower-boundary complement of the last-surrogate case.")
+  (input  (match (Char.from-int 57344) ((Some _) 1) ((None _) 0)))
+  (output (: 1 Int64)))
+
+(case "the maximum valid scalar U+10FFFF round-trips through to-int"
+  (doc    "`(Char.to-int (Char.from-int 1114111))` recovers 1114111 — the max scalar survives the char
+           round-trip intact. The extreme companion of the mid-range round-trip below: a conversion that
+           truncated or mis-handled the 21-bit-wide maximum scalar would lose it.")
+  (input  (= (Char.to-int (Option.expect (Char.from-int 1114111) "max scalar")) 1114111))
+  (output (: true Bool)))
+
 (case "char to-int and from-int round-trip through the scalar value"
   (doc    "For a scalar value v, `(Char.from-int v)` is `(Some c)` and `(Char.to-int c)` is v again:
            `(Char.to-int #\\a)` = 97 and `(Char.from-int 97)` = `(Some #\\a)`, so matching the Some arm
