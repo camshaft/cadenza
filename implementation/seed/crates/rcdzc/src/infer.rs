@@ -1670,6 +1670,23 @@ fn type_ctor_arity_message_here(db: &mut Db, ty_expr: StructId) -> Option<String
              were supplied — write `({name} <{placeholder}>)`, e.g. `{name}64`"
         ));
     }
+    // The ARROW (function) type constructor `->`. Unlike the fixed-arity collection ctors, `->` takes ONE
+    // OR MORE arguments: `(-> R)` is the nullary `Unit -> R`, `(-> P R)` the ordinary `P -> R`, `(-> A B … R)`
+    // the right-curried n-ary arrow (`reduce_ctor`'s `FnCtor` arm) — so ONLY the ZERO-argument `(->)` is a
+    // wrong arity. `reduce_ctor` rejects it ("-> takes at least one type argument"), which the generic
+    // `non_type_annotation_message` flattens to the misleading "found a non-type" (as if `->` were not a
+    // type constructor). Name the arrow shape + its minimum (a result type), the arrow twin of the
+    // collection-ctor arity messages. Only the empty case; `(-> …)` with ≥1 arg is well-formed and returns
+    // `None` (any non-type argument inside it surfaces as its own fault).
+    if crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::FnCtor) && supplied == 0
+    {
+        return Some(
+            "an arrow type is `(-> Arg… Result)` — it needs at least a result type, e.g. `(-> Int64)` \
+             (a nullary function returning `Int64`) or `(-> Int64 Bool)` (`Int64 -> Bool`); `(->)` names \
+             no type"
+                .to_string(),
+        );
+    }
     // A PRELUDE collection/quantity type constructor — its arity is fixed by the prim, and its argument
     // placeholder names read naturally (`List Elem`, `Map Key Value`, `Qty T u`). `Qty` takes 2 — a numeric
     // TYPE + a UNIT (`(Qty Int64 (Unit.base #"meter"))`); a wrong count `(Qty Int64)` / `(Qty)` reads as

@@ -181,6 +181,7 @@ pass	Type.eq of a type-valued parameter against itself is always true
 pass	Type.eq on a constructed generic sum compares the full instantiated type
 pass	Type.eq on a type-valued parameter against a COMPOUND type is structural
 pass	Type.of carries a quantity's unit into a same-type annotation
+pass	Type.of on a bare nullary variant reflects its element as UNDETERMINED
 pass	Type.of reflects a runtime parameter's type at compile time
 pass	Type.of reflects a value's type for use as an annotation
 pass	UInt64.max crosses the parameter boundary and back unchanged
@@ -715,6 +716,8 @@ pass	a factory RETURNS a closure that captures a let-bound inner closure
 pass	a failing guard falls through to a later arm
 pass	a failing payload-binder guard falls to a later arm re-binding the payload
 pass	a failing tuple guard falls to a later arm re-binding the elements
+pass	a failure `?` preserves a COMPOUND error value through the short-circuit
+pass	a failure `?` propagates through TWO nested fallible boundaries
 pass	a failure `?` short-circuits BEFORE later computation runs
 pass	a fallible parser threads a Result((value,cursor),String) through mutual recursion, short-circuiting on Err
 pass	a false variant guard shields its arm's trapping body
@@ -2507,6 +2510,7 @@ pass	constructing a sized bytes segment whose value length differs from the size
 pass	constructing a u8 segment from a value above its range is rejected
 pass	constructing an unsigned segment from a negative value is rejected
 pass	constructor pattern binders capture the payload uniformly
+pass	context that constrains a nullary variant's element makes Type.of concrete
 pass	converting a BigInt back to a fixed width is checked and a compile-provable out-of-range narrowing is rejected
 pass	converting a char to its integer scalar value is total
 pass	converting a fixed-width integer to BigInt is explicit
@@ -2659,6 +2663,7 @@ pass	expect traps on the err case of a RUNTIME result
 pass	expect unwraps the ok case of a runtime result
 pass	expect unwraps the present case of a runtime optional
 pass	extending a record adds a new field
+pass	extending a record then dropping the added field returns the original
 pass	extending a record with an already-present field is rejected
 pass	extracting a high byte composes shift and mask
 pass	false is less than true
@@ -2768,6 +2773,7 @@ pass	membership of an absent element is false, not a trap
 pass	merging records that share a field name is rejected
 pass	merging records with a runtime field value carries both operands' fields
 pass	merging records with runtime values on both sides binds each field to its own value
+pass	merging two disjoint records then projecting one side recovers it
 pass	merging two empty records is the empty record
 pass	merging two records with disjoint fields unions their fields
 pass	merging with the empty record on the left is the identity
@@ -3350,6 +3356,7 @@ pass	unsigned subtraction below zero is rejected at compile time
 pass	updating a list index replaces that element, leaving others
 pass	updating a list slot with an element of a different type is a type error
 pass	updating a record field changes its type to the new value's
+pass	updating a record field preserves the other fields' values
 pass	updating a record field replaces its value
 pass	updating an absent record field is rejected
 pass	when two abortive performs sit on one spine the FIRST (leftmost) abort wins

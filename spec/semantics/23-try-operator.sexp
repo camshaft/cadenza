@@ -275,6 +275,33 @@
             (export main)))
   (output (: 7 Int64)))
 
+(case "a failure `?` preserves a COMPOUND error value through the short-circuit"
+  (doc    "The Err-value case above carries a scalar 7; this carries a COMPOUND: `(try (Err (tuple 3 4)))`
+           under a `(Result Int64 (Tuple Int64 Int64))` boundary short-circuits, and the caller's Err arm
+           destructures the tuple `(3, 4)` → 7. Pins that `?` propagates the WHOLE error payload (a compound,
+           not just a scalar) unchanged through the abortive short-circuit — the error analogue of the
+           compound-Ok-payload unwrap.")
+  (input  (do
+            (def (f) (: (let ((y (try (Err (tuple 3 4))))) (Ok y)) (Result Int64 (Tuple Int64 Int64))))
+            (def (main) (match (f) ((Ok v) 0) ((Err (tuple a b)) (+ a b))))
+            (export main)))
+  (output (: 7 Int64)))
+
+(case "a failure `?` propagates through TWO nested fallible boundaries"
+  (doc    "An Err bubbles up MORE than one `?` boundary: `inner` returns `Err 9`; `outer`'s `(try (inner))`
+           short-circuits and re-propagates the Err to its OWN boundary; `main` reads 9. Pins that the
+           abortive `?` composes across nested fallible functions — the failure exits inner's boundary,
+           becomes outer's `(try …)` operand, and short-circuits outer's boundary too, carrying 9 the whole
+           way. A `?` that only exited one level (or lost the value across the second boundary) would give a
+           wrong result. (The single-boundary short-circuit + the same-boundary two-`?` cases are pinned
+           above; this is the cross-boundary composition.)")
+  (input  (do
+            (def (inner) (: (let ((y (try (Err 9)))) (Ok y)) (Result Int64 Int64)))
+            (def (outer) (: (let ((z (try (inner)))) (Ok (+ z 1))) (Result Int64 Int64)))
+            (def (main) (match (outer) ((Ok v) v) ((Err e) e)))
+            (export main)))
+  (output (: 9 Int64)))
+
 (case "effect state threads across a successful `?`"
   (doc    "The straddle: `(let ((a (Ctr.tick)) (x (try (Some 0))) (b (Ctr.tick))) (Some (+ a b)))` — a
            perform BEFORE the `?` (a = 0), a SUCCESSFUL `?` unwrapping Some 0 (no short-circuit), then

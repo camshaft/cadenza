@@ -50,6 +50,23 @@ pub fn rust_type(ty: &Ty) -> Option<String> {
         // normalized form). Its ops mirror the wasm runtime's `rational-*` byte-for-byte, so a rust program
         // computes the same rational value. Non-Copy (owns two limb `Vec`s) → clone-on-read.
         Ty::Rational => Some("cdz_num::Rational".to_string()),
+        // A QUANTITY is a COMPILE-TIME-only dimension over an inner numeric magnitude — `lower` erases the
+        // `Ty::Qty` wrapper, so the emitted VALUE is just the inner magnitude. Map to `rust_type(inner)`;
+        // the unit is recovered for the boundary render from the `cdz-return` note's `render_name` and
+        // rendered as `(Qty.of <magnitude> <unit>)` by the gate harness. RESTRICTED to a SCALE-1 reference
+        // unit whose render is a SIMPLE base (`(Unit.base #"…")`) or dimensionless (`Unit.one`): a
+        // non-scale-1 unit DISPLAY-scales the magnitude (`5 mile`→`201168/25 meter` — per-inner-type
+        // scaling, a later increment), and a DERIVED unit (`Unit.*`/`Unit.^`/product) needs the dotted
+        // value-form conversion the harness doesn't yet do. Those decline (`None`); this increment covers
+        // the common base/dimensionless quantity result.
+        Ty::Qty { inner, unit }
+            if unit.scale() == (1, 1) && {
+                let r = unit.render();
+                r == "Unit.one" || (r.starts_with("(Unit.base ") && !r.contains("Unit.*"))
+            } =>
+        {
+            rust_type(inner)
+        }
         // A CHAR is a single Unicode scalar value — Rust's native `char` (which IS a Unicode scalar,
         // exactly the Cadenza model). Copy, so no clone-on-read needed. Lets a `Char` cross as a sum
         // payload / tuple element (a `(Tok (Ch Char))` enum) and a `ConstChar` emit as a `'…'` literal.

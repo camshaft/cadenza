@@ -1547,6 +1547,27 @@ fn rustc_roundtrip_rational_arithmetic_and_render() {
 }
 
 #[test]
+fn quantity_result_maps_to_inner_at_a_scale1_base_unit_else_declines() {
+    // A QUANTITY RESULT at a scale-1 SIMPLE unit maps to its INNER magnitude's Rust type (the `Ty::Qty`
+    // wrapper erases in `lower`); the unit is carried in the `cdz-return` note + rendered `((. Qty of)
+    // <mag> <unit>)` by the gate harness (the 9 corpus cases pin the end-to-end render). Here we pin the
+    // EMIT side: a base-unit Qty result compiles with the inner type; a non-scale-1 unit still declines.
+    let base = compile_rust("(module m (def (g) (Qty.of 5.0 (Unit.base #\"meter\"))) (export g))");
+    assert!(
+        base.contains("-> f64")
+            && base.contains("// cdz-return[g]: (Qty Float64 (Unit.base #\"meter\"))"),
+        "a Qty{{Float64,meter}} result emits the inner f64 + a Qty return note:\n{base}"
+    );
+    // A NON-reference (scaled) unit still DECLINES — its display would scale the magnitude (deferred).
+    let scaled =
+        compile_rust_result("(module m (def (g) (Qty.of 5 (Unit.of #\"mile\"))) (export g))");
+    assert!(
+        scaled.is_err(),
+        "a non-scale-1 (mile) quantity result declines (display-scaling not yet done):\n{scaled:?}"
+    );
+}
+
+#[test]
 fn rustc_roundtrip_add_matches_the_wasm_answer() {
     // The exact I2b wasmtime answers: add(20,22)=42, add(100,-1)=99.
     let rs = compile_rust("(module m (def (add (: a Int64) (: b Int64)) (+ a b)) (export add))");

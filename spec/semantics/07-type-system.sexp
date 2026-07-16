@@ -1048,6 +1048,31 @@
             (export main)))
   (output (: 0 Int64)))
 
+(case "Type.of on a bare nullary variant reflects its element as UNDETERMINED"
+  (doc    "`Type.of` reflects a value's INFERRED type, so a bare nullary variant — carrying no element —
+           reflects an UNDETERMINED element. `(None)` is `Option ?a`, distinct from a concrete `Option
+           Int64` (`(Some 1)`): `(Type.eq (Type.of (None)) (Type.of (Some 1)))` is `false` — the `?a` is not
+           yet `Int64`. Pins that reflection over a polymorphic value sees the type as inferred (undetermined
+           here), NOT eagerly grounded — the type-value analogue of a bare `None`'s open element type. (See
+           the next case: CONTEXT that constrains the element makes them equal.)")
+  (input  (do
+            (def (main) (if (Type.eq (Type.of (None)) (Type.of (Some 1))) 1 0))
+            (export main)))
+  (output (: 0 Int64)))
+
+(case "context that constrains a nullary variant's element makes Type.of concrete"
+  (doc    "The complement of the bare case above: when CONTEXT pins a nullary variant's element, `Type.of`
+           reflects the concrete instantiation. `pick : (Option Int64) -> (Option Int64)` forces its `(None)`
+           argument to `Option Int64`, so `(Type.eq (Type.of (pick (None))) (Type.of (Some 1)))` is `true` —
+           both `Option Int64`. Pins that `Type.of` tracks the element the surrounding constraints DETERMINE,
+           so the same `(None)` reflects `Option ?a` bare (false above) but `Option Int64` in a typed
+           position (true here) — reflection is over the SOLVED type, not the syntactic constructor.")
+  (input  (do
+            (def (pick (: o (Option Int64))) o)
+            (def (main) (if (Type.eq (Type.of (pick (None))) (Type.of (Some 1))) 1 0))
+            (export main)))
+  (output (: 1 Int64)))
+
 (case "Type.eq compares a TUPLE type-value structurally, by element types"
   (doc    "`Type.of` on a tuple value reflects its structural `Ty::Tuple` type, compared element-wise.
            `(Type.of (tuple 1 \"a\"))` is `(Tuple Int64 String)`: equal to another `(Tuple Int64 String)`

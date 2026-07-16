@@ -218,6 +218,36 @@
   (input  (= (Record.project (record (x 1) (y 2)) (x)) (record (x 1))))
   (output (: true Bool)))
 
+; The cases above pin each record operation in isolation (extend, without, with, merge, project). These pin
+; their ALGEBRAIC compositions — the round-trips and inverses where a field-set bookkeeping slip would
+; surface: extend-then-without is the identity, `with` preserves the OTHER fields, and merge-then-project
+; recovers a merged side. Each composes ≥2 operations, so a result that mis-tracked the field set (dropped,
+; duplicated, or reordered a label) fails the structural `=`.
+
+(case "extending a record then dropping the added field returns the original"
+  (doc    "`(Record.without (Record.extend (record (a 1)) #\"b\" 2) (b))` = `(record (a 1))` — extend adds
+           `b`, without drops it, and the result equals the original by structural `=`. Pins that
+           extend/without are inverse on the added field: the field-set bookkeeping adds then removes exactly
+           `b`, leaving `a` untouched.")
+  (input  (= (Record.without (Record.extend (record (a 1)) #"b" 2) (b)) (record (a 1))))
+  (output (: true Bool)))
+
+(case "updating a record field preserves the other fields' values"
+  (doc    "`(Record.with (record (a 1) (b 2) (c 3)) #\"b\" 9)` = `(record (a 1) (b 9) (c 3))` — `with`
+           replaces only `b`, leaving `a` and `c` at their original values. Pins that an update is local to
+           the named field: the surrounding fields (both before and after the updated one) keep their values
+           and positions, not just the updated field being correct.")
+  (input  (= (Record.with (record (a 1) (b 2) (c 3)) #"b" 9) (record (a 1) (b 9) (c 3))))
+  (output (: true Bool)))
+
+(case "merging two disjoint records then projecting one side recovers it"
+  (doc    "`(Record.project (Record.merge (record (a 1) (b 2)) (record (c 3))) (a b))` = `(record (a 1)
+           (b 2))` — merge unions the disjoint fields, then project narrows back to the left side's labels,
+           recovering it exactly. Pins the merge/project round-trip: the merged record carries all three
+           fields with their values, and projecting `(a b)` selects the two by name unchanged.")
+  (input  (= (Record.project (Record.merge (record (a 1) (b 2)) (record (c 3))) (a b)) (record (a 1) (b 2))))
+  (output (: true Bool)))
+
 ; --- Tuple reshaping: explicit positional operations yield a new tuple ----------------------
 ; type-system.md #A Tuple Is Reshaped Positionally By An Explicit Operation Yielding A New Value and its
 ; companions: `Tuple.concat` concatenates, `Tuple.split-at` splits at a static position, `Tuple.remove` takes

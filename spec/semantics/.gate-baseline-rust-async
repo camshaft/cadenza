@@ -30,6 +30,7 @@ pass	OR-then-mask absorption folds to the mask constant on a runtime operand
 pass	Ok carrying a Some keeps both variant tags
 pass	Qty.pow and repeated multiplication produce the same dimension for a matching add
 pass	Qty.unit recovers a derived unit
+pass	Qty.unit recovers a quantity's unit to build another quantity of the same unit
 pass	Qty.unit recovers the unit of a quantity whose magnitude is a runtime value
 pass	Qty.value recovers the underlying numeric value, discarding the unit
 pass	Result propagates errors without trapping
@@ -74,6 +75,7 @@ pass	Type.eq of a type-valued parameter against itself is always true
 pass	Type.eq on a constructed generic sum compares the full instantiated type
 pass	Type.eq on a type-valued parameter against a COMPOUND type is structural
 pass	Type.of carries a quantity's unit into a same-type annotation
+pass	Type.of on a bare nullary variant reflects its element as UNDETERMINED
 pass	Type.of reflects a runtime parameter's type at compile time
 pass	Type.of reflects a value's type for use as an annotation
 pass	UInt64.max crosses the parameter boundary and back unchanged
@@ -367,6 +369,7 @@ pass	a curried function-type annotation checks its inner result type against the
 pass	a curried newtype constructor applies to completion
 pass	a curried-syntax application of a multi-payload constructor reaches full arity and constructs
 pass	a decimal integer literal
+pass	a decimal kilobyte and a binary kibibyte are distinct units of one dimension
 pass	a decimal kilobyte and a binary kibibyte convert distinctly over Int64
 pass	a decimal literal annotated Rational equals its explicit constructor form
 pass	a decimal literal annotated Rational grounds to its exact fraction
@@ -406,6 +409,7 @@ pass	a dependent-size segment that overruns the remaining bytes falls through
 pass	a destructuring let over a runtime value binds its parts
 pass	a dictionary consumer called at two dictionaries is monomorphized per dictionary
 pass	a digit separator adjacent to a float's decimal point is a malformed literal
+pass	a dimensionless quantity carries the group identity Unit.one
 pass	a discarded do-statement whose value would overflow is elided, so its trap does not occur
 pass	a diverging expression unifies with an integer position
 pass	a division whose divisor folds to zero still traps
@@ -1028,6 +1032,7 @@ pass	a quantity annotation at an in-range narrow width grounds and accepts
 pass	a quantity annotation range-checks the inner width — an out-of-range magnitude is rejected
 pass	a quantity annotation rejects a negative magnitude at an unsigned inner width
 pass	a quantity built from an extracted unit is dimensionally checked
+pass	a quantity is constructed from a numeric value and a unit
 pass	a quantity over a BigInt magnitude compares by its exact value
 pass	a quantity over a BigInt magnitude runs unbounded arithmetic on the erased handles
 pass	a quantity over a Rational magnitude compares by its exact value
@@ -1586,6 +1591,7 @@ pass	a unary constructor applied to a runtime value is returned as a program res
 pass	a unary constructor is a single-arity function
 pass	a unary variant applied to a wrong-arity tuple payload is a type error
 pass	a unary variant applied to a wrong-type payload is a type error
+pass	a unit multiplied by its own inverse cancels to the dimensionless unit
 pass	a user Name variant does not capture the Ast sum's Name variant
 pass	a user function may be named quote — its signature is a binding form, not a quote
 pass	a user sum NAMED `Box` wrapping a recursive type does not collide with the heap pointer
@@ -1636,7 +1642,9 @@ pass	adding a squared length to a plain length is a dimension mismatch
 pass	adding quantities of incompatible dimension is a compile-time error
 pass	adding rational-magnitude quantities of incompatible dimension is still a compile-time error
 pass	adding two named family units of one dimension converts to the reference (Float)
+pass	adding two quantities of the same dimension keeps that dimension
 pass	adding two squared-length quantities is well-dimensioned
+pass	adding two units of one dimension converts to the reference unit exactly
 pass	addition of a string and a byte sequence names both text types
 pass	addition of a string and a list names both non-numeric types
 pass	addition of two lists is rejected — a list is not a number
@@ -2015,6 +2023,7 @@ pass	constructing a sized bytes segment whose value length differs from the size
 pass	constructing a u8 segment from a value above its range is rejected
 pass	constructing an unsigned segment from a negative value is rejected
 pass	constructor pattern binders capture the payload uniformly
+pass	context that constrains a nullary variant's element makes Type.of concrete
 pass	converting a BigInt back to a fixed width is checked and a compile-provable out-of-range narrowing is rejected
 pass	converting a char to its integer scalar value is total
 pass	converting a fixed-width integer to BigInt is explicit
@@ -2377,6 +2386,7 @@ pass	scalar length counts Unicode scalar values, not bytes
 pass	scalar length of a supplementary-plane character is one scalar value
 pass	scaling a Float64 quantity by a bare integer is a numeric-type mismatch
 pass	scaling a quantity by a bare number of its own numeric type keeps its dimension
+pass	scaling a quantity by a dimensionless quantity keeps its dimension
 pass	scaling an integer quantity by a bare integer of its own type keeps its dimension
 pass	self-operand division is NOT folded to one — it still traps at zero
 pass	self-operand subtraction and xor are zero, and-or are the operand, on a runtime value
@@ -2651,6 +2661,7 @@ pass	unary negation of a float flips the sign, preserving signed zero
 pass	unary negation of a non-numeric value is a type error
 pass	unary negation of a nonzero float
 pass	unary negation of a parenthesized sum negates the whole expression
+pass	unary negation of a quantity preserves its unit
 pass	unary negation of a runtime integer parameter negates at run time
 pass	unary negation of an arbitrary-precision integer
 pass	unary negation of an exact rational negates the numerator
@@ -2786,7 +2797,6 @@ todo	MULTI-EXPORT: two same-sig closures each taking TWO Tuple args share one `c
 todo	MULTI-EXPORT: two two-Tuple-arg closures with a BYTE-ROPE result
 todo	MULTI-EXPORT: two two-Tuple-arg closures with a LIST result share one `call`
 todo	MULTI-EXPORT: two two-Tuple-arg closures with a fixed COMPOUND result
-todo	Qty.unit recovers a quantity's unit to build another quantity of the same unit
 todo	SUM ARG + LIST RESULT declines cleanly (Option arg, List result)
 todo	Set.contains over nan finds nan
 todo	THREE Tuple args cross the direct-call boundary
@@ -2965,12 +2975,10 @@ todo	a consumer returns a different type than the closure it applies
 todo	a consumer takes the handed-back closure as its SECOND parameter
 todo	a curried-syntax application of a runtime closure flattens to one full-arity indirect call
 todo	a cycle of module imports is rejected
-todo	a decimal kilobyte and a binary kibibyte are distinct units of one dimension
 todo	a decoded field re-encodes into the same-width segment without an explicit narrow
 todo	a delegated effect performed inside an intra-program handler
 todo	a delegated host effect composes with the value-heap runtime
 todo	a different function argument through the same recursive higher-order function
-todo	a dimensionless quantity carries the group identity Unit.one
 todo	a distinct-signature per-group call-g is a repeatable (borrow<t>) callback
 todo	a distinct-signature round-trip alongside a plain export — the Int64->Bool side runs
 todo	a distinct-signature round-trip alongside a plain export — the Int64->Int64 side runs
@@ -3044,7 +3052,6 @@ todo	a produced closure is handed back into a consumer export (the round trip)
 todo	a program that makes a host call has that call in its observable behavior
 todo	a program uses a response-returning delegated host function's return value
 todo	a purely-logical composed proof over a quantified proposition: DISCH then MP
-todo	a quantity is constructed from a numeric value and a unit
 todo	a quantity over an exact rational magnitude divides exactly and derives its dimension
 todo	a re-declared same-name theorem type in another module is a distinct type a kernel value does not satisfy
 todo	a record-returning closure alongside a parameterized plain export — the closure
@@ -3121,10 +3128,7 @@ todo	a tuple-returning closure alongside a plain export — the closure
 todo	a tuple-returning closure alongside a plain export — the plain
 todo	a two-argument closure exported to the host is called with both arguments
 todo	a two-parameter closure is applied at full arity through a recursive HOF
-todo	a unit multiplied by its own inverse cancels to the dimensionless unit
 todo	a wildcard-exported variant whose name shadows a prelude type is constructible in an importer
-todo	adding two quantities of the same dimension keeps that dimension
-todo	adding two units of one dimension converts to the reference unit exactly
 todo	an 8-bit-integer closure crosses the host boundary
 todo	an IEC-prefixed quantity displays scaled to its reference over Int64
 todo	an INFINITY-axiom theorem is unforgeable — its Thm cannot be fabricated outside the kernel
@@ -3301,7 +3305,6 @@ todo	round-trip: a scalar consumer + a compound consumer of the same closure —
 todo	round-trip: a scalar consumer and a byte-rope consumer of the same closure — the byte-rope one
 todo	round-trip: a scalar consumer and a byte-rope consumer of the same closure — the scalar one
 todo	round-trip: an UNANNOTATED inner closure with a List param via the context arrow
-todo	scaling a quantity by a dimensionless quantity keeps its dimension
 todo	scan emits the seed plus one accumulator per element (n+1 outputs)
 todo	scan over an empty iterator emits just the seed
 todo	scan threads its accumulator left-to-right (an order-sensitive folder)
@@ -3355,6 +3358,5 @@ todo	two same-signature String-returning closures share one call
 todo	two same-signature closures alongside a plain export all coexist
 todo	two same-signature closures alongside a plain export — the plain export runs
 todo	two sibling modules may each define a private helper of the same name
-todo	unary negation of a quantity preserves its unit
 todo	α-equivalence (aconv) recognizes (λx.x) and (λy.y) as the same term up to bound-variable renaming
 todo	α-equivalence handles nesting and distinguishes a bound variable from a same-numbered free variable
