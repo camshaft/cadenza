@@ -9492,6 +9492,38 @@ fn enrich_unbound(db: &mut Db, id: crate::ast::StructId, r: Reject) -> Reject {
         )
         .at(id);
     }
+    // A bare NAME in the SYMBOL-NAME argument of a unit builder — `(Unit.base foot)`, `(Unit.of foot)`,
+    // `(Unit.define furlong …)` — is the value-expression twin of the bare-name-in-a-`(Qty T u)`-position
+    // slip: the author wrote the unit's NAME as an identifier where a `#"…"` SYMBOL belongs (a unit name is
+    // a symbol, `enrich_nested_lowercase_type_vars`'s Qty sibling). It resolves as a MISLEADING "unbound
+    // name `foot`" (with a did-you-mean to some near value), as if `foot` were a mistyped binding, when the
+    // real fix is to quote it as a symbol. Name that + carry the `#"foot"` replace fix (the name text is in
+    // hand). Fires only when `id` is the FIRST argument (the name slot) of a `Unit.base`/`Unit.of`/
+    // `Unit.define` form — the symbol-consuming builders; `Unit.*`/`Unit./`/`Unit.^`/`Unit.prefix` take
+    // unit/int operands, not a name, so they are excluded.
+    if let Some(parent) = db.parent_of(id)
+        && let crate::ast::Struct::List(kids) = db.ast.get(parent)
+        && kids.get(1) == Some(&id)
+        && let Some(&head) = kids.first()
+        && matches!(
+            crate::eval::meta_apply_of(db, head),
+            Some(
+                crate::resolved::Prim::UnitBase
+                    | crate::resolved::Prim::UnitOf
+                    | crate::resolved::Prim::UnitDefine
+            )
+        )
+    {
+        return Reject::coded(
+            Code::Malformed,
+            format!(
+                "`{name}` is not a unit name here — a unit builder names its unit with a SYMBOL, not a \
+                 bare identifier. Write `#\"{name}\"` (a `#\"…\"` symbol literal)"
+            ),
+        )
+        .at(id)
+        .with_fix(Fix::replace_heuristic(id, format!("#\"{name}\"")));
+    }
     match crate::resolve::nearest_unbound_suggestion(db, id, &name) {
         Some(candidate) => Reject::coded(
             Code::Unbound,

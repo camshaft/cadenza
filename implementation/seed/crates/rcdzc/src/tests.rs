@@ -23485,6 +23485,74 @@ mod match_engine {
     }
 
     #[test]
+    fn a_bare_name_in_a_unit_builder_names_the_symbol_and_offers_the_hash_quote_fix() {
+        use crate::testkit::parse;
+        // The value-expression twin of the bare-name-in-a-`(Qty T u)`-position slip: a bare identifier in
+        // the SYMBOL-NAME argument of a unit builder — `(Unit.base foot)`, `(Unit.of foot)`,
+        // `(Unit.define furlong …)` — is the author writing the unit's name as an identifier where a
+        // `#"…"` SYMBOL belongs. It used to resolve as a MISLEADING "unbound name `foot`" (with a
+        // did-you-mean to some near value); it now names the symbol requirement + carries the `#"foot"`
+        // quote fix. `enrich_unbound` redirects it (the `eval`-form sibling).
+        let find = |src: &str| {
+            crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.message.contains("is not a unit name here"))
+        };
+        for (src, name) in [
+            (
+                "(module m (def (main) (Qty.of 1.0 (Unit.base foot))) (export main))",
+                "foot",
+            ),
+            (
+                "(module m (def (main) (Qty.of 1.0 (Unit.of foot))) (export main))",
+                "foot",
+            ),
+            (
+                "(module m (def (main) (Qty.of 1.0 (Unit.define furlong (Unit.base #\"m\") 201 1))) \
+                 (export main))",
+                "furlong",
+            ),
+        ] {
+            let d = find(src).unwrap_or_else(|| panic!("expected a unit-name fault for {src}"));
+            assert_eq!(d.code.as_deref(), Some("CDZ0201"), "{src}: {}", d.message);
+            assert!(
+                d.message.contains("names its unit with a SYMBOL"),
+                "names the symbol requirement: {}",
+                d.message
+            );
+            let f = d.fix.as_ref().expect("carries a #\"…\" quote fix");
+            assert_eq!(f.kind, crate::abi::FixKind::Replace);
+            assert_eq!(
+                f.replacement,
+                format!("#\"{name}\""),
+                "the fix quotes the name as a symbol: {}",
+                f.replacement
+            );
+        }
+        // NO false positive: a correct `#"…"` symbol argument, an ordinary unbound name (not a unit-builder
+        // arg), and a `Unit.^` integer-exponent operand (not a name slot) are unaffected.
+        for clean in [
+            "(module m (def (main) (Qty.of 1.0 (Unit.base #\"foot\"))) (export main))",
+            "(module m (def (main) (Qty.of 1.0 (Unit.of #\"foot\"))) (export main))",
+        ] {
+            assert!(
+                find(clean).is_none(),
+                "a correct symbol unit builder is not flagged: {clean}"
+            );
+        }
+        // An ordinary unbound name keeps the plain "unbound name" message (not the unit-builder redirect).
+        assert!(
+            crate::diagnostics(&mut crate::db::Db::load(parse(
+                "(module m (def (main) (bar 5)) (export main))"
+            )))
+            .iter()
+            .any(|d| d.message.contains("unbound name `bar`")
+                && !d.message.contains("not a unit name here")),
+            "an ordinary unbound name is not redirected to the unit message"
+        );
+    }
+
+    #[test]
     fn a_non_unit_second_argument_to_qty_of_is_rejected() {
         // `Qty.of <value> <unit>` — the VALUE-position companion of the Qty-TYPE unit check. A non-unit
         // second arg (`(Qty.of 5 5)`, `(Qty.of 5 "s")`, `(Qty.of 5 (tuple 1 2))`) made `eval::unit_of`
