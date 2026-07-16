@@ -975,6 +975,57 @@
             (export main)))
   (error  CDZ0214))
 
+; --- eval/quote CANNOT forge a private constructor: expansion is checked as if written directly ---------
+; The abstract-type guarantee above (a withheld constructor is unreachable outside its module — CDZ0214)
+; MUST hold whether the constructor reference arrives via DIRECT source OR via `(eval (quote …))`. eval's
+; desugar reconstructs the source its `Ast` argument denotes and re-resolves it AT THE EVAL CALL SITE — eval
+; gets NO privileged scope (`metaprogramming.md` §Expansion Precedes And Feeds The Core Guarantees: expanded
+; AST is capability/visibility-checked "exactly as if it had been written directly"). So `(eval (quote
+; (Color.Green)))` from a file where `Color`'s handle is visible but `Green` is withheld rejects CDZ0214,
+; exactly as the direct `(Color.Green)` above does — it does NOT forge a `Color` value. This closes a
+; soundness hole (found 2026-07-16): eval-reconstructed nodes are appended outside every file's demux
+; range, so the file-identity-keyed visibility gate saw no file and did not fire; the fix walks the
+; reconstructed node's parent chain to the enclosing eval call's file (`Db::visibility_file_of`), so the
+; existing gate fires unchanged. This is the make-or-break for any opaque-type trust boundary (an
+; LCF-kernel `Thm`, a capability token): a value of an abstract type cannot be forged from outside via eval.
+
+(case "eval of a quoted private constructor is withheld exactly as a direct reference — no forge"
+  (doc    "SOUNDNESS: `(eval (quote (Color.Green)))` from the entry — where `Color`'s handle is visible but
+           its `Green` constructor is withheld — rejects CDZ0214, NOT a forged `Color`. eval re-resolves the
+           reconstructed `(Color.Green)` at the eval call site under the SAME constructor-visibility gate as
+           the direct `(Color.Green)` case above (eval gets no privileged scope). Pins that eval/quote cannot
+           reach a module-private constructor — the abstract-type forge hole is closed.")
+  (module "lib"
+    (do
+      (type Color (Red) (Green) (Blue))
+      (def (mk) Color.Green)
+      (export Color)
+      (export mk)))
+  (input  (do
+            (import "lib" (Color mk))
+            (def (main) (eval (quote (Color.Green))))
+            (export main)))
+  (error  CDZ0214))
+
+(case "eval of an exported smart constructor still works — the forge fix does not over-reject"
+  (doc    "The companion that guards against over-rejecting: eval of the EXPORTED `mk` (a public door) must
+           still fold. `(rank (eval (quote (mk))))` obtains a `Color` through the exported `mk` and inspects
+           it through the exported `rank` → `Green` = 2. Pins that the forge fix withholds only the
+           PRIVATE constructor path, not a legitimate eval of an exported function.")
+  (module "lib"
+    (do
+      (type Color (Red) (Green) (Blue))
+      (def (mk) Color.Green)
+      (def (rank c) (match c ((Color.Red) 1) ((Color.Green) 2) ((Color.Blue) 3)))
+      (export Color)
+      (export mk)
+      (export rank)))
+  (input  (do
+            (import "lib" (Color mk rank))
+            (def (main) (rank (eval (quote (mk)))))
+            (export main)))
+  (output (: 2 Int64)))
+
 (case "an abstract type is used through the module's exported constructor and accessor"
   (doc    "The companion of the reject above: the SAME abstract `lib` (handle `Color` + `mk` + `rank`, no
            constructor exported) used CORRECTLY. The entry never names a `Color` constructor — it obtains a

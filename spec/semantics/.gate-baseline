@@ -2446,8 +2446,10 @@ pass	eval of a quoted conditional reduces its comparison condition first
 pass	eval of a quoted conditional takes the branch its boolean literal selects
 pass	eval of a quoted float executes it to the float value
 pass	eval of a quoted float feeds ordinary float arithmetic
+pass	eval of a quoted private constructor is withheld exactly as a direct reference — no forge
 pass	eval of a quoted string executes it to the string value
 pass	eval of a template splicing a runtime VALUE folds — the working side of the boundary
+pass	eval of an exported smart constructor still works — the forge fix does not over-reject
 pass	eval on malformed AST traps
 pass	every not-a-number value is equal to every not-a-number value
 pass	exact rational arithmetic is exact and normalized
