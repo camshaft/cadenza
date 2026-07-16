@@ -6,195 +6,159 @@ import { Why } from "../../components/Why.tsx";
 export default function PropertyTesting() {
   return (
     <article>
-      <H1>Property-based testing</H1>
+      <H1>Testing &amp; properties</H1>
       <Lede>
-        Instead of checking one example at a time, state a <em>property</em> — something that should hold
-        for <em>every</em> input — and let generated inputs try to break it. There's no new construct:
-        a generator is a function, a property is a predicate, and both are ordinary Cadenza.
+        A test in Cadenza is just a function you mark <C>@test</C>. There's no separate "property" concept
+        to learn: give that test <em>parameters</em> and it becomes generative — the runner makes up inputs,
+        runs it many times, and shrinks any failure to the smallest case.
       </Lede>
 
-      <H2>Generation is seeded and reproducible</H2>
+      <H2>A test is a marked function</H2>
       <P>
-        A generator turns a <em>seed</em> into a value. The classic one is a linear congruential step —
-        multiply, add, wrap. Because it's a pure function of its seed, the same seed always gives the same
-        value, so a failing run is reproducible: record the seed and you can replay it exactly.
-      </P>
-      <Runnable
-        source={`(let ((next (fn (s)
-              (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005)
-                                  1442695040888963407))))
-  (= (next 42) (next 42)))`}
-      />
-      <P>
-        Same seed, same draw — <C>true</C>. Reproducibility only earns its keep if <em>different</em> seeds
-        explore <em>different</em> inputs, though; a generator that ignored its seed would be useless. Two
-        distinct seeds give two distinct values, so <C>=</C> is <C>false</C>:
-      </P>
-      <Runnable
-        source={`(let ((next (fn (s)
-              (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005)
-                                  1442695040888963407))))
-  (= (next 1) (next 2)))`}
-      />
-
-      <H2>Bounding a generator to a range</H2>
-      <P>
-        A raw draw covers the whole <C>Int64</C> range. To generate in a smaller range — say a die roll in{" "}
-        <C>0 .. 64</C> — mask the low bits with <C>&</C>. <C>(& v 63)</C> keeps the bottom six bits, so
-        every draw lands in range no matter the seed:
-      </P>
-      <Runnable
-        source={`(def (next (: s Int64))
-  (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
-(def (roll (: s Int64)) (& (next s) 63))
-(def (main)
-  (let ((v (roll 12345)))
-    (if (>= v 0) (< v 64) false)))`}
-      />
-      <P>
-        The drawn value satisfies its bound — <C>true</C>. That's a generator respecting a refinement: it
-        produces only admissible values, which is what lets a property assume its inputs are well-formed.
-      </P>
-
-      <H2>A property, and whether it has teeth</H2>
-      <P>
-        A property is just a predicate that should hold for every input. A load-bearing one is{" "}
-        <em>permutation invariance</em>: a commutative fold gives the same answer whatever order its inputs
-        arrive in. Summing <C>(list 1 2 3)</C> and a shuffle <C>(list 3 1 2)</C> agrees:
-      </P>
-      <Runnable
-        source={`(def (sum (: xs (List Int64)))
-  (match xs
-    ((list) 0)
-    ((list h .. t) (+ h (sum t)))))
-(def (main)
-  (if (= (sum (list 1 2 3)) (sum (list 3 1 2))) 1 0))`}
-      />
-      <P>
-        The two orderings agree, so the check gives <C>1</C>. A property is only meaningful if it can also{" "}
-        <em>fail</em> — if it rejects the behaviors it's meant to catch. Order invariance has teeth: a
-        computation that depends on order, like "keep the first argument", does <em>not</em> satisfy it —{" "}
-        <C>(first-wins 3 7)</C> is <C>3</C> but <C>(first-wins 7 3)</C> is <C>7</C>, so the property is{" "}
-        <C>false</C> (the check gives <C>0</C>):
-      </P>
-      <Runnable
-        source={`(def (first-wins (: a Int64) (: b Int64)) a)
-(def (main)
-  (if (= (first-wins 3 7) (first-wins 7 3)) 1 0))`}
-      />
-
-      <H2>Shrinking to the smallest failure</H2>
-      <P>
-        When a property fails, a big random counterexample isn't much help — you want the <em>smallest</em>{" "}
-        input that still fails. That's shrinking: scan candidates upward from <C>0</C> while the property
-        holds, and stop at the first one that fails. For the property <C>x &lt; 4</C>, the search reports{" "}
-        <C>4</C> — the minimal violating input:
-      </P>
-      <Runnable
-        source={`(def (p (: x Int64)) (< x 4))
-(def (search (: cand Int64) (: fuel Int64))
-  (if (= fuel 0) cand
-    (if (p cand) (search (+ cand 1) (- fuel 1)) cand)))
-(def (main) (search 0 100))`}
-      />
-      <P>
-        The <C>fuel</C> argument bounds the scan so it always terminates — even if the property never fails
-        in range, the search runs out of fuel and returns rather than looping forever. A shrinker is total
-        by construction.
-      </P>
-
-      <H2>Putting it together: a property run</H2>
-      <P>
-        A real property run threads the seed through a bounded recursion, checks the property at each draw,
-        and reports a verdict. Here <C>run</C> draws <C>n</C> values, short-circuiting to <C>false</C> the
-        moment one fails — and for the (always-true) property "the low byte is under 256", twenty draws all
-        pass, so the verdict is <C>true</C>:
-      </P>
-      <Runnable
-        source={`(def (next (: s Int64))
-  (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
-(def (p (: v Int64)) (< (& v 255) 256))
-(def (run (: s Int64) (: n Int64))
-  (if (= n 0) true
-    (let ((v (next s)))
-      (if (p v) (run v (- n 1)) false))))
-(def (main) (if (run 42 20) 1 0))`}
-      />
-      <P>
-        And here's the payoff of seeding: because generation is a pure function of the seed, a run is
-        <em>reproducible</em>. A version of <C>run</C> that reports the first failing draw (instead of a
-        bool) returns the very same counterexample every time from a given seed — so a failure found in CI,
-        with its seed recorded, replays exactly on your machine:
-      </P>
-      <Runnable
-        source={`(def (next (: s Int64))
-  (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
-(def (p (: v Int64)) (< (& v 15) 8))
-(def (run (: s Int64) (: n Int64))
-  (if (= n 0) -1
-    (let ((v (next s)))
-      (if (p v) (run v (- n 1)) (& v 255)))))
-(def (main) (if (= (run 42 100) (run 42 100)) 1 0))`}
-      />
-      <P>
-        Both runs from seed <C>42</C> find the identical first counterexample, so the check is <C>1</C>.
-        That reproducibility — record the seed, replay the exact failure — is what makes a generated
-        counterexample <em>actionable</em> rather than a one-off fluke.
-      </P>
-
-      <H2>The built-in test runner</H2>
-      <P>
-        Everything above is hand-rolled to show the mechanism — but you don't have to write the generator
-        and shrinker yourself. Mark a function <C>@test</C> and <C>cdz test</C> (from the toolchain in{" "}
-        <strong>The playground</strong>) runs it, reporting pass/fail: a plain <C>@test def name() = …</C>{" "}
-        is a unit test that passes unless it traps. Give that test <em>parameters</em> and it becomes a
-        property test — the compiler <em>synthesizes a generator from the parameter types</em> (scalars
-        directly; and, derived, compound types like <C>List</C>/<C>Tuple</C>/<C>Record</C>/<C>Set</C>/
-        <C>Map</C> and user sums), runs it over many generated inputs, and on failure shrinks to a minimal
-        counterexample and prints the seed to replay — the whole loop you built by hand, for free.
+        Mark a zero-argument function <C>@test</C> and <C>cdz test</C> runs it. It passes unless it{" "}
+        <em>traps</em> — so you assert with an <C>if</C> that traps on the bad branch:
       </P>
       <Note>
-        Two more annotations refine it: <C>@exhaustive</C> drives the <em>entire</em> finite domain of a
-        small-typed parameter (every <C>Bool</C> pair, every <C>UInt8</C>) rather than sampling — a pass is
-        a proof over that domain; and <C>@tag("…")</C> labels a test so <C>cdz test --tag …</C> runs just
-        that group. They're ordinary annotations — the runner is a convenience over the same pattern this
-        chapter builds, not a privileged layer.
+        <C>{`@test def two_plus_two() = if 2 + 2 == 4 then unit else trap("wrong")`}</C>
+        <br />
+        <C>cdz test</C> reports: <C>PASS two_plus_two</C>
+      </Note>
+      <P>
+        That's an ordinary unit test. These are <em>declarations</em> the test runner finds — the guide's
+        Run button, by contrast, evaluates a <C>main</C> and shows its value, so throughout this chapter the{" "}
+        <em>runnable</em> panels show the <em>predicate</em> being computed, and the <C>cdz test</C>{" "}
+        transcripts (in the grey boxes) show what the runner prints. The predicate is the real content; the
+        annotation just hands it to the runner.
+      </P>
+
+      <H2>Parameters make it generative</H2>
+      <P>
+        Give a <C>@test</C> parameters and it turns into a <em>property</em> test: the runner{" "}
+        <em>generates</em> values for those parameters — the generator is synthesized from the parameter{" "}
+        <em>types</em>, nothing to write — runs the test many times (100 by default), and only passes if
+        every trial does. A property is just a predicate that should hold for <em>all</em> inputs. Here's
+        one — addition is commutative — computed live on a concrete pair:
+      </P>
+      <Runnable
+        source={`(def (add-comm a b)
+  (= (Int64.wrapping-add a b) (Int64.wrapping-add b a)))
+(def (main) (if (add-comm 3 7) 1 0))`}
+      />
+      <P>
+        Run gives <C>1</C> — the predicate holds for <C>3</C> and <C>7</C>. Mark that same predicate a{" "}
+        <C>@test</C> with parameters and <C>cdz test</C> supplies the <C>a</C> and <C>b</C> for you, a
+        hundred times over:
+      </P>
+      <Note>
+        <C>{`@test def add_comm(a: Int64, b: Int64) =`}</C>
+        <br />
+        <C>{`  if Int64.wrapping-add(a, b) == Int64.wrapping-add(b, a) then unit else trap("not commutative")`}</C>
+        <br />
+        <C>cdz test</C> reports: <C>PASS add_comm (100 trials)</C>
+      </Note>
+      <P>
+        You wrote the predicate; the runner wrote the generator. Scalars (<C>Int64</C>, <C>Bool</C>,{" "}
+        <C>Float64</C>, and the rest) generate directly. Compound types generate too — a{" "}
+        <C>(List Int64)</C> parameter is filled with generated lists, a record with generated fields, and so
+        on — the compiler derives the generator from the type. Here a list property, computed on a concrete
+        list, holds:
+      </P>
+      <Runnable
+        source={`(def (len-nonneg xs) (>= (List.len xs) 0))
+(def (main) (if (len-nonneg (list 1 2 3)) 1 0))`}
+      />
+      <Note>
+        <C>{`@test def len_nonneg(xs: List(Int64)) = if List.len(xs) >= 0 then unit else trap("neg")`}</C>
+        <br />
+        <C>cdz test</C> reports: <C>PASS len_nonneg-gen (100 trials)</C> — the <C>-gen</C> marks the
+        synthesized list generator.
       </Note>
 
-      <Why tenet="A property is ordinary code, not a testing DSL">
-        Property testing here is a <em>pattern</em>, not a feature. A generator is a function from a seed;
-        a property is a predicate; shrinking is a bounded search — all written in the same language you
-        test. Nothing was added to support it, and nothing hides what's happening: you can read the
-        generator, replay a seed, and step the shrinker. It's the same instinct as the rest of Cadenza —
-        reach for the pieces already there rather than a special-purpose layer.
+      <H2>Failure shrinks to the smallest case</H2>
+      <P>
+        When a property fails, a giant random counterexample isn't much help — so the runner{" "}
+        <em>shrinks</em> it, searching for the smallest input that still fails, and prints the seed to
+        replay. Take a deliberately-wrong property, "every number is under 5". It holds at <C>4</C>:
+      </P>
+      <Runnable
+        source={`(def (small n) (< n 5))
+(def (main) (if (small 4) 1 0))`}
+      />
+      <P>
+        — and fails at <C>5</C>:
+      </P>
+      <Runnable
+        source={`(def (small n) (< n 5))
+(def (main) (if (small 5) 1 0))`}
+      />
+      <P>
+        Run the first and you get <C>1</C>, the second <C>0</C>. As a <C>@test</C>, the runner finds a
+        failing input and shrinks it to exactly the boundary — <C>5</C>, the <em>smallest</em> number that
+        breaks it, not whatever large value it first stumbled on:
+      </P>
+      <Note>
+        <C>{`@test def small(n: Int64) = if n < 5 then unit else trap("too big")`}</C>
+        <br />
+        <C>cdz test</C> reports:
+        <br />
+        <C>FAIL small</C>
+        <br />
+        <C>{`  counterexample: small(5)   (seed 0; replay with --seed 0)`}</C>
+      </Note>
+      <P>
+        The recorded seed makes the failure reproducible — a counterexample found in CI replays exactly on
+        your machine, which is what makes it actionable.
+      </P>
+
+      <H2>Proving over a whole small domain, and tagging</H2>
+      <P>
+        Two refinements finish the surface. <C>@exhaustive</C> — on a test whose parameters are{" "}
+        <em>bounded</em> (a <C>Bool</C>, a small integer like <C>UInt8</C>) — runs <em>every</em>{" "}
+        combination instead of sampling, so a pass is a <em>proof</em> over that domain, not just evidence:
+      </P>
+      <Note>
+        <C>{`@exhaustive def or_commutes(a: Bool, b: Bool) = if (a || b) == (b || a) then unit else trap("no")`}</C>
+        <br />
+        <C>cdz test</C> reports: <C>PASS or_commutes (exhaustive, 4 cases)</C> — all four <C>Bool</C> pairs.
+      </Note>
+      <P>
+        And <C>@tag("…")</C> labels a test so you can run a subset — <C>cdz test --tag slow</C> runs only
+        the tests you tagged <C>"slow"</C>. All three are ordinary annotations; there's no privileged
+        testing layer, just functions the runner knows how to call.
+      </P>
+
+      <Why tenet="A test is a function; a property is a test with arguments">
+        Cadenza doesn't add a property-testing DSL with its own generators and combinators. A test is a
+        function marked <C>@test</C>; a <em>property</em> is that same idea with parameters, and the
+        compiler synthesizes the generator from the types you already wrote — so there's nothing extra to
+        learn or maintain. Under the hood the runner drives generation, shrinking, and a recorded seed (a
+        real generative engine), but the surface you touch is just: write a predicate, mark it, and — if it
+        takes arguments — the runner tries to break it for you.
       </Why>
 
       <H2>Your turn</H2>
+      <P>
+        These exercises work the <em>predicate</em> — the part you write. In a real test file you'd mark it{" "}
+        <C>@test</C> and let <C>cdz test</C> generate the inputs; here you apply it to a concrete input and
+        Run, the same computation the runner performs each trial.
+      </P>
       <Exercise
         id="property-testing:1"
         prompt={
           <>
-            Bound a draw to <C>0 .. 8</C> by masking the low three bits. Fill the mask so every draw lands
-            in range — the check gives <C>1</C>.
+            Doubling then halving should return the original — a round-trip property. Fill the check so{" "}
+            <C>round-trip</C> confirms it for <C>21</C>, giving <C>1</C>.
           </>
         }
-        starter={`(def (next (: s Int64))
-  (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
-(def (roll (: s Int64)) (& (next s) ?))
-(def (main)
-  (let ((v (roll 999)))
-    (if (< v 8) 1 0)))`}
-        solution={`(def (next (: s Int64))
-  (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
-(def (roll (: s Int64)) (& (next s) 7))
-(def (main)
-  (let ((v (roll 999)))
-    (if (< v 8) 1 0)))`}
+        starter={`(def (round-trip n) (= (/ (* n 2) 2) ?))
+(def (main) (if (round-trip 21) 1 0))`}
+        solution={`(def (round-trip n) (= (/ (* n 2) 2) n))
+(def (main) (if (round-trip 21) 1 0))`}
         expected="1"
         hint={
           <>
-            To keep the low three bits, mask with <C>7</C> — that's <C>2³ − 1 = 0b111</C>, so the result is
-            always <C>0 .. 8</C>. (A mask of <C>15</C> would allow up to 15 and the check could fail.)
+            The property is that doubling then halving gets you back where you started — so{" "}
+            <C>(/ (* n 2) 2)</C> should equal <C>n</C>. Fill the blank with <C>n</C>.
           </>
         }
       />
@@ -203,26 +167,20 @@ export default function PropertyTesting() {
         id="property-testing:2"
         prompt={
           <>
-            Shrink to the minimal failure of the property <C>x &lt; 3</C>. The search scans upward from{" "}
-            <C>0</C> while the property holds; fill the base value it starts from so it reports the smallest
-            failing input, <C>3</C>.
+            Find the boundary. The property <C>(&lt; n 3)</C> holds for small <C>n</C> and fails once{" "}
+            <C>n</C> is big enough — fill the input that is the <em>smallest</em> failing case (what a
+            shrinker would report), so the check gives <C>0</C>.
           </>
         }
-        starter={`(def (p (: x Int64)) (< x 3))
-(def (search (: cand Int64) (: fuel Int64))
-  (if (= fuel 0) cand
-    (if (p cand) (search (+ cand 1) (- fuel 1)) cand)))
-(def (main) (search ? 100))`}
-        solution={`(def (p (: x Int64)) (< x 3))
-(def (search (: cand Int64) (: fuel Int64))
-  (if (= fuel 0) cand
-    (if (p cand) (search (+ cand 1) (- fuel 1)) cand)))
-(def (main) (search 0 100))`}
-        expected="3"
+        starter={`(def (under-3 n) (< n 3))
+(def (main) (if (under-3 ?) 1 0))`}
+        solution={`(def (under-3 n) (< n 3))
+(def (main) (if (under-3 3) 1 0))`}
+        expected="0"
         hint={
           <>
-            Shrinking looks for the <em>smallest</em> failing input, so the scan starts at <C>0</C> and
-            counts up. With <C>p x = x &lt; 3</C> holding for 0, 1, 2, the first failure is <C>3</C>.
+            <C>(&lt; n 3)</C> is true for <C>0, 1, 2</C> and false from <C>3</C> up, so the smallest failing
+            input is <C>3</C> — and <C>(under-3 3)</C> is <C>false</C>, giving <C>0</C>.
           </>
         }
       />
