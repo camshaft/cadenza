@@ -9895,3 +9895,38 @@
               (def (main) (f (W (W (I 7)))))
               (export main)))
   (output (: 0 Int64)))
+
+; --- Known-disc nested payload depth: the depth-3 and runtime-control faces -------------------------
+; c259cbeed fixed the nested-match payload-depth miscompile (a KNOWN outer disc dropped the switch
+; and the inner literal test read variant 0's payload type — (match (W (I 7)) ((W (I 7)) 1)) gave 0).
+; Its pins cover the two-level match/fall-through; these pin the neighbors, promoted from breaker
+; probes (blocked one tick by the runtime-hash red, verified after the re-pin).
+
+(case "a three-deep known-disc nested match reads the right payload at every level"
+  (doc    "`(match (W (W (I 7))) ((W (W (I 7))) 1) (_ 0))` → 1 — TWO dropped switches (both outer
+           discs statically known), so the payload-type recording must happen at BOTH known-disc
+           levels for the innermost literal test to read `I`'s payload rather than variant 0's. The
+           depth-3 face of the fix (a record keyed to the single dropped level regresses here).")
+  (input  (do
+            (type T (I Int64) (W T))
+            (def (main (: d Int64))
+              (match (W (W (I 7))) ((W (W (I 7))) 1) (_ 0)))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 1 Int64)))
+
+(case "a runtime scrutinee keeps the full switch and nested dispatch"
+  (doc    "The control: `(mk d)` returns `(W (I 7))` or `(I 3)` by a RUNTIME branch, so no disc is
+           statically known and the full switch path runs — d = 1 → the nested arm (1), d = 0 → the
+           `I` arm binds 3. Pins that the known-disc optimization's fix did not perturb the ordinary
+           runtime path (both paths must agree on the same patterns).")
+  (input  (do
+            (type T (I Int64) (W T))
+            (def (mk (: d Int64)) (if (> d 0) (W (I 7)) (I 3)))
+            (def (main (: d Int64))
+              (match (mk d) ((W (I 7)) 1) ((I n) n) (_ 0)))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 1 Int64))
+  (call   main (: 0 Int64))
+  (output (: 3 Int64)))
