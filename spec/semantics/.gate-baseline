@@ -132,6 +132,8 @@ pass	String.from-bytes rejects a lone continuation byte
 pass	String.from-bytes rejects an overlong encoding
 pass	String.scalar-len of a string selected by a runtime if
 pass	String.scalar-len of a string selected by a runtime match
+pass	String.to-bytes of a genuinely-runtime string yields its UTF-8 byte length
+pass	String.to-bytes of a runtime string threaded through recursion round-trips its bytes
 pass	THREE Tuple args cross the direct-call boundary
 pass	THREE Tuple args with a LIST result
 pass	TWO Record args cross the direct-call boundary
@@ -397,6 +399,7 @@ pass	a built-in Option is unwrapped by a helper that binds its payload
 pass	a built-in Option tuple payload consumed INLINE in the Some arm projects
 pass	a built-in Result whose two type arguments DIFFER is matched on both variants
 pass	a built-in comparison on an abstract type's value is rejected outside its module
+pass	a byte of a runtime string's encoding is its exact UTF-8 value, not merely the right count
 pass	a byte sequence carrying a runtime byte value is a first-class value
 pass	a byte sequence is constructed from a list of integers in range
 pass	a byte sequence written as a literal renders back to the same literal

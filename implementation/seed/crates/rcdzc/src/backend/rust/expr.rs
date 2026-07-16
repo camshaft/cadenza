@@ -1260,6 +1260,7 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         | Core::BytesSlice { .. }
         | Core::BytesCompact { .. }
         | Core::StrFromBytes { .. }
+        | Core::StrToBytes { .. }
         // Runtime BigInt (a heap leaf + the runtime `bigint-*` ops) has no native Rust rendering yet —
         // the rust backend would need a Rust bignum runtime. Declines cleanly (a constant BigInt folds
         // and reaches this backend as a `Core::ConstInt`, which emits fine).

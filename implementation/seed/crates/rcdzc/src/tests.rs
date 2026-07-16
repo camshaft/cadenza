@@ -1790,6 +1790,51 @@ fn a_runtime_string_from_bytes_leaks_no_more_than_the_twin_option_builder() {
     }
 }
 
+/// `String.to-bytes` on a RUNTIME `String` (one the compiler cannot fold to a constant) lowers to the
+/// runtime encoding rather than declining. A String IS a UTF-8 Bytes leaf (byte-identical), so the
+/// encoding is TOTAL and needs no conversion — it only flattens the string's byte-rope into a canonical
+/// flat Bytes leaf via the runtime `bytes-compact` op (the exact inverse of `str-from-bytes`), consuming
+/// the string handle. The string is built through a tail-recursive appender so it stays opaque to the
+/// fold (`(rep "" 3)` = "aaa", genuinely runtime), then `Bytes.len` measures the encoding. Pins the
+/// runtime `String.to-bytes` path the compiler-in-Cadenza codec ENCODER rests on (was declining
+/// "constant strings only"). Companion to the constant-fold `to-bytes` corpus cases + the runtime
+/// `String.from-bytes` decode test.
+#[test]
+fn a_runtime_string_to_bytes_encodes_a_recursively_built_string() {
+    use crate::testkit::parse;
+    // "aaa" is 3 ASCII bytes; a multibyte "é" (2 bytes) appended once more would be 4 — keep it ASCII so
+    // the byte count is unambiguous. `rep` recurses so the string is genuinely runtime (opaque to the fold).
+    let src = "(module m \
+                 (def (rep (: acc String) (: n Int64)) \
+                    (if (= n 0) acc (rep (String.concat acc \"a\") (- n 1)))) \
+                 (def (main) (Bytes.len (String.to-bytes (rep \"\" 3)))) \
+                 (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    assert!(
+        cdz_run::required_runtime(&bytes).expect("valid").is_some(),
+        "a runtime String.to-bytes must build on the byte-rope heap (import the runtime)"
+    );
+    let Some(runtime) = find_runtime_wasm() else {
+        eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
+        return;
+    };
+    let opts = cdz_run::RunOpts {
+        export: Some("main".to_string()),
+        args: vec![],
+        runtime: Some(runtime),
+        runtime_cache_dir: None,
+        host_responses: Vec::new(),
+    };
+    match cdz_run::run(&bytes, &opts).expect("run") {
+        cdz_run::Outcome::Value(s) => {
+            assert_eq!(s, "3", "three 'a's encode to 3 UTF-8 bytes")
+        }
+        cdz_run::Outcome::Trap(t) => {
+            panic!("runtime String.to-bytes trapped (a total encoding must never trap): {t}")
+        }
+    }
+}
+
 /// A FIELD read on a RUNTIME record (one whose value is not a compile-time-visible literal) projects
 /// like a tuple element: a record at run time IS a positional heap array in SORTED-KEY order, so
 /// `(. rec field)` is an `arr-get` at the field's sorted index. The record is written OUT of sorted

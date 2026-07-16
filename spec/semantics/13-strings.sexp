@@ -673,6 +673,43 @@
              (def (main)    (agree "café")) (export main)))
   (output  (: true Bool)))
 
+(case "String.to-bytes of a genuinely-runtime string yields its UTF-8 byte length"
+  (doc    "`String.to-bytes` on a value that is NOT a compile-time-visible constant string — here forced
+           runtime by `(String.concat s \"\")`, the same shape `String.at`'s runtime cases use — must emit
+           the runtime encoding, not decline. A String IS a UTF-8 Bytes leaf, so the encoding is total: it
+           materializes the string's byte-rope into a canonical flat Bytes leaf (the runtime `bytes-compact`
+           op — the exact inverse of the runtime `str-from-bytes` decode). `\"café\"` is 5 UTF-8 bytes (é is
+           two). Pins the runtime `String.to-bytes` path the compiler-in-Cadenza codec ENCODER rests on —
+           previously declined 'not yet computed (constant strings only)'.")
+  (input   (do
+             (def (enc s)  (Bytes.len (String.to-bytes (String.concat s ""))))
+             (def (main)   (enc "café")) (export main)))
+  (output  (: 5 Int64)))
+
+(case "String.to-bytes of a runtime string threaded through recursion round-trips its bytes"
+  (doc    "The serializer shape: a String payload threaded through a recursive encoder is genuinely runtime,
+           so `String.to-bytes(n)` takes the runtime path. Encodes `Name(\"foo\")` as a tag byte (2) then the
+           byte-length prefix then the UTF-8 bytes — `1 + 1 + 3 = 5` bytes total. This is the exact shape the
+           compiler-ml codec's encode.cdz takes (a Name's UTF-8 written via String.to-bytes), the round-trip
+           blocker this op removes.")
+  (input   (do
+             (def (b1 x)        (Bytes.of (list (UInt8.wrap x))))
+             (def (str-payload s) (Bytes.concat (b1 (String.byte-len s)) (String.to-bytes s)))
+             (def (main)        (Bytes.len (Bytes.concat (b1 2) (str-payload (String.concat "foo" ""))))) (export main)))
+  (output  (: 5 Int64)))
+
+(case "a byte of a runtime string's encoding is its exact UTF-8 value, not merely the right count"
+  (doc    "Content, not just length: index the runtime `String.to-bytes` result to read a specific UTF-8
+           byte. `\"café\"` encodes to `99 97 102 195 169` (é = C3 A9); byte 4 is `169` (0xA9, the trailing
+           byte of é). Forced runtime by `(String.concat s \"\")`. Pins that the runtime `bytes-compact`
+           flatten PRESERVES the byte content — a rope's node `raw` holds header bytes, not content, so a
+           flatten that read the header would give the wrong byte. Reads via `Bytes.at` (→ `Option Int64`),
+           avoiding runtime-Bytes value-equality (a separate unimplemented compound heap-walk).")
+  (input   (do
+             (def (enc s)  (String.to-bytes (String.concat s "")))
+             (def (main)   (Option.expect (Bytes.at (enc "café") 4) "in range")) (export main)))
+  (output  (: 169 Int64)))
+
 (case "the scalar length of a runtime multi-byte string counts scalars, not bytes"
   (doc    "`String.scalar-len` of a runtime string counts Unicode scalar values, not UTF-8 bytes:
            `(slen \"café\")` is 4 (c, a, f, é) even though the byte length is 5. Pins that scalar length

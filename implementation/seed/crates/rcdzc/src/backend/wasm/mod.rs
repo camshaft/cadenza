@@ -1198,6 +1198,7 @@ fn collect_host_arg_strings_at(db: &mut Db, id: crate::ast::StructId, out: &mut 
         }
         Core::BytesCompact { operand }
         | Core::StrFromBytes { bytes: operand, .. }
+        | Core::StrToBytes { string: operand }
         | Core::Convert { operand, .. }
         | Core::Not { operand }
         | Core::ListLen { operand }

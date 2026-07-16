@@ -455,6 +455,9 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
         // `String.from-bytes` CONSUMES its bytes operand (`str-from-bytes` transfers ownership out as the
         // String on success, drops it on failure), so a binding used as the operand escapes into the result.
         Core::StrFromBytes { bytes, .. } => binding_escapes(db, bytes, binder, false),
+        // `String.to-bytes` CONSUMES its string operand (`bytes-compact` transfers the handle out as the
+        // Bytes result), so a binding used as the operand escapes into the result.
+        Core::StrToBytes { string } => binding_escapes(db, string, binder, false),
         // A constructed tuple/list CONSUMES each element — a binding used as an element escapes into it.
         // `Bytes.of`'s elements are scalar bytes (Int64 0..=255), consumed into the sequence like a list's.
         Core::Tuple { elems } | Core::ListNew { elems } | Core::BytesOf { elems } => {
@@ -746,6 +749,7 @@ pub fn core_child_ids(db: &mut Db, id: StructId) -> Vec<StructId> {
         | Core::BinIntRead { bytes: operand, .. }
         | Core::BinRestRead { bytes: operand, .. }
         | Core::StrFromBytes { bytes: operand, .. }
+        | Core::StrToBytes { string: operand }
         | Core::Convert { operand, .. }
         | Core::Not { operand } => cs.push(operand),
         Core::ListAt {
@@ -1101,6 +1105,8 @@ fn mark_binder_dups_inner(
         }
         // `String.from-bytes` CONSUMES its bytes operand (`str-from-bytes` transfers it out as the String).
         Core::StrFromBytes { bytes, .. } => consume(db, bytes, live_after, sites),
+        // `String.to-bytes` CONSUMES its string operand (`bytes-compact` transfers it out as the Bytes).
+        Core::StrToBytes { string } => consume(db, string, live_after, sites),
         // BigInt/Rational arith/cmp BORROW their handle operands (`tail_borrowed: true` in `binding_escapes`).
         Core::BigIntBinOp { lhs, rhs, .. }
         | Core::BigIntCmp { lhs, rhs, .. }
@@ -2257,6 +2263,13 @@ fn collect_used_ops_into(
             out.insert(OP_STR_FROM_BYTES);
             out.insert(OP_SUM_NEW);
             collect_used_ops_into(db, bytes, out);
+        }
+        // `String.to-bytes` on a runtime String: `bytes-compact` flattens the string's byte-rope to a
+        // canonical flat leaf (a String IS a UTF-8 Bytes leaf, so no conversion) and transfers it out as the
+        // Bytes result — the total encoding needs no `sum-new`/validation, just the one flatten op.
+        Core::StrToBytes { string } => {
+            out.insert(OP_BYTES_COMPACT);
+            collect_used_ops_into(db, string, out);
         }
         Core::If { cond, then_, else_ } => {
             collect_used_ops_into(db, cond, out);
@@ -6884,6 +6897,19 @@ fn emit(
         Core::BytesCompact { operand } => {
             emit(db, operand, slots, base, high, scratch_ty, layout, out)?; // [b]
             out.push(Lir::CallImport(OP_BYTES_COMPACT)); // → [compacted]
+            Ok(())
+        }
+        // A runtime `String.to-bytes(string)` — the TOTAL UTF-8 encoding `String → Bytes`. A String IS a
+        // UTF-8 Bytes leaf (byte-identical), so the encoding is a no-op re-view — but the string may be a
+        // `String.concat`/`.slice` ROPE whose node `raw` holds header bytes, not content; the result must be
+        // a well-formed Bytes value (a nested rope compares/keys WRONG under the tagless heap walk unless
+        // flattened AT CONSTRUCTION — the canonicalize-at-construction invariant). `bytes-compact` does
+        // exactly that (flatten the rope to a canonical flat leaf, CONSUMES the handle, transfers it out), so
+        // it is the whole op — the exact inverse of `str-from-bytes` on well-formed input. No `sum-new`
+        // (total, unlike the fallible decode), no `dup` (the handle is owned out of `bytes-compact`).
+        Core::StrToBytes { string } => {
+            emit(db, string, slots, base, high, scratch_ty, layout, out)?; // [string]
+            out.push(Lir::CallImport(OP_BYTES_COMPACT)); // → [flat Bytes leaf] (consumes string)
             Ok(())
         }
         // A runtime `String.from-bytes(bytes)` — the TOTAL UTF-8 decode. Emit the bytes handle,

@@ -434,6 +434,17 @@ pub enum Core {
         disc_some: u32,
         disc_none: u32,
     },
+    /// `String.to-bytes s` on a RUNTIME `String` — the UTF-8 encoding `String → Bytes`. Present when the
+    /// operand is not a compile-time-visible constant string (a constant folds to a `Core::BytesOf` of its
+    /// UTF-8 bytes in `lower_str_to_bytes`). A String IS a UTF-8 Bytes leaf (byte-identical representation),
+    /// so the encoding is TOTAL and needs no conversion — it only materializes the string's byte-rope (a
+    /// `String.concat`/`.slice` tree) into a canonical flat leaf so the result is a well-formed Bytes value
+    /// (a nested rope compares/keys wrong under the tagless heap walk unless flattened AT CONSTRUCTION). That
+    /// is exactly what the runtime `bytes-compact` op does — flatten + return the handle — so this reuses it
+    /// (no new runtime op, frozen hash unchanged); the exact inverse of `str-from-bytes` on well-formed input.
+    /// CONSUMES `string` (`bytes-compact` transfers the handle out as the Bytes result). The runtime
+    /// companion of the constant fold in `lower_str_to_bytes`.
+    StrToBytes { string: StructId },
     /// `BigInt.of x` on a RUNTIME fixed-width integer — widen `x` (an i64-slot value) into a `BigInt`
     /// heap leaf via the runtime `bigint-of-i64` op. A CONSTANT source folds to `Core::ConstInt` retyped
     /// `BigInt` in `lower` (B1) and never reaches here; this is the runtime path (B3b).
