@@ -1873,6 +1873,8 @@ pass	an arm that binds its resume in a lambda and applies it immediately folds
 pass	an association list is searched by key with a tuple-carrying Option match
 pass	an earlier literal arm is chosen over a later name-binding arm for a runtime scrutinee
 pass	an effect discharged by a handler does not escape to the manifest
+pass	an effect in a statically-dead branch is still syntactically reached, so its delegation is not latent
+pass	an effect in a statically-dead branch still requires a grant — ungranted is rejected
 pass	an effect operation declared with no name is rejected
 pass	an effect operation may be named `bind` — the interop directive keyword is not reserved for op names
 pass	an effect operation reached with neither a handler nor a delegation is rejected

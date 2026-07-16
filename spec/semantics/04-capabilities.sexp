@@ -166,6 +166,41 @@
                 42)) (export main)))
   (error  CDZ0404))
 
+; The latent case above (CDZ0404) has NO syntactic effect op in its body (`(host (log) 42)`); the runtime-
+; conditional case (`(if b …)`) is granted because a runtime branch is reachable. These pin the boundary
+; between them: an effect in a STATICALLY-DEAD branch (`(if false …)`). Reachability is SYNTACTIC — a dead-
+; branch effect still COUNTS as reached: with a delegation it exercises the grant (NOT latent → not CDZ0404,
+; unlike the no-op-at-all latent case), and without one it is still an ungranted effect (CDZ0401, exactly as
+; a live one). So the compiler does NOT const-fold `if false` away before the reachability/manifest analysis
+; — a precise-reachability change that elided the dead branch would flip both (the grant → latent CDZ0404,
+; the ungranted → compiles), so these lock the syntactic-reachability contract.
+
+(case "an effect in a statically-dead branch is still syntactically reached, so its delegation is not latent"
+  (doc    "`(host (log) (if false (log.emit \"x\") unit))` delegates `log` and its body SYNTACTICALLY
+           contains `log.emit`, even though the `if false` then-branch is never taken. Reachability is
+           syntactic, so the effect COUNTS as reached and the delegation is exercised — NOT latent authority
+           (contrast the CDZ0404 case above, whose body has no `log` op at all). The program compiles and runs
+           to unit (the dead branch makes no host call). Pins that `if false` is NOT const-folded away before
+           the manifest/latent analysis — a delegation is latent only when NO syntactic occurrence exists,
+           not when the sole occurrence is in dead code.")
+  (input  (do
+            (effect log (op emit (-> String Unit)))
+            (def (main) (host (log) (if false (log.emit "x") unit)))
+            (export main)))
+  (output (: unit Unit)))
+
+(case "an effect in a statically-dead branch still requires a grant — ungranted is rejected"
+  (doc    "The dual: the SAME dead-branch `(if false (log.emit \"x\") unit)` with NO delegation is rejected
+           CDZ0401 (ungranted effect), exactly as a live `log.emit` is. Syntactic reachability again — the
+           dead-branch effect still needs a home, so its absence is a fault; the compiler does not excuse it
+           by folding the branch. Together with the case above, pins that a dead-branch effect is treated
+           identically to a live one on BOTH sides of the grant boundary (needs a grant; exercises one).")
+  (input  (do
+            (effect log (op emit (-> String Unit)))
+            (def (main) (if false (log.emit "x") unit))
+            (export main)))
+  (error  CDZ0401))
+
 (case "the program manifest is the union of its entrypoints' delegations"
   (doc    "Witnesses capabilities-and-effects.md #The Program Manifest Is The Union Of Its Entrypoints'
            Delegations: main delegates `log` to the host and performs `log.emit`, so the manifest grants
