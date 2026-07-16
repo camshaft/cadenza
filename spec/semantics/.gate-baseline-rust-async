@@ -2516,6 +2516,7 @@ pass	overflow of the default integer traps deterministically
 pass	parsing a length-framed message and rebuilding it yields the original bytes
 pass	partial application captures a let-bound value in the residual lambda
 pass	partial application captures a runtime parameter in the residual lambda
+pass	passing one newtype where a different newtype is expected names both nominal types
 pass	pattern matching over AST distinguishes forms
 pass	performing a string-parameter operation with a non-string argument is a type error
 pass	performing an operation with a wrong-type argument for a compound parameter is a type error
