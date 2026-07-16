@@ -10,6 +10,9 @@ pass	BigInt.of a UInt64 at u64::MAX is a positive BigInt
 pass	BigInt.of a UInt64 widens to the exact value (round-trips back through Int64.of where it fits)
 pass	BigInt.of a UInt8 at its high bit widens to the exact value (smallest-width zero-extend)
 pass	BigInt.of a signed Int32 is a positive BigInt (the narrow path breaks regardless of sign)
+pass	Char.from-int at U+E000 (first scalar after the surrogate block) is Some
+pass	Char.from-int at the last surrogate U+DFFF is None
+pass	Char.from-int at the maximum valid scalar U+10FFFF is Some
 pass	DOMINATOR CSE does not reuse a condition's perform-product in the taken branch
 pass	Int64.min crosses the parameter boundary and back unchanged
 pass	Int64.min crossing the boundary is still negative
@@ -298,7 +301,11 @@ pass	a chained Option.expect(Option.expect s) payload consumed per iteration acc
 pass	a chained access through an if-of-records composes and shields the untaken branch's trap
 pass	a chained float ordering is not foldable by transitivity — a NaN middle breaks the chain
 pass	a char literal naming a surrogate is a reader error
+pass	a char not among the literal arms falls through to the wildcard
 pass	a char order agrees with its scalar value
+pass	a char-literal pattern nested in a variant payload matches by scalar value
+pass	a char-literal pattern over a non-char scrutinee is a type error
+pass	a char-literal pattern selects the arm whose char matches
 pass	a checked addition of two runtime-wrapped bytes still guards at the narrow width
 pass	a checked conversion of a negative CONSTANT into an unsigned type is rejected
 pass	a checked integer conversion of an out-of-range CONSTANT is rejected at compile time
@@ -794,6 +801,7 @@ pass	a match building one Some per arm sinks to a single Some around a payload m
 pass	a match not covering the scrutinee is a compile-time rejection
 pass	a match on a BigInt with a single catch-all binder binds and uses it
 pass	a match on a computed runtime value dispatches on the result
+pass	a match on a genuinely-runtime char (from a runtime Char.from-int) declines pending the runtime Char rep
 pass	a match on a record field selects a later literal arm
 pass	a match on a record-field-access scrutinee dispatches on the field value
 pass	a match on a runtime integer scrutinee producing a boolean
@@ -923,6 +931,7 @@ pass	a nested Result pattern selects the inner Err arm
 pass	a nested application of a let-bound lambda resolves each argument at its call site
 pass	a nested call chain whose callee duplicates its parameter folds without exponential blowup
 pass	a nested chain of function calls compiles in linear time and folds to a constant
+pass	a nested char-literal payload falls through on a non-matching char
 pass	a nested conditional (the sign idiom) folds to branchless nested selects — negative
 pass	a nested conditional (the sign idiom) folds to branchless nested selects — positive
 pass	a nested conditional (the sign idiom) folds to branchless nested selects — zero
@@ -1276,6 +1285,7 @@ pass	a runtime bitwise AND masks bits
 pass	a runtime bitwise OR combines bits
 pass	a runtime bitwise XOR toggles bits
 pass	a runtime byte truncation of the sign extremes keeps exactly the low byte
+pass	a runtime char reaches a later char-literal arm by scalar value
 pass	a runtime closure compares its argument to a captured value in a branch
 pass	a runtime closure whose body calls a recursive top-level function
 pass	a runtime compound structural equality is expressible as a hand-written recursive comparator
@@ -1542,6 +1552,7 @@ pass	a sum-payload loop invariant consumed per iteration accumulates stably
 pass	a sum-payload-wrapped self-application is rejected in bounded time, not a compiler stack overflow
 pass	a sum-type value is constructed through a variant
 pass	a sum-type value is deconstructed by an exhaustive match
+pass	a supplementary-plane char literal matches by scalar value
 pass	a symbol compared to a string is a type error
 pass	a symbol converts back to its content string
 pass	a symbol's identity is its content, not how the content was derived
@@ -2641,6 +2652,7 @@ pass	the manifest is DERIVED from what entrypoints delegate, not from effect dec
 pass	the maximum Int64 in hexadecimal reads as an integer
 pass	the maximum Int64 literal reads as an integer
 pass	the maximum unsigned 8-bit value is its per-width bound
+pass	the maximum valid scalar U+10FFFF round-trips through to-int
 pass	the minimum Int64 literal reads as an integer
 pass	the minimum integer scrutinee misses a zero-based jump table
 pass	the minimum signed 8-bit value is its per-width bound

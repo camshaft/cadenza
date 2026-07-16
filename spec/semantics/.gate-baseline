@@ -1081,6 +1081,7 @@ pass	a match building one Some per arm sinks to a single Some around a payload m
 pass	a match not covering the scrutinee is a compile-time rejection
 pass	a match on a BigInt with a single catch-all binder binds and uses it
 pass	a match on a computed runtime value dispatches on the result
+pass	a match on a genuinely-runtime char (from a runtime Char.from-int) declines pending the runtime Char rep
 pass	a match on a record field selects a later literal arm
 pass	a match on a record-field-access scrutinee dispatches on the field value
 pass	a match on a runtime integer scrutinee producing a boolean
