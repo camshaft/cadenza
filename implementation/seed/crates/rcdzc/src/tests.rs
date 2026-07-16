@@ -34013,6 +34013,18 @@ mod match_engine {
                 "an active splice of a constant {kind} list lifts each element to its matching Ast leaf"
             );
         }
+        // An element ALREADY of type `Ast` splices by IDENTITY (a list of pre-built AST fragments) — the
+        // same identity `ast-lift` gives an already-`Ast` operand. The fragments appear unchanged, not
+        // re-wrapped, so the reified list equals the longhand quote of the same fragments.
+        assert!(
+            reject_code(
+                "(module m (def (main) \
+                   (let ((xs (list (Ast.Int 7) (Ast.Int 8)))) \
+                     (= (quasiquote (f (unquote-splicing xs))) (quote (f 7 8))))) (export main))"
+            )
+            .is_none(),
+            "an active splice of a constant list of Ast values splices the fragments by identity"
+        );
         // A NESTED-list element has no scalar value leaf this increment, so the splice DECLINES (a Todo, the
         // runtime splice map is unbuilt) rather than mis-lifting — reject-don't-miscompile. It is not a
         // CDZ0201 non-list error (the operand IS a list); it simply cannot fold yet.

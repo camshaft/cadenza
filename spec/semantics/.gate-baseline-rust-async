@@ -2779,6 +2779,7 @@ pass	unit is the empty tuple
 pass	unquote in quasiquote evaluates normally and embeds
 pass	unquote outside quasiquote is a syntax error
 pass	unquote with more than one operand inside a quasiquote is malformed
+pass	unquote-splicing a list of Ast values splices by identity
 pass	unquote-splicing a list of nested lists declines — no scalar leaf to lift into
 pass	unquote-splicing lifts a boolean list to Ast.Bool leaves
 pass	unquote-splicing lifts a float list to Ast.Float leaves

@@ -1558,8 +1558,8 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                         Some(core) => core,
                         None => Core::Poison(Reject::decline(
                             "an active `,@` splice needs a compile-time-constant list of scalar \
-                                 (Int64/Float64/Bool/String) elements (the runtime splice map is not \
-                                 yet built)",
+                                 (Int64/Float64/Bool/String) or Ast elements (the runtime splice map \
+                                 is not yet built)",
                         )),
                     },
                     _ => Core::Poison(Reject::decline(
@@ -2156,25 +2156,39 @@ fn ctor_head_display_name(db: &Db, head: StructId) -> Option<String> {
         .map(str::to_string)
 }
 
-/// Fold `ast-splice-lift` over a CONSTANT list's element cores: wrap each in the `Ast` leaf its CONSTANT
+/// Fold `ast-splice-lift` over a CONSTANT list's element cores. An element that is ALREADY an `Ast` value
+/// splices by IDENTITY (a list of pre-built AST fragments needs no wrapping — the same identity arm
+/// `lower_ast_lift` has for an already-`Ast` operand); otherwise wrap each in the `Ast` leaf its CONSTANT
 /// kind denotes — `ConstInt`→`Ast.Int`, `ConstFloat`→`Ast.Float`, `ConstBool`→`Ast.Bool`, `ConstStr`→
 /// `Ast.Str` (each a `Core::SumNew` at the leaf disc, one payload). Returns a `Core::ListNew` of the
 /// wrapped nodes (the lifted `(List Ast)`), or `None` if the `Ast` sum is absent OR an element has no
-/// scalar-value leaf — a nested list, a char, a NaN float, or a runtime element declines rather than
-/// building a wrong-typed node. The list is homogeneous, so in practice every element shares one leaf.
-/// `id` seeds nothing structural; the synthesized nodes carry their own `Ty::Sum{Ast}`. This is the
-/// constant splice companion of the active-unquote `ast-lift` wrap (which dispatches by inferred TYPE for
-/// the runtime case); the two agree on the leaf set (Int64/Float64/Bool/String).
+/// scalar-value leaf and is not already an `Ast` — a nested list, a char, a NaN float, or a runtime
+/// element declines rather than building a wrong-typed node. The list is homogeneous, so in practice
+/// every element shares one leaf. `id` seeds nothing structural; the synthesized nodes carry their own
+/// `Ty::Sum{Ast}`. This is the constant splice companion of the active-unquote `ast-lift` wrap (which
+/// dispatches by inferred TYPE for the runtime case); the two agree on the leaf set + the Ast identity.
 fn lower_ast_splice_lift(db: &mut Db, id: StructId, elems: &[StructId]) -> Option<Core> {
     // The `Ast` sum type + its variant discriminants (read by name so a decl reordering never mis-tags).
     let disc = ast_variant_discs(db)?;
     let ast_ty = disc.ty.clone();
+    // The `Ast` sum's own declaration id — recognizes an element that is ALREADY an `Ast` (identity splice).
+    let ast_decl = match &disc.ty {
+        crate::ty::Ty::Sum { decl, .. } => Some(*decl),
+        _ => None,
+    };
     let _ = id;
     let mut wrapped = Vec::with_capacity(elems.len());
     for &e in elems {
-        // Dispatch each element by its CONSTANT core kind to the matching `Ast` leaf. A non-scalar
-        // constant (nested list, char, NaN float) or a runtime element has no leaf this increment →
-        // decline the whole splice (never build a wrong-typed leaf). Mirrors `lower_ast_lift`'s leaf set.
+        // An element already of type `Ast` splices as-is (identity) — a list of pre-built AST fragments.
+        if let crate::ty::Ty::Sum { decl, .. } = crate::infer::type_of(db, e).strip_nominal()
+            && Some(*decl) == ast_decl
+        {
+            wrapped.push(e);
+            continue;
+        }
+        // Otherwise dispatch by CONSTANT core kind to the matching `Ast` leaf. A non-scalar constant
+        // (nested list, char, NaN float) or a runtime element has no leaf this increment → decline the
+        // whole splice (never build a wrong-typed leaf). Mirrors `lower_ast_lift`'s leaf set + identity.
         let leaf_disc = match core_of(db, e) {
             Core::ConstInt(_) => disc.int,
             Core::ConstFloat(_) => disc.float,
