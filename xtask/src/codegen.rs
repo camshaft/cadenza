@@ -663,6 +663,10 @@ mod wasm_abi {
             // INT→FLOAT conversion (`Float N.of-int`): signed i64 → f64/f32, round-to-nearest-even.
             op("F64_CONVERT_I64_S", Instruction::F64ConvertI64S),
             op("F32_CONVERT_I64_S", Instruction::F32ConvertI64S),
+            // FLOAT→INT bit reinterpret (no value change) — the canonical-byte float `=` reinterprets
+            // the bits to an integer to compare (NaN-canonicalizing bit compare, IEEE `f*.eq` won't do).
+            op("I32_REINTERPRET_F32", Instruction::I32ReinterpretF32),
+            op("I64_REINTERPRET_F64", Instruction::I64ReinterpretF64),
             op("IF", Instruction::If(wasm_encoder::BlockType::Empty)),
             op("ELSE", Instruction::Else),
             op("END", Instruction::End),
