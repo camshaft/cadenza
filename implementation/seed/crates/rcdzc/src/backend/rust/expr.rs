@@ -637,19 +637,7 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             // the same route the wasm backend's `bigint-of-bytes` takes). `IntValue.magnitude` is
             // BIG-endian, so reverse it for the LE form the parser expects.
             if matches!(type_of(db, id), Ty::BigInt) {
-                if let Some(n) = v.to_i64() {
-                    Ok(format!("cdz_num::Big::from_i64({n})"))
-                } else {
-                    let sign = if v.negative { 1u8 } else { 0u8 };
-                    let mut bytes = vec![sign];
-                    bytes.extend(v.magnitude.iter().rev().copied()); // BE magnitude → LE
-                    let elems = bytes
-                        .iter()
-                        .map(|b| b.to_string())
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    Ok(format!("cdz_num::Big::from_sign_magnitude_bytes(&[{elems}])"))
-                }
+                Ok(const_big_expr(&v))
             } else {
                 emit_const_int(db, id, &v)
             }
@@ -1619,15 +1607,63 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             };
             Ok(expr)
         }
-        // A constant `Rational` (a normalized `IntValue` pair) has no native Rust value rendering yet —
-        // the rust backend would need a rational runtime type. Declines cleanly (a Rational-valued program
-        // runs on the wasm path; the rust backend is a differential oracle for the scalar surface). The
-        // RUNTIME Rational ops likewise have no Rust rendering (they call the runtime `rational-*`).
-        | Core::ConstRational(_, _)
-        | Core::RationalOfInts { .. }
-        | Core::RationalOfIntWiden { .. }
-        | Core::RationalBinOp { .. }
-        | Core::RationalCmp { .. }
+        // Runtime Rational ops → `cdz_num::Rational` value ops (num/den `Big` pair, canonical normalized;
+        // mirrors the wasm runtime's `rational-*` byte-for-byte). Each fixed-width int operand widens to a
+        // `Big` BY VALUE through `i128` (a `uN as i128` keeps its true sign — the same unsigned-safe path
+        // as `BigIntOfI64`, since `Rational.of` operands are `∀a.(Int a)`).
+        //
+        // `Rational.of n d` — build `n/d`, normalized (traps on zero denominator). `RationalOfIntWiden n`
+        // — the whole rational `n/1`.
+        Core::RationalOfInts { num, den } => {
+            let n = emit_int_as_big(db, num, env, ctx)?;
+            let d = emit_int_as_big(db, den, env, ctx)?;
+            Ok(format!("cdz_num::Rational::new({n}, {d})"))
+        }
+        Core::RationalOfIntWiden { value } => {
+            let n = emit_int_as_big(db, value, env, ctx)?;
+            Ok(format!("cdz_num::Rational::from_big({n})"))
+        }
+        // A runtime Rational binary op → the `Rational` method (borrow both, return owned). `div` traps on
+        // a zero divisor (mirrors `rational-div`).
+        Core::RationalBinOp { op, lhs, rhs } => {
+            let l = emit(db, lhs, env, ctx)?;
+            let r = emit(db, rhs, env, ctx)?;
+            let m = match op {
+                crate::core::RationalOp::Add => "add",
+                crate::core::RationalOp::Sub => "sub",
+                crate::core::RationalOp::Mul => "mul",
+                crate::core::RationalOp::Div => "div",
+            };
+            Ok(format!("({l}).{m}(&({r}))"))
+        }
+        // A runtime Rational comparison → three-way `cmp` reduced to the Prim's bool (mirrors the BigInt
+        // comparison; no `Ne` Prim — `≠` is `not =` upstream).
+        Core::RationalCmp { op, lhs, rhs } => {
+            let l = emit(db, lhs, env, ctx)?;
+            let r = emit(db, rhs, env, ctx)?;
+            let cmp = format!("({l}).cmp(&({r}))");
+            let expr = match op {
+                Prim::Eq => format!("({cmp} == core::cmp::Ordering::Equal)"),
+                Prim::Lt => format!("({cmp} == core::cmp::Ordering::Less)"),
+                Prim::Gt => format!("({cmp} == core::cmp::Ordering::Greater)"),
+                Prim::Le => format!("({cmp} != core::cmp::Ordering::Greater)"),
+                Prim::Ge => format!("({cmp} != core::cmp::Ordering::Less)"),
+                _ => {
+                    return Err(Reject::decline(
+                        "unexpected non-relational Prim in a Rational comparison",
+                    ));
+                }
+            };
+            Ok(expr)
+        }
+        // A constant Rational — a normalized `IntValue` num/den pair (folded in `lower`). Build each `Big`
+        // via the same const-BigInt materialization (in-i64 → `from_i64`, beyond → `from_sign_magnitude_bytes`)
+        // then `Rational::new` (which re-normalizes — a no-op on an already-normalized pair, so byte-identical).
+        Core::ConstRational(n, d) => {
+            let nb = const_big_expr(&n);
+            let db_ = const_big_expr(&d);
+            Ok(format!("cdz_num::Rational::new({nb}, {db_})"))
+        }
         | Core::BinBuild { .. }
         | Core::BinBitsBuild { .. }
         | Core::BinIntRead { .. }
@@ -1690,6 +1726,39 @@ fn ty_supports_native_eq(db: &mut Db, ty: &Ty) -> bool {
 /// (`Int64`), which unification does not thread the context width back onto.
 fn emit_const_int(db: &mut Db, id: StructId, v: &IntValue) -> Result<String, Reject> {
     emit_const_int_at(int_ty_of(db, id), v)
+}
+
+/// A `cdz_num::Big` constructor EXPRESSION for a CONSTANT integer `v` — in-i64 range → `Big::from_i64`,
+/// beyond → `Big::from_sign_magnitude_bytes(&[sign, LE-magnitude…])` (the runtime's canonical leaf form,
+/// `IntValue.magnitude` is BIG-endian so reversed). Shared by the `Core::ConstInt`-typed-BigInt arm and
+/// the `Core::ConstRational` num/den materialization.
+fn const_big_expr(v: &IntValue) -> String {
+    if let Some(n) = v.to_i64() {
+        format!("cdz_num::Big::from_i64({n})")
+    } else {
+        let sign = if v.negative { 1u8 } else { 0u8 };
+        let mut bytes = vec![sign];
+        bytes.extend(v.magnitude.iter().rev().copied()); // BE magnitude → LE
+        let elems = bytes
+            .iter()
+            .map(|b| b.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("cdz_num::Big::from_sign_magnitude_bytes(&[{elems}])")
+    }
+}
+
+/// Emit a fixed-width int NODE widened to a `cdz_num::Big` BY VALUE (through `i128`, so an unsigned
+/// operand `>= 2^63` keeps its true sign — the unsigned-safe path `BigIntOfI64` uses). Shared by the
+/// Rational-of-ints ops (`Rational.of`/`Rational.of-int`), whose operands are `∀a.(Int a)`.
+fn emit_int_as_big(db: &mut Db, node: StructId, env: &Env, ctx: &Ctx) -> Result<String, Reject> {
+    let v = emit(db, node, env, ctx)?;
+    Ok(format!(
+        "{{ let mut __buf = [0u8; 17]; \
+         let __n = cdz_num::Big::i128_to_sign_magnitude_bytes_into(({v}) as i128, &mut __buf) \
+         .expect(\"i128 fits 17 bytes\"); \
+         cdz_num::Big::from_sign_magnitude_bytes(&__buf[..__n]) }}"
+    ))
 }
 
 /// Render an integer constant as `<bits><utype> as <target>` (or just `<bits><utype>` when the target
@@ -2181,7 +2250,13 @@ fn ty_is_non_copy(ty: &Ty) -> bool {
         // `Vec<T>`/`BTreeMap<K,V>`/`BTreeSet<T>`/`String` are heap-owned values — non-Copy (move-only), so a
         // binding of one read in more than one position clones (the clone-on-read discipline). `Big`
         // (`cdz_num::Big`) owns a limb `Vec`, so it is likewise non-Copy → clone-on-read.
-        Ty::List(_) | Ty::Map(_, _) | Ty::Set(_) | Ty::String | Ty::Bytes | Ty::BigInt => true,
+        Ty::List(_)
+        | Ty::Map(_, _)
+        | Ty::Set(_)
+        | Ty::String
+        | Ty::Bytes
+        | Ty::BigInt
+        | Ty::Rational => true,
         // A compound is non-Copy iff any component is (a tuple/record of scalars stays Copy).
         Ty::Tuple(elems) => elems.iter().any(ty_is_non_copy),
         Ty::Record(fields) => fields.values().any(ty_is_non_copy),

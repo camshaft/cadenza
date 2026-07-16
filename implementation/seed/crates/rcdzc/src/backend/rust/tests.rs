@@ -1504,6 +1504,49 @@ fn rustc_roundtrip_bigint_arithmetic_and_render() {
 }
 
 #[test]
+fn rustc_roundtrip_rational_arithmetic_and_render() {
+    // Rational emit-side: `Ty::Rational` → `cdz_num::Rational` (a Big num/den pair, canonical normalized);
+    // `Rational.of`/`.of-int` widen + build, `+`/`-`/`*`/`/` are Rational methods, cmp reduces to a bool,
+    // render is `n/d`. Values MIRROR the wasm runtime's rational-* byte-for-byte. 1/3 + 1/6 = 1/2 exactly.
+    let add =
+        compile_rust("(module m (def (g) (+ (Rational.of 1 3) (Rational.of 1 6))) (export g))");
+    assert!(
+        add.contains("cdz_num::Rational"),
+        "Rational maps to cdz_num::Rational:\n{add}"
+    );
+    if let Some(out) = rustc_run(&add, "g().to_display_string()") {
+        assert_eq!(out, "1/2", "exact rational addition, lowest terms");
+    }
+    // Reduce to lowest terms; sign normalized onto the numerator; a whole rational keeps `/1`.
+    let red = compile_rust("(module m (def (g) (Rational.of 2 4)) (export g))");
+    if let Some(out) = rustc_run(&red, "g().to_display_string()") {
+        assert_eq!(out, "1/2", "2/4 reduces to 1/2");
+    }
+    let sign = compile_rust("(module m (def (g) (Rational.of 3 -4)) (export g))");
+    if let Some(out) = rustc_run(&sign, "g().to_display_string()") {
+        assert_eq!(
+            out, "-3/4",
+            "sign moves to the numerator, denominator positive"
+        );
+    }
+    let whole = compile_rust("(module m (def (g) ((. Rational of-int) 5)) (export g))");
+    if let Some(out) = rustc_run(&whole, "g().to_display_string()") {
+        assert_eq!(out, "5/1", "a whole rational carries denominator 1");
+    }
+    // A Rational is a valid BTreeSet/BTreeMap key (impl Ord) — dedup by exact value: {1/2, 2/4, 1/3} → 2.
+    let set = compile_rust(
+        "(module m (def (g) (Set.len (Set.of (list (Rational.of 1 2) (Rational.of 2 4) (Rational.of 1 3))))) \
+           (export g))",
+    );
+    if let Some(out) = rustc_run(&set, "g()") {
+        assert_eq!(
+            out, "2",
+            "a Rational set dedups by normalized value (1/2 == 2/4)"
+        );
+    }
+}
+
+#[test]
 fn rustc_roundtrip_add_matches_the_wasm_answer() {
     // The exact I2b wasmtime answers: add(20,22)=42, add(100,-1)=99.
     let rs = compile_rust("(module m (def (add (: a Int64) (: b Int64)) (+ a b)) (export add))");
