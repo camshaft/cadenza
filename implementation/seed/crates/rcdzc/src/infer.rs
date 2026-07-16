@@ -11837,7 +11837,33 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                     //# The compiler MUST validate a type annotation against the annotated expression's static type at compile time.
                     //= spec/capabilities/core-semantics.md#types-are-first-class-values
                     //# The compiler MUST reject a program in which a type annotation's declared type does not match the annotated expression's static type before that program runs.
-                    let expr_ty = type_of(db, expr);
+                    // A FUNCTION VALUE'S type must be its BODY-SOLVED arrow, not the bottom-up `type_of`
+                    // arrow. The `type_of` Lambda arm leaves an UNANNOTATED parameter `Any` (`h x = x + 1`
+                    // types `(-> Any Int64)`), and `Any` UNIFIES WITH ANYTHING — so a CONTRADICTORY arrow
+                    // annotation `(: h (-> Bool Int64))` / `(: h (-> String Int64))` unified against `(-> Any
+                    // Int64)` and SUCCEEDED, silently accepting a mismatch the check exists to reject (an
+                    // annotated-domain fn `(: (: x Int64) …)` or a RESULT contradiction was caught — only the
+                    // un-annotated DOMAIN slipped, via the `Any`). `solved_lambda_arrow` grounds each param
+                    // from the body (the same solve reflection + lowering use), so the domain is its real
+                    // type and the contradiction is caught. A genuinely-unconstrained param stays `Any` (a
+                    // polymorphic `(fn (x) x)`), which still unifies — honest, no false reject. GATE on the
+                    // bottom-up type ALREADY being a `Ty::Fn`: `lambda_params_and_body` follows a `let`/`apply`
+                    // through to an inner body (its `lambda_of` peels `Resolved::Let`/`Apply`), so a
+                    // NON-function annotated expr like `(: (let ((y …)) (Ok y)) (Result …))` would otherwise
+                    // wrongly enter the fn-grounding path and mis-solve. Only re-solve when `type_of` already
+                    // says it IS a function (then `solved_lambda_arrow` grounds its `Any` domains); every
+                    // other expr keeps its plain `type_of`.
+                    let base_ty = type_of(db, expr);
+                    let expr_ty = if matches!(base_ty, Ty::Fn(_, _)) {
+                        match crate::eval::lambda_params_and_body(db, expr) {
+                            Some((params, body)) => {
+                                solved_lambda_arrow(db, &params, body).unwrap_or(base_ty)
+                            }
+                            None => base_ty,
+                        }
+                    } else {
+                        base_ty
+                    };
                     let mut subst = Subst::new();
                     if crate::unify::unify(&mut subst, &annot_ty, &expr_ty).is_err() {
                         trace!(target: "rcdzc::infer", node = id.0, annot_ty = %annot_ty.render_name(), expr_ty = %expr_ty.render_name(), "fault: annotation type mismatch (CDZ0203)");
