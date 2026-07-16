@@ -68347,6 +68347,43 @@ mod cross_component_oracle {
     }
 
     // ------------------------------------------------------------------------------------------------
+    // U10 — the embedder REJECTS a mis-shaped model op with a clear message, not a panic. `run_agent`
+    // binds `converse` assuming the imported op is `(u32) -> u32` (a String prompt/completion each cross
+    // as one runtime rope handle). A consumer whose model op has a DIFFERENT shape (here `(Int64) ->
+    // Int64`, which crosses as `(s64) -> s64` — a scalar, not a handle) must fail up front naming the op
+    // + the required shape (robustness hardening — Copilot PR#463 flagged the unchecked `results[0]`).
+    // ------------------------------------------------------------------------------------------------
+    #[test]
+    fn u10_the_embedder_rejects_a_mis_shaped_model_op_clearly() {
+        use crate::testkit::parse;
+        // A consumer whose Model.converse is `(Int64) -> Int64` (scalar, crosses as s64) — NOT the
+        // `(String) -> String` (u32 handle) shape the embedder binds. It still imports the runtime (an
+        // unrelated String literal forces the heap import) so run_agent reaches the shape check.
+        let src = "(do \
+            (effect Model (op converse (-> Int64 Int64))) \
+            (bind Model \"cadenza:model/api\") \
+            (def (main) (+ (host (Model) (Model.converse 1)) (String.byte-len \"x\"))) \
+            (export main))";
+        let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .unwrap_or_else(|d| panic!("consumer compiles: {} [{:?}]", d.message, d.code));
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: Vec::new(),
+            // No runtime needed: the shape check fails BEFORE the runtime is required.
+            runtime: super::find_runtime_wasm(),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        let err = cdz_run::run_agent(&consumer, "cadenza:model/api", "converse", &opts, |p| p)
+            .expect_err("a mis-shaped model op must be REJECTED, not run (or panic)");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("must be `(u32) -> u32`") && msg.contains("converse"),
+            "the rejection must name the op + the required (u32)->u32 shape, got: {msg}"
+        );
+    }
+
+    // ------------------------------------------------------------------------------------------------
     // PL4 — a NON-KEBAB peer OP NAME agrees across the consumer + provider and RUNS. The op name is a
     // component-boundary extern name (the interface func); a camelCase source op (`addTwo`) must
     // kebab-normalize to the SAME `add-two` on BOTH sides — the consumer's `(bind)`/`host` import AND

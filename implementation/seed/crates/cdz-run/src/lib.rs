@@ -399,6 +399,52 @@ pub fn run_with_peers(consumer_bytes: &[u8], peers: &[Peer], opts: &RunOpts) -> 
     run_export(&engine, &consumer, &mut store, &linker, opts)
 }
 
+/// Verify a consumer's imported model op `model_iface`.`op_name` has the `(u32) -> u32` boundary shape
+/// [`run_agent`] binds (a String prompt/completion each cross as ONE runtime rope HANDLE). Checked BEFORE
+/// binding so a mis-shaped op fails with a clear message naming the op + the required shape, rather than
+/// panicking or trapping opaquely inside the host closure. If the consumer does not import the interface
+/// or the op at all, this returns Ok — the linker's own "unknown import" error is already clear (and a
+/// consumer that never performs the op needs no binding). Only a PRESENT-but-mis-shaped op is rejected.
+fn check_model_op_shape(
+    engine: &Engine,
+    consumer: &Component,
+    model_iface: &str,
+    op_name: &str,
+) -> Result<()> {
+    // The consumer's declared signatures for `model_iface` (None → it doesn't import the interface).
+    let Some(sigs) = consumer
+        .component_type()
+        .imports(engine)
+        .find(|(n, _)| *n == model_iface)
+        .and_then(|(_, item)| iface_func_sigs(engine, &item))
+    else {
+        return Ok(());
+    };
+    // The op within it (None → the interface is imported but not this op → leave to the linker).
+    let Some((_, params, results)) = sigs.iter().find(|(n, _, _)| n == op_name) else {
+        return Ok(());
+    };
+    let is_u32 = |t: &Type| matches!(t, Type::U32);
+    let ok = params.len() == 1 && is_u32(&params[0]) && results.len() == 1 && is_u32(&results[0]);
+    if !ok {
+        let shape = |ts: &[Type]| {
+            ts.iter()
+                .map(|t| format!("{t:?}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        return Err(anyhow!(
+            "the model op `{model_iface}`.`{op_name}` must be `(u32) -> u32` (a String prompt and \
+             completion each cross as one runtime rope handle), but the consumer imports it as \
+             `({}) -> ({})` — a `String -> String` model op lowers to exactly one u32 arg and one u32 \
+             result",
+            shape(params),
+            shape(results),
+        ));
+    }
+    Ok(())
+}
+
 /// Run a CONSUMER component whose one peer interface `model_iface` (e.g. `cadenza:model/api`) is answered
 /// not by a peer COMPONENT but by a HOST closure — the embedder pattern the native agent-harness uses to
 /// wire a `String -> String` model call (Bedrock) into a pure-Cadenza agent loop without a Cadenza peer
@@ -431,6 +477,14 @@ where
         .map_err(|e| anyhow!("invalid consumer component: {e}"))?;
     let mut store = Store::new(&engine, ());
     let mut linker: Linker<()> = Linker::new(&engine);
+
+    // Verify the consumer's imported model op is the `(u32) -> u32` shape the binding assumes (a String
+    // prompt/completion each cross as ONE runtime rope HANDLE) BEFORE binding — a differently-shaped op
+    // (wrong arity, a non-u32 param/result, or no result) would otherwise surface as an opaque panic or a
+    // confusing trap deep in the closure (the unchecked `results[0]` write). Fail up front with a message
+    // naming the op and the shape we require. `None` (the op/interface is not imported at all) is left to
+    // the linker's own "unknown import" error, which is already clear.
+    check_model_op_shape(&engine, &consumer, model_iface, op_name)?;
 
     // The consumer's String model call rides the shared value-heap runtime (the prompt/completion are
     // rope handles), so the runtime is REQUIRED here (unlike the scalar peer path where it is optional).
@@ -500,7 +554,13 @@ where
         let mut made = [Val::Bool(false)];
         str_new.call(&mut ctx, &[Val::String(completion)], &mut made)?;
         str_new.post_return(&mut ctx)?;
-        results[0] = made[0].clone();
+        // Write the completion handle into the result slot. `check_model_op_shape` already proved the op
+        // has exactly one (u32) result, so `results` is non-empty here; guard anyway rather than index
+        // blindly (a defense-in-depth that turns any future shape drift into an error, not a panic).
+        let slot = results
+            .first_mut()
+            .ok_or_else(|| anyhow!("model op `{op_label}` returned no result slot to write"))?;
+        *slot = made[0].clone();
         Ok(())
     })?;
 
