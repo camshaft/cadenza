@@ -1660,3 +1660,36 @@
             (def (main) (dbl 5))
             (export main)))
   (trap   "unreachable"))
+
+; ── (D) TEST-TIER ENFORCEMENT — a PLAIN @requires is CHECKED at run time (Inc-b (D), verify_enforce.rs) ──
+; The operator confirmed (D): @requires/@ensures/@trap_free/@invariant verify AT RUN TIME now (proof-guided
+; ELISION defers to the bounded compile-time kernel interpreter (A) — a3's compile-time-eval premise was
+; unbuildable: the kernel is recursive and rcdzc has no compile-time recursive evaluator). These two cases
+; pin the PLAIN @requires enforcement: a violated precondition TRAPS, a satisfied one is value-transparent.
+
+(case "a PLAIN @requires precondition is ENFORCED at body-entry: a VIOLATED precondition traps when the def is called"
+  (doc    "The (D) test-tier enforcement of a bare `@requires` (NOT stacked under `@test` — that is
+           v-property-testing's TESTED tier). `verify_enforce::enforce` rewrites `(@ (requires (>= x 0))
+           (def (f (: x Int64)) (+ x 1)))` so the body becomes `(if (>= x 0) (+ x 1) (trap …))` — the
+           precondition is checked ONCE at body-entry (the Hoare `{P} body {Q}` reading), NOT at each call
+           site. `(f -5)` violates `(>= x 0)`, so the `if` takes the trap arm, halting with the canonical
+           `unreachable` kind. Before (D) the precondition was RECORDED (db.requires) but NOT enforced — the
+           call returned `-4`. Pins that a plain @requires now actually verifies at run time; the wrapper is
+           left in place so `strip_annotations` still records the predicate for the verification layer.")
+  (input  (do
+            (@ (requires (>= x 0)) (def (f (: x Int64)) (+ x 1)))
+            (def (main) (f -5))
+            (export main)))
+  (trap   "unreachable"))
+
+(case "a PLAIN @requires precondition is value-transparent when SATISFIED: the def returns its computed value"
+  (doc    "The value-transparency half of the plain-@requires enforcement pin above. `(f 5)` SATISFIES
+           `(>= x 0)`, so the injected `(if (>= x 0) (+ x 1) (trap …))` takes the pass arm and returns the
+           def's own value `6` — NOT `unit`, and no trap. Together with the trap case above this pins that
+           the enforcement rewrite is value-transparent AND checking: a satisfied precondition yields the
+           computed result, a violated one traps — the check does not swallow the value on the pass path.")
+  (input  (do
+            (@ (requires (>= x 0)) (def (f (: x Int64)) (+ x 1)))
+            (def (main) (f 5))
+            (export main)))
+  (output (: 6 Int64)))

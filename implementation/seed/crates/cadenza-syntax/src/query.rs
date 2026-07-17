@@ -4407,6 +4407,92 @@ mod tests {
         assert!(back.structurally_eq(&a));
     }
 
+    /// Build a random arena node (all leaf kinds + arbitrary arity incl. EMPTY lists — shapes the s-expr
+    /// reader never produces but a decoded/hand-built arena can), returning its root id. Bounded by depth.
+    fn gen_arena_node(rng: &mut SplitMix64, b: &mut Builder, depth: usize) -> StructId {
+        if depth == 0 || rng.next().is_multiple_of(3) {
+            let leaf = match rng.next() % 7 {
+                0 => Leaf::Int {
+                    value: num_bigint::BigInt::from(rng.next() as i64),
+                    radix: [crate::ast::Radix::Dec, crate::ast::Radix::Hex]
+                        [(rng.next() % 2) as usize],
+                },
+                1 => Leaf::Str(["", "hi", "a\nb", "λ中"][(rng.next() % 4) as usize].to_string()),
+                2 => Leaf::Bool(rng.next().is_multiple_of(2)),
+                3 => Leaf::Char(['a', 'é', '\n'][(rng.next() % 3) as usize]),
+                4 => Leaf::Bytes(vec![(rng.next() & 0xff) as u8]),
+                5 => Leaf::Sym(["meter", "x"][(rng.next() % 2) as usize].to_string()),
+                _ => Leaf::Name(
+                    ["f", "x", "+", "record", "list"][(rng.next() % 5) as usize].to_string(),
+                ),
+            };
+            b.atom_leaf(leaf)
+        } else {
+            let n = (rng.next() % 5) as usize; // 0..=4 children, incl. the empty list
+            let kids: Vec<StructId> = (0..n).map(|_| gen_arena_node(rng, b, depth - 1)).collect();
+            b.list(kids)
+        }
+    }
+
+    /// Assert every node of an owned `Tree` carries a provenance `origin()` whose source `Struct` KIND
+    /// matches the tree node's kind (Atom↔Atom, List↔List) — `from_arena` must tag each node with the id
+    /// it was copied from, the invariant a search match's span report depends on.
+    fn assert_provenance(t: &Tree, src: &Arenas) {
+        let id = t
+            .origin()
+            .expect("from_arena records provenance on every node");
+        match (t, src.get(id)) {
+            (Tree::Atom(..), Struct::Atom(_)) => {}
+            (Tree::List(kids, _), Struct::List(src_kids)) => {
+                assert_eq!(
+                    kids.len(),
+                    src_kids.len(),
+                    "provenance list arity mismatch at #{}",
+                    id.0
+                );
+                for k in kids {
+                    assert_provenance(k, src);
+                }
+            }
+            _ => panic!("provenance kind mismatch at #{}", id.0),
+        }
+    }
+
+    #[test]
+    fn tree_arena_roundtrip_is_structural_identity_over_generated_arenas() {
+        // `Tree::of(a).to_arena()` — the arena→owned-Tree→arena round-trip EVERY codemod op begins and
+        // ends with — must be a STRUCTURAL IDENTITY. Both legs (`from_arena`, `build`) are explicit-stack
+        // post-order walks with reversed-child pushes; the single hand case above can't catch a child-
+        // order or arity drift in that bookkeeping. Sweep random arenas (all leaf kinds + arbitrary arity
+        // incl. EMPTY lists, the shapes only a decoded/hand-built arena reaches) and assert: (a) the
+        // round-trip is structurally equal to the source; (b) `to_sexpr()` equals the arena's own
+        // `sexpr::print` (the rendering all the crate's other sweeps trust); (c) every owned-tree node's
+        // `origin()` provenance points at a source id of the matching Struct kind.
+        let mut rng = SplitMix64(0x77ee_c0de_a5f1_0003);
+        for _ in 0..4000 {
+            let mut b = Builder::new();
+            let depth = 1 + (rng.next() % 4) as usize;
+            let root = gen_arena_node(&mut rng, &mut b, depth);
+            let arena = b.finish(root);
+            let tree = Tree::of(&arena);
+            // (a) round-trip is a structural identity.
+            let back = tree.to_arena();
+            assert!(
+                back.structurally_eq(&arena),
+                "Tree::of(a).to_arena() not structurally equal to a: {}",
+                sexpr::print(&arena)
+            );
+            // (b) the Tree's own rendering agrees with the arena's printer.
+            assert_eq!(
+                tree.to_sexpr(),
+                sexpr::print(&arena),
+                "Tree::to_sexpr disagrees with sexpr::print on the same structure"
+            );
+            // (c) provenance: every node points back at a matching source id.
+            assert_provenance(&tree, &arena);
+        }
+    }
+
     // ---- multi-rule sets + strategy ----
 
     fn rule(p: &str, t: &str) -> Rule {

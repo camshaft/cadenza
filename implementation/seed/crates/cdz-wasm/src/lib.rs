@@ -259,24 +259,7 @@ pub fn compile(text: &str, from: &str) -> Result<CompileResult, JsError> {
             // ML parser's span) so the guide editor underlines the exact syntax mistake, not a
             // positionless (0, 0). (The message no longer embeds the byte offset — the range carries it.)
             let (from_b, to_b) = ml_parse_error_span(text, from).unwrap_or((0, 0));
-            return Ok(CompileResult {
-                component: None,
-                diagnostics: vec![Diagnostic {
-                    error: true,
-                    code: String::new(),
-                    message: msg,
-                    node: u32::MAX,
-                    from: from_b,
-                    to: to_b,
-                    fix_replacement: String::new(),
-                    fix_prefix: String::new(),
-                    fix_suffix: String::new(),
-                    fix_from: 0,
-                    fix_to: 0,
-                    fix_verified: false,
-                    fix_kind: String::new(),
-                }],
-            });
+            return Ok(compile_error(msg, from_b, to_b));
         }
     };
 
@@ -314,6 +297,148 @@ pub fn compile(text: &str, from: &str) -> Result<CompileResult, JsError> {
         .collect();
     // Both `Wasm` and `WasmDebug` produce a `component`-kinded artifact (a debug component is a
     // decorated component, not a new kind), so the artifact lookup is the same either way.
+    let component = out
+        .artifact(rcdzc::Target::Wasm.artifact_kind())
+        .map(|b| b.to_vec());
+    Ok(CompileResult {
+        component,
+        diagnostics,
+    })
+}
+
+/// A codeless error [`CompileResult`] carrying one diagnostic anchored at `[from_b, to_b)` — the uniform
+/// "no component, one message" channel `compile*` returns for a parse/read failure.
+fn compile_error(message: String, from_b: u32, to_b: u32) -> CompileResult {
+    CompileResult {
+        component: None,
+        diagnostics: vec![Diagnostic {
+            error: true,
+            code: String::new(),
+            message,
+            node: u32::MAX,
+            from: from_b,
+            to: to_b,
+            fix_replacement: String::new(),
+            fix_prefix: String::new(),
+            fix_suffix: String::new(),
+            fix_from: 0,
+            fix_to: 0,
+            fix_verified: false,
+            fix_kind: String::new(),
+        }],
+    }
+}
+
+/// Compile `text` (surface `from`) to a WebAssembly component with a set of PRELOADED library modules
+/// linked alongside it — so the user's buffer can `import { … } from "<name>"` a module it never had to
+/// author or paste in. This is the seam the `/cad` IDE needs: the CAD geometry library (v-cad's
+/// `exact`/`units` modules) is supplied as preloaded modules, and the editor buffer holds ONLY the user's
+/// model, not the library boilerplate.
+///
+/// The preloaded modules arrive as three parallel arrays (wasm-bindgen marshals `Vec<String>` directly,
+/// no JSON): `preloaded_names[i]` is the module NAME an `import` resolves against (the artifact name —
+/// `import from "exact"` binds to the preloaded module named `exact`), `preloaded_sources[i]` its source
+/// text, `preloaded_formats[i]` its surface (`"ml"`/`"sexpr"`). The three MUST be equal length.
+///
+/// Mechanism: each preloaded source is parsed to an `ast`-kinded artifact named by its module name, the
+/// user text is parsed to the `main` `ast` artifact, and a `KIND_ENTRY` marker names `main` the entry —
+/// so `rcdzc::compile` LINKS them into one package (`DESIGN-package-linking.md`), resolving the user's
+/// imports against the preloaded modules exactly as the native `cdz` multi-file compile does. A preloaded
+/// module that fails to parse is a codeless error diagnostic naming the offending module (the whole
+/// compile declines rather than silently dropping a library the user's model depends on).
+///
+/// NOTE: this links preloaded modules the user still IMPORTS by name. Making a preloaded module's exports
+/// AMBIENT (in scope with no `import` line at all) is a resolution-policy decision (auto-inject the import
+/// vs. a prelude-style install) pending an operator ruling; this seam delivers the module-crossing plumbing
+/// either policy needs. Existing [`compile`] is unchanged (callers that pass no library keep using it).
+#[wasm_bindgen]
+pub fn compile_with_preloaded(
+    text: &str,
+    from: &str,
+    preloaded_names: Vec<String>,
+    preloaded_sources: Vec<String>,
+    preloaded_formats: Vec<String>,
+) -> Result<CompileResult, JsError> {
+    let from = parse_format(from)?;
+    if preloaded_names.len() != preloaded_sources.len()
+        || preloaded_names.len() != preloaded_formats.len()
+    {
+        return Err(JsError::new(
+            "compile_with_preloaded: preloaded_names/sources/formats must be equal length",
+        ));
+    }
+
+    // No preloaded modules → nothing to link; the result is byte-identical to a plain single-file
+    // compile (no KIND_ENTRY, no linkage), so keep the flat-namespace path exactly.
+    if preloaded_names.is_empty() {
+        return compile(text, from.name());
+    }
+
+    // Parse the user model into the `main` AST + its span table (a parse failure → codeless diagnostic
+    // with the mistake's source range, matching `compile`).
+    let (ast_bytes, spans) = match parse_spanned(text, from) {
+        Ok(pair) => pair,
+        Err(msg) => {
+            let (from_b, to_b) = ml_parse_error_span(text, from).unwrap_or((0, 0));
+            return Ok(compile_error(msg, from_b, to_b));
+        }
+    };
+
+    let mut inputs = vec![rcdzc::Artifact::new(
+        rcdzc::Artifact::KIND_AST,
+        "main",
+        ast_bytes,
+    )];
+    // Embed DWARF for the USER model (the buffer the browser debugger steps through); preloaded library
+    // modules carry no spans (they aren't the source under edit), so the debug info stays about the model.
+    let target = match &spans {
+        Some(span_table) => {
+            inputs.push(rcdzc::Artifact::new(
+                rcdzc::spans::KIND_SPANS,
+                "main",
+                rcdzc::spans::encode(&span_data_of(text, span_table)),
+            ));
+            rcdzc::Target::WasmDebug
+        }
+        None => rcdzc::Target::Wasm,
+    };
+
+    // Each preloaded module → an `ast` artifact NAMED by its module name (the link target of an
+    // `import from "<name>"`). A parse failure names the module so the user knows which library broke.
+    for ((name, source), fmt) in preloaded_names
+        .iter()
+        .zip(preloaded_sources.iter())
+        .zip(preloaded_formats.iter())
+    {
+        let pf = parse_format(fmt)?;
+        match parse_spanned(source, pf) {
+            Ok((bytes, _)) => {
+                inputs.push(rcdzc::Artifact::new(rcdzc::Artifact::KIND_AST, name, bytes));
+            }
+            Err(msg) => {
+                return Ok(compile_error(
+                    format!("preloaded module `{name}` failed to parse: {msg}"),
+                    0,
+                    0,
+                ));
+            }
+        }
+    }
+
+    // The `KIND_ENTRY` marker makes `main` the package entry, so `compile` links the files instead of
+    // treating them as one flat arena.
+    inputs.push(rcdzc::Artifact::new(
+        rcdzc::link::KIND_ENTRY,
+        "entry",
+        b"main".to_vec(),
+    ));
+
+    let out = rcdzc::compile(&inputs, &[target]);
+    let diagnostics = out
+        .diagnostics
+        .iter()
+        .map(|d| to_js_diag(d, spans.as_ref(), from == Format::Ml))
+        .collect();
     let component = out
         .artifact(rcdzc::Target::Wasm.artifact_kind())
         .map(|b| b.to_vec());
@@ -1448,6 +1573,90 @@ mod tests {
                 .expect("query ok")
                 .is_none(),
             "a literal is not a definition"
+        );
+    }
+
+    #[test]
+    fn compile_with_preloaded_links_a_user_import_against_a_supplied_module() {
+        // The `/cad` seam: the buffer holds ONLY the user's model, which `import`s a name from a PRELOADED
+        // library module it never had to paste in. Here `lib` exports `answer`; the model imports and uses
+        // it. With the module preloaded, the program links + compiles to a component (no "unbound name").
+        let lib = "def answer() = 42\nexport { answer }";
+        let model = "import { answer } from \"lib\"\ndef main() = answer()\nexport { main }";
+        let out = compile_with_preloaded(
+            model,
+            "ml",
+            vec!["lib".to_string()],
+            vec![lib.to_string()],
+            vec!["ml".to_string()],
+        )
+        .expect("compile_with_preloaded runs");
+        let errors: Vec<_> = out.diagnostics.iter().filter(|d| d.error).collect();
+        assert!(
+            errors.is_empty(),
+            "a model importing a preloaded module compiles cleanly, got errors: {:?}",
+            errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        assert!(
+            out.component.is_some(),
+            "linking the preloaded module produced a component"
+        );
+    }
+
+    #[test]
+    fn compile_with_preloaded_without_the_module_leaves_the_import_unbound() {
+        // Control: the SAME model with NO preloaded module fails to resolve the import — proving the pass
+        // above succeeds BECAUSE the module was linked in, not because the import was ignored.
+        let model = "import { answer } from \"lib\"\ndef main() = answer()\nexport { main }";
+        let out = compile_with_preloaded(model, "ml", Vec::new(), Vec::new(), Vec::new())
+            .expect("compile_with_preloaded runs with no preloads");
+        assert!(
+            out.component.is_none() || out.diagnostics.iter().any(|d| d.error),
+            "an unsatisfied import without its module does not silently produce a good component"
+        );
+    }
+
+    #[test]
+    fn compile_with_preloaded_empty_matches_plain_compile() {
+        // No preloaded modules → byte-identical to `compile` (the flat single-file path, no linkage).
+        let src = "def main() = 1\nexport { main }";
+        let a = compile(src, "ml").expect("compile");
+        let b = compile_with_preloaded(src, "ml", Vec::new(), Vec::new(), Vec::new())
+            .expect("compile_with_preloaded");
+        assert_eq!(
+            a.component, b.component,
+            "empty-preload compile equals plain compile"
+        );
+    }
+
+    // NOTE: the mismatched-array-length guard (returns a `JsError`) is not unit-tested here — a `JsError`
+    // cannot be constructed on a non-wasm host target (wasm-bindgen panics), so the Err path is only
+    // exercisable in a wasm environment. The length check itself is a plain `if` above the JS boundary.
+
+    #[test]
+    fn compile_with_preloaded_names_a_broken_library_module() {
+        // A preloaded module that fails to parse → a codeless error diagnostic NAMING the module, so the
+        // user sees which library broke rather than a mysterious unbound-name cascade in their own model.
+        let model = "import { answer } from \"lib\"\ndef main() = answer()\nexport { main }";
+        let out = compile_with_preloaded(
+            model,
+            "ml",
+            vec!["lib".to_string()],
+            vec!["def answer( = ".to_string()], // malformed
+            vec!["ml".to_string()],
+        )
+        .expect("compile_with_preloaded runs");
+        assert!(
+            out.component.is_none()
+                && out
+                    .diagnostics
+                    .iter()
+                    .any(|d| d.error && d.message.contains("preloaded module `lib`")),
+            "a broken preloaded module is reported by name, got: {:?}",
+            out.diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
         );
     }
 }

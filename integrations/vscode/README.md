@@ -15,6 +15,7 @@ A thin LSP client that launches **`cdz lsp`** (the compiler's own Language Serve
 - **document outline** — the symbol tree / breadcrumb (Ctrl-Shift-O);
 - **workspace symbol search** — jump to any top-level declaration across the open files (Ctrl-T);
 - **folding** — collapse each multi-line top-level declaration from the gutter;
+- **expand selection** — grow the selection out along syntax boundaries (Ctrl-Shift-→);
 - **quick-fixes** — the compiler's own structured repairs (the same ones `cdz fix` applies), one click
   from the lightbulb.
 

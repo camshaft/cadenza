@@ -46,6 +46,37 @@ pub unsafe extern "C" fn compile(ptr: u32, len: u32) -> u64 {
     (rptr << 32) | rlen
 }
 
+/// Allocate `len` bytes in this module's linear memory and return the pointer — the host calls this FIRST to
+/// get a region to write the AST bytes into (the host can't allocate guest memory itself). The classic wasm
+/// host-alloc protocol: host `alloc(n)` → ptr, host writes n bytes at ptr, host `compile(ptr, n)`. The block
+/// is leaked (forgotten) so it stays live across the host's write + the `compile` call; the host frees it with
+/// [`dealloc`] after. Returns 0 on allocation failure.
+///
+/// # Safety
+/// The returned pointer is valid for `len` bytes until [`dealloc`] is called with the same `ptr`/`len`.
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub extern "C" fn alloc(len: u32) -> u32 {
+    let mut buf = Vec::<u8>::with_capacity(len as usize);
+    let ptr = buf.as_mut_ptr() as u32;
+    std::mem::forget(buf); // leak: the host owns it until dealloc
+    ptr
+}
+
+/// Free a region previously returned by [`alloc`] (or a result region returned by [`compile`], whose length
+/// is `(packed & 0xffff_ffff)`). The host calls this to release the AST-input region after `compile` and the
+/// result region after reading it — so the compiler wasm doesn't leak across many compiles in a long-lived
+/// kernel.
+///
+/// # Safety
+/// `ptr`/`len` must be a region returned by [`alloc`]/[`compile`] and not already freed.
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub unsafe extern "C" fn dealloc(ptr: u32, len: u32) {
+    // Reconstitute the Vec with the SAME capacity `alloc` used (it allocated `len` capacity) and drop it.
+    let _ = Vec::from_raw_parts(ptr as *mut u8, 0, len as usize);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

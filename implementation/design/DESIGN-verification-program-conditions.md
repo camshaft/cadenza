@@ -523,6 +523,20 @@ scopes) and SETS `file_scope` — so a linked member's `Thm` opacity works NATUR
 - **FORGE-VECTOR pin (with a1):** a Rust `#[test]` that a bundled-kernel `Thm.MkThm(...)` outside the kernel
   file is CDZ0214 (opacity holds through the linked-member path) — the regression guard for §A1.
 
+**⚠️ a3 ROOT-CAUSE FIX (2026-07-17) — the bundled kernel's ROOT must be a BARE `(do …)`, NOT `(module …)`.**
+Probing the a1 link path (flip `VERIFY_KERNEL_LINKING_ENABLED` → gate) surfaced a latent bug: the a1 asset
+`verify_kernel.cdz` was authored as `(module "verify-kernel" (do …))`, but `link_inputs` (compile.rs) already
+supplies the module NAME externally (`VERIFY_KERNEL_NAME`) to `link::link`, exactly as the corpus package
+driver keys a library file by its FILENAME. A doubly-wrapped `(module … (do …))` root makes `link::top_items`
+(link.rs) unwrap only the OUTER module to a single `[(do …)]` item — so every `type`/`def`/`export` inside is
+invisible as a top-level item. Result: imports of the kernel resolve to nothing (`does not export add`), and
+the kernel's own type annotations go unbound (`unbound Term`/`Thm`) — the linked program fails to compile
+(pass→todo regression on the two `@test @ensures` corpus cases). FIX: reshape the asset to a bare `(do …)`
+root (module name supplied externally). With the reshape, flipping the flag is fully behavior-neutral —
+the linked kernel is dead-code-eliminated to a byte-identical component until a3 wires an actual consumer, and
+the gate stays green (3712/9/0, 0 regress) with linking ON. The flag stays `false` on trunk (the flip belongs
+WITH the a3 discharge wiring, per the sequencing below); the reshape lands first as the enabling bugfix.
+
 **Sequencing:** a1 (link the kernel as a package member) is the foundation — the first real slice of the
 unblocked arc. Then a2 (exports in scope — mostly free via linkage) → a3 (compile-time-eval wiring = b4c) →
 b3 (the oracle) → the

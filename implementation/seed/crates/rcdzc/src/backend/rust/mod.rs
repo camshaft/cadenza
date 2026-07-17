@@ -487,16 +487,19 @@ fn emit_signature(
             result.render_name()
         )));
     }
-    // A DIVERGING body — its core is provably `Core::Trap` (a bare `(trap …)`, a zero-arm match on a
-    // `Never` scrutinee, a call reduced to one) — has a `Never` result type (a fresh `Ty::Var`/`Any`) with
-    // no native Rust rep, but NO value ever returns: the body `panic!`s. Emit Rust's NEVER type `!` as the
-    // return type (`fn main() -> ! { panic!(…) }` is valid), mirroring the wasm backend which crosses such
-    // an export as a no-result function (`Core::Trap` guard there too). Checked BEFORE the `rust_type`
-    // decline so a diverging `Any`/`Var` result is not misdiagnosed as an unrepresentable type. Gated on
-    // `Core::Trap` specifically — a genuinely-unconstrained (non-diverging) result var still declines, as it
-    // has no defined value to return.
-    let diverges = types::rust_type(result).is_none()
-        && matches!(crate::lower::core_of(db, body), crate::core::Core::Trap);
+    // A DIVERGING body — one that provably never returns a value (a bare `(trap …)`, a zero-arm match on a
+    // `Never` scrutinee, OR a compound whose every path diverges: a both-branches-diverge `(if b (trap)
+    // (trap))`, an all-arms-diverge match, a `let`/`seq` whose tail diverges) — has a `Never` result type
+    // (a fresh `Ty::Var`/`Any`) with no native Rust rep, but NO value ever returns: the body `panic!`s on
+    // every path. Emit Rust's NEVER type `!` as the return type (`fn main() -> ! { … }` is valid),
+    // mirroring the wasm backend which crosses such an export as a no-result function. Uses the SHARED
+    // `body_diverges` predicate (the Core-level divergence check the wasm backend also drives — ONE
+    // definition, so the two backends agree on what diverges) instead of matching a bare `Core::Trap`,
+    // which missed a both-diverge `if`/match (v-wasm-opt + breaker's Never-in-emit-position family).
+    // Checked BEFORE the `rust_type` decline so a diverging `Any`/`Var` result is not misdiagnosed as an
+    // unrepresentable type. A genuinely-unconstrained (non-diverging) result var still declines below.
+    let diverges =
+        types::rust_type(result).is_none() && crate::backend::wasm::select::body_diverges(db, body);
     // An ILL-FORMED integer width in the RESULT type is a REJECT (CDZ0302), not a decline — the twin of
     // the parameter check above, matching the wasm target (`(: 5 (Int -8))` → CDZ0302, not a codeless
     // decline). NOT for a DIVERGING body: it produces no value, so a `!` return is legitimate regardless of

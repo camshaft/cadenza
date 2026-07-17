@@ -53,10 +53,12 @@
 /// no `∀`-annotation is needed because the new type is INFERRED from the (unannotated) closure / tuple, never
 /// WRITTEN — so the "no-∀-binder-in-annotation" surface gap does not bite here.
 ///
-/// NOT YET (residual inference gap, filed + routed to v-inference):
-///   - An UNUSED/identity closure (`fn (s) => s`) at TWO element types still declines (the closure-body-
-///     result-from-domain multi-instantiation residual — single-type identity works). The closures here all
-///     USE their parameter, so this does not bite in practice.
+/// RESOLVED (was a residual inference gap; fixed upstream by rcdzc `565f6d184` "tie an unannotated closure's
+/// aggregate-result elements to its domain"):
+///   - An UNUSED/identity closure (`fn (s) => s`) at TWO element types now COMPOSES (it previously declined
+///     on the closure-body-result-from-domain multi-instantiation residual). Verified: `gmap` with `fn(x)=>x+1`
+///     at Int AND `fn(s)=>s` at String in one program runs. So the "closures must USE their parameter" caveat
+///     below no longer holds — identity/pass-through closures are fine now.
 ///
 /// KNOWN EDGE this module steers around (NOT Part C, NOT a miscompile):
 ///   - NULLARY generic producer (`empty : Unit -> GIter(a)`) has NO argument to tie its element to, so a use
@@ -129,11 +131,10 @@ def last(it) = match it with
     | GIter.Cons(_, _) => last(rest))
 
 /// CLOSURE-FREE TRANSFORMERS (build a new `GIter(a)`; no closure threaded — the Part C shape) -----------
-/// These need NO closure, so they compose per element type today. Transformers that thread a closure
-/// (`map`/`filter`) are gated on a SEPARATE inference gap — a recursive-generic function threading a
-/// CLOSURE through its recursion still declines at ≥2 element types (filed
-/// `mlrepro-decline-generic-recursive-transformer-threads-closure.cdz`, root-caused by v-inference in
-/// `type_specialize`; the fix is in progress). They land the tick it merges.
+/// These need NO closure, so they compose per element type. (Closure-threading transformers — `map`/`filter`
+/// etc. below — once needed a SEPARATE recursive-generic-transformer closure tie; that LANDED, and the
+/// later closure-aggregate-result residual landed too (rcdzc `565f6d184`), so they now compose at ≥2 element
+/// types including identity/aggregate-result closures.)
 
 /// `chain(a, b)` — concatenate two iterators: yield all of `a`, then all of `b`. Self-recursive over `a`;
 /// the `Nil` base returns `b` (same element type), so the result element ties to the inputs'.
@@ -235,9 +236,9 @@ def interleave(a, b) = match a with
 /// CLOSURE-STORING TRANSFORMERS & CONSUMERS (thread a closure through the recursion) -------------------
 /// Unblocked by the recursive-generic-transformer closure tie (rcdzc "tie a recursive-generic transformer's
 /// closure domain to the mapped element"): a recursive-generic function that threads a closure now
-/// monomorphizes per element type, so these compose at ≥2 element types. The closure's parameter must be
-/// USED (an unused/identity closure like `fn (s) => s` still declines — the residual
-/// closure-body-result-from-domain gap v-inference noted).
+/// monomorphizes per element type, so these compose at ≥2 element types. (An unused/identity closure like
+/// `fn (s) => s` USED to decline on a residual gap, now RESOLVED by rcdzc `565f6d184` — identity/pass-through
+/// closures compose fine now.)
 
 /// `map(it, f)` — apply `f : a -> b` to every element, yielding a `GIter(b)`. Threads the closure `f`.
 /// ELEMENT-CHANGING: `b` may differ from `a` (int→Bool, int→String — see the tests); it is INFERRED from
@@ -303,9 +304,8 @@ def count-if(it, p) = match it with
 /// `map` + `take-while` in one closure). Threads `f`; ELEMENT-CHANGING (`b` from the `Some` payload, inferred
 /// — int→int, String→int in the tests). The `None` stop branch is a bare `GIter.Nil(unit)` (like
 /// `take-while`), tied by the rigid-biased if-join, so it composes at ≥2 element types.
-/// CAVEAT (same as `map`): the `Some` payload must TRANSFORM the element — an IDENTITY payload `Some(x)`
-/// (`b == a`) trips the residual closure-body-result-from-domain gap and collides at ≥2 instantiations
-/// (CDZ0201). Use a transforming payload (the tests do).
+/// (Formerly an identity payload `Some(x)` (`b == a`) tripped a residual closure-body-result gap at ≥2
+/// instantiations; RESOLVED by rcdzc `565f6d184` — an identity `Some(x)` payload composes fine now too.)
 def map-while(it, f) = match it with
   | GIter.Nil(_) => GIter.Nil(unit)
   | GIter.Cons(h, rest) => (match f(h) with
@@ -872,9 +872,8 @@ def map-while-all-some-maps-every-element-strings() =
 
 @test
 def map-while-first-none-is-empty() =
-  // NB: the Some payload is element-CHANGING (`x * 10`), NOT the identity `Some(x)`. An identity payload
-  // trips the known residual closure-body-result-from-domain gap (v-inference's `fn(s) => s` residual) —
-  // at ≥2 instantiations it collides (CDZ0201) — so map-while, like map, wants a USED/transforming closure.
+  // (The `x * 10` payload is incidental — an identity `Some(x)` also composes now that rcdzc `565f6d184`
+  // resolved the former identity-closure residual; kept as-is since it still exercises the first-None stop.)
   if count(map-while(from-list([5, 1, 2]), fn(x) => if x < 3 then Option.Some(x * 10) else Option.None(unit))) == 0
   then unit else trap("map-while first element None is empty")
 

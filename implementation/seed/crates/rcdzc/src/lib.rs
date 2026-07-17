@@ -57,6 +57,9 @@ pub mod quote;
 // `(eval AST)` desugar — the INVERSE of quote reification: reconstruct the source form an `Ast` value
 // denotes and splice it in, so `(eval (quote (+ 1 2)))` folds to `3` through the ordinary path.
 pub mod eval_ast;
+// Verification-annotation ENFORCEMENT (Inc-b (D), test-tier) — rewrite a PLAIN `@requires` so the def body
+// checks the precondition at body-entry and traps on violation. Runs before `proptest_gen`/`strip_annotations`.
+pub mod verify_enforce;
 // `@param` sidecar — scan every `@param(widget: …) name : Type` site and GENERATE a `Param` effect with
 // one typed accessor op per param (the runtime-parameter host-effect codegen; v-effects binds it, v-syntax
 // parses the annotation). Runs before the top-level scan so the generated effect is picked up as a decl.

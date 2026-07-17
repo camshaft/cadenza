@@ -3459,16 +3459,31 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
             // `non_exhaustive_sum_reject` with an empty `tested` set — so a zero-arm match gets the SAME
             // "add the missing arms" fix a partially-covered one does (the full variant set as
             // `(V (trap "TODO: V"))` arms), not just a dead-end message. A non-sum inhabited scrutinee (a
-            // bare scalar with zero arms) keeps the generic message — its cover is a wildcard, and a bare
-            // `(match n)` is a rarer malformation.
+            // bare scalar with zero arms) is covered by a single wildcard `_` arm, so carry that "add a `_`
+            // (trap TODO) arm" fix (the open-sum analogue) — both for the actionable route to a fix and,
+            // critically, so a CALLED def's zero-arm scalar match dedups: the def-body copy's fix edits the
+            // real (user) match form while the inlined call-site copy's fix targets the SYNTHESIZED reduced
+            // match, and `dedup_faults`' `user_fix_keys` rule drops the non-user copy (a fix-LESS reject
+            // gave that rule no discriminator, so both leaked as two `error:` lines for one defect). Falls
+            // back to the fix-less message when the match form has no parent node (defensive; unreachable
+            // for a real `(match x)`).
             _ => match &scrut_ty {
                 crate::ty::Ty::Sum { decl, .. } | crate::ty::Ty::Nominal { decl, .. } => {
                     Core::Poison(non_exhaustive_sum_reject(db, *decl, &[], scrutinee))
                 }
-                _ => Core::Poison(Reject::coded(
-                    Code::NonExhaustive,
-                    "a zero-arm match is exhaustive only on an uninhabited (Never) scrutinee; this scrutinee has values a case must cover",
-                )),
+                _ => {
+                    let reject = Reject::coded(
+                        Code::NonExhaustive,
+                        "a zero-arm match is exhaustive only on an uninhabited (Never) scrutinee; this scrutinee has values a case must cover",
+                    );
+                    Core::Poison(match db.parent_of(scrutinee) {
+                        Some(match_form) => reject.with_fix(Fix::insert_arms_heuristic(
+                            match_form,
+                            vec!["(_ (trap \"TODO\"))".to_string()],
+                        )),
+                        None => reject,
+                    })
+                }
             },
         };
     }

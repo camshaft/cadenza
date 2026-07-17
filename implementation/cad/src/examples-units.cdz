@@ -1,0 +1,68 @@
+/// examples-units.cdz — worked CAD models authored ENTIRELY in UNITS, end-to-end (Vec3→Qty stage 3+).
+///
+/// The operator's "track units correctly end to end" made concrete: these models are built with the
+/// `units-model` constructors (`cube-m`/`sphere-m`/`cylinder-m`/`difference-m`/`translate-m`), so every
+/// dimension is a length `Qty[meter]` — the model's TYPE is `Solid(Qty[meter])`, and a bare number (or a
+/// non-length) is a compile-time error. `lower` unwraps the whole CSG tree to the bare-`Rational`-meters
+/// `Solid(Rational)` that `bounding-box` + the mesh drivers consume (units in the model, bare meters on the
+/// wire; f64 only at the manifold FFI edge). Mixing units is EXACT: a 1-metre body with 1/4-inch holes
+/// carries `1` and `127/20000` m with zero rounding — the whole point of Rational+Qty.
+///
+/// This is the units-everywhere SHOWCASE on the stage-3 model (vs examples-exact.cdz's bare-Rational models
+/// and examples-typed.cdz's S2b boundary-typed `Vec3m` models — this one is the full `Solid(Qty[meter])`).
+
+@!default-fraction Rational
+
+import { Solid, Vec3, bounding-box, aabbr-size, v3r-x, v3r-y, v3r-z } from "exact"
+import { meters, cube-m, sphere-m, cylinder-m, difference-m, translate-m, lower } from "units-model"
+
+/// A length in inches, converted to an exact Rational-METER `Qty` at the boundary (1 inch = 127/5000 m).
+/// This is how a model authored with imperial fasteners stays EXACT: the language converts inch→meter over
+/// Rational, so the model carries the exact meter magnitude, no float.
+def inches(n: Rational) =
+  Qty.of(Qty.value(Unit.in(Unit.of(#"meter"), Qty.of(n, Unit.of(#"inch")))), Unit.of(#"meter"))
+
+/// ---- worked models: authored in units (Solid(Qty[meter])), lowered for bbox/mesh --------------------
+
+/// A 2m × 1m × 0.5m plinth — authored in meters. The model's type is Solid(Qty[meter]).
+def plinth-m() = cube-m(meters(2), meters(1), meters(1 / 2))
+
+/// A drilled block: a 1m cube with a central Ø(1/2-inch) bore — MIXED units (metric body, imperial bore),
+/// exact. The bore radius is 1/4 inch = 127/20000 m exactly.
+def drilled-block-m() =
+  difference-m(cube-m(meters(1), meters(1), meters(1)), cylinder-m(meters(2), inches(1 / 4)))
+
+/// A washer: outer cylinder minus a concentric bore, both meter lengths.
+def washer-m() = difference-m(cylinder-m(meters(1 / 10), meters(1)), cylinder-m(meters(1 / 10), meters(1 / 2)))
+
+/// ============================ @test suite (units-authored models → lower → exact bbox) ============================
+
+@test
+def plinth-authored-in-meters-has-exact-bbox() =
+  // Authored as Solid(Qty[meter]); lower → Solid(Rational); bbox is exactly 2 × 1 × 1/2 m (the meter mags).
+  let sz = aabbr-size(bounding-box(lower(plinth-m()))) in
+  if v3r-x(sz) == 2 / 1 then
+    (if v3r-y(sz) == 1 / 1 then (if v3r-z(sz) == 1 / 2 then unit else trap("z")) else trap("y"))
+  else trap("x")
+
+@test
+def drilled-block-mixes-metric-and-imperial-exactly() =
+  // THE showcase: a 1m cube (metric) drilled with a 1/4-inch bore (imperial) — one model, both exact. The
+  // bore is internal so the bbox is the 1m cube; the point is the model type-checks with mixed-unit inputs
+  // and the imperial radius carried exactly (1/4 inch = 127/20000 m).
+  let sz = aabbr-size(bounding-box(lower(drilled-block-m()))) in
+  if v3r-x(sz) == 1 / 1 then unit else trap("drilled block bbox is the 1m cube")
+
+@test
+def an-imperial-bore-radius-is-exact-meters() =
+  // 1/4 inch = 127/20000 m EXACTLY (1 inch = 127/5000, /4 = 127/20000). No float — the reason Rational+Qty
+  // exist. `inches(1/4)` is a meter Qty; its magnitude is that exact fraction.
+  if Qty.value(inches(1 / 4)) == 127 / 20000 then unit else trap("1/4 inch = 127/20000 m exactly")
+
+@test
+def washer-outer-box-is-its-diameter() =
+  // outer radius 1m → Ø2m in x/y; thickness 1/10 m in z. Authored in units, lowered, exact.
+  let sz = aabbr-size(bounding-box(lower(washer-m()))) in
+  if v3r-x(sz) == 2 / 1 then (if v3r-z(sz) == 1 / 10 then unit else trap("z")) else trap("x")
+
+export { inches, plinth-m, drilled-block-m, washer-m }

@@ -365,6 +365,123 @@ pub(super) fn body_loops(db: &mut Db, self_def: usize) -> bool {
     !loop_group(db, self_def).is_empty()
 }
 
+/// Whether a call to `callee` (reaching the async `Core::Call` emit arm) needs a `Box::pin` indirection —
+/// i.e. whether `callee`'s emitted `async fn` future is SELF-REFERENTIAL (infinitely sized), which Rust
+/// requires be broken by pinning at the recursive call (E0733).
+///
+/// The future is infinite iff `callee` can transitively reach ITSELF through AWAITED calls. The emitted
+/// await-call graph is ALL `Core::Call` edges EXCEPT a def's TAIL calls to members of its OWN loop group —
+/// those the backend emits as a `continue` (a loop iteration), not an awaited call, so they do NOT grow
+/// the future. This is the crucial distinction the operator's directive turns on:
+///   - a NON-recursive callee → no cycle → NO pin (the over-boxing to fix: every leaf/helper was pinned);
+///   - a FULLY tail-recursive callee (loop-transformed, e.g. an accumulator `sum-to`) → its only self-edge
+///     is a tail-`continue`, pruned → no awaited cycle → NO pin (the future is a finite `loop`);
+///   - a callee with a NON-TAIL recursive call (e.g. `remove`, whose self-call is an operand of `push`,
+///     inside a loop that couldn't eliminate it) → an awaited self-edge remains → a cycle → PIN (E0733
+///     otherwise). This is exactly the operator's "truly recursive async where we couldn't loop it".
+///
+/// Worklist over the pruned graph from `callee`; a `seen` set bounds it, so a cycle terminates. Reads the
+/// SAME edge relations the emitter uses (`layout::callees_of` for all edges, `tail_callees` + `loop_group`
+/// for the pruned tail edges), so the pin decision matches what is actually emitted.
+fn call_needs_pin(db: &mut Db, callee: usize) -> bool {
+    // The AWAITED callees of `def` — every call the emitter renders as an awaited `callee(…).await`, as
+    // opposed to a loop `continue`. The emitter turns a call into a `continue` ONLY when it is a TAIL call
+    // to a member of `def`'s own loop group; EVERY other call (a non-tail call anywhere, or a tail call to
+    // a non-member) is awaited. Crucially a callee can appear in BOTH positions — `rem`'s tail self-call
+    // is a `continue` but its NON-tail self-call (an operand of `push`) is awaited — so we must classify by
+    // POSITION, not by callee-set membership (a set-based prune would wrongly drop `rem` entirely). Walk
+    // the body collecting all calls, marking tail-position ones, and keep a callee as awaited if it has ANY
+    // non-tail occurrence OR is a tail call to a non-loop-member.
+    fn awaited_callees(db: &mut Db, def: usize) -> Vec<usize> {
+        let body = match db.defs[def].body {
+            Some(b) => b,
+            None => return Vec::new(),
+        };
+        let group = loop_group(db, def);
+        let all = crate::layout::callees_of(db, body);
+        if group.is_empty() {
+            return all; // not a loop → no call is a `continue` → every call is awaited.
+        }
+        let mut tail = Vec::new();
+        tail_callees(db, body, &mut tail);
+        // A callee is awaited unless ALL its occurrences are tail calls to a loop-group member. It has a
+        // non-tail occurrence iff it is called at all AND is not SOLELY a tail-member call — approximated
+        // as: keep it awaited when it is NOT a group member, OR it appears in a non-tail position. We
+        // detect a non-tail occurrence by the callee being in `all` but its tail-only status being false.
+        let mut nontail = Vec::new();
+        nontail_callees(db, body, &mut nontail);
+        all.into_iter()
+            .filter(|c| nontail.contains(c) || !(group.contains(c) && tail.contains(c)))
+            .collect()
+    }
+    // The callees appearing in a NON-tail position (an operand, a call argument, a scrutinee) — the calls
+    // the emitter always awaits (never a `continue`). The complement of `tail_callees`'s tail positions:
+    // descend tail-transparent forms (if/let/match) NOT collecting the tail slot, and collect EVERY call
+    // reached through a non-tail child (operands of arith, args of a call, etc.).
+    fn nontail_callees(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
+        match core_of(db, id) {
+            // A call node: its own callee is in tail position HERE (handled by the caller's descent), but
+            // its ARGS are non-tail — collect calls inside them.
+            Core::Call { args, .. } => {
+                for a in args {
+                    collect_all_calls(db, a, out);
+                }
+            }
+            // Tail-transparent forms: the cond/binding-values are non-tail; the branch/body slots are tail
+            // (recurse tail-transparently). A `let` binding value is non-tail.
+            Core::If {
+                cond, then_, else_, ..
+            } => {
+                collect_all_calls(db, cond, out);
+                nontail_callees(db, then_, out);
+                nontail_callees(db, else_, out);
+            }
+            Core::Let { bindings, body } => {
+                for (_, v) in bindings {
+                    collect_all_calls(db, v, out);
+                }
+                nontail_callees(db, body, out);
+            }
+            Core::Match { arms, .. } => {
+                for a in arms {
+                    nontail_callees(db, a.body, out);
+                }
+            }
+            Core::MatchList { arms, .. } => {
+                for a in arms {
+                    nontail_callees(db, a.body, out);
+                }
+            }
+            // Any other form is a non-tail expression: every call inside it is awaited.
+            other => {
+                let _ = other;
+                collect_all_calls(db, id, out);
+            }
+        }
+    }
+    // Every callee reached anywhere under `id` (all positions) — a call in a non-tail expression is
+    // awaited regardless of nesting, so this gathers the full set to mark as non-tail.
+    fn collect_all_calls(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
+        for c in crate::layout::callees_of(db, id) {
+            if !out.contains(&c) {
+                out.push(c);
+            }
+        }
+    }
+    let mut seen: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    let mut work = awaited_callees(db, callee);
+    while let Some(c) = work.pop() {
+        if c == callee {
+            return true; // an awaited path returns to `callee` — the future is self-referential.
+        }
+        if !seen.insert(c) {
+            continue;
+        }
+        work.extend(awaited_callees(db, c));
+    }
+    false
+}
+
 /// The tail-recursion group `self_def` belongs to — the members compiled into ONE shared `loop`, with
 /// `self_def` FIRST (it enters the loop at its own `which = 0`). Empty = no loop. Mirrors the wasm
 /// backend's `mutual_loop_group`:
@@ -1028,11 +1145,18 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             // β-copied do-local worker names ITS copy (`fac_7`), not a sibling copy's identically-named fn.
             let ident = super::fn_ident(db, ctx.layout, callee);
             if ctx.mode.is_async() {
-                // Async/gas mode: thread `env` as the callee's first argument, and `Box::pin(…).await`
-                // the call. The pin is what makes a RECURSIVE `async fn` well-sized (a recursive future
-                // is otherwise infinite); a non-recursive call inlines upstream and never reaches here,
-                // so this only ever wraps a genuine recursive/mutual call. `env` is the shared gas/yield
+                // Async/gas mode: thread `env` as the callee's first argument. The call is wrapped in
+                // `Box::pin(…).await` ONLY when the callee's async future is SELF-REFERENTIAL — a
+                // RECURSIVE callee (it transitively calls back to itself) that the backend did NOT
+                // loop-transform. Rust sizes an `async fn`'s future at compile time; a recursive future
+                // is infinite and MUST be pinned at the recursive call, but a NON-recursive callee's
+                // future is finite and needs no box, and a LOOP-TRANSFORMED recursive callee is finite
+                // too (its self-call became a `continue`, not an awaited future). Boxing EVERY call — the
+                // prior behaviour — over-allocated on every leaf/helper/loop call (operator: "boxing
+                // functions a lot that it doesn't need to be … only box on truly recursive async
+                // functions where we couldn't transform it into a loop"). `env` is the shared gas/yield
                 // cell each call reborrows.
+                let needs_pin = call_needs_pin(db, callee);
                 //
                 // A NESTED async call — one whose result is an ARGUMENT to this call (`cnt(env, mk(env,
                 // k).await)`) — would borrow `env` mutably TWICE at once: Rust reborrows `env` for the
@@ -1044,6 +1168,16 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                 // reborrow completes (its `.await` releases it) before the next statement, so no two are
                 // ever live together. Args with no `.await` (scalars, field reads) stay inline.
                 let needs_hoist = rendered.iter().any(|a| a.contains(".await"));
+                // Render `<callee>(<env>, <args>).await`, wrapped in a fully-qualified
+                // `::std::boxed::Box::pin(…)` ONLY when `needs_pin` (a recursive, non-loop callee). The
+                // `Box` path is fully qualified so a user sum named `Box` cannot shadow it.
+                let call_of = |args: String| -> String {
+                    if needs_pin {
+                        format!("::std::boxed::Box::pin({ident}({args})).await")
+                    } else {
+                        format!("{ident}({args}).await")
+                    }
+                };
                 if needs_hoist {
                     let mut binds = String::new();
                     let mut call_args = Vec::with_capacity(rendered.len());
@@ -1062,9 +1196,7 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                     } else {
                         format!("{env_param}, {}", call_args.join(", "))
                     };
-                    Ok(format!(
-                        "{{ {binds}::std::boxed::Box::pin({ident}({args})).await }}"
-                    ))
+                    Ok(format!("{{ {binds}{} }}", call_of(args)))
                 } else {
                     let env_param = super::ENV_PARAM;
                     let args = if rendered.is_empty() {
@@ -1072,8 +1204,7 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                     } else {
                         format!("{env_param}, {}", rendered.join(", "))
                     };
-                    // Fully-qualify `::std::boxed::Box::pin` so a user sum named `Box` cannot shadow it.
-                    Ok(format!("::std::boxed::Box::pin({ident}({args})).await"))
+                    Ok(call_of(args))
                 }
             } else {
                 Ok(format!("{ident}({})", rendered.join(", ")))
@@ -2410,6 +2541,23 @@ fn emit_arith(
     env: &Env,
     ctx: &Ctx,
 ) -> Result<String, Reject> {
+    // A DIVERGING OPERAND (a `(trap …)` value, or any provably-diverging sub-expression — reaching here via
+    // a `let`-binding `(let ((x (trap))) (+ x 1))` folded to a `Core::Trap` operand, or an inlined call-arg
+    // `(f (trap))` substituting the trap for the param) makes the WHOLE arithmetic dead: the operand's
+    // `panic!` aborts before the op runs. Emitting the op verbatim yields `(panic!(…)).checked_add(1)` — a
+    // method call on Rust's `!`, which E0599s ("no method `checked_add` for type `!`"): `!` coerces to a
+    // value but is not a method receiver. So emit ONLY the diverging computation (the op is unreachable),
+    // matching the wasm backend where the trap's `unreachable` aborts before the add is ever executed.
+    // Cadenza evaluates lhs THEN rhs: if lhs diverges, rhs never runs → emit lhs alone; if lhs is fine but
+    // rhs diverges, lhs still runs (for effect) then rhs aborts → `{ let _ = <lhs>; <rhs> }`.
+    if crate::backend::wasm::select::body_diverges(db, lhs) {
+        return emit(db, lhs, env, ctx);
+    }
+    if crate::backend::wasm::select::body_diverges(db, rhs) {
+        let l = emit(db, lhs, env, ctx)?;
+        let r = emit(db, rhs, env, ctx)?;
+        return Ok(format!("{{ let _ = {l}; {r} }}"));
+    }
     // A FLOAT arithmetic op (`+.`/`-.`/`*.`/`/.`) → the native Rust `+`/`-`/`*`/`/` on `f64`/`f32`. IEEE,
     // never traps (no `checked_*`/overflow panic, unlike the integer arith below) — matches the wasm
     // machine op. Both operands share the op's float type, so they emit as-is (no width grounding).

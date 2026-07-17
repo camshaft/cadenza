@@ -30,13 +30,29 @@ pub struct Tick {
 /// genesis program yet (the CLI must inject one first) or the interpret run fails. `runtime` is the value-heap
 /// wasm (resolve via [`crate::kernel::find_runtime_for`] on the compiled program; a caller skips if absent).
 pub fn tick(log: &impl Log, event_kind: i64, runtime: Vec<u8>) -> Result<Tick> {
-    let events = log.tail(0)?;
-    let program = crate::boot::latest_program(&events).ok_or_else(|| {
-        anyhow!("no genesis program in the log (CLI must inject one before the daemon runs)")
-    })?;
+    let program = latest_or_err(log)?;
     let run = crate::kernel::run_interpret(&program, event_kind, runtime)?;
     Ok(Tick {
         op_count: run.op_count,
+    })
+}
+
+/// Run ONE daemon step that EXECUTES the ops (not just counts them): same genesis lookup as [`tick`], but
+/// drives the PERFORMING executor ([`crate::kernel::run_interpret_performing`], K1c) so each host-op the
+/// interpret schedules fires a real `Prim.run` perform (the exec/http/log primitives, in-program-mocked at
+/// this rung). Returns the number of ops PERFORMED. This is the daemon's real execution step — the counting
+/// [`tick`] is the projection/inspection variant; a live daemon uses this to actually run the plan. (Binding
+/// `Prim` to the real host primitives instead of the mock is the K1c→host-primitive rung.)
+pub fn tick_performing(log: &impl Log, event_kind: i64, runtime: Vec<u8>) -> Result<i64> {
+    let program = latest_or_err(log)?;
+    crate::kernel::run_interpret_performing(&program, event_kind, runtime)
+}
+
+/// The latest genesis `program` source in `log`, or a loud error if none (the CLI must inject one first).
+fn latest_or_err(log: &impl Log) -> Result<String> {
+    let events = log.tail(0)?;
+    crate::boot::latest_program(&events).ok_or_else(|| {
+        anyhow!("no genesis program in the log (CLI must inject one before the daemon runs)")
     })
 }
 
@@ -132,6 +148,40 @@ mod tests {
         assert_eq!(
             t.op_count, 1,
             "the daemon ran the UPDATED genesis (kind=1 → [Noop] → 1), not the original (would be 2)"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn tick_performing_executes_each_op_not_just_counts() {
+        // The daemon's real execution step: tick_performing drives the PERFORMING executor, so each op the
+        // genesis interpret schedules fires a real Prim.run perform. kind=1 → [Append, Exec] → 2 performs.
+        let (path, mut log) = temp_log();
+        crate::boot::inject_genesis(&mut log, GENESIS).unwrap();
+        let store_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let provider = match crate::kernel::compile_interpret_provider(GENESIS) {
+            Ok(p) => p,
+            Err(e) => panic!("genesis compiles: {e}"),
+        };
+        let Some(runtime) = crate::kernel::find_runtime_for(&provider, store_root) else {
+            eprintln!("[cdz-kernel::daemon] runtime absent/stale; skipping tick_performing");
+            return;
+        };
+        let performed =
+            tick_performing(&log, 1, runtime).expect("the daemon executes the genesis's ops");
+        assert_eq!(
+            performed, 2,
+            "kind=1 → [Append, Exec] → each op fired a real perform → 2"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn tick_performing_without_a_genesis_is_a_loud_error() {
+        let (path, log) = temp_log();
+        assert!(
+            tick_performing(&log, 1, Vec::new()).is_err(),
+            "no genesis → tick_performing errors (like tick)"
         );
         let _ = std::fs::remove_file(&path);
     }

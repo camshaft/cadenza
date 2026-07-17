@@ -645,6 +645,20 @@
   (call   main (: false Bool) (: 5 Int64)) (output (: 1 Int64))
   (call   main (: false Bool) (: 2 Int64)) (output (: 0 Int64)))
 
+(case "chained and short-circuits through nesting: a false outer-left skips a NESTED trapping operand"
+  (doc    "Short-circuit is RECURSIVE, not one-deep: an outer `and` whose left is false skips its ENTIRE
+           right operand — including a NESTED `and` and the trapping divide buried inside it.
+           `(and a (and b (< (/ 10 d) 5)))` with `a`=false, `d`=0: the outer `and` short-circuits on the
+           false `a`, so the whole `(and b (/ 10 0))` subtree is never evaluated — the inner `(/ 10 0)` does
+           NOT trap — and the result is false → 0. The single-level short-circuit cases above (a false left
+           skips ONE trapping operand) cannot catch a shield that only reaches one level: an implementation
+           that evaluated the outer's right operand `(and b …)` eagerly enough to reach the inner divide
+           would trap here. Pins that the connective's laziness propagates through the whole operand
+           subtree, the chained companion of the single-level `and`/`or` short-circuit cases.")
+  (input  (do (def (main (: a Bool) (: b Bool) (: d Int64)) (if (and a (and b (< (/ 10 d) 5))) 1 0)) (export main)))
+  (call   main (: false Bool) (: true Bool) (: 0 Int64))
+  (output (: 0 Int64)))
+
 (case "a sequencing block yields the value of its last form"
   (doc    "Witnesses core-semantics.md #A Sequencing Block Evaluates Its Forms In Order (2nd sentence:
            a block evaluates to its last form's value). The earlier forms are pure here, so the block's

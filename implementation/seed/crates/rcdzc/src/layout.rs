@@ -1225,6 +1225,17 @@ fn collect_cont_callees(db: &mut Db, cont: &crate::core::SumCont, out: &mut Vec<
     }
 }
 
+/// The definitions called from the body at `id` — the emitted call edges (the SAME relation the backend
+/// walks). `pub(crate)` so the Rust async backend can compute its own await-call reachability (a call
+/// needs `Box::pin` only if the callee's async future is self-referential). A `Core::Call` in ANY
+/// position is an edge here; the caller decides which edges are awaited (a loop-group tail edge is a
+/// `continue`, not an await, so the async backend prunes those before its cycle check).
+pub fn callees_of(db: &mut Db, id: StructId) -> Vec<usize> {
+    let mut out = Vec::new();
+    collect_call_callees(db, id, &mut out);
+    out
+}
+
 /// The parameters of definition `def` for INTERNAL emission — each `(name-occurrence, solved-type)`,
 /// in signature order. Same as [`export_params`] but WITHOUT the boundary-representability decline: an
 /// internal (non-exported) callee's parameters need only a CORE machine valtype (i32/i64), not a

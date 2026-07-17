@@ -429,7 +429,26 @@ fn looks_in_ml_subset(src: &str) -> bool {
     if s.contains('"') || s.contains('.') {
         return false;
     }
-    // A multi-definition module / function definition is out of subset (the subset is a single expression).
+    // The canonical corpus MODULE wrapper `(do (def (main) <body>) (export main))` IS in subset — the
+    // ML reader peels a NULLARY `main` to its body. Accept exactly that shape (a `(do (def (main) ` prefix
+    // with a nullary `(main)` signature — the `)` right after `main`); everything else about a module is
+    // out of subset. A PARAMETERIZED main `(def (main (: n …)) …)` has a `(` after `main`, a helper def
+    // before `main`, or a `(fn …)` — none of which the reader supports — so those still fast-decline.
+    let is_nullary_main_module = {
+        let no_ws: String = s.split_whitespace().collect::<Vec<_>>().join(" ");
+        no_ws.starts_with("(do (def (main) ")
+    };
+    if is_nullary_main_module {
+        // A nullary-main module with no nested `(fn …)`/second `(def …)` helper is in subset. Reject a
+        // module that also declares a helper or a lambda (the reader reads only the leading main body).
+        if s.contains("(fn") {
+            return false;
+        }
+        // A second `(def ` beyond the leading `main` def is a multi-definition module — out of subset.
+        return s.matches("(def").count() == 1;
+    }
+    // A bare `(do …)` that is NOT the nullary-main shape, or any top-level definition/module, is out of
+    // subset (the bare-expression subset is a single expression).
     if s.starts_with("(do") || s.contains("(def") || s.contains("(export") || s.contains("(fn") {
         return false;
     }
@@ -494,7 +513,15 @@ fn run_run_ml(args: &RunMlArgs) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let driver_path = src_dir.join("zz-run-ml-driver.cdz");
+    // PER-PROCESS driver filename (pid-stamped), NOT a fixed `zz-run-ml-driver.cdz` (Copilot PR #536):
+    // the differential ML gate runs many corpus cases, often in PARALLEL, each shelling `cdz run-ml`. A
+    // fixed name means concurrent invocations write + delete the SAME file — one run clobbers another's
+    // driver (compiling a wrong/half-written program) or deletes it mid-compile, and an interrupted run
+    // leaves it behind. A pid-stamped name is unique per invocation (matching `compile_run_ml_driver`'s
+    // pid-stamped `tmp_wasm`), so parallel run-ml can't race. It must still live in `src_dir` (a sibling of
+    // the compiler-ml sources) because `import "sread-eval"` resolves RELATIVE TO THE ENTRY FILE'S DIR —
+    // only the FILENAME varies; every return below still removes it.
+    let driver_path = src_dir.join(format!("zz-run-ml-driver-{}.cdz", std::process::id()));
     if let Err(e) = std::fs::write(&driver_path, &driver) {
         eprintln!("{PROG} run-ml: cannot write driver: {e}");
         return ExitCode::FAILURE;
@@ -6909,6 +6936,49 @@ mod tests {
         let err = expand_input_specs(&[dir.to_string_lossy().into_owned()]).unwrap_err();
         assert!(err.contains("no source files"), "got {err}");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn is_source_file_accepts_the_four_source_surfaces_and_rejects_others() {
+        // The recognized source surfaces — same set as the import resolver's precedence. Each accepted.
+        for ext in [".cdz", ".ml", ".sexp", ".sexpr"] {
+            assert!(
+                is_source_file(&format!("app{ext}")),
+                "a bare path ending {ext} is source"
+            );
+            assert!(
+                is_source_file(&format!("lib/nested{ext}")),
+                "a nested path ending {ext} is source"
+            );
+        }
+        // A non-source extension, or none, is not source.
+        assert!(!is_source_file("README.md"), "md is not source");
+        assert!(!is_source_file("notes.txt"), "txt is not source");
+        assert!(!is_source_file("app"), "no extension is not source");
+        // A .sexp-lookalike that does not END with the extension is not source.
+        assert!(
+            !is_source_file("app.sexp.bak"),
+            "a .bak masquerading is not source"
+        );
+    }
+
+    #[test]
+    fn is_source_file_rejects_artifact_specs_even_with_a_source_extension() {
+        // The `kind:`/`name=` discrimination: an explicit artifact spec is passed through raw, NOT
+        // auto-parsed — even when its path has a source extension. So a `:` or `=` anywhere disqualifies it
+        // (the guard that keeps `cdz compile prog.cdz sidecar:d=drive.bin` from parsing the drive spec).
+        assert!(
+            !is_source_file("ast:m=app.cdz"),
+            "a kind:name=path artifact spec is not auto-parsed source"
+        );
+        assert!(
+            !is_source_file("m=app.sexp"),
+            "a name=path spec is not auto-parsed source"
+        );
+        assert!(
+            !is_source_file("spans:x.sexp"),
+            "a kind:path spec is not auto-parsed source"
+        );
     }
 
     #[test]

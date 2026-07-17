@@ -3486,6 +3486,61 @@ mod tests {
     }
 
     #[test]
+    fn display_of_a_rational_value_preserves_the_numeric_value_over_generated_rationals() {
+        // VALUE PRESERVATION of the display Rational transform, swept — the existing display test pins ~10
+        // HAND cases (`1/3`, `8/1`, `-1/2`, …) for no-panic + exact text, but never that the bare form the
+        // display emits has the SAME numeric value as the input over the whole space. A display printer
+        // that rendered `6/4` as `1/2` (or dropped a sign) would pass the totality + hand tests yet be a
+        // real value miscompile in the REPL/notebook. Here: for a generated rational `n/d`, `print_display`
+        // of `(: n/d Rational)` must yield a bare text that PARSES BACK to a rational of value n/d — checked
+        // by cross-multiplication (a·d' == a'·d), independent of whether display reduces or keeps the
+        // spelling. The form is either `p/q` or a bare integer `p` (when the value is integral).
+        //
+        // Parse the display's bare rational text `-p/q` or `-p` into (num, den) BigInts, or None if it is
+        // not that shape (which would itself be a display bug for a Rational value — asserted by the caller).
+        fn parse_bare_rational(s: &str) -> Option<(num_bigint::BigInt, num_bigint::BigInt)> {
+            use std::str::FromStr;
+            let (num_str, den_str) = match s.split_once('/') {
+                Some((n, d)) => (n, d),
+                None => (s, "1"), // an integral value displays as a bare integer
+            };
+            let num = num_bigint::BigInt::from_str(num_str.trim()).ok()?;
+            let den = num_bigint::BigInt::from_str(den_str.trim()).ok()?;
+            Some((num, den))
+        }
+        let mut rng = SplitMix64(0x5a71_0a11_0d15_9107);
+        for _ in 0..4000 {
+            // A random CANONICAL rational n/d — the sign lives on the NUMERATOR and the denominator is
+            // POSITIVE (the value form `cdz-run` emits; a `n/-d` spelling is not a well-formed Rational
+            // leaf — it backtick-escapes — so it is not a value the display path ever receives). Mixed
+            // numerator signs, incl. integral (d|n) and both reduced + reducible spellings.
+            let n = (rng.next() % 201) as i64 - 100; // -100..=100 (sign on the numerator)
+            let d = (rng.next() % 100) as i64 + 1; // 1..=100, always positive (never zero)
+            let src = format!("(: {n}/{d} Rational)");
+            let Ok(arena) = sexpr::read(&src) else {
+                continue;
+            };
+            let shown = print_display(&arena, 80);
+            let (pn, pd) = parse_bare_rational(&shown).unwrap_or_else(|| {
+                panic!(
+                    "display of a Rational must be a bare `p/q` or integer, got {shown:?} for {src}"
+                )
+            });
+            assert!(
+                pd != num_bigint::BigInt::from(0),
+                "display produced a zero denominator: {shown:?} for {src}"
+            );
+            // Value equality by cross-multiplication: n/d == pn/pd  ⟺  n·pd == pn·d.
+            let (n_big, d_big) = (num_bigint::BigInt::from(n), num_bigint::BigInt::from(d));
+            assert_eq!(
+                &n_big * &pd,
+                &pn * &d_big,
+                "display of {src} = {shown:?} changed the numeric value (n/d != shown)"
+            );
+        }
+    }
+
+    #[test]
     fn unit_conversion_as_round_trips() {
         // `value as name` renders `(Unit.in (Unit.of #"name") value)` and re-parses to the same arena
         // — the inverse of the parser's `as_conversion`.

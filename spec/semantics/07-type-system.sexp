@@ -962,6 +962,52 @@
             (def (main) (+ 1 (bomb))) (export main)))
   (trap   "unreachable"))
 
+(case "arithmetic on a let binding whose initializer diverges traps"
+  (doc    "`(let ((x (trap …))) (+ x 1))`: the binding's initializer is Never, so it TRAPS before the add
+           ever runs — the arithmetic is dead. The value is the trap, not a number. Witnesses that a
+           diverging sub-value aborts its enclosing computation (type-system.md #Never Is The Empty Sum:
+           Never unifies with any position, and a diverging expression halts). The Rust backend must NOT
+           emit the dead `(+ x 1)` as a method call on the `!`-typed binding (`x.checked_add(1)` — E0599, a
+           method call on Never); it emits only the diverging trap, matching the wasm `unreachable`.")
+  (input  (do (def (main) (let ((x (trap "boom"))) (+ x 1))) (export main)))
+  (trap   "unreachable"))
+
+(case "arithmetic reached via an inlined diverging call argument traps"
+  (doc    "`(f (trap …))` with `f x = (+ x 1)`: the argument diverges (Never), so evaluating it traps before
+           `f`'s body runs. When `f` inlines, the Never argument substitutes for `x`, so the body's `(+ x 1)`
+           becomes arithmetic on Never — the same shape as the let-binding case, reached by a call-arg
+           substitution. Traps unreachable; the Rust backend emits only the trap, not a method call on `!`.")
+  (input  (do (def (f (: x Int64)) (+ x 1)) (def (main) (f (trap "boom"))) (export main)))
+  (trap   "unreachable"))
+
+(case "a match whose all arms diverge is Never and always traps"
+  (doc    "Every arm of `(match n (0 (trap …)) (_ (trap …)))` diverges, so the match is Never — it produces
+           no value on any path. Type-checks (Never), and running it traps. The backends emit the match with
+           no result value (an empty/never block, not a decline for 'no machine representation'); with n=0
+           the first arm traps unreachable.")
+  (input  (do (def (main (: n Int64)) (match n (0 (trap "zero")) (_ (trap "other")))) (export main)))
+  (call   main (: 0 Int64))
+  (trap   "unreachable"))
+
+(case "an if whose both branches diverge is Never and always traps"
+  (doc    "Both arms of `(if b (trap …) (trap …))` diverge, so the `if` is Never — no value on any path. It
+           type-checks (Never unifies with any position), and running EITHER branch traps. The backends emit
+           the `if` with no result value (an empty/never block + a stack-polymorphic trailing unreachable),
+           NOT a decline for 'result type has no machine representation'. With b=true the then-branch traps.")
+  (input  (do (def (main (: b Bool)) (if b (trap "then") (trap "else"))) (export main)))
+  (call   main (: true Bool))
+  (trap   "unreachable"))
+
+(case "a both-diverge if nested in a value position yields the outer value"
+  (doc    "`(if b 1 (if c (trap …) (trap …)))`: the INNER if is Never (both arms trap); as the outer else-arm
+           it unifies into the outer if's Int64 (Never unifies with any type), so the outer if is Int64. With
+           b=true the concrete `1` is selected (the diverging inner if is never entered) → 1. Pins that a
+           both-diverge if nested as a value subexpression does not spoil the enclosing typed conditional —
+           the Never inner supplies a stack-polymorphic value the outer arm's type expects.")
+  (input  (do (def (main (: b Bool) (: c Bool)) (if b 1 (if c (trap "x") (trap "y")))) (export main)))
+  (call   main (: true Bool) (: false Bool))
+  (output (: 1 Int64)))
+
 (case "a trap message that is not a String is rejected"
   (doc    "`trap` aborts with a TEXT message, so its argument must be a String; `(trap 42)` supplies an
            Int64, which is rejected (CDZ0203). The diagnostic names the requirement — a trap message is

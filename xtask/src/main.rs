@@ -3399,7 +3399,15 @@ fn trap_kind(reason: &str) -> Option<&'static str> {
     let r = reason.to_ascii_lowercase();
     // Order matters: check the most specific substrings first. "divide by zero" / "division by zero"
     // both contain "zero"; "integer overflow" / "overflow" share "overflow".
-    if r.contains("divide by zero") || r.contains("division by zero") {
+    if r.contains("divide by zero")
+        || r.contains("division by zero")
+        || r.contains("remainder by zero")
+    {
+        // Divide-by-zero AND modulo/remainder-by-zero are the SAME underlying fault (a zero divisor):
+        // wasm traps both as an integer division trap, and the rust backend panics "division by zero"
+        // for `/` but "remainder by zero" for `%` — map both spellings to the one canonical kind so a
+        // runtime modulo-by-zero `(trap …)` case grades pass on BOTH backends (the rust matcher was
+        // keyed only to the divide spelling, so a `%`-by-zero case graded todo on rust — breaker's gap).
         Some("div-by-zero")
     } else if r.contains("out of bounds") || r.contains("out-of-bounds") {
         // wasmtime "out of bounds memory access" (a guest bounds trap) and the corpus "index out of
@@ -3915,47 +3923,90 @@ fn report_ml_conformance(paths: &Paths, profile: &str) {
         .flat_map(|file| read_corpus(&tools, file))
         .collect();
 
+    // Classify each case IN PARALLEL — this step shells `cdz run-ml` once per corpus case (and the
+    // Wasm oracle again for a non-declining case), so a serial loop over ~3700 cases made `cargo xtask
+    // check` minutes slower. A work-stealing thread pool (same shape as `roundtrip_all_parallel`) keeps
+    // the per-case classification independent (each only READS `tools`/`store` + spawns its own
+    // subprocesses) and cuts wall-clock to ~one case-chain per core. Each slot is `Agree` / `Disagree`
+    // (with the report line) / `NotYet`.
+    enum MlOutcome {
+        Agree,
+        Disagree(String),
+        NotYet,
+    }
+    let n = records.len();
+    let slots: Vec<std::sync::Mutex<Option<MlOutcome>>> =
+        (0..n).map(|_| std::sync::Mutex::new(None)).collect();
+    let cursor = std::sync::atomic::AtomicUsize::new(0);
+    let workers = std::thread::available_parallelism()
+        .map(|w| w.get())
+        .unwrap_or(1)
+        .max(1);
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            let (cursor, slots, records, tools, store) =
+                (&cursor, &slots, &records, &tools, &store);
+            scope.spawn(move || {
+                loop {
+                    let i = cursor.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if i >= records.len() {
+                        break;
+                    }
+                    let rec = &records[i];
+                    // Compare the FIRST trial only (the ML subset is nullary; a `(call …)` case declines
+                    // in run_program_ml's subset guard, so the first trial represents ML support today).
+                    let call = rec.trials.first().and_then(|t| t.call.as_ref());
+                    let ml = run_program(
+                        tools,
+                        store,
+                        &rec.program,
+                        &rec.modules,
+                        call,
+                        &rec.host_responses,
+                        GateTarget::CadenzaMl,
+                    );
+                    let outcome = match &ml {
+                        // Not-yet-supported: the ML front-end declined — coverage-not-yet, never a diff.
+                        Ran::Declined { .. } => MlOutcome::NotYet,
+                        // ML produced a value (or error) — compare to the oracle.
+                        _ => {
+                            let oracle = run_program(
+                                tools,
+                                store,
+                                &rec.program,
+                                &rec.modules,
+                                call,
+                                &rec.host_responses,
+                                GateTarget::Wasm,
+                            );
+                            if ml_agrees_with_oracle(&ml, &oracle) {
+                                MlOutcome::Agree
+                            } else {
+                                MlOutcome::Disagree(format!(
+                                    "{}: ml={} oracle={}",
+                                    rec.description,
+                                    ran_summary(&ml),
+                                    ran_summary(&oracle)
+                                ))
+                            }
+                        }
+                    };
+                    *slots[i].lock().unwrap() = Some(outcome);
+                }
+            });
+        }
+    });
     let (mut agree, mut disagree, mut not_yet) = (0usize, 0usize, 0usize);
     let mut disagreements: Vec<String> = Vec::new();
-    for rec in &records {
-        // Compare the FIRST trial only (the ML subset is nullary; a `(call …)` case declines in
-        // run_program_ml's subset guard, so the first trial is representative of ML support today).
-        let call = rec.trials.first().and_then(|t| t.call.as_ref());
-        let ml = run_program(
-            &tools,
-            &store,
-            &rec.program,
-            &rec.modules,
-            call,
-            &rec.host_responses,
-            GateTarget::CadenzaMl,
-        );
-        match &ml {
-            // Not-yet-supported: the ML front-end declined. Coverage-not-yet, never a disagreement.
-            Ran::Declined { .. } => not_yet += 1,
-            // The ML compiler produced a value (or an error/bad artifact) — compare to the oracle.
-            _ => {
-                let oracle = run_program(
-                    &tools,
-                    &store,
-                    &rec.program,
-                    &rec.modules,
-                    call,
-                    &rec.host_responses,
-                    GateTarget::Wasm,
-                );
-                if ml_agrees_with_oracle(&ml, &oracle) {
-                    agree += 1;
-                } else {
-                    disagree += 1;
-                    disagreements.push(format!(
-                        "{}: ml={} oracle={}",
-                        rec.description,
-                        ran_summary(&ml),
-                        ran_summary(&oracle)
-                    ));
-                }
+    for slot in &slots {
+        match slot.lock().unwrap().take() {
+            Some(MlOutcome::Agree) => agree += 1,
+            Some(MlOutcome::Disagree(msg)) => {
+                disagree += 1;
+                disagreements.push(msg);
             }
+            // NotYet or an unfilled slot (a worker that never reached it — shouldn't happen) → not-yet.
+            _ => not_yet += 1,
         }
     }
     let total = agree + disagree + not_yet;
@@ -4811,6 +4862,14 @@ mod trap_grading_tests {
         assert_eq!(trap_kind("division by zero"), Some("div-by-zero"));
         assert_eq!(
             trap_kind("cdz-run: trap: wasm trap: integer divide by zero: error while executing"),
+            Some("div-by-zero")
+        );
+        // Modulo/remainder-by-zero is the SAME div-by-zero fault — the rust backend panics
+        // "remainder by zero" for `%` (vs "division by zero" for `/`); both must classify identically
+        // so a runtime `%`-by-zero `(trap …)` case grades pass on rust, not todo (breaker's gap).
+        assert_eq!(trap_kind("remainder by zero"), Some("div-by-zero"));
+        assert_eq!(
+            trap_kind("thread 'main' panicked at …: remainder by zero"),
             Some("div-by-zero")
         );
         // Overflow — bare and "integer" both, corpus + wasmtime.

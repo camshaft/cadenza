@@ -138,6 +138,37 @@ def read-paren-form(s: String, i: Int64, tree: Tree) =
             (let a3 = close-paren(s, a2) in
              (match add-node(t2, Node.NBin(op-code-of(sym), leftId, rightId)) with | (id, t3) => (id, a3, t3)))))))))
 
+/// After `(do` (index `i` past the `do` atom): peel the canonical corpus MODULE wrapper
+/// `(do (def (main) <body>) (export main))` and read `<body>` as the program's value — the corpus tool
+/// normalizes EVERY case (even a bare `42`) into this module shape, so without this the reader declines
+/// the whole differential corpus. The value of a nullary-`main` module IS its body's value, so returning
+/// the body node makes the module cases agree with the rcdzc oracle.
+///
+/// SUBSET: the FIRST def must be exactly nullary `(def (main) …)`. Anything else — a PARAMETERIZED main
+/// `(def (main (: n Int64)) …)` (the body would reference unbound params), a helper def before `main`, or
+/// a non-`def` head — reads as `unsupported()` → an unbound `NVar` → resolve poison → infer `TErr` →
+/// eval `None` → the driver reports `declined` (coverage-not-yet, NEVER a fabricated value). The trailing
+/// `(export main)` + closing parens don't affect the value, so they're left unconsumed (the module is a
+/// top-level form; `read-source` ignores the returned next-index).
+def unsupported-at(tree: Tree, i: Int64) =
+  (match unsupported(tree) with | (id, t1) => (id, i, t1))
+
+def read-do-form(s: String, i: Int64, tree: Tree) =
+  (let d0 = open-paren(s, i) in                          // `(` before the first def
+   (match scan-atom(s, skip-space(s, d0), "") with | (kw, d1) =>
+     (if (kw == "def") then                              // first form must be a `def` (else decline)
+        (let m0 = open-paren(s, d1) in                   // `(` before the main signature
+         (match scan-atom(s, skip-space(s, m0), "") with | (nm, m1) =>
+           (if (nm == "main") then                       // first def must be `main` (else decline)
+              (let k = skip-space(s, m1) in
+               // nullary main: the signature closes immediately with `)`. A `(` here is a param
+               // `(: n Int64)` → parameterized main → out of subset → decline.
+               (if (char-at(s, k) == ")")
+                then read-form(s, k + 1, tree)            // read the main BODY as the module's value
+                else unsupported-at(tree, k)))
+            else unsupported-at(tree, m1))))
+      else unsupported-at(tree, d1))))
+
 /// After `(if` (index `i` past the `if` atom): read cond, then, else forms + consume `)` → `NIf`.
 def read-if-form(s: String, i: Int64, tree: Tree) =
   (match read-form(s, i, tree) with | (condId, a1, t1) =>
@@ -166,8 +197,25 @@ def read-let-form(s: String, i: Int64, tree: Tree) =
              (let e1 = close-paren(s, e0) in // close the `let` `)`
               (match add-node(t2, Node.NLet(name-id(nm), valId, bodyId)) with | (id, t3) => (id, e1, t3)))))))))))
 
+/// Does `s` (from index `j`, space already skipped) open a `(do …)` module? A `(` followed by the atom
+/// `do`. Used by `read-source` to peel the corpus MODULE wrapper at the ENTRY (not mid-expression) — so
+/// `read-do-form` stays OUTSIDE the `read-form`↔`read-paren-form` recursion cycle.
+def opens-do(s: String, j: Int64) =
+  (if (char-at(s, j) == "(")
+   then (match scan-atom(s, skip-space(s, j + 1), "") with | (a, _) => a == "do")
+   else false)
+
 /// The reader ENTRY: source text → `(rootId, Tree)`, the shape `eval-db.eval-tree(tree, root)` consumes.
-def read-source(s: String) = match read-form(s, 0, empty-tree()) with | (root, _, tree) => (root, tree)
+/// A `(do …)` MODULE (the canonical corpus wrapper `(do (def (main) <body>) (export main))`) is peeled to
+/// its `main` body HERE, at the entry; every other program is a bare top-level expression read directly.
+/// Dispatching the module case from the entry (not from `read-paren-form`) keeps `read-do-form` a caller
+/// of the recursive reader rather than a node INSIDE the recursion cycle.
+def read-source(s: String) =
+  (let j = skip-space(s, 0) in
+   (if (opens-do(s, j))
+    then (match scan-atom(s, skip-space(s, j + 1), "") with | (_do, after-do) =>
+           (match read-do-form(s, after-do, empty-tree()) with | (root, _, tree) => (root, tree)))
+    else (match read-form(s, 0, empty-tree()) with | (root, _, tree) => (root, tree))))
 
 @test
 def sr-int-literal() =
@@ -289,5 +337,39 @@ def sr-let-body-arith() =
     (match node-at(tree, root) with
       | Option.Some(Node.NLet(_, _, bodyId)) => (if is-bin-op(tree, bodyId, 43) then unit else trap("body is a + Bin"))
       | _ => trap("root is an NLet")))
+
+@test
+def sr-module-int-body() =
+  // the canonical corpus module shape `(do (def (main) 42) (export main))` → the body NLit(42) IS the
+  // program's value (the module wrapper is peeled). Before this, the whole corpus declined.
+  (match read-source("(do (def (main) 42) (export main))") with | (root, tree) =>
+    (if is-lit(tree, root, 42) then unit else trap("module body is NLit 42")))
+
+@test
+def sr-module-arith-body() =
+  // `(do (def (main) (+ 1 2)) (export main))` → body is a + Bin (the wrapper peels to the body form).
+  (match read-source("(do (def (main) (+ 1 2)) (export main))") with | (root, tree) =>
+    (if is-bin-op(tree, root, 43) then unit else trap("module body is a + Bin")))
+
+@test
+def sr-module-let-body() =
+  // `(do (def (main) (let ((x 10)) x)) (export main))` → body is an NLet.
+  (match read-source("(do (def (main) (let ((x 10)) x)) (export main))") with | (root, tree) =>
+    (match node-at(tree, root) with
+      | Option.Some(Node.NLet(_, _, _)) => unit
+      | _ => trap("module body is an NLet")))
+
+@test
+def sr-module-parameterized-main-declines() =
+  // a PARAMETERIZED main `(def (main (: n Int64)) …)` is OUT of the nullary subset — the body references
+  // an unbound param, so the module must DECLINE (unsupported NVar), not fabricate a value.
+  (match read-source("(do (def (main (: n Int64)) n) (export main))") with | (root, tree) =>
+    (if is-var(tree, root, 0) then unit else trap("parameterized main declines to unbound NVar(0)")))
+
+@test
+def sr-module-non-main-first-def-declines() =
+  // a helper def before `main` is out of subset (the reader peels only a leading nullary `main`) → decline.
+  (match read-source("(do (def (helper) 1) (def (main) 2) (export main))") with | (root, tree) =>
+    (if is-var(tree, root, 0) then unit else trap("non-main first def declines to unbound NVar(0)")))
 
 export { skip-space, read-form, read-source, scan-atom, op-code-of, name-id }
