@@ -231,6 +231,8 @@ pass	a BOOL-result effect op threads state across two performs on a boolean conn
 pass	a BigInt factorial accumulator computes 25! exactly
 pass	a BigInt is usable as a map key, matched by its arbitrary-precision value
 pass	a BigInt is usable as a set element, deduplicated by its arbitrary-precision value
+pass	a BigInt narrowed to the exact Int8 maximum and minimum fits and converts
+pass	a BigInt narrowed to the exact UInt8 maximum fits and converts
 pass	a BigInt operation does not silently promote a fixed-width operand
 pass	a BigInt-inner quantity ADDITION past Int64.max stays exact through the wrapper
 pass	a BigInt-inner quantity grows past Int64.max without trapping
@@ -899,9 +901,9 @@ pass	a guard reads the payload binder and an enclosing parameter together
 pass	a guard sees the names its pattern binds and arms are tried in order
 pass	a guard-elided masked add at a NARROW width computes identically on both backends
 pass	a guard-elided masked add computes inline over runtime operands
+pass	a guard-elided masked left shift computes identically on both backends
 pass	a guard-elided masked multiply computes inline over runtime operands
 pass	a guard-elided masked subtract computes inline over runtime operands
-pass	a guard-elided masked left shift computes identically on both backends
 pass	a guarded arm among same-constructor match arms keeps first-match-wins
 pass	a guarded arm is selected when its guard holds
 pass	a guarded list-match arm body reads its element binder
