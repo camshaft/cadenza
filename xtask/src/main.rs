@@ -2761,6 +2761,7 @@ fn gate_opt_sweep(paths: &Paths, profile: &str, opts: &GateOpts) {
                 GateTarget::Rust => "rust",
                 GateTarget::RustAsync => "rust-async",
                 GateTarget::Wasm => "wasm",
+                GateTarget::CadenzaMl => "cadenza-ml",
             }
         );
         std::process::exit(2);
