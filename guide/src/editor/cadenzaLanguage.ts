@@ -69,6 +69,16 @@ export const cadenzaLanguage = StreamLanguage.define<State>({
       return "operator";
     }
 
+    // Annotation decorators: `@test` / `@property` / `@exhaustive` / `@tag` / `@inline-never` / `@param`
+    // etc. Colored as `meta` (a decorator/annotation tone) in the lexical layer — parity with the vscode
+    // TextMate grammar + the keyword tone the LSP semantic tokens paint, so the guide's testing/property
+    // chapters (which teach @-annotations) read right before semantic tokens arrive.
+    if (stream.peek() === "@") {
+      stream.next();
+      stream.match(/^[A-Za-z_][A-Za-z0-9_-]*/); // the annotation name (kebab ok: @inline-never)
+      return "meta";
+    }
+
     // Numbers (int, float, radix, digit separators).
     if (/\d/.test(stream.peek() ?? "")) {
       stream.match(/^0[xXbBoO][0-9a-fA-F_]+/) ||
