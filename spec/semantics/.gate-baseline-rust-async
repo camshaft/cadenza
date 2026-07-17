@@ -3573,6 +3573,7 @@ todo	four same-signature closure exports share one resource
 todo	function arguments are evaluated left to right
 todo	host calls are observed in the order they were made
 todo	let bindings' initializers are evaluated in binding order
+todo	mixed-type @param sites share one Param effect and drive control flow
 todo	mixed: two closure exports alongside a plain export — driving the plain export
 todo	multi-export Set-result closures — the singleton one
 todo	multi-export Set-result closures — three sharing one call
