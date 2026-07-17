@@ -5817,6 +5817,89 @@ fn a_match_shaped_arm_body_resumes_in_a_sequence_of_performs() {
     }
 }
 
+/// The agent-kernel EXECUTOR shape (v-agent-harness K1c): a CROSS-FUNCTION recursive list-fold that PERFORMS
+/// a host effect PER ELEMENT — `run-ops` matches `(list head .. rest)`, performs `(Prim.run head)` then
+/// self-calls `(run-ops rest)` in a `do`. v-agent-harness reported this DECLINES ("not yet reducible by the
+/// tail-resumptive fold"), but it FOLDS on current trunk — the `(do (Prim.run head) (run-ops rest))` shape is
+/// a `do` with a leading perform before a recursive call, exactly the intermediate the batch-161 helper-call
+/// fix (`53d95f103`, `beta_reduce` do-preservation) stopped dropping on the inline/specialize path. Before
+/// that fix the `Prim.run head` intermediate was discarded (the `do` collapsed to `Ref{(run-ops rest)}`);
+/// preserved, the per-element perform threads through the E3 specialization. Two witnesses: (1) base value
+/// (the fold's value is the `(_ 0)` base → 0); (2) OBSERVE the threaded state — a two-op handler where `run`
+/// advances state per element and a final `total` reads it → 3 (all three performs ran + threaded). Pins the
+/// consumer-witnessed shape so a regression to the decline (or a dropped-perform miscompile) is caught.
+#[test]
+fn a_per_element_perform_in_a_cross_function_list_fold_threads() {
+    use crate::testkit::parse;
+    // (1) base-value witness: the fold's value is the base case (0); the performs run for effect.
+    let src = "(do \
+        (effect Prim (op run (-> Int64 Int64))) \
+        (def (run-ops (: ops (List Int64))) \
+          (match ops ((list head .. rest) (do (Prim.run head) (run-ops rest))) (_ 0))) \
+        (def (main) (handle Prim 0 ((run (tag) s (resume s (+ s 1)))) (run-ops (list 1 2 3)))) \
+        (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect(
+        "a per-element perform in a cross-function list-fold must fold (batch-161 do-preservation)",
+    );
+    if let Some(v) = run_linked(&bytes, "main") {
+        assert_eq!(v, "0", "the fold's value is the `(_ 0)` base case");
+    }
+    // (2) observe-state witness: `run` counts performs into the state, a final `total` reads it → 3, proving
+    // all three per-element performs ran AND threaded their state advance (not silently dropped).
+    let src2 = "(do \
+        (effect Prim (op run (-> Int64 Int64)) (op total (-> Int64 Int64))) \
+        (def (run-ops (: ops (List Int64))) \
+          (match ops ((list head .. rest) (do (Prim.run head) (run-ops rest))) (_ (Prim.total 0)))) \
+        (def (main) (handle Prim 0 ((run (tag) s (resume s (+ s 1))) (total (u) s (resume s s))) \
+          (run-ops (list 1 2 3)))) \
+        (export main))";
+    let bytes2 = compile_component(&crate::codec::encode(&parse(src2)))
+        .expect("the state-observing cross-function per-element perform fold must fold");
+    if let Some(v) = run_linked(&bytes2, "main") {
+        assert_eq!(
+            v, "3",
+            "all three per-element performs ran + threaded: state counts to 3"
+        );
+    }
+}
+
+/// KNOWN LATENT SILENT MISCOMPILE — PINNED (v-agent-harness 4329, 2026-07-17). A handler-STATE accumulator
+/// does NOT thread across a CROSS-FUNCTION recursive fold: `run-ops` recursively performs `Prim.run` per
+/// element (advancing state `s→s+1` per the arm), but a perform in the handle body's CONTINUATION *after*
+/// `run-ops` sees FRESH state 0, not the accumulated count. `(handle Prim 0 ((run (tag) s (resume s (+ s
+/// 1)))) (do (run-ops (list 1 2 3)) (Prim.run 0)))` runs to 0, should be 3 — the 3 performs inside the
+/// specialized `run-ops#ctx` recursion advance state, but that recursion's final OUT-STATE never reaches the
+/// caller's continuation (the `do`'s second item). SAME class as the E3 cross-function out-state limit (the
+/// `loop.cdz` note: cross-fn state-threading needs an explicit acc PARAMETER, not handler state) — the
+/// recursive callee's advanced state is dropped at the specialization-return boundary, the recursive analogue
+/// of the (now-fixed) INLINED helper-call drop. NOT a decline (compiles + runs to a wrong value). Per
+/// v-agent-harness this does NOT block the REAL agent-kernel executor: real exec/http/log performs return
+/// their OWN per-call results (which DO work — the perform fires + returns its result), not a threaded
+/// counter; only a handler-state accumulator across the cross-fn fold is affected. QUEUED (substantial — E3
+/// specialization out-state threading to the caller's continuation). This test PINS the wrong value (0) so a
+/// regression to a different wrong shape / a leak is caught; FLIP to 3 when the cross-fn out-state threads.
+#[test]
+fn a_handler_state_accumulator_across_a_cross_function_fold_is_a_known_miscompile() {
+    use crate::testkit::parse;
+    let src = "(do \
+        (effect Prim (op run (-> Int64 Int64))) \
+        (def (run-ops (: ops (List Int64))) \
+          (match ops ((list h .. rest) (do (Prim.run h) (run-ops rest))) (_ 0))) \
+        (def (main) (handle Prim 0 ((run (tag) s (resume s (+ s 1)))) \
+          (do (run-ops (list 1 2 3)) (Prim.run 0)))) \
+        (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src)))
+        .expect("compiles (the miscompile is a wrong value, not a decline)");
+    if let Some(v) = run_linked(&bytes, "main") {
+        // KNOWN-WRONG: the cross-fn recursion's out-state is dropped, so the trailing (Prim.run 0) sees
+        // state 0, not the accumulated 3. FLIP to "3" when E3 threads the recursive callee's out-state.
+        assert_eq!(
+            v, "0",
+            "KNOWN MISCOMPILE (cross-fn fold out-state not threaded to the continuation): 0, want 3 once fixed"
+        );
+    }
+}
+
 /// FIXED (was a KNOWN LATENT SILENT MISCOMPILE, promoted 2026-07-17 when active-demand work cleared + a peer
 /// pinged). An effectful STATE-ADVANCING op (`put`→`Map.insert`) performed inside a CALLED HELPER used to have
 /// its handler-state advance DROPPED at the CALL-RETURN boundary — the later `get` MISSED → a WRONG VALUE (99).
@@ -28533,6 +28616,42 @@ mod match_engine {
         assert_eq!(
             out, "(: (map (1 (list 1)) (2 (list 2))) (Map Int64 (List Int64)))",
             "runtime map-of-lists renders the nested value type"
+        );
+    }
+
+    #[test]
+    fn a_runtime_collection_nested_in_a_tuple_or_record_escapes() {
+        // v-guide-infra gap: a runtime-built COLLECTION nested inside a Tuple/Record used to DECLINE at
+        // compile ("value-form walker that loops to a runtime-determined depth … is not yet emitted") while
+        // a BARE runtime collection crossed fine. The value-encode walker + `sum_shape_descriptor` already
+        // handle a nested collection (`shape_of` recurses, the Tuple/Record descriptor arm exists); the gap
+        // was purely ROUTING in the resource-escape emit — a Tuple/Record fell to `runtime_value_form_template`
+        // (None for a variable-length element → decline) instead of the descriptor path. Now a Tuple/Record
+        // whose template is None falls back to `sum_shape_descriptor` + the value-encode walker. This is the
+        // operator's "show DATA + RESULT together" example pattern (a runtime-built list + a computed scalar).
+        // `build 3` → [1 2 3]; `(tuple (build 3) 30)` → the pair with the list first.
+        let Some(out) = escape_render(
+            "(module m (def (build n) (if (= n 0) (: (list) (List Int64)) ((. List push) (build (- n 1)) n))) \
+                       (def (main) (tuple (build 3) 30)) (export main))",
+        ) else {
+            eprintln!("runtime wasm not found; skipping runtime-collection-in-tuple escape run");
+            return;
+        };
+        assert_eq!(
+            out, "(: (tuple (list 1 2 3) 30) (Tuple (List Int64) Int64))",
+            "a runtime list nested in a tuple crosses, rendering the nested collection + its type"
+        );
+
+        // A RECORD whose field is a runtime-built list — the operator's `(ages, average)`-style
+        // named-field shape. `{data: (build 2), n: 2}` → the record with a runtime list in `data`.
+        let out = escape_render(
+            "(module m (def (build n) (if (= n 0) (: (list) (List Int64)) ((. List push) (build (- n 1)) n))) \
+                       (def (main) (record (data (build 2)) (n 2))) (export main))",
+        )
+        .expect("runtime present");
+        assert_eq!(
+            out, "(: (record (data (list 1 2)) (n 2)) (record (data (List Int64)) (n Int64)))",
+            "a runtime list nested in a record field crosses, rendering the nested collection + its type"
         );
     }
 

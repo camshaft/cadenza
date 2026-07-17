@@ -10777,3 +10777,17 @@
               (export main)))
   (call   main (: 0 Int64))
   (output (: 100 Int64)))
+
+(case "a runtime-built list nested in a tuple crosses the host boundary rendering the nested collection"
+  (doc    "A RUNTIME-built collection nested inside a compound (a tuple/record) crosses the host boundary,
+           where before it DECLINED at compile ('value-form walker that loops to a runtime-determined depth
+           is not yet emitted') while a BARE runtime collection crossed. The value-encode walker +
+           sum_shape_descriptor already recurse into a nested collection; the gap was purely ROUTING — a
+           Tuple/Record fell to the fixed-hole `runtime_value_form_template` (None for a variable-length
+           element) instead of the value-encode descriptor path. This is the operator's 'show DATA + RESULT
+           together' pattern — a runtime-built list plus a computed scalar. `build 3` recurses pushing
+           1,2,3 → the list, paired with 30.")
+  (input  (do (def (build (: n Int64)) (if (= n 0) (: (list) (List Int64)) ((. List push) (build (- n 1)) n)))
+              (def (main) (tuple (build 3) 30))
+              (export main)))
+  (output (: (tuple (list 1 2 3) 30) (Tuple (List Int64) Int64))))

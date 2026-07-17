@@ -1776,6 +1776,7 @@ pass	a runtime wrapper sum whose payload is a variant is matched by a nested con
 pass	a runtime-assembled tree round-trips equal to its quoted twin
 pass	a runtime-branched tuple returned from a callee is projected in the caller
 pass	a runtime-built generic user sum escapes with its parametric type frame
+pass	a runtime-built list nested in a tuple crosses the host boundary rendering the nested collection
 pass	a runtime-built open-sum variant decodes through the schema
 pass	a runtime-built string crosses the boundary as its value form
 pass	a runtime-computed BigInt result crosses the host boundary
