@@ -490,3 +490,70 @@
                 ((Option.None) false)))
             (export main)))
   (trap   "integer overflow"))
+
+; ── b4b: the DENOTATION — a predicate `Ast` → an obligation `Term` (the semantics→logic bridge, §1A) ──
+; b4a records a `@requires(pred)`/`@ensures(pred)` predicate as its `Ast` occurrence. b4b DENOTES that
+; predicate Ast into a HOL `Term` the kernel discharges — the §1A shallow embedding on the pure-arith
+; fragment. A predicate `(<= x 100)` is `Ast.List [Ast.Name "<=", Ast.Name "x", Ast.Int 100]`; its
+; denotation is the `bounds` term `le (Var 0) (Num 100)` (a Name→Var by the param's index, an Int→Num,
+; the `<=` head→`le`). This case pins the denotation as an ordinary total `Ast → Term` function (which is
+; where the b4 compiler wiring will compile-time-eval it); the FULL @ensures elaboration (result binder
+; `it`, the obligation implication) composes these clauses and is a later slice.
+
+(case "b4b denotation: a predicate Ast (<= x 100) denotes to the bounds obligation term le (Var 0) (Num 100)"
+  (doc    "The semantics→logic bridge (design §1A) as a total `Ast → Term` function. The recorded predicate
+           `(<= x 100)` reifies to `Ast.List [Ast.Name \"<=\", Ast.Name \"x\", Ast.Int 100]`; `denote` maps
+           it to the `bounds` kernel term `le (Var 0) (Num 100)` — `<=`→`le`, the param name `x`→`Var 0`
+           (its parameter index, supplied by an env), the literal `100`→`Num 100`. The entry denotes the
+           predicate and checks (via `term-eq`) it equals the hand-built obligation term. Runs to `true`.
+           Pins that a `@requires`/`@ensures` predicate's Ast denotes to exactly the obligation Term the
+           b1/b2 discharge machinery consumes — so the b4 elaboration feeds the SAME kernel the hand-authored
+           b1 cases exercise, no new discharge path. (`+`→`add`, `>`→a flipped `le` etc. extend the same
+           match; this pins the `<=` clause + the Name/Int leaves, the load-bearing shapes.)")
+  (module "bounds"
+    (do
+      (type Term (Var Int64) (Num Int64) (Comb Term Term) (Const Int64))
+      ; a minimal Ast mirror (the metaprogramming Ast sum's relevant variants for the arith fragment)
+      (type Ast (AName String) (AInt Int64) (AList (List Ast)))
+      (def (term-eq (: a Term) (: b Term))
+        (match a
+          ((Term.Var n)    (match b ((Term.Var m) (= n m)) (_ false)))
+          ((Term.Num n)    (match b ((Term.Num m) (= n m)) (_ false)))
+          ((Term.Const c)  (match b ((Term.Const d) (= c d)) (_ false)))
+          ((Term.Comb x y) (match b ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) (_ false)))))
+      (def (add (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 0) a) b))
+      (def (le  (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 1) a) b))
+      ; the param environment: a name → its Var index. Minimal here (only `x` at index 0).
+      (def (var-of (: name String)) (if (= name "x") 0 (- 0 1)))
+      ; DENOTE a leaf: a name → Var, an int → Num. (A non-arith leaf is out of the fragment; here total.)
+      (def (denote-leaf (: a Ast))
+        (match a
+          ((Ast.AName nm) (Term.Var (var-of nm)))
+          ((Ast.AInt n)   (Term.Num n))
+          ((Ast.AList _)  (Term.Num (- 0 1)))))
+      ; DENOTE a predicate Ast → an obligation Term (the §1A shallow embedding, arith fragment).
+      ; `(<= a b)` → `le`, `(+ a b)` → `add`; operands denote via denote-leaf (or recurse for nesting).
+      (def (denote (: a Ast))
+        (match a
+          ((Ast.AList items)
+            (match items
+              ((list (Ast.AName op) l r)
+                (let ((lt (denote-leaf l)) (rt (denote-leaf r)))
+                  (if (= op "<=") (le lt rt)
+                    (if (= op "+") (add lt rt)
+                      (Term.Num (- 0 1))))))
+              (_ (Term.Num (- 0 1)))))
+          (_ (denote-leaf a))))
+      (export (. Term *))
+      (export (. Ast *))
+      (export term-eq add le denote)))
+  (input  (do
+            (import "bounds" (Term Ast term-eq add le denote))
+            (def (main)
+              ; the recorded predicate `(<= x 100)` as an Ast
+              (let ((pred (Ast.AList (list (Ast.AName "<=") (Ast.AName "x") (Ast.AInt 100)))))
+                ; its denotation must equal the hand-built obligation term `le (Var 0) (Num 100)`
+                (let ((expected (le (Term.Var 0) (Term.Num 100))))
+                  (term-eq (denote pred) expected))))
+            (export main)))
+  (output (: true Bool)))

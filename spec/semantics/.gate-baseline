@@ -2610,6 +2610,7 @@ pass	arithmetic right shift of negative one is negative one
 pass	arithmetic right shift preserves the sign bit for a negative operand
 pass	arithmetic within one integer type
 pass	at min times -1 the three overflow families diverge: checked None, wrapping min
+pass	b4b denotation: a predicate Ast (<= x 100) denotes to the bounds obligation term le (Var 0) (Num 100)
 pass	binary operator operands are evaluated left to right
 pass	binding the same effect to a peer twice is rejected
 pass	bit-field segments pack sub-byte values into one byte
