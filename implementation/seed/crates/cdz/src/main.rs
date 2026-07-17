@@ -2310,6 +2310,8 @@ fn run_watch(args: &WatchArgs) -> ExitCode {
     // invoke the ordinary handler in-process. `--store` threads through to the commands that resolve the
     // value-heap runtime (`test`/`run`); `check`/`build` don't take a store. Returns the command's code.
     let store = args.store.clone();
+    let call = args.call.clone();
+    let run_args = args.args.clone();
     let dir_str = dir.to_string_lossy().into_owned();
     let rerun = move || -> ExitCode {
         match args.exec {
@@ -2337,8 +2339,8 @@ fn run_watch(args: &WatchArgs) -> ExitCode {
             // then run it), the same path `cdz run <dir>` takes. `store` threads through for a heap run.
             WatchCmd::Run => run_project(&cdz_run::cli::RunArgs {
                 component: Some(std::path::PathBuf::from(&dir_str)),
-                call: None,
-                args: Vec::new(),
+                call: call.clone(),
+                args: run_args.clone(),
                 runtime: None,
                 store: store.clone(),
                 host_responses: Vec::new(),
@@ -3222,6 +3224,16 @@ struct WatchArgs {
     /// Which command to re-run on each change: `check` (default), `test`, `build`, or `run`.
     #[arg(long, value_enum, default_value_t = WatchCmd::Check)]
     exec: WatchCmd,
+    /// The export to call each `--exec run` re-run (like `cdz run --call`). Ignored by the other execs.
+    /// OMITTED → the entry's sole function export.
+    #[arg(long)]
+    call: Option<String>,
+    /// An argument to pass to the `--exec run` entry, repeatable (like `cdz run --arg`) — so a `main`
+    /// that TAKES arguments can be watched (before this, run-mode passed none, so an arg-taking entry
+    /// errored on every run). `allow_hyphen_values` so a negative number (`--arg -4`) is the value, not
+    /// a flag. Ignored by the other execs.
+    #[arg(long = "arg", value_name = "VALUE", allow_hyphen_values = true)]
+    args: Vec<String>,
     /// The debounce window in milliseconds — filesystem events within this window of each other are
     /// COALESCED into a single re-run (so saving several files at once, or an editor's write-then-rename,
     /// triggers one run, not a storm). Default 400ms.
