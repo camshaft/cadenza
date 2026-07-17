@@ -429,6 +429,19 @@
   (input  (do (def (step-by-2 (: x Int64)) (+ x 1)) (export step-by-2)))
   (error  CDZ0201))
 
+(case "an export name with a non-ASCII segment is rejected, not silently invalid"
+  (doc    "The third invalid-kebab-extern-name face (alongside the digit-led segment above and the
+           normalization collision): a NON-ASCII source name. `café` is a legal Cadenza identifier, but a
+           component-model extern name's `KebabStr` grammar admits only ASCII letters/digits/hyphens, so
+           `café` (the `é`) cannot form a valid extern name and `kebab_extern_name` cannot normalize it to
+           one. Emitting it produced a component wasmtime rejects at load with NO compiler diagnostic (the
+           non-ASCII-export-name mangle, silent-miscompile face). The compiler now rejects it CDZ0201 before
+           emit — on BOTH backends (the rust backend, which emits no component, previously emitted a `pub fn`
+           silently where wasm rejected; the rust `emit` now runs the same `invalid_kebab_export_name` check
+           at its top). Pins the non-ASCII member of the export-name-validity check at both-backend parity.")
+  (input  (do (def (café) 42) (export café)))
+  (error  CDZ0201))
+
 (case "a top-level value definition binds a name usable by the program's functions"
   (doc    "A definition is 'a value, function, type' (glossary), and each registers its name in the module
            (core-semantics.md #A Module Evaluates To A Record Of Its Exports). So a VALUE definition

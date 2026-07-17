@@ -2099,6 +2099,7 @@ pass	an export mixing a scalar and a nested-tuple parameter returns a list from 
 pass	an export mixing a scalar and a tuple parameter returns a BigInt from both
 pass	an export mixing a scalar and a tuple parameter returns a list from both
 pass	an export name with a digit-led kebab segment is rejected, not silently invalid
+pass	an export name with a non-ASCII segment is rejected, not silently invalid
 pass	an export whose name is not kebab-case crosses under a normalized extern name
 pass	an export with a nested-tuple parameter returns a list from its leaves
 pass	an export with a record-with-a-tuple-field parameter returns a list from its leaves
