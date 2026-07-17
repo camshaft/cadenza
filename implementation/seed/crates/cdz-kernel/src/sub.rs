@@ -19,6 +19,8 @@ use anyhow::{anyhow, Result};
 
 /// The event `kind` tag for a subscription event (a [`Subscription`] in its payload).
 pub const SUBSCRIBE: &str = "subscribe";
+/// The event `kind` tag for an unsubscribe event (its payload is the revoked subscription `id`).
+pub const UNSUBSCRIBE: &str = "unsubscribe";
 
 /// A matchable predicate over the event stream — the "when" of a subscription. Deliberately a small set of
 /// CONCRETE variants for L3a (mirrors how L2's inbox is just a `to == agent` filter): a general predicate
@@ -153,6 +155,47 @@ fn get_str(bytes: &[u8], i: &mut usize) -> Result<String> {
         .map_err(|e| anyhow!("subscription field not valid UTF-8: {e}"))
 }
 
+/// The ACTIVE subscriptions as a PROJECTION over the log (agent-runtime L3b) — a fold, mirroring L2b's
+/// [`crate::msg::inbox_for`]. Folds `events`: each `subscribe` event registers (or, by the same `id`,
+/// REPLACES — supersession) a [`Subscription`]; each `unsubscribe` event revokes the subscription with that
+/// `id`. Returns the live set paired with the `seq` of the *latest* `subscribe` that defined each (the seq a
+/// supersession/dispatch correlates against), in ascending order of that seq. A `subscribe` event whose
+/// payload fails to decode is skipped (the projection stays readable — same discipline as the inbox fold).
+///
+/// Supersession-by-id + explicit unsubscribe are the *only* revocation for L3b (vision "open leaf-level":
+/// richer lifecycle — TTLs, one-shot subscriptions — is a later rung). This is "the active reactive set is a
+/// fold over the log", the L3 counterpart of "the inbox is a fold".
+pub fn active_subscriptions(events: &[Event]) -> Vec<(crate::Seq, Subscription)> {
+    // A small insertion-ordered map keyed by subscription id: later `subscribe`s replace earlier ones in
+    // place (supersession), `unsubscribe` removes, and we keep the latest defining seq. A Vec keeps it
+    // dependency-free + preserves first-seen order deterministically (the set is small — one entry per live
+    // subscription, not per event).
+    let mut live: Vec<(crate::Seq, Subscription)> = Vec::new();
+    for e in events {
+        match e.kind.as_str() {
+            SUBSCRIBE => {
+                let Ok(s) = Subscription::decode(&e.payload) else {
+                    continue; // corrupt subscribe event — skip, keep the projection readable
+                };
+                if let Some(slot) = live.iter_mut().find(|(_, cur)| cur.id == s.id) {
+                    *slot = (e.seq, s); // supersede: replace the prior definition + its seq
+                } else {
+                    live.push((e.seq, s));
+                }
+            }
+            UNSUBSCRIBE => {
+                if let Ok(id) = String::from_utf8(e.payload.clone()) {
+                    live.retain(|(_, cur)| cur.id != id);
+                }
+            }
+            _ => {}
+        }
+    }
+    // Return in ascending order of the latest defining seq (a superseded sub sorts by its NEW seq).
+    live.sort_by_key(|(seq, _)| *seq);
+    live
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -280,5 +323,126 @@ mod tests {
         };
         assert!(p.matches(&mr), "matches the exact kind");
         assert!(!p.matches(&other), "a different kind does not match");
+    }
+
+    // ── L3b: the active-subscriptions projection (a fold over the log) ────────────────────────────────
+
+    /// Build a `subscribe` [`Event`] at `seq` for a subscription with `id` + `pred`.
+    fn sub_event(seq: crate::Seq, id: &str, pred: Predicate) -> Event {
+        let s = Subscription {
+            id: id.into(),
+            predicate: pred,
+            program_ref: "p.wasm".into(),
+            capability: "model".into(),
+        };
+        Event {
+            seq,
+            kind: SUBSCRIBE.into(),
+            payload: s.encode(),
+        }
+    }
+
+    /// Build an `unsubscribe` [`Event`] at `seq` revoking subscription `id`.
+    fn unsub_event(seq: crate::Seq, id: &str) -> Event {
+        Event {
+            seq,
+            kind: UNSUBSCRIBE.into(),
+            payload: id.as_bytes().to_vec(),
+        }
+    }
+
+    #[test]
+    fn active_subscriptions_folds_subscribe_events_in_seq_order() {
+        let log = vec![
+            sub_event(0, "a", Predicate::EventKind("k1".into())),
+            sub_event(1, "b", Predicate::MessageTo("me".into())),
+        ];
+        let active = active_subscriptions(&log);
+        assert_eq!(
+            active.iter().map(|(s, _)| *s).collect::<Vec<_>>(),
+            vec![0, 1],
+            "both subscriptions active, ordered by defining seq"
+        );
+        assert_eq!(active[0].1.id, "a");
+        assert_eq!(active[1].1.id, "b");
+    }
+
+    #[test]
+    fn a_later_subscribe_with_the_same_id_supersedes_the_earlier_one() {
+        // Re-subscribing under the same id REPLACES the definition (and its seq) — supersession, no dup.
+        let log = vec![
+            sub_event(0, "a", Predicate::EventKind("old".into())),
+            sub_event(3, "a", Predicate::EventKind("new".into())),
+        ];
+        let active = active_subscriptions(&log);
+        assert_eq!(active.len(), 1, "one live subscription for id `a`, not two");
+        assert_eq!(active[0].0, 3, "keyed to the LATEST defining seq");
+        assert_eq!(
+            active[0].1.predicate,
+            Predicate::EventKind("new".into()),
+            "the superseding definition wins"
+        );
+    }
+
+    #[test]
+    fn an_unsubscribe_revokes_the_subscription_by_id() {
+        let log = vec![
+            sub_event(0, "a", Predicate::EventKind("k".into())),
+            sub_event(1, "b", Predicate::EventKind("k".into())),
+            unsub_event(2, "a"),
+        ];
+        let active = active_subscriptions(&log);
+        assert_eq!(
+            active.iter().map(|(_, s)| s.id.clone()).collect::<Vec<_>>(),
+            vec!["b".to_string()],
+            "the unsubscribed `a` is revoked; `b` stays live"
+        );
+        // A re-subscribe AFTER an unsubscribe brings it back (the log just grows).
+        let mut log2 = log.clone();
+        log2.push(sub_event(3, "a", Predicate::EventKind("k2".into())));
+        let active2 = active_subscriptions(&log2);
+        assert_eq!(
+            active2.len(),
+            2,
+            "re-subscribing after unsubscribe re-adds it"
+        );
+    }
+
+    #[test]
+    fn active_subscriptions_skips_a_corrupt_subscribe_event_but_keeps_the_rest() {
+        let mut log = vec![
+            sub_event(0, "a", Predicate::EventKind("k".into())),
+            sub_event(1, "b", Predicate::EventKind("k".into())),
+        ];
+        log[0].payload = vec![0x00, 0x01]; // corrupt the first subscribe payload
+        let active = active_subscriptions(&log);
+        assert_eq!(
+            active.iter().map(|(_, s)| s.id.clone()).collect::<Vec<_>>(),
+            vec!["b".to_string()],
+            "the corrupt subscribe is skipped; the well-formed one still projects"
+        );
+    }
+
+    #[test]
+    fn active_subscriptions_is_empty_for_no_subscribes_or_all_revoked() {
+        assert!(active_subscriptions(&[]).is_empty(), "empty log → none");
+        let log = vec![
+            sub_event(0, "a", Predicate::EventKind("k".into())),
+            unsub_event(1, "a"),
+        ];
+        assert!(
+            active_subscriptions(&log).is_empty(),
+            "the only subscription is revoked → none active"
+        );
+        // Non-subscription events (a plain message) don't register anything.
+        assert!(
+            active_subscriptions(&[msg_event(0, "me")]).is_empty(),
+            "a message event registers no subscription"
+        );
+    }
+
+    #[test]
+    fn unsubscribe_tag_is_stable() {
+        assert_eq!(UNSUBSCRIBE, "unsubscribe");
     }
 }
