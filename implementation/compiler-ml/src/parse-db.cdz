@@ -30,6 +30,7 @@ type Tok =
   | TIf
   | TThen
   | TElse
+  | TNeg            // the prefix unary minus `-` (distinct from binary `-` = TOp 45)
   | TLParen
   | TRParen
   | TEnd
@@ -76,6 +77,13 @@ def op-code(t: Tok) = match t with | Tok.TOp(op) => op | _ => 0 - 1
 def parse-factor(ts: List(Tok), i: Int64, tree: Tree) = match tok-at(ts, i) with
   | Tok.TNum(v) => (match add-node(tree, Node.NLit(v)) with | (id, t1) => (id, i + 1, t1))
   | Tok.TBoolTok(b) => (match add-node(tree, Node.NBoolLit(b)) with | (id, t1) => (id, i + 1, t1))
+  | Tok.TNeg =>
+    // prefix unary minus `-x`, DESUGARED at parse time into `0 - x` = NBin(45, NLit 0, x). No new node type,
+    // so resolve/infer/lower/eval need no `NNeg` arm — it is exactly a subtraction. Binds tight (a factor):
+    // `-x * 2` = `(-x) * 2`, and `- -x` = `0 - (0 - x)`. Uses NLit 0 as the left operand.
+    (match add-node(tree, Node.NLit(0)) with | (zeroId, t0) =>
+      (match parse-factor(ts, i + 1, t0) with | (opnd, j, t1) =>
+        (match add-node(t1, Node.NBin(45, zeroId, opnd)) with | (id, t2) => (id, j, t2))))
   | Tok.TName(nm) => (match add-node(tree, Node.NVar(nm)) with | (id, t1) => (id, i + 1, t1))
   | Tok.TLParen =>
     (match parse-any(ts, i + 1, tree) with | (inner, j, t1) =>
@@ -201,6 +209,7 @@ def thenkw() = Tok.TThen
 def elsekw() = Tok.TElse
 def truelit() = Tok.TBoolTok(1)
 def falselit() = Tok.TBoolTok(0)
+def neg() = Tok.TNeg
 
 @test
 def pd-single-literal() =
@@ -386,5 +395,23 @@ def pd-bool-in-if-cond() =
     (match node-at(tree, root) with
       | Option.Some(Node.NIf(cond, _, _)) => (if is-bool-lit(tree, cond, 1) then unit else trap("cond is bool literal true"))
       | _ => trap("root is an NIf")))
+
+@test
+def pd-unary-minus-desugars-to-sub() =
+  // "-5" → NBin(45, NLit 0, NLit 5): unary minus desugars to `0 - 5` (no new node type).
+  (match parse-tokens([neg(), n(5)]) with | (root, tree) =>
+    (match node-at(tree, root) with
+      | Option.Some(Node.NBin(op, l, r)) =>
+        (if op == 45 then (if is-lit(tree, l, 0) then (if is-lit(tree, r, 5) then unit else trap("right is Lit 5")) else trap("left is Lit 0")) else trap("op is - (45)"))
+      | _ => trap("root is a - Bin")))
+
+@test
+def pd-unary-minus-binds-tight() =
+  // "-x * 2" → `(-x) * 2` = NBin(*, NBin(-, 0, x), 2): unary minus is a factor, so it binds tighter than *.
+  (match parse-tokens([neg(), var(1), times(), n(2)]) with | (root, tree) =>
+    (match node-at(tree, root) with
+      | Option.Some(Node.NBin(op, l, _)) =>
+        (if op == 42 then (if is-bin-op(tree, l, 45) then unit else trap("* 's left is the unary-minus Bin")) else trap("root is *"))
+      | _ => trap("root is a Bin")))
 
 export { Tok.*, Node.*, Tree.*, empty-tree, add-node, node-at, node-count, parse-tokens, is-bin-op, is-lit, is-var, is-let, is-if, is-bool-lit }
