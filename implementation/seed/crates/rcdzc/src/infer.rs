@@ -5008,6 +5008,15 @@ pub fn solved_lambda_arrow_under(
     // Bind each param to its expected domain (when concrete) in a local subst, so typing the body reads
     // the param at that type. A param whose expected domain is a hole is left to the body-only solve.
     let mut subst = Subst::new();
+    // ALSO seed each param's concrete expected domain into `db.param_types` (save + restore). The var-subst
+    // above only rewrites `Ty::Var`s, but a BARE lambda param types as `Ty::Any` (not a var — `type_of`'s
+    // Lambda arm), which `subst.apply` cannot touch. So an AGGREGATE body over the param — `(fn (x) (tuple
+    // x x))`, `(fn (x) (Cons x Nil))` — types its element positions at `Any` and stays `(Tuple Any Any)`
+    // even after the subst, so the recovered arrow keeps an `Any` hole and `type_specialize` DECLINES (the
+    // gmap `int→tuple` + `string→string` CDZ0201 — `cdz check` green, `cdz test` red). Seeding
+    // `db.param_types[x] = Int64` makes `type_of(x)` return the domain DIRECTLY, so the tuple types `(Tuple
+    // Int64 Int64)`. Restored below so the transient seeding never leaks into another def's solve.
+    let mut seeded: Vec<(StructId, Option<Ty>)> = Vec::new();
     for (i, &p) in params.iter().enumerate() {
         let occ = crate::eval::param_name_occ(db, p);
         if let Some(dom) = expected_doms.get(i)
@@ -5018,11 +5027,22 @@ pub fn solved_lambda_arrow_under(
             // Unify the param's own (var/Any) type with the expected domain, so a body reference to it
             // reads the concrete domain through the subst.
             let _ = crate::unify::unify(&mut subst, &pv, dom);
+            // Seed the concrete domain so an aggregate body reads the param's type directly (not `Any`).
+            // Only when the param is currently a HOLE (`Any`/var) — an already-concrete param is untouched.
+            if matches!(pv, Ty::Any) || pv.has_free_var() {
+                seeded.push((occ, db.param_types.insert(occ, dom.clone())));
+            }
         }
     }
     // Type the body, then read the result + each param through the subst (a pass-through body's result is
     // now the bound domain). Curry right-to-left, exactly like `solved_lambda_arrow`.
     let result = subst.apply(&type_of(db, body));
+    for (occ, prev) in seeded {
+        match prev {
+            Some(t) => db.param_types.insert(occ, t),
+            None => db.param_types.remove(&occ),
+        };
+    }
     Some(
         params
             .iter()

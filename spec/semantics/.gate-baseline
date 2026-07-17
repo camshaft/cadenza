@@ -1641,7 +1641,7 @@ pass	a recursive-generic producer's element is usable at each instantiation
 pass	a recursive-generic producer's result is consumed by an element-typed consumer
 pass	a recursive-generic transformer composes with itself
 pass	a recursive-generic transformer threading a closure composes at two element types
-pass	a recursive-generic transformer threading an IDENTITY closure at TWO types declines pending the multi-instantiation result tie
+pass	a recursive-generic transformer threading an IDENTITY closure composes at TWO element types
 pass	a recursive-generic transformer threading an IDENTITY closure composes at a single element type
 pass	a recursive-generic transformer with a bare-Nil STOP branch composes at two element types
 pass	a recursive-generic transformer with an element-CHANGING closure ties domain to codomain
