@@ -2270,6 +2270,7 @@ pass	a zero-length slice is the empty byte sequence
 pass	accessing through an empty-side split-at is usable, like the equivalent literal
 pass	accumulator introduction threads a transformed extra parameter through a multi-parameter recursion
 pass	adding a cubed length to a squared length is a dimension mismatch
+pass	adding a degree quantity to a radian quantity is a dimension mismatch
 pass	adding a squared length to a plain length is a dimension mismatch
 pass	adding adjacent high-power quantities is a mismatch (meter^100 + meter^101)
 pass	adding quantities of incompatible dimension is a compile-time error
@@ -2614,6 +2615,7 @@ pass	and evaluates the right operand when the left is true
 pass	and performs the right operand's effect when the left is true
 pass	and short-circuit does not perform the right operand's effect
 pass	and short-circuits at run time: a false left operand skips the trapping right operand
+pass	angle units radian and degree are first-class and exact within their own dimension
 pass	annotating a quantity at a dimension the expression does not derive is an error
 pass	annotating a quantity at a same-dimension DIFFERENT unit is accepted (dimension checked, not scale)
 pass	applying a boolean is a type error

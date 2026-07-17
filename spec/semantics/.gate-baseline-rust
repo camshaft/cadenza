@@ -1,4 +1,7 @@
 # gate baseline — per-case verdicts (verdict\tdescription). Regenerate with `cargo xtask gate --save`.
+pass	adding a degree quantity to a radian quantity is a dimension mismatch
+pass	angle units radian and degree are first-class and exact within their own dimension
+todo	a state-advancing helper called before a later read threads its write through the continuation
 pass	Ast.decode converts bytes to an AST sum type value
 pass	Ast.decode decodes bytes that arrive as a function argument
 pass	Ast.encode and Ast.decode round-trip
