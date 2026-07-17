@@ -60429,6 +60429,27 @@ mod sidecar_driven {
     }
 
     #[test]
+    fn highlight_paints_a_live_at_param_annotation_without_false_reds() {
+        // A `@param(widget: slider) width : Int64` site parses to `(: (@ (param (: widget slider)) width)
+        // Int64)` — a CALL-STYLE annotation on a PARAM binder, NOT wrapping a `(def …)`, so
+        // `strip_annotations`' def-only unwrap never fires and the whole `(@ (param …) …)` form stays LIVE
+        // and root-reachable (unlike the orphaned def-annotation case). Its `@` sigil + `param` head resolve
+        // to nothing and its config kv leaves aren't a value scope, so a naive leaf walk paints FOUR tokens
+        // `unbound` (error-red) on a program that compiles clean (the sidecar generates `Param`). The fix:
+        // `@`/`param` paint `keyword` (a decorator); the config payload (`widget`/`slider`) softens to
+        // `symbol` (inert metadata); the annotation TARGET (`width`, `Int64`) still classifies normally.
+        let src = "(module m (: (@ (param (: widget slider)) width) Int64) \
+                    (def (main) (host (Param) (Param.width))) (export main))";
+        assert_eq!(highlight_kinds_of(src, "@"), vec!["keyword"]);
+        assert_eq!(highlight_kinds_of(src, "param"), vec!["keyword"]);
+        // Config payload — inert metadata, `symbol` not `unbound`.
+        assert_eq!(highlight_kinds_of(src, "widget"), vec!["symbol"]);
+        assert_eq!(highlight_kinds_of(src, "slider"), vec!["symbol"]);
+        // The annotation TARGET still resolves — the declared type is a `type`, unchanged by the softening.
+        assert_eq!(highlight_kinds_of(src, "Int64"), vec!["type"]);
+    }
+
+    #[test]
     fn highlight_colours_literals_by_kind() {
         // Each literal leaf carries its own kind; a keyword head is `keyword`.
         let src = "(module m (def (main) (if true 42 0)) (export main))";
