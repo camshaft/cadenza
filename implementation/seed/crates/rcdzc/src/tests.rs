@@ -5866,6 +5866,55 @@ fn a_helper_state_advance_in_a_branch_threads_to_a_later_read() {
     }
 }
 
+/// Site-4 (`let`-init conditional distribution) HIT-BRANCH coverage + a single-parent-arena hardening
+/// witness (Copilot flag on merged PR #534, github-liaison relayed). The distribution `(let ((a (match …
+/// (Some v) (None …)))) cont)` ≡ `(match … (Some v (let ((a v)) cont)) (None … (let ((a …)) cont)))`
+/// splices the CONTINUATION (binder + remaining bindings + body) into EVERY branch via
+/// `map_conditional_branches`. The flag: reusing the SAME continuation nodes across branches shares them in
+/// a single-parent arena (`push_list` overwrites `parent`/`child_ix`), so the last-built branch steals their
+/// parentage — the "one leaf under two parents" class `deep_fresh_copy` guards. VERIFIED (this tick): the
+/// sharing is currently LATENT-BENIGN — the `thread` pass runs AFTER the hoist and re-processes each branch
+/// (rebuilding via `push_list`/`copy_pure`), re-freshing the shared nodes before resolution matters, so this
+/// case runs to the SAME value (50) with or without the per-branch copy. The fix (`deep_fresh_copy` per
+/// branch in `wrap`) is DEFENSIVE hardening — it makes the "continuation duplicated across branches"
+/// invariant structurally true (matching every If/Match thread arm, which copies per branch for exactly
+/// this reason) and robust against a future thread-pass change that stops re-copying. This test is not a
+/// strict sentinel for that (it passes both ways today); its value is COVERAGE of the Site-4 HIT branch —
+/// the other Site-4 tests all take the `None`/miss branch. The outer body pre-`put`s key 5 so `demand 5 99`'s
+/// inner `Db.get 5` HITS (→ `Some 25`, the FIRST-built arm, which `demand` returns WITHOUT re-putting 99),
+/// and the distributed continuation `(match (Db.get 5) ((Some w) (+ a w)) …)` reads the branch-bound `a`:
+/// `a`=25, later get→25, `a`+`w` = 50.
+#[test]
+fn site4_continuation_hit_branch_taken_folds_correctly() {
+    use crate::testkit::parse;
+    let src = "(do \
+        (effect Db (op get (-> Int64 (Option Int64))) (op put (-> (Tuple Int64 Int64) Unit))) \
+        (def (demand (: k Int64) (: compute Int64)) \
+          (match (Db.get k) \
+            (((. Option Some) v) v) \
+            (((. Option None) u) (do (Db.put (tuple k compute)) compute)))) \
+        (def (run-hit) \
+          (handle Db (Map.empty) \
+            ((get (k) s (resume (Map.lookup s k) s)) \
+             (put (kv) s (match kv ((tuple k v) (resume unit (Map.insert s k v)))))) \
+            (do \
+              (Db.put (tuple 5 25)) \
+              (let ((a (demand 5 99))) \
+                (match (Db.get 5) (((. Option Some) w) (+ a w)) (((. Option None) u) 99)))))) \
+        (export run-hit))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src)))
+        .expect("Site-4 distribution with a taken hit-branch must compile + fold");
+    if let Some(v) = run_linked(&bytes, "run-hit") {
+        // Pre-put 5→25, so `demand 5 99`'s get HITS (Some 25, the FIRST-built branch) → a=25 (does NOT
+        // re-put 99); the later get 5 → 25; 25 + 25 = 50. An orphaned first-branch continuation (the
+        // pre-fix shared-node bug) would mis-resolve `a`/`w`.
+        assert_eq!(
+            v, "50",
+            "Site-4 fresh-per-branch continuation: the taken Some/hit branch resolves a=25, w=25 → 50"
+        );
+    }
+}
+
 /// FIXED (was a KNOWN LATENT SILENT MISCOMPILE) — the WIDEST witness of the same helper-call out-state bug as
 /// the test above, and the strongest proof the fix generalizes: two `demand`s of the SAME key in ADJACENT
 /// let-bindings `(let ((a (demand 5 25)) (b (demand 5 999))) (+ a b))`. The first fills `5→25`; the second

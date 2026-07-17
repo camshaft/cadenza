@@ -2585,13 +2585,31 @@ fn hoist_resumptive_once(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> Optio
                 // The continuation = this binder (bound to the branch value) + the remaining bindings +
                 // the body, rebuilt as a `let` around each branch.
                 let rest_pairs: Vec<StructId> = pairs[k + 1..].to_vec();
+                // `map_conditional_branches` calls `wrap` ONCE PER BRANCH (both `if` arms, or every `match`
+                // arm), so the continuation — the binder, the remaining bindings, and the body — is spliced
+                // into EACH branch. The arena is single-parent (`push_list` overwrites `parent`/`child_ix`),
+                // so reusing the SAME `binder`/`rest_pairs`/`body_occ` nodes across branches would parent
+                // them to whichever branch is built LAST, orphaning the earlier branch's copy — the "one leaf
+                // under two parents" class `deep_fresh_copy` guards (same as the If/Match thread arms copying
+                // their state-refs per branch). DEFENSIVE: today this sharing is latent-benign — the `thread`
+                // pass runs after this hoist and re-processes each branch (rebuilding via `push_list`/
+                // `copy_pure`), re-freshing the shared nodes before resolution matters (verified: the fold
+                // yields the same value with or without this copy). But relying on a later pass to launder a
+                // structurally-invalid shared subtree is fragile, so give each branch its OWN fresh copy of
+                // every continuation node here — making the "continuation duplicated across branches" comment
+                // structurally true and robust to a future thread-pass change. (Copilot flag on PR #534.)
                 let wrap = |db: &mut Db, branch: StructId| -> StructId {
                     let let_head = db.push_atom(Leaf::Name("let".to_string()));
-                    let this_pair = db.push_list(vec![binder, branch]);
+                    let binder_c = deep_fresh_copy(db, binder);
+                    let this_pair = db.push_list(vec![binder_c, branch]);
                     let mut bindings = vec![this_pair];
-                    bindings.extend_from_slice(&rest_pairs);
+                    for &rp in &rest_pairs {
+                        let rp_c = deep_fresh_copy(db, rp);
+                        bindings.push(rp_c);
+                    }
                     let bindings_list = db.push_list(bindings);
-                    db.push_list(vec![let_head, bindings_list, body_occ])
+                    let body_c = deep_fresh_copy(db, body_occ);
+                    db.push_list(vec![let_head, bindings_list, body_c])
                 };
                 let distributed = map_conditional_branches(db, init, wrap);
                 // Preceding bindings (pure or performing — both stay in place, in order) become the outer
