@@ -3799,6 +3799,21 @@ fn check(paths: &Paths, profile: &str) {
     };
     log.step_show("gate", &gate_cmd, repo);
 
+    // OPTIMIZATION-LEVEL-EQUIVALENCE gate — a HARD BLOCKING merge gate (operator directive 2026-07-17): a
+    // program that produces a DIFFERENT observable outcome across optimization levels (O0..O3) is an
+    // unsound optimization, and must RED the gate + reject the MR, not merely be reported. `gate
+    // --opt-sweep` runs every corpus program at every level and hard-fails (exit non-zero) on any
+    // cross-level divergence. Because `check` is exactly what pr-sync re-gates with, adding it here makes
+    // it blocking on merge across ALL levels in one place. With the `PassManager` pipeline currently empty
+    // every level runs identically, so this is green today and stands guard over every future Core pass
+    // (an unsound pass caught before it lands — the §9 both-backend-miscompile guard). Wasm-target only
+    // (the sweep rejects a non-wasm target); ~parallelized so the full corpus completes in a couple min.
+    log.step(
+        "opt-sweep",
+        &format!("{xtask} --profile {profile} gate --opt-sweep"),
+        repo,
+    );
+
     // The Cadenza-SOURCE @test suites — libraries written IN Cadenza (the CAD `Solid` model library and
     // the self-hosted compiler-ml port), run via `cdz test` (compile a separate wasm test component from
     // each `@test` def, run it under wasmtime, PASS if it returns / FAIL if it traps). These are NOT
