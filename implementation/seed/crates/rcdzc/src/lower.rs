@@ -1135,6 +1135,28 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                                 if let Some(callee) = callee_def_index(g, head) {
                                     g.inlined.insert(callee);
                                 }
+                                // ANCHOR the reduced body under the call site before lowering it. `apply_lambda`
+                                // returns a subtree whose ROOT parent is `None` (a fresh β-reduce copy of the
+                                // callee body). Usually harmless — a reduced body that is the substituted arg
+                                // itself (`(def (f n) n)` → `k`) is main's own already-resolved occurrence. But
+                                // when the callee body is a `handle` (`(def (run s0) (handle St s0 …))`), the
+                                // reduced handle is a fresh orphan, and `core_of`'s Handle arm re-parents the
+                                // FOLD under that orphan handle node — so a fold result referencing the seed
+                                // (`(handle St k … (St.get))` with an identity arm → the seed `k` = the caller's
+                                // param) has its chain ascend fold → orphan-handle → None and never reaches the
+                                // caller's scope → a spurious CDZ0101 "unbound k". Parenting `reduced` under the
+                                // call site `id` (whose own chain reaches the enclosing def) gives the reduced
+                                // subtree — and every reparent-under-handle-site anchored within it — a live path
+                                // to the caller's binders. (A reduced body that is a bare already-resolved
+                                // occurrence is unaffected: re-parenting only sets the root's parent slot.)
+                                if g.parent_of(reduced).is_none()
+                                    && matches!(
+                                        crate::resolve::resolved_of(g, reduced),
+                                        Resolved::Handle { .. }
+                                    )
+                                {
+                                    g.reparent(reduced, Some(id), g.child_ix_of(id) as u32);
+                                }
                                 core_of(g, reduced)
                             }
                             Ok(None) => unreachable!("lambda_body implies a lambda head"),

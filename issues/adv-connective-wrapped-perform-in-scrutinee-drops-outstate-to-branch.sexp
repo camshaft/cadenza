@@ -68,3 +68,16 @@
 ;   position whose out-state the outer branches observe). `not` threads its operand directly (no if-desugar), so
 ;   it's unaffected — matching the control. FIX (when v-effects stack drains): thread the connective-desugar's
 ;   TAKEN-branch out-state through when the connective sits in a strict-first (cond/scrutinee) position.
+
+; ── V-EFFECTS DEEPER READ (2026-07-17, read-only while stack pending) ──
+; PUZZLE to resolve when building: the If thread arm (effects.rs:3390-3412) returns `cur` = the
+; POST-CONDITION state (line 3412), NOT the taken-branch's out-state — so naively BOTH the connective-in-
+; scrutinee AND the let-bound-connective forms should drop the branch advance. Yet breaker confirms let-bound
+; threads correctly (2) while inline-in-scrutinee drops (1). So the real mechanism is NOT simply "If returns
+; post-cond state" — there must be a hoist (hoist_resumptive_conditional?) or a let-init-specific path that
+; lifts/threads the connective's branch advance in the let-bound case but not when the connective is inline in
+; an outer if-cond/match-scrutinee. FIX INVESTIGATION START: (1) trace both forms' threaded output with a
+; debug dump; (2) find why let-bound captures the advance; (3) apply the same to the scrutinee/cond position
+; (likely: when threading an if/match whose COND/SCRUTINEE is a connective-desugar that advances state, the
+; if's out-state must be the taken-branch's, or hoist the connective's rhs advance out to a let before the if).
+; NOTE: `not` is unaffected (threads its operand directly, no if-desugar) — matches the control.

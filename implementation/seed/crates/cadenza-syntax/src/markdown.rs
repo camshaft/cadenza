@@ -519,14 +519,31 @@ fn fence_body(src: &str, span: Span, kind: &CodeBlockKind) -> String {
             if !lines.is_empty() {
                 lines.remove(0);
             }
-            // Drop a trailing empty element from a final newline, then the closing fence line.
+            // Drop a trailing empty element from a final newline, then the closing fence line. Capture the
+            // closing fence's own leading indent FIRST: when the block sits inside a list item (or block
+            // quote), the span starts AT the opening fence — so the opening line has no container indent
+            // in the slice, but every CONTINUATION line (body + closing fence) still carries the
+            // container's indentation. That indent is NOT part of the code; leaving it in the stored `raw`
+            // makes the printer re-indent it on top of the list indent (`  code` → `    code`), so the
+            // re-read sees deeper-indented code — a different tree (arena-idempotency break).
             if lines.last().is_some_and(|l| l.trim().is_empty()) {
                 lines.pop();
             }
+            let container_indent = lines
+                .last()
+                .filter(|l| is_fence_line(l))
+                .map(|l| l.len() - l.trim_start_matches(' ').len())
+                .unwrap_or(0);
             if lines.last().is_some_and(|l| is_fence_line(l)) {
                 lines.pop();
             }
-            lines.join("\n")
+            // Strip the container indent (at most) from each body line, so `raw` holds the code as it
+            // reads AFTER the container strips its indent — the same bytes a top-level fence would store.
+            lines
+                .iter()
+                .map(|l| strip_up_to_spaces(l, container_indent))
+                .collect::<Vec<_>>()
+                .join("\n")
         }
         CodeBlockKind::Indented => slice
             .lines()
@@ -536,6 +553,13 @@ fn fence_body(src: &str, span: Span, kind: &CodeBlockKind) -> String {
             .trim_end()
             .to_string(),
     }
+}
+
+/// Strip up to `n` leading SPACE characters from `line` (a blank/shorter line loses only what it has) —
+/// used to remove a code block's container indent without touching the code's own deeper indentation.
+fn strip_up_to_spaces(line: &str, n: usize) -> &str {
+    let strippable = line.len() - line.trim_start_matches(' ').len();
+    &line[strippable.min(n)..]
 }
 
 /// Render an inline-code span per CommonMark: the backtick delimiter is a run ONE longer than the
@@ -1215,6 +1239,22 @@ mod tests {
         assert_idempotent("1. a\n2. b\n");
         // A tight item carrying a nested list is still tight (no spurious item separators either).
         assert_idempotent("- x\n  - sub\n- y\n");
+    }
+
+    #[test]
+    fn code_block_inside_a_list_item_round_trips() {
+        // A fenced code block INSIDE a list item: the span pulldown-cmark gives starts at the opening
+        // fence, so its continuation lines (body + closing fence) still carry the list-container indent.
+        // fence_body used to store that indent in `raw` (`  code`), and the printer then re-indented it
+        // under the list (`    code`), so the re-read saw deeper-indented code — a different tree. Now the
+        // container indent (read off the closing fence) is stripped, so `raw` holds the code as it reads
+        // after the container strips its indent. The code's OWN deeper indentation is preserved.
+        assert_idempotent("- a\n\n  ```\n  code\n  ```\n- b\n");
+        assert_idempotent("- x\n\n  ```py\n  a = 1\n    b = 2\n  ```\n"); // internal indent kept
+        assert_idempotent("- item\n\n  ```\n  line1\n\n  line2\n  ```\n"); // blank line inside body
+        // A top-level fence (no container indent) is unaffected.
+        assert_idempotent("```\ncode\n```\n");
+        assert_idempotent("```cdz\nlet x = 1 in x\n```\n");
     }
 
     #[test]

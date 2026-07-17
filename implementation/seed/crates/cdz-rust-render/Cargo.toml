@@ -1,0 +1,15 @@
+[package]
+name = "cdz-rust-render"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# The Rust-backend boundary-value RENDER + descriptor-note PARSE logic, shared by the corpus gate
+# (`cargo xtask gate --target rust`) and the `cdz run-rust` subcommand. Both compile a Cadenza program
+# to `--target rust`, run it, and must render the boundary value to the SAME canonical s-expr the wasm
+# oracle (`cdz-run`) prints — so wasm-vs-rust outcomes compare like-for-like. This crate holds the PURE
+# logic (no I/O, no process spawning): it reads the backend's emitted `// cdz-*` descriptor NOTES from
+# the module text and builds the Rust render/reconstruction expression as a source STRING. The emitted
+# strings reference `cdz_num::Big` / `cdz-rt` types, but this crate only PRODUCES that text — it does not
+# link them, so it stays dependency-free (std only).
+[dependencies]

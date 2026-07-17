@@ -415,6 +415,10 @@ jobs:
           #  - tuple-collection: a runtime-built collection nested in a tuple must cross the host boundary +
           #    render (self-activating — SKIPs if the compiler feature regresses to the known decline, ASSERTs
           #    the rendered value otherwise). Guards the "show data + result" example pattern.
+          #  - cad-preload: the /cad route compiles a bare model against the PRELOADED CAD library
+          #    (compile_with_preloaded) + the preload-aware linter resolves the vocab (diagnostics_with_preloaded).
+          #    check-examples uses self-contained programs, not preloaded; check-visual (browser) isn't in CI.
           npm run check:worker-stack
           npm run check:tuple-collection
+          npm run check:cad-preload
           npm run build

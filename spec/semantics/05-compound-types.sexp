@@ -4868,6 +4868,23 @@
             (def (main) (f (mk 2))) (export main)))
   (output (: 2 Int64)))
 
+(case "a list is exhaustive when the empty, singleton, and two-or-more arms jointly cover every length"
+  (doc    "LENGTH-COVERAGE exhaustiveness across three arms WITHOUT a `_`: `(match xs ((list) …)
+           ((list a) …) ((list a b .. r) …))` over `(List Int64)` is total — the empty arm covers
+           length 0, the singleton covers length 1, and the two-leading rest arm covers every length
+           ≥ 2, so together they cover every length exactly. No wildcard, no `(list .. rest)` catch-all
+           needed. `f [3,4,5]` takes the ≥2 arm → a+b = 7. Pins that explicit length arms accumulate to
+           full coverage (the empty + singleton + rest partition of the naturals) — the length analogue
+           of a finite sum's variant set closing exhaustiveness.")
+  (input  (do
+            (def (f (: xs (List Int64)))
+              (match xs
+                ((list)           0)
+                ((list a)         a)
+                ((list a b .. r)  (+ a b))))
+            (def (main) (f (list 3 4 5))) (export main)))
+  (output (: 7 Int64)))
+
 (case "a list of a sum is exhaustive when the empty and every variant's first-element arm are covered"
   (doc    "The CONSTRUCTOR generalization of the list-of-bools case: `(match xs ((list) …) ((list (Some x)
            .. r) …) ((list (None) .. r) …))` over `(List (Option Int64))` is exhaustive WITHOUT a `_`. A

@@ -4281,12 +4281,29 @@ fn gate_batch(fleet: &Fleet, dry_run: bool, limit: usize) {
         let m = &clean[i];
         println!("LAND\t{}\t{}\t{}\t{}", m.file, m.from, m.r#ref, m.subject);
     }
+    // AUTO-QUARANTINE DIAGNOSIS: for each broken MR, try to name a DETERMINISTIC, inspectable reason so
+    // pr-sync can auto-reject it with a precise, actionable message instead of a generic "broken" that
+    // needs a human to re-bisect. Currently we detect baseline-title drift (a wasm-only baseline edit
+    // whose rust twin wasn't updated — unambiguous, content-only, no false positives). A broken MR with
+    // no recognized deterministic reason stays a plain REJECT-BROKEN (needs a look). Cheap: re-runs only
+    // the instant `baseline-titles-agree` lint on that one MR merged, NOT the full ~30min gate.
     for &i in &broken_idx {
         let m = &clean[i];
-        println!(
-            "REJECT-BROKEN\t{}\t{}\t{}\t{}",
-            m.file, m.from, m.r#ref, m.subject
-        );
+        match diagnose_broken_reason(&wt, scratch, &m.r#ref) {
+            Some(reason) => println!(
+                "REJECT-BASELINE-DRIFT\t{}\t{}\t{}\t{}\t{}",
+                m.file, m.from, m.r#ref, m.subject, reason
+            ),
+            None => println!(
+                "REJECT-BROKEN\t{}\t{}\t{}\t{}",
+                m.file, m.from, m.r#ref, m.subject
+            ),
+        }
+    }
+    // Diagnosis left the scratch branch on the last-diagnosed MR; detach back to trunk (keep under
+    // --dry-run for inspection) so we leave the worktree in the same clean state as before.
+    if !broken_idx.is_empty() {
+        cleanup(scratch, dry_run);
     }
     for m in &bounced {
         println!(
@@ -4368,6 +4385,53 @@ fn gate_subset(repo: &Path, branch: &str, clean: &[BatchMr], subset: &[usize]) -
     // the legit minutes-long check) neither kills the check nor throws its work away — the next
     // invocation resumes it. Falls back to a plain blocking check if detached mode can't be set up.
     gate_check_combined(repo)
+}
+
+/// Diagnose a DETERMINISTIC, inspectable reason a single broken MR fails, for auto-quarantine. Merges
+/// just `mr_ref` onto a fresh scratch branch off trunk and runs the fast `baseline-titles-agree` lint
+/// (via `cargo xtask gate --check-baseline-titles` — no build, ~instant). Returns `Some(reason)` if that
+/// lint fails (a baseline-title divergence — e.g. a wasm-only baseline edit whose rust twin wasn't
+/// updated), else `None` (no recognized deterministic reason → the MR stays a plain REJECT-BROKEN that
+/// needs a human look). Conservative by construction: only a CLEAN, unambiguous lint failure yields a
+/// reason, so we never mis-quarantine an MR that's broken for a subtler cause. Leaves the scratch branch
+/// re-formed at this MR; the caller detaches afterward.
+fn diagnose_broken_reason(repo: &Path, branch: &str, mr_ref: &str) -> Option<String> {
+    // Re-form scratch = trunk + just this MR.
+    if !git_branch_at(repo, branch, "trunk") {
+        return None;
+    }
+    if !git_merge_no_ff_onto(repo, branch, mr_ref) {
+        let _ = Command::new("git")
+            .current_dir(repo)
+            .args(["merge", "--abort"])
+            .output();
+        return None; // wouldn't merge alone → not a lint reason (a conflict is a BOUNCE, handled earlier)
+    }
+    // Run ONLY the deterministic baseline-titles lint on this tree, IN-PROCESS (it just reads the three
+    // `spec/semantics/.gate-baseline*` files and compares their title sets — no build, ~instant). Point a
+    // `Paths` at the scratch worktree so it reads THIS MR's baselines. A returned `Err` is the divergence
+    // message → the quarantine reason; `Ok` means baselines agree (not the recognized reason).
+    let scratch_paths = crate::Paths {
+        repo: repo.to_path_buf(),
+        seed: repo.join("implementation/seed"),
+    };
+    match crate::baseline_titles_agree_lint(&scratch_paths) {
+        Ok(()) => None, // baselines agree → this isn't the (recognized) reason it's broken
+        Err(msg) => Some(format!(
+            "baseline-titles-agree: {}",
+            first_divergence_line(&msg)
+        )),
+    }
+}
+
+/// The first substantive line of a baseline-titles-agree complaint (multi-line), as a one-line
+/// quarantine reason. Falls back to a generic explanation if no line names the specific divergence.
+fn first_divergence_line(msg: &str) -> String {
+    msg.lines()
+        .map(str::trim)
+        .find(|l| l.contains("missing"))
+        .unwrap_or("baselines diverge (a wasm-only baseline edit without its rust twin)")
+        .to_string()
 }
 
 /// The full `cargo xtask check` on the current combined tree, run in the FOREGROUND (blocking). Used as
@@ -4631,6 +4695,24 @@ mod tests {
         let (land, broken) = partition_batch(4, |subset| !subset.contains(&0));
         assert_eq!(land, vec![1, 2, 3]);
         assert_eq!(broken, vec![0]);
+    }
+
+    #[test]
+    fn first_divergence_line_picks_the_specific_missing_titles_line() {
+        // The lint's Err is multi-line; the quarantine reason should be the specific "missing" line.
+        let msg = "baseline title sets diverge:\n  \
+                   .gate-baseline-rust is missing 2 title(s) present in another baseline:\n    \
+                   foo, bar\n  fix: regenerate with gate --save --target rust";
+        assert_eq!(
+            first_divergence_line(msg),
+            ".gate-baseline-rust is missing 2 title(s) present in another baseline:",
+            "picks the line that names which baseline is missing which titles"
+        );
+        // No line containing "missing" → generic fallback (still an actionable, non-empty reason).
+        assert_eq!(
+            first_divergence_line("some other divergence, no such keyword\nsecond line"),
+            "baselines diverge (a wasm-only baseline edit without its rust twin)"
+        );
     }
 
     #[test]

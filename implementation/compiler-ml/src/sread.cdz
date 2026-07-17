@@ -132,11 +132,12 @@ def read-paren-form(s: String, i: Int64, tree: Tree) =
    (match scan-atom(s, h, "") with | (sym, a0) =>
      (if (sym == "if") then read-if-form(s, a0, tree)
       else (if (sym == "let") then read-let-form(s, a0, tree)
+      else (if (sym == "do") then read-do-form(s, a0, tree)
       else
         (match read-form(s, a0, tree) with | (leftId, a1, t1) =>
           (match read-form(s, a1, t1) with | (rightId, a2, t2) =>
             (let a3 = close-paren(s, a2) in
-             (match add-node(t2, Node.NBin(op-code-of(sym), leftId, rightId)) with | (id, t3) => (id, a3, t3)))))))))
+             (match add-node(t2, Node.NBin(op-code-of(sym), leftId, rightId)) with | (id, t3) => (id, a3, t3))))))))))
 
 /// After `(do` (index `i` past the `do` atom): peel the canonical corpus MODULE wrapper
 /// `(do (def (main) <body>) (export main))` and read `<body>` as the program's value — the corpus tool
@@ -371,5 +372,16 @@ def sr-module-non-main-first-def-declines() =
   // a helper def before `main` is out of subset (the reader peels only a leading nullary `main`) → decline.
   (match read-source("(do (def (helper) 1) (def (main) 2) (export main))") with | (root, tree) =>
     (if is-var(tree, root, 0) then unit else trap("non-main first def declines to unbound NVar(0)")))
+
+@test
+def sr-do-form-in-cycle-reads() =
+  // `read-do-form` is now dispatched from `read-paren-form` too (not only the entry), so a `(do …)` module
+  // reached THROUGH the recursive reader (an in-cycle SCC member) reads its body. Confirms the mutrec-SCC
+  // scratch-floor fix (rcdzc c58faa412) — this SCC configuration used to emit INVALID wasm (function[N])
+  // when read-do-form joined the read-form↔read-paren-form cycle; now it type-checks AND emits valid wasm
+  // (this @test compiling+running IS the valid-emit witness). Read via read-form so the `(do` goes through
+  // read-paren-form's in-cycle arm.
+  (match read-form("(do (def (main) (+ 4 5)) (export main))", 0, empty-tree()) with | (root, _, tree) =>
+    (if is-bin-op(tree, root, 43) then unit else trap("in-cycle (do …) reads its body as a + Bin")))
 
 export { skip-space, read-form, read-source, scan-atom, op-code-of, name-id }

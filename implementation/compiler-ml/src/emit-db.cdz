@@ -1,0 +1,160 @@
+/// emit-db.cdz — W1 of the WASM-EMIT BACKEND (operator directive 2026-07-17): take the integer-subset Core
+/// IR (`lower-db.Core`) and emit a REAL WebAssembly MODULE (a `Bytes` buffer) — the currently-missing final
+/// stage of the self-hosted compiler. Today the spine stops at `eval-db` (tree-walk INTERPRET to a value);
+/// this begins the path source → … → Core IR → EXECUTABLE WASM, on the integer subset, before language
+/// breadth (the integers-first architecture lever from the Rust impl).
+///
+/// SCOPE (W1): emit a valid module for a CONSTANT `main` — `Core.CNum(v)` → a module exporting a nullary
+/// `main : () -> i64` whose body is `i64.const v; end`. Later increments add CBin (arith), CVar/CLet (wasm
+/// locals), CIf (control flow). `eval-db` STAYS as the differential ORACLE: emit-then-run MUST equal
+/// interpret, for every corpus case (wired in a later increment once the host wasmtime-run harness exists).
+///
+/// GATING (W1): the emitted bytes are verified STRUCTURALLY here (magic/version/section tags/the i64.const
+/// payload), the same in-Cadenza self-check idiom `encode.cdz` uses for its wire format — so W1 needs no new
+/// host harness. Executing the emitted module through real wasmtime (the emit≡interpret gate) is W4.
+///
+/// WASM BINARY FORMAT (the minimal module this emits):
+///   magic `00 61 73 6d`, version `01 00 00 00`
+///   type    section (id 1): one type `() -> i64`         = 01 <size> 01 60 00 01 7e
+///   func    section (id 3): one func, type index 0        = 03 <size> 01 00
+///   export  section (id 7): export "main" as func 0        = 07 <size> 01 04 6d 61 69 6e 00 00
+///   code    section (id 10): one body, no locals, const+end = 0a <size> 01 <bodysize> 00 42 <sleb v> 0b
+/// Sizes/counts are ULEB128; the `i64.const` value is SLEB128.
+
+import { Core } from "lower-db"
+
+/// A one-byte `Bytes` holding the low 8 bits of `x` (mirrors `encode.cdz`'s `b1`).
+def b1(x: Int64) = Bytes.of([UInt8.wrap(x)])
+
+/// ULEB128-encode a NON-NEGATIVE `Int64` into `Bytes` (7 bits per byte, low-to-high, high bit = "more").
+/// Used for section sizes, vector counts, function/type indices — all small + non-negative here. Total via
+/// a fuel-bounded worker (an Int64 needs ≤10 groups of 7 bits; 10 is a safe ceiling).
+def uleb(n: Int64) = uleb-go(n, 10)
+def uleb-go(n: Int64, fuel: Int64) =
+  (if fuel <= 0 then Bytes.of([])
+   else (let low = n % 128 in
+         (let rest = n / 128 in
+          (if rest == 0 then b1(low)
+           else Bytes.concat(b1(low + 128), uleb-go(rest, fuel - 1))))))
+
+/// SLEB128-encode a (possibly-negative) `Int64` — the `i64.const` operand encoding. Standard signed LEB:
+/// 7 bits per byte; stop when the remaining value is 0 (and the sign bit of the last byte is clear) or -1
+/// (and the sign bit is set). Fuel-bounded (≤10 groups).
+def sleb(n: Int64) = sleb-go(n, 10)
+def sleb-go(n: Int64, fuel: Int64) =
+  if fuel <= 0 then Bytes.of([])
+  else
+    let byte = n % 128 in            // low 7 bits; Int64 % is sign-following, normalized to 0..127 below
+    let low = (if byte < 0 then byte + 128 else byte) in
+    let rest = (n - low) / 128 in    // arithmetic shift right by 7 (the subtract floors toward -inf)
+    let sign-bit = low / 64 in       // bit 6 of the 7-bit group (0 or 1)
+    // done when: rest==0 and sign bit clear (non-neg fits), OR rest==-1 and sign bit set (neg fits).
+    let done = (if rest == 0 then sign-bit == 0
+                else (if rest == (0 - 1) then sign-bit == 1 else false)) in
+    (if done then b1(low)
+     else Bytes.concat(b1(low + 128), sleb-go(rest, fuel - 1)))
+
+/// Wrap a section BODY in its `<id> <uleb byte-length> <body>` framing.
+def section(id: Int64, body: Bytes) = Bytes.concat(b1(id), Bytes.concat(uleb(Bytes.len(body)), body))
+
+/// The wasm module PREAMBLE: magic `\0asm` + version 1.
+def preamble() = Bytes.of([UInt8.wrap(0), UInt8.wrap(97), UInt8.wrap(115), UInt8.wrap(109),
+                           UInt8.wrap(1), UInt8.wrap(0), UInt8.wrap(0), UInt8.wrap(0)])
+
+/// Type section: one function type `() -> i64`. `01`=one type, `60`=functype, `00`=zero params,
+/// `01 7e`=one result of type i64 (`0x7e`).
+def type-section() = section(1, Bytes.of([UInt8.wrap(1), UInt8.wrap(96), UInt8.wrap(0), UInt8.wrap(1), UInt8.wrap(126)]))
+
+/// Function section: one function declared to use type index 0. `01`=one func, `00`=type index 0.
+def func-section() = section(3, Bytes.of([UInt8.wrap(1), UInt8.wrap(0)]))
+
+/// Export section: export the single function as `main`. `01`=one export, `04`=name length,
+/// `6d 61 69 6e`="main", `00`=export kind func, `00`=func index 0.
+def export-section() =
+  section(7, Bytes.of([UInt8.wrap(1), UInt8.wrap(4), UInt8.wrap(109), UInt8.wrap(97), UInt8.wrap(105), UInt8.wrap(110),
+                       UInt8.wrap(0), UInt8.wrap(0)]))
+
+/// A function body for `i64.const v; end`: `00`=zero local groups, `42`=i64.const, `<sleb v>`, `0b`=end.
+def const-body(v: Int64) =
+  Bytes.concat(b1(0), Bytes.concat(b1(66), Bytes.concat(sleb(v), b1(11))))
+
+/// Code section wrapping a single function body: `01`=one body, `<uleb bodylen>`, `<body>`.
+def code-section(body: Bytes) =
+  section(10, Bytes.concat(b1(1), Bytes.concat(uleb(Bytes.len(body)), body)))
+
+/// Emit a whole module for a constant-`main` Core term. W1: only `Core.CNum(v)` is emitted; any other Core
+/// shape returns `None` (out of the W1 subset — a later increment emits it). The value of a nullary `main`
+/// module IS its body's value, so a `CNum(v)` module runs to `v`.
+def emit-module(c: Core) = match c with
+  | Core.CNum(v) => Option.Some(Bytes.concat(preamble(),
+                      Bytes.concat(type-section(),
+                        Bytes.concat(func-section(),
+                          Bytes.concat(export-section(), code-section(const-body(v)))))))
+  | _ => Option.None(unit)
+
+/// TESTS ----------------------------------------------------------------------------------------------
+/// W1 verifies the emitted bytes STRUCTURALLY in-Cadenza (no host wasmtime yet — that gate is W4).
+
+/// Byte `i` of `b`, or -1 if out of range (so a test can assert a fixed offset totally).
+def byte-of(b: Bytes, i: Int64) = match Bytes.at(b, i) with | Option.Some(x) => x | Option.None(_) => 0 - 1
+
+@test
+def em-cnum-emits-a-module() =
+  // a CNum emits Some(bytes); a non-CNum (W1 out-of-subset) emits None.
+  (match emit-module(Core.CNum(42)) with
+    | Option.Some(_) => (match emit-module(Core.CVar(0)) with | Option.None(_) => unit | _ => trap("CVar out of W1 subset"))
+    | Option.None(_) => trap("CNum emits a module"))
+
+@test
+def em-module-has-wasm-magic-and-version() =
+  // the first 8 bytes are the wasm magic `\0asm` + version 1.
+  (match emit-module(Core.CNum(7)) with
+    | Option.Some(m) =>
+      (if (byte-of(m, 0) == 0) then
+        (if (byte-of(m, 1) == 97) then
+          (if (byte-of(m, 2) == 115) then
+            (if (byte-of(m, 3) == 109) then
+              (if (byte-of(m, 4) == 1) then
+                (if (byte-of(m, 5) == 0) then unit else trap("version byte 5"))
+               else trap("version byte 4")) else trap("magic 'm'")) else trap("magic 's'")) else trap("magic 'a'")) else trap("magic NUL"))
+    | Option.None(_) => trap("emits a module"))
+
+@test
+def em-uleb-small-is-one-byte() =
+  // a value < 128 ulebs to exactly one byte equal to itself.
+  (if (byte-of(uleb(5), 0) == 5) then
+    (if (Bytes.len(uleb(5)) == 1) then unit else trap("uleb 5 is one byte")) else trap("uleb 5 == 5"))
+
+@test
+def em-uleb-onetwentyeight-is-two-bytes() =
+  // 128 = 0x80 → ULEB `80 01` (low group 0 with more-bit, then 1).
+  (if (byte-of(uleb(128), 0) == 128) then
+    (if (byte-of(uleb(128), 1) == 1) then
+      (if (Bytes.len(uleb(128)) == 2) then unit else trap("uleb 128 is two bytes")) else trap("uleb 128 high byte 1")) else trap("uleb 128 low byte 0x80"))
+
+@test
+def em-sleb-small-nonneg-is-one-byte() =
+  // a small non-negative value (< 64) slebs to one byte equal to itself (sign bit clear).
+  (if (byte-of(sleb(7), 0) == 7) then
+    (if (Bytes.len(sleb(7)) == 1) then unit else trap("sleb 7 is one byte")) else trap("sleb 7 == 7"))
+
+@test
+def em-sleb-negative-one-is-hex7f() =
+  // -1 slebs to a single byte 0x7f (7 one-bits; sign bit set, rest == -1 → stop).
+  (if (byte-of(sleb(0 - 1), 0) == 127) then
+    (if (Bytes.len(sleb(0 - 1)) == 1) then unit else trap("sleb -1 is one byte")) else trap("sleb -1 == 0x7f"))
+
+@test
+def em-code-section-tag-and-body-ends-with-const-and-end() =
+  // the module ends with the code section: … 0a <size> 01 <bodylen> 00 42 <sleb v> 0b. For v=3 the tail is
+  // 00 42 03 0b (no locals, i64.const 3, end). Check the last 4 bytes.
+  (match emit-module(Core.CNum(3)) with
+    | Option.Some(m) =>
+      (let n = Bytes.len(m) in
+       (if (byte-of(m, n - 4) == 0) then          // zero local groups
+         (if (byte-of(m, n - 3) == 66) then        // i64.const opcode 0x42
+           (if (byte-of(m, n - 2) == 3) then        // sleb of 3
+             (if (byte-of(m, n - 1) == 11) then unit else trap("body ends with 0x0b end")) else trap("i64.const 3")) else trap("0x42 i64.const")) else trap("zero locals")))
+    | Option.None(_) => trap("emits a module"))
+
+export { emit-module, uleb, sleb }

@@ -143,6 +143,13 @@ def c-cx-var-in-later-binding() = Case.Case([Tok.TLet, Tok.TName(1), Tok.TEq, To
 def c-cx-div-paren-divisor() = Case.Case([Tok.TLet, Tok.TName(1), Tok.TEq, Tok.TNum(20), Tok.TIn, Tok.TName(1), Tok.TOp(47), Tok.TLParen, Tok.TNum(2), Tok.TOp(43), Tok.TNum(3), Tok.TRParen], Expect.Runs(4))
 /// `let flag = 5 > 3 in if flag then 1 else 0` → flag=true → 1 (a Bool-valued let read as an if-condition).
 def c-cx-bool-let-as-cond() = Case.Case([Tok.TLet, Tok.TName(1), Tok.TEq, Tok.TNum(5), Tok.TOp(62), Tok.TNum(3), Tok.TIn, Tok.TIf, Tok.TName(1), Tok.TThen, Tok.TNum(1), Tok.TElse, Tok.TNum(0)], Expect.Runs(1))
+/// `(1 + 2) * 3` → 9 (parens OVERRIDE precedence: without them `1 + 2 * 3` = 7). The end-to-end pin that
+/// a parenthesised sub-expression regroups the tree — the eval-side companion of `pd-parens-override`.
+def c-cx-paren-overrides-precedence() = Case.Case([Tok.TLParen, Tok.TNum(1), Tok.TOp(43), Tok.TNum(2), Tok.TRParen, Tok.TOp(42), Tok.TNum(3)], Expect.Runs(9))
+/// `2 * (3 + 4)` → 14 (parens on the RIGHT operand of a higher-precedence op).
+def c-cx-paren-right-operand() = Case.Case([Tok.TNum(2), Tok.TOp(42), Tok.TLParen, Tok.TNum(3), Tok.TOp(43), Tok.TNum(4), Tok.TRParen], Expect.Runs(14))
+/// `((5))` → 5 (redundant NESTED parens collapse to the inner literal — the paren-nests-full-grammar recursion).
+def c-cx-nested-redundant-parens() = Case.Case([Tok.TLParen, Tok.TLParen, Tok.TNum(5), Tok.TRParen, Tok.TRParen], Expect.Runs(5))
 
 /// THE CORPUS: every conformance case. Widening the language = appending here (start-low-and-climb).
 def corpus() = [
@@ -157,7 +164,8 @@ def corpus() = [
   c-gt(), c-le(), c-ge(), c-ne(), c-rel-in-if(), c-bool-rel-declines(),
   c-div(), c-div-by-zero(), c-mod(), c-div-precedence(), c-bool-div-declines(),
   c-cx-nested-let-precedence(), c-cx-arith-in-cond(), c-cx-mod-parity(), c-cx-var-in-later-binding(),
-  c-cx-div-paren-divisor(), c-cx-bool-let-as-cond()
+  c-cx-div-paren-divisor(), c-cx-bool-let-as-cond(),
+  c-cx-paren-overrides-precedence(), c-cx-paren-right-operand(), c-cx-nested-redundant-parens()
 ]
 
 /// THE SCOREBOARD: `(passed, total)` over the corpus — what the `cadenza-ml` gate target prints as `X/N`.
@@ -197,7 +205,7 @@ def cf-corpus-size-floor() =
   // v-fleet-tooling as the compiler-ml gate-throughput + false-hang source). The conformance FLOOR
   // is now: 47 per-case @tests (each case correct) + this size check (no case dropped), with none of
   // the redundant full-corpus re-run.
-  (if List.len(corpus()) == 47 then unit else trap("corpus has 47 cases"))
+  (if List.len(corpus()) == 50 then unit else trap("corpus has 50 cases"))
 
 @test
 def cf-count-passing-partial() =
@@ -307,5 +315,11 @@ def conformance-cx-var-in-later-binding() = (if check-case(c-cx-var-in-later-bin
 def conformance-cx-div-paren-divisor() = (if check-case(c-cx-div-paren-divisor()) then unit else trap("let x=20 in x/(2+3) → 4"))
 @test
 def conformance-cx-bool-let-as-cond() = (if check-case(c-cx-bool-let-as-cond()) then unit else trap("let flag=5>3 in if flag then 1 else 0 → 1"))
+@test
+def conformance-cx-paren-overrides-precedence() = (if check-case(c-cx-paren-overrides-precedence()) then unit else trap("(1 + 2) * 3 → 9"))
+@test
+def conformance-cx-paren-right-operand() = (if check-case(c-cx-paren-right-operand()) then unit else trap("2 * (3 + 4) → 14"))
+@test
+def conformance-cx-nested-redundant-parens() = (if check-case(c-cx-nested-redundant-parens()) then unit else trap("((5)) → 5"))
 
 export { Expect.*, Case.*, case-passes, check-case, count-passing, corpus, conformance, all-pass }

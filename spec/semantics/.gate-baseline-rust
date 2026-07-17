@@ -3553,7 +3553,7 @@ todo	a String-returning closure alongside a parameterized plain export — the p
 todo	a THREE-argument closure round-trips — flat arrow spelling
 todo	a Tuple ARG among scalars with a BYTE-ROPE result crosses the direct-call boundary
 todo	a UInt64 closure round-trips through a consumer export
-todo	a bottom-up fold matches a tuple of its recursive results with constructor patterns
+pass	a bottom-up fold matches a tuple of its recursive results with constructor patterns
 todo	a build-time delegated effect whose result a returned closure captures does not escape
 todo	a camelCase round-trip resolves through kebab boundary-name normalization
 todo	a camelCase same-signature multi-export normalizes each make-<name>
@@ -3608,6 +3608,7 @@ todo	a host effect with a non-kebab OPERATION name crosses under a normalized fu
 todo	a host op whose result is a QUANTITY crosses the boundary as its inner scalar (unit erased)
 todo	a host op with a String parameter composes with the value-heap runtime
 todo	a list element that is a sum with a tuple payload binds the tuple fields
+pass	a list is exhaustive when the empty, singleton, and two-or-more arms jointly cover every length
 todo	a literal narrow-width newtype list element in a constructed list grounds to its inner width
 todo	a multi-argument closure returning a COMPOUND round-trips — flat arrow spelling
 todo	a multi-argument closure round-trips through a consumer

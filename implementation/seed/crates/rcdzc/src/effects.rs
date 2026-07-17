@@ -735,6 +735,27 @@ pub fn nearest_declared_op(db: &mut Db, op: StructId) -> Option<(StructId, Strin
     Some((key_occ, candidate))
 }
 
+/// Whether the operation `key` — absent from the effect NAMED `name` that a bare `E` reference resolves to
+/// (the FIRST-declared same-named effect) — IS declared on a DIFFERENT, LATER `(effect name …)` of the same
+/// name. Two same-named effects are DISTINCT (an effect's identity is its declaration, not its name —
+/// `capabilities-and-effects.md` §An Effect's Operations Are A Closed Set; pinned by `14-effects:3129`), so
+/// a bare `E` resolves the first and `E.key` where `key` lives only on a later same-named `E` fails "no
+/// operation `key`" — baffling, since `key`'s declaration is visibly present. This detects exactly that
+/// case so `no_field_reject` can explain it (the diagnostic-quality half of the works-as-specified
+/// duplicate-effect finding). `resolved_first_occ` is the declaration occurrence the bare name resolved to
+/// (so we only flag OTHER declarations). Returns true iff some same-named effect with a DIFFERENT occurrence
+/// declares an op called `key`.
+pub fn op_on_other_same_named_effect(
+    db: &Db,
+    name: &str,
+    resolved_first_occ: StructId,
+    key: &str,
+) -> bool {
+    db.effect_decls.iter().any(|e| {
+        e.name == name && e.occ != resolved_first_occ && e.ops.iter().any(|o| o.name == key)
+    })
+}
+
 /// The TWO-TIER hint for a handler arm whose op `(. E k)` names an operation `E` does not declare — the
 /// effect-op analogue of `no_field_reject`'s member-access enrichment. Returns `(key-occurrence, hint,
 /// confident-single)`: `hint` is the `did_you_mean` suffix (a confident `` — did you mean `k`? `` when a

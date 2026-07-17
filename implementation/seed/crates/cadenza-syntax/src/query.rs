@@ -398,6 +398,187 @@ impl Template {
     }
 }
 
+/// A potential VARIABLE CAPTURE a rewrite template could introduce: a binder the template adds (a
+/// `let`/`fn`/`def`/`match`-arm binding) whose name occurs FREE inside the subtree a matched
+/// metavariable bound. Splicing that metavariable's tree under the new binder silently re-scopes those
+/// free occurrences to the template's binder — changing the program's meaning even though the rewrite
+/// is a faithful structural replace. This is a LINT signal, not an error: the documented rewrite
+/// contract is structural replace + re-parse (no α-renaming — binding is the compiler's domain, not
+/// this syntax layer's), exactly like ast-grep/comby; capture avoidance is the template author's job.
+/// But because `cdz rewrite` is scripted by agents as a "validated" edit, surfacing the risk is cheap
+/// insurance. Reported by [`Template::capture_risks`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CaptureRisk {
+    /// The name the template's binder introduces (e.g. `x` in a template `(let ((x …)) …)`).
+    pub binder: String,
+    /// The metavariable whose bound subtree contains `binder` as a free name (e.g. `e` for `,e`).
+    pub metavar: String,
+}
+
+/// The names a binder FORM introduces into the scope of its body — the recognized surface binders,
+/// mirroring the canonical s-expression shapes (`core-semantics.md`): `(let ((n v)…) body…)` binds each
+/// `n`; `(fn (p…) body…)` and `(def (f p…) body…)` bind the parameter (and `def`'s function) names; a
+/// `(match scrut (pat body)…)` arm binds the names its `pat` introduces. Returns the LITERAL binder
+/// names only — a metavariable in binder position (`(let ((,n …)) …)`) introduces no statically-known
+/// name (it is filled from the match), so it is skipped. Used by the capture lint, not by evaluation
+/// (this layer has no scope semantics); it is a deliberately CONSERVATIVE over-approximation — an
+/// unrecognized binder form simply contributes no names (a missed warning, never a false rewrite).
+fn binder_names(form: &Tree) -> Vec<String> {
+    let Tree::List(items, _) = form else {
+        return Vec::new();
+    };
+    let head = items.first().and_then(|h| h.as_name());
+    let mut out = Vec::new();
+    // Collect the literal binder names a binding-target tree introduces. For the forms handled here
+    // (`let` binding-name, `fn` param list, `def` signature) every bare-name leaf is a binder — a `fn`
+    // param `(n)` and a `def` signature `(f a)` name real bindings in HEAD position too, so (unlike a
+    // match-arm constructor pattern, not handled in this lint) no head is skipped. Metavars in binder
+    // position are `(unquote …)` lists — their `unquote` head is not a `Name` leaf, so they contribute
+    // nothing (the name is filled from the match, not statically known); wildcards contribute nothing.
+    fn pat_names(t: &Tree, out: &mut Vec<String>) {
+        match t {
+            Tree::Atom(Leaf::Name(n), _) if !is_wildcard(n) => out.push(n.clone()),
+            Tree::List(kids, _) => {
+                // A metavar `(unquote name)` / splice `(unquote-splicing name)` in binder position names
+                // no static binder — skip it rather than treat `unquote`/its payload as binder names.
+                if as_metavar_tree(t).is_some() || as_splice(t).is_some() {
+                    return;
+                }
+                for k in kids {
+                    pat_names(k, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    match head {
+        Some("let") => {
+            // (let ((n v) (n v)…) body…) — each binding pair's first element is a binder name.
+            if let Some(Tree::List(bindings, _)) = items.get(1) {
+                for bind in bindings {
+                    if let Tree::List(pair, _) = bind
+                        && let Some(name) = pair.first()
+                    {
+                        pat_names(name, &mut out);
+                    }
+                }
+            }
+        }
+        Some("fn") => {
+            // (fn (p…) body…) — the parameter list binds each param.
+            if let Some(params) = items.get(1) {
+                pat_names(params, &mut out);
+            }
+        }
+        Some("def") => {
+            // (def (f p…) body…) — the signature list binds the function name AND its params.
+            if let Some(sig) = items.get(1) {
+                pat_names(sig, &mut out);
+            }
+        }
+        _ => {}
+    }
+    out
+}
+
+/// The bare names occurring FREE in `tree` — every `Name` atom not in HEAD position of a list (a head
+/// name is an operator/keyword/constructor, not a variable reference) and not shadowed by a binder the
+/// subtree itself introduces. A conservative syntactic free-variable set for the capture lint: it has
+/// no type/scope information (that is the compiler's domain), so it treats every non-head name as a
+/// potential variable and only discounts shadowing by the recognized binder forms ([`binder_names`]).
+/// Over-approximation is safe for a lint — it can only warn about a name that truly appears.
+fn free_names(tree: &Tree, out: &mut std::collections::BTreeSet<String>) {
+    fn walk(t: &Tree, bound: &BoundStack, out: &mut std::collections::BTreeSet<String>) {
+        match t {
+            Tree::Atom(Leaf::Name(n), _) if !is_wildcard(n) && !bound.contains(n) => {
+                out.insert(n.clone());
+            }
+            Tree::List(items, _) => {
+                let introduced = binder_names(t);
+                let inner = BoundStack::with(bound, &introduced);
+                // Skip the head name (operator/keyword/constructor — not a variable reference); walk the
+                // rest under any names this form binds.
+                for (i, c) in items.iter().enumerate() {
+                    if i == 0 && c.as_name().is_some() {
+                        continue;
+                    }
+                    walk(c, &inner, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    walk(tree, &BoundStack::empty(), out);
+}
+
+/// A tiny persistent "set of bound names" for the free-var walk — a linked frame of the names each
+/// enclosing binder introduced, so shadowing is scoped without cloning a set at every node.
+enum BoundStack<'a> {
+    Empty,
+    Frame(&'a [String], &'a BoundStack<'a>),
+}
+impl<'a> BoundStack<'a> {
+    fn empty() -> BoundStack<'static> {
+        BoundStack::Empty
+    }
+    fn with(parent: &'a BoundStack<'a>, names: &'a [String]) -> BoundStack<'a> {
+        BoundStack::Frame(names, parent)
+    }
+    fn contains(&self, name: &str) -> bool {
+        match self {
+            BoundStack::Empty => false,
+            BoundStack::Frame(names, parent) => {
+                names.iter().any(|n| n == name) || parent.contains(name)
+            }
+        }
+    }
+}
+
+impl Template {
+    /// The potential variable CAPTURES this template introduces against a match's `bindings`: for each
+    /// binder the template adds (`let`/`fn`/`def`/`match`-arm), whether its name occurs FREE in the
+    /// subtree any matched metavariable bound. When it does, splicing that metavar under the new binder
+    /// silently re-scopes those occurrences (the breaker's `"(+ ,e 1)" -> "(let ((x 100)) (+ ,e x))"`
+    /// over `,e = x`: the spliced `x` now resolves to the template's `x`, not the outer one). Empty when
+    /// no template binder shadows a free name of any bound tree — the common, safe case.
+    ///
+    /// A LINT, not a correctness gate: the rewrite contract is a structural replace with NO α-renaming
+    /// (binding is the compiler's concern), so this only WARNS. Conservative on both sides (see
+    /// [`binder_names`]/[`free_names`]): it may miss an unrecognized binder form but never fabricates a
+    /// risk for a name that does not actually occur free.
+    pub fn capture_risks(&self, bindings: &Bindings) -> Vec<CaptureRisk> {
+        // Every binder name the template introduces anywhere.
+        let mut binders: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        fn collect_binders(t: &Tree, out: &mut std::collections::BTreeSet<String>) {
+            if let Tree::List(items, _) = t {
+                out.extend(binder_names(t));
+                items.iter().for_each(|c| collect_binders(c, out));
+            }
+        }
+        collect_binders(&self.tree, &mut binders);
+        if binders.is_empty() {
+            return Vec::new();
+        }
+        // For each metavariable, the free names of the tree(s) it bound; a binder ∩ those is a risk.
+        let mut risks = Vec::new();
+        for (metavar, trees) in bindings.iter() {
+            let mut free = std::collections::BTreeSet::new();
+            for t in trees {
+                free_names(t, &mut free);
+            }
+            for binder in &binders {
+                if free.contains(binder) {
+                    risks.push(CaptureRisk {
+                        binder: binder.clone(),
+                        metavar: metavar.to_string(),
+                    });
+                }
+            }
+        }
+        risks
+    }
+}
+
 /// Compile a pattern `Tree` into a [`Pat`]. A splice at the top level (not a list child) is an error.
 fn compile_pat(t: &Tree) -> Result<Pat, PatternError> {
     if let Some(payload) = as_metavar_tree(t) {
@@ -5651,5 +5832,109 @@ mod tests {
                 "swept a meaningful anti-unification space, got {checked}"
             );
         }
+    }
+
+    /// Match `pattern` against `subject` and return the FIRST match's bindings (the capture lint runs
+    /// per matched site).
+    fn first_bindings(pattern: &str, subject: &str) -> Bindings {
+        let s = subj(subject);
+        let mut m = search(&pat(pattern), &s, None);
+        assert!(
+            !m.is_empty(),
+            "pattern {pattern:?} did not match {subject:?}"
+        );
+        m.remove(0).bindings
+    }
+
+    #[test]
+    fn capture_risk_flags_the_breaker_repro() {
+        // The breaker's case: rewriting `(+ ,e 1)` -> `(let ((x 100)) (+ ,e x))` over a program where the
+        // matched `,e` IS the variable `x`. The template introduces a binder `x`, and `,e` bound the tree
+        // `x` (a free `x`), so splicing it under the new `let` silently re-scopes it — a capture. The lint
+        // must flag (binder x, metavar e).
+        let binds = first_bindings("(+ ,e 1)", "(+ x 1)");
+        let risks = tmpl("(let ((x 100)) (+ ,e x))").capture_risks(&binds);
+        assert_eq!(
+            risks,
+            vec![CaptureRisk {
+                binder: "x".to_string(),
+                metavar: "e".to_string()
+            }],
+            "the template's `x` binder captures the free `x` inside the matched `,e`"
+        );
+    }
+
+    #[test]
+    fn no_capture_when_binder_name_is_fresh_or_metavar_tree_lacks_it() {
+        // Same template shape, but `,e` bound `y` (not `x`): the template's `x` binder does NOT occur free
+        // in `y`, so no capture.
+        let binds = first_bindings("(+ ,e 1)", "(+ y 1)");
+        assert!(
+            tmpl("(let ((x 100)) (+ ,e x))")
+                .capture_risks(&binds)
+                .is_empty(),
+            "a fresh binder name captures nothing"
+        );
+        // A template with NO binder at all never risks capture, whatever the match bound.
+        let binds = first_bindings("(+ ,e 1)", "(+ x 1)");
+        assert!(
+            tmpl("(* ,e 2)").capture_risks(&binds).is_empty(),
+            "a binder-free template has no capture risk"
+        );
+        // The matched tree contains `x` only in HEAD position (`(x 1)` — an application/operator head, not
+        // a free variable reference), so a `let ((x …))` binder does not capture it.
+        let binds = first_bindings("(f ,e)", "(f (x 1))");
+        assert!(
+            tmpl("(let ((x 0)) ,e)").capture_risks(&binds).is_empty(),
+            "a name only in head position is not a captured free variable"
+        );
+    }
+
+    #[test]
+    fn capture_risk_recognizes_fn_and_def_and_nested_binders() {
+        // A `fn` parameter binder captures a free occurrence in a matched metavar.
+        let binds = first_bindings("(g ,body)", "(g (+ n 1))");
+        assert_eq!(
+            tmpl("(fn (n) ,body)").capture_risks(&binds),
+            vec![CaptureRisk {
+                binder: "n".to_string(),
+                metavar: "body".to_string()
+            }],
+            "a fn parameter `n` captures the free `n` in the spliced body"
+        );
+        // A `def` signature binds the function name AND params; a param capture is flagged.
+        let binds = first_bindings("(g ,body)", "(g (+ a 1))");
+        assert_eq!(
+            tmpl("(def (h a) ,body)").capture_risks(&binds),
+            vec![CaptureRisk {
+                binder: "a".to_string(),
+                metavar: "body".to_string()
+            }]
+        );
+        // Shadowing: an INNER binder that re-binds the name means the free occurrence under it is NOT free
+        // there — but the metavar tree itself is what matters, and here `,body` bound `(+ n 1)` with a free
+        // `n`, while the template's OUTER `fn (n)` still captures it. (Confirms we scan template binders
+        // against the metavar's own free set, the intended lint.)
+        let binds = first_bindings("(g ,body)", "(g (+ n 1))");
+        assert!(
+            !tmpl("(fn (n) (let ((k 0)) ,body))")
+                .capture_risks(&binds)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn free_names_skips_heads_and_respects_inner_shadowing() {
+        // `free_names` treats a head name as an operator (not a variable) and discounts names an inner
+        // binder shadows. `(let ((x 1)) (+ x y))`: `x` is bound (not free), `+` is a head, `y` is free.
+        let mut free = std::collections::BTreeSet::new();
+        free_names(&subj("(let ((x 1)) (+ x y))"), &mut free);
+        assert!(free.contains("y"), "y is free");
+        assert!(!free.contains("x"), "x is bound by the let, not free");
+        assert!(!free.contains("+"), "+ is an operator head, not a variable");
+        assert!(
+            !free.contains("let"),
+            "the let keyword is a head, not a variable"
+        );
     }
 }

@@ -895,49 +895,62 @@ fn bind_host_op_bindings(
     let str_get = get_func_named(store, "str-get")?;
     let str_new = get_func_named(store, "str-new")?;
 
+    // Group the bindings by interface: `Linker::instance(iface)` may be called only ONCE per interface
+    // name, so several ops sharing one interface (e.g. `Prim.exec`/`Prim.http`/`Prim.append`) must be
+    // bound through a SINGLE `iface_linker`. Preserve order within an interface (first-seen order).
+    let mut by_iface: Vec<(String, Vec<(String, HostOp)>)> = Vec::new();
+    for b in bindings {
+        let HostOpBinding { iface, op, host } = b;
+        match by_iface.iter_mut().find(|(i, _)| *i == iface) {
+            Some((_, ops)) => ops.push((op, host)),
+            None => by_iface.push((iface, vec![(op, host)])),
+        }
+    }
+
     // Bind each op to a `func_new` closure of the right shape. Reading the arg rope (`str-get`) / minting
     // the result rope (`str-new`) inside the closure via the passed `ctx` is the `bind_runtime_into`
     // pattern. A helper reads a u32 arg handle to its String; each arm marshals per its HostOp variant.
-    for b in bindings {
-        let HostOpBinding { iface, op, host } = b;
+    for (iface, ops) in by_iface {
         let mut iface_linker = linker
             .instance(&iface)
             .map_err(|e| anyhow!("linker instance {iface}: {e}"))?;
-        let op_label = op.clone();
-        match host {
-            HostOp::StringToString(f) => {
-                let f = Arc::new(f);
-                let (sg, sn) = (str_get, str_new);
-                iface_linker.func_new(&op, move |mut ctx, params, results| {
-                    let arg = read_arg_string(&mut ctx, &sg, params, &op_label)?;
-                    let out = f(arg);
-                    let mut made = [Val::Bool(false)];
-                    sn.call(&mut ctx, &[Val::String(out)], &mut made)?;
-                    sn.post_return(&mut ctx)?;
-                    write_result(results, made[0].clone(), &op_label)?;
-                    Ok(())
-                })?;
-            }
-            HostOp::StringToScalar(f) => {
-                let f = Arc::new(f);
-                let sg = str_get;
-                iface_linker.func_new(&op, move |mut ctx, params, results| {
-                    let arg = read_arg_string(&mut ctx, &sg, params, &op_label)?;
-                    write_result(results, Val::S64(f(arg)), &op_label)?;
-                    Ok(())
-                })?;
-            }
-            HostOp::UnitToString(f) => {
-                let f = Arc::new(f);
-                let sn = str_new;
-                iface_linker.func_new(&op, move |mut ctx, _params, results| {
-                    let out = f();
-                    let mut made = [Val::Bool(false)];
-                    sn.call(&mut ctx, &[Val::String(out)], &mut made)?;
-                    sn.post_return(&mut ctx)?;
-                    write_result(results, made[0].clone(), &op_label)?;
-                    Ok(())
-                })?;
+        for (op, host) in ops {
+            let op_label = op.clone();
+            match host {
+                HostOp::StringToString(f) => {
+                    let f = Arc::new(f);
+                    let (sg, sn) = (str_get, str_new);
+                    iface_linker.func_new(&op, move |mut ctx, params, results| {
+                        let arg = read_arg_string(&mut ctx, &sg, params, &op_label)?;
+                        let out = f(arg);
+                        let mut made = [Val::Bool(false)];
+                        sn.call(&mut ctx, &[Val::String(out)], &mut made)?;
+                        sn.post_return(&mut ctx)?;
+                        write_result(results, made[0].clone(), &op_label)?;
+                        Ok(())
+                    })?;
+                }
+                HostOp::StringToScalar(f) => {
+                    let f = Arc::new(f);
+                    let sg = str_get;
+                    iface_linker.func_new(&op, move |mut ctx, params, results| {
+                        let arg = read_arg_string(&mut ctx, &sg, params, &op_label)?;
+                        write_result(results, Val::S64(f(arg)), &op_label)?;
+                        Ok(())
+                    })?;
+                }
+                HostOp::UnitToString(f) => {
+                    let f = Arc::new(f);
+                    let sn = str_new;
+                    iface_linker.func_new(&op, move |mut ctx, _params, results| {
+                        let out = f();
+                        let mut made = [Val::Bool(false)];
+                        sn.call(&mut ctx, &[Val::String(out)], &mut made)?;
+                        sn.post_return(&mut ctx)?;
+                        write_result(results, made[0].clone(), &op_label)?;
+                        Ok(())
+                    })?;
+                }
             }
         }
     }

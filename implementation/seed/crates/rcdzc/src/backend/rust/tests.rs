@@ -3077,6 +3077,53 @@ fn rustc_roundtrip_two_disc_ge_1_nested_sum_variants_over_a_runtime_disc() {
 }
 
 #[test]
+fn a_bottom_up_fold_tuple_of_recursive_results_never_miscompiles_declines_or_computes_12() {
+    // LATENT-HAZARD TRIPWIRE (concierge-directed, tick-103). The self-hosting optimizer idiom: `fold`
+    // recursively simplifies an expression's two children, then matches the TUPLE of the two recursive
+    // results `(tuple (fold a) (fold b))` with CONSTRUCTOR patterns `(tuple (E.Lit x) (E.Lit y))` to fire
+    // a rewrite. Folding `(Add (Lit 3) (Add (Lit 4) (Lit 5)))` must collapse to `(Lit 12)`, so `ev` = 12.
+    //
+    // HISTORY: this DECLINED while the recursive self-call's result shape was unresolved (subject_ty =
+    // Ty::Any). Once v-inference's SCC return-type-fixpoint LANDED, it grounds subject_ty to E — which
+    // EXPOSED a real miscompile: emit_sum_switch minted the two `(E.Lit x)` / `(E.Lit y)` payload binders
+    // with a name keyed on the switch path's LENGTH, so the two sibling switches (`[Elem(0)]` and
+    // `[Elem(1)]` of the tuple, both len 1, both arm 0) COLLIDED to the same name — `x` and `y` aliased and
+    // `(+ x y)` emitted `p.checked_add(p)`, computing 20 not 12. Fixed by keying the binder name off the
+    // path CONTENT (`sum_path_tag`: `e0` vs `e1`) so siblings never collide. It now EMITS and computes 12.
+    //
+    // THE TRIPWIRE (kept as a permanent guard against a re-collision OR a future wrong grounding — e.g. a
+    // grounding to a DIFFERENT-shaped sum, which the emit_sum_switch variant-count guard declines rather
+    // than mis-resolving; see the 20-structural-editing corpus case + [[queued-generic-transformer-closure-tie]]):
+    // the ONLY acceptable outcomes are (a) a clean DECLINE, or (b) an emit that rustc-compiles AND runs to
+    // 12. A build that emits but yields anything ELSE (20, a panic, non-compile) fails here — catching any
+    // regression of the binder-collision fix or a bad grounding immediately.
+    let prog = "(module m (type E (Lit Int64) (Add (Tuple E E))) \
+         (def (fold e) \
+           (match e ((E.Lit n) (E.Lit n)) \
+             ((E.Add (tuple a b)) \
+               (match (tuple (fold a) (fold b)) \
+                 ((tuple (E.Lit x) (E.Lit y)) (E.Lit (+ x y))) \
+                 ((tuple fa fb) (E.Add (tuple fa fb))))))) \
+         (def (ev e) (match e ((E.Lit n) n) ((E.Add (tuple a b)) (+ (ev a) (ev b))))) \
+         (def (run) (ev (fold (E.Add (tuple (E.Lit 3) (E.Add (tuple (E.Lit 4) (E.Lit 5)))))))) \
+         (export run))";
+    match compile_rust_result(prog) {
+        // (a) A sound decline — the current, expected behavior while the self-call shape is unresolved.
+        Err(_) => {}
+        // (b) It emitted — then it MUST be correct (compiles + runs to 12), never a wrong-variant 20.
+        Ok(_rs) => {
+            if let Some(out) = rustc_run(&compile_rust(prog), "run()") {
+                assert_eq!(
+                    out, "12",
+                    "if the bottom-up fold emits, it MUST compute 12 — a wrong value (e.g. 20) is the \
+                     wrong-variant sum-match miscompile this tripwire guards against"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn rustc_roundtrip_match_a_runtime_tuple_from_an_if() {
     // A top-level `(tuple a b)` pattern over a RUNTIME tuple scrutinee — a tuple built by an `if` (or a
     // branchy fn), NOT a constant `Core::Tuple` and NOT a bound `__pay` (a top-level tuple match mints no

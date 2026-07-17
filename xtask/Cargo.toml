@@ -21,6 +21,9 @@ edition = "2024"
 publish = false
 
 [dependencies]
+# The Rust-backend boundary-value render + descriptor-parse logic, shared with the `cdz run-rust`
+# subcommand so the gate's `--target rust` render and the CLI's can't drift (extracted from xtask).
+cdz-rust-render = { path = "../implementation/seed/crates/cdz-rust-render" }
 sha2 = "0.10"
 # The fleet orchestrator (`fleet` subcommand) serializes its durable manifest + inbox messages as
 # JSON. Dev-desk only, like the rest of xtask's deps — never enters the shipped compiler.

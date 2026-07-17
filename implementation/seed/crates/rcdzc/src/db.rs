@@ -162,6 +162,17 @@ thread_local! {
     /// `many_wrong_sum_ctor_arms_list_the_matched_variants_in_bounded_time`.
     pub(crate) static VARIANT_CLOSEST_MATCHES_MISSES: std::cell::Cell<u64> =
         const { std::cell::Cell::new(0) };
+
+    /// Test-only: total `no_field_suggestion` MISSES since the last reset — the record-field "did you
+    /// mean?" (winner, hint) pair actually COMPUTED (`suggest::nearest` + `did_you_mean` each build the
+    /// record's O(fields) name list and edit-distance-scan it), NOT the memo hits. A wide record (N
+    /// fields) with a typo'd field accessed from N sites re-ran that per access → O(N²); the per-
+    /// `(reduced-record occ, key)` memo collapses repeats, so a program's misses = its DISTINCT
+    /// (record, key) typo'd accesses, independent of the site count. The noise-free regression signal
+    /// (a wall-clock ratio false-fails under fleet load) — see
+    /// `many_typod_field_accesses_of_one_wide_record_suggest_in_bounded_time`.
+    pub(crate) static NO_FIELD_SUGGESTION_MISSES: std::cell::Cell<u64> =
+        const { std::cell::Cell::new(0) };
 }
 
 /// A top-level definition located by the one cheap top-level scan: its name, its parameter

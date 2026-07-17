@@ -1034,60 +1034,14 @@ fn a_list_parameter_test_is_property_tested_by_a_synthesized_generator() {
     );
 }
 
-/// The TESTED tier of the three-tier `@ensures` (co-designed with v-verification): a `@test`-stacked
-/// `@ensures` property-checks the postcondition `Q` (over the result binder `it`) across generated inputs.
-/// A TRUE postcondition passes the trial count; the `@ensures` predicate — not the def body — is the oracle.
-#[test]
-fn a_test_stacked_ensures_property_checks_a_true_postcondition() {
-    let d = dir("ensures-true");
-    // `@ensures(it == n)` on the identity: the postcondition holds for every generated `n`, so the property
-    // passes the trial count. `it` binds to the def's result. A second def keeps the ML top level a do-block.
-    let f = write(
-        &d,
-        "m.cdz",
-        "@test @ensures(it == n)\n\
-         def ident(n: Int64) = n\n\
-         @test def plain() = if 1 == 1 then unit else trap(\"p\")\n",
-    );
-    let (ok, stdout, stderr) = run(&["test", &f, "--trials", "20"]);
-    assert!(
-        ok,
-        "a true @ensures postcondition passes over trials: {stdout}{stderr}"
-    );
-    assert!(
-        stdout.contains("PASS ident (20 trials)"),
-        "the @ensures postcondition runs as the property oracle over the trial count: {stdout}"
-    );
-    assert!(stdout.contains("2 passed, 0 failed"), "{stdout}");
-}
-
-/// A FALSE `@test @ensures` postcondition FAILS with a shrunk counterexample + a replay seed — the TESTED
-/// tier's headline value: not a proof, but a concrete counterexample. `@ensures(it == 0)` on the identity is
-/// false for any generated `n != 0`, so the postcondition traps (via the synthesized `(if Q unit (trap …))`)
-/// and the runner shrinks to the minimal failing input.
-#[test]
-fn a_false_test_stacked_ensures_fails_with_a_counterexample() {
-    let d = dir("ensures-false");
-    let f = write(
-        &d,
-        "m.cdz",
-        "@test @ensures(it == 0)\n\
-         def ident(n: Int64) = n\n",
-    );
-    let (ok, stdout, stderr) = run(&["test", &f, "--seed", "0"]);
-    assert!(
-        !ok,
-        "a false @ensures postcondition → non-zero exit: {stdout}{stderr}"
-    );
-    assert!(
-        stdout.contains("FAIL ident"),
-        "the false postcondition fails the test: {stdout}"
-    );
-    assert!(
-        stdout.contains("seed 0"),
-        "the replay seed is reported for the counterexample: {stdout}"
-    );
-}
+// NOTE: the two TESTED-tier `@test @ensures` integration tests (a true postcondition passes over trials; a
+// false one fails with a counterexample) MOVED OUT of this file in the `@ensures`-ownership lockstep. `@ensures`
+// enforcement — bare AND `@test`-stacked — is now v-verification's `verify_enforce::enforce` pass (it rewrites a
+// def body to `(let ((it BODY)) (if Q it (trap)))` BEFORE the test runner sees it). This vertical no longer owns
+// the `@test @ensures` postcondition rewrite (its `rewrite_ensures_stacked_tests` pre-pass was deleted here), so
+// the postcondition-behavior coverage belongs on v-verification's side once their skip-lift lands. What THIS file
+// still covers is the property-GENERATION half (the `-gen` wrapper, scalar/compound params, `@requires` constrained
+// generation) — orthogonal to `@ensures` enforcement.
 
 /// CONSTRAINED GENERATION for a `@requires` precondition: a `@test` over a `@requires`-constrained def must
 /// generate only IN-DOMAIN inputs, so the (D) body-entry precondition trap never fires and the test is not

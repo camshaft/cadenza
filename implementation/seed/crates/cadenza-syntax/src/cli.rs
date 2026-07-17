@@ -243,6 +243,15 @@ pub struct RewriteArgs {
     /// Emit the rewrite result as JSON (`{file?, count, rewritten}`) for machine consumption.
     #[arg(long)]
     json: bool,
+
+    /// Warn (on stderr) when the TEMPLATE introduces a binder (`let`/`fn`/`def`) whose name occurs FREE
+    /// inside a matched metavariable's subtree — a silent variable CAPTURE: splicing that subtree under
+    /// the new binder re-scopes its free occurrences to the template's binder, changing the program's
+    /// meaning even though the rewrite is a faithful structural replace. Purely a diagnostic (semantics
+    /// unchanged, no α-renaming — binding is the compiler's domain, not this syntax layer's); the fix is
+    /// the template author's (rename the binder, or match a fresh name). Off by default.
+    #[arg(long = "warn-capture")]
+    warn_capture: bool,
 }
 
 #[derive(Args)]
@@ -932,6 +941,34 @@ fn run_rewrite(args: &RewriteArgs) -> Result<(), String> {
         let Some((target, src)) = load_target(spec, multi)? else {
             continue;
         };
+
+        // `--warn-capture`: before rewriting, scan each rule's matches for a template binder that would
+        // capture a free name inside a matched metavariable's subtree, and warn. Diagnostic only — the
+        // rewrite proceeds unchanged (the structural-replace contract has no α-renaming).
+        if args.warn_capture {
+            for (ri, rule) in rules.rules.iter().enumerate() {
+                for m in query::search(&rule.pattern, &target.tree, None) {
+                    for risk in rule.template.capture_risks(&m.bindings) {
+                        let where_rule = if rules.rules.len() > 1 {
+                            format!(" (rule {})", ri + 1)
+                        } else {
+                            String::new()
+                        };
+                        eprintln!(
+                            "cdz: {}: warning{where_rule}: template binder `{}` may capture the free \
+                             `{}` inside the matched `,{}` — the spliced code's `{}` will resolve to \
+                             the template's binder, not the outer one (rename the binder or match a \
+                             fresh name; --warn-capture is advisory, the rewrite is unchanged)",
+                            label(&spec.path),
+                            risk.binder,
+                            risk.binder,
+                            risk.metavar,
+                            risk.binder,
+                        );
+                    }
+                }
+            }
+        }
 
         // Formatting-preserving (span-splicing) mode is the DEFAULT: it applies when the output
         // surface matches the input (no cross-surface `--to`) and the input carried spans. It edits
