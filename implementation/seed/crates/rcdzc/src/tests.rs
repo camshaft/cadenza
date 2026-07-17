@@ -19420,6 +19420,29 @@ mod match_engine {
             wrap.message,
             wrap.fix
         );
+        // A SHARED type variable an EARLIER argument already solved renders CONCRETELY, not as `_`. In
+        // `(def (pair (: t Type) (: x t) (: y t)) x)` the two `t`-annotated params share one var; typing the
+        // arg for `x` binds it, so the mismatch report for `y` must show that SOLVED type — the call-site
+        // unify now applies the accumulated substitution before rendering the expected type. `(pair Int64 1
+        // true)`: `x = 1` pins `t`'s var to Int64, so `y`'s expected type is Int64, not the unsolved-`Ty::Var`
+        // "_" it used to print ("a value of type `_` is expected here").
+        let shared = reject_full(
+            "(module m (def (pair (: t Type) (: x t) (: y t)) x) (def (g) (pair Int64 1 true)) (export g))",
+        )
+        .expect("a sibling-param mismatch on a shared type var rejects");
+        assert!(
+            shared
+                .message
+                .contains("parameter `y` is a Bool, but a value of type Int64 is expected here"),
+            "the shared var renders the type the sibling arg solved (Int64), not `_`: {}",
+            shared.message
+        );
+        assert!(
+            !shared.message.contains("value of type `_`")
+                && !shared.message.contains("value of type _"),
+            "no unsolved-var `_` in the expected-type render: {}",
+            shared.message
+        );
     }
 
     #[test]
