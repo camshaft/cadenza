@@ -29,11 +29,12 @@
 type Vec3 =
   | V3(a, a, a)
 
-/// The exact CSG tree — the FULL model (R3): primitives (Empty/Cube/Sphere/Cylinder), the three booleans,
+/// The exact CSG tree — the FULL model: primitives (Empty/Cube/Sphere/Cylinder), the three booleans,
 /// and the affine transforms that stay exact over Rational (Translate, per-axis Scale). NOTE: no `Rotate` —
 /// a general rotation needs sin/cos, which have no exact Rational form; rotation, if needed, is applied by
-/// the mesh driver at the f64 manifold leaf, keeping the model tree exact. The Float64 `Solid(Rational)` (solid.cdz)
-/// is the legacy model; this exact `Solid(Rational)` is what the drivers/examples move onto.
+/// the mesh driver at the f64 manifold leaf, keeping the model tree exact. (There is no longer a separate
+/// Float64 model — the legacy float `solid.cdz` was deleted; exact Rational/Qty is the ONLY surface.)
+///
 /// The CSG tree, GENERIC over its coordinate type `a` (stage 2 of Vec3→Qty, B-via-generic). Instantiated
 /// as `Solid(Qty[meter])` for the authored model (a coordinate IS a length — units end-to-end) and, via a
 /// `lower` map that unwraps each coordinate, as `Solid(Rational)` at the render edge the mesh driver parses

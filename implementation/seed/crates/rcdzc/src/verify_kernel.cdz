@@ -6,6 +6,13 @@
 ; keeps its unforgeable opacity boundary (is_linked_package true → withheld-constructor CDZ0214 fires
 ; for `Thm.MkThm` outside this module). NO Rust re-implementation — the compiler runs THIS kernel.
 ;
+; ROOT SHAPE: a BARE `(do …)`, NOT a `(module "verify-kernel" (do …))` wrapper — the link path
+; (compile.rs `link_inputs`) supplies the module NAME externally (`VERIFY_KERNEL_NAME`), exactly as
+; the corpus package driver keys a library file by its FILENAME, not by an inner `(module …)` clause.
+; A doubly-wrapped `(module … (do …))` root would make `link::top_items` unwrap only the outer module
+; to a single `[(do …)]` item, hiding every `type`/`def`/`export` from top-level linking (imports then
+; resolve to nothing, and the kernel's own type annotations go unbound). Bare `(do …)` is the fix.
+;
 ; The kernel is the `bounds` order-logic validated end-to-end in spec/semantics/26-program-conditions.sexp:
 ;   - `Thm` — an ABSTRACT sequent `(hyps |- concl)`; its constructor is private (the LCF trust boundary).
 ;   - the arithmetic-order axiom base (CHECKED ground schemas: `le-ax`/`ge-ax` mint an order fact only
@@ -16,83 +23,82 @@
 ; Head-symbol encoding (a `Const`-headed `Comb` application): add=0, le=1, ge=2, sub=3, mul=4, gt=5,
 ; neq=6, lt=7, conj=8, covers=9, unreach=10.
 
-(module "verify-kernel"
-  (do
-    (type Term (Var Int64) (Num Int64) (Comb Term Term) (Const Int64))
-    (type Thm (Seq (List Term) Term))
+(do
+  (type Term (Var Int64) (Num Int64) (Comb Term Term) (Const Int64))
+  (type Thm (Seq (List Term) Term))
 
-    (def (term-eq (: a Term) (: b Term))
-      (match a
-        ((Term.Var n)    (match b ((Term.Var m) (= n m)) (_ false)))
-        ((Term.Num n)    (match b ((Term.Num m) (= n m)) (_ false)))
-        ((Term.Const c)  (match b ((Term.Const d) (= c d)) (_ false)))
-        ((Term.Comb x y) (match b ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) (_ false)))))
+  (def (term-eq (: a Term) (: b Term))
+    (match a
+      ((Term.Var n)    (match b ((Term.Var m) (= n m)) (_ false)))
+      ((Term.Num n)    (match b ((Term.Num m) (= n m)) (_ false)))
+      ((Term.Const c)  (match b ((Term.Const d) (= c d)) (_ false)))
+      ((Term.Comb x y) (match b ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) (_ false)))))
 
-    ; arithmetic head-symbols as Const-headed applications
-    (def (add (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 0) a) b))
-    (def (le  (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 1) a) b))
-    (def (maxint) (Term.Num 9223372036854775807))
+  ; arithmetic head-symbols as Const-headed applications
+  (def (add (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 0) a) b))
+  (def (le  (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 1) a) b))
+  (def (maxint) (Term.Num 9223372036854775807))
 
-    (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
-    (def (hyps  (: th Thm)) (match th ((Thm.Seq h _) h)))
+  (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
+  (def (hyps  (: th Thm)) (match th ((Thm.Seq h _) h)))
 
-    ; LEAF rule: assume a proposition (its own hypothesis)
-    (def (assume (: p Term)) (Thm.Seq (list p) p))
+  ; LEAF rule: assume a proposition (its own hypothesis)
+  (def (assume (: p Term)) (Thm.Seq (list p) p))
 
-    ; a partial evaluator over the GROUND numeric fragment (numerals + `add`), for the CHECKED axiom base
-    (def (eval-ground (: t Term))
-      (match t
-        ((Term.Num n) (Option.Some n))
-        ((Term.Comb (Term.Comb (Term.Const 0) a) b)
-          (match (eval-ground a)
-            ((Option.Some av) (match (eval-ground b)
-                                ((Option.Some bv) (Option.Some (+ av bv)))
-                                ((Option.None) (Option.None))))
-            ((Option.None) (Option.None))))
-        (_ (Option.None))))
+  ; a partial evaluator over the GROUND numeric fragment (numerals + `add`), for the CHECKED axiom base
+  (def (eval-ground (: t Term))
+    (match t
+      ((Term.Num n) (Option.Some n))
+      ((Term.Comb (Term.Comb (Term.Const 0) a) b)
+        (match (eval-ground a)
+          ((Option.Some av) (match (eval-ground b)
+                              ((Option.Some bv) (Option.Some (+ av bv)))
+                              ((Option.None) (Option.None))))
+          ((Option.None) (Option.None))))
+      (_ (Option.None))))
 
-    ; CHECKED GROUND AXIOM: mint |- (le lhs rhs) ONLY when both sides are ground numeric and lhs <= rhs
-    (def (le-ax (: lhs Term) (: rhs Term))
-      (match (eval-ground lhs)
-        ((Option.Some lv) (match (eval-ground rhs)
-                            ((Option.Some rv) (if (<= lv rv)
-                                                (Option.Some (Thm.Seq (list) (le lhs rhs)))
-                                                (Option.None)))
-                            ((Option.None) (Option.None))))
-        ((Option.None) (Option.None))))
+  ; CHECKED GROUND AXIOM: mint |- (le lhs rhs) ONLY when both sides are ground numeric and lhs <= rhs
+  (def (le-ax (: lhs Term) (: rhs Term))
+    (match (eval-ground lhs)
+      ((Option.Some lv) (match (eval-ground rhs)
+                          ((Option.Some rv) (if (<= lv rv)
+                                              (Option.Some (Thm.Seq (list) (le lhs rhs)))
+                                              (Option.None)))
+                          ((Option.None) (Option.None))))
+      ((Option.None) (Option.None))))
 
-    ; RULE: monotonicity of + on the right — from G |- (le x c) derive G |- (le (add x k) (add c k))
-    (def (mono-add-r (: th Thm) (: k Term))
-      (match (concl th)
-        ((Term.Comb (Term.Comb (Term.Const 1) x) c)
-          (Option.Some (Thm.Seq (hyps th) (le (add x k) (add c k)))))
-        (_ (Option.None))))
+  ; RULE: monotonicity of + on the right — from G |- (le x c) derive G |- (le (add x k) (add c k))
+  (def (mono-add-r (: th Thm) (: k Term))
+    (match (concl th)
+      ((Term.Comb (Term.Comb (Term.Const 1) x) c)
+        (Option.Some (Thm.Seq (hyps th) (le (add x k) (add c k)))))
+      (_ (Option.None))))
 
-    ; RULE: transitivity of <= — from G |- (le a b) and D |- (le b c) derive G++D |- (le a c)
-    (def (trans-le (: t1 Thm) (: t2 Thm))
-      (match (concl t1)
-        ((Term.Comb (Term.Comb (Term.Const 1) a) b)
-          (match (concl t2)
-            ((Term.Comb (Term.Comb (Term.Const 1) b2) c)
-              (if (term-eq b b2)
-                (Option.Some (Thm.Seq (List.concat (hyps t1) (hyps t2)) (le a c)))
-                (Option.None)))
-            (_ (Option.None))))
-        (_ (Option.None))))
+  ; RULE: transitivity of <= — from G |- (le a b) and D |- (le b c) derive G++D |- (le a c)
+  (def (trans-le (: t1 Thm) (: t2 Thm))
+    (match (concl t1)
+      ((Term.Comb (Term.Comb (Term.Const 1) a) b)
+        (match (concl t2)
+          ((Term.Comb (Term.Comb (Term.Const 1) b2) c)
+            (if (term-eq b b2)
+              (Option.Some (Thm.Seq (List.concat (hyps t1) (hyps t2)) (le a c)))
+              (Option.None)))
+          (_ (Option.None))))
+      (_ (Option.None))))
 
-    ; membership: some member of `ps` is term-eq to `q`
-    (def (mem (: q Term) (: ps (List Term)))
-      (match ps ((list) false) ((list h .. t) (if (term-eq q h) true (mem q t)))))
+  ; membership: some member of `ps` is term-eq to `q`
+  (def (mem (: q Term) (: ps (List Term)))
+    (match ps ((list) false) ((list h .. t) (if (term-eq q h) true (mem q t)))))
 
-    ; hyps ⊆ precondition: every hyp is a member of the precondition set
-    (def (hyps-subset (: hs (List Term)) (: pre (List Term)))
-      (match hs ((list) true) ((list h .. t) (if (mem h pre) (hyps-subset t pre) false))))
+  ; hyps ⊆ precondition: every hyp is a member of the precondition set
+  (def (hyps-subset (: hs (List Term)) (: pre (List Term)))
+    (match hs ((list) true) ((list h .. t) (if (mem h pre) (hyps-subset t pre) false))))
 
-    ; THE MATCH PREDICATE (the compiler's trusted elision surface): a discharged Thm licenses the elision
-    ; iff its conclusion IS the obligation AND its hypotheses are covered by the node's stated precondition.
-    (def (licenses (: thm Thm) (: obligation Term) (: pre (List Term)))
-      (and (term-eq (concl thm) obligation) (hyps-subset (hyps thm) pre)))
+  ; THE MATCH PREDICATE (the compiler's trusted elision surface): a discharged Thm licenses the elision
+  ; iff its conclusion IS the obligation AND its hypotheses are covered by the node's stated precondition.
+  (def (licenses (: thm Thm) (: obligation Term) (: pre (List Term)))
+    (and (term-eq (concl thm) obligation) (hyps-subset (hyps thm) pre)))
 
-    (export (. Term *))
-    (export Thm)
-    (export term-eq add le maxint concl hyps assume eval-ground le-ax mono-add-r trans-le licenses)))
+  (export (. Term *))
+  (export Thm)
+  (export term-eq add le maxint concl hyps assume eval-ground le-ax mono-add-r trans-le licenses))

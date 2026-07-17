@@ -17283,18 +17283,25 @@ mod match_engine {
 
     /// Verification Inc-b b4a: `@requires(pred)`/`@ensures(pred)` are RECORDED (their predicate occurrences
     /// keyed by the def's body occ, `Db::requires_of`/`ensures_of`) — the `@requires`/`@ensures`→node
-    /// channel the proof-guided-elision oracle needs — AND the annotated def is otherwise UNCHANGED
-    /// (behavior-neutral: it compiles + runs exactly as the un-annotated def, since nothing yet CONSUMES
-    /// the recorded predicates; the denotation + discharge are later b4/b3 slices). Before this slice
-    /// `@requires`/`@ensures` were inert unknown markers (recorded nowhere).
+    /// channel the proof-guided-elision oracle needs. The recording is unchanged by the (D) enforcement:
+    /// `verify_enforce` rewrites the def BODY but leaves the `(@ (requires …) …)` wrapper in place, so
+    /// `strip_annotations` still records the predicate.
+    ///
+    /// (D) UPDATE (2026-07-17): `@requires` is now ENFORCED at body-entry (`verify_enforce`), so it is no
+    /// longer behavior-neutral in general — a VIOLATED precondition traps (pinned in the corpus). But when
+    /// the input SATISFIES the precondition, the def runs identically to the un-annotated one (the enforced
+    /// `(if PRE BODY (trap))` takes the pass arm and returns BODY's value). This test exercises the
+    /// SATISFYING path (`x=41`, `41 > 0`), so the annotated def still runs to 42 — value-transparent on a
+    /// valid input. (Plain `@ensures` is still recorded-but-not-yet-enforced — the universal `@ensures`
+    /// enforcement is the immediately-following increment; the corpus pins the `@requires` trap-on-violation.)
     #[test]
-    fn requires_ensures_predicates_are_recorded_and_behavior_neutral() {
+    fn requires_ensures_predicates_are_recorded_and_behavior_neutral_on_a_valid_input() {
         use crate::testkit::parse;
         // A def carrying a @requires and a @ensures. The predicates are ordinary forms over the param `x`
         // (and, for @ensures, the implicit result binder `it`); b4a just records their StructIds.
         let src = "(module m (@ (requires (> x 0)) (@ (ensures (> it 0)) (def (f (: x Int64)) (+ x 1)))) (export f))";
         let db = crate::db::Db::load(parse(src));
-        // The annotations are RECORDED against f's def.
+        // The annotations are RECORDED against f's def (unchanged by the (D) enforcement — the wrapper stays).
         let f = db.def_by_name("f").expect("def f");
         assert_eq!(
             db.requires_of(f).len(),
@@ -17306,7 +17313,8 @@ mod match_engine {
             1,
             "the @ensures(> it 0) predicate is recorded for f"
         );
-        // BEHAVIOR-NEUTRAL: the annotated def compiles + runs identically to the un-annotated one.
+        // VALUE-TRANSPARENT ON A VALID INPUT: with x=41 the precondition `(> x 0)` holds, so the enforced
+        // `(if (> x 0) (+ x 1) (trap))` takes the pass arm — the annotated def runs identically to the plain.
         use wasmtime::component::Val;
         let annotated =
             compile_component(&crate::codec::encode(&parse(src))).expect("annotated compiles");
@@ -17316,12 +17324,12 @@ mod match_engine {
         assert_eq!(
             run_returns_with::<i64>(&annotated, "f", &[Val::S64(41)]),
             42,
-            "the @requires/@ensures-annotated f runs to (+ 41 1)=42"
+            "the @requires/@ensures-annotated f runs to (+ 41 1)=42 on the SATISFYING input x=41"
         );
         assert_eq!(
             run_returns_with::<i64>(&plain, "f", &[Val::S64(41)]),
             run_returns_with::<i64>(&annotated, "f", &[Val::S64(41)]),
-            "the annotated def runs identically to the un-annotated def (behavior-neutral)"
+            "on a precondition-satisfying input the annotated def runs identically to the un-annotated def"
         );
     }
 
@@ -17407,11 +17415,18 @@ mod match_engine {
     /// and the `licenses` match predicate. This is the parse-level validation of the asset the compiler will
     /// `include_str!` at a1 (design §9): a malformed/truncated kernel source is caught here.
     ///
+    /// ROOT SHAPE: the asset is a BARE `(do …)`, NOT a `(module "verify-kernel" (do …))` wrapper — the
+    /// link path supplies the module NAME externally (`VERIFY_KERNEL_NAME`), exactly as the corpus package
+    /// driver keys a library file by its FILENAME. A doubly-wrapped `(module … (do …))` root makes
+    /// `link::top_items` unwrap only the outer module to a single `[(do …)]` item, hiding every
+    /// `type`/`def`/`export` from top-level linking (imports resolve to nothing; the kernel's own type
+    /// annotations go unbound) — see the a3 root-cause probe. Bare `(do …)` is the fix.
+    ///
     /// NOTE: full semantic validation (the module's types in scope, `Thm` unforgeable) requires the LINKED-
-    /// package load a1 wires (`Db::load_linked`) — a bare `Db::load` of a `(module …)` does not put the
-    /// module's own types in scope for its defs, which is exactly why a1 loads the kernel as a linked
-    /// member. That end-to-end check is part of a1 proper; the module shape's opacity is already pinned by
-    /// the 25-verification corpus (63 unforgeability cases over this same `Thm`-sequent shape).
+    /// package load a1 wires — the bare-`(do …)` kernel is linked as a package member under
+    /// `VERIFY_KERNEL_NAME`, which puts its types in scope for its defs and gives `Thm` its opacity. That
+    /// end-to-end check is part of a3 proper; the module shape's opacity is already pinned by the
+    /// 25-verification corpus (63 unforgeability cases over this same `Thm`-sequent shape).
     #[test]
     fn bundled_verify_kernel_asset_reads_and_declares_thm_and_licenses() {
         // The bundled kernel asset — the same source the compiler will include_str! at a1.
@@ -17429,18 +17444,35 @@ mod match_engine {
             KERNEL_SRC.contains("(def (licenses"),
             "the kernel declares the licenses match predicate (the trusted elision surface)"
         );
+        // The root is a BARE `(do …)`, NOT a `(module "verify-kernel" …)` wrapper — the link path supplies
+        // the module name externally, and a re-wrap would hide the declarations from `link::top_items`.
+        // Check the CODE (comment lines dropped — the header comment explains the module wrapper it avoids).
+        let code: String = KERNEL_SRC
+            .lines()
+            .filter(|l| !l.trim_start().starts_with(';'))
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(
-            KERNEL_SRC.contains("(module \"verify-kernel\""),
-            "the kernel is a named module (linked as a package member at a1)"
+            code.trim_start().starts_with("(do"),
+            "the kernel root is a bare (do …) so link::top_items sees each top-level declaration"
+        );
+        assert!(
+            !code.contains("(module"),
+            "the kernel must NOT re-wrap in (module …) — the link path names it externally"
         );
     }
 
-    /// Verification Inc-b a1: REGENERATE `verify_kernel.bin` from `verify_kernel.cdz`. The compiler embeds
-    /// the kernel as codec BYTES (not source) because rcdzc must not depend on the `cadenza-syntax` reader
-    /// in lib code ("COPY, DON'T DEPEND"). The `.bin` = `cadenza_syntax::codec::encode(sexpr::read(.cdz))` —
-    /// exactly the bridge bytes rcdzc's own `codec::decode` reads. This test WRITES the `.bin` from the
-    /// `.cdz` (run it to regenerate after editing the kernel) AND asserts round-trip: the bytes decode with
-    /// rcdzc's codec to a non-empty arena. Keeping the two in sync is a checked invariant, not a manual step.
+    /// Verification Inc-b a1: the committed `verify_kernel.bin` STAYS IN SYNC with `verify_kernel.cdz`. The
+    /// compiler embeds the kernel as codec BYTES (not source) because rcdzc must not depend on the
+    /// `cadenza-syntax` reader in lib code ("COPY, DON'T DEPEND"). The `.bin` =
+    /// `cadenza_syntax::codec::encode(sexpr::read(.cdz))` — exactly the bridge bytes rcdzc's own
+    /// `codec::decode` reads.
+    ///
+    /// HERMETIC (Copilot PR#537): this test does NOT mutate the source tree on a normal run — it ASSERTS the
+    /// committed `.bin` equals the freshly-encoded bytes (a checked drift guard, safe on a read-only/CI
+    /// checkout), and REGENERATES the artifact only when `REGEN_VERIFY_KERNEL_BIN` is set in the environment
+    /// (the manual tool: `REGEN_VERIFY_KERNEL_BIN=1 cargo test -p rcdzc regenerate_verify_kernel_bin` after
+    /// editing the kernel). Round-trip through rcdzc's own codec is asserted either way.
     #[test]
     fn regenerate_verify_kernel_bin() {
         const KERNEL_SRC: &str = include_str!("verify_kernel.cdz");
@@ -17452,9 +17484,20 @@ mod match_engine {
             !decoded.structure.is_empty(),
             "decoded kernel arena is non-empty"
         );
-        // WRITE the checked-in artifact next to the source (idempotent — same source → same bytes).
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/src/verify_kernel.bin");
-        std::fs::write(path, &bytes).expect("write verify_kernel.bin");
+        if std::env::var_os("REGEN_VERIFY_KERNEL_BIN").is_some() {
+            // Manual regeneration tool — the ONLY path that writes the tracked artifact.
+            std::fs::write(path, &bytes).expect("write verify_kernel.bin");
+        } else {
+            // Normal run: assert the committed artifact matches (no source-tree mutation, CI-safe).
+            let committed = include_bytes!("verify_kernel.bin");
+            assert_eq!(
+                committed.as_slice(),
+                bytes.as_slice(),
+                "verify_kernel.bin is STALE vs verify_kernel.cdz — regenerate with \
+                 REGEN_VERIFY_KERNEL_BIN=1 cargo test -p rcdzc regenerate_verify_kernel_bin"
+            );
+        }
     }
 
     /// A SHAPE-valid constructor-export `(export (. T A))` / `(export (. T *))` must ALSO be SEMANTICALLY
@@ -44213,6 +44256,69 @@ mod stage1 {
     }
 
     #[test]
+    fn a_called_defs_zero_arm_scalar_match_reports_cdz0210_once_not_at_the_call_site_too() {
+        // A CALLED def with a zero-arm `(match x)` on an inhabited SCALAR scrutinee used to report CDZ0210
+        // TWICE: once at the def body, once re-anchored to the CALL SITE (the reduced body re-runs the
+        // exhaustiveness check at a synthesized node). The SUM/nominal case already deduped — its reject
+        // carries a fix, and `dedup_faults`' `user_fix_keys` rule drops the copy whose fix targets a
+        // SYNTHESIZED (non-user) node. The SCALAR reject carried NO fix, so that rule had no discriminator
+        // and both leaked. `lower` now gives the scalar zero-arm reject the same "add a `_` (trap TODO)
+        // arm" fix (a wildcard covers any scalar), so the def-body copy's fix edits the real match while the
+        // inlined call-site copy's fix targets the synthesized reduced match — and the non-user copy drops.
+        let errs: Vec<crate::abi::Diagnostic> = crate::compile::compile(
+            &[crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "m",
+                crate::codec::encode(&parse(
+                    "(module m (def (f (: x Int64)) (match x)) (def (main) (f 1)) (export main))",
+                )),
+            )],
+            &[crate::backend::Target::Wasm],
+        )
+        .diagnostics
+        .into_iter()
+        .filter(|d| d.severity == crate::abi::Severity::Error)
+        .collect();
+        assert_eq!(
+            errs.len(),
+            1,
+            "a called zero-arm scalar match = ONE CDZ0210, got: {:?}",
+            errs.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        assert!(
+            errs[0].message.contains("zero-arm match is exhaustive"),
+            "the surviving error is the zero-arm CDZ0210: {}",
+            errs[0].message
+        );
+        // TWO DISTINCT called defs each with a zero-arm scalar match must BOTH report (no false-merge) —
+        // each copy's fix edits its OWN user match node, so neither is the "non-user" copy the rule drops.
+        let two: Vec<crate::abi::Diagnostic> = crate::compile::compile(
+            &[crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "m",
+                crate::codec::encode(&parse(
+                    "(module m (def (f (: x Int64)) (match x)) (def (g (: y Int64)) (match y)) \
+                     (def (main) (+ (f 1) (g 2))) (export main))",
+                )),
+            )],
+            &[crate::backend::Target::Wasm],
+        )
+        .diagnostics
+        .into_iter()
+        .filter(|d| {
+            d.severity == crate::abi::Severity::Error
+                && d.message.contains("zero-arm match is exhaustive")
+        })
+        .collect();
+        assert_eq!(
+            two.len(),
+            2,
+            "two distinct zero-arm scalar matches = TWO CDZ0210 (no false-merge), got: {:?}",
+            two.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn named_member_access_on_a_tuple_points_at_the_numeric_index_form() {
         // A tuple IS a member-access operand — by POSITION, not name. `(. t x)` on a `(Tuple …)` used to
         // give the generic "member access requires a record, found (Tuple …)", a dead end when the real
@@ -54841,16 +54947,26 @@ mod stage1 {
             Some("CDZ0210".to_string()),
             "a zero-arm match on the empty sum is not flagged non-exhaustive"
         );
-        // A zero-arm match on a SCALAR keeps the generic message (its cover is a wildcard, not named arms).
+        // A zero-arm match on a SCALAR keeps the generic message (its cover is a single wildcard, not the
+        // sum's named per-variant arms) — but now carries a "add a `_` (trap TODO) arm" fix, both as an
+        // actionable route to a fix and so a CALLED def's zero-arm scalar match dedups its call-site copy
+        // (`a_called_defs_zero_arm_scalar_match_reports_cdz0210_once_not_at_the_call_site_too`).
         let scalar = compile_component(&crate::codec::encode(&parse(
             "(module m (def (f (: n Int64)) (match n)) (export f))",
         )))
         .expect_err("a zero-arm match on a scalar rejects");
         assert!(
-            scalar.message.contains("zero-arm match is exhaustive only") && scalar.fix.is_none(),
-            "a scalar zero-arm match keeps the generic message, no arms fix: {} fix={:?}",
-            scalar.message,
-            scalar.fix
+            scalar.message.contains("zero-arm match is exhaustive only"),
+            "a scalar zero-arm match keeps the generic message: {}",
+            scalar.message
+        );
+        let scalar_fix = scalar
+            .fix
+            .expect("a scalar zero-arm match carries the add-a-wildcard-arm fix");
+        assert_eq!(scalar_fix.kind, crate::abi::FixKind::InsertInto);
+        assert_eq!(
+            scalar_fix.replacement, "(_ (trap \"TODO\"))",
+            "a single wildcard arm covers any scalar"
         );
     }
 

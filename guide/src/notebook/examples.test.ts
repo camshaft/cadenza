@@ -10,7 +10,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { EXAMPLES, DEFAULT_EXAMPLE } from "./examples.ts";
 import { parseDocument, type Cell } from "./parseDocument.ts";
-import { parseWidgets } from "./parseWidgets.ts";
+import { parseWidgets, type Widget } from "./parseWidgets.ts";
+import { assembleForRun } from "./assembleForRun.ts";
 
 function codeCells(cells: Cell[]) {
   return cells.filter((c): c is Extract<Cell, { kind: "code" }> => c.kind === "code");
@@ -74,3 +75,24 @@ test("every example has a unique slug", () => {
   const slugs = EXAMPLES.map((e) => e.slug);
   assert.equal(new Set(slugs).size, slugs.length);
 });
+
+// Every non-widget code cell of every example must ASSEMBLE to a single-`main` module — the end-to-end
+// guard on the P0 #12 cell-collision ("notebook busted": >1 `main` in one namespace → CDZ0201). Each cell
+// defines its own `main`, and a multi-cell example carries prior cells' defs in its buffer; the per-cell
+// `main`-strip (assembleCell.stripMainDef) must leave EXACTLY one `main` so the cell compiles. This pins
+// that the SHIPPED examples stay CDZ0201-safe (a new example, or a regression in the strip, fails here).
+for (const ex of EXAMPLES) {
+  test(`example "${ex.slug}" — every code cell assembles to exactly one \`main\` (CDZ0201-safe, P0 #12)`, () => {
+    const cells = parseDocument(ex.markdown);
+    const widgets: Widget[] = codeCells(cells)
+      .filter((c) => c.directive.kind === "widget")
+      .flatMap((c) => parseWidgets(c.source).widgets);
+    cells.forEach((c, i) => {
+      if (c.kind !== "code" || c.directive.kind === "widget") return;
+      const { buffer, entry } = assembleForRun(cells, i, widgets, {}, "sexpr");
+      const mainDefs = (buffer.match(/\(def\s+\(main\)/g) ?? []).length;
+      assert.equal(mainDefs, 1, `cell ${i} in ${ex.slug} must assemble with exactly one \`main\` (got ${mainDefs})`);
+      assert.equal(entry, "(main)", `cell ${i} in ${ex.slug} runs via a (main) call`);
+    });
+  });
+}

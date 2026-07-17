@@ -49,14 +49,24 @@ impl OnBehalfOf {
     /// Decode an [`OnBehalfOf`] from an [`INBOUND`] payload. Errors on a truncated/malformed payload (the log
     /// is the source of truth — a bad decode is loud).
     pub fn decode(bytes: &[u8]) -> Result<OnBehalfOf> {
+        // All offset additions use checked_add: the lengths are u32 read from an UNTRUSTED inbound frame, so on
+        // a 32-bit target `off + len` could overflow `usize`; a checked overflow returns a loud decode Err (not
+        // a wrap-then-panic). On 64-bit these cannot overflow (a u32 maxes ~4.3B « usize::MAX) — this is
+        // defense-in-depth for a future 32-bit build (Copilot PR#537). The `.get(..)` calls are already
+        // bounds-checked (return Err, never panic).
+        let add = |a: usize, b: usize| -> Result<usize> {
+            a.checked_add(b)
+                .ok_or_else(|| anyhow!("on-behalf-of offset overflow (malformed frame)"))
+        };
         let get_len = |b: &[u8], i: usize| -> Result<usize> {
-            let s = b.get(i..i + 4).ok_or_else(|| {
+            let end = add(i, 4)?;
+            let s = b.get(i..end).ok_or_else(|| {
                 anyhow!("truncated on-behalf-of: expected a 4-byte length at {i}")
             })?;
             Ok(u32::from_le_bytes(s.try_into().expect("4 bytes")) as usize)
         };
         let plen = get_len(bytes, 0)?;
-        let pend = 4 + plen;
+        let pend = add(4, plen)?;
         let principal = String::from_utf8(
             bytes
                 .get(4..pend)
@@ -65,8 +75,8 @@ impl OnBehalfOf {
         )
         .map_err(|e| anyhow!("on-behalf-of principal not UTF-8: {e}"))?;
         let blen = get_len(bytes, pend)?;
-        let bstart = pend + 4;
-        let bend = bstart + blen;
+        let bstart = add(pend, 4)?;
+        let bend = add(bstart, blen)?;
         let body = bytes
             .get(bstart..bend)
             .ok_or_else(|| anyhow!("truncated on-behalf-of body"))?
@@ -135,6 +145,20 @@ mod tests {
         assert!(
             OnBehalfOf::decode(&e.encode()[..3]).is_err(),
             "a truncated envelope is a loud error"
+        );
+    }
+
+    #[test]
+    fn a_crafted_giant_length_is_a_loud_error_not_a_panic() {
+        // A malicious inbound frame with a huge principal length (u32::MAX) must decode to Err, never panic or
+        // wrap — the checked_add offsets contain it (Copilot PR#537 hardening). The `.get(..)` bounds-check
+        // catches the out-of-range slice on 64-bit; checked_add catches the offset overflow on 32-bit.
+        let mut frame = Vec::new();
+        frame.extend_from_slice(&u32::MAX.to_le_bytes()); // principal len = 4.3B, far beyond the buffer
+        frame.extend_from_slice(b"short");
+        assert!(
+            OnBehalfOf::decode(&frame).is_err(),
+            "a crafted giant length decodes to a loud Err, not a panic"
         );
     }
 

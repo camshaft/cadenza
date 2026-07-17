@@ -288,6 +288,32 @@ jobs:
           cargo fmt --check
           cargo build --features aws
 
+  rcdzc-wasm:
+    # The Cadenza COMPILER as a WASM artifact (implementation/seed/crates/rcdzc-wasm, v-agent-harness
+    # minimal-kernel K1-dep wasm-swap — operator #54). EXCLUDED + wasm-only: it builds to wasm32-wasip1 (a
+    # cdylib exporting compile/alloc/dealloc the kernel loads via wasmtime), so the seed's `--workspace` jobs
+    # skip it entirely — gate it here (like wasm-runtime/cdz-kernel). Two checks: the pure host-side glue
+    # (compile_ast + the codec, native test/clippy/fmt), and the actual WASM BUILD (the artifact the kernel
+    # runs). The wasm32-wasip1 target isn't in setup-rust's default set, so add it explicitly.
+    name: rcdzc compiler-wasm
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: rcdzc-wasm
+      - name: Host-side glue (native test + lint)
+        working-directory: implementation/seed/crates/rcdzc-wasm
+        run: |
+          cargo test
+          cargo clippy --all-targets -- -D warnings
+          cargo fmt --check
+      - name: Build the compiler wasm artifact (wasm32-wasip1)
+        working-directory: implementation/seed/crates/rcdzc-wasm
+        run: |
+          rustup target add wasm32-wasip1
+          cargo build --target wasm32-wasip1
+
   roundtrip:
     # Every corpus program must round-trip through the syntax surfaces — guards cadenza-syntax
     # independently of the compiler. No runtime needed.

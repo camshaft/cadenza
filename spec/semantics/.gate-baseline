@@ -320,6 +320,8 @@ pass	a NaN nested in a sum payload compares equal under the canonical byte form
 pass	a NaN nested in a tuple compares equal under the canonical byte form
 pass	a NaN operand makes every runtime float ordering relation false (unordered)
 pass	a PARTIALLY-applied multi-payload constructor is a first-class function value
+pass	a PLAIN @requires precondition is ENFORCED at body-entry: a VIOLATED precondition traps when the def is called
+pass	a PLAIN @requires precondition is value-transparent when SATISFIED: the def returns its computed value
 pass	a Qty-typed variant payload keeps its type non-generic and matches back
 pass	a Quantity @param generates a Qty-result accessor the host supplies as a scalar magnitude
 pass	a RADIX literal carries the N type suffix
@@ -471,6 +473,7 @@ pass	a boolean result threaded through a second function
 pass	a boolean tuple element is projected as the program result
 pass	a boolean-parameter function applied to false
 pass	a boolean-returning function called with a false result
+pass	a both-diverge if nested in a value position yields the outer value
 pass	a bottom-up fold matches a tuple of its recursive results with constructor patterns
 pass	a bound effect performed with neither a handler nor a host delegation has no home
 pass	a bound name in a map key is used by its value, not the literal name
@@ -1176,6 +1179,7 @@ pass	a match over multiple nullary constructors with uniform patterns
 pass	a match pattern naming a non-existent variant is a coded rejection
 pass	a match returning multi-argument closures applies at full arity
 pass	a match takes another match's result as its scrutinee
+pass	a match whose all arms diverge is Never and always traps
 pass	a match whose arm bodies have different types is a type error even when a constant scrutinee selects one
 pass	a match whose only arm is guarded by a literally-true condition is still non-exhaustive
 pass	a match whose only arm is guarded is non-exhaustive
@@ -2496,6 +2500,7 @@ pass	an if over two trap-free bitwise arms selects branchlessly — else arm
 pass	an if over two trap-free bitwise arms selects branchlessly — then arm
 pass	an if returning false/true folds to the negation of a runtime condition
 pass	an if returning true/false folds to the runtime condition itself
+pass	an if whose both branches diverge is Never and always traps
 pass	an if whose untaken arm would trap keeps the branch (no select of checked arith)
 pass	an if with a narrow branch and a bare-literal branch computes at the narrow width
 pass	an if with identical branches folds even when the condition is a NaN-false float compare
@@ -2629,6 +2634,8 @@ pass	arithmetic between a char and a FLOAT is rejected with a working two-step c
 pass	arithmetic between a char and a Rational is rejected with a working two-step conversion fix
 pass	arithmetic between a char and an Int64 is rejected with the plain Char.to-int fix
 pass	arithmetic on a bound Rational payload computes and escapes exactly
+pass	arithmetic on a let binding whose initializer diverges traps
+pass	arithmetic reached via an inlined diverging call argument traps
 pass	arithmetic right shift
 pass	arithmetic right shift of negative one is negative one
 pass	arithmetic right shift preserves the sign bit for a negative operand
@@ -2679,6 +2686,7 @@ pass	byte length is the UTF-8 byte count
 pass	byte sequences are equal by their bytes in order
 pass	capture-avoiding substitution renames a Forall binder to avoid capture (logical-form subst)
 pass	capture-avoiding substitution renames a binder so the substituted term's free variable is not captured
+pass	chained and short-circuits through nesting: a false outer-left skips a NESTED trapping operand
 pass	chained guards of the same variant are tried in order
 pass	chaining two Unit.in conversions is a compile-time error — the inner one already unwrapped
 pass	char to-int and from-int round-trip through the scalar value

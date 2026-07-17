@@ -120,10 +120,39 @@ The trajectory over time — drag velocity or gravity and the arc moves:
 (def (main) (list (tuple 0 0.0) (tuple 1 h1) (tuple 2 h2) (tuple 3 h3) (tuple 4 h4)))
 ~~~`;
 
+/// A quadratic-explorer showcase: three sliders (a, b, c) reshape the parabola y = a·x² + b·x + c live.
+/// Evaluated at a spread of x (including NEGATIVE x, exercising the chart's negative-coordinate axis) with
+/// +/* on Float64 literals only — browser-self-contained like the others. Drag a/b/c and the curve bends.
+const QUADRATIC = `# Quadratic explorer
+
+Shape the parabola **y = a·x² + b·x + c** — drag the coefficients and watch it bend.
+
+~~~cadenza widget
+a : Float64 = slider(-5.0, 5.0, step: 0.5, default: 1.0)
+b : Float64 = slider(-5.0, 5.0, step: 0.5, default: 0.0)
+c : Float64 = slider(-5.0, 5.0, step: 0.5, default: 0.0)
+~~~
+
+Evaluate y at each x (y = a·x·x + b·x + c):
+
+~~~cadenza
+(def (y-at x) (+ (+ (* a (* x x)) (* b x)) c))
+(def (main) (y-at 0.0))
+~~~
+
+The parabola from x = −3 to 3 — drag a, b, or c to reshape it:
+
+~~~cadenza chart:line
+(def (main) (list
+  (tuple -3.0 (y-at -3.0)) (tuple -2.0 (y-at -2.0)) (tuple -1.0 (y-at -1.0))
+  (tuple 0.0 (y-at 0.0)) (tuple 1.0 (y-at 1.0)) (tuple 2.0 (y-at 2.0)) (tuple 3.0 (y-at 3.0))))
+~~~`;
+
 export const EXAMPLES: ExampleNotebook[] = [
   { slug: "compound-interest", title: "Compound interest", markdown: COMPOUND_INTEREST },
   { slug: "loan", title: "Loan repayment", markdown: LOAN },
   { slug: "projectile", title: "Projectile motion", markdown: PROJECTILE },
+  { slug: "quadratic", title: "Quadratic explorer", markdown: QUADRATIC },
   { slug: "tables", title: "Tables", markdown: TABLE_DEMO },
   { slug: "charts", title: "Charts", markdown: CHART_DEMO },
   { slug: "values", title: "Values", markdown: VALUE_DEMO },

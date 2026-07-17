@@ -1749,6 +1749,15 @@ impl Db {
         // stripped text is CAPTURED (keyed by each def's signature occurrence) so the `DocOf`/`DocAt`
         // queries can still surface a definition's documentation after it leaves the body.
         let doc_by_sig = strip_def_docs(&mut ast);
+        // Verification-annotation ENFORCEMENT (Inc-b (D), test-tier): rewrite every PLAIN `@requires` — `(@
+        // (requires PRE) (def SIG BODY))` — so the def body becomes `(if PRE BODY (trap …))`, a body-entry
+        // precondition check that TRAPS on violation. Runs BEFORE `proptest_gen::synthesize` (so a `@test`
+        // over a `@requires`-constrained param wraps the already-checked body — the seam agreed with
+        // v-property-testing) and BEFORE `strip_annotations` (so the `(@ (requires …) …)` wrapper is still
+        // present to detect, and still recorded into `db.requires` afterward). A no-op for a program with no
+        // plain `@requires`. (Universal `@ensures` enforcement — plain + `@test`-stacked via a shared helper
+        // — is the immediately-following increment; this pass covers only plain `@requires` today.)
+        crate::verify_enforce::enforce(&mut ast);
         // F1: for a `@test` whose parameter is a `(List <Int>)`, synthesize a nullary `Test.gen`-driven
         // generator WRAPPER (and drop `@test` from the original, which becomes the wrapper's callee), so
         // `cdz test` can property-test over a list rather than declining the compound param at the

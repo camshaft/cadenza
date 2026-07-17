@@ -2317,6 +2317,50 @@ fn rustc_roundtrip_provably_in_range_left_shift_elision_computes_identically_and
 }
 
 #[test]
+fn a_diverging_body_or_operand_emits_never_not_a_decline_or_a_method_call_on_never() {
+    // Never (`!`) in an emit position — the family v-wasm-opt + breaker reported.
+
+    // (a) A BOTH-BRANCHES-DIVERGE `if` is Never — it produces no value on any path. The fn return type is
+    // Rust's never `!`, and the body is the `if` whose arms both `panic!` (a valid `-> !` body). Uses the
+    // shared `body_diverges` (recurses If/Let/Seq/Match), not a bare `Core::Trap` match — so it no longer
+    // declines "result type has no native Rust representation".
+    let both_if = compile_rust(
+        "(module m (def (main (: b Bool)) (if b (trap \"then\") (trap \"else\"))) (export main))",
+    );
+    assert!(
+        both_if.contains("pub fn main(b: bool) -> !"),
+        "a both-diverge if returns Rust's never `!`:\n{both_if}"
+    );
+
+    // (b) ARITHMETIC on a diverging let-binding: the init traps before the add, so emit ONLY the trap — NOT
+    // `x.checked_add(1)` on the `!`-typed binding (E0599, a method call on Never). rustc must accept it.
+    let never_let =
+        compile_rust("(module m (def (main) (let ((x (trap \"boom\"))) (+ x 1))) (export main))");
+    assert!(
+        never_let.contains("panic!(\"unreachable\")") && !never_let.contains(".checked_add"),
+        "arithmetic on a diverging binding emits only the trap, no method call on `!`:\n{never_let}"
+    );
+    // It compiles (the E0599 is gone) — a lib build suffices (a `-> i64` fn whose body is a coerced panic).
+    assert!(
+        compile_rust_result(
+            "(module m (def (mk) (let ((x (trap \"boom\"))) (+ x 1))) (export mk))"
+        )
+        .is_ok(),
+        "the diverging-arithmetic emit is well-formed Rust (no E0599)"
+    );
+
+    // (c) The SAME via an inlined diverging call argument: `(f (trap))` with `f x = (+ x 1)` inlines the
+    // Never arg into `x`, so the body's arithmetic is on Never — emits only the trap, same as (b).
+    let never_arg = compile_rust(
+        "(module m (def (f (: x Int64)) (+ x 1)) (def (mk) (f (trap \"boom\"))) (export mk))",
+    );
+    assert!(
+        never_arg.contains("panic!(\"unreachable\")") && !never_arg.contains(".checked_add"),
+        "arithmetic reached via an inlined diverging call-arg emits only the trap:\n{never_arg}"
+    );
+}
+
+#[test]
 fn rustc_roundtrip_overflow_traps() {
     // Int8 100+100 = 200 leaves the type → Cadenza traps → the emitted Rust panics.
     let rs = compile_rust("(module m (def (add8 (: a Int8) (: b Int8)) (+ a b)) (export add8))");
@@ -3230,6 +3274,58 @@ fn async_mode_emits_env_threaded_gas_metered_fns() {
     assert!(
         rs.contains("Box::pin(sum_to(__cdz_env,"),
         "boxed recursive call:\n{rs}"
+    );
+}
+
+#[test]
+fn async_boxes_only_a_call_whose_future_is_self_referential() {
+    // OPERATOR DIRECTIVE: the async backend must box ONLY a "truly recursive async function where we
+    // couldn't transform it into a loop" — NOT every call. A `Box::pin` is needed exactly when the
+    // callee's emitted future is self-referential (infinitely sized); a non-recursive callee, and a
+    // fully-tail-recursive (loop-transformed) callee, have finite futures and must NOT be boxed.
+
+    // (a) A FULLY-TAIL-recursive callee (accumulator `sum-to`) is loop-transformed — its self-call is a
+    // `continue`, its future is a finite `loop`. The ENTRY call to it (from `main`) must NOT be boxed.
+    let tail = compile_rust_async(
+        "(module m (def (sumto (: n Int64) (: acc Int64)) (if (= n 0) acc (sumto (+ n -1) (+ acc n)))) \
+           (def (main) (sumto 5 0)) (export main))",
+    );
+    assert!(
+        tail.contains("loop {"),
+        "the tail-recursive accumulator is loop-transformed:\n{tail}"
+    );
+    assert!(
+        !tail.contains("Box::pin"),
+        "a call to a fully-loop-transformed callee is NOT boxed (finite future):\n{tail}"
+    );
+
+    // (b) A NON-recursive helper chain: nothing is boxed (helpers inline / are finite).
+    let plain = compile_rust_async(
+        "(module m (def (leaf (: x Int64)) (+ x 1)) (def (mid (: y Int64)) (leaf (* y 2))) \
+           (def (main) (mid 5)) (export main))",
+    );
+    assert!(
+        !plain.contains("Box::pin"),
+        "a non-recursive call chain is never boxed:\n{plain}"
+    );
+
+    // (c) A NON-TAIL recursive callee that CANNOT be loop-transformed (its self-call is an operand, used
+    // after the recursion) — its future IS self-referential, so the recursive call MUST be boxed (Rust
+    // E0733 otherwise). Even when the fn is ALSO loop-transformed for its TAIL self-call, the NON-tail
+    // self-call still needs the box (the case the first cut of this fix missed).
+    let nontail = compile_rust_async(
+        "(module m (def (rem (: t Int64) (: hs (List Int64))) \
+           (match hs ((list) (list)) \
+             ((list h .. rest) (if (= h t) (rem t rest) (List.push (rem t rest) h))))) \
+           (def (main) (List.len (rem 5 (list 1 2 5 3)))) (export main))",
+    );
+    assert!(
+        nontail.contains("loop {"),
+        "rem is loop-transformed for its TAIL self-call:\n{nontail}"
+    );
+    assert!(
+        nontail.contains("Box::pin(rem("),
+        "rem's NON-TAIL self-call is still boxed (its future is self-referential):\n{nontail}"
     );
 }
 

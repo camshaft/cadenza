@@ -1,7 +1,7 @@
 {
   "name": "cadenza-lsp",
   "displayName": "Cadenza",
-  "description": "Cadenza language support — project-aware diagnostics, hover, semantic highlighting, go-to-definition, find-references, document highlight, rename, completion, document outline, workspace symbol search, folding, and quick-fixes, all served by `cdz lsp` (the compiler itself).",
+  "description": "Cadenza language support — project-aware diagnostics, hover, semantic highlighting, go-to-definition, find-references, document highlight, rename, completion, document outline, workspace symbol search, folding, expand selection, and quick-fixes, all served by `cdz lsp` (the compiler itself).",
   "version": "0.1.0",
   "publisher": "cadenza",
   "repository": {

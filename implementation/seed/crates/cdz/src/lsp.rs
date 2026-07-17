@@ -41,7 +41,7 @@ use lsp_types::notification::{
 use lsp_types::request::{
     CodeActionRequest, CodeLensRequest, Completion, DocumentHighlightRequest,
     DocumentSymbolRequest, FoldingRangeRequest, GotoDefinition, HoverRequest, References, Rename,
-    Request as _, SelectionRangeRequest, SemanticTokensFullRequest, Shutdown,
+    Request as _, SelectionRangeRequest, SemanticTokensFullRequest, Shutdown, SignatureHelpRequest,
     WorkspaceSymbolRequest,
 };
 use lsp_types::{
@@ -56,10 +56,10 @@ use lsp_types::{
     Range, ReferenceParams, RenameParams, SelectionRange, SelectionRangeParams, SemanticToken,
     SemanticTokenType, SemanticTokens, SemanticTokensFullOptions, SemanticTokensLegend,
     SemanticTokensOptions, SemanticTokensParams, SemanticTokensResult,
-    SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo, SymbolInformation,
-    SymbolKind, TextDocumentContentChangeEvent, TextDocumentSyncCapability, TextDocumentSyncKind,
-    TextEdit, Uri, WorkDoneProgressOptions, WorkspaceEdit, WorkspaceSymbolParams,
-    WorkspaceSymbolResponse,
+    SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo, SignatureHelp,
+    SignatureHelpOptions, SignatureHelpParams, SignatureInformation, SymbolInformation, SymbolKind,
+    TextDocumentContentChangeEvent, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit,
+    Uri, WorkDoneProgressOptions, WorkspaceEdit, WorkspaceSymbolParams, WorkspaceSymbolResponse,
 };
 
 /// Run the stdio LSP server to completion: perform the initialize handshake, then loop over incoming
@@ -133,6 +133,13 @@ fn capabilities() -> ServerCapabilities {
         // Smart-expand selection (Ctrl+Shift+→) — from the cursor, the nested chain of enclosing syntax
         // nodes (innermost first), each the parent of the previous. Built from span containment; no query.
         selection_range_provider: Some(lsp_types::SelectionRangeProviderCapability::Simple(true)),
+        // Signature help — inside a `(callee arg…)` call, show the callee's arrow type (via `TypeOf`) with
+        // the argument at the cursor highlighted. Triggered on `(` (call open) and space (next arg).
+        signature_help_provider: Some(SignatureHelpOptions {
+            trigger_characters: Some(vec!["(".to_string(), " ".to_string()]),
+            retrigger_characters: Some(vec![" ".to_string()]),
+            work_done_progress_options: WorkDoneProgressOptions::default(),
+        }),
         // Completion with no trigger characters — the client invokes it on the usual identifier typing /
         // Ctrl-Space. We return the full candidate set (locals + top-level symbols) and let the client
         // filter by the typed prefix (the standard "server offers, client filters" model).
@@ -328,6 +335,11 @@ impl Server {
             SelectionRangeRequest::METHOD => {
                 let (id, params) = cast_request::<SelectionRangeRequest>(req)?;
                 let result = self.selection_range(&params);
+                self.send_response(Response::new_ok(id, result))
+            }
+            SignatureHelpRequest::METHOD => {
+                let (id, params) = cast_request::<SignatureHelpRequest>(req)?;
+                let result = self.signature_help(&params);
                 self.send_response(Response::new_ok(id, result))
             }
             Completion::METHOD => {
@@ -619,6 +631,17 @@ impl Server {
                 .map(|&pos| selection_range_at(&doc.text, doc.is_ml, pos))
                 .collect(),
         )
+    }
+
+    /// Answer a `textDocument/signatureHelp`: inside a `(callee arg…)` call, show the CALLEE's type (its
+    /// arrow signature, via the `TypeOf` query — the same authority hover uses for a def) with the argument
+    /// at the cursor marked active, so the editor's signature popup tracks which parameter you're typing.
+    /// `None` when the document is not open, the cursor is not inside a call whose head is a named
+    /// function, or that name has no known type — the editor then shows no popup (total, never an error).
+    fn signature_help(&self, params: &SignatureHelpParams) -> Option<SignatureHelp> {
+        let pos = &params.text_document_position_params;
+        let doc = self.docs.get(&pos.text_document.uri)?;
+        signature_help_at(&doc.text, doc.is_ml, pos.position)
     }
 
     /// Answer a `textDocument/completion`: the names in scope at the cursor — local bindings (backed by
@@ -2374,6 +2397,78 @@ fn selection_range_at(text: &str, is_ml: bool, pos: Position) -> SelectionRange 
     }
     // `chain` is non-None (ranges was non-empty) — unbox the innermost entry as the returned root.
     *chain.expect("ranges was non-empty, so the chain has at least one entry")
+}
+
+/// Signature help at `pos`: find the innermost `(callee arg…)` call the cursor is inside, then show the
+/// callee's type. The enclosing call is the SMALLEST-span `List` node containing the cursor whose head
+/// (child 0) is a NAME — found by span containment (the same model `node_at_offset`/`selection_range_at`
+/// use), so no parent index is needed. The callee's signature comes from the `TypeOf` query (the arrow
+/// the def resolves to — the same authority hover uses). The active parameter is how many argument forms
+/// (children past the head) END at or before the cursor — i.e. how many args are already typed. `None`
+/// when not inside such a call, the head is not a named function, or that name has no known type.
+fn signature_help_at(text: &str, is_ml: bool, pos: Position) -> Option<SignatureHelp> {
+    let (arenas, spans, _errors) = parse_surface(text, is_ml).ok()?;
+    let byte = position_to_byte(text, pos);
+    // The innermost enclosing CALL: smallest-span List node covering the cursor whose head is a name.
+    let mut best: Option<(
+        cadenza_syntax::StructId,
+        usize,
+        Vec<cadenza_syntax::StructId>,
+    )> = None;
+    for i in 0..arenas.structure.len() {
+        let id = cadenza_syntax::StructId(i as u32);
+        let cadenza_syntax::ast::Struct::List(children) = arenas.get(id) else {
+            continue;
+        };
+        // Head must be a name (a call `(f …)`, not a bare list) and there must be a head to name.
+        if children.first().and_then(|&h| arenas.as_name(h)).is_none() {
+            continue;
+        }
+        let Some(span) = spans.get(id) else { continue };
+        if !span.contains(byte) {
+            continue;
+        }
+        let width = span.end - span.start;
+        if best.as_ref().is_none_or(|(_, w, _)| width < *w) {
+            best = Some((id, width, children.clone()));
+        }
+    }
+    let (_call, _w, children) = best?;
+    // The callee name (head), and its type via `TypeOf` (the arrow the def resolves to).
+    let callee = arenas.as_name(children[0])?.to_string();
+    let arrow = run_query_text(
+        &arenas,
+        rcdzc::sidecar::Query::TypeOf {
+            name: callee.clone(),
+        },
+        rcdzc::sidecar::KIND_TYPE_INFO,
+    )
+    .map(|s| s.trim().to_string())
+    // A signature must be a FUNCTION type — an arrow `(-> …)`. This is also the guard that keeps signature
+    // help from firing on a SPECIAL FORM head (`def`/`if`/`let`/`do`/…): those are not defs, so `TypeOf`
+    // answers with an error string ("no such definition `def` …") or a non-arrow, both rejected here. A
+    // nullary value (`answer : Int64`, no arrow) is likewise not a callable signature.
+    .filter(|s| s.contains("->"))?;
+    // Active parameter: how many ARGUMENT forms (children past the head) end at/before the cursor — the
+    // args already typed. The current (in-progress) arg is that count (0-based index of the arg being
+    // typed). Clamp so a cursor past the last arg still points at the last parameter slot.
+    let arg_spans: Vec<_> = children[1..].iter().filter_map(|&c| spans.get(c)).collect();
+    let typed = arg_spans.iter().filter(|s| s.end <= byte).count();
+    let active = typed as u32;
+    // The signature label is the callee with its arrow type — `callee : (-> A B)`. (Per-parameter labels
+    // would need to split the arrow into argument types; the whole-arrow label is a correct first form the
+    // client still highlights `activeParameter` against.)
+    let label = format!("{callee} : {arrow}");
+    Some(SignatureHelp {
+        signatures: vec![SignatureInformation {
+            label,
+            documentation: None,
+            parameters: None,
+            active_parameter: Some(active),
+        }],
+        active_signature: Some(0),
+        active_parameter: Some(active),
+    })
 }
 
 /// Map a `Symbols`-query kind spelling to the LSP `SymbolKind` for the outline. `value`→CONSTANT,
@@ -4363,6 +4458,83 @@ mod tests {
                 .and_then(|v| v.as_bool()),
             Some(true),
             "selectionRangeProvider must be advertised: {value}"
+        );
+    }
+
+    #[test]
+    fn signature_help_shows_the_callee_type_and_tracks_the_active_arg() {
+        // `add` is a 2-arg function; inside a call `(add 1 2)` the signature popup shows add's arrow type,
+        // and the active parameter advances as the cursor moves past each typed argument.
+        let text = "(do (def (add (: a Int64) (: b Int64)) (+ a b)) (def (main) (add 1 2)))";
+        // Cursor right after `(add ` — on the first arg `1`. Find the `1` in `(add 1 2)`.
+        let first_arg = text.find("add 1 2").unwrap() + 4; // index of `1`
+        let sh = signature_help_at(text, false, byte_to_position(text, first_arg))
+            .expect("a signature inside the call");
+        assert_eq!(sh.signatures.len(), 1, "one signature for the callee");
+        assert!(
+            sh.signatures[0].label.starts_with("add : "),
+            "label names the callee + its type: {}",
+            sh.signatures[0].label
+        );
+        assert!(
+            sh.signatures[0].label.contains("->"),
+            "the type is an arrow: {}",
+            sh.signatures[0].label
+        );
+        // On the first arg (none fully typed-and-past yet), active parameter is 0.
+        assert_eq!(sh.active_parameter, Some(0), "first arg active");
+        // Cursor after the second arg `2` (on the closing paren) — both args typed → active 2 (clamped by
+        // the client to the last slot). At minimum it must have advanced past 0.
+        let after_second = text.find("1 2)").unwrap() + 3; // the `)` after `2`
+        let sh2 = signature_help_at(text, false, byte_to_position(text, after_second))
+            .expect("a signature still inside the call");
+        assert!(
+            sh2.active_parameter.unwrap() >= 1,
+            "active parameter advanced past the first arg: {:?}",
+            sh2.active_parameter
+        );
+    }
+
+    #[test]
+    fn signature_help_is_none_outside_a_call() {
+        // A cursor NOT inside a `(callee arg…)` named call → no signature popup (total, never an error).
+        let text = "(do (def answer 42) (def (main) answer))";
+        // Cursor on the bare `42` literal (not inside a call).
+        let on_literal = text.find("42").unwrap() + 1;
+        assert!(
+            signature_help_at(text, false, byte_to_position(text, on_literal)).is_none(),
+            "no signature help outside a call"
+        );
+    }
+
+    #[test]
+    fn signature_help_handler_returns_none_on_an_unopened_document() {
+        let (server, _client) = memory_server();
+        let params = SignatureHelpParams {
+            context: None,
+            text_document_position_params: lsp_types::TextDocumentPositionParams {
+                text_document: lsp_types::TextDocumentIdentifier { uri: test_uri() },
+                position: Position::new(0, 0),
+            },
+            work_done_progress_params: Default::default(),
+        };
+        assert!(
+            server.signature_help(&params).is_none(),
+            "signatureHelp on an unopened document must be None"
+        );
+    }
+
+    #[test]
+    fn signature_help_capability_is_advertised_with_trigger_chars() {
+        let value = serde_json::to_value(capabilities()).expect("serializes");
+        let shp = value.get("signatureHelpProvider").expect("advertised");
+        let triggers = shp
+            .get("triggerCharacters")
+            .and_then(|v| v.as_array())
+            .expect("trigger characters");
+        assert!(
+            triggers.iter().any(|c| c == "("),
+            "`(` is a trigger char: {shp}"
         );
     }
 

@@ -10,6 +10,19 @@
 ;; Int64)) — payload should be (GIter Int64) but this one is (GIter Int64)". `cdz check` PASSES;
 ;; `cdz test`/compile DECLINES (check≡compile discrepancy).
 ;;
+;; DECISIVE (_w55 apply_scheme_to_args probe): instrumented the gmap call — the closure ARG type is
+;; CORRECT `at=(-> Int64 (GIter Int64))`, but the EXPECTED param (gmap's `f` after scheme-instantiate +
+;; arg0 unify) is `pinned=(-> Int64 (GIter (GIter Int64)))` — over-nested by one GIter BEFORE arg1 is even
+;; checked. So the closure is fine; gmap's result var `b` was bound to `(GIter Int64)` (one level too deep)
+;; during the scheme instantiation / arg0 (`it`) unification. `at != pinned` → unify fails → CDZ0203. NOTE:
+;; gmap's STORED scheme is CLEAN `(-> (GIter a) (-> (-> a b) (GIter b)))` when queried with no use (the
+;; corrupt `type gmap` render WITH a use is a query-time monomorphization artifact — gmap at 2 scalar
+;; domains still works end-to-end, _w44 intact). So the bug is LOCAL to this call's instantiation: `b` binds
+;; over-deep specifically when the closure body is a from-list (recursive-generic producer) call. FIX LOCUS
+;; (deep, hot apply_scheme_to_args / freshen_arg-freshen_free — 3 ticks investigated, NOT safe to rush):
+;; trace why `b` binds to (GIter Int64) not a free var before arg1; likely the recursive from-list result
+;; feeds back through freshen. Standing deep target; needs a careful session with the lib suite as the net.
+;;
 ;; DEEPER (_w53 probe): the BARE closure `fn(x) => from-list([x])` types `(-> Any (GIter <freevar>))` —
 ;; its result `(GIter a)` has a FREE var NOT tied to the param `x` (from-list([x]) instantiates from-list's
 ;; scheme with a fresh element var rather than tying it to x). The apply_scheme_to_args closure-arg RECOVERY
