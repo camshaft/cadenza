@@ -99,10 +99,13 @@ enum Cmd {
         /// answer. Slower (a `rustc` invocation per case), so it is opt-in and has its own baseline.
         #[arg(long, default_value = "wasm")]
         target: GateTargetArg,
-        /// OPTIMIZATION-LEVEL-EQUIVALENCE sweep: compile each corpus program at O0/O1/O2/O3 and assert
-        /// the emitted component is BYTE-IDENTICAL across all four (the tiered-opt invariant — every
-        /// level is observably identical). A level that changes the bytes is a candidate miscompile (hard
-        /// fail). Ignores `--save`/`--check` (it has no baseline; it is a same-run cross-level diff).
+        /// OPTIMIZATION-LEVEL-EQUIVALENCE sweep: compile AND RUN each corpus program at O0/O1/O2/O3 and
+        /// assert the OBSERVABLE RUN OUTCOME (value / trap-kind / decline-code) is equivalent across all
+        /// four (the tiered-opt invariant — every level is observably identical). NOT a byte diff: the
+        /// wasm emit is not byte-deterministic run-to-run, so the observable outcome is the real invariant.
+        /// A level that changes the outcome is a candidate miscompile (hard fail). Wasm-target only for now
+        /// (rejects `--target rust`/`rust-async`); ignores `--save`/`--check` (no baseline — a same-run
+        /// cross-level diff).
         #[arg(long, conflicts_with_all = ["save", "check"])]
         opt_sweep: bool,
     },
@@ -2653,10 +2656,27 @@ fn gate(paths: &Paths, profile: &str, opts: GateOpts) {
 /// preserve. Each case is driven per its trials (its `(call …)`s); a case that DECLINES at the default
 /// tier is skipped (a decline is level-independent; the normal gate grades it Todo). Multi-file PACKAGE
 /// cases are skipped in this first cut (the single-file pipe covers the arithmetic/control programs where
-/// the pass tiers act). Wired into `cargo xtask check` so a peer landing a pass that mis-optimizes at
-/// `O2`/`O3` is caught fleet-wide. With the pipeline currently empty (no registered passes) every level
-/// runs identically, so this passes today and stands guard over every future pass.
+/// the pass tiers act). OPT-IN for now (not in `cargo xtask check`) — it guards nothing while the
+/// `PassManager` pipeline is empty (every level runs identically); wire it into `check` in the same slice
+/// that registers the first real Core pass, when it actually guards a level-sensitive transform. It then
+/// catches fleet-wide any pass that mis-optimizes at `O2`/`O3`.
 fn gate_opt_sweep(paths: &Paths, profile: &str, opts: &GateOpts) {
+    // The sweep drives the WASM run path only (`run_program_wasm`). Honoring `--target rust`/`rust-async`
+    // would need `--opt-level` threaded through the separate rust run path (a follow-up); silently running
+    // wasm under `--target rust` would give a FALSE sense of cross-level coverage for that backend. So
+    // REJECT the combo with a clear error rather than fake it.
+    if !matches!(opts.target, GateTarget::Wasm) {
+        eprintln!(
+            "error: --opt-sweep supports only the wasm target for now (got --target {}). \
+             Run `gate --opt-sweep` without --target; rust/rust-async opt-level sweep is a follow-up.",
+            match opts.target {
+                GateTarget::Rust => "rust",
+                GateTarget::RustAsync => "rust-async",
+                GateTarget::Wasm => "wasm",
+            }
+        );
+        std::process::exit(2);
+    }
     let tools = build_tools(paths, profile);
     let files = if opts.files.is_empty() {
         default_corpus_files(paths)
@@ -2672,7 +2692,14 @@ fn gate_opt_sweep(paths: &Paths, profile: &str, opts: &GateOpts) {
         match ran {
             Ran::Value(v, calls) if calls.is_empty() => format!("value {v}"),
             Ran::Value(v, calls) => format!("value {v} [host: {}]", calls.join(",")),
-            Ran::Trap(msg) => format!("trap {}", trap_kind(msg).unwrap_or("other")),
+            // Prefer the classified trap KIND (corpus/wasmtime vocab → one token); for an UNCLASSIFIED
+            // reason fall back to the RAW first line, NOT a single "other" bucket — else two genuinely
+            // different unclassified traps would compare EQUAL and a real cross-level trap divergence
+            // among them would be missed.
+            Ran::Trap(msg) => match trap_kind(msg) {
+                Some(kind) => format!("trap {kind}"),
+                None => format!("trap raw:{}", first_line(msg.as_bytes())),
+            },
             Ran::Declined { code } => format!("declined {}", code.as_deref().unwrap_or("-")),
             Ran::BadArtifact(msg) => format!("bad-artifact {msg}"),
         }
