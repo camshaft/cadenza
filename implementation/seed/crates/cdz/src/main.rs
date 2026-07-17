@@ -1156,6 +1156,13 @@ struct TreeArgs {
     /// The project whose dependency tree to print: a `Project.cdz` manifest, or a DIRECTORY holding one.
     /// OMITTED → search up from the current directory for the nearest `Project.cdz` (like `cdz build`).
     dir: Option<String>,
+    /// Emit the tree as a nested JSON object instead of the box-drawing text — the shape a tool consumes
+    /// to read the project graph without parsing the connectors. Each node is
+    /// `{name, path, deps: [...]}`; a node also carries `unresolved: true` (no `Project.cdz` at its path)
+    /// or `repeated: true` (already shown higher up — a cycle/diamond, not re-expanded), mirroring the
+    /// text form's `*unresolved*` / `(*)` markers. The root node's `path` is its directory.
+    #[arg(long)]
+    json: bool,
 }
 
 /// `cdz metadata [DIR]` — print the resolved project manifest as JSON (the `cargo metadata` analogue): a
@@ -1335,9 +1342,7 @@ fn run_tree(args: &TreeArgs) -> ExitCode {
         Ok(v) => v,
         Err(code) => return code,
     };
-    // The root line: `name (dir)`.
     let root_name = m.name.clone().unwrap_or_else(|| "<unnamed>".to_string());
-    println!("{root_name} ({})", dir.display());
     // Canonicalize a dir for the visited-set key (so `../a` and an absolute path to the same dir collide),
     // falling back to the raw path when canonicalization fails (a not-yet-existing dep dir).
     let canon = |p: &std::path::Path| -> std::path::PathBuf {
@@ -1346,8 +1351,66 @@ fn run_tree(args: &TreeArgs) -> ExitCode {
     let mut visited: std::collections::HashSet<std::path::PathBuf> =
         std::collections::HashSet::new();
     visited.insert(canon(&dir));
-    print_dep_subtree(&dir, &m, "", &mut visited);
+    if args.json {
+        // The root node object: `{name, path, deps: [...]}` — same shape a tool consumes for the whole
+        // graph. The root's `path` is its directory (deps carry their manifest-relative path spelling).
+        let deps = dep_subtree_json(&dir, &m, &mut visited);
+        use cadenza_syntax::query::json;
+        let mut obj = json::Object::new();
+        obj.string("name", &root_name);
+        obj.string("path", &dir.to_string_lossy());
+        obj.raw("deps", &deps);
+        println!("{}", obj.finish());
+    } else {
+        // The root line: `name (dir)`, then the recursive box-drawing subtree.
+        println!("{root_name} ({})", dir.display());
+        print_dep_subtree(&dir, &m, "", &mut visited);
+    }
     ExitCode::SUCCESS
+}
+
+/// Build the JSON array of `manifest_dir`'s `def deps` as nested `{name, path, deps}` node objects — the
+/// `--json` counterpart of [`print_dep_subtree`], sharing its resolution + cycle/diamond guard. A dep with
+/// no resolvable `Project.cdz` is `{path, unresolved: true}`; a dep already shown higher up is
+/// `{name, path, repeated: true}` (not re-expanded), mirroring the text form's `*unresolved*` / `(*)`.
+fn dep_subtree_json(
+    manifest_dir: &std::path::Path,
+    m: &Manifest,
+    visited: &mut std::collections::HashSet<std::path::PathBuf>,
+) -> String {
+    use cadenza_syntax::query::json;
+    let canon = |p: &std::path::Path| -> std::path::PathBuf {
+        std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
+    };
+    let mut arr = json::Array::new();
+    for dep in &m.deps {
+        #[allow(clippy::infallible_destructuring_match)]
+        let dep_path = match dep {
+            DepSource::Path(p) => p,
+        };
+        let dep_dir = manifest_dir.join(dep_path);
+        let mut obj = json::Object::new();
+        match load_manifest(&dep_dir) {
+            Ok(Some((_dpath, dm))) => {
+                let dep_name = dm.name.clone().unwrap_or_else(|| "<unnamed>".to_string());
+                obj.string("name", &dep_name);
+                obj.string("path", dep_path);
+                let key = canon(&dep_dir);
+                if visited.contains(&key) {
+                    obj.raw("repeated", "true");
+                } else {
+                    visited.insert(key);
+                    obj.raw("deps", &dep_subtree_json(&dep_dir, &dm, visited));
+                }
+            }
+            _ => {
+                obj.string("path", dep_path);
+                obj.raw("unresolved", "true");
+            }
+        }
+        arr.raw(&obj.finish());
+    }
+    arr.finish()
 }
 
 /// Recursively print `manifest_dir`'s `def deps` beneath it, each with a tree connector under `prefix`.
