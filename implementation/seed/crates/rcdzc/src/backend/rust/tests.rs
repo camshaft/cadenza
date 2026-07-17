@@ -3504,6 +3504,20 @@ fn rustc_roundtrip_runtime_bin_construction_and_match() {
         guard.contains("binary value does not fit segment"),
         "a narrow segment emits the fit backstop:\n{guard}"
     );
+
+    // (g) a runtime `(bits v k)` RUN computes its ceil/mask in u128 — NOT `1i64 << k` (which is i64::MIN at
+    // k==63, a shift-overflow at k==64), so a wide field cannot emit a negative ceil / wrong mask (Copilot
+    // PR#516). A byte-aligned `(bits n 8)` run over a UInt8: the fit-check ceil is `256u128`, mask `255u128`.
+    let bits = compile_rust(
+        "(module m (def (run (: n UInt8)) (Bytes.len (bin (bits n 8)))) (export run))",
+    );
+    assert!(
+        bits.contains("256u128") && bits.contains("255u128"),
+        "a bit-field run computes ceil/mask in u128 (no 1i64<<k overflow):\n{bits}"
+    );
+    if let Some(out) = rustc_run(&bits, "run(200)") {
+        assert_eq!(out, "1", "a byte-aligned bits run packs to 1 byte");
+    }
 }
 
 #[test]
