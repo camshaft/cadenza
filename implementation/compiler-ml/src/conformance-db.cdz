@@ -129,6 +129,21 @@ def c-div-precedence() = Case.Case([Tok.TNum(1), Tok.TOp(43), Tok.TNum(8), Tok.T
 /// `true / 2` → Declines (division needs Int operands).
 def c-bool-div-declines() = Case.Case([Tok.TBoolTok(1), Tok.TOp(47), Tok.TNum(2)], Expect.Declines)
 
+// ---- COMPOUND programs: cross-feature interactions the per-feature cases don't cover. Pure corpus
+// additions (no grammar change) — exercise precedence across tiers, nested let/if, division-in-conditions. ----
+/// `let x = 10 in let y = 3 in x - y * 2` → 10 - (3*2) = 4 (nested let + precedence in the body).
+def c-cx-nested-let-precedence() = Case.Case([Tok.TLet, Tok.TName(1), Tok.TEq, Tok.TNum(10), Tok.TIn, Tok.TLet, Tok.TName(2), Tok.TEq, Tok.TNum(3), Tok.TIn, Tok.TName(1), Tok.TOp(45), Tok.TName(2), Tok.TOp(42), Tok.TNum(2)], Expect.Runs(4))
+/// `if 2 + 3 < 10 then 100 else 200` → (5 < 10) → 100 (arithmetic under a comparison under an if-cond).
+def c-cx-arith-in-cond() = Case.Case([Tok.TIf, Tok.TNum(2), Tok.TOp(43), Tok.TNum(3), Tok.TOp(60), Tok.TNum(10), Tok.TThen, Tok.TNum(100), Tok.TElse, Tok.TNum(200)], Expect.Runs(100))
+/// `let n = 7 in if n % 2 == 0 then 0 else 1` → 7%2=1, 1==0 false → 1 (modulo + equality + let-var in cond).
+def c-cx-mod-parity() = Case.Case([Tok.TLet, Tok.TName(1), Tok.TEq, Tok.TNum(7), Tok.TIn, Tok.TIf, Tok.TName(1), Tok.TOp(37), Tok.TNum(2), Tok.TOp(61), Tok.TNum(0), Tok.TThen, Tok.TNum(0), Tok.TElse, Tok.TNum(1)], Expect.Runs(1))
+/// `let a = 4 in let b = a * a in b + a` → b=16, 16+4=20 (a var used in a later binding's value).
+def c-cx-var-in-later-binding() = Case.Case([Tok.TLet, Tok.TName(1), Tok.TEq, Tok.TNum(4), Tok.TIn, Tok.TLet, Tok.TName(2), Tok.TEq, Tok.TName(1), Tok.TOp(42), Tok.TName(1), Tok.TIn, Tok.TName(2), Tok.TOp(43), Tok.TName(1)], Expect.Runs(20))
+/// `let x = 20 in x / (2 + 3)` → 20 / 5 = 4 (division with a parenthesised divisor).
+def c-cx-div-paren-divisor() = Case.Case([Tok.TLet, Tok.TName(1), Tok.TEq, Tok.TNum(20), Tok.TIn, Tok.TName(1), Tok.TOp(47), Tok.TLParen, Tok.TNum(2), Tok.TOp(43), Tok.TNum(3), Tok.TRParen], Expect.Runs(4))
+/// `let flag = 5 > 3 in if flag then 1 else 0` → flag=true → 1 (a Bool-valued let read as an if-condition).
+def c-cx-bool-let-as-cond() = Case.Case([Tok.TLet, Tok.TName(1), Tok.TEq, Tok.TNum(5), Tok.TOp(62), Tok.TNum(3), Tok.TIn, Tok.TIf, Tok.TName(1), Tok.TThen, Tok.TNum(1), Tok.TElse, Tok.TNum(0)], Expect.Runs(1))
+
 /// THE CORPUS: every conformance case. Widening the language = appending here (start-low-and-climb).
 def corpus() = [
   c-literal(), c-add(), c-sub(), c-mul(), c-precedence(),
@@ -140,7 +155,9 @@ def corpus() = [
   c-if-true-literal(), c-if-false-literal(), c-let-bool-literal(), c-bool-in-arith-declines(),
   c-unary-minus(), c-unary-minus-in-arith(), c-double-negation(),
   c-gt(), c-le(), c-ge(), c-ne(), c-rel-in-if(), c-bool-rel-declines(),
-  c-div(), c-div-by-zero(), c-mod(), c-div-precedence(), c-bool-div-declines()
+  c-div(), c-div-by-zero(), c-mod(), c-div-precedence(), c-bool-div-declines(),
+  c-cx-nested-let-precedence(), c-cx-arith-in-cond(), c-cx-mod-parity(), c-cx-var-in-later-binding(),
+  c-cx-div-paren-divisor(), c-cx-bool-let-as-cond()
 ]
 
 /// THE SCOREBOARD: `(passed, total)` over the corpus — what the `cadenza-ml` gate target prints as `X/N`.
@@ -173,7 +190,7 @@ def cf-declines-mismatch-is-fail() =
 def cf-corpus-all-pass() =
   // the whole corpus is at 100% — the current conformance floor.
   (match conformance() with | (passed, total) =>
-    (if passed == total then (if total == 41 then unit else trap("41 cases")) else trap("all cases pass")))
+    (if passed == total then (if total == 47 then unit else trap("47 cases")) else trap("all cases pass")))
 
 @test
 def cf-count-passing-partial() =
@@ -271,5 +288,19 @@ def conformance-mod() = (if check-case(c-mod()) then unit else trap("7 % 3 → 1
 def conformance-div-precedence() = (if check-case(c-div-precedence()) then unit else trap("1 + 8 / 2 → 5"))
 @test
 def conformance-bool-div-declines() = (if check-case(c-bool-div-declines()) then unit else trap("true / 2 declines"))
+@test
+def conformance-cx-nested-let-precedence() = (if check-case(c-cx-nested-let-precedence()) then unit else trap("let x=10 in let y=3 in x - y*2 → 4"))
+@test
+def conformance-cx-arith-in-cond() = (if check-case(c-cx-arith-in-cond()) then unit else trap("if 2+3<10 then 100 else 200 → 100"))
+@test
+def conformance-cx-mod-parity() = (if check-case(c-cx-mod-parity()) then unit else trap("let n=7 in if n%2==0 then 0 else 1 → 1"))
+@test
+def conformance-cx-var-in-later-binding() = (if check-case(c-cx-var-in-later-binding()) then unit else trap("let a=4 in let b=a*a in b+a → 20"))
+@test
+def conformance-cx-nested-if-in-then() = (if check-case(c-cx-nested-if-in-then()) then unit else trap("nested if in then → 42"))
+@test
+def conformance-cx-div-paren-divisor() = (if check-case(c-cx-div-paren-divisor()) then unit else trap("let x=20 in x/(2+3) → 4"))
+@test
+def conformance-cx-bool-let-as-cond() = (if check-case(c-cx-bool-let-as-cond()) then unit else trap("let flag=5>3 in if flag then 1 else 0 → 1"))
 
 export { Expect.*, Case.*, case-passes, check-case, count-passing, corpus, conformance, all-pass }

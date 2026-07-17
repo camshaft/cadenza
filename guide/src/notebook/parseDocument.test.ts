@@ -5,7 +5,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseDocument, parseDirective, type Cell } from "./parseDocument.ts";
+import { parseDocument, parseDirective, cellRanges, type Cell } from "./parseDocument.ts";
 
 test("a plain prose-only document is one prose cell", () => {
   const cells = parseDocument("# Title\n\nsome **markdown** prose.");
@@ -134,4 +134,52 @@ test("CRLF (and lone CR) line endings are normalized — no stray \\r in code-ce
   assert.deepEqual(parseDocument(cr), [
     { kind: "code", source: "def main() = 7", directive: { kind: "none" } },
   ]);
+});
+
+// ── cellRanges: the line-range map for the cell-aware LSP (operator P0 #13, v-lsp contract) ──
+
+test("cellRanges maps code cells to half-open [start,end) line ranges EXCLUDING the fence lines", () => {
+  const md = ["intro", "```cadenza", "def main() = 1 + 2", "```", "outro"].join("\n");
+  //          0        1             2                     3       4
+  const r = cellRanges(md, "ml");
+  assert.deepEqual(r, [
+    { startLine: 0, endLine: 1, kind: "prose", surface: "ml" }, // "intro"
+    { startLine: 2, endLine: 3, kind: "code", directive: { kind: "none" }, surface: "ml" }, // source only, no fences
+    { startLine: 4, endLine: 5, kind: "prose", surface: "ml" }, // "outro"
+  ]);
+  // The code range covers exactly the source line, not the ``` fences.
+  const lines = md.split("\n");
+  assert.deepEqual(lines.slice(2, 3), ["def main() = 1 + 2"]);
+});
+
+test("cellRanges tags widget + directive so the LSP can exclude widget/prose from Cadenza diagnostics", () => {
+  const md = ["# h", "```cadenza widget", "x : Int64 = slider(0, 10)", "```", "```cadenza table", "(def (main) (list))", "```"].join("\n");
+  const r = cellRanges(md, "sexpr");
+  const code = r.filter((c) => c.kind === "code");
+  assert.equal(code.length, 2);
+  assert.deepEqual(code[0].directive, { kind: "widget" });
+  assert.deepEqual(code[1].directive, { kind: "table" });
+  // The LSP's rule: check only code cells that are NOT widgets.
+  const cadenzaCells = r.filter((c) => c.kind === "code" && c.directive?.kind !== "widget");
+  assert.equal(cadenzaCells.length, 1);
+  assert.deepEqual(cadenzaCells[0].directive, { kind: "table" });
+});
+
+test("cellRanges: an unclosed cadenza fence still yields a code range to EOF (robustness)", () => {
+  const md = ["```cadenza", "def main() = 1"].join("\n"); // no closing fence
+  const r = cellRanges(md, "ml");
+  assert.deepEqual(r, [{ startLine: 1, endLine: 2, kind: "code", directive: { kind: "none" }, surface: "ml" }]);
+});
+
+test("cellRanges: a non-cadenza fence stays inside prose (not a code range)", () => {
+  const md = ["before", "```js", "let x = 1;", "```", "after"].join("\n");
+  const r = cellRanges(md, "sexpr");
+  // The whole thing is one prose run (the ```js block is prose passthrough) — no code range.
+  assert.deepEqual(r, [{ startLine: 0, endLine: 5, kind: "prose", surface: "sexpr" }]);
+});
+
+test("cellRanges surface defaults to sexpr (the notebook's pinned surface) and rides onto every cell", () => {
+  const md = ["```cadenza", "(def (main) 1)", "```"].join("\n");
+  assert.equal(cellRanges(md)[0].surface, "sexpr");
+  assert.equal(cellRanges(md, "ml")[0].surface, "ml");
 });

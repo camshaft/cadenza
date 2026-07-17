@@ -36,14 +36,26 @@ export default function Rationals() {
       <Runnable source={`0.5R`} />
       <P>
         It's the very same value as the constructor — <C>0.5R</C> equals <C>(Rational.of 1 2)</C> — just
-        terser to write. Here's the point of it, and the contrast with <strong>Floating-point numbers</strong>:
-        write the tenths as rationals and <C>0.1 + 0.2</C> is <em>exactly</em> <C>3/10</C>, where the float{" "}
-        <C>(+ 0.1 0.2)</C> drifted to <C>0.30000000000000004</C>:
+        terser to write. And it's where the contrast with <strong>Floating-point numbers</strong> stops
+        being a claim and becomes something you can watch. Add a tenth and two tenths as <em>floats</em> and
+        the answer isn't <C>0.3</C> — it's the nearest float to it, which isn't quite <C>0.3</C>:
       </P>
-      <Runnable source={`(+ 0.1R 0.2R)`} />
+      <Runnable source={`(+ 0.1 0.2)`} />
       <P>
-        Same digits you'd type for a float, one letter's difference — and the answer is the number you
-        meant, not the nearest float to it.
+        <C>0.30000000000000004</C> — the drift is real, not hypothetical. So the natural test{" "}
+        <em>fails</em>: the float sum is not equal to <C>0.3</C>.
+      </P>
+      <Runnable source={`(= (+ 0.1 0.2) 0.3)`} />
+      <P>
+        <C>false</C>. Now write the very same digits as rational literals. The sum is <em>exactly</em>{" "}
+        <C>3/10</C>, so the same equality that failed for floats holds for rationals:
+      </P>
+      <Runnable source={`(= (+ 0.1R 0.2R) 0.3R)`} />
+      <P>
+        <C>true</C> — same digits you'd type for a float, one letter's difference, and now <C>0.1 + 0.2</C>{" "}
+        is the number you <em>meant</em>. The float wasn't buggy; it was doing exactly what binary
+        floating-point must. The <C>Rational</C> just makes the other trade — exactness over speed — so the
+        arithmetic never rounds in the first place.
       </P>
 
       <H2>Whole numbers that outgrow Int64: <C>BigInt</C></H2>
