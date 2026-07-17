@@ -1,23 +1,32 @@
-/// giter.cdz — a GENERIC (`∀a`) lazy pull-iterator, the element-polymorphic companion to the
-/// monomorphic-Int64 `iter.cdz`. This module exists because the recursive-generic PRODUCER element tie
+/// giter.cdz — a GENERIC (`∀a`) STRICT (eager, fully-materialized) pull-iterator, the element-polymorphic
+/// companion to the monomorphic-Int64 `iter.cdz`. This module exists because the recursive-generic PRODUCER element tie
 /// (a `List(a) -> GIter(a)` producer whose result element must tie to its argument) was the long-standing
 /// inference gap that pinned `iter.cdz` to `Int64`; that gap is now RESOLVED upstream (rcdzc "tie a
 /// recursive-generic producer's result element to its argument — Part C, rigid param vars"), verified here
 /// by a producer composed with a consumer at TWO distinct element types in one program (Int64 AND String —
 /// see `from-list-composes-at-two-element-types` / `collect-instantiates-at-two-types`).
 ///
+/// ⚠ STRICTNESS — this is EAGER, not lazy. The cons-cell is FULLY MATERIALIZED when a producer runs:
+/// `from-list`/`range-from` build the ENTIRE `GIter(a)` (a deep recursion) up front, so `take(it, 3)` over a
+/// huge source does NOT "pull only 3" — the source is already built (and a source of ≳10⁴ elements overflows
+/// the call stack and TRAPS). `next` just projects an ALREADY-BUILT cell. A genuinely LAZY sequence needs a
+/// thunk tail (`Cons(a, Unit -> GIter(a))` forced on demand), which this encoding does NOT have (Cadenza is
+/// strict). So treat these as EAGER transformers over finite in-memory sequences, NOT lazy streams.
+///
 /// ENCODING — a recursive CONS-CELL sum (`Nil | Cons(a, GIter(a))`), NOT the reified sum-of-step-shapes
 /// `iter.cdz` uses. The two encodings differ on purpose:
 ///   - `iter.cdz` (mono-Int64) reifies each transformer as a step-shape variant that STORES A CLOSURE over
-///     the element (`MapI((Int64 -> Int64), Iter)`, …). That is what lets it be lazy without a thunk.
+///     the element (`MapI((Int64 -> Int64), Iter)`, …) — its `next` INTERPRETS one step, so it forces nothing
+///     until pulled (that reified form IS lazy without a thunk; the generic cons-cell form here is NOT).
 ///   - `giter.cdz` (generic) uses the cons-cell recursion because THAT is the shape the Part C tie
 ///     unblocks: the producer `from-list` recurses through `Cons`, threading the element `h : a` into
 ///     `Cons(h, from-list(t))`, so the result element ties to the argument element and the whole thing
 ///     monomorphizes independently per element type. A `FromList(List(a))` wrapper (no self-recursion in
 ///     the producer) does NOT tie the element and still declines CDZ0201 — verified — so the cons-cell
 ///     form is the correct generic encoding today.
-/// `next` is still the pull interface (`GIter(a) -> Option((a, GIter(a)))`), total (never traps) and pure
-/// (re-stepping yields the same element); the cons-cell IS the reified rest, so `next` just projects it.
+/// `next` is the pull interface (`GIter(a) -> Option((a, GIter(a)))`): pure (re-stepping yields the same
+/// element) and total ON AN ALREADY-BUILT iterator (it never traps itself — but BUILDING a huge source can,
+/// per the strictness note above); the cons-cell IS the materialized rest, so `next` just projects it.
 ///
 /// SCOPE (slices 1–18, 21–22; 19–20 deferred — see below). CLOSURE-FREE (Part C shape): producers (`from-list`, `singleton`), `next`, consumers
 /// (`count`, `collect`, `nth`, `last`), transformers (`chain`, `take`, `drop`, `zip`, `enumerate`,
