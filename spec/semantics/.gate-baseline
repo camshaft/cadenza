@@ -3289,7 +3289,11 @@ pass	subtraction of two strings is rejected
 pass	subtraction of two symbols is rejected
 pass	sum type constructors are in scope after declaration
 pass	symbol identity follows String normalization
+pass	symbol ordering is reflexive at the boundary — less-than-or-equal on equal content
+pass	symbol ordering — greater-than agrees with the byte order
+pass	symbol ordering — greater-than-or-equal is false when strictly less
 pass	symbols interned from different strings are unequal
+pass	symbols order by content-lexicographic UTF-8 byte order — less-than
 pass	take-while composed after a map threads both transformers' closures
 pass	take-while excludes the failing element and everything after it (content, not just count)
 pass	take-while where every element satisfies the predicate keeps the whole run

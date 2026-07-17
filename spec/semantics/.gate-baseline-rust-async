@@ -2794,7 +2794,11 @@ pass	subtraction of two strings is rejected
 pass	subtraction of two symbols is rejected
 pass	sum type constructors are in scope after declaration
 pass	symbol identity follows String normalization
+pass	symbol ordering is reflexive at the boundary — less-than-or-equal on equal content
+pass	symbol ordering — greater-than agrees with the byte order
+pass	symbol ordering — greater-than-or-equal is false when strictly less
 pass	symbols interned from different strings are unequal
+pass	symbols order by content-lexicographic UTF-8 byte order — less-than
 pass	textually-identical performs are DISTINCT state-advancing reads, not a common subexpression
 pass	the AST is a sum type deconstructible by pattern matching
 pass	the Bool generator covers both values across seeds (it is not a constant)
