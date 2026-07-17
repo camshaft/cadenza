@@ -133,8 +133,12 @@ export default function CadPage() {
     <div className="mx-auto flex min-h-screen max-w-6xl flex-col px-4 py-4">
       <div className="mb-3 flex items-baseline justify-between gap-3">
         <h1 className="text-lg font-bold text-slate-100 sm:text-xl">Cadenza CAD</h1>
+        {/* Mobile touch target: the header link gets a 44px min-height below `sm`, compact at sm+. */}
         <div className="flex shrink-0 items-center gap-3 text-xs">
-          <Link to="/playground" className="text-cadenza-400 hover:text-cadenza-300">
+          <Link
+            to="/playground"
+            className="flex min-h-11 items-center px-2 text-cadenza-400 hover:text-cadenza-300 sm:min-h-0 sm:px-0"
+          >
             Playground →
           </Link>
         </div>
@@ -163,7 +167,7 @@ export default function CadPage() {
             <button
               onClick={() => void runModel(source, surface)}
               disabled={status.phase === "running"}
-              className="rounded bg-cadenza-600 px-3 py-1 text-xs font-semibold text-white transition enabled:hover:bg-cadenza-500 disabled:opacity-40"
+              className="flex min-h-11 items-center justify-center rounded bg-cadenza-600 px-3 text-xs font-semibold text-white transition enabled:hover:bg-cadenza-500 disabled:opacity-40 sm:min-h-0 sm:py-1"
             >
               ▶ Run
             </button>
