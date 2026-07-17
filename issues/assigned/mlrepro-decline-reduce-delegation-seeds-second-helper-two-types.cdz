@@ -1,0 +1,22 @@
+;; DECLINE (new gap, distinct from CDZ0201): a `reduce`-shaped WRAPPER whose Cons arm seeds a SECOND
+;; recursive-generic helper (`go`) with the HEAD ELEMENT, then used at TWO element types in one program,
+;; trips "a recursive function with an unannotated parameter is not yet inferred (annotate its parameters)".
+;; SINGLE element type COMPILES+RUNS; the failure is the >=2-instantiation transitive tie — the delegated
+;; helper `go`'s accumulator var is not tied across the wrapper `reduce`'s two monomorphizations.
+;; (A structurally-identical direct `fold` with an element-typed accumulator at two types WORKS — see
+;; giter.cdz fold; the trigger is the WRAPPER->second-recursive-helper delegation seeded from the head,
+;; NOT the element-typed accumulator itself. A `reduce1` variant WITHOUT the Option wrapper hits a
+;; DIFFERENT error instead — "borrowing op operand has an ownership this backend cannot yet prove".)
+;; Routed to v-inference (transitive recursive-generic tie family, sibling of the transformer closure tie).
+(do
+  (type GIter (Nil) (Cons a (GIter a)))
+  (def (from-list xs)
+    (match xs ((list) (GIter.Nil)) ((list h .. t) (GIter.Cons h (from-list t)))))
+  (def (go it acc f)
+    (match it ((GIter.Nil) acc) ((GIter.Cons h rest) (go rest (f acc h) f))))
+  (def (reduce1 it f)
+    (match it ((GIter.Nil) (Option.None)) ((GIter.Cons h rest) (Option.Some (go rest h f)))))
+  (def (main)
+    (+ (match (reduce1 (from-list (list 1 2 3)) (fn (x y) (+ x y))) ((Option.None) 0) ((Option.Some v) v))
+       (match (reduce1 (from-list (list "a" "b")) (fn (x y) (String.concat x y))) ((Option.None) 0) ((Option.Some v) (String.byte-len v)))))
+  (export main))

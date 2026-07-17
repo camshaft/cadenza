@@ -19,12 +19,12 @@
 /// `next` is still the pull interface (`GIter(a) -> Option((a, GIter(a)))`), total (never traps) and pure
 /// (re-stepping yields the same element); the cons-cell IS the reified rest, so `next` just projects it.
 ///
-/// SCOPE (slices 1–10). CLOSURE-FREE (Part C shape): producers (`from-list`, `singleton`), `next`, consumers
-/// (`count`, `collect`, `nth`, `last`), transformers (`chain`, `take`, `drop`, `zip`, `enumerate`).
-/// CLOSURE-STORING (unblocked by the recursive-generic-transformer closure tie + the rigid-biased if-join):
-/// `map`, `filter`, `drop-while`, `take-while`, `scan`, `find`, `all`, `any`, `fold`, `zip-with` — each
-/// threads a closure and monomorphizes per element type. Every function composes at Int64 AND String in one
-/// program (the tests pin this).
+/// SCOPE (slices 1–13). CLOSURE-FREE (Part C shape): producers (`from-list`, `singleton`), `next`, consumers
+/// (`count`, `collect`, `nth`, `last`), transformers (`chain`, `take`, `drop`, `zip`, `enumerate`,
+/// `intersperse`, `step-by`). CLOSURE-STORING (unblocked by the recursive-generic-transformer closure tie +
+/// the rigid-biased if-join): `map`, `filter`, `drop-while`, `take-while`, `scan`, `find`, `all`, `any`,
+/// `fold`, `zip-with`, `position` — each threads a closure and monomorphizes per element type. Every function
+/// composes at Int64 AND String in one program (the tests pin this).
 /// ELEMENT-CHANGING
 /// is supported too: `zip`/`enumerate` yield a tuple element, `map` maps `a -> b` at a DIFFERENT result type
 /// (int→Bool, int→String — see the tests), and `zip-with`/`fold` fuse to an inferred result/accumulator type;
@@ -155,6 +155,30 @@ def enum-from(it, i) = match it with
 /// iterator analogue of `List.enumerate`; a thin seed of `enum-from` at index 0.
 def enumerate(it) = enum-from(it, 0)
 
+/// `intersperse(it, sep)` — insert `sep : a` BETWEEN every pair of adjacent elements (not before the first
+/// or after the last), yielding `a, sep, b, sep, c, …`. Closure-free; `sep` shares the element type, so the
+/// result element ties to the input's (`GIter(a) -> a -> GIter(a)`) and it composes at ≥2 element types. The
+/// inner match on `rest` distinguishes the LAST element (no trailing `sep`) from a middle one; an `n`-element
+/// iterator yields `2n-1` elements (0 stays 0, else `2n-1`).
+def intersperse(it, sep) = match it with
+  | GIter.Nil(_) => GIter.Nil(unit)
+  | GIter.Cons(h, rest) => (match rest with
+    | GIter.Nil(_) => GIter.Cons(h, GIter.Nil(unit))
+    | GIter.Cons(_, _) => GIter.Cons(h, GIter.Cons(sep, intersperse(rest, sep))))
+
+/// `step-from(it, n, i)` — the recursive worker for `step-by`: yield the current element when the countdown
+/// `i` hits 0 (then reset to `n-1`), else skip it and decrement. Closure-free; rebuilds the head cell so the
+/// result element ties to the input's, composing at ≥2 element types.
+def step-from(it, n, i) = match it with
+  | GIter.Nil(_) => GIter.Nil(unit)
+  | GIter.Cons(h, rest) =>
+    if i <= 0 then GIter.Cons(h, step-from(rest, n, n - 1)) else step-from(rest, n, i - 1)
+
+/// `step-by(it, n)` — keep every `n`-th element starting at index 0 (`0, n, 2n, …`), dropping the rest.
+/// A thin seed of `step-from` at countdown 0 (so the first element is always kept). `step-by(it, 1)` is the
+/// identity; `n <= 0` would never advance the counter past the first element — callers pass `n >= 1`.
+def step-by(it, n) = step-from(it, n, 0)
+
 /// CLOSURE-STORING TRANSFORMERS & CONSUMERS (thread a closure through the recursion) -------------------
 /// Unblocked by the recursive-generic-transformer closure tie (rcdzc "tie a recursive-generic transformer's
 /// closure domain to the mapped element"): a recursive-generic function that threads a closure now
@@ -183,6 +207,18 @@ def drop-while(it, p) = match it with
 def find(it, p) = match it with
   | GIter.Nil(_) => Option.None(unit)
   | GIter.Cons(h, rest) => if p(h) then Option.Some(h) else find(rest, p)
+
+/// `pos-from(it, p, i)` — the recursive worker for `position`: the 0-based INDEX (not the element) of the
+/// first element satisfying `p`, counting from `i`. Threads `p` and a plain Int64 counter `i` — the counter
+/// is NOT element-typed (unlike a `reduce`-style head-seeded accumulator, which trips a transitive tie at ≥2
+/// types), so this composes cleanly at ≥2 element types.
+def pos-from(it, p, i) = match it with
+  | GIter.Nil(_) => Option.None(unit)
+  | GIter.Cons(h, rest) => if p(h) then Option.Some(i) else pos-from(rest, p, i + 1)
+
+/// `position(it, p)` — the 0-based index of the first element satisfying `p`, or `None`. The index sibling of
+/// `find` (which returns the element); a thin seed of `pos-from` at index 0.
+def position(it, p) = pos-from(it, p, 0)
 
 /// `all(it, p)` — `true` iff every element satisfies `p` (vacuously true for empty). Threads `p`.
 def all(it, p) = match it with
@@ -596,5 +632,73 @@ def zip-with-mixed-source-types-into-int() =
 def zip-with-empty-left-is-empty() =
   if count(zip-with(take(from-list([1]), 0), from-list([9, 9]), fn(x, y) => x + y)) == 0
   then unit else trap("zip-with empty left is empty")
+
+/// SLICE-11: `intersperse` — closure-free, inserts a separator between adjacent elements (2n-1 elements out),
+/// pinned at two element types and the singleton/empty edges (no trailing separator).
+
+@test
+def intersperse-ints-inserts-between() =
+  if int-list-eq(collect(intersperse(from-list([1, 2, 3]), 0)), [1, 0, 2, 0, 3])
+  then unit else trap("intersperse ints")
+
+@test
+def intersperse-strings-second-source-type() =
+  if str-list-eq(collect(intersperse(from-list(["a", "b"]), "-")), ["a", "-", "b"])
+  then unit else trap("intersperse String source (2nd element type)")
+
+@test
+def intersperse-singleton-has-no-separator() =
+  if int-list-eq(collect(intersperse(from-list([7]), 0)), [7])
+  then unit else trap("intersperse singleton unchanged")
+
+@test
+def intersperse-empty-is-empty() =
+  if count(intersperse(take(from-list([1]), 0), 0)) == 0
+  then unit else trap("intersperse empty is empty")
+
+/// SLICE-12: `step-by` — closure-free, keeps every n-th element from index 0, pinned at two element types and
+/// the identity (n=1) case.
+
+@test
+def step-by-keeps-every-second-int() =
+  if int-list-eq(collect(step-by(from-list([1, 2, 3, 4, 5, 6]), 2)), [1, 3, 5])
+  then unit else trap("step-by 2 over ints")
+
+@test
+def step-by-one-is-identity-strings() =
+  if str-list-eq(collect(step-by(from-list(["a", "b", "c"]), 1)), ["a", "b", "c"])
+  then unit else trap("step-by 1 is identity (String source)")
+
+@test
+def step-by-three-keeps-first-and-fourth() =
+  if int-list-eq(collect(step-by(from-list([1, 2, 3, 4, 5, 6, 7]), 3)), [1, 4, 7])
+  then unit else trap("step-by 3 keeps indices 0,3,6")
+
+/// SLICE-13: `position` — closure-storing, the 0-based index of the first predicate match (the index sibling
+/// of `find`), pinned at two element types, a miss, and the first-element hit.
+
+@test
+def position-finds-first-matching-int-index() =
+  match position(from-list([10, 20, 30]), fn(x) => x == 20) with
+  | Option.None(_) => trap("position int must find")
+  | Option.Some(i) => if i == 1 then unit else trap("position int index")
+
+@test
+def position-finds-first-matching-string-index() =
+  match position(from-list(["a", "bb", "ccc"]), fn(s) => String.byte-len(s) == 3) with
+  | Option.None(_) => trap("position str must find")
+  | Option.Some(i) => if i == 2 then unit else trap("position str index")
+
+@test
+def position-miss-is-none() =
+  match position(from-list([1, 2, 3]), fn(x) => x > 100) with
+  | Option.None(_) => unit
+  | Option.Some(_) => trap("position miss must be None")
+
+@test
+def position-first-element-hit-is-zero() =
+  match position(from-list([5, 6, 7]), fn(x) => x == 5) with
+  | Option.None(_) => trap("position first hit must find")
+  | Option.Some(i) => if i == 0 then unit else trap("position first hit index 0")
 
 export { GIter.* }
