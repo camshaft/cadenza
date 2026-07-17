@@ -715,15 +715,17 @@
             (def (main)
               (let ((x   (Term.Var 0))
                     (one (Term.Num 1)))
-                ; the unprovable obligation: le (add x 1) MAXINT with x unbounded
-                (let ((goal (le (add x one) (maxint))))
-                  ; the only axiom that could mint it is le-ax; it is NON-GROUND → None. No proof reaches
-                  ; goal, so the PROVEN tier misses. (goal is bound to exercise the denotation but is not
-                  ; provable — assert le-ax yields None.)
-                  (let ((attempt (le-ax goal (maxint))))
-                    (match attempt
-                      ((Option.Some _) false)
-                      ((Option.None) true))))))
+                ; the unprovable obligation: le (add x 1) MAXINT with x unbounded. le-ax is the only axiom
+                ; that could mint it — call it on the OBLIGATION's own sides (lhs = the numeric term
+                ; (add x 1), rhs = MAXINT), exactly the no-overflow fact. eval-ground on (add x 1) fails
+                ; because x is a FREE Var (non-ground) — so le-ax returns None specifically DUE TO the
+                ; unbounded x, the real "unbounded add is not dischargeable" property (not a shape mismatch:
+                ; both sides ARE numeric/add terms le-ax evaluates; only x's freeness blocks it). No proof
+                ; reaches the goal, so the PROVEN tier misses. Assert le-ax yields None.
+                (let ((attempt (le-ax (add x one) (maxint))))
+                  (match attempt
+                    ((Option.Some _) false)
+                    ((Option.None) true)))))
             (export main)))
   (output (: true Bool)))
 
