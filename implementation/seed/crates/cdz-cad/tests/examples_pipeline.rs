@@ -25,6 +25,16 @@ const WASHER: &str = "(: (Differencer (Cylinderr 1.0 2.0) (Cylinderr 1.0 1.0)) S
 /// `tube(3, 2, 1)` — a length-3 pipe, outer radius 2, bore 1. Box = the outer cylinder: 4×4×3.
 const TUBE: &str = "(: (Differencer (Cylinderr 3.0 2.0) (Cylinderr 3.0 1.0)) Solidr)";
 
+/// `mixed-block()` from the UNITS-TYPED library (`examples-typed.cdz`): a box authored `box-len(meters(1),
+/// inches(12), inches(6))` — 1 m wide, 12-inch deep, 6-inch high. The units-everywhere path: each dimension
+/// is a length QUANTITY (a bare number is a type error at `box-len`), authored in mixed units and converted
+/// to EXACT Rational METERS (the model's internal unit) before rendering — 12 inch = 381/1250 m, 6 inch =
+/// 381/2500 m EXACTLY (no float rounding). So the model renders the same `n/d`-Rational grammar the driver
+/// already parses, and this pins that a UNITS-AUTHORED model flows end-to-end (library → render → driver →
+/// mesh) — the payoff that makes units-everywhere real at the render edge, not just unit-tested in Cadenza.
+const MIXED_BLOCK: &str =
+    "(: (Cuber (: (tuple 1/1 381/1250 381/2500) Vec3r)) Solidr)";
+
 #[test]
 fn plate_meshes_and_bounds_match_the_base_cube() {
     let s = parse_solid(PLATE).expect("plate parses");
@@ -35,6 +45,23 @@ fn plate_meshes_and_bounds_match_the_base_cube() {
     assert!(
         approx(d[0], 4.0) && approx(d[1], 2.0) && approx(d[2], 1.0),
         "plate box is its base cube 4×2×1, got {d:?}"
+    );
+}
+
+#[test]
+fn units_typed_mixed_block_meshes_and_bounds_are_exact_meters() {
+    // The units-everywhere end-to-end pin: a model authored in MIXED units (1 m + 12 inch + 6 inch) renders
+    // to exact Rational METERS and flows through the native driver. Box = the full-size cube: 1 × 0.3048 ×
+    // 0.1524 m (12 inch = 381/1250 = 0.3048 m; 6 inch = 381/2500 = 0.1524 m — exact, no float rounding).
+    let s = parse_solid(MIXED_BLOCK).expect("the units-typed mixed block parses");
+    let m = mesh(&s);
+    assert!(!m.is_empty(), "the mixed-unit block has geometry");
+    assert_eq!(m.triangle_count(), 12, "a box is 12 triangles");
+    let b = bounds(&s).expect("the mixed block has bounds");
+    let d = b.dimensions();
+    assert!(
+        approx(d[0], 1.0) && approx(d[1], 0.3048) && approx(d[2], 0.1524),
+        "mixed-block box is 1 m × 12in(0.3048 m) × 6in(0.1524 m), got {d:?}"
     );
 }
 
