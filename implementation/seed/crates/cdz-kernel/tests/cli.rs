@@ -94,6 +94,55 @@ fn bootstrap_then_inject_then_run_drives_the_genesis() {
 }
 
 #[test]
+fn perform_executes_the_plan_and_sums_per_op_results() {
+    // The `perform` verb is the daemon's real EXECUTION step (K1c): unlike `run` (which COUNTS the scheduled
+    // ops), `perform` drives `daemon::tick_performing` so each op fires a real `Prim.run` perform, and the fold
+    // SUMS the per-op results — kind=1 → [Append(1), Exec(2)] → 3 (proves each op performed AND its result came
+    // back through the cross-fn fold, NOT a count). Same store-gated SKIP as `run` (missing runtime → skip).
+    let log = unique("perform-log").with_extension("log");
+    let prog = unique("perform-genesis").with_extension("cdz");
+    let _ = std::fs::remove_file(&log);
+    std::fs::write(&prog, GENESIS).unwrap();
+
+    Command::new(bin())
+        .args(["bootstrap", log.to_str().unwrap()])
+        .output()
+        .expect("bootstrap");
+    Command::new(bin())
+        .args([
+            "inject-genesis",
+            log.to_str().unwrap(),
+            prog.to_str().unwrap(),
+        ])
+        .output()
+        .expect("inject-genesis");
+
+    let out = Command::new(bin())
+        .args(["perform", log.to_str().unwrap(), "1"])
+        .output()
+        .expect("run cdz-agent perform");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    if out.status.success() {
+        assert!(
+            stdout.contains("summed per-op result = 3"),
+            "kind=1 → perform executes [Append(1), Exec(2)] and sums to 3; got: {stdout}"
+        );
+    } else {
+        assert!(
+            stderr.contains("runtime not found"),
+            "the only acceptable `perform` failure is a missing runtime store (skip); got: {stderr}"
+        );
+        eprintln!(
+            "[cdz-agent it] value-heap runtime absent; skipped the `perform` result assertion"
+        );
+    }
+
+    let _ = std::fs::remove_file(&log);
+    let _ = std::fs::remove_file(&prog);
+}
+
+#[test]
 fn unknown_subcommand_prints_usage_and_fails() {
     let out = Command::new(bin())
         .arg("frobnicate")

@@ -224,6 +224,34 @@ def v3r-eq-is-a-direct-compound-walk() =
   else trap("whole-Vec3(Rational) == over Rational must walk (1/2 == 2/4 normalized)")
 
 @test
+def aabb-is-a-direct-compound-walk() =
+  // Extend the ty_heap_walkable Rational-admission pin to the DEEPER `Aabb` compound (a nested pair of
+  // Vec3(Rational)): a whole-`Aabb` `==` must walk two levels of nesting and normalize Rational leaves at
+  // depth — a box with `1/2` and one with `2/4` on the same corner axis are the SAME box; a differing hi
+  // corner makes them unequal. Deeper than v3r-eq (Aabb wraps two Vec3s), so it guards the walk at nesting > 1.
+  let b1 = Aabb.Box(v3r(1 / 2, rzero(), rzero()), v3r(1 / 1, 1 / 1, 1 / 1)) in
+  let b2 = Aabb.Box(v3r(2 / 4, rzero(), rzero()), v3r(1 / 1, 1 / 1, 1 / 1)) in   // 1/2 == 2/4 normalized
+  let b3 = Aabb.Box(v3r(1 / 2, rzero(), rzero()), v3r(2 / 1, 1 / 1, 1 / 1)) in   // hi.x differs
+  if (b1 == b2) then (if (b1 == b3) then trap("differing hi corner must be unequal") else unit)
+  else trap("whole-Aabb == must walk the nested Vec3(Rational) pair, normalizing (1/2 == 2/4)")
+
+@test
+def solid-is-a-direct-compound-walk() =
+  // The DEEPEST case: a whole `Solid(Rational)` `==` — a recursive sum of Rationals to a data-determined depth.
+  // Two structurally-identical trees whose only difference is a NORMALIZED Rational leaf (5/2 vs 10/4) are
+  // equal; a differing leaf value or a differing tree SHAPE makes them unequal. This pins that the heap walk
+  // handles a recursive-sum-of-Rational at arbitrary depth (not just the flat Vec3/Aabb), the same admission
+  // `lower`/render rely on — a future change that dropped Rational (or recursive sums) from the walk fails here.
+  let s1 = Solid.Difference(Solid.Cube(v3r(4 / 1, 4 / 1, 4 / 1)), Solid.Sphere(5 / 2)) in
+  let s2 = Solid.Difference(Solid.Cube(v3r(4 / 1, 4 / 1, 4 / 1)), Solid.Sphere(10 / 4)) in  // 5/2 == 10/4
+  let s-leaf = Solid.Difference(Solid.Cube(v3r(4 / 1, 4 / 1, 4 / 1)), Solid.Sphere(3 / 1)) in  // radius differs
+  let s-shape = Solid.Cube(v3r(4 / 1, 4 / 1, 4 / 1)) in  // different constructor/shape
+  if (s1 == s2) then
+    (if (s1 == s-leaf) then trap("differing sphere radius must be unequal")
+     else (if (s1 == s-shape) then trap("differing tree shape must be unequal") else unit))
+  else trap("whole-Solid(Rational) == must walk the recursive sum, normalizing (5/2 == 10/4)")
+
+@test
 def v3r-eq-and-add() =
   let a = v3r(1 / 2, 1 / 3, 1 / 6) in
   let b = v3r(1 / 2, 2 / 3, 5 / 6) in

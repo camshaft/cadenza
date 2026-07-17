@@ -85,6 +85,36 @@ test("a notebook with no widgets: initial run covers all code cells, no recomput
   assert.deepEqual(recomputePlan(cells, [], "nope", "ml"), []);
 });
 
+test("dragging `rate` recomputes ONLY the dependent cell even when EVERY code cell defines `main`", () => {
+  // The shipped notebook's reality: every code cell defines its own `main` (its private entry slot). The
+  // NOTEBOOK fixture above uses `def aside()` for its independent cell, so it wouldn't catch a planner that
+  // treats `main` as a cross-cell dependency (the recomputePlan `main`-cascade bug). This end-to-end case
+  // makes BOTH code cells define `main` — the balance cell uses `rate`, the aside is an independent
+  // constant — and pins that only the balance cell recomputes. A regression where `main` leaks into the
+  // dependency graph would recompute the aside too, and this fails.
+  const doc = [
+    "~~~cadenza widget",
+    "rate : Float64 = slider(0.0, 0.2, step: 0.01, default: 0.05)",
+    "~~~",
+    "",
+    "~~~cadenza",
+    "def main() = 1000.0 * (1.0 + rate)", // code cell idx 1 — uses rate
+    "~~~",
+    "",
+    "~~~cadenza",
+    "def main() = 42.0", // code cell idx 2 — independent constant, ALSO defines main
+    "~~~",
+  ].join("\n");
+  const cells = parseDocument(doc);
+  const widgets = allWidgets(cells);
+  assert.deepEqual(widgets.map((w) => w.name), ["rate"]);
+  // Cells: [0]=widget, [1]=balance code, [2]=aside code (no interleaving prose here).
+  assert.deepEqual(initialRunOrder(cells), [1, 2]);
+  // Only the balance cell (idx 1) truly depends on rate; the aside (idx 2) must NOT recompute despite
+  // also defining `main`. A planner treating `main` as a cross-cell dep would recompute idx 2 too.
+  assert.deepEqual(recomputePlan(cells, widgets, "rate", "ml"), [1]);
+});
+
 test("multiple widgets in ONE widget cell are all collected + independently drive recompute", () => {
   const doc = [
     "~~~cadenza widget",

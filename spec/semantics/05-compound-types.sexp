@@ -4785,6 +4785,26 @@
             (def (main) (f (tuple false true))) (export main)))
   (output (: 2 Int64)))
 
+(case "a tuple of a bool and a sum is exhaustive when every bool×variant combination is covered"
+  (doc    "EXHAUSTIVENESS over a product where the two finite factors are covered by DIFFERENT mechanisms:
+           `(match t ((tuple true (R)) …) ((tuple true (G)) …) ((tuple false (R)) …) ((tuple false (G)) …))`
+           over `(Tuple Bool C)`, `C = (R) | (G)`, is exhaustive WITHOUT a `_`. The first column is a `Bool`
+           value TEST refined by finiteness (`true`+`false` close it, as in the tuple-of-bools case); the
+           second is a SUM DISCRIMINANT whose variant set `{R, G}` is closed by variant coverage. This pins
+           that the bool-else-refinement and sum-variant coverage COMPOSE in one product — all four
+           bool×variant leaves must be present, and each dispatches to its own arm. `(false, (G))` selects
+           the last arm → 4.")
+  (input  (do
+            (type C (R) (G))
+            (def (f (: t (Tuple Bool C)))
+              (match t
+                ((tuple true (R))  1)
+                ((tuple true (G))  2)
+                ((tuple false (R)) 3)
+                ((tuple false (G)) 4)))
+            (def (main) (f (tuple false (G)))) (export main)))
+  (output (: 4 Int64)))
+
 (case "a list of bools is exhaustive when the empty and both first-element values are covered"
   (doc    "The LIST analogue of the tuple-of-bools case: `(match xs ((list) …) ((list true .. r) …)
            ((list false .. r) …))` over `(List Bool)` is exhaustive WITHOUT a `_`. A list-element arm set

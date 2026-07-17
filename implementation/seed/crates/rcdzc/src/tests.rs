@@ -5867,19 +5867,17 @@ fn a_per_element_perform_in_a_cross_function_list_fold_threads() {
 /// does NOT thread across a CROSS-FUNCTION recursive fold: `run-ops` recursively performs `Prim.run` per
 /// element (advancing state `s→s+1` per the arm), but a perform in the handle body's CONTINUATION *after*
 /// `run-ops` sees FRESH state 0, not the accumulated count. `(handle Prim 0 ((run (tag) s (resume s (+ s
-/// 1)))) (do (run-ops (list 1 2 3)) (Prim.run 0)))` runs to 0, should be 3 — the 3 performs inside the
-/// specialized `run-ops#ctx` recursion advance state, but that recursion's final OUT-STATE never reaches the
-/// caller's continuation (the `do`'s second item). SAME class as the E3 cross-function out-state limit (the
-/// `loop.cdz` note: cross-fn state-threading needs an explicit acc PARAMETER, not handler state) — the
-/// recursive callee's advanced state is dropped at the specialization-return boundary, the recursive analogue
-/// of the (now-fixed) INLINED helper-call drop. NOT a decline (compiles + runs to a wrong value). Per
-/// v-agent-harness this does NOT block the REAL agent-kernel executor: real exec/http/log performs return
-/// their OWN per-call results (which DO work — the perform fires + returns its result), not a threaded
-/// counter; only a handler-state accumulator across the cross-fn fold is affected. QUEUED (substantial — E3
-/// specialization out-state threading to the caller's continuation). This test PINS the wrong value (0) so a
-/// regression to a different wrong shape / a leak is caught; FLIP to 3 when the cross-fn out-state threads.
+/// 1)))) (do (run-ops (list 1 2 3)) (Prim.run 0)))` runs to 3 — the 3 performs inside the specialized
+/// `run-ops#ctx` recursion advance state 0→3, and that recursion's final OUT-STATE now reaches the caller's
+/// continuation (the `do`'s trailing `(Prim.run 0)`) so it reads 3. FIXED (task #15) by forcing MULTI-VALUE
+/// specialization when the handle body has a recursive-effectful call whose out-state a LATER spine item
+/// observes: `reduce_handle` scans the body (`mark_caller_observed_outstate`) and records the callee in
+/// `db.force_multivalue`, so `specialize_recursive` emits `run-ops#ctx` returning `(value, out-state)` and the
+/// caller threads `(. t 1)` to the trailing perform (the same machinery repro-1 uses to thread a self-call's
+/// out-state to a later SIBLING, now triggered from the CALLER side). The recursive analogue of the
+/// (already-fixed) INLINED helper-call out-state drop.
 #[test]
-fn a_handler_state_accumulator_across_a_cross_function_fold_is_a_known_miscompile() {
+fn a_handler_state_accumulator_across_a_cross_function_fold_threads_to_the_continuation() {
     use crate::testkit::parse;
     let src = "(do \
         (effect Prim (op run (-> Int64 Int64))) \
@@ -5889,14 +5887,83 @@ fn a_handler_state_accumulator_across_a_cross_function_fold_is_a_known_miscompil
           (do (run-ops (list 1 2 3)) (Prim.run 0)))) \
         (export main))";
     let bytes = compile_component(&crate::codec::encode(&parse(src)))
-        .expect("compiles (the miscompile is a wrong value, not a decline)");
+        .expect("compiles (multi-value specialization)");
     if let Some(v) = run_linked(&bytes, "main") {
-        // KNOWN-WRONG: the cross-fn recursion's out-state is dropped, so the trailing (Prim.run 0) sees
-        // state 0, not the accumulated 3. FLIP to "3" when E3 threads the recursive callee's out-state.
+        // The 3 performs advance state 0→1→2→3; the trailing (Prim.run 0) now sees the threaded 3.
         assert_eq!(
-            v, "0",
-            "KNOWN MISCOMPILE (cross-fn fold out-state not threaded to the continuation): 0, want 3 once fixed"
+            v, "3",
+            "cross-fn fold out-state must thread to the continuation: want 3"
         );
+    }
+}
+
+/// ADVERSARIAL companion (task #15): the caller-observed out-state fix must thread through a read-out OP too,
+/// not only a state-advancing one. `(do (run-ops [1 2 3]) (Prim.total))` — `total` resumes with the state
+/// UNCHANGED (`resume(s, s)`), so it READS the accumulated 3 the cross-fn recursion advanced. The observer is
+/// a perform (any perform observes the out-state), so multi-value specialization must fire → 3.
+#[test]
+fn a_cross_function_fold_outstate_is_observed_by_a_readout_op_in_the_continuation() {
+    use crate::testkit::parse;
+    let src = "(do \
+        (effect Prim (op run (-> Int64 Int64)) (op total (-> Int64))) \
+        (def (run-ops (: ops (List Int64))) \
+          (match ops ((list h .. rest) (do (Prim.run h) (run-ops rest))) (_ 0))) \
+        (def (main) (handle Prim 0 ((run (tag) s (resume s (+ s 1))) (total () s (resume s s))) \
+          (do (run-ops (list 1 2 3)) (Prim.total)))) \
+        (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src)))
+        .expect("compiles (multi-value specialization threads out-state to the read-out op)");
+    if let Some(v) = run_linked(&bytes, "main") {
+        assert_eq!(
+            v, "3",
+            "the read-out op after the fold must see the threaded 3"
+        );
+    }
+}
+
+/// ADVERSARIAL companion (task #15): TWO cross-fn folds in the caller's `do` must EACH thread their out-state
+/// to the next spine item. `(do (run-ops [1 2 3]) (run-ops [1 2]) (Prim.run 0))` — the first advances 0→3, the
+/// second continues 3→5, and the trailing `(Prim.run 0)` reads 5. Confirms the caller-side mark records BOTH
+/// callees and the `do` thread arm carries `cur` between them (a state-RESET on the second fold would give 2).
+#[test]
+fn two_cross_function_folds_in_a_continuation_thread_state_left_to_right() {
+    use crate::testkit::parse;
+    let src = "(do \
+        (effect Prim (op run (-> Int64 Int64))) \
+        (def (run-ops (: ops (List Int64))) \
+          (match ops ((list h .. rest) (do (Prim.run h) (run-ops rest))) (_ 0))) \
+        (def (main) (handle Prim 0 ((run (tag) s (resume s (+ s 1)))) \
+          (do (run-ops (list 1 2 3)) (run-ops (list 1 2)) (Prim.run 0)))) \
+        (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src)))
+        .expect("compiles (both folds specialize multi-value)");
+    if let Some(v) = run_linked(&bytes, "main") {
+        // 0→(3 performs)→3→(2 performs)→5; the trailing (Prim.run 0) resumes with s=5.
+        assert_eq!(
+            v, "5",
+            "two sequential folds must thread state left-to-right: want 5"
+        );
+    }
+}
+
+/// ADVERSARIAL companion (task #15): a cross-fn fold whose out-state is NOT observed (no later spine item
+/// performs) must stay correct + leak-free. `(handle … (run-ops [1 2 3]))` — the handle value is the fold's
+/// VALUE (the base-case 0), the out-state is unobserved. Multi-value must NOT be forced here (no caller
+/// observation); the single-return path folds it. Pins that the caller-side mark does not over-fire.
+#[test]
+fn a_cross_function_fold_with_no_observed_outstate_stays_single_return() {
+    use crate::testkit::parse;
+    let src = "(do \
+        (effect Prim (op run (-> Int64 Int64))) \
+        (def (run-ops (: ops (List Int64))) \
+          (match ops ((list h .. rest) (do (Prim.run h) (run-ops rest))) (_ 0))) \
+        (def (main) (handle Prim 0 ((run (tag) s (resume s (+ s 1)))) \
+          (run-ops (list 1 2 3)))) \
+        (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src)))
+        .expect("compiles (single-return fold, no observed out-state)");
+    if let Some(v) = run_linked(&bytes, "main") {
+        assert_eq!(v, "0", "the fold's value is the base case 0; no leak");
     }
 }
 
@@ -11941,28 +12008,27 @@ mod runtime_ops {
                 .all(|d| d.severity != crate::abi::Severity::Error),
             "a wide constant-list `let` type-checks: {diags:?}"
         );
-        // Growth guard: `cdz check` at width N vs 2N. The per-binding scope walk drove an 800→1600 ratio of
-        // ~3.6× (O(N²)); the single-pass collect makes it ~1.2× (linear). Paired back-to-back timings, MIN
-        // ratio, so transient contention under the parallel harness cancels (the technique
-        // `scope_resolution_deep_let_chain` uses). Threshold 2.5× sits between the two regimes.
-        fn check_ms(src: &str) -> f64 {
-            let start = std::time::Instant::now();
+        // Growth guard at width N vs 2N. The NOISE-FREE signal is `COLLECT_BINDING_USES_VISITS` — the
+        // nodes the single-pass `collect_binding_uses` region walk visits (the compiler's own recursion
+        // count, a pure function of the program), NOT wall-clock. A wall-clock ratio false-fails under
+        // fleet load (a narrow run in a quiet slice vs a wide run hitting a scheduling stall inflates the
+        // ratio past threshold — the flake). The per-binding `should_keep_binding` scope walk was O(N²)
+        // (each binding re-walked the whole later region); the single-pass collect is O(N) — so the visit
+        // count grows ~2× over a 2× width, not ~4×. Threshold 3.0× sits between the regimes with margin.
+        fn uses_visits(src: &str) -> u64 {
+            crate::db::COLLECT_BINDING_USES_VISITS.with(|c| c.set(0));
             let _ = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
-            start.elapsed().as_secs_f64() * 1000.0
+            crate::db::COLLECT_BINDING_USES_VISITS.with(|c| c.get())
         }
-        let (narrow, wide) = (wide_listlet(800), wide_listlet(1600));
-        check_ms(&narrow); // warm lazy one-time init before the first timed pair
-        let mut best = f64::INFINITY;
-        for _ in 0..6 {
-            let t800 = check_ms(&narrow);
-            let t1600 = check_ms(&wide);
-            best = best.min(t1600 / t800.max(0.1));
-        }
+        let n800 = uses_visits(&wide_listlet(800));
+        let n1600 = uses_visits(&wide_listlet(1600));
+        let ratio = n1600 as f64 / (n800.max(1)) as f64;
         assert!(
-            best < 2.5,
+            n800 > 0 && ratio < 3.0,
             "a wide `let`'s keep-decision must scale linearly (was O(N²) via a per-binding \
              `should_keep_binding` scope walk; now one `collect_binding_uses` pass): width 800→1600 grew \
-             {best:.1}× (min paired ratio); linear is ~2×, the per-binding walk was ~3.6×"
+             `collect_binding_uses` visits {ratio:.1}× (n800={n800}, n1600={n1600}); linear is ~2×, the \
+             per-binding walk was ~4×"
         );
     }
 
@@ -17313,14 +17379,21 @@ mod match_engine {
             1,
             "the @ensures(> it 0) predicate is recorded for f"
         );
-        // VALUE-TRANSPARENT ON A VALID INPUT: with x=41 the precondition `(> x 0)` holds, so the enforced
-        // `(if (> x 0) (+ x 1) (trap))` takes the pass arm — the annotated def runs identically to the plain.
+        // ENFORCEMENT ON THE STACKED `@requires`-OVER-`@ensures` SHAPE. `src` spells the canonical contract
+        // `(@ (requires (> x 0)) (@ (ensures (> it 0)) (def (f x) (+ x 1))))` — the `@requires` does NOT
+        // directly wrap the def (the `@ensures` layer sits between). `verify_enforce::enforce` DESCENDS
+        // through the intervening `(@ (ensures …) …)` wrapper to reach the def and injects
+        // `(if (> x 0) (+ x 1) (trap))`, so the precondition is enforced at body-entry for this ordering too.
+        // (Before that descent fix a `@requires` over another `@`-wrapper was silently SKIPPED — a satisfying
+        // input passed either way, so this test MUST exercise BOTH the satisfying AND the violating input to
+        // witness enforcement, not just recording.)
         use wasmtime::component::Val;
         let annotated =
             compile_component(&crate::codec::encode(&parse(src))).expect("annotated compiles");
         let plain_src = "(module m (def (f (: x Int64)) (+ x 1)) (export f))";
         let plain =
             compile_component(&crate::codec::encode(&parse(plain_src))).expect("plain compiles");
+        // SATISFYING input x=41: `(> 41 0)` holds → the injected `if` takes the pass arm → same as plain.
         assert_eq!(
             run_returns_with::<i64>(&annotated, "f", &[Val::S64(41)]),
             42,
@@ -17330,6 +17403,19 @@ mod match_engine {
             run_returns_with::<i64>(&plain, "f", &[Val::S64(41)]),
             run_returns_with::<i64>(&annotated, "f", &[Val::S64(41)]),
             "on a precondition-satisfying input the annotated def runs identically to the un-annotated def"
+        );
+        // VIOLATING input x=-5: `(> -5 0)` is FALSE → the injected `if` takes the trap arm → the call TRAPS.
+        // This is the teeth the satisfying-only assertions lacked: it proves the outer `@requires` (over the
+        // `@ensures` layer) is actually ENFORCED, not merely recorded. A `wasm unreachable` surfaces as an
+        // Err from the wasmtime call — assert the annotated def traps while the plain def returns -4.
+        assert!(
+            call_traps(&annotated, "f", &[Val::S64(-5)]),
+            "the @requires(> x 0) (stacked over @ensures) TRAPS on the VIOLATING input x=-5"
+        );
+        assert_eq!(
+            run_returns_with::<i64>(&plain, "f", &[Val::S64(-5)]),
+            -4,
+            "the un-annotated plain def has no precondition and returns (+ -5 1) = -4 on x=-5"
         );
     }
 
@@ -27826,6 +27912,65 @@ mod match_engine {
     }
 
     #[test]
+    fn list_len_over_an_owned_temporary_list_concat_or_update_reclaims_it() {
+        // The LIST-PRODUCER faces of the owned-temporary reclaim: `List.concat` (`vec-concat`) and
+        // `List.update` (`vec-update`) each return a FRESH owned list handle, exactly like the `Bytes.concat`
+        // /`Bytes.slice` producers already in the Owned classifier — but they were NOT classified, so
+        // `heap_operand_ownership` fell to its `_ => decline` default → the reclaim gate never fired and a
+        // `List.len (List.concat …)` / `List.len (List.update …)` LEAKED the fresh list per call (value
+        // correct — a leak, not a miscompile). The `build`-via-`List.push` owned path already reclaimed; only
+        // these two producers slipped. Fix classifies them Owned; here we pin BOTH import `drop` (reclaim) and
+        // stay value-correct, plus a borrowed-read-twice guard (must NOT double-free) and a leak stress.
+        let concat_owned = "(module m \
+               (def (build i n acc) (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc)) \
+               (def (main) ((. List len) ((. List concat) (build 0 3 (list)) (build 0 2 (list))))) (export main))";
+        assert!(
+            component_imports_op(&component(concat_owned), "drop"),
+            "List.len over an owned-temporary List.concat must import `drop` (reclaim — leak fix)"
+        );
+        if let Some(out) = run_on_heap(concat_owned) {
+            assert_eq!(out, "5", "List.concat len unchanged by the reclaim (3+2)");
+        }
+        let update_owned = "(module m \
+               (def (build i n acc) (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc)) \
+               (def (main) ((. List len) ((. List update) (build 0 5 (list)) 2 99))) (export main))";
+        assert!(
+            component_imports_op(&component(update_owned), "drop"),
+            "List.len over an owned-temporary List.update must import `drop` (reclaim — leak fix)"
+        );
+        if let Some(out) = run_on_heap(update_owned) {
+            assert_eq!(
+                out, "5",
+                "List.update len unchanged by the reclaim (still 5 elems)"
+            );
+        }
+        // A BORROWED (let-bound) concat result read TWICE must not be freed by the first read (the `let`
+        // reclaims it once at scope end; a borrowing `List.len` never drops it) — else a double-free traps.
+        let concat_borrowed = "(module m \
+               (def (build i n acc) (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc)) \
+               (def (main) (let ((xs ((. List concat) (build 0 3 (list)) (build 0 2 (list))))) \
+                             (+ ((. List len) xs) ((. List len) xs)))) (export main))";
+        if let Some(out) = run_on_heap(concat_borrowed) {
+            assert_eq!(
+                out, "10",
+                "a borrowed concat list read twice must not be freed early (5 + 5, no double-free)"
+            );
+        }
+        // Leak stress: 20000× a fresh owned concat read+discarded. A leaked vector per call would OOM/drift.
+        let concat_stress = "(module m \
+               (def (build i n acc) (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc)) \
+               (def (drive j m tot) (if (< j m) \
+                   (drive (+ j 1) m (+ tot ((. List len) ((. List concat) (build 0 3 (list)) (build 0 2 (list)))))) tot)) \
+               (def (main) (drive 0 20000 0)) (export main))";
+        if let Some(out) = run_on_heap(concat_stress) {
+            assert_eq!(
+                out, "100000",
+                "20000 owned-temporary List.concat must each reclaim the fresh list (no leak drift)"
+            );
+        }
+    }
+
+    #[test]
     fn set_contains_and_map_lookup_over_an_owned_temporary_reclaim_the_collection() {
         // The last READ-op faces: `Set.contains`/`Map.lookup` over an owned-temporary collection must
         // reclaim it. ⚠ Map.lookup is DELICATE — the looked-up value is borrowed from the map and dup'd in
@@ -37622,6 +37767,77 @@ mod match_engine {
             !cross.message.contains("SAME dimension at DIFFERENT units"),
             "a cross-dimension clash must NOT claim same-dimension: {}",
             cross.message
+        );
+    }
+
+    #[test]
+    fn adding_a_quantity_to_a_non_numeric_operand_is_cdz0203_not_the_plain_number_cdz0501() {
+        // The `_ =>` arm of the additive quantity/non-quantity check reports CDZ0501 "a quantity and a
+        // plain number" + a `(Qty.of <n> <unit>)` repair — meaningful ONLY when the non-quantity operand is
+        // actually a NUMBER. A quantity added to a NON-numeric value (an `(Option (Qty …))` — the common
+        // `List.at`/`Map.get` result — a tuple, a string) is not a dimension slip; mislabeling it "a plain
+        // number" and offering a `(Qty.of …)` wrap is nonsense. The arm is now gated on the non-quantity
+        // operand being numeric; otherwise it falls through to the generic scheme-unify path, which reports
+        // the accurate CDZ0203 for the real type clash. Here `(List.at xs 0) : (Option (Qty …))` added to a
+        // `(Qty …)` must be CDZ0203 naming the `Option`, NOT CDZ0501 "a plain number".
+        let src = "(module m \
+                     (def (main) ((. Qty value) \
+                       (+ ((. Qty of) 5 ((. Unit base) #\"meter\")) \
+                          ((. List at) (list ((. Qty of) 1 ((. Unit base) #\"meter\"))) 0)))) \
+                     (export main))";
+        let diags = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+        assert!(
+            diags.iter().any(|d| d.code.as_deref() == Some("CDZ0203")),
+            "a quantity added to an `(Option (Qty …))` must be a plain CDZ0203 type mismatch: {:?}",
+            diags
+                .iter()
+                .map(|d| (&d.code, &d.message))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            !diags
+                .iter()
+                .any(|d| d.code.as_deref() == Some("CDZ0501")
+                    && d.message.contains("a plain number")),
+            "a non-numeric operand must NOT be mislabeled 'a plain number' (CDZ0501): {:?}",
+            diags
+                .iter()
+                .map(|d| (&d.code, &d.message))
+                .collect::<Vec<_>>()
+        );
+        // With the Option operand on the LEFT, the reported clash NAMES the `(Option (Qty …))` — proving the
+        // fall-through reaches the generic mismatch on the actual non-numeric type (not a scheme-Int leak).
+        let rev = "(module m \
+                     (def (main) ((. Qty value) \
+                       (+ ((. List at) (list ((. Qty of) 1 ((. Unit base) #\"meter\"))) 0) \
+                          ((. Qty of) 5 ((. Unit base) #\"meter\"))))) \
+                     (export main))";
+        let rev_diags = crate::diagnostics(&mut crate::db::Db::load(parse(rev)));
+        assert!(
+            rev_diags
+                .iter()
+                .any(|d| d.code.as_deref() == Some("CDZ0203") && d.message.contains("Option")),
+            "with the Option operand first, CDZ0203 names the `(Option (Qty …))`: {:?}",
+            rev_diags
+                .iter()
+                .map(|d| (&d.code, &d.message))
+                .collect::<Vec<_>>()
+        );
+        // REGRESSION: a quantity + a genuine BARE NUMBER is still CDZ0501 "a plain number" (the arm's
+        // intended target — the numeric operand keeps its dimension-slip message + `(Qty.of …)` repair).
+        let bare = "(module m (def (main) ((. Qty value) \
+                      (+ ((. Qty of) 5 ((. Unit base) #\"meter\")) 3))) (export main))";
+        let bare_diags = crate::diagnostics(&mut crate::db::Db::load(parse(bare)));
+        assert!(
+            bare_diags
+                .iter()
+                .any(|d| d.code.as_deref() == Some("CDZ0501")
+                    && d.message.contains("a plain number")),
+            "a quantity + a bare number is still CDZ0501 'a plain number': {:?}",
+            bare_diags
+                .iter()
+                .map(|d| (&d.code, &d.message))
+                .collect::<Vec<_>>()
         );
     }
 
@@ -48130,6 +48346,97 @@ mod stage1 {
     }
 
     #[test]
+    fn a_package_entrys_exported_def_wins_over_a_same_named_sibling_def() {
+        // REGRESSION (breaker `adv-package-entry-colliding-def-name-runs-wrong-files-main`,
+        // `package-export-boundary-binds-flat-def-by-name-not-per-file`): when two files of a package
+        // each define `main`, the COMPONENT'S exported `main` must be the ENTRY file's own def — never a
+        // sibling's. The export boundary used to bind through the package-wide first-wins `def_of_name`
+        // (`scan_top_level`), so the alphabetically-first file's `main` hijacked the export and BOTH entry
+        // choices ran the wrong file's code — a SILENT wrong program (no diagnostic, plausible output).
+        // Internal CALLS already resolved per-file; only this boundary site missed the per-file rule.
+        //
+        // Compile the whole package through `compile()` (the real path the CLI drives), naming the entry
+        // via a `KIND_ENTRY` artifact, then RUN the component: `--entry zzz` (main = n*7) must give 21 at
+        // n=3, and `--entry aaa` (main = n*100) must give 300 — each entry's OWN main, not the first-spliced.
+        use crate::abi::Artifact;
+        use wasmtime::component::Val;
+        let aaa = crate::codec::encode(&parse(
+            "(do (def (main (: n Int64)) (* n 100)) (export main))",
+        ));
+        let zzz = crate::codec::encode(&parse(
+            "(do (def (main (: n Int64)) (* n 7)) (export main))",
+        ));
+        let compile_pkg = |entry: &str| -> Vec<u8> {
+            let out = crate::host::run_with_compiler_stack(|| {
+                crate::compile::compile(
+                    &[
+                        Artifact::new(Artifact::KIND_AST, "aaa", aaa.clone()),
+                        Artifact::new(Artifact::KIND_AST, "zzz", zzz.clone()),
+                        Artifact::new(crate::link::KIND_ENTRY, "entry", entry.as_bytes().to_vec()),
+                    ],
+                    &[crate::backend::Target::Wasm],
+                )
+            });
+            out.artifact(crate::backend::Target::Wasm.artifact_kind())
+                .unwrap_or_else(|| {
+                    panic!(
+                        "package with entry `{entry}` compiles: {:?}",
+                        out.diagnostics
+                    )
+                })
+                .to_vec()
+        };
+        // `--entry zzz` runs zzz's own `main` (n*7) — 21, NOT aaa's `main` (n*100 = 300).
+        assert_eq!(
+            run_returns_with::<i64>(&compile_pkg("zzz"), "main", &[Val::S64(3)]),
+            21,
+            "the entry `zzz`'s exported `main` (n*7) wins over the sibling `aaa`'s same-named `main`"
+        );
+        // The mirror: `--entry aaa` runs aaa's own `main` (n*100) — 300. (Both entry choices used to give
+        // 300 — the alphabetically-first `main` — before the export bound per-file.)
+        assert_eq!(
+            run_returns_with::<i64>(&compile_pkg("aaa"), "main", &[Val::S64(3)]),
+            300,
+            "the entry `aaa`'s exported `main` (n*100) wins over the sibling `zzz`'s same-named `main`"
+        );
+    }
+
+    #[test]
+    fn a_package_export_binds_the_entry_files_def_not_a_private_siblings_same_named_def() {
+        // The sharper control (breaker's "even a PRIVATE lib `main` hijacks"): the sibling `lib` defines
+        // `main` but does NOT export it (it exports `other`); the entry `zzz` exports its own `main`. The
+        // component's `main` must still be the entry's — a private, un-exported sibling def must never
+        // hijack the export. This pins that `export_def` resolves through the exporting file's OWN visible
+        // map (its defs + imports), which includes a file's private defs by name for its OWN export only.
+        let lib = parse(
+            "(do (def (main (: n Int64)) (* n 100)) (def (other (: n Int64)) n) (export other))",
+        );
+        let zzz = parse("(do (def (main (: n Int64)) (* n 7)) (export main))");
+        let files = vec![("lib".to_string(), lib), ("zzz".to_string(), zzz)];
+        let linked = crate::link::link(&files, "zzz").expect("package links");
+        let db = crate::db::Db::load_linked(linked.arenas.clone(), Some(linked.linkage()));
+        // The exported `main` must bind to the def whose signature occurrence lives in the ENTRY file
+        // (`zzz`), not `lib`'s. Verify at the fold level: the export's `def` is a def in the entry file.
+        let main_export = db
+            .exports
+            .iter()
+            .find(|e| e.name == "main")
+            .expect("component exports `main`");
+        let def_idx = main_export.def.expect("exported `main` binds a def");
+        let sig_occ = db.defs[def_idx].sig_occ;
+        let entry_file = linked
+            .files
+            .iter()
+            .position(|f| f.path == "zzz")
+            .expect("entry file present");
+        assert_eq!(
+            db.file_of(sig_occ),
+            Some(entry_file),
+            "the exported `main` binds the ENTRY file `zzz`'s def, not the private sibling `lib`'s"
+        );
+    }
+
+    #[test]
     fn a_duplicate_parameter_name_is_rejected_as_nonlinear() {
         // A function's parameter list is a BINDER POSITION, linear like a pattern (core-semantics.md
         // §Patterns Compose: "A pattern MUST bind each name at most once … rather than silently shadowing
@@ -54744,6 +55051,40 @@ mod stage1 {
             compile_component(&crate::codec::encode(&parse(src))).is_ok(),
             "a record-payload variant with lowercase field names must COMPILE — not reject P.Pt as \
              nullary (the field names must not be collected as type parameters)"
+        );
+    }
+
+    #[test]
+    fn a_qty_payloads_inner_type_variable_stays_a_generic_parameter() {
+        // The OTHER edge of the `(Qty T u)` type-parameter skip: `collect_type_params` descends only into a
+        // Qty payload's inner type `T` and skips the unit `u` (so a unit-leaf name like `base` is NOT
+        // harvested as a spurious parameter — the sibling `a_variant_with_a_record_payload…` guard's Qty
+        // twin). But it must NOT OVER-skip: a type VARIABLE in the inner (`T`) position is a real generic
+        // parameter. `(type Box (B (Qty a (Unit.base #"meter"))))` is generic over `a` (harvested from
+        // `children[1]`), so a bare `Box` needs a type argument (CDZ0203) and `(Box Rational)` resolves.
+        // Compiling the fully-applied construct→match→`Qty.value` is the precise guard that the inner-type
+        // parameter survived the skip (a spurious over-skip would make `Box` nullary and reject `(Box Rational)`).
+        let src = "(module m (type Box (B (Qty a (Unit.base #\"meter\")))) \
+                     (def (mk (: x (Qty Rational (Unit.base #\"meter\")))) (Box.B x)) \
+                     (def (unwrap (: b (Box Rational))) (match b ((Box.B q) (Qty.value q)))) \
+                     (def (main) (unwrap (mk (Qty.of (Rational.of 7 2) (Unit.base #\"meter\"))))) \
+                     (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_ok(),
+            "a Qty payload's inner-type variable must stay a real generic parameter — `(Box Rational)` must \
+             resolve (the unit-arg skip must not over-skip and drop the inner-type parameter)"
+        );
+        // The reject twin: a BARE `Box` (no type argument) is CDZ0203 — the inner-type parameter is genuinely
+        // required, so the skip did not silently drop it (which would wrongly accept a nullary `Box`).
+        let bare = "(module m (type Box (B (Qty a (Unit.base #\"meter\")))) \
+                      (def (unwrap (: b Box)) (match b ((Box.B q) (Qty.value q)))) \
+                      (def (main) (unwrap (Box.B (Qty.of (Rational.of 7 2) (Unit.base #\"meter\"))))) \
+                      (export main))";
+        assert!(
+            crate::diagnostics(&mut crate::db::Db::load(parse(bare)))
+                .iter()
+                .any(|d| d.code.as_deref() == Some("CDZ0203")),
+            "a bare `Box` (a generic type used with no type argument) must reject CDZ0203"
         );
     }
 
@@ -71018,6 +71359,22 @@ mod cross_component_oracle {
                     .contains("binds an EFFECT to a peer interface string")),
             "a malformed (bind …) is CDZ0201: {:?}",
             d1.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        // (a2) a `(bind E Iface)` whose INTERFACE is a BAREWORD name, not a string literal, is CDZ0201.
+        // This is the OTHER `well_shaped` failure (compile.rs): case (a) is arity-1 (the interface is
+        // missing); (a2) is arity-2 but the second operand is a NAME occ, so `as_str().is_some()` is false
+        // → the same MALFORMED_BIND reject. The likely author mistake is writing the interface unquoted
+        // (`(bind Net cadenza:http/client)` — an s-expr `:`/`/` don't tokenize as one bareword anyway, so a
+        // single-word `(bind Net client)` is the realistic shape). The message points at "a string literal".
+        let bareword_iface = "(do (effect Net (op get (-> Int64 Int64))) (bind Net client) (def (main) 0) (export main))";
+        let d1b = crate::diagnostics(&mut crate::db::Db::load(parse(bareword_iface)));
+        assert!(
+            d1b.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
+                && d.message
+                    .contains("binds an EFFECT to a peer interface string")),
+            "a (bind E <bareword>) with a non-string interface is CDZ0201 (interface must be a string \
+             literal), not a silent drop: {:?}",
+            d1b.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
         // (b) a `(bind …)` naming a VALUE DEFINITION (not an effect) is CDZ0201 — binding a non-effect to a
         // peer routes nothing.

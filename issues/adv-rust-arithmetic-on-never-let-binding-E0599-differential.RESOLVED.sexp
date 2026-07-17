@@ -48,3 +48,11 @@
 ; UPDATE (corpus-bugfix 2026-07-17, from v-rust-backend note): FIXED in the same pending Never MR
 ; 8edddea3f. `(let ((x (trap))) (+ x 1))` now emits `panic!(unreachable)` (dead arithmetic on !, no
 ; checked_add on Never) — rustc-clean. Flips rust->pass once the MR lands. DO NOT mint a fixer.
+
+; ---
+; RESOLVED (corpus-bugfix 2026-07-17, breaker re-verify on trunk 1daad71c0): HEALED by 8edddea3f
+; (rcdzc rust-backend: handle Never in emit positions, landed). (let ((x (trap))) (+ x 1)) now emits
+; plain panic!(unreachable) on rust AND rust-async, rustc-compiles clean, traps at runtime matching wasm.
+; Breaker probed the TYPE not just the witness (both-diverge init, branch-diverging init) — closed on
+; every axis. Candidate to promote into spec/semantics. (NOTE: the NESTED (+ (+ (trap) 1) 2) residue is
+; a SEPARATE open item, routed to v-rust-backend — review-rust-nested-diverging-arith-...sexp.)

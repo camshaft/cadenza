@@ -629,13 +629,29 @@ impl Server {
     /// the document is not open.
     fn selection_range(&self, params: &SelectionRangeParams) -> Option<Vec<SelectionRange>> {
         let doc = self.docs.get(&params.text_document.uri)?;
-        Some(
-            params
-                .positions
-                .iter()
-                .map(|&pos| selection_range_at(&doc.text, doc.is_ml, pos))
-                .collect(),
-        )
+        // Parse the document ONCE per request, then answer every requested position against the shared span
+        // table — a multi-cursor `selectionRange` must not re-parse + re-scan per position (was
+        // O(positions × parse), noticeable on large files — PR #538). If the parse fails, every position
+        // gets the empty (self) range (total), matching the single-position fallback.
+        match parse_surface(&doc.text, doc.is_ml) {
+            Ok((_arenas, spans, _errors)) => Some(
+                params
+                    .positions
+                    .iter()
+                    .map(|&pos| selection_range_from_spans(&doc.text, &spans, pos))
+                    .collect(),
+            ),
+            Err(_) => Some(
+                params
+                    .positions
+                    .iter()
+                    .map(|&pos| SelectionRange {
+                        range: Range::new(pos, pos),
+                        parent: None,
+                    })
+                    .collect(),
+            ),
+        }
     }
 
     /// Answer a `textDocument/signatureHelp`: inside a `(callee arg…)` call, show the CALLEE's type (its
@@ -2370,14 +2386,40 @@ fn fold_item(
 /// the chain strictly nested (an editor's expand-selection steps out one syntactic level at a time). A
 /// cursor over no node (an empty/unparseable buffer, or a position past the end) yields a degenerate
 /// empty range AT the cursor — the protocol wants one entry per requested position, never a gap.
+///
+/// TEST-ONLY: the production `selection_range` handler parses ONCE per request and drives
+/// `selection_range_from_spans` per position (PR #538 — a multi-cursor request must not re-parse per
+/// cursor), so this parse-then-delegate single-position wrapper is used only by the unit tests that pin
+/// the chain shape from raw text.
+#[cfg(test)]
 fn selection_range_at(text: &str, is_ml: bool, pos: Position) -> SelectionRange {
-    let byte = position_to_byte(text, pos);
+    // Single-position convenience: parse once here then delegate. The MULTI-position `selection_range`
+    // handler does NOT use this — it parses ONCE for the whole request and calls `selection_range_from_spans`
+    // per position (a multi-cursor selectionRange must not re-parse per cursor — PR #538).
     let empty = SelectionRange {
         range: Range::new(pos, pos),
         parent: None,
     };
     let Ok((_arenas, spans, _errors)) = parse_surface(text, is_ml) else {
         return empty;
+    };
+    selection_range_from_spans(text, &spans, pos)
+}
+
+/// Build the nested `SelectionRange` chain at `pos` from an ALREADY-PARSED span table — the per-position
+/// core of `selection_range`, split out so a multi-position (multi-cursor) request parses the document
+/// ONCE and answers every position against the SAME `spans`, instead of re-parsing + re-scanning per
+/// position (was O(positions × parse) — PR #538). Total: a position inside no node span yields the empty
+/// (self) range.
+fn selection_range_from_spans(
+    text: &str,
+    spans: &cadenza_syntax::spans::SpanTable,
+    pos: Position,
+) -> SelectionRange {
+    let byte = position_to_byte(text, pos);
+    let empty = SelectionRange {
+        range: Range::new(pos, pos),
+        parent: None,
     };
     // Collect every node span that contains the cursor, as `(start, end)` byte pairs.
     let mut ranges: Vec<(usize, usize)> = (0..spans.len())
@@ -4555,6 +4597,43 @@ mod tests {
     }
 
     #[test]
+    fn selection_range_handler_parses_once_and_matches_per_position() {
+        // PR #538: the multi-position handler now parses the document ONCE and answers every position
+        // against the shared span table (was O(positions × parse)). Pin that this optimization is
+        // behavior-PRESERVING: each entry the handler returns must equal what the single-position
+        // parse-per-call `selection_range_at` gives for the same position (same chain, same ranges).
+        let text = "def f(x) = if x then x else 0";
+        let (mut server, _client) = memory_server();
+        let uri = test_uri();
+        server
+            .handle_notification(did_open_note(&uri, text))
+            .expect("didOpen");
+        let positions = vec![
+            Position::new(0, 4),
+            Position::new(0, 14),
+            Position::new(0, 25),
+        ];
+        let params = SelectionRangeParams {
+            text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+            positions: positions.clone(),
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        };
+        let batched = server.selection_range(&params).expect("a response");
+        assert_eq!(batched.len(), positions.len(), "one entry per position");
+        for (i, &pos) in positions.iter().enumerate() {
+            // The single-parse batched entry equals the independent per-position parse — proving the
+            // parse-once refactor changed only the parse COUNT, not the answer.
+            let independent = selection_range_at(text, true, pos);
+            assert_eq!(
+                selection_chain(&batched[i]),
+                selection_chain(&independent),
+                "batched entry {i} (pos {pos:?}) matches the per-position parse"
+            );
+        }
+    }
+
+    #[test]
     fn selection_range_handler_returns_none_on_an_unopened_document() {
         let (server, _client) = memory_server();
         let params = SelectionRangeParams {
@@ -4698,6 +4777,41 @@ mod tests {
             signature_help_at(text, false, byte_to_position(text, on_literal)).is_none(),
             "no signature help outside a call"
         );
+    }
+
+    #[test]
+    fn signature_help_is_none_for_a_call_to_an_unbound_callee() {
+        // A call whose head names NO definition — `TypeOf` answers an error string ("no such definition …"),
+        // not an arrow, so the `->` guard rejects it and no bogus signature leaks. (Totality: never a panic
+        // or an error-string-as-signature.)
+        let text = "(do (def (main) (mystery 1 2)))";
+        let on_arg = text.find("mystery 1 2").unwrap() + 8; // on the `1`
+        assert!(
+            signature_help_at(text, false, byte_to_position(text, on_arg)).is_none(),
+            "no signature for a call to an unbound callee"
+        );
+    }
+
+    #[test]
+    fn signature_help_works_on_the_ml_surface_with_per_parameter_labels() {
+        // Signature help must work on the ML SURFACE (what most editor users write), not just s-expr: the ML
+        // parser desugars `add(1, 2)` into the same call shape the finder walks. Pins per-parameter labels
+        // for an ML buffer (all other sighelp tests are s-expr `is_ml=false`, leaving this path un-covered).
+        let text = "def add(a: Int64, b: Int64) -> Int64 = a + b\ndef main = add(1, 2)";
+        let on_arg = text.rfind("add(1, 2)").unwrap() + 4; // on the `1`
+        let sh = signature_help_at(text, true, byte_to_position(text, on_arg))
+            .expect("a signature inside the ML call");
+        assert!(
+            sh.signatures[0].label.starts_with("add : "),
+            "ML label names the callee + its type: {}",
+            sh.signatures[0].label
+        );
+        let params = sh.signatures[0]
+            .parameters
+            .as_ref()
+            .expect("per-parameter labels on the ML surface too");
+        assert_eq!(params.len(), 2, "two parameters (return dropped)");
+        assert_eq!(sh.active_parameter, Some(0), "first arg active");
     }
 
     #[test]

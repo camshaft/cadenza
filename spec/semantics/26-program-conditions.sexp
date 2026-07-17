@@ -1729,3 +1729,25 @@
             (def (main) (f 50))
             (export main)))
   (output (: 51 Int64)))
+
+(case "@requires stacked OVER @ensures: the precondition is still enforced when an @ensures wrapper sits between it and the def"
+  (doc    "The reviewer's post-merge vector on the (D) @requires enforcement (a natural spelling of the
+           canonical precondition+postcondition contract). `(@ (requires (>= x 0)) (@ (ensures (>= it 0))
+           (def (f x) (+ x 1))))` — the `@requires` does NOT directly wrap the def; the `@ensures` layer is
+           between them. Before the descent fix, `verify_enforce::enforce` only rewrote a `@requires` whose
+           INNER was directly a `(def …)`, so this `@requires` (inner = the `(@ (ensures …) …)` node) was
+           SILENTLY SKIPPED — `(f -5)` returned `-4` instead of trapping, a precondition that looked enforced
+           but was not. The fix DESCENDS through any intervening `(@ NAME INNER)` layer (here the `@ensures`)
+           to the def and injects `(if (>= x 0) (+ x 1) (trap …))`, so the precondition enforces regardless of
+           which verification/annotation layers wrap between it and the def. `(f -5)` violates `(>= x 0)`, so
+           the check takes the trap arm — `unreachable`. Pins that @requires enforcement is ORDER-INSENSITIVE
+           with respect to a stacked @ensures (or any other annotation), closing the reviewer-verified leak.
+           (@ensures itself is not yet run-time-enforced here — that is the immediately-following increment;
+           this case is purely about the @requires precondition firing through the @ensures wrapper.)")
+  (input  (do
+            (@ (requires (>= x 0))
+            (@ (ensures (>= it 0))
+               (def (f (: x Int64)) (+ x 1))))
+            (def (main) (f -5))
+            (export main)))
+  (trap   "unreachable"))

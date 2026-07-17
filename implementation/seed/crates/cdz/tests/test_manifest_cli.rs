@@ -811,8 +811,8 @@ fn a_list_parameter_test_is_property_tested_by_a_synthesized_generator() {
     assert!(stdout.contains("PASS plain"), "{stdout}");
     assert!(stdout.contains("2 passed, 0 failed"), "{stdout}");
 
-    // A FALSE property over a generated list fails with a counterexample + a replay seed. The wrapper
-    // builds a fixed-length-3 list, so `len == 3` is always true → this asserts-false and fails.
+    // A FALSE property over a generated list fails with a counterexample + a replay seed. The generator
+    // draws a variable-length (0..=3) list, so some trial hits length 3 → `len == 3` traps → the run fails.
     let bad = write(
         &d,
         "bad.cdz",
@@ -828,6 +828,16 @@ fn a_list_parameter_test_is_property_tested_by_a_synthesized_generator() {
     assert!(
         stdout.contains("counterexample") && stdout.contains("seed 0"),
         "a counterexample + replay seed are reported: {stdout}"
+    );
+    // The counterexample shows the CONCRETE shrunk VALUE — a rendered list `[…]` reported as a call to the
+    // ORIGINAL test name (`never_three([…])`), NOT the opaque raw driver ints (`generated ints [big64, …]`).
+    // This is the operator-visible payoff of shrinking: the minimal failing input, printed. The property
+    // `List.len(xs) == 3` only trapped because the generated list is length 3, so the render is a 3-element
+    // list of the shrunk element values (each shrunk toward 0).
+    assert!(
+        stdout.contains("counterexample: never_three([")
+            && !stdout.contains("counterexample: generated ints"),
+        "the counterexample shows the rendered list VALUE via the original test name, not raw ints: {stdout}"
     );
 
     // G2: the element type need not be an integer — a `(List Bool)` is generated too (each element from

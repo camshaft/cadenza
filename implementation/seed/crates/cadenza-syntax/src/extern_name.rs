@@ -335,6 +335,57 @@ mod tests {
     }
 
     #[test]
+    fn a_normalizer_fixpoint_is_not_the_same_as_a_valid_kebab_word() {
+        // A LOAD-BEARING distinction the emit path depends on: `is_kebab_extern_name(name)` asks "is
+        // `name` a FIXPOINT of `kebab_extern_name`?" (does normalization leave it unchanged), which is NOT
+        // the same as "is `name` a VALID component extern word?" (`is_kebab_word`). The two DISAGREE on the
+        // declined separator-before-digit class: `kebab_extern_name("a-0") == "a-0"` (a fixpoint, so
+        // `is_kebab_extern_name` is TRUE) yet `is_kebab_word("a-0")` is FALSE (a kebab word cannot start a
+        // segment with a digit). So the compile-boundary guard MUST validate via `is_kebab_word(&
+        // kebab_extern_name(name))`, NOT via `is_kebab_extern_name(name)` — using the fixpoint check as the
+        // emit guard would silently re-admit `a-0`/`step-2`-style names and reintroduce the invalid-
+        // component miscompile (`invalid_kebab_export_name` in rcdzc is the real guard). This pins that the
+        // two predicates are genuinely different, so a refactor can't conflate them without failing here.
+        for n in ["a-0", "step-2", "my-2nd", "x-1y"] {
+            assert!(
+                is_kebab_extern_name(n),
+                "{n} IS a normalizer fixpoint (kebab_extern_name leaves it unchanged)"
+            );
+            assert!(
+                !is_kebab_word(n),
+                "{n} is NOT a valid kebab word — the fixpoint check must not be trusted as the emit guard"
+            );
+        }
+        // Where they AGREE (the common, well-behaved case): a genuinely-valid already-kebab name is both a
+        // fixpoint and a valid word; a non-kebab source name is neither a fixpoint nor (as written) valid.
+        for n in ["inc", "my-func", "foo2", "sum-to"] {
+            assert!(is_kebab_extern_name(n) && is_kebab_word(n), "{n} both");
+        }
+        for n in ["fA", "myFunc", "Foo"] {
+            assert!(
+                !is_kebab_extern_name(n),
+                "{n} is not a fixpoint (it normalizes)"
+            );
+        }
+        // The GUARANTEE the guard actually relies on: normalize THEN validate. For every letter-led name
+        // NOT in the declined class, `is_kebab_word(kebab_extern_name(n))` holds — that composition, not the
+        // fixpoint predicate, is the correct emit check.
+        for n in [
+            "fA",
+            "myFunc",
+            "Foo",
+            "my_func",
+            "parseHTTPResponse",
+            "fooBar2",
+        ] {
+            assert!(
+                is_kebab_word(&kebab_extern_name(n)),
+                "normalize-then-validate must accept the well-formed name {n}"
+            );
+        }
+    }
+
+    #[test]
     fn well_formed_interface_names_are_accepted() {
         for n in [
             "cadenza:math/api",

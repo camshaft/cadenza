@@ -89,4 +89,100 @@ mod tests {
             assert_eq!(n.get(&i), Some(&(i * 3)));
         }
     }
+
+    fn h(f: impl FnOnce(&mut FxHasher)) -> u64 {
+        let mut hasher = FxHasher::default();
+        f(&mut hasher);
+        hasher.finish()
+    }
+
+    #[test]
+    fn known_answer_vectors_pin_the_exact_fxhash_algorithm() {
+        // This hasher must stay BYTE-IDENTICAL to rcdzc's copied-in `fxhash` (this crate's AST + codec
+        // is the copy SOURCE), so the round-trip depends on the EXACT algorithm, not merely "some hash
+        // that works". `map_roundtrips_*` passes for ANY functioning hasher and so guards nothing here.
+        // These are independently hand-computed known-answer vectors — a regression to `SEED`, the
+        // `rotate_left(5)` amount, the little-endian word packing, or the `write` remainder padding
+        // changes at least one of them (each constant was derived from a separate reference impl, NOT
+        // from the code under test).
+
+        // Fresh state finishes at 0; hashing a zero word keeps it 0 (rotl(0,5) ^ 0 == 0, * SEED == 0).
+        assert_eq!(h(|_| {}), 0, "empty state");
+        assert_eq!(h(|s| s.write_u64(0)), 0, "u64(0) stays 0");
+
+        // A single `add(1)` from zero state is exactly `(rotl(0,5) ^ 1) * SEED == SEED` — pins the
+        // multiplier constant directly.
+        assert_eq!(
+            h(|s| s.write_u64(1)),
+            0x517c_c1b7_2722_0a95,
+            "u64(1) == SEED"
+        );
+        // write_u32 / write_usize also route through the same single `add`, so all three agree on 1.
+        assert_eq!(
+            h(|s| s.write_u32(1)),
+            0x517c_c1b7_2722_0a95,
+            "u32(1) == SEED"
+        );
+        assert_eq!(
+            h(|s| s.write_usize(1)),
+            0x517c_c1b7_2722_0a95,
+            "usize(1) == SEED"
+        );
+
+        // Order sensitivity pins `rotate_left(5)`: (1 then 0) folds a rotated nonzero state, so it is
+        // NOT 0 and NOT the same as (0 then 1). A missing/incorrect rotate would collapse these.
+        assert_eq!(
+            h(|s| {
+                s.write_u64(1);
+                s.write_u64(0);
+            }),
+            0x0d45_69ee_47d3_c0f2,
+            "u64(1),u64(0) is rotate-sensitive"
+        );
+        assert_eq!(
+            h(|s| {
+                s.write_u64(1);
+                s.write_u64(1);
+            }),
+            0x5ec2_2ba5_6ef5_cb87,
+            "u64(1),u64(1)"
+        );
+        assert_ne!(
+            h(|s| {
+                s.write_u64(1);
+                s.write_u64(0);
+            }),
+            h(|s| {
+                s.write_u64(0);
+                s.write_u64(1);
+            }),
+            "order matters (rotate_left)"
+        );
+
+        // The `write(&[u8])` path: a single byte 0x01 must zero-pad the 8-byte remainder buffer
+        // little-endian, giving the SAME state as `write_u64(1)`. This pins the padding + endianness.
+        assert_eq!(
+            h(|s| s.write(&[1u8])),
+            0x517c_c1b7_2722_0a95,
+            "one byte pads to u64(1)"
+        );
+        assert_eq!(
+            h(|s| s.write(&1u64.to_le_bytes())),
+            0x517c_c1b7_2722_0a95,
+            "8 LE bytes of 1 == u64(1)"
+        );
+
+        // A 4-byte string (pure remainder path, no full chunk) and a 9-byte slice (one exact 8-byte
+        // chunk + a 1-byte remainder) exercise both branches of `write`.
+        assert_eq!(
+            h(|s| s.write(b"main")),
+            0x1e74_8e51_ec9d_f671,
+            "\"main\" remainder path"
+        );
+        assert_eq!(
+            h(|s| s.write(&[1, 2, 3, 4, 5, 6, 7, 8, 9])),
+            0xcd94_3b11_5336_6ac4,
+            "9 bytes = chunk + remainder"
+        );
+    }
 }

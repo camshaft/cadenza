@@ -4232,3 +4232,23 @@
   (output (: 999 Int64))
   (call   classify (: -1 Int64))
   (output (: 999 Int64)))
+
+(case "a dense if-equality chain dispatches on a let-bound value"
+  (doc    "The if-chain integer dispatch works on a `let`-bound scrutinee (a `LocalRef`), not only a
+           bare parameter: `(let ((y (+ x 1))) (if (= y 0) … (if (= y 1) … (if (= y 2) … default))))`
+           tests the SAME let-binding `y` in every arm. Pins the observed values (y=x+1, so x=-1→y=0→100,
+           x=0→y=1→101, x=1→y=2→102, else 999) — the same first-wins semantics a backend lifting the
+           chain to a jump table over the reusable local must preserve.")
+  (input  (do
+            (def (classify (: x Int64))
+              (let ((y (+ x 1)))
+                (if (= y 0) 100 (if (= y 1) 101 (if (= y 2) 102 999)))))
+            (export classify)))
+  (call   classify (: -1 Int64))
+  (output (: 100 Int64))
+  (call   classify (: 0 Int64))
+  (output (: 101 Int64))
+  (call   classify (: 1 Int64))
+  (output (: 102 Int64))
+  (call   classify (: 9 Int64))
+  (output (: 999 Int64)))

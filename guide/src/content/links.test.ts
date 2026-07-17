@@ -31,6 +31,23 @@ function validRoutes(): Set<string> {
   return routes;
 }
 
+/// The standalone APP routes (playground / calculator / cad / notebook …) — every top-level
+/// `path: "/x"` in main.tsx that is NOT the site root, the `/:slug` param route, or a chapter slug.
+/// These are the showcase apps the guide's "Example applications" gallery is meant to gather; deriving
+/// them from the router (not a hard-coded list) means adding a new app route automatically extends the
+/// gallery-coverage invariant below.
+function appRoutes(): string[] {
+  const chapterRoutes = new Set(CHAPTERS.map((c) => `/${c.slug}`));
+  const mainSrc = readFileSync(mainTsx, "utf8");
+  const out: string[] = [];
+  for (const m of mainSrc.matchAll(/path:\s*"(\/[^"]*)"/g)) {
+    const p = m[1];
+    if (p === "/" || p.includes(":") || chapterRoutes.has(p)) continue;
+    if (!out.includes(p)) out.push(p);
+  }
+  return out;
+}
+
 /// Every `to="/…"` string literal in a source file, with the line number for a legible failure. The
 /// interpolated form `to={…}` (used inside the <Ch>/<Link> wrapper *definitions*) is intentionally
 /// not matched — those forward a literal passed at the call site, which this scan sees separately.
@@ -76,4 +93,38 @@ test("the link scan actually found links (guards against a broken regex silently
   const files = [...tsxFilesIn(chaptersDir), ...tsxFilesIn(componentsDir)];
   const total = files.reduce((n, f) => n + internalLinks(readFileSync(f, "utf8")).length, 0);
   assert.ok(total >= 20, `expected many internal links across content, found ${total}`);
+});
+
+// The "Example applications" gallery chapter is the guide's one narrative gateway to the showcase apps —
+// its whole job is to send the reader into every standalone app (playground, calculator, CAD, notebook).
+// If a new app route is added to the router but not linked here (or an app link is dropped from the
+// chapter), the gallery silently omits an app: it ships in the router, reachable only by typing the URL,
+// with no narrative path in. Nothing else in the suite would catch that. Pin it: the gallery chapter must
+// link every app route the router declares. (The chapter is identified by its registered slug, so a
+// rename tracks automatically; deriving the app set from main.tsx means a new app extends this by itself.)
+test("the Example-applications gallery links every standalone app route the router declares", () => {
+  const gallery = CHAPTERS.find((c) => c.section === "Example applications");
+  assert.ok(gallery, "no chapter in the 'Example applications' section — the gallery is missing");
+  const entryRe = /slug:\s*"([^"]+)"[\s\S]*?import\("\.\/chapters\/([^"]+)"\)/g;
+  const registrySrc = readFileSync(join(here, "chapters.ts"), "utf8");
+  const fileForSlug = new Map<string, string>();
+  for (let m = entryRe.exec(registrySrc); m; m = entryRe.exec(registrySrc)) fileForSlug.set(m[1], m[2]);
+  const file = fileForSlug.get(gallery!.slug);
+  assert.ok(file, `no TSX import found for the gallery chapter slug ${gallery!.slug}`);
+  const linked = new Set(internalLinks(readFileSync(join(chaptersDir, file!), "utf8")).map((l) => l.href));
+  const missing = appRoutes().filter((r) => !linked.has(r));
+  assert.equal(
+    missing.length,
+    0,
+    `the Example-applications gallery (${file}) does not link these app route(s): ${missing.join(", ")} — every showcase app needs a narrative path in`,
+  );
+});
+
+test("appRoutes finds the showcase apps (guards against a broken router scan)", () => {
+  // A broken scan would make the gallery-coverage test pass vacuously (0 missing of 0). Assert we see the
+  // known showcase apps so a regex/refactor break trips here instead of hiding.
+  const routes = appRoutes();
+  for (const r of ["/playground", "/calculator", "/cad", "/notebook"]) {
+    assert.ok(routes.includes(r), `expected app route ${r} among the router's standalone routes; found ${routes.join(", ")}`);
+  }
 });

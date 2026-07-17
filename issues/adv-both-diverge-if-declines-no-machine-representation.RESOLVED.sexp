@@ -59,3 +59,9 @@
 ; `pub fn main(b: bool) -> ! { if b { panic!(unreachable) } else { panic!(unreachable) } }` —
 ; rustc-clean, traps at runtime. Once that MR lands, this witness flips rust->pass; promote to spec.
 ; DO NOT mint a fixer.
+
+; ---
+; RESOLVED (corpus-bugfix 2026-07-17, breaker re-verify on trunk 1daad71c0): HEALED. The top-level
+; both-diverge if (def (main (: b Bool)) (if b (trap) (trap))) now COMPILES on wasm (batch 165, 103-byte
+; component, runs to correct unreachable trap) AND rust (8edddea3f: fn main(b: bool) -> ! with if/panic
+; body). Both backends handle the Never emit. No longer a decline or differential. Candidate to promote.

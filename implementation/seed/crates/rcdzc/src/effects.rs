@@ -1746,6 +1746,14 @@ pub fn reduce_handle(
         }
         return Some(folded);
     }
+    // CALLER-OBSERVED OUT-STATE (task #15). Before threading, scan the handle body for a recursive-effectful
+    // call whose FINAL out-state a LATER spine item observes (`(do (run-ops …) (Prim.run 0))` — the trailing
+    // perform reads the state `run-ops` advanced). Record each such callee so `specialize_recursive` emits it
+    // in MULTI-VALUE mode (return `(value, out-state)`); the single-return convention drops the advance and
+    // silently miscompiles the observer to the pre-recursion state. The mode decision reads only the callee's
+    // OWN body, so this caller-side observation must be recorded up front. Purely additive: it only UPGRADES a
+    // multi-value-threadable callee — a non-threadable one stays single-return.
+    mark_caller_observed_outstate(db, body, &ctx);
     // Thread the INIT state through the body in evaluation order. The handle's value is the body's
     // value (the accumulated state is observable only through the operations), so we return the
     // rewritten body; the final threaded state is discarded (the body never reads it directly).
@@ -4072,6 +4080,97 @@ fn selfcall_precedes_perform_in_operands(
     }
 }
 
+/// Collect the `db.defs` indices of every RECURSIVE-EFFECTFUL call in `node` this handler discharges — a
+/// call `(f args…)` where `f` is a recursive def whose body reaches an op in `ctx.arms`. Used by
+/// [`mark_caller_observed_outstate`] to know which callee's out-state a later spine item observes.
+fn collect_rec_eff_call_defs(db: &mut Db, node: StructId, ctx: &HandlerCtx, out: &mut Vec<usize>) {
+    if let Resolved::Apply { head, .. } = resolved_of(db, node)
+        && recursive_call_reaches_discharged(db, &head, ctx)
+        && let Some(cd) = callee_def_index_of(db, head)
+        && !out.contains(&cd)
+    {
+        out.push(cd);
+    }
+    match db.ast.get(node).clone() {
+        Struct::List(children) => {
+            for c in children {
+                collect_rec_eff_call_defs(db, c, ctx, out);
+            }
+        }
+        Struct::Atom(_) => {}
+    }
+}
+
+/// Scan the HANDLE BODY for a recursive-effectful call whose FINAL out-state is OBSERVED by a LATER item on
+/// the same strict spine — `(do (run-ops …) (Prim.run 0))` where the trailing perform reads the state the
+/// recursion advanced — and record each such callee in `db.force_multivalue` so `specialize_recursive`
+/// upgrades it to the MULTI-VALUE calling convention (return `(value, out-state)` instead of a bare value).
+/// The single-return convention returns the INCOMING state unchanged as a recursive call's out-state, so a
+/// caller's continuation after the recursion sees the PRE-recursion state — the cross-fn-fold out-state
+/// silent miscompile (task #15). This is the CALLER-side analogue of `selfcall_precedes_perform_in_operands`
+/// (which flags the same shape INSIDE the recursive def). It marks only the observation; the mode decision
+/// in `specialize_recursive` still requires the callee to be MULTI-VALUE-THREADABLE, so an unthreadable
+/// callee stays single-return (unchanged) rather than declining — purely additive, no regression.
+///
+/// Spine positions (mirroring `selfcall_precedes_perform_in_operands`): `do` items, `let` inits then body,
+/// an operator's operands, and a `match` scrutinee → each arm body. In each, once an element CONTAINS a
+/// recursive-effectful call, any LATER element that reaches ANY perform observes its out-state. (A later
+/// element that itself contains a recursive-effectful call reaches a perform too — `contains_any_perform`
+/// over-reports a recursive callee — so the two-sibling-caller-calls shape is covered by the same rule; the
+/// `thread` do/let/operand arms already thread `cur` between the two, so multi-value carries the advance.)
+fn mark_caller_observed_outstate(db: &mut Db, node: StructId, ctx: &HandlerCtx) {
+    // Scan an ordered SEQUENCE of spine elements: an earlier element's recursive-effectful callee whose
+    // out-state a later element observes (reaches a perform) is recorded.
+    fn scan_seq(db: &mut Db, seq: &[StructId], ctx: &HandlerCtx) {
+        let mut pending: Vec<usize> = Vec::new();
+        for &el in seq {
+            if !pending.is_empty() && contains_any_perform(db, el, ctx) {
+                let key = ctx.key.clone();
+                for &cd in &pending {
+                    if let Some(body) = db.defs[cd].body {
+                        db.force_multivalue.insert((body, key.clone()));
+                    }
+                }
+            }
+            collect_rec_eff_call_defs(db, el, ctx, &mut pending);
+        }
+    }
+    // An operator/user application: operands evaluate left-to-right (a strict spine).
+    if let Resolved::Apply { args, .. } = resolved_of(db, node) {
+        scan_seq(db, &args, ctx);
+    }
+    // A `do` sequences its items; a `let` its inits then its body. Both are strict spines.
+    if let Some(items) = db.ast.as_form(node, "do").map(|t| t.to_vec()) {
+        scan_seq(db, &items, ctx);
+    }
+    if let Some(form) = db.ast.as_form(node, "let").map(|t| t.to_vec())
+        && form.len() == 2
+        && let Struct::List(pairs) = db.ast.get(form[0]).clone()
+    {
+        let mut seq: Vec<StructId> = pairs
+            .iter()
+            .filter_map(|&pair| match db.ast.get(pair).clone() {
+                Struct::List(kv) if kv.len() == 2 => Some(kv[1]),
+                _ => None,
+            })
+            .collect();
+        seq.push(form[1]); // the body follows the inits on the spine
+        scan_seq(db, &seq, ctx);
+    }
+    // A `match` evaluates its scrutinee then the selected arm body — scrutinee before each arm.
+    if let Resolved::Match { scrutinee, arms } = resolved_of(db, node) {
+        for &(_, arm_body) in &arms {
+            scan_seq(db, &[scrutinee, arm_body], ctx);
+        }
+    }
+    // Recurse structurally so a spine nested inside a branch/let/operand is scanned too.
+    if let Struct::List(children) = db.ast.get(node).clone() {
+        for c in children {
+            mark_caller_observed_outstate(db, c, ctx);
+        }
+    }
+}
+
 /// Whether the recursive body has a SELF-CALL whose ARGUMENT contains a call to a cross-function
 /// effect-performing HELPER whose own body performs a discharged op UNDER A CONDITIONAL (`if`/`match`).
 /// This is the residual of the effectful-helper-in-a-self-call-arg family the deep-fresh-copy fixes do NOT
@@ -4272,7 +4371,15 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
     // needs the offending shape + a non-abortive context. A top-level `match`/`if` DISPATCH whose arm bodies
     // hold the sibling self-calls is exactly what `thread_returning_tuple` recurses into, so it must NOT be
     // treated as "self-call under a conditional" at this level.)
-    let multivalue = selfcall_precedes_perform_in_operands(db, orig_body, callee_def, ctx)
+    // CALLER-OBSERVED OUT-STATE (task #15): the handle body has `(do (f …) (E.op))` where a LATER spine item
+    // observes THIS callee's final out-state (recorded by `mark_caller_observed_outstate` before threading).
+    // The single-return convention returns the incoming state unchanged, so the observer reads the
+    // PRE-recursion state — a silent miscompile. Force multi-value mode so the advance threads to the
+    // observing continuation. Only takes effect when the callee is multi-value-threadable (checked below);
+    // an unthreadable callee stays single-return (no regression — the miscompile is pinned, not newly broken).
+    let caller_observes_outstate = db.force_multivalue.contains(&(orig_body, ctx.key.clone()));
+    let multivalue = (selfcall_precedes_perform_in_operands(db, orig_body, callee_def, ctx)
+        || caller_observes_outstate)
         && ctx.abortive.is_empty()
         && multivalue_leaves_threadable(db, orig_body, callee_def);
     if selfcall_precedes_perform_in_operands(db, orig_body, callee_def, ctx) && !multivalue {

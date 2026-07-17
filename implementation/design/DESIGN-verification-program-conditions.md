@@ -187,6 +187,23 @@ kernel discharges, reusing the b1 denotation (`Ast → Term`, §1A). For a pure-
    automatic proven→tested→CDZ-VERIFY SEQUENCING is a spec module-directive (`PRAGMA_REGISTRY` +
    modules-and-namespaces.md §Fixed Set + validator) that **I coordinate at b4c** when the sequencing lands.
 
+   **TRAP-CHANNEL DECISION — the `@requires` reject stays a HARD trap; the generator draws in-domain (2026-07-17,
+   v-property-testing seam).** The (D) run-time enforcement injects `(if PRE BODY (trap …))`, a BARE hard trap on
+   a violated precondition. Under `cdz test`, a `@test` over a `@requires`'d def can DRAW an input outside the
+   precondition, which trips that trap; the runner sees a bare `Outcome::Trap` INDISTINGUISHABLE (no observable
+   message) from a genuine property-failure trap. Two resolutions were weighed: **(A)** make the reject
+   OBSERVABLE — enforcement emits a distinct reporting op (a `Test.reject`/`.fail`-family marker) so the runner
+   can discard-not-fail; **(B)** the generator reads the `@requires` predicate and generates IN-DOMAIN so the
+   precondition never trips. **RULED (B).** (A) is UNSOUND for the (D) contract: enforcement runs at LOAD time
+   UNIFORMLY (it cannot know it is under `cdz test`), and the (D) guarantee is that a violated precondition
+   crashes deterministically for EVERY caller in PRODUCTION — a soft, recoverable reject would downgrade the
+   production contract to serve the harness. So the trap STAYS a hard `(trap …)`; the runner cannot and should
+   NOT distinguish reject-from-failure by text. (B) is also the operator's preferred target and reuses the
+   `@invariant` constrained-gen peephole: `@requires` is the PARAM-level sibling of `@invariant` (read the
+   predicate off `Db::requires_of`, generate within the range/bound — the same `Comb`-tree inspection), keyed by
+   param scope instead of the type. Ownership: **I keep the trap hard; v-property-testing owns in-domain
+   generation.** No throwaway discard-interim (it would need the unsound (A) channel).
+
 **Why this is a small b4, not a new increment.** b1 built the denotation + discharge; b2 the match predicate;
 b3 the oracle→optimizer wiring. b4 is: (a) the `@ensures`/`@requires` elaboration that emits `denote(Q)` /
 `assume(denote P)` — a front-end pass over the already-settled parse; (b) the CDZ-VERIFY diagnostic. The

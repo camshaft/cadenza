@@ -1,4 +1,5 @@
 # gate baseline — per-case verdicts (verdict\tdescription). Regenerate with `cargo xtask gate --save`.
+pass	@requires stacked OVER @ensures: the precondition is still enforced when an @ensures wrapper sits between it and the def
 pass	Ast.decode converts bytes to an AST sum type value
 pass	Ast.decode decodes bytes that arrive as a function argument
 pass	Ast.encode and Ast.decode round-trip
@@ -325,6 +326,8 @@ pass	a NaN operand makes every runtime float ordering relation false (unordered)
 pass	a PARTIALLY-applied multi-payload constructor is a first-class function value
 pass	a PLAIN @requires precondition is ENFORCED at body-entry: a VIOLATED precondition traps when the def is called
 pass	a PLAIN @requires precondition is value-transparent when SATISFIED: the def returns its computed value
+pass	a Qty payload with a GENERIC inner type rejects a bare use with no type argument
+pass	a Qty payload's INNER type stays a real type parameter — the unit-arg skip does not over-skip
 pass	a Qty-typed variant payload keeps its type non-generic and matches back
 pass	a Quantity @param generates a Qty-result accessor the host supplies as a scalar magnitude
 pass	a RADIX literal carries the N type suffix
@@ -702,6 +705,7 @@ pass	a contradictory arrow annotation on a function in a SUM payload is rejected
 pass	a contradictory arrow annotation on a function in a runtime Map value is rejected
 pass	a contradictory arrow annotation on a function stored as a Map KEY is rejected
 pass	a correctly-annotated function parameter is accepted
+pass	a cross-function recursive fold's out-state threads to a later perform in the caller's continuation
 pass	a cross-type variant pattern whose payload width differs is rejected, not miscompiled
 pass	a crossing text-literal arm is rejected even beside a same-kind sibling arm
 pass	a ctor-in-tuple-slot match is expressible by binding the tuple then re-matching
@@ -750,6 +754,7 @@ pass	a delegated effect reached only through an if-branch is granted and fires w
 pass	a delegated host effect composes with the value-heap runtime
 pass	a delegation naming an effect that is never reached is rejected as latent authority
 pass	a dense if-equality chain dispatches every value including the default
+pass	a dense if-equality chain dispatches on a let-bound value
 pass	a dense zero-based jump-table match hits a covered arm
 pass	a dense zero-based jump-table match routes an out-of-range scrutinee to the default
 pass	a dependent size of zero binds an empty body and leaves the rest untouched
@@ -2175,6 +2180,7 @@ pass	a tuple guard mixes an element binder with an enclosing parameter
 pass	a tuple guard reads a ctor payload binder inside a tuple element
 pass	a tuple guard reads a nested tuple's inner binders
 pass	a tuple is constructed with positional elements
+pass	a tuple of a bool and a sum is exhaustive when every bool×variant combination is covered
 pass	a tuple of bools is exhaustive when every combination is covered
 pass	a tuple of calls to a sibling function on recursive-sum values matches with constructor patterns
 pass	a tuple of two sums is matched with nested constructor patterns
@@ -2286,6 +2292,7 @@ pass	accessing through an empty-side split-at is usable, like the equivalent lit
 pass	accumulator introduction threads a transformed extra parameter through a multi-parameter recursion
 pass	adding a cubed length to a squared length is a dimension mismatch
 pass	adding a degree quantity to a radian quantity is a dimension mismatch
+pass	adding a quantity to a NON-numeric value is a plain type mismatch, not a dimension slip
 pass	adding a squared length to a plain length is a dimension mismatch
 pass	adding adjacent high-power quantities is a mismatch (meter^100 + meter^101)
 pass	adding quantities of incompatible dimension is a compile-time error
