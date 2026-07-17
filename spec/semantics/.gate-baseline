@@ -2871,6 +2871,7 @@ pass	equality over a runtime float in a SUM payload compares by the float leaf
 pass	eval does not forge a private constructor NESTED in a compound
 pass	eval does not see through a splice whose operand is itself an Ast value
 pass	eval is optional for macros and interactive use
+pass	eval of a bare Ast.Name for an unbound name is the ordinary unbound-name error
 pass	eval of a fully-concrete imported constructor is legal from outside
 pass	eval of a partially-exported type's EXPORTED constructor works
 pass	eval of a partially-exported type's WITHHELD constructor is rejected
@@ -2894,6 +2895,7 @@ pass	eval of a quoted string executes it to the string value
 pass	eval of a quoted theorem constructor cannot forge an abstract theorem outside the kernel
 pass	eval of a template splicing a runtime VALUE folds — the working side of the boundary
 pass	eval of an Ast.Float NaN node executes to the NaN value — it does NOT construct an escaping node
+pass	eval of an Ast.List with a non-operator head is the ordinary application type error
 pass	eval of an exported smart constructor still works — the forge fix does not over-reject
 pass	eval on malformed AST traps
 pass	every not-a-number value is equal to every not-a-number value
