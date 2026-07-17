@@ -34243,6 +34243,66 @@ mod match_engine {
     }
 
     #[test]
+    fn scan_manifest_reads_each_param_site_name_widget_range_and_type() {
+        // @param sidecar WIDGET MANIFEST (DESIGN-runtime-parameter-host-effect.md 2nd output): param_sidecar::
+        // scan_manifest walks every `(: (@ (param <kv>) name) Type)` site into a ParamRecord the host reads
+        // (v-cdz-tooling plumbs the Query + `cdz param-manifest` CLI over these). This tests the SCAN half —
+        // that each site's name + widget + range + type node are read off the arena correctly. Node-ids
+        // (ty/range) are rendered by the query handler (Db type column + span table); here we assert the
+        // NAME + widget string + that a range yields two element nodes + a type node is present.
+        use crate::param_sidecar::scan_manifest;
+        // NOTE the s-expr surface spells the range list `(list 0 100)` — the `[0 100]` bracket-sugar is an
+        // ML-surface literal the s-expr reader does NOT parse as a list (it reads `[0`/`100]` as atoms). The
+        // canonical arena node is `(list lo hi)` either way (bracket sugar desugars to it on the ML side).
+        let ast = crate::testkit::parse(
+            "(module m \
+               (: (@ (param (: widget slider) (: range (list 0 100))) width) Int64) \
+               (: (@ (param (: widget toggle)) mirror) Bool) \
+               (def (main) 0) \
+             (export main))",
+        );
+        let recs = scan_manifest(&ast);
+        assert_eq!(recs.len(), 2, "two @param sites → two manifest records");
+        let width = recs
+            .iter()
+            .find(|r| r.name == "width")
+            .expect("width record");
+        assert_eq!(
+            width.widget.as_deref(),
+            Some("slider"),
+            "width's widget config reads as `slider`"
+        );
+        assert!(
+            width.range.is_some(),
+            "width's `range: [0 100]` yields two element nodes"
+        );
+        // The declared type node is present (rendered by the query handler); confirm it names Int64.
+        assert_eq!(
+            ast.as_name(width.ty),
+            Some("Int64"),
+            "width's declared type node is Int64"
+        );
+        let mirror = recs
+            .iter()
+            .find(|r| r.name == "mirror")
+            .expect("mirror record");
+        assert_eq!(
+            mirror.widget.as_deref(),
+            Some("toggle"),
+            "mirror's widget config reads as `toggle`"
+        );
+        assert!(
+            mirror.range.is_none(),
+            "mirror has no range kv → range is None (a stable-schema null, not a crash)"
+        );
+        assert_eq!(
+            ast.as_name(mirror.ty),
+            Some("Bool"),
+            "mirror's type node is Bool"
+        );
+    }
+
+    #[test]
     fn at_param_site_generates_a_param_accessor_the_guest_can_reference() {
         // @param sidecar (DESIGN-runtime-parameter-host-effect.md): a `@param(widget: …) name : Type` site
         // — parsed to `(: (@ (param …) name) Type)` — makes the sidecar GENERATE `(effect Param (op name
