@@ -24,6 +24,24 @@ dump) when load < ~5. If it reproduces clean, the by-hand-correct trace means th
 parse (resolve/infer/lower/eval) mis-handling a deeply-nested `NIf`-in-`NIf`, NOT the index threading — look
 there. If it does NOT reproduce, it was contention; just re-add the conformance case.
 
+## UPDATE 2 (2026-07-17, third look — CONFIRMED REAL, narrowed to PARSE-or-LOWER)
+
+Re-verified after a CLEAN `cargo build --release --bin cdz` (so NOT stale-store, NOT a timeout — a printed
+`@test` assertion failure): `zzverify-fortytwo` (asserting the program == 42) FAILED, 0 passed / 1 failed.
+Then split the value: `val() == -1` (None) FAILED → **the program RUNS to a real non-None value** (it is NOT
+an ill-typed decline). So parse+infer produce a runnable tree, but the VALUE is wrong (≠42).
+- `eval-core` of a HAND-BUILT nested `CIf` is CORRECT (`ev-if-untaken-branch-not-evaluated` proves
+  `CIf(CNum 1, CNum 7, CBin(47,1,0))` → 7; the `CIf` arm: nonzero cond→then, zero→else). So EVAL is not the bug.
+- Therefore the bug is in **PARSE or LOWER**: the *parsed* `if 1<2 then (if 3<4 then 42 else 0) else 99`
+  builds a Core that evals to the wrong value, even though a hand-built equivalent CIf is fine. Every by-hand
+  index-trace of `parse-if`/`parse-factor`(paren)/`parse-cmp`/lower's `NIf` arm reads as CORRECT — so the bug
+  is subtle (a wrong child id / mis-associated branch that a structural dump would reveal).
+- NEXT (quiet box): dump the parsed tree's root `NIf` children ids + each child's node, and the lowered
+  `Core` shape, for this exact program. Compare then/else children to expectation (then=inner NIf, else=NLit
+  99). The mismatch localizes parse-vs-lower. Could NOT complete the structural dump this tick (box load
+  25–66; each single-`@test` run ~2 min, several got killed). Fix is BLOCKED on a quieter box AND on trunk
+  being green (my heal `ee7cc6da4` still pending at pr-sync as of this update).
+
 ## Program
 
 `if 1 < 2 then (if 3 < 4 then 42 else 0) else 99` — an outer `if` whose THEN-branch is a *parenthesised inner
