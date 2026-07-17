@@ -59,6 +59,78 @@ function isCadenzaInfo(info: string): boolean {
   return first?.toLowerCase() === "cadenza";
 }
 
+/// A line-range map of a notebook document, for the LSP (operator P0 #13): the editor/LSP must run
+/// Cadenza diagnostics ONLY on CODE cells, not on prose or the notebook's widget-DSL cells. Each entry
+/// gives, per v-lsp's contract:
+///   - `startLine`/`endLine`: 0-based, HALF-OPEN `[startLine, endLine)`. For a code cell these bound the
+///     Cadenza SOURCE only — the ` ```cadenza ` opener and the closing ` ``` ` fence lines are OUTSIDE the
+///     range (feeding the backticks to the parser would inject a parse error).
+///   - `kind`: `"code"` | `"prose"`.
+///   - `directive`: the code cell's render directive (`undefined` for prose). The LSP checks a cell only
+///     when `kind === "code" && directive.kind !== "widget"` — a widget cell is the notebook DSL, not
+///     Cadenza, so it (and prose) get NO Cadenza diagnostics.
+///   - `surface`: `"ml"` | `"sexpr"` — which reader the LSP uses for this cell (notebook code cells are a
+///     WHOLE program / def-block, not a bare fragment, so no synthetic module wrap is needed).
+export interface CellRange {
+  startLine: number;
+  endLine: number;
+  kind: "code" | "prose";
+  directive?: CellDirective;
+  surface: "ml" | "sexpr";
+}
+
+/// Compute the line-range map of a notebook (see `CellRange`). `surface` is the document's editing surface
+/// (the notebook is surface-pinned — s-expr today), carried per-cell so the LSP picks the right reader.
+/// A prose range spans its lines inclusively-as-half-open; a code range covers only the fenced SOURCE
+/// (fence lines excluded). An unclosed cadenza fence still yields a code range to its last line (matches
+/// `parseDocument`'s robustness — a half-typed doc never drops content).
+export function cellRanges(markdown: string, surface: "ml" | "sexpr" = "sexpr"): CellRange[] {
+  const lines = markdown.replace(/\r\n?/g, "\n").split("\n");
+  const ranges: CellRange[] = [];
+  // Accumulate a prose run [proseStart, i) and flush it only if it has non-blank content (mirrors
+  // parseDocument's flushProse: blank-only runs don't become cells).
+  let proseStart = 0;
+  const flushProse = (end: number) => {
+    let hasContent = false;
+    for (let k = proseStart; k < end; k++) if (lines[k].trim().length > 0) { hasContent = true; break; }
+    if (hasContent) ranges.push({ startLine: proseStart, endLine: end, kind: "prose", surface });
+  };
+
+  let i = 0;
+  while (i < lines.length) {
+    const m = FENCE_RE.exec(lines[i]);
+    if (m) {
+      const fenceChar = m[2][0];
+      const fenceLen = m[2].length;
+      const info = m[3];
+      const cadenza = isCadenzaInfo(info);
+      // Find the matching closing fence.
+      let j = i + 1;
+      let closed = false;
+      for (; j < lines.length; j++) {
+        const cm = FENCE_RE.exec(lines[j]);
+        if (cm && cm[2][0] === fenceChar && cm[2].length >= fenceLen && cm[3].trim() === "") {
+          closed = true;
+          break;
+        }
+      }
+      if (cadenza) {
+        flushProse(i); // close any pending prose BEFORE the opening fence line
+        // Source is the lines strictly between the opening fence (i) and the closing fence (j) — fences
+        // excluded per the contract. An unclosed fence runs to EOF (j === lines.length).
+        ranges.push({ startLine: i + 1, endLine: j, kind: "code", directive: parseDirective(info), surface });
+        proseStart = closed ? j + 1 : j;
+      }
+      // A non-cadenza fence stays part of the surrounding prose run — don't flush, don't reset proseStart.
+      i = closed ? j + 1 : j;
+      continue;
+    }
+    i++;
+  }
+  flushProse(lines.length);
+  return ranges;
+}
+
 /// Parse a whole notebook markdown string into an ordered list of cells.
 ///
 /// The scan walks lines, tracking whether we're inside a fenced block. A fence opens with ≥3 `` ` `` or
