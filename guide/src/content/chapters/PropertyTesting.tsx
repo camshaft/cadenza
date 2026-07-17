@@ -2,6 +2,7 @@ import { H1, Lede, H2, P, C, Note } from "../../components/Prose.tsx";
 import { Runnable } from "../../components/Runnable.tsx";
 import { Exercise } from "../../components/Exercise.tsx";
 import { Why } from "../../components/Why.tsx";
+import { Link } from "react-router-dom";
 
 export default function PropertyTesting() {
   return (
@@ -119,6 +120,16 @@ export default function PropertyTesting() {
         just: write a function, assert what should hold, mark it — and, if it takes arguments, the runner
         tries to break it for you.
       </Why>
+
+      <P>
+        That's the last of what makes Cadenza its own language — exact numbers, units, effects, types as
+        values, metaprogramming, generative tests. You've met the ideas; now watch them do real work. The{" "}
+        <Link to="/example-apps" className="text-cadenza-300 underline-offset-2 hover:underline">
+          example applications
+        </Link>{" "}
+        are full, interactive programs built in Cadenza — the calculator, the CAD preview, the notebook, the
+        playground — each one a differentiator you just learned, running in your browser.
+      </P>
 
       <H2>Your turn</H2>
       <P>

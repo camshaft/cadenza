@@ -1,5 +1,6 @@
 import { H1, Lede, H2, P, C, Note } from "../../components/Prose.tsx";
 import { Runnable } from "../../components/Runnable.tsx";
+import { Link } from "react-router-dom";
 import { Exercise } from "../../components/Exercise.tsx";
 import { Why } from "../../components/Why.tsx";
 
@@ -223,6 +224,14 @@ export default function Effects() {
         does this at its edge, where the effects show up in its manifest) and the identical loop drives a
         live agent. That's the payoff: the logic you test with mocks is byte-for-byte the logic that runs in
         production — the handler is the only thing that changed.
+      </P>
+      <P>
+        The{" "}
+        <Link to="/notebook" className="text-cadenza-300 underline-offset-2 hover:underline">
+          notebook
+        </Link>{" "}
+        turns this idea into a live document: drag a slider and every dependent cell recomputes — the
+        surrounding context deciding what a value means, made interactive.
       </P>
 
       <H2>Your turn</H2>
