@@ -281,13 +281,19 @@ try {
   for (const p of PLAYGROUND) {
     // The intentional "see the squiggle" example is authored to NOT compile — check it as expect="error".
     const expect = /\(\+\s+1\s+true\)/.test(p.source) ? "error" : "value";
+    // An example MAY pin its exact SCALAR result via `expected` — then the gate asserts the program runs
+    // to THAT value, not merely "to some value", so a future compiler change that flips e.g. Collatz from
+    // 111 to 42 is caught instead of silently accepted (a true regression test). Optional + scalar-only:
+    // the harness compares the s-expr-canonical render, and a compound (list/tuple/rational) renders
+    // differently across surfaces (its own rule in `checkProgram`), so only bare-number/bool examples
+    // carry `expected`; compound-returning ones stay run-only.
     examples.push({
       file: "src/playground/examples.ts",
       kind: "Runnable",
       snippet: p.source,
       surface: p.surface,
       expect,
-      expected: null,
+      expected: p.expected ?? null,
       noWrap: true,
     });
   }

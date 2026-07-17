@@ -8,6 +8,11 @@ export interface Example {
   name: string;
   surface: Surface;
   source: string;
+  /// Optional pinned SCALAR result (bare number or bool, as the runner renders it). When set, the
+  /// check-examples gate asserts the program runs to exactly this value — turning the example into a
+  /// regression test rather than a mere "it runs" check. Only scalars are pinned (a compound value
+  /// renders differently across the s-expr/ML surfaces); compound-returning examples leave it unset.
+  expected?: string;
 }
 
 export const EXAMPLES: Example[] = [
@@ -17,6 +22,7 @@ export const EXAMPLES: Example[] = [
     source: `(module m
   (def (main) (+ 2 3))
   (export main))`,
+    expected: "5",
   },
   {
     name: "A recursive sum",
@@ -26,6 +32,7 @@ export const EXAMPLES: Example[] = [
     (if (= n 0) 0 (+ n (sm (- n 1)))))
   (def (main) (sm 5))
   (export main))`,
+    expected: "15",
   },
   {
     name: "Pattern matching",
@@ -37,6 +44,7 @@ export const EXAMPLES: Example[] = [
       (2 20)
       (_ 0)))
   (export main))`,
+    expected: "20",
   },
   {
     name: "Option & sum types",
@@ -48,6 +56,7 @@ export const EXAMPLES: Example[] = [
       ((Some x) x)
       ((None _) 0)))
   (export main))`,
+    expected: "7",
   },
   {
     name: "Records",
@@ -56,6 +65,7 @@ export const EXAMPLES: Example[] = [
   (def (area r) (* (. r w) (. r h)))
   (def (main) (area (record (w 4) (h 5))))
   (export main))`,
+    expected: "20",
   },
   {
     name: "A tuple",
@@ -71,6 +81,7 @@ export const EXAMPLES: Example[] = [
   (def (main)
     (List.len (List.concat (list 1 2) (list 3 4 5))))
   (export main))`,
+    expected: "5",
   },
   {
     // Shows off: a recursive sum type + structural pattern matching = a real (if tiny) interpreter.
@@ -96,6 +107,7 @@ export const EXAMPLES: Example[] = [
     (eval (Mul (tuple (Add (tuple (Lit 2) (Lit 3)))
                       (Neg (Lit 4))))))
   (export main))`,
+    expected: "-20",
   },
   {
     // Shows off: tail-style recursion + integer arithmetic driving a classic number-theory routine.
@@ -113,6 +125,7 @@ export const EXAMPLES: Example[] = [
             (collatz (+ (* 3 n) 1) (+ steps 1)))))
   (def (main) (collatz 27 0))
   (export main))`,
+    expected: "111",
   },
   {
     // Shows off: first-class functions — a function that RETURNS a function (a closure over f and g).
@@ -126,6 +139,7 @@ export const EXAMPLES: Example[] = [
   (def (inc x) (+ x 1))
   (def (main) ((compose double inc) 20))
   (export main))`,
+    expected: "42",
   },
   {
     // Shows off: a Map used as a MEMO CACHE, threaded functionally through the recursion. Each call
@@ -148,6 +162,7 @@ export const EXAMPLES: Example[] = [
                  (tuple r (Map.insert (. b 1) n r)))))))))
   (def (main) (. (fib 30 (Map.empty)) 0))
   (export main))`,
+    expected: "832040",
   },
   {
     // Shows off: building a frequency table by folding a list into a Map (add-or-bump each key).
@@ -200,6 +215,7 @@ export const EXAMPLES: Example[] = [
   (def (lcm a b) (/ (* a b) (gcd a b)))
   (def (main) (lcm 12 18))
   (export main))`,
+    expected: "36",
   },
   {
     // Shows off: Set operations as first-class values. Symmetric difference (elements in exactly one
@@ -254,6 +270,7 @@ export const EXAMPLES: Example[] = [
     (let ((toks (list (Num 3) (Num 4) (Plus unit) (Num 5) (Times unit))))
       (top (run toks 0 (List.len toks) (Empty unit)))))
   (export main))`,
+    expected: "35",
   },
   {
     // Shows off: nested recursion for a real algorithm — count primes ≤ N by trial division.
@@ -274,6 +291,7 @@ export const EXAMPLES: Example[] = [
         (count (+ k 1) n (if (isprime k) (+ acc 1) acc))))
   (def (main) (count 2 100 0))
   (export main))`,
+    expected: "25",
   },
   {
     // Shows off: a cellular automaton — Rule 110, one of the simplest Turing-complete systems — as a
@@ -318,6 +336,7 @@ export const EXAMPLES: Example[] = [
                         (record (name "Grace") (age 40)))))
       (/ (sum-age people 0 (List.len people) 0) (List.len people))))
   (export main))`,
+    expected: "39",
   },
   {
     // Shows off: exponential recursion made concrete — the minimum moves to solve Tower of Hanoi with
@@ -333,6 +352,7 @@ export const EXAMPLES: Example[] = [
         (+ (+ (hanoi (- n 1)) 1) (hanoi (- n 1)))))
   (def (main) (hanoi 10))
   (export main))`,
+    expected: "1023",
   },
   {
     // Shows off: bit-twiddling with plain integer arithmetic — count the 1-bits (population count) of a
@@ -347,6 +367,7 @@ export const EXAMPLES: Example[] = [
         (popcount (/ n 2) (+ acc (% n 2)))))
   (def (main) (popcount 2730 0))
   (export main))`,
+    expected: "6",
   },
   {
     // Shows off: a classic list transform — run-length encoding. Walk the list tracking the current
@@ -386,6 +407,7 @@ export const EXAMPLES: Example[] = [
     (let ((bs (String.to-bytes "racecar")))
       (if (pal bs 0 (- (Bytes.len bs) 1)) 1 0)))
   (export main))`,
+    expected: "1",
   },
   {
     // Shows off: computing a result without a built-in — integer square root by searching upward for the
@@ -399,6 +421,7 @@ export const EXAMPLES: Example[] = [
   (def (isqrt n) (isqrt-from n 1))
   (def (main) (isqrt 144))
   (export main))`,
+    expected: "12",
   },
   {
     // Shows off: rebuilding a list in reverse by pushing elements from the end onto a fresh list.
