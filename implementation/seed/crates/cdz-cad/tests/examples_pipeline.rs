@@ -32,8 +32,7 @@ const TUBE: &str = "(: (Differencer (Cylinderr 3.0 2.0) (Cylinderr 3.0 1.0)) Sol
 /// 381/2500 m EXACTLY (no float rounding). So the model renders the same `n/d`-Rational grammar the driver
 /// already parses, and this pins that a UNITS-AUTHORED model flows end-to-end (library → render → driver →
 /// mesh) — the payoff that makes units-everywhere real at the render edge, not just unit-tested in Cadenza.
-const MIXED_BLOCK: &str =
-    "(: (Cuber (: (tuple 1/1 381/1250 381/2500) Vec3r)) Solidr)";
+const MIXED_BLOCK: &str = "(: (Cuber (: (tuple 1/1 381/1250 381/2500) Vec3r)) Solidr)";
 
 #[test]
 fn plate_meshes_and_bounds_match_the_base_cube() {
