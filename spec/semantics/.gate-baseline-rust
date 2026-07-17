@@ -2430,6 +2430,7 @@ pass	an in-range constant argument to a narrow parameter computes at the paramet
 pass	an indexed read is not shared across a shadowing rebinding
 pass	an indexed read of an updated list is not shared with the original's
 pass	an init after the failing `?` never evaluates — even a provably-trapping one
+pass	an inline Unit.define conflicting with a built-in conversion is rejected wherever it occurs
 pass	an inline-never definition is emitted once and called
 pass	an inline-never definition with a const dictionary still monomorphizes the dictionary
 pass	an inlined multi-use checked-arith argument is shared and computed directly into its slot

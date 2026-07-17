@@ -1543,6 +1543,21 @@
             (export main)))
   (error  CDZ0502))
 
+(case "an inline Unit.define conflicting with a built-in conversion is rejected wherever it occurs"
+  (doc    "The name->conversion-uniqueness rule (#A Named Unit's Conversion Is Unique) holds wherever a
+           `Unit.define` occurs, not only at the TOP LEVEL: an INLINE `(Unit.define #\"foot\" (Unit.base
+           #\"meter\") 2 1)` in a `Qty.of` unit position redeclares the built-in `foot` (381/1250 m) as 2 m
+           — a conflicting conversion — so it is CDZ0502, exactly like the top-level form. Before the scan
+           walked every arena node (not just top items), an inline define BYPASSED the uniqueness table: it
+           silently evaluated at the fake 2 m ratio (`(+ (Qty.of 1.0 fake-foot) (Qty.of 1.0 meter))` ran to
+           3.0 instead of rejecting), the classic silent-wrong-physics the layer exists to prevent.")
+  (input  (do
+            (def (main (: a Float64))
+              (Qty.value (+ (Qty.of a (Unit.define #"foot" (Unit.base #"meter") 2 1))
+                            (Qty.of a (Unit.base #"meter")))))
+            (export main)))
+  (error  CDZ0502))
+
 (case "redeclaring a built-in unit with its own conversion is admissible"
   (doc    "`(Unit.define #\"foot\" (Unit.of #\"meter\") 381 1250)` redeclares the built-in `foot` at its
            OWN scale (381/1250 m) — an AGREEING redeclaration — so it is admitted, not CDZ0502

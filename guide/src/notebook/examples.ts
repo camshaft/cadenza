@@ -136,7 +136,7 @@ c : Float64 = slider(-5.0, 5.0, step: 0.5, default: 0.0)
 Evaluate y at each x (y = a·x·x + b·x + c):
 
 ~~~cadenza
-(def (y-at x) (+ (+ (* a (* x x)) (* b x)) c))
+(def (y-at (: x Float64)) (+ (+ (* a (* x x)) (* b x)) c))
 (def (main) (y-at 0.0))
 ~~~
 

@@ -16558,6 +16558,35 @@ mod tests {
     }
 
     #[test]
+    fn a_sparse_if_equality_chain_does_not_emit_a_br_table() {
+        // The if-chain lift routes through the match backend, which only emits a `br_table` for a DENSE
+        // range (`try_emit_scalar_br_table`'s `span > 2*count || span > 256` gate). A SPARSE chain — ≥3
+        // distinct consts but a huge span (0/1000/50000) — must fall back to the linear `i64.eq` cascade,
+        // NOT a 50000-wide table. Pins the density discipline the lift inherits: a regression loosening the
+        // gate would emit a gigantic (or invalid) table. The values stay correct either way (the linear
+        // chain is exhaustive); this asserts only the SHAPE (no br_table, keeps per-arm equality probes).
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: n Int64)) \
+               (if (= n 0) 100 (if (= n 1000) 101 (if (= n 50000) 102 999)))) (export f))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let d = db.def_by_name("f").expect("def f");
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function_of(&mut db, body, &params, &layout, Some(d)).expect("select");
+        assert!(
+            !f.code.iter().any(|i| matches!(i, Lir::BrTable(_, _))),
+            "a sparse if-equality chain (huge span) does not emit a br_table, got: {:?}",
+            f.code
+        );
+        assert!(
+            f.code.iter().any(|i| matches!(i, Lir::I64Eq)),
+            "the sparse chain keeps its linear per-arm equality probes, got: {:?}",
+            f.code
+        );
+    }
+
+    #[test]
     fn a_br_table_over_a_zero_based_range_skips_the_index_shift() {
         // A dense `br_table` normalizes the scrutinee to a 0-based table index via `scrutinee - min`. When
         // the covered range STARTS AT 0 — the common `(match x (0 …) (1 …) …)` shape — that shift is the
