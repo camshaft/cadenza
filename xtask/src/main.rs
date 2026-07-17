@@ -2731,6 +2731,26 @@ fn gate(paths: &Paths, profile: &str, opts: GateOpts) {
     }
 }
 
+/// The observable-outcome KEY the opt-sweep compares across optimization levels — the projection every
+/// level must preserve. Two runs are level-EQUIVALENT iff their keys are equal; a divergence in this key
+/// across O0..O3 is a candidate miscompile. A value carries its host-call trace; a trap keys on its
+/// classified KIND ([`trap_kind`]) or — for an UNCLASSIFIED reason — the RAW first line (NOT a single
+/// "other" bucket, else two genuinely-different unclassified traps would compare EQUAL and a real
+/// cross-level trap divergence among them would be missed). Extracted as a free fn so the comparison the
+/// blocking gate rests on is unit-tested (see `opt_sweep_outcome_key_*` tests).
+fn sweep_outcome_key(ran: &Ran) -> String {
+    match ran {
+        Ran::Value(v, calls) if calls.is_empty() => format!("value {v}"),
+        Ran::Value(v, calls) => format!("value {v} [host: {}]", calls.join(",")),
+        Ran::Trap(msg) => match trap_kind(msg) {
+            Some(kind) => format!("trap {kind}"),
+            None => format!("trap raw:{}", first_line(msg.as_bytes())),
+        },
+        Ran::Declined { code } => format!("declined {}", code.as_deref().unwrap_or("-")),
+        Ran::BadArtifact(msg) => format!("bad-artifact {msg}"),
+    }
+}
+
 /// The OPTIMIZATION-LEVEL-EQUIVALENCE gate (`xtask gate --opt-sweep`). The tiered `OptLevel` framework's
 /// correctness invariant is that EVERY level produces OBSERVABLY-IDENTICAL behavior — only compile time /
 /// output size differs, never the result (`core-semantics.md` §Observable Behavior Is A Defined
@@ -2744,10 +2764,10 @@ fn gate(paths: &Paths, profile: &str, opts: GateOpts) {
 /// preserve. Each case is driven per its trials (its `(call …)`s); a case that DECLINES at the default
 /// tier is skipped (a decline is level-independent; the normal gate grades it Todo). Multi-file PACKAGE
 /// cases are skipped in this first cut (the single-file pipe covers the arithmetic/control programs where
-/// the pass tiers act). OPT-IN for now (not in `cargo xtask check`) — it guards nothing while the
-/// `PassManager` pipeline is empty (every level runs identically); wire it into `check` in the same slice
-/// that registers the first real Core pass, when it actually guards a level-sensitive transform. It then
-/// catches fleet-wide any pass that mis-optimizes at `O2`/`O3`.
+/// the pass tiers act). Wired into `cargo xtask check` (operator directive 2026-07-17) → a HARD BLOCKING
+/// merge gate: because pr-sync re-gates every MR via `check`, a cross-level divergence rejects the MR. It
+/// guards nothing while the `PassManager` pipeline is empty (every level runs identically), but stands
+/// ready to catch fleet-wide any future Core pass that mis-optimizes at `O2`/`O3`.
 fn gate_opt_sweep(paths: &Paths, profile: &str, opts: &GateOpts) {
     // The sweep drives the WASM run path only (`run_program_wasm`). Honoring `--target rust`/`rust-async`
     // would need `--opt-level` threaded through the separate rust run path (a follow-up); silently running
@@ -2777,23 +2797,6 @@ fn gate_opt_sweep(paths: &Paths, profile: &str, opts: &GateOpts) {
     // The observable outcome of a run, as a comparable string — the projection the levels must preserve.
     // A host-delegating case (non-empty host_responses) is level-independent in its host protocol, so its
     // observed calls are folded into the value string like the normal gate renders them.
-    let outcome = |ran: &Ran| -> String {
-        match ran {
-            Ran::Value(v, calls) if calls.is_empty() => format!("value {v}"),
-            Ran::Value(v, calls) => format!("value {v} [host: {}]", calls.join(",")),
-            // Prefer the classified trap KIND (corpus/wasmtime vocab → one token); for an UNCLASSIFIED
-            // reason fall back to the RAW first line, NOT a single "other" bucket — else two genuinely
-            // different unclassified traps would compare EQUAL and a real cross-level trap divergence
-            // among them would be missed.
-            Ran::Trap(msg) => match trap_kind(msg) {
-                Some(kind) => format!("trap {kind}"),
-                None => format!("trap raw:{}", first_line(msg.as_bytes())),
-            },
-            Ran::Declined { code } => format!("declined {}", code.as_deref().unwrap_or("-")),
-            Ran::BadArtifact(msg) => format!("bad-artifact {msg}"),
-        }
-    };
-
     // Gather every case, then sweep them IN PARALLEL — like `grade_all_parallel`, the work is
     // process-bound (each level is a full compile+run subprocess pipeline), so a worker pool pulling from
     // a shared cursor keeps many pipelines in flight. Order is irrelevant here (we only tally + collect
@@ -2802,7 +2805,6 @@ fn gate_opt_sweep(paths: &Paths, profile: &str, opts: &GateOpts) {
         .iter()
         .flat_map(|file| read_corpus(&tools, file))
         .collect();
-    let outcome = &outcome;
     let (checked, skipped, divergences) = {
         use std::sync::Mutex;
         use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
@@ -2831,7 +2833,7 @@ fn gate_opt_sweep(paths: &Paths, profile: &str, opts: &GateOpts) {
                         if i >= records.len() {
                             break;
                         }
-                        match sweep_one_case(tools, store, &records[i], &LEVELS, outcome) {
+                        match sweep_one_case(tools, store, &records[i], &LEVELS) {
                             SweepOutcome::Skipped => {
                                 skipped.fetch_add(1, Ordering::Relaxed);
                             }
@@ -2884,7 +2886,6 @@ fn sweep_one_case(
     store: &Option<PathBuf>,
     rec: &CorpusRecord,
     levels: &[&str],
-    outcome: &dyn Fn(&Ran) -> String,
 ) -> SweepOutcome {
     // Multi-file package cases are out of scope for this first cut.
     if !rec.modules.is_empty() {
@@ -2919,9 +2920,9 @@ fn sweep_one_case(
             return SweepOutcome::Skipped;
         }
         checked_any = true;
-        let base = outcome(&runs[default_idx]);
+        let base = sweep_outcome_key(&runs[default_idx]);
         for (lvl, ran) in levels.iter().zip(&runs) {
-            let got = outcome(ran);
+            let got = sweep_outcome_key(ran);
             if got != base {
                 let label = call.map(|c| c.export.as_str()).unwrap_or("(no call)");
                 diffs.push(format!(
@@ -4825,6 +4826,58 @@ mod trap_grading_tests {
         );
         // An unclassifiable reason yields None (grader stays conservative — never a false Pass).
         assert_eq!(trap_kind("some novel host failure"), None);
+    }
+
+    #[test]
+    fn opt_sweep_outcome_key_distinguishes_observably_different_runs() {
+        // The opt-sweep's blocking guarantee rests on `sweep_outcome_key`: two runs are level-equivalent
+        // iff their keys are EQUAL. So the key MUST separate every observably-different outcome — a value
+        // change, a value-vs-trap, a trap-KIND change, a decline-code change — else a real cross-level
+        // divergence (an unsound optimization) would compare equal and slip past the gate.
+        let val = |v: &str| Ran::Value(v.to_string(), vec![]);
+        // Distinct values → distinct keys (a level that changed the computed value is caught).
+        assert_ne!(sweep_outcome_key(&val("42")), sweep_outcome_key(&val("43")));
+        // Same value → same key (a level that only reshuffled emit bytes is NOT a divergence).
+        assert_eq!(sweep_outcome_key(&val("42")), sweep_outcome_key(&val("42")));
+        // Value vs trap → distinct (a level that turned a result into a trap, or vice versa, is caught).
+        assert_ne!(
+            sweep_outcome_key(&val("0")),
+            sweep_outcome_key(&Ran::Trap("divide by zero".into()))
+        );
+        // Distinct trap KINDS → distinct keys.
+        assert_ne!(
+            sweep_outcome_key(&Ran::Trap("divide by zero".into())),
+            sweep_outcome_key(&Ran::Trap("integer overflow".into()))
+        );
+        // Distinct decline CODES → distinct keys.
+        assert_ne!(
+            sweep_outcome_key(&Ran::Declined {
+                code: Some("CDZ0302".into())
+            }),
+            sweep_outcome_key(&Ran::Declined {
+                code: Some("CDZ0304".into())
+            })
+        );
+    }
+
+    #[test]
+    fn opt_sweep_outcome_key_separates_distinct_unclassified_traps() {
+        // The review-fix-3 invariant (PR #529 Copilot): an UNCLASSIFIED trap reason must NOT collapse to a
+        // single "other" bucket, or two genuinely-different unclassified traps would compare EQUAL and a
+        // real cross-level trap divergence among them would be MISSED. Both reasons are `trap_kind` = None,
+        // so the key falls back to the raw first line and they must differ.
+        assert_eq!(trap_kind("novel host failure A"), None);
+        assert_eq!(trap_kind("novel host failure B"), None);
+        assert_ne!(
+            sweep_outcome_key(&Ran::Trap("novel host failure A".into())),
+            sweep_outcome_key(&Ran::Trap("novel host failure B".into())),
+            "distinct unclassified traps must not collapse to equal keys"
+        );
+        // A multi-line trap keys on its FIRST line only (stable across incidental trailing noise).
+        assert_eq!(
+            sweep_outcome_key(&Ran::Trap("novel host failure A\n  at frame 3".into())),
+            sweep_outcome_key(&Ran::Trap("novel host failure A\n  at frame 7".into()))
+        );
     }
 
     #[test]
