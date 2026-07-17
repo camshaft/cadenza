@@ -1108,6 +1108,26 @@
   (input  (= (String.from-bytes (Bytes.of (list 192 128))) None))
   (output (: true Bool)))
 
+(case "decoding a lone continuation byte yields none"
+  (doc    "`(Bytes.of (list 128))` is `0x80` — a CONTINUATION byte (`10xxxxxx`) with no preceding lead byte.
+           A well-formed UTF-8 sequence never starts with a continuation, so `String.from-bytes` yields
+           `None`. Distinct from the lone-`0xFF` case (0xFF is never a valid byte at all) and the overlong
+           case (structurally-paired but non-canonical): here the byte is a valid CONTINUATION shape but
+           appears with no lead to continue — the STATE-MACHINE failure mode a decoder that only rejected
+           `0xFF`/overlong could miss. Pins that a stray continuation is rejected.")
+  (input  (= (String.from-bytes (Bytes.of (list 128))) None))
+  (output (: true Bool)))
+
+(case "decoding a truncated multi-byte sequence yields none"
+  (doc    "`(Bytes.of (list 195))` is `0xC3` — a 2-byte LEAD (`110xxxxx`) with NO following continuation byte
+           (the sequence ends mid-codepoint). `é` needs `C3 A9`; `C3` alone is truncated, so
+           `String.from-bytes` yields `None`. The dual of the lone-continuation case: a lead expecting a
+           continuation that never arrives (a decode that ran off the end of the input). Together they pin
+           BOTH state-machine failure faces — a continuation with no lead, and a lead with no continuation —
+           beyond the byte-value (`0xFF`) and shortest-form (overlong) rejections above.")
+  (input  (= (String.from-bytes (Bytes.of (list 195))) None))
+  (output (: true Bool)))
+
 (case "decoding a surrogate code point encoded as UTF-8 yields none"
   (doc    "`(Bytes.of (list 237 160 128))` is `ED A0 80` — the UTF-8-shaped encoding of U+D800, a HIGH
            SURROGATE. Surrogates are not Unicode scalar values (they exist only for UTF-16 pairing), so

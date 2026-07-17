@@ -35,10 +35,18 @@ export function displayNode(n: Node): string {
 /// `n/1` (Cadenza canonicalizes integer-valued rationals to `n/1`) to its plain integer (`4/1` → `4`,
 /// `-4/1` → `-4`), so a rational-typed whole number reads the same in a value / table cell as it does in
 /// a formula cell (which already collapses `n/1`). A genuine fraction (den ≠ 1) is left as `n/d`.
+///
+/// CRITICAL: the `n/1` collapse must run on the RAW (still-quoted) atom, only when it is NOT a quoted
+/// string — a String value like `(: "4/1" String)` arrives here as the atom `"4/1"`; unquoting first and
+/// then matching `n/1` would corrupt it to `4` (a String that merely LOOKS like a rational). Only a bare
+/// (unquoted) atom can be a genuine Rational, so gate the collapse on that (PR #523 Copilot).
 function displayAtom(atom: string): string {
-  const unquoted = unquoteAtom(atom);
-  const rat = /^(-?)(\d+)\/1$/.exec(unquoted);
-  return rat ? `${rat[1]}${rat[2]}` : unquoted;
+  const isQuotedString = atom.length >= 2 && atom.startsWith('"') && atom.endsWith('"');
+  if (!isQuotedString) {
+    const rat = /^(-?)(\d+)\/1$/.exec(atom);
+    if (rat) return `${rat[1]}${rat[2]}`;
+  }
+  return unquoteAtom(atom);
 }
 
 /// A compact one-line canonical render of an arbitrary node (for a compound value the friendly path

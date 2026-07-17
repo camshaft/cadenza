@@ -12,11 +12,18 @@
 /// `50` and `127/20` (= 6.35 mm) with ZERO rounding — the thing floats can't do and the reason Rational+Qty
 /// exist. `Unit.in` converts by the exact direct ratio over Rational (inch = 127/5000 m, mm = 1/1000 m).
 
+/// NUMERIC MODE (S1-redux): `@!default-fraction Rational` — exact-by-default, so a bare `n/d` here is an
+/// exact Rational (no `Rational.of` noise). Module-local (doesn't leak into imported `exact`). Where an
+/// `Int64` is genuinely wanted under this default, an explicit `(… : Int64)` annotation overrides it.
+@!default-fraction Rational
+
 import { Vec3r } from "exact"
 import { v3r } from "exact"
 
-/// A `Rational` from an integer (the common case: `ri 50` = 50/1). Sugar over `Rational.of`.
-def ri(n: Int64) = Rational.of(n, 1)
+/// A `Rational` from an integer (the common case: `ri 50` = 50/1). Sugar over `Rational.of`. Kept with an
+/// `Int64` signature (an importer passes a bare Int64 count); the literal `1` denominator is annotated
+/// `(1 : Int64)` so it stays an Int64 argument under this module's `default-fraction Rational`.
+def ri(n: Int64) = Rational.of(n, (1 : Int64))
 
 /// Convert a `Qty` length to the model's bare-`Rational` MILLIMETRES (the exact edge conversion). `Unit.in`
 /// rescales to millimeter over Rational (exact direct ratio); `Qty.value` drops the now-mm unit wrapper. The
@@ -50,8 +57,8 @@ def mm-is-identity-in-the-model-unit() =
 @test
 def inch-converts-exactly() =
   // 1 inch = 25.4 mm = 127/5 exactly; 1/4 inch = 6.35 mm = 127/20 exactly (no float rounding).
-  if inch(ri(1)) == Rational.of(127, 5) then
-    (if inch(Rational.of(1, 4)) == Rational.of(127, 20) then unit else trap("1/4 inch = 127/20 mm"))
+  if inch(ri(1)) == 127 / 5 then
+    (if inch(1 / 4) == 127 / 20 then unit else trap("1/4 inch = 127/20 mm"))
   else trap("1 inch = 127/5 mm")
 
 @test
@@ -62,14 +69,14 @@ def cm-and-m-convert-exactly() =
 @test
 def foot-converts-exactly() =
   // 1 foot = 12 inch = 304.8 mm = 1524/5 exactly.
-  if foot(ri(1)) == Rational.of(1524, 5) then unit else trap("1 foot = 1524/5 mm")
+  if foot(ri(1)) == 1524 / 5 then unit else trap("1 foot = 1524/5 mm")
 
 @test
 def mixing-units-is-exact() =
   // THE showcase: a 50 mm width and a 1/4 inch radius coexist EXACTLY in one model, no rounding.
   // 50 mm + 1/4 inch = 50 + 127/20 = 1127/20 mm.
-  let total = mm(ri(50)) + inch(Rational.of(1, 4)) in
-  if total == Rational.of(1127, 20) then unit else trap("50mm + 0.25in = 1127/20 mm exactly")
+  let total = mm(ri(50)) + inch(1 / 4) in
+  if total == 1127 / 20 then unit else trap("50mm + 0.25in = 1127/20 mm exactly")
 
 @test
 def a_length_round_trips_mm_to_inch() =
@@ -84,7 +91,7 @@ def as-mm-wraps-a-bare-mm-coordinate() =
   // as-mm is the OUTPUT edge dual of the input constructors: a stored bare-Rational mm coordinate → a Qty in
   // millimeters. Directly (was only exercised transitively via display-in): its value is the same Rational and
   // re-reading it in mm returns the coordinate (identity round-trip on the model unit). Exact.
-  let coord = Rational.of(127, 20) in            // 6.35 mm (a 1/4-inch hole radius), exact
+  let coord = 127 / 20 in            // 6.35 mm (a 1/4-inch hole radius), exact
   let q = as-mm(coord) in
   if Qty.value(q) == coord then
     (if Qty.value(Unit.in(Unit.of(#"millimeter"), q)) == coord then unit else trap("re-read in mm")) else trap("as-mm value")

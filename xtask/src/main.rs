@@ -3544,10 +3544,15 @@ fn baseline_titles_agree_lint(paths: &Paths) -> Result<(), String> {
     let mut sets: Vec<(&str, std::collections::BTreeSet<String>)> = Vec::new();
     for (name, target) in targets {
         let path = baseline_path(paths, target);
-        // A baseline that doesn't exist yet is not a divergence (the rust baselines are opt-in to
-        // create); `gate --check --target <t>` is what errors on a missing one. Skip absent files.
-        let Ok(text) = std::fs::read_to_string(&path) else {
-            continue;
+        // A baseline that doesn't EXIST yet is not a divergence (the rust baselines are opt-in to
+        // create; `gate --check --target <t>` errors on a missing one) — skip it. But a real read
+        // ERROR (permissions, transient IO, invalid UTF-8) must FAIL LOUDLY, not be silently treated as
+        // absent (which would pass the lint having checked nothing for that file). Discriminate on the
+        // error kind, not a blanket Ok-else-skip.
+        let text = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(format!("cannot read baseline {}: {e}", path.display())),
         };
         sets.push((name, baseline_titles(&text)));
     }
@@ -4256,6 +4261,39 @@ mod trap_grading_tests {
             baseline_titles_agree_lint(&paths).is_ok(),
             "agreeing title-sets with differing verdicts must pass"
         );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn baseline_titles_agree_lint_skips_absent_but_fails_on_a_read_error() {
+        // PR#522: a MISSING baseline (NotFound) is legitimately skipped (rust baselines are opt-in),
+        // but a real read ERROR must FAIL LOUDLY rather than be silently treated as absent.
+        let tick = std::process::id();
+        let root = std::env::temp_dir().join(format!("baseline-readerr-{tick}"));
+        let _ = std::fs::remove_dir_all(&root);
+        let sem = root.join("spec/semantics");
+        std::fs::create_dir_all(&sem).unwrap();
+        let paths = Paths {
+            seed: root.join("implementation/seed"),
+            repo: root.clone(),
+        };
+
+        // Only the wasm baseline exists; rust + async are ABSENT (NotFound → skipped). With <2 present
+        // there's nothing to compare → Ok (a missing opt-in baseline is not a divergence).
+        std::fs::write(sem.join(".gate-baseline"), "pass\tsome case\n").unwrap();
+        assert!(
+            baseline_titles_agree_lint(&paths).is_ok(),
+            "a single present baseline (others NotFound) must pass, not error"
+        );
+
+        // Now make the rust baseline UNREADABLE-as-UTF-8 (invalid bytes) — a real read error, NOT
+        // absence. The lint must FAIL loudly, not silently skip it as if missing.
+        std::fs::write(sem.join(".gate-baseline-rust"), [0xff, 0xfe, 0x00]).unwrap();
+        let err = baseline_titles_agree_lint(&paths).expect_err(
+            "an unreadable (non-UTF-8) baseline must be a hard error, not a silent skip",
+        );
+        assert!(err.contains("cannot read baseline"), "got: {err}");
 
         let _ = std::fs::remove_dir_all(&root);
     }

@@ -632,6 +632,7 @@ pass	a guard reads a binding from the enclosing scope, not only its pattern's
 pass	a guard reads payload binders from two ctor list elements
 pass	a guard reads the payload binder and an enclosing parameter together
 pass	a guard sees the names its pattern binds and arms are tried in order
+pass	a guard-elided FLOW-REFINED add computes identically on both backends
 pass	a guard-elided masked add at a NARROW width computes identically on both backends
 pass	a guard-elided masked add computes inline over runtime operands
 pass	a guard-elided masked left shift computes identically on both backends
@@ -2029,6 +2030,7 @@ pass	an earlier literal arm is chosen over a later name-binding arm for a runtim
 pass	an effect discharged by a handler does not escape to the manifest
 pass	an effect in a statically-dead branch is still syntactically reached, so its delegation is not latent
 pass	an effect in a statically-dead branch still requires a grant — ungranted is rejected
+pass	an effect op whose declared RESULT is a QUANTITY resumes with a Qty value
 pass	an effect operation declared with no name is rejected
 pass	an effect operation may be named `bind` — the interop directive keyword is not reserved for op names
 pass	an effect operation reached with neither a handler nor a delegation is rejected
@@ -2364,9 +2366,11 @@ pass	decode of a Str tag with an oversized length yields the error case
 pass	decode of a truncated Float tag yields the error case, not a trap
 pass	decode of an unknown tag byte yields the error case
 pass	decoding a four-byte sequence for a code point above U+10FFFF yields none
+pass	decoding a lone continuation byte yields none
 pass	decoding a runtime ROPE Bytes as UTF-8 flattens before validating (well-formed)
 pass	decoding a runtime ROPE Bytes that is ill-formed yields none
 pass	decoding a surrogate code point encoded as UTF-8 yields none
+pass	decoding a truncated multi-byte sequence yields none
 pass	decoding an encoded string round-trips to the same bytes (the inverse direction)
 pass	decoding an overlong UTF-8 encoding yields none
 pass	decoding bytes that are not a canonical AST yields the error case, not a trap

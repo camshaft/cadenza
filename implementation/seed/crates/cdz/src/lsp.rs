@@ -2844,6 +2844,66 @@ mod tests {
         );
     }
 
+    /// Build a `didClose` notification for `uri`.
+    fn did_close_note(uri: &Uri) -> Notification {
+        let params = DidCloseTextDocumentParams {
+            text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+        };
+        Notification::new(
+            DidCloseTextDocument::METHOD.to_string(),
+            serde_json::to_value(params).unwrap(),
+        )
+    }
+
+    #[test]
+    fn did_close_drops_the_buffer_and_clears_its_diagnostics() {
+        // Closing a document must (a) forget its buffer (so a later query can't read stale text) and
+        // (b) publish an EMPTY diagnostic list for its URI, so the editor clears any squiggle it was
+        // showing for a file no longer open. Drive it through the real handler and confirm both.
+        let (mut server, client) = memory_server();
+        let uri = test_uri();
+        // Open a program WITH an error (an unbound name) so there's a diagnostic to clear on close.
+        server
+            .handle_notification(did_open_note(&uri, "def main = nope"))
+            .expect("didOpen dispatches");
+        // The open published at least one diagnostic (the unbound `nope`); drain up to the last publish.
+        let mut open_diags: Option<usize> = None;
+        while let Ok(Message::Notification(n)) = client.receiver.try_recv() {
+            if n.method == PublishDiagnostics::METHOD {
+                let p: PublishDiagnosticsParams = serde_json::from_value(n.params).unwrap();
+                open_diags = Some(p.diagnostics.len());
+            }
+        }
+        assert_eq!(
+            open_diags,
+            Some(1),
+            "opening `def main = nope` publishes one diagnostic (the unbound name)"
+        );
+        // Now close it.
+        server
+            .handle_notification(did_close_note(&uri))
+            .expect("didClose dispatches");
+        // (a) the buffer is forgotten.
+        assert!(
+            !server.docs.contains_key(&uri),
+            "a closed document is removed from the open set"
+        );
+        // (b) the close published an EMPTY diagnostic list for the URI (clears the squiggle).
+        let mut close_diags: Option<usize> = None;
+        while let Ok(Message::Notification(n)) = client.receiver.try_recv() {
+            if n.method == PublishDiagnostics::METHOD {
+                let p: PublishDiagnosticsParams = serde_json::from_value(n.params).unwrap();
+                assert_eq!(p.uri, uri, "the clear is published for the closed URI");
+                close_diags = Some(p.diagnostics.len());
+            }
+        }
+        assert_eq!(
+            close_diags,
+            Some(0),
+            "closing publishes an empty diagnostic list so the editor clears stale errors"
+        );
+    }
+
     /// The line/character of a `Position`, as a tuple, for terse assertions.
     fn lc(p: Position) -> (u32, u32) {
         (p.line, p.character)

@@ -1654,6 +1654,18 @@ pub struct Db {
     /// `Db::malformed_tag_forms` to REJECT them in `collect_faults` (a silently-dropped tag masks the error).
     pub(crate) malformed_tags: Vec<StructId>,
 
+    /// `@requires(pred)` PRECONDITION predicate occurrences per annotated def (BODY occ → the predicate
+    /// `StructId`s, in annotation order). The verification layer (Inc-b) denotes these into HOL obligations;
+    /// the proof-guided-elision oracle looks up a checked-arith node's precondition here. Recorded by
+    /// `strip_annotations` (b4a); empty in a build with no `@requires`. Read by `Db::requires_of`.
+    pub(crate) requires: crate::fxhash::FxHashMap<StructId, Vec<StructId>>,
+
+    /// `@ensures(pred)` POSTCONDITION predicate occurrences per annotated def (BODY occ → predicate
+    /// `StructId`s). The predicate is over the def's params + the implicit result binder `it`. Denoted +
+    /// discharged by the verification layer (Inc-b); recorded by `strip_annotations` (b4a). Read by
+    /// `Db::ensures_of`.
+    pub(crate) ensures: crate::fxhash::FxHashMap<StructId, Vec<StructId>>,
+
     /// TRANSIENT flow-sensitive value-range REFINEMENTS, active only during wasm emit. A stack of
     /// frames, each mapping a variable's binder occurrence (a `Core::Param`/`LocalRef` `binder`) to a
     /// range `[lo, hi]` KNOWN to hold in the current control-flow branch (`hi = None` = unbounded above).
@@ -1745,6 +1757,8 @@ impl Db {
             tags,
             exhaustive,
             malformed_tags,
+            requires,
+            ensures,
         } = strip_annotations(&mut ast);
         // `@param` SIDECAR — scan every `@param(widget: …) name : Type` site and GENERATE the `Param`
         // effect (one typed accessor op per param), appending it as a module member. Runs HERE, right
@@ -2106,10 +2120,19 @@ impl Db {
         // a module). The linked arena splices every file's items under ONE synthetic `(do …)` root, so
         // `top_items` returns items from ALL files — the pragma's SIBLINGS include imported files' defs
         // unless filtered by file.
+        // BINARY SEARCH the demux, not a linear `position(contains)`: the harvest below calls this inside a
+        // nested `top_items × top_items` loop (once per pragma × per sibling), so a linear scan is
+        // O(pragmas × siblings × files) on a multi-file package (Copilot perf note, PR #523). The files are
+        // spliced sequentially, so `link_files` is SORTED by `struct_base` with non-overlapping ranges —
+        // `partition_point` finds the last file whose base is ≤ `id` in O(log files), then a single
+        // `contains` confirms `id` is within that file's range (a node in NO file — the synth `(do …)` root
+        // — falls between/after ranges and fails the check). Same result as the linear scan, log-time.
         let file_of = |id: StructId| -> Option<usize> {
-            link_files
-                .as_ref()
-                .and_then(|fs| fs.iter().position(|f| f.contains(id)))
+            let fs = link_files.as_ref()?;
+            let idx = fs
+                .partition_point(|f| f.struct_base <= id.0)
+                .checked_sub(1)?;
+            fs.get(idx).filter(|f| f.contains(id)).map(|_| idx)
         };
         for &item in &top_items(&ast) {
             let Some(ptail) = ast.as_form(item, "pragma") else {
@@ -2288,6 +2311,8 @@ impl Db {
             tags,
             exhaustive,
             malformed_tags,
+            requires,
+            ensures,
             range_refinements: Vec::new(),
         };
         // NEWTYPE ERASURE: materialize, once, which declared sums are erasable NEWTYPES and their
@@ -3086,6 +3111,32 @@ impl Db {
             .get(def)
             .and_then(|d| d.body)
             .and_then(|body| self.tags.get(&body))
+            .map_or(NONE, Vec::as_slice)
+    }
+
+    /// The `@requires(pred)` PRECONDITION predicate occurrences definition `def` carries, in annotation
+    /// order (empty if none, or `def` is out of range / bodyless). Keyed by the def's BODY occurrence, like
+    /// `tags_of`. Each `StructId` is a predicate FORM over the def's params — the verification layer denotes
+    /// it into a HOL obligation (Inc-b b4/b3). Backs the proof-guided-elision oracle's per-node precondition
+    /// lookup.
+    pub fn requires_of(&self, def: usize) -> &[StructId] {
+        const NONE: &[StructId] = &[];
+        self.defs
+            .get(def)
+            .and_then(|d| d.body)
+            .and_then(|body| self.requires.get(&body))
+            .map_or(NONE, Vec::as_slice)
+    }
+
+    /// The `@ensures(pred)` POSTCONDITION predicate occurrences definition `def` carries, in annotation
+    /// order. Keyed by the def's BODY occurrence. Each `StructId` is a predicate FORM over the def's params
+    /// and the implicit result binder `it` — denoted + discharged by the verification layer (Inc-b).
+    pub fn ensures_of(&self, def: usize) -> &[StructId] {
+        const NONE: &[StructId] = &[];
+        self.defs
+            .get(def)
+            .and_then(|d| d.body)
+            .and_then(|body| self.ensures.get(&body))
             .map_or(NONE, Vec::as_slice)
     }
 
@@ -4191,8 +4242,14 @@ fn strip_const_params(ast: &mut Arenas) -> crate::fxhash::FxHashSet<StructId> {
 /// annotations carry compiler SEMANTICS today". An annotation whose name is NOT one of these is still
 /// UNWRAPPED (the def takes effect) but recorded nowhere: a transparent, inert marker. So a future
 /// `@deprecated`/`@lint`/… works as a no-op the day it is written and gains meaning by joining this list.
-pub(crate) const KNOWN_ANNOTATIONS: &[&str] =
-    &["inline-never", "inline-always", "test", "exhaustive"];
+pub(crate) const KNOWN_ANNOTATIONS: &[&str] = &[
+    "inline-never",
+    "inline-always",
+    "test",
+    "exhaustive",
+    "requires",
+    "ensures",
+];
 /// The strippable annotations a definition carries, each a set of the annotated defs' BODY occurrences.
 pub(crate) struct StrippedAnnotations {
     pub(crate) inline_never: crate::fxhash::FxHashSet<StructId>,
@@ -4215,6 +4272,21 @@ pub(crate) struct StrippedAnnotations {
     /// (`@tag(5)`, `@tag(foo)`, `@tag()`, `@tag("a" "b")`). Recorded by the offending `(tag …)` occurrence
     /// so `collect_faults` rejects it (rather than silently dropping the tag and masking the author error).
     pub(crate) malformed_tags: Vec<StructId>,
+    /// The `@requires(pred)` PRECONDITION predicates each annotated def carries, keyed by BODY occ (like
+    /// `tags`). A def may stack several (`@requires(> x 0) @requires(< x 100)`); they accumulate in
+    /// annotation order (a conjunction). The stored `StructId` is the PREDICATE-form occurrence — a
+    /// Cadenza expression over the def's params — which the verification layer (Inc-b b4) DENOTES into a
+    /// HOL obligation `Term`. This is the `@requires`/`@ensures`→node channel the proof-guided-elision
+    /// oracle (`discharged_no_overflow`) needs: a checked-arith node's precondition is looked up here.
+    /// (This b4a slice RECORDS the predicates; the denotation + discharge are later b4 slices. Recording
+    /// them is behavior-neutral — nothing yet reads these sets, so an annotated def compiles exactly as
+    /// today, just no longer as an inert unknown marker.)
+    pub(crate) requires: crate::fxhash::FxHashMap<StructId, Vec<StructId>>,
+    /// The `@ensures(pred)` POSTCONDITION predicates each annotated def carries, keyed by BODY occ. The
+    /// stored `StructId` is the predicate-form occurrence, a Cadenza expression over the def's params +
+    /// the implicit result binder `it` (v-syntax's result-binding convention). Denoted + discharged in a
+    /// later b4 slice; recorded here (behavior-neutral) as the surface half of the channel.
+    pub(crate) ensures: crate::fxhash::FxHashMap<StructId, Vec<StructId>>,
 }
 
 /// Unwrap EVERY `@`-ANNOTATION on a definition — `(@ inline-never (def …))`, `(@ inline-always (def …))`,
@@ -4309,6 +4381,10 @@ fn strip_annotations(ast: &mut Arenas) -> StrippedAnnotations {
     let mut exhaustive: crate::fxhash::FxHashSet<StructId> = crate::fxhash::FxHashSet::default();
     // `(@ (tag …) …)` heads whose argument is not exactly one STRING — malformed tag annotations to reject.
     let mut malformed_tags: Vec<StructId> = Vec::new();
+    let mut requires: crate::fxhash::FxHashMap<StructId, Vec<StructId>> =
+        crate::fxhash::FxHashMap::default();
+    let mut ensures: crate::fxhash::FxHashMap<StructId, Vec<StructId>> =
+        crate::fxhash::FxHashMap::default();
     for i in 0..ast.structure.len() {
         let id = StructId(i as u32);
         // `(@ NAME INNER)` — the annotation head `@`, its name, and the annotated form. Only a known
@@ -4342,6 +4418,23 @@ fn strip_annotations(ast: &mut Arenas) -> StrippedAnnotations {
                 _ => None, // `@tag` with not-exactly-one-arg (or a non-string arg) — not a modeled tag
             }
         });
+        // `@requires(pred)` / `@ensures(pred)` reify like `@tag`, but their ARGUMENT is a PREDICATE FORM
+        // (a Cadenza expression over the def's params, and — for `@ensures` — the result binder `it`), not
+        // a string. `@requires(> x 0)` → `(@ (requires (> x 0)) def)`, so the name position is the
+        // application `(requires (> x 0))` and its single tail element is the predicate occurrence. Record
+        // that `StructId`; the verification layer denotes it into a HOL obligation (a later b4 slice). A
+        // `@requires`/`@ensures` with not-exactly-one argument is left unrecorded here (a well-formedness
+        // concern for a later slice, alongside the denotation), not silently mis-modeled.
+        let requires_pred: Option<StructId> =
+            ast.as_form(name_occ, "requires").and_then(|t| match t {
+                [only] => Some(*only),
+                _ => None,
+            });
+        let ensures_pred: Option<StructId> =
+            ast.as_form(name_occ, "ensures").and_then(|t| match t {
+                [only] => Some(*only),
+                _ => None,
+            });
         // The inner must be a `(def SIG BODY …)` — read its children to adopt them + find the BODY occ.
         // NOTE: this def check is BEFORE the malformed-`@tag` recording below on purpose — the `@tag`
         // contract only applies when the annotation wraps a DEFINITION, so a `@tag` around a NON-def is
@@ -4375,7 +4468,15 @@ fn strip_annotations(ast: &mut Arenas) -> StrippedAnnotations {
         debug_assert!(
             name.as_deref()
                 .is_none_or(|n| KNOWN_ANNOTATIONS.contains(&n)
-                    == matches!(n, "inline-never" | "inline-always" | "test" | "exhaustive")),
+                    == matches!(
+                        n,
+                        "inline-never"
+                            | "inline-always"
+                            | "test"
+                            | "exhaustive"
+                            | "requires"
+                            | "ensures"
+                    )),
             "KNOWN_ANNOTATIONS and the strip_annotations match arms disagree on `{name:?}`"
         );
         match name.as_deref() {
@@ -4406,6 +4507,16 @@ fn strip_annotations(ast: &mut Arenas) -> StrippedAnnotations {
         if let Some(tag) = tag_arg {
             tags.entry(body).or_default().push(tag);
         }
+        // `@requires(pred)`/`@ensures(pred)` record their predicate occ against the def's BODY occ,
+        // accumulating across stacked annotations (a conjunction). The name position is the `(requires …)`
+        // / `(ensures …)` application, so `name` (the bare-name read) is `None` and these fall to the `_`
+        // arm above — recorded here, like `@tag`, after the unwrap so `body` is the def's occ.
+        if let Some(pred) = requires_pred {
+            requires.entry(body).or_default().push(pred);
+        }
+        if let Some(pred) = ensures_pred {
+            ensures.entry(body).or_default().push(pred);
+        }
     }
     StrippedAnnotations {
         inline_never,
@@ -4414,6 +4525,8 @@ fn strip_annotations(ast: &mut Arenas) -> StrippedAnnotations {
         tags,
         exhaustive,
         malformed_tags,
+        requires,
+        ensures,
     }
 }
 

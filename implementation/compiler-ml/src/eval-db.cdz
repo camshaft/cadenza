@@ -78,6 +78,7 @@ def thenkw() = Tok.TThen
 def elsekw() = Tok.TElse
 def truelit() = Tok.TBoolTok(1)
 def falselit() = Tok.TBoolTok(0)
+def neg() = Tok.TNeg
 
 /// `let x = 2 in x * 3 + 1` as tokens — THE MILESTONE program.
 def milestone-tokens() = [letkw(), var(1), eq(), n(2), inkw(), var(1), times(), n(3), plus(), n(1)]
@@ -221,5 +222,25 @@ def ev-if-false-literal-cond() =
 def ev-let-bound-bool-literal() =
   // let b = true in if b then 5 else 6  →  5 (a bool literal flows through a let binding into a cond).
   (match run([letkw(), var(1), eq(), truelit(), inkw(), ifkw(), var(1), thenkw(), n(5), elsekw(), n(6)]) with | Option.Some(v) => (if v == 5 then unit else trap("let b = true → 5")) | Option.None(_) => trap("runs"))
+
+@test
+def ev-unary-minus() =
+  // -5  →  -5 (desugars to 0 - 5).
+  (match run([neg(), n(5)]) with | Option.Some(v) => (if v == (0 - 5) then unit else trap("-5 = -5")) | Option.None(_) => trap("unary minus runs"))
+
+@test
+def ev-unary-minus-in-arith() =
+  // 10 + -3  →  7 (unary minus as an operand: 10 + (0 - 3)).
+  (match run([n(10), plus(), neg(), n(3)]) with | Option.Some(v) => (if v == 7 then unit else trap("10 + -3 = 7")) | Option.None(_) => trap("runs"))
+
+@test
+def ev-unary-minus-of-let-var() =
+  // let x = 4 in -x  →  -4.
+  (match run([letkw(), var(1), eq(), n(4), inkw(), neg(), var(1)]) with | Option.Some(v) => (if v == (0 - 4) then unit else trap("-x where x=4 is -4")) | Option.None(_) => trap("runs"))
+
+@test
+def ev-double-negation() =
+  // - -5  →  5 (0 - (0 - 5)).
+  (match run([neg(), neg(), n(5)]) with | Option.Some(v) => (if v == 5 then unit else trap("- -5 = 5")) | Option.None(_) => trap("runs"))
 
 export { eval-core, eval-bin, eval-tree, run, milestone-tokens, run-milestone }

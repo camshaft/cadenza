@@ -572,6 +572,32 @@ fn emit_grounded(
 ///    all args computed into temps before any param is overwritten, then jump to the loop top;
 ///  - any other value `v` becomes `break v` (yielding the loop's — the function's — result).
 ///
+/// Emit `body` under the FLOW-REFINEMENT frame that `cond` establishes for the given branch polarity, so a
+/// guard-elision check inside the branch (`provably_no_overflow` → `value_range` → `db.refined_range`) sees
+/// the range facts the guard implies (`(if (< a 100) (+ a 1) …)` → `a ∈ [_, 99]` in the then branch, so the
+/// `+ a 1` overflow guard is elided). This mirrors the wasm backend's `refined_frame_for_branch` push/pop
+/// (select.rs) — the SAME backend-agnostic refinement computation — so both backends make the identical
+/// elision decision. The frame is INTERSECTED onto the current one (`refined_frame_for_branch` takes the
+/// base) and popped after `body`, so refinements nest correctly and never leak past the branch. A condition
+/// that yields no single-variable interval (a non-comparison, an `or`'s then) contributes an unchanged
+/// frame — a safe no-op.
+fn with_branch_refinement<F>(
+    db: &mut Db,
+    cond: StructId,
+    then_branch: bool,
+    body: F,
+) -> Result<String, Reject>
+where
+    F: FnOnce(&mut Db) -> Result<String, Reject>,
+{
+    let base = db.current_refinements();
+    let frame = crate::backend::wasm::select::refined_frame_for_branch(db, cond, then_branch, base);
+    db.push_range_refinements(frame);
+    let out = body(db);
+    db.pop_range_refinements();
+    out
+}
+
 /// Returns a Rust STATEMENT/expression usable as the loop body. Only called when `ctx.self_loop` is set.
 fn emit_tail(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Reject> {
     let group = ctx
@@ -621,8 +647,10 @@ fn emit_tail(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, 
         // An `if` in tail position: both branches are tail; the condition is an ordinary value.
         Core::If { cond, then_, else_ } => {
             let c = emit(db, cond, env, ctx)?;
-            let t = emit_tail(db, then_, env, ctx)?;
-            let e = emit_tail(db, else_, env, ctx)?;
+            // FLOW-REFINEMENT parity (see the non-tail `Core::If` arm): emit each branch under the range
+            // facts its guard establishes so an in-branch guard-elision check sees the narrowed range.
+            let t = with_branch_refinement(db, cond, true, |db| emit_tail(db, then_, env, ctx))?;
+            let e = with_branch_refinement(db, cond, false, |db| emit_tail(db, else_, env, ctx))?;
             Ok(format!("if {c} {{ {t} }} else {{ {e} }}"))
         }
         // A `let` in tail position: its bindings are ordinary values, its body is tail.
@@ -734,8 +762,14 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         // block's type — the same reconciliation the wasm backend's `emit_branch` does.
         Core::If { cond, then_, else_ } => {
             let c = emit(db, cond, env, ctx)?;
-            let t = emit_branch(db, then_, id, env, ctx)?;
-            let e = emit_branch(db, else_, id, env, ctx)?;
+            // FLOW-REFINEMENT (both-backend parity with wasm's `refined_frame_for_branch` push/pop): each
+            // branch is emitted under the range facts its guard establishes, so a guard-elision check
+            // (`provably_no_overflow` → `value_range`) inside a branch sees the narrowed range and drops a
+            // dead overflow guard — e.g. `(if (< a 100) (+ a 1) 0)` elides the `+ a 1` guard in the then
+            // branch. Without this the rust backend saw no refinement (wasm did), keeping a guard wasm
+            // elides — a correct-but-divergent decision this closes. Symmetric push/pop around EACH branch.
+            let t = with_branch_refinement(db, cond, true, |db| emit_branch(db, then_, id, env, ctx))?;
+            let e = with_branch_refinement(db, cond, false, |db| emit_branch(db, else_, id, env, ctx))?;
             let bare = format!("if {c} {{ {t} }} else {{ {e} }}");
             // ANNOTATE the `if` result when it is a GENERIC SUM (`Option<…>`/`Result<…>`/a user generic
             // enum). A branch that is a bare nullary generic variant (`Option::None`) carries no type
@@ -3771,13 +3805,26 @@ fn emit_sum_payload(
                                 cur_ty = elems.get(*j).cloned().unwrap_or(Ty::Any);
                                 expr = format!("({expr}).{j}");
                             }
+                            // A RECORD maps to a Rust tuple in SORTED FIELD-NAME order (see `types::rust_type`
+                            // / `Core::Record`), so an `Elem(j)` is the j-th sorted field → `.{j}`, exactly
+                            // like a tuple. Advance the type through the sorted field values (`BTreeMap`
+                            // iterates sorted) so a deeper step resolves.
+                            Ty::Record(fields) => {
+                                cur_ty = fields.values().nth(*j).cloned().unwrap_or(Ty::Any);
+                                expr = format!("({expr}).{j}");
+                            }
                             Ty::List(elem) => {
                                 cur_ty = (**elem).clone();
                                 expr = format!("({expr})[{j}]");
                             }
+                            // Any OTHER element shape is not a positional projectable (`Elem` is only valid
+                            // over a tuple/record/list) — emitting `.{j}` would be an uncompilable field
+                            // access on, say, a scalar/sum/map. DECLINE with a clear message (Copilot PR#522
+                            // — the old catch-all `.{j}` risked invalid Rust and dropped type-tracking to Any).
                             _ => {
-                                cur_ty = Ty::Any;
-                                expr = format!("({expr}).{j}");
+                                return Err(Reject::decline(
+                                    "a nested list-element `Elem` step over a non-tuple/record/list type is not rendered by the Rust backend",
+                                ));
                             }
                         },
                         // A `Payload`/`RestFrom` beyond the leading list index is a shape this slice does not

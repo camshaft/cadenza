@@ -27,6 +27,16 @@ test("a whole-valued rational `n/1` collapses to a plain integer (matches formul
   assert.equal(formatValue("(: 4/2 Rational)"), "4/2");
 });
 
+test("a String that LOOKS like n/1 is NOT collapsed — only a genuine Rational is (PR #523)", () => {
+  // A String value `(: "3/1" String)` must keep its text `3/1` (quotes stripped) — the n/1-collapse must
+  // NOT corrupt it to `3`. The collapse only applies to a bare (Rational) atom, not unquoted String text.
+  assert.equal(formatValue('(: "3/1" String)'), "3/1");
+  assert.equal(formatValue('(: "4/1" String)'), "4/1");
+  assert.equal(formatValue('(: "-5/1" String)'), "-5/1");
+  // …while the genuine Rational 3/1 still collapses to 3.
+  assert.equal(formatValue("(: 3/1 Rational)"), "3");
+});
+
 test("a string loses its quotes", () => {
   assert.equal(formatValue('(: "hello" String)'), "hello");
   assert.equal(formatValue('(: "a \\"q\\" b" String)'), 'a "q" b');

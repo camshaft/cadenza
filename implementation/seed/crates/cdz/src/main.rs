@@ -244,6 +244,13 @@ enum Cmd {
     /// arguments (a recursive generic at each element type, a type-valued-parameter def at each type, and
     /// a `const` dictionary parameter at each concrete dictionary — the ad-hoc-polymorphism case).
     Instantiations(InstantiationsArgs),
+    /// The `@param` WIDGET MANIFEST of FILE — one record per `@param(widget: …) name : Type` site, the
+    /// data a HOST (browser/CAD/notebook) reads to render a control per program parameter. Prints
+    /// `file:line:col: name : type [widget=… range=[lo,hi] options=[…] default=…]` per site (`--json`
+    /// emits one structured object per param — `name`, `type`, `widget`, `range`, `options`, `default`,
+    /// and `file`/`line`/`col` — the shape a widget host consumes). The declared type is the checker's
+    /// (via the type column); range/options/default are rendered from the source arena.
+    ParamManifest(ParamManifestArgs),
 
     // ── editor integration ────────────────────────────────────────────────────────────────────────
     /// Run a Language Server (LSP) over stdio — the persistent editor face of the in-process query
@@ -306,6 +313,7 @@ fn main() -> ExitCode {
         Cmd::Doc(a) => run_doc(&a),
         Cmd::DocAt(a) => run_doc_at(&a),
         Cmd::Instantiations(a) => run_instantiations(&a),
+        Cmd::ParamManifest(a) => run_param_manifest(&a),
         Cmd::Lsp => run_lsp(),
     }
 }
@@ -2092,8 +2100,10 @@ fn run_test_file(
     let out = rcdzc::run_with_compiler_stack(|| rcdzc::compile(&inputs, &[]));
     let Some(component) = out.artifact("component") else {
         // The test compile declined — report its errors (a parameterized `@test`, an ill-typed test body,
-        // etc.). `report_errors` prints each coded/uncoded error to stderr.
-        report_errors(&out);
+        // an invalid-kebab `@test` name, …). We HOLD the closure files (source + spans), so render each
+        // fault at its `file:line:col` (the located reporter), not the bare `cdz: error …` — an anchored
+        // decline (e.g. CDZ0201 on a bad `@test` name) then points at the name occurrence like `cdz check`.
+        report_errors_located(&out, &closure);
         return Err(());
     };
     let component = component.to_vec();
@@ -3415,6 +3425,20 @@ struct InstantiationsArgs {
     name: String,
     /// The program file (`.cdz`/`.ml` → ml, `.sexp`/`.sexpr` → sexpr).
     file: String,
+}
+
+#[derive(clap::Args)]
+struct ParamManifestArgs {
+    /// The program file (`.cdz`/`.ml` → ml, `.sexp`/`.sexpr` → sexpr).
+    file: String,
+    /// Emit each `@param` site as a machine-readable JSON object (one per line) instead of the human
+    /// `file:line:col: name : type [widget=… …]` text — the shape a widget HOST consumes to render
+    /// controls without re-parsing. Each object has `name`, `type`, `widget` (or null), `range` (a
+    /// `[lo, hi]` array or null), `options` (an array or null), `default` (the rendered value or null),
+    /// `file`, and — when the param's name node has a known span — `line` + `col`. Null-not-omitted for
+    /// absent config so the host gets a stable schema (the `cdz check --json`/`cdz metadata` convention).
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(clap::Args)]
@@ -4755,6 +4779,140 @@ fn run_symbols(args: &SymbolsArgs) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// `cdz param-manifest FILE` — the `@param` WIDGET MANIFEST: one record per `@param(widget: …) name : Type`
+/// site, the data a HOST (browser/CAD/notebook) reads to render a control per program parameter. Drives
+/// `Query::ParamManifest` (the sidecar half, owned jointly with v-metaprogramming's `scan_manifest`), whose
+/// wire answer is one TAB-separated line per site
+/// `name<TAB>widget<TAB>type<TAB>range-lo<TAB>range-hi<TAB>options<TAB>default<TAB>name-node`. The compiler
+/// renders the declared TYPE (its type column); the value fields are ARENA NODE IDS this CLI renders from
+/// the shared-`StructId` source arena (`sexpr::print_from`), and `name-node` is mapped to `file:line:col`
+/// via the span table — the "compiler emits identity, front-end owns spans + value rendering" split. Human
+/// form: `file:line:col: name : type [widget=… range=[lo,hi] options=… default=…]` per site (the bracketed
+/// config only for present fields); `--json` emits one object per param with null-not-omitted config.
+fn run_param_manifest(args: &ParamManifestArgs) -> ExitCode {
+    let (source, arenas, spans) = match load_program_spanned(&args.file) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("{PROG}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let out = run_sidecar(
+        &arenas,
+        rcdzc::Request::Query(rcdzc::sidecar::Query::ParamManifest),
+    );
+    let Some(bytes) = out.artifact(rcdzc::sidecar::KIND_PARAM_MANIFEST) else {
+        report_errors(&out);
+        return ExitCode::FAILURE;
+    };
+    let text = String::from_utf8_lossy(bytes);
+    if text.trim().is_empty() {
+        eprintln!("{PROG}: {} declares no @param sites", args.file);
+        return ExitCode::SUCCESS;
+    }
+    let index = cadenza_syntax::query::driver::LineIndex::new(&source);
+    // Render an arena value-node id (from the wire) to its source s-expression, or `None` for the `-`
+    // sentinel (an absent config field). Node-id-keyed → the shared `StructId` space lets this CLI print
+    // the exact source form the compiler pointed at, without re-parsing.
+    let render_node = |field: &str| -> Option<String> {
+        let id: u32 = field.parse().ok()?;
+        Some(cadenza_syntax::sexpr::print_from(
+            &arenas,
+            cadenza_syntax::StructId(id),
+        ))
+    };
+    for line in text.lines() {
+        // `name  widget  type  range-lo  range-hi  options  default  name-node` — split into exactly 8.
+        let cols: Vec<&str> = line.splitn(8, '\t').collect();
+        let [
+            name,
+            widget,
+            ty,
+            range_lo,
+            range_hi,
+            options,
+            default,
+            name_node,
+        ] = cols[..]
+        else {
+            continue;
+        };
+        let widget = (widget != "-").then_some(widget);
+        // A range is the two element nodes rendered as `[lo, hi]` (both present or neither).
+        let range = match (render_node(range_lo), render_node(range_hi)) {
+            (Some(lo), Some(hi)) => Some((lo, hi)),
+            _ => None,
+        };
+        let options = render_node(options);
+        let default = render_node(default);
+        let line_col = name_node
+            .parse::<u32>()
+            .ok()
+            .and_then(|d| spans.get(cadenza_syntax::StructId(d)))
+            .map(|span| index.line_col(&source, span.start));
+        if args.json {
+            use cadenza_syntax::query::json;
+            let mut obj = json::Object::new();
+            obj.string("file", &args.file);
+            if let Some((l, c)) = line_col {
+                obj.raw("line", &l.to_string());
+                obj.raw("col", &c.to_string());
+            }
+            obj.string("name", name);
+            obj.string("type", ty);
+            // Null-not-omitted for absent config, so a host gets a STABLE schema across sites.
+            match widget {
+                Some(w) => obj.string("widget", w),
+                None => obj.raw("widget", "null"),
+            }
+            match &range {
+                Some((lo, hi)) => {
+                    let mut arr = json::Array::new();
+                    arr.string(lo);
+                    arr.string(hi);
+                    obj.raw("range", &arr.finish());
+                }
+                None => obj.raw("range", "null"),
+            }
+            match &options {
+                Some(o) => obj.string("options", o),
+                None => obj.raw("options", "null"),
+            }
+            match &default {
+                Some(d) => obj.string("default", d),
+                None => obj.raw("default", "null"),
+            }
+            println!("{}", obj.finish());
+        } else {
+            let loc = match line_col {
+                Some((l, c)) => format!("{}:{l}:{c}", args.file),
+                None => args.file.clone(),
+            };
+            // The bracketed config lists only PRESENT fields (a compact human summary).
+            let mut cfg = Vec::new();
+            if let Some(w) = widget {
+                cfg.push(format!("widget={w}"));
+            }
+            if let Some((lo, hi)) = &range {
+                cfg.push(format!("range=[{lo},{hi}]"));
+            }
+            if let Some(o) = &options {
+                cfg.push(format!("options={o}"));
+            }
+            if let Some(d) = &default {
+                cfg.push(format!("default={d}"));
+            }
+            let cfg = if cfg.is_empty() {
+                String::new()
+            } else {
+                format!(" [{}]", cfg.join(" "))
+            };
+            println!("{loc}: {name} : {ty}{cfg}");
+        }
+    }
+    ExitCode::SUCCESS
+}
+
 /// `cdz instantiations NAME FILE` — the DISPOSITION of definition NAME plus, if it is specialized, every
 /// concrete monomorphization. Drives `Query::Instantiations`, which forces monomorphization over the whole
 /// program then reads the disposition + instantiation records. Prints a disposition line
@@ -4945,6 +5103,59 @@ fn report_errors(out: &rcdzc::CompileOutput) {
                 Some(code) => eprintln!("{PROG}: error [{code}]: {}", d.message),
                 None => eprintln!("{PROG}: error: {}", d.message),
             }
+        }
+    }
+}
+
+/// Report a compile output's error diagnostics to stderr WITH a source location — the located counterpart
+/// of [`report_errors`], for a caller that HOLDS the program's files (source + span table). When a
+/// diagnostic carries a source anchor (`d.node`), map it to `file:line:col` (demuxing a package node to its
+/// file via the `link-map`, like the check path) and print `file:line:col: error [CODE]: message` — the
+/// SAME located shape `cdz check` uses. This closes the gap where the emit path (`cdz test`, `cdz build`)
+/// declines with a well-anchored diagnostic (e.g. an invalid-kebab `@test`/export name, `node = Some`) yet
+/// the reporter dropped the anchor and printed only `cdz: error [CODE]: …`. A diagnostic with no anchor (or
+/// an unmappable node) falls back to the bare `cdz: error …` line, so it is never worse than `report_errors`.
+fn report_errors_located(out: &rcdzc::CompileOutput, files: &[closure::LoadedFile]) {
+    // Per-file line index (binary-searched line:col), parallel to `files` — linear even with many faults.
+    let indices: Vec<_> = files
+        .iter()
+        .map(|f| cadenza_syntax::query::driver::LineIndex::new(&f.source))
+        .collect();
+    // Demux a GLOBAL node id to `(file index, that file's LOCAL id)`. A single file (no link-map) is the
+    // identity `(0, id)`; a package finds the file whose `[base, base+count)` range holds the id. `None`
+    // for a node in no file (a synthesized/prelude node).
+    let link_map = out
+        .artifact(rcdzc::link::KIND_LINK_MAP)
+        .map(rcdzc::link::decode_link_map)
+        .unwrap_or_default();
+    let file_of_node = |n: u32| -> Option<(usize, u32)> {
+        if link_map.is_empty() {
+            return files.first().map(|_| (0usize, n));
+        }
+        let fs = link_map
+            .iter()
+            .find(|fs| n >= fs.struct_base && n < fs.struct_base + fs.struct_count)?;
+        let fi = files.iter().position(|f| f.name == fs.path)?;
+        Some((fi, n - fs.struct_base))
+    };
+    // A node id → its `file:line:col` label, or `None` if unanchored/unmappable (then the bare form prints).
+    let loc_label = |node: Option<u32>| -> Option<String> {
+        let (fi, local) = file_of_node(node?)?;
+        let span = files[fi].spans.get(cadenza_syntax::StructId(local))?;
+        let (l, c) = indices[fi].line_col(&files[fi].source, span.start);
+        Some(format!("{}:{l}:{c}", files[fi].path))
+    };
+    for d in &out.diagnostics {
+        if d.severity != rcdzc::Severity::Error {
+            continue;
+        }
+        let code = match &d.code {
+            Some(code) => format!(" [{code}]"),
+            None => String::new(),
+        };
+        match loc_label(d.node) {
+            Some(loc) => eprintln!("{loc}: error{code}: {}", d.message),
+            None => eprintln!("{PROG}: error{code}: {}", d.message),
         }
     }
 }

@@ -11758,7 +11758,7 @@ fn emit_branch(
 /// NOTHING (returns `base`) — conservative, so no guard is ever wrongly elided. UNSIGNED comparisons and
 /// `Eq`/`Ne` are skipped (no sound one-sided interval). The refinement is a narrowing the branch
 /// GUARANTEES, so a guard the narrowed range proves dead is safe to drop.
-fn refined_frame_for_branch(
+pub(crate) fn refined_frame_for_branch(
     db: &mut Db,
     cond: StructId,
     then_branch: bool,
@@ -11828,7 +11828,7 @@ fn refined_const_value(db: &mut Db, branch: StructId) -> Option<Core> {
 /// `(op var C)` / `(op C var)` (flipped) → in the `then` branch `var op C` holds, in the `else` its
 /// negation; the resulting `[lo, hi]` bound is intersected with any existing refinement for `var`. A
 /// non-comparison, an unsigned variable, or `Eq`/`Ne` contributes nothing (returns `base`).
-fn refine_from_comparison(
+pub(crate) fn refine_from_comparison(
     db: &mut Db,
     op: Prim,
     lhs: StructId,
