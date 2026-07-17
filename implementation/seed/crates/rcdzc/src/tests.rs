@@ -60996,6 +60996,35 @@ mod sidecar_driven {
     }
 
     #[test]
+    fn highlight_colours_char_bytes_and_symbol_literals_by_their_constant_kind() {
+        // The literal classifier colours each constant leaf by its RESOLVED kind, not its spelling. The
+        // char (`#\a`), byte-string (`b"…"`), and symbol (`#"…"`) literal forms are distinct kinds that
+        // the by-kind literal path emits — thinly covered before this pin (the earlier literals test only
+        // exercised bool + number), so a regression collapsing one into `string`/`symbol`/`unbound` would
+        // go unnoticed. Assert each emits its OWN wire spelling. (These are non-NAME leaves, so the
+        // by-name helper can't find them — read the raw artifact, like the bool/number test.)
+        let each = |src: &str, kind: &str| {
+            let out = compile(&inputs(src, &[Request::Query(Query::Highlight)]), &[]);
+            let text = artifact_text(&out, KIND_HIGHLIGHT).expect("a highlight artifact");
+            assert!(
+                text.lines().any(|l| l.ends_with(&format!("\t{kind}"))),
+                "expected a `{kind}` token in:\n{text}"
+            );
+            // A well-formed literal program never paints error-red.
+            assert!(
+                !text.lines().any(|l| l.ends_with("\tunbound")),
+                "a clean literal program has no unbound token:\n{text}"
+            );
+        };
+        // A CHAR literal `#\a`.
+        each("(module m (def (main) #\\a) (export main))", "char");
+        // A BYTE-STRING literal `b\"hi\"`.
+        each("(module m (def (main) b\"hi\") (export main))", "bytes");
+        // A SYMBOL literal `#\"sym\"` — the literal form (distinct from a name taken as data).
+        each("(module m (def (main) #\"sym\") (export main))", "symbol");
+    }
+
+    #[test]
     fn highlight_does_not_flag_binder_declarations_as_unbound() {
         // A binding DECLARATION (a module name, a variant-pattern PAYLOAD binder) is not a reference — it
         // must NOT read as `unbound` on a clean program. Regression guard: a whole-program leaf walk that
