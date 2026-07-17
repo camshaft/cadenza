@@ -76,6 +76,8 @@ def eqop() = Tok.TOp(61)
 def ifkw() = Tok.TIf
 def thenkw() = Tok.TThen
 def elsekw() = Tok.TElse
+def truelit() = Tok.TBoolTok(1)
+def falselit() = Tok.TBoolTok(0)
 
 /// `let x = 2 in x * 3 + 1` as tokens — THE MILESTONE program.
 def milestone-tokens() = [letkw(), var(1), eq(), n(2), inkw(), var(1), times(), n(3), plus(), n(1)]
@@ -183,5 +185,25 @@ def ev-if-untaken-branch-not-evaluated() =
 def ev-nested-else-if() =
   // if 5 < 1 then 100 else if 5 < 10 then 200 else 300  →  200 (else-if chain, middle branch).
   (match run([ifkw(), n(5), lt(), n(1), thenkw(), n(100), elsekw(), ifkw(), n(5), lt(), n(10), thenkw(), n(200), elsekw(), n(300)]) with | Option.Some(v) => (if v == 200 then unit else trap("else-if chain → 200")) | Option.None(_) => trap("runs"))
+
+@test
+def ev-bool-literal-true() =
+  // true  →  1 (Bool literal encodes as 1).
+  (match run([truelit()]) with | Option.Some(v) => (if v == 1 then unit else trap("true = 1")) | Option.None(_) => trap("bool literal runs"))
+
+@test
+def ev-if-true-literal-cond() =
+  // if true then 42 else 0  →  42 (a bool literal directly as the condition).
+  (match run([ifkw(), truelit(), thenkw(), n(42), elsekw(), n(0)]) with | Option.Some(v) => (if v == 42 then unit else trap("if true → 42")) | Option.None(_) => trap("runs"))
+
+@test
+def ev-if-false-literal-cond() =
+  // if false then 42 else 7  →  7.
+  (match run([ifkw(), falselit(), thenkw(), n(42), elsekw(), n(7)]) with | Option.Some(v) => (if v == 7 then unit else trap("if false → 7")) | Option.None(_) => trap("runs"))
+
+@test
+def ev-let-bound-bool-literal() =
+  // let b = true in if b then 5 else 6  →  5 (a bool literal flows through a let binding into a cond).
+  (match run([letkw(), var(1), eq(), truelit(), inkw(), ifkw(), var(1), thenkw(), n(5), elsekw(), n(6)]) with | Option.Some(v) => (if v == 5 then unit else trap("let b = true → 5")) | Option.None(_) => trap("runs"))
 
 export { eval-core, eval-bin, eval-tree, run, milestone-tokens, run-milestone }

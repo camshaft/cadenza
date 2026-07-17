@@ -31,6 +31,7 @@ type Typed =
 def infer-node(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64, Typed)) =
   match node-at(tree, id) with
     | Option.Some(Node.NLit(_)) => Map.insert(tcol, id, Typed.TInt)
+    | Option.Some(Node.NBoolLit(_)) => Map.insert(tcol, id, Typed.TBool)
     | Option.Some(Node.NVar(_)) =>
         // a var's type is the type of the VALUE its binder binds (not hardcoded Int) — so a var bound to a
         // Bool is Bool. resolve gives the binder NLet's node-id; its value was typed before the body (the
@@ -166,6 +167,8 @@ def eqop() = Tok.TOp(61)
 def ifkw() = Tok.TIf
 def thenkw() = Tok.TThen
 def elsekw() = Tok.TElse
+def truelit() = Tok.TBoolTok(1)
+def falselit() = Tok.TBoolTok(0)
 
 /// Parse a token list to `(root, tree)`.
 def parse-of(ts: List(Tok)) = parse-tokens(ts)
@@ -276,5 +279,23 @@ def id-if-bool-branches-is-bool() =
   // "if 1 < 2 then 3 < 4 else 5 < 6" → cond TBool, both branches TBool → the if is TBool.
   (match parse-of([ifkw(), n(1), lt(), n(2), thenkw(), n(3), lt(), n(4), elsekw(), n(5), lt(), n(6)]) with | (root, tree) =>
     (if is-bool-at(tree, root, root) then unit else trap("if with Bool branches is TBool")))
+
+@test
+def id-bool-literal-is-bool() =
+  // "true" → TBool.
+  (match parse-of([truelit()]) with | (root, tree) =>
+    (if is-bool-at(tree, root, root) then unit else trap("true is TBool")))
+
+@test
+def id-bool-literal-as-if-cond-ok() =
+  // "if true then 1 else 2" → cond is TBool (bool literal) → well-typed TInt.
+  (match parse-of([ifkw(), truelit(), thenkw(), n(1), elsekw(), n(2)]) with | (root, tree) =>
+    (if is-int-at(tree, root, root) then unit else trap("if true then Int else Int is TInt")))
+
+@test
+def id-bool-in-arith-is-err() =
+  // "true + 1" → a Bool operand to arithmetic → TErr (bin-type requires Int operands).
+  (match parse-of([truelit(), plus(), n(1)]) with | (root, tree) =>
+    (if type-err-at(tree, root, root) then unit else trap("true + 1 is TErr (no bool arithmetic)")))
 
 export { Typed.*, infer-tree, type-at, well-typed, type-err-at, typed-count, is-bool-at, is-int-at }
