@@ -21,7 +21,8 @@ export function SyntaxToggle() {
             aria-checked={active}
             onClick={() => setSurface(s.id)}
             className={
-              "rounded-md px-2 py-1 text-xs font-medium transition sm:px-3 " +
+              // Mobile touch target: a 44px-tall segment below `sm` (the touch guideline), compact at sm+.
+              "flex min-h-11 items-center rounded-md px-2 text-xs font-medium transition sm:min-h-0 sm:px-3 sm:py-1 " +
               (active
                 ? "bg-cadenza-600 text-white shadow"
                 : "text-slate-400 hover:text-slate-200")

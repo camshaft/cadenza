@@ -9,6 +9,7 @@ import * as Comlink from "comlink";
 import init, {
   compile as wasmCompile,
   compile_tests as wasmCompileTests,
+  param_test_signatures as wasmParamTestSignatures,
   diagnostics as wasmDiagnostics,
   type_at as wasmTypeAt,
   define_at as wasmDefineAt,
@@ -82,6 +83,19 @@ export interface TestCompileOutcome {
   diagnostics: Diag[];
   nullaryTestNames: string[];
   paramTestNames: string[];
+}
+
+/**
+ * One parameterized `@test`'s signature, for the property-test driver. `compound: false` = a scalar-param
+ * test whose params are on the export (the driver generates a JS arg per `paramTypes` entry and calls the
+ * export); `compound: true` = a synthesized `-gen` wrapper (a compound param hoisted to an internal
+ * `Test.gen`) the driver routes to its deferred phase-2 path. `paramTypes` is a stable lowercase enum per
+ * param (`int8`..`uint64`|`bool`|`float32`|`float64`|`other`); empty for a `-gen` wrapper.
+ */
+export interface ParamTestSig {
+  name: string;
+  paramTypes: string[];
+  compound: boolean;
 }
 
 /** The inferred type at a source offset, for hover. */
@@ -227,6 +241,21 @@ const api = {
       nullaryTestNames: r.nullary_test_names,
       paramTestNames: r.param_test_names,
     };
+  },
+
+  /// The signatures of every PARAMETERIZED `@test` in `text` (`param_test_signatures`) — the metadata the
+  /// property-test driver needs to generate inputs: each param test's name, its scalar param types (for the
+  /// arg-driver), and whether it's a `-gen` wrapper (`compound` → deferred phase-2). A parse error / no
+  /// `@test` yields an empty list (this is metadata, not a compile — an unparseable buffer just has none).
+  async paramTestSignatures(text: string, from: Surface): Promise<ParamTestSig[]> {
+    await ensureReady();
+    let sigs: ReturnType<typeof wasmParamTestSignatures>;
+    try {
+      sigs = wasmParamTestSignatures(text, from);
+    } catch {
+      return [];
+    }
+    return sigs.map((s) => ({ name: s.name, paramTypes: s.param_types, compound: s.compound }));
   },
 
   /// Type-check `text` and return all diagnostics with source spans — no component built, no export

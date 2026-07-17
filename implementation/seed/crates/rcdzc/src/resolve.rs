@@ -395,6 +395,25 @@ fn compute(db: &Db, id: StructId) -> Resolved {
                 Some(".") => resolve_member(db, id),
                 Some("fn") => resolve_lambda(db, id),
                 Some(":") => resolve_annot(db, id),
+                // A `(@ …)` annotation node that SURVIVED `strip_annotations` and reached resolve. A
+                // well-formed def-wrapping annotation `(@ NAME (def …))` is unwrapped IN PLACE by
+                // `strip_annotations` wherever it appears; a TOP-LEVEL survivor (wraps no def) is already
+                // rejected by `collect_faults`' `malformed_annotation_forms` scan. What reaches HERE is a
+                // NESTED `(@ …)` in expression position — e.g. `(do (: (@ (param …) width) Int64) …)` — which
+                // that top-level-only scan misses. Left to fall through, `@` resolves as an "unbound name `@`"
+                // and EACH internal token (`param`/`tag`, `widget`/`x`, …) cascades its OWN spurious
+                // unbound-name error — a baffling pile for a user who wrote an annotation, not name references
+                // (v-metaprogramming diagnostic-quality report, 2026-07-17). Report ONE clean CDZ0201 naming
+                // the misplacement, and do NOT resolve the internals (return a Poison so the node is inert).
+                Some("@") => Resolved::Poison(
+                    Reject::coded(
+                        Code::Malformed,
+                        "an `(@ …)` annotation cannot appear here — an annotation attaches to a top-level \
+                         definition, as `(@ <name> (def …))` (e.g. `(@ test (def (t) 1))`); it is not an \
+                         expression and cannot be nested in a `do`-block or other value position",
+                    )
+                    .at(id),
+                ),
                 // `(typeval PAYLOAD)` — a built type-value node the evaluator produced; decode the
                 // payload back to the `Ty` it carries. This is the dual of `eval::encode_typeval`.
                 Some("typeval") => match db.ast.as_form(id, "typeval").and_then(|t| t.first()) {
@@ -4670,6 +4689,23 @@ fn decode_ty(db: &Db, node: StructId) -> Option<crate::ty::Ty> {
                     Some(Ty::Fn(Box::new(p), Box::new(r)))
                 }
             }
+        }
+        // A TYPE VARIABLE — `(Var N)`, the dual of `eval::encode_ty`'s `Var` arm. Reaches here when a
+        // type-valued parameter is encoded inside a compound type-value that round-trips (e.g. the arrow
+        // `(-> t Int64)` → `Ty::Fn(Var(t), Int64)`); without this arm the `Var` decoded to `None` and the
+        // whole enclosing type failed to decode, collapsing the parameter to `Unit`.
+        "Var" => {
+            let tail = db.ast.as_form(node, "Var")?;
+            let n = match db.ast.get(*tail.first()?) {
+                Struct::Atom(l) => match db.ast.leaf(*l) {
+                    Leaf::Int { value, .. } => {
+                        value.to_i64().and_then(|n| u32::try_from(n).ok())?
+                    }
+                    _ => return None,
+                },
+                _ => return None,
+            };
+            Some(Ty::Var(n))
         }
         "Tuple" => {
             let tail = db.ast.as_form(node, "Tuple")?;

@@ -308,4 +308,60 @@ mod tests {
         assert_eq!(remapped.len(), canon.structure.len());
         assert_eq!(remapped.file(), parsed.spans.file());
     }
+
+    #[test]
+    fn remap_invariants_hold_over_generated_tables_and_id_maps() {
+        // `SpanTable::remap` is the defensive re-key the ML-surface span table relies on
+        // (`ml-parser-node-order`): given an OLD→NEW id map + a new length, it moves each mapped span to
+        // its new slot, drops unmapped/out-of-range ones, sizes to new_len, and preserves the file id.
+        // The hand tests pin specific cases; this sweeps random tables × random id_maps (with `None`s,
+        // out-of-range targets, and new_len smaller/larger than the table) and asserts the full contract
+        // against an INDEPENDENT reference — so a re-key/drop/sizing bug on some shape is caught.
+        let mut rr = Rng(0x51a7_ab1e_c0de_5eed);
+        for _ in 0..4000 {
+            let file = FileId(rr.next() as u32);
+            let n_old = rr.below(8); // 0..=7 old nodes
+            let mut t = SpanTable::new(file);
+            for _ in 0..n_old {
+                let a = rr.below(30);
+                let b = rr.below(30);
+                t.push(Span::new(a.min(b), a.max(b)));
+            }
+            // new_len straddles n_old (sometimes smaller → drops, sometimes larger → default slots).
+            let new_len = rr.below(10);
+            // A random OLD→NEW map: each old id → None, or Some(new id) that may be in- or out-of-range.
+            let id_map: Vec<Option<StructId>> = (0..n_old)
+                .map(|_| {
+                    if rr.next().is_multiple_of(4) {
+                        None
+                    } else {
+                        Some(StructId((rr.below(12)) as u32)) // may exceed new_len (out-of-range → dropped)
+                    }
+                })
+                .collect();
+            let r = t.remap(&id_map, new_len);
+            // (a) sized to new_len, file preserved.
+            assert_eq!(r.len(), new_len, "remap sizes to new_len");
+            assert_eq!(r.file(), file, "remap preserves the file id");
+            // (b) INDEPENDENT reference: build the expected table directly.
+            let mut expected = vec![Span::new(0, 0); new_len];
+            for (old, &new) in id_map.iter().enumerate() {
+                if let Some(new) = new
+                    && (new.0 as usize) < new_len
+                {
+                    // The LAST old id mapping to a given new slot wins (matches remap's forward loop).
+                    expected[new.0 as usize] = t.get(StructId(old as u32)).unwrap();
+                }
+            }
+            for (i, &want) in expected.iter().enumerate() {
+                assert_eq!(
+                    r.get(StructId(i as u32)),
+                    Some(want),
+                    "remap slot {i} mismatch (n_old={n_old}, new_len={new_len}, id_map={id_map:?})"
+                );
+            }
+            // (c) past the end is None.
+            assert_eq!(r.get(StructId(new_len as u32)), None, "past-end is None");
+        }
+    }
 }

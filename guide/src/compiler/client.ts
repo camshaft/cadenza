@@ -2,7 +2,7 @@
 /// so any component can `await compiler.compile(...)` as if it were a local async function.
 
 import * as Comlink from "comlink";
-import type { CompilerApi, CompileOutcome, TestCompileOutcome, Diag, DiagFix, Surface, TypeAtInfo, DefineAtInfo, SemanticTok, DispositionInfo } from "./worker.ts";
+import type { CompilerApi, CompileOutcome, TestCompileOutcome, ParamTestSig, Diag, DiagFix, Surface, TypeAtInfo, DefineAtInfo, SemanticTok, DispositionInfo } from "./worker.ts";
 
 let proxy: Comlink.Remote<CompilerApi> | null = null;
 
@@ -24,6 +24,12 @@ export function compile(text: string, from: Surface): Promise<CompileOutcome> {
 /// + the discovered test names (nullary vs parameterized). The run worker invokes the nullary exports.
 export function compileTests(text: string, from: Surface): Promise<TestCompileOutcome> {
   return client().compileTests(text, from);
+}
+
+/// The signatures of every PARAMETERIZED `@test` in `text` — for the property-test driver. Each carries the
+/// test name, its scalar param types (arg-driver), and `compound` (a `-gen` wrapper → deferred phase-2).
+export function paramTestSignatures(text: string, from: Surface): Promise<ParamTestSig[]> {
+  return client().paramTestSignatures(text, from);
 }
 
 /// Type-check without building a component (as-you-type diagnostics). No export required upstream.
@@ -116,4 +122,4 @@ export function exportTypes(text: string, from: Surface): Promise<string> {
   return client().exportTypes(text, from);
 }
 
-export type { CompileOutcome, TestCompileOutcome, Surface, Diag, DiagFix, TypeAtInfo, DefineAtInfo, SemanticTok, DispositionInfo };
+export type { CompileOutcome, TestCompileOutcome, ParamTestSig, Surface, Diag, DiagFix, TypeAtInfo, DefineAtInfo, SemanticTok, DispositionInfo };

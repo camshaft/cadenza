@@ -36,7 +36,7 @@ export function Layout() {
               <button
                 onClick={() => setNavOpen(false)}
                 aria-label="Close navigation"
-                className="rounded p-1 text-slate-400 hover:bg-slate-800/60 hover:text-slate-200"
+                className="flex min-h-11 min-w-11 items-center justify-center rounded text-slate-400 hover:bg-slate-800/60 hover:text-slate-200"
               >
                 ✕
               </button>
@@ -89,8 +89,9 @@ function SidebarNav() {
                 <li key={c.slug}>
                   <NavLink
                     to={`/${c.slug}`}
+                    // Mobile drawer: 44px-tall rows (touch guideline); dense (py-1.5) desktop sidebar at md+.
                     className={({ isActive }) =>
-                      "flex items-center gap-2 rounded-md px-2.5 py-1.5 text-sm transition " +
+                      "flex min-h-11 items-center gap-2 rounded-md px-2.5 py-1.5 text-sm transition md:min-h-0 " +
                       (isActive
                         ? "bg-cadenza-600/15 font-medium text-cadenza-300"
                         : "text-slate-400 hover:bg-slate-800/60 hover:text-slate-200")
@@ -138,7 +139,7 @@ function ProgressSummary() {
         </span>
         <button
           onClick={progress.clear}
-          className="text-slate-500 transition hover:text-slate-300"
+          className="flex min-h-11 items-center px-1 text-slate-500 transition hover:text-slate-300 md:min-h-0 md:px-0"
           title="Reset your progress"
         >
           reset
@@ -160,13 +161,14 @@ function Header({ onOpenNav }: { onOpenNav: () => void }) {
           <button
             onClick={onOpenNav}
             aria-label="Open navigation"
-            className="-ml-1 rounded p-1.5 text-slate-300 transition hover:bg-slate-800/60 md:hidden"
+            className="-ml-1 flex min-h-11 min-w-11 items-center justify-center rounded text-slate-300 transition hover:bg-slate-800/60 md:hidden"
           >
             <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true">
               <path d="M3 5h14M3 10h14M3 15h14" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
             </svg>
           </button>
-          <NavLink to="/" className="flex items-center gap-2">
+          {/* Mobile touch target: the brand link is a 44px-tall tap area below `sm`, compact at sm+. */}
+          <NavLink to="/" className="flex min-h-11 items-center gap-2 sm:min-h-0">
             <span className="text-lg font-bold tracking-tight text-slate-100">Cadenza</span>
             <span className="hidden text-sm text-slate-500 sm:inline">the interactive guide</span>
           </NavLink>

@@ -135,6 +135,13 @@ enum Cmd {
     /// RESOLVED glob-expanded file sets (`entry_file`, `module_files`, `test_files`), so a consumer sees
     /// both intent and concrete files (and the project graph) without re-implementing glob resolution.
     Metadata(MetadataArgs),
+    /// Print the project's DEPENDENCY TREE (the `cargo tree` analogue): the root project and, indented
+    /// beneath it, each `def deps` path-dependency — recursively, so a dep's own deps appear nested. Each
+    /// node shows `name (path)`. A dependency that cannot be resolved (no `Project.cdz` at its path) is
+    /// marked `*unresolved*`, and a dependency already shown higher in the tree is marked `(*)` and not
+    /// re-expanded (so a dependency cycle terminates). Resolves the same `Project.cdz` as `cdz build`/`cdz
+    /// metadata` (searching upward when given no argument).
+    Tree(TreeArgs),
 
     // ── project clean ─────────────────────────────────────────────────────────────────────────────
     /// Remove the build artifacts a `cdz build`/`cdz run` produces (the `cargo clean` analogue): the
@@ -292,6 +299,7 @@ fn main() -> ExitCode {
         Cmd::Calc(a) => cdz_calc::cli::run(&a, PROG),
         Cmd::Build(a) => run_build(&a),
         Cmd::Metadata(a) => run_metadata(&a),
+        Cmd::Tree(a) => run_tree(&a),
         Cmd::Clean(a) => run_clean(&a),
         Cmd::New(a) => run_new(&a),
         Cmd::Init(a) => run_init(&a),
@@ -1143,6 +1151,13 @@ struct MetadataArgs {
     dir: Option<String>,
 }
 
+#[derive(clap::Args)]
+struct TreeArgs {
+    /// The project whose dependency tree to print: a `Project.cdz` manifest, or a DIRECTORY holding one.
+    /// OMITTED → search up from the current directory for the nearest `Project.cdz` (like `cdz build`).
+    dir: Option<String>,
+}
+
 /// `cdz metadata [DIR]` — print the resolved project manifest as JSON (the `cargo metadata` analogue): a
 /// machine-readable description of what the project IS, for editors, build tools, and scripts. Resolves
 /// the same `Project.cdz` that `cdz build`/`cdz test` do, then emits one JSON object: the manifest's raw
@@ -1305,6 +1320,75 @@ fn run_metadata(args: &MetadataArgs) -> ExitCode {
     obj.raw("artifacts", &str_array(&artifacts));
     println!("{}", obj.finish());
     ExitCode::SUCCESS
+}
+
+/// `cdz tree [DIR]` — print the project's DEPENDENCY TREE (the `cargo tree` analogue). Resolves the root
+/// `Project.cdz` (same resolution as `cdz build`/`cdz metadata`), prints its `name (dir)`, then recurses
+/// into each `def deps` PATH dependency — indented beneath its parent — so the whole transitive graph is
+/// legible. A dep dir is resolved RELATIVE to its parent's manifest dir (same as `build_path_deps`). Two
+/// termination guards keep it total on any graph: a dep whose `Project.cdz` doesn't resolve is printed
+/// `*unresolved*` (not fatal — a partial tree is more useful than an abort), and a dep dir already shown
+/// higher in the walk is printed with a `(*)` marker and NOT re-expanded (so a dependency CYCLE — or a
+/// diamond — terminates instead of looping forever).
+fn run_tree(args: &TreeArgs) -> ExitCode {
+    let (dir, _mpath, m) = match resolve_project_manifest(args.dir.as_deref(), "cdz tree") {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
+    // The root line: `name (dir)`.
+    let root_name = m.name.clone().unwrap_or_else(|| "<unnamed>".to_string());
+    println!("{root_name} ({})", dir.display());
+    // Canonicalize a dir for the visited-set key (so `../a` and an absolute path to the same dir collide),
+    // falling back to the raw path when canonicalization fails (a not-yet-existing dep dir).
+    let canon = |p: &std::path::Path| -> std::path::PathBuf {
+        std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
+    };
+    let mut visited: std::collections::HashSet<std::path::PathBuf> =
+        std::collections::HashSet::new();
+    visited.insert(canon(&dir));
+    print_dep_subtree(&dir, &m, "", &mut visited);
+    ExitCode::SUCCESS
+}
+
+/// Recursively print `manifest_dir`'s `def deps` beneath it, each with a tree connector under `prefix`.
+/// `visited` holds the canonical dirs already shown, so a cycle/diamond is marked `(*)` and not re-walked.
+fn print_dep_subtree(
+    manifest_dir: &std::path::Path,
+    m: &Manifest,
+    prefix: &str,
+    visited: &mut std::collections::HashSet<std::path::PathBuf>,
+) {
+    let canon = |p: &std::path::Path| -> std::path::PathBuf {
+        std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
+    };
+    let n = m.deps.len();
+    for (i, dep) in m.deps.iter().enumerate() {
+        #[allow(clippy::infallible_destructuring_match)]
+        let dep_path = match dep {
+            DepSource::Path(p) => p,
+        };
+        let last = i + 1 == n;
+        let connector = if last { "└── " } else { "├── " };
+        // The child prefix continues the vertical bars for non-last siblings.
+        let child_prefix = format!("{prefix}{}", if last { "    " } else { "│   " });
+        let dep_dir = manifest_dir.join(dep_path);
+        match load_manifest(&dep_dir) {
+            Ok(Some((_dpath, dm))) => {
+                let dep_name = dm.name.clone().unwrap_or_else(|| "<unnamed>".to_string());
+                let key = canon(&dep_dir);
+                if visited.contains(&key) {
+                    // Already shown higher up (a diamond or a cycle) — mark and don't re-expand.
+                    println!("{prefix}{connector}{dep_name} ({dep_path}) (*)");
+                } else {
+                    visited.insert(key);
+                    println!("{prefix}{connector}{dep_name} ({dep_path})");
+                    print_dep_subtree(&dep_dir, &dm, &child_prefix, visited);
+                }
+            }
+            // No manifest at the dep path, or it didn't parse — a partial tree beats an abort.
+            _ => println!("{prefix}{connector}{dep_path} *unresolved*"),
+        }
+    }
 }
 
 // ── project clean ────────────────────────────────────────────────────────────────────────────────

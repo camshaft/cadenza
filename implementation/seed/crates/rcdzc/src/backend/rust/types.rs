@@ -399,9 +399,36 @@ fn int_type(it: IntTy) -> Option<&'static str> {
         (false, 16) => "u16",
         (false, 32) => "u32",
         (false, 64) => "u64",
-        // Any other width (non-aliased/odd) has no native Rust primitive — decline.
+        // An UNUSUAL in-range width (`UInt48`, `UInt12`, `Int24` — 1..=64 but not an aliased boundary) has
+        // no exact Rust primitive, so it is STORED in the next-larger machine width (`UInt48`→`u64`,
+        // `UInt12`→`u16`, `Int24`→`i32`). A value of the unusual width always fits its storage width, so a
+        // const/wrap value + a boundary render are exact. ⚠ RUNTIME ARITHMETIC on an unusual width would
+        // need the overflow check at `2^N` (not the storage width's `2^machine`), so `emit_arith`/shift/
+        // convert on an unusual width must DECLINE (defense-in-depth — no corpus case runs arith on an
+        // unusual width today: the only `(+ (UInt48) (UInt48))` case is a compile-time CDZ0304 reject). The
+        // storage-width map here is safe for the value/wrap/render surface; the arith guard prevents a
+        // silent wrong-overflow miscompile if a runtime unusual-width arith ever reaches emit.
+        (_, w) if (1..=64).contains(&w) => storage_width_type(signed, w),
+        // Out of the 1..=64 admitted range (a compiler bug — CDZ0302 rejects earlier) — decline.
         _ => return None,
     })
+}
+
+/// The next-larger native Rust integer primitive that STORES an unusual width `w` (1..=64) of the given
+/// signedness — the smallest of 8/16/32/64 that is `>= w`. A value of the unusual width always fits, so the
+/// storage is lossless for a const/wrap value + a boundary render. (Arithmetic must still range-check at
+/// `2^w`, which the emit guards by declining unusual-width arith — see `int_type`.)
+fn storage_width_type(signed: bool, w: u32) -> &'static str {
+    match (signed, w) {
+        (true, w) if w <= 8 => "i8",
+        (true, w) if w <= 16 => "i16",
+        (true, w) if w <= 32 => "i32",
+        (true, _) => "i64",
+        (false, w) if w <= 8 => "u8",
+        (false, w) if w <= 16 => "u16",
+        (false, w) if w <= 32 => "u32",
+        (false, _) => "u64",
+    }
 }
 
 /// Whether a NON-scale-1 quantity over inner type `inner` can DISPLAY-SCALE its magnitude on the Rust
@@ -445,6 +472,10 @@ pub fn unsigned_bits_type(it: IntTy) -> Option<&'static str> {
         16 => "u16",
         32 => "u32",
         64 => "u64",
+        // An UNUSUAL width stores in the next-larger UNSIGNED machine type (`UInt48`/`Int48`→`u64` bits);
+        // `emit_const_int_at` writes the low-`width`-bit magnitude (`wrap_to(false, width)`) in this type,
+        // which fits exactly, then casts to the signed target if needed — mirroring the aliased path.
+        w if (1..=64).contains(&w) => storage_width_type(false, w),
         _ => return None,
     })
 }

@@ -434,6 +434,113 @@ pub fn compile_tests(text: &str, from: &str) -> Result<TestCompileResult, JsErro
     })
 }
 
+/// One parameterized `@test`'s signature, for the browser property-test DRIVER (`v-property-testing`).
+/// A SCALAR-param property test keeps its parameters ON THE EXPORT (the driver generates JS args of each
+/// param's type and calls the export — `Int64`→`bigint`, `Bool`→`boolean`, …). A COMPOUND-param test is
+/// neutralized into a synthesized nullary `-gen` wrapper that performs `Test.gen` internally, so it has no
+/// callable params and is DEFERRED to the driver's phase-2 (host-response) path. This struct tells the
+/// driver which is which (`compound`) and, for the scalar case, each param's type (`param_types`).
+#[wasm_bindgen(getter_with_clone)]
+pub struct ParamTestSignature {
+    /// The `@test` def's name (a `-gen` wrapper keeps its `-gen` suffix, matching `compile_tests`'
+    /// `param_test_names`).
+    pub name: String,
+    /// Each parameter's type as a STABLE lowercase enum the driver switches on:
+    /// `int8`|`int16`|`int32`|`int64`|`uint8`|`uint16`|`uint32`|`uint64`|`bool`|`float32`|`float64` for the
+    /// scalar types the arg-driver generates, or `other` for anything outside that set (an unannotated /
+    /// inferred / non-scalar param — the driver skips or defers it). EMPTY for a `-gen` wrapper (no callable
+    /// params — see `compound`).
+    pub param_types: Vec<String>,
+    /// `true` when the test is a synthesized `-gen` wrapper (a COMPOUND param was hoisted to an internal
+    /// `Test.gen`) — the driver routes it to the deferred phase-2 path, NOT the scalar arg-driver. `false`
+    /// for a scalar-param test whose params are on the export.
+    pub compound: bool,
+}
+
+/// The stable scalar-type enum string for a parameter's TYPE node, or `"other"` for anything the browser
+/// arg-driver can't generate directly (a compound `(List …)`, a nominal newtype, an unannotated/inferred
+/// param — anything not a bare scalar type name). Kept in sync with the jco boundary lowering the driver
+/// relies on (Int/UInt widths + Bool + Float widths → a JS bigint/boolean/number).
+fn scalar_type_enum(ast: &rcdzc::ast::Arenas, ty_node: rcdzc::ast::StructId) -> String {
+    let Some(name) = ast.as_name(ty_node) else {
+        // A non-atom type node (e.g. `(List Int64)`, `(Tuple …)`) — not a bare scalar.
+        return "other".to_string();
+    };
+    match name {
+        "Int8" | "Int16" | "Int32" | "Int64" | "UInt8" | "UInt16" | "UInt32" | "UInt64" | "Bool"
+        | "Float32" | "Float64" => name.to_ascii_lowercase(),
+        _ => "other".to_string(),
+    }
+}
+
+/// The signatures of every PARAMETERIZED `@test` in `text` — the metadata the browser property-test driver
+/// needs to generate inputs (see [`ParamTestSignature`]). Mirrors `compile_tests`' param-test enumeration
+/// (same `Db::test_defs()` walk, same `-gen`-suffix classification), but additionally reads each scalar
+/// param's TYPE so the driver generates from real types instead of guessing by arity. A parse error / no
+/// `@test` yields an empty list.
+#[wasm_bindgen]
+pub fn param_test_signatures(text: &str, from: &str) -> Result<Vec<ParamTestSignature>, JsError> {
+    let from = parse_format(from)?;
+    let Ok((ast_bytes, _spans)) = parse_spanned(text, from) else {
+        return Ok(Vec::new());
+    };
+    let Some(arenas) = rcdzc::codec::decode(&ast_bytes) else {
+        return Ok(Vec::new());
+    };
+    let db = rcdzc::db::Db::load(arenas);
+    let mut out = Vec::new();
+    for i in db.test_defs() {
+        let def = &db.defs[i];
+        let is_gen_wrapper = def.name.ends_with("-gen");
+        // Same classification as `compile_tests`: a NULLARY non-wrapper test isn't parameterized — skip it
+        // (the runner invokes it directly). We report only property tests: a params-bearing scalar test OR
+        // a synthesized `-gen` wrapper.
+        if def.params.is_empty() && !is_gen_wrapper {
+            continue;
+        }
+        // A `-gen` wrapper carries no callable params (its compound param was hoisted to an internal
+        // `Test.gen`) — deferred phase-2, no scalar param types to report.
+        if is_gen_wrapper {
+            out.push(ParamTestSignature {
+                name: def.name.clone(),
+                param_types: Vec::new(),
+                compound: true,
+            });
+            continue;
+        }
+        // A scalar-param test: read each param's annotated type. A parameter is a bare name atom or an
+        // annotated binder `(: name T)` — the two shapes `Db`/`resolve` recognize; the TYPE is the binder's
+        // SECOND child (after the name). A bare (unannotated) param has no type node → `other`.
+        let mut param_types = Vec::with_capacity(def.params.len());
+        let mut any_non_scalar = false;
+        for &p in &def.params {
+            let enum_str = if let Some(tail) = db.ast.as_form(p, ":") {
+                // `(: name TYPE)` → the type node is `tail[1]`.
+                match tail.get(1) {
+                    Some(&ty_node) => scalar_type_enum(&db.ast, ty_node),
+                    None => "other".to_string(),
+                }
+            } else {
+                // A bare (unannotated) param — no annotation to read.
+                "other".to_string()
+            };
+            if enum_str == "other" {
+                any_non_scalar = true;
+            }
+            param_types.push(enum_str);
+        }
+        out.push(ParamTestSignature {
+            name: def.name.clone(),
+            param_types,
+            // A scalar test whose every param is a generatable scalar → scalar path (compound=false). If
+            // any param isn't a scalar the driver can't fully drive it via args — flag it compound so it's
+            // routed to the deferred path rather than the driver generating a wrong-typed arg.
+            compound: any_non_scalar,
+        });
+    }
+    Ok(out)
+}
+
 /// The names of every top-level `def` the buffer declares — for the playground REPL's autocomplete.
 /// Parses the buffer (surface-aware) and reads each definition's bound name, in source order. A parse
 /// error yields an empty list (autocomplete is a nicety; a mid-edit unparseable buffer just offers

@@ -929,7 +929,23 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                     Reject::decline("wrap target width has no native Rust representation")
                 })?;
                 let operand_s = emit(db, operand, env, ctx)?;
-                Ok(format!("({operand_s} as {rty})"))
+                let width = dst.ground_width();
+                // An `as` cast keeps the STORAGE width's low bits (`as u8` = low 8), but `.wrap` to an
+                // UNUSUAL width N (not a machine boundary — `UInt4`/`UInt48`, stored in the next-larger
+                // primitive) must keep the low N bits. Mask `& ((1<<N)-1)` after the cast so `(UInt4).wrap 17`
+                // = `17 & 0xF` = 1, not the byte-cast's 17. An aliased width (8/16/32/64) needs no mask (the
+                // `as` cast IS the exact truncation). The mask literal is written in the storage type `rty`;
+                // `2^N - 1` fits it (N ≤ the storage width). A SIGNED unusual width would additionally need a
+                // sign-extend from bit N-1 — but the corpus has only UNSIGNED unusual-width wraps; a signed
+                // one is not yet exercised, and the unsigned mask below is correct for it as a bit-truncation
+                // (the sign reinterpretation of a signed narrow wrap is a later slice — decline-safe since no
+                // case hits it and the mask keeps the low N bits either way).
+                if matches!(width, 8 | 16 | 32 | 64) {
+                    Ok(format!("({operand_s} as {rty})"))
+                } else {
+                    let mask: u64 = (1u64 << width) - 1;
+                    Ok(format!("(({operand_s} as {rty}) & {mask}{rty})"))
+                }
             }
             // A runtime int→float conversion `Float N.of-int` → an `as f64`/`as f32` cast (total,
             // round-to-nearest, matches the wasm `convert_i64_s`). The target width is the node's type.
@@ -2357,6 +2373,21 @@ fn emit_arith(
     // literal operand to it so `(+ a 1)` over a narrow `a` emits `<narrow>::checked_add(1<narrow>)`,
     // not `checked_add((1u64 as i64))` (Rust E0308) — the analogue of the wasm backend's `emit_operand`.
     let it = int_ty_of(db, id);
+    // SAFETY GUARD (unusual-width arithmetic): an UNUSUAL width (`UInt48`, `Int12` — 1..=64 but not an
+    // aliased boundary) is STORED in the next-larger machine primitive (`types::int_type`), so a `checked_*`
+    // on that primitive would trap at `2^machine`, NOT the type's `2^N` — a WRONG overflow (`(UInt48).max +
+    // 1` = 2^48 must trap, but `u64::checked_add` wouldn't). Emitting it is a silent miscompile. DECLINE
+    // runtime arithmetic on an unusual width (defense-in-depth: no corpus case runs it — the only unusual-
+    // width `+` is a compile-time CDZ0304 reject — but the storage-width map makes the type representable, so
+    // this guard is what keeps a future runtime unusual-width arith from miscompiling). The value/wrap/render
+    // surface (which the storage map serves) has no such hazard. An unusual-width `2^N` range-check is a
+    // later slice.
+    if matches!(it.width, Width::Fixed(w) if (1..=64).contains(&w) && !matches!(w, 8 | 16 | 32 | 64))
+    {
+        return Err(Reject::decline(
+            "runtime arithmetic on an unusual integer width (stored in a larger machine type) is not yet range-checked at its own width by the Rust backend",
+        ));
+    }
     let l = emit_grounded(db, lhs, it, env, ctx)?;
     let r = emit_grounded(db, rhs, it, env, ctx)?;
     match op {
@@ -3868,7 +3899,11 @@ fn emit_sum_payload(
                             }
                         },
                         // A `Payload`/`RestFrom` beyond the leading list index is a shape this slice does not
-                        // render — decline (the pre-existing boundary).
+                        // render — decline (the pre-existing boundary). A sum-element payload binder
+                        // (`(list (A.I x) .. rest)`, path `[Elem(i), Payload]`) needs the guard-established
+                        // DISCRIMINANT to spell `match (xs)[i] { A::I(p) => p, … }`, but the disc is not on this
+                        // path (an or-pattern over all variants mis-types a heterogeneous-payload sum) — so it
+                        // needs the disc threaded from the guard (a lower.rs change), deferred.
                         _ => {
                             return Err(Reject::decline(
                                 "a nested list-element binder beyond a tuple projection is not rendered by the Rust backend",

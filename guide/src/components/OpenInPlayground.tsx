@@ -17,7 +17,7 @@ export function OpenInPlayground({ getText, surface }: Props) {
     <button
       onClick={() => navigate(`/playground#${encodeShareHash({ s: surface(), src: getText() })}`)}
       title="Open this snippet in the full playground"
-      className="rounded px-2 py-1 text-xs text-slate-500 transition hover:bg-slate-700/60 hover:text-slate-300"
+      className="flex min-h-11 items-center justify-center rounded px-2 text-xs text-slate-500 transition hover:bg-slate-700/60 hover:text-slate-300 sm:min-h-0 sm:py-1"
     >
       Open in playground ↗
     </button>

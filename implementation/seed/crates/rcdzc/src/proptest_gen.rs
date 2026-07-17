@@ -194,14 +194,15 @@ fn rewrite_ensures_stacked_tests(ast: &mut Arenas, items: &[StructId]) {
         let (Some(&sig), Some(&body)) = (def_tail.first(), def_tail.get(1)) else {
             continue;
         };
-        // Guard `it` capture: if a parameter is literally named `it`, skip (rewriting would shadow it).
+        // Guard `it` capture: if a parameter is literally named `it`, skip (the injected `(let ((it BODY))
+        // …)` binder would SHADOW that param and silently change the def's meaning). A parameter appears in
+        // TWO shapes — a TYPED `(: it Ty)` annotation OR a BARE unannotated name `it` (an inference-typed
+        // param). Both must be detected: checking only the typed form (Copilot PR #529) missed the bare
+        // `(def (f it) …)` case. `param_is_named_it` covers both.
         let sig_names_it = match ast.get(sig) {
-            crate::ast::Struct::List(sig_items) => sig_items.iter().skip(1).any(|&p| {
-                ast.as_form(p, ":")
-                    .and_then(|t| t.first())
-                    .and_then(|&nm| ast.as_name(nm))
-                    == Some("it")
-            }),
+            crate::ast::Struct::List(sig_items) => {
+                sig_items.iter().skip(1).any(|&p| param_is_named_it(ast, p))
+            }
             _ => false,
         };
         if sig_names_it {
@@ -238,6 +239,22 @@ fn rewrite_ensures_stacked_tests(ast: &mut Arenas, items: &[StructId]) {
         let new_def_children = vec![def_head, sig, new_body];
         ast.structure[inner.0 as usize] = crate::ast::Struct::List(new_def_children);
     }
+}
+
+/// Whether a def PARAMETER occurrence is literally named `it` — in EITHER shape a parameter can take: a
+/// BARE unannotated name (`it`, inference-typed) OR a TYPED annotation `(: it Ty)`. Used by
+/// [`rewrite_ensures_stacked_tests`] to skip a def whose param would be shadowed by the injected `it`
+/// result-binder. Checking only the typed form missed the bare case (Copilot PR #529).
+fn param_is_named_it(ast: &Arenas, param: StructId) -> bool {
+    // Bare name param: the occurrence IS the name `it`.
+    if ast.as_name(param) == Some("it") {
+        return true;
+    }
+    // Typed param `(: it Ty)`: the annotation's first child is the name `it`.
+    ast.as_form(param, ":")
+        .and_then(|t| t.first())
+        .and_then(|&nm| ast.as_name(nm))
+        == Some("it")
 }
 
 /// A `@test` def that needs a generator wrapper: its position in the top-level list, the inner `(def …)`
@@ -991,6 +1008,26 @@ mod tests {
         assert!(
             has_trap && has_it_let,
             "a @test @ensures rewrite injects a `let it` + `trap`-guarded postcondition"
+        );
+    }
+
+    /// The `it`-capture guard covers a BARE unannotated param named `it`, not just the typed `(: it Ty)`
+    /// form (Copilot PR #529): `(def (f it) …)` must NOT get the injected `(let ((it BODY)) …)` binder, which
+    /// would shadow the user's `it` param and change meaning. Pins that a `@test @ensures` over such a def is
+    /// left UNrewritten (no `trap`/`let` injected).
+    #[test]
+    fn the_it_capture_guard_covers_a_bare_unannotated_it_param() {
+        let mut ast =
+            crate::testkit::parse("(do (@ test (@ (ensures (>= it 0)) (def (f it) it))))");
+        super::synthesize(&mut ast);
+        // The rewrite is SKIPPED, so no `trap` (and no injected `let`) is introduced — the source had neither.
+        let has_trap = (0..ast.structure.len()).any(|i| {
+            ast.as_form(crate::ast::StructId(i as u32), "trap")
+                .is_some()
+        });
+        assert!(
+            !has_trap,
+            "a bare `it` param is guarded — the ensures rewrite is skipped (no injected binder shadows it)"
         );
     }
 

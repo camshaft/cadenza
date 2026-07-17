@@ -3073,7 +3073,24 @@ fn encode_ty(db: &mut Db, ty: &crate::ty::Ty) -> StructId {
             let unit_node = db.push_list(unit_items);
             db.push_list(vec![head, inner_node, unit_node])
         }
-        // Var/Any shouldn't reach a built type-value in Milestone A; encode Unit as a safe stub.
+        // A TYPE VARIABLE — `(Var N)`, the variable's number. It reaches a built type-value when a
+        // TYPE-VALUED PARAMETER is used INSIDE a compound type that takes the `reduce_ctor`→`encode_typeval`
+        // round-trip: the arrow `(-> t Int64)` builds `Ty::Fn(Var(t), Int64)`, and `FnCtor` has no direct
+        // fast path (unlike List/Set/Map/Tuple/Record), so the whole `Ty` is encoded — WITHOUT this arm the
+        // catch-all below stubbed `Var` as `Unit`, so `t` collapsed and the def scheme read `(-> (-> Unit
+        // Int64) …)` instead of `(-> (-> a Int64) …)`. The domain then defaulted to `Unit` and a real
+        // argument (`(fn (n) n) : (-> Int64 Int64)`) failed CDZ0203 "expected (-> Unit Int64)". A bare `t`
+        // (`typeval_of` returns `Ty::Var` directly, never encoded) and `(List t)` (a direct fast path) were
+        // unaffected — only a param under an ARROW hit this hole. Round-trips with `decode_ty`'s `"Var"` arm.
+        Ty::Var(n) => {
+            let head = db.push_name("Var");
+            let num = db.push_atom(Leaf::Int {
+                value: IntValue::from_i64(*n as i64),
+                radix: crate::ast::Radix::Dec,
+            });
+            db.push_list(vec![head, num])
+        }
+        // Any shouldn't reach a built type-value in Milestone A; encode Unit as a safe stub.
         _ => db.push_name("Unit"),
     }
 }

@@ -8310,6 +8310,18 @@
   (call   main 4294967296)
   (trap   "unreachable"))
 
+(case "a runtime List.update at exactly the length index is the first out-of-bounds and traps"
+  (doc    "The OFF-BY-ONE boundary companion of the wrap-hazard case above: for a length-3 list, index 3
+           (== len) is the FIRST out-of-bounds index — valid indices are 0..2. `(List.update … 2 99)` (the
+           LAST valid index) updates and reads back 99; `(List.update … 3 99)` (== len) TRAPS. Pins that the
+           runtime bounds check is `index >= len` (not `> len` — a `>` off-by-one would let `i == len` alias
+           past the last slot and return length 3 instead of trapping). Distinct from the far-OOB 2^32 case:
+           this catches the +1-past-the-end edge specifically. The trap surfaces as the runtime's
+           `unreachable` (panic=abort, no reason string), on both backends.")
+  (input  (do (def (main (: i Int64)) (match (List.at (List.update (list 10 20 30) i 99) 2) ((Some v) v) (None -1))) (export main)))
+  (call   main (: 2 Int64)) (output (: 99 Int64))
+  (call   main (: 3 Int64)) (trap "unreachable"))
+
 ; --- `List.at` at a RUNTIME index: the fallible positional read on the value heap -----------------------
 ; The `List.at` cases elsewhere read at a CONSTANT index (`(List.at (list …) 3)` folds to the element at
 ; compile time). A RUNTIME index — a boundary parameter — cannot fold: the read runs on the value heap,

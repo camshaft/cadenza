@@ -1100,6 +1100,7 @@ pass	a nominal record compared to a plain record of the same shape is a type err
 pass	a non-admitted float width NESTED in a compound annotation is rejected
 pass	a non-admitted float width in a parameter annotation is rejected
 pass	a non-admitted float width in a type-declaration payload is rejected
+pass	a non-byte-aligned bit-field width takes its exact arbitrary-width unsigned type
 pass	a non-constructor type applied to arguments in type position is rejected
 pass	a non-dividing conversion ratio truncates on an Int magnitude
 pass	a non-empty scrutinee does not match an empty bin pattern
@@ -1429,6 +1430,7 @@ pass	a runtime Int32 division of the minimum by -1 overflows and traps
 pass	a runtime Int32 division of the minimum by -2 is a normal division
 pass	a runtime Int8 division of the minimum by -1 overflows and traps
 pass	a runtime List built past 32 elements reads correctly by index across the RRB leaf-to-trie boundary
+pass	a runtime List.update at exactly the length index is the first out-of-bounds and traps
 pass	a runtime MIXED-SCALE BigInt comparison converts to the reference before comparing
 pass	a runtime MIXED-SCALE BigInt-magnitude sum converts to the reference in unbounded arithmetic
 pass	a runtime MIXED-SCALE Rational-magnitude sum converts to the reference EXACTLY
@@ -1450,6 +1452,8 @@ pass	a runtime bin construction result unequal to different content is false
 pass	a runtime bin match binds the tail after a fixed header via a final rest segment
 pass	a runtime bin match dispatches on a literal tag across arms
 pass	a runtime bin pattern decodes a fixed-width segment from a runtime scrutinee
+pass	a runtime bit-field packs a runtime value into a nibble
+pass	a runtime bit-field run spans two bytes and composes with an int segment
 pass	a runtime bitwise AND masks bits
 pass	a runtime bitwise OR combines bits
 pass	a runtime bitwise XOR toggles bits
@@ -1511,6 +1515,7 @@ pass	a runtime negative dividend divided by a constant power of two truncates to
 pass	a runtime negative dividend mod a constant power of two takes the dividend's sign
 pass	a runtime negative zero is not equal to positive zero
 pass	a runtime negative-const-multiply one past its lower fitting boundary traps
+pass	a runtime nibble truncation keeps the low four bits
 pass	a runtime out-of-bounds list update traps rather than aliasing a valid slot
 pass	a runtime overflowing left shift traps
 pass	a runtime product's derived dimension cancels correctly through a divide
@@ -1844,6 +1849,7 @@ pass	a trapping shared payload before the differing position must not preempt a 
 pass	a trivially-true guard does not make its variant arm unconditional
 pass	a truncating conversion keeps the low bits rather than trapping
 pass	a truncating conversion of a negative value uses two's complement
+pass	a truncating conversion to an unusual width keeps that width's low bits
 pass	a tuple = whose Bool element derives from a const-divisor rem is emitted as valid wasm
 pass	a tuple = with differing const-divisor Bool elements compares unequal
 pass	a tuple access out of arity on a function-returned tuple is a type error, not a trap
@@ -2287,6 +2293,7 @@ pass	an untaken arm's overflowing operand does not trap under the operator hoist
 pass	an unused let binding whose init would divide by zero is elided, so its trap does not occur
 pass	an unused let binding whose init would overflow is elided, so its trap does not occur
 pass	an unused let-init that does not reduce to a value is eliminated, so it does not diverge
+pass	an unusual in-range width is a first-class type
 pass	an unusual-width value that overflows its computed range is rejected at compile time
 pass	an unwrapped conversion result is a bare number under ordinary numeric rules
 pass	an unwrapped length adds to an unwrapped time with no dimension error
@@ -2308,6 +2315,7 @@ pass	arithmetic right shift of negative one is negative one
 pass	arithmetic right shift preserves the sign bit for a negative operand
 pass	arithmetic within one integer type
 pass	at min times -1 the three overflow families diverge: checked None, wrapping min
+pass	b(sub): a no-underflow obligation is DISCHARGED — for x >= 0, (x - 1) >= MININT via monotonicity + a CHECKED numeral fact
 pass	b4b denotation: a predicate Ast (<= x 100) denotes to the bounds obligation term le (Var 0) (Num 100)
 pass	b4c(conjunctive) NEG-1: precondition covers only {le x 100} (missing ge x 0) — the 2-hyp proof is NOT licensed
 pass	b4c(conjunctive) NEG-2 (reverse): precondition covers only {ge x 0} (missing le x 100) — NOT licensed though discharged via le
@@ -3509,7 +3517,6 @@ todo	a multi-export set of parameterized capturing closures is driven per export
 todo	a multi-export shared call is a repeatable (borrow<t>) callback
 todo	a mutually-recursive AST walker reads a node's child list without corrupting a sibling head-read
 todo	a mutually-recursive decoder returns a heap value and cursor and its heap slot is dispatched
-todo	a non-byte-aligned bit-field width takes its exact arbitrary-width unsigned type
 todo	a parameterized export returning a capturing closure is made and called by the host
 todo	a parameterized export returning a multi-argument capturing closure
 todo	a parameterized plain export alongside a closure export applies its argument
@@ -3533,13 +3540,9 @@ todo	a round-trip consumer binds the applied closure through a let
 todo	a round-trip consumer takes the non-applying match arm
 todo	a round-trip consumer that does NOT apply the closure on the taken branch
 todo	a run's result is a deterministic function of a host call's recorded response
-todo	a runtime bit-field packs a runtime value into a nibble
-todo	a runtime bit-field run spans two bytes and composes with an int segment
-todo	a runtime nibble truncation keeps the low four bits
 todo	a scalar BETWEEN two Tuple args with a LIST result
 todo	a second same-signature closure export shares the one call method
 todo	a three-argument closure exported to the host is called with all three
-todo	a truncating conversion to an unusual width keeps that width's low bits
 todo	a tuple-returning closure alongside a plain export — the closure
 todo	a tuple-returning closure alongside a plain export — the plain
 todo	a two-argument closure exported to the host is called with both arguments
@@ -3556,7 +3559,6 @@ todo	an escaping closure whose body binds a multi-variable let
 todo	an escaping closure whose body is a match hits the literal arm
 todo	an escaping closure whose body is a match hits the wildcard arm
 todo	an intra-program handler interposes on a delegated effect, counts it, and forwards to the boundary
-todo	an unusual in-range width is a first-class type
 todo	and performs the right operand's effect when the left is true
 todo	and short-circuit does not perform the right operand's effect
 todo	binary operator operands are evaluated left to right

@@ -1333,19 +1333,15 @@ fn an_ill_formed_integer_width_is_rejected_not_declined() {
         over.iter().any(|d| d.contains("not a valid integer type")),
         "parameter reject should cite the ill-formed width: {over:?}"
     );
-    // A VALID but non-aliased width (`UInt7`, in 1..=64) is a genuine backend limitation → a codeless
-    // DECLINE (no native Rust primitive), NOT a CDZ0302 reject. Guards against over-rejecting.
-    let seven = try_compile_rust("(module m (def (main (: x (UInt 7))) x) (export main))")
-        .expect_err("UInt7 has no native Rust rep — declines");
+    // A VALID but non-aliased width (`UInt7`, in 1..=64) now EMITS — it STORES in the next-larger machine
+    // primitive (`UInt7`→`u8`), so a value/param of it is representable (NOT a decline, and NOT the CDZ0302
+    // reject the ill-formed cases get). Guards that the storage-width map admits a valid non-aliased width
+    // while the well-formedness reject above still fires for a truly ill-formed one. (Runtime ARITHMETIC on
+    // such a width still declines — the 2^N overflow check is a later slice — but a param passthrough emits.)
+    let seven = compile_rust("(module m (def (main (: x (UInt 7))) x) (export main))");
     assert!(
-        seven
-            .iter()
-            .any(|d| d.contains("no native Rust representation")),
-        "a valid non-aliased width should DECLINE, not reject: {seven:?}"
-    );
-    assert!(
-        !seven.iter().any(|d| d.contains("not a valid integer type")),
-        "UInt7 must NOT be reported as an ill-formed width: {seven:?}"
+        seven.contains("x: u8") && seven.contains("-> u8"),
+        "a valid non-aliased UInt7 stores in u8 and emits (not declined): {seven}"
     );
 }
 
@@ -3925,10 +3921,99 @@ fn export_name_kebab_validity_is_rejected_on_the_rust_backend_too() {
         digit_led.is_err(),
         "a digit-led kebab export segment is rejected on rust:\n{digit_led:?}"
     );
-    // (c) a normal export name still emits (no over-rejection) — regression guard.
+    // (c) a normal export name still emits (no over-rejection) — regression guard. Assert on the SPECIFIC
+    // emitted identifier `my_func` (the `my-func` boundary name sanitized: `-`→`_` for a Rust fn), NOT a
+    // bare `"pub fn "` fallback — that matches ANY public fn (the emitted module always has one), so it
+    // would pass even if `my_func` were mis-emitted/missing (Copilot PR#528 weak-test finding).
     let ok = compile_rust("(module m (def (my-func (: x Int64)) (+ x 1)) (export my-func))");
     assert!(
-        ok.contains("pub fn my_func") || ok.contains("pub fn my-func") || ok.contains("pub fn "),
-        "a valid kebab export name still emits a pub fn:\n{ok}"
+        ok.contains("pub fn my_func"),
+        "a valid kebab export name still emits `pub fn my_func` (not declined/over-rejected):\n{ok}"
     );
+}
+
+#[test]
+fn rustc_roundtrip_unusual_integer_width_stores_in_the_next_larger_primitive() {
+    // An UNUSUAL in-range width (`UInt48`, `UInt4` — 1..=64 but not an aliased boundary) has no exact Rust
+    // primitive, so it STORES in the next-larger machine width (`UInt48`→`u64`, `UInt4`→`u8`); the value/
+    // wrap/render surface is exact. `.wrap` to an unusual width masks the low N bits (an `as` cast keeps the
+    // STORAGE width's bits, so add `& (2^N-1)`). Runtime ARITHMETIC on an unusual width DECLINES (it would
+    // need the `2^N` overflow check, not the storage width's — a safety guard against a silent miscompile).
+    // (a) a `(UInt 48)` const value = 2^48-1, stored as u64.
+    let val = compile_rust("(module m (def (run) (: 281474976710655 (UInt 48))) (export run))");
+    assert!(
+        val.contains("-> u64") && val.contains("281474976710655u64"),
+        "a UInt48 value stores in u64:\n{val}"
+    );
+
+    // (b) a runtime `(UInt 4).wrap n` masks the low 4 bits: `(n as u8) & 15`. Run: 17 → 1, 15 → 15.
+    let wrap =
+        compile_rust("(module m (def (run (: n Int64)) ((. (UInt 4) wrap) n)) (export run))");
+    assert!(
+        wrap.contains("& 15u8"),
+        "a UInt4 wrap masks the low 4 bits:\n{wrap}"
+    );
+    if let Some(out) = rustc_run(&wrap, "run(17)") {
+        assert_eq!(out, "1", "17 & 0xF = 1 (low nibble)");
+    }
+    if let Some(out) = rustc_run(&wrap, "run(15)") {
+        assert_eq!(out, "15", "15 fits the nibble whole");
+    }
+
+    // (c) runtime ARITHMETIC on an unusual width DECLINES (safety — no wrong 2^machine overflow).
+    let arith = try_compile_rust(
+        "(module m (def (run (: a (UInt 48)) (: b (UInt 48))) (+ a b)) (export run))",
+    );
+    assert!(
+        arith.is_err(),
+        "runtime unusual-width arithmetic declines (not a wrong-width overflow):\n{arith:?}"
+    );
+
+    // (d) an aliased narrow width (UInt8) still wraps with NO redundant mask (the `as` cast is exact).
+    let alias =
+        compile_rust("(module m (def (run (: n Int64)) ((. (UInt 8) wrap) n)) (export run))");
+    assert!(
+        alias.contains("as u8") && !alias.contains("& 255u8"),
+        "an aliased UInt8 wrap needs no mask (the cast truncates exactly):\n{alias}"
+    );
+}
+
+#[test]
+fn rustc_roundtrip_unusual_width_composes_through_compounds_and_collections() {
+    // The storage-width map (an unusual `(UInt N)` → the next-larger machine primitive) must COMPOSE through
+    // a tuple leaf, a Set element, and a List element — the value stays in range, so the wider storage is
+    // lossless and the collection Ord/eq (over the storage primitive) matches the logical order. Guards the
+    // tick-84 slice against a future change breaking unusual-width-in-compound. (Probed passing; pinned.)
+    // (a) a UInt48 MAX value as a Set element, queried by the same value → found (Ord over u64 = logical).
+    let set = compile_rust(
+        "(module m (def (run) \
+           (if (Set.contains (Set.of (list (: 281474976710655 (UInt 48)) (: 5 (UInt 48)))) \
+                             (: 281474976710655 (UInt 48))) 1 0)) (export run))",
+    );
+    if let Some(out) = rustc_run(&set, "run()") {
+        assert_eq!(
+            out, "1",
+            "the UInt48 max value is found as a Set element (u64-stored, in-range)"
+        );
+    }
+
+    // (b) a UInt48 leaf in a TUPLE crosses + projects back — the wider storage is transparent.
+    let tup = compile_rust(
+        "(module m (def (run) (. (tuple (: 281474976710655 (UInt 48)) 7) 0)) (export run))",
+    );
+    if let Some(out) = rustc_run(&tup, "run()") {
+        assert_eq!(
+            out, "281474976710655",
+            "a UInt48 tuple leaf round-trips its max value"
+        );
+    }
+
+    // (c) a UInt4 (nibble) wrap result as a List element, counted back — the masked value stores in u8.
+    let lst = compile_rust(
+        "(module m (def (run (: n Int64)) \
+           (List.len (list ((. (UInt 4) wrap) n) ((. (UInt 4) wrap) 3)))) (export run))",
+    );
+    if let Some(out) = rustc_run(&lst, "run(17)") {
+        assert_eq!(out, "2", "two UInt4 elements build a length-2 list");
+    }
 }

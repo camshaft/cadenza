@@ -16926,6 +16926,58 @@ mod match_engine {
         }
     }
 
+    /// A NESTED `(@ …)` annotation — one in EXPRESSION position (a `do`-block, an argument), NOT wrapping a
+    /// top-level def — must report ONE clean CDZ0201 "cannot appear here", not a CASCADE of unbound-name
+    /// errors for its internal tokens. `strip_annotations` unwraps a well-formed def-wrapping `(@ …)` in
+    /// place; the top-level `malformed_annotation_forms` scan (in `collect_faults`) catches a top-level
+    /// survivor — but it MISSES a nested one, which fell through to resolve as "unbound name `@`" PLUS a
+    /// spurious unbound-name for each internal token (`param`/`tag`, `widget`/`x`, …) — a baffling pile for
+    /// a user who wrote an annotation, not name references (v-metaprogramming diagnostic-quality report,
+    /// 2026-07-17). A resolve-time `(@ …)` guard now reports it once and resolves none of its internals.
+    #[test]
+    fn a_nested_annotation_reports_one_clean_reject_not_an_unbound_name_cascade() {
+        use crate::testkit::parse;
+        for (src, internal_tokens) in [
+            // nested @param in a do-block (the reported repro A)
+            (
+                "(module m (def (main) (do (: (@ (param (: widget slider)) width) Int64) 1)) (export main))",
+                ["param", "widget", "slider"].as_slice(),
+            ),
+            // nested @tag — proves it is general to all annotations (repro B)
+            (
+                "(module m (def (main) (do (: (@ (tag x) foo) Int64) 1)) (export main))",
+                ["tag", "foo"].as_slice(),
+            ),
+        ] {
+            let ds = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+            // ONE clean CDZ0201 naming the misplacement.
+            let anno = ds
+                .iter()
+                .find(|d| d.message.contains("annotation cannot appear here"))
+                .unwrap_or_else(|| panic!("a nested `(@ …)` must be named: {src}"));
+            assert_eq!(
+                anno.code.as_deref(),
+                Some("CDZ0201"),
+                "got: {}",
+                anno.message
+            );
+            // NO cascade: the misleading "unbound name `@`" and the annotation's internal tokens must NOT
+            // surface as spurious unbound-name errors.
+            assert!(
+                !ds.iter().any(|d| d.message.contains("unbound name `@`")),
+                "the misleading `unbound name @` is superseded: {src}"
+            );
+            for tok in internal_tokens {
+                assert!(
+                    !ds.iter()
+                        .any(|d| d.message.contains(&format!("unbound name `{tok}`"))),
+                    "the annotation's internal token `{tok}` must NOT cascade an unbound-name error: {src} — {:?}",
+                    ds.iter().map(|d| &d.message).collect::<Vec<_>>()
+                );
+            }
+        }
+    }
+
     /// A MALFORMED `@tag` — `(@ (tag …) def)` whose argument is not exactly ONE STRING — must be REJECTED,
     /// not silently dropped. `strip_annotations` records the tag only for `(tag "string")`; any other arg
     /// shape (`(tag 5)`, `(tag foo)`, `(tag)`, `(tag "a" "b")`) recorded the tag NOWHERE, so the def was
@@ -17062,6 +17114,46 @@ mod match_engine {
                     .iter()
                     .any(|d| d.message.contains("takes exactly one PREDICATE argument")),
                 "a valid one-predicate @requires/@ensures is not flagged: {ok}"
+            );
+        }
+    }
+
+    /// Verification Inc-b b4c: a `@requires`/`@ensures` predicate references only names in scope — the
+    /// def's PARAMETERS, `it` (for `@ensures`), and prelude/global names. A name that is none of those is
+    /// UNBOUND → CDZ0101 at the annotation (good locality). The b4a2-deferred name check, done where the
+    /// scope is known: each predicate name occurrence is checked against the param set + `it`, and any other
+    /// name must resolve standalone (a prelude op does; a stray name poisons CDZ0101).
+    #[test]
+    fn requires_ensures_predicate_unbound_name_is_cdz0101_valid_names_ok() {
+        use crate::testkit::parse;
+        // UNBOUND: a name that is not a param, not `it`, not a prelude op.
+        for (src, why) in [
+            (
+                "(module m (@ (requires (> y 0)) (def (f (: x Int64)) (+ x 1))) (export f))",
+                "@requires references unbound `y` (param is x)",
+            ),
+            (
+                "(module m (@ (ensures (> zzz 0)) (def (f (: x Int64)) (+ x 1))) (export f))",
+                "@ensures references unbound `zzz`",
+            ),
+        ] {
+            let d = crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.code.as_deref() == Some("CDZ0101"))
+                .unwrap_or_else(|| panic!("an unbound predicate name must be CDZ0101: {why}"));
+            assert_eq!(d.code.as_deref(), Some("CDZ0101"), "{why}: {}", d.message);
+        }
+        // BOUND: params, `it` (in @ensures), and prelude operators (`>`,`+`,`<=`) all in scope — no CDZ0101.
+        for ok in [
+            "(module m (@ (requires (> x 0)) (def (f (: x Int64)) (+ x 1))) (export f))", // param x
+            "(module m (@ (ensures (> it 0)) (def (f (: x Int64)) (+ x 1))) (export f))", // result it
+            "(module m (@ (requires (<= x 100)) (@ (ensures (> it x)) (def (f (: x Int64)) (+ x 1)))) (export f))",
+        ] {
+            assert!(
+                !crate::diagnostics(&mut crate::db::Db::load(parse(ok)))
+                    .iter()
+                    .any(|d| d.code.as_deref() == Some("CDZ0101")),
+                "a predicate over params/it/prelude-ops must NOT flag unbound: {ok}"
             );
         }
     }
@@ -36629,6 +36721,31 @@ mod match_engine {
                 "a known/declared unit is not flagged: {ok}"
             );
         }
+        // NO SPURIOUS "not a SYMBOL" companion: an unknown unit `#"name"` IS a well-formed symbol literal,
+        // so `check_unit_composition`'s "names its unit with a SYMBOL, but this is a Symbol value" reject
+        // must NOT fire alongside the unknown-unit one. Before the symbol-arg exclusion, `5 furlong` got
+        // BOTH — the second self-contradictory (it names the very `#"…"` form the arg already is). The
+        // unknown-unit diagnostic is the SOLE fault for a bad unit name.
+        let diags = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def (main) (Qty.of 5 (Unit.of #\"furlong\"))) (export main))",
+        )));
+        assert!(
+            !diags
+                .iter()
+                .any(|d| d.message.contains("names its unit with a SYMBOL")),
+            "no spurious not-a-SYMBOL reject on a valid symbol naming an unknown unit: {:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        // A genuinely NON-symbol arg (an integer) STILL earns the "not a SYMBOL" reject — the exclusion is
+        // for a valid symbol only, not a blanket suppression.
+        assert!(
+            crate::diagnostics(&mut crate::db::Db::load(parse(
+                "(module m (def (main) (Qty.of 1 (Unit.of 42))) (export main))"
+            )))
+            .iter()
+            .any(|d| d.message.contains("names its unit with a SYMBOL")),
+            "a non-symbol Unit.of arg still names the symbol requirement"
+        );
     }
 
     /// A MALFORMED `(Unit.define …)` — wrong arity, a non-symbol name, or a non-integer scale — is CDZ0201,
@@ -37135,6 +37252,54 @@ mod match_engine {
                 "main"
             ),
             2.2192
+        );
+    }
+
+    #[test]
+    fn a_standard_unit_abbreviation_names_the_same_unit_as_its_canonical_spelling() {
+        // The ML quantity-literal surface reads for the terse SI/metric symbols a calculator user reaches
+        // for, so a standard ABBREVIATION resolves to the SAME family unit as its canonical spelling:
+        // `km` = `kilometer`, `m` = `meter`, `ms` = `millisecond`. `1.0 km + 500.0 m` converts km + m to
+        // the meter reference and sums to 1500 m. Before the abbreviation aliases these failed as unknown
+        // units — the operator hit `5 km` / `100 m` directly. Compiles + RUNS. (The operator's `5 km /
+        // 100 m` ratio also resolves both units; it yields a dimensionless `Qty`, exercised via `calc`.)
+        let sum = "(do (def (main) ((. Qty value) \
+                   (+ ((. Qty of) 1.0 ((. Unit of) #\"km\")) \
+                      ((. Qty of) 500.0 ((. Unit of) #\"m\"))))) (export main))";
+        assert_eq!(
+            run_returns::<f64>(
+                &compile_component(&crate::codec::encode(&parse(sum)))
+                    .expect("a km+m abbreviation sum compiles and runs"),
+                "main"
+            ),
+            1500.0
+        );
+        // The registry carries the abbreviations across dimensions, each aliasing its canonical row's
+        // conversion (one source of truth) — a direct check that the family table resolves them.
+        let fams = crate::prelude::unit_families();
+        for (abbr, canonical) in [
+            ("km", "kilometer"),
+            ("cm", "centimeter"),
+            ("ft", "foot"),
+            ("ms", "millisecond"),
+            ("min", "minute"),
+            ("h", "hour"),
+            ("kB", "kilobyte"),
+            ("MiB", "mebibyte"),
+            ("Hz", "hertz"),
+            ("GHz", "gigahertz"),
+        ] {
+            assert_eq!(
+                fams.get(abbr),
+                fams.get(canonical),
+                "abbreviation `{abbr}` must resolve to the same conversion as `{canonical}`"
+            );
+        }
+        // `in` is the `in` KEYWORD, not a unit ident — it must NOT be registered as an inch abbreviation
+        // (a `5 in` quantity is a parse error, handled at the surface, not an unknown-unit lookup).
+        assert!(
+            !fams.contains_key("in"),
+            "`in` is a keyword and must not be a unit abbreviation"
         );
     }
 
@@ -51597,6 +51762,51 @@ mod stage1 {
             cdz_run::Outcome::Value(v) => assert_eq!(
                 v, "5",
                 "len monomorphized over Lst Int64 (2) + Lst String (3), type arg erased"
+            ),
+            cdz_run::Outcome::Trap(t) => panic!("run trapped: {t}"),
+        }
+    }
+
+    #[test]
+    fn a_type_valued_parameter_under_a_function_arrow_annotation_is_not_lost() {
+        // Type-valued-parameter vertical: a `(: t Type)` param used in the DOMAIN or RESULT of a FUNCTION
+        // ARROW annotation — `(: g (-> t Int64))` — must reduce `t` to the SAME stable type variable a
+        // bare `(: x t)` or `(: xs (List t))` does. It did not: `FnCtor` has no direct fast path in
+        // `typeval_of`'s `Apply` arm (unlike List/Set/Map/Tuple/Record), so the arrow took the
+        // `reduce_ctor`→`encode_typeval` round-trip, and `encode_ty` had NO `Ty::Var` arm — it stubbed the
+        // variable as `Unit`. So the scheme read `(-> Type (-> (-> Unit Int64) …))` instead of `(-> Type (->
+        // (-> a Int64) …))`, and a real closure argument `(fn (n) n) : (-> Int64 Int64)` failed CDZ0203
+        // "expected (-> Unit Int64)". The fix pairs an `encode_ty`/`decode_ty` `(Var N)` arm so the
+        // round-trip is faithful. This is exactly the operator's ad-hoc-polymorphism example (a dict of
+        // functions generic over the element type). Here `dict.describe` dispatches over BOTH an Int64 and a
+        // Bool instance through a `(Record (describe (-> t Int64)))`-annotated param: 5 + (true→1) = 6.
+        let src = "(module m \
+                   (def (describe-int (: n Int64)) n) \
+                   (def (describe-bool (: b Bool)) (if b 1 0)) \
+                   (def (show-with (: t Type) (: dict (Record (describe (-> t Int64)))) (: x t)) \
+                     ((. dict describe) x)) \
+                   (def (main) (+ (show-with Int64 (record (describe describe-int)) 5) \
+                                  (show-with Bool (record (describe describe-bool)) true))) \
+                   (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src)))
+            .expect("a type-param under an arrow annotation compiles (ad-hoc-poly dict dispatch)");
+        // Uses the value heap (the record), so it runs through `cdz_run` with the runtime resolved — SKIP
+        // if the store is absent (as the sibling type-valued-parameter tests do).
+        let Some(runtime) = find_runtime_wasm() else {
+            eprintln!("runtime wasm not found; skipping arrow-type-param run");
+            return;
+        };
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec![],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run(&bytes, &opts).expect("run") {
+            cdz_run::Outcome::Value(v) => assert_eq!(
+                v, "6",
+                "show-with dispatched describe-int (5) + describe-bool (true→1) through a `(-> t Int64)` dict field"
             ),
             cdz_run::Outcome::Trap(t) => panic!("run trapped: {t}"),
         }
