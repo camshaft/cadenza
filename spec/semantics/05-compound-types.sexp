@@ -3249,6 +3249,32 @@
             (def (main) (sum-firsts (build 1 4 (list)))) (export main)))
   (output (: 6 Int64)))
 
+; A push-loop accumulator that threads a `(List (Tuple Int64 Int64))` — its element a TUPLE built from a
+; parameter being solved — must infer the tuple's FIRST component as `Int64`, not strand it at `Any`. In
+; `(build i n out) = (if (< i n) (build (+ i 1) n ((. List push) out (tuple i 99))) out)`, the pushed
+; `(tuple i 99)` reads `i : Int64` (from `(< i n)`/`(+ i 1)`); the connected parameter solve must propagate
+; that into `out`'s element's first slot. Before, the solve had a List-constructor arm but NO tuple arm, so
+; a tuple built from a solved param typed `(Tuple Any Int64)` — the `Any` first slot stranded the result
+; `(List (Tuple Any Int64))`, which the rust backend declines ("no native representation for `Any`"). This
+; pins that the first slot infers `Int64` by reading it back: build the list, take the head pair, return its
+; FIRST component. build pushes (0,99)(1,99)(2,99); the head's first component is 0.
+
+(case "a push-loop tuple-list accumulator infers its tuple element component types"
+  (doc    "A `build` push-loop threads `out : (List (Tuple Int64 Int64))`, pushing `(tuple i 99)` where
+           `i : Int64`. The connected parameter solve must infer the tuple's FIRST component as `Int64` (it
+           had a List-element arm but no tuple arm, so a tuple built from a solved param stranded its
+           components at `Any` → `(List (Tuple Any Int64))`, which has no native rust representation). Reads
+           the first component of the head pair back to prove it is a real `Int64`: `build 0 3 (list)` gives
+           `[(0,99),(1,99),(2,99)]`, whose head's first component is 0.")
+  (input  (do
+            (def (build i n out)
+              (if (< i n) (build (+ i 1) n ((. List push) out (tuple i 99))) out))
+            (def (head-first xs)
+              (match xs ((list) 0) ((list (tuple a _) .. rest) a)))
+            (def (main) (head-first (build 0 3 (list))))
+            (export main)))
+  (output (: 0 Int64)))
+
 ; The list-element cases above bind an IRREFUTABLE element (a tuple, always matches once the length holds)
 ; or refine on a LITERAL. A list arm's element MAY also be a refutable sum-CONSTRUCTOR pattern `(A.I x)`,
 ; which adds a runtime DISCRIMINANT test on that element (does it carry the `I` tag?) on top of the length

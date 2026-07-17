@@ -3460,6 +3460,7 @@ todo	a pass-through closure that returns its arg via a trivial let composes at o
 todo	a produced closure is handed back into a consumer export (the round trip)
 todo	a program that makes a host call has that call in its observable behavior
 todo	a program uses a response-returning delegated host function's return value
+todo	a push-loop tuple-list accumulator infers its tuple element component types
 todo	a record-returning closure alongside a parameterized plain export — the closure
 todo	a record-returning closure alongside a parameterized plain export — the plain
 todo	a recursive NEWTYPE traversal recurses on its projected recursive field
