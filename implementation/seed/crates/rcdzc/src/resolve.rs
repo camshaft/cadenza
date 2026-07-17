@@ -4820,7 +4820,28 @@ fn decode_ty(db: &Db, node: StructId) -> Option<crate::ty::Ty> {
             let inner = decode_ty(db, tail[0])?;
             let unit_items = db.ast.as_form(tail[1], "unit")?;
             let mut unit = crate::ty::Unit::one();
+            // The unit is a list of `(base NAME EXP)` triples PLUS an optional trailing `(scale NUM DEN)`
+            // item (present only for a NON-reference unit — see `encode_ty`'s Qty arm). Restore the scale
+            // so a `kilometer`/`foot`/`KiB` param annotation keeps its factor across the round-trip instead
+            // of collapsing to its reference unit (which caused a raw-magnitude cross-scale miscompile).
+            let mut scale: Option<(i128, i128)> = None;
             for &pair in unit_items {
+                if let Some(scale_items) = db.ast.as_form(pair, "scale") {
+                    if scale_items.len() != 2 {
+                        return None;
+                    }
+                    let read = |db: &Db, n: StructId| -> Option<i128> {
+                        match db.ast.get(n) {
+                            Struct::Atom(l) => match db.ast.leaf(*l) {
+                                Leaf::Int { value, .. } => value.to_i128(),
+                                _ => None,
+                            },
+                            _ => None,
+                        }
+                    };
+                    scale = Some((read(db, scale_items[0])?, read(db, scale_items[1])?));
+                    continue;
+                }
                 let items = db.ast.as_form(pair, "base")?;
                 if items.len() != 2 {
                     return None;
@@ -4834,6 +4855,9 @@ fn decode_ty(db: &Db, node: StructId) -> Option<crate::ty::Ty> {
                     _ => return None,
                 };
                 unit = unit.mul(&crate::ty::Unit::base(name).pow(exp));
+            }
+            if let Some((sn, sd)) = scale {
+                unit = unit.scaled(sn, sd)?;
             }
             Some(Ty::Qty {
                 inner: Box::new(inner),

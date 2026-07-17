@@ -5299,8 +5299,11 @@ fn mark_float_literals(
     }
 }
 
-/// Scan the top-level `(Unit.define #"name" base-unit-expr num den)` forms into
-/// `(name, base-unit-occurrence, scale-num, scale-den)` entries — the user family-declaration surface.
+/// Scan EVERY `(Unit.define #"name" base-unit-expr num den)` form in the arena — a TOP-LEVEL declaration
+/// OR an INLINE one in a `Qty.of` unit position — into `(name, base-unit-occurrence, scale-num, scale-den)`
+/// entries, the user family-declaration surface. (Walking the whole arena, not just top-level items, is
+/// what feeds an inline define the SAME name→conversion uniqueness table `check_unit_defines` consults, so
+/// an inline redeclaration of a built-in ratio is rejected CDZ0502 like the top-level form — see the body.)
 /// `Unit.define` reads as the member-access head `(. Unit define)` applied to four args: a symbol name,
 /// a base-unit expression (reduced later by `eval::unit_of`), and an integer `num`/`den` scaling the
 /// base. A malformed form (wrong arity, non-symbol name, non-integer scale) is skipped here — it

@@ -74,23 +74,61 @@ def export-section() =
   section(7, Bytes.of([UInt8.wrap(1), UInt8.wrap(4), UInt8.wrap(109), UInt8.wrap(97), UInt8.wrap(105), UInt8.wrap(110),
                        UInt8.wrap(0), UInt8.wrap(0)]))
 
-/// A function body for `i64.const v; end`: `00`=zero local groups, `42`=i64.const, `<sleb v>`, `0b`=end.
-def const-body(v: Int64) =
-  Bytes.concat(b1(0), Bytes.concat(b1(66), Bytes.concat(sleb(v), b1(11))))
+/// The wasm i64 arithmetic opcode for a Core binary op-code (Core uses the ASCII byte: 43 `+`, 45 `-`,
+/// 42 `*`, 47 `/`, 37 `%`). i64.add=0x7c, sub=0x7d, mul=0x7e, div_s=0x7f, rem_s=0x81. `div_s`/`rem_s` TRAP
+/// on divide-by-zero — which matches `eval-db` returning `None` for `n / 0` (the corpus grades it Declines).
+/// A non-arithmetic op-code (a comparison — W3) returns 0 (an unreachable sentinel; W2 emits only arith).
+def wasm-op(op: Int64) =
+  (if op == 43 then 124
+   else (if op == 45 then 125
+   else (if op == 42 then 126
+   else (if op == 47 then 127
+   else (if op == 37 then 129 else 0)))))
+
+/// Whether `op` is one of the W2 arithmetic ops (so a CBin over other ops — comparisons — declines to emit
+/// until W3 adds i64-relational + the i32→i64 result convention).
+def is-arith-op(op: Int64) = (op == 43) or (op == 45) or (op == 42) or (op == 47) or (op == 37)
+
+/// Is `c` in the current emit SUBSET (so `emit-module` should emit rather than decline)? W2: `CNum` and
+/// `CBin` over arithmetic ops, recursively. `CVar`/`CLet` (wasm locals) = W2b; `CIf`/comparison = W3.
+/// A SEPARATE predicate (not an `Option` return threaded through the byte-build) so `emit-instrs` can be a
+/// TOTAL `Bytes` producer — matching an `Option(Bytes)` payload and re-concatenating it through the module
+/// build tripped a self-hosted-compiler invalid-wasm emit (see the `zz`-probe finding in the log), so the
+/// backend keeps the decline decision (a scalar `Bool`) OFF the heap-`Bytes` path.
+def can-emit(c: Core) = match c with
+  | Core.CNum(_) => true
+  | Core.CBin(op, l, r) => is-arith-op(op) and can-emit(l) and can-emit(r)
+  | _ => false
+
+/// Emit the INSTRUCTION bytes for a Core term onto the i64 operand stack — TOTAL (returns `Bytes`, never an
+/// `Option`). W2 subset: `CNum` (i64.const), `CBin` over arithmetic (emit left, emit right, then the i64 op
+/// — postfix, so operands are on the stack when the op runs). An out-of-subset node emits empty `Bytes`
+/// (never reached in practice: `emit-module` gates on `can-emit` first). Keeping this total + Option-free is
+/// the fix for the invalid-wasm-when-a-matched-Bytes-payload-threads-through-the-module-build trigger.
+def emit-instrs(c: Core) = match c with
+  | Core.CNum(v) => Bytes.concat(b1(66), sleb(v))                       // 0x42 i64.const <sleb v>
+  | Core.CBin(op, l, r) => Bytes.concat(emit-instrs(l), Bytes.concat(emit-instrs(r), b1(wasm-op(op))))
+  | _ => Bytes.of([])
+
+/// Wrap emitted instructions into a function body: `00`=zero local groups (W2 uses no locals — CLet is W2b),
+/// then the instructions, then `0b`=end.
+def body-of(instrs: Bytes) = Bytes.concat(b1(0), Bytes.concat(instrs, b1(11)))
 
 /// Code section wrapping a single function body: `01`=one body, `<uleb bodylen>`, `<body>`.
 def code-section(body: Bytes) =
   section(10, Bytes.concat(b1(1), Bytes.concat(uleb(Bytes.len(body)), body)))
 
-/// Emit a whole module for a constant-`main` Core term. W1: only `Core.CNum(v)` is emitted; any other Core
-/// shape returns `None` (out of the W1 subset — a later increment emits it). The value of a nullary `main`
-/// module IS its body's value, so a `CNum(v)` module runs to `v`.
-def emit-module(c: Core) = match c with
-  | Core.CNum(v) => Option.Some(Bytes.concat(preamble(),
-                      Bytes.concat(type-section(),
-                        Bytes.concat(func-section(),
-                          Bytes.concat(export-section(), code-section(const-body(v)))))))
-  | _ => Option.None(unit)
+/// Emit a whole module for a `main` Core term whose body is in the current emit subset (W1: CNum; W2: +
+/// CBin over arithmetic). Returns `None` for an out-of-subset shape (CVar/CLet = W2b, CIf/comparison = W3)
+/// so an unsupported program declines rather than emitting a wrong module. The value of a nullary `main`
+/// module IS its body's value. `can-emit` gates the decision (scalar); `emit-instrs` builds the bytes total.
+def emit-module(c: Core) =
+  (if can-emit(c)
+   then Option.Some(Bytes.concat(preamble(),
+          Bytes.concat(type-section(),
+            Bytes.concat(func-section(),
+              Bytes.concat(export-section(), code-section(body-of(emit-instrs(c))))))))
+   else Option.None(unit))
 
 /// TESTS ----------------------------------------------------------------------------------------------
 /// W1 verifies the emitted bytes STRUCTURALLY in-Cadenza (no host wasmtime yet — that gate is W4).
@@ -157,4 +195,63 @@ def em-code-section-tag-and-body-ends-with-const-and-end() =
              (if (byte-of(m, n - 1) == 11) then unit else trap("body ends with 0x0b end")) else trap("i64.const 3")) else trap("0x42 i64.const")) else trap("zero locals")))
     | Option.None(_) => trap("emits a module"))
 
-export { emit-module, uleb, sleb }
+/// W2 --------------------------------------------------------------------------------------------------
+
+@test
+def em-cbin-add-emits-a-module() =
+  // `1 + 2` (CBin 43 (CNum 1) (CNum 2)) is in the W2 subset → emits Some. The tail is …42 01 42 02 7c 0b
+  // (i64.const 1, i64.const 2, i64.add, end).
+  (match emit-module(Core.CBin(43, Core.CNum(1), Core.CNum(2))) with
+    | Option.Some(m) =>
+      (let n = Bytes.len(m) in
+       (if (byte-of(m, n - 2) == 124) then          // i64.add opcode 0x7c right before end
+         (if (byte-of(m, n - 1) == 11) then unit else trap("ends with end")) else trap("i64.add 0x7c")))
+    | Option.None(_) => trap("CBin add emits a module"))
+
+@test
+def em-cbin-postfix-order() =
+  // postfix: left operand bytes, then right, then op. For (CNum 5) op (CNum 6): … 42 05 42 06 <op> 0b.
+  // Check the const operands appear in source order before the op.
+  (match emit-module(Core.CBin(42, Core.CNum(5), Core.CNum(6))) with
+    | Option.Some(m) =>
+      (let n = Bytes.len(m) in
+       // tail: 42 05 42 06 7e 0b → bytes n-6..n-1
+       (if (byte-of(m, n - 6) == 66) then           // 0x42 i64.const (left)
+         (if (byte-of(m, n - 5) == 5) then            // 5
+           (if (byte-of(m, n - 4) == 66) then          // 0x42 i64.const (right)
+             (if (byte-of(m, n - 3) == 6) then           // 6
+               (if (byte-of(m, n - 2) == 126) then unit else trap("i64.mul 0x7e")) else trap("right operand 6")) else trap("right i64.const")) else trap("left operand 5")) else trap("left i64.const")))
+    | Option.None(_) => trap("CBin mul emits a module"))
+
+/// The op-byte of an emitted `CBin op 1 1` module — the byte right before the trailing `0x0b` end — or -1
+/// if it declined to emit. A test helper so the op-mapping check stays flat (no deep nested matches).
+def emitted-op-byte(op: Int64) = match emit-module(Core.CBin(op, Core.CNum(1), Core.CNum(1))) with
+  | Option.Some(m) => byte-of(m, Bytes.len(m) - 2)
+  | Option.None(_) => 0 - 1
+
+@test
+def em-cbin-op-mapping() =
+  // each Core arith op-code maps to its i64 wasm opcode (add 0x7c, sub 0x7d, mul 0x7e, div_s 0x7f, rem_s 0x81).
+  (if (emitted-op-byte(43) == 124) then
+    (if (emitted-op-byte(45) == 125) then
+      (if (emitted-op-byte(42) == 126) then
+        (if (emitted-op-byte(47) == 127) then
+          (if (emitted-op-byte(37) == 129) then unit else trap("37 % → i64.rem_s 0x81"))
+         else trap("47 / → i64.div_s 0x7f")) else trap("42 * → i64.mul 0x7e")) else trap("45 - → i64.sub 0x7d")) else trap("43 + → i64.add 0x7c"))
+
+@test
+def em-nested-cbin-emits() =
+  // `1 + 2 * 3` (CBin 43 (CNum 1) (CBin 42 (CNum 2) (CNum 3))) — nested arith stays in-subset → emits.
+  (match emit-module(Core.CBin(43, Core.CNum(1), Core.CBin(42, Core.CNum(2), Core.CNum(3)))) with
+    | Option.Some(_) => unit
+    | Option.None(_) => trap("nested arith emits a module"))
+
+@test
+def em-cvar-clet-out-of-subset-decline() =
+  // CVar / CLet need wasm locals (W2b) — not yet emitted, so emit-module declines (no wrong module).
+  (match emit-module(Core.CVar(0)) with
+    | Option.None(_) => (match emit-module(Core.CLet(0, Core.CNum(1), Core.CVar(0))) with
+                          | Option.None(_) => unit | _ => trap("CLet out of subset"))
+    | _ => trap("CVar out of subset"))
+
+export { emit-module, emit-instrs, can-emit, wasm-op, uleb, sleb }

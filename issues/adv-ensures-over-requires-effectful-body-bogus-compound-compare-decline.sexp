@@ -91,3 +91,14 @@
 ; multivalue-specialized / state-threaded body? Likely fix = ensure the it-let binds the value projection, not
 ; the raw tuple, when the wrapped body is state-threaded. Minimal non-verification repro to build: a
 ; hand-written (if c (let ((r (E.op))) (> r 0)) false) under a handler where the body is multivalue-threaded.
+
+; ---
+; RE-ROUTED to v-effects as PRIMARY (corpus-bugfix 2026-07-17): v-verification BUILT their seam-side
+; canonical-ordering fix (A) and it FAILED — a tree STRUCTURALLY IDENTICAL to the working forward-order
+; tree still declines the compound-compare in BOTH orders under their one-shot rewrite. So the trigger is
+; NOT tree shape (front-end can't fix): effect-lowering is sensitive to node PROVENANCE/INDEX for a
+; let-bound perform nested under an if. Trunk-forward works only because @requires rewrites the def
+; in place FIRST (lower index). v-verification reverted (clean), can't close seam-side. FIX = (B) in
+; effect-lowering: lower a let-bound perform correctly regardless of surrounding if/let nesting + node
+; order. v-verification filing a NON-VERIFICATION minimal repro ((if c (let ((r (E.op))) (if (> r 0) r
+; (trap))) (trap)) under a handler) that isolates it with zero annotations. Promote when v-effects fixes.

@@ -956,6 +956,58 @@ fn agent_reads_stale(
     true
 }
 
+/// Is `line` the redundant title line of `<name>`'s status file — `# <name> status` or
+/// `# <name> — status` (any heading/emphasis/dash punctuation)? Matched so it's skipped in favor of the
+/// first REAL status line. Strips only markdown markers and the `—`/`|` separators (NOT the `-` inside a
+/// hyphenated agent name like `v-fleet-tooling`), then checks the words are exactly `<name>` + `status`.
+fn is_status_title_line(line: &str, name: &str) -> bool {
+    let stripped: String = line
+        .chars()
+        .map(|c| {
+            if matches!(c, '#' | '*' | '—' | '|') {
+                ' '
+            } else {
+                c
+            }
+        })
+        .collect();
+    let words: Vec<&str> = stripped.split_whitespace().collect();
+    words.len() == 2
+        && words[0].eq_ignore_ascii_case(name)
+        && words[1].eq_ignore_ascii_case("status")
+}
+
+/// The agent's self-reported status HEADLINE: the first substantive line of `status/<agent>.md`, with
+/// leading markdown heading `#`/bold `*` markers stripped and truncated to keep the board tidy. `None`
+/// if the file is absent or has no substantive line. This is what an agent chooses to say about its own
+/// state — folded onto the board so `fleet status` shows self-report alongside registry/heartbeat facts.
+fn status_headline(fleet: &Fleet, name: &str) -> Option<String> {
+    let path = fleet.root.join("status").join(format!("{name}.md"));
+    let text = std::fs::read_to_string(&path).ok()?;
+    let line = text
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty() && !is_status_title_line(l, name))?;
+    // Strip leading markdown noise (`#`, `*`, `-`, spaces) so the headline reads cleanly, then drop any
+    // bold `**` markers left in the middle (e.g. `**Did:** …` → `Did: …`).
+    let cleaned = line
+        .trim_start_matches(['#', '*', '-', ' '])
+        .replace("**", "");
+    let cleaned = cleaned.trim();
+    if cleaned.is_empty() {
+        return None;
+    }
+    // Truncate on a char boundary to keep one line; ellipsize if cut.
+    const MAX: usize = 96;
+    let headline = if cleaned.chars().count() > MAX {
+        let cut: String = cleaned.chars().take(MAX).collect();
+        format!("{cut}…")
+    } else {
+        cleaned.to_string()
+    };
+    Some(headline)
+}
+
 fn status(fleet: &Fleet) {
     let reg = fleet.load();
     let session = if in_tmux() {
@@ -1016,6 +1068,12 @@ fn status(fleet: &Fleet) {
             "  {:<18} {:<13} {:<7} {:<8} {:<7} {:<9} {}{}",
             a.name, role, a.model, a.status, window, hb_age, inbox, flag
         );
+        // Fold the agent's OWN self-reported status headline (first substantive line of its
+        // `status/<agent>.md`) onto an indented sub-line, so the board shows what each agent SAYS it's
+        // doing — not just registry/heartbeat facts. Absent file → no sub-line (silent).
+        if let Some(headline) = status_headline(fleet, &a.name) {
+            println!("      ↳ {headline}");
+        }
     }
     if stale > 0 {
         println!(
@@ -4713,6 +4771,37 @@ mod tests {
             first_divergence_line("some other divergence, no such keyword\nsecond line"),
             "baselines diverge (a wasm-only baseline edit without its rust twin)"
         );
+    }
+
+    #[test]
+    fn is_status_title_line_matches_the_title_in_any_punctuation_without_mangling_hyphenated_names()
+    {
+        // The title line (redundant with the board's name column) is skipped in ANY form…
+        assert!(is_status_title_line("# concierge status", "concierge"));
+        assert!(is_status_title_line(
+            "# v-fleet-tooling — status",
+            "v-fleet-tooling"
+        ));
+        assert!(is_status_title_line(
+            "v-fleet-tooling status",
+            "v-fleet-tooling"
+        ));
+        assert!(is_status_title_line("## pr-sync — status", "pr-sync"));
+        // …but a REAL first line (the actual headline) is NOT mistaken for the title.
+        assert!(!is_status_title_line("**Did:** drained inbox", "concierge"));
+        assert!(!is_status_title_line(
+            "SLICE 2+3 LANDED (caa9c47c)",
+            "v-fleet-tooling"
+        ));
+        assert!(!is_status_title_line(
+            "status of the world: green",
+            "v-fleet-tooling"
+        ));
+        // A different agent's title is not this agent's title.
+        assert!(!is_status_title_line(
+            "# concierge status",
+            "v-fleet-tooling"
+        ));
     }
 
     #[test]

@@ -1617,6 +1617,7 @@ pass	a scalar element is projected directly from a fn-return tuple with runtime 
 pass	a scalar element is projected directly from a function's runtime tuple result
 pass	a scalar element is projected from a let-bound runtime tuple
 pass	a scalar-payload sum looked up from a map, returned via a ctor, is matched in the caller
+pass	a scaled-unit PARAMETER annotation keeps its scale across the type round-trip (mixed-scale combine)
 pass	a schema decode's Err result is handled as data on its own branch
 pass	a schema decode's Ok result is matched to recover the decoded payload
 pass	a scientific-notation float literal denotes the scaled value

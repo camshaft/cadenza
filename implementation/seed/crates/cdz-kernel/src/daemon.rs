@@ -48,6 +48,58 @@ pub fn tick_performing(log: &impl Log, event_kind: i64, runtime: Vec<u8>) -> Res
     crate::kernel::run_interpret_performing(&program, event_kind, runtime)
 }
 
+/// The event kind prefix a performed host-op is RECORDED under in the log (`prim-exec`/`prim-http`/
+/// `prim-append`). Each perform appends one such event carrying the op's String payload — the §2.3
+/// recorded-effect trail (like `fold`'s `model-request`/`model-response`), so a re-fold replays the plan.
+pub const PRIM_RECORD_PREFIX: &str = "prim-";
+
+/// Run ONE daemon step that PERFORMS the ops via a REAL host primitive and RECORDS each perform in the log
+/// (the K1c→host-primitive rung). Same genesis lookup as [`tick`], but drives the HOSTED executor
+/// ([`crate::kernel::run_interpret_hosted`]): each scheduled `Prim.exec`/`Prim.http`/`Prim.append` is answered
+/// by a real closure that (1) appends a `prim-<op>` event carrying the op's String payload to `log` (the
+/// recorded-effect trail, like [`crate::fold::drive_one_turn`]), and (2) returns a per-op scalar the fold sums.
+///
+/// This first cut is a SAFE record-only primitive — it logs each perform, no subprocess/network. Live `exec`
+/// (subprocess) / `http` (network) cross the capability boundary and must be gated behind Cedar authorization
+/// (the charter's on-behalf-of model) before they run for real; this rung proves the daemon→hosted→real-
+/// closure→log-event path with a primitive that only records. Returns the summed per-op result. `log` is shared
+/// with the recording closure via `Arc<Mutex>` (the closure runs inside the wasmtime host call, must be
+/// `Send + Sync + 'static`); the daemon is single-threaded so the lock is uncontended.
+pub fn tick_hosted<L>(
+    log: std::sync::Arc<std::sync::Mutex<L>>,
+    event_kind: i64,
+    runtime: Vec<u8>,
+) -> Result<i64>
+where
+    L: Log + Send + 'static,
+{
+    let program = {
+        let l = log.lock().map_err(|_| anyhow!("log mutex poisoned"))?;
+        crate::boot::latest_program(&l.tail(0)?).ok_or_else(|| {
+            anyhow!("no genesis program in the log (CLI must inject one before the daemon runs)")
+        })?
+    };
+    // The real (record-only) primitive: append a `prim-<op>` event carrying the payload, return a per-op
+    // scalar (Append→1, Exec→2, Http→3 — the same tags the mock used, so behavior is comparable). An append
+    // failure can't surface through the `-> i64` host-op contract, so it's a best-effort record (a gap shows
+    // as a missing event, not a wrong result), matching `fold::drive_one_turn`'s recording discipline.
+    let prim = {
+        let log = std::sync::Arc::clone(&log);
+        move |op: &str, payload: String| -> i64 {
+            if let Ok(mut l) = log.lock() {
+                let _ = l.append(&format!("{PRIM_RECORD_PREFIX}{op}"), payload.as_bytes());
+            }
+            match op {
+                "exec" => 2,
+                "http" => 3,
+                "append" => 1,
+                _ => 0,
+            }
+        }
+    };
+    crate::kernel::run_interpret_hosted(&program, event_kind, runtime, prim)
+}
+
 /// The latest genesis `program` source in `log`, or a loud error if none (the CLI must inject one first).
 fn latest_or_err(log: &impl Log) -> Result<String> {
     let events = log.tail(0)?;
@@ -185,6 +237,69 @@ mod tests {
         assert!(
             tick_performing(&log, 1, Vec::new()).is_err(),
             "no genesis → tick_performing errors (like tick)"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn tick_hosted_performs_via_a_real_primitive_and_records_each_op_in_the_log() {
+        // The K1c→host-primitive rung: tick_hosted drives the HOSTED executor (Prim bound to a REAL host
+        // closure), so each op is PERFORMED by the daemon's record-only primitive AND appended to the log as a
+        // `prim-<op>` event (the recorded-effect trail, like fold's model-request/response). kind=1 → [Append
+        // "ack", Exec "handle"] → append("ack")→1 + exec("handle")→2 → sum 3, and the log gains `prim-append`
+        // (payload "ack") + `prim-exec` (payload "handle") IN ORDER. This is the daemon actually executing via
+        // a real host primitive (record-only cut; live exec/http gate behind Cedar), not the in-program mock.
+        use std::sync::{Arc, Mutex};
+        let (path, mut log0) = temp_log();
+        crate::boot::inject_genesis(&mut log0, GENESIS).unwrap();
+        let store_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let provider = match crate::kernel::compile_interpret_provider(GENESIS) {
+            Ok(p) => p,
+            Err(e) => panic!("genesis compiles: {e}"),
+        };
+        let Some(runtime) = crate::kernel::find_runtime_for(&provider, store_root) else {
+            eprintln!("[cdz-kernel::daemon] runtime absent/stale; skipping tick_hosted");
+            let _ = std::fs::remove_file(&path);
+            return;
+        };
+        let log = Arc::new(Mutex::new(log0));
+        let performed = tick_hosted(Arc::clone(&log), 1, runtime)
+            .expect("the daemon performs the genesis's ops via a real host primitive");
+        assert_eq!(
+            performed, 3,
+            "kind=1 → append(\"ack\")→1 + exec(\"handle\")→2 → summed by the fold = 3"
+        );
+        // The recorded-effect trail: the log gained a `prim-append`/`prim-exec` event per performed op, in
+        // list order, each carrying the op's String payload.
+        let events = log.lock().unwrap().tail(0).unwrap();
+        let prim_events: Vec<(String, String)> = events
+            .iter()
+            .filter(|e| e.kind.starts_with(PRIM_RECORD_PREFIX))
+            .map(|e| {
+                (
+                    e.kind.clone(),
+                    String::from_utf8_lossy(&e.payload).into_owned(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            prim_events,
+            vec![
+                ("prim-append".to_string(), "ack".to_string()),
+                ("prim-exec".to_string(), "handle".to_string()),
+            ],
+            "each performed op was recorded in the log as prim-<op> with its payload, in order"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn tick_hosted_without_a_genesis_is_a_loud_error() {
+        use std::sync::{Arc, Mutex};
+        let (path, log) = temp_log();
+        assert!(
+            tick_hosted(Arc::new(Mutex::new(log)), 1, Vec::new()).is_err(),
+            "no genesis → tick_hosted errors (like tick/tick_performing)"
         );
         let _ = std::fs::remove_file(&path);
     }
