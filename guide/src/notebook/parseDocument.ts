@@ -206,3 +206,43 @@ export function parseDocument(markdown: string): Cell[] {
   flushProse();
   return cells;
 }
+
+/// The fence info-string token for a code cell's directive — the inverse of `parseDirective`, for
+/// `serializeDocument`. `none` has NO token (a bare ` ```cadenza `); every other directive round-trips to
+/// its keyword (`table`, `formula`, `widget`, `hidden`, `chart:line`/`bar`/`scatter`).
+function directiveToInfo(d: CellDirective): string {
+  switch (d.kind) {
+    case "none": return "cadenza";
+    case "chart": return `cadenza chart:${d.chart}`;
+    default: return `cadenza ${d.kind}`;
+  }
+}
+
+/// Serialize a cell list back to a notebook markdown string — the inverse of `parseDocument`. A prose cell
+/// is emitted verbatim; a code cell becomes a ` ```cadenza<directive> ` fence + its source + a closing
+/// ` ``` `. Cells are joined with a blank line so they re-split cleanly. `parseDocument(serializeDocument(
+/// cells))` round-trips a parsed document (modulo the blank-run normalization `parseDocument` already does).
+/// This is the doc-side of per-cell editing (P0 #13): a per-cell editor edits one cell's `source`
+/// (`setCellSource`), then the notebook re-serializes to markdown for storage / the run path.
+export function serializeDocument(cells: Cell[]): string {
+  return cells
+    .map((cell) =>
+      cell.kind === "prose"
+        ? cell.markdown
+        : `\`\`\`${directiveToInfo(cell.directive)}\n${cell.source}\n\`\`\``,
+    )
+    .join("\n\n");
+}
+
+/// Return a NEW cell list with the CODE cell at `index` given `newSource` (immutable — a fresh array +
+/// a fresh cell object, so React state updates cleanly and the other cells keep their identity). Throws on
+/// an out-of-range index or a non-code cell (a prose cell isn't edited through this path), mirroring
+/// `assembleCell`'s guards. The directive is preserved — only the source changes.
+export function setCellSource(cells: Cell[], index: number, newSource: string): Cell[] {
+  const cell = cells[index];
+  if (!cell) throw new RangeError(`setCellSource: no cell at index ${index}`);
+  if (cell.kind !== "code") throw new TypeError(`setCellSource: cell ${index} is prose, not code`);
+  const next = cells.slice();
+  next[index] = { kind: "code", source: newSource, directive: cell.directive };
+  return next;
+}

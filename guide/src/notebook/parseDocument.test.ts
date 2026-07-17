@@ -5,7 +5,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseDocument, parseDirective, cellRanges, type Cell } from "./parseDocument.ts";
+import { parseDocument, parseDirective, cellRanges, serializeDocument, setCellSource, type Cell } from "./parseDocument.ts";
 
 test("a plain prose-only document is one prose cell", () => {
   const cells = parseDocument("# Title\n\nsome **markdown** prose.");
@@ -182,4 +182,74 @@ test("cellRanges surface defaults to sexpr (the notebook's pinned surface) and r
   const md = ["```cadenza", "(def (main) 1)", "```"].join("\n");
   assert.equal(cellRanges(md)[0].surface, "sexpr");
   assert.equal(cellRanges(md, "ml")[0].surface, "ml");
+});
+
+// ── serializeDocument / setCellSource: the per-cell-edit round trip (P0 #13, per-cell editors) ──
+
+test("serializeDocument is the inverse of parseDocument (round-trips every directive)", () => {
+  const md = [
+    "# Title",
+    "",
+    "intro prose",
+    "",
+    "```cadenza",
+    "(def (main) 1)",
+    "```",
+    "",
+    "```cadenza table",
+    "(def (main) (list))",
+    "```",
+    "",
+    "```cadenza chart:bar",
+    "(def (main) (list))",
+    "```",
+    "",
+    "```cadenza widget",
+    "x : Int64 = slider(0, 10)",
+    "```",
+  ].join("\n");
+  const cells = parseDocument(md);
+  // parseDocument∘serializeDocument∘parseDocument is stable (the fixpoint parseDocument already normalizes to).
+  assert.deepEqual(parseDocument(serializeDocument(cells)), cells);
+});
+
+test("serializeDocument preserves each directive's fence token (none has no token)", () => {
+  const cells: Cell[] = [
+    { kind: "code", source: "(def (main) 1)", directive: { kind: "none" } },
+    { kind: "code", source: "(def (main) 2)", directive: { kind: "chart", chart: "scatter" } },
+    { kind: "code", source: "(def (main) 3)", directive: { kind: "hidden" } },
+  ];
+  const md = serializeDocument(cells);
+  assert.match(md, /```cadenza\n\(def \(main\) 1\)/); // none → bare `cadenza`
+  assert.match(md, /```cadenza chart:scatter\n/);
+  assert.match(md, /```cadenza hidden\n/);
+  assert.deepEqual(parseDocument(md), cells);
+});
+
+test("setCellSource replaces one code cell's source immutably, preserving the directive + other cells", () => {
+  const cells = parseDocument("```cadenza table\n(def (main) (list))\n```\n\nprose\n\n```cadenza\n(def (main) 1)\n```");
+  const next = setCellSource(cells, 0, "(def (main) (list 1 2))");
+  // A fresh array + fresh cell; the edited cell keeps its `table` directive.
+  assert.notEqual(next, cells);
+  assert.notEqual(next[0], cells[0]);
+  assert.deepEqual(next[0], { kind: "code", source: "(def (main) (list 1 2))", directive: { kind: "table" } });
+  // Other cells are untouched (same object identity).
+  assert.equal(next[1], cells[1]);
+  assert.equal(next[2], cells[2]);
+  // The original array is unmodified.
+  assert.equal((cells[0] as Extract<Cell, { kind: "code" }>).source, "(def (main) (list))");
+});
+
+test("setCellSource throws on a bad index or a prose cell (like assembleCell)", () => {
+  const cells = parseDocument("prose\n\n```cadenza\n(def (main) 1)\n```");
+  assert.throws(() => setCellSource(cells, 99, "x"), RangeError);
+  assert.throws(() => setCellSource(cells, 0, "x"), TypeError); // cell 0 is prose
+});
+
+test("an edit then re-serialize survives a full parse round trip (the live edit flow)", () => {
+  const cells = parseDocument("```cadenza\n(def (main) 1)\n```");
+  const edited = setCellSource(cells, 0, "(def (main) 42)");
+  const md = serializeDocument(edited);
+  assert.deepEqual(parseDocument(md), edited);
+  assert.match(md, /\(def \(main\) 42\)/);
 });
