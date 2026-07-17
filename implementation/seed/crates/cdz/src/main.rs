@@ -384,6 +384,33 @@ struct RunMlArgs {
 /// can't cross the component boundary as an arg, but a literal is compile-time — no crossing) and calls
 /// `run-src`, then compile+run it and read the rendered `Option`. The driver MUST live in the compiler-ml
 /// `src/` dir because `import "sread-eval"` resolves RELATIVE TO THE ENTRY FILE'S DIR (no `--search-path`).
+///
+/// Locate `implementation/compiler-ml/src` ROBUSTLY (not assuming cwd == repo root): walk upward from the
+/// current dir, then from the exe's dir, returning the first ancestor that contains it. So `cdz run-ml`
+/// works from any working directory — e.g. `cargo test`, whose per-crate cwd is NOT the repo root (the bug
+/// that reded the shared gate). Returns the resolved `…/compiler-ml/src` dir, or `None` if not found.
+fn find_compiler_ml_src() -> Option<std::path::PathBuf> {
+    const REL: &str = "implementation/compiler-ml/src";
+    let mut roots: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(cwd) = std::env::current_dir() {
+        roots.push(cwd);
+    }
+    if let Some(exe_dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(|p| p.to_path_buf())) {
+        roots.push(exe_dir);
+    }
+    for start in roots {
+        let mut cur: Option<&std::path::Path> = Some(start.as_path());
+        while let Some(dir) = cur {
+            let candidate = dir.join(REL);
+            if candidate.is_dir() {
+                return Some(candidate);
+            }
+            cur = dir.parent();
+        }
+    }
+    None
+}
+
 fn run_run_ml(args: &RunMlArgs) -> ExitCode {
     use std::io::Read;
     // 1. Read the program source (file or stdin). A read failure is the reserved harness-error path.
@@ -417,18 +444,17 @@ fn run_run_ml(args: &RunMlArgs) -> ExitCode {
         "import {{ run-src }} from \"sread-eval\"\ndef main() = run-src(\"{escaped}\")\nexport {{ main }}\n"
     );
 
-    // 3. Write the driver INTO the compiler-ml src dir (so `import \"sread-eval\"` resolves). Unique-ish
-    //    name; cleaned up before every return below. The gate runs from the repo root, so this relative
-    //    path is stable. If the dir is ABSENT (e.g. `run-ml` invoked from a crate dir under `cargo test`,
-    //    not the repo root), the ML compiler simply isn't available HERE — that is coverage-not-yet, not a
-    //    program READ failure, so per the exit-code contract emit a `declined` VERDICT and exit 0 (a missing
-    //    compiler is a decline, not a shell failure; the ONLY non-zero path is a program read error). The
-    //    gate always runs from the repo root where the dir exists, so it still gets real differential runs.
-    let src_dir = std::path::Path::new("implementation/compiler-ml/src");
-    if !src_dir.is_dir() {
-        println!("declined");
-        return ExitCode::SUCCESS;
-    }
+    // 3. Write the driver INTO the compiler-ml src dir (so `import \"sread-eval\"` resolves — imports are
+    //    entry-dir-relative). Located ROBUSTLY (not assuming cwd == repo root): search upward from the cwd
+    //    AND from the exe's dir for `implementation/compiler-ml/src`, so `cdz run-ml` works from any cwd
+    //    (e.g. under `cargo test`, whose cwd is the crate dir, not the repo root).
+    let src_dir = match find_compiler_ml_src() {
+        Some(d) => d,
+        None => {
+            eprintln!("{PROG} run-ml: compiler-ml src dir not found (searched up from cwd + exe dir)");
+            return ExitCode::FAILURE;
+        }
+    };
     let driver_path = src_dir.join("zz-run-ml-driver.cdz");
     if let Err(e) = std::fs::write(&driver_path, &driver) {
         eprintln!("{PROG} run-ml: cannot write driver: {e}");
