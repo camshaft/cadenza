@@ -4250,11 +4250,15 @@ fn strip_const_params(ast: &mut Arenas) -> crate::fxhash::FxHashSet<StructId> {
     const_params
 }
 
-/// The three known annotation NAMES `strip_annotations` records into a policy set off a `(@ NAME (def …))`
-/// wrapper — the inline-policy pair and the unit-test marker — the single source of truth for "which
-/// annotations carry compiler SEMANTICS today". An annotation whose name is NOT one of these is still
-/// UNWRAPPED (the def takes effect) but recorded nowhere: a transparent, inert marker. So a future
-/// `@deprecated`/`@lint`/… works as a no-op the day it is written and gains meaning by joining this list.
+/// The known annotation NAMES `strip_annotations` records into a policy set off a `(@ NAME (def …))`
+/// wrapper — the single source of truth for "which annotations carry compiler SEMANTICS today". The set
+/// is the inline-policy pair (`inline-never`/`inline-always`), the test markers (`test`/`exhaustive`), and
+/// the verification-contract predicates (`requires`/`ensures`). The contract pair is CALL-STYLE — the
+/// annotation head is an APPLICATION `@requires(pred)`/`@ensures(pred)` carrying a predicate argument, not
+/// a bare `NAME` like the others (`strip_annotations` matches the application head against this list). An
+/// annotation whose name is NOT one of these is still UNWRAPPED (the def takes effect) but recorded
+/// nowhere: a transparent, inert marker. So a future `@deprecated`/`@lint`/… works as a no-op the day it is
+/// written and gains meaning by joining this list.
 pub(crate) const KNOWN_ANNOTATIONS: &[&str] = &[
     "inline-never",
     "inline-always",
