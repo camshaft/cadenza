@@ -1069,6 +1069,7 @@ pass	a nested runtime tuple built behind a recursive call escapes to the host
 pass	a nested runtime tuple is returned as a result
 pass	a nested sum match missing an inner variant is non-exhaustive
 pass	a nested symbol-literal payload falls through on a non-matching symbol
+pass	a nested tuple list element is bound over a runtime list and folded across the rest
 pass	a nested tuple pattern of the wrong arity is a type error
 pass	a nested tuple-arity mismatch in equality is a type error
 pass	a nested tuple-pattern parameter destructures a runtime tuple
@@ -1209,6 +1210,7 @@ pass	a pure lambda passed as an argument to a performing callee folds
 pass	a pure let-bound lambda and a performing one are both applied in the handle body
 pass	a pure shared subexpression computes the same value however the backend optimizes it
 pass	a purely-logical composed proof over a quantified proposition: DISCH then MP
+pass	a push-loop tuple-list accumulator infers its tuple element component types
 pass	a qualified construct and a bare match name the same colliding variant
 pass	a quantity annotation at an in-range narrow width grounds and accepts
 pass	a quantity annotation range-checks the inner width — an out-of-range magnitude is rejected
@@ -3450,7 +3452,6 @@ todo	a multi-export set of parameterized capturing closures is driven per export
 todo	a multi-export shared call is a repeatable (borrow<t>) callback
 todo	a mutually-recursive AST walker reads a node's child list without corrupting a sibling head-read
 todo	a mutually-recursive decoder returns a heap value and cursor and its heap slot is dispatched
-todo	a nested tuple list element is bound over a runtime list and folded across the rest
 todo	a non-byte-aligned bit-field width takes its exact arbitrary-width unsigned type
 todo	a parameterized export returning a capturing closure is made and called by the host
 todo	a parameterized export returning a multi-argument capturing closure
@@ -3460,7 +3461,6 @@ todo	a pass-through closure that returns its arg via a trivial let composes at o
 todo	a produced closure is handed back into a consumer export (the round trip)
 todo	a program that makes a host call has that call in its observable behavior
 todo	a program uses a response-returning delegated host function's return value
-todo	a push-loop tuple-list accumulator infers its tuple element component types
 todo	a record-returning closure alongside a parameterized plain export — the closure
 todo	a record-returning closure alongside a parameterized plain export — the plain
 todo	a recursive NEWTYPE traversal recurses on its projected recursive field
