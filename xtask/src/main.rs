@@ -4181,6 +4181,9 @@ mod trap_grading_tests {
         // `spec/semantics` does not exist → read_dir errors → hard Err.
         let tick = std::process::id();
         let root = std::env::temp_dir().join(format!("needs-lint-empty-{tick}"));
+        // Pre-clear: the dir is keyed only on pid, so a prior run that panicked before its cleanup
+        // could leave stale contents that contaminate the empty-dir assertion below. Start clean.
+        let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         let paths = Paths {
             seed: root.join("implementation/seed"),
@@ -4215,6 +4218,8 @@ mod trap_grading_tests {
         // `gate --save`). The lint must flag rust + rust-async as missing that title, with the heal cmd.
         let tick = std::process::id();
         let root = std::env::temp_dir().join(format!("baseline-agree-{tick}"));
+        // Pre-clear: pid-keyed dir, so a prior panicked run's leftovers could skew the title-set diff.
+        let _ = std::fs::remove_dir_all(&root);
         let sem = root.join("spec/semantics");
         std::fs::create_dir_all(&sem).unwrap();
         let paths = Paths {
