@@ -13,6 +13,8 @@ A thin LSP client that launches **`cdz lsp`** (the compiler's own Language Serve
   one edit (cross-file when the symbol spans a project's import closure);
 - **completion** — names in scope (locals with their types + the module's top-level declarations);
 - **document outline** — the symbol tree / breadcrumb (Ctrl-Shift-O);
+- **workspace symbol search** — jump to any top-level declaration across the open files (Ctrl-T);
+- **folding** — collapse each multi-line top-level declaration from the gutter;
 - **quick-fixes** — the compiler's own structured repairs (the same ones `cdz fix` applies), one click
   from the lightbulb.
 
