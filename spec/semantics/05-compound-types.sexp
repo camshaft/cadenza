@@ -8694,6 +8694,23 @@
             (def (main) (Map.len (. (Map.take (Map.insert Map.empty 1 10) 2) 1))) (export main)))
   (output (: 1 Int64)))
 
+(case "a single Map.swap reports the OLD prior value WHILE the new map holds the NEW value (combined atomicity)"
+  (doc    "The cases above read the `Map.swap` tuple's elements SEPARATELY — the prior optional (`.0`) or the
+           new map (`.1`) — so neither pins that BOTH come from the SAME swap consistently. This reads both
+           from ONE `(Map.swap {1↦10} 1 99)`: the prior element must be the OLD `(Some 10)` AND the new map
+           must hold the NEW `99` at key 1. Encoded as `100·prior + newval = 100·10 + 99 = 1099`, so an
+           element-crossing bug diverges — returning the NEW value as the prior (`Some 99` → 9999) or the
+           OLD map (lookup misses → 100·10+0 = 1000) both miss 1099. Pins swap as atomic: the reported prior
+           is the value BEFORE the write and the returned map is the value AFTER it, from one operation.")
+  (input  (do
+            (def (main)
+              (let ((r (Map.swap (Map.insert Map.empty 1 10) 1 99)))
+                (match (. r 0)
+                  ((Some p) (+ (* 100 p) (match (Map.lookup (. r 1) 1) ((Some v) v) (None 0))))
+                  (None 0))))
+            (export main)))
+  (output (: 1099 Int64)))
+
 ; --- Map operations at a RUNTIME key: lookup / swap / take / insert / remove on the value heap ----------
 ; The map cases above use CONSTANT keys, so the lookup/swap/take/size results fold at compile time. A
 ; RUNTIME key — a boundary parameter — cannot fold: the key is boxed and the CHAMP is probed at run time,

@@ -1166,4 +1166,70 @@ mod tests {
             let _ = crate::parser::read_ml(s);
         }
     }
+
+    #[test]
+    fn glued_literal_forms_lex_as_one_token_over_generated_bodies() {
+        // The GLUED literal forms — `b"…"` (ByteStr), `#"…"` (SymLit), `<tag>"…"` (TaggedTemplate) — must
+        // each lex as EXACTLY ONE token spanning the whole construct, over bodies rich in the boundary
+        // chars that stress the escape-/brace-aware body scan: an escaped quote `\"` must NOT close the
+        // literal early, a `\\` must consume its pair, and (tagged-template only) a `"` inside a `{…}` hole
+        // must NOT close it. The arbitrary-input sweep hits these forms only rarely/degenerately (the
+        // random alphabet seldom emits a full `b"…"` with a well-formed escaped body); this constructs
+        // them densely. `assert_lex_invariants` already pins span reconstruction + no-panic; here we ALSO
+        // assert the single-token-of-the-expected-KIND property (an early split/over-consume shows as a
+        // wrong token count or kind).
+        // A body alphabet weighted to the escape-significant chars + unicode. `\"` and `\\` are emitted as
+        // 2-char escape UNITS so the generated body is always well-formed (even count of backslashes).
+        let units: &[&str] = &[
+            "a", "b", " ", "\t", "x", "1", "λ", "中", // ordinary body chars
+            "\\\"", "\\\\",
+            "\\n", // escape units (backslash-quote, backslash-backslash, backslash-n)
+            "{{", "}}", // template brace escapes (harmless in b"/#" too — just chars there)
+        ];
+        let mut r = SplitMix64(0x91ed_c0de_1a7e_5eed);
+        let gen_body = |r: &mut SplitMix64, n: usize| -> String {
+            (0..n)
+                .map(|_| units[(r.next() as usize) % units.len()])
+                .collect()
+        };
+        for _ in 0..4000 {
+            let n = (r.next() % 6) as usize;
+            let body = gen_body(&mut r, n);
+            // b"<body>" → one ByteStr; #"<body>" → one SymLit; id"<body>" → one TaggedTemplate.
+            for (src, want) in [
+                (format!("b\"{body}\""), Kind::ByteStr),
+                (format!("#\"{body}\""), Kind::SymLit),
+                (format!("id\"{body}\""), Kind::TaggedTemplate),
+            ] {
+                let ks = kinds(&src);
+                assert_eq!(
+                    ks,
+                    vec![want],
+                    "glued form {src:?} must be exactly one {want:?} token, got {ks:?}"
+                );
+                // The single token spans the ENTIRE source (no early split / over-consume).
+                let st = spanned_text(&src);
+                assert_eq!(
+                    st,
+                    vec![(src.as_str(), want)],
+                    "glued form {src:?} token must span all of it"
+                );
+            }
+        }
+        // Tagged-template HOLES with an embedded `"` (a string literal in the interpolated expr) must NOT
+        // close the template early — construct `tag"…{ <hole-with-a-quoted-string> }…"` and assert one token.
+        for hole in [
+            "x",
+            "g(\"}\")",     // a `}` inside a string inside the hole
+            "f(\"a{b}c\")", // braces + quotes inside the hole
+            "h(\"\\\"\")",  // an escaped quote inside the hole's string
+        ] {
+            let src = format!("t\"pre{{{hole}}}post\"");
+            assert_eq!(
+                kinds(&src),
+                vec![Kind::TaggedTemplate],
+                "a hole with an embedded string must keep the template one token: {src:?}"
+            );
+        }
+    }
 }

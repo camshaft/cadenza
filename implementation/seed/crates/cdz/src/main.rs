@@ -5280,13 +5280,21 @@ fn run_instantiations(args: &InstantiationsArgs) -> ExitCode {
         }
         None => args.file.clone(),
     };
+    let mut malformed = false;
     for line in text.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
         let mut cols = line.split('\t');
         match cols.next() {
             Some("disp") => {
                 let (node, disp) = match (cols.next(), cols.next()) {
                     (Some(n), Some(d)) => (n, d),
-                    _ => continue,
+                    _ => {
+                        report_malformed_query_row("instantiations", line);
+                        malformed = true;
+                        continue;
+                    }
                 };
                 // Present the disposition set readably, and gloss what it MEANS (why there is / isn't a
                 // function to point at) so the status is self-explanatory. A `transformed→copy` tag or a
@@ -5308,7 +5316,11 @@ fn run_instantiations(args: &InstantiationsArgs) -> ExitCode {
             Some("inst") => {
                 let (spec, node, arglist) = match (cols.next(), cols.next(), cols.next()) {
                     (Some(s), Some(n), Some(a)) => (s, n, a),
-                    _ => continue,
+                    _ => {
+                        report_malformed_query_row("instantiations", line);
+                        malformed = true;
+                        continue;
+                    }
                 };
                 let pretty = arglist
                     .split(';')
@@ -5317,10 +5329,19 @@ fn run_instantiations(args: &InstantiationsArgs) -> ExitCode {
                     .join(", ");
                 println!("{}:   {}[{pretty}] → {spec}", loc_of(node), args.name);
             }
-            _ => continue,
+            // A row whose leading tag is neither `disp` nor `inst` is a format skew — fail loudly rather
+            // than silently drop it (the silent-skip class; the other query readers already do this).
+            _ => {
+                report_malformed_query_row("instantiations", line);
+                malformed = true;
+            }
         }
     }
-    ExitCode::SUCCESS
+    if malformed {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
 }
 
 /// `cdz highlight FILE` — semantic syntax highlighting: every classified token as `file:line:col: kind`.
@@ -5419,10 +5440,11 @@ fn run_sidecar_many(
 }
 
 /// Report a sidecar QUERY RESULT ROW that did not parse into its expected shape — the shared loud-failure
-/// path for every `cdz` query reader (`symbols`/`exports`/`scope`/`uses`/`highlight`/`instantiations`/
-/// `param-manifest`). Each reader splits a query's TAB-separated output into a fixed set of fields; a row
-/// that does not match is NOT silently dropped (which would mask a sidecar output-format regression behind
-/// a success exit + a silently-short result — the class Copilot flagged on `param-manifest`, PR #525).
+/// path for the `cdz` query readers that call it: `uses`, `scope`, `exports`, `symbols`, `highlight`, and
+/// `instantiations`. (`param-manifest` has its OWN equivalent error path — the original fix from PR #525 —
+/// and does not route through here.) Each reader splits a query's TAB-separated output into a fixed set of
+/// fields; a row that does not match is NOT silently dropped (which would mask a sidecar output-format
+/// regression behind a success exit + a silently-short result — the class Copilot flagged, PR #525/#530).
 /// Instead the reader calls this to name the query + the offending line, then FAILS at the end. `query` is
 /// the query name for the message; returns nothing — the caller sets its own `malformed` flag.
 fn report_malformed_query_row(query: &str, line: &str) {
@@ -6538,6 +6560,33 @@ mod tests {
             debug_module_path("/build/a/prog.sexp"),
             debug_module_path("/elsewhere/b/prog.sexp"),
         );
+    }
+
+    #[test]
+    fn debug_module_path_covers_the_documented_edge_specs() {
+        // The doc-comment promises three edges the happy-path test above skips; pin them so DWARF
+        // determinism can't silently regress on an unusual spec (DESIGN-debug-info-rcdzc.md §4).
+        // (1) EMPTY spec (only when a spec is itself empty) — no leading `./` to strip, so verbatim (empty).
+        assert_eq!(debug_module_path(""), "");
+        // (2) A trailing-slash dir-like path is relative → kept verbatim (not an absolute-path reduction).
+        assert_eq!(debug_module_path("src/"), "src/");
+        // (3) On this POSIX host a backslash is NOT a path separator, so a Windows-style relative path is
+        //     kept verbatim (it degrades to file-name only on a Windows host) — still deterministic here.
+        assert_eq!(debug_module_path("a\\b.cdz"), "a\\b.cdz");
+        // A bare `./` strips to empty (the prefix is the whole spec).
+        assert_eq!(debug_module_path("./"), "");
+    }
+
+    #[test]
+    fn program_name_falls_back_to_main_when_a_spec_has_no_file_stem() {
+        // `program_name` is the artifact/query name a spec defaults to; a normal path yields its stem,
+        // but a stem-less spec (root, `..`, or empty) falls back to the literal "main" — pin the fallback
+        // so a query artifact never ends up unnamed.
+        assert_eq!(program_name("src/app.cdz"), "app");
+        assert_eq!(program_name("app.sexp"), "app");
+        assert_eq!(program_name("/"), "main");
+        assert_eq!(program_name(".."), "main");
+        assert_eq!(program_name(""), "main");
     }
 
     /// A throwaway directory unique to `tag`, created empty. The caller populates + removes it.

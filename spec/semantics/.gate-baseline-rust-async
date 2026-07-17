@@ -1641,6 +1641,7 @@ pass	a signed narrow-width wrapping-add constant folds by wrapping to the negati
 pass	a signed pattern segment reads a two's-complement integer as negative
 pass	a signed segment reads the sign-bit-only byte as the minimum, not its magnitude
 pass	a signed-byte entrypoint returns its runtime argument
+pass	a single Map.swap reports the OLD prior value WHILE the new map holds the NEW value (combined atomicity)
 pass	a single-form body admits a sequence by holding a do block
 pass	a single-scalar String.slice equals the String.at of the same index (the two scalar-addressing paths agree)
 pass	a single-variant Int32 newtype literal-payload arm compiles at the payload width
@@ -1673,6 +1674,7 @@ pass	a spliced boolean drives an evaluated conditional through the lifted leaf
 pass	a spliced string participates in an evaluated equality
 pass	a squared BigInt-inner quantity added to a linear one is a dimension mismatch
 pass	a squared quantity does not add to a linear quantity
+todo	a state-advancing helper called before a later read threads its write through the continuation
 pass	a stateful handler threads its counter across a function boundary
 pass	a straight-line tuple built from callee params is projected in the caller
 pass	a strength-reduced multiply nested as an operand computes in place
@@ -2851,6 +2853,12 @@ pass	symbol ordering — greater-than agrees with the byte order
 pass	symbol ordering — greater-than-or-equal is false when strictly less
 pass	symbols interned from different strings are unequal
 pass	symbols order by content-lexicographic UTF-8 byte order — less-than
+pass	t1(div0) NEGATIVE: an UNBOUNDED divisor is NOT provably non-zero — the divide-by-zero trap STAYS
+pass	t1(div0): the divide-by-zero obligation NEQ b 0 is DISCHARGED for b > 0 — so a/b cannot trap
+pass	t1(match) NEGATIVE: a NON-total arm set (one Bool arm missing) does NOT discharge COVERS — the match can still trap
+pass	t1(match): the exhaustiveness obligation COVERS is DISCHARGED for a TOTAL arm set — the match cannot trap
+pass	t1(oob) NEGATIVE: with only the LOWER bound (>= i 0), the out-of-bounds obligation is NOT complete — the trap STAYS
+pass	t1(oob): the out-of-bounds obligation (0<=i) AND (i<len) is DISCHARGED from the two bound preconditions
 pass	textually-identical performs are DISTINCT state-advancing reads, not a common subexpression
 pass	the AST is a sum type deconstructible by pattern matching
 pass	the Bool generator covers both values across seeds (it is not a constant)
@@ -3530,6 +3538,7 @@ todo	a tuple-returning closure alongside a plain export — the closure
 todo	a tuple-returning closure alongside a plain export — the plain
 todo	a two-argument closure exported to the host is called with both arguments
 todo	a two-parameter closure is applied at full arity through a recursive HOF
+todo	a type-valued parameter under a function-arrow annotation dispatches an ad-hoc-polymorphic dict
 todo	an 8-bit-integer closure crosses the host boundary
 todo	an @param of a Bool type generates a Bool-typed accessor
 todo	an @param of a Float64 type generates a Float64-typed accessor

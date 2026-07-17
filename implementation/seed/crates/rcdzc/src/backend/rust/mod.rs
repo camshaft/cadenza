@@ -56,6 +56,78 @@ fn is_fn_ty(ty: &crate::ty::Ty) -> bool {
     matches!(ty.strip_nominal(), crate::ty::Ty::Fn(_, _))
 }
 
+/// If exported definition `e` is a top-level IMMEDIATE, CAPTURE-FREE lambda — `(def (name) (fn (p…)
+/// body))`, a nullary def whose whole body is a `(fn …)` value — return the lifted-lambda slot its body
+/// builds; else `None`. This is the ETA-PEEL shape: on the wasm target such an export crosses as a
+/// closure RESOURCE (the host retains a handle it later `call`s), but the Rust target has NO resource
+/// model — the gate (and any real Rust consumer) applies the export DIRECTLY at full arity, so the
+/// faithful Rust rendering is a plain `pub fn name(p…) -> R`, exactly the function the lambda denotes.
+/// The peel is sound ONLY when the lambda CAPTURES NOTHING: a top-level `(fn …)` sits in an empty
+/// environment (no binding is in scope at module top-level to capture), so its lifted form is a pure
+/// combinator whose parameters ARE the export's parameters. A capturing lambda (impossible at top level,
+/// but guarded anyway) or a body that is not an immediate lambda (a computed/returned closure) does NOT
+/// peel — it stays the closure-resource shape the Rust target declines. Sync mode only (an async peel
+/// would thread the `env`; deferred with the rest of async-closure work).
+///
+/// Returns the lifted slot `code` so the caller can (a) emit the export via that lambda's params/body and
+/// (b) SUPPRESS the standalone `__lifted_{code}` (peeling inlines it into the `pub fn`; emitting it too
+/// would be dead — and unreferenced, since no `Core::Closure` value survives once the export is a plain fn).
+fn peelable_export_lambda(db: &mut Db, e: &crate::layout::ExportPlan, mode: Mode) -> Option<usize> {
+    if mode.is_async() || !e.params.is_empty() || !is_fn_ty(&e.result) {
+        return None;
+    }
+    match crate::lower::core_of(db, e.body) {
+        crate::core::Core::Closure { code, captures } if captures.is_empty() => {
+            // Only peel when the lambda's RESULT renders IDENTICALLY through a direct Rust return as it does
+            // through the wasm closure-RESOURCE boundary — else the two backends would disagree on the SAME
+            // corpus expectation (a real differential, not a parity win). See `peel_result_render_agrees`.
+            let lam = layout_lifted_ret(db, code);
+            if peel_result_render_agrees(&lam) {
+                Some(code)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// The result type of lifted-lambda slot `code`, cloned out of `db.lifted` (read before the peel commits).
+fn layout_lifted_ret(db: &Db, code: usize) -> crate::ty::Ty {
+    db.lifted[code].ret_ty.clone()
+}
+
+/// Whether a peeled export's RESULT type renders the SAME through a direct Rust `pub fn` return as it does
+/// through the wasm closure-RESOURCE `call` boundary — the condition for the eta-peel to be a genuine
+/// parity win rather than a cross-backend disagreement on one corpus expectation.
+///
+/// The wasm closure-resource ABI degrades some result types at the boundary in ways a direct Rust return
+/// does NOT reproduce, so the corpus expectation (graded green on wasm) is keyed to that degradation.
+/// `Bytes`/`String` cross the resource `call` as `list<u8>` / a byte-code list — the corpus expects
+/// `(5 6)`/`(104 105)`, but a direct Rust return is a `Vec<u8>`/`String` the gate renders `b"…"`/`"…"`. A
+/// `Float32` result trips an emit bug on the peeled path (an `f32 + f64`-literal body → rustc E0308). A
+/// `Sum` result crosses with an ABI-specific DOUBLE type-annotation `(: (: v T) T)` the direct return
+/// (single `(: v T)`) does not carry. `Symbol`/`Char` share the byte/degradation concern.
+///
+/// Everything else — integers of any width, `Bool`, `Unit`, `Float64`, tuples/records/lists/sets/maps of
+/// safe elements, quantities, big/rational numerics, and a nominal wrapper over a safe type — renders the
+/// same either way, so it peels. Applied RECURSIVELY: a compound result is safe only if every leaf is.
+/// (A future slice can widen this once the resource-vs-direct render difference for Bytes/String/Sum is
+/// resolved at the gate/spec level — filed to the vertical log.)
+fn peel_result_render_agrees(ty: &crate::ty::Ty) -> bool {
+    use crate::ty::Ty;
+    match ty.strip_nominal() {
+        Ty::Int(_) | Ty::Bool | Ty::Unit | Ty::BigInt | Ty::Rational | Ty::Qty { .. } => true,
+        Ty::Float(ft) => ft.ground_width() == 64,
+        Ty::Tuple(elems) => elems.iter().all(peel_result_render_agrees),
+        Ty::Record(fields) => fields.values().all(peel_result_render_agrees),
+        Ty::List(e) | Ty::Set(e) => peel_result_render_agrees(e),
+        Ty::Map(k, v) => peel_result_render_agrees(k) && peel_result_render_agrees(v),
+        // Bytes/String/Symbol/Char (byte-degraded), Sum (double-annotated), Fn/Var/Any/Type: not peeled.
+        _ => false,
+    }
+}
+
 fn ill_formed_int_width_reject(ty: &crate::ty::Ty) -> Option<Reject> {
     use crate::ty::{Ty, Width};
     let Ty::Int(it) = ty else { return None };
@@ -153,10 +225,19 @@ pub fn emit(db: &mut Db, layout: &Layout, mode: Mode) -> Result<Vec<u8>, Reject>
     // renderer resolves a newtype-typed boundary value (`Pt`) to its erased inner type and renders it
     // structurally rather than `Display`-ing the erased Rust tuple. Inert to rustc (a `//` comment).
     out.push_str(&enums::emit_newtype_descriptors(db));
+    // Lifted-lambda slots ETA-PEELED into an export's own `pub fn` (see `peelable_export_lambda`): their
+    // body is emitted AS the export, so the standalone `__lifted_{code}` below is suppressed (it would be
+    // dead — the peeled export builds no `Core::Closure` value that references it).
+    let mut peeled_codes: std::collections::HashSet<usize> = std::collections::HashSet::new();
     for &def in &layout.order {
         let f = match layout.export_plan(def) {
             // An exported definition — a `pub fn` under its verbatim boundary name.
-            Some(e) => emit_export(db, e, layout, mode)?,
+            Some(e) => {
+                if let Some(code) = peelable_export_lambda(db, e, mode) {
+                    peeled_codes.insert(code);
+                }
+                emit_export(db, e, layout, mode)?
+            }
             // A reachable non-export callee (reached via a runtime `Core::Call`) — a private `fn`.
             None => emit_fn(db, def, layout, mode)?,
         };
@@ -166,9 +247,13 @@ pub fn emit(db: &mut Db, layout: &Layout, mode: Mode) -> Result<Vec<u8>, Reject>
     // Each REACHED lambda-lifted closure (`layout.lifted[k]`, reached by a `Core::Closure` in some body)
     // becomes a private `fn __lifted_{k}(<captures…>, <params…>) -> <ret>` — the closure VALUE a
     // `Core::Closure` builds calls into it. An UNREACHED slot is skipped (no `Core::Closure` names it, so
-    // no closure value references it — emitting it would be dead code that might not even type). A lifted
-    // body that declines (an unsupported construct) declines the whole module, exactly like any `fn`.
+    // no closure value references it — emitting it would be dead code that might not even type). A slot
+    // ETA-PEELED into an export (its body emitted as the `pub fn`) is likewise skipped. A lifted body that
+    // declines (an unsupported construct) declines the whole module, exactly like any `fn`.
     for k in 0..layout.lifted.len() {
+        if peeled_codes.contains(&k) {
+            continue;
+        }
         if layout.lifted_reached.get(k).copied().unwrap_or(false) {
             let f = expr::emit_lifted_lambda(db, k, layout, mode)?;
             out.push('\n');
@@ -284,6 +369,28 @@ fn emit_export(
     layout: &Layout,
     mode: Mode,
 ) -> Result<String, Reject> {
+    // ETA-PEEL: an export whose body is an immediate capture-free lambda `(def (name) (fn (p…) body))`
+    // renders as a plain `pub fn name(p…) -> R` — the lambda's OWN parameters + result + body, NOT the
+    // (empty) parameter list of the nullary def. On the wasm target this is a closure resource; the Rust
+    // target has no resource ABI and applies the export directly, so the lambda IS the function. Emit via
+    // `emit_signature` supplying the lifted lambda's params/result/body (its body reads its params as
+    // `Core::Param`, which `emit_body` binds by the same binder occurrences carried here). `def` stays the
+    // export's def — a self-tail-call inside the lambda body still resolves to it, and `fn_ident` derives
+    // the same name for the declaration + every call.
+    if let Some(code) = peelable_export_lambda(db, e, mode) {
+        let lam = layout.lifted[code].clone();
+        return emit_signature(
+            db,
+            &e.name,
+            true,
+            e.def,
+            &lam.params,
+            &lam.ret_ty,
+            lam.body,
+            layout,
+            mode,
+        );
+    }
     emit_signature(
         db, &e.name, true, e.def, &e.params, &e.result, e.body, layout, mode,
     )

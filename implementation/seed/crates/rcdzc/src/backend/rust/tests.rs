@@ -729,6 +729,57 @@ fn a_closure_crossing_the_export_boundary_declines() {
 }
 
 #[test]
+fn a_top_level_immediate_capture_free_lambda_export_eta_peels_to_a_plain_fn() {
+    // ETA-PEEL: `(def (mk) (fn (p…) body))` — a nullary def whose whole body is an immediate, capture-free
+    // lambda — is NOT a closure-resource export on the Rust target (which has no resource ABI). The gate
+    // applies it DIRECTLY at full arity, so the faithful rendering is a plain `pub fn mk(p…) -> R`: the
+    // lambda's OWN parameters + body, not the empty parameter list of the nullary def. Distinct from the
+    // CAPTURING result (`a_closure_crossing_the_export_boundary_declines`) which still declines — a top-level
+    // lambda captures nothing, so its lifted form is a pure combinator whose params ARE the export's params.
+    let single = compile_rust("(module m (def (inc) (fn ((: x Int64)) (+ x 1))) (export inc))");
+    assert!(
+        single.contains("pub fn inc(x: i64) -> i64"),
+        "an immediate capture-free lambda export peels to a plain `pub fn` over the lambda's params:\n{single}"
+    );
+    assert!(
+        !single.contains("__lifted_"),
+        "the peeled lambda is emitted AS the export — no standalone `__lifted_k` remains:\n{single}"
+    );
+    if let Some(out) = rustc_run(&single, "inc(5)") {
+        assert_eq!(out, "6", "peeled `inc` applies directly: 5 + 1 = 6");
+    }
+
+    // The peel carries the lambda's COMPOUND parameter through unchanged — a `(Option (Tuple Int64 Int64))`
+    // arg crosses as a native `Option<(i64, i64)>` and the body's match/projection runs as an ordinary fn.
+    let compound = compile_rust(
+        "(module m (def (mk) (fn ((: o (Option (Tuple Int64 Int64)))) \
+           (match o ((Some p) (+ (. p 0) (. p 1))) (None 0)))) (export mk))",
+    );
+    assert!(
+        compound.contains("pub fn mk(o: Option<(i64, i64)>) -> i64"),
+        "a compound lambda param peels through to the `pub fn` signature:\n{compound}"
+    );
+    if let Some(out) = rustc_run(&compound, "mk(Some((3i64, 4i64)))") {
+        assert_eq!(
+            out, "7",
+            "the peeled compound-arg body folds Some((3,4)) → 3 + 4 = 7"
+        );
+    }
+
+    // GATED to a render-agreeing RESULT: a `Bytes`/`String`/`Sum` result degrades DIFFERENTLY across the
+    // wasm closure-resource boundary vs a direct Rust return, so it must NOT peel (it stays a decline, matching
+    // the wasm-graded expectation). A `Bytes`-returning immediate lambda therefore still declines.
+    let bytes_result = try_compile_rust(
+        "(module m (def (mk) (fn ((: n Int64)) \
+           (bin (u8 (UInt8.wrap n)) (u8 (UInt8.wrap (+ n 1)))))) (export mk))",
+    );
+    assert!(
+        bytes_result.is_err(),
+        "a Bytes-RESULT lambda does not peel (resource-vs-direct render differ) — stays a decline: {bytes_result:?}"
+    );
+}
+
+#[test]
 fn map_and_set_emit_native_btree_collections() {
     // A `(Map K V)` → `BTreeMap<K,V>`, a `(Set E)` → `BTreeSet<E>` (BTree = sorted = canonical order).
     let m = compile_rust(

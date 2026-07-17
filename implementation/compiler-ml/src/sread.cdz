@@ -1,0 +1,76 @@
+/// sread.cdz — the S-EXPR SOURCE READER for the Cadenza-in-Cadenza compiler: read a program's canonical
+/// homoiconic s-expr SOURCE TEXT (the `spec/semantics/*.sexp` `(input …)` form) into the `Node` ARENA that
+/// `resolve-db`/`infer-db`/`lower-db`/`eval-db` already consume. This is the SOURCE-IN front-end the operator
+/// asked for ("compile + invoke the ML compiler the exact same way rcdzc does"): the ML compiler reads the
+/// real program text itself, rather than a hand-built `Tok` list. Feeds the arena DIRECTLY (bypassing the
+/// infix `parse-db`, which is for hand-built infix `Tok` lists — the corpus is PREFIX s-expr).
+///
+/// INCREMENTAL: this first slice reads the smallest subset — a bare INTEGER LITERAL (`42`) — producing
+/// `(rootId, Tree)` with a single `NLit`. It grows case-by-case (bool literals, `(if c t e)`, `(op a b)`
+/// prefix, `(let ((x v)) b)`) as the differential-vs-rcdzc corpus number climbs; each slice is a new arm in
+/// `read-form` + a test here. Reuses `strlex`'s char helpers (`char-at`, `is-digit`, `scan-number`) and
+/// `parse-db`'s `Node`/`Tree`/`add-node`/`empty-tree`.
+
+import { Node, Tree, empty-tree, add-node, is-lit } from "parse-db"
+
+/// The 1-char string at position `i` of `s`, or `""` past the end. (strlex has an identical private helper;
+/// sread keeps its own so it depends only on parse-db, not strlex's internals.)
+def char-at(s: String, i: Int64) = match String.at(s, i) with
+  | Option.Some(c) => c
+  | Option.None(_) => ""
+
+def is-digit(c: String) =
+  c == "0" or c == "1" or c == "2" or c == "3" or c == "4"
+  or c == "5" or c == "6" or c == "7" or c == "8" or c == "9"
+
+def is-space(c: String) = c == " "
+
+def digit-val(c: String) =
+  if c == "0" then 0 else (if c == "1" then 1 else (if c == "2" then 2 else (if c == "3" then 3
+  else (if c == "4" then 4 else (if c == "5" then 5 else (if c == "6" then 6 else (if c == "7" then 7
+  else (if c == "8" then 8 else 9))))))))
+
+/// Scan a run of digits from `i`, accumulating the decimal value into `acc`. Returns `(value, next-index)`.
+def scan-number(s: String, i: Int64, acc: Int64) =
+  (if i == String.byte-len(s) then (acc, i)
+   else (let c = char-at(s, i) in
+     (if is-digit(c) then scan-number(s, i + 1, acc * 10 + digit-val(c)) else (acc, i))))
+
+/// Skip spaces from `i`, returning the first non-space index (total; stops at end-of-string).
+def skip-space(s: String, i: Int64) =
+  (if i == String.byte-len(s) then i
+   else (if is-space(char-at(s, i)) then skip-space(s, i + 1) else i))
+
+/// Read ONE form starting at index `i` (after leading space is skipped by the caller), interning its nodes
+/// into `tree`. Returns `(rootId, nextIndex, tree')`. FIRST SLICE: only a non-negative integer literal —
+/// `NLit`. Any other lead char is error-recovery `NLit 0` (widened as real forms land).
+def read-form(s: String, i: Int64, tree: Tree) =
+  (let j = skip-space(s, i) in
+   (let c = char-at(s, j) in
+    (if is-digit(c) then
+       (match scan-number(s, j, 0) with | (v, k) =>
+         (match add-node(tree, Node.NLit(v)) with | (id, t1) => (id, k, t1)))
+     else (match add-node(tree, Node.NLit(0)) with | (id, t1) => (id, j + 1, t1)))))
+
+/// The reader ENTRY: source text → `(rootId, Tree)`, the shape `eval-db.eval-tree(tree, root)` consumes.
+def read-source(s: String) = match read-form(s, 0, empty-tree()) with | (root, _, tree) => (root, tree)
+
+@test
+def sr-int-literal() =
+  // "42" → one NLit(42), root is it.
+  (match read-source("42") with | (root, tree) =>
+    (if is-lit(tree, root, 42) then unit else trap("root is NLit 42")))
+
+@test
+def sr-int-leading-space() =
+  // "  7" → leading spaces skipped, NLit(7).
+  (match read-source("  7") with | (root, tree) =>
+    (if is-lit(tree, root, 7) then unit else trap("root is NLit 7 after spaces")))
+
+@test
+def sr-multidigit() =
+  // "100" → NLit(100) (scan-number accumulates).
+  (match read-source("100") with | (root, tree) =>
+    (if is-lit(tree, root, 100) then unit else trap("root is NLit 100")))
+
+export { skip-space, read-form, read-source }

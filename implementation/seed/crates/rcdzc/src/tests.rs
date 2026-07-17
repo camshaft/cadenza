@@ -5817,27 +5817,26 @@ fn a_match_shaped_arm_body_resumes_in_a_sequence_of_performs() {
     }
 }
 
-/// KNOWN LATENT SILENT MISCOMPILE — PINNED (concierge ruling 2026-07-17: queue the fix, pin the unsound case
-/// so it is tracked + cannot silently regress-worse; work active-demand Quantity-ABI/E5 first, promote when
-/// they clear or a real consumer hits it). ⚠ WIDER RADIUS than this fn's name (breaker mapped it 2026-07-17):
-/// the bug is NOT branch-specific — an effectful STATE-ADVANCING op (`put`→`Map.insert`) performed inside a
-/// CALLED HELPER has its handler-state advance DROPPED at the CALL-RETURN boundary, whether the put is
-/// conditional (in a `match` arm) OR UNCONDITIONAL, and whether the caller position is a `let`-init OR a
-/// `do`-sequence. INLINE (same body, no helper) threads fine; the helper-CALL boundary is the loss point (the
-/// cross-function inline path effects.rs:~3250 threads the reduced body but the callee's advanced out-state
-/// does not reach the caller's continuation for a non-tail call). So the later `get` MISSES → a WRONG VALUE
-/// (v-compiler-ml's memoized-DB `demand`, lifting db.cdz onto effect-Db design A; they routed around it via the
-/// pure threaded-Db design B, so NO current consumer). VERIFIED LATENT (predates the 4a8b278b6 match-arm fix —
-/// compiles+fails identically at the pre-fix parent), NOT a regression. A quick guard was proven IMPOSSIBLE
-/// (3 clean-reverted attempts). The real fix is THREADING EACH CALLED HELPER'S ADVANCED OUT-STATE back to the
-/// caller's continuation — a substantial vertical, QUEUED. This test PINS one witness as a KNOWN MISCOMPILE:
-/// it currently COMPILES + runs to the WRONG value; when the fix lands, `run-then-get` yields 50 (demand fills
-/// 5→25, the later get(5) sees Some 25, so 25 + 25 = 50) — FLIP the assertion to `50` then. (breaker added the
-/// widest witness — a double-call → 1024/should-be-50 — as a companion pin.) Until then it documents the bug
-/// (compiles, not a decline) so a regression to a DIFFERENT wrong shape (or a leak) is caught. Full analysis:
-/// queue mlrepro-effect-db-helper-outstate-lost-to-caller-sequence.cdz + the queued-branch-outstate memory.
+/// FIXED (was a KNOWN LATENT SILENT MISCOMPILE, promoted 2026-07-17 when active-demand work cleared + a peer
+/// pinged). An effectful STATE-ADVANCING op (`put`→`Map.insert`) performed inside a CALLED HELPER used to have
+/// its handler-state advance DROPPED at the CALL-RETURN boundary — the later `get` MISSED → a WRONG VALUE (99).
+/// ROOT CAUSE (found by content, NOT the pin's "call-boundary threading" theory): the loss was a TWO-STAGE
+/// drop on the INLINE path. (1) `beta_reduce` inlines `demand` and its `None` arm `(do (Db.put …) compute)`
+/// resolved to `Ref{compute}` (`resolve_do` collapses a `do` to its last form — every intermediate is a
+/// value whose value is discarded), so the substituting β-reduce chased the `Ref` and DROPPED the `Db.put`
+/// intermediate entirely (the arm became bare `compute`). (2) Even once the `put` survives, the `match`/`if`
+/// thread arms return the post-SCRUTINEE state as the whole conditional's out-state, so a branch's advance is
+/// lost to the continuation after the conditional. THE FIX is two composed pieces: (1) `beta_reduce` now
+/// PRESERVES a `do`'s structure (copies it, so the effectful intermediate survives — consistent with
+/// `copy_pure`, which never collapsed); (2) `reduce_handle` RE-RUNS `hoist_resumptive_conditional` AFTER the
+/// applied-lambda inline, and that hoist gained a `let`-init distribution Site (Site 4) that lifts the exposed
+/// branch-performing conditional to tail position — `(let ((a (match … (do (put…) 25)))) cont)` becomes
+/// `(match … (Some v → (let ((a v)) cont)) (None → (let ((a (do (put…) 25))) cont)))`, so the branch `put`
+/// threads through the continuation. `run-then-get` now folds to 50 (demand fills 5→25; the later get(5) sees
+/// Some 25; 25 + 25 = 50). The full effects suite (215 cases) is unchanged. See the companion double-call test
+/// for the widest witness (a helper's out-state threading to a SECOND sibling call).
 #[test]
-fn a_helper_state_advance_in_a_branch_lost_to_a_later_read_is_a_known_miscompile() {
+fn a_helper_state_advance_in_a_branch_threads_to_a_later_read() {
     use crate::testkit::parse;
     let src = "(do \
         (effect Db (op get (-> Int64 (Option Int64))) (op put (-> (Tuple Int64 Int64) Unit))) \
@@ -5856,31 +5855,28 @@ fn a_helper_state_advance_in_a_branch_lost_to_a_later_read_is_a_known_miscompile
     // compiles (so a regression to a decline/leak is caught) — the value is WRONG today (the `get 5` misses
     // because `demand`'s `put` out-state was dropped, so it takes the `None` arm → 99, not `25 + 25` = 50).
     let bytes = compile_component(&crate::codec::encode(&parse(src)))
-        .expect("known-latent silent miscompile: currently COMPILES (does not decline) — see doc");
+        .expect("the helper's `put` threads through the inlined conditional — must compile + fold");
     if let Some(v) = run_linked(&bytes, "run-then-get") {
-        // KNOWN-WRONG: the later `get 5` misses (dropped out-state) → `None` arm → 99. When the
-        // branch-out-state fix lands, this becomes "50" — FLIP to assert_eq!(v, "50") then.
+        // FIXED (was a KNOWN MISCOMPILE → 99): `demand`'s `put` out-state now threads out of the inlined
+        // `match` `None` arm to the caller's continuation, so the later `get 5` HITS (Some 25) → 25 + 25.
         assert_eq!(
-            v, "99",
-            "KNOWN MISCOMPILE (branch-out-state dropped): get 5 misses → 99; should be 50 once fixed"
+            v, "50",
+            "helper-call out-state threaded: get 5 hits the demand-written value → 25 + 25 = 50"
         );
     }
 }
 
-/// KNOWN LATENT SILENT MISCOMPILE — the WIDEST witness of the SAME call-boundary bug as the pin above
-/// (breaker mapped the blast radius 2026-07-17; v-effects confirmed + rescoped the queued fix to "thread
-/// each called helper's advanced out-state back to the caller's continuation", NOT branch-specific — the
-/// locus is `effects.rs` `call_reaches_discharged_effect`, the cross-function inline path for a NON-TAIL
-/// call). The bug is NOT a branch: an effectful STATE-ADVANCING op in a CALLED HELPER has its handler-state
-/// advance dropped at the call-return boundary (verified: conditional/unconditional put, let-init/sequence
-/// all miscompile; inline in one body is sound). This DOUBLE-CALL witness is the strongest sentinel: two
-/// `demand`s of the SAME key — the first should fill `5→25`, the second should HIT it (get→Some 25→25), so
-/// `a + b = 50`. But the first `demand`'s `put` out-state never reaches the second call, so the SECOND ALSO
-/// MISSES and RE-COMPUTES `999` → `25 + 999` = 1024. The cumulative loss + re-compute across two calls
-/// proves the advance never reaches the caller's continuation (not merely a one-shot arm-thread bug).
-/// When the call-out-state fix lands, this becomes "50" — FLIP to assert_eq!(v, "50") then.
+/// FIXED (was a KNOWN LATENT SILENT MISCOMPILE) — the WIDEST witness of the same helper-call out-state bug as
+/// the test above, and the strongest proof the fix generalizes: two `demand`s of the SAME key in ADJACENT
+/// let-bindings `(let ((a (demand 5 25)) (b (demand 5 999))) (+ a b))`. The first fills `5→25`; the second
+/// must HIT it (get→Some 25→25), so `a + b = 50`. Before the fix the first `demand`'s `put` was DROPPED (its
+/// `do` intermediate collapsed away on inline), so `b` MISSED and re-computed `999` → `25 + 999` = 1024.
+/// After the fix, `beta_reduce` preserves each helper's `do` and the re-hoist's `let`-init Site distributes
+/// the FIRST binding's exposed conditional so its `put`-advanced state threads into the SECOND binding's
+/// inlined `demand` — the second call sees the write and hits. Folds to 50, proving a helper's advance now
+/// reaches a LATER sibling call's continuation, not merely its own one-shot arm.
 #[test]
-fn two_helper_state_advances_both_lost_to_the_caller_is_the_widest_known_miscompile() {
+fn two_helper_state_advances_both_thread_to_the_caller() {
     use crate::testkit::parse;
     let src = "(do \
         (effect Db (op get (-> Int64 (Option Int64))) (op put (-> (Tuple Int64 Int64) Unit))) \
@@ -5898,14 +5894,15 @@ fn two_helper_state_advances_both_lost_to_the_caller_is_the_widest_known_miscomp
     // regression to a decline/leak) — the value is WRONG today: the first `demand`'s `put` out-state is
     // dropped at the call boundary, so `b = demand 5 999` MISSES and re-computes 999 → 25 + 999 = 1024,
     // not the sound `25 + 25` = 50.
-    let bytes = compile_component(&crate::codec::encode(&parse(src)))
-        .expect("known-latent silent miscompile: currently COMPILES (does not decline) — see doc");
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect(
+        "both helper `put` out-states thread to the caller's continuation — must compile + fold",
+    );
     if let Some(v) = run_linked(&bytes, "run-twice") {
-        // KNOWN-WRONG: the second `demand` re-computes (dropped out-state) → 25 + 999 = 1024. When the
-        // call-out-state fix lands, this becomes "50" — FLIP to assert_eq!(v, "50") then.
+        // FIXED (was a KNOWN MISCOMPILE → 1024): the first `demand`'s `put` out-state now threads to the
+        // SECOND `demand`, which HITS the write (get→Some 25→25) instead of re-computing 999 → 25 + 25.
         assert_eq!(
-            v, "1024",
-            "KNOWN MISCOMPILE (helper-call out-state lost): 2nd demand re-computes → 1024; should be 50 once fixed"
+            v, "50",
+            "both helper out-states threaded: 2nd demand hits the 1st's write → 25 + 25 = 50"
         );
     }
 }
@@ -16520,6 +16517,67 @@ mod match_engine {
             0,
             "a nullary `(: Int64 Type)` type-value export is BAKEABLE (crosses like bare `Int64`), got: {:?}",
             ann.diagnostics
+        );
+    }
+
+    #[test]
+    fn a_type_valued_param_used_in_a_value_position_reports_one_coded_error_not_a_cascade() {
+        // A `(: t Type)` parameter used in a VALUE position — `(+ t 1)` (arithmetic) or `(if t 1 2)`
+        // (a Bool-checked condition) — is a kind-boundary fault reported by `infer` as ONE coded reject
+        // (CDZ0201 "a Type and an Int64 are different types …" for the arith form; CDZ0203 "if condition
+        // must be Bool, found Type" for the if form). But lowering the erased type-param body ALSO leaked
+        // the whole no-runtime-form decline FAMILY — PRIM_AS_VALUE (`+` reached as a value once its operand
+        // is a type), NULLARY_LAMBDA_NO_CLOSURE, CLOSURE_PARAM_NO_REPR, TYPE_VALUE_NO_RUNTIME — so one
+        // mistake surfaced as 2–4 `error:` lines. `dedup_faults`'s `has_type_kind_boundary_reject` gate now
+        // drops that family (and recognizes the `found Type` phrasing, not only `are different types`), so
+        // each is ONE clean coded error.
+        let one_coded = |src: &str, code: &str| {
+            let out = crate::compile::compile(
+                &[crate::abi::Artifact::new(
+                    crate::abi::Artifact::KIND_AST,
+                    "m",
+                    crate::codec::encode(&parse(src)),
+                )],
+                &[crate::backend::Target::Wasm],
+            );
+            let errors: Vec<&crate::abi::Diagnostic> = out
+                .diagnostics
+                .iter()
+                .filter(|d| d.severity == crate::abi::Severity::Error)
+                .collect();
+            assert_eq!(
+                errors.len(),
+                1,
+                "a type-param in a value position = ONE error, got: {:?}",
+                out.diagnostics
+            );
+            assert_eq!(
+                errors[0].code.as_deref(),
+                Some(code),
+                "got: {}",
+                errors[0].message
+            );
+            // None of the no-runtime-form declines accompany the coded reject.
+            assert!(
+                !out.diagnostics.iter().any(|d| matches!(
+                    d.message.as_str(),
+                    crate::diag::TYPE_VALUE_NO_RUNTIME_DECLINE
+                        | crate::diag::PRIM_AS_VALUE_DECLINE
+                        | crate::diag::NULLARY_LAMBDA_NO_CLOSURE_DECLINE
+                        | crate::diag::CLOSURE_PARAM_NO_REPR_DECLINE
+                )),
+                "no no-runtime-form cascade: {:?}",
+                out.diagnostics
+            );
+        };
+        // arithmetic (CDZ0201 kind boundary) and a Bool-checked condition (CDZ0203 "found Type").
+        one_coded(
+            "(module m (def (f (: t Type)) (+ t 1)) (def (main) (f Int64)) (export main))",
+            "CDZ0201",
+        );
+        one_coded(
+            "(module m (def (f (: t Type)) (if t 1 2)) (def (main) (f Int64)) (export main))",
+            "CDZ0203",
         );
     }
 

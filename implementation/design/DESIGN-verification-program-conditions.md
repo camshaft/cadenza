@@ -473,6 +473,40 @@ reasoning. Increment plan (after the kernel-location ruling):
 
 ---
 
+## 9. Kernel-location = (A) BUNDLED PRELUDE — RULED by operator (2026-07-17), the implementation plan
+
+**Operator ruling:** *"I'm fine to put the verification kernel in the prelude for now."* So the trusted HOL
+kernel ships as a compiler-bundled **prelude module**, always in scope; the compiler compile-time-evals the
+`licenses`/discharge check against the REAL kernel (no Rust re-implementation — one trusted copy, preserving
+the unforgeable-LCF guarantee). This one ruling unblocks BOTH b3 proof-guided-elision AND the `@trap_free`
+capstone (same compile-time-discharge dependency). "for now" = pragmatic current choice, not necessarily
+forever.
+
+**The mechanism (no precedent — the prelude is Rust-built today; `db.prelude` maps a builtin name → an arena
+occurrence, `db.rs:1021`).** The kernel is a MODULE (types + many defs), not a single builtin, and it must
+NOT be re-implemented in Rust (that would be the second kernel the LCF design forbids). So embed the kernel
+SOURCE and load it:
+- **a1 — embed + parse the kernel source.** `include_str!` the trusted kernel module source (a `.cdz`/s-expr
+  file — the `bounds`/`hol` module, promoted from the corpus to a canonical compiler-bundled asset), parse it
+  once at compiler init (the reader already exists), and register its defs into `db` the way an ordinary
+  module's members register (`modules::register_callable`). No precedent for `include_str!` in the compiler
+  → this is the new mechanism; keep it small (one asset, one load call).
+- **a2 — make the kernel names resolvable.** The kernel's exported names (`licenses`, the rules, `Thm`) bind
+  in the prelude map (or a dedicated always-in-scope module namespace) so the discharge program the compiler
+  synthesizes can reference them. The `Thm` abstract-type boundary must hold (opacity gated on
+  `is_linked_package` — the kernel stays a SEPARATE linked module, per the Inc-a load-bearing constraint).
+- **a3 — compile-time-eval the discharge.** With the kernel in scope, the b4c oracle synthesizes a discharge
+  program (`(licenses <proof> <obligation> <pre>)`) and compile-time-evals it (`eval_ast`, §3) to a boolean;
+  b3's `discharged_no_overflow` returns it (fail-closed on an eval trap). This is the payoff the whole arc
+  builds to.
+
+**Sequencing:** a1 (embed+parse+register the kernel module) is the foundation — the first real slice of the
+unblocked arc. Then a2 (name resolution) → a3 (compile-time-eval wiring = b4c) → b3 (the oracle) → the
+`@trap_free` t2/t3. The t1 per-trap-source obligation corpus (div0 done; OOB/exhaustiveness/explicit-trap
+next) proceeds in parallel — it's kernel-location-independent and feeds a3/b3's discharge targets.
+
+---
+
 ## References
 - [DESIGN-verification-hol-kernel.md](DESIGN-verification-hol-kernel.md) — the kernel this builds on
   (unforgeable `Thm`, the trust boundary, the LCF check-is-trivial/find-is-untrusted payoff).

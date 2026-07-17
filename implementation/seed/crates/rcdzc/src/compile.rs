@@ -3044,9 +3044,19 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>, has_bakeable_type_export: bool) ->
     // kind-boundary phrasing, so an unrelated coded reject does not spuriously suppress a genuine
     // unbuilt-type-value decline (e.g. a bare type export with no boundary error keeps its own handling).
     let has_type_kind_boundary_reject = faults.iter().any(|r| {
-        r.code == Some(Code::Malformed)
-            && r.message.contains("are different types")
-            && r.message.contains("Type")
+        r.code.is_some()
+            && (
+                // The `(+ Color 1)` kind-boundary CDZ0201 ("a Type and an Int64 are different types …").
+                (r.message.contains("are different types") && r.message.contains("Type"))
+                // A checked VALUE position (`if`/`and`/`not`/guard condition, a member/tuple/record
+                // operand) that received the kind `Type` — "… must be Bool, found Type" / "… requires a
+                // record, found Type" etc. A type-valued `t` used in such a position (`(if t 1 2)`) is the
+                // same type-in-value-position fault as `(+ t 1)`, and its lowering leaks the same
+                // no-runtime-form decline family. Keyed on the actual/found type being exactly `Type` (the
+                // messages render it as the trailing `found Type`), so an unrelated reject that merely
+                // mentions the word does not match.
+                || r.message.ends_with("found Type")
+            )
     });
     // Likewise: the evaluator's uncoded "applied more arguments than the function accepts" DECLINE is
     // redundant when `infer` proved the over-application (the coded CDZ0203 `applied N arguments to a
@@ -3389,13 +3399,29 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>, has_bakeable_type_export: bool) ->
             {
                 return false;
             }
-            // Drop the SPANLESS "a type value has no runtime form" decline when a coded Type-kind-boundary
-            // reject (`(+ Color 1)` → CDZ0201) already names the real fault — the decline is the same
-            // type-in-value-position defect surfacing at lowering, not an independent limitation. (Spanless,
-            // so the node-based `coded_nodes` dedup below misses it.)
+            // Drop the no-runtime-form decline FAMILY when a coded Type-kind-boundary reject (`(+ Color 1)`,
+            // or a `(: t Type)` param used in a value position → CDZ0201/CDZ0203) already names the real
+            // fault — those declines are the same type-in-value-position defect surfacing at lowering, not
+            // independent limitations. `(+ t 1)` with a type-valued `t` reduces the operand to the erased
+            // type value and hits NOT ONLY the spanless "a type value has no runtime form" decline but also
+            // its siblings — `PRIM_AS_VALUE` (the `+` builtin reached as a value once its operand is a
+            // type), `NULLARY_LAMBDA_NO_CLOSURE`, and `CLOSURE_PARAM_NO_REPR` (the erased-type-param body
+            // lowered as a closure) — all consequences of the coded kind-boundary fault, so a single such
+            // reject used to leak 2–4 uncoded `error:` lines. Drop the SAME family the type-export/bakeable
+            // arms below already drop (spanless, so the node-based `coded_nodes` dedup misses them). Gated on
+            // the kind-boundary reject existing, so a program with a GENUINE independent closure/prim-value
+            // decline (no Type-kind-boundary fault) keeps its honest report.
             if has_type_kind_boundary_reject
                 && r.is_decline()
-                && r.message == crate::diag::TYPE_VALUE_NO_RUNTIME_DECLINE
+                && matches!(
+                    r.message.as_str(),
+                    crate::diag::TYPE_VALUE_NO_RUNTIME_DECLINE
+                        | crate::diag::PRIM_AS_VALUE_DECLINE
+                        | crate::diag::NULLARY_LAMBDA_NO_CLOSURE_DECLINE
+                        | crate::diag::CLOSURE_PARAM_NO_REPR_DECLINE
+                        | crate::diag::CLOSURE_RESULT_NO_REPR_DECLINE
+                        | crate::diag::CLOSURE_CAPTURE_NO_REPR_DECLINE
+                )
             {
                 return false;
             }

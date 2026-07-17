@@ -1217,3 +1217,291 @@
                       ((Option.None) false))))))
             (export main)))
   (output (: true Bool)))
+
+; ── t1(div0): the DIVIDE-BY-ZERO trap-source obligation — for b > 0, (b != 0) so `a / b` cannot trap ──
+; The @trap_free capstone (design §8) proves EVERY trap source unreachable. This pins the DIVIDE-BY-ZERO
+; source: a checked `a / b` traps iff b = 0, so its trap-free obligation is `NEQ b 0` (the divisor is
+; non-zero). Under `@requires(> b 0)`, the obligation discharges: from `assume (gt b 0)`, a `pos-nonzero`
+; rule (a positive value is non-zero) yields `NEQ b 0`. The base gains a `gt` order + `neq` + `pos-nonzero`
+; + the CHECKED ground `gt-ax`. `gt`=Const 5, `neq`=Const 6. Pins the div0 trap-source obligation shape the
+; capstone's per-source conjunction needs.
+
+(case "t1(div0): the divide-by-zero obligation NEQ b 0 is DISCHARGED for b > 0 — so a/b cannot trap"
+  (doc    "The divide-by-zero trap source of the @trap_free capstone (design §8). A checked `a / b` traps iff
+           `b = 0`; its trap-free obligation is `NEQ b 0`. Under `@requires(> b 0)`, from `assume (gt b 0)`
+           the `pos-nonzero` rule (a value proven `> 0` is `!= 0`) derives `NEQ b 0` — the divisor is
+           provably non-zero, so the division cannot trap on that input. The entry discharges it through the
+           rules and checks the conclusion is the obligation. Runs to `true`. Pins the div0 obligation shape
+           the capstone's per-trap-source conjunction discharges (one source of the whole-function trap-free
+           proof).")
+  (module "bounds"
+    (do
+      (type Term (Var Int64) (Num Int64) (Comb Term Term) (Const Int64))
+      (type Thm (Seq (List Term) Term))
+      (def (term-eq (: a Term) (: b Term))
+        (match a
+          ((Term.Var n)    (match b ((Term.Var m) (= n m)) (_ false)))
+          ((Term.Num n)    (match b ((Term.Num m) (= n m)) (_ false)))
+          ((Term.Const c)  (match b ((Term.Const d) (= c d)) (_ false)))
+          ((Term.Comb x y) (match b ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) (_ false)))))
+      (def (gt  (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 5) a) b))
+      (def (neq (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 6) a) b))
+      (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
+      (def (hyps  (: th Thm)) (match th ((Thm.Seq h _) h)))
+      (def (assume (: p Term)) (Thm.Seq (list p) p))
+      ; RULE: pos-nonzero — from G |- (gt x 0) derive G |- (neq x 0). A value proven strictly positive is
+      ; non-zero. The rule fires ONLY when the premise is `(gt x (Num 0))` (the zero literal); else None.
+      (def (pos-nonzero (: th Thm))
+        (match (concl th)
+          ((Term.Comb (Term.Comb (Term.Const 5) x) (Term.Num 0))
+            (Option.Some (Thm.Seq (hyps th) (neq x (Term.Num 0)))))
+          (_ (Option.None))))
+      (export (. Term *))
+      (export Thm)
+      (export term-eq gt neq concl hyps assume pos-nonzero)))
+  (input  (do
+            (import "bounds" (Term Thm term-eq gt neq concl hyps assume pos-nonzero))
+            (def (main)
+              (let ((b    (Term.Var 1))
+                    (zero (Term.Num 0)))
+                ; the div0 trap-free obligation: (neq b 0)
+                (let ((goal (neq b zero)))
+                  ; @requires(> b 0) → assume (gt b 0); pos-nonzero derives (neq b 0)
+                  (let ((pre (assume (gt b zero))))
+                    (match (pos-nonzero pre)
+                      ((Option.Some proof) (term-eq (concl proof) goal))
+                      ((Option.None) false))))))
+            (export main)))
+  (output (: true Bool)))
+
+(case "t1(div0) NEGATIVE: an UNBOUNDED divisor is NOT provably non-zero — the divide-by-zero trap STAYS"
+  (doc    "The div0 soundness dual. With no `> b 0` (or `b != 0`) precondition, the divisor `b` is unbounded
+           — `NEQ b 0` is NOT provable: `pos-nonzero` needs a `(gt b 0)` premise, and an arbitrary assumption
+           about `b` does not establish it. So the @trap_free proof for the division MISSES → the div-by-zero
+           guard STAYS (the function is not certified trap-free on that source). The entry confirms
+           `pos-nonzero` of an unrelated assumption does not yield the obligation. Runs to `true`. Pins that
+           an unprovable divide-by-zero source correctly keeps the trap — @trap_free is sound (it never
+           certifies a function whose divisor could be zero).")
+  (module "bounds"
+    (do
+      (type Term (Var Int64) (Num Int64) (Comb Term Term) (Const Int64))
+      (type Thm (Seq (List Term) Term))
+      (def (term-eq (: a Term) (: b Term))
+        (match a
+          ((Term.Var n)    (match b ((Term.Var m) (= n m)) (_ false)))
+          ((Term.Num n)    (match b ((Term.Num m) (= n m)) (_ false)))
+          ((Term.Const c)  (match b ((Term.Const d) (= c d)) (_ false)))
+          ((Term.Comb x y) (match b ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) (_ false)))))
+      (def (gt  (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 5) a) b))
+      (def (neq (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 6) a) b))
+      (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
+      (def (hyps  (: th Thm)) (match th ((Thm.Seq h _) h)))
+      (def (assume (: p Term)) (Thm.Seq (list p) p))
+      (def (pos-nonzero (: th Thm))
+        (match (concl th)
+          ((Term.Comb (Term.Comb (Term.Const 5) x) (Term.Num 0))
+            (Option.Some (Thm.Seq (hyps th) (neq x (Term.Num 0)))))
+          (_ (Option.None))))
+      (export (. Term *))
+      (export Thm)
+      (export term-eq gt neq concl hyps assume pos-nonzero)))
+  (input  (do
+            (import "bounds" (Term Thm term-eq gt neq concl hyps assume pos-nonzero))
+            (def (main)
+              (let ((b    (Term.Var 1))
+                    (zero (Term.Num 0)))
+                (let ((goal (neq b zero)))
+                  ; no `> b 0` precondition — only an unrelated assumption about b; pos-nonzero cannot fire
+                  (let ((unrelated (assume (neq b b))))
+                    (match (pos-nonzero unrelated)
+                      ((Option.Some proof) (not (term-eq (concl proof) goal)))
+                      ((Option.None) true))))))
+            (export main)))
+  (output (: true Bool)))
+
+; ── t1(oob): the OUT-OF-BOUNDS trap-source obligation — for 0 <= i < len, `xs[i]` cannot trap ─────────
+; The @trap_free capstone (§8) proves EVERY trap source unreachable. This pins the OUT-OF-BOUNDS source: a
+; checked index `List.at xs i` (or Bytes.at) traps iff i < 0 OR i >= len, so its trap-free obligation is the
+; CONJUNCTION `(0 <= i) AND (i < len)` — a two-part bound. Under `@requires(>= i 0) @requires(< i len)`,
+; both conjuncts are direct precondition hypotheses; the obligation is their conjunction. The base gains a
+; `lt` order (Const 7) + a `conj` connective (Const 8) + a `both` rule (from G|-p and D|-q derive G++D|-p∧q).
+; From assume(ge i 0) and assume(lt i len): `both` gives `CONJ (ge i 0) (lt i len)` = the in-bounds proof.
+
+(case "t1(oob): the out-of-bounds obligation (0<=i) AND (i<len) is DISCHARGED from the two bound preconditions"
+  (doc    "The out-of-bounds trap source of the @trap_free capstone. A checked `xs[i]` traps iff `i < 0` or
+           `i >= len`; its trap-free obligation is the conjunction `(ge i 0) AND (lt i len)`. Under
+           `@requires(>= i 0)` and `@requires(< i len)`, each conjunct is a precondition hypothesis, and the
+           `both` rule combines them into `CONJ (ge i 0) (lt i len)` — the index is provably in bounds, so
+           the access cannot trap. The entry assumes both bounds, combines via `both`, and checks the
+           conclusion is the conjunction obligation (both conjuncts, hyps unioned). Runs to `true`. Pins the
+           OOB obligation shape (a two-part conjunction) the capstone's per-trap-source proof discharges.")
+  (module "bounds"
+    (do
+      (type Term (Var Int64) (Num Int64) (Comb Term Term) (Const Int64))
+      (type Thm (Seq (List Term) Term))
+      (def (term-eq (: a Term) (: b Term))
+        (match a
+          ((Term.Var n)    (match b ((Term.Var m) (= n m)) (_ false)))
+          ((Term.Num n)    (match b ((Term.Num m) (= n m)) (_ false)))
+          ((Term.Const c)  (match b ((Term.Const d) (= c d)) (_ false)))
+          ((Term.Comb x y) (match b ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) (_ false)))))
+      (def (ge   (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 2) a) b))
+      (def (lt   (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 7) a) b))
+      (def (conj (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 8) a) b))
+      (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
+      (def (hyps  (: th Thm)) (match th ((Thm.Seq h _) h)))
+      (def (assume (: p Term)) (Thm.Seq (list p) p))
+      ; RULE `both`: from G |- p and D |- q derive G++D |- (conj p q) — the in-bounds proof combines the two
+      ; bound facts. (Hyps unioned, per the Inc-11 soundness rule that a multi-premise rule carries the union.)
+      (def (both (: t1 Thm) (: t2 Thm))
+        (Option.Some (Thm.Seq (List.concat (hyps t1) (hyps t2)) (conj (concl t1) (concl t2)))))
+      (export (. Term *))
+      (export Thm)
+      (export term-eq ge lt conj concl hyps assume both)))
+  (input  (do
+            (import "bounds" (Term Thm term-eq ge lt conj concl hyps assume both))
+            (def (main)
+              (let ((i    (Term.Var 2))
+                    (len  (Term.Var 3))
+                    (zero (Term.Num 0)))
+                ; the OOB trap-free obligation: (conj (ge i 0) (lt i len))
+                (let ((goal (conj (ge i zero) (lt i len))))
+                  ; @requires(>= i 0) and @requires(< i len) → two hypotheses
+                  (let ((lower (assume (ge i zero)))
+                        (upper (assume (lt i len))))
+                    (match (both lower upper)
+                      ((Option.Some proof) (term-eq (concl proof) goal))
+                      ((Option.None) false))))))
+            (export main)))
+  (output (: true Bool)))
+
+(case "t1(oob) NEGATIVE: with only the LOWER bound (>= i 0), the out-of-bounds obligation is NOT complete — the trap STAYS"
+  (doc    "The OOB soundness dual. The obligation is the CONJUNCTION `(ge i 0) AND (lt i len)`; a precondition
+           giving ONLY the lower bound `>= i 0` (missing `< i len`) cannot establish it — `i` could still be
+           >= len, so the access can still trap past the end. The entry has only the lower-bound hypothesis
+           and confirms it does NOT establish the full conjunction (the upper-bound conjunct is absent). So
+           the @trap_free proof for the index MISSES → the bounds-check STAYS. Runs to `true` (asserts the
+           lower bound alone is not the obligation). Pins that a PARTIAL bound does not certify in-bounds —
+           @trap_free is sound (it never drops a bounds check unless BOTH bounds are proven).")
+  (module "bounds"
+    (do
+      (type Term (Var Int64) (Num Int64) (Comb Term Term) (Const Int64))
+      (type Thm (Seq (List Term) Term))
+      (def (term-eq (: a Term) (: b Term))
+        (match a
+          ((Term.Var n)    (match b ((Term.Var m) (= n m)) (_ false)))
+          ((Term.Num n)    (match b ((Term.Num m) (= n m)) (_ false)))
+          ((Term.Const c)  (match b ((Term.Const d) (= c d)) (_ false)))
+          ((Term.Comb x y) (match b ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) (_ false)))))
+      (def (ge   (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 2) a) b))
+      (def (lt   (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 7) a) b))
+      (def (conj (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 8) a) b))
+      (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
+      (def (assume (: p Term)) (Thm.Seq (list p) p))
+      (export (. Term *))
+      (export Thm)
+      (export term-eq ge lt conj concl assume)))
+  (input  (do
+            (import "bounds" (Term Thm term-eq ge lt conj concl assume))
+            (def (main)
+              (let ((i    (Term.Var 2))
+                    (len  (Term.Var 3))
+                    (zero (Term.Num 0)))
+                (let ((goal (conj (ge i zero) (lt i len))))
+                  ; only the lower bound is assumed — no upper bound, so the conjunction is not established
+                  (let ((lower (assume (ge i zero))))
+                    ; the lower bound alone is NOT the full obligation → bounds check stays
+                    (not (term-eq (concl lower) goal))))))
+            (export main)))
+  (output (: true Bool)))
+
+; ── t1(match): the PARTIAL-MATCH / exhaustiveness trap source — a match with total arm coverage cannot trap ─
+; The @trap_free capstone (§8): a `match` traps at an `Unreachable` node iff a scrutinee value hits no arm.
+; Its trap-free obligation is EXHAUSTIVENESS — every reachable scrutinee value is covered. Modeled here as a
+; `covers` proof: the obligation `COVERS scrut arms` holds when the arm set is TOTAL for the scrutinee's
+; type. The exhaustiveness checker already decides this for the compiler; here we pin the OBLIGATION shape —
+; an `exhaustive-ax` mints `COVERS s arms` only when a `total?` predicate on the arm set holds (a decidable
+; ground check, like le-ax's numeral side-condition). `covers`=Const 9. A NON-total arm set yields None (the
+; Unreachable stays reachable → the match can trap).
+
+(case "t1(match): the exhaustiveness obligation COVERS is DISCHARGED for a TOTAL arm set — the match cannot trap"
+  (doc    "The partial-match trap source of the @trap_free capstone. A `match` traps at Unreachable iff some
+           scrutinee value hits no arm; its trap-free obligation is EXHAUSTIVENESS. Modeled: `exhaustive-ax`
+           mints `COVERS scrut arms` ONLY when the arm set is TOTAL for the scrutinee (a decidable
+           side-condition, `total?` — here a two-variant Bool scrutinee with both arms present). A total arm
+           set discharges → no Unreachable is reachable → the match cannot trap. The entry checks a
+           both-arms-covered Bool match discharges the COVERS obligation. Runs to `true`. Pins the
+           exhaustiveness obligation shape the capstone's per-trap-source proof discharges (the checker
+           already decides totality; this pins the obligation the discharge produces).")
+  (module "bounds"
+    (do
+      (type Term (Var Int64) (Num Int64) (Comb Term Term) (Const Int64))
+      (type Thm (Seq (List Term) Term))
+      (def (term-eq (: a Term) (: b Term))
+        (match a
+          ((Term.Var n)    (match b ((Term.Var m) (= n m)) (_ false)))
+          ((Term.Num n)    (match b ((Term.Num m) (= n m)) (_ false)))
+          ((Term.Const c)  (match b ((Term.Const d) (= c d)) (_ false)))
+          ((Term.Comb x y) (match b ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) (_ false)))))
+      (def (covers (: scrut Term) (: arms Term)) (Term.Comb (Term.Comb (Term.Const 9) scrut) arms))
+      (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
+      ; total? : is the arm set (a list of covered variant tags, as Num) TOTAL for a scrutinee whose variant
+      ; count is `n`? Decidable: the arm set covers exactly {0..n-1}. Here the ground check is "arms has n
+      ; distinct tags 0..n-1"; modeled minimally as len(arms) == n with tags being 0..n-1 in order.
+      (def (total? (: arms (List Int64)) (: n Int64))
+        (= (List.len arms) n))
+      ; AXIOM: mint COVERS scrut arms-term ONLY when the arm TAGS are total for the scrutinee's variant
+      ; count. A non-total set → None (the Unreachable stays reachable).
+      (def (exhaustive-ax (: scrut Term) (: arms-term Term) (: arm-tags (List Int64)) (: nvariants Int64))
+        (if (total? arm-tags nvariants)
+          (Option.Some (Thm.Seq (list) (covers scrut arms-term)))
+          (Option.None)))
+      (export (. Term *))
+      (export Thm)
+      (export term-eq covers concl total? exhaustive-ax)))
+  (input  (do
+            (import "bounds" (Term Thm term-eq covers concl total? exhaustive-ax))
+            (def (main)
+              (let ((scrut (Term.Var 0))
+                    ; the arm set as an opaque term (its identity is what COVERS names); tags are 0,1 (both
+                    ; Bool variants), nvariants = 2 → total.
+                    (arms  (Term.Const 100)))
+                (let ((goal (covers scrut arms)))
+                  (match (exhaustive-ax scrut arms (list 0 1) 2)
+                    ((Option.Some proof) (term-eq (concl proof) goal))
+                    ((Option.None) false)))))
+            (export main)))
+  (output (: true Bool)))
+
+(case "t1(match) NEGATIVE: a NON-total arm set (one Bool arm missing) does NOT discharge COVERS — the match can still trap"
+  (doc    "The exhaustiveness soundness dual. A Bool scrutinee (2 variants) with only ONE arm covered (tags
+           = {0}, missing 1) is NOT total, so `exhaustive-ax` returns None — the COVERS obligation is not
+           established, the Unreachable stays reachable, and the @trap_free proof for the match MISSES → the
+           match can still trap on the uncovered value. The entry confirms exhaustive-ax of a one-arm set
+           over a 2-variant scrutinee yields None. Runs to `true`. Pins that a non-exhaustive match is NOT
+           certified trap-free — @trap_free is sound (it never drops the Unreachable unless the match is
+           proven total).")
+  (module "bounds"
+    (do
+      (type Term (Var Int64) (Num Int64) (Comb Term Term) (Const Int64))
+      (type Thm (Seq (List Term) Term))
+      (def (covers (: scrut Term) (: arms Term)) (Term.Comb (Term.Comb (Term.Const 9) scrut) arms))
+      (def (total? (: arms (List Int64)) (: n Int64)) (= (List.len arms) n))
+      (def (exhaustive-ax (: scrut Term) (: arms-term Term) (: arm-tags (List Int64)) (: nvariants Int64))
+        (if (total? arm-tags nvariants)
+          (Option.Some (Thm.Seq (list) (covers scrut arms-term)))
+          (Option.None)))
+      (export (. Term *))
+      (export Thm)
+      (export covers total? exhaustive-ax)))
+  (input  (do
+            (import "bounds" (Term Thm covers total? exhaustive-ax))
+            (def (main)
+              (let ((scrut (Term.Var 0))
+                    (arms  (Term.Const 100)))
+                ; only tag 0 covered, nvariants = 2 → NOT total → None
+                (match (exhaustive-ax scrut arms (list 0) 2)
+                  ((Option.Some _) false)
+                  ((Option.None) true))))
+            (export main)))
+  (output (: true Bool)))

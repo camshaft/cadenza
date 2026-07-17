@@ -173,7 +173,11 @@ async function runTests(job: RunJob): Promise<RunResult> {
   }
   // Drive the SCALAR-param property tests (their params are on the export → generated call-args). Compound
   // `-gen` tests are not in `scalarProps` (the client defers them), so this only adds real property runs.
-  const propResults = await runScalarProperties(job);
+  // REUSE the `root` already instantiated above — a property test calls the same exports (by name) as the
+  // nullary tests, so re-instantiating (a second jco transpile + wasm load) would be pure waste (flagged in
+  // PR #533). The nullary invokes above don't persist state into the exports we re-call (each @test/property
+  // export is a fresh evaluation), so one instance serves both.
+  const propResults = await runScalarProperties(job, root);
   return { kind: "tests", results: [...results, ...propResults] };
 }
 
@@ -354,10 +358,14 @@ async function runScalarProperty(
 /// Run each SCALAR-param property test (from `param_test_signatures`, `compound: false`) over generated
 /// inputs — the browser equivalent of `cdz test`'s property driver. Compound (`-gen`) tests are not here
 /// (the client still defers them).
-async function runScalarProperties(job: RunJob): Promise<TestResult[]> {
+// `preInstantiated` lets the caller (`runTests`) pass the component instance it ALREADY built for the
+// nullary tests, so a mixed nullary+property run instantiates ONCE, not twice (PR #533). When called
+// standalone (no pre-built root), it instantiates itself — but only after the empty-props early-return, so
+// a run with no scalar properties never instantiates here.
+async function runScalarProperties(job: RunJob, preInstantiated?: Record<string, unknown>): Promise<TestResult[]> {
   const props = job.scalarProps ?? [];
   if (props.length === 0) return [];
-  const root = await instantiateComponent(job);
+  const root = preInstantiated ?? (await instantiateComponent(job));
   const exportsByNorm = new Map<string, (...a: unknown[]) => unknown>();
   for (const { name, fn } of exportedFunctions(root)) exportsByNorm.set(normalizeName(name), fn);
   const trials = job.trials ?? DEFAULT_TRIALS;

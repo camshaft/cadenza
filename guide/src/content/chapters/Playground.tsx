@@ -150,9 +150,10 @@ export default function Playground() {
         editor that speaks the protocol gets the <em>same</em> compiler-backed help the playground has —
         not a text-based guess, but the type checker's actual understanding. In VS Code (one-step setup
         with <C>cargo xtask install-lsp</C>) you get, live as you type: diagnostics, hover types, semantic
-        highlighting by role, go-to-definition and find-references, name completion from what's actually in
-        scope, one-click quick-fixes from the compiler's suggested repairs, and an outline of a file's
-        definitions.
+        highlighting by role, go-to-definition and find-references, same-symbol highlighting (rest the caret
+        on a name and every other use of it tints, the declaration included — shadowing respected, so a local
+        never lights up an unrelated top-level), name completion from what's actually in scope, one-click
+        quick-fixes from the compiler's suggested repairs, and an outline of a file's definitions.
       </P>
       <P>
         One of those is unique to Cadenza's compiler. Above every generic definition the compiler{" "}
