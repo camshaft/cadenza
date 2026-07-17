@@ -140,7 +140,13 @@ function parseLine(raw: string): Widget | string {
       const min = num(positional[0]);
       const max = num(positional[1]);
       if (min === undefined || max === undefined) return "slider needs numeric min + max: `slider(min, max, ...)`";
-      const step = num(named.get("step")) ?? (type === "Int64" ? 1 : (max - min) / 100);
+      // A slider needs a POSITIVE range (max > min) — an inverted/zero-width range yields a broken/invalid
+      // <input type=range> (and a negative default step from (max-min)/100). Reject it clearly.
+      if (max <= min) return `slider max (${max}) must be greater than min (${min})`;
+      // The step must be POSITIVE; a declared step ≤ 0 (or non-finite) is invalid for a range input, so
+      // fall back to the sensible default (1 for Int64, 1/100 of the range for Float64).
+      const declaredStep = num(named.get("step"));
+      const step = declaredStep !== undefined && declaredStep > 0 ? declaredStep : type === "Int64" ? 1 : (max - min) / 100;
       const def = num(named.get("default")) ?? min;
       return { name, type, control: "slider", min, max, step, default: def };
     }
