@@ -79,6 +79,17 @@ pub fn synthesize(ast: &mut Arenas) {
         return;
     };
 
+    // TESTED-TIER PRE-PASS (the three-tier `@ensures`, co-designed with v-verification: PROVEN | TESTED |
+    // CDZ-VERIFY). Before planning, rewrite every `@test`-STACKED `@ensures` — `(@ test (@ (ensures Q)
+    // (def SIG BODY)))` — so its def BODY becomes `(let ((it BODY)) Q)` and the `@ensures` node collapses to
+    // that plain `(@ test (def SIG (let ((it BODY)) Q)))`. This turns the postcondition `Q` into the test
+    // ORACLE (over `it`, the def's result) that the ordinary `@test` machinery below then runs over generated
+    // inputs — scalar params via the runner's boundary-arg route, compound params via the synthesized `-gen`
+    // wrapper, uniformly. The explicit `@test` is the opt-in: a BARE `@ensures` (no `@test`) never reaches
+    // here, so a proof-only postcondition stays untouched. `it := BODY` matches v-verification's
+    // `denote(Q[it := body])` binding convention.
+    rewrite_ensures_stacked_tests(ast, &items);
+
     // If the program declares an effect named `Test` WITHOUT a `gen` op, this pass cannot proceed: the
     // wrapper needs `Test.gen`, appending its own `(effect Test …)` would collide with the existing name,
     // and the existing one has no `gen` to reuse. Bail out (the compound-param `@test` then declines at
@@ -138,6 +149,94 @@ pub fn synthesize(ast: &mut Arenas) {
     do_children.extend(new_items);
     let new_root = push_list(ast, do_children);
     ast.root = new_root;
+}
+
+/// TESTED-tier pre-pass: for each top-level `(@ test (@ (ensures Q) (def SIG BODY)))`, rewrite the middle
+/// `(@ (ensures Q) …)` node IN PLACE to a plain `(def SIG (let ((it BODY)) Q))`, so the postcondition `Q`
+/// (over the result binder `it`) becomes the test body the ordinary `@test` machinery runs over generated
+/// inputs. Fires ONLY when the outer annotation is `@test` (or `@exhaustive`) AND the immediate inner is a
+/// call-style `(@ (ensures Q) DEF)` — a bare `@ensures` (no enclosing test) is never a top-level item this
+/// scans for, so a proof-only postcondition is untouched. A def whose signature already binds a parameter
+/// literally named `it` is SKIPPED (rewriting would capture it); such a def keeps its own body (its `@ensures`
+/// stays inert this pass — a rare corner, not worth an alpha-rename). Idempotent: after the rewrite the item
+/// is `(@ test (def …))`, no longer matching the `(@ (ensures …) …)` inner shape.
+fn rewrite_ensures_stacked_tests(ast: &mut Arenas, items: &[StructId]) {
+    for &item in items {
+        // The outer annotation must be `@test`/`@exhaustive` — the author's explicit opt-in.
+        let Some(outer) = ast.as_form(item, "@") else {
+            continue;
+        };
+        let (Some(&outer_name), Some(&inner)) = (outer.first(), outer.get(1)) else {
+            continue;
+        };
+        match ast.as_name(outer_name) {
+            Some("test") | Some("exhaustive") => {}
+            _ => continue,
+        }
+        // The immediate inner must be a CALL-STYLE `(@ (ensures Q) DEF)` — head is the application
+        // `(ensures Q)` (a list), not a bare name.
+        let Some(ens) = ast.as_form(inner, "@") else {
+            continue;
+        };
+        let (Some(&ens_head), Some(&def_node)) = (ens.first(), ens.get(1)) else {
+            continue;
+        };
+        let Some(ens_app) = ast.as_form(ens_head, "ensures") else {
+            continue;
+        };
+        let Some(&pred) = ens_app.first() else {
+            continue;
+        };
+        // DEF is `(def SIG BODY)` — need the sig (to guard the `it` capture) and the body (to bind `it` to).
+        let Some(def_tail) = ast.as_form(def_node, "def") else {
+            continue;
+        };
+        let (Some(&sig), Some(&body)) = (def_tail.first(), def_tail.get(1)) else {
+            continue;
+        };
+        // Guard `it` capture: if a parameter is literally named `it`, skip (rewriting would shadow it).
+        let sig_names_it = match ast.get(sig) {
+            crate::ast::Struct::List(sig_items) => sig_items.iter().skip(1).any(|&p| {
+                ast.as_form(p, ":")
+                    .and_then(|t| t.first())
+                    .and_then(|&nm| ast.as_name(nm))
+                    == Some("it")
+            }),
+            _ => false,
+        };
+        if sig_names_it {
+            continue;
+        }
+        // Build `(let ((it BODY)) (if Q unit (trap "…")))`. The postcondition must TRAP when false — an
+        // `@test` PASSES by returning and FAILS by trapping (a bare Bool `false` return would count as a
+        // PASS), so `Q` is wrapped in the `(if Q unit (trap msg))` idiom (the same trap-on-false shape the
+        // guide's assert prelude uses). `it` is bound to the def's own `BODY` (its result) so the predicate
+        // reads the value the def computes.
+        let new_body = {
+            let it_nm = name(ast, "it");
+            let binder = push_list(ast, vec![it_nm, body]);
+            let binds_list = push_list(ast, vec![binder]);
+            let let_head = name(ast, "let");
+            // `(if Q unit (trap "@ensures failed"))`
+            let check = {
+                let if_head = name(ast, "if");
+                let unit_nm = name(ast, "unit");
+                let trap_call = {
+                    let trap_head = name(ast, "trap");
+                    let msg = push_atom(ast, Leaf::Str("@ensures postcondition failed".to_string()));
+                    push_list(ast, vec![trap_head, msg])
+                };
+                push_list(ast, vec![if_head, pred, unit_nm, trap_call])
+            };
+            push_list(ast, vec![let_head, binds_list, check])
+        };
+        // Build the rewritten `(def SIG new_body)` and REPLACE the middle `(@ (ensures Q) …)` node in place
+        // with it, so the item becomes `(@ test (def SIG (let ((it BODY)) Q)))`. Replacing `inner` (the
+        // `@ensures` node id) keeps the outer `(@ test …)`'s child pointer valid.
+        let def_head = name(ast, "def");
+        let new_def_children = vec![def_head, sig, new_body];
+        ast.structure[inner.0 as usize] = crate::ast::Struct::List(new_def_children);
+    }
 }
 
 /// A `@test` def that needs a generator wrapper: its position in the top-level list, the inner `(def …)`
@@ -867,6 +966,49 @@ mod tests {
         assert!(
             !test_names.iter().any(|n| n == "p"),
             "the original compound-param def is no longer a test: {test_names:?}"
+        );
+    }
+
+    /// The TESTED tier: a `@test`-stacked `@ensures` rewrites the def body to `(let ((it BODY)) (if Q unit
+    /// (trap …)))`, so the postcondition `Q` is the test oracle over the def's result. Pins that the rewrite
+    /// fires (a scalar-param `@ensures` test stays a test — its body now carries the `let it` + `trap`) and
+    /// that a BARE `@ensures` (no `@test`) is left untouched.
+    #[test]
+    fn a_test_stacked_ensures_rewrites_the_body_to_check_the_postcondition() {
+        let mut ast = crate::testkit::parse(
+            "(do (@ test (@ (ensures (>= it 0)) (def (f (: n Int64)) n))))",
+        );
+        super::synthesize(&mut ast);
+        // After synthesis the body of `f` should be a `(let ((it n)) (if (>= it 0) unit (trap …)))`. Find a
+        // `trap` and an `it` binder anywhere in the arena — their PRESENCE proves the postcondition rewrite
+        // ran (the source had neither a `trap` nor a `let`).
+        let has_trap = (0..ast.structure.len()).any(|i| {
+            ast.as_form(crate::ast::StructId(i as u32), "trap").is_some()
+        });
+        let has_it_let = (0..ast.structure.len()).any(|i| {
+            ast.as_form(crate::ast::StructId(i as u32), "let").is_some()
+        });
+        assert!(
+            has_trap && has_it_let,
+            "a @test @ensures rewrite injects a `let it` + `trap`-guarded postcondition"
+        );
+    }
+
+    /// A BARE `@ensures` (no enclosing `@test`) is NOT rewritten — a proof-only postcondition stays proof-only
+    /// (no `trap`/`let` injected, its def is untouched). Guards the opt-in: only an explicit `@test` triggers
+    /// the TESTED-tier synthesis.
+    #[test]
+    fn a_bare_ensures_is_left_untouched_by_the_tested_tier() {
+        let mut ast = crate::testkit::parse(
+            "(do (@ (ensures (>= it 0)) (def (g (: n Int64)) n)) (export g))",
+        );
+        super::synthesize(&mut ast);
+        let has_trap = (0..ast.structure.len()).any(|i| {
+            ast.as_form(crate::ast::StructId(i as u32), "trap").is_some()
+        });
+        assert!(
+            !has_trap,
+            "a bare @ensures (no @test) is not rewritten into a trapping test"
         );
     }
 
