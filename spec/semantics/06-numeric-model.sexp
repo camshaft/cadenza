@@ -2977,6 +2977,30 @@
   (call   main (: 5 Int8)) (output (: 4 Int8))
   (call   main (: -128 Int8)) (trap "integer overflow"))
 
+; The elision predicate is fed the GROUNDED result type on both backends (wasm via `Machine::of`, rust by
+; grounding `int_ty_of` the same way). A node is genuinely deferred at emit ONLY when its width is truly
+; unconstrained — then Int64 is the correct type. But when a narrow CONSUMER constrains it, inference
+; resolves the op to that narrow width BEFORE emit, so the elision checks the REAL (narrow) bounds — not
+; Int64's wide bounds. This pins that an unannotated add whose result flows into a UInt8 sink is checked
+; against UInt8 [0,255], NOT silently elided against Int64 and wrapped: the [100,300] sum can leave UInt8,
+; so the guard is KEPT and an over-range input traps — the deferred-width companion of the annotated
+; Int8-underflow case above, and the reason the both-backend grounding is sound rather than over-eliding.
+(case "an unannotated add narrowed by a UInt8 consumer keeps its overflow guard and traps"
+  (doc    "`(sink (+ (if (< n 5) 200 0) 100))` where `sink : (: x UInt8)`: the add is UNANNOTATED, but its
+           result flows into a UInt8 parameter, so inference narrows the op to UInt8. The branches live in
+           [0,200] and `+ 100` gives [100,300] — which can LEAVE UInt8's [0,255], so the op is NOT provably
+           in range and its overflow guard is KEPT (the elision predicate sees the RESOLVED narrow width,
+           not Int64's wide bounds). `n=10` → 0+100 = 100 (fits); `n=1` → 200+100 = 300 OVERFLOWS UInt8 and
+           MUST trap. Pins that a guard-elision decision consults the CONSUMER-narrowed type, so a deferred
+           op constrained to a narrow sink is never elided against the wider default — the soundness of the
+           both-backend grounding (`ground_width`/`ground_signed`), identically on wasm and rust.")
+  (input  (do
+            (def (sink (: x UInt8)) x)
+            (def (main (: n Int64)) (sink (+ (if (< n 5) 200 0) 100)))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 100 UInt8))
+  (call   main (: 1 Int64)) (trap "integer overflow"))
+
 (case "a runtime bitwise OR combines bits"
   (doc    "`(| a b)` emits `i64.or`; `(42, 128)` = 170 — setting the LEB128 continuation bit on a runtime
            byte. Pins the emitted bitwise-OR path.")

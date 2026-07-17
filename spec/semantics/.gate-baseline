@@ -2522,6 +2522,7 @@ pass	an outer definition references a sibling nested module by bare name
 pass	an over-ceiling integer width in an unused parameter is rejected, like a used one
 pass	an un-projected tuple element is not evaluated, so its trap does not occur
 pass	an un-read record field is not evaluated, so its trap does not occur
+pass	an unannotated add narrowed by a UInt8 consumer keeps its overflow guard and traps
 pass	an unannotated closure in a Some payload is typed from the Option's element arrow
 pass	an unannotated closure in a user variant payload is typed from the declared arrow
 pass	an unannotated closure is inferred through an unannotated recursive HOF parameter
