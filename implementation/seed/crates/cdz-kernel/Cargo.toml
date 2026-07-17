@@ -26,8 +26,11 @@ publish = false
 [features]
 # OFF by default: the DynamoDB log backend (L1d) — the async aws-sdk + tokio tree. The default build is the
 # file-backed log, so `cargo build`/`cargo test` here needs no AWS creds and no network (the CI-gated path).
+# The `aws` feature adds the real `DynamoLog` (the §2.1 many-writer ordering authority: a conditional write
+# assigns the monotonic seq). The event↔item MARSHALLING is pure + tested in the DEFAULT build; only the
+# DynamoDB client calls are feature-gated (network-only, exercised manually), mirroring cdz-agent's bedrock.
 default = []
-aws = []
+aws = ["dep:aws-config", "dep:aws-sdk-dynamodb", "dep:tokio"]
 
 [dependencies]
 anyhow = "1"
@@ -37,6 +40,11 @@ anyhow = "1"
 # cdz-agent path-deps cdz-run). No new heavy tree — cdz-agent's aws-sdk stays behind ITS `bedrock` feature.
 cdz-run = { path = "../cdz-run" }
 cdz-agent = { path = "../cdz-agent" }
+
+# The DynamoDB log backend (L1d), behind the `aws` feature only (heavy async tree — kept out of default).
+aws-config = { version = "1", optional = true }
+aws-sdk-dynamodb = { version = "1", optional = true }
+tokio = { version = "1", features = ["rt", "rt-multi-thread"], optional = true }
 
 [lib]
 name = "cdz_kernel"

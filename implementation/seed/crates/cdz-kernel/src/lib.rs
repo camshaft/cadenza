@@ -54,3 +54,7 @@ pub use file_log::FileLog;
 /// and appends every model effect-request/response as an immutable event (recorded-effect determinism,
 /// vision §2.3) — the "tail → fold → execute effect-request → append" core.
 pub mod fold;
+
+/// The DynamoDB log backend (L1d): the real many-writer ordering authority (vision §2.1). The event↔item
+/// MARSHALLING is pure + tested in the default build; the DynamoDB client is behind the `aws` feature.
+pub mod dynamo_log;
