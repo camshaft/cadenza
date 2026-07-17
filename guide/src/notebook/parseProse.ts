@@ -91,15 +91,24 @@ export function parseInline(text: string): Inline[] {
         continue;
       }
     }
-    // *em* or _em_
+    // *em* or _em_. CommonMark rule: a `_` delimiter may NOT open/close INTRAWORD (it needs a
+    // non-alphanumeric flank), so a snake_case_name in prose stays literal instead of turning "case" into
+    // italics; `*` has no such restriction (intraword `*` emphasis is allowed). Without this, a
+    // programming notebook's identifiers get mangled — a very common case here.
     if (text[i] === "*" || text[i] === "_") {
       const d = text[i];
       const end = text.indexOf(d, i + 1);
       if (end > i && end !== i + 1) {
-        flushPlain();
-        spans.push({ t: "em", text: text.slice(i + 1, end) });
-        i = end + 1;
-        continue;
+        // For `_`, both delimiters must be word-boundaries: the char BEFORE the opener and the char AFTER
+        // the closer must be absent or non-alphanumeric (intraword underscores like a_b are not emphasis).
+        const alnum = (c: string | undefined) => c !== undefined && /[A-Za-z0-9]/.test(c);
+        const underscoreIntraword = d === "_" && (alnum(text[i - 1]) || alnum(text[end + 1]));
+        if (!underscoreIntraword) {
+          flushPlain();
+          spans.push({ t: "em", text: text.slice(i + 1, end) });
+          i = end + 1;
+          continue;
+        }
       }
     }
     plain += text[i];

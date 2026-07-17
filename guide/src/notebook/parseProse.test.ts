@@ -32,6 +32,29 @@ test("inline: `**` takes precedence over `*` (bold before italic)", () => {
   assert.deepEqual(parseInline("**strong**"), [{ t: "strong", text: "strong" }]);
 });
 
+test("inline: an intraword `_` is NOT emphasis — a snake_case identifier stays literal (CommonMark)", () => {
+  // The killer case for a programming notebook: `snake_case_name` must not become "snake <em>case</em> name".
+  assert.deepEqual(parseInline("use snake_case_name here"), [{ t: "text", text: "use snake_case_name here" }]);
+  assert.deepEqual(parseInline("a_b_c"), [{ t: "text", text: "a_b_c" }]);
+  // A word-boundary `_italic_` still IS emphasis (flanked by spaces / string edges).
+  assert.deepEqual(parseInline("this is _italic_ ok"), [
+    { t: "text", text: "this is " },
+    { t: "em", text: "italic" },
+    { t: "text", text: " ok" },
+  ]);
+  assert.deepEqual(parseInline("_lead_ and trail _end_"), [
+    { t: "em", text: "lead" },
+    { t: "text", text: " and trail " },
+    { t: "em", text: "end" },
+  ]);
+  // `*` emphasis has NO intraword restriction (CommonMark) — intraword `*` still emphasizes.
+  assert.deepEqual(parseInline("a*b*c"), [
+    { t: "text", text: "a" },
+    { t: "em", text: "b" },
+    { t: "text", text: "c" },
+  ]);
+});
+
 test("inline: an unclosed delimiter renders as literal text (never throws)", () => {
   assert.deepEqual(parseInline("a * b"), [{ t: "text", text: "a * b" }]);
   assert.deepEqual(parseInline("`unclosed"), [{ t: "text", text: "`unclosed" }]);
