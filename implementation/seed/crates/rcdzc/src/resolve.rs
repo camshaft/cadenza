@@ -4671,6 +4671,23 @@ fn decode_ty(db: &Db, node: StructId) -> Option<crate::ty::Ty> {
                 }
             }
         }
+        // A TYPE VARIABLE — `(Var N)`, the dual of `eval::encode_ty`'s `Var` arm. Reaches here when a
+        // type-valued parameter is encoded inside a compound type-value that round-trips (e.g. the arrow
+        // `(-> t Int64)` → `Ty::Fn(Var(t), Int64)`); without this arm the `Var` decoded to `None` and the
+        // whole enclosing type failed to decode, collapsing the parameter to `Unit`.
+        "Var" => {
+            let tail = db.ast.as_form(node, "Var")?;
+            let n = match db.ast.get(*tail.first()?) {
+                Struct::Atom(l) => match db.ast.leaf(*l) {
+                    Leaf::Int { value, .. } => {
+                        value.to_i64().and_then(|n| u32::try_from(n).ok())?
+                    }
+                    _ => return None,
+                },
+                _ => return None,
+            };
+            Some(Ty::Var(n))
+        }
         "Tuple" => {
             let tail = db.ast.as_form(node, "Tuple")?;
             let mut elems = Vec::with_capacity(tail.len());

@@ -51691,6 +51691,51 @@ mod stage1 {
     }
 
     #[test]
+    fn a_type_valued_parameter_under_a_function_arrow_annotation_is_not_lost() {
+        // Type-valued-parameter vertical: a `(: t Type)` param used in the DOMAIN or RESULT of a FUNCTION
+        // ARROW annotation — `(: g (-> t Int64))` — must reduce `t` to the SAME stable type variable a
+        // bare `(: x t)` or `(: xs (List t))` does. It did not: `FnCtor` has no direct fast path in
+        // `typeval_of`'s `Apply` arm (unlike List/Set/Map/Tuple/Record), so the arrow took the
+        // `reduce_ctor`→`encode_typeval` round-trip, and `encode_ty` had NO `Ty::Var` arm — it stubbed the
+        // variable as `Unit`. So the scheme read `(-> Type (-> (-> Unit Int64) …))` instead of `(-> Type (->
+        // (-> a Int64) …))`, and a real closure argument `(fn (n) n) : (-> Int64 Int64)` failed CDZ0203
+        // "expected (-> Unit Int64)". The fix pairs an `encode_ty`/`decode_ty` `(Var N)` arm so the
+        // round-trip is faithful. This is exactly the operator's ad-hoc-polymorphism example (a dict of
+        // functions generic over the element type). Here `dict.describe` dispatches over BOTH an Int64 and a
+        // Bool instance through a `(Record (describe (-> t Int64)))`-annotated param: 5 + (true→1) = 6.
+        let src = "(module m \
+                   (def (describe-int (: n Int64)) n) \
+                   (def (describe-bool (: b Bool)) (if b 1 0)) \
+                   (def (show-with (: t Type) (: dict (Record (describe (-> t Int64)))) (: x t)) \
+                     ((. dict describe) x)) \
+                   (def (main) (+ (show-with Int64 (record (describe describe-int)) 5) \
+                                  (show-with Bool (record (describe describe-bool)) true))) \
+                   (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src)))
+            .expect("a type-param under an arrow annotation compiles (ad-hoc-poly dict dispatch)");
+        // Uses the value heap (the record), so it runs through `cdz_run` with the runtime resolved — SKIP
+        // if the store is absent (as the sibling type-valued-parameter tests do).
+        let Some(runtime) = find_runtime_wasm() else {
+            eprintln!("runtime wasm not found; skipping arrow-type-param run");
+            return;
+        };
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec![],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run(&bytes, &opts).expect("run") {
+            cdz_run::Outcome::Value(v) => assert_eq!(
+                v, "6",
+                "show-with dispatched describe-int (5) + describe-bool (true→1) through a `(-> t Int64)` dict field"
+            ),
+            cdz_run::Outcome::Trap(t) => panic!("run trapped: {t}"),
+        }
+    }
+
+    #[test]
     fn a_malformed_const_parameter_names_the_annotated_binder_shape() {
         // A `const` parameter wraps exactly ONE annotated binder — `(const (: n Int64))`. A malformed
         // `(const n Int64)` (two operands, unannotated) survives `strip_const_params` (which only unwraps a
