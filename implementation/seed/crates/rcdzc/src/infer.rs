@@ -10412,6 +10412,8 @@ fn no_field_reject(
     {
         hit.clone()
     } else {
+        #[cfg(test)]
+        crate::db::NO_FIELD_SUGGESTION_MISSES.with(|c| c.set(c.get() + 1));
         let fields = crate::eval::record_field_names(db, operand);
         let suggestion = crate::diag::suggest::nearest(&key.name, &fields);
         let hint = crate::diag::suggest::did_you_mean(&key.name, &fields, 3);
@@ -10425,12 +10427,42 @@ fn no_field_reject(
     // `(. E emt)` reads "effect `E` has no operation `emt`", `(. List nonesuch)` "the `List` module has no
     // member `nonesuch`". The `has no <word> \`key\`` shape stays the shared dedup invariant.
     let (subject, member_word) = member_category(db, operand, &key.name);
+    // SHADOWED-OP HINT: when the operand is an effect NAME and the missing operation `key` is NOT a typo of
+    // the resolved effect's ops but IS declared on a DIFFERENT, LATER same-named `(effect …)`, the ordinary
+    // "no operation `key` — closest matches: …" is baffling (the author sees `key`'s declaration in plain
+    // sight). Two same-named effects are DISTINCT (an effect's identity is its declaration, not its name —
+    // pinned by `14-effects:3129`), so a bare `E` resolves the FIRST and `key` on a later `E` is genuinely
+    // out of reach. Explain THAT (the diagnostic-quality half of the works-as-specified duplicate-effect
+    // finding) instead of/atop the typo hint. Only when the operand is a bare effect name whose resolved
+    // declaration lacks `key` while a later same-named one declares it — a narrow, non-typo case.
+    let shadow_hint = if let Some(name) = db.ast.as_name(operand)
+        && let Some(first_occ) = db.effect_decl_by_name(name)
+        && crate::effects::op_on_other_same_named_effect(db, name, first_occ, &key.name)
+    {
+        format!(
+            " — operation `{}` is declared on a LATER `(effect {name} …)`; a bare `{name}` resolves the \
+             FIRST declaration (an effect's identity is its declaration, not its name), so that operation \
+             is out of reach here — merge the operations into one `(effect {name} …)` or handle the \
+             intended declaration",
+            key.name
+        )
+    } else {
+        String::new()
+    };
+    // The shadow hint SUPERSEDES the generic did-you-mean suffix (a "closest matches: a" list is noise when
+    // the real cause is a shadowed later declaration); otherwise keep the ordinary two-tier `hint`.
+    let is_shadow = !shadow_hint.is_empty();
+    let suffix = if is_shadow { shadow_hint } else { hint };
     let reject = Reject::coded(
         Code::Malformed,
-        format!("{subject} has no {member_word} `{}`{hint}", key.name),
+        format!("{subject} has no {member_word} `{}`{suffix}", key.name),
     );
+    // A shadow case has no single mechanical replace fix (the op is real, just in another declaration), so
+    // suppress the typo-replace fix there; otherwise the confident-typo fix stands.
     match (suggestion, key_occ) {
-        (Some(field), Some(occ)) => reject.with_fix(Fix::replace_heuristic(occ, field)),
+        (Some(field), Some(occ)) if !is_shadow => {
+            reject.with_fix(Fix::replace_heuristic(occ, field))
+        }
         _ => reject,
     }
 }

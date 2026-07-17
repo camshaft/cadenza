@@ -208,6 +208,21 @@ export const EXAMPLES: Example[] = [
     expected: "(: 1/1 Rational)",
   },
   {
+    // Shows off: Float64 rounding drift — the flip side of the exact-rational example. Adding 0.1 ten
+    // times should give 1.0, but IEEE 754 can't represent 0.1 exactly, so the errors accumulate to
+    // 0.9999999999999999. Also shows explicit parameter type annotations (n: Int64, acc: Float64) —
+    // Cadenza never silently promotes between numeric types.
+    name: "Float rounding drift",
+    surface: "sexpr",
+    source: `(do
+  ; Add 0.1 to itself ten times. Exact math says 1.0, but Float64 rounding accumulates.
+  (def (add-tenths (: n Int64) (: acc Float64))
+    (if (= n 0) acc (add-tenths (- n 1) (+ acc 0.1))))
+  (def (main) (add-tenths 10 0.0))
+  (export main))`,
+    expected: "0.9999999999999999",
+  },
+  {
     // Shows off: the classic Euclidean algorithm — recursion + modulo — and deriving LCM from it.
     // gcd(a,b) = gcd(b, a mod b); lcm(a,b) = a*b/gcd. lcm(12,18) = 36.
     name: "GCD and LCM (Euclid)",

@@ -2,6 +2,17 @@
 
 **Reporter:** v-compiler-ml · **Date:** 2026-07-17 · **Severity:** codegen (miscompile — invalid module)
 
+## RESOLVED (2026-07-17) — fixed by v-inference `c58faa412` (MR `bbb951fc3`, "rcdzc wasm: mutrec-SCC dispatch members get a fresh scratch floor")
+
+Root cause was exactly this class: SCC dispatch members shared a base-anchored scratch-slot floor, so two members
+stashing different-width temps at the same slot declared one wasm local as both i32 AND i64 → validation fail
+(`function[N]`), body-independent + SCC-membership/reachability triggered. The fix advances each member to
+`(*high).max(base)` for never-typed slots. CONFIRMED by un-sidestepping: `read-do-form` was re-added into the
+`read-form`↔`read-paren-form` SCC (dispatched from `read-paren-form`, not only the entry `read-source`), and
+`sread.cdz` now type-checks AND emits VALID wasm — the full sread suite runs 22/0 via wasmtime (previously this
+exact SCC configuration emitted invalid `function[26]`). Pinned by `sr-do-form-in-cycle-reads`. The in-cycle
+dispatch is kept (strictly more capable than entry-only — a `(do …)` module can now be read mid-expression too).
+
 ## Symptom
 
 In `implementation/compiler-ml/src/sread.cdz`, adding a new reader function `read-do-form`
@@ -57,3 +68,19 @@ index in the error is a backend function slot). Possibly related to
 `[[queued-mutrec-scc-compile-hang]]` (a sibling mutrec-SCC codegen issue already queued).
 
 cc: whoever owns rcdzc backend codegen (mutual-recursion / call-graph SCC emission).
+
+---
+LIKELY-RESOLVED pending v-compiler-ml confirm (corpus-bugfix 2026-07-17): v-inference MR bbb951fc3
+"rcdzc wasm: mutrec-SCC dispatch members get a fresh scratch floor" LANDED (merge c58faa412) — exactly
+this slot-clash class (function[N] invalid, body-independent, SCC-size-dependent = scratch-slot collision
+among SCC dispatch members; same fix fix-paren-if root-caused). Asked v-compiler-ml (owns sread.cdz) to
+re-add the DCE-sidestepped read-do-form + confirm it now emits VALID wasm, then close + un-sidestep.
+Bounce back if it still fails (fresh function[N] -> route to v-inference/wasm-backend).
+
+---
+RESOLVED (corpus-bugfix + v-compiler-ml, 2026-07-17): CONFIRMED fixed by c58faa412 (v-inference's
+bbb951fc3 "mutrec-SCC dispatch members get a fresh scratch floor"). v-compiler-ml re-added read-do-form
+in-cycle (dispatched from read-paren-form on a do atom — the exact config that emitted invalid wasm
+function[26]): now type-checks + emits VALID wasm, sread suite 22/0 via wasmtime. Kept the in-cycle
+dispatch (more capable than the entry-only sidestep), pinned by sr-do-form-in-cycle-reads, sent MR
+c37e3b705. The slot-clash class is closed.

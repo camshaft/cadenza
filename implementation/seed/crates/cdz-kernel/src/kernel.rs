@@ -132,6 +132,47 @@ fn performing_executor_src() -> String {
         .to_string()
 }
 
+/// The interface the kernel publishes the broad host PRIMITIVES under — `Prim.exec`/`Prim.http`/`Prim.append`,
+/// each `(String) -> Int64` (the op's String payload crosses as a rope handle; the primitive returns a scalar
+/// result). The executor binds this; the HOST answers it with a real Rust closure (exec/http/log), unlike
+/// [`KERNEL_IFACE`] which a Cadenza PROVIDER peer answers. This is the real-primitive counterpart of the
+/// in-program `Prim` mock in [`performing_executor_src`].
+pub const PRIM_IFACE: &str = "cadenza:agent/prim";
+
+/// The K1c-HOSTED executor: like [`performing_executor_src`], but instead of HANDLING `Prim` in-program (the
+/// tag-echo mock), it declares `Prim` as a HOST effect (`Prim.exec`/`Prim.http`/`Prim.append`, each
+/// `(-> String Int64)`) bound to [`PRIM_IFACE`], and dispatches each `HostOp` variant to the matching op with
+/// the op's STRING payload. The host answers each with a REAL closure (exec/http/log) — so the fold sums the
+/// primitives' actual results. `interpret` STAYS a separately-compiled PROVIDER peer (bound via `K`); `Prim` is
+/// answered at the host. This is why the kernel needs `run_with_peers_hosted` (peer + host bindings together).
+/// (Option b of the dispatch fork: one host op per kind, each `String -> Int64`, no new cdz-run HostOp shape.)
+fn hosted_executor_src() -> String {
+    "(do \
+       (type HostOp (Append String) (Exec String) (Http String) (Noop Int64)) \
+       (effect K (op interpret (-> Int64 Int64 (List HostOp)))) \
+       (bind K \"cadenza:agent/kernel\") \
+       (effect Prim \
+         (op exec (-> String Int64)) \
+         (op http (-> String Int64)) \
+         (op append (-> String Int64))) \
+       (bind Prim \"cadenza:agent/prim\") \
+       (def (run-op (: op HostOp)) \
+         (match op \
+           ((Append s) (Prim.append s)) \
+           ((Exec s) (Prim.exec s)) \
+           ((Http s) (Prim.http s)) \
+           ((Noop n) 0))) \
+       (def (run-ops (: ops (List HostOp))) \
+         (match ops \
+           ((list head .. rest) (+ (run-op head) (run-ops rest))) \
+           (_ 0))) \
+       (def (main (: kind Int64)) \
+         (let ((ops (host (K) (K.interpret kind 0)))) \
+           (host (Prim) (run-ops ops)))) \
+       (export main))"
+        .to_string()
+}
+
 /// The result of running one interpret turn through the kernel: the number of host-ops the interpret program
 /// scheduled for the given event (the executor's `List.len` over the crossed `(List HostOp)` handle). K1b
 /// turns this into the executed op-effects; K1 surfaces the count as proof the loop ran end-to-end.
@@ -230,6 +271,71 @@ pub fn run_interpret_performing(
         event_kind,
         runtime,
     )
+}
+
+/// Run one interpret turn with the K1c-HOSTED executor: `interpret` stays a PROVIDER peer, but each op's
+/// `Prim.exec`/`Prim.http`/`Prim.append` is answered by a REAL host closure `prim` (exec/http/log), composed
+/// via [`cdz_run::run_with_peers_hosted`] (peer + host bindings together). `prim` is called with `(op_name,
+/// payload)` for each performed op and returns that primitive's scalar result; the fold sums them. This is the
+/// real-primitive counterpart of [`run_interpret_performing`] (which mocks `Prim` in-program). Returns the sum.
+/// `prim` is the ONLY non-Cadenza surface — bind it to the actual broad primitives (a daemon passes a closure
+/// dispatching `op_name` → exec/http/log + recording each as a log event, like `fold::drive_one_turn`).
+pub fn run_interpret_hosted<P>(
+    interpret_src: &str,
+    event_kind: i64,
+    runtime: Vec<u8>,
+    prim: P,
+) -> Result<i64>
+where
+    P: Fn(&str, String) -> i64 + Send + Sync + Clone + 'static,
+{
+    let provider = compile_interpret_provider(interpret_src)?;
+    let peers = vec![cdz_run::Peer {
+        bytes: provider,
+        interface: KERNEL_IFACE.to_string(),
+    }];
+    let executor = hosted_executor_src();
+    let executor_arenas = cadenza_syntax::sexpr::read(&executor)
+        .map_err(|e| anyhow!("hosted executor source did not parse: {e:?}"))?;
+    let consumer =
+        rcdzc::compile::compile_component(&cadenza_syntax::codec::encode(&executor_arenas))
+            .map_err(|d| {
+                anyhow!(
+                    "hosted executor peer did not compile: {} [{:?}]",
+                    d.message,
+                    d.code
+                )
+            })?;
+    let opts = cdz_run::RunOpts {
+        export: Some("main".to_string()),
+        args: vec![event_kind.to_string()],
+        runtime: Some(runtime),
+        runtime_cache_dir: None,
+        host_responses: Vec::new(),
+    };
+    // Bind each Prim op to the real closure — one HostOpBinding per op (each `String -> Int64`), all
+    // dispatching to `prim` tagged with the op name. This is option (b): one host op per kind, no new
+    // cdz-run HostOp shape (each is a `StringToScalar`).
+    let bindings = ["exec", "http", "append"]
+        .into_iter()
+        .map(|op| {
+            let prim = prim.clone();
+            let op_name = op.to_string();
+            cdz_run::HostOpBinding {
+                iface: PRIM_IFACE.to_string(),
+                op: op.to_string(),
+                host: cdz_run::HostOp::StringToScalar(Box::new(move |payload| {
+                    prim(&op_name, payload)
+                })),
+            }
+        })
+        .collect();
+    match cdz_run::run_with_peers_hosted(&consumer, &peers, &opts, bindings)? {
+        cdz_run::Outcome::Value(s) => s
+            .parse::<i64>()
+            .map_err(|_| anyhow!("hosted executor returned a non-integer result: {s:?}")),
+        cdz_run::Outcome::Trap(t) => Err(anyhow!("hosted run trapped: {t}")),
+    }
 }
 
 /// Resolve the value-heap runtime wasm the compiled provider requires, from the content-addressed store on
@@ -356,5 +462,57 @@ mod tests {
         let sum0 = run_interpret_performing(INTERPRET_SRC, 9, runtime)
             .expect("the performing executor runs for a non-message event");
         assert_eq!(sum0, 0, "kind=9 → [Noop(0)] → 0");
+    }
+
+    #[test]
+    fn the_hosted_executor_answers_prim_with_a_real_host_closure_per_op() {
+        // K1c-HOSTED (the real-Prim slice): `interpret` stays a PROVIDER peer, but each op's Prim.exec/http/
+        // append is answered by a REAL HOST CLOSURE (composed via run_with_peers_hosted — a PEER and a HOST
+        // binding TOGETHER, which is the whole point of the new runner). The closure returns a distinct value
+        // per op (exec→2, http→3, append→1) AND records the (op, payload) it saw. kind=1 → [Append "ack",
+        // Exec "handle"] → the host is called append("ack")→1 + exec("handle")→2 → sum 3, and we assert it
+        // received BOTH the right op names AND the right payloads (proves the String payload crossed as a rope
+        // to the host, not just a count). This is the peer-AND-host-together gate v-peer-linking required.
+        use std::sync::{Arc, Mutex};
+        let store_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let Some(runtime) = compile_interpret_provider(INTERPRET_SRC)
+            .ok()
+            .and_then(|p| find_runtime_for(&p, store_root))
+        else {
+            eprintln!(
+                "[cdz-kernel::kernel] value-heap runtime absent/stale; skipping the hosted run"
+            );
+            return;
+        };
+        // The real host primitive: records each (op, payload) and returns a per-op scalar result.
+        let calls: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
+        let prim = {
+            let calls = Arc::clone(&calls);
+            move |op: &str, payload: String| -> i64 {
+                calls.lock().unwrap().push((op.to_string(), payload));
+                match op {
+                    "exec" => 2,
+                    "http" => 3,
+                    "append" => 1,
+                    _ => 0,
+                }
+            }
+        };
+        let sum = run_interpret_hosted(INTERPRET_SRC, 1, runtime, prim)
+            .expect("the hosted executor runs interpret-as-peer + Prim-as-host-closure end-to-end");
+        assert_eq!(
+            sum, 3,
+            "kind=1 → append(\"ack\")→1 + exec(\"handle\")→2, summed by the fold = 3"
+        );
+        // The host closure saw BOTH ops IN ORDER with their real String payloads (crossed as ropes).
+        let seen = calls.lock().unwrap().clone();
+        assert_eq!(
+            seen,
+            vec![
+                ("append".to_string(), "ack".to_string()),
+                ("exec".to_string(), "handle".to_string()),
+            ],
+            "the real host primitive was called per op with the op's String payload, in list order"
+        );
     }
 }

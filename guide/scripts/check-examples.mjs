@@ -51,7 +51,7 @@ function blockedBy(ex) {
 
 // ---- the compiler (browser wasm) + runner (jco), loaded once ----
 const pkgDir = join(guideRoot, "src/wasm/pkg");
-const { default: init, compile, compile_tests, param_test_signatures, render_value, render_syntax, export_types } = await import(join(pkgDir, "cdz_wasm.js"));
+const { default: init, compile, compile_tests, param_test_signatures, render_value, render_syntax, export_types, repl_eval } = await import(join(pkgDir, "cdz_wasm.js"));
 await init({ module_or_path: readFileSync(join(pkgDir, "cdz_wasm_bg.wasm")) });
 const { transpileBytes } = await import("@bytecodealliance/jco-transpile");
 // Mirror the app run path's scalar formatting (a whole-number Float gets its `.0` back from the static
@@ -510,13 +510,57 @@ for (const ex of examples) {
   if (fail) { failures.push(fail); continue; }
   pass++;
 }
+// ---- the /notebook route's shipped example notebooks (src/notebook/examples.ts) ----
+// A notebook example is markdown interleaved with Cadenza CODE CELLS. Each non-widget code cell is
+// compiled the way the live route compiles it: `assembleForRun` builds its (buffer, entry) — widget
+// bindings (at their DEFAULTS) + prior cells' defs + this cell's def-block in the buffer, entry a call —
+// and `repl_eval(buffer, entry, "sexpr", exact=true)` compiles it in the notebook's EXACT surface. The
+// examples.test.ts unit gate only PARSES cells (well-formed, defines main), so a cell that parses but
+// FAILS TO COMPILE (an inference gap, a bad annotation, a `do`-wrapped pragma) ships broken and only
+// shows up when a reader opens the route. This closes that gap: every notebook example cell must compile.
+// (Runs are browser-only via jco; compiling is the check that catches the "compiles-but-crashes" class.)
+let notebookPass = 0;
+try {
+  const { EXAMPLES: NOTEBOOK } = await import(join(guideRoot, "src/notebook/examples.ts"));
+  const { parseDocument } = await import(join(guideRoot, "src/notebook/parseDocument.ts"));
+  const { parseWidgets } = await import(join(guideRoot, "src/notebook/parseWidgets.ts"));
+  const { assembleForRun } = await import(join(guideRoot, "src/notebook/assembleForRun.ts"));
+  for (const ex of NOTEBOOK) {
+    const cells = parseDocument(ex.markdown);
+    const widgets = cells
+      .filter((c) => c.kind === "code" && c.directive.kind === "widget")
+      .flatMap((c) => parseWidgets(c.source).widgets);
+    cells.forEach((c, i) => {
+      if (c.kind !== "code" || c.directive.kind === "widget") return;
+      const { buffer, entry } = assembleForRun(cells, i, widgets, {}, "sexpr");
+      let r;
+      try {
+        r = repl_eval(buffer, entry, "sexpr", true); // exact=true — the notebook's NOTEBOOK_EXACT mode
+      } catch (e) {
+        failures.push(`src/notebook/examples.ts [notebook] (${ex.slug} cell ${i}): parse error — ${String(e && e.message ? e.message : e).slice(0, 80)}`);
+        return;
+      }
+      if (!r.component) {
+        const d = r.diagnostics.find((x) => x.error) ?? r.diagnostics[0];
+        failures.push(`src/notebook/examples.ts [notebook] (${ex.slug} cell ${i}): compile DECLINED — ${d ? `${d.code ?? ""} ${d.message ?? ""}`.trim() : "no component"}`);
+        return;
+      }
+      notebookPass++;
+    });
+  }
+} catch (e) {
+  console.error(`check-examples: could not load notebook examples — ${String(e && e.message ? e.message : e)}`);
+  process.exit(1);
+}
+
 // A blocklist entry that matched NO example is stale — the example was renamed/removed/rewritten so the
 // entry no longer identifies anything. Flag it (loud, not fatal) so the blocklist doesn't rot silently.
 const staleEntries = blocklist.filter((b) => !matchedEntries.has(b));
 
 console.log(
   `\nchecked ${examples.length} examples across ${files.length} files (both surfaces): ` +
-    `${pass} ok, ${failures.length} failed, ${stillBlocked.length} known-blocked, ${recovered.length} recovered`,
+    `${pass} ok, ${failures.length} failed, ${stillBlocked.length} known-blocked, ${recovered.length} recovered` +
+    ` · notebook cells compiled: ${notebookPass}`,
 );
 
 if (stillBlocked.length) {

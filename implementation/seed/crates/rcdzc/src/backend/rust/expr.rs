@@ -3323,6 +3323,31 @@ fn nullary_variant_path(ty: &Ty, disc: u32, bare: &str) -> String {
 /// of [`sum_variant_path`] (which reads the type off a node). Split out so a nested switch can name a
 /// variant of a sub-value's type. Declines if `ty` is not a sum, its enum is not representable (a
 /// recursive/unrepresentable sum has no Rust type), or the disc is out of range.
+/// A compact, unique-per-CONTENT tag for a sum-switch path — encodes each `PathStep`'s KIND AND INDEX,
+/// not just the path's length. Used to de-collide `emit_sum_switch`'s payload binder names: two sibling
+/// switches on the same scrutinee at the same depth but different path content (`[Elem(0)]` vs `[Elem(1)]`
+/// — the bottom-up-fold tuple-of-recursive-results idiom) must get DISTINCT binder names, else the two
+/// `E.Lit` binders alias and `(+ x y)` reads `p+p` (a wrong-value miscompile). Length alone collides them;
+/// content does not. `Payload`→`p`, `Elem(i)`→`e{i}`, `RestFrom(k)`→`r{k}`, joined so no two distinct
+/// paths share a tag (indices are decimal, kind letters delimit).
+fn sum_path_tag(path: &[crate::core::PathStep]) -> String {
+    let mut tag = String::new();
+    for step in path {
+        match step {
+            crate::core::PathStep::Payload => tag.push('p'),
+            crate::core::PathStep::Elem(i) => {
+                tag.push('e');
+                tag.push_str(&i.to_string());
+            }
+            crate::core::PathStep::RestFrom(k) => {
+                tag.push('r');
+                tag.push_str(&k.to_string());
+            }
+        }
+    }
+    tag
+}
+
 fn sum_variant_path_of_ty(db: &mut Db, ty: &Ty, disc: u32) -> Result<String, Reject> {
     let decl_occ = match ty.strip_nominal() {
         Ty::Sum { decl, .. } => *decl,
@@ -3470,6 +3495,33 @@ fn emit_sum_switch(
     // scrutinee via `ty_at_sum_path` (which then falls back to the disc-0 payload for a `Payload` step).
     let subject_ty = lookup_sum_path_type(ctx, sw_path)
         .unwrap_or_else(|| ty_at_sum_path(db, scrutinee, sw_path));
+    // GROUNDED-DECL CONSISTENCY GUARD (fold-miscompile hazard, coordinated with v-inference). When
+    // inference's SCC return-type-fixpoint grounds `subject_ty` (e.g. the `(tuple (fold a) (fold b))`
+    // elements of the bottom-up-fold idiom), a resolved `Ty::Sum` reaches here where before it was
+    // unresolved (and `sum_variant_path_of_ty` declined). Cadenza sums are STRUCTURAL (a sum's identity IS
+    // its shape — type-system.md), so a same-shape sum IS the arms' type; the only real failure is a
+    // grounding to a DIFFERENT-shaped sum (fewer/other variants) that happens to have an in-range disc for
+    // SOME arms but does not cover the whole match — which would resolve a WRONG `Enum::Variant` for the
+    // arms it can't represent (the transiently-observed 20-not-12 fold miscompile). So: if `subject_ty` IS
+    // a resolved sum, assert its variant count COVERS every arm's disc (max disc + 1); otherwise DECLINE
+    // rather than mis-resolve. A structurally-correct grounding always covers the arms (they were checked
+    // against it); an unresolved `subject_ty` (Any/var) still declines downstream in `sum_variant_path_of_ty`
+    // exactly as today. This makes v-inference's grounding correct-or-declines, never a wrong-variant emit.
+    if let Ty::Sum { decl, .. } = subject_ty.strip_nominal() {
+        let variant_count = db
+            .type_decl_by_occ(*decl)
+            .map(|d| d.variants.len())
+            .unwrap_or(0);
+        let max_disc = arms.iter().filter_map(|a| a.disc).max();
+        if let Some(md) = max_disc
+            && (md as usize) >= variant_count
+        {
+            return Err(Reject::decline(
+                "a sum match whose grounded subject type has fewer variants than the match's discriminants \
+                 (a different-shaped grounding) is declined rather than resolving a wrong variant",
+            ));
+        }
+    }
     let mut out = format!("match {subject} {{ ");
     for (i, arm) in arms.iter().enumerate() {
         match arm.disc {
@@ -3491,7 +3543,16 @@ fn emit_sum_switch(
                     // error). Include the SCRUTINEE id (unique per match node) so nested matches get distinct
                     // identifiers; the bind is still resolved by `(scrutinee, path)`, this only de-collides
                     // the emitted name.
-                    let name = format!("__pay_{}_{}_{i}", scrutinee.0, sw_path.len());
+                    //
+                    // But the scrutinee id + path LENGTH is STILL not enough: two SIBLING switches on the
+                    // SAME scrutinee at the SAME depth but DIFFERENT path CONTENT collide. The bottom-up-fold
+                    // idiom `(match (tuple (fold a) (fold b)) ((tuple (E.Lit x) (E.Lit y)) (+ x y)) …)` mints
+                    // two switches on the one tuple-match node — one at path `[Elem(0)]`, one at `[Elem(1)]`,
+                    // both len 1, both the `E.Lit` arm (i=0) → both `__pay_{s}_1_0`, so `x` and `y` alias and
+                    // `(+ x y)` becomes `p.checked_add(p)` (the 20-not-12 miscompile v-inference's grounding
+                    // exposed). Key the name off the path CONTENT (`sum_path_tag`) — `Elem(0)` vs `Elem(1)`
+                    // yield distinct tags — so sibling switches never collide.
+                    let name = format!("__pay_{}_{}_{i}", scrutinee.0, sum_path_tag(sw_path));
                     let mut payload_path = sw_path.to_vec();
                     payload_path.push(crate::core::PathStep::Payload);
                     // A RECURSIVE variant's field is a `Box<…>` (the enum boxes it), so the bind is boxed —

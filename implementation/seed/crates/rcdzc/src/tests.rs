@@ -6057,6 +6057,37 @@ fn a_runtime_seeded_identity_arm_bare_perform_handle_yields_the_seed() {
     assert_eq!(v, 9, "the identity arm resumes the seed; k=9 → 9");
 }
 
+/// FIXED (breaker WIDENED finding — the HELPER face of the handle Any-leak, upgraded to "any parameterized
+/// handler-runner"). `(def (run (: s0 Int64)) (handle St s0 …)) (def (main (: k Int64)) (run k))` — a handle
+/// held in a NON-recursive helper, called with the CALLER'S PARAM as the seed. `cdz check` solved Int64, but
+/// lowering emitted a spurious spanless `CDZ0101 unbound name k` (k IS main's param). ROOT: the β-reduce
+/// INLINE path in `lower` (`apply_lambda` for a lambda-head call) returns a fresh copy of the callee body
+/// with root parent `None`. For a bare-value body (`(def (f n) n)` → `k`) that is harmless (the reduced body
+/// is the caller's own already-resolved arg). But a `handle` body reduces to a fresh ORPHAN handle, and
+/// `core_of`'s Handle arm re-parents the FOLD under that orphan — so a fold referencing the seed (`k`) ascends
+/// fold → orphan-handle → None and never reaches the caller's scope → unbound. A CONST call arg `(run 7)`
+/// beta-reduced away (no reference to resolve), which is why only a RUNTIME arg triggered it. FIX: the inline
+/// arm now `reparent`s the reduced body under the call site when its root parent is `None`, giving it a live
+/// chain to the caller's binders. Independent of arm/body shape (advancing arm, compound body, 2-param seed
+/// all now compile). k=9 → 9.
+#[test]
+fn a_param_seeded_handle_in_a_helper_called_with_a_runtime_arg_resolves_the_seed() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+    let src = "(do \
+        (effect St (op get (-> Unit Int64))) \
+        (def (run (: s0 Int64)) (handle St s0 ((get (u) s (resume s s))) (St.get))) \
+        (def (main (: k Int64)) (run k)) \
+        (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src)))
+        .expect("compiles (helper-held handle seeded by the caller's runtime param — was a bogus CDZ0101 unbound k)");
+    let v: i64 = run_returns_with(&bytes, "main", &[Val::S64(9)]);
+    assert_eq!(
+        v, 9,
+        "the helper's identity-arm handle resumes the seed; run(9) → 9"
+    );
+}
+
 /// ADVERSARIAL companion (task #15, breaker witness): TWO successive self-recursive folds under ONE handler —
 /// the SECOND fold must thread against the state the FIRST advanced, not the seed. `dn(n) = if n==0 then 0
 /// else dn(n-1) + Counter.bump()` counts down performing `bump` (state s→s+1); `(+ (* 1000 (dn 2)) (dn 2))`.
@@ -28097,6 +28128,58 @@ mod match_engine {
     }
 
     #[test]
+    fn bytes_at_over_an_owned_temporary_compact_or_string_to_bytes_reclaims_it() {
+        // The remaining owned-temporary rope-PRODUCER operand faces of the Bytes.at reclaim, alongside the
+        // concat/slice faces above: `Bytes.compact` (`bytes-compact`) and `String.to-bytes` (also
+        // `bytes-compact`, re-tagging a String's byte-rope out as a fresh flat Bytes) each CONSUME their
+        // operand and return a FRESH owned Bytes leaf — so a Bytes.at over one is an owned temporary the
+        // borrowing len/get must drop or it leaks. All rope-producers (`BytesConcat`/`BytesSlice`/
+        // `BytesCompact`/`StrToBytes`) are in the Owned classifier, but only concat/slice had a Bytes.at
+        // witness; pin the compact + str-to-bytes faces too (a future classifier change could regress one).
+        // Build the owned rope at RUN TIME (a constant folds away — no runtime handle to reclaim).
+        let compact_owned = "(module m \
+               (def (build i n acc) (if (< i n) (build (+ i 1) n ((. Bytes concat) acc b\"\\x0a\\x14\")) acc)) \
+               (def (main) ((. Option expect) ((. Bytes at) ((. Bytes compact) (build 0 3 b\"\")) 1) \"v\")) \
+               (export main))";
+        assert!(
+            component_imports_op(&component(compact_owned), "drop"),
+            "Bytes.at over an owned-temporary Bytes.compact must import `drop` (reclaim — leak fix)"
+        );
+        if let Some(out) = run_on_heap(compact_owned) {
+            assert_eq!(
+                out, "20",
+                "Bytes.at of an owned compact is value-unchanged (0x14 = 20)"
+            );
+        }
+        let to_bytes_owned = "(module m \
+               (def (build i n acc) (if (< i n) (build (+ i 1) n ((. String concat) acc \"ab\")) acc)) \
+               (def (main) ((. Option expect) ((. Bytes at) ((. String to-bytes) (build 0 3 \"\")) 1) \"v\")) \
+               (export main))";
+        assert!(
+            component_imports_op(&component(to_bytes_owned), "drop"),
+            "Bytes.at over an owned-temporary String.to-bytes must import `drop` (reclaim — leak fix)"
+        );
+        if let Some(out) = run_on_heap(to_bytes_owned) {
+            assert_eq!(
+                out, "98",
+                "Bytes.at of an owned String.to-bytes is value-unchanged ('b' = 98)"
+            );
+        }
+        // Leak stress: 5000× a fresh owned compact read+discarded. A leaked leaf per call would OOM/drift.
+        let compact_stress = "(module m \
+               (def (build i n acc) (if (< i n) (build (+ i 1) n ((. Bytes concat) acc b\"\\x0a\\x14\")) acc)) \
+               (def (drive j m tot) (if (< j m) \
+                   (drive (+ j 1) m (+ tot ((. Option expect) ((. Bytes at) ((. Bytes compact) (build 0 3 b\"\")) 1) \"v\"))) tot)) \
+               (def (main) (drive 0 5000 0)) (export main))";
+        if let Some(out) = run_on_heap(compact_stress) {
+            assert_eq!(
+                out, "100000",
+                "5000 owned-temporary Bytes.at-over-compact must each reclaim the leaf (no leak drift)"
+            );
+        }
+    }
+
+    #[test]
     fn list_len_over_an_owned_temporary_list_concat_or_update_reclaims_it() {
         // The LIST-PRODUCER faces of the owned-temporary reclaim: `List.concat` (`vec-concat`) and
         // `List.update` (`vec-update`) each return a FRESH owned list handle, exactly like the `Bytes.concat`
@@ -41141,27 +41224,27 @@ mod diagnostics {
             }),
             "a typo'd field access is enriched with a suggestion: {diags:?}"
         );
-        // Growth guard: `cdz check` at N vs 2N typo'd accesses of an N-field record. The per-access
-        // name-list build + double scan drove a 400→800 ratio of ~3.4× (O(N²)); the memo makes it ~1.7×
-        // (linear). Paired back-to-back timings, MIN ratio, so transient contention cancels. Threshold 2.5.
-        fn check_ms(src: &str) -> f64 {
-            let start = std::time::Instant::now();
+        // Growth guard at N vs 2N typo'd accesses of an N-field record. The NOISE-FREE signal is
+        // `NO_FIELD_SUGGESTION_MISSES` — the field-name-list builds + edit-distance scans actually
+        // COMPUTED, NOT wall-clock. A wall-clock ratio false-fails under fleet load (a narrow run in a
+        // quiet slice vs a wide run hitting a scheduling stall inflates the ratio past threshold — the
+        // flake). The per-access build+double-scan re-ran once per access → O(N) misses (and O(N²) work);
+        // the per-`(record occ, key)` memo collapses them: all N accesses here share the ONE key
+        // `(rr, "k0x")`, so misses stay CONSTANT (1) regardless of N. Assert the miss count does NOT grow
+        // with N (a revert to the per-access scan makes it grow ~linearly with the access count).
+        fn field_misses(src: &str) -> u64 {
+            crate::db::NO_FIELD_SUGGESTION_MISSES.with(|c| c.set(0));
             let _ = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
-            start.elapsed().as_secs_f64() * 1000.0
+            crate::db::NO_FIELD_SUGGESTION_MISSES.with(|c| c.get())
         }
-        let (narrow, wide) = (wide_record_typos(400), wide_record_typos(800));
-        check_ms(&narrow); // warm lazy one-time init before the first timed pair
-        let mut best = f64::INFINITY;
-        for _ in 0..6 {
-            let t400 = check_ms(&narrow);
-            let t800 = check_ms(&wide);
-            best = best.min(t800 / t400.max(0.1));
-        }
+        let m400 = field_misses(&wide_record_typos(400));
+        let m800 = field_misses(&wide_record_typos(800));
         assert!(
-            best < 2.5,
-            "N typo'd field accesses of a wide record must scale linearly (was O(N²) via a per-access \
-             field-name build + double edit-distance scan in `no_field_reject`; now memoized per \
-             (record occ, key)): width 400→800 grew {best:.1}× (min paired ratio); linear ~2×, was ~3.4×"
+            m400 > 0 && m800 <= m400 + 1,
+            "N typo'd accesses of one wide record sharing one missing key must build+scan the field-name \
+             list ONCE (memoized per (record occ, key)), not per access: 400→800 accesses grew the \
+             `no_field_suggestion` computes from {m400} to {m800} (memoized is constant ≈1; the per-access \
+             scan grew ~linearly with the access count)"
         );
     }
 
@@ -45586,6 +45669,47 @@ mod stage1 {
             rec.message.contains("record has no field `fooo`"),
             "a user record keeps 'record has no field': {}",
             rec.message
+        );
+    }
+
+    #[test]
+    fn an_op_on_a_later_same_named_effect_gets_the_shadowed_declaration_hint() {
+        // Two same-named `(effect E …)` are DISTINCT effects (an effect's identity is its declaration, not
+        // its name — pinned by `14-effects:3129`), so a bare `E` resolves the FIRST and `E.b` where `b` is
+        // declared only on a LATER same-named `E` fails "no operation `b`". The ordinary "closest matches"
+        // list is baffling (the author sees `b`'s declaration three lines up), so the message instead
+        // EXPLAINS the shadowing: `b` is on a later `(effect E …)`, a bare `E` resolves the first, so it's
+        // out of reach. (The diagnostic-quality half of the works-as-specified duplicate-effect finding —
+        // NOT a rejection of the duplicate declaration, which is spec-sanctioned.) No confident-typo fix
+        // fires (the op is real, just in another declaration).
+        let err = |src: &str| {
+            compile_component(&crate::codec::encode(&parse(src))).expect_err("must reject")
+        };
+        let d = err(
+            "(module m (effect E (op a (-> Int64 Int64))) (effect E (op b (-> Int64 Int64))) \
+             (def (main) (host (E) (E.b 5))) (export main))",
+        );
+        assert!(
+            d.message.contains("effect `E` has no operation `b`")
+                && d.message.contains("declared on a LATER `(effect E …)`")
+                && d.message.contains("resolves the FIRST"),
+            "a shadowed op names the later same-named declaration, not a typo hint: {}",
+            d.message
+        );
+        assert!(
+            !d.message.contains("closest matches") && !d.message.contains("did you mean"),
+            "the shadow hint supersedes the generic did-you-mean: {}",
+            d.message
+        );
+        // A GENUINE typo (no later same-named E declares it) keeps the ordinary did-you-mean.
+        let typo = err("(module m (effect E (op emit (-> Int64 Int64))) \
+             (def (main) (host (E) (E.emt 5))) (export main))");
+        assert!(
+            typo.message.contains("effect `E` has no operation `emt`")
+                && typo.message.contains("did you mean `emit`?")
+                && !typo.message.contains("declared on a LATER"),
+            "a genuine typo (no shadowing) keeps the did-you-mean hint: {}",
+            typo.message
         );
     }
 
@@ -73324,6 +73448,83 @@ mod cross_component_oracle {
                 "a camelCase peer op crosses end-to-end (both sides kebabize to `add-two`)"
             ),
             cdz_run::Outcome::Trap(t) => panic!("non-kebab peer-op run trapped: {t}"),
+        }
+    }
+
+    #[test]
+    fn a_versioned_interface_name_agrees_across_both_sides_and_runs() {
+        use crate::testkit::parse;
+        // A VERSIONED interface name (`cadenza:math/api@1.0.0`) crosses a real peer end-to-end. The version
+        // suffix is PART OF the component-boundary extern name emitted verbatim on BOTH sides — the provider
+        // `--component-name` and the consumer `(bind …)` string — so they must carry the SAME `@version` or
+        // they fail to link ([[rcdzc-kebab-extern-name-gotcha]] cross-side-agreement class). PL4 pins that a
+        // NON-KEBAB op name agrees across both sides; this pins that the VERSION SUFFIX agrees + round-trips.
+        // A versioned name was only VALIDATED statically before (the malformed-bind test's `@0.0.0` case, no
+        // run) — no e2e crossed a versioned interface. This is the realistic shape: a provider publishing
+        // `cadenza:model/api@1.0.0` and a consumer binding that exact versioned string.
+        //
+        // PROVIDER (source): `dbl` doubles, published as the VERSIONED `cadenza:math/api@1.0.0`.
+        let provider = compile_provider(
+            "(do (def (dbl (: x Int64)) (+ x x)) (export dbl))",
+            "cadenza:math/api@1.0.0",
+        );
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&provider)
+                .expect("versioned-interface provider validates");
+        }
+        // CONSUMER (source): binds the SAME versioned string. A mismatched/absent version would not link.
+        let src = "(do \
+            (effect Math (op dbl (-> Int64 Int64))) \
+            (bind Math \"cadenza:math/api@1.0.0\") \
+            (def (main (: x Int64)) (host (Math) (Math.dbl x))) \
+            (export main))";
+        let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .unwrap_or_else(|d| {
+                panic!(
+                    "versioned-interface consumer compiles: {} [{:?}]",
+                    d.message, d.code
+                )
+            });
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&consumer)
+                .expect("versioned-interface consumer validates");
+        }
+        // Both sides carry the VERSIONED extern name verbatim — the agreement that lets them link.
+        for (who, bytes) in [("provider", &provider), ("consumer", &consumer)] {
+            assert!(
+                bytes
+                    .windows(b"cadenza:math/api@1.0.0".len())
+                    .any(|w| w == b"cadenza:math/api@1.0.0"),
+                "the {who} must carry the versioned interface name `cadenza:math/api@1.0.0`"
+            );
+        }
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("[versioned-iface] runtime wasm not found; skipping the run");
+            return;
+        };
+        let peers = vec![cdz_run::Peer {
+            bytes: provider,
+            interface: "cadenza:math/api@1.0.0".to_string(),
+        }];
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec!["6".to_string()],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run_with_peers(&consumer, &peers, &opts)
+            .expect("a versioned interface composes + runs across both source sides")
+        {
+            // The provider's `dbl(6)` = 12, reached through the VERSIONED `cadenza:math/api@1.0.0` boundary
+            // name agreed on both sides. The version suffix survived the crossing intact.
+            cdz_run::Outcome::Value(s) => assert_eq!(
+                s, "12",
+                "a versioned peer interface crosses end-to-end (both sides carry `@1.0.0`)"
+            ),
+            cdz_run::Outcome::Trap(t) => panic!("versioned-interface run trapped: {t}"),
         }
     }
 

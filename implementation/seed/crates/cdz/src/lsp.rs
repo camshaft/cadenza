@@ -4780,6 +4780,22 @@ mod tests {
     }
 
     #[test]
+    fn signature_help_is_total_on_a_mid_typed_unclosed_call() {
+        // The realistic "as you type" editor scenario: the call is UNCLOSED because the user is still typing
+        // (`(add 1 ` / `add(1, `). Queries over incomplete source must be TOTAL — never panic — per the
+        // tooling spec. It's fine to return None here (an unclosed call may not parse into a named-call node
+        // the finder recognizes); what MUST hold is no crash on the partial buffer.
+        let sexpr = "(do (def (add (: a Int64) (: b Int64)) (+ a b)) (def (main) (add 1 ";
+        let sexpr_cursor = sexpr.rfind("add 1 ").unwrap() + 6;
+        // Must not panic; returns Option — either arm is acceptable, totality is the invariant.
+        let _ = signature_help_at(sexpr, false, byte_to_position(sexpr, sexpr_cursor));
+        let ml = "def add(a: Int64, b: Int64) -> Int64 = a + b\ndef main = add(1, ";
+        let ml_cursor = ml.rfind("add(1, ").unwrap() + 7;
+        let _ = signature_help_at(ml, true, byte_to_position(ml, ml_cursor));
+        // Reaching here without a panic is the assertion (totality on partial/unclosed input).
+    }
+
+    #[test]
     fn signature_help_is_none_for_a_call_to_an_unbound_callee() {
         // A call whose head names NO definition — `TypeOf` answers an error string ("no such definition …"),
         // not an arrow, so the `->` guard rejects it and no bogus signature leaks. (Totality: never a panic

@@ -44,15 +44,15 @@
 //! `@ensures` binds the result to `it`; if a PARAM is literally named `it`, the injected `(let ((it …)) …)`
 //! would SHADOW it — such a def is SKIPPED for `@ensures` (the capture guard, mirroring `proptest_gen`).
 //!
-//! LOCKSTEP with v-property-testing (INTERIM — no-overlap): v-property-testing's `rewrite_ensures_stacked_tests`
-//! still owns the `@test`-stacked `@ensures` form — `(@ test (@ (ensures Q) (def …)))` — on trunk today. To
-//! avoid DOUBLE-INJECTION (both passes wrapping the same body → "expression nests too deeply"), this pass
-//! DELIBERATELY SKIPS an `@ensures` whose node is the DIRECT inner of a `@test`/`@exhaustive` wrapper (their
-//! exact match shape) and enforces only BARE `@ensures` (no enclosing `@test`). `@requires` has no such
-//! overlap (their pass never touches it), so it is enforced universally including under `@test`. When they
-//! DELETE `rewrite_ensures_stacked_tests` in lockstep (after this lands), the `@test`-stacked skip here is
-//! lifted in a follow-up so this pass enforces `@ensures` fully universally — one owner. Until then: bare
-//! `@ensures` = mine, `@test @ensures` = theirs, ZERO overlap.
+//! LOCKSTEP with v-property-testing (COMPLETED): this pass now owns `@ensures` UNIVERSALLY — bare AND
+//! `@test`/`@exhaustive`-stacked. An earlier interim skipped a `@test`-stacked `@ensures` because
+//! v-property-testing's `rewrite_ensures_stacked_tests` also rewrote that shape (both passes wrapping the same
+//! body → "expression nests too deeply"). That pass is now DELETED (co-landed with this skip-lift in one
+//! pr-sync batch, so there is never an intermediate tree where a `@test @ensures` postcondition goes
+//! unenforced OR is double-injected). So this pass rewrites EVERY `@requires`/`@ensures` on any def, whatever
+//! annotations wrap it. Because it runs BEFORE `proptest_gen::synthesize`, a `@test @ensures` def is
+//! `@ensures`-enforced here first (its body becomes `(let ((it BODY)) (if Q it (trap)))`); the generator then
+//! wraps that already-checked body — `proptest_gen` no longer touches `@ensures` at all.
 
 use crate::ast::{Arenas, Leaf, Struct, StructId};
 use crate::prelude::{push_atom, push_list};
@@ -89,35 +89,6 @@ pub(crate) fn enforce(ast: &mut Arenas) {
     // Only ORIGINAL nodes can be a source annotation; the rewrite APPENDS (if/let/trap/name nodes), so bound
     // the scan to the pre-pass length — appended nodes are never themselves a `(@ (requires|ensures …) def)`.
     let original_len = ast.structure.len() as u32;
-    // PRE-SCAN (interim no-overlap with v-property-testing): collect every `@ensures`-head node that is the
-    // DIRECT inner of a `@test`/`@exhaustive` wrapper — `(@ test (@ (ensures Q) …))`. Their
-    // `rewrite_ensures_stacked_tests` owns exactly this shape today, so this pass must NOT also rewrite it
-    // (double injection → over-deep nesting). We skip these `@ensures` nodes below; bare `@ensures` (no
-    // enclosing test) is ours. `@requires` is never in this set (their pass ignores it).
-    let mut test_stacked_ensures: crate::fxhash::FxHashSet<StructId> =
-        crate::fxhash::FxHashSet::default();
-    for i in 0..original_len {
-        let outer = StructId(i);
-        let Some(t) = ast.as_form(outer, "@") else {
-            continue;
-        };
-        let (Some(&outer_name), Some(&inner)) = (t.first(), t.get(1)) else {
-            continue;
-        };
-        if !matches!(ast.as_name(outer_name), Some("test") | Some("exhaustive")) {
-            continue;
-        }
-        // `inner` is the annotated form directly under `@test`/`@exhaustive`. If it is an `(@ (ensures …) …)`
-        // head, mark that node — their pass will rewrite it, so we skip it.
-        if ast
-            .as_form(inner, "@")
-            .and_then(|it| it.first())
-            .and_then(|&head| ast.as_form(head, "ensures"))
-            .is_some()
-        {
-            test_stacked_ensures.insert(inner);
-        }
-    }
     for i in 0..original_len {
         let id = StructId(i);
         // `(@ NAME INNER)` — the annotation head. A verification annotation is `(@ (requires PRE) …)` or
@@ -145,11 +116,6 @@ pub(crate) fn enforce(ast: &mut Arenas) {
             (_, Some(q)) => (q, true),
             _ => continue, // not a verification annotation head — leave untouched
         };
-        // INTERIM no-overlap: a `@test`/`@exhaustive`-stacked `@ensures` is v-property-testing's to rewrite
-        // (`rewrite_ensures_stacked_tests`); skip it here to avoid double-injection. Bare `@ensures` is ours.
-        if is_ensures && test_stacked_ensures.contains(&id) {
-            continue;
-        }
         // INNER is USUALLY `(def SIG BODY …)`, but a def may STACK several verification/other annotations —
         // `(@ (requires P) (@ (ensures Q) (def …)))` — in which case this annotation's INNER is itself an
         // `(@ …)` wrapper, not the def. Descend through any number of intervening `(@ NAME INNER2)` layers to
