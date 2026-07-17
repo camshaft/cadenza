@@ -4309,6 +4309,69 @@ mod tests {
     }
 
     #[test]
+    fn rewrite_fixpoint_is_idempotent_over_generated_subjects() {
+        // The DEFINING property of a fixpoint, swept: `rewrite_fixpoint` reaches a STABLE result — feeding
+        // its own output back in fires ZERO further rewrites and yields the byte-identical tree. Only ONE
+        // hand case (`fixpoint_saturates_and_is_idempotent`) pinned this; if the fixpoint stopped early
+        // (a saturation bug) OR kept firing on its own output (a non-terminating / oscillating rule), a
+        // second run would differ — a real codemod defect (a `cdz rewrite --fixpoint` that leaves
+        // rewritable sites, or loops). Sweep random subjects over a small algebra × a few
+        // terminating rules; assert `fixpoint(fixpoint(s)) == fixpoint(s)` structurally AND that the
+        // second run's rewrite count is 0.
+        fn gen_subj(rng: &mut SplitMix64, depth: usize) -> String {
+            let atoms = ["0", "1", "v", "x", "a"];
+            if depth == 0 || rng.next().is_multiple_of(3) {
+                return atoms[(rng.next() as usize) % atoms.len()].to_string();
+            }
+            let sub = |rng: &mut SplitMix64| gen_subj(rng, depth - 1);
+            match rng.next() % 4 {
+                0 => format!("(+ {} {})", sub(rng), sub(rng)),
+                1 => format!("(* {} {})", sub(rng), sub(rng)),
+                2 => format!("(f {})", sub(rng)),
+                _ => format!("(+ 0 {})", sub(rng)), // bias the `(+ 0 x)` shape the rules target
+            }
+        }
+        // Terminating simplification rules — each strictly SHRINKS or renames, so a fixpoint exists.
+        let rules: [(&str, &str); 3] = [
+            ("(+ 0 ,x)", ",x"), // additive identity
+            ("(* 1 ,x)", ",x"), // multiplicative identity
+            ("(f ,x)", ",x"),   // unwrap a call
+        ];
+        let mut rng = SplitMix64(0xf1_c0de_1de3_a5f1);
+        let mut checked = 0usize;
+        for _ in 0..3000 {
+            let depth = 1 + (rng.next() as usize) % 4;
+            let Ok(arena) = sexpr::read(&gen_subj(&mut rng, depth)) else {
+                continue;
+            };
+            let s = Tree::of(&arena);
+            let (ps, ts) = rules[(rng.next() as usize) % rules.len()];
+            let (p, t) = (pat(ps), tmpl(ts));
+            let once = rewrite_fixpoint(&p, &t, &s, 100);
+            let twice = rewrite_fixpoint(&p, &t, &once.tree, 100);
+            // Re-running the fixpoint on its own output is a NO-OP: identical tree, zero further rewrites.
+            assert_eq!(
+                twice.tree.to_sexpr(),
+                once.tree.to_sexpr(),
+                "fixpoint not stable for rule {ps}→{ts} on {}",
+                s.to_sexpr()
+            );
+            assert_eq!(
+                twice.count,
+                0,
+                "a re-run of a saturated fixpoint fired {} rewrites (should be 0) for rule {ps}→{ts} on {}",
+                twice.count,
+                s.to_sexpr()
+            );
+            checked += 1;
+        }
+        assert!(
+            checked > 1000,
+            "swept a meaningful fixpoint space, got {checked}"
+        );
+    }
+
+    #[test]
     fn fixpoint_is_bounded_on_a_self_rematching_rule() {
         // `,x` -> `(w ,x)` would loop forever (its output re-matches); max_passes caps it.
         let s = subj("a");
