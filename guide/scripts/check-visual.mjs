@@ -33,7 +33,16 @@ const VIEWPORTS = [
 // (arbitrary route-specific assertions reported through the shared pass/fail tally, e.g. /notebook: a
 // widget drag recomputes a cell's output). Every route always gets the baseline overflow + console checks.
 const ROUTES = [
-  { path: "/", waitFor: "a[href]", label: "home" },
+  {
+    // Home — guards the HomePage header nav (Guide/Playground) + the live demo Runnable's controls at
+    // mobile. EXCEPT the inline "Read the design tenets" prose link (→ /philosophy): it's a link inside a
+    // sentence, not a primary control, so the 44px floor doesn't apply (forcing it would break the prose).
+    path: "/",
+    waitFor: "a[href]",
+    label: "home",
+    tapTargets: true,
+    tapTargetsExcept: 'a[href*="philosophy"]',
+  },
   {
     // A chapter page — exercises the shared shell (SyntaxToggle, nav drawer) AND the Runnable/Exercise
     // example controls (Run/Reset/Check/Hint/Show-solution/Open-in-playground), the guide's highest-count
@@ -58,7 +67,17 @@ const ROUTES = [
       await page.waitForTimeout(3500);
     },
   },
-  { path: "/playground", waitFor: ".cm-content", label: "playground" },
+  {
+    // Playground — guards the toolbar (Run/Format/Share/Examples/surface-toggle) + output view tabs at
+    // mobile. EXCEPT the dense 11px IDE status bar (Ln/Col + "home · the guide" footer credits): an
+    // IDE status-line pattern, not primary controls, so exempt from the 44px floor (forcing it breaks the
+    // strip). Marked via `data-testid="status-bar"`.
+    path: "/playground",
+    waitFor: ".cm-content",
+    label: "playground",
+    tapTargets: true,
+    tapTargetsExcept: '[data-testid="status-bar"]',
+  },
   {
     // /cad's showcase must RENDER on first load: it auto-runs the starter Solid program on mount, which
     // compiles → runs → meshes → mounts a three.js <canvas>. A regression here (a broken starter, a
@@ -261,12 +280,22 @@ try {
         // area and passes; we still flag anything genuinely tiny in BOTH axes (width < 24 AND height < 40).
         // Only meaningful at mobile width, so gate on the viewport.
         if (route.tapTargets && vp.name === "mobile-390") {
-          const bad = await page.evaluate(() => {
+          // `tapTargetsExcept` (a CSS selector) marks INTENTIONAL small-text exceptions the 44px floor does
+          // not apply to — a dense IDE status-bar (Ln/Col + footer credits) or an inline PROSE link inside a
+          // sentence, neither a primary control (forcing 44px there breaks the strip / the prose flow). An
+          // element matching the selector (or inside a match) is skipped. Documented per route.
+          const bad = await page.evaluate((exceptSel) => {
+            const excepted = exceptSel ? new Set(document.querySelectorAll(exceptSel)) : new Set();
+            const isExcepted = (el) => {
+              for (let n = el; n; n = n.parentElement) if (excepted.has(n)) return true;
+              return false;
+            };
             const els = [...document.querySelectorAll('button, a[href], input, [role="button"], select')];
             let worst = null;
             for (const el of els) {
               const r = el.getBoundingClientRect();
               if (r.width === 0 || r.height === 0) continue; // hidden / not laid out
+              if (isExcepted(el)) continue; // an intentional small-text exception (status bar / inline prose)
               // Too small = short height (the primary tap axis), OR genuinely tiny in both axes.
               const tooShort = r.height < 40;
               const tinyBoth = r.width < 24 && r.height < 40;
@@ -278,7 +307,7 @@ try {
               }
             }
             return worst;
-          });
+          }, route.tapTargetsExcept ?? null);
           check(
             bad == null,
             `${route.label}: mobile tap targets ≥ 44px tall${bad ? ` (found ${bad.w}×${bad.h}px "${bad.desc}")` : ""}`,
