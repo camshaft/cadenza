@@ -3099,6 +3099,7 @@ pass	tuple access on a tuple chosen by a conditional projects the element
 pass	tuple elements are accessed by index
 pass	tuple elements consume and read a shared binding in both orders
 pass	tuples are deconstructed by pattern matching
+pass	two @param sites with the same name are rejected as a duplicate effect operation
 pass	two BigInt accumulators co-threaded through recursion compute a fibonacci
 pass	two LEXICALLY-NESTED handlers of the same effect partition the performs by region
 pass	two MUTUALLY-recursive functions dispatching on a recursive sum compute its parity
