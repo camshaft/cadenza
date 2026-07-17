@@ -3696,8 +3696,25 @@ fn run_uses(args: &UsesArgs) -> ExitCode {
         return ExitCode::FAILURE;
     };
     let text = String::from_utf8_lossy(bytes);
-    let ids: Vec<u32> = text.lines().filter_map(|l| l.trim().parse().ok()).collect();
-    if ids.is_empty() {
+    // Each line is a bare reference node-id. A non-empty line that is NOT an integer is a sidecar
+    // format skew — flag it (fail at the end) rather than silently dropping the reference (PR #525's
+    // silent-drop class); a blank line is skipped.
+    let mut malformed = false;
+    let mut ids: Vec<u32> = Vec::new();
+    for line in text.lines() {
+        let t = line.trim();
+        if t.is_empty() {
+            continue;
+        }
+        match t.parse::<u32>() {
+            Ok(id) => ids.push(id),
+            Err(_) => {
+                report_malformed_query_row("uses", line);
+                malformed = true;
+            }
+        }
+    }
+    if ids.is_empty() && !malformed {
         eprintln!("{PROG}: no references to `{}` in {}", args.name, args.file);
         return ExitCode::SUCCESS;
     }
@@ -3732,7 +3749,11 @@ fn run_uses(args: &UsesArgs) -> ExitCode {
             }
         }
     }
-    ExitCode::SUCCESS
+    if malformed {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
 }
 
 /// Whether an error diagnostic with code `code` is ABSENT from `text` when parsed as `is_ml` (else
@@ -4639,11 +4660,19 @@ fn run_scope(args: &ScopeArgs) -> ExitCode {
     // Both output shapes — the human `file:line:col: name : type` and the `--json` object — are computed
     // from the SAME resolved `(name, type, line, col)` so they can't drift (mirrors `cdz exports`).
     let index = cadenza_syntax::query::driver::LineIndex::new(&source);
+    let mut malformed = false;
     for line in text.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
         let mut cols = line.splitn(3, '\t');
         let (name, ty, binder) = match (cols.next(), cols.next(), cols.next()) {
             (Some(n), Some(t), Some(b)) => (n, t, b),
-            _ => continue,
+            _ => {
+                report_malformed_query_row("scope", line);
+                malformed = true;
+                continue;
+            }
         };
         let line_col = binder
             .parse::<u32>()
@@ -4669,7 +4698,11 @@ fn run_scope(args: &ScopeArgs) -> ExitCode {
             println!("{loc}: {name} : {ty}");
         }
     }
-    ExitCode::SUCCESS
+    if malformed {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
 }
 
 /// `cdz exports FILE` — the module's exported interface. Drives `Query::Exports` (each exported name +
@@ -4701,11 +4734,19 @@ fn run_exports(args: &ExportsArgs) -> ExitCode {
     // shapes — the human `file:line:col: name : type` and the `--json` object — are computed from the
     // SAME resolved `(name, type, line, col)` so they can't drift (mirrors `cdz symbols`).
     let index = cadenza_syntax::query::driver::LineIndex::new(&source);
+    let mut malformed = false;
     for line in text.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
         let mut cols = line.splitn(3, '\t');
         let (name, ty, node) = match (cols.next(), cols.next(), cols.next()) {
             (Some(n), Some(t), Some(d)) => (n, t, d),
-            _ => continue,
+            _ => {
+                report_malformed_query_row("exports", line);
+                malformed = true;
+                continue;
+            }
         };
         let line_col = node
             .parse::<u32>()
@@ -4731,7 +4772,11 @@ fn run_exports(args: &ExportsArgs) -> ExitCode {
             println!("{loc}: {name} : {ty}");
         }
     }
-    ExitCode::SUCCESS
+    if malformed {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
 }
 
 /// `cdz symbols FILE` — the document OUTLINE: every top-level declaration classified by kind, as
@@ -4764,11 +4809,21 @@ fn run_symbols(args: &SymbolsArgs) -> ExitCode {
     // the human `file:line:col: kind name` and the `--json` object — are computed from the SAME resolved
     // `(name, kind, line, col)` so they can't drift.
     let index = cadenza_syntax::query::driver::LineIndex::new(&source);
+    let mut malformed = false;
     for line in text.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
         let mut cols = line.splitn(3, '\t');
         let (name, kind, node) = match (cols.next(), cols.next(), cols.next()) {
             (Some(n), Some(k), Some(d)) => (n, k, d),
-            _ => continue,
+            // A row that isn't the expected `name<TAB>kind<TAB>node` shape is a sidecar format skew — fail
+            // loudly rather than silently drop the symbol (PR #525's silent-drop class).
+            _ => {
+                report_malformed_query_row("symbols", line);
+                malformed = true;
+                continue;
+            }
         };
         // Resolve the name-node id to a `line:col` (or `None` if the span table has no entry — then the
         // human form prints just the file and the JSON omits line/col).
@@ -4796,7 +4851,11 @@ fn run_symbols(args: &SymbolsArgs) -> ExitCode {
             println!("{loc}: {kind} {name}");
         }
     }
-    ExitCode::SUCCESS
+    if malformed {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
 }
 
 /// `cdz param-manifest FILE` — the `@param` WIDGET MANIFEST: one record per `@param(widget: …) name : Type`
@@ -5082,11 +5141,19 @@ fn run_highlight(args: &HighlightArgs) -> ExitCode {
     // Each line is `node-id<TAB>kind`. Map the node to a `file:line:col`, skipping a span-less node (so
     // every emitted token — human OR `--json` — carries a real position; no raw-id fallback here). Both
     // output shapes are computed from the SAME resolved `(kind, line, col)` so they can't drift.
+    let mut malformed = false;
     for line in text.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
         let mut cols = line.splitn(2, '\t');
         let (node, kind) = match (cols.next(), cols.next()) {
             (Some(n), Some(k)) => (n, k),
-            _ => continue,
+            _ => {
+                report_malformed_query_row("highlight", line);
+                malformed = true;
+                continue;
+            }
         };
         if let Some(span) = node
             .parse::<u32>()
@@ -5107,7 +5174,11 @@ fn run_highlight(args: &HighlightArgs) -> ExitCode {
             }
         }
     }
-    ExitCode::SUCCESS
+    if malformed {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
 }
 
 // ── shared plumbing ────────────────────────────────────────────────────────────────────────────────
@@ -5133,6 +5204,20 @@ fn run_sidecar_many(
     // No emit target: a query-only run (`DESIGN-sidecar-api.md` query-only mode). The stack guard keeps
     // pathologically deep input a decline, not a crash.
     rcdzc::run_with_compiler_stack(|| rcdzc::compile(&inputs, &[]))
+}
+
+/// Report a sidecar QUERY RESULT ROW that did not parse into its expected shape — the shared loud-failure
+/// path for every `cdz` query reader (`symbols`/`exports`/`scope`/`uses`/`highlight`/`instantiations`/
+/// `param-manifest`). Each reader splits a query's TAB-separated output into a fixed set of fields; a row
+/// that does not match is NOT silently dropped (which would mask a sidecar output-format regression behind
+/// a success exit + a silently-short result — the class Copilot flagged on `param-manifest`, PR #525).
+/// Instead the reader calls this to name the query + the offending line, then FAILS at the end. `query` is
+/// the query name for the message; returns nothing — the caller sets its own `malformed` flag.
+fn report_malformed_query_row(query: &str, line: &str) {
+    eprintln!(
+        "{PROG}: internal: could not parse a `{query}` result row — the sidecar query output format may \
+         have changed (expected TAB-separated fields): {line:?}"
+    );
 }
 
 /// Report a compile output's error diagnostics to stderr (used when a query produced no artifact —
