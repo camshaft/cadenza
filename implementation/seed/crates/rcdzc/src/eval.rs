@@ -206,6 +206,23 @@ fn type_in_env(db: &mut Db, id: StructId, env: &HashMap<StructId, TyOrWidth>) ->
                     let elem = type_in_env(db, args[0], env)?;
                     Some(Ty::Set(Box::new(elem)))
                 }
+                // `(Qty T u)` inside a type-lambda / arrow — the QUANTITY type constructor: inner numeric
+                // type `T` reduced under the env, unit `u` a compile-time UNIT (`unit_of`, not a type). This
+                // is what lets an effect OP whose result is a quantity — `(op width (-> Unit (Qty Float64
+                // (Unit.base #"meter"))))` — read its `(meta t)` = `(fn () (-> Unit (Qty …)))` as a scheme
+                // with a determined `(Qty Float64 meter)` RESULT, instead of collapsing the arrow (which made
+                // `op_result_type` read the raw op-value record → CDZ0203 "not fully determined"). Mirrors the
+                // full evaluator's `QtyCtor` arm (`reduce_ctor`); the scheme path (`type_in_env`) was missing
+                // it, so a Qty-result op did not type-check even under an in-program handler. (v-metaprogramming's
+                // Quantity `@param` + v-cad/v-notebook — the Quantity-host-op ABI's layer 1.)
+                Prim::QtyCtor if args.len() == 2 => {
+                    let inner = type_in_env(db, args[0], env)?;
+                    let unit = unit_of(db, args[1])?;
+                    Some(Ty::Qty {
+                        inner: Box::new(inner),
+                        unit,
+                    })
+                }
                 // A GENERIC SUM application `(Option a)` inside a type-lambda — each arg reduced under
                 // the env (so `a` becomes its type variable), then `Ty::Sum{decl, args}`. This is what
                 // makes a generic variant ctor's `(meta t)` = `(fn (a) (-> a (Option a)))` read as the

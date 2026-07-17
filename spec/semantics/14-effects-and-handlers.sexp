@@ -1106,6 +1106,24 @@
                 (match (Look.find 41) ((Some v) v) (None 0)))) (export main)))
   (output (: 42 Int64)))
 
+(case "an effect op whose declared RESULT is a QUANTITY resumes with a Qty value"
+  (doc    "An operation whose declared result is a QUANTITY type `(Qty T u)` — the resume value is a
+           unit-carrying `Qty`, not a bare scalar. `Env.width : Unit -> (Qty Int64 meter)`; the arm resumes
+           `(Qty.of 5 (Unit.base #\"meter\"))`, and the body reads the magnitude back with `Qty.value` → 5.
+           Pins that a Qty-typed operation result flows through the effect machinery: the op's `(meta t)` arrow
+           `(-> Unit (Qty Int64 meter))` must reduce to a determined `Ty::Qty` RESULT (the scheme path
+           `type_in_env` gained a `QtyCtor` arm; without it the arrow collapsed and the result read as the raw
+           op-value record → CDZ0203 'not fully determined'). This is the guest-side of the runtime-parameter
+           `@param` Quantity path — a `@param(...) width : Length` generates exactly this Qty-result op (the
+           host-boundary num/den ABI for it is a separate later increment; here it is discharged by an
+           in-program handler). Identical on both backends.")
+  (input  (do
+            (effect Env (op width (-> Unit (Qty Int64 (Unit.base #"meter")))))
+            (def (main)
+              (handle Env unit ((width (u) s (resume (Qty.of 5 (Unit.base #"meter")) s)))
+                (Qty.value (Env.width)))) (export main)))
+  (output (: 5 Int64)))
+
 (case "a RESULT-returning effect op is matched on Ok / Err — the fallible-step idiom"
   (doc    "The `Result` companion of the Option-result case: an operation whose declared result is a
            `(Result Int64 Int64)`, resumed with an `Ok` or `Err` chosen by the arm, and the body dispatches
