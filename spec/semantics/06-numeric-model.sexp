@@ -3070,6 +3070,20 @@
   (call   main (: 42 Int64)) (output (: 43 Int64))
   (call   main (: 200 Int64)) (output (: 0 Int64)))
 
+(case "a guard-elided signed division by a provably-non-neg-one divisor computes identically on both backends"
+  (doc    "The Div member of the guard-elision family, now BOTH-BACKEND. Signed `/` traps on TWO things:
+           a zero divisor AND `MIN / -1` (the only quotient that leaves the type). The `MIN/-1` overflow
+           guard exists SOLELY for a divisor of -1, so when the divisor provably is NOT -1 it is dead. Here
+           `(/ a (& b 7))` masks the divisor to [0,7] — cannot be -1 — so the compiler elides the `MIN/-1`
+           overflow guard (the zero-divisor guard STAYS: a masked divisor can be 0). The wasm backend elides
+           via `divisor_can_be_neg_one` in emit; the rust backend now consults the SAME Core-tier predicate,
+           so both make the identical decision. Value parity is the observable proof: `(100, 7)` = 100 / (7&7)
+           = 100 / 7 = 14 (truncating); `(100, 2)` = 100 / (2&7) = 100 / 2 = 50. A zero mask (`(100, 8)` →
+           8&7 = 0) still traps divide-by-zero — the kept guard.")
+  (input  (do (def (main (: a Int64) (: b Int64)) (/ a (& b 7))) (export main)))
+  (call   main (: 100 Int64) (: 7 Int64)) (output (: 14 Int64))
+  (call   main (: 100 Int64) (: 2 Int64)) (output (: 50 Int64)))
+
 (case "a strength-reduced multiply nested as an operand computes in place"
   (doc    "`(+ (* a 2) 1)` over a runtime `a`: the `(* a 2)` strength-reduces to `a << 1` and is the LHS
            OPERAND of the enclosing `+`, so the shift writes the add's operand slot DIRECTLY (its result

@@ -638,6 +638,7 @@ pass	a guard-elided masked add computes inline over runtime operands
 pass	a guard-elided masked left shift computes identically on both backends
 pass	a guard-elided masked multiply computes inline over runtime operands
 pass	a guard-elided masked subtract computes inline over runtime operands
+pass	a guard-elided signed division by a provably-non-neg-one divisor computes identically on both backends
 pass	a guarded arm among same-constructor match arms keeps first-match-wins
 pass	a guarded arm is selected when its guard holds
 pass	a guarded list-match arm body reads its element binder

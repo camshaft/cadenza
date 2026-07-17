@@ -373,6 +373,45 @@ fn rustc_roundtrip_signed_div_min_by_neg1_traps_overflow_not_div_by_zero() {
 }
 
 #[test]
+fn a_provably_safe_signed_division_elides_its_min_by_neg1_overflow_guard() {
+    // BOTH-BACKEND PARITY (v-core-opt Slice-7): the signed `MIN/-1` overflow guard is the Div member of
+    // the guard-elision family. The rust `/` emit now consults the SAME Core-tier predicates the wasm
+    // backend uses (select.rs) — `divisor_can_be_neg_one` + `value_provably_nonneg` — and drops the guard
+    // when either operand rules out the `MIN ÷ -1` pair. The zero-divisor guard ALWAYS stays.
+    //
+    // DIVISOR provably not -1 (masked `(& b 7)` ∈ [0,7]): the MIN/-1 guard is dead.
+    let masked_divisor =
+        compile_rust("(module m (def (d (: a Int64) (: b Int64)) (/ a (& b 7))) (export d))");
+    assert!(
+        masked_divisor.contains("panic!(\"division by zero\")")
+            && !masked_divisor.contains("== -1")
+            && !masked_divisor.contains("division overflow"),
+        "a divisor provably != -1 elides the MIN/-1 guard, keeps the zero guard:\n{masked_divisor}"
+    );
+    // DIVIDEND provably nonneg (masked `(& a 255)` ∈ [0,255]): can never be MIN, so MIN/-1 can't occur.
+    let nonneg_dividend =
+        compile_rust("(module m (def (d (: a Int64) (: b Int64)) (/ (& a 255) b)) (export d))");
+    assert!(
+        !nonneg_dividend.contains("== -1") && !nonneg_dividend.contains("division overflow"),
+        "a provably-nonneg dividend elides the MIN/-1 guard:\n{nonneg_dividend}"
+    );
+    // FULL-RANGE signed `/` (both operands unbounded) KEEPS the guard — the elision is opt-in on a proof.
+    let full = compile_rust("(module m (def (d (: a Int64) (: b Int64)) (/ a b)) (export d))");
+    assert!(
+        full.contains("i64::MIN && r == -1") && full.contains("division overflow"),
+        "a full-range signed division keeps its MIN/-1 overflow guard:\n{full}"
+    );
+    // End-to-end value parity: the masked-divisor form computes correctly with the guard elided.
+    // d(100, 7): divisor = 7 & 7 = 7; 100 / 7 = 14 (truncating). Guard elided, value unchanged.
+    if let Some(out) = rustc_run(&masked_divisor, "d(100, 7)") {
+        assert_eq!(
+            out, "14",
+            "100 / (7&7=7) = 14, computed identically with the guard elided"
+        );
+    }
+}
+
+#[test]
 fn rustc_roundtrip_modulo_min_by_neg1_is_zero_not_a_trap() {
     // End-to-end through rustc: `(% a b)` at (Int64.min, -1) MUST return 0 on the Rust backend, matching
     // wasm `i64.rem_s`. Before the fix the emitted `checked_rem(MIN, -1)` returned None and PANICKED — a
