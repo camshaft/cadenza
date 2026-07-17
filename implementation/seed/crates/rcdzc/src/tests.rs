@@ -37139,6 +37139,54 @@ mod match_engine {
     }
 
     #[test]
+    fn a_standard_unit_abbreviation_names_the_same_unit_as_its_canonical_spelling() {
+        // The ML quantity-literal surface reads for the terse SI/metric symbols a calculator user reaches
+        // for, so a standard ABBREVIATION resolves to the SAME family unit as its canonical spelling:
+        // `km` = `kilometer`, `m` = `meter`, `ms` = `millisecond`. `1.0 km + 500.0 m` converts km + m to
+        // the meter reference and sums to 1500 m. Before the abbreviation aliases these failed as unknown
+        // units — the operator hit `5 km` / `100 m` directly. Compiles + RUNS. (The operator's `5 km /
+        // 100 m` ratio also resolves both units; it yields a dimensionless `Qty`, exercised via `calc`.)
+        let sum = "(do (def (main) ((. Qty value) \
+                   (+ ((. Qty of) 1.0 ((. Unit of) #\"km\")) \
+                      ((. Qty of) 500.0 ((. Unit of) #\"m\"))))) (export main))";
+        assert_eq!(
+            run_returns::<f64>(
+                &compile_component(&crate::codec::encode(&parse(sum)))
+                    .expect("a km+m abbreviation sum compiles and runs"),
+                "main"
+            ),
+            1500.0
+        );
+        // The registry carries the abbreviations across dimensions, each aliasing its canonical row's
+        // conversion (one source of truth) — a direct check that the family table resolves them.
+        let fams = crate::prelude::unit_families();
+        for (abbr, canonical) in [
+            ("km", "kilometer"),
+            ("cm", "centimeter"),
+            ("ft", "foot"),
+            ("ms", "millisecond"),
+            ("min", "minute"),
+            ("h", "hour"),
+            ("kB", "kilobyte"),
+            ("MiB", "mebibyte"),
+            ("Hz", "hertz"),
+            ("GHz", "gigahertz"),
+        ] {
+            assert_eq!(
+                fams.get(abbr),
+                fams.get(canonical),
+                "abbreviation `{abbr}` must resolve to the same conversion as `{canonical}`"
+            );
+        }
+        // `in` is the `in` KEYWORD, not a unit ident — it must NOT be registered as an inch abbreviation
+        // (a `5 in` quantity is a parse error, handled at the surface, not an unknown-unit lookup).
+        assert!(
+            !fams.contains_key("in"),
+            "`in` is a keyword and must not be a unit abbreviation"
+        );
+    }
+
+    #[test]
     fn a_named_rate_unit_of_a_derived_dimension_converts_and_mixes() {
         // F2-5: `mbps` is a named unit of the DERIVED dimension `byte/second` (a rate = information/time),
         // not an atomic base. A rate DERIVED by division (`bytes / seconds`) is the SAME free-abelian-

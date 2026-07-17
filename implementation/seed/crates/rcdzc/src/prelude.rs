@@ -1421,16 +1421,24 @@ pub fn unit_families() -> BTreeMap<String, UnitConversion> {
             panic!("built-in unit family `{name}` registered with conflicting conversions")
         }
     };
-    // Common ENGLISH PLURAL spellings of the atomic units resolve to the SAME conversion as their
-    // canonical singular — the ML quantity-literal surface is written for natural language (`4 feet`,
-    // `5 meters`, `3 inches`; the parser's own `quantity_literal_desugars` test builds `(Unit.of
-    // #"feet")`), so a plural MUST name the same unit as its singular rather than fail as unknown.
-    // English plurals are IRREGULAR (`foot`→`feet`, `inch`→`inches`; `hertz` is invariant, no alias),
-    // so they are explicit DATA here, not a computed `+s` stemming rule. Each alias REUSES its
-    // canonical row's `UnitConversion` (one source of truth — editing `foot`'s scale flows to `feet`
-    // for free); an alias never collides with a canonical name, so the uniqueness invariant holds.
+    // Common ENGLISH PLURAL spellings of the atomic units — AND the standard SI/metric ABBREVIATIONS —
+    // resolve to the SAME conversion as their canonical singular. The ML quantity-literal surface is
+    // written for natural language AND for the terse symbols a calculator user reaches for (`4 feet`,
+    // `5 meters`, `3 inches`, but equally `5 km`, `100 m`, `250 ms`; the parser's own
+    // `quantity_literal_desugars` test builds `(Unit.of #"feet")`, and `5 km` desugars to `(Unit.of
+    // #"km")` identically), so a plural OR an abbreviation MUST name the same unit as its canonical
+    // spelling rather than fail as unknown. Both plurals (IRREGULAR — `foot`→`feet`, `inch`→`inches`;
+    // `hertz` invariant) and abbreviations (`km`, `cm`, `Hz`) are explicit DATA here, not a computed
+    // stemming rule. Each alias REUSES its canonical row's `UnitConversion` (one source of truth —
+    // editing `foot`'s scale flows to `feet` AND `ft` for free); an alias never collides with a
+    // canonical name, so the uniqueness invariant holds.
+    //
+    // Abbreviations OMITTED and why: `in` (inch) is the `in` KEYWORD — it lexes as a reserved word, not
+    // a unit ident, so `5 in` is a parse error, not an unknown unit; use `inch`/`inches`. MASS symbols
+    // (`kg`, `g`, `mg`) have NO canonical row — there is no mass dimension in the built-in families yet
+    // — so they cannot alias anything; adding them needs a `gram` family first (deferred, told v-guide).
     const ALIASES: &[(&str, &str)] = &[
-        // length
+        // length — plurals
         ("meters", "meter"),
         ("millimeters", "millimeter"),
         ("centimeters", "centimeter"),
@@ -1438,12 +1446,25 @@ pub fn unit_families() -> BTreeMap<String, UnitConversion> {
         ("inches", "inch"),
         ("feet", "foot"),
         ("miles", "mile"),
-        // time
+        // length — abbreviations
+        ("m", "meter"),
+        ("mm", "millimeter"),
+        ("cm", "centimeter"),
+        ("km", "kilometer"),
+        ("ft", "foot"),
+        ("mi", "mile"),
+        // time — plurals
         ("seconds", "second"),
         ("milliseconds", "millisecond"),
         ("minutes", "minute"),
         ("hours", "hour"),
-        // information
+        // time — abbreviations (`min`/`h` are the conventional short forms; `hr` also common)
+        ("s", "second"),
+        ("ms", "millisecond"),
+        ("min", "minute"),
+        ("h", "hour"),
+        ("hr", "hour"),
+        // information — plurals
         ("bytes", "byte"),
         ("bits", "bit"),
         ("kilobytes", "kilobyte"),
@@ -1452,6 +1473,19 @@ pub fn unit_families() -> BTreeMap<String, UnitConversion> {
         ("kibibytes", "kibibyte"),
         ("mebibytes", "mebibyte"),
         ("gibibytes", "gibibyte"),
+        // information — abbreviations (decimal `kB/MB/GB` vs binary `KiB/MiB/GiB`, matching the rows)
+        ("B", "byte"),
+        ("kB", "kilobyte"),
+        ("MB", "megabyte"),
+        ("GB", "gigabyte"),
+        ("KiB", "kibibyte"),
+        ("MiB", "mebibyte"),
+        ("GiB", "gibibyte"),
+        // frequency — abbreviations (`hertz` has no plural alias; `Hz` is the SI symbol)
+        ("Hz", "hertz"),
+        ("kHz", "kilohertz"),
+        ("MHz", "megahertz"),
+        ("GHz", "gigahertz"),
     ];
     for (alias, canonical) in ALIASES {
         let conv = m
