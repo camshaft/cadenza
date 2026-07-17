@@ -5817,23 +5817,24 @@ fn a_match_shaped_arm_body_resumes_in_a_sequence_of_performs() {
     }
 }
 
-/// KNOWN LATENT SILENT MISCOMPILE — PINNED (concierge ruling 2026-07-17: queue the branch-out-state fix,
-/// pin the unsound case so it is tracked + cannot silently regress-worse; work active-demand Quantity-ABI/E5
-/// first, promote when they clear or a real consumer hits it). A HELPER that performs a STATE-ADVANCING op
-/// (`put`→`Map.insert`) inside a conditional BRANCH, called in a NON-TAIL position (a `let`-init) whose
-/// continuation READS the state (a later `get`), drops the branch's advanced out-state — the `Match`/`If`
-/// thread arms return the post-scrutinee state, discarding the advance. So the later `get` MISSES → a WRONG
-/// VALUE (v-compiler-ml's memoized-DB `demand`, lifting db.cdz onto effect-Db design A; they routed around it
-/// via the pure threaded-Db design B, so NO current consumer). VERIFIED LATENT (predates the 4a8b278b6
-/// match-arm fix — compiles+fails identically at the pre-fix parent), NOT a regression. A quick guard was
-/// proven IMPOSSIBLE (3 clean-reverted attempts: an arm-level decline over-declines the SOUND tail cases +
-/// breaks specialization; a let/do-arm reactive guard can't work — the helper's `put` is already inlined+
-/// threaded+folded-away by the time the arm sees the init). The real fix is BRANCH-OUT-STATE THREADING
-/// (thread each branch's advanced out-state forward as a match-valued state) — a substantial vertical, QUEUED.
-/// This test PINS the shape as a KNOWN MISCOMPILE: it currently COMPILES + runs to the WRONG value; when the
-/// branch-out-state fix lands, `run-then-get` yields 50 (demand fills 5→25, the later get(5) sees Some 25, so
-/// 25 + 25 = 50) — FLIP the assertion to `50` then. Until then it documents the bug (compiles, not a decline)
-/// so a regression to a DIFFERENT wrong shape (or a leak) is caught. Full analysis:
+/// KNOWN LATENT SILENT MISCOMPILE — PINNED (concierge ruling 2026-07-17: queue the fix, pin the unsound case
+/// so it is tracked + cannot silently regress-worse; work active-demand Quantity-ABI/E5 first, promote when
+/// they clear or a real consumer hits it). ⚠ WIDER RADIUS than this fn's name (breaker mapped it 2026-07-17):
+/// the bug is NOT branch-specific — an effectful STATE-ADVANCING op (`put`→`Map.insert`) performed inside a
+/// CALLED HELPER has its handler-state advance DROPPED at the CALL-RETURN boundary, whether the put is
+/// conditional (in a `match` arm) OR UNCONDITIONAL, and whether the caller position is a `let`-init OR a
+/// `do`-sequence. INLINE (same body, no helper) threads fine; the helper-CALL boundary is the loss point (the
+/// cross-function inline path effects.rs:~3250 threads the reduced body but the callee's advanced out-state
+/// does not reach the caller's continuation for a non-tail call). So the later `get` MISSES → a WRONG VALUE
+/// (v-compiler-ml's memoized-DB `demand`, lifting db.cdz onto effect-Db design A; they routed around it via the
+/// pure threaded-Db design B, so NO current consumer). VERIFIED LATENT (predates the 4a8b278b6 match-arm fix —
+/// compiles+fails identically at the pre-fix parent), NOT a regression. A quick guard was proven IMPOSSIBLE
+/// (3 clean-reverted attempts). The real fix is THREADING EACH CALLED HELPER'S ADVANCED OUT-STATE back to the
+/// caller's continuation — a substantial vertical, QUEUED. This test PINS one witness as a KNOWN MISCOMPILE:
+/// it currently COMPILES + runs to the WRONG value; when the fix lands, `run-then-get` yields 50 (demand fills
+/// 5→25, the later get(5) sees Some 25, so 25 + 25 = 50) — FLIP the assertion to `50` then. (breaker added the
+/// widest witness — a double-call → 1024/should-be-50 — as a companion pin.) Until then it documents the bug
+/// (compiles, not a decline) so a regression to a DIFFERENT wrong shape (or a leak) is caught. Full analysis:
 /// queue mlrepro-effect-db-helper-outstate-lost-to-caller-sequence.cdz + the queued-branch-outstate memory.
 #[test]
 fn a_helper_state_advance_in_a_branch_lost_to_a_later_read_is_a_known_miscompile() {
