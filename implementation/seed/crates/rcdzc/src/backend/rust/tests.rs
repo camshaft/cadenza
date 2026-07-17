@@ -520,14 +520,17 @@ fn runtime_list_ops_emit_native_vec_operations() {
                     (def (main) (List.concat (f 1) (f 2))) (export main))",
     );
     assert!(cat.contains("__v.extend("), "List.concat → extend:\n{cat}");
-    // `List.update` → a bounds-checked index-set that traps OOB.
+    // `List.update` → a bounds-checked index-set that traps OOB via `panic!("unreachable")` — the wasm
+    // runtime's `List.update` OOB is a GENERIC `unreachable` abort (message-less under panic=abort), which
+    // the corpus grades `(trap "unreachable")`; matching that KIND (not "index out of bounds", which would
+    // classify `out-of-bounds`, a mismatch) is what lets the runtime-OOB case grade pass on rust.
     let upd = compile_rust(
         "(module m (def (f (: n Int64)) (if (= n 0) (list n n) (f (+ n -1)))) \
                     (def (main (: i Int64)) (List.update (f 1) i 9)) (export main))",
     );
     assert!(
-        upd.contains("panic!(\"index out of bounds\")") && upd.contains("__v[__i] ="),
-        "List.update → bounds-checked set:\n{upd}"
+        upd.contains("panic!(\"unreachable\")") && upd.contains("__v[__i] ="),
+        "List.update → bounds-checked set trapping `unreachable` (matching the wasm runtime kind):\n{upd}"
     );
     // `List.at` → the fallible read yielding a native Option.
     let at = compile_rust(

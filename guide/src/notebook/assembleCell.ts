@@ -35,6 +35,71 @@ function isScopeContributing(cell: Cell): boolean {
   return cell.kind === "code" && cell.directive.kind !== "widget";
 }
 
+/// Split a code cell's source into its TOP-LEVEL forms (a `def`/`type`/`effect`/`Unit.define`/… block
+/// each), preserving order. s-expr: balanced-paren scan — each top-level `(…)` is one form, and any
+/// non-paren run (blank lines, a bare atom) is its own chunk. ML: split on top-level `def `/`type `/
+/// `effect ` line starts (a form runs until the next such line). This is a lightweight structural split
+/// (not a real parser) — enough to drop a whole `main` form; a malformed/unbalanced tail is returned as
+/// one trailing chunk so nothing is silently lost.
+export function topLevelForms(source: string, surface: Surface): string[] {
+  const trimmed = source.trim();
+  if (!trimmed) return [];
+  if (surface === "sexpr") {
+    const forms: string[] = [];
+    let depth = 0;
+    let start = 0;
+    let inStr = false;
+    let escaped = false;
+    for (let i = 0; i < trimmed.length; i++) {
+      const c = trimmed[i];
+      if (inStr) {
+        if (escaped) escaped = false;
+        else if (c === "\\") escaped = true;
+        else if (c === '"') inStr = false;
+        continue;
+      }
+      if (c === '"') inStr = true;
+      else if (c === "(") depth++;
+      else if (c === ")") {
+        depth--;
+        if (depth === 0) {
+          forms.push(trimmed.slice(start, i + 1).trim());
+          start = i + 1;
+        }
+      }
+    }
+    const tail = trimmed.slice(start).trim(); // anything after the last balanced form (or an unbalanced rest)
+    if (tail) forms.push(tail);
+    return forms.filter((f) => f.length > 0);
+  }
+  // ML: a top-level form begins at a line starting with a top-level keyword; it runs until the next one.
+  const lines = trimmed.split("\n");
+  const forms: string[] = [];
+  let cur: string[] = [];
+  const isFormStart = (line: string) => /^(def|type|effect|export|import|Unit\.define)\b/.test(line);
+  for (const line of lines) {
+    if (isFormStart(line) && cur.length) {
+      forms.push(cur.join("\n").trim());
+      cur = [];
+    }
+    cur.push(line);
+  }
+  if (cur.length) forms.push(cur.join("\n").trim());
+  return forms.filter((f) => f.length > 0);
+}
+
+/// Remove any top-level def literally named `main` from a cell's source (both surfaces). A notebook cell's
+/// `main` is its PRIVATE per-cell output/entry slot — the run path calls `(main)`/`main()` on the CURRENT
+/// cell only — so a PRIOR cell's `main` must not enter a later cell's module namespace, else >1 `main`
+/// collides on CDZ0201 "`main` is defined more than once" (operator P0 #12). Every NON-`main` def (a
+/// `def base = …` helper) is preserved, so the sequential-scope contract still holds. `main` is matched by
+/// def-NAME, so a helper whose name merely contains "main" (`mainline`) is untouched.
+export function stripMainDef(source: string, surface: Surface): string {
+  return topLevelForms(source, surface)
+    .filter((form) => topLevelDefNames(form, surface)[0] !== "main")
+    .join(surface === "sexpr" ? "\n" : "\n\n");
+}
+
 /// Assemble the runnable program for the code cell at `index` in `cells`, under sequential scope.
 /// Throws if `index` is out of range or names a non-code cell (the caller only assembles code cells).
 ///
@@ -42,6 +107,11 @@ function isScopeContributing(cell: Cell): boolean {
 /// is a block of top-level `def`/`type`/`effect` forms, and both surfaces accept newline-separated
 /// top-level forms in a buffer (`replEval` gathers them). We do NOT wrap here: `replEval` + `wrapModule`
 /// own the export/main scaffolding; this module only decides WHAT source is in scope.
+///
+/// P0 #12: each prior cell's OWN `main` def is stripped (via `stripMainDef`) before it enters the buffer —
+/// a notebook cell's `main` is its private per-cell output slot, so carrying a prior cell's `main` forward
+/// would put >1 `main` in the module and trip CDZ0201. Only the CURRENT cell's `main` remains (it's the
+/// `entry`, called as `(main)`/`main()`). Every non-`main` def a prior cell defines still flows downstream.
 export function assembleCell(cells: Cell[], index: number, surface: Surface): Assembled {
   const cell = cells[index];
   if (!cell) throw new RangeError(`assembleCell: no cell at index ${index}`);
@@ -56,9 +126,13 @@ export function assembleCell(cells: Cell[], index: number, surface: Surface): As
     const src = (prior as Extract<Cell, { kind: "code" }>).source;
     const trimmed = src.trim();
     if (!trimmed) continue; // an empty code cell contributes nothing
-    priorSources.push(trimmed);
-    for (const name of topLevelDefNames(trimmed, surface)) {
-      if (!inScope.includes(name)) inScope.push(name);
+    // Drop the prior cell's own `main` (its private output slot) so it can't collide with THIS cell's
+    // `main` in the shared module namespace (CDZ0201, operator P0 #12). Non-`main` defs still flow.
+    const contributed = stripMainDef(trimmed, surface);
+    if (!contributed.trim()) continue; // a prior cell that was ONLY `main` contributes nothing downstream
+    priorSources.push(contributed);
+    for (const name of topLevelDefNames(contributed, surface)) {
+      if (name !== "main" && !inScope.includes(name)) inScope.push(name);
     }
   }
 

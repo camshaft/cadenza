@@ -99,6 +99,12 @@ enum Cmd {
         /// answer. Slower (a `rustc` invocation per case), so it is opt-in and has its own baseline.
         #[arg(long, default_value = "wasm")]
         target: GateTargetArg,
+        /// OPTIMIZATION-LEVEL-EQUIVALENCE sweep: compile each corpus program at O0/O1/O2/O3 and assert
+        /// the emitted component is BYTE-IDENTICAL across all four (the tiered-opt invariant — every
+        /// level is observably identical). A level that changes the bytes is a candidate miscompile (hard
+        /// fail). Ignores `--save`/`--check` (it has no baseline; it is a same-run cross-level diff).
+        #[arg(long, conflicts_with_all = ["save", "check"])]
+        opt_sweep: bool,
     },
     /// The omnibus health check: cargo fmt --check, workspace build, tests, clippy (`-D warnings`),
     /// the wasm runtime build, and the behavior gate. Each step's output is captured to a log file
@@ -225,10 +231,9 @@ fn main() {
             save,
             check,
             target,
-        } => gate(
-            &paths,
-            profile,
-            GateOpts {
+            opt_sweep,
+        } => {
+            let gate_opts = GateOpts {
                 files,
                 store,
                 case,
@@ -239,8 +244,13 @@ fn main() {
                     GateTargetArg::Rust => GateTarget::Rust,
                     GateTargetArg::RustAsync => GateTarget::RustAsync,
                 },
-            },
-        ),
+            };
+            if opt_sweep {
+                gate_opt_sweep(&paths, profile, &gate_opts);
+            } else {
+                gate(&paths, profile, gate_opts);
+            }
+        }
         Cmd::Check => check(&paths, profile),
         Cmd::Roundtrip { files } => roundtrip(&paths, profile, files),
         Cmd::Fmt { files, to, check } => fmt(&paths, profile, files, &to, check),
@@ -683,7 +693,9 @@ fn run_program(
     target: GateTarget,
 ) -> Ran {
     match target {
-        GateTarget::Wasm => run_program_wasm(tools, store, program, modules, call, host_responses),
+        GateTarget::Wasm => {
+            run_program_wasm(tools, store, program, modules, call, host_responses, None)
+        }
         // The Rust backend has no host-boundary path — a host-delegating case declines there (Todo).
         GateTarget::Rust if !host_responses.is_empty() => Ran::Declined { code: None },
         GateTarget::RustAsync if !host_responses.is_empty() => Ran::Declined { code: None },
@@ -703,13 +715,15 @@ fn run_program_wasm(
     modules: &[(String, String)],
     call: Option<&Call>,
     host_responses: &[(String, String)],
+    opt_level: Option<&str>,
 ) -> Ran {
     use std::io::Write;
     use std::process::Stdio;
 
     // Emit the component bytes — either the single-file pipe or the multi-file package compile.
+    // `opt_level` selects the pass tier (only the opt-sweep passes a level; `None` = compiler default).
     let component = if modules.is_empty() {
-        emit_component_single(tools, program)
+        emit_component_single_at(tools, program, opt_level)
     } else {
         emit_component_package(tools, program, modules)
     };
@@ -761,7 +775,15 @@ fn run_program_wasm(
 /// The single-file component-emit path: program text (stdin) → binary AST → component (stdout), via
 /// the `cdz convert | cdz compile` pipe. `Err(Ran::Declined)` on a rejection/decline (its code
 /// recovered from stderr).
-fn emit_component_single(tools: &Tools, program: &str) -> Result<Vec<u8>, Ran> {
+/// The single-file component-emit path at an optimization level — `opt_level` is the `cdz compile
+/// --opt-level` value (`"O0"`..`"O3"`), or `None` for the compiler default (`O1`). Only the
+/// opt-level-equivalence sweep ([`gate_opt_sweep`]) passes a level; the normal gate passes `None` so its
+/// behavior is byte-identical to before.
+fn emit_component_single_at(
+    tools: &Tools,
+    program: &str,
+    opt_level: Option<&str>,
+) -> Result<Vec<u8>, Ran> {
     use std::io::Write;
     use std::process::{Command, Stdio};
 
@@ -780,9 +802,16 @@ fn emit_component_single(tools: &Tools, program: &str) -> Result<Vec<u8>, Ran> {
         .write_all(program.as_bytes())
         .ok();
 
-    // Stage 2: AST → component; capture stderr so a decline carries its diagnostic.
+    // Stage 2: AST → component; capture stderr so a decline carries its diagnostic. When a level is
+    // requested, pass it through — `cdz compile --opt-level <L>` selects the pass tier (the default O1 is
+    // what the bare `["compile", "-", "-o", "-"]` uses).
+    let mut compile_args: Vec<&str> = vec!["compile", "-", "-o", "-"];
+    if let Some(level) = opt_level {
+        compile_args.push("--opt-level");
+        compile_args.push(level);
+    }
     let rcdzc = Command::new(&tools.rcdzc)
-        .args(["compile", "-", "-o", "-"])
+        .args(&compile_args)
         .stdin(Stdio::from(syntax.stdout.take().unwrap()))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -2609,6 +2638,118 @@ fn gate(paths: &Paths, profile: &str, opts: GateOpts) {
     if fail > 0 {
         std::process::exit(1);
     }
+}
+
+/// The OPTIMIZATION-LEVEL-EQUIVALENCE gate (`xtask gate --opt-sweep`). The tiered `OptLevel` framework's
+/// correctness invariant is that EVERY level produces OBSERVABLY-IDENTICAL behavior — only compile time /
+/// output size differs, never the result (`core-semantics.md` §Observable Behavior Is A Defined
+/// Projection Of A Run; DESIGN-tiered-optimization-levels-rcdzc.md §5). This mode compiles AND RUNS each
+/// corpus program at `O0`/`O1`/`O2`/`O3` and asserts the OBSERVABLE OUTCOME (value / trap / decline) is
+/// the SAME across all four. A level that changes the outcome is a candidate miscompile: a hard fail.
+///
+/// It compares the RUN OUTCOME, not the emitted bytes: the wasm emit is not byte-deterministic
+/// run-to-run (map-iteration order in selection), so a byte diff has false positives — the observable
+/// projection (the value a run yields, or the trap/decline) is the real invariant the levels must
+/// preserve. Each case is driven per its trials (its `(call …)`s); a case that DECLINES at the default
+/// tier is skipped (a decline is level-independent; the normal gate grades it Todo). Multi-file PACKAGE
+/// cases are skipped in this first cut (the single-file pipe covers the arithmetic/control programs where
+/// the pass tiers act). Wired into `cargo xtask check` so a peer landing a pass that mis-optimizes at
+/// `O2`/`O3` is caught fleet-wide. With the pipeline currently empty (no registered passes) every level
+/// runs identically, so this passes today and stands guard over every future pass.
+fn gate_opt_sweep(paths: &Paths, profile: &str, opts: &GateOpts) {
+    let tools = build_tools(paths, profile);
+    let files = if opts.files.is_empty() {
+        default_corpus_files(paths)
+    } else {
+        opts.files.clone()
+    };
+    const LEVELS: [&str; 4] = ["O0", "O1", "O2", "O3"];
+
+    // The observable outcome of a run, as a comparable string — the projection the levels must preserve.
+    // A host-delegating case (non-empty host_responses) is level-independent in its host protocol, so its
+    // observed calls are folded into the value string like the normal gate renders them.
+    let outcome = |ran: &Ran| -> String {
+        match ran {
+            Ran::Value(v, calls) if calls.is_empty() => format!("value {v}"),
+            Ran::Value(v, calls) => format!("value {v} [host: {}]", calls.join(",")),
+            Ran::Trap(msg) => format!("trap {}", trap_kind(msg).unwrap_or("other")),
+            Ran::Declined { code } => format!("declined {}", code.as_deref().unwrap_or("-")),
+            Ran::BadArtifact(msg) => format!("bad-artifact {msg}"),
+        }
+    };
+
+    let mut checked = 0u32;
+    let mut skipped = 0u32;
+    let mut divergences: Vec<String> = Vec::new();
+    for file in &files {
+        for rec in read_corpus(&tools, file) {
+            // Multi-file package cases are out of scope for this first cut.
+            if !rec.modules.is_empty() {
+                skipped += 1;
+                continue;
+            }
+            // For each trial (a `(call …)`, or the single no-call trial), run at every level and compare
+            // outcomes. A case with no trials still has one implicit no-call run.
+            let calls: Vec<Option<&Call>> = if rec.trials.is_empty() {
+                vec![None]
+            } else {
+                rec.trials.iter().map(|t| t.call.as_ref()).collect()
+            };
+            let mut case_declined_at_default = false;
+            let mut case_checked_any = false;
+            for call in calls {
+                let runs: Vec<Ran> = LEVELS
+                    .iter()
+                    .map(|lvl| {
+                        run_program_wasm(
+                            &tools,
+                            &opts.store,
+                            &rec.program,
+                            &rec.modules,
+                            call,
+                            &rec.host_responses,
+                            Some(lvl),
+                        )
+                    })
+                    .collect();
+                // A decline at the default tier means the case doesn't compile — skip it (level-independent).
+                if matches!(&runs[1], Ran::Declined { .. }) {
+                    case_declined_at_default = true;
+                    break;
+                }
+                case_checked_any = true;
+                let base = outcome(&runs[1]);
+                for (lvl, ran) in LEVELS.iter().zip(&runs) {
+                    let got = outcome(ran);
+                    if got != base {
+                        let label = call.map(|c| c.export.as_str()).unwrap_or("(no call)");
+                        divergences.push(format!(
+                            "{} [{label}]: {lvl} → `{got}`, O1 → `{base}` — LEVELS DIVERGE (candidate miscompile)",
+                            rec.description
+                        ));
+                    }
+                }
+            }
+            if case_declined_at_default {
+                skipped += 1;
+            } else if case_checked_any {
+                checked += 1;
+            }
+        }
+    }
+
+    println!(
+        "\ngate --opt-sweep: {checked} checked ({skipped} skipped: package/decline), {} divergence(s) across O0..O3",
+        divergences.len()
+    );
+    if !divergences.is_empty() {
+        println!("\ndivergences:");
+        for d in &divergences {
+            println!("  DIVERGE  {d}");
+        }
+        std::process::exit(1);
+    }
+    println!("all checked cases run to the SAME outcome at every optimization level ✓");
 }
 
 /// Grade every record in PARALLEL, returning `(description, grade)` in the SAME order as `records`.

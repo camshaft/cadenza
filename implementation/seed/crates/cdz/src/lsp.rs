@@ -2546,31 +2546,21 @@ mod tests {
 
     #[test]
     fn highlight_kind_map_covers_the_whole_query_vocabulary() {
-        // Every `HighlightKind` wire spelling the query can emit must map to a legend index (or be a
-        // deliberate fallback) — a new kind must force a decision here, not silently drop. All indices
-        // must be in range of the published legend.
-        for kind in [
-            "keyword",
-            "type",
-            "constructor",
-            "function",
-            "param",
-            "variable",
-            "effect",
-            "label",
-            "number",
-            "string",
-            "char",
-            "bytes",
-            "symbol",
-            "literal",
-            "unbound",
-        ] {
-            let idx = highlight_kind_to_token_index(kind)
-                .unwrap_or_else(|| panic!("highlight kind `{kind}` has no token index"));
+        // Every `HighlightKind` the query can emit must map to a legend index whose value is in range of
+        // the published legend — otherwise that kind renders unclassified. Iterate the PRODUCER's canonical
+        // vocabulary (`rcdzc::sidecar::HighlightKind::ALL`) rather than a hand-maintained spelling list, so
+        // a NEW kind added upstream is automatically exercised here and FAILS this test until it gets a
+        // legend mapping — closing the producer→consumer loop (ALL guarantees completeness upstream; this
+        // proves the semantic-token legend consumes the whole of it). The wire spelling is the query's
+        // per-token second column, `HighlightKind::as_str`.
+        for kind in rcdzc::sidecar::HighlightKind::ALL {
+            let spelling = kind.as_str();
+            let idx = highlight_kind_to_token_index(spelling).unwrap_or_else(|| {
+                panic!("highlight kind `{spelling}` has no semantic-token legend index")
+            });
             assert!(
                 (idx as usize) < SEMANTIC_TOKEN_TYPES.len(),
-                "index {idx} for `{kind}` is out of legend range"
+                "index {idx} for `{spelling}` is out of legend range"
             );
         }
     }

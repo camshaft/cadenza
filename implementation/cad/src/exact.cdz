@@ -13,8 +13,13 @@
 /// main `Solid`/`Vec3` model (currently Float64) onto this exact basis + `Qty` dimensioned lengths
 /// (coordinating with v-quantity on the Qty surface); the native/browser mesh drivers then convert Rational
 /// → f64 only at the manifold leaf, keeping the model tree exact.
+///
+/// NUMERIC MODE (S1-redux, finale): `@!default-fraction Rational` — the exact-geometry BASE is exact-by-
+/// default, so a bare `n/d` is an exact Rational (no `Rational.of` noise). This module has no imports (it IS
+/// the base everyone imports); the pragma is module-local, so importers keep their own defaults.
+@!default-fraction Rational
 
-/// An exact 3-D vector — the Rational analogue of `Vec3`. `Rational.of(n, d)` builds a component.
+/// An exact 3-D vector — the Rational analogue of `Vec3`. A bare `n/d` builds a component.
 type Vec3r =
   | V3r(Rational, Rational, Rational)
 
@@ -43,10 +48,10 @@ def rmin(a: Rational, b: Rational) = if a < b then a else b
 def rmax(a: Rational, b: Rational) = if a > b then a else b
 
 /// The Rational zero — a common corner/identity value.
-def rzero() = Rational.of(0, 1)
+def rzero() = 0 / 1
 
 /// Exact half of a Rational (÷2 is exact). Used to turn a FULL cube/cylinder dimension into a half-extent.
-def rhalf(x: Rational) = x / Rational.of(2, 1)
+def rhalf(x: Rational) = x / 2
 
 /// Build an exact vector.
 def v3r(x: Rational, y: Rational, z: Rational) = Vec3r.V3r(x, y, z)
@@ -190,8 +195,8 @@ def simplify-r(s: Solidr) = match s with
 
 @test
 def rmin-rmax-exact() =
-  let third = Rational.of(1, 3) in
-  let half = Rational.of(1, 2) in
+  let third = 1 / 3 in
+  let half = 1 / 2 in
   if rmin(third, half) == third then (if rmax(third, half) == half then unit else trap("rmax")) else trap("rmin")
 
 @test
@@ -200,25 +205,25 @@ def v3r-eq-is-a-direct-compound-walk() =
   // over Rational leaves must WALK (compile + run), incl. exact normalization — 1/2 and 2/4 are the SAME
   // Rational, so the vectors are equal; a differing component makes them unequal. If a future change drops
   // Rational from the walk, v3r-eq would decline and this case fails — guarding the whole vertical's equality.
-  let a = v3r(Rational.of(1, 2), Rational.of(1, 3), Rational.of(1, 6)) in
-  let b = v3r(Rational.of(2, 4), Rational.of(1, 3), Rational.of(1, 6)) in   // 1/2 == 2/4 normalized
-  let c = v3r(Rational.of(1, 2), Rational.of(1, 3), Rational.of(5, 6)) in   // z differs
+  let a = v3r(1 / 2, 1 / 3, 1 / 6) in
+  let b = v3r(2 / 4, 1 / 3, 1 / 6) in   // 1/2 == 2/4 normalized
+  let c = v3r(1 / 2, 1 / 3, 5 / 6) in   // z differs
   if v3r-eq(a, b) then (if v3r-eq(a, c) then trap("differing z must be unequal") else unit)
   else trap("whole-Vec3r == over Rational must walk (1/2 == 2/4 normalized)")
 
 @test
 def v3r-eq-and-add() =
-  let a = v3r(Rational.of(1, 2), Rational.of(1, 3), Rational.of(1, 6)) in
-  let b = v3r(Rational.of(1, 2), Rational.of(2, 3), Rational.of(5, 6)) in
+  let a = v3r(1 / 2, 1 / 3, 1 / 6) in
+  let b = v3r(1 / 2, 2 / 3, 5 / 6) in
   // 1/2+1/2=1, 1/3+2/3=1, 1/6+5/6=1  → (1,1,1) exactly
-  let one = Rational.of(1, 1) in
+  let one = 1 / 1 in
   if v3r-eq(v3r-add(a, b), v3r(one, one, one)) then unit else trap("exact componentwise add")
 
 @test
 def bounding-box-of-a-cube-is-symmetric() =
   // a FULL-size-2 cube centred at origin spans [-1, 1] on each axis (half-extent 1).
-  let two = Rational.of(2, 1) in
-  let one = Rational.of(1, 1) in
+  let two = 2 / 1 in
+  let one = 1 / 1 in
   let b = bounding-box(Solidr.Cuber(v3r(two, two, two))) in
   match b with | Aabbr.Boxr(lo, hi) =>
     (if v3r-eq(lo, v3r(rzero() - one, rzero() - one, rzero() - one)) then
@@ -227,30 +232,30 @@ def bounding-box-of-a-cube-is-symmetric() =
 @test
 def bounding-box-of-a-union-encloses-both() =
   // a full-size-2 cube at origin (box [-1,1]) ∪ same translated +5 in x (box [4,6]) → x spans [-1, 6].
-  let two = Rational.of(2, 1) in
-  let five = Rational.of(5, 1) in
+  let two = 2 / 1 in
+  let five = 5 / 1 in
   let model = Solidr.Unionr(
     Solidr.Cuber(v3r(two, two, two)),
     Solidr.Translater(v3r(five, rzero(), rzero()), Solidr.Cuber(v3r(two, two, two)))) in
   match bounding-box(model) with | Aabbr.Boxr(lo, hi) =>
-    (if v3r-x(lo) == (rzero() - Rational.of(1, 1)) then
-      (if v3r-x(hi) == Rational.of(6, 1) then unit else trap("hi.x should be 6 exactly")) else trap("lo.x should be -1"))
+    (if v3r-x(lo) == (rzero() - 1 / 1) then
+      (if v3r-x(hi) == 6 / 1 then unit else trap("hi.x should be 6 exactly")) else trap("lo.x should be -1"))
 
 @test
 def bounding-box-size-is-exact() =
   // size of a translated sphere's box = 2r on each axis, exact (no float drift).
-  let r = Rational.of(3, 2) in // radius 1.5, exact
-  let b = bounding-box(Solidr.Translater(v3r(Rational.of(10, 1), rzero(), rzero()), Solidr.Spherer(r))) in
+  let r = 3 / 2 in // radius 1.5, exact
+  let b = bounding-box(Solidr.Translater(v3r(10 / 1, rzero(), rzero()), Solidr.Spherer(r))) in
   let sz = aabbr-size(b) in
   // 2 * 3/2 = 3 exactly on each axis
-  if v3r-eq(sz, v3r(Rational.of(3, 1), Rational.of(3, 1), Rational.of(3, 1))) then unit
+  if v3r-eq(sz, v3r(3 / 1, 3 / 1, 3 / 1)) then unit
   else trap("exact size 2r = 3 per axis")
 
 @test
 def exact_arithmetic_has_no_rounding() =
   // the showcase: 1/3 + 1/3 + 1/3 == 1 EXACTLY (a float would drift). Pin it as a Vec3r component.
-  let third = Rational.of(1, 3) in
-  if (third + third + third) == Rational.of(1, 1) then unit else trap("1/3+1/3+1/3 = 1 exactly")
+  let third = 1 / 3 in
+  if (third + third + third) == 1 / 1 then unit else trap("1/3+1/3+1/3 = 1 exactly")
 
 @test
 def empty-has-a-degenerate-box() =
@@ -263,27 +268,27 @@ def empty-has-a-degenerate-box() =
 @test
 def cylinder-box-is-diameter-by-height() =
   // a cylinder (FULL height h, radius r) spans [-r,r]×[-r,r]×[-h/2,h/2] → size (2r, 2r, h), exact.
-  let h = Rational.of(5, 1) in let r = Rational.of(3, 2) in
+  let h = 5 / 1 in let r = 3 / 2 in
   let sz = aabbr-size(bounding-box(Solidr.Cylinderr(h, r))) in
-  if v3r-eq(sz, v3r(Rational.of(3, 1), Rational.of(3, 1), Rational.of(5, 1))) then unit
+  if v3r-eq(sz, v3r(3 / 1, 3 / 1, 5 / 1)) then unit
   else trap("cylinder box size (2r,2r,h) = (3,3,5) exact")
 
 @test
 def difference-is-bounded-by-the-base() =
   // subtracting a tool doesn't grow the base → the difference's box is the base's box.
-  let one = Rational.of(1, 1) in
+  let one = 1 / 1 in
   let base = Solidr.Cuber(v3r(one, one, one)) in
-  let d = Solidr.Differencer(base, Solidr.Spherer(Rational.of(1, 2))) in
+  let d = Solidr.Differencer(base, Solidr.Spherer(1 / 2)) in
   if v3r-eq(aabbr-size(bounding-box(d)), aabbr-size(bounding-box(base))) then unit
   else trap("difference box = base box")
 
 @test
 def scale-multiplies-the-box() =
   // scale a FULL-size-2 cube (box [-1,1]³) by (2,3,4) → box [-2,2]×[-3,3]×[-4,4], size (4,6,8), exact.
-  let two = Rational.of(2, 1) in
-  let scaled = Solidr.Scaler(v3r(Rational.of(2,1), Rational.of(3,1), Rational.of(4,1)), Solidr.Cuber(v3r(two, two, two))) in
+  let two = 2 / 1 in
+  let scaled = Solidr.Scaler(v3r(2 / 1, 3 / 1, 4 / 1), Solidr.Cuber(v3r(two, two, two))) in
   let sz = aabbr-size(bounding-box(scaled)) in
-  if v3r-eq(sz, v3r(Rational.of(4,1), Rational.of(6,1), Rational.of(8,1))) then unit
+  if v3r-eq(sz, v3r(4 / 1, 6 / 1, 8 / 1)) then unit
   else trap("scaled box size (4,6,8) exact")
 
 @test
@@ -292,13 +297,13 @@ def negative-scale-keeps-a-well-formed-box() =
   // invert the box (lo.x > hi.x) → a NEGATIVE aabbr-size, which would break a mesh driver / union / intersect.
   // bounding-box re-normalizes (min/max of the scaled corners), so a mirror keeps a well-formed box + correct
   // POSITIVE size. Mirror a size-2 cube (box [-1,1]³) by (-1, 1, -2) → still [-1,1]×[-1,1]×[-2,2], size (2,2,4).
-  let one = Rational.of(1,1) in let two = Rational.of(2,1) in
+  let one = 1 / 1 in let two = 2 / 1 in
   let mirrored = Solidr.Scaler(v3r(rzero() - one, one, rzero() - two), Solidr.Cuber(v3r(two, two, two))) in
   match bounding-box(mirrored) with | Aabbr.Boxr(lo, hi) =>
     // lo ≤ hi on every axis (well-formed), and size is the POSITIVE (2, 2, 4).
     (if v3r-eq(lo, v3r(rzero() - one, rzero() - one, rzero() - two)) then
       (if v3r-eq(hi, v3r(one, one, two)) then
-        (if v3r-eq(aabbr-size(bounding-box(mirrored)), v3r(two, two, Rational.of(4,1))) then unit
+        (if v3r-eq(aabbr-size(bounding-box(mirrored)), v3r(two, two, 4 / 1)) then unit
          else trap("mirrored size must be positive (2,2,4)")) else trap("hi corner"))
      else trap("lo corner — box should be normalized, not inverted"))
 
@@ -307,21 +312,21 @@ def negative-primitive-dimensions-keep-a-well-formed-box() =
   // REGRESSION (sibling of the negative-scale fix): a PRIMITIVE with a NEGATIVE dimension builds its box from
   // ±half-extent corners that would invert (lo > hi) if unnormalized → a negative aabbr-size. aabbr-of-corners
   // normalizes all three primitive arms, so a negative size/radius yields the ABSOLUTE extent, well-formed.
-  let two = Rational.of(2, 1) in let three = Rational.of(3, 1) in
+  let two = 2 / 1 in let three = 3 / 1 in
   let neg-cube = Solidr.Cuber(v3r(rzero() - two, two, rzero() - two)) in       // |−2| on x and z
-  let neg-sphere = Solidr.Spherer(rzero() - Rational.of(3, 2)) in              // radius −3/2 → size 3
-  let neg-cyl = Solidr.Cylinderr(rzero() - Rational.of(5, 1), rzero() - two) in // −5 height, −2 radius
+  let neg-sphere = Solidr.Spherer(rzero() - 3 / 2) in              // radius −3/2 → size 3
+  let neg-cyl = Solidr.Cylinderr(rzero() - 5 / 1, rzero() - two) in // −5 height, −2 radius
   if v3r-eq(aabbr-size(bounding-box(neg-cube)), v3r(two, two, two)) then
     (if v3r-eq(aabbr-size(bounding-box(neg-sphere)), v3r(three, three, three)) then
-      (if v3r-eq(aabbr-size(bounding-box(neg-cyl)), v3r(Rational.of(4,1), Rational.of(4,1), Rational.of(5,1)))
+      (if v3r-eq(aabbr-size(bounding-box(neg-cyl)), v3r(4 / 1, 4 / 1, 5 / 1))
        then unit else trap("neg cylinder size (2|r|,2|r|,|h|) = (4,4,5)"))
      else trap("neg sphere size 2|r| = 3")) else trap("neg cube size |w|,|d|,|h| = (2,2,2)")
 
 @test
 def intersection-of-two-cubes-is-the-overlap() =
   // two full-size-2 cubes (box [-1,1]), one translated +1 in x (box [0,2]) → intersection box x in [0,1].
-  let two = Rational.of(2, 1) in
-  let one = Rational.of(1, 1) in
+  let two = 2 / 1 in
+  let one = 1 / 1 in
   let a = Solidr.Cuber(v3r(two, two, two)) in
   let b = Solidr.Translater(v3r(one, rzero(), rzero()), Solidr.Cuber(v3r(two, two, two))) in
   match bounding-box(Solidr.Intersectionr(a, b)) with | Aabbr.Boxr(lo, hi) =>
@@ -331,39 +336,39 @@ def intersection-of-two-cubes-is-the-overlap() =
 
 @test
 def v3r-min-max-are-componentwise() =
-  let a = v3r(Rational.of(1, 2), Rational.of(5, 1), Rational.of(3, 1)) in
-  let b = v3r(Rational.of(1, 3), Rational.of(7, 1), Rational.of(2, 1)) in
+  let a = v3r(1 / 2, 5 / 1, 3 / 1) in
+  let b = v3r(1 / 3, 7 / 1, 2 / 1) in
   // min picks the smaller per axis (1/3, 5, 2), max the larger (1/2, 7, 3) — exact, total order over Rational.
-  if v3r-eq(v3r-min(a, b), v3r(Rational.of(1, 3), Rational.of(5, 1), Rational.of(2, 1))) then
-    (if v3r-eq(v3r-max(a, b), v3r(Rational.of(1, 2), Rational.of(7, 1), Rational.of(3, 1))) then unit
+  if v3r-eq(v3r-min(a, b), v3r(1 / 3, 5 / 1, 2 / 1)) then
+    (if v3r-eq(v3r-max(a, b), v3r(1 / 2, 7 / 1, 3 / 1)) then unit
      else trap("v3r-max componentwise")) else trap("v3r-min componentwise")
 
 @test
 def v3r-mul-is-componentwise-exact() =
-  let a = v3r(Rational.of(1, 2), Rational.of(2, 3), Rational.of(3, 1)) in
-  let b = v3r(Rational.of(4, 1), Rational.of(3, 1), Rational.of(1, 3)) in
+  let a = v3r(1 / 2, 2 / 3, 3 / 1) in
+  let b = v3r(4 / 1, 3 / 1, 1 / 3) in
   // 1/2*4 = 2, 2/3*3 = 2, 3*1/3 = 1 — exact, no rounding.
-  if v3r-eq(v3r-mul(a, b), v3r(Rational.of(2, 1), Rational.of(2, 1), Rational.of(1, 1))) then unit
+  if v3r-eq(v3r-mul(a, b), v3r(2 / 1, 2 / 1, 1 / 1)) then unit
   else trap("v3r-mul componentwise exact")
 
 @test
 def v3r-accessors-project-each-axis() =
   // v3r-y / v3r-z had no direct case (only v3r-x did) — pin all three accessors project the right component.
-  let v = v3r(Rational.of(7, 2), Rational.of(9, 4), Rational.of(11, 8)) in
-  if v3r-x(v) == Rational.of(7, 2) then
-    (if v3r-y(v) == Rational.of(9, 4) then
-      (if v3r-z(v) == Rational.of(11, 8) then unit else trap("v3r-z")) else trap("v3r-y")) else trap("v3r-x")
+  let v = v3r(7 / 2, 9 / 4, 11 / 8) in
+  if v3r-x(v) == 7 / 2 then
+    (if v3r-y(v) == 9 / 4 then
+      (if v3r-z(v) == 11 / 8 then unit else trap("v3r-z")) else trap("v3r-y")) else trap("v3r-x")
 
 @test
 def aabbr-union-and-intersect-of-explicit-boxes() =
   // exercise aabbr-union / aabbr-intersect DIRECTLY on explicit boxes (not only via bounding-box's folds):
   // union of box[(0,0,0),(2,2,2)] and box[(1,1,1),(4,4,4)] = box[(0,0,0),(4,4,4)]; intersect = box[(1,1,1),(2,2,2)].
-  let p = Aabbr.Boxr(v3r(rzero(), rzero(), rzero()), v3r(Rational.of(2, 1), Rational.of(2, 1), Rational.of(2, 1))) in
-  let q = Aabbr.Boxr(v3r(Rational.of(1, 1), Rational.of(1, 1), Rational.of(1, 1)), v3r(Rational.of(4, 1), Rational.of(4, 1), Rational.of(4, 1))) in
+  let p = Aabbr.Boxr(v3r(rzero(), rzero(), rzero()), v3r(2 / 1, 2 / 1, 2 / 1)) in
+  let q = Aabbr.Boxr(v3r(1 / 1, 1 / 1, 1 / 1), v3r(4 / 1, 4 / 1, 4 / 1)) in
   (match aabbr-union(p, q) with | Aabbr.Boxr(ulo, uhi) =>
     (match aabbr-intersect(p, q) with | Aabbr.Boxr(ilo, ihi) =>
-      if v3r-eq(ulo, v3r(rzero(), rzero(), rzero())) and v3r-eq(uhi, v3r(Rational.of(4, 1), Rational.of(4, 1), Rational.of(4, 1)))
-         and v3r-eq(ilo, v3r(Rational.of(1, 1), Rational.of(1, 1), Rational.of(1, 1))) and v3r-eq(ihi, v3r(Rational.of(2, 1), Rational.of(2, 1), Rational.of(2, 1)))
+      if v3r-eq(ulo, v3r(rzero(), rzero(), rzero())) and v3r-eq(uhi, v3r(4 / 1, 4 / 1, 4 / 1))
+         and v3r-eq(ilo, v3r(1 / 1, 1 / 1, 1 / 1)) and v3r-eq(ihi, v3r(2 / 1, 2 / 1, 2 / 1))
       then unit else trap("union/intersect corners")))
 
 // ---- R11: simplify-r — the empty-solid algebraic identities on the EXACT Solidr model --------------------
@@ -371,7 +376,7 @@ def aabbr-union-and-intersect-of-explicit-boxes() =
 @test
 def simplify-r-absorbs-empty-in-union() =
   // Unionr Emptyr x = x (both sides); check the result is the surviving cube (box unchanged) and non-empty.
-  let one = Rational.of(1, 1) in
+  let one = 1 / 1 in
   let cube = Solidr.Cuber(v3r(one, one, one)) in
   let sl = simplify-r(Solidr.Unionr(Solidr.Emptyr, cube)) in
   let sr = simplify-r(Solidr.Unionr(cube, Solidr.Emptyr)) in
@@ -383,7 +388,7 @@ def simplify-r-absorbs-empty-in-union() =
 @test
 def simplify-r-intersection-with-empty-is-empty() =
   // Intersectionr Emptyr x = Emptyr (absorbing).
-  let one = Rational.of(1, 1) in
+  let one = 1 / 1 in
   let cube = Solidr.Cuber(v3r(one, one, one)) in
   if solidr-is-empty(simplify-r(Solidr.Intersectionr(Solidr.Emptyr, cube)))
      and solidr-is-empty(simplify-r(Solidr.Intersectionr(cube, Solidr.Emptyr)))
@@ -392,7 +397,7 @@ def simplify-r-intersection-with-empty-is-empty() =
 @test
 def simplify-r-difference-identities() =
   // Differencer Emptyr x = Emptyr; Differencer x Emptyr = x (subtracting nothing is a no-op).
-  let one = Rational.of(1, 1) in
+  let one = 1 / 1 in
   let cube = Solidr.Cuber(v3r(one, one, one)) in
   let subtract-nothing = simplify-r(Solidr.Differencer(cube, Solidr.Emptyr)) in
   if solidr-is-empty(simplify-r(Solidr.Differencer(Solidr.Emptyr, cube)))
@@ -403,16 +408,16 @@ def simplify-r-difference-identities() =
 @test
 def simplify-r-prunes-a-nested-empty-branch-and-transform() =
   // a translate of empty collapses to empty; a union of two dead branches collapses fully to empty.
-  let dead = Solidr.Translater(v3r(Rational.of(5,1), rzero(), rzero()), Solidr.Emptyr) in
-  let both-dead = Solidr.Unionr(dead, Solidr.Intersectionr(Solidr.Emptyr, Solidr.Spherer(Rational.of(1,1)))) in
+  let dead = Solidr.Translater(v3r(5 / 1, rzero(), rzero()), Solidr.Emptyr) in
+  let both-dead = Solidr.Unionr(dead, Solidr.Intersectionr(Solidr.Emptyr, Solidr.Spherer(1 / 1))) in
   if solidr-is-empty(simplify-r(dead)) and solidr-is-empty(simplify-r(both-dead)) then unit
   else trap("simplify-r prunes dead transform + all-empty tree to Emptyr")
 
 @test
 def simplify-r-preserves-a-real-tree-and-is-idempotent() =
   // a fully-real model is unchanged in extent, and a second simplify pass is a no-op (idempotent).
-  let two = Rational.of(2, 1) in
-  let model = Solidr.Differencer(Solidr.Cuber(v3r(two, two, two)), Solidr.Spherer(Rational.of(1,1))) in
+  let two = 2 / 1 in
+  let model = Solidr.Differencer(Solidr.Cuber(v3r(two, two, two)), Solidr.Spherer(1 / 1)) in
   let s1 = simplify-r(model) in
   let s2 = simplify-r(s1) in
   if v3r-eq(aabbr-size(bounding-box(s1)), aabbr-size(bounding-box(model)))
@@ -427,10 +432,10 @@ def simplify-r-of-a-mixed-tree-drops-dead-branches-but-preserves-the-real-extent
   // would fold in as a degenerate box at the ORIGIN — wrongly stretching the union's box from x=0 to x=10.5).
   // simplify-r drops the dead branch first, so the simplified tree's box is EXACTLY the real cube's box — the
   // pre-simplify box is larger (contaminated by the origin), proving the prune matters. All exact.
-  let one = Rational.of(1, 1) in
-  let ten = Rational.of(10, 1) in
+  let one = 1 / 1 in
+  let ten = 10 / 1 in
   let real = Solidr.Translater(v3r(ten, rzero(), rzero()), Solidr.Cuber(v3r(one, one, one))) in
-  let dead = Solidr.Translater(v3r(Rational.of(5, 1), rzero(), rzero()), Solidr.Emptyr) in
+  let dead = Solidr.Translater(v3r(5 / 1, rzero(), rzero()), Solidr.Emptyr) in
   let mixed = Solidr.Unionr(real, dead) in
   let simplified = simplify-r(mixed) in
   // simplified extent == the real cube's extent (a 1×1×1 box → size (1,1,1)); and NOT empty.

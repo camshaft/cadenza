@@ -170,8 +170,11 @@ export default function CadPage() {
           </div>
         </div>
 
-        {/* 3D preview */}
-        <div className="min-h-[16rem] flex-1 overflow-hidden rounded-lg border border-slate-800 bg-slate-950">
+        {/* 3D preview. On MOBILE (stacked, flex-col) the preview is the star: give it a tall
+            viewport-relative floor (`min-h-[60vh]`) so it fills most of the section instead of the
+            small `flex-1`-split box it collapsed to before. At `md`+ (side-by-side) it drops back to
+            the flex-driven `16rem` floor and fills its column. */}
+        <div className="min-h-[60vh] flex-1 overflow-hidden rounded-lg border border-slate-800 bg-slate-950 md:min-h-[16rem]">
           {status.phase === "meshed" ? (
             <MeshView positions={status.mesh.positions} indices={status.mesh.indices} normals={status.mesh.normals} />
           ) : (

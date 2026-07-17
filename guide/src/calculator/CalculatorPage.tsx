@@ -55,7 +55,7 @@ const PLACEHOLDER: Record<string, string> = {
 const STARTERS: Record<string, { label: string; expr: string }[]> = {
   ml: [
     { label: "exact thirds", expr: "1 / 3 + 1 / 3 + 1 / 3" },
-    { label: "km + m", expr: "Qty.of(1, Unit.of(#\"kilometer\")) + Qty.of(500, Unit.of(#\"meter\"))" },
+    { label: "km + m", expr: "1 kilometer + 500 meters" },
     { label: "assign a variable", expr: "x = 6 * 7" },
   ],
   sexpr: [

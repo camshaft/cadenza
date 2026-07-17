@@ -158,7 +158,7 @@ export default function MapsSets() {
         source={`(def (main)
   (match (. (Map.take (map (1 10) (2 20)) 1) 0)
     ((Some v) v)
-    ((None _) (- 0 1))))`}
+    ((None _) -1)))`}
       />
       <P>
         The other half of the tuple, <C>.1</C>, is the smaller map — one entry left. Return it and you can
@@ -182,7 +182,7 @@ export default function MapsSets() {
         source={`(def (main)
   (match (. (Map.swap (map (1 10)) 1 99) 0)
     ((Some old) old)
-    ((None _) (- 0 1))))`}
+    ((None _) -1)))`}
       />
       <P>
         Swap a key that's new and <C>.0</C> is <C>(None unit)</C> — nothing was replaced. Between them,{" "}

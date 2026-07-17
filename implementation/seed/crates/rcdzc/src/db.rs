@@ -1319,6 +1319,22 @@ pub struct Db {
     /// in `compute_def_scheme`; never nested (a scheme solve does not recurse into another).
     pub(crate) scheme_rigid_vars: Option<crate::fxhash::FxHashSet<u32>>,
 
+    /// The lambdas whose `expected_arrow_for_lambda` context-recovery is CURRENTLY ON THE STACK — the
+    /// re-entry backstop for that ONE recovery. Path (3)/(3b) of `expected_arrow_for_lambda` reads the
+    /// type of the storage context's head/param via `type_of`; for an UNANNOTATED parameter of a
+    /// module-qualified or self-applied call, that `type_of` walks back to the SAME lambda's parameter,
+    /// whose `type_of` re-enters `lambda_param_ty_from_context` → `expected_arrow_for_lambda` on the SAME
+    /// lambda. Absent a guard this recurses until `descent_depth` hits `DESCENT_DEPTH_LIMIT` (~1024) — it
+    /// TERMINATES on the 64 MB compiler thread but the ~1024 frames OVERFLOW the smaller browser/worker
+    /// compile stack (a RangeError on a 3-line module program: `Temp.c-to-f(100)`). A lambda already
+    /// mid-recovery recovers NOTHING (`None`) at re-entry — the same "no context hint, the param types
+    /// `Any` and the body-solve grounds it" the `reduce_nodes` budget and the concrete-only domain checks
+    /// already fall back to — so the cycle breaks at depth ~2 instead of at the limit. SCOPED to this
+    /// recovery (NOT a global `type_of` guard) so it leaves the convergent recursive-parameter solve
+    /// (`solving_params`/`solve_recursive_params`, which grounds a self-tail-recursive param by RE-reading
+    /// its body) completely untouched. See `expected_arrow_for_lambda`.
+    pub(crate) arrow_lambdas_in_progress: crate::fxhash::FxHashSet<StructId>,
+
     /// Guard against re-entering the recursive-parameter solve for a def already being solved — the
     /// solve types the body with a LOCAL env (not `type_of`), so a self-call reads the provisional
     /// signature rather than re-triggering; this set is the defensive backstop that a demand landing
@@ -2290,6 +2306,7 @@ impl Db {
             def_schemes: crate::fxhash::FxHashMap::default(),
             param_types: crate::fxhash::FxHashMap::default(),
             scheme_rigid_vars: None,
+            arrow_lambdas_in_progress: crate::fxhash::FxHashSet::default(),
             solving_params: crate::fxhash::FxHashSet::default(),
             solving_schemes: crate::fxhash::FxHashSet::default(),
             seed_transitive: crate::fxhash::FxHashSet::default(),

@@ -4,7 +4,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { assembleCell, cellDependencies } from "./assembleCell.ts";
+import { assembleCell, cellDependencies, stripMainDef, topLevelForms } from "./assembleCell.ts";
 import type { Cell, CellDirective } from "./parseDocument.ts";
 
 const code = (source: string, directive: CellDirective = { kind: "none" }): Cell => ({
@@ -116,4 +116,50 @@ test("cellDependencies over-approximates safely but doesn't invent names not in 
   const a = assembleCell(cells, 1, "ml");
   assert.deepEqual(a.inScope, ["x"]);
   assert.deepEqual(cellDependencies(a), []); // x not used; y/z aren't in scope so not reported
+});
+
+// ── P0 #12: a prior cell's own `main` must NOT collide with this cell's `main` (CDZ0201) ──
+
+test("topLevelForms splits s-expr top-level forms (balanced parens), keeping order", () => {
+  assert.deepEqual(topLevelForms("(def (x) 1)\n(def (main) (+ x 1))", "sexpr"), ["(def (x) 1)", "(def (main) (+ x 1))"]);
+  // a string containing parens/quotes stays inside its form
+  assert.deepEqual(topLevelForms('(def (s) "a (b) c")', "sexpr"), ['(def (s) "a (b) c")']);
+});
+
+test("topLevelForms splits ML top-level forms on def/type/effect line starts", () => {
+  assert.deepEqual(topLevelForms("def x = 1\ndef main() = x + 1", "ml"), ["def x = 1", "def main() = x + 1"]);
+  // a multi-line def body stays with its def (the continuation isn't a form start)
+  assert.deepEqual(topLevelForms("def main() =\n  x + 1", "ml"), ["def main() =\n  x + 1"]);
+});
+
+test("stripMainDef removes a top-level `main` def, keeps every non-main def (both surfaces)", () => {
+  assert.equal(stripMainDef("(def (base) 100.0)\n(def (main) (* base 2.0))", "sexpr"), "(def (base) 100.0)");
+  assert.equal(stripMainDef("def base = 100.0\ndef main() = base * 2.0", "ml"), "def base = 100.0");
+  // a cell that is ONLY main → empty contribution
+  assert.equal(stripMainDef("(def (main) 42)", "sexpr"), "");
+  // a helper whose NAME merely contains "main" is untouched (matched by whole def-name)
+  assert.equal(stripMainDef("(def (mainline) 7)", "sexpr"), "(def (mainline) 7)");
+});
+
+test("assembleCell strips a PRIOR cell's `main` so two main-defining cells don't collide (P0 #12)", () => {
+  const cells: Cell[] = [
+    code("(def (main) (* 1000.0 (+ 1.0 rate)))"),
+    code("(def (main) (list (tuple 1 (+ 1.0 rate))))"),
+  ];
+  const a = assembleCell(cells, 1, "sexpr");
+  // The prior cell's `main` is dropped → the buffer carries nothing (it was only `main`); this cell's own
+  // `main` is the entry, so the assembled module has exactly ONE `main`.
+  assert.equal(a.buffer, "");
+  assert.equal(a.entry, "(def (main) (list (tuple 1 (+ 1.0 rate))))");
+  assert.ok(!a.inScope.includes("main"), "`main` is never an in-scope downstream name");
+});
+
+test("assembleCell keeps a prior cell's NON-main helper while stripping its main (sequential scope holds)", () => {
+  const cells: Cell[] = [
+    code("(def (base) 100.0)\n(def (main) base)"), // defines a helper AND a main
+    code("(def (main) (* base 2.0))"), // references the prior helper
+  ];
+  const a = assembleCell(cells, 1, "sexpr");
+  assert.equal(a.buffer, "(def (base) 100.0)"); // helper preserved, prior main dropped
+  assert.deepEqual(a.inScope, ["base"]); // base in scope, main is not
 });

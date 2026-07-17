@@ -1157,16 +1157,21 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         }
         // `List.update` → replace the element at `index`, returning the NEW list; an out-of-bounds index
         // TRAPS (Cadenza `List.update` traps OOB, `value-heap-runtime.md`). The index is an Int64 occurrence
-        // cast to `usize` (a negative index wraps to a huge `usize` → still `>= len` → the OOB panic, whose
-        // "index out of bounds" reason the gate's `trap_kind` maps to `out-of-bounds`, matching the wasm
-        // trap). An explicit bound check so the panic reason is stable and matches the corpus vocabulary.
+        // cast to `usize` (a negative index or `>= len` → the trap). 🔑 TRAP KIND: the wasm runtime's
+        // `List.update` OOB is a GENERIC `unreachable` abort (the runtime op traps message-lessly under
+        // `panic = abort`), which the corpus grades `(trap "unreachable")` — NOT a bounds-specific string.
+        // So panic `"unreachable"` (whose `trap_kind` is `unreachable`) to AGREE with wasm; `"index out of
+        // bounds"` would classify `out-of-bounds`, a KIND MISMATCH the gate reads as a still-todo differential
+        // (the trap fired, wrong kind). One op's trap = one canonical kind across both backends (tick-57).
+        // On a 64-bit host `usize` does NOT wrap a 2^32 index (the wasm i32-wrap hazard the corpus warns of
+        // has no rust analogue — `(2^32) as usize` stays `2^32 >= len` → traps correctly).
         Core::ListUpdate { list, index, elem } => {
             let l = emit(db, list, env, ctx)?;
             let i = emit(db, index, env, ctx)?;
             let e = emit(db, elem, env, ctx)?;
             Ok(format!(
                 "{{ let mut __v = {l}; let __i = ({i}) as usize; \
-                 if __i >= __v.len() {{ panic!(\"index out of bounds\") }} __v[__i] = {e}; __v }}"
+                 if __i >= __v.len() {{ panic!(\"unreachable\") }} __v[__i] = {e}; __v }}"
             ))
         }
         // `List.at` → the FALLIBLE indexed read, yielding a built-in `Option` (which maps to Rust's OWN

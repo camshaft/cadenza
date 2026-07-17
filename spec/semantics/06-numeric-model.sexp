@@ -3084,6 +3084,41 @@
   (call   main (: 100 Int64) (: 7 Int64)) (output (: 14 Int64))
   (call   main (: 100 Int64) (: 2 Int64)) (output (: 50 Int64)))
 
+; The SOUNDNESS SENTINELS for the Div-guard elision above: eliding the MIN/-1 overflow guard must drop ONLY
+; that guard (never the zero-divisor guard), and only when an operand genuinely rules the MIN/-1 pair out.
+; These three pin: (1) the zero guard STAYS under a MIN/-1-safe masked divisor; (2) a full-range `/` keeps
+; the MIN/-1 guard and traps; (3) a nonneg dividend makes `/-1` a plain negation (the elided guard is dead
+; because the dividend can never be MIN). Each traps exactly the case the elided-positive above never reaches.
+(case "a masked-divisor signed division still traps on a zero divisor (zero guard never elided)"
+  (doc    "`(/ a (& b 7))`: the masked divisor ∈ [0,7] rules out −1, so the MIN/-1 overflow guard is elided —
+           but the divisor CAN be 0, so the zero-divisor guard STAYS. `(100, 7)` = 14; `(100, 0)` → `(& 0 7)`
+           = 0 → divide-by-zero TRAP. Pins that eliding the MIN/-1 guard does NOT touch the zero-divisor
+           guard (the graded trap companion of the elided-positive above), on both backends.")
+  (input  (do (def (main (: a Int64) (: b Int64)) (/ a (& b 7))) (export main)))
+  (call   main (: 100 Int64) (: 7 Int64)) (output (: 14 Int64))
+  (call   main (: 100 Int64) (: 0 Int64)) (trap "division by zero"))
+
+(case "a full-range signed division keeps its MIN over -1 overflow guard and traps"
+  (doc    "`(/ a b)` over two full-range Int64 operands: NEITHER operand rules out the MIN/-1 pair, so the
+           overflow guard is KEPT. `(100, 7)` = 14, but `(Int64.min, -1)` = 2^63 overflows Int64 → TRAP. Pins
+           that the elision is opt-in on a PROOF the pair cannot occur — an unconstrained `/` keeps the guard,
+           so a genuine MIN/-1 traps rather than wrapping to MIN. Both backends.")
+  (input  (do (def (main (: a Int64) (: b Int64)) (/ a b)) (export main)))
+  (call   main (: 100 Int64) (: 7 Int64)) (output (: 14 Int64))
+  (call   main (: -9223372036854775808 Int64) (: -1 Int64)) (trap "integer overflow"))
+
+(case "a nonneg-dividend signed division elides the MIN over -1 guard and divides by -1 as a plain negation"
+  (doc    "`(/ (& a 255) b)`: the dividend `(& a 255)` ∈ [0,255] is provably NONNEGATIVE, so it can never be
+           `Int64.min` (which is negative) — the MIN/-1 pair is impossible regardless of the divisor, so the
+           overflow guard is elided. `(100, -1)` = `(100 & 255) / -1` = 100 / −1 = −100, a PLAIN negation that
+           does NOT trap (the elided guard was dead — the dividend isn't MIN); `(100, 7)` = 14; `(100, 0)` →
+           divide-by-zero TRAP (zero guard kept). Pins that a nonneg dividend soundly licenses the MIN/-1
+           elision — `/-1` at a non-MIN dividend is a normal in-range negation. Both backends.")
+  (input  (do (def (main (: a Int64) (: b Int64)) (/ (& a 255) b)) (export main)))
+  (call   main (: 100 Int64) (: -1 Int64)) (output (: -100 Int64))
+  (call   main (: 100 Int64) (: 7 Int64)) (output (: 14 Int64))
+  (call   main (: 100 Int64) (: 0 Int64)) (trap "division by zero"))
+
 ; The SOUNDNESS SENTINELS for the flow-refined elision above: the refinement elides a guard ONLY on a
 ; genuine upper-bound proof, scoped to the branch it guards. These two negative companions pin that it does
 ; NOT over-elide — a refinement that fails to bound the result above KEEPS the guard, and a then-branch

@@ -2345,6 +2345,22 @@ pub fn reflected_ty(db: &mut Db, id: StructId) -> Ty {
 /// type against the payload's declared function type). `None` when the context declares no arrow (a HOF
 /// call site — handled by the call's own unification — or a genuinely unconstrained position).
 pub(crate) fn expected_arrow_for_lambda(db: &mut Db, lambda: StructId) -> Option<Ty> {
+    // RE-ENTRY backstop (see `db::arrow_lambdas_in_progress`). Paths (3)/(3b) below read the storage
+    // context head/param's `type_of`, which for an unannotated parameter of a module-qualified/self-applied
+    // call walks back to THIS lambda's param → `lambda_param_ty_from_context` → here on the SAME lambda.
+    // Absent this guard the cycle recurses to `DESCENT_DEPTH_LIMIT` (~1024) — terminating natively but
+    // overflowing the smaller browser/worker compile stack. Break it at re-entry: recover NOTHING, exactly
+    // the `None` the `reduce_nodes` budget below already falls back to (the param then types `Any` and the
+    // body-solve grounds it). Scoped to THIS lambda so a nested lambda's own recovery is unaffected.
+    if !db.arrow_lambdas_in_progress.insert(lambda) {
+        return None;
+    }
+    let out = expected_arrow_for_lambda_inner(db, lambda);
+    db.arrow_lambdas_in_progress.remove(&lambda);
+    out
+}
+
+fn expected_arrow_for_lambda_inner(db: &mut Db, lambda: StructId) -> Option<Ty> {
     // CUMULATIVE-WORK budget — the SAME `reduce_nodes` counter β-reduction charges against
     // (`db::REDUCE_NODE_BUDGET`). This context-recovery recurses through `type_of` (path 3 below reads a
     // parameter's type, which for a SELF-APPLICATION re-enters here on the growing term); like the plain

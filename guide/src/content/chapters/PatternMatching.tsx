@@ -98,10 +98,10 @@ export default function PatternMatching() {
       <Runnable
         source={`(def (sign n)
   (match n
-    ((guard x (< x 0)) (- 0 1))
+    ((guard x (< x 0)) -1)
     (0 0)
     (_ 1)))
-(def (main) (sign (- 0 8)))`}
+(def (main) (sign -8))`}
       />
       <P>
         <C>(guard x (&lt; x 0))</C> binds the value to <C>x</C> and fires only when <C>x &lt; 0</C>, so{" "}
@@ -142,7 +142,7 @@ export default function PatternMatching() {
         source={`(def (setting m)
   (match m
     ((map ("width" v) .. rest) v)
-    (_ (- 0 1))))
+    (_ -1)))
 (def (main)
   (setting (Map.insert (Map.insert (Map.empty) "width" 80) "height" 50)))`}
       />

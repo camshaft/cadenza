@@ -10,16 +10,17 @@
 /// it doubles the type structure the monomorphizer carries — and `giter.cdz` (92 @tests) already sits at
 /// the monomorphizer's per-module instantiation-PRESSURE ceiling. Measured on trunk with the tie fix:
 /// `flatten` composes with ≤ ~20 other test call-sites but DECLINES (CDZ0201) when added to the full 92-test
-/// `giter.cdz` — the ceiling, NOT the tie, is the binding constraint (reported to v-inference; the global
-/// monomorphizer pressure/cap lever is the fix that would let `giter.cdz` absorb it). Keeping `flatten` in a
-/// SMALL dedicated module ships the capability now (the tie fix IS real and works) without gutting
-/// `giter.cdz`'s coverage. When the pressure ceiling lifts, `flatten` folds back into `giter.cdz` and this
-/// module retires.
+/// `giter.cdz` — the ceiling, NOT the tie, is the binding constraint (reported to v-inference; a global
+/// monomorphizer pressure/cap limit governs how large an instantiation set one module can carry). A SMALL
+/// dedicated module keeps `flatten`'s heavy nested instantiation isolated (per-module compilation isolates
+/// the pressure), so the capability lives here (the tie fix IS real and works) while `giter.cdz` keeps its
+/// full coverage — the appropriate home for `flatten` given the current per-module ceiling.
 ///
-/// STILL DEFERRED even here (heavier still): `concat-map`/`flat-map` (`flatten ∘ gmap`, where the mapped
-/// closure RETURNS a `GIter` — a nested generic through a closure) exceeds the ceiling even in a small
-/// module; it waits for the pressure lever alongside the accumulator-threading `reduce`/`reverse` (a
-/// separate not-yet-built tie). See `giter.cdz`'s header for the full deferred backlog.
+/// This module does NOT hold `concat-map`/`flat-map` (`flatten ∘ gmap`, where the mapped closure RETURNS a
+/// `GIter` — a nested generic through a closure): that shape exceeds the current per-module ceiling even
+/// standalone. The accumulator-threading `reduce`/`reverse` need a different monomorphization tie (element
+/// through a self-call accumulator) that the compiler does not currently make. See `giter.cdz`'s header for
+/// the full set of functions the current inference/monomorphization limits keep out.
 
 /// The generic pull-iterator (same cons-cell shape as `giter.cdz`; re-declared here so this module is
 /// self-contained — each `src/*.cdz` is its own namespace).

@@ -566,6 +566,7 @@ pass	a floating-point literal
 pass	a four-level nested-constructor pattern with a generic user sum in the middle matches
 pass	a fresh-id supply threads state across two sibling recursive calls in one arm
 pass	a fresh-id walk over a THREE-constructor sum threads state across mixed-arity arms
+pass	a full-range signed division keeps its MIN over -1 overflow guard and traps
 pass	a full-string String.slice byte-len equals the whole string's byte-len
 pass	a full-string String.slice recovers the whole string's length by both measures
 pass	a function applied to an argument
@@ -862,6 +863,7 @@ pass	a map with record values of different field sets is a type error
 pass	a map with tuple values of different arities is a type error
 pass	a map with values of two different types is a type error
 pass	a map-scrutinee match arm whose head is an unbound name is rejected in a recursive body (CDZ0101)
+pass	a masked-divisor signed division still traps on a zero divisor (zero guard never elided)
 pass	a match arm binds a nested tuple inside a sum payload
 pass	a match arm building a fresh runtime compound infers its shape
 pass	a match arm mixes a payload LITERAL, a wildcard, and a nested-Option pattern
@@ -1090,6 +1092,7 @@ pass	a non-tail-resumptive outer handler reduces a reducible inner handle before
 pass	a non-unit base in a Unit.^ power is rejected
 pass	a non-unit factor in a Unit.* composition is rejected
 pass	a non-unit factor in a Unit./ composition is rejected
+pass	a nonneg-dividend signed division elides the MIN over -1 guard and divides by -1 as a plain negation
 pass	a not of a runtime conjunction computes the negated conjunction
 pass	a nullary Sign variant applied to a non-unit payload is a type error
 pass	a nullary constructor is a plain first-class value stored in a tuple
@@ -1462,6 +1465,7 @@ pass	a runtime negative dividend divided by a constant power of two truncates to
 pass	a runtime negative dividend mod a constant power of two takes the dividend's sign
 pass	a runtime negative zero is not equal to positive zero
 pass	a runtime negative-const-multiply one past its lower fitting boundary traps
+pass	a runtime out-of-bounds list update traps rather than aliasing a valid slot
 pass	a runtime overflowing left shift traps
 pass	a runtime product's derived dimension cancels correctly through a divide
 pass	a runtime product's derived dimension is enforced against an incompatible add
@@ -2241,6 +2245,8 @@ pass	arithmetic right shift preserves the sign bit for a negative operand
 pass	arithmetic within one integer type
 pass	at min times -1 the three overflow families diverge: checked None, wrapping min
 pass	b4b denotation: a predicate Ast (<= x 100) denotes to the bounds obligation term le (Var 0) (Num 100)
+pass	b4c(conjunctive) NEG-1: precondition covers only {le x 100} (missing ge x 0) — the 2-hyp proof is NOT licensed
+pass	b4c(conjunctive) NEG-2 (reverse): precondition covers only {ge x 0} (missing le x 100) — NOT licensed though discharged via le
 pass	b4c(conjunctive): two stacked @requires give a 2-hyp proof; licenses requires BOTH hyps covered by the precondition
 pass	b4c(proven): @requires(<= x 100)/@ensures(<= it MAXINT) on (f x)=x+1 discharges — P denoted as hyp, Q[it:=body] as goal
 pass	b4c(unprovable): @ensures(<= it MAXINT) on unbounded (f x)=x+1 is NOT dischargeable — the proof tier correctly MISSES (CDZ-VERIFY)
@@ -3023,6 +3029,7 @@ pass	tuple access on a tuple chosen by a conditional projects the element
 pass	tuple elements are accessed by index
 pass	tuple elements consume and read a shared binding in both orders
 pass	tuples are deconstructed by pattern matching
+pass	two @param sites with the same name are rejected as a duplicate effect operation
 pass	two BigInt accumulators co-threaded through recursion compute a fibonacci
 pass	two LEXICALLY-NESTED handlers of the same effect partition the performs by region
 pass	two MUTUALLY-recursive functions dispatching on a recursive sum compute its parity
@@ -3500,7 +3507,6 @@ todo	a runtime closure compares its argument to a captured value in a branch
 todo	a runtime closure whose body calls a recursive top-level function
 todo	a runtime function value is manually eta-wrapped and applied through nested recursive HOFs
 todo	a runtime nibble truncation keeps the low four bits
-todo	a runtime out-of-bounds list update traps rather than aliasing a valid slot
 todo	a runtime-selected closure survives as a value threaded through a recursive HOF (false branch)
 todo	a runtime-selected closure survives as a value threaded through a recursive HOF (true branch)
 todo	a scalar BETWEEN two Tuple args with a LIST result

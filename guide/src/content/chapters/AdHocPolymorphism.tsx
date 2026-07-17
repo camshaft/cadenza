@@ -58,25 +58,30 @@ export default function AdHocPolymorphism() {
         function; no record is passed, no field is looked up at run time:
       </P>
       <Runnable
-        source={`(def (describe-plus n) (+ n 100))
-(def (describe-double n) (* n 2))
-(def (show-with (const (: dict (Record (describe (-> Int64 Int64))))) (: x Int64))
-  ((. dict describe) x))
+        source={`(def (describe-int n) (+ n 100))
+(def (describe-bool b) (if b 999 0))
+(def (show-with (const dict) x) ((. dict describe) x))
 (def (main)
-  (+ (show-with (record (describe describe-plus)) 5)
-     (show-with (record (describe describe-double)) 5)))`}
+  (+ (show-with (record (describe describe-int)) 5)
+     (show-with (record (describe describe-bool)) true)))`}
       />
       <P>
-        Two different instances through the same specialized <C>show-with</C> — <C>describe-plus</C> gives{" "}
-        <C>105</C>, <C>describe-double</C> gives <C>10</C>, summing to <C>115</C> — so dispatch genuinely
-        varies even with the dictionary erased. The annotation <C>{`(Record (describe (-> Int64 Int64)))`}</C> is
-        a real constraint: it names the field the dictionary must carry and its type, so a record missing{" "}
-        <C>describe</C> (or with the wrong signature) is a compile error, not a runtime surprise. Zero runtime
-        cost, because the dictionary is a compile-time argument folded away: this is exactly what a typeclass
-        system does under the hood — thread a dictionary to the use site — except here the dictionary is an
-        ordinary record you can see, and the erasure is the general <C>const</C> mechanism, not special trait
-        plumbing.
+        The very same two instances as before — one for <C>Int64</C>, one for <C>Bool</C> — now dispatched
+        through a <C>const</C> dictionary: <C>describe-int</C> turns <C>5</C> into <C>105</C>,{" "}
+        <C>describe-bool</C> turns <C>true</C> into <C>999</C>, summing to <C>1104</C>. Because the parameter
+        is <C>const</C> and left <em>unannotated</em>, <C>show-with</C> stays fully generic — it works for{" "}
+        <em>any</em> type whose dictionary carries a <C>describe</C> — yet the compiler still inlines each
+        call into a specialized copy and erases the record. This is exactly what a typeclass system does
+        under the hood — thread a dictionary to the use site — except here the dictionary is an ordinary
+        record you can see, and the erasure is the general <C>const</C> mechanism, not special trait plumbing.
       </P>
+      <Note>
+        Left the dictionary <em>unannotated</em> on purpose: that's what keeps <C>show-with</C> generic over
+        the element type. Cadenza has no <C>∀</C>-binder inside an annotation, so you couldn't write a
+        generic type like <C>{`(Record (describe (-> a Int64)))`}</C> with a free <C>a</C> even if you wanted
+        to — an unannotated parameter <em>is</em> the generic form (see <em>Const parameters</em> and{" "}
+        <em>Types as values</em> for the type-valued way to pin one explicitly).
+      </Note>
 
       <H2>The built-in instances: typed operators</H2>
       <P>

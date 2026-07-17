@@ -1217,7 +1217,7 @@ impl HighlightKind {
     /// query can emit. A downstream consumer (e.g. the `cdz lsp` server's semantic-token legend) can
     /// iterate this to prove it handles the WHOLE vocabulary, so adding a variant forces a decision there
     /// rather than silently rendering the new kind unclassified. Keep in sync with the enum + `as_str`
-    /// (the `all_variants_have_a_distinct_wire_spelling` test pins that this list is complete + 1:1).
+    /// (the `highlight_kind_all_is_the_complete_1to1_wire_vocabulary` test pins that this list is complete + 1:1).
     pub const ALL: &'static [HighlightKind] = &[
         HighlightKind::Keyword,
         HighlightKind::Type,

@@ -122,9 +122,15 @@ fn acked_seqs(events: &[crate::Event]) -> std::collections::HashSet<Seq> {
         .collect()
 }
 
-/// Whether the message at `seq` has been acked anywhere in `events` (its "mark processed").
+/// Whether the message at `seq` has been acked anywhere in `events` (its "mark processed"). Scans with an
+/// early-exit `any` — it does NOT build the full `acked_seqs` set for a single membership test (that would
+/// allocate + populate a HashSet over every event each call; `inbox_for` uses the set because it tests
+/// many seqs at once, but this tests one). Copilot PR#526.
 pub fn is_acked(events: &[crate::Event], seq: Seq) -> bool {
-    acked_seqs(events).contains(&seq)
+    events
+        .iter()
+        .filter(|e| e.kind == ACK)
+        .any(|e| Ack::decode(&e.payload).is_ok_and(|a| a.message_seq == seq))
 }
 
 /// The INBOX for `agent` as a PROJECTION over the log (vision §9: the inbox is a fold, not a queue). Folds

@@ -92,6 +92,27 @@
                   (respond Param.h (: 4 Int64)))
   (output (: 7 Int64)))
 
+; DUPLICATE-NAME SOUNDNESS: two `@param` sites with the SAME name both generate an `(op width …)` under the
+; ONE generated `Param` effect — i.e. a duplicate operation name in an effect. That is rejected by the
+; ordinary front-end effect check (an effect has a fixed set of operation names) as CDZ0201, exactly as a
+; hand-written effect with two same-named ops is. This PINS that the sidecar does NOT silently dedup / last-
+; wins a collision (which would drop a param the host expects to bind, or emit an invalid module) — a
+; duplicate @param name is a clean compile error, never a silent miscompile. The generate is a plain splice
+; into an ordinary effect, so it composes with the effect-declaration check for free; this case guards that
+; composition against a future `generate` change (e.g. one that deduped names) reintroducing the hazard.
+(case "two @param sites with the same name are rejected as a duplicate effect operation"
+  (doc    "Two `@param` sites both named `width` each generate an `(op width …)` under the single generated
+           `Param` effect — a duplicate operation name. The front-end effect check rejects it as CDZ0201
+           (an effect has a fixed set of operation names), the SAME reject a hand-written effect with two
+           same-named ops gets. Pins that the sidecar surfaces a name collision as a clean compile error
+           rather than silently deduping (dropping a param) or emitting an invalid module.")
+  (input  (do
+            (: (@ (param (: widget slider)) width) Int64)
+            (: (@ (param (: widget stepper)) width) Int64)
+            (def (main) (host (Param) (Param.width)))
+            (export main)))
+  (error  CDZ0201))
+
 ; SCAN ROBUSTNESS: the config kv (widget/range/…) is OPTIONAL to the SCAN — the sidecar reads the param
 ; NAME + declared TYPE (which drive the generated accessor) and does not require any widget metadata to
 ; generate. A bare `(param)` (no config) still yields a typed accessor; the config only feeds the widget

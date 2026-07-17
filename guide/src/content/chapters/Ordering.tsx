@@ -51,7 +51,7 @@ export default function Ordering() {
       </P>
       <Runnable
         source={`(def (cmp a b)
-  (if (< a b) (- 0 1)
+  (if (< a b) -1
       (if (= a b) 0 1)))
 (def (main) (cmp 3 9))`}
       />
@@ -70,7 +70,7 @@ export default function Ordering() {
       <Runnable
         source={`(def (order-sign a b)
   (match (compare a b)
-    ((Less _)    (- 0 1))
+    ((Less _)    -1)
     ((Equal _)   0)
     ((Greater _) 1)))
 (def (main) (order-sign 3 9))`}
@@ -99,7 +99,7 @@ export default function Ordering() {
       <Runnable
         source={`(def (order-sign a b)
   (match (compare a b)
-    ((Less _)    (- 0 1))
+    ((Less _)    -1)
     ((Equal _)   0)
     ((Greater _) 1)))
 (def (main) (order-sign "apple" "banana"))`}

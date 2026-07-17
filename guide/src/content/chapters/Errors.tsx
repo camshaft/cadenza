@@ -30,7 +30,7 @@ export default function Errors() {
 (def (main)
   (match (safe-div 10 2)
     ((Some q) q)
-    ((None _) (- 0 1))))`}
+    ((None _) -1)))`}
       />
       <P>Change the <C>2</C> to <C>0</C> and Run: the <C>None</C> arm fires and you get <C>-1</C> — no crash.</P>
 
@@ -98,7 +98,7 @@ export default function Errors() {
         source={`(def (main)
   (match (Int64.checked-mul 9223372036854775807 2)
     ((Some x) x)
-    ((None _) (- 0 1))))`}
+    ((None _) -1)))`}
       />
       <P>That's <C>Int64</C>'s largest value times 2 — it can't fit, so you get the <C>None</C> arm.</P>
 
@@ -144,7 +144,7 @@ export default function Errors() {
   (match o
     ((Some 0) 100)
     ((Some x) x)
-    ((None _) (- 0 1))))
+    ((None _) -1)))
 (def (main) (describe (Some 0)))`}
       />
       <P>
@@ -165,7 +165,7 @@ export default function Errors() {
 (def (main)
   (match (safe-div 20 4)
     ((Ok q) q)
-    ((Err e) (- 0 1))))`}
+    ((Err e) -1)))`}
       />
       <P>
         This takes the <C>Ok</C> arm for <C>20 / 4 = 5</C>. Change the <C>4</C> to <C>0</C> and Run: the{" "}
@@ -227,13 +227,13 @@ export default function Errors() {
 (def (main)
   (match (take-from 3 10)
     ((Some left) left)
-    ((None _) (- 0 1))))`}
+    ((None _) -1)))`}
         solution={`(def (take-from stock n)
   (if (< stock n) (None unit) (Some (- stock n))))
 (def (main)
   (match (take-from 3 10)
     ((Some left) left)
-    ((None _) (- 0 1))))`}
+    ((None _) -1)))`}
         expected="-1"
         hint={
           <>
