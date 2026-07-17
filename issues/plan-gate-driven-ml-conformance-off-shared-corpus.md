@@ -1,5 +1,66 @@
 # Plan: gate-driven ML-compiler conformance off the SHARED corpus (operator directive, 2026-07-17)
 
+## INVOCATION ARCHITECTURE (settled 2026-07-17: SOURCE-IN, per operator "exact same way as rcdzc")
+
+`cdz run-ml` STUB LANDED on trunk (`c009ad30c`). Now the front-end behind it. The operator: the ML compiler
+is "compiled and invoked the EXACT SAME WAY rcdzc does" — and rcdzc takes **program SOURCE IN** (`cdz convert
+| cdz compile -`). So `run-ml` must feed the ML compiler a **program source string** and the ML compiler must
+READ it — NOT the Rust side pre-parsing to my `Tok`/arena. Concretely (studied `cdz run`/`cdz-run` RunArgs):
+- `run-ml` reads the corpus program SOURCE (file/stdin) — already does (stub).
+- It hands that source STRING to the Cadenza-written ML pipeline. Mechanism candidates:
+  - ❌ **(ii-a) `run-source(program: String)` — RULED OUT (spiked 2026-07-17).** A `.cdz` entry CANNOT take a
+    `String` arg across the component boundary: `cdz compile` errors "type `String` has no component boundary
+    representation (only the aliased integer widths 8/16/32/64 cross the boundary)". So the program source
+    cannot be handed to the ML compiler as a String arg. (Confirms the memory trap that String doesn't cross
+    the host/component boundary — applies to ARG-IN too, not just RETURN.)
+  - ✅ **(ii-c) BYTE-LIST source-in — the viable path.** `Int64`/width-aliased ints DO cross the boundary, so
+    a `List` of byte codes can. `run-ml` (Rust) reads the corpus source, converts to a byte list, passes it
+    via `--arg` (or the driver embeds it), and the ML compiler's reader consumes **bytes** — which `strlex`
+    ALREADY does (`String.to-bytes` / `char-at` over bytes). This IS "source in" (the ML compiler reads the
+    raw program bytes itself, self-hosting-true) and crosses the boundary legally. ⚠ NEXT VERIFY (small spike,
+    quiet box): does a `List(Int64)`/`List(UInt8)` arg cross via `cdz run --arg`? If `--arg` can't express a
+    list, fall to (ii-d).
+  - **(ii-d) embed-and-compile-per-case fallback:** `run-ml` (Rust) reads the corpus source, generates a tiny
+    `.cdz` driver with the program bytes as a literal `[...]` `List(Int64)`, compiles+runs it, reads the
+    value. No boundary-arg needed (bytes are a compile-time literal). Heavier (compile per case) but always
+    works. Likely the pragmatic first cut; (ii-c) optimizes it later if `--arg` lists work.
+- FIRST BUILD UNIT (mine, when trunk-stub-landed [done] + box quiet): the Cadenza **s-expr-prefix reader**
+  (bytes → `Node` arena for the int/bool + let/if + prefix-ops subset), + the driver, + wire `run_run_ml` to
+  invoke it. Smallest slice: `(input 42)` and `(if false 1 2)` flip decline→value.
+
+⚠️ **VALUE-FORMAT CORRECTION (2026-07-17, read `run_program_rust`/`run_program_wasm`): `run-ml` must emit the
+value as a BARE SCALAR, NOT `(: N Type)`.** The gate captures rcdzc's/wasm's `Ran::Value` in "cdz-run's
+BARE-SCALAR rendering" — `42`, `true` (main.rs:1034-35), NOT the corpus's `(: 42 Int64)` output form. The
+DIFFERENTIAL compares `ml_value == rcdzc_value` as those rendered strings. So my `run-ml` verdict must be
+`value 42` / `value true` (bare scalar, matching cdz-run's Display), NOT `value (: 42 Int64)`. Emitting the
+`(: … )` form would falsely DISAGREE with rcdzc on every case. (The corpus's own `(output (: N Type))` is
+only what rcdzc is graded against; the ML↔rcdzc differential compares the two BARE renderings to each other.)
+Confirm cdz-run's exact int/bool rendering when building (bare `42`/`true`; negative `-4`; big-int form).
+
+## FORK RESOLVED → C + DIFFERENTIAL TESTING (operator, 2026-07-17, via concierge assign)
+
+Operator (verbatim): "The compiler ml needs a way to be compiled and then invoked the EXACT SAME WAY the
+rcdzc does. That way we can start locking on behavior and differential testing. If it doesn't support
+something it simply declines." → the A/B/C fork is RESOLVED to **C**, and the goal is sharpened from "X/N
+conformance" to **DIFFERENTIAL AGREEMENT WITH rcdzc**:
+1. **SYMMETRIC INVOCATION.** The ML compiler is invoked the SAME way the gate invokes rcdzc — source in →
+   verdict out. That's `cdz run-ml` (already stubbed, `cef183504`/pending), the peer of `cdz compile
+   --target rust`. The ML compiler becomes a peer GATE TARGET.
+2. **DIFFERENTIAL vs rcdzc.** The gate runs BOTH rcdzc and the ML compiler on each shared-corpus program and
+   DIFFS their verdicts — "locking on behavior". The grading rule:
+   - ML **declines** (unsupported construct) → **coverage-not-yet, NOT a failure** (the climbing X/N).
+   - ML **agrees** with rcdzc (same value) on a supported construct → PASS (counts toward X).
+   - ML **disagrees** with rcdzc where it claims support (ran to a DIFFERENT value, or ran where rcdzc
+     declined / vice-versa) → **FAIL** (a real differential miscompile — the only red).
+   So the gate never compares ML to the corpus's own `(output …)` directly; it compares ML **to rcdzc's
+   verdict on the same program** (rcdzc is the executable oracle). Decline is free; disagreement is the bug.
+3. v-fleet-tooling owns the `cadenza-ml` GateTarget + the differential diff + the reported (non-baseline)
+   `cadenza-ml: X agree / D disagree / N total` line. I own `cdz run-ml` + its source→arena front-end.
+
+This is a SHARPER version of the filed plan: not "does ML match the corpus expectation" but "does ML AGREE
+WITH rcdzc where supported." Same X/N-climbs-as-features-land property; the delete-hand-encoded-builders step
+stands (the differential gate replaces them entirely).
+
 ## CORPUS-SHAPE FINDING (2026-07-17, surveyed spec/semantics — reshapes the front-end)
 
 The corpus `(input …)` is the CANONICAL HOMOICONIC S-EXPR (PREFIX), not surface source and not my infix
