@@ -1,7 +1,7 @@
 /// exact.cdz — the EXACT-arithmetic geometry foundation for Cadenza CAD (R1 of the Rational/Qty redirect,
 /// operator-directed 2026-07-16). CAD geometry should be built on `Rational` (exact, no float rounding) —
 /// "a big motivator for adding Rationals to the language" — so coordinates, sizes, and the bounding-box math
-/// are exact. This module is the proof + foundation: an exact `Vec3` (Rational components) with the min/max
+/// are exact. This module is the proof + foundation: an exact `Vec3(Rational)` (Rational components) with the min/max
 /// and a recursive `bounding-box` fold over a CSG tree.
 ///
 /// 🔑 WHY THIS UNBLOCKS `bounding-box`: the fold needs `<`/`>` (min/max) over coordinates. Over `Float64`
@@ -10,7 +10,7 @@
 /// COMPILES + RUNS. Exact CAD isn't just nicer — it's what makes the extent analysis expressible today.
 ///
 /// This is R1: a self-contained exact-geometry module + its `Solid` CSG sum, gated by @test. R2 folds the
-/// main `Solid`/`Vec3` model (currently Float64) onto this exact basis + `Qty` dimensioned lengths
+/// main `Solid`/`Vec3(Rational)` model (currently Float64) onto this exact basis + `Qty` dimensioned lengths
 /// (coordinating with v-quantity on the Qty surface); the native/browser mesh drivers then convert Rational
 /// → f64 only at the manifold leaf, keeping the model tree exact.
 ///
@@ -19,9 +19,15 @@
 /// the base everyone imports); the pragma is module-local, so importers keep their own defaults.
 @!default-fraction Rational
 
-/// An exact 3-D vector — the Rational analogue of `Vec3`. A bare `n/d` builds a component.
+/// A 3-D vector, GENERIC over its component type `a` (the "parameterize over the unit" shape — operator
+/// directive + concierge B-via-generic ruling). Instantiated as `Vec3(Rational)` of `Qty[meter]` for units-carrying
+/// geometry (the authored model, where a coordinate IS a length), of `Qty[radian]` for angles, and of bare
+/// `Rational` at the render edge (unwrapped meters the mesh driver parses — f64 only at the FFI edge). The
+/// bounding-box / min-max helpers below specialize to whatever `a` supports order + arithmetic (Rational
+/// and Qty both do). Stage 1 of the Vec3(Rational)→Qty retype: the type is generic; callers still build over Rational
+/// until the Qty[meter] model layer (stage 2) + render-edge unwrap land.
 type Vec3 =
-  | V3(Rational, Rational, Rational)
+  | V3(a, a, a)
 
 /// The exact CSG tree — the FULL model (R3): primitives (Empty/Cube/Sphere/Cylinder), the three booleans,
 /// and the affine transforms that stay exact over Rational (Translate, per-axis Scale). NOTE: no `Rotate` —
@@ -30,18 +36,18 @@ type Vec3 =
 /// is the legacy model; this exact `Solid` is what the drivers/examples move onto.
 type Solid =
   | Empty                        // the identity of union / absorbing element of intersection
-  | Cube(Vec3)                  // an axis-aligned box of FULL size (w, d, h) centred at origin (like Cube)
+  | Cube(Vec3(Rational))                  // an axis-aligned box of FULL size (w, d, h) centred at origin (like Cube)
   | Sphere(Rational)             // a sphere of the given radius, centred at the origin
   | Cylinder(Rational, Rational) // a cylinder (FULL height, radius), centred on the origin along +z
   | Union(Solid, Solid)
   | Difference(Solid, Solid)
   | Intersection(Solid, Solid)
-  | Translate(Vec3, Solid)
-  | Scale(Vec3, Solid)         // per-axis exact scale (Rational factors)
+  | Translate(Vec3(Rational), Solid)
+  | Scale(Vec3(Rational), Solid)         // per-axis exact scale (Rational factors)
 
-/// An exact axis-aligned bounding box: the min and max corners (both `Vec3`).
+/// An exact axis-aligned bounding box: the min and max corners (both `Vec3(Rational)`).
 type Aabb =
-  | Box(Vec3, Vec3)
+  | Box(Vec3(Rational), Vec3(Rational))
 
 /// Exact scalar min/max — total order over `Rational`, the operations the float model could not perform.
 def rmin(a: Rational, b: Rational) = if a < b then a else b
@@ -56,32 +62,32 @@ def rhalf(x: Rational) = x / 2
 /// Build an exact vector.
 def v3r(x: Rational, y: Rational, z: Rational) = Vec3.V3(x, y, z)
 
-def v3r-x(v: Vec3) = match v with | Vec3.V3(x, _, _) => x
-def v3r-y(v: Vec3) = match v with | Vec3.V3(_, y, _) => y
-def v3r-z(v: Vec3) = match v with | Vec3.V3(_, _, z) => z
+def v3r-x(v: Vec3(Rational)) = match v with | Vec3.V3(x, _, _) => x
+def v3r-y(v: Vec3(Rational)) = match v with | Vec3.V3(_, y, _) => y
+def v3r-z(v: Vec3(Rational)) = match v with | Vec3.V3(_, _, z) => z
 
 /// Component-wise exact vector addition (composing translations).
-def v3r-add(a: Vec3, b: Vec3) =
+def v3r-add(a: Vec3(Rational), b: Vec3(Rational)) =
   match a with | Vec3.V3(ax, ay, az) =>
     (match b with | Vec3.V3(bx, by, bz) =>
       Vec3.V3(ax + bx, ay + by, az + bz))
 
 /// Component-wise exact min / max.
-def v3r-min(a: Vec3, b: Vec3) =
+def v3r-min(a: Vec3(Rational), b: Vec3(Rational)) =
   match a with | Vec3.V3(ax, ay, az) =>
     (match b with | Vec3.V3(bx, by, bz) =>
       Vec3.V3(rmin(ax, bx), rmin(ay, by), rmin(az, bz)))
-def v3r-max(a: Vec3, b: Vec3) =
+def v3r-max(a: Vec3(Rational), b: Vec3(Rational)) =
   match a with | Vec3.V3(ax, ay, az) =>
     (match b with | Vec3.V3(bx, by, bz) =>
       Vec3.V3(rmax(ax, bx), rmax(ay, by), rmax(az, bz)))
 
 /// Exact vector equality — a direct whole-compound `==`. The `ty_heap_walkable` heap-walk now admits
 /// `Ty::Rational` (and `Ty::BigInt`) leaves — both are canonical by construction (a Rational is a normalized
-/// two-BigInt-handle node), so `champ_eq` walks a `Vec3` of Rationals EXACTLY, INCLUDING normalization
+/// two-BigInt-handle node), so `champ_eq` walks a `Vec3(Rational)` of Rationals EXACTLY, INCLUDING normalization
 /// (`1/2 == 2/4` → true). This replaced the earlier component-wise workaround (which existed only because the
 /// walk once covered `Ty::Float` but not `Ty::Rational`); `v3r-eq-is-a-direct-compound-walk` pins the invariant.
-def v3r-eq(a: Vec3, b: Vec3) = a == b
+def v3r-eq(a: Vec3(Rational), b: Vec3(Rational)) = a == b
 
 /// The union of two exact boxes — the enclosing box (min of the mins, max of the maxes).
 def aabbr-union(p: Aabb, q: Aabb) =
@@ -98,7 +104,7 @@ def aabbr-intersect(p: Aabb, q: Aabb) =
       Aabb.Box(v3r-max(plo, qlo), v3r-min(phi, qhi)))
 
 /// Component-wise exact vector multiply (for per-axis scale).
-def v3r-mul(a: Vec3, b: Vec3) =
+def v3r-mul(a: Vec3(Rational), b: Vec3(Rational)) =
   match a with | Vec3.V3(ax, ay, az) =>
     (match b with | Vec3.V3(bx, by, bz) =>
       Vec3.V3(ax * bx, ay * by, az * bz))
@@ -110,7 +116,7 @@ def aabbr-empty() = Aabb.Box(v3r(rzero(), rzero(), rzero()), v3r(rzero(), rzero(
 /// INVERTED box: a primitive built from `±half-extent` corners, or a scaled/mirrored one, can have its nominal
 /// "lo" corner land ABOVE "hi" on an axis when a dimension/factor is NEGATIVE — which would make `aabbr-size`
 /// go negative and break the min/max-based union/intersect. Normalizing here keeps the box valid for any sign.
-def aabbr-of-corners(p: Vec3, q: Vec3) = Aabb.Box(v3r-min(p, q), v3r-max(p, q))
+def aabbr-of-corners(p: Vec3(Rational), q: Vec3(Rational)) = Aabb.Box(v3r-min(p, q), v3r-max(p, q))
 
 /// The EXACT axis-aligned bounding box of an exact CSG tree — the recursive fold that was BLOCKED over
 /// Float64 (it needs `<`/`>` per node) and is expressible here because Rational has a total order. A cube
@@ -201,7 +207,7 @@ def rmin-rmax-exact() =
 
 @test
 def v3r-eq-is-a-direct-compound-walk() =
-  // PINS the ty_heap_walkable Rational admission that lets v3r-eq be a direct `a == b`: a whole-Vec3 `==`
+  // PINS the ty_heap_walkable Rational admission that lets v3r-eq be a direct `a == b`: a whole-Vec3(Rational) `==`
   // over Rational leaves must WALK (compile + run), incl. exact normalization — 1/2 and 2/4 are the SAME
   // Rational, so the vectors are equal; a differing component makes them unequal. If a future change drops
   // Rational from the walk, v3r-eq would decline and this case fails — guarding the whole vertical's equality.
@@ -209,7 +215,7 @@ def v3r-eq-is-a-direct-compound-walk() =
   let b = v3r(2 / 4, 1 / 3, 1 / 6) in   // 1/2 == 2/4 normalized
   let c = v3r(1 / 2, 1 / 3, 5 / 6) in   // z differs
   if v3r-eq(a, b) then (if v3r-eq(a, c) then trap("differing z must be unequal") else unit)
-  else trap("whole-Vec3 == over Rational must walk (1/2 == 2/4 normalized)")
+  else trap("whole-Vec3(Rational) == over Rational must walk (1/2 == 2/4 normalized)")
 
 @test
 def v3r-eq-and-add() =
@@ -253,7 +259,7 @@ def bounding-box-size-is-exact() =
 
 @test
 def exact_arithmetic_has_no_rounding() =
-  // the showcase: 1/3 + 1/3 + 1/3 == 1 EXACTLY (a float would drift). Pin it as a Vec3 component.
+  // the showcase: 1/3 + 1/3 + 1/3 == 1 EXACTLY (a float would drift). Pin it as a Vec3(Rational) component.
   let third = 1 / 3 in
   if (third + third + third) == 1 / 1 then unit else trap("1/3+1/3+1/3 = 1 exactly")
 

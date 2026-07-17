@@ -44,8 +44,27 @@ ALL integration. Two disciplines keep that from ever happening — follow BOTH e
 ## Each tick
 1. `cargo xtask fleet heartbeat pr-sync`. **Then apply discipline (a): if context > ~70%, `/compact`
    before draining the batch** (never risk reaching the unrecoverable 100%).
-2. **Drain your inbox**, oldest-first. The messages that matter are `merge-request`s (from any
-   agent). For each, in order:
+2. **Drain your inbox**, oldest-first. The messages that matter are `merge-request`s (from any agent).
+
+   **⚡ DEFAULT FAST PATH — OPTIMISTIC BATCH + BISECT (`cargo xtask fleet gate-batch`).** Re-gating
+   per MR costs N full gate cycles for N MRs — the 13-30 min batch latency. Instead, when the queue has
+   more than a couple of MRs, run **`cargo xtask fleet gate-batch`** (advisory planner; it does NOT
+   touch `trunk` or reply — it plans on a throwaway scratch branch and prints a machine-readable
+   per-MR decision). Its loop: conflict-prefilter (a non-mergeable MR → `BOUNCE-CONFLICT`, cheap, no
+   gate) → gate the combined tree ONCE (green ⟹ the whole batch is `LAND` — one gate run for N MRs) →
+   on red, binary-search to isolate the culprit(s) (`REJECT-BROKEN`) and land the rest. Then EXECUTE
+   the plan (you are still the single writer + must honor the reply-invariant):
+   - For each `LAND` line: `git merge --no-ff <ref>` onto `trunk` (they're pre-verified cleanly
+     mergeable + collectively green), then `fleet ack <file> --outcome merged --ref <new-trunk-sha>`.
+   - For each `BOUNCE-CONFLICT` / `REJECT-BROKEN` line: `fleet ack <file> --outcome reject --body
+     "<conflict: rebase on trunk@X / broke the gate: <summary>>"`. Same bounce as the per-MR path.
+   - Notify `reviewer` of the landed diff (as below). One gate run replaces N; a bad MR costs
+     ~log₂(N) extra gate runs to isolate, not a full re-gate each. This is the throughput cure.
+
+   **Per-MR fallback (below)** is still correct for a 1-2 MR queue (no batching win) or if you want to
+   integrate one specific MR out of band. The invariant + gate discipline are identical either way.
+
+   For each, in order:
 
    **Integrate one `merge-request`** (`ref` = the sender's commit sha; subject/body name the branch
    + carry the gate summary). **INVARIANT: every merge-request you take off the inbox MUST end in

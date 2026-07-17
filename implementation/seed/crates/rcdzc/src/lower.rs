@@ -10397,9 +10397,12 @@ fn emit_call_or_specialize(db: &mut Db, head: StructId, callee: usize, args: &[S
                     // argument, so the monomorphizer has no concrete type to bind it to at this call. THREE
                     // known shapes hit this (all tracked inference follow-ups): (1) a PRODUCER whose RESULT
                     // element is inferred free of its argument (`List a -> Iter a` used at ≥2 element types);
-                    // (2) a recursive TRANSFORMER threading a CLOSURE whose parameter type is not tied to the
-                    // element it maps (`(map it f) = Cons (f h) (map rest f)` — the scheme leaves `f`'s
-                    // domain a free variable, so it declines even at a SINGLE element type); (3) a recursive
+                    // (2) a recursive TRANSFORMER threading a CLOSURE (`(map it f) = Cons (f h) (map rest f)`),
+                    // instantiated at ≥2 DISTINCT element (closure-domain) types where at least one maps to an
+                    // AGGREGATE result — the closure-domain var is tied to the element within one copy (so a
+                    // SINGLE type, or several SAME-domain types, monomorphize fine — the closure-domain tie
+                    // landed), but the per-copy tie is not preserved across distinct-domain monomorphizations
+                    // when a result is a compound, so those copies collide on an untied var; (3) a recursive
                     // producer applied to an ARGUMENT whose type is itself the result of the SAME (or another
                     // in-flight) recursive-generic call — `(from-list (list (inner) (inner)))` where `(inner)`
                     // is a `from-list` call — so typing the argument re-enters the producer's own mid-solve
@@ -10413,13 +10416,14 @@ fn emit_call_or_specialize(db: &mut Db, head: StructId, callee: usize, args: &[S
                      function whose scheme leaves a type variable untied to any argument cannot be \
                      monomorphized here. This happens with a PRODUCER whose result element is inferred free of \
                      its argument (`List a -> Iter a` used at more than one element type); with a recursive \
-                     TRANSFORMER threading a closure whose parameter type is not tied to the element it maps \
-                     (declines even at a single element type); and with a producer applied to an argument \
-                     whose type is itself another in-flight recursive-generic call's result (e.g. \
-                     `(from-list (list (inner) (inner)))` where `inner` is a `from-list` call). Add an \
-                     explicit annotation — on a nested generic-call argument or on the result — annotate the \
-                     closure's parameter type, use a single concrete element type, or make the definition \
-                     monomorphic"
+                     TRANSFORMER threading a closure (`(map it f) = Cons (f h) (map rest f)`) instantiated at \
+                     more than one DISTINCT element type where a closure maps to a COMPOUND result (a single \
+                     element type, or several of the same type, monomorphize fine); and with a producer \
+                     applied to an argument whose type is itself another in-flight recursive-generic call's \
+                     result (e.g. `(from-list (list (inner) (inner)))` where `inner` is a `from-list` call). \
+                     Add an explicit annotation — on a nested generic-call argument or on the result — \
+                     annotate the closure's parameter type, use a single concrete element type, or make the \
+                     definition monomorphic"
                 };
                 Core::Poison(Reject::coded(Code::Malformed, message))
             }

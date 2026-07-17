@@ -519,6 +519,109 @@ next) proceeds in parallel — it's kernel-location-independent and feeds a3/b3'
 
 ---
 
+## 10. DATA TYPE INVARIANTS — `@invariant` (operator directive, 2026-07-17)
+
+**Operator directive:** *"data type invariants … annotations on data types that must be held. Just like
+requires/ensures these would be included as part of verification as well as optimizations."* This is the
+DATA-level member of the verification-annotation family — `@requires`/`@ensures` are FUNCTION pre/post-
+conditions, `@trap_free` is a whole-function crash-free proof, and `@invariant` is a property EVERY VALUE of
+a type maintains — all discharged by the same HOL kernel, all feeding both verification and optimization.
+
+### 10.1 Surface (fork I1, route to operator)
+`@invariant(<predicate over the value>)` on a type/record/sum declaration, in the `@`-family:
+`@invariant(> (len it) 0) (type NonEmptyList …)` / `@invariant(and (>= it 0) (<= it 100)) (type Percent Int64)`.
+The value is bound to `it` (same result-binder convention as `@ensures` — one implicit-subject name across
+the family, v-syntax's ruling). Fork I1 (naming/placement): `@invariant` on the type decl (my lean — names
+the concept, fits the family) vs a refinement-type surface (`Int64 where (…)`, the 2C option) — the two share
+the `it` binder so they stay consistent; `@invariant` first, refinement-types later. Route to operator.
+
+### 10.2 The obligation — ESTABLISH + PRESERVE (the classic invariant proof shape)
+An invariant `I` on type `T` is really a pair of obligations, both reusing the `@requires`/`@ensures`
+machinery:
+- **ESTABLISH:** every CONSTRUCTOR of `T` must prove its result satisfies `I` — i.e. `I` is an implicit
+  `@ensures(I[it := constructed value])` on each constructor. A constructor that can't establish `I` is a
+  compile error (or, per the failure-mode fork, must carry a `@requires` strong enough to).
+- **PRESERVE:** every operation returning `T` must prove it maintains `I` — `I` is an implicit `@ensures(I)`
+  on the result, AND (the dual) a consumer may ASSUME `I` on any `T` input (an implicit `@requires(I)`
+  granted for free, since every `T` value provably holds `I`). So an invariant is simultaneously a proof
+  OBLIGATION on producers and a proof GIFT to consumers — that gift is what powers the optimization.
+This is exactly `@ensures`-on-every-constructor + `@requires`-you-get-free-on-every-consumer, so b4c's
+denotation + b3's discharge machinery apply unchanged; `@invariant` adds the surface + the establish/preserve
+obligation generation, not new kernel machinery.
+
+### 10.3 Optimization payoff — data-level proof-guided elision
+A held invariant is a proven fact the optimizer consumes, exactly like a proven no-overflow (§3): a
+`NonEmptyList` value provably has `len > 0` → the optimizer ELIDES every empty-guard/`head`-bounds-check on
+it; a `Percent` provably in `[0,100]` → range-guards on it are dead. This is the DATA-level analogue of b3:
+where b3 elides a guard a *proof at a node* discharges, `@invariant` elides a guard the *type's invariant*
+discharges — and because the invariant holds for EVERY value, the elision applies everywhere the typed value
+flows (a stronger, whole-type version of the per-node elision). Same `provably_no_overflow`-style disjunction
+seam, keyed on the value's type-invariant instead of a per-node `Thm`.
+
+### 10.4 GENERATION — the invariant drives property-test fuzzing (operator addition, 2026-07-17)
+The invariant predicate has a THIRD consumer beyond verify + optimize: **property-test generation**. When a
+`@test`/`@exhaustive` fuzzes a value of a type with an `@invariant`, the generator must yield ONLY values
+that SATISFY the invariant — a `Percent` with `@invariant(and (>= it 0) (<= it 100))` generates in `0..100`;
+a `NonEmptyList` never empty; a `SortedVec` only sorted. This makes property tests exercise the RIGHT domain
+(legal values) instead of wasting trials on values the type can't hold. So the invariant is the **single
+source of "what is a valid value of this type"** — verified on producers, assumed on consumers, elided-against
+by the optimizer, AND the generation constraint for fuzzing.
+
+**Seam (co-designed with v-property-testing, SETTLED 2026-07-17):** v-verification EXPOSES the type's
+`@invariant` predicate via `Db::invariant_of(type)` (the same predicate from §10.2's obligations — one source
+of truth, denoted over `it`); v-property-testing's `gen<T>` CONSUMES it at its `classify_ty`/`build_gen`
+point. **Operator refinement (2026-07-17): CONSTRAINED-GEN is the PREFERRED path** — "never waste a cycle on
+a value just to get rejected" — with reject-until-valid only the correctness fallback. Three tiers (theirs
+to implement, agreed):
+- **constrained-gen (PREFERRED, where derivable):** derive an in-domain generator from the invariant SHAPE —
+  a range `0≤it≤100` → generate directly in `[0,100]`; `len>0` → generate non-empty. Zero rejection.
+- **reject-until-valid (fallback):** generate a raw `T`, keep iff the predicate holds; fuel-bounded. Correct
+  for ANY invariant; used when the shape isn't recognized.
+- **invariant-respecting shrink:** the shrinker accepts a smaller candidate only if it BOTH still fails the
+  property AND satisfies the invariant (a shrunk counterexample stays a legal value).
+
+**Structural exposure (the constrained-gen enabler).** Constrained-gen needs the invariant's STRUCTURE, not
+just an opaque callable. GOOD NEWS: the exposed predicate IS already structured — it's a `Term`/`Ast` tree
+(`(and (<= lo it) (<= it hi))` is an inspectable `Comb`-tree, exactly what b4b's denotation + the
+`t1(oob)`/`div0` cases pattern-match), so `Db::invariant_of` returning the predicate `StructId` ALREADY hands
+v-property-testing an analyzable shape — their tier-2 peephole reads it directly. **Fork I-struct (route to
+operator): who owns the shape-recognition + how much now?** — (a) v-property-testing peepholes the raw
+predicate AST (my lean — the shape IS the AST, no new form; they already designed this tier-2, keeps
+recognition in the generation lane where the gen strategies live); (b) v-verification pre-normalizes to a
+classified `RangeConstraint`/`NonEmpty`/`Conjunction` form (centralizes recognition in my lane, more upfront
+work). Both start with the common shapes (range/bound/non-empty) + fall back to reject-until-valid. My lean
+(a) — the raw AST is already the structured form; a shared shape-recognizer can move to a common util later
+if both verticals need it.
+
+Shrinking stays within the invariant (above). **Fork I3 (route to operator):** an invariant too tight for
+even reject-until-valid to hit — (a) a fuzz-time DECLINE "invariant too tight to fuzz; supply a `Test.gen`"
+(v-property-testing's lean + mine, agreed — decline at fuzz-time, NOT a definition-time error; the invariant
+is still valid+verified), (b) rejection-budget then skip. Lean: (a). v-verification exposes the predicate;
+the generation policy is v-property-testing's + these forks.
+
+### 10.5 Failure mode (fork I2, route to operator) + dependency
+**I2 — a constructor that can't establish `I`:** REJECT (compile error "constructor cannot establish
+invariant `I`") — my lean, consistent with `@ensures`/`@trap_free` (an invariant is a promise). A `@requires`
+on the constructor that makes `I` establishable is the escape hatch. Route to operator.
+**Dependency:** `@invariant` shares the compile-time-discharge path — the kernel-in-prelude (A1) + the b4c
+oracle + b3's elision seam. It lands AFTER the a1/a3/b3 foundation (it reuses all of it); the corpus
+obligation shapes (establish/preserve as `@ensures`-style discharges) can be pinned in parallel now, like the
+`@trap_free` t1 sources.
+
+### 10.6 Forks routed to operator
+- **I1 (surface):** `@invariant(pred)` on the type decl (my lean) vs a refinement-type `where`-surface
+  (defer; shares the `it` binder).
+- **I2 (failure mode):** REJECT a constructor that can't establish the invariant (my lean) vs warn.
+- **I3 (generation, §10.4):** when an invariant is too tight for reject-until-valid fuzzing — manual-generator
+  escape hatch + clear diagnostic (my lean; agreed with v-property-testing) vs rejection-budget-then-skip.
+- **I-struct (constrained-gen structural exposure, §10.4):** who owns invariant-shape-recognition —
+  v-property-testing peepholes the raw predicate AST `Db::invariant_of` exposes (my lean; the AST IS the
+  structured form) vs v-verification pre-normalizes to a classified constraint form.
+- **(shared) dependencies:** the (A1) kernel-in-prelude + b4c/b3 discharge+elision path `@invariant` reuses.
+- **(new seam) v-property-testing:** consumes the exposed `@invariant` predicate for `gen<T>` (§10.4).
+
+---
+
 ## References
 - [DESIGN-verification-hol-kernel.md](DESIGN-verification-hol-kernel.md) — the kernel this builds on
   (unforgeable `Thm`, the trust boundary, the LCF check-is-trivial/find-is-untrusted payoff).

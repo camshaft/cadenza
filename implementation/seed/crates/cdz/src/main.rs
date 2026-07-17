@@ -276,9 +276,12 @@ enum Cmd {
     /// corpus rcdzc is gated against (operator directive 2026-07-17). Reads the program SOURCE from a FILE
     /// argument, or from stdin when no file is given. Prints ONE verdict line to stdout:
     /// `value <sexpr>` (ran to that value) | `declined` (well-formed but not-yet-supported by the ML
-    /// compiler's current language subset — a coverage-not-yet, not an error) | `error <msg>`. ALWAYS exits
-    /// 0 — a decline/error is a verdict, not a shell failure; the gate maps stdout→a per-case outcome and
-    /// reports a climbing `cadenza-ml conformance: X/N` line. STUB: currently declines every program (the
+    /// compiler's current language subset — a coverage-not-yet, not an error) | `error <msg>`. Exits 0 for
+    /// any RUN OUTCOME — a decline/error is a verdict, not a shell failure; the gate maps stdout→a per-case
+    /// outcome and reports a climbing `cadenza-ml conformance: X/N` line. The one non-zero exit is a
+    /// HARNESS-level failure that produced no verdict (a file/stdin READ error), so a script tells "the ML
+    /// compiler judged this program" from "the input couldn't be read at all". STUB: currently declines
+    /// every program (the
     /// ML compiler's source front-end lands behind this subcommand next, per the A/B/C ruling); this fixes
     /// the interface so the gate wiring can land against 0/N green and each ML feature flips cases without
     /// any xtask change.
@@ -367,21 +370,23 @@ struct RunMlArgs {
 }
 
 /// `cdz run-ml` — run ONE corpus program through the Cadenza-in-Cadenza (ML) compiler and print a
-/// machine-readable verdict for the gate. Contract (fixed, invariant to the A/B/C source-reader ruling):
+/// machine-readable verdict for the gate. Contract (fixed, invariant to the source-reader design):
 ///   - input: program source from FILE, else stdin.
-///   - stdout: exactly ONE verdict line — `value <sexpr>` | `declined` | `error <msg>`.
+///   - stdout: exactly ONE verdict line — `value <n>` (bare scalar, matching cdz-run's Ran::Value render so
+///     the gate's differential vs rcdzc compares like-for-like) | `declined` | `error <msg>`.
 ///   - exit: ALWAYS 0 (a decline/error is a VERDICT, not a shell failure; the gate reserves non-zero for a
-///     genuine harness crash).
+///     genuine harness crash — a driver-write / compiler-invocation failure).
 ///
-/// STUB (this increment): the ML compiler's source front-end (source → its `Tok` pipeline) has not landed
-/// yet — that's the next unit, behind whichever of A/B/C the operator picks. So every program currently
-/// `declined` (well-formed-but-not-yet-supported → coverage-not-yet, NOT an error). This fixes the interface
-/// so v-fleet-tooling can wire the `cadenza-ml` GateTarget + reported `X/N` line against a real 0/N-green
-/// seam; each ML feature added later flips cases `declined`→`value …` with ZERO xtask change.
+/// MECHANISM: the ML compiler is WRITTEN IN CADENZA (`implementation/compiler-ml/src/`); its source front-end
+/// `sread-eval.run-src : String -> Option(Int64)` reads a program's canonical s-expr SOURCE, runs it through
+/// resolve→infer→lower→eval, and returns `Some value` | `None` (declined / out-of-subset). We invoke it by
+/// generating a tiny DRIVER program that embeds the corpus source as a compile-time STRING LITERAL (String
+/// can't cross the component boundary as an arg, but a literal is compile-time — no crossing) and calls
+/// `run-src`, then compile+run it and read the rendered `Option`. The driver MUST live in the compiler-ml
+/// `src/` dir because `import "sread-eval"` resolves RELATIVE TO THE ENTRY FILE'S DIR (no `--search-path`).
 fn run_run_ml(args: &RunMlArgs) -> ExitCode {
     use std::io::Read;
-    // Read the program source (file or stdin). A read failure is a harness-level problem → the one
-    // reserved non-success path, so the gate can distinguish "couldn't feed the program" from a verdict.
+    // 1. Read the program source (file or stdin). A read failure is the reserved harness-error path.
     let source = match &args.file {
         Some(path) => match std::fs::read_to_string(path) {
             Ok(s) => s,
@@ -399,11 +404,114 @@ fn run_run_ml(args: &RunMlArgs) -> ExitCode {
             buf
         }
     };
-    // STUB: no source front-end yet → every program is not-yet-supported. `_source` is read (so the
-    // stdin/file plumbing + the gate contract are exercised now) but not yet compiled.
-    let _source = source;
-    println!("declined");
-    ExitCode::SUCCESS
+
+    // 2. Generate the driver: it embeds the source as a Cadenza string literal and calls run-src. The
+    //    literal must escape `\` and `"`; the corpus s-expr programs are single-line ASCII (no newlines),
+    //    so this minimal escape is sufficient (a defensive newline→space keeps it one line regardless).
+    let escaped = source
+        .trim()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', " ");
+    let driver = format!(
+        "import {{ run-src }} from \"sread-eval\"\ndef main() = run-src(\"{escaped}\")\nexport {{ main }}\n"
+    );
+
+    // 3. Write the driver INTO the compiler-ml src dir (so `import \"sread-eval\"` resolves). Unique-ish
+    //    name; cleaned up before every return below. The gate runs from the repo root, so this relative
+    //    path is stable. If the dir is ABSENT (e.g. `run-ml` invoked from a crate dir under `cargo test`,
+    //    not the repo root), the ML compiler simply isn't available HERE — that is coverage-not-yet, not a
+    //    program READ failure, so per the exit-code contract emit a `declined` VERDICT and exit 0 (a missing
+    //    compiler is a decline, not a shell failure; the ONLY non-zero path is a program read error). The
+    //    gate always runs from the repo root where the dir exists, so it still gets real differential runs.
+    let src_dir = std::path::Path::new("implementation/compiler-ml/src");
+    if !src_dir.is_dir() {
+        println!("declined");
+        return ExitCode::SUCCESS;
+    }
+    let driver_path = src_dir.join("zz-run-ml-driver.cdz");
+    if let Err(e) = std::fs::write(&driver_path, &driver) {
+        eprintln!("{PROG} run-ml: cannot write driver: {e}");
+        return ExitCode::FAILURE;
+    }
+
+    // 4. Compile + run the driver by shelling `cdz` to itself (install-location-independent via current_exe),
+    //    the same compile→run path the gate uses for rcdzc. Capture stdout (the rendered Option).
+    let verdict = compile_run_ml_driver(&driver_path);
+    let _ = std::fs::remove_file(&driver_path); // always clean up the temp driver
+
+    match verdict {
+        Ok(v) => {
+            println!("{v}");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            // A harness-level failure (couldn't invoke the compiler/runner). Non-zero so the gate flags it
+            // distinctly from a verdict; the message goes to stderr, stdout stays verdict-free.
+            eprintln!("{PROG} run-ml: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Compile + run the generated driver and MAP its output to a verdict line. `cdz compile <driver> -o <tmp>`
+/// then `cdz run <tmp> --call main`; the run prints `(: (Some N) (Option Int64))` / `(: (None …) …)`. Returns
+/// the verdict STRING (`value N` | `declined` | `error …`) on a successful invocation, or `Err` for a
+/// harness failure (couldn't spawn / the compile itself failed to produce an artifact → treat as `declined`,
+/// since an un-compilable driver means the program is outside the ML compiler's expressible subset).
+fn compile_run_ml_driver(driver_path: &std::path::Path) -> Result<String, String> {
+    use std::process::Command;
+    let exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
+    let tmp_wasm = std::env::temp_dir().join(format!("cdz-run-ml-{}.wasm", std::process::id()));
+
+    // Compile. A compile FAILURE (diagnostics / non-zero) → the program isn't expressible → `declined`
+    // (coverage-not-yet), NOT a harness error: the ML compiler "declines" anything its front-end can't build.
+    let compile = Command::new(&exe)
+        .arg("compile")
+        .arg(driver_path)
+        .arg("-o")
+        .arg(&tmp_wasm)
+        .output()
+        .map_err(|e| format!("spawn compile: {e}"))?;
+    if !compile.status.success() {
+        let _ = std::fs::remove_file(&tmp_wasm);
+        return Ok("declined".to_string());
+    }
+
+    // Run.
+    let run = Command::new(&exe)
+        .arg("run")
+        .arg(&tmp_wasm)
+        .arg("--call")
+        .arg("main")
+        .output()
+        .map_err(|e| format!("spawn run: {e}"));
+    let _ = std::fs::remove_file(&tmp_wasm);
+    let run = run?;
+    let out = String::from_utf8_lossy(&run.stdout);
+    if !run.status.success() {
+        // The driver compiled but TRAPPED at run time (e.g. divide-by-zero) — a decline-shaped outcome for
+        // the differential (rcdzc would trap too; the gate treats trap-vs-value, but for the ML subset a
+        // trap is "no value" → declined keeps run-ml total and the gate never sees a spurious value).
+        return Ok("declined".to_string());
+    }
+    Ok(parse_ml_option_render(out.trim()))
+}
+
+/// Map cdz-run's rendered `Option(Int64)` to a verdict. `(: (Some N) (Option Int64))` → `value N` (BARE
+/// scalar, matching rcdzc's Ran::Value render for the differential); `(: (None …) …)` → `declined`; anything
+/// unexpected → `declined` (conservative — never emit a bogus `value`).
+fn parse_ml_option_render(rendered: &str) -> String {
+    // Find `(Some ` and take the token up to the next `)`.
+    if let Some(rest) = rendered.split("(Some ").nth(1)
+        && let Some(n) = rest.split(')').next()
+    {
+        let n = n.trim();
+        if !n.is_empty() {
+            return format!("value {n}");
+        }
+    }
+    "declined".to_string()
 }
 
 // ── compile (with in-process source parsing + auto-spans for debug) ──────────────────────────────

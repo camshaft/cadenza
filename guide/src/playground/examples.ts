@@ -81,10 +81,11 @@ export const EXAMPLES: Example[] = [
     name: "Lists",
     surface: "sexpr",
     source: `(do
+  ; Concatenate two lists and return the RESULT — you see the whole list, not just its length.
   (def (main)
-    (List.len (List.concat (list 1 2) (list 3 4 5))))
+    (List.concat (list 1 2) (list 3 4 5)))
   (export main))`,
-    expected: "5",
+    expected: "(: (list 1 2 3 4 5) (List Int64))",
   },
   {
     // Shows off: a recursive sum type + structural pattern matching = a real (if tiny) interpreter.
@@ -323,25 +324,26 @@ export const EXAMPLES: Example[] = [
     expected: "(: (list 0 0 0 1 1 1 1 1) (List Int64))",
   },
   {
-    // Shows off: records + a list of them = a little data pipeline. Aggregate a field (average age)
-    // over a list of (name, age) records by index-recursion. (36 + 41 + 40) / 3 = 39.
+    // Shows off: records + a list of them = a little data pipeline. Project one field (age) out of
+    // each (name, age) record by index-recursion, RETURNING the list of ages so you see the actual
+    // extracted data — [36, 41, 40] — rather than swallowing it to a single number.
     name: "Data pipeline over records",
     surface: "sexpr",
     source: `(do
-  ; A list of records — access a field with (. r age) — aggregated into an average.
-  (def (sum-age xs i n acc)
+  ; A list of records — access a field with (. r age). Project the age of every record into a list.
+  (def (ages xs i n acc)
     (if (= i n)
         acc
         (match (List.at xs i)
-          ((Some r) (sum-age xs (+ i 1) n (+ acc (. r age))))
+          ((Some r) (ages xs (+ i 1) n (List.push acc (. r age))))
           ((None) acc))))
   (def (main)
     (let ((people (list (record (name "Ada") (age 36))
                         (record (name "Alan") (age 41))
                         (record (name "Grace") (age 40)))))
-      (/ (sum-age people 0 (List.len people) 0) (List.len people))))
+      (ages people 0 (List.len people) (: (list) (List Int64)))))
   (export main))`,
-    expected: "39",
+    expected: "(: (list 36 41 40) (List Int64))",
   },
   {
     // Shows off: exponential recursion made concrete — the minimum moves to solve Tower of Hanoi with

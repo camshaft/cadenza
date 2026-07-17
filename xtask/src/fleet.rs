@@ -480,6 +480,32 @@ pub enum FleetCmd {
         /// `%B` — their side (the incoming floor).
         theirs: PathBuf,
     },
+    /// OPTIMISTIC-BATCH + BISECT integration planner for `pr-sync` — the throughput cure for the
+    /// per-MR-gate bottleneck (a batch of N MRs cost N full gate cycles; batches ran 13-30 min). This
+    /// command PLANS the round on a throwaway scratch branch and prints a machine-readable decision per
+    /// merge-request (LAND / BOUNCE-conflict / REJECT-broken); it does NOT advance `trunk` or reply to
+    /// anyone — `pr-sync` stays the single writer and still `fleet ack`s each MR per its reply-invariant.
+    ///
+    /// The loop (mirrors the design in pr-sync.md step 2): (1) CONFLICT-PREFILTER — `git merge --no-ff`
+    /// each queued MR's `--ref` onto a scratch branch off `trunk`, IN QUEUE ORDER; an MR that conflicts
+    /// is dropped from the batch as BOUNCE (cheap — no gate), so the batch is the cleanly-mergeable set.
+    /// (2) OPTIMISTIC GATE ONCE — run the full gate (`cargo xtask check`) on the combined scratch tree;
+    /// green → the whole batch is LAND (one gate run for N MRs, the common+cheap case). (3) BISECT on
+    /// red — binary-search the cleanly-merged set (re-form each half onto `trunk`, gate, recurse on the
+    /// failing half) to isolate the culprit(s); each isolated bad MR is REJECT, then re-form the
+    /// remainder and confirm green, so multiple independently-bad MRs are all found.
+    ///
+    /// `--dry-run` plans without leaving the scratch branch behind (always cleaned up regardless).
+    GateBatch {
+        /// Plan only; print the decision and delete the scratch branch (default true — this command is
+        /// advisory to pr-sync, which executes the real trunk advance).
+        #[arg(long, default_value_t = true)]
+        dry_run: bool,
+        /// Cap the number of MRs planned in one round (0 = all queued). A very large queue can be
+        /// planned in bounded rounds.
+        #[arg(long, default_value_t = 0)]
+        limit: usize,
+    },
     /// Self-heal the fleet, in two passes. RE-ARM: any ACTIVE agent whose `/loop` has stalled — each
     /// agent stamps a heartbeat touch-file (`.claude/fleet/heartbeat/<agent>`) at the top of every
     /// tick; if that file is older than `min(--stale-mult × interval, --stale-cap)`, its loop is
@@ -639,6 +665,7 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
         FleetCmd::Audit { verbose, strict } => audit(&fleet, verbose, strict),
         FleetCmd::RerouteUnknown { dry_run } => reroute_unknown(&fleet, dry_run),
         FleetCmd::MergeFloor { ours, theirs } => merge_floor(&ours, &theirs),
+        FleetCmd::GateBatch { dry_run, limit } => gate_batch(&fleet, dry_run, limit),
     }
 }
 
@@ -3849,9 +3876,294 @@ fn last_commit_age_secs(repo: &Path, refname: &str) -> Option<u64> {
     Some(now_unix().saturating_sub(ct))
 }
 
+// ── gate-batch: optimistic-batch + bisect integration planner ───────────────────────────────────
+
+/// One queued merge-request considered for the round.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct BatchMr {
+    /// The inbox filename (so pr-sync can `fleet ack` exactly this request).
+    file: String,
+    /// The sender agent (for the plan report).
+    from: String,
+    /// The commit sha (`--ref`) to merge.
+    r#ref: String,
+    /// The branch/subject (for the report).
+    subject: String,
+}
+
+/// Partition a batch into the maximal LANDABLE subset and the BROKEN culprits, given a gate oracle.
+///
+/// `items[i]` merges cleanly (conflicts were already filtered out by the caller); `gate(subset)` returns
+/// `true` iff the combined tree of that subset passes the gate. Pure w.r.t. the oracle — no git/IO here,
+/// so the bisection strategy is unit-testable with a synthetic predicate. Strategy: gate the whole set;
+/// if green, all land. If red, binary-search to isolate ONE culprit (the smallest failing prefix's last
+/// element), record it as broken, remove it, and repeat on the remainder — so several independently-bad
+/// items are all found, and the returned landable set is confirmed green by a final gate. Returns
+/// `(landable_indices, broken_indices)` (both into `items`), each sorted ascending.
+///
+/// `gate` is called on index SUBSETS; the caller maps indices→refs and does the real merge+check.
+fn partition_batch(n: usize, mut gate: impl FnMut(&[usize]) -> bool) -> (Vec<usize>, Vec<usize>) {
+    let mut remaining: Vec<usize> = (0..n).collect();
+    let mut broken: Vec<usize> = Vec::new();
+    loop {
+        if remaining.is_empty() {
+            break;
+        }
+        if gate(&remaining) {
+            // The whole remaining set is green → everything left lands.
+            break;
+        }
+        // Red: isolate one culprit. Find the shortest PREFIX of `remaining` that already fails — its
+        // last element is a culprit (adding it flipped green→red for that prefix). Binary-search the
+        // prefix length in [1, len]: the smallest `k` with gate(remaining[..k]) == red.
+        let mut lo = 1usize; // gate(prefix of len 0) is vacuously green, so a culprit exists at ≥1
+        let mut hi = remaining.len();
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            if gate(&remaining[..mid]) {
+                lo = mid + 1; // prefix still green → culprit is later
+            } else {
+                hi = mid; // prefix already red → culprit is at or before mid
+            }
+        }
+        // `lo` is the 1-based length of the shortest failing prefix; its last element is the culprit.
+        let culprit = remaining[lo - 1];
+        broken.push(culprit);
+        remaining.retain(|&i| i != culprit);
+        // Loop: re-gate the remainder (another independent culprit may still be present); when the
+        // remainder finally gates green (or empties), we stop and it's the confirmed landable set.
+    }
+    remaining.sort_unstable();
+    broken.sort_unstable();
+    (remaining, broken)
+}
+
+/// Plan a pr-sync integration round with the optimistic-batch + bisect model, printing a
+/// machine-readable per-MR decision. Advisory only: never advances `trunk`, never replies — pr-sync
+/// executes the plan (single writer + reply-invariant). See the `GateBatch` doc for the loop.
+fn gate_batch(fleet: &Fleet, dry_run: bool, limit: usize) {
+    // The queued merge-requests, oldest first (the round order — same order the conflict-prefilter uses).
+    let mut mrs = queued_merge_requests(fleet);
+    if limit > 0 && mrs.len() > limit {
+        mrs.truncate(limit);
+    }
+    if mrs.is_empty() {
+        println!("gate-batch: no queued merge-requests — nothing to plan.");
+        return;
+    }
+    println!(
+        "gate-batch: planning {} queued merge-request(s)…",
+        mrs.len()
+    );
+
+    let scratch = "fleet-gate-batch-scratch";
+    // Always clean up the scratch branch on the way out (created fresh off trunk below).
+    let cleanup = |branch: &str| {
+        let _ = Command::new("git")
+            .current_dir(&fleet.repo)
+            .args(["branch", "-D", branch])
+            .output();
+    };
+
+    // CONFLICT-PREFILTER: merge each ref, in order, onto a fresh scratch branch off trunk; an MR that
+    // does not merge cleanly is a BOUNCE (no gate cost). The survivors are the cleanly-mergeable set.
+    cleanup(scratch);
+    if !git_branch_at(&fleet.repo, scratch, "trunk") {
+        eprintln!(
+            "gate-batch: cannot create scratch branch off trunk — aborting (nothing changed)."
+        );
+        return;
+    }
+    let mut clean: Vec<BatchMr> = Vec::new();
+    let mut bounced: Vec<BatchMr> = Vec::new();
+    for mr in &mrs {
+        if git_merge_no_ff_onto(&fleet.repo, scratch, &mr.r#ref) {
+            clean.push(mr.clone());
+        } else {
+            // Abort the failed merge so the scratch branch stays at the last clean state.
+            let _ = Command::new("git")
+                .current_dir(&fleet.repo)
+                .args(["-C", ".", "merge", "--abort"])
+                .output();
+            bounced.push(mr.clone());
+        }
+    }
+
+    // OPTIMISTIC GATE + BISECT over the cleanly-merged set. The oracle re-forms a subset onto trunk on
+    // the scratch branch and runs `cargo xtask check`.
+    let (land_idx, broken_idx) = partition_batch(clean.len(), |subset| {
+        gate_subset(&fleet.repo, scratch, &clean, subset)
+    });
+
+    cleanup(scratch);
+
+    // ── Report the plan (machine-readable: one line per MR + a summary). ──
+    println!(
+        "\n=== gate-batch plan ({}) ===",
+        if dry_run { "dry-run" } else { "execute" }
+    );
+    for &i in &land_idx {
+        let m = &clean[i];
+        println!("LAND\t{}\t{}\t{}\t{}", m.file, m.from, m.r#ref, m.subject);
+    }
+    for &i in &broken_idx {
+        let m = &clean[i];
+        println!(
+            "REJECT-BROKEN\t{}\t{}\t{}\t{}",
+            m.file, m.from, m.r#ref, m.subject
+        );
+    }
+    for m in &bounced {
+        println!(
+            "BOUNCE-CONFLICT\t{}\t{}\t{}\t{}",
+            m.file, m.from, m.r#ref, m.subject
+        );
+    }
+    println!(
+        "\ngate-batch: {} land / {} reject-broken / {} bounce-conflict (of {} queued). \
+         ONE gate run landed {} MRs; pr-sync executes this plan (advances trunk + acks each).",
+        land_idx.len(),
+        broken_idx.len(),
+        bounced.len(),
+        mrs.len(),
+        land_idx.len()
+    );
+}
+
+/// List pr-sync's queued merge-requests as `BatchMr`, oldest-first (by the durable `<seq>-` filename).
+fn queued_merge_requests(fleet: &Fleet) -> Vec<BatchMr> {
+    let dir = fleet.inbox("pr-sync");
+    let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
+        .map(|rd| {
+            rd.filter_map(|e| e.ok().map(|e| e.path()))
+                .filter(|p| {
+                    p.file_name()
+                        .and_then(|n| n.to_str())
+                        .is_some_and(|n| n.ends_with("-merge-request.json"))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    files.sort();
+    files
+        .iter()
+        .filter_map(|p| {
+            let text = std::fs::read_to_string(p).ok()?;
+            let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+            Some(BatchMr {
+                file: p.file_name()?.to_str()?.to_string(),
+                from: v
+                    .get("from")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("unknown")
+                    .to_string(),
+                r#ref: v
+                    .get("ref")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                subject: v
+                    .get("subject")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+            })
+        })
+        .filter(|m| !m.r#ref.is_empty())
+        .collect()
+}
+
+/// Reset `branch` to `trunk`, then `git merge --no-ff` each `subset` ref onto it, and run the gate.
+/// Returns true iff every merge is clean AND `cargo xtask check` passes on the combined tree.
+fn gate_subset(repo: &Path, branch: &str, clean: &[BatchMr], subset: &[usize]) -> bool {
+    if !git_branch_at(repo, branch, "trunk") {
+        return false;
+    }
+    for &i in subset {
+        if !git_merge_no_ff_onto(repo, branch, &clean[i].r#ref) {
+            let _ = Command::new("git")
+                .current_dir(repo)
+                .args(["merge", "--abort"])
+                .output();
+            return false; // shouldn't happen (subset is pre-filtered clean) but be safe
+        }
+    }
+    // Run the omnibus gate on the combined tree; capture output (we only care about the exit status).
+    Command::new("cargo")
+        .current_dir(repo)
+        .args(["xtask", "check"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Force-create/reset `branch` to point at `at` and check it out. Returns false on any git failure.
+fn git_branch_at(repo: &Path, branch: &str, at: &str) -> bool {
+    Command::new("git")
+        .current_dir(repo)
+        .args(["checkout", "-B", branch, at])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// `git merge --no-ff <ref>` onto the current branch (no edit). Returns true iff the merge is clean.
+fn git_merge_no_ff_onto(repo: &Path, _branch: &str, r#ref: &str) -> bool {
+    Command::new("git")
+        .current_dir(repo)
+        .args(["merge", "--no-ff", "--no-edit", r#ref])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn partition_batch_all_green_lands_everything() {
+        // No culprit → the whole set lands, no bisection.
+        let (land, broken) = partition_batch(5, |_subset| true);
+        assert_eq!(land, vec![0, 1, 2, 3, 4]);
+        assert!(broken.is_empty());
+    }
+
+    #[test]
+    fn partition_batch_isolates_a_single_culprit() {
+        // Item 2 is poison: any subset CONTAINING it fails; every subset without it passes. The
+        // bisection must land {0,1,3,4} and reject {2}, with log2-ish gate calls (not linear).
+        let bad = 2usize;
+        let (land, broken) = partition_batch(5, |subset| !subset.contains(&bad));
+        assert_eq!(land, vec![0, 1, 3, 4]);
+        assert_eq!(broken, vec![bad]);
+    }
+
+    #[test]
+    fn partition_batch_finds_multiple_independent_culprits() {
+        // Two independent culprits (1 and 3): a subset fails iff it contains EITHER. The loop must peel
+        // both out and land the rest, confirming green only when neither remains.
+        let bads = [1usize, 3usize];
+        let (land, broken) = partition_batch(6, |subset| !subset.iter().any(|i| bads.contains(i)));
+        assert_eq!(land, vec![0, 2, 4, 5]);
+        assert_eq!(broken, vec![1, 3]);
+    }
+
+    #[test]
+    fn partition_batch_empty_is_trivially_landable() {
+        let (land, broken) = partition_batch(0, |_| false);
+        assert!(land.is_empty());
+        assert!(broken.is_empty());
+    }
+
+    #[test]
+    fn partition_batch_first_item_culprit_is_found() {
+        // Edge: the culprit is index 0 (the shortest failing prefix is length 1). Binary search must
+        // still isolate it (lo starts at 1, prefix[..1] already red → culprit = remaining[0]).
+        let (land, broken) = partition_batch(4, |subset| !subset.contains(&0));
+        assert_eq!(land, vec![1, 2, 3]);
+        assert_eq!(broken, vec![0]);
+    }
 
     #[test]
     fn interval_parses_every_supported_unit() {

@@ -463,6 +463,71 @@ mod tests {
         }
     }
 
+    /// Emit a random BALANCED box subtree (words, soft/hard breaks, nested boxes) and RECORD every word
+    /// emitted, in order. The words are drawn from an alphabet with NO whitespace, so the words are the
+    /// ONLY source of non-whitespace output — everything the engine adds (blanks, indent, newlines) is
+    /// whitespace. Returns nothing; appends words to `words`.
+    fn gen_doc_recording(rng: &mut Rng, d: &mut Doc, depth: usize, words: &mut Vec<&'static str>) {
+        // No whitespace inside any of these — so stripping whitespace from the render recovers exactly
+        // the word sequence (a space/hardbreak inside a word would defeat that).
+        let alphabet = ["a", "bb", "ccc", "word", "longer-token", "x", "(", ")", ","];
+        let n = 1 + rng.below(4);
+        for i in 0..n {
+            if i > 0 {
+                match rng.below(3) {
+                    0 => d.space(),
+                    1 => d.zerobreak(),
+                    _ => d.hardbreak(),
+                }
+            }
+            if depth == 0 || rng.below(3) == 0 {
+                let w = alphabet[rng.below(alphabet.len())];
+                d.word(w);
+                words.push(w);
+            } else if rng.below(2) == 0 {
+                d.cbox(rng.below(4) as isize);
+                gen_doc_recording(rng, d, depth - 1, words);
+                d.end();
+            } else {
+                d.ibox(rng.below(4) as isize);
+                gen_doc_recording(rng, d, depth - 1, words);
+                d.end();
+            }
+        }
+    }
+
+    #[test]
+    fn render_preserves_word_content_and_order_at_every_width() {
+        // Content preservation — the invariant orthogonal to the width-bound and fits⇒flat sweeps: a
+        // pretty-printer decides WHERE to break, never WHAT to emit. Whatever the width or the resulting
+        // break decisions, the rendered text must contain EXACTLY the input words, in order — never
+        // dropping, duplicating, reordering, or corrupting one. A phase-1/phase-2 desync (e.g. a break's
+        // span mis-resolved so a token is skipped, or an off-by-one in the scan stack) would surface here
+        // as changed content, which neither existing sweep checks (they bound geometry, not payload).
+        // Because the word alphabet carries NO whitespace, every non-whitespace char in the output comes
+        // from a word — so stripping ALL whitespace yields the words concatenated in order.
+        let mut rng = Rng(0xc047_e27a_0aad_0001);
+        for _ in 0..4000 {
+            let mut d = Doc::new();
+            let mut words: Vec<&str> = Vec::new();
+            // An outer box so top-level breaks live inside a frame (a bare top-level break always fires —
+            // harmless for content, but keeps the shape like a real printed form).
+            d.cbox(0);
+            let depth = 1 + rng.below(4);
+            gen_doc_recording(&mut rng, &mut d, depth, &mut words);
+            d.end();
+            let expected: String = words.concat();
+            for &width in &[1usize, 3, 7, 16, 40, 120] {
+                let out = d.render(width);
+                let stripped: String = out.chars().filter(|c| !c.is_whitespace()).collect();
+                assert_eq!(
+                    stripped, expected,
+                    "render at width {width} changed word content/order\n  words: {words:?}\n  out: {out:?}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn render_never_panics_and_respects_the_width_bound() {
         // The pretty-printer's core correctness property, swept over random BALANCED token streams (a

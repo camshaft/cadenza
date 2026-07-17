@@ -41,7 +41,7 @@ use lsp_types::notification::{
 use lsp_types::request::{
     CodeActionRequest, CodeLensRequest, Completion, DocumentHighlightRequest,
     DocumentSymbolRequest, GotoDefinition, HoverRequest, References, Rename, Request as _,
-    SemanticTokensFullRequest, Shutdown,
+    SemanticTokensFullRequest, Shutdown, WorkspaceSymbolRequest,
 };
 use lsp_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionParams, CodeActionResponse,
@@ -54,9 +54,10 @@ use lsp_types::{
     MarkedString, Position, PublishDiagnosticsParams, Range, ReferenceParams, RenameParams,
     SemanticToken, SemanticTokenType, SemanticTokens, SemanticTokensFullOptions,
     SemanticTokensLegend, SemanticTokensOptions, SemanticTokensParams, SemanticTokensResult,
-    SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo, SymbolKind,
-    TextDocumentContentChangeEvent, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit,
-    Uri, WorkDoneProgressOptions, WorkspaceEdit,
+    SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo, SymbolInformation,
+    SymbolKind, TextDocumentContentChangeEvent, TextDocumentSyncCapability, TextDocumentSyncKind,
+    TextEdit, Uri, WorkDoneProgressOptions, WorkspaceEdit, WorkspaceSymbolParams,
+    WorkspaceSymbolResponse,
 };
 
 /// Run the stdio LSP server to completion: perform the initialize handshake, then loop over incoming
@@ -120,6 +121,10 @@ fn capabilities() -> ServerCapabilities {
         // The document outline (Ctrl-Shift-O / the breadcrumb bar) — every top-level declaration, backed
         // by the `Symbols` query.
         document_symbol_provider: Some(lsp_types::OneOf::Left(true)),
+        // Project-wide symbol search (Ctrl-T / "Go to Symbol in Workspace") — the same `Symbols` query
+        // run across every OPEN document, filtered by the query string. (An on-disk project scan of
+        // unopened files is a later increment; this covers the loaded editor set.)
+        workspace_symbol_provider: Some(lsp_types::OneOf::Left(true)),
         // Completion with no trigger characters — the client invokes it on the usual identifier typing /
         // Ctrl-Space. We return the full candidate set (locals + top-level symbols) and let the client
         // filter by the typed prefix (the standard "server offers, client filters" model).
@@ -300,6 +305,11 @@ impl Server {
             Rename::METHOD => {
                 let (id, params) = cast_request::<Rename>(req)?;
                 let result = self.rename(&params);
+                self.send_response(Response::new_ok(id, result))
+            }
+            WorkspaceSymbolRequest::METHOD => {
+                let (id, params) = cast_request::<WorkspaceSymbolRequest>(req)?;
+                let result = self.workspace_symbol(&params);
                 self.send_response(Response::new_ok(id, result))
             }
             Completion::METHOD => {
@@ -524,6 +534,45 @@ impl Server {
             changes: Some(changes),
             ..Default::default()
         })
+    }
+
+    /// Answer a `workspace/symbol` (Ctrl-T / "Go to Symbol in Workspace"): every top-level declaration
+    /// across ALL OPEN documents whose name matches the query, backed by the same `Symbols` query the
+    /// document outline uses — one `SymbolInformation` per hit, each with a `Location` (the file URI + the
+    /// name occurrence's range) so the editor jumps straight to it. The match is a case-insensitive
+    /// SUBSTRING test (the conventional workspace-symbol filter; the client may re-rank). An empty query
+    /// returns every symbol (VS Code sends "" to preload). Scoped to the loaded editor set — an on-disk
+    /// scan of unopened project files is a later increment. TOTAL: an un-analyzable open buffer just
+    /// contributes nothing, never a panic; result order is deterministic (documents by URI, then the
+    /// query's declaration order).
+    fn workspace_symbol(&self, params: &WorkspaceSymbolParams) -> Option<WorkspaceSymbolResponse> {
+        let needle = params.query.to_lowercase();
+        // Deterministic across docs: sort the open URIs by their string form before scanning.
+        let mut uris: Vec<&Uri> = self.docs.keys().collect();
+        uris.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+        let mut symbols: Vec<SymbolInformation> = Vec::new();
+        for uri in uris {
+            let doc = &self.docs[uri];
+            for (name, kind, range) in top_level_symbols_of(&doc.text, doc.is_ml) {
+                // Case-insensitive substring match; an empty query matches everything.
+                if needle.is_empty() || name.to_lowercase().contains(&needle) {
+                    #[allow(deprecated)]
+                    // `deprecated` is deprecated but non-optional in this lsp-types.
+                    symbols.push(SymbolInformation {
+                        name,
+                        kind: symbol_kind_to_document_kind(&kind),
+                        tags: None,
+                        deprecated: None,
+                        location: Location {
+                            uri: uri.clone(),
+                            range,
+                        },
+                        container_name: None,
+                    });
+                }
+            }
+        }
+        Some(WorkspaceSymbolResponse::Flat(symbols))
     }
 
     /// Answer a `textDocument/completion`: the names in scope at the cursor — local bindings (backed by
@@ -2121,6 +2170,31 @@ fn instantiations_lens_title(answer: &str) -> Option<String> {
 /// hierarchy. TOTAL: an un-analyzable buffer yields whatever partial set the query produces, never a
 /// panic.
 fn document_symbols_for(text: &str, is_ml: bool) -> Vec<DocumentSymbol> {
+    top_level_symbols_of(text, is_ml)
+        .into_iter()
+        .map(|(name, kind, range)| {
+            #[allow(deprecated)]
+            // the `deprecated` field is deprecated but non-optional in this lsp-types.
+            DocumentSymbol {
+                detail: Some(kind.clone()),
+                kind: symbol_kind_to_document_kind(&kind),
+                name,
+                tags: None,
+                deprecated: None,
+                range,
+                selection_range: range,
+                children: None,
+            }
+        })
+        .collect()
+}
+
+/// The shared core of the outline / workspace-symbol reads: every TOP-LEVEL declaration in `text` as
+/// `(name, kind-spelling, name-range)`, backed by the `Symbols` query. The kind is the raw wire spelling
+/// (`value`/`function`/`type`/`effect`/`module`) — callers map it to an LSP `SymbolKind`. Declaration
+/// order preserved (a deterministic function of the source). TOTAL: an un-analyzable buffer, or a row
+/// whose node has no span, contributes nothing rather than panicking.
+fn top_level_symbols_of(text: &str, is_ml: bool) -> Vec<(String, String, Range)> {
     let Ok((arenas, spans, _errors)) = parse_surface(text, is_ml) else {
         return Vec::new();
     };
@@ -2147,18 +2221,7 @@ fn document_symbols_for(text: &str, is_ml: bool) -> Vec<DocumentSymbol> {
         else {
             continue;
         };
-        #[allow(deprecated)]
-        // the `deprecated` field is deprecated but non-optional in this lsp-types.
-        out.push(DocumentSymbol {
-            name: name.to_string(),
-            detail: Some(kind.to_string()),
-            kind: symbol_kind_to_document_kind(kind),
-            tags: None,
-            deprecated: None,
-            range,
-            selection_range: range,
-            children: None,
-        });
+        out.push((name.to_string(), kind.to_string(), range));
     }
     out
 }
@@ -3882,6 +3945,100 @@ mod tests {
         // A buffer that does not parse yields a defined (possibly empty) outline, never a panic.
         let _ = document_symbols_for("def (f x = (", true);
         let _ = document_symbols_for("", true);
+    }
+
+    /// The flat `SymbolInformation` list from a workspace-symbol response (the only variant we emit).
+    fn flat_symbols(resp: Option<WorkspaceSymbolResponse>) -> Vec<SymbolInformation> {
+        match resp.expect("a workspace-symbol response") {
+            WorkspaceSymbolResponse::Flat(v) => v,
+            WorkspaceSymbolResponse::Nested(_) => panic!("we only emit the Flat variant"),
+        }
+    }
+
+    /// A second document URI, for the cross-document workspace-symbol tests.
+    fn test_uri2() -> Uri {
+        use std::str::FromStr;
+        Uri::from_str("file:///u.cdz").unwrap()
+    }
+
+    #[test]
+    fn workspace_symbol_finds_a_matching_symbol_across_open_documents() {
+        // Two open docs; a query matches symbols in BOTH, each carrying a Location pointing at its own
+        // file. Case-insensitive SUBSTRING match ("elp" hits "helper").
+        let (mut server, _client) = memory_server();
+        let (u1, u2) = (test_uri(), test_uri2());
+        server
+            .handle_notification(did_open_note(&u1, "def helper(x: Int64) -> Int64 = x"))
+            .expect("didOpen 1");
+        server
+            .handle_notification(did_open_note(
+                &u2,
+                "def helper2(y: Int64) -> Int64 = y\ndef other = 1",
+            ))
+            .expect("didOpen 2");
+        let params = WorkspaceSymbolParams {
+            query: "elp".to_string(),
+            partial_result_params: Default::default(),
+            work_done_progress_params: Default::default(),
+        };
+        let syms = flat_symbols(server.workspace_symbol(&params));
+        // Both `helper` (u1) and `helper2` (u2) contain "elp"; `other` does not.
+        let names: Vec<&str> = syms.iter().map(|s| s.name.as_str()).collect();
+        assert!(
+            names.contains(&"helper") && names.contains(&"helper2"),
+            "both helper symbols found across files: {names:?}"
+        );
+        assert!(!names.contains(&"other"), "non-match excluded: {names:?}");
+        // Each carries the URI of the file it came from.
+        let helper = syms.iter().find(|s| s.name == "helper").unwrap();
+        let helper2 = syms.iter().find(|s| s.name == "helper2").unwrap();
+        assert_eq!(helper.location.uri, u1, "helper is located in u1");
+        assert_eq!(helper2.location.uri, u2, "helper2 is located in u2");
+    }
+
+    #[test]
+    fn workspace_symbol_empty_query_returns_every_open_symbol() {
+        // VS Code sends an empty query to preload — it must return the full set (not empty).
+        let (mut server, _client) = memory_server();
+        server
+            .handle_notification(did_open_note(&test_uri(), "def a = 1\ndef b = 2"))
+            .expect("didOpen");
+        let params = WorkspaceSymbolParams {
+            query: String::new(),
+            partial_result_params: Default::default(),
+            work_done_progress_params: Default::default(),
+        };
+        let syms = flat_symbols(server.workspace_symbol(&params));
+        let names: Vec<&str> = syms.iter().map(|s| s.name.as_str()).collect();
+        assert!(
+            names.contains(&"a") && names.contains(&"b"),
+            "empty query returns all symbols: {names:?}"
+        );
+    }
+
+    #[test]
+    fn workspace_symbol_with_no_open_documents_is_empty_not_none() {
+        // No documents open → an empty list (Some), not None and not a panic — total.
+        let (server, _client) = memory_server();
+        let params = WorkspaceSymbolParams {
+            query: "anything".to_string(),
+            partial_result_params: Default::default(),
+            work_done_progress_params: Default::default(),
+        };
+        let syms = flat_symbols(server.workspace_symbol(&params));
+        assert!(syms.is_empty(), "no open docs → no symbols: {syms:?}");
+    }
+
+    #[test]
+    fn workspace_symbol_capability_is_advertised() {
+        let value = serde_json::to_value(capabilities()).expect("serializes");
+        assert_eq!(
+            value
+                .get("workspaceSymbolProvider")
+                .and_then(|v| v.as_bool()),
+            Some(true),
+            "workspaceSymbolProvider must be advertised: {value}"
+        );
     }
 
     #[test]

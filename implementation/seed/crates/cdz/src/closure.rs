@@ -213,4 +213,79 @@ mod tests {
             "a string-path import is kept; a non-string-path import is skipped, not fatal"
         );
     }
+
+    /// A throwaway directory unique to `tag`, created empty. The caller populates + removes it.
+    fn tmp_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("cdz-closure-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        dir
+    }
+
+    #[test]
+    fn resolve_import_file_finds_a_sibling_by_each_supported_extension() {
+        // An import names a bare stem; the resolver appends each supported extension and returns the first
+        // existing sibling file. One file per extension, one at a time, so each extension is exercised.
+        for ext in [".cdz", ".ml", ".sexp", ".sexpr"] {
+            let dir = tmp_dir(&format!("ext{ext}"));
+            let path = dir.join(format!("lib{ext}"));
+            std::fs::write(&path, "(def x 1)").unwrap();
+            let got = resolve_import_file(&dir, "lib");
+            assert_eq!(
+                got.as_deref(),
+                path.to_str(),
+                "an import `lib` resolves to the sibling lib{ext}"
+            );
+            std::fs::remove_dir_all(&dir).ok();
+        }
+    }
+
+    #[test]
+    fn resolve_import_file_prefers_earlier_extensions_in_the_precedence_order() {
+        // When multiple sibling files share a stem, the resolver picks by the FIXED precedence
+        // `.cdz` > `.ml` > `.sexp` > `.sexpr` — a determinism guarantee the package/LSP path relies on
+        // (so which surface an ambiguous import resolves to never depends on filesystem enumeration order).
+        let dir = tmp_dir("precedence");
+        // Write ALL four; `.cdz` must win.
+        for ext in [".cdz", ".ml", ".sexp", ".sexpr"] {
+            std::fs::write(dir.join(format!("lib{ext}")), "(def x 1)").unwrap();
+        }
+        assert_eq!(
+            resolve_import_file(&dir, "lib").as_deref(),
+            dir.join("lib.cdz").to_str(),
+            ".cdz wins over .ml/.sexp/.sexpr"
+        );
+        // Remove `.cdz`; now `.ml` wins.
+        std::fs::remove_file(dir.join("lib.cdz")).unwrap();
+        assert_eq!(
+            resolve_import_file(&dir, "lib").as_deref(),
+            dir.join("lib.ml").to_str(),
+            ".ml wins once .cdz is gone"
+        );
+        // Remove `.ml`; now `.sexp` wins over `.sexpr`.
+        std::fs::remove_file(dir.join("lib.ml")).unwrap();
+        assert_eq!(
+            resolve_import_file(&dir, "lib").as_deref(),
+            dir.join("lib.sexp").to_str(),
+            ".sexp wins over .sexpr"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn resolve_import_file_is_none_for_a_missing_sibling_or_a_directory() {
+        let dir = tmp_dir("missing");
+        // No sibling with any supported extension → None.
+        assert!(
+            resolve_import_file(&dir, "nope").is_none(),
+            "an import naming no sibling file resolves to None"
+        );
+        // A DIRECTORY named `libdir.cdz` is not a file → still None (the `is_file` guard, not `exists`).
+        std::fs::create_dir_all(dir.join("libdir.cdz")).unwrap();
+        assert!(
+            resolve_import_file(&dir, "libdir").is_none(),
+            "a directory matching the name+ext is not a loadable file"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }

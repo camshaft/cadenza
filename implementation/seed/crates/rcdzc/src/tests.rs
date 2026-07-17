@@ -5866,6 +5866,55 @@ fn a_helper_state_advance_in_a_branch_threads_to_a_later_read() {
     }
 }
 
+/// Site-4 (`let`-init conditional distribution) HIT-BRANCH coverage + a single-parent-arena hardening
+/// witness (Copilot flag on merged PR #534, github-liaison relayed). The distribution `(let ((a (match …
+/// (Some v) (None …)))) cont)` ≡ `(match … (Some v (let ((a v)) cont)) (None … (let ((a …)) cont)))`
+/// splices the CONTINUATION (binder + remaining bindings + body) into EVERY branch via
+/// `map_conditional_branches`. The flag: reusing the SAME continuation nodes across branches shares them in
+/// a single-parent arena (`push_list` overwrites `parent`/`child_ix`), so the last-built branch steals their
+/// parentage — the "one leaf under two parents" class `deep_fresh_copy` guards. VERIFIED (this tick): the
+/// sharing is currently LATENT-BENIGN — the `thread` pass runs AFTER the hoist and re-processes each branch
+/// (rebuilding via `push_list`/`copy_pure`), re-freshing the shared nodes before resolution matters, so this
+/// case runs to the SAME value (50) with or without the per-branch copy. The fix (`deep_fresh_copy` per
+/// branch in `wrap`) is DEFENSIVE hardening — it makes the "continuation duplicated across branches"
+/// invariant structurally true (matching every If/Match thread arm, which copies per branch for exactly
+/// this reason) and robust against a future thread-pass change that stops re-copying. This test is not a
+/// strict sentinel for that (it passes both ways today); its value is COVERAGE of the Site-4 HIT branch —
+/// the other Site-4 tests all take the `None`/miss branch. The outer body pre-`put`s key 5 so `demand 5 99`'s
+/// inner `Db.get 5` HITS (→ `Some 25`, the FIRST-built arm, which `demand` returns WITHOUT re-putting 99),
+/// and the distributed continuation `(match (Db.get 5) ((Some w) (+ a w)) …)` reads the branch-bound `a`:
+/// `a`=25, later get→25, `a`+`w` = 50.
+#[test]
+fn site4_continuation_hit_branch_taken_folds_correctly() {
+    use crate::testkit::parse;
+    let src = "(do \
+        (effect Db (op get (-> Int64 (Option Int64))) (op put (-> (Tuple Int64 Int64) Unit))) \
+        (def (demand (: k Int64) (: compute Int64)) \
+          (match (Db.get k) \
+            (((. Option Some) v) v) \
+            (((. Option None) u) (do (Db.put (tuple k compute)) compute)))) \
+        (def (run-hit) \
+          (handle Db (Map.empty) \
+            ((get (k) s (resume (Map.lookup s k) s)) \
+             (put (kv) s (match kv ((tuple k v) (resume unit (Map.insert s k v)))))) \
+            (do \
+              (Db.put (tuple 5 25)) \
+              (let ((a (demand 5 99))) \
+                (match (Db.get 5) (((. Option Some) w) (+ a w)) (((. Option None) u) 99)))))) \
+        (export run-hit))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src)))
+        .expect("Site-4 distribution with a taken hit-branch must compile + fold");
+    if let Some(v) = run_linked(&bytes, "run-hit") {
+        // Pre-put 5→25, so `demand 5 99`'s get HITS (Some 25, the FIRST-built branch) → a=25 (does NOT
+        // re-put 99); the later get 5 → 25; 25 + 25 = 50. An orphaned first-branch continuation (the
+        // pre-fix shared-node bug) would mis-resolve `a`/`w`.
+        assert_eq!(
+            v, "50",
+            "Site-4 fresh-per-branch continuation: the taken Some/hit branch resolves a=25, w=25 → 50"
+        );
+    }
+}
+
 /// FIXED (was a KNOWN LATENT SILENT MISCOMPILE) — the WIDEST witness of the same helper-call out-state bug as
 /// the test above, and the strongest proof the fix generalizes: two `demand`s of the SAME key in ADJACENT
 /// let-bindings `(let ((a (demand 5 25)) (b (demand 5 999))) (+ a b))`. The first fills `5→25`; the second
@@ -17268,6 +17317,39 @@ mod match_engine {
                 "a predicate over params/it/prelude-ops must NOT flag unbound: {ok}"
             );
         }
+    }
+
+    /// Verification Inc-b a1: the compiler-bundled verification KERNEL asset (`verify_kernel.cdz`) READS as
+    /// a well-formed s-expression module and declares the pieces a1/a3 need — the ABSTRACT `Thm` sequent
+    /// and the `licenses` match predicate. This is the parse-level validation of the asset the compiler will
+    /// `include_str!` at a1 (design §9): a malformed/truncated kernel source is caught here.
+    ///
+    /// NOTE: full semantic validation (the module's types in scope, `Thm` unforgeable) requires the LINKED-
+    /// package load a1 wires (`Db::load_linked`) — a bare `Db::load` of a `(module …)` does not put the
+    /// module's own types in scope for its defs, which is exactly why a1 loads the kernel as a linked
+    /// member. That end-to-end check is part of a1 proper; the module shape's opacity is already pinned by
+    /// the 25-verification corpus (63 unforgeability cases over this same `Thm`-sequent shape).
+    #[test]
+    fn bundled_verify_kernel_asset_reads_and_declares_thm_and_licenses() {
+        // The bundled kernel asset — the same source the compiler will include_str! at a1.
+        const KERNEL_SRC: &str = include_str!("verify_kernel.cdz");
+        // It READS as a well-formed s-expression (the reader the compiler uses at a1).
+        let arenas = cadenza_syntax::sexpr::read(KERNEL_SRC)
+            .expect("the bundled verify_kernel.cdz reads as well-formed s-expression");
+        assert!(!arenas.structure.is_empty(), "non-empty kernel arena");
+        // It declares the pieces a1 links + a3 compile-time-evals: the abstract Thm sequent + licenses.
+        assert!(
+            KERNEL_SRC.contains("(type Thm (Seq (List Term) Term))"),
+            "the kernel declares the abstract Thm sequent"
+        );
+        assert!(
+            KERNEL_SRC.contains("(def (licenses"),
+            "the kernel declares the licenses match predicate (the trusted elision surface)"
+        );
+        assert!(
+            KERNEL_SRC.contains("(module \"verify-kernel\""),
+            "the kernel is a named module (linked as a package member at a1)"
+        );
     }
 
     /// A SHAPE-valid constructor-export `(export (. T A))` / `(export (. T *))` must ALSO be SEMANTICALLY
@@ -37435,6 +37517,60 @@ mod match_engine {
         assert!(
             !fams.contains_key("in"),
             "`in` is a keyword and must not be a unit abbreviation"
+        );
+    }
+
+    #[test]
+    fn radian_and_degree_are_first_class_units_in_separate_dimensions() {
+        // ANGLE units (operator ruling — CAD revolve/rotate angles get their own family, like meter/km).
+        // `radian` and `degree` are SEPARATE base DIMENSIONS, NOT one angle dimension: their conversion is
+        // IRRATIONAL (180° = π rad, π has no exact Rational), and every family unit keys to an EXACT
+        // rational ratio — so one shared dimension would break the exact-Rational invariant. As distinct
+        // dimensions each is exact WITHIN itself and mixing them rejects CDZ0501 (honest — not exactly
+        // interconvertible). `rad`/`deg`/`radians`/`degrees` alias their canonical spelling.
+        let fams = crate::prelude::unit_families();
+        for name in ["radian", "degree", "radians", "degrees", "rad", "deg"] {
+            assert!(fams.contains_key(name), "angle unit `{name}` is registered");
+        }
+        assert_eq!(fams.get("rad"), fams.get("radian"), "`rad` = `radian`");
+        assert_eq!(fams.get("deg"), fams.get("degree"), "`deg` = `degree`");
+        assert_eq!(
+            fams.get("radians"),
+            fams.get("radian"),
+            "`radians` = `radian`"
+        );
+        // Distinct DIMENSIONS: radian's and degree's conversions differ (their dimension component is a
+        // different base), so they are NOT the same unit and never silently interconvert.
+        assert_ne!(
+            fams.get("radian"),
+            fams.get("degree"),
+            "radian and degree are DISTINCT dimensions (no exact interconversion)"
+        );
+        // Exact WITHIN a dimension: `5 degree + 90 degree = 95 degree` runs (Int64 magnitude, no runtime).
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(
+                    "(do (def (main) ((. Qty value) \
+                       (+ ((. Qty of) 5 ((. Unit of) #\"degree\")) \
+                          ((. Qty of) 90 ((. Unit of) #\"degree\"))))) (export main))"
+                )))
+                .expect("a degree + degree sum compiles and runs"),
+                "main"
+            ),
+            95
+        );
+        // Mixing dimensions REJECTS CDZ0501 — degree + radian is not exactly interconvertible, so it is a
+        // dimension mismatch, not a silent conversion.
+        assert_eq!(
+            compile_component(&crate::codec::encode(&parse(
+                "(do (def (main) (+ ((. Qty of) 1 ((. Unit of) #\"degree\")) \
+                   ((. Qty of) 1 ((. Unit of) #\"radian\")))) (export main))"
+            )))
+            .err()
+            .and_then(|d| d.code.as_deref().map(str::to_string))
+            .as_deref(),
+            Some("CDZ0501"),
+            "degree + radian must reject CDZ0501 (incompatible dimension)"
         );
     }
 
@@ -72821,6 +72957,69 @@ mod cross_component_oracle {
                 "two compound arguments each cross as their own handle in one peer call"
             ),
             cdz_run::Outcome::Trap(t) => panic!("two-compound-argument run trapped: {t}"),
+        }
+    }
+
+    #[test]
+    fn a_list_argument_crosses_inbound_to_a_peer_as_a_handle() {
+        use crate::testkit::parse;
+        // A LIST argument crosses INBOUND into a provider export as a runtime handle — the inbound twin of
+        // the List-RESULT-escape path. U16/PL17 pin a Tuple/Record compound arg; a List is the same handle
+        // mechanism (`extern_abi_val_type` → `is_extern_heap_type` includes `Ty::List`), but a List has a
+        // DISTINCT runtime rep (an RRB vector, not a flat tuple record), so its inbound crossing deserves
+        // its own guard. (Requested by v-agent-harness for the K0 agent-kernel: `interpret : (tail: List
+        // Event, new: Event) -> (List HostOp)` needs the `List Event` ARG to cross inbound; verified here.)
+        //
+        // PROVIDER (source): `total : (List Int64) -> Int64` = the list's length — it reads a List handed in
+        // as a handle and dereferences it against the shared runtime.
+        let provider = compile_provider(
+            "(do (def (total (: xs (List Int64))) (List.len xs)) (export total))",
+            "cadenza:l/api",
+        );
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&provider)
+                .expect("the list-arg provider validates");
+        }
+        // CONSUMER (source): builds `(list 10 20 30)` on the shared runtime and passes its handle INTO the
+        // peer's `total` op. main = L.total([10,20,30]) = 3 — the List crossed as a handle, read by the peer.
+        let src = "(do \
+            (effect L (op total (-> (List Int64) Int64))) \
+            (bind L \"cadenza:l/api\") \
+            (def (main) (host (L) (L.total (list 10 20 30)))) \
+            (export main))";
+        let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .unwrap_or_else(|d| panic!("list-arg consumer compiles: {} [{:?}]", d.message, d.code));
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&consumer)
+                .expect("list-arg consumer validates");
+        }
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("[list-arg] runtime wasm not found; skipping the run");
+            return;
+        };
+        let peers = vec![cdz_run::Peer {
+            bytes: provider,
+            interface: "cadenza:l/api".to_string(),
+        }];
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: Vec::new(),
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run_with_peers(&consumer, &peers, &opts)
+            .expect("a list argument crosses to a peer")
+        {
+            // The consumer built [10,20,30] and passed its handle to the peer; the peer read the List and
+            // returned its length → 3. A LIST ARGUMENT crossed the boundary inbound as a shared handle.
+            cdz_run::Outcome::Value(s) => assert_eq!(
+                s, "3",
+                "a list argument crosses inbound to a peer as a shared handle and is read there"
+            ),
+            cdz_run::Outcome::Trap(t) => panic!("list-argument run trapped: {t}"),
         }
     }
 

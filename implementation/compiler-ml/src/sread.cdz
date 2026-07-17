@@ -83,15 +83,33 @@ def name-id-fold(bytes: Bytes, i: Int64, acc: Int64) =
 def name-id(name: String) = name-id-fold(String.to-bytes(name), 0, 7)
 
 /// Read ONE form starting at index `i` (leading space skipped here). Returns `(rootId, nextIndex, tree')`.
-/// SLICE 2 handles: non-negative INT literal; `true`/`false` bool literals; and a PARENTHESISED PREFIX form
-/// `(op a b)` where `op` is a binary operator symbol → `NBin(code, a, b)`. Unrecognized lead → recovery
-/// `NLit 0`. (`if`/`let`/vars are later slices.)
+/// Reads: non-negative INT literal; `true`/`false`; a bare identifier → `NVar`; a parenthesised prefix form
+/// (`if`/`let`/`(op a b)`). An UNSUPPORTED lead char (e.g. a string `"…"`, a float, `-`, a radix literal)
+/// reads as `unsupported()` — an UNBOUND `NVar` (name-id 0, unreachable by `name-id`) → resolve `RPoison` →
+/// infer `TErr` → eval `None` → the driver reports `declined`. This is the KEY totality+soundness rule: an
+/// out-of-subset program must DECLINE, never fabricate a bogus value (an `NLit 0` recovery would make
+/// `"hello"` "run" to 0 and falsely DISAGREE with rcdzc — the whole differential hinges on decline≠value).
+def unsupported(tree: Tree) = add-node(tree, Node.NVar(0))
+
+/// Does the char at index `i` END a token cleanly? A well-formed atom is followed by space, `)`, or
+/// end-of-string. A digit-led token followed by ANYTHING ELSE (a `_` separator, a letter, a `.`, a radix
+/// marker) is a literal FORM this subset does not support (`1_000_000`, `123abc`, `0xFF`, `3.5`) — it must
+/// DECLINE, not read a prefix (`scan-number` stopping at `_` would silently make `1_000_000` the value 1 and
+/// FALSELY DISAGREE with rcdzc, which reads 1000000 / rejects `123abc`). This is the token-boundary guard.
+def ends-token(s: String, i: Int64) =
+  (if i == String.byte-len(s) then true
+   else (let c = char-at(s, i) in (if is-space(c) then true else (if c == ")" then true else false))))
+
 def read-form(s: String, i: Int64, tree: Tree) =
   (let j = skip-space(s, i) in
    (let c = char-at(s, j) in
     (if is-digit(c) then
        (match scan-number(s, j, 0) with | (v, k) =>
-         (match add-node(tree, Node.NLit(v)) with | (id, t1) => (id, k, t1)))
+         // a bare int literal is only well-formed if it ENDS at a token boundary; otherwise it is an
+         // unsupported literal form (`1_000_000`/`123abc`/`0xFF`/`3.5`) → decline, never a partial value.
+         (if ends-token(s, k)
+          then (match add-node(tree, Node.NLit(v)) with | (id, t1) => (id, k, t1))
+          else (match scan-atom(s, k, "") with | (_junk, k2) => (match unsupported(tree) with | (id, t1) => (id, k2, t1)))))
      else (if (c == "(") then read-paren-form(s, j + 1, tree)
      else (if (is-alpha(c)) then
         (match scan-atom(s, j, "") with | (atom, k) =>
@@ -100,7 +118,7 @@ def read-form(s: String, i: Int64, tree: Tree) =
            else
              // a bare identifier is a VARIABLE reference → NVar keyed by the name's deterministic id.
              (match add-node(tree, Node.NVar(name-id(atom))) with | (id, t1) => (id, k, t1)))))
-     else (match add-node(tree, Node.NLit(0)) with | (id, t1) => (id, j + 1, t1)))))))
+     else (match unsupported(tree) with | (id, t1) => (id, j + 1, t1)))))))
 
 /// Consume a `)` at/after index `i` (skipping space); tolerate a missing one. Returns the next index.
 def close-paren(s: String, i: Int64) =
