@@ -41,8 +41,9 @@ export default function ExampleApps() {
         program, run it, and peek at the WebAssembly <em>and</em> Rust it compiles to — the same source
         targeting two backends, which is the point of a compiler that treats code as data. It ships a
         dropdown of worked example programs — an AST interpreter, a Collatz walk, function composition,
-        a memoized Fibonacci, exact-rational arithmetic, set algebra, an RPN stack machine, and more — each
-        a small showcase of recursion, sum types, closures, or the collections. Two stand out: a Rule 110
+        a memoized Fibonacci, exact-rational arithmetic, set algebra, an RPN stack machine, a stateful{" "}
+        <Ch to="/effects">effect handler</Ch>, and more — each a small showcase of recursion, sum types,
+        closures, effects, or the collections. Two stand out: a Rule 110
         cellular automaton, a Turing-complete system in a handful of lines; and a{" "}
         <em>code-as-data</em> example that quotes a program into an AST, splices a computed value into it,
         and <C>eval</C>s the result — Cadenza building and running Cadenza from within itself. It's where{" "}
