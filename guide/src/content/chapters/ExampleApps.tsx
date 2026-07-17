@@ -80,6 +80,11 @@ export default function ExampleApps() {
         tables, charts, and values are just what Cadenza's results look like when an app renders them
         instead of printing a single number.
       </P>
+
+      <P>
+        That's the tour — the ideas, and the apps that prove them. To recap what you've learned and find
+        where to go from here, head to <Ch to="/whats-next">Where to go next</Ch>.
+      </P>
     </article>
   );
 }
