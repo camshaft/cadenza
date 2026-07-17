@@ -1042,6 +1042,7 @@ pass	a nested unquote pattern matches a Str sub-AST by shape
 pass	a nested unquote pattern matches a sub-AST by shape
 pass	a nested-let chain that reuses each binding folds to one value
 pass	a neutral and-true keeps both the trap and the value of its left operand
+pass	a no-overflow obligation is DISCHARGED: for x <= 100, (x + 1) <= MAXINT via monotonicity + a numeral fact
 pass	a nominal record compared to a plain record of the same shape is a type error
 pass	a non-admitted float width NESTED in a compound annotation is rejected
 pass	a non-admitted float width in a parameter annotation is rejected
@@ -1916,6 +1917,7 @@ pass	an R-suffixed decimal literal is its exact fraction
 pass	an R-suffixed integer literal is that integer over one
 pass	an R-suffixed literal composes with exact rational arithmetic
 pass	an SI decimal prefix scales a unit by a power of ten
+pass	an UNCONSTRAINED add is NOT dischargeable: with no precondition bound, the no-overflow obligation cannot be closed (the check must stay)
 pass	an abort abandons a pending borrowed map lookup and the map survives
 pass	an abort abandons a pending consuming op and the shared binding survives
 pass	an abortive handler arm never resumes, so its value becomes the handle's value
@@ -3397,7 +3399,6 @@ todo	a mutually-recursive AST walker reads a node's child list without corruptin
 todo	a mutually-recursive decoder returns a heap value and cursor and its heap slot is dispatched
 todo	a nested element pattern dispatches on a NON-variant-0 list payload
 todo	a nested tuple list element is bound over a runtime list and folded across the rest
-todo	a no-overflow obligation is DISCHARGED: for x <= 100, (x + 1) <= MAXINT via monotonicity + a numeral fact
 todo	a non-byte-aligned bit-field width takes its exact arbitrary-width unsigned type
 todo	a parameterized export returning a capturing closure is made and called by the host
 todo	a parameterized export returning a multi-argument capturing closure
@@ -3465,8 +3466,6 @@ todo	an 8-bit-integer closure crosses the host boundary
 todo	an @param of a Bool type generates a Bool-typed accessor
 todo	an @param of a Float64 type generates a Float64-typed accessor
 todo	an @param site generates a Param accessor a host delegation reads at run time
-todo	an INFINITY-axiom theorem is unforgeable — its Thm cannot be fabricated outside the kernel
-todo	an UNCONSTRAINED add is NOT dischargeable: with no precondition bound, the no-overflow obligation cannot be closed (the check must stay)
 todo	an abortive handler abandons a host call in the path it discards
 todo	an entrypoint delegation lets a program reach its host function
 todo	an entrypoint delegation reaches an effect performed in a recursive callee
@@ -3615,23 +3614,6 @@ todo	take-while where the first element fails the predicate returns the empty ru
 todo	the built variant is the multi-arg one, the unbuilt arm still gets its call type
 todo	the empty and None arms of a list-payload split dispatch to their own values
 todo	the generated Param accessor carries the @param's declared type into arithmetic
-todo	the implication-extended kernel Thm stays unforgeable — Thm.Seq of a bogus implication outside is CDZ0214
-todo	the kernel defines T (truth) as a constant and DERIVES |- T through the rules
-todo	the kernel proves reflexivity end-to-end: refl t yields a theorem whose conclusion is (t = t)
-todo	the kernel proves the identity theorem ⊢ (λx.x) y = y via BETA — the first-theorem milestone
-todo	the kernel proves the tautology ⊢ p ⇒ p via DISCH (implication introduction) over ASSUME
-todo	the kernel's ABS rule lifts an equation under a binder: from |- t=u derive |- (λx.t)=(λx.u)
-todo	the kernel's ASSUME rule yields the sequent {p} |- p
-todo	the kernel's BETA rule reduces an application of a lambda: (λv.body) arg = body[arg/v]
-todo	the kernel's DEDUCT_ANTISYM rule: from A |- p and B |- q derive (A-q)++(B-p) |- p=q
-todo	the kernel's EQ_MP rule: from |- p=q and G |- p derive G |- q (hypotheses unioned)
-todo	the kernel's GEN (∀-introduction) enforces its free-variable side-condition
-todo	the kernel's MK_COMB rule: equals applied to equals are equal — from f=g and x=y derive (f x)=(g y)
-todo	the kernel's SPEC (∀-elimination) instantiates the quantified body with the witness
-todo	the kernel's conjunction: CONJ unions hypotheses, CONJUNCT1/2 project (hyps survive)
-todo	the kernel's disjunction introduction (DISJ1/DISJ2) preserves hypotheses
-todo	the kernel's existential introduction (EXISTS) checks the witness and preserves hypotheses
-todo	the kernel's modus ponens (⇒-elimination): from ⊢ p⇒q and ⊢ p derive ⊢ q
 todo	the program manifest is the union of its entrypoints' delegations
 todo	the round trip tracks the produced closure's captured value
 todo	the same conditional delegation makes no host call when the branch is not taken
@@ -3644,7 +3626,6 @@ todo	three distinct closure signatures cross as three resource types
 todo	three same-variant literal arms fall through in order
 todo	tuple elements are evaluated left to right
 todo	two @param sites generate two accessors under one Param effect
-todo	two definitions imported under the same name are rejected
 todo	two exports normalizing to the same kebab extern name are rejected
 todo	two host calls consume their responses in order
 todo	two host responses combine in call order through a non-commutative operator
