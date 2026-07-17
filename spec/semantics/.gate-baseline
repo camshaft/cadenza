@@ -1484,6 +1484,7 @@ pass	a pure lambda passed as an argument to a performing callee folds
 pass	a pure let-bound lambda and a performing one are both applied in the handle body
 pass	a pure shared subexpression computes the same value however the backend optimizes it
 pass	a purely-logical composed proof over a quantified proposition: DISCH then MP
+pass	a push-loop tuple-list accumulator infers its tuple element component types
 pass	a qualified construct and a bare match name the same colliding variant
 pass	a quantity annotation at an in-range narrow width grounds and accepts
 pass	a quantity annotation range-checks the inner width — an out-of-range magnitude is rejected
@@ -1650,6 +1651,7 @@ pass	a returned lambda captures+applies a closure param bound to a TOP-LEVEL def
 pass	a returned lookup result consumed with a wildcard never inspects the payload
 pass	a returned runtime string with a multi-byte scalar renders the scalar verbatim
 pass	a returned runtime string with a non-printable scalar renders it verbatim, not a u-escape
+pass	a reverse wrapper seeding a second generic helper with an accumulator at two element types declines pending the transitive tie
 pass	a right shift by a floating-point count does not silently promote
 pass	a right shift by the bit width or more traps rather than masking
 pass	a rope in a record field equals its flat-twin field
@@ -2522,6 +2524,7 @@ pass	an outer definition references a sibling nested module by bare name
 pass	an over-ceiling integer width in an unused parameter is rejected, like a used one
 pass	an un-projected tuple element is not evaluated, so its trap does not occur
 pass	an un-read record field is not evaluated, so its trap does not occur
+pass	an unannotated add narrowed by a UInt8 consumer keeps its overflow guard and traps
 pass	an unannotated closure in a Some payload is typed from the Option's element arrow
 pass	an unannotated closure in a user variant payload is typed from the declared arrow
 pass	an unannotated closure is inferred through an unannotated recursive HOF parameter
@@ -2995,6 +2998,7 @@ pass	mixed bool and int splices evaluate in one template
 pass	mixed comparison operators across if arms keep their own arms
 pass	mixed operators across the if arms keep their own arms
 pass	mixed payload widths across the variant set dispatch and read correctly
+pass	mixed-type @param sites share one Param effect and drive control flow
 pass	mixed: two closure exports alongside a plain export — driving the plain export
 pass	mixing a prefixed unit across DIFFERENT dimensions is still a compile-time error
 pass	mixing nullary and unary constructors in one match

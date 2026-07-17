@@ -5970,11 +5970,22 @@ fn emit(
                 out.push(Lir::LocalSet(val_slot)); // val := value:i64  → [buf]
                 // RANGE CHECK (defensive backstop — normally DEAD, the `(UInt k)` field type already bounds
                 // `val`): a k-bit UNSIGNED field, so `0 <= val < 2^k` (k ≤ 56 → 2^k is a positive i64).
+                //
+                // `ceil = 2^k` and `mask = 2^k - 1` are computed in u128 so a WIDE field cannot overflow the
+                // HOST shift computing the constant (mirrors the rust backend's u128 fix, `73efc94ae`):
+                // `1i64 << k` is `i64::MIN` at k==63 and a shift-overflow (panic/UB) at k==64. `lower`
+                // (`lower.rs`) caps a RUNTIME bit-field at k ≤ 56 (a wider one declines "…wider than 56 bits
+                // is not yet built"), so k in 57..=64 is not reachable here TODAY — and for every reachable
+                // k ≤ 56 the `as i64` cast is EXACT, so the emitted `ConstI64`s (hence the module bytes) are
+                // byte-identical to the old `1i64 << k` form. This purely hardens rcdzc's own constant
+                // computation so it stays correct (no host overflow) if that cap ever moves.
+                let ceil = (1u128 << k) as i64; // 2^k
+                let mask = ((1u128 << k) - 1) as i64; // 2^k - 1
                 out.push(Lir::LocalGet(val_slot));
                 out.push(Lir::ConstI64(0));
                 out.push(Lir::I64LtS); // val < 0
                 out.push(Lir::LocalGet(val_slot));
-                out.push(Lir::ConstI64(1i64 << k));
+                out.push(Lir::ConstI64(ceil));
                 out.push(Lir::I64GeS); // val >= 2^k
                 out.push(Lir::I32Or);
                 out.push(Lir::IfUnreachableEnd); // → trap "binary value does not fit segment"  → [buf]
@@ -5983,7 +5994,7 @@ fn emit(
                 out.push(Lir::ConstI64(k as i64));
                 out.push(Lir::I64Shl); // acc << k
                 out.push(Lir::LocalGet(val_slot));
-                out.push(Lir::ConstI64((1i64 << k) - 1));
+                out.push(Lir::ConstI64(mask));
                 out.push(Lir::I64And); // val & mask
                 out.push(Lir::I64Or);
                 out.push(Lir::LocalSet(acc_slot)); // → [buf]
@@ -6009,7 +6020,10 @@ fn emit(
                         out.push(Lir::ConstI64(0));
                     } else {
                         out.push(Lir::LocalGet(acc_slot));
-                        out.push(Lir::ConstI64((1i64 << nbits) - 1));
+                        // `2^nbits - 1` in u128 for the same host-overflow safety as the field mask above
+                        // (nbits < 8 here after the `-= 8` flushes, so this is always small + `as i64` exact;
+                        // computed in u128 purely for uniformity with the ceil/mask hardening).
+                        out.push(Lir::ConstI64(((1u128 << nbits) - 1) as i64));
                         out.push(Lir::I64And);
                     }
                     out.push(Lir::LocalSet(acc_slot)); // → [buf]

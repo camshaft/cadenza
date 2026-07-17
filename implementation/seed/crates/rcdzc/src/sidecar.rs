@@ -98,6 +98,11 @@ pub const KIND_INSTANTIATIONS: &str = "instantiations";
 /// analogue.
 pub const KIND_SYMBOLS: &str = "symbols";
 
+/// The output artifact kind for a `ParamManifest` query result — the `@param` WIDGET MANIFEST: one record
+/// per `@param` site (name, declared type, widget, range/options/default, name-node), the data a HOST
+/// (browser/CAD/notebook) reads to render controls for a program's parameters.
+pub const KIND_PARAM_MANIFEST: &str = "param-manifest";
+
 /// One request in a sidecar's list. Either MATERIALIZE an output column (`Emit`) or READ a fact column
 /// (`Query`). `Rewrite` (the validated-transaction arm of `DESIGN-sidecar-api.md`) is a later rung and
 /// not modeled here yet.
@@ -253,6 +258,22 @@ pub enum Query {
     /// empty result. INTERNAL defs (do-local / module-member callables `modules::register_callable`
     /// synthesizes) are OMITTED: they are not top-level source declarations an outline names.
     Symbols,
+    /// The `@param` WIDGET MANIFEST — one record per well-typed `@param` site `(: (@ (param <kv>) name)
+    /// Type)`, the data a HOST (browser/CAD/notebook) reads to render a control per program parameter.
+    /// Reads `param_sidecar::scan_manifest` (the read-only `@param`-site scan — the SAME sites the
+    /// generate half turns into a typed `Param` effect, so the manifest's rendered type and the generated
+    /// accessor's result type share one source of truth), then renders each record's DECLARED TYPE via the
+    /// type column (`infer::type_of` → `Ty::render_name` — the render needs the `Db`, which lives on this
+    /// query side, not the arena-only scan). Answered as one record per line, TAB-separated:
+    /// `name  widget  type  range-lo-node  range-hi-node  options-node  default-node  name-node` — `widget`
+    /// is the bare widget atom or `-`; `type` is the rendered declared type; the four value columns are the
+    /// arena node ids of `(: range [lo hi])`'s two elements, `(: options […])`'s list, and `(: default v)`'s
+    /// value (`-` when the kv is absent), which the CONSUMER (holding the shared `StructId` arena + span
+    /// table) renders + maps to `file:line:col` — node-id-keyed and span-free like the sibling queries
+    /// (`query-engine.md`: the compiler emits node IDENTITY, the front-end owns spans + value rendering).
+    /// `name-node` is the param NAME occurrence, mapped to `file:line:col`. TOTAL: a program with no
+    /// `@param` sites yields the empty result.
+    ParamManifest,
 }
 
 /// The one-byte request tags. Stable across versions (additive — a new request is a new tag).
@@ -292,6 +313,7 @@ mod tag {
     pub const QUERY_DOC_AT: u8 = 0x19;
     pub const QUERY_INSTANTIATIONS: u8 = 0x1a;
     pub const QUERY_SYMBOLS: u8 = 0x1b;
+    pub const QUERY_PARAM_MANIFEST: u8 = 0x1c;
 }
 
 /// Decode a request list from its wire bytes. Total: a truncated or malformed list yields `None` (the
@@ -348,6 +370,7 @@ fn decode_one(r: &mut Reader) -> Option<Request> {
             name: read_string(r)?,
         })),
         tag::QUERY_SYMBOLS => Some(Request::Query(Query::Symbols)),
+        tag::QUERY_PARAM_MANIFEST => Some(Request::Query(Query::ParamManifest)),
         _ => None,
     }
 }
@@ -407,6 +430,7 @@ fn encode_one(out: &mut Vec<u8>, req: &Request) {
             write_string(out, name);
         }
         Request::Query(Query::Symbols) => out.push(tag::QUERY_SYMBOLS),
+        Request::Query(Query::ParamManifest) => out.push(tag::QUERY_PARAM_MANIFEST),
     }
 }
 
@@ -440,9 +464,15 @@ pub fn run_query(db: &mut Db, query: &Query) -> QueryResult {
         Query::TypeOf { name } => {
             let text = match db.def_by_name(name) {
                 Some(def) => match crate::infer::def_scheme(db, def) {
-                    // The definition's rendered type — the same canonical text a value's annotation
-                    // carries (`Ty::render_name`). A demand-driven read of the type column.
-                    Some(scheme) => scheme.ty.render_name(),
+                    // The definition's rendered type. `render_scheme` names each DISTINCT quantified type
+                    // variable with a stable letter (`a`, `b`, …) rather than collapsing every var to `_`,
+                    // so a generic signature's TIE STRUCTURE is visible — `(-> (List a) (Iter a))` (element
+                    // tied) reads differently from `(-> (Iter a) (Iter b))` (untied), where `render_name`
+                    // would print `(-> (Iter _) (Iter _))` for both. A monomorphic scheme is byte-identical
+                    // to `render_name`. Diagnostic MESSAGES keep the collapsed `_` (an unknown type there is
+                    // just "some type"); only this `cdz type` surface names vars, the tool for diagnosing a
+                    // recursive-generic monomorphization tie.
+                    Some(scheme) => scheme.render_scheme(),
                     // A def whose type could not be solved (an ambiguous unannotated parameter) — a
                     // DEFINED "unknown", not an error: the query is total.
                     None => "unknown".to_string(),
@@ -734,7 +764,54 @@ pub fn run_query(db: &mut Db, query: &Query) -> QueryResult {
                 bytes: text.into_bytes(),
             }
         }
+        Query::ParamManifest => {
+            let text = param_manifest_text(db);
+            QueryResult {
+                kind: KIND_PARAM_MANIFEST,
+                name: "param-manifest".to_string(),
+                bytes: text.into_bytes(),
+            }
+        }
     }
+}
+
+/// The `ParamManifest` read: one `@param` site per line,
+/// `name<TAB>widget<TAB>type<TAB>range-lo<TAB>range-hi<TAB>options<TAB>default<TAB>name-node`. Scans the
+/// sites read-only (`param_sidecar::scan_manifest` over `db.ast`), then renders each record's DECLARED
+/// TYPE via the type column (`infer::type_of` → `Ty::render_name`) — the one field that needs the `Db`.
+/// The value fields (range elements, options list, default value) are emitted as ARENA NODE IDS (`-` when
+/// the kv is absent), which the consumer renders via the shared-`StructId` arena; `widget` is the bare
+/// atom or `-`; `name-node` is the param name occurrence the consumer maps to `file:line:col`. Order is
+/// scan order (ascending site id), a deterministic function of the program. TOTAL: no sites → empty.
+fn param_manifest_text(db: &mut Db) -> String {
+    // Scan first (an immutable borrow of the arena), collecting the records, THEN render types (a mutable
+    // borrow of `db` for `type_of`'s memoization) — the two borrows must not overlap.
+    let records = crate::param_sidecar::scan_manifest(&db.ast);
+    let node_or_dash = |o: Option<StructId>| o.map_or_else(|| "-".to_string(), |n| n.0.to_string());
+    let mut text = String::new();
+    for rec in records {
+        let widget = rec.widget.as_deref().unwrap_or("-");
+        // `rec.ty` is the annotation's TYPE-EXPRESSION node (the `Type` in `(: … Type)`). REDUCE it to the
+        // declared type VALUE (`eval::typeval_of` — the same evaluator the annotation path uses, so the
+        // manifest's type equals what the type checker asserts), NOT `type_of` (which would give the node's
+        // KIND, `Type`). A node that does not reduce to a type value falls back to `type_of`'s render so the
+        // field stays definite (total).
+        let ty = match crate::eval::typeval_of(db, rec.ty) {
+            Some(t) => t.render_name(),
+            None => crate::infer::type_of(db, rec.ty).render_name(),
+        };
+        let (range_lo, range_hi) = match rec.range {
+            Some((lo, hi)) => (lo.0.to_string(), hi.0.to_string()),
+            None => ("-".to_string(), "-".to_string()),
+        };
+        let options = node_or_dash(rec.options);
+        let default = node_or_dash(rec.default);
+        text.push_str(&format!(
+            "{}\t{widget}\t{ty}\t{range_lo}\t{range_hi}\t{options}\t{default}\t{}\n",
+            rec.name, rec.name_node.0
+        ));
+    }
+    text
 }
 
 /// A top-level declaration's OUTLINE KIND — the fixed closed vocabulary a `Symbols` line reports, the LSP

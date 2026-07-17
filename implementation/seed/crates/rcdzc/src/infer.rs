@@ -3604,6 +3604,22 @@ fn arg_ty_in_env(
             }
             return Ty::List(Box::new(subst.apply(&elem_ty)));
         }
+        // A TUPLE built from parameter references — `(tuple i 99)` where `i` is a param being solved. Each
+        // COMPONENT's type must be read through the LOCAL `subst` (where `(< i n)`/`(+ i 1)` pinned `i` to
+        // `Int w`), NOT `type_of((tuple i 99))` — mid-solve `db.param_types` is empty, so `type_of` reads
+        // `i` as `Any` and the tuple types `(Tuple Any Int64)`, stranding the first slot (a runtime
+        // `(List (Tuple Int64 Int64))` accumulator threaded through `List.push` then solved `(List (Tuple
+        // Any Int64))` → the rust backend declines "no native representation" for the `Any`). Building each
+        // component via `arg_ty_in_env` recursively links a param-referencing component's var into the
+        // subst, so pinning `i` pins the tuple slot. The `tuple` NAME-alias form (`TupleNew`) is the same
+        // shape reached through `Apply`, handled in that arm below (mirrors the `List`/`ListNew` pair).
+        Resolved::Tuple { elems } => {
+            let tys: Vec<Ty> = elems
+                .iter()
+                .map(|&e| subst.apply(&arg_ty_in_env(db, e, env, subst, fresh)))
+                .collect();
+            return Ty::Tuple(tys.into());
+        }
         // An APPLICATION OF A FN-TYPED PARAMETER being solved — `(f h)` where `f` is in `env`. Its type is
         // `f`'s var peeled by one arrow per argument, read from the LOCAL `subst` (where the arrow was
         // unified in `collect_param_constraints`), NOT from `type_of` — `db.param_types` is still empty
@@ -3612,6 +3628,16 @@ fn arg_ty_in_env(
         Resolved::Apply { head, args } => {
             // The `list` NAME alias (`(list i)` via `ListNew`) is a list built from its arguments — the
             // element type read through the LOCAL subst, exactly as the `Resolved::List` arm above.
+            // The `tuple` NAME alias (`(tuple i 99)` via `TupleNew`) — each component's type read through
+            // the LOCAL subst, exactly as the symbol-headed `Resolved::Tuple` arm above (the two surfaces
+            // reach the same shape). Without this the tuple's param-referencing components strand at `Any`.
+            if crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::TupleNew) {
+                let tys: Vec<Ty> = args
+                    .iter()
+                    .map(|&e| subst.apply(&arg_ty_in_env(db, e, env, subst, fresh)))
+                    .collect();
+                return Ty::Tuple(tys.into());
+            }
             if crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::ListNew) {
                 let mut elem_ty = Ty::Any;
                 for &e in args.iter() {

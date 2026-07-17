@@ -439,6 +439,21 @@ export const EXAMPLES: Example[] = [
   (export main))`,
   },
   {
+    // Shows off: metaprogramming — code is DATA. `quasiquote` builds an AST value without running it,
+    // `unquote` splices a computed value into that AST, and `eval` runs the constructed code. Here we
+    // generate the expression (base*base + offset) for base=6, offset=5 and evaluate it -> 41.
+    name: "Metaprogramming (quote & eval)",
+    surface: "sexpr",
+    source: `(module m
+  ; quasiquote builds code as data; unquote splices a value in; eval runs it.
+  ; This generates and evaluates  (base * base) + offset.
+  (def (gen base offset)
+    (eval (quasiquote (+ (* (unquote base) (unquote base)) (unquote offset)))))
+  (def (main) (gen 6 5))
+  (export main))`,
+    expected: "41",
+  },
+  {
     name: "A type error (see the squiggle)",
     surface: "sexpr",
     source: `(module m

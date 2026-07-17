@@ -1069,6 +1069,7 @@ pass	a nested runtime tuple built behind a recursive call escapes to the host
 pass	a nested runtime tuple is returned as a result
 pass	a nested sum match missing an inner variant is non-exhaustive
 pass	a nested symbol-literal payload falls through on a non-matching symbol
+pass	a nested tuple list element is bound over a runtime list and folded across the rest
 pass	a nested tuple pattern of the wrong arity is a type error
 pass	a nested tuple-arity mismatch in equality is a type error
 pass	a nested tuple-pattern parameter destructures a runtime tuple
@@ -1209,6 +1210,7 @@ pass	a pure lambda passed as an argument to a performing callee folds
 pass	a pure let-bound lambda and a performing one are both applied in the handle body
 pass	a pure shared subexpression computes the same value however the backend optimizes it
 pass	a purely-logical composed proof over a quantified proposition: DISCH then MP
+pass	a push-loop tuple-list accumulator infers its tuple element component types
 pass	a qualified construct and a bare match name the same colliding variant
 pass	a quantity annotation at an in-range narrow width grounds and accepts
 pass	a quantity annotation range-checks the inner width — an out-of-range magnitude is rejected
@@ -1363,6 +1365,7 @@ pass	a returned lambda captures+applies a closure param bound to a TOP-LEVEL def
 pass	a returned lookup result consumed with a wildcard never inspects the payload
 pass	a returned runtime string with a multi-byte scalar renders the scalar verbatim
 pass	a returned runtime string with a non-printable scalar renders it verbatim, not a u-escape
+pass	a reverse wrapper seeding a second generic helper with an accumulator at two element types declines pending the transitive tie
 pass	a right shift by a floating-point count does not silently promote
 pass	a right shift by the bit width or more traps rather than masking
 pass	a rope in a record field equals its flat-twin field
@@ -2197,6 +2200,7 @@ pass	an outer definition references a sibling nested module by bare name
 pass	an over-ceiling integer width in an unused parameter is rejected, like a used one
 pass	an un-projected tuple element is not evaluated, so its trap does not occur
 pass	an un-read record field is not evaluated, so its trap does not occur
+pass	an unannotated add narrowed by a UInt8 consumer keeps its overflow guard and traps
 pass	an unannotated closure in a user variant payload is typed from the declared arrow
 pass	an unannotated closure parameter is grounded from its body and applied at runtime
 pass	an unannotated closure typed Int8 from context computes an in-range constant
@@ -3448,7 +3452,6 @@ todo	a multi-export set of parameterized capturing closures is driven per export
 todo	a multi-export shared call is a repeatable (borrow<t>) callback
 todo	a mutually-recursive AST walker reads a node's child list without corrupting a sibling head-read
 todo	a mutually-recursive decoder returns a heap value and cursor and its heap slot is dispatched
-todo	a nested tuple list element is bound over a runtime list and folded across the rest
 todo	a non-byte-aligned bit-field width takes its exact arbitrary-width unsigned type
 todo	a parameterized export returning a capturing closure is made and called by the host
 todo	a parameterized export returning a multi-argument capturing closure
@@ -3573,6 +3576,7 @@ todo	four same-signature closure exports share one resource
 todo	function arguments are evaluated left to right
 todo	host calls are observed in the order they were made
 todo	let bindings' initializers are evaluated in binding order
+todo	mixed-type @param sites share one Param effect and drive control flow
 todo	mixed: two closure exports alongside a plain export — driving the plain export
 todo	multi-export Set-result closures — the singleton one
 todo	multi-export Set-result closures — three sharing one call

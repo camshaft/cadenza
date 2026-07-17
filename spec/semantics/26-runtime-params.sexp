@@ -110,3 +110,25 @@
   (call   main)
   (host-responses (respond Param.width (: 5 Int64)))
   (output (: 5 Int64)))
+
+; The realistic parametric shape: SEVERAL @param sites of DIFFERENT scalar types, all under the one
+; generated `Param` effect, used together in real control flow (a CAD/notebook model reads a bool toggle,
+; an int count, a float ratio). Pins that the sidecar generates a heterogeneous effect (ops of distinct
+; result types) and each accessor host-binds independently within one `(host (Param) …)` delegation.
+
+(case "mixed-type @param sites share one Param effect and drive control flow"
+  (doc    "Three `@param`s of DIFFERENT types — `count : Int64`, `ratio : Float64`, `on : Bool` — generate
+           one `Param` effect with three distinctly-typed accessor ops. The guest branches on `(Param.on)`
+           and returns `(Param.count)`: with the host responding on=true, count=42, `main` returns 42. Pins
+           the realistic parametric-model shape (several heterogeneous params under one delegation, used in
+           control flow), beyond the same-type two-site case — each accessor is host-bound at its own type.")
+  (input  (do
+            (: (@ (param (: widget slider)) count) Int64)
+            (: (@ (param (: widget slider)) ratio) Float64)
+            (: (@ (param (: widget toggle)) on) Bool)
+            (def (main) (host (Param) (if (Param.on) (Param.count) 0)))
+            (export main)))
+  (call   main)
+  (host-responses (respond Param.on (: true Bool))
+                  (respond Param.count (: 42 Int64)))
+  (output (: 42 Int64)))

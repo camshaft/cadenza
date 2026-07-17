@@ -5817,23 +5817,24 @@ fn a_match_shaped_arm_body_resumes_in_a_sequence_of_performs() {
     }
 }
 
-/// KNOWN LATENT SILENT MISCOMPILE — PINNED (concierge ruling 2026-07-17: queue the branch-out-state fix,
-/// pin the unsound case so it is tracked + cannot silently regress-worse; work active-demand Quantity-ABI/E5
-/// first, promote when they clear or a real consumer hits it). A HELPER that performs a STATE-ADVANCING op
-/// (`put`→`Map.insert`) inside a conditional BRANCH, called in a NON-TAIL position (a `let`-init) whose
-/// continuation READS the state (a later `get`), drops the branch's advanced out-state — the `Match`/`If`
-/// thread arms return the post-scrutinee state, discarding the advance. So the later `get` MISSES → a WRONG
-/// VALUE (v-compiler-ml's memoized-DB `demand`, lifting db.cdz onto effect-Db design A; they routed around it
-/// via the pure threaded-Db design B, so NO current consumer). VERIFIED LATENT (predates the 4a8b278b6
-/// match-arm fix — compiles+fails identically at the pre-fix parent), NOT a regression. A quick guard was
-/// proven IMPOSSIBLE (3 clean-reverted attempts: an arm-level decline over-declines the SOUND tail cases +
-/// breaks specialization; a let/do-arm reactive guard can't work — the helper's `put` is already inlined+
-/// threaded+folded-away by the time the arm sees the init). The real fix is BRANCH-OUT-STATE THREADING
-/// (thread each branch's advanced out-state forward as a match-valued state) — a substantial vertical, QUEUED.
-/// This test PINS the shape as a KNOWN MISCOMPILE: it currently COMPILES + runs to the WRONG value; when the
-/// branch-out-state fix lands, `run-then-get` yields 50 (demand fills 5→25, the later get(5) sees Some 25, so
-/// 25 + 25 = 50) — FLIP the assertion to `50` then. Until then it documents the bug (compiles, not a decline)
-/// so a regression to a DIFFERENT wrong shape (or a leak) is caught. Full analysis:
+/// KNOWN LATENT SILENT MISCOMPILE — PINNED (concierge ruling 2026-07-17: queue the fix, pin the unsound case
+/// so it is tracked + cannot silently regress-worse; work active-demand Quantity-ABI/E5 first, promote when
+/// they clear or a real consumer hits it). ⚠ WIDER RADIUS than this fn's name (breaker mapped it 2026-07-17):
+/// the bug is NOT branch-specific — an effectful STATE-ADVANCING op (`put`→`Map.insert`) performed inside a
+/// CALLED HELPER has its handler-state advance DROPPED at the CALL-RETURN boundary, whether the put is
+/// conditional (in a `match` arm) OR UNCONDITIONAL, and whether the caller position is a `let`-init OR a
+/// `do`-sequence. INLINE (same body, no helper) threads fine; the helper-CALL boundary is the loss point (the
+/// cross-function inline path effects.rs:~3250 threads the reduced body but the callee's advanced out-state
+/// does not reach the caller's continuation for a non-tail call). So the later `get` MISSES → a WRONG VALUE
+/// (v-compiler-ml's memoized-DB `demand`, lifting db.cdz onto effect-Db design A; they routed around it via the
+/// pure threaded-Db design B, so NO current consumer). VERIFIED LATENT (predates the 4a8b278b6 match-arm fix —
+/// compiles+fails identically at the pre-fix parent), NOT a regression. A quick guard was proven IMPOSSIBLE
+/// (3 clean-reverted attempts). The real fix is THREADING EACH CALLED HELPER'S ADVANCED OUT-STATE back to the
+/// caller's continuation — a substantial vertical, QUEUED. This test PINS one witness as a KNOWN MISCOMPILE:
+/// it currently COMPILES + runs to the WRONG value; when the fix lands, `run-then-get` yields 50 (demand fills
+/// 5→25, the later get(5) sees Some 25, so 25 + 25 = 50) — FLIP the assertion to `50` then. (breaker added the
+/// widest witness — a double-call → 1024/should-be-50 — as a companion pin.) Until then it documents the bug
+/// (compiles, not a decline) so a regression to a DIFFERENT wrong shape (or a leak) is caught. Full analysis:
 /// queue mlrepro-effect-db-helper-outstate-lost-to-caller-sequence.cdz + the queued-branch-outstate memory.
 #[test]
 fn a_helper_state_advance_in_a_branch_lost_to_a_later_read_is_a_known_miscompile() {
@@ -59268,8 +59269,8 @@ mod sidecar_driven {
     use crate::compile::compile;
     use crate::sidecar::{
         self, KIND_DIAGNOSTICS, KIND_DOC, KIND_EXPORTS, KIND_HIGHLIGHT, KIND_INSTANTIATIONS,
-        KIND_RESOLVE, KIND_SCOPE, KIND_SYMBOLS, KIND_TYPE_AT, KIND_TYPE_INFO, KIND_USES, Query,
-        Request,
+        KIND_PARAM_MANIFEST, KIND_RESOLVE, KIND_SCOPE, KIND_SYMBOLS, KIND_TYPE_AT, KIND_TYPE_INFO,
+        KIND_USES, Query, Request,
     };
     use crate::testkit::parse;
 
@@ -59325,6 +59326,44 @@ mod sidecar_driven {
         assert_eq!(
             artifact_text(&out, KIND_TYPE_INFO).as_deref(),
             Some("(-> Int64 Int64)")
+        );
+    }
+
+    #[test]
+    fn a_type_of_query_names_distinct_generic_vars_so_the_tie_structure_is_visible() {
+        // A GENERIC scheme's `cdz type` answer names each DISTINCT quantified type variable with a stable
+        // letter (`a`, `b`, …) instead of collapsing every var to `_` — so a reader sees which `_`s are the
+        // SAME variable. This is the tool for diagnosing a recursive-generic monomorphization TIE: an
+        // element-TIED producer and an UNtied one print differently.
+        //   - `from-list : List a -> Iter a` — the element is TIED (one var `a` on both sides). It composes
+        //     at multiple element types; `render_name` would print `(-> (List _) (Iter _))`, hiding the tie.
+        let src = "(module m (type Iter (Nil) (Cons a (Iter a))) \
+                    (def (from-list xs) (match xs ((list) (Iter.Nil)) ((list h .. t) (Iter.Cons h (from-list t))))) \
+                    (def (main) 0) (export main))";
+        let out = compile(
+            &inputs(
+                src,
+                &[Request::Query(Query::TypeOf {
+                    name: "from-list".into(),
+                })],
+            ),
+            &[],
+        );
+        assert_eq!(
+            artifact_text(&out, KIND_TYPE_INFO).as_deref(),
+            Some("(-> (List a) (Iter a))"),
+            "a tied producer names the SAME var on both sides (not two collapsed `_`)"
+        );
+        // A MONOMORPHIC scheme is byte-identical to `render_name` (no vars to name).
+        let mono = "(module m (def (f (: x Int64)) x) (def (main) (f 1)) (export main))";
+        let out2 = compile(
+            &inputs(mono, &[Request::Query(Query::TypeOf { name: "f".into() })]),
+            &[],
+        );
+        assert_eq!(
+            artifact_text(&out2, KIND_TYPE_INFO).as_deref(),
+            Some("(-> Int64 Int64)"),
+            "a monomorphic scheme renders unchanged"
         );
     }
 
@@ -60329,6 +60368,59 @@ mod sidecar_driven {
     }
 
     #[test]
+    fn a_param_manifest_query_renders_each_param_site_to_a_row() {
+        // The `@param` WIDGET MANIFEST query (v-metaprogramming's scan + v-cdz-tooling's Query+CLI): one row
+        // per `(: (@ (param <kv>) name) Type)` site, TAB-separated
+        // `name  widget  type  range-lo  range-hi  options  default  name-node`. The DECLARED TYPE is
+        // rendered here (the type column, `Ty::render_name`); the value fields are ARENA NODE IDS (or `-`),
+        // which the CLI renders. (Range spelled `(list 0 100)` in s-expr — `[0 100]` is ML-surface sugar.)
+        let src = "(module m \
+                   (: (@ (param (: widget slider) (: range (list 0 100))) width) Int64) \
+                   (: (@ (param (: widget toggle)) mirror) Bool) \
+                   (def (main) 0) (export main))";
+        let out = compile(&inputs(src, &[Request::Query(Query::ParamManifest)]), &[]);
+        assert!(!out.has_error(), "{:?}", out.diagnostics);
+        let text = artifact_text(&out, KIND_PARAM_MANIFEST).expect("a param-manifest artifact");
+        let rows: Vec<Vec<&str>> = text.lines().map(|l| l.split('\t').collect()).collect();
+        assert_eq!(rows.len(), 2, "two @param sites → two rows: {text:?}");
+
+        // width: slider widget, Int64 type, a range (both element nodes present, not `-`), no options/default.
+        let width = rows.iter().find(|r| r[0] == "width").expect("width row");
+        assert_eq!(width[1], "slider", "width widget: {width:?}");
+        assert_eq!(
+            width[2], "Int64",
+            "width declared type rendered via the type column: {width:?}"
+        );
+        assert_ne!(width[3], "-", "width range-lo is a node id: {width:?}");
+        assert_ne!(width[4], "-", "width range-hi is a node id: {width:?}");
+        assert_eq!(width[5], "-", "width has no options: {width:?}");
+        assert_eq!(width[6], "-", "width has no default: {width:?}");
+        assert_ne!(
+            width[7], "-",
+            "width name-node is a jumpable node id: {width:?}"
+        );
+
+        // mirror: toggle widget, Bool type, NO range → both range columns are the `-` sentinel (stable schema).
+        let mirror = rows.iter().find(|r| r[0] == "mirror").expect("mirror row");
+        assert_eq!(mirror[1], "toggle", "mirror widget: {mirror:?}");
+        assert_eq!(mirror[2], "Bool", "mirror declared type: {mirror:?}");
+        assert_eq!(mirror[3], "-", "mirror has no range-lo: {mirror:?}");
+        assert_eq!(mirror[4], "-", "mirror has no range-hi: {mirror:?}");
+    }
+
+    #[test]
+    fn a_param_manifest_query_on_a_paramless_program_is_empty() {
+        // Total: a program with no `@param` sites yields the empty manifest, never an error.
+        let src = "(do (def (main) 0) (export main))";
+        let out = compile(&inputs(src, &[Request::Query(Query::ParamManifest)]), &[]);
+        assert!(!out.has_error(), "{:?}", out.diagnostics);
+        assert_eq!(
+            artifact_text(&out, KIND_PARAM_MANIFEST).as_deref(),
+            Some("")
+        );
+    }
+
+    #[test]
     fn a_doc_of_query_reads_a_definitions_docstring() {
         // A `DocOf` request answers with a definition's `(doc "…")` text — captured off the def body at
         // load (`strip_def_docs`) and read from the doc column, for both a value and a function def.
@@ -60685,6 +60777,33 @@ mod sidecar_driven {
         assert!(
             !text.lines().any(|l| l.ends_with("\tunbound")),
             "no token in a clean @tag program is unbound:\n{text}"
+        );
+    }
+
+    #[test]
+    fn highlight_paints_stacked_annotations_without_false_reds() {
+        // STACKED annotations on one def — `@test @tag("slow") (def …)` reifies to
+        // `(@ test (@ (tag "slow") (def …)))`, nesting the wrappers. `db::strip_annotations` unwraps the
+        // INNER `(@ (tag …) def)` first (the def adopts its children), then the OUTER `(@ test …)`, orphaning
+        // BOTH `@` sigils, the `test` name, AND the `(tag "slow")` app — several detached tokens over one
+        // def. This is the multi-annotation edge the single-annotation tests don't reach: it must still show
+        // NO false-red (each `@`→keyword via the parentless-`@` path, `test`→keyword via KNOWN_ANNOTATIONS,
+        // the orphaned `tag` head→symbol via the quoted-data stopgap), and the def + body classify normally.
+        let src = "(module m (@ test (@ (tag \"slow\") (def (t) (+ 1 1)))) (export t))";
+        // Both `@` sigils are decorators. (Two occurrences, one per stacked annotation.)
+        assert_eq!(highlight_kinds_of(src, "@"), vec!["keyword", "keyword"]);
+        // The known-annotation name `test` is a keyword.
+        assert_eq!(highlight_kinds_of(src, "test"), vec!["keyword"]);
+        // The call-style `tag` head is inert data (orphaned app) — `symbol`, not error-red.
+        assert_eq!(highlight_kinds_of(src, "tag"), vec!["symbol"]);
+        // The doubly-annotated def still resolves — nullary def reads `variable`, at the def + export ref.
+        assert_eq!(highlight_kinds_of(src, "t"), vec!["variable", "variable"]);
+        // NOTHING in a clean stacked-annotation program is painted error-red.
+        let out = compile(&inputs(src, &[Request::Query(Query::Highlight)]), &[]);
+        let text = artifact_text(&out, KIND_HIGHLIGHT).expect("a highlight artifact");
+        assert!(
+            !text.lines().any(|l| l.ends_with("\tunbound")),
+            "no token in a clean stacked-annotation program is unbound:\n{text}"
         );
     }
 

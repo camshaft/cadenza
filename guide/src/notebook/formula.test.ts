@@ -11,6 +11,15 @@ test("a rational classifies as a stacked fraction (num/den, sign)", () => {
   assert.deepEqual(classifyFormula("(: -3/4 Rational)"), { kind: "fraction", num: "3", den: "4", negative: true });
 });
 
+test("a whole-valued rational `n/1` collapses to a plain integer (not a fraction over 1)", () => {
+  assert.deepEqual(classifyFormula("(: 4/1 Rational)"), { kind: "plain", text: "4" });
+  assert.deepEqual(classifyFormula("(: -4/1 Rational)"), { kind: "plain", text: "-4" });
+  // a bare (un-ascribed) whole rational collapses too
+  assert.deepEqual(classifyFormula("9/1"), { kind: "plain", text: "9" });
+  // a genuine fraction is still a stacked fraction (denominator != 1)
+  assert.deepEqual(classifyFormula("(: 4/2 Rational)"), { kind: "fraction", num: "4", den: "2", negative: false });
+});
+
 test("a plain scalar classifies as plain friendly text", () => {
   assert.deepEqual(classifyFormula("(: 42 Int64)"), { kind: "plain", text: "42" });
   assert.deepEqual(classifyFormula("(: 3.14 Float64)"), { kind: "plain", text: "3.14" });
