@@ -61229,6 +61229,38 @@ mod sidecar_driven {
     }
 
     #[test]
+    fn symbol_kind_all_is_the_complete_1to1_wire_vocabulary() {
+        use crate::sidecar::SymbolKind;
+        // `SymbolKind::ALL` is the canonical symbols-query vocabulary a downstream consumer (an LSP
+        // document-outline / breadcrumb icon legend) iterates to prove it handles EVERY declaration
+        // kind. Same two invariants as the `HighlightKind` guard above, so it can't rot:
+        // (1) ALL is COMPLETE — the exhaustive `match` fails to compile if a variant is added without
+        //     extending ALL (this and `ALL` are the single pair to update alongside the enum);
+        // (2) the wire spellings are DISTINCT and 1:1 with ALL (no two kinds share an outline token,
+        //     and every entry has a spelling).
+        for &k in SymbolKind::ALL {
+            match k {
+                SymbolKind::Value
+                | SymbolKind::Function
+                | SymbolKind::Type
+                | SymbolKind::Effect
+                | SymbolKind::Module => {}
+            }
+        }
+        let spellings: Vec<&str> = SymbolKind::ALL.iter().map(|k| k.as_str()).collect();
+        assert!(
+            spellings.iter().all(|s| !s.is_empty()),
+            "every symbol kind has a wire spelling"
+        );
+        let unique: std::collections::BTreeSet<&str> = spellings.iter().copied().collect();
+        assert_eq!(
+            unique.len(),
+            spellings.len(),
+            "wire spellings must be DISTINCT (no two kinds share an outline token): {spellings:?}"
+        );
+    }
+
+    #[test]
     fn highlight_colours_literals_by_kind() {
         // Each literal leaf carries its own kind; a keyword head is `keyword`.
         let src = "(module m (def (main) (if true 42 0)) (export main))";
