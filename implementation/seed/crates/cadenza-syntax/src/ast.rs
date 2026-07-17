@@ -788,4 +788,110 @@ mod tests {
             );
         }
     }
+
+    /// Copy a `src` node into `b`, OPTIONALLY flipping every compound-ctor HEAD between its `Name` and
+    /// `Str` spelling (`record` ⇄ `"record"`, for the four ctors `list`/`tuple`/`record`/`map`). Since
+    /// `structurally_eq` normalizes those two head kinds in head position, a flipped copy MUST stay
+    /// structurally equal to the original — the property this exercises. A non-ctor head, and any leaf
+    /// NOT in head position, is copied verbatim (so a bare `list` name / the string `"list"` elsewhere
+    /// keeps its kind — the collapse is head-position-only).
+    fn copy_flipping_ctor_heads(
+        b: &mut Builder,
+        src: &Arenas,
+        id: StructId,
+        flip: bool,
+    ) -> StructId {
+        match src.get(id) {
+            Struct::Atom(l) => b.atom_leaf(src.leaf(*l).clone()),
+            Struct::List(kids) => {
+                let copied: Vec<StructId> = kids
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &k)| {
+                        // Flip ONLY the head child (i == 0) and ONLY when it is one of the four ctors.
+                        if flip
+                            && i == 0
+                            && let Struct::Atom(l) = src.get(k)
+                            && let Leaf::Name(sp) | Leaf::Str(sp) = src.leaf(*l)
+                            && matches!(sp.as_str(), "list" | "tuple" | "record" | "map")
+                        {
+                            // Flip Name→Str / Str→Name for the ctor head.
+                            let flipped = match src.leaf(*l) {
+                                Leaf::Name(_) => Leaf::Str(sp.clone()),
+                                _ => Leaf::Name(sp.clone()),
+                            };
+                            return b.atom_leaf(flipped);
+                        }
+                        copy_flipping_ctor_heads(b, src, k, flip)
+                    })
+                    .collect();
+                b.list(copied)
+            }
+        }
+    }
+
+    #[test]
+    fn structurally_eq_is_an_equivalence_with_head_collapse_over_generated_trees() {
+        // `structurally_eq` is the workhorse EVERY round-trip/fidelity sweep in this crate rests on, yet
+        // only REFLEXIVITY is swept generatively. Pin the rest of its contract over random trees:
+        //   * SYMMETRY — `a.eq(b)` iff `b.eq(a)` (the ctor-head Name/Str collapse is head-position-only
+        //     and looks asymmetric, so this is a real risk);
+        //   * the HEAD COLLAPSE — an independent copy with EVERY compound-ctor head flipped between its
+        //     `Name` and `Str` spelling is still equal (both directions);
+        //   * DISCRIMINATION — a structurally-different tree (one leaf changed, or a child dropped) is
+        //     NOT equal, and that inequality is also symmetric (no false-positive collapse).
+        // Generation reuses `gen_node` (atoms across all leaf kinds + arbitrary arity), so the property is
+        // checked over the whole shape space, not the few hand cases above.
+        let mut rng = Rng(0xe01a_b1e5_c0de_0007);
+        for _ in 0..4000 {
+            let mut ba = Builder::new();
+            let depth = 1 + rng.below(4);
+            let root = gen_node(&mut rng, &mut ba, depth);
+            let a = ba.finish(root);
+
+            // An INDEPENDENT identical copy (fresh arena, same structure) — equality must not depend on
+            // sharing the same arena/interning, and must be symmetric.
+            let mut bb = Builder::new();
+            let rb = copy_flipping_ctor_heads(&mut bb, &a, a.root, false);
+            let a_copy = bb.finish(rb);
+            assert!(a.structurally_eq(&a_copy), "equal to an independent copy");
+            assert!(
+                a_copy.structurally_eq(&a),
+                "symmetric on an independent copy"
+            );
+
+            // A ctor-HEAD-FLIPPED copy (record ⇄ "record", …) — the collapse must make it equal, both ways.
+            let mut bf = Builder::new();
+            let rf = copy_flipping_ctor_heads(&mut bf, &a, a.root, true);
+            let flipped = bf.finish(rf);
+            assert!(
+                a.structurally_eq(&flipped),
+                "ctor-head Name/Str flip must stay equal (collapse)"
+            );
+            assert!(
+                flipped.structurally_eq(&a),
+                "ctor-head collapse must be symmetric"
+            );
+
+            // DISCRIMINATION: append one extra atom child at the root if it is a list (changes arity), or
+            // wrap an atom root in a 1-list — either way a DIFFERENT structure that must NOT be equal.
+            let mut bd = Builder::new();
+            let rd = copy_flipping_ctor_heads(&mut bd, &a, a.root, false);
+            let mutated_root = match bd.get(rd) {
+                Struct::List(kids) => {
+                    let mut k = kids.clone();
+                    let extra = bd.atom_leaf(Leaf::Name("cdz-sentinel-xyz".to_string()));
+                    k.push(extra);
+                    bd.list(k)
+                }
+                Struct::Atom(_) => bd.list(vec![rd]), // wrap: an atom vs a 1-list are different shapes
+            };
+            let mutated = bd.finish(mutated_root);
+            assert!(
+                !a.structurally_eq(&mutated),
+                "a structurally-different tree must NOT be equal"
+            );
+            assert!(!mutated.structurally_eq(&a), "inequality must be symmetric");
+        }
+    }
 }
