@@ -34352,6 +34352,39 @@ mod match_engine {
             Some("Bool"),
             "mirror's type node is Bool"
         );
+        // OPTIONS + DEFAULT config (a dropdown param): scan_manifest reads the `(: options (list …))` list
+        // node + the `(: default <val>)` value node. Both come back as node-ids the query handler renders
+        // (options → a JSON array of the list's elements, default → the rendered value / JSON null when
+        // absent). Here assert they are PRESENT (Some) for a param that declares them.
+        let ast2 = crate::testkit::parse(
+            "(module m \
+               (: (@ (param (: widget dropdown) (: options (list \"m\" \"mm\" \"in\")) (: default \"mm\")) unit) String) \
+               (def (main) 0) \
+             (export main))",
+        );
+        let recs2 = scan_manifest(&ast2);
+        let unit = recs2
+            .iter()
+            .find(|r| r.name == "unit")
+            .expect("unit record");
+        assert_eq!(
+            unit.widget.as_deref(),
+            Some("dropdown"),
+            "unit's widget is dropdown"
+        );
+        assert!(
+            unit.options.is_some(),
+            "unit's `options: (list …)` yields the list node"
+        );
+        assert!(
+            unit.default.is_some(),
+            "unit's `default: \"mm\"` yields the default value node"
+        );
+        // The options node IS the (list …) — confirm it reads as a list form the handler can enumerate.
+        assert!(
+            ast2.as_form(unit.options.unwrap(), "list").is_some(),
+            "the options node is a (list …) the query handler enumerates for the JSON array"
+        );
     }
 
     #[test]
