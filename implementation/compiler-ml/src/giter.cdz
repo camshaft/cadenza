@@ -19,12 +19,13 @@
 /// `next` is still the pull interface (`GIter(a) -> Option((a, GIter(a)))`), total (never traps) and pure
 /// (re-stepping yields the same element); the cons-cell IS the reified rest, so `next` just projects it.
 ///
-/// SCOPE (slices 1–13). CLOSURE-FREE (Part C shape): producers (`from-list`, `singleton`), `next`, consumers
+/// SCOPE (slices 1–17). CLOSURE-FREE (Part C shape): producers (`from-list`, `singleton`), `next`, consumers
 /// (`count`, `collect`, `nth`, `last`), transformers (`chain`, `take`, `drop`, `zip`, `enumerate`,
-/// `intersperse`, `step-by`). CLOSURE-STORING (unblocked by the recursive-generic-transformer closure tie +
-/// the rigid-biased if-join): `map`, `filter`, `drop-while`, `take-while`, `scan`, `find`, `all`, `any`,
-/// `fold`, `zip-with`, `position` — each threads a closure and monomorphizes per element type. Every function
-/// composes at Int64 AND String in one program (the tests pin this).
+/// `intersperse`, `step-by`, `zip3`, `windows2`). CLOSURE-STORING (unblocked by the recursive-generic-
+/// transformer closure tie + the rigid-biased if-join): `map`, `filter`, `drop-while`, `take-while`, `scan`,
+/// `find`, `all`, `any`, `count-if`, `map-while`, `fold`, `zip-with`, `position` — each threads a closure and
+/// monomorphizes per element type. Every function composes at Int64 AND String in one program (the tests
+/// pin this).
 /// ELEMENT-CHANGING
 /// is supported too: `zip`/`enumerate` yield a tuple element, `map` maps `a -> b` at a DIFFERENT result type
 /// (int→Bool, int→String — see the tests), and `zip-with`/`fold` fuse to an inferred result/accumulator type;
@@ -179,6 +180,29 @@ def step-from(it, n, i) = match it with
 /// identity; `n <= 0` would never advance the counter past the first element — callers pass `n >= 1`.
 def step-by(it, n) = step-from(it, n, 0)
 
+/// `zip3(a, b, c)` — pair the THREE iterators element-wise into a `GIter((a, b, c))`, stopping at the
+/// SHORTEST. Closure-free; the result element is a 3-tuple (element-CHANGING like `zip`), so it composes at
+/// ≥2 element types AND across three DIFFERENT element types in one call (String × Int64 × Bool — the
+/// tuple is inferred, no `∀`-annotation). The three-way sibling of `zip`.
+def zip3(a, b, c) = match a with
+  | GIter.Nil(_) => GIter.Nil(unit)
+  | GIter.Cons(ha, ra) => (match b with
+    | GIter.Nil(_) => GIter.Nil(unit)
+    | GIter.Cons(hb, rb) => (match c with
+      | GIter.Nil(_) => GIter.Nil(unit)
+      | GIter.Cons(hc, rc) => GIter.Cons((ha, hb, hc), zip3(ra, rb, rc))))
+
+/// `windows2(it)` — the SLIDING pairs of adjacent elements: `(x0,x1), (x1,x2), …`, yielding a
+/// `GIter((a, a))`. Closure-free; the inner match on `rest` peeks the SECOND element (via `h2`) without
+/// consuming it (recurses on `rest`, not `rest`'s tail), so each element but the last pairs with its
+/// successor. An `n`-element iterator yields `n-1` pairs (0 or 1 element → empty). The width-2 special case
+/// of a general `windows(k)`; the tuple element ties both slots to the input element, composing at ≥2 types.
+def windows2(it) = match it with
+  | GIter.Nil(_) => GIter.Nil(unit)
+  | GIter.Cons(h, rest) => (match rest with
+    | GIter.Nil(_) => GIter.Nil(unit)
+    | GIter.Cons(h2, _) => GIter.Cons((h, h2), windows2(rest)))
+
 /// CLOSURE-STORING TRANSFORMERS & CONSUMERS (thread a closure through the recursion) -------------------
 /// Unblocked by the recursive-generic-transformer closure tie (rcdzc "tie a recursive-generic transformer's
 /// closure domain to the mapped element"): a recursive-generic function that threads a closure now
@@ -229,6 +253,26 @@ def all(it, p) = match it with
 def any(it, p) = match it with
   | GIter.Nil(_) => false
   | GIter.Cons(h, rest) => if p(h) then true else any(rest, p)
+
+/// `count-if(it, p)` — the NUMBER of elements satisfying `p : a -> Bool` (the counting companion of `filter`
+/// + `count`, in one pass). Threads `p`; returns an `Int64` (NOT element-typed), so it composes at ≥2
+/// element types with no result-element tie needed.
+def count-if(it, p) = match it with
+  | GIter.Nil(_) => 0
+  | GIter.Cons(h, rest) => (if p(h) then 1 else 0) + count-if(rest, p)
+
+/// `map-while(it, f)` — map `f : a -> Option(b)` over the elements, STOPPING at the first `None` (a fused
+/// `map` + `take-while` in one closure). Threads `f`; ELEMENT-CHANGING (`b` from the `Some` payload, inferred
+/// — int→int, String→int in the tests). The `None` stop branch is a bare `GIter.Nil(unit)` (like
+/// `take-while`), tied by the rigid-biased if-join, so it composes at ≥2 element types.
+/// CAVEAT (same as `map`): the `Some` payload must TRANSFORM the element — an IDENTITY payload `Some(x)`
+/// (`b == a`) trips the residual closure-body-result-from-domain gap and collides at ≥2 instantiations
+/// (CDZ0201). Use a transforming payload (the tests do).
+def map-while(it, f) = match it with
+  | GIter.Nil(_) => GIter.Nil(unit)
+  | GIter.Cons(h, rest) => (match f(h) with
+    | Option.None(_) => GIter.Nil(unit)
+    | Option.Some(v) => GIter.Cons(v, map-while(rest, f)))
 
 /// `take-while(it, p)` — the longest leading run of elements satisfying `p`, stopping at the first that
 /// fails. Threads `p`. Its stop branch is a bare `GIter.Nil(unit)` whose element used to be untied on that
@@ -700,5 +744,93 @@ def position-first-element-hit-is-zero() =
   match position(from-list([5, 6, 7]), fn(x) => x == 5) with
   | Option.None(_) => trap("position first hit must find")
   | Option.Some(i) => if i == 0 then unit else trap("position first hit index 0")
+
+/// SLICE-14: `zip3` — closure-free, three iterators into a 3-tuple, pinned at two element types, three
+/// DIFFERENT element types in one call, and stopping at the shortest.
+
+@test
+def zip3-triples-ints() =
+  if count(zip3(from-list([1, 2, 3]), from-list([4, 5, 6]), from-list([7, 8, 9]))) == 3
+  then unit else trap("zip3 ints")
+
+@test
+def zip3-stops-at-shortest() =
+  if count(zip3(from-list([1, 2, 3]), from-list([4, 5]), from-list([7, 8, 9, 10]))) == 2
+  then unit else trap("zip3 stops at shortest")
+
+@test
+def zip3-three-different-element-types() =
+  match next(zip3(from-list(["a", "b"]), from-list([1, 2]), from-list([true, false]))) with
+  | Option.None(_) => trap("zip3 mixed must yield")
+  | Option.Some(p) => (match p with | (triple, _rest) =>
+    (match triple with | (s, n, b) =>
+      if s == "a" then (if n == 1 then (if b then unit else trap("zip3 bool")) else trap("zip3 int"))
+      else trap("zip3 str")))
+
+/// SLICE-15: `windows2` — closure-free sliding adjacent pairs (n-1 out), pinned at two element types and the
+/// short-input edges (0/1 element → empty).
+
+@test
+def windows2-adjacent-pairs-ints() =
+  if count(windows2(from-list([1, 2, 3, 4]))) == 3
+  then unit else trap("windows2 ints (n-1 pairs)")
+
+@test
+def windows2-carries-both-neighbors() =
+  match next(windows2(from-list([10, 20, 30]))) with
+  | Option.None(_) => trap("windows2 must yield")
+  | Option.Some(p) => (match p with | (pair, _rest) =>
+    (match pair with | (l, r) =>
+      if l == 10 then (if r == 20 then unit else trap("windows2 right")) else trap("windows2 left")))
+
+@test
+def windows2-strings-second-source-type() =
+  if count(windows2(from-list(["a", "b", "c"]))) == 2
+  then unit else trap("windows2 String source (2nd element type)")
+
+@test
+def windows2-singleton-is-empty() =
+  if count(windows2(from-list([7]))) == 0
+  then unit else trap("windows2 of a singleton is empty")
+
+/// SLICE-16: `count-if` — closure-storing consumer, counts matches in one pass (Int64 result), pinned at two
+/// element types and the none/all edges.
+
+@test
+def count-if-counts-matching-ints() =
+  if count-if(from-list([1, 2, 3, 4]), fn(x) => x > 2) == 2
+  then unit else trap("count-if ints")
+
+@test
+def count-if-counts-matching-strings() =
+  if count-if(from-list(["a", "bb", "ccc"]), fn(s) => String.byte-len(s) > 1) == 2
+  then unit else trap("count-if String source (2nd element type)")
+
+@test
+def count-if-none-match-is-zero() =
+  if count-if(from-list([1, 2, 3]), fn(x) => x > 100) == 0
+  then unit else trap("count-if none match")
+
+/// SLICE-17: `map-while` — closure-storing, fused map + take-while over an Option-returning closure
+/// (element-changing), pinned at two source element types, the stop-at-None, and the all-Some cases.
+
+@test
+def map-while-stops-at-first-none-ints() =
+  if int-list-eq(collect(map-while(from-list([1, 2, 3, 4]),
+    fn(x) => if x < 3 then Option.Some(x * 10) else Option.None(unit))), [10, 20])
+  then unit else trap("map-while stops at first None")
+
+@test
+def map-while-all-some-maps-every-element-strings() =
+  if int-list-eq(collect(map-while(from-list(["a", "bb", "ccc"]), fn(s) => Option.Some(String.byte-len(s)))), [1, 2, 3])
+  then unit else trap("map-while String source, all Some")
+
+@test
+def map-while-first-none-is-empty() =
+  // NB: the Some payload is element-CHANGING (`x * 10`), NOT the identity `Some(x)`. An identity payload
+  // trips the known residual closure-body-result-from-domain gap (v-inference's `fn(s) => s` residual) —
+  // at ≥2 instantiations it collides (CDZ0201) — so map-while, like map, wants a USED/transforming closure.
+  if count(map-while(from-list([5, 1, 2]), fn(x) => if x < 3 then Option.Some(x * 10) else Option.None(unit))) == 0
+  then unit else trap("map-while first element None is empty")
 
 export { GIter.* }
