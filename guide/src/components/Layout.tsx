@@ -172,24 +172,11 @@ function Header({ onOpenNav }: { onOpenNav: () => void }) {
           </NavLink>
         </div>
         <div className="flex items-center gap-3">
-          <NavLink
-            to="/calculator"
-            className="rounded-md border border-slate-700/70 px-2.5 py-1 text-xs font-medium text-slate-300 transition hover:border-cadenza-600/60 hover:text-cadenza-300"
-          >
-            Calculator →
-          </NavLink>
-          <NavLink
-            to="/cad"
-            className="rounded-md border border-slate-700/70 px-2.5 py-1 text-xs font-medium text-slate-300 transition hover:border-cadenza-600/60 hover:text-cadenza-300"
-          >
-            CAD →
-          </NavLink>
-          <NavLink
-            to="/playground"
-            className="rounded-md border border-slate-700/70 px-2.5 py-1 text-xs font-medium text-slate-300 transition hover:border-cadenza-600/60 hover:text-cadenza-300"
-          >
-            Playground →
-          </NavLink>
+          {/* The app NavLinks (Calculator/CAD/Playground) were REMOVED per operator direction (via
+              v-guide-editor): they distracted from the guide and don't scale as the example set grows.
+              The apps' canonical home is now the Example Applications gallery chapter (sidebar), and each
+              app stays richly linked from the chapter body (v-guide-editor verified reachability) +
+              Playground keeps its HomePage CTA. Only the SyntaxToggle remains in the header nav. */}
           <SyntaxToggle />
         </div>
       </div>
