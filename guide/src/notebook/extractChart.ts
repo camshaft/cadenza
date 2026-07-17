@@ -35,6 +35,23 @@ function head(n: Node): string | null {
   return null;
 }
 
+/// Min / max of a numeric list via a loop, NOT `Math.min(...arr)` — spreading a large array (or an
+/// iterator) into `Math.min`/`Math.max` risks a `RangeError: too many arguments` (and a big transient
+/// allocation) once the length passes the JS engine's argument-count limit. A chart can carry arbitrarily
+/// many points / categories, so its extent math must not spread (PR #524 Copilot). `seed` lets a caller
+/// fold in an extra bound (e.g. include 0 in a y-axis extent) the way `Math.max(0, ...ys)` did.
+/// An empty list with no seed returns +∞ (min) / −∞ (max), matching `Math.min()`/`Math.max()`.
+export function minOf(xs: Iterable<number>, seed = Infinity): number {
+  let m = seed;
+  for (const x of xs) if (x < m) m = x;
+  return m;
+}
+export function maxOf(xs: Iterable<number>, seed = -Infinity): number {
+  let m = seed;
+  for (const x of xs) if (x > m) m = x;
+  return m;
+}
+
 /// Parse an atom node as a finite number, or null if it isn't one (a rational `n/d` evaluates to n/d).
 function asNumber(n: Node): number | null {
   if (!isAtom(n)) return null;
@@ -81,7 +98,7 @@ export function extractChart(rendered: string): ChartResult {
     return { ok: false, reason: "chart rows must be all numbers, all `tuple` points, or all `record` points" };
   }
   const tuples = elems.map((e) => (e as { list: Node[] }).list.slice(1));
-  const yCount = Math.min(...tuples.map((t) => t.length)) - 1; // shared y-columns (x is field 0)
+  const yCount = minOf(tuples.map((t) => t.length)) - 1; // shared y-columns (x is field 0); no spread (PR #524)
   if (yCount < 1) return { ok: false, reason: "each `tuple` point needs an x and at least one y" };
 
   const seriesCount = yCount;
@@ -122,7 +139,7 @@ export function categoryLabels(series: Series[]): string[] | null {
     }
   }
   if (byX.size === 0) return null;
-  const maxX = Math.max(...byX.keys());
+  const maxX = maxOf(byX.keys()); // loop, not Math.max(...keys) — a big categorical chart would overflow the arg count (PR #524)
   return Array.from({ length: maxX + 1 }, (_, i) => byX.get(i) ?? `${i}`);
 }
 

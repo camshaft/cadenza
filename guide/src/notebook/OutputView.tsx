@@ -3,7 +3,7 @@
 /// shape decisions live in the pure renderOutput.ts; this is only the JSX + the SVG chart drawing.
 
 import type { CellOutput } from "./renderOutput.ts";
-import { categoryLabels, type Series } from "./extractChart.ts";
+import { categoryLabels, minOf, maxOf, type Series } from "./extractChart.ts";
 import type { Table } from "./extractTable.ts";
 import type { Formula } from "./formula.ts";
 
@@ -80,15 +80,17 @@ function ChartView({ chart, series }: { chart: "line" | "bar" | "scatter"; serie
   const pts = series.flatMap((s) => s.points);
   if (pts.length === 0) return <p className="text-sm text-slate-500">no data</p>;
   const xs = pts.map((p) => p.x), ys = pts.map((p) => p.y);
-  const minX = Math.min(...xs), maxX = Math.max(...xs);
-  const minY = Math.min(0, ...ys), maxY = Math.max(...ys);
+  // Loop-based extent (minOf/maxOf), NOT Math.min(...xs) — a chart with many points would overflow the JS
+  // argument-count limit when spread into Math.min/max (PR #524). minY seeds 0 so the y-axis includes it.
+  const minX = minOf(xs), maxX = maxOf(xs);
+  const minY = minOf(ys, 0), maxY = maxOf(ys);
   const spanX = maxX - minX || 1, spanY = maxY - minY || 1;
   const sx = (x: number) => PAD + ((x - minX) / spanX) * (W - 2 * PAD);
   const sy = (y: number) => H - PAD - ((y - minY) / spanY) * (H - 2 * PAD);
 
   // Shared bar-column width: derived ONCE from the widest series' point count, so grouped bars align
   // across series that have different point counts (PR #489). Used by the `chart === "bar"` branch below.
-  const maxPoints = Math.max(1, ...series.map((s) => s.points.length));
+  const maxPoints = maxOf(series.map((s) => s.points.length), 1); // seed 1; no spread (PR #524)
   const barSlot = ((W - 2 * PAD) / maxPoints) * 0.7;
 
   // Short numeric tick label (a rational-ish value trimmed to ≤2 decimals, integers bare) so the axes
