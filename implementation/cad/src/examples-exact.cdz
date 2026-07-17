@@ -1,5 +1,5 @@
 /// examples-exact.cdz — worked CAD models built with EXACT arithmetic + REAL UNITS (R3, the operator's
-/// showcase: "lean into units — a great showcase of bigint/rationals/units"). Each model is a `Solidr`
+/// showcase: "lean into units — a great showcase of bigint/rationals/units"). Each model is a `Solid`
 /// (exact Rational geometry) whose dimensions are written in real-world units (`mm`, `inch`, `cm`) that
 /// convert EXACTLY to the model's millimetre coordinates — no float rounding anywhere. The bounding-box
 /// (exact, from `exact.cdz`) then reports true dimensions.
@@ -12,36 +12,36 @@
 /// unaffected; `ri`/`mm`/`inch`/`foot` keep their signatures and a bare Int64 arg to `ri` stays Int64).
 @!default-fraction Rational
 
-import { Solidr, Vec3r, Aabbr } from "exact"
+import { Solid, Vec3, Aabb } from "exact"
 import { v3r, bounding-box, aabbr-size, v3r-eq, v3r-x } from "exact"
 import { ri, mm, cm, inch, foot } from "units"
 
 /// ---- constructors: exact primitives dimensioned in the model unit (mm), built from length values -------
 
 /// An axis-aligned box of the given width/depth/height (each an exact mm coordinate — pass `mm 50` / `inch
-/// 2` etc). `Cuber` stores the FULL size (centred at origin), so `box (mm 50) …` is a 50 mm-wide box.
-def box(w: Rational, d: Rational, h: Rational) = Solidr.Cuber(v3r(w, d, h))
+/// 2` etc). `Cube` stores the FULL size (centred at origin), so `box (mm 50) …` is a 50 mm-wide box.
+def box(w: Rational, d: Rational, h: Rational) = Solid.Cube(v3r(w, d, h))
 
-/// A cylinder of the given full height + radius (exact mm). `Cylinderr` stores the full height.
-def cyl(height: Rational, radius: Rational) = Solidr.Cylinderr(height, radius)
+/// A cylinder of the given full height + radius (exact mm). `Cylinder` stores the full height.
+def cyl(height: Rational, radius: Rational) = Solid.Cylinder(height, radius)
 
 /// Translate a solid by exact mm offsets.
-def move(x: Rational, y: Rational, z: Rational, s: Solidr) = Solidr.Translater(v3r(x, y, z), s)
+def move(x: Rational, y: Rational, z: Rational, s: Solid) = Solid.Translate(v3r(x, y, z), s)
 
 /// ---- the marquee model: a plate with two bolt holes, dimensioned in MIXED units ------------------------
 
 /// A rectangular plate, `w × d` in millimetres and `t` thick, with two bolt holes of radius `r` at 1/4 and
 /// 3/4 width. Write `plate (mm 50) (mm 30) (mm 5) (inch (1/4))` — the width is metric, the holes imperial,
-/// and every coordinate is EXACT. Holes are cut with `Differencer`.
+/// and every coordinate is EXACT. Holes are cut with `Difference`.
 def plate(w: Rational, d: Rational, t: Rational, r: Rational) =
-  Solidr.Differencer(
-    Solidr.Differencer(box(w, d, t),
+  Solid.Difference(
+    Solid.Difference(box(w, d, t),
       move(w / ri(4), d / ri(2), ri(0), cyl(t, r))),
     move((w * ri(3)) / ri(4), d / ri(2), ri(0), cyl(t, r)))
 
 /// A hollow tube: outer cylinder minus a concentric bore (both dimensioned in units).
 def tube(len: Rational, ro: Rational, ri-inner: Rational) =
-  Solidr.Differencer(cyl(len, ro), cyl(len, ri-inner))
+  Solid.Difference(cyl(len, ro), cyl(len, ri-inner))
 
 /// A 4-bolt flange: a round plate (disc of radius `r`, thickness `t`) with a central bore (radius `bore`) and
 /// four bolt holes (radius `hole-r`) evenly spaced on a bolt circle of radius `bcr`, at the CARDINAL positions
@@ -53,32 +53,32 @@ def tube(len: Rational, ro: Rational, ri-inner: Rational) =
 /// 90mm bolt circle, 1/4-inch bolt holes — metric body, imperial fasteners, all exact.
 def bolt-flange(r: Rational, t: Rational, bore: Rational, bcr: Rational, hole-r: Rational) =
   let disc = cyl(t, r) in
-  let with-bore = Solidr.Differencer(disc, cyl(t, bore)) in
+  let with-bore = Solid.Difference(disc, cyl(t, bore)) in
   // the four cardinal bolt holes on the bolt circle (radius bcr) — exact offsets ±bcr / 0.
   let h-east = move(bcr, ri(0), ri(0), cyl(t, hole-r)) in
   let h-west = move(ri(0) - bcr, ri(0), ri(0), cyl(t, hole-r)) in
   let h-north = move(ri(0), bcr, ri(0), cyl(t, hole-r)) in
   let h-south = move(ri(0), ri(0) - bcr, ri(0), cyl(t, hole-r)) in
-  Solidr.Differencer(
-    Solidr.Differencer(
-      Solidr.Differencer(
-        Solidr.Differencer(with-bore, h-east), h-west), h-north), h-south)
+  Solid.Difference(
+    Solid.Difference(
+      Solid.Difference(
+        Solid.Difference(with-bore, h-east), h-west), h-north), h-south)
 
 /// An L-bracket: a base plate `w × d × t` UNIONED with an upright wall `w × t × h` that stands along the
 /// base's back edge, with a mounting hole (radius `hole-r`) through the base. Write
 /// `l-bracket (mm 50) (mm 40) (mm 30) (inch (1/8)) (mm 3)` — metric arms, an IMPERIAL thickness (1/8 inch =
-/// 127/40 mm), all exact. This is the multi-operation showcase: `Unionr` joins the two plates, `Differencer`
-/// cuts the hole, `Translater` positions both — the whole print-ready part is one exact model. The base sits
+/// 127/40 mm), all exact. This is the multi-operation showcase: `Union` joins the two plates, `Difference`
+/// cuts the hole, `Translate` positions both — the whole print-ready part is one exact model. The base sits
 /// centred at the origin (spans z ∈ [-t/2, t/2]); the wall rises from the base's back edge to +z, so the
 /// union's bounding box is exactly `w × d × h` regardless of the (thin) wall thickness.
 def l-bracket(w: Rational, d: Rational, h: Rational, t: Rational, hole-r: Rational) =
   let base = box(w, d, t) in
   // the upright wall: a thin slab, moved to the base's back edge (+y) and up (+z) so it stands on the base.
   let wall = move(ri(0), (d - t) / ri(2), (h - t) / ri(2), box(w, t, h)) in
-  let bracket = Solidr.Unionr(base, wall) in
+  let bracket = Solid.Union(base, wall) in
   // a mounting hole through the base thickness, near the front-centre of the base.
   let hole = move(ri(0), ri(0) - (d / ri(4)), ri(0), cyl(t, hole-r)) in
-  Solidr.Differencer(bracket, hole)
+  Solid.Difference(bracket, hole)
 
 /// ============================ @test suite (R3 exact+units models) ============================
 
@@ -115,7 +115,7 @@ def tube-outer-box-is-diameter-by-length() =
 def foot-dimensioned-box-is-exact() =
   // a 1-foot cube → 304.8 mm = 1524/5 per axis, exact.
   let c = box(foot(ri(1)), foot(ri(1)), foot(ri(1))) in
-  match bounding-box(c) with | Aabbr.Boxr(_, hi) =>
+  match bounding-box(c) with | Aabb.Box(_, hi) =>
     if v3r-x(hi) == 762 / 5 then unit else trap("1-foot cube half-extent = 762/5 mm (full 1524/5)")
 
 @test
@@ -141,11 +141,11 @@ def bolt-flange-hole-centres-sit-on-the-bolt-circle() =
   let bcr = mm(ri(45)) in
   let hole-r = inch(1 / 4) in
   let east-hole = move(bcr, ri(0), ri(0), cyl(mm(ri(8)), hole-r)) in
-  match bounding-box(east-hole) with | Aabbr.Boxr(lo, hi) =>
+  match bounding-box(east-hole) with | Aabb.Box(lo, hi) =>
     // centre-x = (lo.x + hi.x)/2 must equal bcr = 45; and the west hole (−bcr) mirrors to −45.
     (if (v3r-x(lo) + v3r-x(hi)) / ri(2) == ri(45) then
       (let west-hole = move(ri(0) - bcr, ri(0), ri(0), cyl(mm(ri(8)), hole-r)) in
-        match bounding-box(west-hole) with | Aabbr.Boxr(wlo, whi) =>
+        match bounding-box(west-hole) with | Aabb.Box(wlo, whi) =>
           if (v3r-x(wlo) + v3r-x(whi)) / ri(2) == ri(0) - ri(45) then unit else trap("west hole centre = -45"))
      else trap("east hole centre = +45 (on the 45mm bolt circle)"))
 

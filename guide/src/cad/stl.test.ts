@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { meshFromSolid } from "./index.ts";
 import { meshToBinaryStl } from "./stl.ts";
 
-const CUBE = "(: (Cuber (: (tuple 2/1 2/1 2/1) Vec3r)) Solidr)";
+const CUBE = "(: (Cube (: (tuple 2/1 2/1 2/1) Vec3)) Solid)";
 
 test("a cube meshes then serializes to a well-formed binary STL (84 + 50/tri bytes, 12 triangles)", async () => {
   const r = await meshFromSolid(CUBE);
@@ -35,7 +35,7 @@ test("the 80-byte header does NOT begin with 'solid' (else a reader parses it as
 });
 
 test("an empty mesh serializes to a valid header-only STL (0 triangles, 84 bytes)", () => {
-  // The Emptyr / degenerate case: no triangles → just the 84-byte preamble with a zero count.
+  // The Empty / degenerate case: no triangles → just the 84-byte preamble with a zero count.
   const empty = { positions: new Float32Array(0), indices: new Uint32Array(0) };
   const stl = meshToBinaryStl(empty);
   assert.equal(stl.byteLength, 84, "empty STL is header (80) + count (4)");

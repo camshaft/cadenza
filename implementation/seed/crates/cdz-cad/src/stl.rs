@@ -112,7 +112,7 @@ mod tests {
 
     #[test]
     fn a_cube_stl_has_the_right_size_and_count() {
-        let m = mesh(&parse_solid("(: (Cuber (: (tuple 2.0 2.0 2.0) Vec3r)) Solidr)").unwrap());
+        let m = mesh(&parse_solid("(: (Cube (: (tuple 2.0 2.0 2.0) Vec3)) Solid)").unwrap());
         let stl = to_binary_stl(&m);
         // 12 triangles → header(80) + count(4) + 12×50 = 684 bytes.
         assert_eq!(stl.len(), 84 + 12 * 50);
@@ -125,10 +125,8 @@ mod tests {
     fn the_byte_length_always_matches_the_triangle_count() {
         // property: len == 84 + 50 * tris, for any mesh.
         let m = mesh(
-            &parse_solid(
-                "(: (Differencer (Cuber (: (tuple 4.0 4.0 4.0) Vec3r)) (Spherer 1.5)) Solidr)",
-            )
-            .unwrap(),
+            &parse_solid("(: (Difference (Cube (: (tuple 4.0 4.0 4.0) Vec3)) (Sphere 1.5)) Solid)")
+                .unwrap(),
         );
         let stl = to_binary_stl(&m);
         assert_eq!(stl.len(), 84 + 50 * m.triangle_count());
@@ -137,7 +135,7 @@ mod tests {
 
     #[test]
     fn an_empty_mesh_writes_a_valid_zero_triangle_stl() {
-        let m = mesh(&parse_solid("(: (Emptyr unit) Solidr)").unwrap());
+        let m = mesh(&parse_solid("(: (Empty unit) Solid)").unwrap());
         let stl = to_binary_stl(&m);
         assert_eq!(stl.len(), 84); // header + count, no triangles
         assert_eq!(stl_tri_count(&stl), 0);
@@ -145,7 +143,7 @@ mod tests {
 
     #[test]
     fn normals_are_unit_length_for_a_cube() {
-        let m = mesh(&parse_solid("(: (Cuber (: (tuple 2.0 2.0 2.0) Vec3r)) Solidr)").unwrap());
+        let m = mesh(&parse_solid("(: (Cube (: (tuple 2.0 2.0 2.0) Vec3)) Solid)").unwrap());
         let stl = to_binary_stl(&m);
         // first triangle's normal is at bytes 84..96 (3 f32).
         let nx = f32::from_le_bytes([stl[84], stl[85], stl[86], stl[87]]);
@@ -160,7 +158,7 @@ mod tests {
 
     #[test]
     fn ascii_stl_is_well_formed_with_one_facet_per_triangle() {
-        let m = mesh(&parse_solid("(: (Cuber (: (tuple 2.0 2.0 2.0) Vec3r)) Solidr)").unwrap());
+        let m = mesh(&parse_solid("(: (Cube (: (tuple 2.0 2.0 2.0) Vec3)) Solid)").unwrap());
         let s = to_ascii_stl(&m);
         assert!(s.starts_with("solid cdz_cad"), "opens with a solid header");
         assert!(
@@ -176,7 +174,7 @@ mod tests {
 
     #[test]
     fn ascii_stl_of_empty_has_no_facets() {
-        let m = mesh(&parse_solid("(: (Emptyr unit) Solidr)").unwrap());
+        let m = mesh(&parse_solid("(: (Empty unit) Solid)").unwrap());
         let s = to_ascii_stl(&m);
         assert_eq!(s.matches("facet normal").count(), 0);
         assert!(s.contains("solid cdz_cad") && s.contains("endsolid cdz_cad"));

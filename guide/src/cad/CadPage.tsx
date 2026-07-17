@@ -6,17 +6,17 @@
 /// THE SPLIT (confirmed with v-cad): this vertical owns the route + shell + the react-three-fiber canvas
 /// + the 3 npm deps (three, @react-three/fiber, manifold-3d) — all code-split behind this lazy route so
 /// they never touch the guide's first paint. v-cad owns `guide/src/cad/index.ts` (`meshFromSolid`: parse
-/// a rendered Solidr S-EXPR → manifold-3d CSG → triangle buffers).
+/// a rendered Solid S-EXPR → manifold-3d CSG → triangle buffers).
 ///
 /// SURFACE: /cad respects the global surface toggle for EDITING (like /calculator + /playground) — a
 /// per-surface starter, edited in whichever surface the reader has selected — but the compiled value is
 /// always RUN + rendered in s-expr (`runComponent(component, "sexpr")`) before it reaches the driver.
-/// `meshFromSolid` parses the RENDERED value as an s-expr `(: (Differencer …) Solidr)`; an ML render uses
+/// `meshFromSolid` parses the RENDERED value as an s-expr `(: (Difference …) Solid)`; an ML render uses
 /// commas + backtick-rationals the s-expr parser can't read, so the driver consumes the canonical machine
 /// form, not the display surface. Both starters are self-contained (inline `type` defs + `def main`): the
 /// CAD library modules aren't resolvable in the browser compiler, so each program defines its own
-/// `Vec3r`/`Solidr` and returns a `Solidr` value. Both render IDENTICALLY to
-/// `(: (Differencer (Cuber (: (tuple 4/1 4/1 4/1) Vec3r)) (Spherer 5/2)) Solidr)` (v-cad-verified end to
+/// `Vec3`/`Solid` and returns a `Solid` value. Both render IDENTICALLY to
+/// `(: (Difference (Cube (: (tuple 4/1 4/1 4/1) Vec3)) (Sphere 5/2)) Solid)` (v-cad-verified end to
 /// end — 584 triangles), so the driver behaves the same whichever surface the reader edits in.
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -40,26 +40,26 @@ const CAD_IDE = {
 
 /// The starter Solid model per surface — a 4mm cube with a 2.5-radius spherical dent (the classic CSG
 /// difference). Self-contained (inline `type` defs + `def main`): the CAD library modules aren't resolvable
-/// in the browser compiler, so each program defines its own `Vec3r`/`Solidr` and returns a `Solidr` value
+/// in the browser compiler, so each program defines its own `Vec3`/`Solid` and returns a `Solid` value
 /// that renders to exactly the grammar `meshFromSolid` parses. Rationals are `Rational.of(n, d)` / `(. Rational of)` —
 /// a bare `n/d` in source is Int64 division. Both surfaces render to the same canonical s-expr value, so
 /// the driver meshes them identically (v-cad-verified: 584 triangles end to end).
 const STARTER: Record<Surface, string> = {
-  ml: `type Vec3r = | V3r(Rational, Rational, Rational)
-type Solidr =
-  | Cuber(Vec3r)
-  | Spherer(Rational)
-  | Differencer(Solidr, Solidr)
+  ml: `type Vec3 = | V3r(Rational, Rational, Rational)
+type Solid =
+  | Cube(Vec3)
+  | Sphere(Rational)
+  | Difference(Solid, Solid)
 def r(n: Int64) = Rational.of(n, 1)
 def main() =
-  Solidr.Differencer(
-    Solidr.Cuber(V3r(r(4), r(4), r(4))),
-    Solidr.Spherer(Rational.of(5, 2)))`,
+  Solid.Difference(
+    Solid.Cube(V3r(r(4), r(4), r(4))),
+    Solid.Sphere(Rational.of(5, 2)))`,
   sexpr: `(do
-  (type Vec3r (V3r Rational Rational Rational))
-  (type Solidr (Cuber Vec3r) (Spherer Rational) (Differencer Solidr Solidr))
+  (type Vec3 (V3r Rational Rational Rational))
+  (type Solid (Cube Vec3) (Sphere Rational) (Difference Solid Solid))
   (def (r (: n Int64)) ((. Rational of) n 1))
-  (def (main) ((. Solidr Differencer) ((. Solidr Cuber) ((. Vec3r V3r) (r 4) (r 4) (r 4))) ((. Solidr Spherer) ((. Rational of) 5 2))))
+  (def (main) ((. Solid Difference) ((. Solid Cube) ((. Vec3 V3r) (r 4) (r 4) (r 4))) ((. Solid Sphere) ((. Rational of) 5 2))))
   (export main))`,
 };
 
@@ -89,7 +89,7 @@ export default function CadPage() {
           return;
         }
         // Render the value in s-expr regardless of the EDIT surface — meshFromSolid parses the canonical
-        // s-expr Solidr grammar (an ML render's commas/backtick-rationals aren't parseable by the driver).
+        // s-expr Solid grammar (an ML render's commas/backtick-rationals aren't parseable by the driver).
         const result = await runComponent(out.component, "sexpr");
         if (result.kind !== "value") {
           const msg =
@@ -99,7 +99,7 @@ export default function CadPage() {
           setStatus({ phase: "error", message: msg });
           return;
         }
-        // Hand the rendered s-expr Solidr value to v-cad's mesh driver → manifold-3d CSG → triangles.
+        // Hand the rendered s-expr Solid value to v-cad's mesh driver → manifold-3d CSG → triangles.
         const mesh = await meshFromSolid(result.text);
         if (!mesh.ok) {
           setStatus({ phase: "error", message: mesh.error });

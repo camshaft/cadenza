@@ -8,7 +8,7 @@
 use std::io::Write;
 use std::process::{Command, Stdio};
 
-const CUBE: &str = "(: (Cuber (: (tuple 2.0 2.0 2.0) Vec3r)) Solidr)";
+const CUBE: &str = "(: (Cube (: (tuple 2.0 2.0 2.0) Vec3)) Solid)";
 
 /// Run the `cdz-cad` binary with `args`, feeding `stdin`. Returns (success, stdout, stderr).
 fn run(args: &[&str], stdin: &str) -> (bool, String, String) {
@@ -138,10 +138,7 @@ fn rejects_ascii_with_a_glb_target() {
 fn a_malformed_solid_errs_without_writing() {
     let out = tmp_path("bad.stl");
     let _ = std::fs::remove_file(&out);
-    let (ok, _o, stderr) = run(
-        &["-", "-o", out.to_str().unwrap()],
-        "(: (Torus 1.0) Solidr)",
-    );
+    let (ok, _o, stderr) = run(&["-", "-o", out.to_str().unwrap()], "(: (Torus 1.0) Solid)");
     assert!(!ok, "should fail on an unknown constructor");
     assert!(stderr.contains("parse error"), "stderr: {stderr}");
     assert!(!out.exists(), "no output file on a parse error");

@@ -107,7 +107,7 @@ mod tests {
     #[test]
     fn a_cube_meshes_to_twelve_triangles() {
         // an axis-aligned box has 6 faces × 2 triangles = 12.
-        let s = parse_solid("(: (Cuber (: (tuple 2.0 2.0 2.0) Vec3r)) Solidr)").unwrap();
+        let s = parse_solid("(: (Cube (: (tuple 2.0 2.0 2.0) Vec3)) Solid)").unwrap();
         let m = mesh(&s);
         assert_eq!(m.triangle_count(), 12);
         assert!(!m.is_empty());
@@ -117,7 +117,7 @@ mod tests {
 
     #[test]
     fn empty_meshes_to_nothing() {
-        let s = parse_solid("(: (Emptyr unit) Solidr)").unwrap();
+        let s = parse_solid("(: (Empty unit) Solid)").unwrap();
         let m = mesh(&s);
         assert!(m.is_empty());
         assert_eq!(m.triangle_count(), 0);
@@ -127,11 +127,11 @@ mod tests {
     fn a_negative_dimension_cube_meshes_to_empty() {
         // Cross-surface consistency guard: the exact model (exact.cdz) normalizes a negative-dimension box to a
         // well-formed ABSOLUTE extent, and manifold documents that any negative (or all-zero) dimension yields
-        // an EMPTY manifold — so a negative-size Cuber meshes to NOTHING here (never garbage/degenerate geometry
+        // an EMPTY manifold — so a negative-size Cube meshes to NOTHING here (never garbage/degenerate geometry
         // that could crash a downstream STL/glTF writer). Pins that the native driver agrees with manifold's
         // documented negative-dimension behavior. (A model would `simplify-r`/normalize upstream; this is the
         // driver's own safety net.)
-        let s = parse_solid("(: (Cuber (: (tuple -2.0 2.0 2.0) Vec3r)) Solidr)").unwrap();
+        let s = parse_solid("(: (Cube (: (tuple -2.0 2.0 2.0) Vec3)) Solid)").unwrap();
         let m = mesh(&s);
         assert!(
             m.is_empty(),
@@ -143,10 +143,9 @@ mod tests {
     #[test]
     fn a_difference_produces_a_watertight_hole() {
         // cube minus a sphere → more triangles than the bare cube (the boolean carved a cavity).
-        let s = parse_solid(
-            "(: (Differencer (Cuber (: (tuple 4.0 4.0 4.0) Vec3r)) (Spherer 1.5)) Solidr)",
-        )
-        .unwrap();
+        let s =
+            parse_solid("(: (Difference (Cube (: (tuple 4.0 4.0 4.0) Vec3)) (Sphere 1.5)) Solid)")
+                .unwrap();
         let m = mesh(&s);
         assert!(
             m.triangle_count() > 12,
@@ -158,7 +157,7 @@ mod tests {
     #[test]
     fn the_plate_example_meshes_non_empty() {
         // the DESIGN marquee: a 10×4×1 plate with two Ø1 bolt holes.
-        let plate = "(: (Differencer (Differencer (Cuber (: (tuple 10.0 4.0 1.0) Vec3r)) (Translater (: (tuple 2.5 2.0 0.0) Vec3r) (Cylinderr 1.0 0.5))) (Translater (: (tuple 7.5 2.0 0.0) Vec3r) (Cylinderr 1.0 0.5))) Solidr)";
+        let plate = "(: (Difference (Difference (Cube (: (tuple 10.0 4.0 1.0) Vec3)) (Translate (: (tuple 2.5 2.0 0.0) Vec3) (Cylinder 1.0 0.5))) (Translate (: (tuple 7.5 2.0 0.0) Vec3) (Cylinder 1.0 0.5))) Solid)";
         let m = mesh(&parse_solid(plate).unwrap());
         assert!(!m.is_empty());
         assert!(m.triangle_count() > 12);
@@ -168,7 +167,7 @@ mod tests {
     fn a_transform_chain_meshes() {
         // scale ∘ translate ∘ cube — the transform arms all evaluate (the exact model has no Rotate).
         let s = parse_solid(
-            "(: (Scaler (: (tuple 2/1 2/1 2/1) Vec3r) (Translater (: (tuple 1/1 0/1 0/1) Vec3r) (Cuber (: (tuple 1/1 1/1 1/1) Vec3r)))) Solidr)",
+            "(: (Scale (: (tuple 2/1 2/1 2/1) Vec3) (Translate (: (tuple 1/1 0/1 0/1) Vec3) (Cube (: (tuple 1/1 1/1 1/1) Vec3)))) Solid)",
         )
         .unwrap();
         let m = mesh(&s);
@@ -177,7 +176,7 @@ mod tests {
 
     #[test]
     fn segment_count_controls_sphere_tessellation() {
-        let s = parse_solid("(: (Spherer 1.0) Solidr)").unwrap();
+        let s = parse_solid("(: (Sphere 1.0) Solid)").unwrap();
         let coarse = mesh_with_segments(&s, 8);
         let fine = mesh_with_segments(&s, 64);
         assert!(
@@ -189,10 +188,10 @@ mod tests {
     #[test]
     fn union_of_disjoint_solids_keeps_both() {
         // two spheres far apart → the union keeps both shells (roughly double a single sphere's tris).
-        let one = mesh(&parse_solid("(: (Spherer 1.0) Solidr)").unwrap());
+        let one = mesh(&parse_solid("(: (Sphere 1.0) Solid)").unwrap());
         let two = mesh(
             &parse_solid(
-                "(: (Unionr (Spherer 1.0) (Translater (: (tuple 10.0 0.0 0.0) Vec3r) (Spherer 1.0))) Solidr)",
+                "(: (Union (Sphere 1.0) (Translate (: (tuple 10.0 0.0 0.0) Vec3) (Sphere 1.0))) Solid)",
             )
             .unwrap(),
         );

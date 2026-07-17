@@ -1,7 +1,7 @@
 /// exact.cdz — the EXACT-arithmetic geometry foundation for Cadenza CAD (R1 of the Rational/Qty redirect,
 /// operator-directed 2026-07-16). CAD geometry should be built on `Rational` (exact, no float rounding) —
 /// "a big motivator for adding Rationals to the language" — so coordinates, sizes, and the bounding-box math
-/// are exact. This module is the proof + foundation: an exact `Vec3r` (Rational components) with the min/max
+/// are exact. This module is the proof + foundation: an exact `Vec3` (Rational components) with the min/max
 /// and a recursive `bounding-box` fold over a CSG tree.
 ///
 /// 🔑 WHY THIS UNBLOCKS `bounding-box`: the fold needs `<`/`>` (min/max) over coordinates. Over `Float64`
@@ -9,7 +9,7 @@
 /// ruling — see the vertical log). `Rational` has a TOTAL ORDER (exact), so the identical recursive fold
 /// COMPILES + RUNS. Exact CAD isn't just nicer — it's what makes the extent analysis expressible today.
 ///
-/// This is R1: a self-contained exact-geometry module + its `Solidr` CSG sum, gated by @test. R2 folds the
+/// This is R1: a self-contained exact-geometry module + its `Solid` CSG sum, gated by @test. R2 folds the
 /// main `Solid`/`Vec3` model (currently Float64) onto this exact basis + `Qty` dimensioned lengths
 /// (coordinating with v-quantity on the Qty surface); the native/browser mesh drivers then convert Rational
 /// → f64 only at the manifold leaf, keeping the model tree exact.
@@ -20,28 +20,28 @@
 @!default-fraction Rational
 
 /// An exact 3-D vector — the Rational analogue of `Vec3`. A bare `n/d` builds a component.
-type Vec3r =
-  | V3r(Rational, Rational, Rational)
+type Vec3 =
+  | V3(Rational, Rational, Rational)
 
 /// The exact CSG tree — the FULL model (R3): primitives (Empty/Cube/Sphere/Cylinder), the three booleans,
 /// and the affine transforms that stay exact over Rational (Translate, per-axis Scale). NOTE: no `Rotate` —
 /// a general rotation needs sin/cos, which have no exact Rational form; rotation, if needed, is applied by
 /// the mesh driver at the f64 manifold leaf, keeping the model tree exact. The Float64 `Solid` (solid.cdz)
-/// is the legacy model; this exact `Solidr` is what the drivers/examples move onto.
-type Solidr =
-  | Emptyr                        // the identity of union / absorbing element of intersection
-  | Cuber(Vec3r)                  // an axis-aligned box of FULL size (w, d, h) centred at origin (like Cube)
-  | Spherer(Rational)             // a sphere of the given radius, centred at the origin
-  | Cylinderr(Rational, Rational) // a cylinder (FULL height, radius), centred on the origin along +z
-  | Unionr(Solidr, Solidr)
-  | Differencer(Solidr, Solidr)
-  | Intersectionr(Solidr, Solidr)
-  | Translater(Vec3r, Solidr)
-  | Scaler(Vec3r, Solidr)         // per-axis exact scale (Rational factors)
+/// is the legacy model; this exact `Solid` is what the drivers/examples move onto.
+type Solid =
+  | Empty                        // the identity of union / absorbing element of intersection
+  | Cube(Vec3)                  // an axis-aligned box of FULL size (w, d, h) centred at origin (like Cube)
+  | Sphere(Rational)             // a sphere of the given radius, centred at the origin
+  | Cylinder(Rational, Rational) // a cylinder (FULL height, radius), centred on the origin along +z
+  | Union(Solid, Solid)
+  | Difference(Solid, Solid)
+  | Intersection(Solid, Solid)
+  | Translate(Vec3, Solid)
+  | Scale(Vec3, Solid)         // per-axis exact scale (Rational factors)
 
-/// An exact axis-aligned bounding box: the min and max corners (both `Vec3r`).
-type Aabbr =
-  | Boxr(Vec3r, Vec3r)
+/// An exact axis-aligned bounding box: the min and max corners (both `Vec3`).
+type Aabb =
+  | Box(Vec3, Vec3)
 
 /// Exact scalar min/max — total order over `Rational`, the operations the float model could not perform.
 def rmin(a: Rational, b: Rational) = if a < b then a else b
@@ -54,142 +54,142 @@ def rzero() = 0 / 1
 def rhalf(x: Rational) = x / 2
 
 /// Build an exact vector.
-def v3r(x: Rational, y: Rational, z: Rational) = Vec3r.V3r(x, y, z)
+def v3r(x: Rational, y: Rational, z: Rational) = Vec3.V3(x, y, z)
 
-def v3r-x(v: Vec3r) = match v with | Vec3r.V3r(x, _, _) => x
-def v3r-y(v: Vec3r) = match v with | Vec3r.V3r(_, y, _) => y
-def v3r-z(v: Vec3r) = match v with | Vec3r.V3r(_, _, z) => z
+def v3r-x(v: Vec3) = match v with | Vec3.V3(x, _, _) => x
+def v3r-y(v: Vec3) = match v with | Vec3.V3(_, y, _) => y
+def v3r-z(v: Vec3) = match v with | Vec3.V3(_, _, z) => z
 
 /// Component-wise exact vector addition (composing translations).
-def v3r-add(a: Vec3r, b: Vec3r) =
-  match a with | Vec3r.V3r(ax, ay, az) =>
-    (match b with | Vec3r.V3r(bx, by, bz) =>
-      Vec3r.V3r(ax + bx, ay + by, az + bz))
+def v3r-add(a: Vec3, b: Vec3) =
+  match a with | Vec3.V3(ax, ay, az) =>
+    (match b with | Vec3.V3(bx, by, bz) =>
+      Vec3.V3(ax + bx, ay + by, az + bz))
 
 /// Component-wise exact min / max.
-def v3r-min(a: Vec3r, b: Vec3r) =
-  match a with | Vec3r.V3r(ax, ay, az) =>
-    (match b with | Vec3r.V3r(bx, by, bz) =>
-      Vec3r.V3r(rmin(ax, bx), rmin(ay, by), rmin(az, bz)))
-def v3r-max(a: Vec3r, b: Vec3r) =
-  match a with | Vec3r.V3r(ax, ay, az) =>
-    (match b with | Vec3r.V3r(bx, by, bz) =>
-      Vec3r.V3r(rmax(ax, bx), rmax(ay, by), rmax(az, bz)))
+def v3r-min(a: Vec3, b: Vec3) =
+  match a with | Vec3.V3(ax, ay, az) =>
+    (match b with | Vec3.V3(bx, by, bz) =>
+      Vec3.V3(rmin(ax, bx), rmin(ay, by), rmin(az, bz)))
+def v3r-max(a: Vec3, b: Vec3) =
+  match a with | Vec3.V3(ax, ay, az) =>
+    (match b with | Vec3.V3(bx, by, bz) =>
+      Vec3.V3(rmax(ax, bx), rmax(ay, by), rmax(az, bz)))
 
 /// Exact vector equality — a direct whole-compound `==`. The `ty_heap_walkable` heap-walk now admits
 /// `Ty::Rational` (and `Ty::BigInt`) leaves — both are canonical by construction (a Rational is a normalized
-/// two-BigInt-handle node), so `champ_eq` walks a `Vec3r` of Rationals EXACTLY, INCLUDING normalization
+/// two-BigInt-handle node), so `champ_eq` walks a `Vec3` of Rationals EXACTLY, INCLUDING normalization
 /// (`1/2 == 2/4` → true). This replaced the earlier component-wise workaround (which existed only because the
 /// walk once covered `Ty::Float` but not `Ty::Rational`); `v3r-eq-is-a-direct-compound-walk` pins the invariant.
-def v3r-eq(a: Vec3r, b: Vec3r) = a == b
+def v3r-eq(a: Vec3, b: Vec3) = a == b
 
 /// The union of two exact boxes — the enclosing box (min of the mins, max of the maxes).
-def aabbr-union(p: Aabbr, q: Aabbr) =
-  match p with | Aabbr.Boxr(plo, phi) =>
-    (match q with | Aabbr.Boxr(qlo, qhi) =>
-      Aabbr.Boxr(v3r-min(plo, qlo), v3r-max(phi, qhi)))
+def aabbr-union(p: Aabb, q: Aabb) =
+  match p with | Aabb.Box(plo, phi) =>
+    (match q with | Aabb.Box(qlo, qhi) =>
+      Aabb.Box(v3r-min(plo, qlo), v3r-max(phi, qhi)))
 
 /// The box of an INTERSECTION — the overlap of the two boxes (max of the mins, min of the maxes). The
 /// result may be "inverted" (lo > hi) if the boxes don't overlap; that denotes an empty intersection, which
 /// a mesh driver treats as no geometry. Exact.
-def aabbr-intersect(p: Aabbr, q: Aabbr) =
-  match p with | Aabbr.Boxr(plo, phi) =>
-    (match q with | Aabbr.Boxr(qlo, qhi) =>
-      Aabbr.Boxr(v3r-max(plo, qlo), v3r-min(phi, qhi)))
+def aabbr-intersect(p: Aabb, q: Aabb) =
+  match p with | Aabb.Box(plo, phi) =>
+    (match q with | Aabb.Box(qlo, qhi) =>
+      Aabb.Box(v3r-max(plo, qlo), v3r-min(phi, qhi)))
 
 /// Component-wise exact vector multiply (for per-axis scale).
-def v3r-mul(a: Vec3r, b: Vec3r) =
-  match a with | Vec3r.V3r(ax, ay, az) =>
-    (match b with | Vec3r.V3r(bx, by, bz) =>
-      Vec3r.V3r(ax * bx, ay * by, az * bz))
+def v3r-mul(a: Vec3, b: Vec3) =
+  match a with | Vec3.V3(ax, ay, az) =>
+    (match b with | Vec3.V3(bx, by, bz) =>
+      Vec3.V3(ax * bx, ay * by, az * bz))
 
 /// A degenerate zero box at the origin — the bound of an empty solid (no geometry).
-def aabbr-empty() = Aabbr.Boxr(v3r(rzero(), rzero(), rzero()), v3r(rzero(), rzero(), rzero()))
+def aabbr-empty() = Aabb.Box(v3r(rzero(), rzero(), rzero()), v3r(rzero(), rzero(), rzero()))
 
 /// Build a WELL-FORMED box from two corners, component-wise (lo = min, hi = max). This is the guard against an
 /// INVERTED box: a primitive built from `±half-extent` corners, or a scaled/mirrored one, can have its nominal
 /// "lo" corner land ABOVE "hi" on an axis when a dimension/factor is NEGATIVE — which would make `aabbr-size`
 /// go negative and break the min/max-based union/intersect. Normalizing here keeps the box valid for any sign.
-def aabbr-of-corners(p: Vec3r, q: Vec3r) = Aabbr.Boxr(v3r-min(p, q), v3r-max(p, q))
+def aabbr-of-corners(p: Vec3, q: Vec3) = Aabb.Box(v3r-min(p, q), v3r-max(p, q))
 
 /// The EXACT axis-aligned bounding box of an exact CSG tree — the recursive fold that was BLOCKED over
 /// Float64 (it needs `<`/`>` per node) and is expressible here because Rational has a total order. A cube
-/// A `Cuber(w,d,h)` is the FULL size (matching `solid.cdz`'s `Cube`), centred at the origin → it spans
-/// [-w/2, w/2]×[-d/2, d/2]×[-h/2, h/2]. A `Cylinderr(height, radius)` is the FULL height + radius →
+/// A `Cube(w,d,h)` is the FULL size (matching `solid.cdz`'s `Cube`), centred at the origin → it spans
+/// [-w/2, w/2]×[-d/2, d/2]×[-h/2, h/2]. A `Cylinder(height, radius)` is the FULL height + radius →
 /// [-r, r]×[-r, r]×[-height/2, height/2] (radius IS a half-diameter, so it's not halved). A sphere of radius
 /// r spans [-r, r]³. A union encloses both children; a translate shifts both corners; a scale multiplies them
-/// (re-normalized to stay well-formed under a NEGATIVE/mirror factor — see the `Scaler` arm).
-def bounding-box(s: Solidr) = match s with
-  | Solidr.Emptyr => aabbr-empty()
+/// (re-normalized to stay well-formed under a NEGATIVE/mirror factor — see the `Scale` arm).
+def bounding-box(s: Solid) = match s with
+  | Solid.Empty => aabbr-empty()
   // Each primitive builds its box from ±half-extent corners, normalized via `aabbr-of-corners` so a NEGATIVE
   // dimension/radius yields a well-formed box (absolute extent) rather than an inverted one.
-  | Solidr.Cuber(sz) =>
-    (match sz with | Vec3r.V3r(w, d, h) =>
-      aabbr-of-corners(Vec3r.V3r(rzero() - rhalf(w), rzero() - rhalf(d), rzero() - rhalf(h)),
-                       Vec3r.V3r(rhalf(w), rhalf(d), rhalf(h))))
-  | Solidr.Spherer(r) =>
-    aabbr-of-corners(Vec3r.V3r(rzero() - r, rzero() - r, rzero() - r), Vec3r.V3r(r, r, r))
-  | Solidr.Cylinderr(height, r) =>
-    aabbr-of-corners(Vec3r.V3r(rzero() - r, rzero() - r, rzero() - rhalf(height)),
-                     Vec3r.V3r(r, r, rhalf(height)))
-  | Solidr.Unionr(a, b) => aabbr-union(bounding-box(a), bounding-box(b))
+  | Solid.Cube(sz) =>
+    (match sz with | Vec3.V3(w, d, h) =>
+      aabbr-of-corners(Vec3.V3(rzero() - rhalf(w), rzero() - rhalf(d), rzero() - rhalf(h)),
+                       Vec3.V3(rhalf(w), rhalf(d), rhalf(h))))
+  | Solid.Sphere(r) =>
+    aabbr-of-corners(Vec3.V3(rzero() - r, rzero() - r, rzero() - r), Vec3.V3(r, r, r))
+  | Solid.Cylinder(height, r) =>
+    aabbr-of-corners(Vec3.V3(rzero() - r, rzero() - r, rzero() - rhalf(height)),
+                     Vec3.V3(r, r, rhalf(height)))
+  | Solid.Union(a, b) => aabbr-union(bounding-box(a), bounding-box(b))
   // subtracting a tool never grows the base → the base's box bounds the difference.
-  | Solidr.Differencer(a, _) => bounding-box(a)
-  | Solidr.Intersectionr(a, b) => aabbr-intersect(bounding-box(a), bounding-box(b))
-  | Solidr.Translater(by, of) =>
+  | Solid.Difference(a, _) => bounding-box(a)
+  | Solid.Intersection(a, b) => aabbr-intersect(bounding-box(a), bounding-box(b))
+  | Solid.Translate(by, of) =>
     (match bounding-box(of) with
-      | Aabbr.Boxr(lo, hi) => Aabbr.Boxr(v3r-add(lo, by), v3r-add(hi, by)))
-  | Solidr.Scaler(by, of) =>
+      | Aabb.Box(lo, hi) => Aabb.Box(v3r-add(lo, by), v3r-add(hi, by)))
+  | Solid.Scale(by, of) =>
     (match bounding-box(of) with
       // A NEGATIVE scale factor (a mirror) flips a corner past the other on that axis, so the scaled corners can
       // be inverted — `aabbr-of-corners` re-normalizes them (identity for a positive factor). Same guard the
       // primitives use.
-      | Aabbr.Boxr(lo, hi) => aabbr-of-corners(v3r-mul(lo, by), v3r-mul(hi, by)))
+      | Aabb.Box(lo, hi) => aabbr-of-corners(v3r-mul(lo, by), v3r-mul(hi, by)))
 
 /// The exact size (max − min) of a bounding box — the "how big" answer, exact.
-def aabbr-size(b: Aabbr) =
-  match b with | Aabbr.Boxr(lo, hi) =>
-    (match lo with | Vec3r.V3r(lx, ly, lz) =>
-      (match hi with | Vec3r.V3r(hx, hy, hz) =>
-        Vec3r.V3r(hx - lx, hy - ly, hz - lz)))
+def aabbr-size(b: Aabb) =
+  match b with | Aabb.Box(lo, hi) =>
+    (match lo with | Vec3.V3(lx, ly, lz) =>
+      (match hi with | Vec3.V3(hx, hy, hz) =>
+        Vec3.V3(hx - lx, hy - ly, hz - lz)))
 
 /// Is this exact solid the empty node? A direct top-node test (NOT a full leaf-count) — `simplify-r` collapses
-/// dead branches to `Emptyr`, so an `Emptyr` at a node is the signal an algebraic identity fires.
-def solidr-is-empty(s: Solidr) = match s with
-  | Solidr.Emptyr => true
+/// dead branches to `Empty`, so an `Empty` at a node is the signal an algebraic identity fires.
+def solidr-is-empty(s: Solid) = match s with
+  | Solid.Empty => true
   | _ => false
 
 /// Simplify an exact CSG tree by the empty-solid algebraic identities — the exact-model twin of `simplify`
 /// (solid.cdz's Float64 version). A mesh driver runs this before meshing to prune dead branches:
-///   • `Unionr Emptyr x` = `Unionr x Emptyr` = `x`          (Emptyr is union's identity)
-///   • `Intersectionr Emptyr x` = `Intersectionr x Emptyr` = `Emptyr`  (Emptyr absorbs intersection)
-///   • `Differencer Emptyr x` = `Emptyr`; `Differencer x Emptyr` = `x`  (subtracting nothing is a no-op)
-///   • `Translater/Scaler _ Emptyr` = `Emptyr`               (transforming nothing is nothing)
+///   • `Union Empty x` = `Union x Empty` = `x`          (Empty is union's identity)
+///   • `Intersection Empty x` = `Intersection x Empty` = `Empty`  (Empty absorbs intersection)
+///   • `Difference Empty x` = `Empty`; `Difference x Empty` = `x`  (subtracting nothing is a no-op)
+///   • `Translate/Scale _ Empty` = `Empty`               (transforming nothing is nothing)
 /// Leaves and genuinely-non-empty nodes rebuild unchanged. Idempotent (a second pass is a no-op) and never
 /// adds geometry. NOTE: no `Rotater` in the exact model (rotation is an f64 mesh-leaf concern), so no rotate arm.
-def simplify-r(s: Solidr) = match s with
-  | Solidr.Emptyr => Solidr.Emptyr
-  | Solidr.Cuber(v) => Solidr.Cuber(v)
-  | Solidr.Spherer(r) => Solidr.Spherer(r)
-  | Solidr.Cylinderr(h, r) => Solidr.Cylinderr(h, r)
-  | Solidr.Unionr(a, b) =>
+def simplify-r(s: Solid) = match s with
+  | Solid.Empty => Solid.Empty
+  | Solid.Cube(v) => Solid.Cube(v)
+  | Solid.Sphere(r) => Solid.Sphere(r)
+  | Solid.Cylinder(h, r) => Solid.Cylinder(h, r)
+  | Solid.Union(a, b) =>
     let sa = simplify-r(a) in
     let sb = simplify-r(b) in
-    (if solidr-is-empty(sa) then sb else (if solidr-is-empty(sb) then sa else Solidr.Unionr(sa, sb)))
-  | Solidr.Differencer(a, b) =>
+    (if solidr-is-empty(sa) then sb else (if solidr-is-empty(sb) then sa else Solid.Union(sa, sb)))
+  | Solid.Difference(a, b) =>
     let sa = simplify-r(a) in
     let sb = simplify-r(b) in
-    (if solidr-is-empty(sa) then Solidr.Emptyr else (if solidr-is-empty(sb) then sa else Solidr.Differencer(sa, sb)))
-  | Solidr.Intersectionr(a, b) =>
+    (if solidr-is-empty(sa) then Solid.Empty else (if solidr-is-empty(sb) then sa else Solid.Difference(sa, sb)))
+  | Solid.Intersection(a, b) =>
     let sa = simplify-r(a) in
     let sb = simplify-r(b) in
-    (if solidr-is-empty(sa) then Solidr.Emptyr else (if solidr-is-empty(sb) then Solidr.Emptyr else Solidr.Intersectionr(sa, sb)))
-  | Solidr.Translater(by, of) =>
+    (if solidr-is-empty(sa) then Solid.Empty else (if solidr-is-empty(sb) then Solid.Empty else Solid.Intersection(sa, sb)))
+  | Solid.Translate(by, of) =>
     let so = simplify-r(of) in
-    (if solidr-is-empty(so) then Solidr.Emptyr else Solidr.Translater(by, so))
-  | Solidr.Scaler(by, of) =>
+    (if solidr-is-empty(so) then Solid.Empty else Solid.Translate(by, so))
+  | Solid.Scale(by, of) =>
     let so = simplify-r(of) in
-    (if solidr-is-empty(so) then Solidr.Emptyr else Solidr.Scaler(by, so))
+    (if solidr-is-empty(so) then Solid.Empty else Solid.Scale(by, so))
 
 /// ============================ @test suite (R1 exact-geometry proof) ============================
 
@@ -201,7 +201,7 @@ def rmin-rmax-exact() =
 
 @test
 def v3r-eq-is-a-direct-compound-walk() =
-  // PINS the ty_heap_walkable Rational admission that lets v3r-eq be a direct `a == b`: a whole-Vec3r `==`
+  // PINS the ty_heap_walkable Rational admission that lets v3r-eq be a direct `a == b`: a whole-Vec3 `==`
   // over Rational leaves must WALK (compile + run), incl. exact normalization — 1/2 and 2/4 are the SAME
   // Rational, so the vectors are equal; a differing component makes them unequal. If a future change drops
   // Rational from the walk, v3r-eq would decline and this case fails — guarding the whole vertical's equality.
@@ -209,7 +209,7 @@ def v3r-eq-is-a-direct-compound-walk() =
   let b = v3r(2 / 4, 1 / 3, 1 / 6) in   // 1/2 == 2/4 normalized
   let c = v3r(1 / 2, 1 / 3, 5 / 6) in   // z differs
   if v3r-eq(a, b) then (if v3r-eq(a, c) then trap("differing z must be unequal") else unit)
-  else trap("whole-Vec3r == over Rational must walk (1/2 == 2/4 normalized)")
+  else trap("whole-Vec3 == over Rational must walk (1/2 == 2/4 normalized)")
 
 @test
 def v3r-eq-and-add() =
@@ -224,8 +224,8 @@ def bounding-box-of-a-cube-is-symmetric() =
   // a FULL-size-2 cube centred at origin spans [-1, 1] on each axis (half-extent 1).
   let two = 2 / 1 in
   let one = 1 / 1 in
-  let b = bounding-box(Solidr.Cuber(v3r(two, two, two))) in
-  match b with | Aabbr.Boxr(lo, hi) =>
+  let b = bounding-box(Solid.Cube(v3r(two, two, two))) in
+  match b with | Aabb.Box(lo, hi) =>
     (if v3r-eq(lo, v3r(rzero() - one, rzero() - one, rzero() - one)) then
       (if v3r-eq(hi, v3r(one, one, one)) then unit else trap("hi corner")) else trap("lo corner"))
 
@@ -234,10 +234,10 @@ def bounding-box-of-a-union-encloses-both() =
   // a full-size-2 cube at origin (box [-1,1]) ∪ same translated +5 in x (box [4,6]) → x spans [-1, 6].
   let two = 2 / 1 in
   let five = 5 / 1 in
-  let model = Solidr.Unionr(
-    Solidr.Cuber(v3r(two, two, two)),
-    Solidr.Translater(v3r(five, rzero(), rzero()), Solidr.Cuber(v3r(two, two, two)))) in
-  match bounding-box(model) with | Aabbr.Boxr(lo, hi) =>
+  let model = Solid.Union(
+    Solid.Cube(v3r(two, two, two)),
+    Solid.Translate(v3r(five, rzero(), rzero()), Solid.Cube(v3r(two, two, two)))) in
+  match bounding-box(model) with | Aabb.Box(lo, hi) =>
     (if v3r-x(lo) == (rzero() - 1 / 1) then
       (if v3r-x(hi) == 6 / 1 then unit else trap("hi.x should be 6 exactly")) else trap("lo.x should be -1"))
 
@@ -245,7 +245,7 @@ def bounding-box-of-a-union-encloses-both() =
 def bounding-box-size-is-exact() =
   // size of a translated sphere's box = 2r on each axis, exact (no float drift).
   let r = 3 / 2 in // radius 1.5, exact
-  let b = bounding-box(Solidr.Translater(v3r(10 / 1, rzero(), rzero()), Solidr.Spherer(r))) in
+  let b = bounding-box(Solid.Translate(v3r(10 / 1, rzero(), rzero()), Solid.Sphere(r))) in
   let sz = aabbr-size(b) in
   // 2 * 3/2 = 3 exactly on each axis
   if v3r-eq(sz, v3r(3 / 1, 3 / 1, 3 / 1)) then unit
@@ -253,15 +253,15 @@ def bounding-box-size-is-exact() =
 
 @test
 def exact_arithmetic_has_no_rounding() =
-  // the showcase: 1/3 + 1/3 + 1/3 == 1 EXACTLY (a float would drift). Pin it as a Vec3r component.
+  // the showcase: 1/3 + 1/3 + 1/3 == 1 EXACTLY (a float would drift). Pin it as a Vec3 component.
   let third = 1 / 3 in
   if (third + third + third) == 1 / 1 then unit else trap("1/3+1/3+1/3 = 1 exactly")
 
 @test
 def empty-has-a-degenerate-box() =
   // an Empty solid bounds to a zero box at the origin.
-  let b = bounding-box(Solidr.Emptyr) in
-  match b with | Aabbr.Boxr(lo, hi) =>
+  let b = bounding-box(Solid.Empty) in
+  match b with | Aabb.Box(lo, hi) =>
     (if v3r-eq(lo, v3r(rzero(), rzero(), rzero())) then
       (if v3r-eq(hi, v3r(rzero(), rzero(), rzero())) then unit else trap("hi zero")) else trap("lo zero"))
 
@@ -269,7 +269,7 @@ def empty-has-a-degenerate-box() =
 def cylinder-box-is-diameter-by-height() =
   // a cylinder (FULL height h, radius r) spans [-r,r]×[-r,r]×[-h/2,h/2] → size (2r, 2r, h), exact.
   let h = 5 / 1 in let r = 3 / 2 in
-  let sz = aabbr-size(bounding-box(Solidr.Cylinderr(h, r))) in
+  let sz = aabbr-size(bounding-box(Solid.Cylinder(h, r))) in
   if v3r-eq(sz, v3r(3 / 1, 3 / 1, 5 / 1)) then unit
   else trap("cylinder box size (2r,2r,h) = (3,3,5) exact")
 
@@ -277,8 +277,8 @@ def cylinder-box-is-diameter-by-height() =
 def difference-is-bounded-by-the-base() =
   // subtracting a tool doesn't grow the base → the difference's box is the base's box.
   let one = 1 / 1 in
-  let base = Solidr.Cuber(v3r(one, one, one)) in
-  let d = Solidr.Differencer(base, Solidr.Spherer(1 / 2)) in
+  let base = Solid.Cube(v3r(one, one, one)) in
+  let d = Solid.Difference(base, Solid.Sphere(1 / 2)) in
   if v3r-eq(aabbr-size(bounding-box(d)), aabbr-size(bounding-box(base))) then unit
   else trap("difference box = base box")
 
@@ -286,7 +286,7 @@ def difference-is-bounded-by-the-base() =
 def scale-multiplies-the-box() =
   // scale a FULL-size-2 cube (box [-1,1]³) by (2,3,4) → box [-2,2]×[-3,3]×[-4,4], size (4,6,8), exact.
   let two = 2 / 1 in
-  let scaled = Solidr.Scaler(v3r(2 / 1, 3 / 1, 4 / 1), Solidr.Cuber(v3r(two, two, two))) in
+  let scaled = Solid.Scale(v3r(2 / 1, 3 / 1, 4 / 1), Solid.Cube(v3r(two, two, two))) in
   let sz = aabbr-size(bounding-box(scaled)) in
   if v3r-eq(sz, v3r(4 / 1, 6 / 1, 8 / 1)) then unit
   else trap("scaled box size (4,6,8) exact")
@@ -298,8 +298,8 @@ def negative-scale-keeps-a-well-formed-box() =
   // bounding-box re-normalizes (min/max of the scaled corners), so a mirror keeps a well-formed box + correct
   // POSITIVE size. Mirror a size-2 cube (box [-1,1]³) by (-1, 1, -2) → still [-1,1]×[-1,1]×[-2,2], size (2,2,4).
   let one = 1 / 1 in let two = 2 / 1 in
-  let mirrored = Solidr.Scaler(v3r(rzero() - one, one, rzero() - two), Solidr.Cuber(v3r(two, two, two))) in
-  match bounding-box(mirrored) with | Aabbr.Boxr(lo, hi) =>
+  let mirrored = Solid.Scale(v3r(rzero() - one, one, rzero() - two), Solid.Cube(v3r(two, two, two))) in
+  match bounding-box(mirrored) with | Aabb.Box(lo, hi) =>
     // lo ≤ hi on every axis (well-formed), and size is the POSITIVE (2, 2, 4).
     (if v3r-eq(lo, v3r(rzero() - one, rzero() - one, rzero() - two)) then
       (if v3r-eq(hi, v3r(one, one, two)) then
@@ -313,9 +313,9 @@ def negative-primitive-dimensions-keep-a-well-formed-box() =
   // ±half-extent corners that would invert (lo > hi) if unnormalized → a negative aabbr-size. aabbr-of-corners
   // normalizes all three primitive arms, so a negative size/radius yields the ABSOLUTE extent, well-formed.
   let two = 2 / 1 in let three = 3 / 1 in
-  let neg-cube = Solidr.Cuber(v3r(rzero() - two, two, rzero() - two)) in       // |−2| on x and z
-  let neg-sphere = Solidr.Spherer(rzero() - 3 / 2) in              // radius −3/2 → size 3
-  let neg-cyl = Solidr.Cylinderr(rzero() - 5 / 1, rzero() - two) in // −5 height, −2 radius
+  let neg-cube = Solid.Cube(v3r(rzero() - two, two, rzero() - two)) in       // |−2| on x and z
+  let neg-sphere = Solid.Sphere(rzero() - 3 / 2) in              // radius −3/2 → size 3
+  let neg-cyl = Solid.Cylinder(rzero() - 5 / 1, rzero() - two) in // −5 height, −2 radius
   if v3r-eq(aabbr-size(bounding-box(neg-cube)), v3r(two, two, two)) then
     (if v3r-eq(aabbr-size(bounding-box(neg-sphere)), v3r(three, three, three)) then
       (if v3r-eq(aabbr-size(bounding-box(neg-cyl)), v3r(4 / 1, 4 / 1, 5 / 1))
@@ -327,9 +327,9 @@ def intersection-of-two-cubes-is-the-overlap() =
   // two full-size-2 cubes (box [-1,1]), one translated +1 in x (box [0,2]) → intersection box x in [0,1].
   let two = 2 / 1 in
   let one = 1 / 1 in
-  let a = Solidr.Cuber(v3r(two, two, two)) in
-  let b = Solidr.Translater(v3r(one, rzero(), rzero()), Solidr.Cuber(v3r(two, two, two))) in
-  match bounding-box(Solidr.Intersectionr(a, b)) with | Aabbr.Boxr(lo, hi) =>
+  let a = Solid.Cube(v3r(two, two, two)) in
+  let b = Solid.Translate(v3r(one, rzero(), rzero()), Solid.Cube(v3r(two, two, two))) in
+  match bounding-box(Solid.Intersection(a, b)) with | Aabb.Box(lo, hi) =>
     (if v3r-x(lo) == rzero() then (if v3r-x(hi) == one then unit else trap("hi.x = 1")) else trap("lo.x = 0"))
 
 // ---- R9: direct coverage for the exported vector/box helpers that were only exercised transitively --------
@@ -363,61 +363,61 @@ def v3r-accessors-project-each-axis() =
 def aabbr-union-and-intersect-of-explicit-boxes() =
   // exercise aabbr-union / aabbr-intersect DIRECTLY on explicit boxes (not only via bounding-box's folds):
   // union of box[(0,0,0),(2,2,2)] and box[(1,1,1),(4,4,4)] = box[(0,0,0),(4,4,4)]; intersect = box[(1,1,1),(2,2,2)].
-  let p = Aabbr.Boxr(v3r(rzero(), rzero(), rzero()), v3r(2 / 1, 2 / 1, 2 / 1)) in
-  let q = Aabbr.Boxr(v3r(1 / 1, 1 / 1, 1 / 1), v3r(4 / 1, 4 / 1, 4 / 1)) in
-  (match aabbr-union(p, q) with | Aabbr.Boxr(ulo, uhi) =>
-    (match aabbr-intersect(p, q) with | Aabbr.Boxr(ilo, ihi) =>
+  let p = Aabb.Box(v3r(rzero(), rzero(), rzero()), v3r(2 / 1, 2 / 1, 2 / 1)) in
+  let q = Aabb.Box(v3r(1 / 1, 1 / 1, 1 / 1), v3r(4 / 1, 4 / 1, 4 / 1)) in
+  (match aabbr-union(p, q) with | Aabb.Box(ulo, uhi) =>
+    (match aabbr-intersect(p, q) with | Aabb.Box(ilo, ihi) =>
       if v3r-eq(ulo, v3r(rzero(), rzero(), rzero())) and v3r-eq(uhi, v3r(4 / 1, 4 / 1, 4 / 1))
          and v3r-eq(ilo, v3r(1 / 1, 1 / 1, 1 / 1)) and v3r-eq(ihi, v3r(2 / 1, 2 / 1, 2 / 1))
       then unit else trap("union/intersect corners")))
 
-// ---- R11: simplify-r — the empty-solid algebraic identities on the EXACT Solidr model --------------------
+// ---- R11: simplify-r — the empty-solid algebraic identities on the EXACT Solid model --------------------
 
 @test
 def simplify-r-absorbs-empty-in-union() =
-  // Unionr Emptyr x = x (both sides); check the result is the surviving cube (box unchanged) and non-empty.
+  // Union Empty x = x (both sides); check the result is the surviving cube (box unchanged) and non-empty.
   let one = 1 / 1 in
-  let cube = Solidr.Cuber(v3r(one, one, one)) in
-  let sl = simplify-r(Solidr.Unionr(Solidr.Emptyr, cube)) in
-  let sr = simplify-r(Solidr.Unionr(cube, Solidr.Emptyr)) in
+  let cube = Solid.Cube(v3r(one, one, one)) in
+  let sl = simplify-r(Solid.Union(Solid.Empty, cube)) in
+  let sr = simplify-r(Solid.Union(cube, Solid.Empty)) in
   if v3r-eq(aabbr-size(bounding-box(sl)), aabbr-size(bounding-box(cube)))
      and v3r-eq(aabbr-size(bounding-box(sr)), aabbr-size(bounding-box(cube)))
      and (solidr-is-empty(sl) == false)
-  then unit else trap("Unionr with Emptyr reduces to the other operand")
+  then unit else trap("Union with Empty reduces to the other operand")
 
 @test
 def simplify-r-intersection-with-empty-is-empty() =
-  // Intersectionr Emptyr x = Emptyr (absorbing).
+  // Intersection Empty x = Empty (absorbing).
   let one = 1 / 1 in
-  let cube = Solidr.Cuber(v3r(one, one, one)) in
-  if solidr-is-empty(simplify-r(Solidr.Intersectionr(Solidr.Emptyr, cube)))
-     and solidr-is-empty(simplify-r(Solidr.Intersectionr(cube, Solidr.Emptyr)))
-  then unit else trap("Intersectionr with Emptyr is Emptyr")
+  let cube = Solid.Cube(v3r(one, one, one)) in
+  if solidr-is-empty(simplify-r(Solid.Intersection(Solid.Empty, cube)))
+     and solidr-is-empty(simplify-r(Solid.Intersection(cube, Solid.Empty)))
+  then unit else trap("Intersection with Empty is Empty")
 
 @test
 def simplify-r-difference-identities() =
-  // Differencer Emptyr x = Emptyr; Differencer x Emptyr = x (subtracting nothing is a no-op).
+  // Difference Empty x = Empty; Difference x Empty = x (subtracting nothing is a no-op).
   let one = 1 / 1 in
-  let cube = Solidr.Cuber(v3r(one, one, one)) in
-  let subtract-nothing = simplify-r(Solidr.Differencer(cube, Solidr.Emptyr)) in
-  if solidr-is-empty(simplify-r(Solidr.Differencer(Solidr.Emptyr, cube)))
+  let cube = Solid.Cube(v3r(one, one, one)) in
+  let subtract-nothing = simplify-r(Solid.Difference(cube, Solid.Empty)) in
+  if solidr-is-empty(simplify-r(Solid.Difference(Solid.Empty, cube)))
      and (solidr-is-empty(subtract-nothing) == false)
      and v3r-eq(aabbr-size(bounding-box(subtract-nothing)), aabbr-size(bounding-box(cube)))
-  then unit else trap("Differencer empty identities")
+  then unit else trap("Difference empty identities")
 
 @test
 def simplify-r-prunes-a-nested-empty-branch-and-transform() =
   // a translate of empty collapses to empty; a union of two dead branches collapses fully to empty.
-  let dead = Solidr.Translater(v3r(5 / 1, rzero(), rzero()), Solidr.Emptyr) in
-  let both-dead = Solidr.Unionr(dead, Solidr.Intersectionr(Solidr.Emptyr, Solidr.Spherer(1 / 1))) in
+  let dead = Solid.Translate(v3r(5 / 1, rzero(), rzero()), Solid.Empty) in
+  let both-dead = Solid.Union(dead, Solid.Intersection(Solid.Empty, Solid.Sphere(1 / 1))) in
   if solidr-is-empty(simplify-r(dead)) and solidr-is-empty(simplify-r(both-dead)) then unit
-  else trap("simplify-r prunes dead transform + all-empty tree to Emptyr")
+  else trap("simplify-r prunes dead transform + all-empty tree to Empty")
 
 @test
 def simplify-r-preserves-a-real-tree-and-is-idempotent() =
   // a fully-real model is unchanged in extent, and a second simplify pass is a no-op (idempotent).
   let two = 2 / 1 in
-  let model = Solidr.Differencer(Solidr.Cuber(v3r(two, two, two)), Solidr.Spherer(1 / 1)) in
+  let model = Solid.Difference(Solid.Cube(v3r(two, two, two)), Solid.Sphere(1 / 1)) in
   let s1 = simplify-r(model) in
   let s2 = simplify-r(s1) in
   if v3r-eq(aabbr-size(bounding-box(s1)), aabbr-size(bounding-box(model)))
@@ -428,15 +428,15 @@ def simplify-r-preserves-a-real-tree-and-is-idempotent() =
 def simplify-r-of-a-mixed-tree-drops-dead-branches-but-preserves-the-real-extent() =
   // THE correctness link between simplify-r and bounding-box a mesh driver relies on: pruning DEAD branches
   // from a MIXED tree (real ∪ dead) must not change the surviving geometry's extent. Take a real cube shifted
-  // to +10 in x (box centred at x=10) UNIONED with a dead branch (a translated Emptyr, which raw bounding-box
+  // to +10 in x (box centred at x=10) UNIONED with a dead branch (a translated Empty, which raw bounding-box
   // would fold in as a degenerate box at the ORIGIN — wrongly stretching the union's box from x=0 to x=10.5).
   // simplify-r drops the dead branch first, so the simplified tree's box is EXACTLY the real cube's box — the
   // pre-simplify box is larger (contaminated by the origin), proving the prune matters. All exact.
   let one = 1 / 1 in
   let ten = 10 / 1 in
-  let real = Solidr.Translater(v3r(ten, rzero(), rzero()), Solidr.Cuber(v3r(one, one, one))) in
-  let dead = Solidr.Translater(v3r(5 / 1, rzero(), rzero()), Solidr.Emptyr) in
-  let mixed = Solidr.Unionr(real, dead) in
+  let real = Solid.Translate(v3r(ten, rzero(), rzero()), Solid.Cube(v3r(one, one, one))) in
+  let dead = Solid.Translate(v3r(5 / 1, rzero(), rzero()), Solid.Empty) in
+  let mixed = Solid.Union(real, dead) in
   let simplified = simplify-r(mixed) in
   // simplified extent == the real cube's extent (a 1×1×1 box → size (1,1,1)); and NOT empty.
   if v3r-eq(aabbr-size(bounding-box(simplified)), v3r(one, one, one)) and (solidr-is-empty(simplified) == false)
@@ -446,6 +446,6 @@ def simplify-r-of-a-mixed-tree-drops-dead-branches-but-preserves-the-real-extent
      else unit)
   else trap("simplify-r must preserve the real cube's extent while dropping the dead branch")
 
-export { Vec3r.*, Solidr.*, Aabbr.*, rmin, rmax, rzero, v3r, v3r-x, v3r-y, v3r-z, v3r-add, v3r-mul, v3r-min,
+export { Vec3.*, Solid.*, Aabb.*, rmin, rmax, rzero, v3r, v3r-x, v3r-y, v3r-z, v3r-add, v3r-mul, v3r-min,
          v3r-max, v3r-eq, aabbr-union, aabbr-intersect, aabbr-empty, aabbr-of-corners, bounding-box, aabbr-size,
          solidr-is-empty, simplify-r }

@@ -226,7 +226,7 @@ mod tests {
     use crate::{mesh, parse_solid};
 
     fn cube_mesh() -> Mesh {
-        mesh(&parse_solid("(: (Cuber (: (tuple 2/1 2/1 2/1) Vec3r)) Solidr)").unwrap())
+        mesh(&parse_solid("(: (Cube (: (tuple 2/1 2/1 2/1) Vec3)) Solid)").unwrap())
     }
 
     #[test]

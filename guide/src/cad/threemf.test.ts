@@ -8,7 +8,7 @@ import { unzipSync, strFromU8 } from "fflate";
 import { meshFromSolid } from "./index.ts";
 import { meshTo3mf } from "./threemf.ts";
 
-const CUBE = "(: (Cuber (: (tuple 2/1 2/1 2/1) Vec3r)) Solidr)";
+const CUBE = "(: (Cube (: (tuple 2/1 2/1 2/1) Vec3)) Solid)";
 
 test("a cube meshes then serializes to a valid 3MF zip with the three required OPC parts", async () => {
   const r = await meshFromSolid(CUBE);

@@ -17,13 +17,13 @@ fn approx(a: f64, b: f64) -> bool {
 
 /// `plate(4, 2, 1, 0.3)` — a 4×2×1 plate with two Ø0.6 bolt holes. Box = the base cube (holes are internal
 /// cutouts, so they don't extend the extent): centred 4×2×1.
-const PLATE: &str = "(: (Differencer (Differencer (Cuber (: (tuple 4.0 2.0 1.0) Vec3r)) (Translater (: (tuple 1.0 1.0 0.0) Vec3r) (Cylinderr 1.0 0.3))) (Translater (: (tuple 3.0 1.0 0.0) Vec3r) (Cylinderr 1.0 0.3))) Solidr)";
+const PLATE: &str = "(: (Difference (Difference (Cube (: (tuple 4.0 2.0 1.0) Vec3)) (Translate (: (tuple 1.0 1.0 0.0) Vec3) (Cylinder 1.0 0.3))) (Translate (: (tuple 3.0 1.0 0.0) Vec3) (Cylinder 1.0 0.3))) Solid)";
 
 /// `washer(1, 2, 1)` — a thickness-1 ring, outer radius 2, bore radius 1. Box = the outer cylinder: 4×4×1.
-const WASHER: &str = "(: (Differencer (Cylinderr 1.0 2.0) (Cylinderr 1.0 1.0)) Solidr)";
+const WASHER: &str = "(: (Difference (Cylinder 1.0 2.0) (Cylinder 1.0 1.0)) Solid)";
 
 /// `tube(3, 2, 1)` — a length-3 pipe, outer radius 2, bore 1. Box = the outer cylinder: 4×4×3.
-const TUBE: &str = "(: (Differencer (Cylinderr 3.0 2.0) (Cylinderr 3.0 1.0)) Solidr)";
+const TUBE: &str = "(: (Difference (Cylinder 3.0 2.0) (Cylinder 3.0 1.0)) Solid)";
 
 /// `mixed-block()` from the UNITS-TYPED library (`examples-typed.cdz`): a box authored `box-len(meters(1),
 /// inches(12), inches(6))` — 1 m wide, 12-inch deep, 6-inch high. The units-everywhere path: each dimension
@@ -32,7 +32,7 @@ const TUBE: &str = "(: (Differencer (Cylinderr 3.0 2.0) (Cylinderr 3.0 1.0)) Sol
 /// 381/2500 m EXACTLY (no float rounding). So the model renders the same `n/d`-Rational grammar the driver
 /// already parses, and this pins that a UNITS-AUTHORED model flows end-to-end (library → render → driver →
 /// mesh) — the payoff that makes units-everywhere real at the render edge, not just unit-tested in Cadenza.
-const MIXED_BLOCK: &str = "(: (Cuber (: (tuple 1/1 381/1250 381/2500) Vec3r)) Solidr)";
+const MIXED_BLOCK: &str = "(: (Cube (: (tuple 1/1 381/1250 381/2500) Vec3)) Solid)";
 
 #[test]
 fn plate_meshes_and_bounds_match_the_base_cube() {
@@ -128,9 +128,9 @@ fn tri_count(src: &str) -> usize {
 
 #[test]
 fn union_with_empty_meshes_like_the_operand_alone() {
-    let cube = "(: (Cuber (: (tuple 2.0 2.0 2.0) Vec3r)) Solidr)";
-    let union_left = "(: (Unionr (Emptyr unit) (Cuber (: (tuple 2.0 2.0 2.0) Vec3r))) Solidr)";
-    let union_right = "(: (Unionr (Cuber (: (tuple 2.0 2.0 2.0) Vec3r)) (Emptyr unit)) Solidr)";
+    let cube = "(: (Cube (: (tuple 2.0 2.0 2.0) Vec3)) Solid)";
+    let union_left = "(: (Union (Empty unit) (Cube (: (tuple 2.0 2.0 2.0) Vec3))) Solid)";
+    let union_right = "(: (Union (Cube (: (tuple 2.0 2.0 2.0) Vec3)) (Empty unit)) Solid)";
     assert_eq!(
         tri_count(union_left),
         tri_count(cube),
@@ -146,8 +146,8 @@ fn union_with_empty_meshes_like_the_operand_alone() {
 #[test]
 fn difference_of_empty_tool_meshes_like_the_base() {
     // subtracting nothing leaves the base unchanged.
-    let cube = "(: (Cuber (: (tuple 2.0 2.0 2.0) Vec3r)) Solidr)";
-    let diff = "(: (Differencer (Cuber (: (tuple 2.0 2.0 2.0) Vec3r)) (Emptyr unit)) Solidr)";
+    let cube = "(: (Cube (: (tuple 2.0 2.0 2.0) Vec3)) Solid)";
+    let diff = "(: (Difference (Cube (: (tuple 2.0 2.0 2.0) Vec3)) (Empty unit)) Solid)";
     assert_eq!(
         tri_count(diff),
         tri_count(cube),
@@ -157,6 +157,6 @@ fn difference_of_empty_tool_meshes_like_the_base() {
 
 #[test]
 fn intersection_with_empty_meshes_to_nothing() {
-    let inter = "(: (Intersectionr (Cuber (: (tuple 2.0 2.0 2.0) Vec3r)) (Emptyr unit)) Solidr)";
+    let inter = "(: (Intersection (Cube (: (tuple 2.0 2.0 2.0) Vec3)) (Empty unit)) Solid)";
     assert_eq!(tri_count(inter), 0, "intersection(x, Empty) is empty");
 }
