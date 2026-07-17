@@ -3891,15 +3891,25 @@ struct BatchMr {
     subject: String,
 }
 
-/// Partition a batch into the maximal LANDABLE subset and the BROKEN culprits, given a gate oracle.
+/// Partition a batch into a LANDABLE subset (confirmed green together) and a REMOVAL set that makes the
+/// rest green, given a gate oracle.
 ///
 /// `items[i]` merges cleanly (conflicts were already filtered out by the caller); `gate(subset)` returns
 /// `true` iff the combined tree of that subset passes the gate. Pure w.r.t. the oracle — no git/IO here,
 /// so the bisection strategy is unit-testable with a synthetic predicate. Strategy: gate the whole set;
-/// if green, all land. If red, binary-search to isolate ONE culprit (the smallest failing prefix's last
-/// element), record it as broken, remove it, and repeat on the remainder — so several independently-bad
-/// items are all found, and the returned landable set is confirmed green by a final gate. Returns
-/// `(landable_indices, broken_indices)` (both into `items`), each sorted ascending.
+/// if green, all land. If red, binary-search for the smallest failing PREFIX and remove its last element
+/// (the item whose addition flipped that prefix green→red), then repeat on the remainder until it gates
+/// green. The returned landable set is thus CONFIRMED green by a final gate.
+///
+/// ⚠ The removal set is a set that makes the batch green — NOT necessarily the minimal or the "truly
+/// broken" set. For INDEPENDENT failures (each bad item fails on its own) it isolates exactly those. But
+/// for an INTERACTION failure (two items that pass alone yet fail TOGETHER), it removes one of the pair
+/// — that item is not individually "broken", it just breaks the batch in combination. So a removed item
+/// means "excluded so the rest can land this round; rebase+resend to re-attempt", which is the correct
+/// bounce for pr-sync either way (the author re-lands against the new trunk, where the interacting
+/// partner is now present or absent). Callers/reports should frame a removed item as "excluded this
+/// round", not "this MR is definitively buggy". Returns `(landable_indices, removed_indices)` (both into
+/// `items`), each sorted ascending.
 ///
 /// `gate` is called on index SUBSETS; the caller maps indices→refs and does the real merge+check.
 fn partition_batch(n: usize, mut gate: impl FnMut(&[usize]) -> bool) -> (Vec<usize>, Vec<usize>) {
@@ -3957,17 +3967,29 @@ fn gate_batch(fleet: &Fleet, dry_run: bool, limit: usize) {
     );
 
     let scratch = "fleet-gate-batch-scratch";
-    // Always clean up the scratch branch on the way out (created fresh off trunk below).
-    let cleanup = |branch: &str| {
+    // Delete the scratch branch — but you CANNOT `git branch -D` the branch you are ON, so detach to
+    // `trunk` FIRST, then delete. Leaving the repo on the scratch branch (or leaving the branch behind)
+    // would strand pr-sync's worktree on a throwaway branch. `--dry-run` RETAINS the scratch branch for
+    // inspection (still detaches off it so the worktree is back on trunk).
+    let cleanup = |branch: &str, keep_branch: bool| {
+        // Detach to trunk so we're never sitting on the branch we're about to delete.
         let _ = Command::new("git")
             .current_dir(&fleet.repo)
-            .args(["branch", "-D", branch])
+            .args(["checkout", "trunk"])
             .output();
+        if !keep_branch {
+            let _ = Command::new("git")
+                .current_dir(&fleet.repo)
+                .args(["branch", "-D", branch])
+                .output();
+        }
     };
 
     // CONFLICT-PREFILTER: merge each ref, in order, onto a fresh scratch branch off trunk; an MR that
     // does not merge cleanly is a BOUNCE (no gate cost). The survivors are the cleanly-mergeable set.
-    cleanup(scratch);
+    // Start from a clean slate: force-delete any stale scratch branch from a prior run (we're on trunk
+    // now, not scratch, so this delete is safe).
+    cleanup(scratch, false);
     if !git_branch_at(&fleet.repo, scratch, "trunk") {
         eprintln!(
             "gate-batch: cannot create scratch branch off trunk — aborting (nothing changed)."
@@ -3995,7 +4017,8 @@ fn gate_batch(fleet: &Fleet, dry_run: bool, limit: usize) {
         gate_subset(&fleet.repo, scratch, &clean, subset)
     });
 
-    cleanup(scratch);
+    // Detach off scratch back to trunk; keep the scratch branch only under --dry-run (for inspection).
+    cleanup(scratch, dry_run);
 
     // ── Report the plan (machine-readable: one line per MR + a summary). ──
     println!(

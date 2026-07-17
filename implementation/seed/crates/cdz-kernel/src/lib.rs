@@ -94,3 +94,9 @@ pub mod kernel;
 /// lookup (the latest `program` event's source). No hardcoded genesis — the first program is data in the log
 /// the CLI injects (operator fork-5 ruling), and a later `program` event self-supersedes it.
 pub mod boot;
+
+/// The daemon loop (rung KC-daemon — the "start the daemon" half of fork-5): [`daemon::tick`] runs one step —
+/// read the log, find the latest genesis `program` ([`boot::latest_program`]), and drive an interpret turn
+/// ([`kernel::run_interpret`]). Ties the boot half (genesis lookup) + the kernel half (compile+run) into the
+/// per-event loop spine; the event-source driver is thin on top. Pure over the `Log` + the runtime store.
+pub mod daemon;

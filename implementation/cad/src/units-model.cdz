@@ -1,0 +1,109 @@
+/// units-model.cdz — Vec3→Qty STAGE 3: the units-carrying CSG model + the render-edge `lower` (B-via-generic).
+///
+/// OPERATOR (P1 core): "Vec3 should be typed Qty based on meters — that's the whole point, track units
+/// correctly END TO END." Stages 1+2 made `Vec3`/`Solid` GENERIC over their coordinate type. This stage
+/// delivers the payoff: build the model as `Solid(Qty[meter])` — every coordinate/size/radius IS an exact
+/// length quantity, so a bare number (or a non-length) is a COMPILE-TIME type error — and `lower` it to the
+/// bare-`Rational`-meters `Solid(Rational)` the mesh drivers + `bounding-box` consume (f64 only at the
+/// manifold FFI edge, per the concierge B-via-generic ruling: units enforced at the TYPE level in the
+/// authored model, unwrapped to bare meters at the render boundary so the driver grammar stays `n/d`).
+///
+/// So: AUTHOR with these `*-m` constructors (units-carrying) → get a `Solid(Qty[meter])` whose type tracks
+/// length end-to-end → `lower` to `Solid(Rational)` → `bounding-box`/render/mesh (all exact Rational, f64
+/// only at the leaf). This is the units-everywhere geometry the operator asked for.
+
+@!default-fraction Rational
+
+import { Solid, Vec3 } from "exact"
+
+/// A length in the base METER unit — the type every model dimension carries. A coordinate IS a length.
+///  `Qty(Rational, Unit.base(#"meter"))` = an exact-Rational magnitude in meters.
+
+/// A meter length from a magnitude (`meters(5)` = a 5-metre length). Sugar over `Qty.of`; under a caller's
+/// `default-fraction Rational` a bare `5` grounds to Rational, so `meters(5)` / `meters(3/2)` both work.
+def meters(n: Rational) = Qty.of(n, Unit.of(#"meter"))
+
+/// A units-carrying 3-vector: three meter lengths. A bare number here is a CDZ0301 type error — the units
+/// enforcement the operator wants, at the point of authoring.
+def v3m(
+  x: Qty(Rational, Unit.base(#"meter")),
+  y: Qty(Rational, Unit.base(#"meter")),
+  z: Qty(Rational, Unit.base(#"meter"))
+) = Vec3.V3(x, y, z)
+
+/// ---- units-carrying primitive + combinator constructors: build a `Solid(Qty[meter])` ------------------
+/// Each dimension is a length `Qty[meter]`; the resulting model's type tracks length end-to-end.
+
+/// An axis-aligned box of FULL size (w, d, h) — each a meter length — centred at the origin.
+def cube-m(w: Qty(Rational, Unit.base(#"meter")), d: Qty(Rational, Unit.base(#"meter")), h: Qty(Rational, Unit.base(#"meter"))) =
+  Solid.Cube(v3m(w, d, h))
+
+/// A sphere of the given radius (a meter length).
+def sphere-m(r: Qty(Rational, Unit.base(#"meter"))) = Solid.Sphere(r)
+
+/// A cylinder of FULL height + radius (both meter lengths), centred on +z.
+def cylinder-m(height: Qty(Rational, Unit.base(#"meter")), r: Qty(Rational, Unit.base(#"meter"))) =
+  Solid.Cylinder(height, r)
+
+/// The boolean combinators over units-carrying solids (they compose `Solid(Qty[meter])` values). The
+/// params are annotated `Solid(Qty[meter])` since an exported boundary fn needs a concrete parameter type.
+def union-m(a: Solid(Qty(Rational, Unit.base(#"meter"))), b: Solid(Qty(Rational, Unit.base(#"meter")))) = Solid.Union(a, b)
+def difference-m(a: Solid(Qty(Rational, Unit.base(#"meter"))), b: Solid(Qty(Rational, Unit.base(#"meter")))) = Solid.Difference(a, b)
+def intersection-m(a: Solid(Qty(Rational, Unit.base(#"meter"))), b: Solid(Qty(Rational, Unit.base(#"meter")))) = Solid.Intersection(a, b)
+
+/// Translate a units-carrying solid by a meter offset vector.
+def translate-m(by: Vec3(Qty(Rational, Unit.base(#"meter"))), s: Solid(Qty(Rational, Unit.base(#"meter")))) = Solid.Translate(by, s)
+
+/// ---- the render edge: lower `Solid(Qty[meter])` → `Solid(Rational)` (bare meters) --------------------
+/// Unwraps each coordinate `Qty[meter]` to its exact bare-Rational meter magnitude (`Qty.value`), so the
+/// bare-`Rational` model the mesh drivers + `bounding-box` consume is UNCHANGED (driver grammar stays
+/// `n/d`; f64 only at the manifold FFI edge). This is the "units in the model, bare meters on the wire" of
+/// the B-via-generic ruling — the same generic `Solid`/`Vec3`, two instantiations, a structural map between.
+
+def lower-v(v: Vec3(Qty(Rational, Unit.base(#"meter")))) =
+  match v with | Vec3.V3(x, y, z) => Vec3.V3(Qty.value(x), Qty.value(y), Qty.value(z))
+
+def lower(s: Solid(Qty(Rational, Unit.base(#"meter")))) = match s with
+  | Solid.Empty => Solid.Empty
+  | Solid.Cube(v) => Solid.Cube(lower-v(v))
+  | Solid.Sphere(r) => Solid.Sphere(Qty.value(r))
+  | Solid.Cylinder(h, r) => Solid.Cylinder(Qty.value(h), Qty.value(r))
+  | Solid.Union(a, b) => Solid.Union(lower(a), lower(b))
+  | Solid.Difference(a, b) => Solid.Difference(lower(a), lower(b))
+  | Solid.Intersection(a, b) => Solid.Intersection(lower(a), lower(b))
+  | Solid.Translate(by, of) => Solid.Translate(lower-v(by), lower(of))
+  | Solid.Scale(by, of) => Solid.Scale(lower-v(by), lower(of))
+
+/// ============================ @test suite (S3 — units-carrying model + lower, exact meters) ============================
+
+@test
+def a-cube-authored-in-meters-lowers-to-exact-rational() =
+  // Author a 4×2×6-metre box with units; lower to bare Rational meters. The lowered coords are exactly
+  // 4, 2, 6 (the meter magnitudes) — units carried in the model, unwrapped at the render edge.
+  let model = cube-m(meters(4/1), meters(2/1), meters(6/1)) in
+  match lower(model) with
+    | Solid.Cube(v) =>
+      (match v with | Vec3.V3(x, y, z) =>
+        if x == 4/1 then (if z == 6/1 then unit else trap("z")) else trap("x"))
+    | _ => trap("expected a Cube")
+
+@test
+def a-difference-of-units-solids-lowers-recursively() =
+  // A units-carrying CSG tree (cube minus sphere) lowers through the booleans to a bare-Rational tree.
+  let model = difference-m(cube-m(meters(4/1), meters(4/1), meters(4/1)), sphere-m(meters(2/1))) in
+  match lower(model) with | Solid.Difference(a, b) =>
+    (match b with | Solid.Sphere(r) => if r == 2/1 then unit else trap("r") | _ => trap("b"))
+    | _ => trap("diff")
+
+@test
+def a-component-authored-in-inches-lowers-to-exact-meters() =
+  // THE showcase: author a dimension in INCHES; it converts to exact Rational METERS (1 inch = 127/5000 m),
+  // the model carries it as a length, and lower unwraps it to that exact meter magnitude — no float.
+  let inch-x = Qty.of(Qty.value(Unit.in(Unit.of(#"meter"), Qty.of(1/1, Unit.of(#"inch")))), Unit.of(#"meter")) in
+  let model = cube-m(inch-x, meters(1/1), meters(1/1)) in
+  match lower(model) with
+    | Solid.Cube(v) =>
+      (match v with | Vec3.V3(x, _, _) => if x == 127/5000 then unit else trap("1 inch = 127/5000 m"))
+    | _ => trap("expected a Cube")
+
+export { meters, v3m, cube-m, sphere-m, cylinder-m, union-m, difference-m, intersection-m, translate-m, lower-v, lower }

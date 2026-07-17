@@ -953,6 +953,7 @@ pass	a heap arg threaded UNCHANGED to a self-recursive call while a sibling arg 
 pass	a heap capture persists across two applications of a curried closure
 pass	a heap list conditionally escaping into a Some in one branch is still usable after the join
 pass	a heap list consumed in only one if-branch stays live for a use after the if
+pass	a helper called TWICE threads its first write so the second call HITS the memoized value
 pass	a helper decodes bytes to a string and consumes the fallible result
 pass	a helper projects a record parameter constrained by its argument
 pass	a helper projects a tuple parameter constrained by its argument

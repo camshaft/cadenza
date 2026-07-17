@@ -50,6 +50,12 @@ exclude = [
     # tests standalone, run by a dedicated CI job. Excluded up front so later rungs drop in without a
     # workspace-topology change.
     "implementation/seed/crates/cdz-kernel",
+    # `rcdzc-wasm` (the Cadenza compiler as a WASM artifact, v-agent-runtime minimal-kernel K1-dep wasm-swap)
+    # is excluded because it ONLY builds for a wasm target (`cargo build --target wasm32-wasip1 -p rcdzc-wasm`),
+    # like cdz-runtime/cdz-wasm — the native seed `--workspace` build must never try to build a cdylib-for-wasm
+    # crate. It path-deps the member `rcdzc` (an excluded crate may depend on a member, as cdz-smith does). Has
+    # its own `[workspace]` table; a dedicated CI job builds it to wasm + runs its host-side glue tests.
+    "implementation/seed/crates/rcdzc-wasm",
 ]
 
 [profile.dev]

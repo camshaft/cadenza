@@ -3670,3 +3670,28 @@
                   (match (Db.get 5) (((. Option Some) v) (+ a v)) (((. Option None) u) 99)))))
             (export run-then-get)))
   (output (: 50 Int64)))
+
+(case "a helper called TWICE threads its first write so the second call HITS the memoized value"
+  (doc    "The cumulative-loss companion of the single-demand case above — the WIDER witness that a
+           state-advancing helper's write survives across MULTIPLE later calls, not just one. `demand`
+           is a memoizing `demand`: on a MISS it `(Db.put …)` then returns; on a HIT it returns the
+           stored value. `demand 5 25` misses → writes 5↦25 → returns 25. Then `demand 5 999` must HIT
+           the FIRST call's put (`Db.get 5` → Some 25) and return 25 — NOT re-miss and recompute 999. So
+           `a + b` = 25 + 25 = 50. A drop of the FIRST call's out-state across the SECOND call (the
+           cumulative-loss bug the single-demand case cannot catch — it only reads state once) would make
+           the second demand miss → recompute 999 → 1024. Pins that the handler state threads through a
+           CHAIN of helper calls, each seeing every prior call's writes.")
+  (input  (do
+            (effect Db (op get (-> Int64 (Option Int64))) (op put (-> (Tuple Int64 Int64) Unit)))
+            (def (demand (: k Int64) (: compute Int64))
+              (match (Db.get k)
+                (((. Option Some) v) v)
+                (((. Option None) u) (do (Db.put (tuple k compute)) compute))))
+            (def (run-twice)
+              (handle Db (Map.empty)
+                ((get (k) s (resume (Map.lookup s k) s))
+                 (put (kv) s (match kv ((tuple k v) (resume unit (Map.insert s k v))))))
+                (let ((a (demand 5 25)) (b (demand 5 999)))
+                  (+ a b))))
+            (export run-twice)))
+  (output (: 50 Int64)))

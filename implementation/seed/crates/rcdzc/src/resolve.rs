@@ -4642,6 +4642,13 @@ fn decode_ty(db: &Db, node: StructId) -> Option<crate::ty::Ty> {
             "Rational" => Some(Ty::Rational),
             "Float32" => Some(Ty::Float(crate::ty::FloatTy::fixed(32))),
             "Float64" => Some(Ty::Float(crate::ty::FloatTy::fixed(64))),
+            // The KIND-OF-TYPES `Ty::Type`, the dual of `eval::encode_ty`'s `Type` arm. Reaches here when a
+            // `Ty::Type` is encoded inside a compound type-value that round-trips (e.g. `(-> Type Int64)` →
+            // `Ty::Fn(Ty::Type, Int64)`); without it the bare name decoded to `None` and the enclosing type
+            // collapsed the `Type` position to `Unit`. This decodes a bare name INSIDE a compiler-emitted
+            // `(typeval …)` node (not a user type annotation — the reflection module is recognized
+            // structurally elsewhere), so it is internal + consistent, not a prelude name-key.
+            "Type" => Some(Ty::Type),
             _ => None,
         };
     }

@@ -9,9 +9,22 @@
 
 import { read-source } from "sread"
 import { eval-tree } from "eval-db"
+import { is-bool-at } from "infer-db"
 
 /// Read + run a program from its s-expr SOURCE. `Some value` | `None` (declined).
 def run-src(s: String) = match read-source(s) with | (root, tree) => eval-tree(tree, root)
+
+/// Read + run, TAGGING the result with its ground type so the caller can render `true`/`false` for a
+/// Bool-typed program (Core encodes Bool as the Int 0/1, but rcdzc renders it as `true`/`false` — the
+/// differential compares value STRINGS, so the ML side must render the same). `Some (value, isBool)` where
+/// `isBool` is `1` when the program's ROOT is `TBool`, else `0`; `None` when the program declines. One
+/// export (a single tuple-in-Option heap value) → one compile, so the driver stays a single invocation.
+def run-src-typed(s: String) =
+  (match read-source(s) with
+   | (root, tree) =>
+     (match eval-tree(tree, root) with
+      | Option.Some(v) => Option.Some((v, (if is-bool-at(tree, root, root) then 1 else 0)))
+      | Option.None(_) => (Option.None(unit) : Option(Tuple(Int64, Int64)))))
 
 @test
 def se-int-literal() =
@@ -76,4 +89,30 @@ def se-plain-int-still-runs() =
   // regression guard: a CLEAN int literal still runs (the boundary guard only rejects non-clean endings).
   (match run-src("42") with | Option.Some(v) => (if v == 42 then unit else trap("42")) | Option.None(_) => trap("clean int still runs"))
 
-export { run-src }
+@test
+def se-typed-int-flag() =
+  // an INT-valued program tags isBool=0 (renders as a bare scalar).
+  (match run-src-typed("42") with
+   | Option.Some((v, b)) => (if (v == 42 and b == 0) then unit else trap("42 int flag=0"))
+   | Option.None(_) => trap("typed int runs"))
+
+@test
+def se-typed-bool-flag() =
+  // a COMPARISON program is Bool-typed → isBool=1, value 1 (so the caller renders `true`, not `1`).
+  (match run-src-typed("(< 1 2)") with
+   | Option.Some((v, b)) => (if (v == 1 and b == 1) then unit else trap("1<2 bool flag=1"))
+   | Option.None(_) => trap("typed bool runs"))
+
+@test
+def se-typed-bool-false-flag() =
+  // a false comparison → isBool=1, value 0 (caller renders `false`).
+  (match run-src-typed("(< 5 2)") with
+   | Option.Some((v, b)) => (if (v == 0 and b == 1) then unit else trap("5<2 bool flag=1 val=0"))
+   | Option.None(_) => trap("typed bool false runs"))
+
+@test
+def se-typed-declines() =
+  // an out-of-subset / unbound program declines under the typed query too (None, not a fabricated tuple).
+  (match run-src-typed("y") with | Option.None(_) => unit | Option.Some(_) => trap("typed unbound declines"))
+
+export { run-src, run-src-typed }

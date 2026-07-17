@@ -478,7 +478,7 @@ fn run_run_ml(args: &RunMlArgs) -> ExitCode {
         .replace('"', "\\\"")
         .replace('\n', " ");
     let driver = format!(
-        "import {{ run-src }} from \"sread-eval\"\ndef main() = run-src(\"{escaped}\")\nexport {{ main }}\n"
+        "import {{ run-src-typed }} from \"sread-eval\"\ndef main() = run-src-typed(\"{escaped}\")\nexport {{ main }}\n"
     );
 
     // 3. Write the driver INTO the compiler-ml src dir (so `import \"sread-eval\"` resolves — imports are
@@ -563,17 +563,27 @@ fn compile_run_ml_driver(driver_path: &std::path::Path) -> Result<String, String
     Ok(parse_ml_option_render(out.trim()))
 }
 
-/// Map cdz-run's rendered `Option(Int64)` to a verdict. `(: (Some N) (Option Int64))` → `value N` (BARE
-/// scalar, matching rcdzc's Ran::Value render for the differential); `(: (None …) …)` → `declined`; anything
-/// unexpected → `declined` (conservative — never emit a bogus `value`).
+/// Map cdz-run's rendered `Option((Int64, Int64))` to a verdict. The driver calls `run-src-typed`, which
+/// returns `Some (value, isBool)`: rendered as `(: (Some (tuple V B)) (Option (Tuple Int64 Int64)))`. The
+/// verdict is ALWAYS `value <scalar>` (the contract shape the run_ml_cli tests + gate wiring pin) where
+/// `<scalar>` is exactly what `rcdzc`'s `Ran::Value` renders bare, so the differential strips `value ` and
+/// compares the scalar against the oracle:
+///   • `B == 0` (Int-typed program) → `value V` — `V` is the bare integer (`rcdzc` renders e.g. `42`).
+///   • `B == 1` (Bool-typed program) → `value true` / `value false` — Core encodes Bool as the Int 0/1, but
+///     `rcdzc` renders a Bool as `true`/`false`; we render the SAME scalar so the strings agree.
+///   • `(: (None …) …)` (or any unexpected shape) → `declined` (conservative — never emit a bogus `value`).
 fn parse_ml_option_render(rendered: &str) -> String {
-    // Find `(Some ` and take the token up to the next `)`.
-    if let Some(rest) = rendered.split("(Some ").nth(1)
-        && let Some(n) = rest.split(')').next()
+    // Find `(tuple ` (the Some payload) and take the two whitespace-separated tokens up to the next `)`.
+    if let Some(rest) = rendered.split("(tuple ").nth(1)
+        && let Some(inner) = rest.split(')').next()
     {
-        let n = n.trim();
-        if !n.is_empty() {
-            return format!("value {n}");
+        let mut it = inner.split_whitespace();
+        if let (Some(v), Some(b)) = (it.next(), it.next()) {
+            return match b {
+                // Bool-typed: render the scalar rcdzc renders (0 → `false`, non-zero → `true`).
+                "1" => format!("value {}", if v == "0" { "false" } else { "true" }),
+                _ => format!("value {v}"),
+            };
         }
     }
     "declined".to_string()

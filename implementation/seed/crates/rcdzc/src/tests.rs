@@ -31533,6 +31533,89 @@ mod match_engine {
     }
 
     #[test]
+    fn a_both_branches_diverge_if_emits_an_empty_block_not_a_decline() {
+        // `(if b (trap …) (trap …))` — BOTH arms diverge, so the `if` produces no value on any path: its
+        // result type is `Never` (a fresh var / `Any`, no machine rep). Inference types it `Never` (check
+        // passes); before, the `Core::If` emit DECLINED "if result type has no machine representation".
+        // Now `body_diverges` recurses into a `Core::If` (diverges iff BOTH branches do), so the block gets
+        // an EMPTY (0-result) block type and both arms end in `unreachable` — the guest traps at whichever
+        // branch the runtime bool selects. Breaker-found, v-inference ruled option (a). Both selector
+        // values trap (the arm bodies differ only in the trap message).
+        let src = "(module m (def (main (: b Bool)) (if b (trap \"then\") (trap \"else\"))) \
+                   (export main))";
+        let bytes = component(src);
+        for b in [true, false] {
+            assert!(
+                call_traps(&bytes, "main", &[wasmtime::component::Val::Bool(b)]),
+                "both-diverge if (b={b}) must emit a function that TRAPS, not decline"
+            );
+        }
+    }
+
+    #[test]
+    fn a_nested_both_diverge_if_in_value_position_yields_the_outer_value() {
+        // The differential-closing witness (breaker): a both-diverge `if` NESTED as a value subexpression
+        // — `(if b 1 (if c (trap) (trap)))` — declined ONLY on wasm (rust/rust-async compiled + ran to 1).
+        // The inner `if` is `Never`; its EMPTY block yields nothing, so a trailing `unreachable` (stack-
+        // polymorphic) supplies the i64 the OUTER else-arm expects. b=true selects the concrete `1`
+        // (no trap); b=false forces the inner both-diverge `if`, which traps. Pins the outer value flows
+        // AND the nested-Never emit validates in a value position.
+        let src = "(module m (def (main (: b Bool) (: c Bool)) (if b 1 (if c (trap \"x\") (trap \"y\")))) \
+                   (export main))";
+        let bytes = component(src);
+        use wasmtime::component::Val;
+        let got: i64 = run_returns_with(&bytes, "main", &[Val::Bool(true), Val::Bool(true)]);
+        assert_eq!(
+            got, 1,
+            "b=true selects the concrete 1 (the nested Never else-arm is not taken)"
+        );
+        assert!(
+            call_traps(&bytes, "main", &[Val::Bool(false), Val::Bool(true)]),
+            "b=false forces the nested both-diverge if, which must TRAP"
+        );
+    }
+
+    #[test]
+    fn an_all_arms_diverge_match_emits_an_empty_block_not_a_decline() {
+        // The MATCH twin of the both-diverge `if` (breaker): a match whose EVERY arm body diverges is
+        // `Never` (cdz check passes), but the emit DECLINED "match result type has no machine
+        // representation". Now `body_diverges` recurses into `Core::Match`/`MatchList`/`MatchSum` (all arm
+        // bodies / all decision-tree leaves diverge) and the six match block_ty sites emit an empty block
+        // + trailing `unreachable`. A scalar all-diverge match compiles and TRAPS on any scrutinee. (The
+        // sum/list all-diverge shapes also compile + validate — exercised by the standalone compile probes;
+        // a runtime-linked assertion for those needs the heap linker, out of this bare harness's scope.)
+        let src = "(module m (def (main (: n Int64)) (match n (0 (trap \"z\")) (_ (trap \"o\")))) \
+                   (export main))";
+        let bytes = component(src);
+        for n in [5i64, 0i64] {
+            assert!(
+                call_traps(&bytes, "main", &[wasmtime::component::Val::S64(n)]),
+                "an all-diverge match (n={n}) must emit a function that TRAPS, not decline"
+            );
+        }
+    }
+
+    #[test]
+    fn a_nested_all_diverge_match_in_value_position_yields_the_outer_value() {
+        // The value-position witness for the match twin: `(if (> n 0) 1 (match n (0 (trap)) (_ (trap))))`
+        // — the all-diverge match is the outer `if`'s i64 else-arm. Its empty block + trailing
+        // `unreachable` supplies the outer slot. n>0 returns 1; n<=0 forces the match, which traps.
+        let src = "(module m (def (main (: n Int64)) \
+                   (if (> n 0) 1 (match n (0 (trap \"z\")) (_ (trap \"o\"))))) (export main))";
+        let bytes = component(src);
+        use wasmtime::component::Val;
+        let got: i64 = run_returns_with(&bytes, "main", &[Val::S64(5)]);
+        assert_eq!(
+            got, 1,
+            "n>0 selects the concrete 1 (the diverging match is not taken)"
+        );
+        assert!(
+            call_traps(&bytes, "main", &[Val::S64(0)]),
+            "n=0 forces the all-diverge match, which must TRAP"
+        );
+    }
+
+    #[test]
     fn a_body_that_traps_through_a_seq_emits_a_trapping_function() {
         // The divergence detection peers THROUGH a `Core::Seq` (an effect-statement run then a value) to
         // its trapping tail — the shape a unit-test FAILURE path takes: run a `report`/`log` host effect
@@ -44071,6 +44154,65 @@ mod stage1 {
     }
 
     #[test]
+    fn a_scalar_member_access_reports_one_coded_error_not_a_bare_plus_rich_duplicate() {
+        // A direct member access on a non-record scalar `(. 5 x)` used to report TWICE: `infer`'s RICH
+        // "member access requires a record, found Int64" (names the type) AND the emit path's BARE
+        // "member access requires a record" (no type) — at DIFFERENT nodes (the projection vs the enclosing
+        // apply), so the node-keyed dedup missed the pair. `dedup_faults` now drops the bare form when the
+        // rich "…, found <T>" is present. ONE coded error, and it is the type-naming one.
+        let errs: Vec<crate::abi::Diagnostic> = crate::compile::compile(
+            &[crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "m",
+                crate::codec::encode(&parse("(module m (def (main) ((. 5 x))) (export main))")),
+            )],
+            &[crate::backend::Target::Wasm],
+        )
+        .diagnostics
+        .into_iter()
+        .filter(|d| d.severity == crate::abi::Severity::Error)
+        .collect();
+        assert_eq!(
+            errs.len(),
+            1,
+            "a scalar member access = ONE error, got: {:?}",
+            errs.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        assert!(
+            errs[0].message.contains("found Int64"),
+            "the surviving error is the type-naming one: {}",
+            errs[0].message
+        );
+        // The TUPLE-INDEX twin: `(. (tuple 1 2) 5)` similarly reported the bare "tuple index 5 is out of
+        // range" AND the rich "… for a 2-element tuple"; now ONE, the arity-naming one.
+        let terrs: Vec<crate::abi::Diagnostic> = crate::compile::compile(
+            &[crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "m",
+                crate::codec::encode(&parse(
+                    "(module m (def (main) ((. (tuple 1 2) 5))) (export main))",
+                )),
+            )],
+            &[crate::backend::Target::Wasm],
+        )
+        .diagnostics
+        .into_iter()
+        .filter(|d| d.severity == crate::abi::Severity::Error)
+        .collect();
+        assert_eq!(
+            terrs.len(),
+            1,
+            "a tuple index OOB = ONE error, got: {:?}",
+            terrs.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        assert!(
+            terrs[0].message.contains("for a 2-element tuple"),
+            "the surviving error names the arity: {}",
+            terrs[0].message
+        );
+    }
+
+    #[test]
     fn named_member_access_on_a_tuple_points_at_the_numeric_index_form() {
         // A tuple IS a member-access operand — by POSITION, not name. `(. t x)` on a `(Tuple …)` used to
         // give the generic "member access requires a record, found (Tuple …)", a dead end when the real
@@ -52222,6 +52364,55 @@ mod stage1 {
             ),
             cdz_run::Outcome::Trap(t) => panic!("run trapped: {t}"),
         }
+    }
+
+    #[test]
+    fn the_kind_type_under_a_compound_annotation_round_trips_not_collapses_to_unit() {
+        // The `Ty::Type` twin of the `Ty::Var` round-trip fix above: the KIND-OF-TYPES `Type` used INSIDE a
+        // compound annotation — an arrow domain/result `(-> Type Int64)` / `(-> Int64 Type)`, a `(Tuple Type
+        // …)`, a `(Record (kind Type))` — took the `reduce_ctor`→`encode_typeval` round-trip, and `encode_ty`
+        // had NO `Ty::Type` arm, so its catch-all stubbed `Type` as `Unit`. A `(: g (-> Type Int64))` param
+        // then schemed as `(-> (-> Unit Int64) …)`, and passing a real `(-> Type Int64)` value failed CDZ0203
+        // "argument is a Type, but a value of type Unit is expected". Fixed by pairing an `encode_ty`/
+        // `decode_ty` `Type` arm (same class as the Var/Bytes/String/Qty/Nominal round-trip holes). Verified
+        // via the def scheme: `Type` must survive in each compound position, not read `Unit`.
+        let scheme_of = |src: &str, name: &str| {
+            let mut db = crate::db::Db::load(parse(src));
+            let idx = db
+                .defs
+                .iter()
+                .position(|d| d.name == name)
+                .expect("def present");
+            crate::infer::def_scheme(&mut db, idx)
+                .map(|s| s.ty.render_name())
+                .unwrap_or_else(|| "<none>".to_string())
+        };
+        // Arrow DOMAIN: `(: g (-> Type Int64))` — g's type must stay `(-> Type Int64)`, not `(-> Unit Int64)`.
+        let dom = scheme_of(
+            "(module m (def (f (: g (-> Type Int64)) (: t Type)) (g t)) (export f))",
+            "f",
+        );
+        assert!(
+            dom.contains("(-> Type Int64)") && !dom.contains("(-> Unit Int64)"),
+            "Type in an arrow domain round-trips (not Unit): {dom}"
+        );
+        // TUPLE element + arrow RESULT.
+        let tup = scheme_of(
+            "(module m (def (f (: p (Tuple Type Int64))) 0) (export f))",
+            "f",
+        );
+        assert!(
+            tup.contains("(Tuple Type Int64)"),
+            "Type as a tuple element round-trips: {tup}"
+        );
+        let res = scheme_of(
+            "(module m (def (f (: g (-> Int64 Type))) 0) (export f))",
+            "f",
+        );
+        assert!(
+            res.contains("(-> Int64 Type)") && !res.contains("(-> Int64 Unit)"),
+            "Type in an arrow result round-trips: {res}"
+        );
     }
 
     #[test]
@@ -73852,6 +74043,78 @@ mod cross_component_oracle {
                 "a peer-returned list crosses as a handle; List.len reads it over the shared runtime"
             ),
             cdz_run::Outcome::Trap(t) => panic!("list-result run trapped: {t}"),
+        }
+    }
+
+    #[test]
+    fn a_peer_op_returning_a_tuple_with_a_variable_length_list_element_crosses() {
+        use crate::testkit::parse;
+        // A peer op returning a TUPLE whose element is a VARIABLE-LENGTH collection — `(Tuple (List Int64)
+        // Int64)` — crosses as a handle and BOTH fields (the dynamic-depth list + the scalar) read back
+        // over the shared runtime. This is the peer face of the nested-collection resource-escape routing
+        // (a Tuple/Record with a variable-length element has no fixed-hole `runtime_value_form_template`,
+        // so it escapes via the recursive-sum `value-encode` walker that loops to runtime depth — a peer
+        // op returning it flows through the SAME emit path as the fused peer envelope). Before that routing
+        // a peer op with this result declined ("value-form walker that loops to a runtime-determined depth
+        // is not yet emitted"). The earlier peer-List/Set/compound pins cover a FIXED-shape or bare-
+        // collection result; this covers a COMPOUND whose element is itself dynamic-depth.
+        //
+        // PROVIDER: mk(x) = (tuple [x, x+1, x+2], x*10) — a runtime-built list paired with a scalar.
+        let provider = compile_provider(
+            "(do (def (mk (: x Int64)) (tuple (list x (+ x 1) (+ x 2)) (* x 10))) (export mk))",
+            "cadenza:p/api",
+        );
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&provider)
+                .expect("the tuple-with-list provider validates");
+        }
+        // CONSUMER: binds it, reads BOTH fields of the crossed tuple — List.len of the variable-length
+        // element (field 0) + the scalar (field 1) — proving the dynamic-depth element survived the
+        // crossing intact, not just the scalar. main returns a scalar so the entrypoint result stays
+        // scalar (the compound crosses only at the peer boundary).
+        let src = "(do \
+            (effect P (op mk (-> Int64 (Tuple (List Int64) Int64)))) \
+            (bind P \"cadenza:p/api\") \
+            (def (main (: x Int64)) (host (P) (+ (List.len (. (P.mk x) 0)) (. (P.mk x) 1)))) \
+            (export main))";
+        let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .unwrap_or_else(|d| {
+                panic!(
+                    "tuple-with-list consumer compiles: {} [{:?}]",
+                    d.message, d.code
+                )
+            });
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&consumer)
+                .expect("tuple-with-list consumer validates");
+        }
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("[tuple-with-list] runtime wasm not found; skipping the run");
+            return;
+        };
+        let peers = vec![cdz_run::Peer {
+            bytes: provider,
+            interface: "cadenza:p/api".to_string(),
+        }];
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec!["4".to_string()],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run_with_peers(&consumer, &peers, &opts)
+            .expect("a peer op returning a tuple-with-a-list crosses")
+        {
+            // mk(4) = ([4,5,6], 40); List.len(field0) = 3 + field1 = 40 → 43. The variable-length list
+            // element inside the peer-returned tuple crossed as a handle and read back correctly.
+            cdz_run::Outcome::Value(s) => assert_eq!(
+                s, "43",
+                "a peer-returned tuple with a variable-length list element crosses; both fields read"
+            ),
+            cdz_run::Outcome::Trap(t) => panic!("tuple-with-list run trapped: {t}"),
         }
     }
 

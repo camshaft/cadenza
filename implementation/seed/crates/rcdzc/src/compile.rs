@@ -3202,6 +3202,27 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>, has_bakeable_type_export: bool) ->
     let has_tuple_by_name_reject = faults
         .iter()
         .any(|r| r.message.contains(crate::diag::TUPLE_BY_NAME_MARKER));
+    // A DIRECT member access on a non-record scalar (`(. 5 x)`) produces BOTH `infer`'s rich reject
+    // "member access requires a record, found Int64" (names the type) AND the emit path's BARE
+    // `MEMBER_NOT_RECORD_DECLINE` "member access requires a record" (no ", found <T>") — at DIFFERENT nodes
+    // (the projection vs the enclosing apply), so the node-keyed dedup misses the pair and BOTH leak. The
+    // rich one is the primary; drop the bare one whenever the rich "…, found <T>" form is present. Keyed on
+    // the ", found" tail the rich message always carries and the bare lowering decline never does — so this
+    // can never swallow a genuine standalone bare decline (there is none without the rich twin here). This
+    // generalizes the tuple-by-name / value-head drops above to the plain scalar-member-access case.
+    let has_member_not_record_found = faults.iter().any(|r| {
+        r.message
+            .starts_with(crate::diag::MEMBER_NOT_RECORD_DECLINE)
+            && r.message.contains(", found ")
+    });
+    // The exact TUPLE-INDEX analogue: `(. (tuple 1 2) 5)` leaks `infer`'s rich "tuple index 5 is out of
+    // range for a 2-element tuple" (names the arity) AND `lower`'s bare "tuple index 5 is out of range"
+    // (no arity), at different nodes → both leak. Drop the bare form when the rich "… for a N-element
+    // tuple" form is present. Keyed on the shared "tuple index " prefix + the " for a " tail the rich
+    // message carries and the bare lowering one never does.
+    let has_tuple_index_oob_with_arity = faults
+        .iter()
+        .any(|r| r.message.starts_with("tuple index ") && r.message.contains(" for a "));
     // Likewise: a `handle` whose HEAD names a VALUE (`(handle foo …)`) is rejected CDZ0201 at the head. The
     // head is desugared into each arm's `(. foo op)` projection, so the value head ALSO leaks a CDZ0201
     // "member access requires a record, found <T>" (from `(. foo op)`) and the uncoded fold-decline — both
@@ -3588,6 +3609,20 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>, has_bakeable_type_export: bool) ->
             // the def. Drop the bare decline (an EXACT match — the lowering form has no ", found <T>" tail,
             // which infer's own non-record message always carries, so this never hides a genuine primary).
             if has_tuple_by_name_reject && r.message == crate::diag::MEMBER_NOT_RECORD_DECLINE {
+                return false;
+            }
+            // A direct scalar member access leaks the BARE "member access requires a record" alongside
+            // `infer`'s rich "…, found <T>" — same defect, weaker (typeless) message. Drop the bare one when
+            // the rich form is present (EXACT match — the bare form has no ", found <T>" tail).
+            if has_member_not_record_found && r.message == crate::diag::MEMBER_NOT_RECORD_DECLINE {
+                return false;
+            }
+            // The tuple-index-out-of-range twin: drop `lower`'s bare "tuple index N is out of range" when
+            // `infer`'s rich "… for a M-element tuple" is present (bare = no " for a " tail).
+            if has_tuple_index_oob_with_arity
+                && r.message.starts_with("tuple index ")
+                && !r.message.contains(" for a ")
+            {
                 return false;
             }
             // A `handle` whose HEAD is not an effect leaks a consequent from the desugared `(. head op)`

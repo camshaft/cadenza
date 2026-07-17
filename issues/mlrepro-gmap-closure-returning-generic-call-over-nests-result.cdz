@@ -1,0 +1,53 @@
+;; RESIDUAL of the _w44 closure-aggregate tie (v-inference, root-caused _w51 tick). Filed as concat-map
+;; (flatten . gmap-to-iter) by v-iterators, but NARROWED: flatten is NOT involved — the bug is `gmap`
+;; alone with a closure whose result is ANOTHER GENERIC-PRODUCER CALL.
+;;
+;; `gmap(from-list([1,2]), fn(x) => from-list([x]))` — the closure `fn(x) => from-list([x])` returns
+;; `(GIter Int64)`, but gmap's `f`-result is inferred ONE GIter TOO DEEP. gmap's monomorphized scheme:
+;;   (-> (GIter Int64) (-> (-> Int64 (GIter (GIter Int64))) (GIter (GIter (GIter Int64)))))
+;; — the `f` domain result should be (GIter Int64), not (GIter (GIter Int64)). So the real closure arg
+;; (-> Int64 (GIter Int64)) mismatches → CDZ0203 "match arms differ: (GIter Int64) vs (GIter (GIter
+;; Int64)) — payload should be (GIter Int64) but this one is (GIter Int64)". `cdz check` PASSES;
+;; `cdz test`/compile DECLINES (check≡compile discrepancy).
+;;
+;; DEEPER (_w53 probe): the BARE closure `fn(x) => from-list([x])` types `(-> Any (GIter <freevar>))` —
+;; its result `(GIter a)` has a FREE var NOT tied to the param `x` (from-list([x]) instantiates from-list's
+;; scheme with a fresh element var rather than tying it to x). The apply_scheme_to_args closure-arg RECOVERY
+;; (infer.rs ~4896, `if at.has_any()` → solved_lambda_arrow_under) that _w44 relies on is NOT reached for
+;; this shape (verified: the SLAU probe never fires) — so the untied `(GIter a)` flows into gmap's f-result
+;; `b` (b=(GIter a)), and gmap's own result (GIter b) compounds to (GIter (GIter a)); a further layer from
+;; the monomorphization freshen makes the scheme render TRIPLE-nested. FIX is a careful apply_scheme_to_args
+;; / from-list-scheme-instantiation change (tie the nested generic-call's element to the closure param, OR
+;; get the closure-arg recovery to fire for a free-var-result body not just an Any-result one) — DEEP hot
+;; path, 2 ticks of investigation, NOT yet safe to land. This is the standing next-increment deep target.
+;;
+;; DECISIVE ISOLATION (_w52 probe): the over-nest is SPECIFIC to a closure body that is a generic-
+;; PRODUCER CALL. Verified: gmap with `fn(x) => GIter.Cons(x, GIter.Nil(unit))` (a DIRECT constructor
+;; returning (GIter Int64)) PASSES with the CORRECT scheme `(-> (GIter Int64) (-> (-> Int64 (GIter Int64))
+;; (GIter (GIter Int64))))`; only `fn(x) => from-list([x])` (a recursive-generic-def CALL) over-nests. So
+;; _w44's db.param_types seeding is fine (direct Cons works) — the extra GIter enters when `from-list`'s
+;; OWN scheme is INSTANTIATED as the closure body under gmap's f-domain context: from-list's result element
+;; `a` gets wrapped one level too deep. FIX LOCUS: apply_type / apply_scheme_to_args instantiating a nested
+;; generic-producer call whose arg element ties to the seeded closure param.
+;;
+;; SIBLING of _w44 (565f6d184): _w44 tied a closure's DIRECT aggregate result (`(x,x)`, `Box.B(x)`) to its
+;; domain via `solved_lambda_arrow_under` seeding db.param_types. THIS case: the closure body is a NESTED
+;; GENERIC CALL (`from-list([x])`), whose OWN scheme instantiation adds a spurious GIter layer when solved
+;; under gmap's f-domain. FIX LOCUS (next increment): where `solved_lambda_arrow`/`_under` types a closure
+;; body that is a generic-producer call — the producer's result element must tie to the closure param
+;; WITHOUT re-wrapping. Likely the producer call's result var is unified with the ALREADY-GIter element
+;; instead of the element itself (off-by-one nesting). DEEP hot-path change — investigate + gate hard.
+;; concat-map (flatten . gmap) is the same bug one level up; v-iterators' cumulative giter+flatten residual
+;; likely also this at scale.
+type GIter = | Nil | Cons(a, GIter(a))
+def from-list(xs) = match xs with
+  | [] => GIter.Nil(unit)
+  | [h, .. t] => GIter.Cons(h, from-list(t))
+def count(it) = match it with
+  | GIter.Nil(_) => 0
+  | GIter.Cons(_, rest) => 1 + count(rest)
+def gmap(it, f) = match it with
+  | GIter.Nil(_) => GIter.Nil(unit)
+  | GIter.Cons(h, rest) => GIter.Cons(f(h), gmap(rest, f))
+@test
+def t() = if count(gmap(from-list([1,2]), fn(x) => from-list([x]))) == 2 then unit else trap("t")

@@ -91,9 +91,39 @@ The balance over three years — drag a control and the curve moves:
 (def (main) (list (tuple 0 principal) (tuple 1 year1) (tuple 2 year2) (tuple 3 year3)))
 ~~~`;
 
+/// A projectile-motion showcase: two sliders (upward velocity + gravity) drive a live height-vs-time
+/// parabola. Height at time t is v*t - 0.5*g*t*t, evaluated at a few discrete t with +/-/* on Float64
+/// literals (no sqrt/division — keeps it browser-self-contained like the others). The chart:line traces
+/// the arc; drag either slider and the parabola reshapes.
+const PROJECTILE = `# Projectile motion
+
+Launch straight up with a **velocity**, pulled down by **gravity** — the height traces a parabola.
+
+~~~cadenza widget
+velocity : Float64 = slider(0.0, 50.0, step: 1.0, default: 30.0)
+gravity : Float64 = slider(1.0, 20.0, step: 0.5, default: 9.8)
+~~~
+
+Height at a few times \`t\` (height = velocity·t − ½·gravity·t·t):
+
+~~~cadenza
+(def (h1) (- (* velocity 1.0) (* (* 0.5 gravity) (* 1.0 1.0))))
+(def (h2) (- (* velocity 2.0) (* (* 0.5 gravity) (* 2.0 2.0))))
+(def (h3) (- (* velocity 3.0) (* (* 0.5 gravity) (* 3.0 3.0))))
+(def (h4) (- (* velocity 4.0) (* (* 0.5 gravity) (* 4.0 4.0))))
+(def (main) h2)
+~~~
+
+The trajectory over time — drag velocity or gravity and the arc moves:
+
+~~~cadenza chart:line
+(def (main) (list (tuple 0 0.0) (tuple 1 h1) (tuple 2 h2) (tuple 3 h3) (tuple 4 h4)))
+~~~`;
+
 export const EXAMPLES: ExampleNotebook[] = [
   { slug: "compound-interest", title: "Compound interest", markdown: COMPOUND_INTEREST },
   { slug: "loan", title: "Loan repayment", markdown: LOAN },
+  { slug: "projectile", title: "Projectile motion", markdown: PROJECTILE },
   { slug: "tables", title: "Tables", markdown: TABLE_DEMO },
   { slug: "charts", title: "Charts", markdown: CHART_DEMO },
   { slug: "values", title: "Values", markdown: VALUE_DEMO },

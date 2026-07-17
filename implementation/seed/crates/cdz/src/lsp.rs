@@ -41,7 +41,8 @@ use lsp_types::notification::{
 use lsp_types::request::{
     CodeActionRequest, CodeLensRequest, Completion, DocumentHighlightRequest,
     DocumentSymbolRequest, FoldingRangeRequest, GotoDefinition, HoverRequest, References, Rename,
-    Request as _, SemanticTokensFullRequest, Shutdown, WorkspaceSymbolRequest,
+    Request as _, SelectionRangeRequest, SemanticTokensFullRequest, Shutdown,
+    WorkspaceSymbolRequest,
 };
 use lsp_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionParams, CodeActionResponse,
@@ -52,12 +53,13 @@ use lsp_types::{
     DocumentSymbolResponse, FoldingRange, FoldingRangeParams, GotoDefinitionParams,
     GotoDefinitionResponse, Hover, HoverContents, HoverParams, HoverProviderCapability,
     InitializeParams, InitializeResult, Location, MarkedString, Position, PublishDiagnosticsParams,
-    Range, ReferenceParams, RenameParams, SemanticToken, SemanticTokenType, SemanticTokens,
-    SemanticTokensFullOptions, SemanticTokensLegend, SemanticTokensOptions, SemanticTokensParams,
-    SemanticTokensResult, SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo,
-    SymbolInformation, SymbolKind, TextDocumentContentChangeEvent, TextDocumentSyncCapability,
-    TextDocumentSyncKind, TextEdit, Uri, WorkDoneProgressOptions, WorkspaceEdit,
-    WorkspaceSymbolParams, WorkspaceSymbolResponse,
+    Range, ReferenceParams, RenameParams, SelectionRange, SelectionRangeParams, SemanticToken,
+    SemanticTokenType, SemanticTokens, SemanticTokensFullOptions, SemanticTokensLegend,
+    SemanticTokensOptions, SemanticTokensParams, SemanticTokensResult,
+    SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo, SymbolInformation,
+    SymbolKind, TextDocumentContentChangeEvent, TextDocumentSyncCapability, TextDocumentSyncKind,
+    TextEdit, Uri, WorkDoneProgressOptions, WorkspaceEdit, WorkspaceSymbolParams,
+    WorkspaceSymbolResponse,
 };
 
 /// Run the stdio LSP server to completion: perform the initialize handshake, then loop over incoming
@@ -128,6 +130,9 @@ fn capabilities() -> ServerCapabilities {
         // Folding ranges — collapse each multi-line top-level form (the `(def …)`/`(type …)`/`(module
         // …)` a declaration spans). Structural, from the parse tree's top-level spans; no query needed.
         folding_range_provider: Some(lsp_types::FoldingRangeProviderCapability::Simple(true)),
+        // Smart-expand selection (Ctrl+Shift+→) — from the cursor, the nested chain of enclosing syntax
+        // nodes (innermost first), each the parent of the previous. Built from span containment; no query.
+        selection_range_provider: Some(lsp_types::SelectionRangeProviderCapability::Simple(true)),
         // Completion with no trigger characters — the client invokes it on the usual identifier typing /
         // Ctrl-Space. We return the full candidate set (locals + top-level symbols) and let the client
         // filter by the typed prefix (the standard "server offers, client filters" model).
@@ -318,6 +323,11 @@ impl Server {
             FoldingRangeRequest::METHOD => {
                 let (id, params) = cast_request::<FoldingRangeRequest>(req)?;
                 let result = self.folding_range(&params);
+                self.send_response(Response::new_ok(id, result))
+            }
+            SelectionRangeRequest::METHOD => {
+                let (id, params) = cast_request::<SelectionRangeRequest>(req)?;
+                let result = self.selection_range(&params);
                 self.send_response(Response::new_ok(id, result))
             }
             Completion::METHOD => {
@@ -591,6 +601,24 @@ impl Server {
     fn folding_range(&self, params: &FoldingRangeParams) -> Option<Vec<FoldingRange>> {
         let doc = self.docs.get(&params.text_document.uri)?;
         Some(folding_ranges_for(&doc.text, doc.is_ml))
+    }
+
+    /// Answer a `textDocument/selectionRange`: for each requested position, the nested chain of enclosing
+    /// syntax nodes (innermost node first, each the `parent` of the previous), so the editor's
+    /// expand-selection (Ctrl+Shift+→) grows the selection along real syntax boundaries. Built purely from
+    /// span containment (every node span covering the cursor, smallest→largest) — no query. The protocol
+    /// requires one `SelectionRange` per input position, in order; a position that resolves to no node
+    /// yields a degenerate empty range at that position (never fewer entries than positions). `None` when
+    /// the document is not open.
+    fn selection_range(&self, params: &SelectionRangeParams) -> Option<Vec<SelectionRange>> {
+        let doc = self.docs.get(&params.text_document.uri)?;
+        Some(
+            params
+                .positions
+                .iter()
+                .map(|&pos| selection_range_at(&doc.text, doc.is_ml, pos))
+                .collect(),
+        )
     }
 
     /// Answer a `textDocument/completion`: the names in scope at the cursor — local bindings (backed by
@@ -2262,11 +2290,27 @@ fn folding_ranges_for(text: &str, is_ml: bool) -> Vec<FoldingRange> {
     };
     let mut out = Vec::new();
     for item in items {
-        // Fold the form INCLUDING a leading doc/comment wrapper (so the fold covers the whole
-        // declaration), so take the span of the item as-parsed, not the comment-unwrapped inner node.
-        let Some(span) = spans.get(item) else {
-            continue;
-        };
+        fold_item(&arenas, &spans, text, item, &mut out);
+    }
+    out
+}
+
+/// Emit a `FoldingRange` for `item` if it spans ≥2 lines, then — if `item` is a `(module …)` — RECURSE
+/// into its members so a multi-line declaration NESTED in a module folds too (the "nesting module members
+/// is a later refinement" the outline doc-comment promised). One level of nesting matches Cadenza's
+/// structure (top-level declarations, optionally grouped under a module); a member that is itself a module
+/// recurses again. The module's own fold (emitted first) covers the whole block; each member fold is a
+/// sub-region an editor nests under it.
+fn fold_item(
+    arenas: &cadenza_syntax::Arenas,
+    spans: &cadenza_syntax::spans::SpanTable,
+    text: &str,
+    item: cadenza_syntax::StructId,
+    out: &mut Vec<FoldingRange>,
+) {
+    // Fold the form INCLUDING a leading doc/comment wrapper (so the fold covers the whole declaration),
+    // so take the span of the item as-parsed, not the comment-unwrapped inner node.
+    if let Some(span) = spans.get(item) {
         let range = byte_range_to_range(text, span.start, span.end);
         // Only a genuinely multi-line form is foldable.
         if range.end.line > range.start.line {
@@ -2280,7 +2324,56 @@ fn folding_ranges_for(text: &str, is_ml: bool) -> Vec<FoldingRange> {
             });
         }
     }
-    out
+    // A `(module name member…)` groups declarations — recurse into its members (the tail past the name)
+    // so a multi-line member folds on its own. `as_form` reads through the comment wrapper.
+    let inner = crate::unwrap_comment(arenas, item);
+    if let Some(tail) = arenas.as_form(inner, "module") {
+        // Skip element 0 (the module NAME); the rest are its member declarations.
+        for &member in tail.iter().skip(1) {
+            fold_item(arenas, spans, text, member, out);
+        }
+    }
+}
+
+/// The selection-range chain at `pos`: the nested enclosing syntax nodes, innermost first, each linked as
+/// the `parent` of the previous. Built from SPAN CONTAINMENT — every node span covering the cursor byte,
+/// deduped by `(start, end)` and ordered smallest→largest — the same containment model `node_at_offset`
+/// uses, so the innermost entry matches a go-to-definition/hover resolution. Distinct-width ordering makes
+/// the chain strictly nested (an editor's expand-selection steps out one syntactic level at a time). A
+/// cursor over no node (an empty/unparseable buffer, or a position past the end) yields a degenerate
+/// empty range AT the cursor — the protocol wants one entry per requested position, never a gap.
+fn selection_range_at(text: &str, is_ml: bool, pos: Position) -> SelectionRange {
+    let byte = position_to_byte(text, pos);
+    let empty = SelectionRange {
+        range: Range::new(pos, pos),
+        parent: None,
+    };
+    let Ok((_arenas, spans, _errors)) = parse_surface(text, is_ml) else {
+        return empty;
+    };
+    // Collect every node span that contains the cursor, as `(start, end)` byte pairs.
+    let mut ranges: Vec<(usize, usize)> = (0..spans.len())
+        .filter_map(|i| spans.get(cadenza_syntax::StructId(i as u32)))
+        .filter(|s| s.contains(byte))
+        .map(|s| (s.start, s.end))
+        .collect();
+    if ranges.is_empty() {
+        return empty;
+    }
+    // Dedup identical spans (several nodes can share one span), then order smallest→largest so the chain
+    // is strictly nested from the innermost node outward.
+    ranges.sort_by_key(|&(s, e)| (e - s, s));
+    ranges.dedup();
+    // Build the chain from the OUTERMOST inward so each inner range boxes the outer as its `parent`.
+    let mut chain: Option<Box<SelectionRange>> = None;
+    for &(start, end) in ranges.iter().rev() {
+        chain = Some(Box::new(SelectionRange {
+            range: byte_range_to_range(text, start, end),
+            parent: chain,
+        }));
+    }
+    // `chain` is non-None (ranges was non-empty) — unbox the innermost entry as the returned root.
+    *chain.expect("ranges was non-empty, so the chain has at least one entry")
 }
 
 /// Map a `Symbols`-query kind spelling to the LSP `SymbolKind` for the outline. `value`→CONSTANT,
@@ -4129,6 +4222,27 @@ mod tests {
     }
 
     #[test]
+    fn folding_ranges_recurse_into_module_members() {
+        // A module with a multi-line member: the module block folds AND its inner multi-line def folds too
+        // (the module-member refinement — a def nested in a module is foldable on its own, not just the
+        // whole module). Use the s-expr surface for an unambiguous `(module …)` shape.
+        // Lines: 0 `(module m`, 1 `  (def (inner x)`, 2 `    x)`, 3 `  (def (other) 1))`.
+        let text = "(module m\n  (def (inner x)\n    x)\n  (def (other) 1))";
+        let ranges = folding_ranges_for(text, false);
+        let spans: Vec<(u32, u32)> = ranges.iter().map(|r| (r.start_line, r.end_line)).collect();
+        // The whole module (line 0 → 3) folds.
+        assert!(
+            spans.iter().any(|&(s, e)| s == 0 && e == 3),
+            "the module block folds (0-3): {spans:?}"
+        );
+        // The multi-line member `inner` (lines 1-2) folds as its own sub-region — the refinement.
+        assert!(
+            spans.iter().any(|&(s, e)| s == 1 && e == 2),
+            "the multi-line module member `inner` (1-2) folds: {spans:?}"
+        );
+    }
+
+    #[test]
     fn folding_range_capability_is_advertised() {
         let value = serde_json::to_value(capabilities()).expect("serializes");
         // `foldingRangeProvider` serializes to `true` for the Simple(true) capability.
@@ -4151,6 +4265,104 @@ mod tests {
         assert!(
             server.folding_range(&params).is_none(),
             "foldingRange on an unopened document must be None"
+        );
+    }
+
+    /// The chain of ranges (innermost → outermost) a `SelectionRange` links via `parent`, as byte-agnostic
+    /// (line, char)-tuple pairs, for terse assertions.
+    fn selection_chain(sr: &SelectionRange) -> Vec<((u32, u32), (u32, u32))> {
+        let mut out = Vec::new();
+        let mut cur = Some(sr);
+        while let Some(s) = cur {
+            out.push((lc(s.range.start), lc(s.range.end)));
+            cur = s.parent.as_deref();
+        }
+        out
+    }
+
+    #[test]
+    fn selection_range_is_a_strictly_nested_chain_from_the_cursor_outward() {
+        // Cursor on `x` inside `(if (= n 0) x …)`: the expand chain steps out through the enclosing forms,
+        // each range strictly containing the previous (innermost first). We assert the chain is non-empty,
+        // starts at the tightest node covering the cursor, and each parent strictly contains its child.
+        let text = "(do (def (f (: n Int64)) (if (= n 0) x n)) (export f))";
+        // Byte offset of the lone `x` (the then-branch). Find it.
+        let cursor_byte = text.find(" x n)").unwrap() + 1;
+        let pos = byte_to_position(text, cursor_byte);
+        let sr = selection_range_at(text, false, pos);
+        let chain = selection_chain(&sr);
+        assert!(
+            chain.len() >= 2,
+            "expand-selection yields a nested chain (node + enclosers): {chain:?}"
+        );
+        // Innermost range covers the cursor position.
+        let (inner_start, inner_end) = chain[0];
+        assert!(
+            inner_start <= lc(pos) && lc(pos) <= inner_end,
+            "innermost range covers the cursor: {chain:?}"
+        );
+        // Strictly nested: each successive (parent) range contains the previous (child) and is not smaller.
+        for w in chain.windows(2) {
+            let (child, parent) = (w[0], w[1]);
+            assert!(
+                parent.0 <= child.0 && child.1 <= parent.1,
+                "each parent range contains its child: parent={parent:?} child={child:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn selection_range_handler_returns_one_entry_per_position() {
+        // The protocol requires one SelectionRange per requested position, in order — even for a position
+        // over no node (which yields a degenerate empty range, never a missing entry).
+        let (mut server, _client) = memory_server();
+        let uri = test_uri();
+        server
+            .handle_notification(did_open_note(&uri, "def answer = 42"))
+            .expect("didOpen");
+        let params = SelectionRangeParams {
+            text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+            positions: vec![Position::new(0, 4), Position::new(9, 9)], // on `answer`, and past the end
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        };
+        let ranges = server.selection_range(&params).expect("a response");
+        assert_eq!(
+            ranges.len(),
+            2,
+            "one SelectionRange per requested position, in order"
+        );
+        // The out-of-range position degenerates to an empty range AT that position (start == end).
+        assert_eq!(
+            ranges[1].range.start, ranges[1].range.end,
+            "a position over no node yields a degenerate empty range, not a missing entry"
+        );
+    }
+
+    #[test]
+    fn selection_range_handler_returns_none_on_an_unopened_document() {
+        let (server, _client) = memory_server();
+        let params = SelectionRangeParams {
+            text_document: lsp_types::TextDocumentIdentifier { uri: test_uri() },
+            positions: vec![Position::new(0, 0)],
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        };
+        assert!(
+            server.selection_range(&params).is_none(),
+            "selectionRange on an unopened document must be None"
+        );
+    }
+
+    #[test]
+    fn selection_range_capability_is_advertised() {
+        let value = serde_json::to_value(capabilities()).expect("serializes");
+        assert_eq!(
+            value
+                .get("selectionRangeProvider")
+                .and_then(|v| v.as_bool()),
+            Some(true),
+            "selectionRangeProvider must be advertised: {value}"
         );
     }
 

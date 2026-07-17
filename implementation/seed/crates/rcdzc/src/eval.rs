@@ -3106,6 +3106,17 @@ fn encode_ty(db: &mut Db, ty: &crate::ty::Ty) -> StructId {
             });
             db.push_list(vec![head, num])
         }
+        // The KIND-OF-TYPES `Ty::Type` — a first-class type value (`(: t Type)`'s `Type`). It reaches a
+        // built type-value the SAME way `Ty::Var` does: inside a compound that takes the
+        // `reduce_ctor`→`encode_typeval` round-trip. `(: g (-> Type Int64))` builds `Ty::Fn(Ty::Type,
+        // Int64)`, and `FnCtor` has no direct fast path, so the whole `Ty` is encoded — WITHOUT this arm the
+        // catch-all below stubbed `Type` as `Unit`, so the def scheme read `(-> (-> Unit Int64) …)` instead
+        // of `(-> (-> Type Int64) …)`, and passing a real `(-> Type Int64)` closure failed CDZ0203
+        // "argument is a Type, but a value of type Unit is expected". The exact `Type` twin of the `Var`
+        // round-trip hole (same class as Bytes/String/Char/Symbol/Qty/Nominal). A bare `(: t Type)`
+        // (`typeval_of` returns `Ty::Type` directly, never encoded) was unaffected — only `Type` under a
+        // compound (an arrow domain/result) hit this. Round-trips with `decode_ty`'s `"Type"` arm.
+        Ty::Type => db.push_name("Type"),
         // Any shouldn't reach a built type-value in Milestone A; encode Unit as a safe stub.
         _ => db.push_name("Unit"),
     }

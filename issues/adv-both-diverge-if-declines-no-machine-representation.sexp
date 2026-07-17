@@ -30,3 +30,16 @@
   (input (do (def (main (: b Bool)) (if b (trap "then") (trap "else"))) (export main)))
   (call  main (: true Bool))
   (trap  "unreachable"))
+
+; TWIN (breaker 2026-07-17): the SAME gap exists in the MATCH emit — all-diverging arms decline
+; "match result type has no machine representation" (check passes rc=0, infer types it Never; declines at
+; compile). Uniform wasm+rust+rust-async. Loci: select.rs Core::Match ~:575, MatchSum ~:616, MatchList ~:621
+; — same block_ty computation as Core::If ~:4581. v-wasm-opt asked to fix ALL loci via one shared
+; "BlockType::Empty when result is Never" helper. Promote BOTH the if AND this match case once the fix lands.
+(case "a match whose all arms diverge is Never and always traps"
+  (doc "all arms of (match n (0 (trap)) (_ (trap))) are Never; the match is Never. Currently DECLINES
+        'match result type has no machine representation' — the match twin of the both-diverge if. Expected
+        under ruling (a): traps unreachable. Promote once the shared block_ty-Never fix lands.")
+  (input (do (def (main (: n Int64)) (match n (0 (trap "zero")) (_ (trap "other")))) (export main)))
+  (call  main (: 0 Int64))
+  (trap  "unreachable"))

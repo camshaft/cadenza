@@ -361,4 +361,13 @@ jobs:
           npm run check:prose
           npm run check:examples
           npm run check:calculator
+          # Compiler-conformance guards that a per-example check can't cover, each catching a fleet-wide
+          # regression a reader would otherwise hit in the browser:
+          #  - worker-stack: a module-qualified program must compile in a constrained-stack worker (a deep
+          #    recursion that overflows ONLY the browser worker — check:examples runs main-thread + misses it).
+          #  - tuple-collection: a runtime-built collection nested in a tuple must cross the host boundary +
+          #    render (self-activating — SKIPs if the compiler feature regresses to the known decline, ASSERTs
+          #    the rendered value otherwise). Guards the "show data + result" example pattern.
+          npm run check:worker-stack
+          npm run check:tuple-collection
           npm run build
