@@ -25,6 +25,7 @@ type Core =
   | CVar(Int64)               // CVar(binderId) — canonical, resolved
   | CBin(Int64, Core, Core)   // CBin(op, left, right)
   | CLet(Int64, Core, Core)   // CLet(binderId, value, body)
+  | CIf(Core, Core, Core)     // CIf(cond, then, else)
 
 /// Lower the subtree at `id`, reading the pre-built resolve column `rcol` (for var canonicalization) and
 /// type column `tcol` (the well-typed gate). Returns `Option(Core)` — `None` if this node or any descendant
@@ -62,6 +63,18 @@ def lower-ok(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64,
           | Option.Some(cv) =>
             (match lower-node(tree, bodyId, rcol, tcol) with
               | Option.Some(cb) => Option.Some(Core.CLet(id, cv, cb))
+              | Option.None(_) => Option.None(unit))
+          | Option.None(_) => Option.None(unit))
+    | Option.Some(Node.NIf(condId, thenId, elseId)) =>
+        // lower all three children; the if lowers iff all three lower (infer already proved cond Bool and the
+        // branches same-typed, so a Some here is a well-typed CIf).
+        (match lower-node(tree, condId, rcol, tcol) with
+          | Option.Some(cc) =>
+            (match lower-node(tree, thenId, rcol, tcol) with
+              | Option.Some(ct) =>
+                (match lower-node(tree, elseId, rcol, tcol) with
+                  | Option.Some(ce) => Option.Some(Core.CIf(cc, ct, ce))
+                  | Option.None(_) => Option.None(unit))
               | Option.None(_) => Option.None(unit))
           | Option.None(_) => Option.None(unit))
     | Option.None(_) => Option.None(unit)

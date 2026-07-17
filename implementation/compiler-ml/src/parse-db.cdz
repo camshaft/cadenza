@@ -22,10 +22,13 @@
 type Tok =
   | TNum(Int64)
   | TName(Int64)    // an identifier, interned to a name-id (Int64)
-  | TOp(Int64)      // 43 = +, 45 = -, 42 = *
+  | TOp(Int64)      // 43 = +, 45 = -, 42 = *, 60 = <, 61 = ==
   | TLet
   | TIn
   | TEq             // the `=` of a let binding
+  | TIf
+  | TThen
+  | TElse
   | TLParen
   | TRParen
   | TEnd
@@ -38,6 +41,7 @@ type Node =
   | NVar(Int64)                   // NVar(nameId) — a variable reference
   | NBin(Int64, Int64, Int64)     // NBin(op, leftId, rightId)
   | NLet(Int64, Int64, Int64)     // NLet(nameId, valueId, bodyId)
+  | NIf(Int64, Int64, Int64)      // NIf(condId, thenId, elseId) — children by id
 
 /// The arena: nodes keyed by NodeId, plus the next fresh id. (Named `Tree`, NOT `Ast` — a type named `Ast`
 /// collides with the built-in metaprog `Ast`, drawing CDZ0201 "two types with the same name".)
@@ -104,7 +108,20 @@ def add-tail(ts: List(Tok), i: Int64, lhs: Int64, tree: Tree, op: Int64) =
 /// the body is itself a let node (nested scopes the resolve column will walk by id).
 def parse-any(ts: List(Tok), i: Int64, tree: Tree) = match tok-at(ts, i) with
   | Tok.TLet => parse-let(ts, i + 1, tree)
+  | Tok.TIf => parse-if(ts, i + 1, tree)
   | _ => parse-cmp(ts, i, tree)
+
+/// parse-if: after the `if` keyword — `COND then <any> else <any>`, building `NIf(condId, thenId, elseId)`.
+/// The condition is a comparison expression (`parse-cmp`, so `if x < 2 then …` parses without parens); the
+/// branches nest the FULL grammar (`parse-any`, so `if c then let x = 1 in x else 0` and nested ifs parse).
+/// Tolerates a missing `then`/`else` (error recovery: parse straight through). All three children are BY ID.
+def parse-if(ts: List(Tok), i: Int64, tree: Tree) =
+  (match parse-cmp(ts, i, tree) with | (condId, j, t1) =>
+    (let k = (match tok-at(ts, j) with | Tok.TThen => j + 1 | _ => j) in
+     (match parse-any(ts, k, t1) with | (thenId, m, t2) =>
+       (let p = (match tok-at(ts, m) with | Tok.TElse => m + 1 | _ => m) in
+        (match parse-any(ts, p, t2) with | (elseId, q, t3) =>
+          (match add-node(t3, Node.NIf(condId, thenId, elseId)) with | (id, t4) => (id, q, t4)))))))
 
 /// parse-cmp: the comparison layer — `expr [(`<`|`==`) expr]`, looser than `+`/`-` (so `1 + 2 < 3 + 4` groups
 /// the additions under the comparison) and NON-associative (one comparison; a trailing second is ignored,
@@ -155,6 +172,11 @@ def is-let(tree: Tree, id: Int64, nm: Int64) = match node-at(tree, id) with
   | Option.Some(Node.NLet(x, _, _)) => x == nm
   | _ => false
 
+/// Is the node at `id` an `if` node?
+def is-if(tree: Tree, id: Int64) = match node-at(tree, id) with
+  | Option.Some(Node.NIf(_, _, _)) => true
+  | _ => false
+
 /// Builders (test ergonomics).
 def n(v: Int64) = Tok.TNum(v)
 def var(nm: Int64) = Tok.TName(nm)
@@ -166,6 +188,9 @@ def inkw() = Tok.TIn
 def eq() = Tok.TEq
 def lt() = Tok.TOp(60)      // `<`
 def eqop() = Tok.TOp(61)    // `==` (comparison, distinct from the let-binding TEq)
+def ifkw() = Tok.TIf
+def thenkw() = Tok.TThen
+def elsekw() = Tok.TElse
 
 @test
 def pd-single-literal() =
@@ -307,4 +332,29 @@ def pd-equality-op() =
   (match parse-tokens([n(3), eqop(), n(3)]) with | (root, tree) =>
     (if is-bin-op(tree, root, 61) then unit else trap("root is a == Bin")))
 
-export { Tok.*, Node.*, Tree.*, empty-tree, add-node, node-at, node-count, parse-tokens, is-bin-op, is-lit, is-var, is-let }
+@test
+def pd-if-shape() =
+  // "if 1 < 2 then 10 else 20" → root is an NIf; cond is a < Bin, then/else are the literals.
+  (match parse-tokens([ifkw(), n(1), lt(), n(2), thenkw(), n(10), elsekw(), n(20)]) with | (root, tree) =>
+    (match node-at(tree, root) with
+      | Option.Some(Node.NIf(cond, thn, els)) =>
+        (if is-bin-op(tree, cond, 60) then (if is-lit(tree, thn, 10) then (if is-lit(tree, els, 20) then unit else trap("else is Lit 20")) else trap("then is Lit 10")) else trap("cond is a < Bin"))
+      | _ => trap("root is an NIf")))
+
+@test
+def pd-if-branches-nest-full-grammar() =
+  // "if 1 then let x = 5 in x else 0" → the THEN branch is a let node (branches nest parse-any, not parse-cmp).
+  (match parse-tokens([ifkw(), n(1), thenkw(), letkw(), var(1), eq(), n(5), inkw(), var(1), elsekw(), n(0)]) with | (root, tree) =>
+    (match node-at(tree, root) with
+      | Option.Some(Node.NIf(_, thn, _)) => (if is-let(tree, thn, 1) then unit else trap("then branch is a let"))
+      | _ => trap("root is an NIf")))
+
+@test
+def pd-nested-if-in-else() =
+  // "if 1 then 2 else if 3 then 4 else 5" → else-branch is itself an NIf (else-if chaining).
+  (match parse-tokens([ifkw(), n(1), thenkw(), n(2), elsekw(), ifkw(), n(3), thenkw(), n(4), elsekw(), n(5)]) with | (root, tree) =>
+    (match node-at(tree, root) with
+      | Option.Some(Node.NIf(_, _, els)) => (if is-if(tree, els) then unit else trap("else branch is a nested if"))
+      | _ => trap("root is an NIf")))
+
+export { Tok.*, Node.*, Tree.*, empty-tree, add-node, node-at, node-count, parse-tokens, is-bin-op, is-lit, is-var, is-let, is-if }

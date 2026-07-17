@@ -33,6 +33,12 @@ def eval-core(c: Core, env: Map(Int64, Int64)) = match c with
       (match eval-core(valExpr, env) with
         | Option.Some(v) => eval-core(body, Map.insert(env, binder, v))
         | Option.None(_) => Option.None(unit))
+  | Core.CIf(cond, thn, els) =>
+      // Bool is 0/1 in Core: a non-zero condition takes the then-branch, zero takes the else. Only the taken
+      // branch is evaluated (lazy — a divide-by-zero in the untaken branch does NOT sink the result).
+      (match eval-core(cond, env) with
+        | Option.Some(c) => (if (c == 0) then eval-core(els, env) else eval-core(thn, env))
+        | Option.None(_) => Option.None(unit))
 
 /// Apply a binary op (43 +, 45 -, 42 *, 47 /, 60 `<`, 61 `==`). Comparisons yield a Bool encoded as 0/1
 /// (Core represents Bool as an Int). Division by zero → `None` (a total, trap-free evaluator).
@@ -67,6 +73,9 @@ def inkw() = Tok.TIn
 def eq() = Tok.TEq
 def lt() = Tok.TOp(60)
 def eqop() = Tok.TOp(61)
+def ifkw() = Tok.TIf
+def thenkw() = Tok.TThen
+def elsekw() = Tok.TElse
 
 /// `let x = 2 in x * 3 + 1` as tokens — THE MILESTONE program.
 def milestone-tokens() = [letkw(), var(1), eq(), n(2), inkw(), var(1), times(), n(3), plus(), n(1)]
@@ -148,5 +157,31 @@ def ev-comparison-of-arith() =
 def ev-let-bound-bool() =
   // let b = 2 < 3 in b  →  1 (a Bool-valued binding flows through the env).
   (match run([letkw(), var(1), eq(), n(2), lt(), n(3), inkw(), var(1)]) with | Option.Some(v) => (if v == 1 then unit else trap("let b = 2<3 in b = 1")) | Option.None(_) => trap("runs"))
+
+@test
+def ev-if-takes-then() =
+  // if 1 < 2 then 10 else 20  →  10 (cond true).
+  (match run([ifkw(), n(1), lt(), n(2), thenkw(), n(10), elsekw(), n(20)]) with | Option.Some(v) => (if v == 10 then unit else trap("true → then=10")) | Option.None(_) => trap("if runs"))
+
+@test
+def ev-if-takes-else() =
+  // if 5 < 2 then 10 else 20  →  20 (cond false).
+  (match run([ifkw(), n(5), lt(), n(2), thenkw(), n(10), elsekw(), n(20)]) with | Option.Some(v) => (if v == 20 then unit else trap("false → else=20")) | Option.None(_) => trap("runs"))
+
+@test
+def ev-if-with-let-and-arith() =
+  // let x = 3 in if x == 3 then x * 2 else 0  →  6 (a let bound var read in cond AND the taken branch).
+  (match run([letkw(), var(1), eq(), n(3), inkw(), ifkw(), var(1), eqop(), n(3), thenkw(), var(1), times(), n(2), elsekw(), n(0)]) with | Option.Some(v) => (if v == 6 then unit else trap("x=3; x==3 → x*2 = 6")) | Option.None(_) => trap("runs"))
+
+@test
+def ev-if-untaken-branch-not-evaluated() =
+  // if 1 < 2 then 7 else (1 / 0)  →  7: the else-branch divide-by-zero is NOT evaluated (if is lazy). If
+  // both branches were eagerly evaluated this would be None; getting 7 proves only the taken branch runs.
+  (match run([ifkw(), n(1), lt(), n(2), thenkw(), n(7), elsekw(), n(1), Tok.TOp(47), n(0)]) with | Option.Some(v) => (if v == 7 then unit else trap("taken branch only → 7")) | Option.None(_) => trap("lazy if runs to 7"))
+
+@test
+def ev-nested-else-if() =
+  // if 5 < 1 then 100 else if 5 < 10 then 200 else 300  →  200 (else-if chain, middle branch).
+  (match run([ifkw(), n(5), lt(), n(1), thenkw(), n(100), elsekw(), ifkw(), n(5), lt(), n(10), thenkw(), n(200), elsekw(), n(300)]) with | Option.Some(v) => (if v == 200 then unit else trap("else-if chain → 200")) | Option.None(_) => trap("runs"))
 
 export { eval-core, eval-bin, eval-tree, run, milestone-tokens, run-milestone }

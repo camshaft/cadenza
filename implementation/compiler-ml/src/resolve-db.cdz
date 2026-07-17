@@ -41,6 +41,11 @@ def resolve-node(tree: Tree, id: Int64, env: Map(Int64, Int64), col: Map(Int64, 
         (let col1 = resolve-node(tree, valId, env, col) in
          (let env2 = Map.insert(env, nm, id) in
           resolve-node(tree, bodyId, env2, col1)))
+    | Option.Some(Node.NIf(condId, thenId, elseId)) =>
+        // an `if` introduces no binder: all three children resolve in the SAME env (cond, then, else).
+        (let c1 = resolve-node(tree, condId, env, col) in
+         (let c2 = resolve-node(tree, thenId, env, c1) in
+          resolve-node(tree, elseId, env, c2)))
     | Option.None(_) => col   // an id not in the arena (a malformed tree) resolves to nothing
 
 /// The resolve COLUMN builder: resolve the whole tree from `root`, starting with an empty scope + column.
