@@ -251,6 +251,43 @@ jobs:
           cargo fmt --check
           cargo test --features bedrock
 
+  cdz-kernel:
+    # The log-native agent-runtime MICROKERNEL crate (implementation/seed/crates/cdz-kernel, v-agent-harness
+    # agent-runtime L1 — the fold owner). EXCLUDED from the seed workspace (its own `[workspace]`) because
+    # its future `aws` feature (the DynamoDB log backend, L1d) pulls the heavy async aws-sdk + tokio tree the
+    # seed's `--workspace` jobs must never pay. So the test/clippy/fmt jobs above don't cover it; gate it
+    # here (like cdz-agent/cdz-cad). Its fold-owner test (L1b+) drives a compiled Cadenza agent-loop consumer
+    # through cdz-run with a MOCK model (no AWS creds/network), reusing cdz-agent's model-consumer fixture, so
+    # it needs the value-heap runtime store — we `cargo xtask build` it and REGENERATE that fixture from
+    # source (so the fixture's runtime hash always matches this build, never a stale-fixture skip). Tests
+    # DEFAULT features (file log + mock model); the `aws` feature only needs to COMPILE (its DynamoDB path is
+    # network-only, exercised manually). aarch64 for the same runtime-hash reason as gate.
+    name: cdz-kernel microkernel
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-rust
+        with:
+          wasm-tools: "true"
+          cache-key: cdz-kernel
+      - name: Build the runtime store
+        run: cargo xtask build
+      - name: Build cdz + cdz-run
+        run: cargo build --release -p cdz -p cdz-run
+      - name: Regenerate the model-consumer fixture (match the current runtime hash)
+        run: |
+          printf '%s' '(do (effect Model (op converse (-> String String))) (bind Model "cadenza:model/api") (def (main) (String.byte-len (host (Model) (Model.converse "hi")))) (export main))' \
+            > /tmp/kernel-consumer.sexp
+          ./target/release/cdz compile /tmp/kernel-consumer.sexp \
+            -o implementation/seed/crates/cdz-agent/tests/fixtures/model-consumer.wasm
+      - name: Test + lint the cdz-kernel crate (standalone workspace)
+        working-directory: implementation/seed/crates/cdz-kernel
+        run: |
+          cargo test
+          cargo clippy --all-targets -- -D warnings
+          cargo fmt --check
+          cargo build --features aws
+
   roundtrip:
     # Every corpus program must round-trip through the syntax surfaces — guards cadenza-syntax
     # independently of the compiler. No runtime needed.
