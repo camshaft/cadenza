@@ -1061,6 +1061,58 @@ mod tests {
     }
 
     #[test]
+    fn char_render_parse_is_the_identity_over_generated_scalars() {
+        // The char inverse-pair CONTRACT — `char_leaf(render_char(c) without its "#\\") == Char(c)` — swept
+        // over random Unicode scalars. `render_char` is what a printer emits for a `Char` leaf; `char_leaf`
+        // is what the reader applies to a `#\<word>` token (see parser.rs). They must be inverse: a bug in
+        // the `#\u+HHHH` hex form (padding / case / char::from_u32) or the named-control mapping
+        // (space/newline/tab/return/null) would silently corrupt a char literal on round-trip. The
+        // hand tests cover the obvious chars; this sweeps the whole scalar space, weighted toward the
+        // named controls, the hex-escaped control range, ASCII, and multi-byte scalars where an asymmetry
+        // hides. (`render_char` strips the `#\` prefix conceptually; `char_leaf` takes the word AFTER it,
+        // exactly as the parser does — so we strip it here.)
+        let named: &[char] = &[' ', '\n', '\t', '\r', '\0']; // the five with named forms
+        let mut rng = Rng(0xc4a5_c0de_c4a5_c0de);
+        let mut checked = 0usize;
+        // (a) the named controls — hit them deterministically (a fixed set, not generator-luck).
+        for &c in named {
+            let word = render_char(c)
+                .strip_prefix("#\\")
+                .expect("render_char emits the #\\ prefix")
+                .to_string();
+            assert_eq!(
+                char_leaf(&word),
+                Leaf::Char(c),
+                "named control {c:?} did not round-trip (via {word:?})"
+            );
+        }
+        // (b) a broad random sweep over the scalar space (ASCII, Latin-1, control, BMP, astral).
+        for _ in 0..50_000 {
+            // A random valid Unicode scalar: draw a code point, skip the surrogate gap.
+            let cp = (rng.next() % 0x11_0000) as u32;
+            let Some(c) = char::from_u32(cp) else {
+                continue;
+            }; // surrogates → None, skip
+            let rendered = render_char(c);
+            assert!(
+                rendered.starts_with("#\\"),
+                "render_char({c:?})={rendered:?} must start with #\\"
+            );
+            let word = &rendered["#\\".len()..];
+            assert_eq!(
+                char_leaf(word),
+                Leaf::Char(c),
+                "char {c:?} (U+{cp:04X}) did not round-trip via {rendered:?}"
+            );
+            checked += 1;
+        }
+        assert!(
+            checked > 40_000,
+            "swept a meaningful scalar space, got {checked}"
+        );
+    }
+
+    #[test]
     fn string_escape_reparses() {
         for s in [
             "hello",

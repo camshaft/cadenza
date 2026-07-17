@@ -50,6 +50,27 @@
   (host-calls (call ask.ask))
   (output (: 100 Int64)))
 
+(case "a host op whose result is a QUANTITY crosses the boundary as its inner scalar (unit erased)"
+  (doc    "The runtime-parameter `@param` Quantity host path: a host-delegated op whose declared result is a
+           `(Qty T u)` — `Env.width : Unit -> (Qty Int64 meter)` — crosses the host boundary as its INNER
+           scalar (`Int64`), because a unit is a COMPILE-TIME value ERASED before codegen (`Ty::Qty` has the
+           SAME runtime rep as its inner). The host supplies the magnitude (`42`) as that scalar; the guest's
+           static `(Qty Int64 meter)` type carries the unit, so `Qty.value` reads the magnitude back → 42 —
+           no runtime reconstruction, and a wrong-DIMENSION host value is inexpressible (the host has no unit
+           channel; the unit is fixed guest-side by the op's declared type). This is what lets a
+           `@param(...) width : Length` generate a Qty-result host op that binds to a browser/CLI/notebook
+           value at run time (v-cad Length dimensions, v-notebook). A Qty whose inner is a heap Rational/BigInt
+           still declines (a num/den boundary pair is a later increment); a scalar-inner Qty rides the existing
+           scalar host boundary.")
+  (input  (do
+            (effect Env (op width (-> Unit (Qty Int64 (Unit.base #"meter")))))
+            (def (main)
+              (host (Env)
+                (Qty.value (Env.width)))) (export main)))
+  (host-responses (respond env.width (: 42 Int64)))
+  (host-calls (call env.width))
+  (output (: 42 Int64)))
+
 ; The case above fixes ONE response. On its own it cannot distinguish a run that genuinely CONSUMES the
 ; response value from a compiler that hardcoded 100 — both produce 100. This pair pins that the response
 ; VALUE flows into the result: the SAME program with a DIFFERENT response produces a DIFFERENT (but

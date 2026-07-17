@@ -1280,6 +1280,53 @@ mod tests {
     }
 
     #[test]
+    fn a_generated_cedar_policy_survives_the_binary_codec_round_trip() {
+        // The binary codec is the canonical STORED form for a Cedar policyset too, so it must faithfully
+        // preserve the policy arena — `cdz convert policy.cedar --to binary` and back must be lossless.
+        // `cedar_to_binary_round_trips` pins ONE hand policy; this sweeps it (the json/toml codec-sweep
+        // analogue). Cedar is arena-idempotent (not byte-exact, like JSON), so: for random Cedar,
+        // read → encode → decode is structurally identical, encode is deterministic (the bijection), and
+        // printing the DECODED arena re-reads to the same tree. A codec/Cedar-surface mismatch on some
+        // generated shape (scope variants, condition clauses, annotations, entity/action refs) would
+        // silently corrupt a stored policy — the case the hand policy can't reach.
+        let seeds: [u64; 3] = [
+            0xceda_c0de_0bad_f00d,
+            0x5eed_ace0_1234_abcd,
+            0xb01d_face_dead_10ff,
+        ];
+        let mut total = 0usize;
+        for &seed in &seeds {
+            let mut rng = Rng(seed);
+            for _ in 0..600 {
+                let src = gen_cedar(&mut rng);
+                let a1 = read(&src).expect("generated Cedar parses");
+                let bin = crate::codec::encode(&a1);
+                let a2 = crate::codec::decode(&bin)
+                    .expect("a Cedar arena decodes from its own encoding");
+                assert!(
+                    a1.structurally_eq(&a2),
+                    "Cedar arena survives the binary round-trip for:\n{src}"
+                );
+                // Determinism: re-encoding the decoded arena reproduces the exact bytes (the bijection).
+                assert_eq!(
+                    bin,
+                    crate::codec::encode(&a2),
+                    "binary encode is deterministic for:\n{src}"
+                );
+                // The decoded arena prints back to a tree that re-reads identically (arena-idempotence
+                // through the codec).
+                let a3 = read(&print(&a2, 100)).expect("decoded-then-printed Cedar re-reads");
+                assert!(
+                    a1.structurally_eq(&a3),
+                    "Cedar survives binary → print → re-read for:\n{src}"
+                );
+                total += 1;
+            }
+        }
+        assert!(total >= 1500, "swept a meaningful codec space, got {total}");
+    }
+
+    #[test]
     fn cedar_read_never_panics_on_arbitrary_input() {
         // `read` operates on UNTRUSTED policy text; it must return a diagnostic, never panic. Sweep
         // random Cedar-ish strings (keywords + structural chars) plus truncated fragments. On a

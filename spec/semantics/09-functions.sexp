@@ -3724,6 +3724,26 @@
             (export main)))
   (output (: 8 Int64)))
 
+; The SOUNDNESS SENTINEL for the tie above: broadening `collect_param_constraints` to accept a SumPayload-of-
+; a-param arg (so the element flows into the callee's domain) must NOT loosen type-safety — a threaded element
+; whose type is INCOMPATIBLE with the callee's declared parameter must still be REJECTED, not wrongly accepted.
+(case "a recursive transformer passing its element to an incompatibly-typed callee is rejected"
+  (doc    "`flatten-bad`'s `Cons` arm passes its element `h` (an `Iter a`) to `sum-ints : (Iter Int64) → Int64`,
+           but `flatten-bad` is applied at `Iter String`, so `h` is an `Iter String` — incompatible with the
+           `Iter Int64` `sum-ints` demands. The SumPayload-of-a-param constraint (which lets the composing
+           `flatten` above tie correctly) propagates this as a genuine TYPE ERROR (CDZ0203), NOT a silent
+           accept: the broadening ties where the types connect and REJECTS where they clash. Pins that the
+           recursive-transformer element-tie did not weaken the callee-domain check — the negative companion of
+           the composing case above, on both backends.")
+  (input  (do
+            (type Iter (Nil) (Cons a (Iter a)))
+            (def (from-list xs) (match xs ((list) (Iter.Nil)) ((list h .. t) (Iter.Cons h (from-list t)))))
+            (def (sum-ints (: it (Iter Int64))) (match it ((Iter.Nil) 0) ((Iter.Cons h t) (+ h (sum-ints t)))))
+            (def (flatten-bad it) (match it ((Iter.Nil) 0) ((Iter.Cons h rest) (+ (sum-ints h) (flatten-bad rest)))))
+            (def (main) (flatten-bad (from-list (list (from-list (list "a" "b"))))))
+            (export main)))
+  (error  CDZ0203))
+
 ; The COMPLEMENT of the producer tie above — a recursive-generic TRANSFORMER that threads a CLOSURE:
 ; `(gmap it f) = (Cons (f h) (gmap rest f))` maps `f` over each element, principal type
 ; `∀a b. (Iter a) → (a → b) → (Iter b)` with the closure DOMAIN `a` tied to the element `it` carries. The

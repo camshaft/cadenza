@@ -91,6 +91,30 @@ fn wait_for_count(cap: &std::path::Path, needle: &str, want: usize, timeout: Dur
     count(cap, needle) >= want
 }
 
+/// Wait until `needle`'s count STOPS CHANGING for a short quiet window, then return the settled count
+/// (capped by `max`). A poll-until-stable replacement for a blanket `sleep` when waiting for an
+/// uncertain-length event burst to finish (e.g. a macOS spurious startup FS event that may fire a
+/// second run): on a platform where nothing further arrives (Linux), the count is stable on the first
+/// window and this returns in ~`quiet`, not the full cap — so the common case pays no fixed latency,
+/// while a real trailing event still gets absorbed up to `max`. (Copilot PR #523.)
+fn settle_count(cap: &std::path::Path, needle: &str, max: Duration) -> usize {
+    let quiet = Duration::from_millis(300); // the count must hold steady this long to be "settled"
+    let start = Instant::now();
+    let mut last = count(cap, needle);
+    let mut stable_since = Instant::now();
+    while start.elapsed() < max {
+        std::thread::sleep(Duration::from_millis(50));
+        let now = count(cap, needle);
+        if now != last {
+            last = now;
+            stable_since = Instant::now(); // changed → restart the quiet window
+        } else if stable_since.elapsed() >= quiet {
+            break; // held steady for the quiet window → settled
+        }
+    }
+    last
+}
+
 /// Poll until `path` exists (up to `timeout`); return whether it appeared. Used to detect a build's
 /// artifact by its FILE (stabler than grepping the build's stdout for a substring that could change).
 fn wait_for_path(path: &std::path::Path, timeout: Duration) -> bool {
@@ -518,9 +542,11 @@ fn watch_clear_emits_a_clear_screen_before_each_run() {
         "the initial run clears the screen: {:?}",
         read_cap(&cap)
     );
-    // Let any spurious startup FS event (macOS) settle so the baseline count is stable before the edit.
-    std::thread::sleep(Duration::from_secs(2));
-    let startup_clears = count(&cap, "\x1b[2J");
+    // Let the startup clear count SETTLE before taking the baseline — a poll-until-stable, not a blanket
+    // sleep: on Linux (no spurious event) it returns in ~one quiet window; on macOS it absorbs the extra
+    // startup FS event's clear up to the cap. Either way the baseline is the settled count (Copilot #523:
+    // the earlier fixed 2s sleep added that latency to every run, even where the event never occurs).
+    let startup_clears = settle_count(&cap, "\x1b[2J", Duration::from_secs(2));
     assert!(
         startup_clears >= 1,
         "the startup run clears at least once: {:?}",

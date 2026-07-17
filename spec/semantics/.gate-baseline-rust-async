@@ -1303,6 +1303,7 @@ pass	a recursive sum type works with pattern matching
 pass	a recursive tag builds a compound Ast.List at compile-time fold
 pass	a recursive tag function const-folds to a compile-time Ast
 pass	a recursive tag scans its chunk text byte-by-byte and folds to a constant Ast
+pass	a recursive transformer passing its element to an incompatibly-typed callee is rejected
 pass	a recursive unifier distinguishes arrow components through the payload slots
 pass	a recursive user sum built in a lib is folded by the entry over the imported type
 pass	a recursive user sum type is built at run time and renders its variant names
@@ -2235,6 +2236,7 @@ pass	arithmetic right shift of negative one is negative one
 pass	arithmetic right shift preserves the sign bit for a negative operand
 pass	arithmetic within one integer type
 pass	at min times -1 the three overflow families diverge: checked None, wrapping min
+pass	b4b denotation: a predicate Ast (<= x 100) denotes to the bounds obligation term le (Var 0) (Num 100)
 pass	binding the same effect to a peer twice is rejected
 pass	bit-field segments pack sub-byte values into one byte
 pass	bitwise AND masks bits
@@ -3426,6 +3428,7 @@ todo	a host call's response is an ordinary value that feeds a LATER host call
 todo	a host effect with a non-kebab NAME crosses under a normalized interface extern name
 todo	a host effect with a non-kebab OPERATION name crosses under a normalized func extern name
 todo	a host op with a String parameter composes with the value-heap runtime
+todo	a host op whose result is a QUANTITY crosses the boundary as its inner scalar (unit erased)
 todo	a host-called closure applied to a different argument tracks the input
 todo	a host-called closure with a different body dispatches the right code
 todo	a list of closures each keeps its own capture, selected by a runtime index

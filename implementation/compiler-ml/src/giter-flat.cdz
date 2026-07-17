@@ -1,0 +1,73 @@
+/// giter-flat.cdz — the NESTED generic iterator `flatten`, split into its own small module.
+///
+/// WHY A SEPARATE MODULE. `flatten : GIter(GIter(a)) -> GIter(a)` needs the "element threaded INTO a
+/// generic callee" tie (rcdzc `e7d78a566` "tie a recursive transformer's element through a generic callee"):
+/// its `Cons` arm threads the inner iterator `inner : GIter(a)` into the generic `chain`, so the scheme
+/// solve must tie `chain`'s domain to `inner`'s element — which that fix makes, so `flatten` now infers
+/// `(-> (GIter (GIter a)) (GIter a))` and composes at two element types.
+///
+/// It lives HERE, not in `giter.cdz`, because a NESTED generic instantiation (`GIter(GIter a)`) is HEAVY —
+/// it doubles the type structure the monomorphizer carries — and `giter.cdz` (92 @tests) already sits at
+/// the monomorphizer's per-module instantiation-PRESSURE ceiling. Measured on trunk with the tie fix:
+/// `flatten` composes with ≤ ~20 other test call-sites but DECLINES (CDZ0201) when added to the full 92-test
+/// `giter.cdz` — the ceiling, NOT the tie, is the binding constraint (reported to v-inference; the global
+/// monomorphizer pressure/cap lever is the fix that would let `giter.cdz` absorb it). Keeping `flatten` in a
+/// SMALL dedicated module ships the capability now (the tie fix IS real and works) without gutting
+/// `giter.cdz`'s coverage. When the pressure ceiling lifts, `flatten` folds back into `giter.cdz` and this
+/// module retires.
+///
+/// STILL DEFERRED even here (heavier still): `concat-map`/`flat-map` (`flatten ∘ gmap`, where the mapped
+/// closure RETURNS a `GIter` — a nested generic through a closure) exceeds the ceiling even in a small
+/// module; it waits for the pressure lever alongside the accumulator-threading `reduce`/`reverse` (a
+/// separate not-yet-built tie). See `giter.cdz`'s header for the full deferred backlog.
+
+/// The generic pull-iterator (same cons-cell shape as `giter.cdz`; re-declared here so this module is
+/// self-contained — each `src/*.cdz` is its own namespace).
+type GIter =
+  | Nil
+  | Cons(a, GIter(a))
+
+/// `from-list(xs)` — the base generic producer (an iterator over `xs : List(a)`), self-recursive so its
+/// result element ties to the argument (the Part C tie).
+def from-list(xs) = match xs with
+  | [] => GIter.Nil(unit)
+  | [h, .. t] => GIter.Cons(h, from-list(t))
+
+/// `count(it)` — the number of elements, driving the pull to exhaustion. Generic in the element.
+def count(it) = match it with
+  | GIter.Nil(_) => 0
+  | GIter.Cons(_, rest) => 1 + count(rest)
+
+/// `chain(a, b)` — concatenate two iterators (all of `a`, then all of `b`). Self-recursive over `a`; the
+/// `Nil` base returns `b`, so the result element ties to the inputs'. `flatten`'s per-inner combiner.
+def chain(a, b) = match a with
+  | GIter.Nil(_) => b
+  | GIter.Cons(h, rest) => GIter.Cons(h, chain(rest, b))
+
+/// `flatten(its)` — concatenate a `GIter` of inner `GIter`s into one flat `GIter(a)`, in order. The nested
+/// generic transformer: its `Cons` arm threads the inner iterator into the generic `chain`, and the
+/// element-into-generic-callee tie (`e7d78a566`) ties `chain`'s domain to the inner's element, so `flatten`
+/// infers `(-> (GIter (GIter a)) (GIter a))` and composes at ≥2 element types (Int64 AND String).
+def flatten(its) = match its with
+  | GIter.Nil(_) => GIter.Nil(unit)
+  | GIter.Cons(inner, rest) => chain(inner, flatten(rest))
+
+/// TESTS ----------------------------------------------------------------------------------------------
+/// Kept small (3 @tests) — well under the ~22-call-site ceiling this nested shape needs (see header).
+
+@test
+def flatten-ints-two-inners() =
+  if count(flatten(from-list([from-list([1, 2]), from-list([3, 4, 5])]))) == 5
+  then unit else trap("flatten Int64: 2 + 3 = 5")
+
+@test
+def flatten-strings-second-element-type() =
+  if count(flatten(from-list([from-list(["a"]), from-list(["b", "c"])]))) == 3
+  then unit else trap("flatten String (2nd element type): 1 + 2 = 3")
+
+@test
+def flatten-skips-empty-inners() =
+  if count(flatten(from-list([from-list([]), from-list([7]), from-list([])]))) == 1
+  then unit else trap("flatten drops empty inner iterators")
+
+export { GIter.* }

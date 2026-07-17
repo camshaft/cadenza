@@ -109,6 +109,40 @@ impl Ack {
     }
 }
 
+/// The set of source-message seqs that an `ack` event in `events` has marked processed. Pure over the log
+/// slice — an `ack` event's payload is the source [`Ack`], whose `message_seq` is the message it acks.
+/// (A malformed ack payload is skipped rather than fail the whole projection — the inbox stays readable
+/// even if one event is corrupt; a strict reader could instead error.)
+fn acked_seqs(events: &[crate::Event]) -> std::collections::HashSet<Seq> {
+    events
+        .iter()
+        .filter(|e| e.kind == ACK)
+        .filter_map(|e| Ack::decode(&e.payload).ok())
+        .map(|a| a.message_seq)
+        .collect()
+}
+
+/// Whether the message at `seq` has been acked anywhere in `events` (its "mark processed").
+pub fn is_acked(events: &[crate::Event], seq: Seq) -> bool {
+    acked_seqs(events).contains(&seq)
+}
+
+/// The INBOX for `agent` as a PROJECTION over the log (vision §9: the inbox is a fold, not a queue). Folds
+/// `events`: decode every `message` event addressed `to == agent`, drop those a later `ack` event marks
+/// processed, and return them in log order paired with their source `seq` (the seq is what an `ack`
+/// correlates against, and what reply-then-ack (L2c) references). A `message` event whose payload fails to
+/// decode is skipped (the inbox stays readable). This is the "inbox = fold over the log" proof — the same
+/// unread/processed semantics the file-inbox fakes today, expressed as a pure fold.
+pub fn inbox_for(events: &[crate::Event], agent: &str) -> Vec<(Seq, Message)> {
+    let acked = acked_seqs(events);
+    events
+        .iter()
+        .filter(|e| e.kind == MESSAGE)
+        .filter_map(|e| Message::decode(&e.payload).ok().map(|m| (e.seq, m)))
+        .filter(|(seq, m)| m.to == agent && !acked.contains(seq))
+        .collect()
+}
+
 // ── length-prefixed codec helpers (u32-LE lengths; binary-safe; no deps) ────────────────────────────────
 
 fn put_u32(out: &mut Vec<u8>, v: u32) {
@@ -232,5 +266,101 @@ mod tests {
     #[test]
     fn message_kind_tags_are_stable() {
         assert_eq!((MESSAGE, ACK), ("message", "ack"));
+    }
+
+    // ── L2b: the inbox projection (fold over the log) ───────────────────────────────────────────────────
+
+    use crate::Event;
+
+    /// Build a `message` [`Event`] at `seq` from a to+kind (minimal fields for projection tests).
+    fn msg_event(seq: Seq, to: &str, kind: &str) -> Event {
+        let m = Message {
+            from: "sender".into(),
+            to: to.into(),
+            kind: kind.into(),
+            subject: "s".into(),
+            refs: vec![],
+            body: b"b".to_vec(),
+        };
+        Event {
+            seq,
+            kind: MESSAGE.into(),
+            payload: m.encode(),
+        }
+    }
+
+    /// Build an `ack` [`Event`] at `seq` acking source message `acked`.
+    fn ack_event(seq: Seq, acked: Seq) -> Event {
+        Event {
+            seq,
+            kind: ACK.into(),
+            payload: Ack { message_seq: acked }.encode(),
+        }
+    }
+
+    #[test]
+    fn inbox_for_folds_messages_addressed_to_the_agent() {
+        // The inbox is a fold: only messages addressed `to` me appear (others are for other agents).
+        let log = vec![
+            msg_event(0, "me", "note"),
+            msg_event(1, "someone-else", "note"),
+            msg_event(2, "me", "assign"),
+        ];
+        let inbox = inbox_for(&log, "me");
+        let seqs: Vec<Seq> = inbox.iter().map(|(s, _)| *s).collect();
+        assert_eq!(
+            seqs,
+            vec![0, 2],
+            "only messages to `me`, in log order, with their source seqs"
+        );
+        assert_eq!(
+            inbox[1].1.kind, "assign",
+            "the projected Message is fully decoded"
+        );
+    }
+
+    #[test]
+    fn inbox_for_excludes_acked_messages() {
+        // "mark processed" = an ack event; an acked message drops out of the inbox (unread projection).
+        let log = vec![
+            msg_event(0, "me", "note"),
+            msg_event(1, "me", "note"),
+            ack_event(2, 0), // ack the message at seq 0
+        ];
+        let inbox = inbox_for(&log, "me");
+        assert_eq!(
+            inbox.iter().map(|(s, _)| *s).collect::<Vec<_>>(),
+            vec![1],
+            "the acked message (seq 0) is processed → only the unacked seq 1 remains"
+        );
+        assert!(is_acked(&log, 0), "seq 0 is acked");
+        assert!(!is_acked(&log, 1), "seq 1 is not acked");
+    }
+
+    #[test]
+    fn inbox_for_is_empty_when_all_acked_or_none_addressed() {
+        let log = vec![msg_event(0, "me", "note"), ack_event(1, 0)];
+        assert!(
+            inbox_for(&log, "me").is_empty(),
+            "the only message is acked → empty inbox"
+        );
+        assert!(
+            inbox_for(&[msg_event(0, "other", "note")], "me").is_empty(),
+            "nothing addressed to me"
+        );
+        assert!(inbox_for(&[], "me").is_empty(), "empty log → empty inbox");
+    }
+
+    #[test]
+    fn inbox_for_skips_a_corrupt_message_event_but_keeps_the_rest() {
+        // A message event whose payload can't decode is skipped, not fatal — the inbox stays readable.
+        let mut log = vec![msg_event(0, "me", "note"), msg_event(1, "me", "assign")];
+        log[0].payload = vec![0xff, 0xff]; // corrupt the first message's payload
+        let inbox = inbox_for(&log, "me");
+        assert_eq!(
+            inbox.iter().map(|(s, _)| *s).collect::<Vec<_>>(),
+            vec![1],
+            "the corrupt message is skipped; the well-formed one still projects"
+        );
     }
 }

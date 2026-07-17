@@ -84,6 +84,16 @@ pub fn abi_val_type(ty: &Ty) -> Option<AbiValType> {
             (false, 64) => Some(AbiValType::U64),
             _ => None,
         },
+        // A QUANTITY crosses as its INNER numeric type's boundary form. The unit is a COMPILE-TIME value,
+        // ERASED before codegen (`Ty::Qty` has the SAME runtime rep as its inner — see lir.rs
+        // `valtype_of`/`comp_valtype_of`), so `(Qty Int64 meter)` is an `Int64` at the boundary and
+        // `(Qty Float64 meter)` an `f64`. The host supplies the magnitude as that inner scalar; the guest's
+        // static `Ty::Qty` carries the unit, so no runtime reconstruction is needed — a wrong-DIMENSION host
+        // value is inexpressible (the host has no unit channel; the unit is fixed guest-side by the declared
+        // op type). This is the runtime-parameter `@param` Quantity host path (v-cad Length dimensions,
+        // v-notebook). A Qty whose inner has no scalar boundary form (a Rational/BigInt inner — a heap value)
+        // still declines here; the num/den pair for an exact-Rational Qty is a later increment.
+        Ty::Qty { inner, .. } => abi_val_type(inner),
         _ => None,
     }
 }
