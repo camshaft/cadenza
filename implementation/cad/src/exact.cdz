@@ -332,6 +332,26 @@ def scale-multiplies-the-box() =
   else trap("scaled box size (4,6,8) exact")
 
 @test
+def nested-transforms-compose-in-order() =
+  // NESTED transform composition (backlog: transform-composition invariants) — the bounding-box fold must
+  // compose Translate/Scale in the RIGHT ORDER (the outer transform applies to the inner's already-transformed
+  // box), and it is NOT commutative. Take a FULL-size-1 cube (box [-1/2, 1/2] on x):
+  //   • Scale(2) ∘ Translate(+3): translate → [5/2, 7/2], then scale ×2 → [5, 7]  (x-extent 5..7)
+  //   • Translate(+3) ∘ Scale(2): scale → [-1, 1], then translate +3 → [2, 4]     (x-extent 2..4)
+  // Same two transforms, different nesting → different box. Pins order-correctness of both arms at depth.
+  let one = 1 / 1 in
+  let cube = Solid.Cube(v3r(one, one, one)) in
+  let scale-of-translate = Solid.Scale(v3r(2 / 1, 2 / 1, 2 / 1), Solid.Translate(v3r(3 / 1, rzero(), rzero()), cube)) in
+  let translate-of-scale = Solid.Translate(v3r(3 / 1, rzero(), rzero()), Solid.Scale(v3r(2 / 1, 2 / 1, 2 / 1), cube)) in
+  match bounding-box(scale-of-translate) with | Aabb.Box(slo, shi) =>
+    (match bounding-box(translate-of-scale) with | Aabb.Box(tlo, thi) =>
+      // scale-of-translate: x ∈ [5, 7]; translate-of-scale: x ∈ [2, 4]. Both exact, and DIFFERENT (non-commutative).
+      (if v3r-x(slo) == 5 / 1 and v3r-x(shi) == 7 / 1 then
+        (if v3r-x(tlo) == 2 / 1 and v3r-x(thi) == 4 / 1 then unit
+         else trap("Translate∘Scale should give x ∈ [2,4]"))
+       else trap("Scale∘Translate should give x ∈ [5,7]")))
+
+@test
 def negative-scale-keeps-a-well-formed-box() =
   // REGRESSION: a NEGATIVE scale factor (a MIRROR) flips corners, so the naive `v3r-mul` of both corners would
   // invert the box (lo.x > hi.x) → a NEGATIVE aabbr-size, which would break a mesh driver / union / intersect.

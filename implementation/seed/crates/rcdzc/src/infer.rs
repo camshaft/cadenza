@@ -97,8 +97,20 @@ pub fn type_of(db: &mut Db, id: StructId) -> Ty {
     // tie grounds, and a module-member generic monomorphization caches that arrow signature — skipping it
     // regressed `across_def_flavors` to a "closure parameter has no machine representation" CDZ0203.
     let skip_reentrant_nested_any = t.has_any_in_data_element()
-        && (!db.solving_params.is_empty() || !db.solving_schemes.is_empty())
-        && node_external_to_inflight_solves(db, id);
+        && ((!db.solving_params.is_empty() && node_external_to_inflight_solves(db, id))
+            // A data-element `Any` computed WHILE A SCHEME SOLVE IS IN FLIGHT (a mutual-recursion SCC) is
+            // PROVISIONAL — a call to an in-flight sibling types `Any`, so a field projected off it
+            // collapses (`parse-if`'s next-index → `(Tuple Int64 Any Tree)`). Caching that node FREEZES the
+            // hole: the emit path then reads the frozen `Any` (the mutual recursion never terminates, the
+            // rust target declines "no native representation") even though a clean re-solve would ground it
+            // to `Int64` once the sibling's scheme settles. The companion `def_scheme` defer (which returns
+            // `None` for a data-`Any` result under an in-flight sibling) re-grounds the SCHEME on a later
+            // clean demand — but the emit path also reads per-NODE `type_of`, so those nodes must likewise
+            // not freeze. Skip caching regardless of external-ness while a scheme solve is on the stack;
+            // scoped to `solving_schemes` (a fixpoint that RE-GROUNDS), never `solving_params` alone (a
+            // monomorphic fold whose internal self-call `Any` must stay cached — the `across_def_flavors` /
+            // bottom-up-fold cases the `node_external` arm protects).
+            || !db.solving_schemes.is_empty());
     if !matches!(t, Ty::Any) && !ty_has_free_var(db, &t) && !skip_reentrant_nested_any {
         db.types.fill(id, t.clone());
     }
@@ -4016,6 +4028,27 @@ fn compute_def_scheme(db: &mut Db, def: usize) -> Option<Scheme> {
     db.scheme_rigid_vars = prev_rigid;
     if matches!(result, Ty::Any) {
         trace!(target: "rcdzc::infer", def, "def_scheme: undetermined result (recursive?) → defer (A2)");
+        return None;
+    }
+    // DEFER A RESULT WITH A DATA-POSITION `Any` BORN FROM AN IN-FLIGHT SIBLING (mutual-recursion SCC). A
+    // member whose result is determined ONLY by a recursive sibling — `parse-if` returns `(id, q, t4)`
+    // where `q` is the next-index field of a `parse-any` result, and `parse-if` has NO non-recursive base
+    // that fixes that field — types its result `(Tuple Int64 Any Tree)` while the sibling's scheme is
+    // still on the stack (the re-entry guard below returns `None` → the call types `Any` → the projected
+    // field collapses to `Any`). Unlike a bare-`Any` result (caught above), this `Any` hides inside a
+    // Tuple, so `matches!(result, Ty::Any)` misses it and the scheme was finalized with the hole —
+    // FREEZING the field `Any`, which the backend then boxes so the mutual recursion never terminates
+    // (`((1))` hangs) and `--target rust` declines "no native representation". DEFER (return `None`,
+    // uncached under `reentrant_solve`) exactly like the bare-`Any` case: a later CLEAN demand — after the
+    // SCC's schemes settle — recomputes the result with the sibling concrete, grounding the field to its
+    // real `Int64`. SCOPED to a REENTRANT solve (`!db.solving_schemes.is_empty()`, minus this def itself):
+    // a data-`Any` result at the TOP of the solve stack is genuinely undetermined (no in-flight sibling to
+    // re-ground it), so it keeps its scheme as before — deferring it would loop forever with no retry that
+    // makes progress. `has_any_in_data_element` excludes an arrow's not-yet-solved closure hole (kept, per
+    // `across_def_flavors`).
+    let sibling_in_flight = db.solving_schemes.iter().any(|&d| d != def);
+    if sibling_in_flight && result.has_any_in_data_element() {
+        trace!(target: "rcdzc::infer", def, result = %result.render_name(), "def_scheme: result has a data-Any from an in-flight sibling → defer (re-grounds after the SCC settles)");
         return None;
     }
     // Curry: `p_0 -> p_1 -> … -> result`. A nullary def is just `result`.

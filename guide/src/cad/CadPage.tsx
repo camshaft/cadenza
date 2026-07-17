@@ -6,29 +6,43 @@
 /// THE SPLIT (confirmed with v-cad): this vertical owns the route + shell + the react-three-fiber canvas
 /// + the 3 npm deps (three, @react-three/fiber, manifold-3d) — all code-split behind this lazy route so
 /// they never touch the guide's first paint. v-cad owns `guide/src/cad/index.ts` (`meshFromSolid`: parse
-/// a rendered Solid S-EXPR → manifold-3d CSG → triangle buffers).
+/// a rendered Solid S-EXPR → manifold-3d CSG → triangle buffers) AND the preloaded CAD library
+/// (`implementation/cad/src/exact.cdz`).
+///
+/// PRELOADED LIBRARY (operator P5, ruling A): the reader's buffer holds ONLY the model — a program that
+/// builds and returns a `Solid`. The CAD vocabulary (`Solid`/`Vec3`/`v3r`/`lower`/…) is a real Cadenza
+/// module (`exact.cdz`) link-merged at compile via `compileWithPreloaded` (no inline `type` defs). The
+/// host AUTO-INJECTS the `import { Solid, v3r, lower } from "exact"` clause before compiling (ruling A),
+/// so the buffer stays clean. The model returns `lower(model)`: `exact.cdz`'s `Solid` is GENERIC
+/// (`Solid(a)`), and a generic recursive-sum value can't yet be host-rendered — `lower` maps it to the
+/// monomorphic `SolidR` mirror the compiler CAN emit and the mesh driver parses (v-cad shipped both).
 ///
 /// SURFACE: /cad respects the global surface toggle for EDITING (like /calculator + /playground) — a
 /// per-surface starter, edited in whichever surface the reader has selected — but the compiled value is
 /// always RUN + rendered in s-expr (`runComponent(component, "sexpr")`) before it reaches the driver.
-/// `meshFromSolid` parses the RENDERED value as an s-expr `(: (Difference …) Solid)`; an ML render uses
+/// `meshFromSolid` parses the RENDERED value as an s-expr `(: (Difference …) SolidR)`; an ML render uses
 /// commas + backtick-rationals the s-expr parser can't read, so the driver consumes the canonical machine
-/// form, not the display surface. Both starters are self-contained (inline `type` defs + `def main`): the
-/// CAD library modules aren't resolvable in the browser compiler, so each program defines its own
-/// `Vec3`/`Solid` and returns a `Solid` value. Both render IDENTICALLY to
-/// `(: (Difference (Cube (: (tuple 4/1 4/1 4/1) Vec3)) (Sphere 5/2)) Solid)` (v-cad-verified end to
+/// form, not the display surface. Both surfaces render IDENTICALLY to
+/// `(: (Difference (Cube (: (tuple 4/1 4/1 4/1) Vec3R)) (Sphere 5/2)) SolidR)` — the driver discards the
+/// trailing type-name atom, so `SolidR`/`Vec3R` parse exactly like `Solid`/`Vec3` (v-cad-verified end to
 /// end — 584 triangles), so the driver behaves the same whichever surface the reader edits in.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { compile } from "../compiler/client.ts";
+import { compileWithPreloaded } from "../compiler/client.ts";
 import { run as runComponent } from "../runner/client.ts";
 import { useSyntax } from "../syntax/SyntaxContext.tsx";
-import { wrapModule } from "../components/wrapModule.ts";
 import { meshFromSolid, type MeshResult } from "./index.ts";
 import { MeshView } from "./MeshView.tsx";
+import { wrapPrefixOf } from "../components/wrapModule.ts";
+import { injectImport, CAD_LIB_NAME, CAD_LIB_FORMAT } from "./preloadModel.ts";
 import type { Surface } from "../compiler/client.ts";
 import { LazyCodeEditor } from "../editor/LazyCodeEditor.tsx";
+// The CAD library source (`implementation/cad/src/exact.cdz`), staged into the guide tree by
+// `stage-wasm.mjs` (same pattern as runtime.wasm) and `?raw`-imported here as a string. It's PRELOADED
+// via `compile_with_preloaded` (operator P5, ruling A) so the reader's buffer holds only the model — the
+// CAD vocabulary (`Solid`/`Vec3`/`v3r`/`lower`/…) is link-merged from this module, not authored inline.
+import EXACT_CDZ from "../wasm/cad/exact.cdz?raw";
 
 // /cad's IDE config is built INSIDE the component (it must read the LIVE edit surface) — see `cadIde`
 // below. The program is a self-contained module (no wrapping), so the compiled text IS the editor text
@@ -42,28 +56,27 @@ import { LazyCodeEditor } from "../editor/LazyCodeEditor.tsx";
 // IDE surface tracks the edit surface; the mesh path forces s-expr on the compiled value.
 
 /// The starter Solid model per surface — a 4mm cube with a 2.5-radius spherical dent (the classic CSG
-/// difference). Self-contained (inline `type` defs + `def main`): the CAD library modules aren't resolvable
-/// in the browser compiler, so each program defines its own `Vec3`/`Solid` and returns a `Solid` value
-/// that renders to exactly the grammar `meshFromSolid` parses. Rationals are `Rational.of(n, d)` / `(. Rational of)` —
-/// a bare `n/d` in source is Int64 division. Both surfaces render to the same canonical s-expr value, so
-/// the driver meshes them identically (v-cad-verified: 584 triangles end to end).
+/// difference), built against the PRELOADED CAD library (`Solid`/`v3r`/`lower` from `exact.cdz`), so the
+/// buffer is just the model — no inline `type` defs. Each carries `@!default-fraction Rational` (a
+/// module-local pragma so a bare `n/d` is an exact Rational, not Int64 division — without it `v3r(4/1,…)`
+/// rejects with CDZ0203; the pragma does NOT leak into the imported library). The model returns
+/// `lower(<Solid model>)` — `exact.cdz`'s `Solid` is generic and a generic value can't be host-rendered
+/// yet, so `lower` maps it to the monomorphic `SolidR` the compiler emits + the driver meshes. The
+/// `import` clause is auto-injected (see `injectImport`), not shown to the reader (ruling A). Both surfaces
+/// render to the same canonical s-expr `SolidR` value → the driver meshes them identically (v-cad-verified:
+/// 584 triangles end to end).
 const STARTER: Record<Surface, string> = {
-  ml: `type Vec3 = | V3r(Rational, Rational, Rational)
-type Solid =
-  | Cube(Vec3)
-  | Sphere(Rational)
-  | Difference(Solid, Solid)
-def r(n: Int64) = Rational.of(n, 1)
+  ml: `@!default-fraction Rational
 def main() =
-  Solid.Difference(
-    Solid.Cube(V3r(r(4), r(4), r(4))),
-    Solid.Sphere(Rational.of(5, 2)))`,
-  sexpr: `(do
-  (type Vec3 (V3r Rational Rational Rational))
-  (type Solid (Cube Vec3) (Sphere Rational) (Difference Solid Solid))
-  (def (r (: n Int64)) ((. Rational of) n 1))
-  (def (main) ((. Solid Difference) ((. Solid Cube) ((. Vec3 V3r) (r 4) (r 4) (r 4))) ((. Solid Sphere) ((. Rational of) 5 2))))
-  (export main))`,
+  lower(
+    Solid.Difference(
+      Solid.Cube(v3r(4/1, 4/1, 4/1)),
+      Solid.Sphere(5/2)))`,
+  sexpr: `(pragma default-fraction Rational)
+(def (main)
+  (lower ((. Solid Difference)
+           ((. Solid Cube) (v3r (/ 4 1) (/ 4 1) (/ 4 1)))
+           ((. Solid Sphere) (/ 5 2)))))`,
 };
 
 type Status =
@@ -79,8 +92,12 @@ export default function CadPage() {
   const runningRef = useRef(false);
 
   // The IDE config for the editor — the linter surface tracks the LIVE edit surface (the global toggle),
-  // so the buffer is diagnosed in the surface it's written in (fixes the all-red-squiggles P-C bug). The
-  // starter is a complete `(do …)`/module, so the compiled text IS the editor text (no wrap, prefix 0).
+  // so the buffer is diagnosed in the surface it's written in (fixes the all-red-squiggles P-C bug).
+  // `prepare` AUTO-INJECTS the `import … from "exact"` clause (the same one `runModel` compiles), and
+  // `preload` supplies the CAD library so the linter uses `diagnosticsWithPreloaded` — otherwise the
+  // preloaded vocab (`Solid`/`v3r`/`lower`) would fault as unbound (6 red squiggles) on a program that
+  // actually runs. `wrapPrefixBytes` is the injected prefix's byte length (from `wrapPrefixOf`, which
+  // locates the reader's verbatim text in the injected output) so a squiggle maps back onto the buffer.
   // `surface` is read through a ref so the getter always sees the current toggle without rebuilding the
   // editor's extension array (which would remount on every toggle). The s-expr-for-driver requirement is
   // enforced separately in `runModel` (the mesh path), not here.
@@ -88,7 +105,11 @@ export default function CadPage() {
   surfaceRef2.current = surface;
   const cadIde = useRef({
     surface: () => surfaceRef2.current,
-    prepare: (editorText: string) => ({ compiled: editorText, wrapPrefixBytes: 0 }),
+    prepare: (editorText: string, from: Surface) => {
+      const compiled = injectImport(editorText, from);
+      return { compiled, wrapPrefixBytes: wrapPrefixOf(editorText, compiled) };
+    },
+    preload: () => ({ names: [CAD_LIB_NAME], sources: [EXACT_CDZ], formats: [CAD_LIB_FORMAT] }),
   }).current;
 
   const runModel = useCallback(
@@ -97,8 +118,10 @@ export default function CadPage() {
       runningRef.current = true;
       setStatus({ phase: "running" });
       try {
-        const program = wrapModule(src, from);
-        const out = await compile(program, from);
+        // Auto-inject the `import … from "exact"` (ruling A) and compile the model against the PRELOADED
+        // CAD library — the buffer stays clean, the vocab is link-merged from `exact.cdz`.
+        const program = injectImport(src, from);
+        const out = await compileWithPreloaded(program, from, [CAD_LIB_NAME], [EXACT_CDZ], [CAD_LIB_FORMAT]);
         if (!out.component) {
           const d = out.diagnostics.find((x) => x.error) ?? out.diagnostics[0];
           setStatus({ phase: "error", message: d ? `${d.code} ${d.message}` : "compile declined" });

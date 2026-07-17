@@ -148,6 +148,27 @@ The parabola from x = −3 to 3 — drag a, b, or c to reshape it:
   (tuple 0.0 (y-at 0.0)) (tuple 1.0 (y-at 1.0)) (tuple 2.0 (y-at 2.0)) (tuple 3.0 (y-at 3.0))))
 ~~~`;
 
+/// A formula-focused example: the `formula` directive typesets a scalar / exact fraction / quantity.
+/// Two Int64 sliders drive `num / den`; because the notebook runs in EXACT mode (int / int → Rational),
+/// the result is a real fraction the FormulaView renders as a stacked n/d. Completes the rich-output
+/// family showcase (value / table / chart / formula). No `pragma` needed — exact mode already makes the
+/// division rational (verified: the `(do (pragma …) …)` wrapper does NOT compile as a top-level cell).
+const FORMULA_DEMO = `# Formulas
+
+A **formula** cell typesets a scalar, an exact fraction, or a quantity. Drag **num** and **den** to
+reshape the fraction:
+
+~~~cadenza widget
+num : Int64 = slider(1, 9, default: 3)
+den : Int64 = slider(1, 9, default: 4)
+~~~
+
+The ratio, as an exact fraction (the notebook evaluates in exact mode, so \`num / den\` is a Rational):
+
+~~~cadenza formula
+(def (main) (/ num den))
+~~~`;
+
 export const EXAMPLES: ExampleNotebook[] = [
   { slug: "compound-interest", title: "Compound interest", markdown: COMPOUND_INTEREST },
   { slug: "loan", title: "Loan repayment", markdown: LOAN },
@@ -155,6 +176,7 @@ export const EXAMPLES: ExampleNotebook[] = [
   { slug: "quadratic", title: "Quadratic explorer", markdown: QUADRATIC },
   { slug: "tables", title: "Tables", markdown: TABLE_DEMO },
   { slug: "charts", title: "Charts", markdown: CHART_DEMO },
+  { slug: "formulas", title: "Formulas", markdown: FORMULA_DEMO },
   { slug: "values", title: "Values", markdown: VALUE_DEMO },
 ];
 

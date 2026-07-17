@@ -490,6 +490,25 @@ export const EXAMPLES: Example[] = [
     expected: "5",
   },
   {
+    // Shows off: NON-primitive recursion — the Ackermann–Péter function, whose recursion nests inside
+    // its own argument (ack(m-1, ack(m, n-1))). It's total but not primitive-recursive, and grows
+    // explosively, so keep the inputs tiny: ack(3, 3) = 61.
+    name: "Ackermann function",
+    surface: "sexpr",
+    source: `(do
+  ; ack(m,n): the classic total-but-not-primitive-recursive function. The inner call
+  ; ack(m, n-1) is itself an argument to the outer ack — recursion nested in recursion.
+  (def (ack m n)
+    (if (= m 0)
+        (+ n 1)
+        (if (= n 0)
+            (ack (- m 1) 1)
+            (ack (- m 1) (ack m (- n 1))))))
+  (def (main) (ack 3 3))
+  (export main))`,
+    expected: "61",
+  },
+  {
     // Shows off: rebuilding a list in reverse by pushing elements from the end onto a fresh list.
     // The prelude List has no reverse, so we walk indices downward. [1 2 3 4 5] -> [5 4 3 2 1].
     name: "Reverse a list",

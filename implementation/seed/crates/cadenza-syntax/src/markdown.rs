@@ -601,8 +601,16 @@ pub fn print(arenas: &Arenas, width: usize) -> String {
 fn print_blocks(a: &Arenas, blocks: &[StructId], out: &mut String) {
     let mut i = 0;
     let mut first = true;
+    let mut prev_inline = false;
     while i < blocks.len() {
-        if !first {
+        // A nested list directly following a tight item's inline text must HUG it — no blank-line
+        // separator. CommonMark reads a blank line before the sublist as making the item LOOSE (it then
+        // wraps the leading text in a `(paragraph …)`), so emitting one here reshapes `(item (text …)
+        // (list …))` into a loose item on the re-read — a different tree, breaking arena-idempotency
+        // (`- item\n  - nested\n` round-tripped through a spurious `- item\n  \n  - nested\n`). Only this
+        // inline-run → list transition is suppressed; genuine block/block separations still get the line.
+        let cur_is_list = a.head_name(blocks[i]) == Some("list");
+        if !(first || prev_inline && cur_is_list) {
             out.push('\n');
         }
         first = false;
@@ -614,9 +622,11 @@ fn print_blocks(a: &Arenas, blocks: &[StructId], out: &mut String) {
             }
             print_inlines(a, &blocks[start..i], out);
             out.push('\n');
+            prev_inline = true;
         } else {
             print_block(a, blocks[i], out);
             i += 1;
+            prev_inline = false;
         }
     }
 }
@@ -1153,6 +1163,23 @@ mod tests {
         // A tight list (inline text directly under `item`) and a nested list must both round-trip.
         assert_idempotent("- one\n- two\n\n  nested paragraph\n- three\n");
         assert_idempotent("1. alpha\n2. beta\n");
+    }
+
+    #[test]
+    fn tight_item_with_a_nested_list_is_arena_idempotent() {
+        // The COMBINED case the faces above cover only separately: a TIGHT item (`(item (text …) …)`,
+        // no wrapping paragraph) whose content is immediately followed by a NESTED list. The printer used
+        // to emit a blank-line separator between the item's inline text and the sublist
+        // (`- item\n  \n  - nested\n`); CommonMark reads that blank line as making the item LOOSE, wrapping
+        // "item" in a paragraph, so the re-read tree differed — an arena-idempotency violation (it only
+        // reconverged on the 2nd round). print_blocks now suppresses the separator on the inline-run → list
+        // transition so the sublist hugs the tight text.
+        assert_idempotent("- item\n  - nested\n");
+        // Ordered outer + nested, and a two-level nest, exercise the same hug at deeper indents.
+        assert_idempotent("1. item\n   - nested\n");
+        assert_idempotent("- a\n  - b\n    - c\n");
+        // A tight item with text, a nested list, THEN more tight siblings still round-trips.
+        assert_idempotent("- one\n  - inner\n- two\n");
     }
 
     #[test]

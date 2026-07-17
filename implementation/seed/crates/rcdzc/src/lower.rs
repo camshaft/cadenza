@@ -7426,6 +7426,8 @@ fn enrich_pattern_head_suggestion(
             let close = if let Some(hit) = db.variant_closest_matches.get(&(decl, key.clone())) {
                 hit.clone()
             } else {
+                #[cfg(test)]
+                crate::db::VARIANT_CLOSEST_MATCHES_MISSES.with(|c| c.set(c.get() + 1));
                 let names: Vec<String> = match db.type_decl_by_occ(decl) {
                     Some(t) => t.variants.iter().map(|v| v.name.clone()).collect(),
                     None => return reject,

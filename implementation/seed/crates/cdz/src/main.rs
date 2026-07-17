@@ -535,11 +535,23 @@ fn run_run_ml(args: &RunMlArgs) -> ExitCode {
         eprintln!("{PROG} run-ml: cannot write driver: {e}");
         return ExitCode::FAILURE;
     }
+    // The driver lives in the SHARED compiler-ml src tree (imports resolve entry-dir-relative, so it can't
+    // go in a temp dir). Remove it on EVERY exit path via an RAII guard, not a single trailing line: a
+    // panic or an early `return` (e.g. a future guard added below `compile_run_ml_driver`) would otherwise
+    // leak a `zz-run-ml-driver-<pid>.cdz` into every agent's `git status`. (A SIGTERM'd process still can't
+    // run Drop — that residue is what the `.gitignore` entry covers — but this closes every in-process path.)
+    struct DriverFile(std::path::PathBuf);
+    impl Drop for DriverFile {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+    let _driver_guard = DriverFile(driver_path.clone());
 
     // 4. Compile + run the driver by shelling `cdz` to itself (install-location-independent via current_exe),
-    //    the same compile→run path the gate uses for rcdzc. Capture stdout (the rendered Option).
+    //    the same compile→run path the gate uses for rcdzc. Capture stdout (the rendered Option). The
+    //    `_driver_guard` above removes the driver when this fn returns (any path).
     let verdict = compile_run_ml_driver(&driver_path);
-    let _ = std::fs::remove_file(&driver_path); // always clean up the temp driver
 
     match verdict {
         Ok(v) => {
@@ -2609,7 +2621,7 @@ fn run_test_file(
     // Each test's name PLUS the generators for its parameters (empty = a plain nullary test, run once;
     // non-empty = a PROPERTY test, run `trials` times with generated inputs). A param whose type is not a
     // generatable scalar makes `param_generators` return `None` — reported per test, not aborting the run.
-    let mut tests: Vec<(String, Option<Vec<GenKind>>, bool)> = Vec::new();
+    let mut tests: Vec<TestSpec> = Vec::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     for i in db.test_defs() {
         // In a PACKAGE, `test_defs()` sees every linked file's `@test`s — keep only the ENTRY file's own,
@@ -2637,8 +2649,17 @@ fn run_test_file(
         // `@exhaustive`: the test is driven over its ENTIRE finite input domain, not by random sampling.
         // Captured per test (before `db` is re-borrowed by the next `param_generators`).
         let exhaustive = db.is_exhaustive(i);
+        // `@requires` bounds for constrained generation — captured before `param_generators` re-borrows `db`
+        // mutably. Only meaningful when the test is a boundary-arg (scalar-param) property; the -gen wrapper
+        // path (compound params) draws internally and isn't clamped here (a later increment).
+        let bounds = param_bounds(&db, i);
         let gens = param_generators(&mut db, i);
-        tests.push((name, gens, exhaustive));
+        tests.push(TestSpec {
+            name,
+            gens,
+            exhaustive,
+            bounds,
+        });
     }
     if tests.is_empty() {
         // No matching `@test` here. A file with no tests (e.g. a pure library module in a package dir, or
@@ -2692,7 +2713,13 @@ fn run_test_file(
     // seed to replay. The runtime cache dir is the store, so the JIT-compiled runtime is reused per trial.
     let mut passed = 0usize;
     let mut failed = 0usize;
-    for (name, gens, exhaustive) in &tests {
+    for TestSpec {
+        name,
+        gens,
+        exhaustive,
+        bounds,
+    } in &tests
+    {
         let kebab = cadenza_syntax::extern_name::kebab_extern_name(name);
         let run_one = |arg_vals: &[String]| -> TrialOutcome {
             run_one_trial(&component, runtime.as_deref(), &kebab, store, arg_vals)
@@ -2838,7 +2865,7 @@ fn run_test_file(
                 }
             },
             // A sampled PROPERTY test: run `trials` trials with generated inputs.
-            Some(gens) => match run_property(gens, trials, seed, &run_one) {
+            Some(gens) => match run_property(gens, bounds, trials, seed, &run_one) {
                 None => {
                     passed += 1;
                     println!("PASS {name} ({trials} trials)");
@@ -3101,6 +3128,17 @@ enum GenKind {
     Char,
 }
 
+/// One `@test`/`@exhaustive` def selected to run, with everything the runner needs to drive it: its `name`,
+/// the per-parameter generators (`None` = a param type the runner can't generate; empty = a nullary def run
+/// once), whether it is `@exhaustive`, and the per-parameter `@requires` integer `bounds` for constrained
+/// generation (empty ⇒ unconstrained). Distilled once per test in the collection loop before the run loop.
+struct TestSpec {
+    name: String,
+    gens: Option<Vec<GenKind>>,
+    exhaustive: bool,
+    bounds: Vec<ParamBound>,
+}
+
 /// The generators for definition `def`'s parameters, or `None` if ANY parameter's solved type is not a
 /// generatable scalar (so the test cannot be property-run). An EMPTY vec means a nullary def (run once).
 /// Each param's type is solved with `infer::type_of` on its binder (seeing through a `(: n T)` annotation,
@@ -3129,6 +3167,153 @@ fn param_generators(db: &mut rcdzc::db::Db, def: usize) -> Option<Vec<GenKind>> 
         kinds.push(kind);
     }
     Some(kinds)
+}
+
+/// An inclusive integer bound `[lo, hi]` a `@requires` precondition imposes on one scalar parameter, so the
+/// generator draws only IN-DOMAIN values and never trips the (D) body-entry precondition trap. `i128` so a
+/// full `i64`/`u64` range plus a `±1` adjustment (turning a strict `<`/`>` into an inclusive bound) never
+/// overflows.
+#[derive(Clone, Copy)]
+struct ParamBound {
+    lo: i128,
+    hi: i128,
+}
+
+impl ParamBound {
+    /// The widest bound — no constraint. Narrowed by each recognized `@requires` comparison.
+    fn unbounded() -> Self {
+        ParamBound {
+            lo: i128::MIN,
+            hi: i128::MAX,
+        }
+    }
+    /// Clamp a drawn value into `[lo, hi]`. An empty range (lo > hi, from contradictory requires) leaves the
+    /// value unchanged — the precondition is unsatisfiable and the trap is the correct outcome, not our job
+    /// to hide.
+    fn clamp(&self, v: i128) -> i128 {
+        if self.lo > self.hi {
+            v
+        } else {
+            v.clamp(self.lo, self.hi)
+        }
+    }
+    /// Whether this bound narrows anything (worth applying).
+    fn is_constrained(&self) -> bool {
+        self.lo != i128::MIN || self.hi != i128::MAX
+    }
+}
+
+/// Per-parameter integer bounds distilled from a def's `@requires` preconditions (empty ⇒ no bound). The
+/// generator applies these so a `@test` over a `@requires`-constrained def draws only inputs SATISFYING the
+/// precondition — the (D) enforcement traps a violated precondition at body entry (a HARD contract for every
+/// caller, `verify_enforce.rs`), so feeding an out-of-domain draw would spuriously FAIL the test rather than
+/// exercise the property. This is the runner-side half of "constrained generation": recognize simple
+/// range/comparison predicates over a single scalar param (`(>= x LO)`, `(< x HI)`, `(= x K)`, and their
+/// mirrors), and constrain that param's draw. An UNRECOGNIZED predicate shape leaves the param unbounded —
+/// the draw is unconstrained, exactly as before (never wrong: an over-broad draw that happens to satisfy the
+/// pre still passes; only a pre-violating draw was the bug, and a recognized bound removes those).
+///
+/// Only INTEGER params are bounded here (the boundary-arg route generates Int/Bool/Float/Char; a comparison
+/// bound is meaningful for integers — Bool/Float/Char preconditions fall through unrecognized). Keyed by
+/// parameter POSITION (matching the `GenKind` vec order).
+fn param_bounds(db: &rcdzc::db::Db, def: usize) -> Vec<ParamBound> {
+    let params = &db.defs[def].params;
+    // Map each param NAME to its position, so a `(>= name lit)` predicate targets the right slot.
+    let pos_of: std::collections::HashMap<&str, usize> = params
+        .iter()
+        .enumerate()
+        .filter_map(|(i, &p)| {
+            // A param is a bare name atom or an annotated `(: name T)` binder — the name is the head child.
+            let name_node = db
+                .ast
+                .as_form(p, ":")
+                .and_then(|t| t.first().copied())
+                .unwrap_or(p);
+            db.ast.as_name(name_node).map(|n| (n, i))
+        })
+        .collect();
+    let mut bounds = vec![ParamBound::unbounded(); params.len()];
+    for &pred in db.requires_of(def) {
+        narrow_from_predicate(db, pred, &pos_of, &mut bounds);
+    }
+    bounds
+}
+
+/// Narrow `bounds` from ONE `@requires` predicate AST node. Recognizes a comparison `(OP a b)` where one
+/// side is a bare param name and the other an integer literal, for OP in `>= > <= < =`; and descends a
+/// conjunction `(and p q …)` / `(& p q …)` so `(and (>= x 0) (< x 100))` bounds `x` to `[0, 99]`. Anything
+/// else (a call, a non-linear predicate, a comparison between two params) is left unrecognized — no change.
+fn narrow_from_predicate(
+    db: &rcdzc::db::Db,
+    pred: rcdzc::ast::StructId,
+    pos_of: &std::collections::HashMap<&str, usize>,
+    bounds: &mut [ParamBound],
+) {
+    // Descend a conjunction: every conjunct constrains independently.
+    for head in ["and", "&"] {
+        if let Some(tail) = db.ast.as_form(pred, head) {
+            for &conj in tail {
+                narrow_from_predicate(db, conj, pos_of, bounds);
+            }
+            return;
+        }
+    }
+    // A comparison `(OP lhs rhs)`. Identify OP, then the (param, literal) pairing in either order.
+    for op in [">=", ">", "<=", "<", "="] {
+        let Some(t) = db.ast.as_form(pred, op) else {
+            continue;
+        };
+        if t.len() != 2 {
+            return;
+        }
+        let (lhs, rhs) = (t[0], t[1]);
+        let as_i128 = |v: &rcdzc::ast::IntValue| v.to_i128();
+        // `(OP param lit)` — the common spelling.
+        if let (Some(name), Some(lit)) = (db.ast.as_name(lhs), db.ast.as_int(rhs).and_then(as_i128))
+        {
+            if let Some(&i) = pos_of.get(name) {
+                apply_cmp(op, lit, false, &mut bounds[i]);
+            }
+            return;
+        }
+        // `(OP lit param)` — the mirrored spelling; the operator flips (lit < x ⇒ x > lit).
+        if let (Some(lit), Some(name)) = (db.ast.as_int(lhs).and_then(as_i128), db.ast.as_name(rhs))
+        {
+            if let Some(&i) = pos_of.get(name) {
+                apply_cmp(op, lit, true, &mut bounds[i]);
+            }
+            return;
+        }
+        return; // recognized OP but not a (param, literal) shape — leave unbounded
+    }
+}
+
+/// Narrow one `ParamBound` by `param OP lit` (or, when `mirrored`, `lit OP param`). A strict `<`/`>` becomes
+/// an inclusive bound via `±1` (integers). `=` pins both ends.
+fn apply_cmp(op: &str, lit: i128, mirrored: bool, b: &mut ParamBound) {
+    // Normalize the mirrored form `lit OP param` to `param OP' lit`: `lit < x` ⇔ `x > lit`, etc.
+    let op = if mirrored {
+        match op {
+            "<" => ">",
+            ">" => "<",
+            "<=" => ">=",
+            ">=" => "<=",
+            other => other, // `=` is symmetric
+        }
+    } else {
+        op
+    };
+    match op {
+        ">=" => b.lo = b.lo.max(lit),
+        ">" => b.lo = b.lo.max(lit.saturating_add(1)),
+        "<=" => b.hi = b.hi.min(lit),
+        "<" => b.hi = b.hi.min(lit.saturating_sub(1)),
+        "=" => {
+            b.lo = b.lo.max(lit);
+            b.hi = b.hi.min(lit);
+        }
+        _ => {}
+    }
 }
 
 /// The number of `(list …)` elements a synthesized variable-length list generator produces candidates for
@@ -3378,14 +3563,15 @@ fn resolve_test_runtime(
 /// still-failing input before reporting.
 fn run_property(
     gens: &[GenKind],
+    bounds: &[ParamBound],
     trials: u64,
     seed: u64,
     run_one: &dyn Fn(&[String]) -> TrialOutcome,
 ) -> Option<PropertyFailure> {
     for trial in 0..trials {
-        let inputs = generate_inputs(gens, seed.wrapping_add(trial));
+        let inputs = generate_inputs(gens, bounds, seed.wrapping_add(trial));
         if let TrialOutcome::Fail(message) = run_one(&inputs) {
-            let (inputs, message) = shrink(gens, &inputs, message, run_one);
+            let (inputs, message) = shrink(gens, bounds, &inputs, message, run_one);
             return Some(PropertyFailure { inputs, message });
         }
     }
@@ -3515,13 +3701,14 @@ fn shrink_pool(
 /// `--seed` replays the exact pool). This is what lets a reported failure be replayed deterministically.
 //= spec/capabilities/property-based-testing.md#generation-is-seeded-and-reproducible
 //# A property run MUST be reproducible from its recorded seed, producing the same inputs on every conforming run.
-fn generate_inputs(gens: &[GenKind], seed: u64) -> Vec<String> {
+fn generate_inputs(gens: &[GenKind], bounds: &[ParamBound], seed: u64) -> Vec<String> {
     use bolero_generator::driver::{self, Rng};
     use bolero_generator::{ValueGenerator, produce};
     let rng = rand_from_seed(seed);
     let mut d = Rng::new(rng, &driver::Options::default());
     gens.iter()
-        .map(|g| match g {
+        .enumerate()
+        .map(|(i, g)| match g {
             GenKind::Bool => produce::<bool>()
                 .generate(&mut d)
                 .unwrap_or(false)
@@ -3538,7 +3725,18 @@ fn generate_inputs(gens: &[GenKind], seed: u64) -> Vec<String> {
             }
             GenKind::Int { signed, width } => {
                 let raw = produce::<i64>().generate(&mut d).unwrap_or(0);
-                render_int(raw, *signed, *width)
+                // `@requires`-constrained generation: if this param carries a recognized integer bound,
+                // CLAMP the drawn value into it so the drawn input SATISFIES the precondition (the (D)
+                // body-entry enforcement traps a violated pre — an out-of-domain draw would spuriously fail
+                // the test). Clamp (not re-draw) keeps generation a pure function of the seed, so the
+                // reproducibility contract (a replayed seed reproduces the inputs) still holds. An
+                // unconstrained param is unchanged. The clamp is in the value's own signed i128 space, then
+                // `render_int` re-narrows to the width.
+                let bounded = match bounds.get(i) {
+                    Some(b) if b.is_constrained() => b.clamp(raw as i128),
+                    _ => raw as i128,
+                };
+                render_int(bounded as i64, *signed, *width)
             }
         })
         .collect()
@@ -3651,6 +3849,7 @@ fn rand_from_seed(seed: u64) -> rand_xoshiro::Xoshiro256PlusPlus {
 /// (possibly updated) failure message from the last failing run.
 fn shrink(
     gens: &[GenKind],
+    bounds: &[ParamBound],
     inputs: &[String],
     message: Option<String>,
     run_one: &dyn Fn(&[String]) -> TrialOutcome,
@@ -3659,6 +3858,17 @@ fn shrink(
     let mut best_msg = message;
     for (i, g) in gens.iter().enumerate() {
         for candidate in shrink_candidates(g, &best[i]) {
+            // A shrink candidate must still SATISFY this param's `@requires` bound — otherwise shrinking an
+            // integer toward 0 could push it out of the precondition domain, and the (D) body-entry trap
+            // would be mistaken for "still fails", yielding an out-of-domain (spurious) counterexample.
+            // Skip a candidate the bound rejects (an unconstrained param admits every candidate).
+            if let Some(b) = bounds.get(i)
+                && b.is_constrained()
+                && let Ok(n) = candidate.parse::<i64>()
+                && b.clamp(n as i128) != n as i128
+            {
+                continue;
+            }
             let mut trial = best.clone();
             trial[i] = candidate;
             if let TrialOutcome::Fail(m) = run_one(&trial) {

@@ -874,3 +874,37 @@
            the Float32 wrapper too, the narrow-float dual of the Float64 typed-empty map.")
   (input  (do (def (main) (Map.len (: (Map.empty) (Map Float32 Int64)))) (export main)))
   (output (: 0 Int64)))
+
+; A collection construction whose element/key siblings INTERLEAVE a BigInt heap handle (i32) with GUARDED
+; Int64 arithmetic (i64) must emit a VALID module. `(Set.of (list (+ (BigInt.of n) (BigInt.of 1)) (BigInt.of
+; (+ n 2))))` has a FIRST element that is a BigInt sum — its `bigint-add` operands stash i32 handles in
+; scratch slots — and a SECOND element that boxes a checked `(+ n 2)` (an i64 overflow-guard temp). The
+; `Set.of`/`Map.insert` emit arms used to lay every sibling at a FIXED scratch base, so the second element's
+; i64 temp reused the slot number the first element's i32 handle had already typed → one wasm local declared
+; at TWO widths → an invalid module (`expected i64, found i32`), rejected at load at every opt level. The fix
+; advances each sibling's scratch floor past the running high-water (the disjoint-slot discipline tuples,
+; records, and lists already applied). These pin the fix on both the Set constructor and the Map.insert twin.
+
+(case "a set built from a BigInt sum and a BigInt.of over integer arithmetic has both elements"
+  (doc    "`(Set.of (list (+ (BigInt.of n) (BigInt.of 1)) (BigInt.of (+ n 2))))` with n=5 holds the BigInt
+           values 6 and 7 — two distinct elements, so Set.len = 2. The first element (a BigInt sum) stashes
+           an i32 handle in a scratch slot; the second (a BigInt.of over a checked `(+ n 2)`) carries an i64
+           overflow-guard temp — and the Set.of emit must keep them on disjoint slots or the wasm local is
+           declared at two widths (invalid module). Reversed order, a plain list, and a bare `=` all worked;
+           only the ordered [big-arith, of(i64-arith)] element pair inside a Set/Map build collided.")
+  (input  (do (def (main (: n Int64))
+                (Set.len (Set.of (list (+ (BigInt.of n) (BigInt.of 1)) (BigInt.of (+ n 2)))))) (export main)))
+  (call   main (: 5 Int64))
+  (output (: 2 Int64)))
+
+(case "a map built from a BigInt sum key and a BigInt.of-over-arithmetic key has both entries"
+  (doc    "The Map twin of the Set slot-clash guard: `(Map.insert (Map.insert (Map.empty) (+ (BigInt.of n)
+           (BigInt.of 1)) 1) (BigInt.of (+ n 2)) 2)` with n=5 keys the BigInt values 6 and 7 — two distinct
+           keys, so Map.len = 2. The first key is a BigInt sum (an i32 handle scratch); the second is a
+           BigInt.of over a checked `(+ n 2)` (an i64 guard temp). The Map.insert emit must advance each
+           sibling's scratch floor so the i32 key handle and the i64 arith temp never share one slot.")
+  (input  (do (def (main (: n Int64))
+                (Map.len (Map.insert (Map.insert (Map.empty) (+ (BigInt.of n) (BigInt.of 1)) 1)
+                                     (BigInt.of (+ n 2)) 2))) (export main)))
+  (call   main (: 5 Int64))
+  (output (: 2 Int64)))

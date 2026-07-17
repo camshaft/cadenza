@@ -18,12 +18,21 @@
 
 import { EditorView, Decoration, type DecorationSet } from "@codemirror/view";
 import { StateField, StateEffect, type Extension, RangeSetBuilder } from "@codemirror/state";
-import { semanticTokens, type Surface, type SemanticTok } from "../compiler/client.ts";
+import {
+  semanticTokens,
+  semanticTokensWithPreloaded,
+  type Surface,
+  type SemanticTok,
+} from "../compiler/client.ts";
 import { byteToUtf16, utf16ToByte } from "./offsets.ts";
 
 export interface SemanticHighlightContext {
   surface: () => Surface;
   prepare: (editorText: string, surface: Surface) => { compiled: string; wrapPrefixBytes: number };
+  /** Optional PRELOADED library modules (name/source/format arrays) link-merged for classification, so a
+   *  name resolving into a preloaded module colours as what it truly is (e.g. /cad's `Solid`/`v3r`/`lower`).
+   *  Omitted → plain `semanticTokens` (unchanged for every other editor). */
+  preload?: () => { names: string[]; sources: string[]; formats: string[] };
 }
 
 /// The effect that carries a fresh set of editor-coordinate tokens to paint.
@@ -72,9 +81,13 @@ export function cadenzaSemanticHighlight(ctx: SemanticHighlightContext): Extensi
     const editorText = view.state.doc.toString();
     const surface = ctx.surface();
     const { compiled, wrapPrefixBytes } = ctx.prepare(editorText, surface);
+    const preload = ctx.preload?.();
     let toks: SemanticTok[];
     try {
-      toks = await semanticTokens(compiled, surface);
+      toks =
+        preload && preload.names.length
+          ? await semanticTokensWithPreloaded(compiled, surface, preload.names, preload.sources, preload.formats)
+          : await semanticTokens(compiled, surface);
     } catch {
       return; // a compiler hiccup leaves the lexical colours in place
     }

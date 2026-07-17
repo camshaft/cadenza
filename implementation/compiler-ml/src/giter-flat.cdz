@@ -53,13 +53,33 @@ def flatten(its) = match its with
   | GIter.Nil(_) => GIter.Nil(unit)
   | GIter.Cons(inner, rest) => chain(inner, flatten(rest))
 
+/// `digits(it)` — fold a `GIter(Int64)` of single digits into one base-10 number (`acc*10 + h`), so the
+/// result is ORDER- AND VALUE-sensitive: `[1, 2, 3]` → 123, `[3, 2, 1]` → 321. A thin seed of the
+/// tail-recursive `digit-from` at `acc = 0` (empty → 0). Monomorphic (Int64 only, no new generic
+/// instantiation — it consumes the `GIter(Int64)` `count` already instantiates), it lets the flatten
+/// tests verify the flattened SEQUENCE, not just its length (which `count` alone can't — a reorder/drop/
+/// dup that preserves cardinality would slip past a count check).
+def digits(it) = digit-from(it, 0)
+
+/// `digit-from(it, acc)` — the tail-recursive worker for `digits`, threading the base-10 accumulator.
+def digit-from(it, acc) = match it with
+  | GIter.Nil(_) => acc
+  | GIter.Cons(h, rest) => digit-from(rest, acc * 10 + h)
+
 /// TESTS ----------------------------------------------------------------------------------------------
-/// Kept small (3 @tests) — well under the ~22-call-site ceiling this nested shape needs (see header).
+/// Kept small — well under the ~22-call-site ceiling this nested shape needs (see header). The Int64 tests
+/// verify the flattened SEQUENCE via `digits` (order + values), not just `count` (cardinality); the String
+/// test stays a `count` check (the second element type, proving flatten composes generically).
 
 @test
 def flatten-ints-two-inners() =
   if count(flatten(from-list([from-list([1, 2]), from-list([3, 4, 5])]))) == 5
   then unit else trap("flatten Int64: 2 + 3 = 5")
+
+@test
+def flatten-ints-preserves-order-and-values() =
+  if digits(flatten(from-list([from-list([1, 2]), from-list([3, 4, 5])]))) == 12345
+  then unit else trap("flatten Int64 concatenates in order: [1,2]++[3,4,5] = 12345")
 
 @test
 def flatten-strings-second-element-type() =
@@ -70,5 +90,10 @@ def flatten-strings-second-element-type() =
 def flatten-skips-empty-inners() =
   if count(flatten(from-list([from-list([]), from-list([7]), from-list([])]))) == 1
   then unit else trap("flatten drops empty inner iterators")
+
+@test
+def flatten-skips-empty-inners-keeps-value() =
+  if digits(flatten(from-list([from-list([]), from-list([7]), from-list([])]))) == 7
+  then unit else trap("flatten drops empty inners but keeps the surviving value 7")
 
 export { GIter.* }

@@ -187,10 +187,17 @@ def cf-declines-mismatch-is-fail() =
   (if case-passes([Tok.TNum(5)], Expect.Declines) == false then unit else trap("5 runs, so expecting Declines fails"))
 
 @test
-def cf-corpus-all-pass() =
-  // the whole corpus is at 100% — the current conformance floor.
-  (match conformance() with | (passed, total) =>
-    (if passed == total then (if total == 47 then unit else trap("47 cases")) else trap("all cases pass")))
+def cf-corpus-size-floor() =
+  // The corpus SIZE floor: exactly 47 cases, so a case can't be silently dropped from `corpus()`.
+  // This does NOT re-run the 47 compiles — each case's pass/decline is already proven by its own
+  // `conformance-<case>` @test below (47 of them), and the `count-passing` fold logic by
+  // `cf-count-passing-partial`. The old `cf-corpus-all-pass` re-ran the entire 47-case
+  // compile+eval pipeline INLINE as one silent @test (~minutes, zero intermediate output), which
+  // duplicated the per-case tests AND read as a silent hang/kill to the gate (localized by
+  // v-fleet-tooling as the compiler-ml gate-throughput + false-hang source). The conformance FLOOR
+  // is now: 47 per-case @tests (each case correct) + this size check (no case dropped), with none of
+  // the redundant full-corpus re-run.
+  (if List.len(corpus()) == 47 then unit else trap("corpus has 47 cases"))
 
 @test
 def cf-count-passing-partial() =

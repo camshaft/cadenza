@@ -8,13 +8,16 @@
 import * as Comlink from "comlink";
 import init, {
   compile as wasmCompile,
+  compile_with_preloaded as wasmCompileWithPreloaded,
   compile_tests as wasmCompileTests,
   param_test_signatures as wasmParamTestSignatures,
   diagnostics as wasmDiagnostics,
+  diagnostics_with_preloaded as wasmDiagnosticsWithPreloaded,
   type_at as wasmTypeAt,
   define_at as wasmDefineAt,
   references_at as wasmReferencesAt,
   semantic_tokens as wasmSemanticTokens,
+  semantic_tokens_with_preloaded as wasmSemanticTokensWithPreloaded,
   disposition as wasmDisposition,
   emit_rust as wasmEmitRust,
   core_module as wasmCoreModule,
@@ -221,6 +224,31 @@ const api = {
     return { component, diagnostics };
   },
 
+  /// Compile `text` with PRELOADED library modules link-merged (`compile_with_preloaded`): the three
+  /// parallel arrays declare each preloaded module's name / source / surface. `text` can `import` from a
+  /// preloaded module by name and the compiler links against the supplied source instead of requiring the
+  /// module in-tree. /cad uses this to compile a bare model buffer against the preloaded CAD library
+  /// (Solid.*/Vec3.*/v3r) — the reader edits only the model, the vocab is preloaded. Same parse-error
+  /// handling as `compile` (a syntax error → a decline diagnostic, not a promise rejection).
+  async compileWithPreloaded(
+    text: string,
+    from: Surface,
+    names: string[],
+    sources: string[],
+    formats: string[],
+  ): Promise<CompileOutcome> {
+    await ensureReady();
+    let r: ReturnType<typeof wasmCompileWithPreloaded>;
+    try {
+      r = wasmCompileWithPreloaded(text, from, names, sources, formats);
+    } catch (e) {
+      return { component: null, diagnostics: [parseErrorDiag(e)] };
+    }
+    const component = r.component ? new Uint8Array(r.component) : null;
+    const diagnostics: Diag[] = r.diagnostics.map(toDiag);
+    return { component, diagnostics };
+  },
+
   /// Compile `text` in TEST-LAYOUT mode (`compile_tests`): the component's boundary is the program's
   /// `@test` defs, so each `@test` is an invocable export. Returns the component + diagnostics + the
   /// discovered test names (nullary = run now, param = deferred property tests). The run worker then
@@ -265,6 +293,24 @@ const api = {
     return wasmDiagnostics(text, from).map(toDiag);
   },
 
+  /// Type-check `text` with PRELOADED library modules link-merged (`diagnostics_with_preloaded`), the
+  /// as-you-type sibling of `compileWithPreloaded`. The three parallel arrays declare each preloaded
+  /// module's name / source / surface; `text` can `import` from a preloaded module by name and resolves
+  /// against the supplied source. Faults are returned over the USER text spans (a fault inside a preloaded
+  /// library is dropped), so a squiggle lands in the buffer the reader edits — /cad lints a bare model
+  /// against the preloaded CAD library without the preloaded vocab (`Solid`/`v3r`/`lower`) showing as
+  /// unbound. Empty arrays are byte-identical to plain `diagnostics`.
+  async diagnosticsWithPreloaded(
+    text: string,
+    from: Surface,
+    names: string[],
+    sources: string[],
+    formats: string[],
+  ): Promise<Diag[]> {
+    await ensureReady();
+    return wasmDiagnosticsWithPreloaded(text, from, names, sources, formats).map(toDiag);
+  },
+
   /// The inferred type at a UTF-8 byte offset (for a hover tooltip), or null if there's nothing there.
   async typeAt(text: string, from: Surface, byteOffset: number): Promise<TypeAtInfo | null> {
     await ensureReady();
@@ -292,6 +338,26 @@ const api = {
   async semanticTokens(text: string, from: Surface): Promise<SemanticTok[]> {
     await ensureReady();
     return wasmSemanticTokens(text, from).map((t) => ({ from: t.from, to: t.to, kind: t.kind }));
+  },
+
+  /// Semantic tokens with PRELOADED library modules link-merged (`semantic_tokens_with_preloaded`), the
+  /// highlighting sibling of `diagnosticsWithPreloaded`. Classifies the whole linked package so a name
+  /// resolving into a preloaded library colours as the function/type/ctor it truly is (/cad's `Solid`/
+  /// `v3r`/`lower` stop rendering blank/unbound); tokens are demuxed back to the USER text spans and
+  /// library-internal tokens dropped. Empty arrays are byte-identical to plain `semanticTokens`.
+  async semanticTokensWithPreloaded(
+    text: string,
+    from: Surface,
+    names: string[],
+    sources: string[],
+    formats: string[],
+  ): Promise<SemanticTok[]> {
+    await ensureReady();
+    return wasmSemanticTokensWithPreloaded(text, from, names, sources, formats).map((t) => ({
+      from: t.from,
+      to: t.to,
+      kind: t.kind,
+    }));
   },
 
   /// The compilation disposition of the definition whose name is at a UTF-8 byte offset (for a hover),

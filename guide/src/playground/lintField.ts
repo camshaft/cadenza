@@ -9,7 +9,12 @@
 
 import { linter, lintGutter, type Diagnostic as CmDiagnostic } from "@codemirror/lint";
 import type { Extension } from "@codemirror/state";
-import { diagnostics as workerDiagnostics, type Diag, type Surface } from "../compiler/client.ts";
+import {
+  diagnostics as workerDiagnostics,
+  diagnosticsWithPreloaded as workerDiagnosticsWithPreloaded,
+  type Diag,
+  type Surface,
+} from "../compiler/client.ts";
 import { toCmDiagnostics } from "./cadenzaLint.ts";
 
 export { lintGutter };
@@ -20,6 +25,10 @@ export interface LinterContext {
   /** Wrap the editor text into a compilable module + report the wrapper's UTF-8 byte length, so spans
    *  map back to the editor text. Identity (no wrap) for a playground buffer already a full module. */
   prepare: (editorText: string, surface: Surface) => { compiled: string; wrapPrefixBytes: number };
+  /** Optional PRELOADED library modules (three parallel name/source/format arrays) link-merged for
+   *  diagnostics. When set, the compiled text is type-checked with `diagnosticsWithPreloaded` so a buffer
+   *  importing a preloaded module (e.g. /cad's model) doesn't fault the preloaded vocab as unbound. */
+  preload?: () => { names: string[]; sources: string[]; formats: string[] };
   /** Receive each fresh raw diagnostics set (for a Diagnostics tab / status counts). */
   onDiagnostics?: (diags: Diag[]) => void;
 }
@@ -31,9 +40,13 @@ export function cadenzaLinter(ctx: LinterContext): Extension {
       const editorText = view.state.doc.toString();
       const surface = ctx.surface();
       const { compiled, wrapPrefixBytes } = ctx.prepare(editorText, surface);
+      const preload = ctx.preload?.();
       let diags: Diag[];
       try {
-        diags = await workerDiagnostics(compiled, surface);
+        diags =
+          preload && preload.names.length
+            ? await workerDiagnosticsWithPreloaded(compiled, surface, preload.names, preload.sources, preload.formats)
+            : await workerDiagnostics(compiled, surface);
       } catch {
         return [];
       }

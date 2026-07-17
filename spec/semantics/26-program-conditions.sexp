@@ -1751,3 +1751,49 @@
             (def (main) (f -5))
             (export main)))
   (trap   "unreachable"))
+
+(case "a PLAIN @ensures postcondition is ENFORCED at body-exit: a VIOLATED postcondition traps when the def is called"
+  (doc    "The (D) test-tier enforcement of a BARE `@ensures` (NOT stacked under `@test` — that is
+           v-property-testing's TESTED tier, which they own). `verify_enforce::enforce` rewrites
+           `(@ (ensures (>= it 0)) (def (f (: x Int64)) (- x 100)))` so the body becomes
+           `(let ((it (- x 100))) (if (>= it 0) it (trap …)))` — the postcondition is checked at body-EXIT
+           (the Hoare `{P} body {Q}` reading, `it` bound to the def's RESULT), and is VALUE-TRANSPARENT: the
+           pass arm returns `it`, the def's own value, NOT `unit`. `(f 5)` computes `-95`, which violates
+           `(>= it 0)`, so the `if` takes the trap arm — `unreachable`. Before this increment a bare @ensures
+           was RECORDED (db.ensures) but NOT enforced — `(f 5)` returned `-95`. Pins that a plain @ensures now
+           actually verifies at run time. (A `@test @ensures` stack is v-property-testing's; this pass skips
+           that shape to avoid double-injection — bare @ensures is v-verification's.)")
+  (input  (do
+            (@ (ensures (>= it 0)) (def (f (: x Int64)) (- x 100)))
+            (def (main) (f 5))
+            (export main)))
+  (trap   "unreachable"))
+
+(case "a PLAIN @ensures postcondition is value-transparent when SATISFIED: the def returns its computed value"
+  (doc    "The value-transparency half of the plain-@ensures enforcement pin above. `(f 200)` computes `100`,
+           which SATISFIES `(>= it 0)`, so the injected `(let ((it (- x 100))) (if (>= it 0) it (trap …)))`
+           binds `it = 100`, the `if` takes the pass arm, and the def returns `it` = `100` — its OWN value,
+           not `unit`, and no trap. Together with the trap case above this pins that the @ensures enforcement
+           rewrite is value-transparent AND checking: a satisfied postcondition yields the computed result, a
+           violated one traps.")
+  (input  (do
+            (@ (ensures (>= it 0)) (def (f (: x Int64)) (- x 100)))
+            (def (main) (f 200))
+            (export main)))
+  (output (: 100 Int64)))
+
+(case "@ensures with a param literally named it is SKIPPED (capture guard) — the def returns its value, no shadow"
+  (doc    "The `it`-capture guard. `@ensures` binds the result to `it`; if a PARAMETER is literally named
+           `it`, the injected `(let ((it BODY)) …)` binder would SHADOW that param and silently change the
+           def's meaning. So `verify_enforce::enforce` SKIPS the @ensures rewrite for a def whose sig binds
+           `it` (bare `it` or typed `(: it T)`) — the postcondition is not enforced for that def (a rare,
+           self-inflicted name clash), but the def keeps its correct meaning. Here `(def (f (: it Int64))
+           (- it 100))` has a param named `it`; the @ensures is skipped, so `(f 5)` returns `(- 5 100)` =
+           `-95` using the PARAMETER `it` (not a shadowed result binder) — no trap, no shadow. Pins that the
+           guard protects the def's semantics rather than miscompiling a captured name. (Mirrors
+           proptest_gen's identical guard on the @test @ensures rewrite.)")
+  (input  (do
+            (@ (ensures (>= it 0)) (def (f (: it Int64)) (- it 100)))
+            (def (main) (f 5))
+            (export main)))
+  (output (: -95 Int64)))

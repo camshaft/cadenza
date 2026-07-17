@@ -3250,7 +3250,16 @@ fn op_name(op: Prim) -> &'static str {
 /// read-off `select.rs` does (`int_ty_of`). A non-integer node never reaches an integer-typed emit
 /// path, so the default is defensive.
 fn int_ty_of(db: &mut Db, id: StructId) -> IntTy {
-    match type_of(db, id) {
+    // PEEL `Ty::Qty`: a quantity over an int — `(Qty Int8 u)` — erases to its inner int's width (the unit
+    // is a compile-time value), so a `(Qty.of (Int8.of n) u)` magnitude must ground to the INNER width, not
+    // the i64 default. WITHOUT the peel, a narrow-Qty magnitude stored as a heap value (e.g. a `Map.insert`
+    // value) rendered `n as i64` into an `i8`-typed slot → Rust E0308 (`expected i8, found i64`). Mirrors
+    // the wasm backend's `int_ty_of` Qty peel (the `int_ty_of`/narrow-width lockstep, cross-backend twin).
+    let ty = match type_of(db, id) {
+        Ty::Qty { inner, .. } => *inner,
+        other => other,
+    };
+    match ty {
         Ty::Int(it) => it,
         _ => IntTy {
             sign: Sign::Fixed(true),
@@ -3605,8 +3614,15 @@ fn emit_sum_cont(
             }
             // The literal to compare against, in the sub-value's own type (`5i64`, `true`) so the Rust
             // comparison types. A string probe never reaches a RUNTIME test (it declines at `is_scalar`
-            // before a decision tree is built), matching the scalar-match path.
-            let lit = match probe {
+            // before a decision tree is built), matching the scalar-match path. For an INT probe both sides
+            // of the `==` MUST share one width: the `subject` (read via `emit_sum_payload`) can come back
+            // WIDENED to i64 (an erased-newtype scrutinee built through a narrowing wrap — `(W.V (Int8.wrap
+            // n))` with `n: Int64` — reads the value as `(n as i64)`), while the literal is emitted at the
+            // narrow logical width (`3i8`) → `i64 == i8` E0308. So key BOTH sides off the SAME `target`
+            // width: emit the literal at `target`, and cast the subject to `target` too (`(<subj>) as i8`).
+            // The cast is sound — the sub-value is logically that narrow type (the newtype's inner width), so
+            // narrowing recovers the true value, matching the wasm decision-tree's width-normalized compare.
+            let (lit, subject) = match probe {
                 crate::core::Probe::Int(v) => {
                     // The sub-value's integer type gives the literal's suffix; a `Payload`/`Elem` path ends
                     // at an Int leaf. Prefer an arm-recorded path type (the entered-variant type, exact for
@@ -3625,9 +3641,17 @@ fn emit_sum_cont(
                     let target = types::rust_type(&Ty::Int(it)).ok_or_else(|| {
                         Reject::decline("a literal-payload width has no native Rust representation")
                     })?;
-                    format!("{}{target}", int_value_signed_decimal(v))
+                    // Cast the subject to the SAME width as the literal so both sides of `==` agree (fixes
+                    // the widened-subject E0308); a subject already at `target` casts to itself (a no-op the
+                    // compiler folds).
+                    (
+                        format!("{}{target}", int_value_signed_decimal(v)),
+                        format!("(({subject}) as {target})"),
+                    )
                 }
-                crate::core::Probe::Bool(b) => (if *b { "true" } else { "false" }).to_string(),
+                crate::core::Probe::Bool(b) => {
+                    ((if *b { "true" } else { "false" }).to_string(), subject)
+                }
                 crate::core::Probe::Str(_)
                 | crate::core::Probe::Char(_)
                 | crate::core::Probe::ListLen { .. }

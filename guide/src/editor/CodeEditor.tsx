@@ -66,6 +66,11 @@ const BASE_EXTENSIONS: Extension[] = [cadenzaLanguage, cadenzaHighlighting, edit
 export interface IdeConfig {
   surface: () => Surface;
   prepare: (editorText: string, surface: Surface) => { compiled: string; wrapPrefixBytes: number };
+  /** Optional PRELOADED library modules link-merged for diagnostics (three parallel name/source/format
+   *  arrays). When set, the linter compiles the prepared text with `diagnosticsWithPreloaded` so a buffer
+   *  that `import`s a preloaded module (e.g. /cad's model against the CAD library) doesn't show the
+   *  preloaded vocab as unbound. Omitted → the linter uses plain `diagnostics` (unchanged). */
+  preload?: () => { names: string[]; sources: string[]; formats: string[] };
 }
 
 interface Props {
@@ -86,11 +91,11 @@ export function CodeEditor({ value, onChange, readOnly, minHeight = "auto", ide 
     return [
       ...BASE_EXTENSIONS,
       lintGutter(),
-      cadenzaLinter({ surface: ide.surface, prepare: ide.prepare }),
+      cadenzaLinter({ surface: ide.surface, prepare: ide.prepare, preload: ide.preload }),
       cadenzaHover({ surface: ide.surface, prepare: ide.prepare }),
       cadenzaGotoDef({ surface: ide.surface, prepare: ide.prepare }),
       cadenzaHighlightRefs({ surface: ide.surface, prepare: ide.prepare }),
-      cadenzaSemanticHighlight({ surface: ide.surface, prepare: ide.prepare }),
+      cadenzaSemanticHighlight({ surface: ide.surface, prepare: ide.prepare, preload: ide.preload }),
       cadenzaSemanticTheme,
     ];
     // eslint-disable-next-line react-hooks/exhaustive-deps

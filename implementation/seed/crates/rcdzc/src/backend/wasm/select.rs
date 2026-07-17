@@ -1729,7 +1729,23 @@ fn is_narrow_int(db: &mut Db, id: StructId) -> Option<Machine> {
     // sum/list element. A bare `UInt8` (`Ty::Int(u8)`) matched + widened fine; only the newtype-wrapped
     // narrow int slipped through. (A nominal over a FULL-width Int64 strips to a non-slot32 int → still None,
     // no extend, correct.)
-    match type_of(db, id).strip_nominal() {
+    //
+    // PEEL `Ty::Qty`: a quantity over a narrow int — `(Qty Int8 u)` — erases to its inner narrow int (the
+    // unit is a compile-time value; the runtime rep IS the inner narrow int's raw i32 slot), so it needs
+    // the SAME i32→i64 widen before `box-int` and i64→i32 narrow after `get-int`. Without the peel, a
+    // `(Qty Int8 u)` stored as a MAP VALUE / heap slot returned None here → the narrow after `get-int` was
+    // skipped → `get-int`'s i64 was left where the i32 narrow-int slot was expected (e.g. a `Map.lookup`
+    // result escaping the Option match as a Qty) → INVALID component (`expected i32, found i64`). The
+    // peel mirrors the sibling `box_op_ty`/`get_op_ty`/`is_heap_type` arms that already descend into a
+    // `Ty::Qty` inner. (A bare narrow int + an erased narrow newtype already matched; only a Qty-wrapped
+    // narrow int slipped through — the value-form materialization twin of the arith-dispatch peel family.)
+    let solved = type_of(db, id);
+    let stripped = solved.strip_nominal();
+    let inner = match stripped {
+        Ty::Qty { inner, .. } => inner.strip_nominal(),
+        other => other,
+    };
+    match inner {
         Ty::Int(it) => {
             let m = Machine::of(*it);
             m.slot32.then_some(m)
@@ -3877,17 +3893,31 @@ fn materialize_payload_prefixes(
         // Emit the prefix as a BARE HANDLE WALK — `<start> …steps` with NO trailing unbox (`get_op`); a
         // prefix ends in `Payload`, so its value is a tuple/record HANDLE, used as-is. Start from the
         // longest ALREADY-registered shorter prefix if one exists (shortest-first order guarantees it is
-        // materialized), else from the scrutinee. Only `Payload`/`Elem` steps appear in a prefix (a
-        // `RestFrom` is a sole step, never followed → never in a prefix), and every `Elem` here is an
-        // `arr-get` (a payload tuple, not a list — a list element would be a lone `Elem` off a list
-        // scrutinee, not under a `Payload`).
+        // materialized), else from the scrutinee. An `Elem` step is USUALLY a tuple/record `arr-get`, but a
+        // LEADING `Elem` off a `List` scrutinee (a sum-with-tuple-payload matched as a LIST ELEMENT — prefix
+        // `[Elem(0), Payload]`, whose two tuple binders share it) is a `vec-get` into the RRB vec, NOT a flat
+        // `arr-get`. So TRACK the sub-value type down the walk exactly as the main `SumPayload` emit does and
+        // pick the accessor per step; a bare unconditional `arr-get` mis-read the vec handle (→ garbage → an
+        // `unreachable` trap, the list-element/tuple-payload miscompile). A `RestFrom` never appears in a
+        // prefix (it is a sole step, never followed).
         let start = (0..prefix.len()).rev().find_map(|k| {
             out.payload_prefix_slots
                 .get(&(scrutinee, prefix[..k].to_vec()))
                 .map(|&s| (k, s))
         });
+        // The absolute path walked so far (from the scrutinee root) and the CURRENT sub-value type — seeded
+        // either from a shorter slotted prefix's recorded type (a `Payload`-ending prefix, else `Any`) or
+        // from the scrutinee's own type when starting fresh.
+        let mut walked_prefix: Vec<crate::core::PathStep>;
+        let mut cur;
         let from = if let Some((k, s)) = start {
             out.push(Lir::LocalGet(s)); // [handle] — the shorter shared prefix
+            walked_prefix = prefix[..k].to_vec();
+            cur = out
+                .sum_path_types
+                .get(&prefix[..k])
+                .cloned()
+                .unwrap_or(Ty::Any);
             k
         } else {
             emit(
@@ -3900,16 +3930,40 @@ fn materialize_payload_prefixes(
                 layout,
                 out,
             )?; // [handle]
+            walked_prefix = Vec::new();
+            cur = type_of(db, scrutinee);
             0
         };
         for step in &prefix[from..] {
+            walked_prefix.push(*step);
             match step {
                 crate::core::PathStep::Payload => {
                     out.push(Lir::CallImport(OP_SUM_PAYLOAD));
+                    cur = match cur.strip_nominal() {
+                        Ty::Sum { .. } => payload_step_ty_of(
+                            db,
+                            Some(scrutinee),
+                            &cur,
+                            &walked_prefix,
+                            &out.sum_path_types,
+                        ),
+                        inner => inner.clone(),
+                    };
                 }
                 crate::core::PathStep::Elem(i) => {
                     out.push(Lir::ConstI32(*i as i32));
-                    out.push(Lir::CallImport(OP_ARR_GET));
+                    // A list element reads the RRB vec (`vec-get`); a tuple/record cell reads the flat array
+                    // (`arr-get`). Mirror the main `SumPayload` emit's per-step type-directed choice.
+                    if matches!(cur.strip_nominal(), Ty::List(_)) {
+                        out.push(Lir::CallImport(OP_VEC_GET));
+                        cur = match cur.strip_nominal() {
+                            Ty::List(e) => (**e).clone(),
+                            _ => Ty::Any,
+                        };
+                    } else {
+                        out.push(Lir::CallImport(OP_ARR_GET));
+                        cur = Ty::Any;
+                    }
                 }
                 crate::core::PathStep::RestFrom(_) => {
                     return Err(Reject::decline(
@@ -6511,13 +6565,19 @@ fn emit(
         } => {
             out.push(Lir::CallImport(OP_MAP_EMPTY)); // → [map]
             for &(k, v) in &entries {
-                emit(db, k, slots, base, high, scratch_ty, layout, out)?; // [map, key]
+                // Each key/value sub-expression starts its scratch ABOVE the running high-water, NOT at a
+                // fixed `base` — the same disjoint-slot discipline `Core::Tuple`/`Core::ListNew` apply, so a
+                // key/value that stashes an i32 handle in a scratch slot never collides with a sibling's i64
+                // arith temp at that slot number (one wasm local at two widths = an invalid module).
+                let key_base = base.max(*high);
+                emit(db, k, slots, key_base, high, scratch_ty, layout, out)?; // [map, key]
                 let key_boxed = box_op_for(db, k, &key_ty)?;
                 emit_heap_store_tail(db, k, key_boxed, out); // [map, key-handle]
                 if key_needs_compaction(db, k) {
                     out.push(Lir::CallImport(OP_BYTES_COMPACT)); // rope key → canonical flat leaf
                 }
-                emit(db, v, slots, base, high, scratch_ty, layout, out)?; // [map, key, val]
+                let val_base = base.max(*high);
+                emit(db, v, slots, val_base, high, scratch_ty, layout, out)?; // [map, key, val]
                 let val_boxed = box_op_for(db, v, &val_ty)?;
                 emit_heap_store_tail(db, v, val_boxed, out); // [map, key, val-handle]
                 out.push(Lir::CallImport(OP_MAP_INSERT)); // → [map'] (consumes map, key, val)
@@ -6534,14 +6594,22 @@ fn emit(
             key_ty,
             val_ty,
         } => {
-            emit(db, map, slots, base, high, scratch_ty, layout, out)?; // [map]
-            emit(db, key, slots, base, high, scratch_ty, layout, out)?; // [map, key]
+            // Each of map/key/val starts its scratch ABOVE the running high-water, NOT at a fixed `base`
+            // — the disjoint-slot discipline `Core::Tuple`/`Core::ListNew` apply. `map`'s prior insert
+            // may have stashed an i32 handle in a slot; `key`/`val` carrying guarded i64 arith
+            // (`(BigInt.of (+ n 2))`) must not reuse that slot number at a different width (one wasm local
+            // at two widths = an invalid module: `expected i64, found i32`).
+            let map_base = base.max(*high);
+            emit(db, map, slots, map_base, high, scratch_ty, layout, out)?; // [map]
+            let key_base = base.max(*high);
+            emit(db, key, slots, key_base, high, scratch_ty, layout, out)?; // [map, key]
             let key_boxed = box_op_for(db, key, &key_ty)?;
             emit_heap_store_tail(db, key, key_boxed, out); // [map, key-handle]
             if key_needs_compaction(db, key) {
                 out.push(Lir::CallImport(OP_BYTES_COMPACT)); // rope key → canonical flat leaf (champ contract)
             }
-            emit(db, val, slots, base, high, scratch_ty, layout, out)?; // [map, key, val]
+            let val_base = base.max(*high);
+            emit(db, val, slots, val_base, high, scratch_ty, layout, out)?; // [map, key, val]
             let val_boxed = box_op_for(db, val, &val_ty)?;
             emit_heap_store_tail(db, val, val_boxed, out); // [map, key, val-handle]
             out.push(Lir::CallImport(OP_MAP_INSERT)); // → [map']
@@ -6614,7 +6682,15 @@ fn emit(
         Core::SetOf { elems, elem_ty } => {
             out.push(Lir::CallImport(OP_SET_EMPTY)); // → [set]
             for &e in &elems {
-                emit(db, e, slots, base, high, scratch_ty, layout, out)?; // [set, elem]
+                // Each element starts its scratch ABOVE the running high-water, NOT at a fixed `base` —
+                // the same disjoint-slot discipline `Core::Tuple`/`Core::Record`/`Core::ListNew` apply.
+                // An element that stashes a transient in a scratch slot at a given TYPE (a BigInt arith's
+                // i32 handle scratch) fixes that slot's declared type; a LATER element reusing the same
+                // slot number at a DIFFERENT width (`(BigInt.of (+ n 2))`'s i64 overflow-guard temp) would
+                // re-type one wasm local to two widths → an invalid module (`expected i64, found i32`).
+                // Advancing `elem_base` past each element's high-water keeps siblings on disjoint slots.
+                let elem_base = base.max(*high);
+                emit(db, e, slots, elem_base, high, scratch_ty, layout, out)?; // [set, elem]
                 let elem_boxed = box_op_for(db, e, &elem_ty)?;
                 emit_heap_store_tail(db, e, elem_boxed, out); // [set, elem-handle]
                 if key_needs_compaction(db, e) {
@@ -6627,8 +6703,13 @@ fn emit(
         // `Set.insert(s, e)` — emit the set handle, the element boxed by its type, then `set-insert`
         // (RETURNS the new set; consumes both). Mirrors `MapInsert` without the value column.
         Core::SetInsert { set, elem, elem_ty } => {
-            emit(db, set, slots, base, high, scratch_ty, layout, out)?; // [set]
-            emit(db, elem, slots, base, high, scratch_ty, layout, out)?; // [set, elem]
+            // `set` and `elem` start their scratch ABOVE the running high-water (disjoint-slot discipline,
+            // as `Core::Tuple`/`Core::ListNew`): `set`'s prior inserts may have typed a scratch slot i32,
+            // and `elem`'s guarded i64 arith must not reuse it at a different width (invalid module).
+            let set_base = base.max(*high);
+            emit(db, set, slots, set_base, high, scratch_ty, layout, out)?; // [set]
+            let elem_base = base.max(*high);
+            emit(db, elem, slots, elem_base, high, scratch_ty, layout, out)?; // [set, elem]
             let elem_boxed = box_op_for(db, elem, &elem_ty)?;
             emit_heap_store_tail(db, elem, elem_boxed, out); // [set, elem-handle]
             if key_needs_compaction(db, elem) {
@@ -9900,13 +9981,20 @@ fn heap_operand_ownership(db: &mut Db, id: StructId) -> Result<HandleOwnership, 
         | Core::Record { .. }
         | Core::ListNew { .. }
         // A list PRODUCER returns a FRESH owned list handle exactly like a `ListNew` constructor:
-        // `vec-concat` (`ListConcat`) consumes both operands and hands back a new vector; `vec-update`
-        // (`ListUpdate`) returns the updated list as a new handle. So such a list as a BORROWING-op operand
-        // (`List.len`/`List.at`/`= `) is an owned temporary the emit reclaims after the borrow — the LIST
-        // analog of the `BytesConcat`/`BytesSlice` producers below. WITHOUT this, `List.len (List.concat a
-        // b)` / `List.at (List.update l i x) j` fell to the `_ => decline` default, so the reclaim gate
-        // never fired and the fresh concat/update list LEAKED one vector per call (value correct — a leak,
-        // not a miscompile — but a real rc gap the `build`-via-`List.push` owned path already reclaims).
+        // `vec-push` (`ListPush`) CONSUMES its input list + element and returns a NEW owned list (the old
+        // version untouched — persistence); `vec-concat` (`ListConcat`) consumes both operands and hands
+        // back a new vector; `vec-update` (`ListUpdate`) returns the updated list as a new handle. So such a
+        // list as a BORROWING-op operand (`List.len`/`List.at`/`= `) is an owned temporary the emit reclaims
+        // after the borrow — the LIST analog of the `BytesConcat`/`BytesSlice` producers below. WITHOUT
+        // this, `List.len (List.push (build …) x)` / `List.len (List.concat a b)` / `List.at (List.update l
+        // i x) j` fell to the `_ => decline` default, so the reclaim gate never fired and the fresh list
+        // LEAKED one vector per call (value correct — a leak, not a miscompile). Classifying `ListPush`
+        // Owned reclaims only the fresh PUSH RESULT that a borrowing op leaves un-consumed; the ACCUMULATOR
+        // pattern `(build i n (List.push acc i))` returns the push as its TAIL (never a borrowing-op
+        // operand), so its ownership is never consulted here and the FBIP single-consume fast path is
+        // untouched. A shared/borrowed `acc` (rc>1) is already `dup`'d before the push by the Perceus retain,
+        // so `vec-push` produces a genuinely fresh result — dropping it can never double-free the live `acc`.
+        | Core::ListPush { .. }
         | Core::ListConcat { .. }
         | Core::ListUpdate { .. }
         | Core::MapNew { .. }
@@ -14240,7 +14328,20 @@ fn int_ty_of(db: &mut Db, id: StructId) -> IntTy {
     // before `box-int`, so the widen expected an i32 but got the i64 const → an INVALID component (`expected
     // i32, found i64`) when the erased narrow newtype was boxed into a tuple/sum/list element. The two width
     // decisions MUST agree on the same stripped type. (Mirrors the `is_narrow_int` strip_nominal fix.)
-    match type_of(db, id).strip_nominal() {
+    //
+    // PEEL `Ty::Qty`: a quantity over a narrow int — `(Qty Int8 u)` — erases to its inner narrow int's
+    // machine width (an i32 slot), so a literal `(Qty.of (Int8.of 100) u)` magnitude must ground to the
+    // INNER width, NOT the i64 default. WITHOUT the peel, `int_ty_of` returned i64 → `ConstI64` for the
+    // magnitude, while `is_narrow_int` (which now peels Qty) prepended the i32→i64 extend / i64→i32 narrow —
+    // the SAME i32-vs-i64 disagreement as the newtype case, surfacing when a `(Qty narrow-Int u)` constant
+    // was boxed into a heap slot (e.g. a `Map.insert` value later read by `Map.lookup`). The two width
+    // decisions MUST agree on the SAME peeled+stripped type. (Mirrors the `is_narrow_int` Qty peel.)
+    let solved = type_of(db, id);
+    let inner = match solved.strip_nominal() {
+        Ty::Qty { inner, .. } => inner.strip_nominal(),
+        other => other,
+    };
+    match inner {
         Ty::Int(it) => *it,
         _ => IntTy::i64(),
     }

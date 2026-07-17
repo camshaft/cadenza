@@ -196,3 +196,16 @@
            not a silently-generated Param op. Pins the sidecar ↔ annotation-guard interaction for @param.")
   (input  (do (: (@ (param (: widget slider)) width) Int64) 1))
   (error  CDZ0201))
+(case "a @param accessor splices into a quasiquote and the eval computes with the host value"
+  (doc    "Composition of the @param sidecar with quasiquote metaprogramming: the generated `Param.width`
+           accessor is unquoted into a template `(+ ,(Param.width) 1)`, reified to an AST, and `eval`
+           executes it. With the host responding 41, the spliced value is 41 and the eval computes 42 —
+           pins that a host-delegated @param accessor composes as an ordinary runtime Int64 inside a
+           quasiquote/eval, the metaprog×runtime-param interaction.")
+  (input  (do
+            (: (@ (param (: widget slider)) width) Int64)
+            (def (main) (host (Param) (eval (quasiquote (+ (unquote (Param.width)) 1)))))
+            (export main)))
+  (call   main)
+  (host-responses (respond Param.width (: 41 Int64)))
+  (output (: 42 Int64)))

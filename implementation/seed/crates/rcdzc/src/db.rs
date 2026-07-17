@@ -152,6 +152,16 @@ thread_local! {
     /// `the_effect_fold_pure_classifier_scales_linearly_over_a_wide_context`.
     pub(crate) static SUBTREE_PERFORMS_UNCACHED_CALLS: std::cell::Cell<u64> =
         const { std::cell::Cell::new(0) };
+
+    /// Test-only: total `variant_closest_matches` MISSES since the last reset — the far-miss pattern-head
+    /// "closest matches" LIST actually COMPUTED (`suggest::closest_matches` sorts all N variants by edit
+    /// distance, O(N log N)), NOT the memo hits. A wrong-sum ctor arm (always a far miss) matched from N
+    /// sites against a wide sum re-ran the sort each → O(N² log N); the per-`(decl, key)` memo collapses
+    /// repeats, so a program's misses = its DISTINCT (decl, key) wrong heads, independent of the site count.
+    /// The noise-free regression signal (a wall-clock ratio false-fails under fleet load) — see
+    /// `many_wrong_sum_ctor_arms_list_the_matched_variants_in_bounded_time`.
+    pub(crate) static VARIANT_CLOSEST_MATCHES_MISSES: std::cell::Cell<u64> =
+        const { std::cell::Cell::new(0) };
 }
 
 /// A top-level definition located by the one cheap top-level scan: its name, its parameter

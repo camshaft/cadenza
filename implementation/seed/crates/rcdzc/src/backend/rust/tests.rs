@@ -2779,6 +2779,60 @@ fn rustc_roundtrip_narrow_sum_payload_literal_match_widens_to_the_unified_result
 }
 
 #[test]
+fn rustc_roundtrip_erased_newtype_narrow_literal_probe_aligns_both_compare_sides() {
+    // A NARROW literal probe over an ERASED single-variant newtype whose value was built through a
+    // narrowing wrap — `(match (W.V (Int8.wrap n)) ((W.V 3) 1000) ((W.V _) 2000))` with `W = (V Int8)` and
+    // `n: Int64`. The tag erases (the value IS the inner Int8), so this reaches the `LitTest` emit. The
+    // literal was rendered at the narrow width (`3i8`) but the subject came back WIDENED — `emit_sum_payload`
+    // read the wrapped value as `(n as i64)` — so the compare was `(n as i64) == 3i8` → rustc E0308 (i64 vs
+    // i8). Fix: key BOTH sides of the `==` off the literal's `target` width — cast the subject to `target`
+    // too (`((subj) as i8) == 3i8`). Sound: the sub-value is logically that narrow width, so the cast
+    // recovers the true value, matching the wasm decision-tree's width-normalized compare. (corpus-bugfix's
+    // adv-rust-erased-newtype-narrow-literal-compare-… reproducer, breaker-filed; a new face of the
+    // narrow-sum-payload-literal E0308 family.)
+    let i8w = compile_rust(
+        "(module m (type W (V Int8)) \
+           (def (run (: n Int64)) (match (W.V (Int8.wrap n)) ((W.V 3) 1000) ((W.V _) 2000))) \
+           (export run))",
+    );
+    if let Some(out) = rustc_run(&i8w, "run(3)") {
+        assert_eq!(out, "1000", "n=3 hits the (W.V 3) literal arm");
+    }
+    if let Some(out) = rustc_run(&i8w, "run(5)") {
+        assert_eq!(out, "2000", "n=5 misses → the wildcard arm");
+    }
+    // WRAP-AROUND: n=259 wraps to Int8 3, so it MUST match (W.V 3) — the cast preserves wrap semantics.
+    if let Some(out) = rustc_run(&i8w, "run(259)") {
+        assert_eq!(
+            out, "1000",
+            "n=259 → Int8.wrap = 3 → the literal arm (wrap-around preserved)"
+        );
+    }
+    // WIDTH AXIS: UInt16 (the note lists Int8/16/32/UInt8/16 all failing pre-fix) also aligns + runs.
+    let u16w = compile_rust(
+        "(module m (type W (V UInt16)) \
+           (def (run (: n Int64)) (match (W.V (UInt16.wrap n)) ((W.V 3) 1000) ((W.V _) 2000))) \
+           (export run))",
+    );
+    if let Some(out) = rustc_run(&u16w, "run(3)") {
+        assert_eq!(out, "1000", "UInt16 narrow literal probe aligns + matches");
+    }
+    // CONTROL: a MULTI-variant sum of the same shape already emitted both-sides-narrow — must not regress.
+    let multi = compile_rust(
+        "(module m (type W (A Int8) (B Int8)) \
+           (def (run (: n Int64)) \
+             (match (W.A (Int8.wrap n)) ((W.A 3) 1000) ((W.A _) 2000) ((W.B _) 3000))) \
+           (export run))",
+    );
+    if let Some(out) = rustc_run(&multi, "run(3)") {
+        assert_eq!(
+            out, "1000",
+            "multi-variant control still matches the literal arm"
+        );
+    }
+}
+
+#[test]
 fn rustc_roundtrip_recursive_sum_folds() {
     // A RECURSIVE user sum (a cons-list) constructs and folds THROUGH RUSTC: the enum is `Box`ed
     // (`Cons(Box<(i64, L)>)`), construction `Box::new(…)`, match derefs `*p`. `sm` sums a runtime-passed

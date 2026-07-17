@@ -2601,9 +2601,38 @@ fn check_lease_dir(repo: &Path) -> Option<PathBuf> {
     Some(dir)
 }
 
-/// Live (`priority`, `vertical`) lease counts in `dir`, reaping any lease older than the TTL first (a
-/// crashed holder's leaked slot). Returns `(priority_live, vertical_live)`.
+/// Is the process that owns a lease still alive? A lease file is named `{pid}-{class}.lease`; the
+/// holder drops it on a CLEAN exit, but a SIGKILL (the 137s this throttle exists to prevent, or
+/// pr-sync preempting a gate) runs no `Drop`, so the file LEAKS. On Linux a live pid has a `/proc/<pid>`
+/// entry; a dead one does not. `None` = "can't tell" (unparseable name / non-Linux) → treat as alive so
+/// we NEVER reap a lease we're unsure about (the TTL is the backstop for that case).
+fn check_lease_holder_alive(lease_name: &str) -> Option<bool> {
+    let pid: u32 = lease_name.split('-').next()?.parse().ok()?;
+    let proc_entry = Path::new("/proc").join(pid.to_string());
+    // Only trust a definitive "the /proc tree exists but this pid is gone" as dead; if /proc itself is
+    // absent (non-Linux) we can't tell, so report alive and let the TTL handle staleness.
+    if !Path::new("/proc").is_dir() {
+        return None;
+    }
+    Some(proc_entry.exists())
+}
+
+/// Live (`priority`, `vertical`) lease counts in `dir`, reaping leaked leases first. A lease is leaked —
+/// and reaped immediately — when its holder pid is DEAD (SIGKILL ran no `Drop`); as a backstop for the
+/// can't-tell case (pid reuse, non-Linux) a lease older than the TTL is also reaped. Returns
+/// `(priority_live, vertical_live)`.
 fn scan_check_leases(dir: &Path, now: u64) -> (usize, usize) {
+    scan_check_leases_with(dir, now, check_lease_holder_alive)
+}
+
+/// The scan mechanics, parameterized on the pid-liveness probe so it's unit-testable without touching
+/// `/proc` or real pids. `is_alive(lease_name) -> Option<bool>`: `Some(false)` = reap now, anything else
+/// = keep (subject to the TTL backstop).
+fn scan_check_leases_with(
+    dir: &Path,
+    now: u64,
+    is_alive: impl Fn(&str) -> Option<bool>,
+) -> (usize, usize) {
     let mut priority = 0usize;
     let mut vertical = 0usize;
     let Ok(rd) = std::fs::read_dir(dir) else {
@@ -2615,7 +2644,14 @@ fn scan_check_leases(dir: &Path, now: u64) -> (usize, usize) {
             Some(n) if n.ends_with(".lease") => n.to_string(),
             _ => continue,
         };
-        // Reclaim a stale lease (crashed/killed holder that never dropped it).
+        // Reclaim a leaked lease. PRIMARY: the holder pid is dead (SIGKILL left the file behind) —
+        // reap NOW rather than waiting out the 45-min TTL, which would stall every vertical check (a
+        // leaked PRIORITY lease blocks ALL verticals). BACKSTOP: `None` (can't tell) falls through to
+        // the TTL so a reused pid or a non-Linux host still self-heals eventually.
+        if is_alive(&name) == Some(false) {
+            let _ = std::fs::remove_file(&p);
+            continue;
+        }
         if file_mtime_unix(&p).is_some_and(|m| now.saturating_sub(m) > CHECK_LEASE_TTL_SECS) {
             let _ = std::fs::remove_file(&p);
             continue;
@@ -4327,11 +4363,18 @@ fn gate_subset(repo: &Path, branch: &str, clean: &[BatchMr], subset: &[usize]) -
             return false; // shouldn't happen (subset is pre-filtered clean) but be safe
         }
     }
-    // Run the omnibus gate on the combined tree; capture output (we only care about the exit status).
-    // `CDZ_CHECK_PRIORITY=1` marks this as the MERGE-QUEUE gate so it takes a PRIORITY check-lease —
-    // it never waits behind vertical checks, and vertical checks yield to it (operator: "prioritize
-    // the main merge over other checks"). Without this the merge gate would queue behind the herd it's
-    // trying to drain.
+    // Run the omnibus gate on the combined tree, DETACHED + marker-polled (see gate_check_combined) so a
+    // SIGTERM to a foreground `gate-batch` invocation (pr-sync's Bash-tool 120s cap kills the driver, not
+    // the legit minutes-long check) neither kills the check nor throws its work away — the next
+    // invocation resumes it. Falls back to a plain blocking check if detached mode can't be set up.
+    gate_check_combined(repo)
+}
+
+/// The full `cargo xtask check` on the current combined tree, run in the FOREGROUND (blocking). Used as
+/// the fallback when detached mode can't be set up. `CDZ_CHECK_PRIORITY=1` marks this as the MERGE-QUEUE
+/// gate so it takes a PRIORITY check-lease — it never waits behind vertical checks, and vertical checks
+/// yield to it (operator: "prioritize the main merge over other checks").
+fn blocking_combined_check(repo: &Path) -> bool {
     Command::new("cargo")
         .current_dir(repo)
         .args(["xtask", "check"])
@@ -4339,6 +4382,187 @@ fn gate_subset(repo: &Path, branch: &str, clean: &[BatchMr], subset: &[usize]) -
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
+}
+
+/// Directory holding gate-batch's detached-check markers/logs/scripts. `None` if the hub can't resolve.
+fn gate_check_dir(repo: &Path) -> Option<PathBuf> {
+    let hub = hub_root(repo)?;
+    let dir = hub.join(".claude/fleet/gate-batch-checks");
+    std::fs::create_dir_all(&dir).ok()?;
+    Some(dir)
+}
+
+/// The combined tree's object id — a STABLE key for the current scratch content. Unlike the merge COMMIT
+/// sha (which embeds a timestamp and so differs every re-run), a TREE id is a pure function of content,
+/// so an identical subset merged onto an identical trunk always maps to the same key → a killed-and-
+/// restarted gate-batch reuses the same in-flight/completed check. `None` if git can't resolve it.
+fn merged_tree_key(repo: &Path) -> Option<String> {
+    let out = Command::new("git")
+        .current_dir(repo)
+        .args(["rev-parse", "HEAD^{tree}"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let key = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (key.len() == 40 && key.bytes().all(|b| b.is_ascii_hexdigit())).then_some(key)
+}
+
+/// Parse a completion marker's contents (the check's exit code as text) into a verdict. `Some(true)` =
+/// exit 0 (green), `Some(false)` = any non-zero, `None` = not-yet-written / garbage (keep polling).
+fn parse_exit_marker(contents: &str) -> Option<bool> {
+    contents.trim().parse::<i32>().ok().map(|code| code == 0)
+}
+
+/// Is `pid` still running? Linux: a live pid has a `/proc/<pid>` entry. No `/proc` (non-Linux) → assume
+/// alive (fail-safe: we'd rather keep waiting for the marker than wrongly declare a running check dead).
+fn pid_is_alive(pid: u32) -> bool {
+    if !Path::new("/proc").is_dir() {
+        return true;
+    }
+    Path::new("/proc").join(pid.to_string()).exists()
+}
+
+/// Read a `{key}.exit` marker into a verdict, if it exists and is complete.
+fn read_gate_marker(marker: &Path) -> Option<bool> {
+    std::fs::read_to_string(marker)
+        .ok()
+        .and_then(|s| parse_exit_marker(&s))
+}
+
+/// Is the detached check whose pid is recorded in `pidf` still alive?
+fn gate_check_pidf_alive(pidf: &Path) -> bool {
+    std::fs::read_to_string(pidf)
+        .ok()
+        .and_then(|s| s.trim().parse::<u32>().ok())
+        .is_some_and(pid_is_alive)
+}
+
+/// Reap gate-check artifacts (marker/log/pid/script) older than 6h — old combined trees no longer gated.
+fn reap_stale_gate_checks(dir: &Path) {
+    const TTL: u64 = 6 * 3600;
+    let now = now_unix();
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for e in rd.filter_map(Result::ok) {
+            let p = e.path();
+            if file_mtime_unix(&p).is_some_and(|m| now.saturating_sub(m) > TTL) {
+                let _ = std::fs::remove_file(&p);
+            }
+        }
+    }
+}
+
+/// Launch the combined-tree check DETACHED in its own session (`setsid`), backgrounded so our direct
+/// child exits at once (no zombie) and the check is reparented to init — it runs to completion no matter
+/// what happens to this gate-batch process. The inner script records its own pid (for liveness/resume),
+/// runs the check with output to `log` (a FILE, so a full pipe can never deadlock it), then writes the
+/// exit code ATOMICALLY to `marker` (`.tmp` then rename) and clears the pid file.
+fn spawn_detached_check(
+    repo: &Path,
+    dir: &Path,
+    key: &str,
+    marker: &Path,
+    pidf: &Path,
+    log: &Path,
+) {
+    let script_path = dir.join(format!("{key}.sh"));
+    let script = format!(
+        "#!/bin/sh\n\
+         echo $$ > '{pidf}'\n\
+         CDZ_CHECK_PRIORITY=1 cargo xtask check > '{log}' 2>&1\n\
+         code=$?\n\
+         printf '%s' \"$code\" > '{marker}.tmp' && mv '{marker}.tmp' '{marker}'\n\
+         rm -f '{pidf}'\n",
+        pidf = pidf.display(),
+        log = log.display(),
+        marker = marker.display(),
+    );
+    if std::fs::write(&script_path, &script).is_err() {
+        eprintln!(
+            "gate-batch: could not write the detached-check script — poll will treat as RED."
+        );
+        return;
+    }
+    // `setsid` → new session (survives a SIGTERM to gate-batch's group); trailing `&` backgrounds it so
+    // the outer `sh` returns immediately and the session leader is reparented to init.
+    let launcher = format!(
+        "setsid sh '{}' </dev/null >/dev/null 2>&1 &",
+        script_path.display()
+    );
+    let launched = Command::new("sh")
+        .current_dir(repo)
+        .args(["-c", &launcher])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if launched {
+        println!(
+            "gate-batch: launched detached combined-tree check for {key} (log: {}).",
+            log.display()
+        );
+    } else {
+        eprintln!("gate-batch: could not launch the detached check — poll will treat as RED.");
+    }
+}
+
+/// Run `cargo xtask check` on the current combined tree as a DETACHED (own-session) process that writes
+/// its exit code to a marker, then POLL the marker. This makes gate-batch immune to the 2-minute
+/// Bash-tool timeout that SIGTERMs pr-sync's foreground `gate-batch` invocation mid-check: the check runs
+/// in its own session (survives the SIGTERM) and, because it's keyed by the STABLE combined-tree id, a
+/// killed-and-restarted gate-batch RESUMES the same in-flight (or already-completed) check instead of
+/// throwing minutes of work away and starting over — which is what caused the 7-restarts-never-completes
+/// stall. Falls back to a blocking check if the marker dir or tree key can't be resolved (fail-safe;
+/// only loses the timeout-immunity).
+fn gate_check_combined(repo: &Path) -> bool {
+    let (Some(dir), Some(key)) = (gate_check_dir(repo), merged_tree_key(repo)) else {
+        return blocking_combined_check(repo);
+    };
+    reap_stale_gate_checks(&dir);
+    let marker = dir.join(format!("{key}.exit"));
+    let pidf = dir.join(format!("{key}.pid"));
+    let log = dir.join(format!("{key}.log"));
+
+    // 1. A completed verdict already on disk (a prior, possibly-killed invocation's check finished)?
+    if let Some(ok) = read_gate_marker(&marker) {
+        println!(
+            "gate-batch: reusing a completed combined-tree check for {key} ({}).",
+            if ok { "green" } else { "red" }
+        );
+        return ok;
+    }
+    // 2. A detached check for this exact tree still alive (a prior invocation was killed mid-check)? →
+    //    resume by polling it; otherwise launch a fresh one.
+    if gate_check_pidf_alive(&pidf) {
+        println!(
+            "gate-batch: resuming an in-flight detached check for tree {key} (survived a prior kill)."
+        );
+    } else {
+        spawn_detached_check(repo, &dir, &key, &marker, &pidf, &log);
+    }
+    // Startup grace: let the freshly launched inner script register its pid (or already finish) before
+    // the poll loop's crash-detection can fire.
+    let mut waited = 0u64;
+    while !pidf.exists() && !marker.exists() && waited < 30 {
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        waited += 2;
+    }
+    // 3. Poll the marker. If THIS process is SIGTERM'd mid-poll, the detached check keeps running and the
+    //    next gate-batch invocation re-enters at step 1/2 and resumes it.
+    loop {
+        if let Some(ok) = read_gate_marker(&marker) {
+            return ok;
+        }
+        // The detached check ended WITHOUT a verdict (OOM/crash/launch-fail) → treat as RED (never a
+        // false green); bisect then isolates the offending subset just as for a normal failure.
+        if !gate_check_pidf_alive(&pidf) && !marker.exists() {
+            eprintln!(
+                "gate-batch: detached check for tree {key} ended without a verdict (crash/OOM/launch-fail) — treating as RED."
+            );
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_secs(5));
+    }
 }
 
 /// Force-create/reset `branch` to point at `at` and check it out. Returns false on any git failure.
@@ -5696,13 +5920,16 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let now = 1_000_000u64;
+        // Probe reports every holder alive so this test exercises ONLY the count + TTL paths
+        // (the fake pids 111/222/… may or may not exist on the host — don't depend on /proc here).
+        let all_alive = |_: &str| Some(true);
 
         // Two vertical + one priority live lease, plus a non-lease file that must be ignored.
         std::fs::write(dir.join("111-vertical.lease"), "x").unwrap();
         std::fs::write(dir.join("222-vertical.lease"), "x").unwrap();
         std::fs::write(dir.join("333-priority.lease"), "x").unwrap();
         std::fs::write(dir.join("notes.txt"), "ignore me").unwrap();
-        let (prio, vert) = scan_check_leases(&dir, now);
+        let (prio, vert) = scan_check_leases_with(&dir, now, all_alive);
         assert_eq!(
             (prio, vert),
             (1, 2),
@@ -5714,11 +5941,49 @@ mod tests {
         let stale = dir.join("444-vertical.lease");
         std::fs::write(&stale, "x").unwrap();
         let stale_now = file_mtime_unix(&stale).unwrap() + CHECK_LEASE_TTL_SECS + 10;
-        let (prio2, vert2) = scan_check_leases(&dir, stale_now);
+        let (prio2, vert2) = scan_check_leases_with(&dir, stale_now, all_alive);
         // At stale_now ALL four originals are also older than TTL (written ~same time) → only reaping
         // remains; assert the stale one was removed and nothing lingers past the TTL.
         assert!(!stale.exists(), "a lease older than the TTL is reclaimed");
         assert_eq!((prio2, vert2), (0, 0), "everything past the TTL is reaped");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn scan_check_leases_reaps_dead_pid_lease_immediately_before_ttl() {
+        // The bug this fixes: a check proc SIGKILLed (137 under load, or pr-sync preempting a gate)
+        // runs no `Drop`, so its lease file LEAKS. A leaked PRIORITY lease then blocks EVERY vertical
+        // check for the full 45-min TTL — a fleet-wide check stall. Fix: reap a dead-pid lease NOW.
+        let dir = std::env::temp_dir().join(format!("cdz-lease-deadpid-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let now = 1_000_000u64; // fresh mtimes → the TTL path would NOT reap; only pid-liveness can.
+
+        std::fs::write(dir.join("111-priority.lease"), "x").unwrap(); // dead holder → must be reaped
+        std::fs::write(dir.join("222-vertical.lease"), "x").unwrap(); // dead holder → must be reaped
+        std::fs::write(dir.join("333-vertical.lease"), "x").unwrap(); // live holder → kept
+
+        // Probe: pid 333 alive, 111 & 222 dead, everything else "can't tell" (kept via backstop).
+        let probe = |name: &str| match name.split('-').next() {
+            Some("333") => Some(true),
+            Some("111") | Some("222") => Some(false),
+            _ => None,
+        };
+        let (prio, vert) = scan_check_leases_with(&dir, now, probe);
+        assert_eq!(
+            (prio, vert),
+            (0, 1),
+            "dead-pid leases reaped immediately (well within the TTL); only the live vertical remains"
+        );
+        assert!(
+            !dir.join("111-priority.lease").exists(),
+            "the leaked PRIORITY lease that was stalling all verticals is gone"
+        );
+        assert!(
+            dir.join("333-vertical.lease").exists(),
+            "the live lease is kept"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -5757,5 +6022,65 @@ mod tests {
         unsafe { std::env::set_var("CDZ_CHECK_LEASE_MAX", "nonsense") };
         assert_eq!(check_lease_max(), 3, "garbage → default");
         unsafe { std::env::remove_var("CDZ_CHECK_LEASE_MAX") };
+    }
+
+    #[test]
+    fn parse_exit_marker_maps_exit_code_to_verdict() {
+        assert_eq!(parse_exit_marker("0"), Some(true), "exit 0 → green");
+        assert_eq!(
+            parse_exit_marker("0\n"),
+            Some(true),
+            "trailing newline tolerated"
+        );
+        assert_eq!(parse_exit_marker(" 1 "), Some(false), "any non-zero → red");
+        assert_eq!(
+            parse_exit_marker("143"),
+            Some(false),
+            "SIGTERM exit → red (not green)"
+        );
+        assert_eq!(
+            parse_exit_marker(""),
+            None,
+            "not-yet-written → keep polling"
+        );
+        assert_eq!(
+            parse_exit_marker("garbage"),
+            None,
+            "partial/garbage → keep polling"
+        );
+    }
+
+    #[test]
+    fn read_gate_marker_reuses_a_completed_verdict_and_ignores_an_absent_one() {
+        // This is the RESUME path: a completed marker on disk (from a prior, possibly-SIGTERM'd
+        // gate-batch invocation) is reused instead of re-running the whole minutes-long check.
+        let dir = std::env::temp_dir().join(format!("cdz-gate-check-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let absent = dir.join("deadbeef.exit");
+        assert_eq!(
+            read_gate_marker(&absent),
+            None,
+            "no marker yet → keep polling (not a false verdict)"
+        );
+
+        let green = dir.join("cafe.exit");
+        std::fs::write(&green, "0").unwrap();
+        assert_eq!(
+            read_gate_marker(&green),
+            Some(true),
+            "a completed green marker is reused"
+        );
+
+        let red = dir.join("f00d.exit");
+        std::fs::write(&red, "143").unwrap();
+        assert_eq!(
+            read_gate_marker(&red),
+            Some(false),
+            "a SIGTERM'd check reads RED, never green"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
