@@ -396,3 +396,59 @@ pub(crate) fn delete_target(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn split_top_forms_keeps_a_single_form_whole() {
+        // One top-level form (`read_all` returns it directly, not wrapped in a synthetic `(do …)`) → a
+        // single-element vec holding that form, re-rendered. This is the common `insert` payload of one arm.
+        let forms = split_top_forms("(Green unit)");
+        assert_eq!(forms.len(), 1, "one form → one element: {forms:?}");
+        assert_eq!(forms[0], "(Green unit)");
+    }
+
+    #[test]
+    fn split_top_forms_unwraps_multiple_forms_from_the_synthetic_do() {
+        // A space-joined RUN of forms (`read_all` wraps them in a synthetic `(do a b …)`); the split must
+        // UNWRAP the `do` and return each form independently — the case a naive "one payload = one node"
+        // would get wrong (it would insert the whole `(do …)` as a single bogus arm).
+        let forms = split_top_forms("(Green unit) (Blue unit)");
+        assert_eq!(
+            forms,
+            vec!["(Green unit)".to_string(), "(Blue unit)".to_string()]
+        );
+        // Three forms unwrap the same way.
+        let three = split_top_forms("(A) (B) (C)");
+        assert_eq!(
+            three,
+            vec!["(A)".to_string(), "(B)".to_string(), "(C)".to_string()]
+        );
+    }
+
+    #[test]
+    fn split_top_forms_returns_the_text_verbatim_when_it_does_not_parse() {
+        // An unparseable payload (a dangling paren) can't be split — the `Err(_)` fallback returns the raw
+        // text as the single element, so the caller inserts it verbatim rather than dropping the fix. Total,
+        // never a panic.
+        let forms = split_top_forms("(unbalanced");
+        assert_eq!(forms, vec!["(unbalanced".to_string()]);
+    }
+
+    #[test]
+    fn split_top_forms_does_not_mistake_a_user_do_for_the_synthetic_wrapper() {
+        // A payload that IS a single `(do …)` form (a user's sequencing block, one top-level form) must be
+        // returned WHOLE, not unwrapped into its members — `read_all` returns a lone form as itself (no
+        // synthetic wrapper is added for a single form), so the `do`-unwrap arm (which only fires on the
+        // MULTI-form synthetic wrap) does not strip a genuine single `(do …)`.
+        let forms = split_top_forms("(do (a) (b))");
+        assert_eq!(
+            forms.len(),
+            1,
+            "a lone `(do …)` form is one payload, not unwrapped: {forms:?}"
+        );
+        assert_eq!(forms[0], "(do (a) (b))");
+    }
+}
