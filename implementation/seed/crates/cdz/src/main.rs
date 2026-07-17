@@ -411,6 +411,28 @@ fn find_compiler_ml_src() -> Option<std::path::PathBuf> {
     None
 }
 
+/// Cheap SOURCE-SHAPE gate: could this program POSSIBLY be in the ML compiler's supported subset (bare
+/// prefix expressions — int/bool/identifier literals, `(let ((x v)) b)`, `(if c t e)`, `(op a b)`)? A `true`
+/// answer only means "worth compiling"; the real reader/pipeline still decides value-vs-decline. A `false`
+/// answer FAST-DECLINES without the (tens-of-seconds) whole-pipeline compile. Conservative: reject the forms
+/// the subset definitely can't express — a top-level module `(do …)` / `(def …)` / `(export …)`, a string
+/// (`"`), a float/decimal (`.`), and empty input — so the gate never pays the compile cost for them.
+fn looks_in_ml_subset(src: &str) -> bool {
+    let s = src.trim();
+    if s.is_empty() {
+        return false;
+    }
+    // A quoted string or a decimal/float is out of the integer/bool subset.
+    if s.contains('"') || s.contains('.') {
+        return false;
+    }
+    // A multi-definition module / function definition is out of subset (the subset is a single expression).
+    if s.starts_with("(do") || s.contains("(def") || s.contains("(export") || s.contains("(fn") {
+        return false;
+    }
+    true
+}
+
 fn run_run_ml(args: &RunMlArgs) -> ExitCode {
     use std::io::Read;
     // 1. Read the program source (file or stdin). A read failure is the reserved harness-error path.
@@ -431,6 +453,18 @@ fn run_run_ml(args: &RunMlArgs) -> ExitCode {
             buf
         }
     };
+
+    // 1b. FAST-DECLINE out-of-subset programs WITHOUT compiling. Building the driver (which links the whole
+    //     compiler-ml pipeline) costs tens of seconds — far too slow to run per corpus case, and pointless
+    //     for the ~majority of corpus programs the ML front-end can't express yet. A cheap source scan
+    //     rejects anything outside the supported bare-expression subset (int/bool/ident/`(let …)`/`(if …)`/
+    //     `(op …)`): a top-level `(do …)`/`(def …)`/`(export …)` module, or an unbalanced/empty form. Only a
+    //     program that PASSES this shape gate pays the compile cost — so `run-ml` is fast for the common
+    //     out-of-subset case and the gate never hangs on the whole-pipeline compile.
+    if !looks_in_ml_subset(source.trim()) {
+        println!("declined");
+        return ExitCode::SUCCESS;
+    }
 
     // 2. Generate the driver: it embeds the source as a Cadenza string literal and calls run-src. The
     //    literal must escape `\` and `"`; the corpus s-expr programs are single-line ASCII (no newlines),
