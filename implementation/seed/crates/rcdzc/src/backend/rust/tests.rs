@@ -207,6 +207,55 @@ fn a_provably_in_range_narrow_op_elides_identically_to_wasm() {
 }
 
 #[test]
+fn a_flow_refined_arith_op_elides_its_overflow_guard_on_the_rust_backend() {
+    // BOTH-BACKEND PARITY for the FLOW-REFINEMENT elision source (v-core-opt Slice-6). The range proof
+    // that licenses eliding an overflow guard can come from a BRANCH GUARD, not just a mask: inside
+    // `(if (< a 100) (+ a 1) …)` the operand `a` is refined to `[_, 99]`, so `+ a 1` provably fits. The
+    // wasm backend already pushed this refinement frame (refined_frame_for_branch); the rust backend now
+    // does too (with_branch_refinement around each branch emit), so both make the identical decision.
+    let rs = compile_rust(
+        "(module m (def (f (: a Int64)) (if (and (>= a 0) (< a 100)) (+ a 1) 0)) (export f))",
+    );
+    // In the then-branch `a ∈ [0,99]`, so `a + 1 ∈ [1,100]` ⊆ Int64 → the `+ a 1` elides to wrapping_add.
+    assert!(
+        rs.contains("wrapping_add") && !rs.contains("checked_add"),
+        "a flow-refined-in-range add elides its overflow guard (parity with wasm):\n{rs}"
+    );
+    // A branch that does NOT bound the operand keeps the guard: `(if (> b 0) (+ a 1) 0)` refines `b`, not
+    // `a`, so `a + 1` is still full-range → checked_add stays.
+    let unrefined = compile_rust(
+        "(module m (def (f (: a Int64) (: b Int64)) (if (> b 0) (+ a 1) 0)) (export f))",
+    );
+    assert!(
+        unrefined.contains("checked_add"),
+        "a branch guard on a DIFFERENT variable does not refine the operand — guard stays:\n{unrefined}"
+    );
+}
+
+#[test]
+fn rustc_roundtrip_flow_refined_elision_computes_identically() {
+    // The flow-refined elision is BEHAVIOR-PRESERVING end-to-end: the refined `+ a 1` computes the SAME
+    // value with the guard elided as it would checked. a=42 ∈ [0,99] → 43; the elided wrapping_add gives
+    // the identical result (the refinement guarantees no overflow, so wrapping == checked here).
+    let rs = compile_rust(
+        "(module m (def (f (: a Int64)) (if (and (>= a 0) (< a 100)) (+ a 1) 0)) (export f))",
+    );
+    if let Some(out) = rustc_run(&rs, "f(42)") {
+        assert_eq!(
+            out, "43",
+            "flow-refined add computes identically when elided"
+        );
+    }
+    // The else branch (a out of [0,100)) returns 0 — exercises the non-refined path too.
+    if let Some(out) = rustc_run(&rs, "f(200)") {
+        assert_eq!(
+            out, "0",
+            "the else branch is unaffected by the then-branch refinement"
+        );
+    }
+}
+
+#[test]
 fn a_narrow_op_with_a_control_flow_operand_wraps_it_down_to_the_op_width() {
     // REGRESSION (the rust-backend cross-backend miscompile): a narrow-annotated op whose operand is a
     // DEFERRED-WIDTH control-flow expression (`if`/`match` of bare literals, inferred Int64) emitted an

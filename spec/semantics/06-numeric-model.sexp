@@ -3057,6 +3057,19 @@
   (call   main (: 255 Int64)) (output (: 60 Int64))
   (call   main (: 1 Int64)) (output (: 4 Int64)))
 
+(case "a guard-elided FLOW-REFINED add computes identically on both backends"
+  (doc    "The range proof that elides an overflow guard can come from a BRANCH GUARD, not just a mask —
+           and now on BOTH backends. In `(if (and (>= a 0) (< a 100)) (+ a 1) 0)` the then-branch refines
+           `a` to [0,99], so `(+ a 1)` lives in [1,100], provably fits Int64, and the overflow guard is
+           dead. The wasm backend pushed this refinement frame (refined_frame_for_branch) all along; the
+           rust backend now pushes the SAME frame around each branch emit (with_branch_refinement), so both
+           make the identical elision decision — closing the last flow-sensitive elision-parity gap. Value
+           parity is the observable proof: `(42)` is in-range → 42+1 = 43; `(200)` takes the else → 0. The
+           refinement is EMIT-ONLY and per-branch, so the else branch is unaffected.")
+  (input  (do (def (main (: a Int64)) (if (and (>= a 0) (< a 100)) (+ a 1) 0)) (export main)))
+  (call   main (: 42 Int64)) (output (: 43 Int64))
+  (call   main (: 200 Int64)) (output (: 0 Int64)))
+
 (case "a strength-reduced multiply nested as an operand computes in place"
   (doc    "`(+ (* a 2) 1)` over a runtime `a`: the `(* a 2)` strength-reduces to `a << 1` and is the LHS
            OPERAND of the enclosing `+`, so the shift writes the add's operand slot DIRECTLY (its result

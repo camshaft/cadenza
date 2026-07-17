@@ -653,6 +653,7 @@ pass	a guard reads a binding from the enclosing scope, not only its pattern's
 pass	a guard reads payload binders from two ctor list elements
 pass	a guard reads the payload binder and an enclosing parameter together
 pass	a guard sees the names its pattern binds and arms are tried in order
+pass	a guard-elided FLOW-REFINED add computes identically on both backends
 pass	a guard-elided masked add at a NARROW width computes identically on both backends
 pass	a guard-elided masked add computes inline over runtime operands
 pass	a guard-elided masked left shift computes identically on both backends
