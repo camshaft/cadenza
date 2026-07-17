@@ -21,6 +21,7 @@ export type Inline =
   | { t: "text"; text: string }
   | { t: "strong"; text: string }
   | { t: "em"; text: string }
+  | { t: "del"; text: string } // GFM strikethrough `~~…~~`
   | { t: "code"; text: string }
   | { t: "link"; text: string; href: string };
 
@@ -76,6 +77,16 @@ export function parseInline(text: string): Inline[] {
       if (end > i) {
         flushPlain();
         spans.push({ t: "strong", text: text.slice(i + 2, end) });
+        i = end + 2;
+        continue;
+      }
+    }
+    // ~~strikethrough~~ (GFM) — a double-tilde delimiter, same precedence class as **strong**.
+    if (text.startsWith("~~", i)) {
+      const end = text.indexOf("~~", i + 2);
+      if (end > i) {
+        flushPlain();
+        spans.push({ t: "del", text: text.slice(i + 2, end) });
         i = end + 2;
         continue;
       }
