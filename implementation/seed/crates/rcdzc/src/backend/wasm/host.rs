@@ -133,6 +133,14 @@ fn is_extern_heap_type(ty: &Ty) -> bool {
         | Ty::Set(_)
         | Ty::Bytes
         | Ty::String
+        // A Symbol is a String byte-leaf at run time (the tagless heap has no `Shape::Sym`; a Symbol is
+        // represented + compared exactly as its content String — `box_op_ty`/`get_op_ty` in select.rs map
+        // it to the String layout). So a Symbol a peer op takes/returns is ALREADY a runtime heap handle
+        // and crosses the peer boundary as its opaque `u32` exactly like a String — no marshaling. Without
+        // this a peer op declaring a `Symbol` declined at the boundary ("no component boundary form") while
+        // the identical String op crossed; this brings the peer transport to the same String parity the
+        // compound-element layout already has.
+        | Ty::Symbol
         | Ty::BigInt
         | Ty::Rational => true,
         Ty::Nominal { inner, .. } => is_extern_heap_type(inner),
