@@ -17352,6 +17352,25 @@ mod match_engine {
         );
     }
 
+    /// Verification Inc-b a1: REGENERATE `verify_kernel.bin` from `verify_kernel.cdz`. The compiler embeds
+    /// the kernel as codec BYTES (not source) because rcdzc must not depend on the `cadenza-syntax` reader
+    /// in lib code ("COPY, DON'T DEPEND"). The `.bin` = `cadenza_syntax::codec::encode(sexpr::read(.cdz))` —
+    /// exactly the bridge bytes rcdzc's own `codec::decode` reads. This test WRITES the `.bin` from the
+    /// `.cdz` (run it to regenerate after editing the kernel) AND asserts round-trip: the bytes decode with
+    /// rcdzc's codec to a non-empty arena. Keeping the two in sync is a checked invariant, not a manual step.
+    #[test]
+    fn regenerate_verify_kernel_bin() {
+        const KERNEL_SRC: &str = include_str!("verify_kernel.cdz");
+        let syntax = cadenza_syntax::sexpr::read(KERNEL_SRC).expect("verify_kernel.cdz reads");
+        let bytes = cadenza_syntax::codec::encode(&syntax);
+        // rcdzc's OWN codec decodes the bridge bytes (the invariant the bundled-kernel path relies on).
+        let decoded = crate::codec::decode(&bytes).expect("kernel bytes decode with rcdzc codec");
+        assert!(!decoded.structure.is_empty(), "decoded kernel arena is non-empty");
+        // WRITE the checked-in artifact next to the source (idempotent — same source → same bytes).
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/src/verify_kernel.bin");
+        std::fs::write(path, &bytes).expect("write verify_kernel.bin");
+    }
+
     /// A SHAPE-valid constructor-export `(export (. T A))` / `(export (. T *))` must ALSO be SEMANTICALLY
     /// valid: `T` a declared sum, `A` one of its variants. The linker's `as_ctor_export` recorded the
     /// (type, ctor) names WITHOUT checking they exist, so `(export (. T Nonesuch))` (a ctor `T` lacks),

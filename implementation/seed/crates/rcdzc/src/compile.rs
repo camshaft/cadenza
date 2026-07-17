@@ -5182,6 +5182,48 @@ fn is_let_binding_name(db: &Db, id: StructId) -> bool {
 /// A package with no named entry declines (there is no rule to pick one — reject, don't guess), except
 /// the degenerate single-file package, whose lone file IS the entry. A decode failure of any file, or
 /// an entry naming no supplied file, declines with a specific diagnostic.
+/// The module NAME the bundled kernel exports under (its `(module "verify-kernel" …)` head).
+const VERIFY_KERNEL_NAME: &str = "verify-kernel";
+/// Whether the compiler actually LINKS the bundled kernel for a verification-using program. OFF until a3/b3
+/// (the discharge-eval + oracle) consume it — linking the kernel BEFORE its consumers exist only changes a
+/// verification-using program's compile (single-file → linked package) with no benefit, which regresses the
+/// existing `@test @ensures` programs (v-property-testing's TESTED tier, which uses `@ensures` but does NOT
+/// yet need kernel discharge). The mechanism (scan + prepend + the `.bin`) lands behavior-neutral now; a3
+/// flips this to `true` together with the discharge wiring, so the kernel is linked exactly when consumed.
+const VERIFY_KERNEL_LINKING_ENABLED: bool = false;
+/// The compiler-bundled verification KERNEL as PRE-ENCODED codec bytes (Inc-b (A1), design §9) — the trusted
+/// HOL kernel the compiler links + compile-time-evals to discharge `@requires`/`@ensures`/`@trap_free`/
+/// `@invariant` obligations. Embedded as codec BYTES (not source text) because rcdzc must NOT depend on the
+/// `cadenza-syntax` reader in lib code (the "COPY, DON'T DEPEND" directive — rcdzc vendors `codec.rs`); the
+/// bytes are `cadenza_syntax::codec::encode(sexpr::read(verify_kernel.cdz))`, decoded here by rcdzc's OWN
+/// `codec::decode`. Regenerated from `verify_kernel.cdz` by the `regenerate_verify_kernel_bin` test.
+const VERIFY_KERNEL_BIN: &[u8] = include_bytes!("verify_kernel.bin");
+
+/// Decode the bundled verification-kernel bytes into an rcdzc `Arenas` (rcdzc's own codec — no reader dep).
+/// `None` if the embedded asset fails to decode — a build-time invariant (checked in), so the caller treats
+/// `None` as "kernel unavailable, skip verification linking" rather than a user error.
+fn bundled_verify_kernel_arena() -> Option<crate::ast::Arenas> {
+    crate::codec::decode(VERIFY_KERNEL_BIN)
+}
+
+/// Whether `arena` USES a verification annotation (`@requires`/`@ensures`/`@trap_free`/`@invariant`) — a
+/// cheap top-level-ish scan of the raw arena for the annotation head. GATES kernel-linking (design §9): a
+/// program that uses NO verification annotation stays on the untouched fast path (the kernel is not linked,
+/// `is_linked_package` stays false, zero blast radius); only a verification-USING program links the kernel.
+/// The annotation reifies as `(@ (requires …) …)` etc., so the head `requires`/`ensures`/`trap-free`/
+/// `invariant` appears as a `Name` leaf; a whole-arena leaf scan is cheap and conservative (a false
+/// positive only over-links, still sound; the names are reserved verification heads).
+fn uses_verification_annotation(arena: &crate::ast::Arenas) -> bool {
+    arena.leaves.iter().any(|leaf| {
+        matches!(
+            leaf,
+            crate::ast::Leaf::Name(n)
+                if n == "requires" || n == "ensures" || n == "trap-free" || n == "trap_free"
+                    || n == "invariant"
+        )
+    })
+}
+
 fn link_inputs(
     ast_arts: &[&Artifact],
     entry_name: Option<&str>,
@@ -5195,10 +5237,34 @@ fn link_inputs(
         [] => Err(Reject::decline("no `ast` input artifact")),
         // The overwhelmingly common case: exactly one file, no package framing. Decode it as-is — flat
         // namespace, no linkage — so a one-file program compiles through the identical path it always
-        // did.
-        [only] if entry_name.is_none() => crate::codec::decode(&only.bytes)
-            .map(|a| (a, None))
-            .ok_or_else(|| Reject::decline("binary AST failed to decode")),
+        // did. EXCEPTION (Inc-b (A1), design §9): if the single file USES a verification annotation
+        // (`@requires`/`@ensures`/`@trap_free`/`@invariant`), LINK the bundled verification kernel as a
+        // package member so the compiler can compile-time-discharge the obligations against the real
+        // kernel — and so the kernel's `Thm` keeps its unforgeable opacity (`is_linked_package` true only
+        // for a verification-using program; a non-verification program stays on the fast path unchanged).
+        [only] if entry_name.is_none() => {
+            let user = crate::codec::decode(&only.bytes)
+                .ok_or_else(|| Reject::decline("binary AST failed to decode"))?;
+            if VERIFY_KERNEL_LINKING_ENABLED
+                && uses_verification_annotation(&user)
+                && let Some(kernel) = bundled_verify_kernel_arena()
+            {
+                // Link kernel + user as a package; the user file is the entry. The kernel exports its
+                // rules + abstract `Thm`; the user imports them (and the compiler synthesizes the
+                // discharge program against them at a3/b3).
+                let files = vec![
+                    (VERIFY_KERNEL_NAME.to_string(), kernel),
+                    (only.name.clone(), user),
+                ];
+                let linked = crate::link::link(&files, &only.name)?;
+                let linkage = linked.linkage();
+                Ok((linked.arenas, Some(linkage)))
+            } else {
+                // No verification annotation (or linking not yet enabled) — the untouched fast path:
+                // flat namespace, no linkage, byte-identical to before.
+                Ok((user, None))
+            }
+        }
         // A package: decode every file, then splice. The entry defaults to the sole file's name when
         // exactly one file was supplied (a single-file package needs no explicit entry); otherwise the
         // caller must name the entry. A single-file package still carries linkage (its `(import …)`
