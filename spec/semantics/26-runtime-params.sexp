@@ -132,3 +132,26 @@
   (host-responses (respond Param.on (: true Bool))
                   (respond Param.count (: 42 Int64)))
   (output (: 42 Int64)))
+
+; The QUANTITY @param (the v-cad/v-notebook driving case) — now unblocked by v-effects' Quantity-host-op ABI
+; (layers 1+2: op-result-type resolution for a Qty + a scalar-inner Qty crossing as its inner scalar, unit
+; erased). A `@param(...) width : (Qty Int64 <unit>)` generates a Qty-result accessor; the host supplies the
+; magnitude as the inner scalar, the guest's declared (Qty …) type carries the unit, and `Qty.value` reads
+; the magnitude back. This is the runtime-parameter path a parametric CAD dimension / notebook length widget
+; drives — the sidecar's type-agnostic generate + v-effects' Qty boundary compose end-to-end.
+
+(case "a Quantity @param generates a Qty-result accessor the host supplies as a scalar magnitude"
+  (doc    "The Quantity runtime parameter: `@param(widget: slider) width : (Qty Int64 (Unit.base #\"meter\"))`
+           makes the sidecar generate `(op width (-> Unit (Qty Int64 meter)))`. The unit is a compile-time
+           value erased before codegen (Ty::Qty has its inner's runtime rep), so the host supplies the
+           magnitude as the inner Int64; the guest's declared Qty type carries the unit, and `Qty.value`
+           reads the magnitude back — with the host responding 42, `main` returns 42. Pins the sidecar's
+           type-agnostic generate composing with v-effects' Quantity-host-op ABI end-to-end (the v-cad
+           parametric-dimension / v-notebook length-widget driving case).")
+  (input  (do
+            (: (@ (param (: widget slider)) width) (Qty Int64 (Unit.base #"meter")))
+            (def (main) (host (Param) (Qty.value (Param.width))))
+            (export main)))
+  (call   main)
+  (host-responses (respond Param.width (: 42 Int64)))
+  (output (: 42 Int64)))

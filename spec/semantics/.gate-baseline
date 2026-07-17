@@ -321,6 +321,7 @@ pass	a NaN nested in a tuple compares equal under the canonical byte form
 pass	a NaN operand makes every runtime float ordering relation false (unordered)
 pass	a PARTIALLY-applied multi-payload constructor is a first-class function value
 pass	a Qty-typed variant payload keeps its type non-generic and matches back
+pass	a Quantity @param generates a Qty-result accessor the host supplies as a scalar magnitude
 pass	a RADIX literal carries the N type suffix
 pass	a RATIONAL compound = has DISCRIMINATING power (1/2 ≠ 1/3, but 0/2 = 0/3)
 pass	a RATIONAL leaf in a compound compares by CANONICAL form (2n/4 = n/2 inside a tuple)
@@ -478,6 +479,7 @@ pass	a boxed nested-unary curried closure applies without trapping
 pass	a boxed runtime closure returning Unit applies without declining
 pass	a boxed runtime closure taking Unit (a lazy thunk) is forced without declining
 pass	a branch perform under two nested handlers threads the inner state to the continuation
+pass	a branch refinement does not leak into the else arm's overflow guard
 pass	a branching recursive tree fold infers its unannotated callback across both arms
 pass	a build-time delegated effect whose result a returned closure captures does not escape
 pass	a built map renders its entries in canonical key order
@@ -905,6 +907,7 @@ pass	a guard-elided masked add computes inline over runtime operands
 pass	a guard-elided masked left shift computes identically on both backends
 pass	a guard-elided masked multiply computes inline over runtime operands
 pass	a guard-elided masked subtract computes inline over runtime operands
+pass	a guard-elided signed division by a provably-non-neg-one divisor computes identically on both backends
 pass	a guarded arm among same-constructor match arms keeps first-match-wins
 pass	a guarded arm is selected when its guard holds
 pass	a guarded list-match arm body reads its element binder
@@ -972,8 +975,8 @@ pass	a host delegating a value definition rather than an effect is rejected
 pass	a host delegating the same effect twice is rejected
 pass	a host effect with a non-kebab NAME crosses under a normalized interface extern name
 pass	a host effect with a non-kebab OPERATION name crosses under a normalized func extern name
-pass	a host op with a String parameter composes with the value-heap runtime
 pass	a host op whose result is a QUANTITY crosses the boundary as its inner scalar (unit erased)
+pass	a host op with a String parameter composes with the value-heap runtime
 pass	a host-called closure applied to a different argument tracks the input
 pass	a host-called closure with a different body dispatches the right code
 pass	a kernel may deliberately export its rule as a first-class value
@@ -1093,6 +1096,7 @@ pass	a loop-invariant computed in both the condition and the body is shared, com
 pass	a loop-invariant heap projection consumed in the loop body is not LICM-hoisted
 pass	a loop-invariant subexpression in a MATCH scrutinee is hoisted to valid wasm
 pass	a loop-invariant trapping expression is not evaluated when the loop runs zero iterations
+pass	a lower-bound branch refinement does NOT license eliding the upper-overflow guard
 pass	a lowercase type variable in a USER-GENERIC parameter annotation is rejected
 pass	a lowercase-named type cross-references another lowercase-named type in a field
 pass	a lowercase-named type is referenceable in a field (types are values, not gated by case)
@@ -2613,6 +2617,7 @@ pass	arithmetic right shift preserves the sign bit for a negative operand
 pass	arithmetic within one integer type
 pass	at min times -1 the three overflow families diverge: checked None, wrapping min
 pass	b4b denotation: a predicate Ast (<= x 100) denotes to the bounds obligation term le (Var 0) (Num 100)
+pass	b4c(proven): @requires(<= x 100)/@ensures(<= it MAXINT) on (f x)=x+1 discharges — P denoted as hyp, Q[it:=body] as goal
 pass	binary operator operands are evaluated left to right
 pass	binding the same effect to a peer twice is rejected
 pass	bit-field segments pack sub-byte values into one byte

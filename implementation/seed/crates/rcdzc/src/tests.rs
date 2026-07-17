@@ -17029,6 +17029,43 @@ mod match_engine {
         );
     }
 
+    /// Verification Inc-b b4a2: a `@requires`/`@ensures` with NOT-exactly-one predicate argument
+    /// (`@requires()`, `@requires(a b)`) is a shape error REJECTED at strip time (CDZ0201), the same arity
+    /// discipline `@tag` gets — a silently-unrecorded predicate would mask the author's mistake and surface
+    /// far away when the denotation consumes it. A valid `@requires(pred)`/`@ensures(pred)` is accepted.
+    /// (Name-resolution/boolean-typedness of the predicate is checked later, at denotation, where the def
+    /// param scope + `it` binder are available — flagged by breaker; scoped here to arity only.)
+    #[test]
+    fn a_malformed_requires_ensures_arity_is_rejected_not_silently_dropped() {
+        use crate::testkit::parse;
+        for src in [
+            "(module m (@ (requires) (def (c) 3)) (export c))", // zero args
+            "(module m (@ (requires (> x 0) (< x 9)) (def (c (: x Int64)) 3)) (export c))", // two args
+            "(module m (@ (ensures) (def (c) 3)) (export c))", // zero args
+            "(module m (@ (ensures (> it 0) 5) (def (c) 3)) (export c))", // two args
+        ] {
+            let d = crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.message.contains("takes exactly one PREDICATE argument"))
+                .unwrap_or_else(|| {
+                    panic!("a malformed `@requires`/`@ensures` must be rejected: {src}")
+                });
+            assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+        }
+        // NO false positive: a valid one-predicate `@requires`/`@ensures` is accepted silently.
+        for ok in [
+            "(module m (@ (requires (> x 0)) (def (c (: x Int64)) 3)) (export c))",
+            "(module m (@ (ensures (> it 0)) (def (c) 3)) (export c))",
+        ] {
+            assert!(
+                !crate::diagnostics(&mut crate::db::Db::load(parse(ok)))
+                    .iter()
+                    .any(|d| d.message.contains("takes exactly one PREDICATE argument")),
+                "a valid one-predicate @requires/@ensures is not flagged: {ok}"
+            );
+        }
+    }
+
     /// A SHAPE-valid constructor-export `(export (. T A))` / `(export (. T *))` must ALSO be SEMANTICALLY
     /// valid: `T` a declared sum, `A` one of its variants. The linker's `as_ctor_export` recorded the
     /// (type, ctor) names WITHOUT checking they exist, so `(export (. T Nonesuch))` (a ctor `T` lacks),
@@ -60959,6 +60996,35 @@ mod sidecar_driven {
     }
 
     #[test]
+    fn highlight_colours_char_bytes_and_symbol_literals_by_their_constant_kind() {
+        // The literal classifier colours each constant leaf by its RESOLVED kind, not its spelling. The
+        // char (`#\a`), byte-string (`b"…"`), and symbol (`#"…"`) literal forms are distinct kinds that
+        // the by-kind literal path emits — thinly covered before this pin (the earlier literals test only
+        // exercised bool + number), so a regression collapsing one into `string`/`symbol`/`unbound` would
+        // go unnoticed. Assert each emits its OWN wire spelling. (These are non-NAME leaves, so the
+        // by-name helper can't find them — read the raw artifact, like the bool/number test.)
+        let each = |src: &str, kind: &str| {
+            let out = compile(&inputs(src, &[Request::Query(Query::Highlight)]), &[]);
+            let text = artifact_text(&out, KIND_HIGHLIGHT).expect("a highlight artifact");
+            assert!(
+                text.lines().any(|l| l.ends_with(&format!("\t{kind}"))),
+                "expected a `{kind}` token in:\n{text}"
+            );
+            // A well-formed literal program never paints error-red.
+            assert!(
+                !text.lines().any(|l| l.ends_with("\tunbound")),
+                "a clean literal program has no unbound token:\n{text}"
+            );
+        };
+        // A CHAR literal `#\a`.
+        each("(module m (def (main) #\\a) (export main))", "char");
+        // A BYTE-STRING literal `b\"hi\"`.
+        each("(module m (def (main) b\"hi\") (export main))", "bytes");
+        // A SYMBOL literal `#\"sym\"` — the literal form (distinct from a name taken as data).
+        each("(module m (def (main) #\"sym\") (export main))", "symbol");
+    }
+
+    #[test]
     fn highlight_does_not_flag_binder_declarations_as_unbound() {
         // A binding DECLARATION (a module name, a variant-pattern PAYLOAD binder) is not a reference — it
         // must NOT read as `unbound` on a clean program. Regression guard: a whole-program leaf walk that
@@ -72367,6 +72433,79 @@ mod cross_component_oracle {
                 "a symbol crosses to and from a peer as a shared handle (round-trip compares equal)"
             ),
             cdz_run::Outcome::Trap(t) => panic!("symbol-peer run trapped: {t}"),
+        }
+    }
+
+    #[test]
+    fn a_scalar_quantity_crosses_to_and_from_a_peer_as_its_inner_scalar() {
+        use crate::testkit::parse;
+        // A scalar-inner Quantity crosses the peer boundary as its INNER scalar — the unit is a
+        // compile-time value ERASED before codegen (`Ty::Qty` has the same runtime rep as its inner), so
+        // `(Qty Int64 <unit>)` is an `Int64` at the boundary and the guest's static type carries the unit.
+        // This exercises the peer path of the Quantity host-ABI arm v-effects added (`abi_val_type`'s
+        // `Ty::Qty { inner, .. } => abi_val_type(inner)`): my `extern_abi_val_type` calls `abi_val_type`
+        // FIRST, so a scalar Qty crosses by value here (before reaching `is_extern_heap_type`) — while a
+        // HEAP-inner Qty (`(Qty Rational …)`) still falls through to the handle path (`is_extern_heap_type`'s
+        // Qty arm recurses on inner). The two arms are complementary: this pins the SCALAR half over a peer.
+        // (Peer + host share `abi_val_type`; v-effects pinned the host side, this pins the peer seam.)
+        //
+        // PROVIDER (source): `dbl : (Qty Int64 m) -> (Qty Int64 m)` doubles the magnitude, unit preserved.
+        let provider = compile_provider(
+            "(do (def (dbl (: q (Qty Int64 (Unit.base #\"meter\")))) \
+                    (Qty.of (* 2 (Qty.value q)) (Unit.base #\"meter\"))) \
+                 (export dbl))",
+            "cadenza:q/api",
+        );
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&provider)
+                .expect("the quantity-dbl provider validates");
+        }
+        // CONSUMER (source): passes `3 meter` in (crosses as the inner Int64 3), reads the returned Qty's
+        // magnitude back with `Qty.value` → 6. Both arg and result cross as the inner scalar; main returns
+        // a scalar Int64.
+        let src = "(do \
+            (effect Q (op dbl (-> (Qty Int64 (Unit.base #\"meter\")) (Qty Int64 (Unit.base #\"meter\"))))) \
+            (bind Q \"cadenza:q/api\") \
+            (def (main) (host (Q) (Qty.value (Q.dbl (Qty.of 3 (Unit.base #\"meter\")))))) \
+            (export main))";
+        let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .unwrap_or_else(|d| {
+                panic!(
+                    "quantity-peer consumer compiles: {} [{:?}]",
+                    d.message, d.code
+                )
+            });
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&consumer)
+                .expect("quantity-peer consumer validates");
+        }
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("[quantity-peer] runtime wasm not found; skipping the run");
+            return;
+        };
+        let peers = vec![cdz_run::Peer {
+            bytes: provider,
+            interface: "cadenza:q/api".to_string(),
+        }];
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: Vec::new(),
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run_with_peers(&consumer, &peers, &opts)
+            .expect("a scalar quantity crosses to and from a peer")
+        {
+            // The consumer passed 3 meter (inner Int64 3) to the peer, which doubled it; Qty.value read the
+            // returned magnitude back → 6. A SCALAR QUANTITY crossed both ways as its inner scalar.
+            cdz_run::Outcome::Value(s) => assert_eq!(
+                s, "6",
+                "a scalar quantity crosses to and from a peer as its inner scalar (3 meter → dbl → 6)"
+            ),
+            cdz_run::Outcome::Trap(t) => panic!("quantity-peer run trapped: {t}"),
         }
     }
 

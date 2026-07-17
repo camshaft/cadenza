@@ -4608,6 +4608,101 @@ mod tests {
     }
 
     #[test]
+    fn emit_name_round_trips_through_the_lexer_over_generated_names() {
+        // The NAME round-trip law, swept: `emit_name(s)` prints a name so it RE-LEXES back to `s` — either
+        // a bare `Ident` (when bare-safe) or a backtick-escaped `` `…` `` (when reserved / an operator
+        // glyph / otherwise not bare-safe), whose `BacktickName` token `unescape_backtick_name` decodes to
+        // `s`. This is the printer↔lexer inverse pair for names (the analogue of the int/float/string/char
+        // sweeps): a printer that emitted an under-escaped name (a bare `+` or `let`, or a `` ` ``/`\`
+        // inside a backtick name left unescaped) would re-lex to a DIFFERENT name or a wrong token — a
+        // silent identifier corruption. Sweep names over an alphabet rich in the escape-significant chars
+        // (backtick, backslash, operator glyphs, reserved-word letters, `#`/`.`/quote, unicode), asserting
+        // `emit_name(s)` lexes to exactly ONE non-trivia token that recovers `s`.
+        let alphabet: &[char] = &[
+            '`', '\\', '+', '-', '*', '/', '<', '>',
+            '=', // operator glyphs + the two escape chars
+            'l', 'e', 't', 'i', 'f', 'n', // reserved-word letters (let/if/in/fn)
+            'a', 'Z', '0', '9', '_', '-', // ordinary ident chars
+            '#', '.', '"', ' ', // sigils/space (never bare-safe)
+            'λ', '中', // multi-byte unicode
+        ];
+        let mut rng = SplitMix64(0xba7c_c0de_11a3_e501);
+        let mut backtick_seen = 0usize;
+        for _ in 0..30_000 {
+            // A non-empty name of 1..=6 chars.
+            let len = 1 + (rng.next() as usize) % 6;
+            let s: String = (0..len)
+                .map(|_| alphabet[(rng.next() as usize) % alphabet.len()])
+                .collect();
+            let printed = emit_name(&s);
+            // `emit_name` output must lex to EXACTLY ONE non-trivia token spanning all of it, and that
+            // token must recover `s`. (A bare-safe name → Ident text == s; otherwise → BacktickName that
+            // `unescape_backtick_name` decodes to s.)
+            let mut toks = crate::lexer::Lexer::new(&printed).filter(|t| !t.kind.is_trivia());
+            match (toks.next(), toks.next()) {
+                (Some(t), None) => {
+                    assert_eq!(
+                        t.span.start, 0,
+                        "emit_name({s:?})={printed:?} did not lex from offset 0"
+                    );
+                    assert_eq!(
+                        t.span.end,
+                        printed.len(),
+                        "emit_name({s:?})={printed:?} lexed only part of the output"
+                    );
+                    let recovered = match t.kind {
+                        Kind::BacktickName => {
+                            backtick_seen += 1;
+                            literal::unescape_backtick_name(&printed[t.span.start..t.span.end])
+                        }
+                        // A bare-safe name lexes as an ordinary Ident (its text IS the name).
+                        Kind::Ident => printed[t.span.start..t.span.end].to_string(),
+                        other => panic!(
+                            "emit_name({s:?})={printed:?} lexed as {other:?}, not Ident/BacktickName"
+                        ),
+                    };
+                    assert_eq!(
+                        recovered, s,
+                        "emit_name → lex → recover is not the identity for {s:?} (printed {printed:?})"
+                    );
+                }
+                (first, second) => panic!(
+                    "emit_name({s:?})={printed:?} did not lex to exactly one token: {first:?}, {second:?}"
+                ),
+            }
+        }
+        // Exercise the backtick-escape path DETERMINISTICALLY (not on generator luck) on names that MUST
+        // escape: a reserved word, an operator glyph, and a name containing the two escape chars.
+        for s in [
+            "let",
+            "+",
+            "->",
+            "a`b",
+            "x\\y",
+            "with space",
+            "#hash",
+            "a.b",
+        ] {
+            let printed = emit_name(s);
+            let mut toks = crate::lexer::Lexer::new(&printed).filter(|t| !t.kind.is_trivia());
+            let (Some(t), None) = (toks.next(), toks.next()) else {
+                panic!("emit_name({s:?})={printed:?} must lex to one token");
+            };
+            assert_eq!(
+                t.kind,
+                Kind::BacktickName,
+                "{s:?} must escape to a backtick name: {printed:?}"
+            );
+            assert_eq!(
+                literal::unescape_backtick_name(&printed[t.span.start..t.span.end]),
+                s,
+                "backtick round-trip is not the identity for {s:?} (printed {printed:?})"
+            );
+        }
+        let _ = backtick_seen; // a soft coverage hint, not asserted (couples to the alphabet)
+    }
+
+    #[test]
     fn guarded_arm_prints_if() {
         let out = assert_roundtrip("match n with | x if x < 0 => neg | _ => pos", 80);
         assert!(out.contains("x if x < 0 =>"), "got: {out}");

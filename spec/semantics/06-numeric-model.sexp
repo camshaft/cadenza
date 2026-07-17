@@ -3070,6 +3070,46 @@
   (call   main (: 42 Int64)) (output (: 43 Int64))
   (call   main (: 200 Int64)) (output (: 0 Int64)))
 
+(case "a guard-elided signed division by a provably-non-neg-one divisor computes identically on both backends"
+  (doc    "The Div member of the guard-elision family, now BOTH-BACKEND. Signed `/` traps on TWO things:
+           a zero divisor AND `MIN / -1` (the only quotient that leaves the type). The `MIN/-1` overflow
+           guard exists SOLELY for a divisor of -1, so when the divisor provably is NOT -1 it is dead. Here
+           `(/ a (& b 7))` masks the divisor to [0,7] — cannot be -1 — so the compiler elides the `MIN/-1`
+           overflow guard (the zero-divisor guard STAYS: a masked divisor can be 0). The wasm backend elides
+           via `divisor_can_be_neg_one` in emit; the rust backend now consults the SAME Core-tier predicate,
+           so both make the identical decision. Value parity is the observable proof: `(100, 7)` = 100 / (7&7)
+           = 100 / 7 = 14 (truncating); `(100, 2)` = 100 / (2&7) = 100 / 2 = 50. A zero mask (`(100, 8)` →
+           8&7 = 0) still traps divide-by-zero — the kept guard.")
+  (input  (do (def (main (: a Int64) (: b Int64)) (/ a (& b 7))) (export main)))
+  (call   main (: 100 Int64) (: 7 Int64)) (output (: 14 Int64))
+  (call   main (: 100 Int64) (: 2 Int64)) (output (: 50 Int64)))
+
+; The SOUNDNESS SENTINELS for the flow-refined elision above: the refinement elides a guard ONLY on a
+; genuine upper-bound proof, scoped to the branch it guards. These two negative companions pin that it does
+; NOT over-elide — a refinement that fails to bound the result above KEEPS the guard, and a then-branch
+; refinement does NOT leak into the else arm. Both trap the overflow the elided case never reaches.
+(case "a lower-bound branch refinement does NOT license eliding the upper-overflow guard"
+  (doc    "`(if (> a 0) (+ a 1) 0)`: the guard `(> a 0)` refines `a` to [1, _] — a LOWER bound only, with NO
+           upper bound — so `(+ a 1)` is NOT provably in range and its overflow guard is KEPT. `(5)` = 6, but
+           `(Int64.max)` (which satisfies `> 0`) makes `(+ a 1)` overflow and MUST trap. Pins that a
+           flow refinement elides ONLY when it proves the result stays in range: a bound on the wrong side
+           (below, not above) does not license dropping the upper-overflow guard — the elision is opt-in on
+           a genuine fit proof, identically on both backends. The negative companion of the elided case above.")
+  (input  (do (def (main (: a Int64)) (if (> a 0) (+ a 1) 0)) (export main)))
+  (call   main (: 5 Int64)) (output (: 6 Int64))
+  (call   main (: 9223372036854775807 Int64)) (trap "overflow"))
+
+(case "a branch refinement does not leak into the else arm's overflow guard"
+  (doc    "`(if (< a 100) 0 (+ a 1))`: the `(+ a 1)` is in the ELSE arm, entered when `(< a 100)` is FALSE —
+           i.e. `a >= 100`, which bounds `a` BELOW, not above — so `(+ a 1)` is not provably in range in the
+           else and its guard is KEPT. `(50)` takes the then-arm → 0, but `(Int64.max)` takes the else and
+           `(+ a 1)` overflows → MUST trap. Pins that the branch refinement is PER-ARM and does NOT leak: the
+           `a < 100` fact holds only in the then-branch, never in the else, so the else's add keeps its guard.
+           The per-branch-scoping companion of the elided case above, on both backends.")
+  (input  (do (def (main (: a Int64)) (if (< a 100) 0 (+ a 1))) (export main)))
+  (call   main (: 50 Int64)) (output (: 0 Int64))
+  (call   main (: 9223372036854775807 Int64)) (trap "overflow"))
+
 (case "a strength-reduced multiply nested as an operand computes in place"
   (doc    "`(+ (* a 2) 1)` over a runtime `a`: the `(* a 2)` strength-reduces to `a << 1` and is the LHS
            OPERAND of the enclosing `+`, so the shift writes the add's operand slot DIRECTLY (its result

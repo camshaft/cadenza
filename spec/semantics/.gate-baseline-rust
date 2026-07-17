@@ -317,6 +317,7 @@ pass	a boxed nested-unary curried closure applies without trapping
 pass	a boxed runtime closure returning Unit applies without declining
 pass	a boxed runtime closure taking Unit (a lazy thunk) is forced without declining
 pass	a branch perform under two nested handlers threads the inner state to the continuation
+pass	a branch refinement does not leak into the else arm's overflow guard
 pass	a branching recursive tree fold infers its unannotated callback across both arms
 pass	a built map renders its entries in canonical key order
 pass	a built-in Ast constructor applied to a wrong-type payload is a type error
@@ -660,6 +661,7 @@ pass	a guard-elided masked add computes inline over runtime operands
 pass	a guard-elided masked left shift computes identically on both backends
 pass	a guard-elided masked multiply computes inline over runtime operands
 pass	a guard-elided masked subtract computes inline over runtime operands
+pass	a guard-elided signed division by a provably-non-neg-one divisor computes identically on both backends
 pass	a guarded arm among same-constructor match arms keeps first-match-wins
 pass	a guarded arm is selected when its guard holds
 pass	a guarded list-match arm body reads its element binder
@@ -839,6 +841,7 @@ pass	a loop-invariant computed in both the condition and the body is shared, com
 pass	a loop-invariant heap projection consumed in the loop body is not LICM-hoisted
 pass	a loop-invariant subexpression in a MATCH scrutinee is hoisted to valid wasm
 pass	a loop-invariant trapping expression is not evaluated when the loop runs zero iterations
+pass	a lower-bound branch refinement does NOT license eliding the upper-overflow guard
 pass	a lowercase type variable in a USER-GENERIC parameter annotation is rejected
 pass	a lowercase-named type cross-references another lowercase-named type in a field
 pass	a lowercase-named type is referenceable in a field (types are values, not gated by case)
@@ -2299,6 +2302,7 @@ pass	arithmetic right shift preserves the sign bit for a negative operand
 pass	arithmetic within one integer type
 pass	at min times -1 the three overflow families diverge: checked None, wrapping min
 pass	b4b denotation: a predicate Ast (<= x 100) denotes to the bounds obligation term le (Var 0) (Num 100)
+pass	b4c(proven): @requires(<= x 100)/@ensures(<= it MAXINT) on (f x)=x+1 discharges — P denoted as hyp, Q[it:=body] as goal
 pass	binding the same effect to a peer twice is rejected
 pass	bit-field segments pack sub-byte values into one byte
 pass	bitwise AND masks bits
@@ -3363,6 +3367,7 @@ todo	a NESTED Tuple arg ALONGSIDE a flat Tuple arg
 todo	a NESTED mixed ARG (a tuple containing a record) crosses the direct-call boundary
 todo	a NESTED-tuple ARG composes with a NESTED-tuple RESULT
 todo	a NOMINAL-over-tuple ARG crosses as the underlying tuple (direct-call)
+todo	a Quantity @param generates a Qty-result accessor the host supplies as a scalar magnitude
 todo	a RECORD closure ARG among scalars crosses the direct-call boundary (scalar result)
 todo	a RECORD closure ARG on the MULTI-EXPORT path
 todo	a RECORD closure ARG whose fields are NOT in sorted source order
@@ -3474,8 +3479,8 @@ todo	a fixed-shape scalar Tuple closure ARG crosses the DIRECT-CALL boundary (ho
 todo	a host call's response is an ordinary value that feeds a LATER host call
 todo	a host effect with a non-kebab NAME crosses under a normalized interface extern name
 todo	a host effect with a non-kebab OPERATION name crosses under a normalized func extern name
-todo	a host op with a String parameter composes with the value-heap runtime
 todo	a host op whose result is a QUANTITY crosses the boundary as its inner scalar (unit erased)
+todo	a host op with a String parameter composes with the value-heap runtime
 todo	a host-called closure applied to a different argument tracks the input
 todo	a host-called closure with a different body dispatches the right code
 todo	a list-arm constructor element over a runtime-built list

@@ -3199,14 +3199,19 @@ fn collect_param_constraints(
                         // (Iter a)) (Iter a))`). A payload binder is in NO env (env holds the params), so it
                         // is distinct from `arg_is_param`; `arg_ty_in_env`'s `SumPayload` arm already links
                         // it to the scrutinee param's element var, so the unify propagates into `subst`.
-                        let arg_is_param_payload = matches!(
-                            resolved_of(db, arg),
-                            Resolved::SumPayload { scrutinee, .. }
-                                if matches!(resolved_of(db, scrutinee),
-                                    Resolved::Ref { value } if env.contains_key(&value))
-                                || matches!(resolved_of(db, scrutinee),
-                                    Resolved::Param { binder } if env.contains_key(&binder))
-                        );
+                        let arg_is_param_payload =
+                            if let Resolved::SumPayload { scrutinee, .. } = resolved_of(db, arg) {
+                                // Resolve the scrutinee ONCE (was two `resolved_of` calls of the same node
+                                // in a hot constraint-collection loop, Copilot micro-perf PR #524): the
+                                // payload's scrutinee reads a parameter directly as a `Ref` or a `Param`.
+                                match resolved_of(db, scrutinee) {
+                                    Resolved::Ref { value } => env.contains_key(&value),
+                                    Resolved::Param { binder } => env.contains_key(&binder),
+                                    _ => false,
+                                }
+                            } else {
+                                false
+                            };
                         if !arg_is_param && !arg_is_param_payload {
                             continue;
                         }

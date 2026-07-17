@@ -159,8 +159,29 @@ function toDiag(d: {
 /// A parse-error throw (a `JsError` from `wasmCompile`/`wasmReplEval` on unparseable text) as a
 /// decline diagnostic, so a syntax error reads like any other "no" instead of rejecting the promise.
 /// Unanchored (byte 0) — the message carries the byte offset the wasm reported.
+///
+/// STOPGAP for the module-qualified-call deep-recursion crash (P0): the browser compiles in a WORKER, whose
+/// JS/wasm stack is smaller than the main thread's, so a deep-but-terminating compiler recursion (e.g.
+/// module-qualified resolution — v-inference is landing an iterative resolve.rs fix) can overflow the worker
+/// stack ("Maximum call stack size exceeded") or trip a wasm "memory access out of bounds" — even for a
+/// program that compiles cleanly natively + on the main thread. Surface those as a CLEAN, actionable
+/// diagnostic instead of the raw runtime error, so the reader sees an explanation rather than a scary crash.
+/// (Remove/relax once the iterative resolve lands and a 3-line module program no longer recurses deeply.)
 function parseErrorDiag(e: unknown): Diag {
   const message = e instanceof Error ? e.message : String(e);
+  if (/maximum call stack|out of bounds|stack overflow|recursion/i.test(message)) {
+    return {
+      error: true,
+      code: "",
+      message:
+        "the browser compiler ran out of stack on this program (a deeply-nested / module-qualified form). " +
+        "It may compile with the `cdz` CLI; this is a known browser-compiler limit being fixed.",
+      node: 0,
+      from: 0,
+      to: 0,
+      fix: null,
+    };
+  }
   return { error: true, code: "", message, node: 0, from: 0, to: 0, fix: null };
 }
 

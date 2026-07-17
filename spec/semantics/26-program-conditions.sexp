@@ -557,3 +557,101 @@
                   (term-eq (denote pred) expected))))
             (export main)))
   (output (: true Bool)))
+
+; ── b4c(proven): a full @requires/@ensures obligation — denote both, discharge P ⇒ Q[it:=body] ─────────
+; b4b denotes ONE predicate Ast → Term. b4c(proven) composes the elaboration (§2.1): for
+;   @requires(<= x 100) @ensures(<= it MAXINT) (def (f x) (+ x 1))
+; the obligation is `denote(P) ⊢ denote(Q)[it := denote(body)]` — i.e. from the precondition hypothesis
+; `le x 100` derive `le (add x 1) MAXINT` (the postcondition with `it` the body's value `x+1`). This is
+; exactly the b1 discharge chain, now framed as the DENOTED annotations: `it` in Q is replaced by the
+; denotation of the body `(+ x 1)` → `add (Var 0) (Num 1)`, and the precondition enters via `assume`. Pins
+; that the §2.1 elaboration target — the whole @requires⇒@ensures obligation — discharges through the SAME
+; kernel the hand-authored b1 cases use, so the b4c compiler wiring (compile-time-eval) has a proven target.
+
+(case "b4c(proven): @requires(<= x 100)/@ensures(<= it MAXINT) on (f x)=x+1 discharges — P denoted as hyp, Q[it:=body] as goal"
+  (doc    "The PROVEN-tier obligation for a full @requires/@ensures pair (design §2.1). The elaboration
+           denotes @requires(<= x 100) → the hypothesis `le (Var 0) (Num 100)` (via assume) and
+           @ensures(<= it MAXINT) with `it` := the body's denotation `add (Var 0) (Num 1)` → the goal
+           `le (add (Var 0) 1) MAXINT`. Discharging is the b1 chain: mono-add-r on the assumed precondition
+           + a CHECKED numeral fact (101 <= MAXINT) + trans-le. The entry builds the denoted obligation and
+           discharges it through the kernel, checking the conclusion is the denoted postcondition. Runs to
+           `true`. Pins that the b4 elaboration's whole-obligation target (P ⇒ Q[it:=body]) discharges via
+           the SAME kernel machinery b1 exercises — so b4c's compile-time-eval wiring has a proven shape to
+           produce, and the discharged Thm is exactly what b3's oracle consumes for the implicit overflow
+           obligation (here `<= it MAXINT` IS the no-overflow condition on `x+1`).")
+  (module "bounds"
+    (do
+      (type Term (Var Int64) (Num Int64) (Comb Term Term) (Const Int64))
+      (type Thm (Seq (List Term) Term))
+      (def (term-eq (: a Term) (: b Term))
+        (match a
+          ((Term.Var n)    (match b ((Term.Var m) (= n m)) (_ false)))
+          ((Term.Num n)    (match b ((Term.Num m) (= n m)) (_ false)))
+          ((Term.Const c)  (match b ((Term.Const d) (= c d)) (_ false)))
+          ((Term.Comb x y) (match b ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) (_ false)))))
+      (def (add (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 0) a) b))
+      (def (le  (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 1) a) b))
+      (def (maxint) (Term.Num 9223372036854775807))
+      (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
+      (def (hyps  (: th Thm)) (match th ((Thm.Seq h _) h)))
+      (def (assume (: p Term)) (Thm.Seq (list p) p))
+      (def (eval-ground (: t Term))
+        (match t
+          ((Term.Num n) (Option.Some n))
+          ((Term.Comb (Term.Comb (Term.Const 0) a) b)
+            (match (eval-ground a)
+              ((Option.Some av) (match (eval-ground b)
+                                  ((Option.Some bv) (Option.Some (+ av bv)))
+                                  ((Option.None) (Option.None))))
+              ((Option.None) (Option.None))))
+          (_ (Option.None))))
+      (def (le-ax (: lhs Term) (: rhs Term))
+        (match (eval-ground lhs)
+          ((Option.Some lv) (match (eval-ground rhs)
+                              ((Option.Some rv) (if (<= lv rv)
+                                                  (Option.Some (Thm.Seq (list) (le lhs rhs)))
+                                                  (Option.None)))
+                              ((Option.None) (Option.None))))
+          ((Option.None) (Option.None))))
+      (def (mono-add-r (: th Thm) (: k Term))
+        (match (concl th)
+          ((Term.Comb (Term.Comb (Term.Const 1) x) c)
+            (Option.Some (Thm.Seq (hyps th) (le (add x k) (add c k)))))
+          (_ (Option.None))))
+      (def (trans-le (: t1 Thm) (: t2 Thm))
+        (match (concl t1)
+          ((Term.Comb (Term.Comb (Term.Const 1) a) b)
+            (match (concl t2)
+              ((Term.Comb (Term.Comb (Term.Const 1) b2) c)
+                (if (term-eq b b2)
+                  (Option.Some (Thm.Seq (List.concat (hyps t1) (hyps t2)) (le a c)))
+                  (Option.None)))
+              (_ (Option.None))))
+          (_ (Option.None))))
+      (export (. Term *))
+      (export Thm)
+      (export term-eq add le maxint concl hyps assume le-ax mono-add-r trans-le)))
+  (input  (do
+            (import "bounds" (Term Thm term-eq add le maxint concl hyps assume le-ax mono-add-r trans-le))
+            (def (main)
+              (let ((x    (Term.Var 0))
+                    (one  (Term.Num 1))
+                    (c100 (Term.Num 100)))
+                ; denote(body) = (+ x 1) → add (Var 0) (Num 1); it := this in the @ensures goal
+                (let ((body-den (add x one)))
+                  ; @ensures(<= it MAXINT) with it:=body → goal = le (add x 1) MAXINT
+                  (let ((goal (le body-den (maxint)))
+                        ; @requires(<= x 100) → hypothesis, entered via assume
+                        (pre  (assume (le x c100))))
+                    ; discharge: mono-add-r + numeral fact + trans (the b1 chain)
+                    (match (mono-add-r pre one)
+                      ((Option.Some step1)
+                        (match (le-ax (add c100 one) (maxint))
+                          ((Option.Some fact)
+                            (match (trans-le step1 fact)
+                              ((Option.Some proof) (term-eq (concl proof) goal))
+                              ((Option.None) false)))
+                          ((Option.None) false)))
+                      ((Option.None) false))))))
+            (export main)))
+  (output (: true Bool)))

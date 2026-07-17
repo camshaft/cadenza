@@ -5,7 +5,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { extractChart, categoryLabels } from "./extractChart.ts";
+import { extractChart, categoryLabels, minOf, maxOf } from "./extractChart.ts";
 
 test("a List of (x, y) tuples → one unnamed series of points", () => {
   const r = extractChart("(: (list (tuple 1 10) (tuple 2 20) (tuple 3 15)) T)");
@@ -142,4 +142,39 @@ test("categoryLabels fills a label-less x-slot with its bare index (defensive)",
   // Hand-built series with a gap at x=1: slot 1 has no label → falls back to "1".
   const series = [{ name: "", points: [{ x: 0, y: 5, label: "a" }, { x: 2, y: 7, label: "c" }] }];
   assert.deepEqual(categoryLabels(series), ["a", "1", "c"]);
+});
+
+// ── minOf / maxOf: loop-based extent (no Math.min(...arr) spread, PR #524) ──
+
+test("minOf / maxOf compute the extent and match Math.min/max on normal input", () => {
+  assert.equal(minOf([3, 1, 2]), 1);
+  assert.equal(maxOf([3, 1, 2]), 3);
+  assert.equal(minOf([-5, 0, 5]), -5);
+  assert.equal(maxOf([-5, 0, 5]), 5);
+});
+
+test("minOf / maxOf honor a seed bound (e.g. include 0 in a y-extent, or a floor of 1)", () => {
+  assert.equal(minOf([3, 5, 8], 0), 0); // seed 0 like Math.min(0, ...ys)
+  assert.equal(maxOf([3, 5, 8], 0), 8);
+  assert.equal(maxOf([], 1), 1); // empty + seed → seed (the barSlot floor)
+});
+
+test("minOf / maxOf on an empty list with no seed match Math.min()/Math.max() (±Infinity)", () => {
+  assert.equal(minOf([]), Infinity);
+  assert.equal(maxOf([]), -Infinity);
+});
+
+test("minOf / maxOf handle a LARGE array that would overflow Math.min(...arr) (the PR #524 bug)", () => {
+  // A spread of this many args throws `RangeError: too many arguments` in V8; the loop must not.
+  const big = Array.from({ length: 500_000 }, (_, i) => i);
+  assert.equal(minOf(big), 0);
+  assert.equal(maxOf(big), 499_999);
+  // (Sanity: confirm the old spread approach WOULD have thrown, so this test guards a real regression.)
+  assert.throws(() => Math.max(...big), RangeError);
+});
+
+test("minOf / maxOf accept any iterable (e.g. a Map's keys, as categoryLabels uses)", () => {
+  const m = new Map([[2, "c"], [0, "a"], [1, "b"]]);
+  assert.equal(maxOf(m.keys()), 2);
+  assert.equal(minOf(m.keys()), 0);
 });

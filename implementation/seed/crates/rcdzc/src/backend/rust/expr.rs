@@ -2413,7 +2413,17 @@ fn emit_arith(
             // zero"; `l == <T>::MIN && r == -1` → "overflow". An UNSIGNED type has NO MIN/-1 overflow (and
             // `r == -1` would not type-check), so it emits only the zero guard. Otherwise the plain `/`
             // (neither condition holds). Each operand binds once so a side-effecting operand runs once.
-            let overflow_guard = match types::int_type_is_signed(it) {
+            // The `MIN/-1` overflow guard exists SOLELY for `MIN ÷ -1`; it is DEAD when either operand
+            // provably rules that pair out — matching the wasm backend's `select.rs:13275` consult of the
+            // SAME two Core-tier predicates (the Div member of the both-backend guard-elision family):
+            //   • the DIVISOR provably is NOT `-1` (`!divisor_can_be_neg_one` — a positive constant, an
+            //     unsigned/nonneg/masked value, or a flow-refined range excluding -1); OR
+            //   • the DIVIDEND is provably NON-NEGATIVE (`value_provably_nonneg`) — `MIN` is negative, so a
+            //     nonneg dividend can never be `MIN`, and then `MIN ÷ -1` cannot occur.
+            // The zero-divisor guard always stays (only the signed MIN/-1 overflow guard is elidable).
+            let overflow_possible = crate::lower::divisor_can_be_neg_one(db, rhs)
+                && !crate::lower::value_provably_nonneg(db, lhs);
+            let overflow_guard = match types::int_type_is_signed(it) && overflow_possible {
                 // `<T>::MIN` names the value type's minimum (the width `it` fixed the operands to). A
                 // divisor of `-1` only exists for a signed type, so this arm is signed-only.
                 true => match types::rust_type(&Ty::Int(it)) {

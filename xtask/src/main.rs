@@ -3395,11 +3395,20 @@ fn check(paths: &Paths, profile: &str) {
     // formatting, build, test, then clippy. `fmt --check` and clippy `-D warnings` are HARD gates —
     // the workspace is cargo-fmt-clean and clippy-clean, and this keeps it that way (a lint or a
     // stray format is a failing step, with the offending diff/lint captured in the log to read).
+    // clippy MUST pass `--all-targets` to match CI (checks.yml runs `clippy --workspace --all-targets
+    // -- -D warnings`): without it, clippy skips test/bench/example targets, so a `#[cfg(test)]`-only
+    // lint passes this local gate + pr-sync's re-gate yet RED-lights CI (this happened — a
+    // `unnecessary_get_then_check` in an lsp test slipped through to a hand-fix on trunk). Keep this in
+    // lockstep with CI's clippy invocation.
     let repo = &paths.repo;
     log.step("fmt", "cargo fmt --all --check", repo);
     log.step("build", "cargo build --workspace", repo);
     log.step("test", "cargo test --workspace", repo);
-    log.step("clippy", "cargo clippy --workspace -- -D warnings", repo);
+    log.step(
+        "clippy",
+        "cargo clippy --workspace --all-targets -- -D warnings",
+        repo,
+    );
 
     // The generated runtime-ABI table (`runtime_abi.rs`) MUST stay current with the runtime WIT — a
     // forgotten `cargo xtask codegen` after a WIT change would silently drift the compiler's import
@@ -3436,7 +3445,10 @@ fn check(paths: &Paths, profile: &str) {
     log.step("cdz-wasm-test", "cargo test -p cdz-wasm", &wasm);
     log.step(
         "cdz-wasm-clippy",
-        "cargo clippy -p cdz-wasm -- -D warnings",
+        // `--all-targets` for the same reason as the workspace clippy above: catch `#[cfg(test)]`-only
+        // lints locally. cdz-wasm has no dedicated CI clippy job (it's gated only here), so this step
+        // is its sole clippy coverage — all the more reason to lint its test targets too.
+        "cargo clippy -p cdz-wasm --all-targets -- -D warnings",
         &wasm,
     );
 
