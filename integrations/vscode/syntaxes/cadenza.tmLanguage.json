@@ -9,6 +9,7 @@
     { "include": "#literals" },
     { "include": "#numbers" },
     { "include": "#keywords" },
+    { "include": "#annotations" },
     { "include": "#constructors" },
     { "include": "#operators" }
   ],
@@ -60,6 +61,11 @@
     "keywords": {
       "name": "keyword.control.cadenza",
       "match": "\\b(fn|def|let|in|if|then|else|match|with|module|export|import|from|effect|handle|host|op|type|do|guard|lambda|record|tuple|list|map|set|quote|quasiquote)\\b"
+    },
+    "annotations": {
+      "comment": "An `@annotation` — `@test`, `@exhaustive`, `@inline-never`, and the call-style `@tag(\"…\")` / `@param(…)`. The sigil plus the annotation name is a decorator on the following definition (the `cdz lsp` server paints these as `keyword` semantic tokens; this is the lexical fallback). Matched BEFORE `#operators` so the leading `@` is claimed here as part of the annotation rather than as a bare operator. Kebab names allowed (`inline-never`). The call-style argument list is left to the ordinary rules (its string/name children paint normally).",
+      "name": "entity.name.tag.annotation.cadenza",
+      "match": "@[A-Za-z_][A-Za-z0-9_-]*"
     },
     "constructors": {
       "comment": "A Capitalized identifier — a type or a variant constructor. Semantic tokens distinguish the two; lexically we colour both as a type name.",
