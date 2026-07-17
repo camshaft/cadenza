@@ -77,11 +77,36 @@ export default function AdHocPolymorphism() {
       </P>
       <Note>
         Left the dictionary <em>unannotated</em> on purpose: that's what keeps <C>show-with</C> generic over
-        the element type. Cadenza has no <C>∀</C>-binder inside an annotation, so you couldn't write a
-        generic type like <C>{`(Record (describe (-> a Int64)))`}</C> with a free <C>a</C> even if you wanted
-        to — an unannotated parameter <em>is</em> the generic form (see <em>Const parameters</em> and{" "}
-        <em>Types as values</em> for the type-valued way to pin one explicitly).
+        the element type. Cadenza has no <C>∀</C>-binder inside an annotation, so you can't write a generic
+        type like <C>{`(Record (describe (-> a Int64)))`}</C> with a free <C>a</C> — an unannotated parameter{" "}
+        <em>is</em> the generic form. When you <em>want</em> the signature written out, there's a second way,
+        below.
       </Note>
+
+      <H2>Spelling out the generic: a type parameter</H2>
+      <P>
+        The unannotated version is generic but silent about it. If you'd rather <em>document</em> the
+        constraint — "this works for some type <C>t</C>, given a dictionary of <C>describe : t → Int64</C>" —
+        take the type as an explicit <C>{`(: t Type)`}</C> parameter (the same first-class{" "}
+        <em>types as values</em> idea) and annotate the rest in terms of it. The caller passes the concrete
+        type at the front; both instances still dispatch through the one <C>show-with</C>:
+      </P>
+      <Runnable
+        source={`(def (describe-int n) (+ n 100))
+(def (describe-bool b) (if b 999 0))
+(def (show-with (: t Type) (: dict (Record (describe (-> t Int64)))) (: x t))
+  ((. dict describe) x))
+(def (main)
+  (+ (show-with Int64 (record (describe describe-int)) 5)
+     (show-with Bool (record (describe describe-bool)) true)))`}
+      />
+      <P>
+        Same <C>1104</C>, now with a fully written-out signature: <C>show-with</C> declares that its element
+        type is a parameter <C>t</C> and its dictionary must carry <C>describe : t → Int64</C>. Feed it{" "}
+        <C>Int64</C> with an integer dictionary, or <C>Bool</C> with a boolean one, and each checks against
+        that same shape. It's the more verbose of the two, but it says out loud what the unannotated form
+        leaves to inference — pick whichever fits how much you want the reader to see.
+      </P>
 
       <H2>The built-in instances: typed operators</H2>
       <P>
