@@ -2868,7 +2868,43 @@ pub(crate) fn body_diverges(db: &mut Db, id: StructId) -> bool {
         // emit (mirrors the diverging-fn-body → 0-result signature). Diverges iff BOTH branches do; a
         // one-sided diverge (`(if b (trap) x)`) still yields `x`'s value, so it does NOT.
         Core::If { then_, else_, .. } => body_diverges(db, then_) && body_diverges(db, else_),
+        // A `match` whose EVERY reachable arm body diverges produces no value on any path — `Never`, same
+        // as the both-diverge `if`. `(match n (0 (trap …)) (_ (trap …)))`: inference types it `Never`, and
+        // the emit must NOT decline "match result type has no machine representation". Diverges iff ALL
+        // arm bodies diverge (a scalar/list match's `arms`, a sum match's decision-tree leaves). An empty
+        // `arms` (a zero-arm match on a `Never` scrutinee) IS diverging — the scrutinee itself never
+        // returns; `Iterator::all` on an empty slice is `true`, which is correct here.
+        Core::Match { arms, .. } => {
+            let bodies: Vec<StructId> = arms.iter().map(|a| a.body).collect();
+            bodies.into_iter().all(|b| body_diverges(db, b))
+        }
+        Core::MatchList { arms, .. } => {
+            let bodies: Vec<StructId> = arms.iter().map(|a| a.body).collect();
+            bodies.into_iter().all(|b| body_diverges(db, b))
+        }
+        Core::MatchSum { root, .. } => sumcont_diverges(db, &root),
         _ => false,
+    }
+}
+
+/// Whether a sum-match decision-tree continuation PROVABLY diverges on every path — the [`SumCont`]
+/// companion of [`body_diverges`] for `Core::MatchSum`. A continuation diverges iff EVERY body it can
+/// reach diverges: a `Leaf` iff its body does; a `Guarded`/`LitTest` iff BOTH the taken branch (`body`/
+/// `then_`) AND the fall-through (`els`) diverge (either may be selected at run time); a `Switch` iff
+/// every arm's continuation diverges (each disc, plus the default). Used so an all-diverge sum match
+/// (`(match s ((Some _) (trap …)) ((None) (trap …)))`) emits an empty block + trailing `unreachable`
+/// rather than declining "sum match result type has no machine representation".
+fn sumcont_diverges(db: &mut Db, cont: &crate::core::SumCont) -> bool {
+    use crate::core::SumCont;
+    match cont {
+        SumCont::Leaf(body) => body_diverges(db, *body),
+        SumCont::Guarded { body, els, .. } => {
+            body_diverges(db, *body) && sumcont_diverges(db, els)
+        }
+        SumCont::LitTest { then_, els, .. } => {
+            sumcont_diverges(db, then_) && sumcont_diverges(db, els)
+        }
+        SumCont::Switch { arms, .. } => arms.iter().all(|a| sumcont_diverges(db, &a.cont)),
     }
 }
 
@@ -4728,10 +4764,17 @@ fn emit_tail(
         }
         // A `match` in tail position: each arm body is tail. Delegated with a tail-aware arm emitter.
         Core::Match { scrutinee, arms } => {
+            // A `Never` match (all arms diverge): empty block + trailing `unreachable` (see the tail
+            // `Core::If` arm). A genuinely unrepresentable non-diverging result still DECLINES.
+            let mut never_diverges = false;
             let block_ty = match type_of(db, id) {
                 Ty::Unit => BlockType::Empty,
                 other => match valtype_of(&other) {
                     Some(vt) => BlockType::Val(vt),
+                    None if body_diverges(db, id) => {
+                        never_diverges = true;
+                        BlockType::Empty
+                    }
                     None => {
                         return Err(Reject::decline(
                             "match result type has no machine representation",
@@ -4763,7 +4806,11 @@ fn emit_tail(
                 layout,
                 out,
                 TailPos::Tail(tl),
-            )
+            )?;
+            if never_diverges {
+                out.push(Lir::Unreachable);
+            }
+            Ok(())
         }
         // A LIST match in tail position: dispatch by length, each ARM BODY in tail position (a self-tail
         // call in a `(list …)` arm becomes a `return_call` / loop iteration). Mirrors the scalar `Match`
@@ -4771,10 +4818,17 @@ fn emit_tail(
         // Without this, `MatchList` fell through to non-tail `emit`, so a tail list fold never looped
         // (`(sa xs acc) = (match xs ((list) acc) ((list x .. rest) (sa rest (+ acc x))))` stack-recursed).
         Core::MatchList { scrutinee, arms } => {
+            // A `Never` list match (all arms diverge): empty block + trailing `unreachable`. A genuinely
+            // unrepresentable non-diverging result still DECLINES.
+            let mut never_diverges = false;
             let block_ty = match type_of(db, id) {
                 Ty::Unit => BlockType::Empty,
                 other => match valtype_of(&other) {
                     Some(vt) => BlockType::Val(vt),
+                    None if body_diverges(db, id) => {
+                        never_diverges = true;
+                        BlockType::Empty
+                    }
                     None => {
                         return Err(Reject::decline(
                             "list match result type has no machine representation",
@@ -4802,7 +4856,11 @@ fn emit_tail(
                 layout,
                 out,
                 TailPos::Tail(tl),
-            )
+            )?;
+            if never_diverges {
+                out.push(Lir::Unreachable);
+            }
+            Ok(())
         }
         // A SUM match in tail position: dispatch on the discriminant decision tree, each LEAF/GUARDED body
         // in tail position (a self-tail-call in a `(Succ m) → (count m …)` arm becomes a `return_call` /
@@ -4812,10 +4870,17 @@ fn emit_tail(
         // `MatchSum` fell through to non-tail `emit`, so a tail-recursive sum consumer never looped (`(count
         // n acc) = (match n ((Zero) acc) ((Succ m) (count m (+ acc 1))))` stack-recursed).
         Core::MatchSum { scrutinee, root } => {
+            // A `Never` sum match (all decision-tree leaves diverge): empty block + trailing
+            // `unreachable`. A genuinely unrepresentable non-diverging result still DECLINES.
+            let mut never_diverges = false;
             let block_ty = match type_of(db, id) {
                 Ty::Unit => BlockType::Empty,
                 other => match valtype_of(&other) {
                     Some(vt) => BlockType::Val(vt),
+                    None if body_diverges(db, id) => {
+                        never_diverges = true;
+                        BlockType::Empty
+                    }
                     None => {
                         return Err(Reject::decline(
                             "sum match result type has no machine representation",
@@ -4872,7 +4937,11 @@ fn emit_tail(
                 layout,
                 out,
                 TailPos::Tail(tl),
-            )
+            )?;
+            if never_diverges {
+                out.push(Lir::Unreachable);
+            }
+            Ok(())
         }
         // Everything else in tail position is an ordinary value (no tail call inside it) — emit normally.
         _ => emit(db, id, slots, base, high, scratch_ty, layout, out),
@@ -8155,10 +8224,19 @@ fn emit(
         // unconditional tail (`else`). The scrutinee is a scalar, so re-pushing it per probe is a cheap
         // local reload — no naming needed.
         Core::Match { scrutinee, arms } => {
+            // A `Never` match (EVERY arm body diverges) has no valtype but yields no value on any path —
+            // emit an empty block, then a trailing `unreachable` for the enclosing (possibly value)
+            // position (same treatment as the both-diverge `Core::If`). A genuinely unrepresentable
+            // non-diverging result still DECLINES.
+            let mut never_diverges = false;
             let block_ty = match type_of(db, id) {
                 Ty::Unit => BlockType::Empty,
                 other => match valtype_of(&other) {
                     Some(vt) => BlockType::Val(vt),
+                    None if body_diverges(db, id) => {
+                        never_diverges = true;
+                        BlockType::Empty
+                    }
                     None => {
                         return Err(Reject::decline(
                             "match result type has no machine representation",
@@ -8174,7 +8252,11 @@ fn emit(
             emit_match_arms(
                 db, scrutinee, &arms, it, result_it, block_ty, slots, base, high, scratch_ty,
                 layout, out,
-            )
+            )?;
+            if never_diverges {
+                out.push(Lir::Unreachable);
+            }
+            Ok(())
         }
         // A sum MATCH → a chain of `if`s over `sum-disc(scrutinee)`. Each variant arm probes
         // `sum-disc(scrutinee) == disc` and takes its body on a match; a wildcard/binder arm (`disc:
@@ -8182,10 +8264,17 @@ fn emit(
         // per probe, cheap). A payload binder in a body reads `sum-payload(scrutinee)` on its own
         // (`Core::SumPayload`), so the arm dispatch needs only the disc.
         Core::MatchSum { scrutinee, root } => {
+            // A `Never` sum match (all decision-tree leaves diverge): empty block + trailing
+            // `unreachable`. A genuinely unrepresentable non-diverging result still DECLINES.
+            let mut never_diverges = false;
             let block_ty = match type_of(db, id) {
                 Ty::Unit => BlockType::Empty,
                 other => match valtype_of(&other) {
                     Some(vt) => BlockType::Val(vt),
+                    None if body_diverges(db, id) => {
+                        never_diverges = true;
+                        BlockType::Empty
+                    }
                     None => {
                         return Err(Reject::decline(
                             "sum match result type has no machine representation",
@@ -8254,7 +8343,11 @@ fn emit(
                 layout,
                 out,
                 TailPos::NonTail,
-            )
+            )?;
+            if never_diverges {
+                out.push(Lir::Unreachable);
+            }
+            Ok(())
         }
         // A runtime LIST match → dispatch by LENGTH. Read `vec-len(scrutinee)` once, then a chain of
         // `if (len <cond>) then <arm-body> else …`. Each arm's element/rest binders read the list on their
@@ -8262,10 +8355,17 @@ fn emit(
         // into a fresh i32 slot so every arm-body binder re-reads the SAME handle. Exhaustiveness (checked
         // in `lower`) guarantees the last arm is a catch-all, so the innermost `else` runs unconditionally.
         Core::MatchList { scrutinee, arms } => {
+            // A `Never` list match (all arms diverge): empty block + trailing `unreachable`. A genuinely
+            // unrepresentable non-diverging result still DECLINES.
+            let mut never_diverges = false;
             let block_ty = match type_of(db, id) {
                 Ty::Unit => BlockType::Empty,
                 other => match valtype_of(&other) {
                     Some(vt) => BlockType::Val(vt),
+                    None if body_diverges(db, id) => {
+                        never_diverges = true;
+                        BlockType::Empty
+                    }
                     None => {
                         return Err(Reject::decline(
                             "list match result type has no machine representation",
@@ -8293,7 +8393,11 @@ fn emit(
                 layout,
                 out,
                 TailPos::NonTail,
-            )
+            )?;
+            if never_diverges {
+                out.push(Lir::Unreachable);
+            }
+            Ok(())
         }
         // A parameter reference — read its local slot. The slot was assigned in `select_function`; a
         // reference to a binder with no slot is either a `Unit` param (elided from the signature — Unit

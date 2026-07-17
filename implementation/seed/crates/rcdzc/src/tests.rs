@@ -31576,6 +31576,43 @@ mod match_engine {
     }
 
     #[test]
+    fn an_all_arms_diverge_match_emits_an_empty_block_not_a_decline() {
+        // The MATCH twin of the both-diverge `if` (breaker): a match whose EVERY arm body diverges is
+        // `Never` (cdz check passes), but the emit DECLINED "match result type has no machine
+        // representation". Now `body_diverges` recurses into `Core::Match`/`MatchList`/`MatchSum` (all arm
+        // bodies / all decision-tree leaves diverge) and the six match block_ty sites emit an empty block
+        // + trailing `unreachable`. A scalar all-diverge match compiles and TRAPS on any scrutinee. (The
+        // sum/list all-diverge shapes also compile + validate — exercised by the standalone compile probes;
+        // a runtime-linked assertion for those needs the heap linker, out of this bare harness's scope.)
+        let src = "(module m (def (main (: n Int64)) (match n (0 (trap \"z\")) (_ (trap \"o\")))) \
+                   (export main))";
+        let bytes = component(src);
+        for n in [5i64, 0i64] {
+            assert!(
+                call_traps(&bytes, "main", &[wasmtime::component::Val::S64(n)]),
+                "an all-diverge match (n={n}) must emit a function that TRAPS, not decline"
+            );
+        }
+    }
+
+    #[test]
+    fn a_nested_all_diverge_match_in_value_position_yields_the_outer_value() {
+        // The value-position witness for the match twin: `(if (> n 0) 1 (match n (0 (trap)) (_ (trap))))`
+        // — the all-diverge match is the outer `if`'s i64 else-arm. Its empty block + trailing
+        // `unreachable` supplies the outer slot. n>0 returns 1; n<=0 forces the match, which traps.
+        let src = "(module m (def (main (: n Int64)) \
+                   (if (> n 0) 1 (match n (0 (trap \"z\")) (_ (trap \"o\"))))) (export main))";
+        let bytes = component(src);
+        use wasmtime::component::Val;
+        let got: i64 = run_returns_with(&bytes, "main", &[Val::S64(5)]);
+        assert_eq!(got, 1, "n>0 selects the concrete 1 (the diverging match is not taken)");
+        assert!(
+            call_traps(&bytes, "main", &[Val::S64(0)]),
+            "n=0 forces the all-diverge match, which must TRAP"
+        );
+    }
+
+    #[test]
     fn a_body_that_traps_through_a_seq_emits_a_trapping_function() {
         // The divergence detection peers THROUGH a `Core::Seq` (an effect-statement run then a value) to
         // its trapping tail — the shape a unit-test FAILURE path takes: run a `report`/`log` host effect
