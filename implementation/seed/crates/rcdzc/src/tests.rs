@@ -21283,6 +21283,41 @@ mod match_engine {
     }
 
     #[test]
+    fn a_module_qualified_call_of_an_unannotated_param_member_compiles_shallowly() {
+        // P0 (operator, browser): a 3-line module program `(module Temp (def (c-to-f c) …)) (Temp.c-to-f 100)`
+        // COMPILES CLEAN natively but recursed ~1024 deep in inference — `type_of` of the unannotated param
+        // `c` demanded `lambda_param_ty_from_context` → `expected_arrow_for_lambda` on `c-to-f`'s lambda,
+        // whose context-recovery (path 3/3b) re-read the SAME param's `type_of`, cycling until the shared
+        // `descent_depth` hit `DESCENT_DEPTH_LIMIT` and returned `Any`. Those ~1024 frames terminate on the
+        // 64 MB compiler thread but OVERFLOW the smaller browser/Web-worker compile stack (a RangeError /
+        // "out of bounds" on a 3-line program). The `arrow_lambdas_in_progress` re-entry guard breaks the
+        // cycle at depth ~2 — the recovery recovers NOTHING on re-entry, the param types `Any` and the body
+        // grounds it (`c * 9 / 5 + 32` is Int64), so the program both compiles AND runs. This asserts the
+        // RESULT (100 * 9 / 5 + 32 = 212); the shallow-compile property is what the guard restores.
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module top (def (main) (do (module Temp (def (c-to-f c) (+ (/ (* c 9) 5) 32)) (export c-to-f)) ((. Temp c-to-f) 100))) (export main))"
+                ),
+                "main"
+            ),
+            212
+        );
+        // The Circle repro shape — a module member reading a sibling CONSTANT (`pi`) and multiplying an
+        // unannotated param, same module-qualified-call recursion root (different browser symptom, OOB).
+        // area(10) = 3 * (10 * 10) = 300.
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module top (def (main) (do (module Circle (def pi 3) (def (area r) (* pi (* r r))) (export area)) ((. Circle area) 10))) (export main))"
+                ),
+                "main"
+            ),
+            300
+        );
+    }
+
+    #[test]
     fn constant_symbol_of_equality_and_to_string_fold() {
         // 17-symbols inc 1: `Symbol.of` interns a String → Symbol (content-derived identity), and equality
         // is String equality lifted through the Symbol tag. A CONSTANT symbol reuses the underlying
