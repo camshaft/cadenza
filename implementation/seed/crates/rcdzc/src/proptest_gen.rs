@@ -208,27 +208,31 @@ fn rewrite_ensures_stacked_tests(ast: &mut Arenas, items: &[StructId]) {
         if sig_names_it {
             continue;
         }
-        // Build `(let ((it BODY)) (if Q unit (trap "…")))`. The postcondition must TRAP when false — an
+        // Build `(let ((it BODY)) (if Q it (trap "…")))`. The postcondition must TRAP when false — an
         // `@test` PASSES by returning and FAILS by trapping (a bare Bool `false` return would count as a
-        // PASS), so `Q` is wrapped in the `(if Q unit (trap msg))` idiom (the same trap-on-false shape the
-        // guide's assert prelude uses). `it` is bound to the def's own `BODY` (its result) so the predicate
-        // reads the value the def computes.
+        // PASS), so `Q` is wrapped in the `(if Q it (trap msg))` idiom (the trap-on-false shape the guide's
+        // assert prelude uses). The pass branch returns `it` — the def's OWN VALUE — NOT `unit`, so a def
+        // carrying both `@test` and `@ensures` stays VALUE-TRANSPARENT when called as an ordinary function
+        // (breaker's ruling: a bare `@test` and a bare `@ensures` both return the def's value, so the stacked
+        // form must too — a returning test passes regardless of the returned value, so this is fully
+        // compatible with the test harness). `it` is bound to the def's `BODY` (its result), read by both `Q`
+        // and the pass branch.
         let new_body = {
             let it_nm = name(ast, "it");
             let binder = push_list(ast, vec![it_nm, body]);
             let binds_list = push_list(ast, vec![binder]);
             let let_head = name(ast, "let");
-            // `(if Q unit (trap "@ensures failed"))`
+            // `(if Q it (trap "@ensures failed"))` — pass returns `it` (value-transparent), fail traps.
             let check = {
                 let if_head = name(ast, "if");
-                let unit_nm = name(ast, "unit");
+                let it_use = name(ast, "it");
                 let trap_call = {
                     let trap_head = name(ast, "trap");
                     let msg =
                         push_atom(ast, Leaf::Str("@ensures postcondition failed".to_string()));
                     push_list(ast, vec![trap_head, msg])
                 };
-                push_list(ast, vec![if_head, pred, unit_nm, trap_call])
+                push_list(ast, vec![if_head, pred, it_use, trap_call])
             };
             push_list(ast, vec![let_head, binds_list, check])
         };
@@ -987,10 +991,11 @@ mod tests {
         );
     }
 
-    /// The TESTED tier: a `@test`-stacked `@ensures` rewrites the def body to `(let ((it BODY)) (if Q unit
-    /// (trap …)))`, so the postcondition `Q` is the test oracle over the def's result. Pins that the rewrite
-    /// fires (a scalar-param `@ensures` test stays a test — its body now carries the `let it` + `trap`) and
-    /// that a BARE `@ensures` (no `@test`) is left untouched.
+    /// The TESTED tier: a `@test`-stacked `@ensures` rewrites the def body to `(let ((it BODY)) (if Q it
+    /// (trap …)))`, so the postcondition `Q` is the test oracle over the def's result — and the pass branch
+    /// returns `it` (the def's VALUE), keeping the def value-transparent when called normally (breaker's
+    /// ruling). Pins that the rewrite fires (a scalar-param `@ensures` test stays a test — its body now
+    /// carries the `let it` + `trap`) and that a BARE `@ensures` (no `@test`) is left untouched.
     #[test]
     fn a_test_stacked_ensures_rewrites_the_body_to_check_the_postcondition() {
         let mut ast =
