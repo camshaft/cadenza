@@ -320,6 +320,57 @@ export const EXAMPLES: Example[] = [
   (export main))`,
   },
   {
+    // Shows off: exponential recursion made concrete — the minimum moves to solve Tower of Hanoi with
+    // n disks is 2^n - 1 (move n-1, move the big disk, move n-1 back). hanoi(10) = 1023.
+    name: "Tower of Hanoi (move count)",
+    surface: "sexpr",
+    source: `(module m
+  ; Moves to solve Tower of Hanoi: solve n-1, move the largest disk, solve n-1 again.
+  ; This is exactly 2^n - 1.
+  (def (hanoi n)
+    (if (= n 0)
+        0
+        (+ (+ (hanoi (- n 1)) 1) (hanoi (- n 1)))))
+  (def (main) (hanoi 10))
+  (export main))`,
+  },
+  {
+    // Shows off: bit-twiddling with plain integer arithmetic — count the 1-bits (population count) of a
+    // number by repeatedly taking n mod 2 and dividing by 2. 2730 = 0b101010101010 has 6 one-bits.
+    name: "Population count (bits)",
+    surface: "sexpr",
+    source: `(module m
+  ; Count the 1-bits of n: the low bit is n mod 2; shift right by dividing by 2.
+  (def (popcount n acc)
+    (if (= n 0)
+        acc
+        (popcount (/ n 2) (+ acc (% n 2)))))
+  (def (main) (popcount 2730 0))
+  (export main))`,
+  },
+  {
+    // Shows off: a classic list transform — run-length encoding. Walk the list tracking the current
+    // run; emit a (value, count) tuple when it ends. [1 1 1 2 3 3] => [(1,3) (2,1) (3,2)]. The empty
+    // accumulator is annotated so its element type is fixed before any element is pushed.
+    name: "Run-length encoding",
+    surface: "sexpr",
+    source: `(module m
+  (def (at xs i) (match (List.at xs i) ((Some v) v) ((None) 0)))
+  ; Walk the list carrying the current value + its running count; emit on a change.
+  (def (go xs i n cur cnt acc)
+    (if (= i n)
+        (List.push acc (tuple cur cnt))
+        (let ((x (at xs i)))
+          (if (= x cur)
+              (go xs (+ i 1) n cur (+ cnt 1) acc)
+              (go xs (+ i 1) n x 1 (List.push acc (tuple cur cnt)))))))
+  (def (main)
+    (let ((xs (list 1 1 1 2 3 3)))
+      ; Annotate the empty seed so its element type is known before the first push.
+      (go xs 1 (List.len xs) (at xs 0) 1 (: (list) (List (Tuple Int64 Int64))))))
+  (export main))`,
+  },
+  {
     name: "A type error (see the squiggle)",
     surface: "sexpr",
     source: `(module m
