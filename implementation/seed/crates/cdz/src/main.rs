@@ -6794,6 +6794,59 @@ mod tests {
         assert_eq!(program_name(""), "main");
     }
 
+    #[test]
+    fn resolve_opt_level_precedence_follows_flag_then_manifest_then_release_then_default() {
+        use rcdzc::OptLevel;
+        let mp = std::path::Path::new("Project.cdz");
+        // The FLAG wins over everything (manifest + release both present, flag still decides).
+        assert_eq!(
+            resolve_opt_level_precedence(Some("O3"), true, Some("O0"), mp).unwrap(),
+            OptLevel::O3,
+            "an explicit --opt-level wins over the manifest AND --release"
+        );
+        // No flag → the MANIFEST wins over --release.
+        assert_eq!(
+            resolve_opt_level_precedence(None, true, Some("O0"), mp).unwrap(),
+            OptLevel::O0,
+            "the manifest opt-level wins over --release"
+        );
+        // No flag, no manifest, --release → O2.
+        assert_eq!(
+            resolve_opt_level_precedence(None, true, None, mp).unwrap(),
+            OptLevel::O2,
+            "--release with nothing else is O2"
+        );
+        // Nothing at all → the default (O1).
+        assert_eq!(
+            resolve_opt_level_precedence(None, false, None, mp).unwrap(),
+            OptLevel::default(),
+            "no flag, no manifest, no --release → the default tier"
+        );
+        assert_eq!(
+            OptLevel::default(),
+            OptLevel::O1,
+            "the documented default is O1"
+        );
+    }
+
+    #[test]
+    fn resolve_opt_level_precedence_errors_name_the_source_of_a_bad_level() {
+        let mp = std::path::Path::new("proj/Project.cdz");
+        // A malformed FLAG level errors, and the message names `--opt-level` so a typo is a clear failure.
+        let flag_err = resolve_opt_level_precedence(Some("Oops"), false, None, mp).unwrap_err();
+        assert!(
+            flag_err.contains("--opt-level") && flag_err.contains("Oops"),
+            "a bad flag level names the flag + the value: {flag_err}"
+        );
+        // A malformed MANIFEST level errors naming the manifest PATH (not the flag), so the fault is
+        // attributed to the right source.
+        let man_err = resolve_opt_level_precedence(None, false, Some("O9"), mp).unwrap_err();
+        assert!(
+            man_err.contains("proj/Project.cdz") && man_err.contains("O9"),
+            "a bad manifest level names the manifest path + the value: {man_err}"
+        );
+    }
+
     /// A throwaway directory unique to `tag`, created empty. The caller populates + removes it.
     fn tmp(tag: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("cdz-expand-{tag}-{}", std::process::id()));
