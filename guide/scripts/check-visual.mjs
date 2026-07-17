@@ -83,6 +83,26 @@ const ROUTES = [
     },
   },
   {
+    // /cad on MOBILE — the 3D preview pane must be LARGE (the operator flagged it rendering as a tiny
+    // box). On a stacked (flex-col) mobile layout the preview gets a `min-h-[60vh]` floor so it fills
+    // most of the section; this guards that it stays a meaningful fraction of the viewport (not the
+    // small flex-split box it collapsed to before). Mobile-only; we don't wait for the heavy mesh here
+    // (the desktop cases cover canvas rendering) — we measure the PANE, which is sized by CSS regardless.
+    path: "/cad",
+    waitFor: "button",
+    label: "cad (mobile preview size)",
+    surface: "sexpr",
+    onlyViewports: ["mobile-390"],
+    async assert(page, check, label) {
+      // The preview pane is the dark (bg-slate-950) panel in the editor/preview split.
+      const box = await page.locator("div.bg-slate-950").first().boundingBox().catch(() => null);
+      const vh = page.viewportSize()?.height ?? 844;
+      const pct = box ? Math.round((box.height / vh) * 100) : 0;
+      // 60vh is the floor; allow slack for rounding/borders — anything ≥ 50% of the viewport is "big".
+      check(pct >= 50, `${label}: preview pane fills the mobile viewport (${pct}% of ${vh}px, want ≥50%)`);
+    },
+  },
+  {
     // /notebook must (1) run its starter cell to a computed value on first load and (2) reactively
     // recompute when a widget changes — the novel runtime-input mechanism. A regression (a broken cell
     // assembly, a dead reactive edge) leaves an error string / a frozen output. Notebook is surface-pinned
