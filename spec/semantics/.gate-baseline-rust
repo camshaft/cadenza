@@ -3364,6 +3364,7 @@ todo	a NESTED Tuple arg ALONGSIDE a flat Tuple arg
 todo	a NESTED mixed ARG (a tuple containing a record) crosses the direct-call boundary
 todo	a NESTED-tuple ARG composes with a NESTED-tuple RESULT
 todo	a NOMINAL-over-tuple ARG crosses as the underlying tuple (direct-call)
+todo	a Quantity @param generates a Qty-result accessor the host supplies as a scalar magnitude
 todo	a RECORD closure ARG among scalars crosses the direct-call boundary (scalar result)
 todo	a RECORD closure ARG on the MULTI-EXPORT path
 todo	a RECORD closure ARG whose fields are NOT in sorted source order
