@@ -834,6 +834,14 @@ fn emit_component_package(
         return Err(Ran::BadArtifact("could not write the entry file".into()));
     }
     for (name, prog) in modules {
+        // Validate the module name is a single safe path component (Copilot PR#517) — the wasm twin of the
+        // guard in `emit_rust_package`: a `/`/`\`/`..` name would escape the temp dir.
+        if !is_safe_module_name(name) {
+            let _ = std::fs::remove_dir_all(&dir);
+            return Err(Ran::BadArtifact(format!(
+                "unsafe module name {name:?} (not a single path component) — cannot form a package file"
+            )));
+        }
         let p = dir.join(format!("{name}.sexp"));
         if write(&p, prog).is_err() {
             let _ = std::fs::remove_dir_all(&dir);
@@ -899,6 +907,14 @@ fn emit_rust_single(tools: &Tools, program: &str, rust_target: &str) -> Result<S
     Ok(String::from_utf8_lossy(&rcdzc_out.stdout).to_string())
 }
 
+/// Whether `name` is a single SAFE path component usable as a `<name>.sexp` filename — non-empty, no path
+/// separator (`/` or `\`), and not a `.`/`..` traversal component. Used to reject a module name that would
+/// make `dir.join(name)` escape the package temp dir (Copilot PR#517). Deliberately strict (a corpus
+/// module target is a plain identifier-like string); a name that trips this fails the trial cleanly.
+fn is_safe_module_name(name: &str) -> bool {
+    !name.is_empty() && name != "." && name != ".." && !name.contains('/') && !name.contains('\\')
+}
+
 /// Emit Rust source for a PACKAGE (entry + imported libraries) — the rust-target twin of
 /// [`emit_component_package`]. Writes the entry as `main.sexp` and each library `(name, prog)` as
 /// `<name>.sexp` into a fresh unique temp dir, then runs `cdz compile <lib>.sexp… main.sexp --entry main
@@ -929,6 +945,17 @@ fn emit_rust_package(
         return Err(Ran::BadArtifact("could not write the entry file".into()));
     }
     for (name, prog) in modules {
+        // VALIDATE the module name is a single SAFE path component before using it as a filename (Copilot
+        // PR#517): a name with a path separator (`/`, `\`) or a `..` component would make `dir.join(name)`
+        // escape the temp dir (writing `<name>.sexp` OUTSIDE it) or imply subdirectories that fail to
+        // create. The input is corpus-controlled (a `(module "name" …)` target — not external), so this is
+        // a robustness guard, not a security boundary; fail cleanly rather than write astray.
+        if !is_safe_module_name(name) {
+            let _ = std::fs::remove_dir_all(&dir);
+            return Err(Ran::BadArtifact(format!(
+                "unsafe module name {name:?} (not a single path component) — cannot form a package file"
+            )));
+        }
         let p = dir.join(format!("{name}.sexp"));
         if std::fs::write(&p, prog).is_err() {
             let _ = std::fs::remove_dir_all(&dir);
@@ -4395,5 +4422,22 @@ mod trap_grading_tests {
             rust_call_arg("(list (tuple 1 2) (tuple 3 4))"),
             "vec![(1, 2), (3, 4)]"
         );
+    }
+
+    #[test]
+    fn is_safe_module_name_rejects_path_traversal_and_separators() {
+        // Copilot PR#517: a package module name is used as a `<name>.sexp` filename, so it must be a single
+        // safe path component or `dir.join` could escape the temp dir. Plain identifier-like names pass;
+        // separators (`/`, `\`), `.`/`..` traversal, and empty are rejected.
+        assert!(is_safe_module_name("lib"));
+        assert!(is_safe_module_name("my-lib"));
+        assert!(is_safe_module_name("mod_2"));
+        assert!(!is_safe_module_name(""));
+        assert!(!is_safe_module_name("."));
+        assert!(!is_safe_module_name(".."));
+        assert!(!is_safe_module_name("../evil"));
+        assert!(!is_safe_module_name("a/b"));
+        assert!(!is_safe_module_name("a\\b"));
+        assert!(!is_safe_module_name("/etc/passwd"));
     }
 }
