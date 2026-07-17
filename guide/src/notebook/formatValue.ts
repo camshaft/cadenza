@@ -22,7 +22,7 @@ function head(n: Node): string | null {
 /// Exported so table CELLS render the same friendly form (a quantity in a table shows `5 meter`, not
 /// `(quantity 5 meter)`) — one display path shared with the value/formula renderers.
 export function displayNode(n: Node): string {
-  if (isAtom(n)) return unquoteAtom(n.atom);
+  if (isAtom(n)) return displayAtom(n.atom);
   if (head(n) === "quantity") {
     // (quantity <value> <unit>) → "<value> <unit>"; be lenient about extra/missing fields.
     const parts = (n as { list: Node[] }).list.slice(1).map(displayNode);
@@ -31,10 +31,20 @@ export function displayNode(n: Node): string {
   return compact(n);
 }
 
+/// Render a single atom for friendly display: unquote a string, and collapse a WHOLE-valued rational
+/// `n/1` (Cadenza canonicalizes integer-valued rationals to `n/1`) to its plain integer (`4/1` → `4`,
+/// `-4/1` → `-4`), so a rational-typed whole number reads the same in a value / table cell as it does in
+/// a formula cell (which already collapses `n/1`). A genuine fraction (den ≠ 1) is left as `n/d`.
+function displayAtom(atom: string): string {
+  const unquoted = unquoteAtom(atom);
+  const rat = /^(-?)(\d+)\/1$/.exec(unquoted);
+  return rat ? `${rat[1]}${rat[2]}` : unquoted;
+}
+
 /// A compact one-line canonical render of an arbitrary node (for a compound value the friendly path
 /// doesn't specialize).
 function compact(n: Node): string {
-  if (isAtom(n)) return unquoteAtom(n.atom);
+  if (isAtom(n)) return displayAtom(n.atom);
   return "(" + n.list.map(compact).join(" ") + ")";
 }
 
