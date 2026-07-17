@@ -1538,18 +1538,33 @@ fn rust_call_arg(val: &str) -> String {
             }
         }
         "record" => {
-            // Each field is a `(name value)` pair; sort by NAME to match the backend's sorted-key tuple.
-            let mut fields: Vec<(String, String)> = split_top_level(rest)
-                .iter()
-                .filter_map(|f| {
-                    let f = f.trim();
-                    let body = f.strip_prefix('(')?.strip_suffix(')')?.trim();
-                    let (name, fval) = body.split_once(char::is_whitespace)?;
-                    Some((name.trim().to_string(), rust_call_arg(fval)))
-                })
-                .collect();
-            fields.sort_by(|a, b| a.0.cmp(&b.0));
-            let elems: Vec<String> = fields.into_iter().map(|(_, v)| v).collect();
+            // A record value crosses in the SAME positional Rust tuple the backend emits (fields in canonical
+            // SORTED-key order). The corpus writes a record arg in one of TWO surface forms:
+            //  - NAMED-pair form `(record (a 3) (b 4))` — each element is a `(name value)` pair; sort by NAME
+            //    so the positional tuple matches the backend's sorted-key field order.
+            //  - POSITIONAL value form `(record 3 4)` — bare values ALREADY in field order (the `record` head
+            //    is dropped by cdz-run's tuple-literal parser; several DIRECT-CALL record-arg cases use this).
+            // Disambiguate by whether EVERY element is parenthesized: a named-pair element is `(a 3)`, a
+            // positional scalar element is a bare `3`. (A positional element that is itself a compound would
+            // also be parenthesized; the record-arg corpus is scalar-field, so this split is exact there.)
+            let raw = split_top_level(rest);
+            let all_pairs = !raw.is_empty() && raw.iter().all(|f| f.trim().starts_with('('));
+            let elems: Vec<String> = if all_pairs {
+                let mut fields: Vec<(String, String)> = raw
+                    .iter()
+                    .filter_map(|f| {
+                        let f = f.trim();
+                        let body = f.strip_prefix('(')?.strip_suffix(')')?.trim();
+                        let (name, fval) = body.split_once(char::is_whitespace)?;
+                        Some((name.trim().to_string(), rust_call_arg(fval)))
+                    })
+                    .collect();
+                fields.sort_by(|a, b| a.0.cmp(&b.0));
+                fields.into_iter().map(|(_, v)| v).collect()
+            } else {
+                // Positional value form — the bare values are already in field order.
+                raw.iter().map(|e| rust_call_arg(e)).collect()
+            };
             if elems.len() == 1 {
                 format!("({},)", elems[0])
             } else {
