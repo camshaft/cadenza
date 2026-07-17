@@ -2731,6 +2731,119 @@ mod tests {
         Uri::from_str("file:///t.cdz").unwrap()
     }
 
+    /// A `Server` wired to an in-memory connection, plus the CLIENT end so a test can drain the
+    /// notifications the server publishes (e.g. `publishDiagnostics` via `client.receiver`). Drives the
+    /// real notification dispatch (`handle_notification`), not just the pure helpers — so it exercises the
+    /// didOpen/didChange wiring end to end.
+    fn memory_server() -> (Server, Connection) {
+        let (server_conn, client_conn) = Connection::memory();
+        (Server::new(server_conn), client_conn)
+    }
+
+    /// Build a `didChange` notification with a single ranged content change over `[(l0,c0)..(l1,c1))`.
+    fn did_change_note(uri: &Uri, l0: u32, c0: u32, l1: u32, c1: u32, text: &str) -> Notification {
+        let params = DidChangeTextDocumentParams {
+            text_document: lsp_types::VersionedTextDocumentIdentifier {
+                uri: uri.clone(),
+                version: 0,
+            },
+            content_changes: vec![ranged_change(l0, c0, l1, c1, text)],
+        };
+        Notification::new(
+            DidChangeTextDocument::METHOD.to_string(),
+            serde_json::to_value(params).unwrap(),
+        )
+    }
+
+    /// Build a `didOpen` notification for `text` at `uri`.
+    fn did_open_note(uri: &Uri, text: &str) -> Notification {
+        let params = DidOpenTextDocumentParams {
+            text_document: lsp_types::TextDocumentItem {
+                uri: uri.clone(),
+                language_id: "cadenza".to_string(),
+                version: 0,
+                text: text.to_string(),
+            },
+        };
+        Notification::new(
+            DidOpenTextDocument::METHOD.to_string(),
+            serde_json::to_value(params).unwrap(),
+        )
+    }
+
+    #[test]
+    fn capabilities_advertise_incremental_sync() {
+        // The server must advertise INCREMENTAL text-document sync (not FULL) so clients send only the
+        // changed ranges — the wire contract the `apply_content_change` splice path depends on. Assert on
+        // the serialized capabilities (exactly what the client reads).
+        let value = serde_json::to_value(capabilities()).expect("serializes");
+        // `textDocumentSync` serializes to the numeric SyncKind: INCREMENTAL == 2 (FULL == 1, NONE == 0).
+        assert_eq!(
+            value.get("textDocumentSync").and_then(|v| v.as_u64()),
+            Some(2),
+            "the server must advertise INCREMENTAL (2) text-document sync: {value}"
+        );
+    }
+
+    #[test]
+    fn did_change_applies_incremental_edits_through_the_handler() {
+        // End-to-end through the real notification dispatch: open a document, then send a SEQUENCE of
+        // incremental `didChange` edits, and confirm the server's in-memory buffer ends in the spliced
+        // state a subsequent query would read. This pins the didChange HANDLER wiring (each change applied
+        // in order to the live buffer), not just the `apply_content_change` helper in isolation.
+        let (mut server, client) = memory_server();
+        let uri = test_uri();
+        // Open `def main = 1` (a clean nullary def).
+        server
+            .handle_notification(did_open_note(&uri, "def main = 1"))
+            .expect("didOpen dispatches");
+        // Edit 1: replace the `1` (col 11..12) with `2` → `def main = 2`.
+        server
+            .handle_notification(did_change_note(&uri, 0, 11, 0, 12, "2"))
+            .expect("didChange 1 dispatches");
+        // Edit 2: insert ` + 3` at end (col 12) → `def main = 2 + 3`.
+        server
+            .handle_notification(did_change_note(&uri, 0, 12, 0, 12, " + 3"))
+            .expect("didChange 2 dispatches");
+        assert_eq!(
+            server.docs.get(&uri).map(|d| d.text.as_str()),
+            Some("def main = 2 + 3"),
+            "the incremental edits splice into the live buffer in order"
+        );
+        // Each open/change publishes diagnostics — drain the client end and confirm we got at least one
+        // `publishDiagnostics` (the wiring reaches the transport), and that the final buffer is clean
+        // (no diagnostics on the last publish).
+        let mut last_diags: Option<usize> = None;
+        while let Ok(Message::Notification(n)) = client.receiver.try_recv() {
+            if n.method == PublishDiagnostics::METHOD {
+                let p: PublishDiagnosticsParams = serde_json::from_value(n.params).unwrap();
+                last_diags = Some(p.diagnostics.len());
+            }
+        }
+        assert_eq!(
+            last_diags,
+            Some(0),
+            "the final `def main = 2 + 3` is clean → the last publishDiagnostics carries zero diagnostics"
+        );
+    }
+
+    #[test]
+    fn did_change_before_open_starts_from_an_empty_buffer() {
+        // A `didChange` for a URI the server has not seen (a change before an open — shouldn't happen per
+        // the protocol, but a robust server must not drop it or panic). The handler starts from an empty
+        // buffer, so an insertion-at-origin change becomes the whole content. Total, never a panic.
+        let (mut server, _client) = memory_server();
+        let uri = test_uri();
+        server
+            .handle_notification(did_change_note(&uri, 0, 0, 0, 0, "def main = 7"))
+            .expect("a didChange before open is handled, not dropped");
+        assert_eq!(
+            server.docs.get(&uri).map(|d| d.text.as_str()),
+            Some("def main = 7"),
+            "a pre-open change applies against an empty base rather than being lost"
+        );
+    }
+
     /// The line/character of a `Position`, as a tuple, for terse assertions.
     fn lc(p: Position) -> (u32, u32) {
         (p.line, p.character)

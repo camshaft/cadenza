@@ -2316,7 +2316,11 @@ fn emit_arith(
             // Grounding here mirrors `Machine::of` so BOTH backends make the identical decision. (For a
             // concrete narrow/wide type `it` is already ground, so this is a no-op on the common path.)
             let grounded = crate::ty::IntTy::fixed(it.ground_signed(), it.ground_width());
-            if crate::lower::arith_provably_in_range(db, op, lhs, rhs, grounded) {
+            // Consult the both-backend elision DECISION (`provably_no_overflow` = range analysis OR a
+            // discharged proof), not the bare predicate — so a verification-licensed node elides here too
+            // once v-verification's b3 fills `discharged_no_overflow`. Behavior-neutral today (the stub
+            // returns false, so this ≡ `arith_provably_in_range` alone).
+            if crate::lower::provably_no_overflow(db, op, lhs, rhs, grounded, id) {
                 let wrapping = match op {
                     Prim::Add => "wrapping_add",
                     Prim::Sub => "wrapping_sub",

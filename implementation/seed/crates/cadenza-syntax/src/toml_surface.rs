@@ -991,6 +991,51 @@ mod tests {
     }
 
     #[test]
+    fn a_generated_toml_document_survives_the_binary_codec_byte_exact() {
+        // TOML stores its DECOR (comments, blank lines, each scalar's raw spelling, key/table order) in
+        // the arena so an unmutated doc round-trips BYTE-EXACT. The binary codec is the canonical STORED
+        // form, so it must preserve that decor-in-arena faithfully — `cdz convert doc.toml --to binary`
+        // then back must reproduce the source byte-for-byte, not just structurally. `toml_to_binary_round
+        // _trips` pins ONE hand doc; this sweeps it: for random well-formed TOML, read → encode → decode
+        // is structurally identical AND printing the DECODED arena reproduces the source exactly. A codec
+        // that dropped or reordered a decor leaf would corrupt a stored config doc — the case the hand
+        // doc can't reach. Also asserts encode is deterministic (the bijection).
+        let seeds: [u64; 3] = [
+            0x7031_c0de_0bad_f00d,
+            0x5eed_beef_1234_abcd,
+            0xca7f_00d5_dead_10ff,
+        ];
+        let mut total = 0usize;
+        for &seed in &seeds {
+            let mut rng = Rng(seed);
+            for _ in 0..800 {
+                let src = gen_toml(&mut rng);
+                let a1 = read(&src).expect("generated TOML parses");
+                let bin = crate::codec::encode(&a1);
+                let a2 =
+                    crate::codec::decode(&bin).expect("a TOML arena decodes from its own encoding");
+                assert!(
+                    a1.structurally_eq(&a2),
+                    "TOML arena survives the binary round-trip for:\n{src}"
+                );
+                assert_eq!(
+                    bin,
+                    crate::codec::encode(&a2),
+                    "binary encode is deterministic for:\n{src}"
+                );
+                // The STRONG contract: the decoded arena re-prints byte-exact to the source.
+                assert_eq!(
+                    print(&a2, 100),
+                    src,
+                    "TOML is byte-exact through the binary codec for:\n{src}"
+                );
+                total += 1;
+            }
+        }
+        assert!(total >= 2000, "swept a meaningful codec space, got {total}");
+    }
+
+    #[test]
     fn toml_read_never_panics_on_arbitrary_input() {
         // `read` operates on UNTRUSTED config text; it must return a diagnostic, never panic. Sweep
         // random TOML-ish strings (structural chars + key/value bytes) plus truncated fragments. On a

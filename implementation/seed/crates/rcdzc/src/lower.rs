@@ -17551,6 +17551,41 @@ pub(crate) fn arith_provably_in_range(
     rlo >= tmin as i128 && rhi <= tmax as i128
 }
 
+/// Whether a discharged verification proof licenses eliding the overflow guard at Core node `id` — the
+/// proof-guided-elision oracle (v-verification × v-core-opt seam, DESIGN-verification-program-conditions.md
+/// §3, fork #3). A discharged `Thm` whose conclusion is `no-overflow@id` (and whose hypotheses are covered
+/// by the node's precondition, per v-verification's `licenses` match predicate) makes this return `true`,
+/// so [`provably_no_overflow`] elides the checked op's guard.
+///
+/// STUB (Slice-5): returns `false` unconditionally, so the disjunction in [`provably_no_overflow`] is
+/// exactly `arith_provably_in_range` — i.e. today's behavior, byte-identical on both backends. This lands
+/// the seam behavior-neutrally. v-verification's Inc-b b3 fills the real body: a compile-time `eval` of the
+/// discharge program for `id`, returning the licensing boolean and FAIL-CLOSED on an eval trap (an
+/// overflowing obligation traps during eval → return `false`, keep the guard). Editing this one function is
+/// the ENTIRE b3 change; the wrapper, the predicate, and both emit sites stay put — unforgeability still
+/// gates elision (no discharged `Thm` ⇒ `false` ⇒ the check stays; the default is always the check).
+pub(crate) fn discharged_no_overflow(_db: &mut Db, _id: StructId) -> bool {
+    false
+}
+
+/// The both-backend overflow-guard-elision decision for a checked `+`/`-`/`*` at Core node `id`: elide iff
+/// the result provably stays in the type by INTERVAL ANALYSIS ([`arith_provably_in_range`]) OR a discharged
+/// verification PROOF licenses it ([`discharged_no_overflow`]). This is the single Core-tier decision BOTH
+/// backends consult (rust `emit_arith`, wasm `emit_checked_arith_to`), so range analysis today and a
+/// discharged `Thm` next both elide uniformly with no emit change. The `OR` only ever makes MORE ops elide,
+/// and only on a real proof — so it is sound by the same argument as the predicate alone (default = check).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn provably_no_overflow(
+    db: &mut Db,
+    op: Prim,
+    lhs: StructId,
+    rhs: StructId,
+    result: crate::ty::IntTy,
+    id: StructId,
+) -> bool {
+    arith_provably_in_range(db, op, lhs, rhs, result) || discharged_no_overflow(db, id)
+}
+
 /// Whether `val << k` provably CANNOT overflow the type of `val` — so the shift's overflow round-trip
 /// guard (and narrow range-check) can be elided. A left shift is exact multiplication by `2^k`, so it
 /// overflows iff the interval `[vlo << k, vhi << k]` leaves the type's `[min, max]`. `<<` is monotone for
@@ -21554,6 +21589,65 @@ mod tests {
             core_of(&mut db, body),
             Core::ConstInt(IntValue::from_i64(6)),
             "a constant binding folds; nothing is named"
+        );
+    }
+
+    #[test]
+    fn discharged_no_overflow_is_a_false_stub_so_the_wrapper_is_behavior_neutral() {
+        // Slice-5 seam: `provably_no_overflow` = `arith_provably_in_range` OR `discharged_no_overflow`.
+        // Until v-verification's b3 fills the oracle body, `discharged_no_overflow` is a `false` STUB, so
+        // the disjunction MUST equal the predicate alone on every node — that is what makes the wrapper
+        // (which both backends now call in place of the bare predicate) byte-identical to today. Pin both:
+        // (1) the stub returns false for any id; (2) the wrapper's verdict == the predicate's, for BOTH a
+        // provably-in-range masked add AND a full-range add. If a future edit flips the stub or the
+        // disjunction without being the intended b3 body-fill, this catches the behavior change.
+        let mut db = Db::load(crate::testkit::parse(
+            "(module m (def (f (: a Int64) (: b Int64)) (+ (& a 15) (& b 15))) (export f))",
+        ));
+        let in_range = body_of(&mut db, "f");
+        let (op, lhs, rhs) = match core_of(&mut db, in_range) {
+            Core::Arith { op, lhs, rhs } => (op, lhs, rhs),
+            other => panic!("expected an Arith node, got {other:?}"),
+        };
+        let ty = crate::infer::type_of(&mut db, in_range);
+        let crate::ty::Ty::Int(it) = ty else {
+            panic!("arith node is not Int-typed")
+        };
+        let grounded = crate::ty::IntTy::fixed(it.ground_signed(), it.ground_width());
+        // (1) stub is false.
+        assert!(
+            !discharged_no_overflow(&mut db, in_range),
+            "discharged_no_overflow is a false stub until b3 fills it"
+        );
+        // (2) wrapper == predicate for the provably-in-range case (both true here: [0,15]+[0,15]=[0,30]).
+        let pred = arith_provably_in_range(&mut db, op, lhs, rhs, grounded);
+        let wrap = provably_no_overflow(&mut db, op, lhs, rhs, grounded, in_range);
+        assert!(pred, "masked add [0,30] is provably in range");
+        assert_eq!(
+            wrap, pred,
+            "wrapper == predicate while the stub is false (in-range case)"
+        );
+
+        // Full-range add: predicate false, wrapper must also be false (stub adds nothing).
+        let mut db2 = Db::load(crate::testkit::parse(
+            "(module m (def (g (: a Int64) (: b Int64)) (+ a b)) (export g))",
+        ));
+        let full = body_of(&mut db2, "g");
+        let (op2, lhs2, rhs2) = match core_of(&mut db2, full) {
+            Core::Arith { op, lhs, rhs } => (op, lhs, rhs),
+            other => panic!("expected an Arith node, got {other:?}"),
+        };
+        let ty2 = crate::infer::type_of(&mut db2, full);
+        let crate::ty::Ty::Int(it2) = ty2 else {
+            panic!("arith node is not Int-typed")
+        };
+        let grounded2 = crate::ty::IntTy::fixed(it2.ground_signed(), it2.ground_width());
+        let pred2 = arith_provably_in_range(&mut db2, op2, lhs2, rhs2, grounded2);
+        let wrap2 = provably_no_overflow(&mut db2, op2, lhs2, rhs2, grounded2, full);
+        assert!(!pred2, "full-range add is NOT provably in range");
+        assert_eq!(
+            wrap2, pred2,
+            "wrapper == predicate while the stub is false (full-range case)"
         );
     }
 }

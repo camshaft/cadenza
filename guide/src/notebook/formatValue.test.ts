@@ -17,6 +17,16 @@ test("a rational renders bare", () => {
   assert.equal(formatValue("(: 127/20 Rational)"), "127/20");
 });
 
+test("a whole-valued rational `n/1` collapses to a plain integer (matches formula-cell display)", () => {
+  assert.equal(formatValue("(: 4/1 Rational)"), "4");
+  assert.equal(formatValue("(: -4/1 Rational)"), "-4");
+  assert.equal(formatValue("9/1"), "9"); // bare, un-ascribed
+  // a quantity whose value is a whole rational collapses its value part too
+  assert.equal(formatValue("(: (quantity 4/1 meter) T)"), "4 meter");
+  // a genuine fraction (den != 1) is untouched
+  assert.equal(formatValue("(: 4/2 Rational)"), "4/2");
+});
+
 test("a string loses its quotes", () => {
   assert.equal(formatValue('(: "hello" String)'), "hello");
   assert.equal(formatValue('(: "a \\"q\\" b" String)'), 'a "q" b');

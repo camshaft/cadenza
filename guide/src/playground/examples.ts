@@ -73,6 +73,7 @@ export const EXAMPLES: Example[] = [
     source: `(module m
   (def (main) (tuple 1 2 3))
   (export main))`,
+    expected: "(: (tuple 1 2 3) (Tuple Int64 Int64 Int64))",
   },
   {
     name: "Lists",
@@ -187,6 +188,7 @@ export const EXAMPLES: Example[] = [
     (let ((xs (list 3 1 3 3 1 2)))
       (Map.to-list (tally xs 0 (List.len xs) (Map.empty)))))
   (export main))`,
+    expected: "(: (list (tuple 1 2) (tuple 2 1) (tuple 3 3)) (List (Tuple Int64 Int64)))",
   },
   {
     // Shows off: EXACT rational arithmetic — 1/2 + 1/3 + 1/6 is EXACTLY 1, with no floating-point
@@ -202,6 +204,7 @@ export const EXAMPLES: Example[] = [
     (def (sum) (+ (+ (/ 1 2) (/ 1 3)) (/ 1 6))))
   (def (main) ((. m sum) unit))
   (export main))`,
+    expected: "(: 1/1 Rational)",
   },
   {
     // Shows off: the classic Euclidean algorithm — recursion + modulo — and deriving LCM from it.
@@ -232,6 +235,7 @@ export const EXAMPLES: Example[] = [
           (b (Set.of (list 3 4 5 6))))
       (Set.to-list (sym-diff a b))))
   (export main))`,
+    expected: "(: (list 1 2 5 6) (List Int64))",
   },
   {
     // Shows off: a sum type as a functional STACK (cons list) with real push/pop via match, driving a
@@ -316,6 +320,7 @@ export const EXAMPLES: Example[] = [
   (def (gens xs k) (if (= k 0) xs (gens (step xs) (- k 1))))
   (def (main) (gens (list 0 0 0 0 0 0 0 1) 4))
   (export main))`,
+    expected: "(: (list 0 0 0 1 1 1 1 1) (List Int64))",
   },
   {
     // Shows off: records + a list of them = a little data pipeline. Aggregate a field (average age)
@@ -390,6 +395,7 @@ export const EXAMPLES: Example[] = [
       ; Annotate the empty seed so its element type is known before the first push.
       (go xs 1 (List.len xs) (at xs 0) 1 (: (list) (List (Tuple Int64 Int64))))))
   (export main))`,
+    expected: "(: (list (tuple 1 3) (tuple 2 1) (tuple 3 2)) (List (Tuple Int64 Int64)))",
   },
   {
     // Shows off: string work via bytes — check a word reads the same forwards and backwards by comparing
@@ -437,6 +443,7 @@ export const EXAMPLES: Example[] = [
     (let ((xs (list 1 2 3 4 5)))
       (rev xs (- (List.len xs) 1) (: (list) (List Int64)))))
   (export main))`,
+    expected: "(: (list 5 4 3 2 1) (List Int64))",
   },
   {
     // Shows off: metaprogramming — code is DATA. `quasiquote` builds an AST value without running it,

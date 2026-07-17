@@ -121,6 +121,41 @@ verify-blocks first (no surface change while the semantics bridge firms up), the
 - **2C. A refinement-type surface** (`Int64 where (> it 0)`). Most powerful, most invasive; defer — but
   note it shares the `it` binder with 2B, so the two stay consistent when it lands.
 
+### 2.1 The b4 elaboration algorithm — from `@requires`/`@ensures` to a kernel obligation
+The surface parses to `(@ (requires P) (@ (ensures Q) (def (f x…) body)))`. Elaboration (untrusted — a bug
+here yields "no proof / wrong proof", never an unsound elision) turns that into obligation `Term`s the
+kernel discharges, reusing the b1 denotation (`Ast → Term`, §1A). For a pure-arithmetic `f`:
+
+1. **Denote the annotation predicates.** `denote(P)` and `denote(Q)` map the Cadenza predicate `Ast` to a
+   HOL `Term` — the SAME `Ast → Term` the b1/b2 obligations use (`>`/`<=`/`+` → `le`/`add`/… head-symbols,
+   params → `Var`, literals → `Num`). `it` in `Q` denotes the function-RESULT term `denote(body)`; a param
+   `x` denotes `Var x` in both `P` and `Q`.
+2. **Form the two obligations.**
+   - `@requires P` is a PRECONDITION the caller must establish — at each call site, `denote(P[args])` is an
+     obligation the caller discharges (or an assumption the callee's body may use). In the callee, `P`
+     enters as a HYPOTHESIS via `assume (denote P)` — exactly the b1 `assume (le x 100)` step.
+   - `@ensures Q` is the POSTCONDITION obligation on the body: `⊢ (denote P) ⇒ (denote Q[it := denote body])`
+     — discharged in the `hol`/`bounds` kernel from the `P` hypothesis, closing to `Q`. This is the b1
+     chain generalized: the specific `no-overflow@Id` obligation b1–b3 use is the case where `Q` is the
+     implicit `add-in-range` side-condition of a checked `+` in `body`.
+3. **The overflow side-condition is an IMPLICIT `@ensures`.** Every checked `x + k` in `body` carries an
+   implicit obligation `LE (add x k) MAXINT` at its node `Id`. b3 already discharges + consumes THIS one
+   (the operator's headline). An explicit `@ensures` is the same machinery with an author-written `Q`
+   instead of the compiler-synthesized range side-condition — so b4 REUSES b1–b3 wholesale; it adds the
+   *surface* (`@ensures(Q)` → `denote(Q)`) and the *diagnostic* ("CDZ-VERIFY: cannot prove `@ensures` …"
+   when the kernel returns no `Thm`), not new kernel or oracle machinery.
+4. **Discharge + report.** Run the obligation through the kernel (compile-time eval, as b2/b3). A discharged
+   `Thm` whose conclusion matches the obligation → the annotation holds (and, for the implicit overflow one,
+   feeds the elision oracle). No `Thm` → a compile diagnostic (untrusted failure: the claim wasn't proven).
+
+**Why this is a small b4, not a new increment.** b1 built the denotation + discharge; b2 the match predicate;
+b3 the oracle→optimizer wiring. b4 is: (a) the `@ensures`/`@requires` elaboration that emits `denote(Q)` /
+`assume(denote P)` — a front-end pass over the already-settled parse; (b) the CDZ-VERIFY diagnostic. The
+kernel, the denotation, the match predicate, and the elision seam are all already built. b4 corpus pins:
+a `def` with a provable `@ensures` type-checks + discharges; one with an unprovable `@ensures` gets
+CDZ-VERIFY; a `@requires` bound flows into the body's overflow discharge (linking the surface to the b3
+elision — a proven `@requires x<=100` elides an `x+1` guard in the body).
+
 ---
 
 ## 3. The proof→optimization interface — how a discharge reaches the optimizer (fork #3, the novel bit)

@@ -907,12 +907,24 @@ fn emit_rust_single(tools: &Tools, program: &str, rust_target: &str) -> Result<S
     Ok(String::from_utf8_lossy(&rcdzc_out.stdout).to_string())
 }
 
-/// Whether `name` is a single SAFE path component usable as a `<name>.sexp` filename — non-empty, no path
-/// separator (`/` or `\`), and not a `.`/`..` traversal component. Used to reject a module name that would
-/// make `dir.join(name)` escape the package temp dir (Copilot PR#517). Deliberately strict (a corpus
-/// module target is a plain identifier-like string); a name that trips this fails the trial cleanly.
+/// Whether `name` is a single SAFE path component usable as a `<name>.sexp` filename — used to reject a
+/// module name that would make `dir.join(name)` escape the package temp dir (Copilot PR#517 + #520).
+///
+/// A PLATFORM-INDEPENDENT character denylist, deliberately NOT `Path::components()`: on Linux (where the
+/// fleet runs) `Path::components()` treats `\`, `C:foo`, `\\srv\s` as a single `Normal` component (no
+/// backslash-separator or drive-prefix semantics), so it would PASS a Windows-escaping name AND regress the
+/// backslash rejection the earlier check had. Instead reject, cross-platform: empty; the `.`/`..` traversal
+/// components; any name containing a separator (`/` or `\`); and a `:` (a Windows drive/ADS prefix like
+/// `C:foo` — the #520 completeness gap — which `PathBuf::join` treats as prefixed/absolute on Windows).
+/// Deliberately strict; a corpus module target is a plain identifier-like string, and a name that trips this
+/// fails the trial cleanly.
 fn is_safe_module_name(name: &str) -> bool {
-    !name.is_empty() && name != "." && name != ".." && !name.contains('/') && !name.contains('\\')
+    !name.is_empty()
+        && name != "."
+        && name != ".."
+        && !name.contains('/')
+        && !name.contains('\\')
+        && !name.contains(':')
 }
 
 /// Emit Rust source for a PACKAGE (entry + imported libraries) — the rust-target twin of
@@ -4169,6 +4181,9 @@ mod trap_grading_tests {
         // `spec/semantics` does not exist → read_dir errors → hard Err.
         let tick = std::process::id();
         let root = std::env::temp_dir().join(format!("needs-lint-empty-{tick}"));
+        // Pre-clear: the dir is keyed only on pid, so a prior run that panicked before its cleanup
+        // could leave stale contents that contaminate the empty-dir assertion below. Start clean.
+        let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         let paths = Paths {
             seed: root.join("implementation/seed"),
@@ -4203,6 +4218,8 @@ mod trap_grading_tests {
         // `gate --save`). The lint must flag rust + rust-async as missing that title, with the heal cmd.
         let tick = std::process::id();
         let root = std::env::temp_dir().join(format!("baseline-agree-{tick}"));
+        // Pre-clear: pid-keyed dir, so a prior panicked run's leftovers could skew the title-set diff.
+        let _ = std::fs::remove_dir_all(&root);
         let sem = root.join("spec/semantics");
         std::fs::create_dir_all(&sem).unwrap();
         let paths = Paths {
@@ -4601,9 +4618,11 @@ mod trap_grading_tests {
 
     #[test]
     fn is_safe_module_name_rejects_path_traversal_and_separators() {
-        // Copilot PR#517: a package module name is used as a `<name>.sexp` filename, so it must be a single
-        // safe path component or `dir.join` could escape the temp dir. Plain identifier-like names pass;
-        // separators (`/`, `\`), `.`/`..` traversal, and empty are rejected.
+        // Copilot PR#517 + #520: a package module name is used as a `<name>.sexp` filename, so it must be a
+        // single safe path component or `dir.join` could escape the temp dir. Plain identifier-like names
+        // pass; separators (`/`, `\`), `.`/`..` traversal, empty, and a Windows drive/ADS prefix (`C:foo` —
+        // a `:`) are rejected — cross-platform (the checks are char-based, not `Path::components()`, which on
+        // Linux would pass `a\b`/`C:foo` as a single Normal component).
         assert!(is_safe_module_name("lib"));
         assert!(is_safe_module_name("my-lib"));
         assert!(is_safe_module_name("mod_2"));
@@ -4614,5 +4633,9 @@ mod trap_grading_tests {
         assert!(!is_safe_module_name("a/b"));
         assert!(!is_safe_module_name("a\\b"));
         assert!(!is_safe_module_name("/etc/passwd"));
+        // #520: a Windows drive/ADS prefix has no separator but is prefix/absolute on Windows — reject the `:`.
+        assert!(!is_safe_module_name("C:foo"));
+        assert!(!is_safe_module_name("C:\\foo"));
+        assert!(!is_safe_module_name("stream:ads"));
     }
 }
