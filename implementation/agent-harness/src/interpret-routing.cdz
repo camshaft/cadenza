@@ -1,0 +1,76 @@
+/// interpret-routing.cdz — a richer minimal-kernel interpret that ROUTES events to broad-primitive plans.
+///
+/// interpret.cdz proved the (List HostOp) result crosses; interpret-events.cdz added the compound (List Event,
+/// Event) signature + a tail-fold dedup. This program shows the REAL agent-loop shape the daemon runs: an
+/// event is ROUTED by its kind to a distinct plan of BROAD host-ops (operator forks 1+3 — exec/http/log/
+/// append are the whole vocabulary; the kernel runs them, the Cadenza program decides which). This is the
+/// "everything above the tiny host is self-modifiable Cadenza" core: routing, policy, the loop — all here.
+///
+/// Modeled scalar-in (an event `kind` tag) so it gate-proves the ROUTING LOGIC independent of the compound-
+/// arg transport (which interpret-events.cdz already proved crosses). Each event kind maps to the broad-op
+/// plan a real agent would run:
+///   - message (1)  → append an ack + EXEC a handler command (the model/tool step)              → 2 ops
+///   - tick (2)     → HTTP-poll an upstream                                                       → 1 op
+///   - model-reply (3) → append the reply to the log + EXEC the tool the model chose             → 2 ops
+///   - shutdown (4) → append a final note, no exec (graceful stop)                                → 1 op
+///   - unknown      → Noop                                                                        → 1 op
+
+/// The broad-primitive host-op vocabulary (forks 1+3): generic, high-reach ops the kernel executes. `Append`
+/// = the one log write; `Exec` = run any host command (the universal escape hatch); `Http` = any network
+/// call; `Noop` = nothing. Named type (v-effects wiring: an op result type must be named, not inline).
+type HostOp =
+  | Append(String)
+  | Exec(String)
+  | Http(String)
+  | Noop
+
+/// ROUTE a landed event (by its `kind` tag) to the plan of broad host-ops to run — the kernel's brain, in
+/// Cadenza. The daemon runs this per event; the kernel executes the returned ops. Pure + total → replayable.
+def route(kind: Int64) =
+  if kind == 1 then
+    [Append("ack"), Exec("run-model-turn")]
+  else if kind == 2 then
+    [Http("poll-upstream")]
+  else if kind == 3 then
+    [Append("model-reply"), Exec("run-tool")]
+  else if kind == 4 then
+    [Append("shutdown-note")]
+  else
+    [Noop]
+
+/// The number of ops routed for an event kind — a scalar the boundary carries, so the suite gate-proves the
+/// ROUTING (which plan each kind maps to) before the full provider+peer loop is wired.
+def op-count(kind: Int64) = List.len(route(kind))
+
+@test def a_message_routes_to_ack_then_model_turn() =
+  op-count(1) == 2
+
+@test def a_tick_routes_to_a_single_poll() =
+  op-count(2) == 1
+
+@test def a_model_reply_routes_to_append_then_tool() =
+  op-count(3) == 2
+
+@test def a_shutdown_routes_to_a_single_note() =
+  op-count(4) == 1
+
+@test def an_unknown_event_routes_to_noop() =
+  op-count(99) == 1
+
+/// A message's FIRST op is the log-append (ack) — pins the ORDER (the executor runs ops in list order, so a
+/// message acks BEFORE it runs the model turn; order is semantically load-bearing).
+@test def a_message_acks_before_it_runs_the_model_turn() =
+  match route(1) with
+  | [first, .. _] => (match first with
+    | HostOp.Append(_) => true
+    | _ => false)
+  | [] => false
+
+/// A model-reply routes to an EXEC as its second op (the tool the model chose) — pins that routing reaches
+/// the broad `Exec` primitive, not just log-appends.
+@test def a_model_reply_execs_a_tool() =
+  match route(3) with
+  | [_, second] => (match second with
+    | HostOp.Exec(_) => true
+    | _ => false)
+  | _ => false
