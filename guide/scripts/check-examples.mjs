@@ -330,12 +330,16 @@ async function checkProgram(program, surface, ex, where) {
   // A guide example that throws/traps/stack-overflows at RUN time is exactly the trust-breaker the
   // "every example is a test" mandate targets — so every non-error example must reach a value here.
   if (surface === "sexpr") {
-    // A graded exercise MUST return a SCALAR. The browser's Check (Exercise.tsx) compares the result
+    // A graded EXERCISE MUST return a SCALAR. The browser's Check (Exercise.tsx) compares the result
     // rendered in the reader's CURRENT surface, but this harness renders s-expr canonical — a scalar
     // (bare number/bool) reads identically in both, a COMPOUND does NOT (`(: (map …) …)` vs ML
     // `#{…} : Map(…)`). So a compound `expected` would pass here yet FAIL the in-browser Check in ML.
     // Reject it at authoring time; return the compound as a Runnable (ungraded) instead.
-    if (ex.expected != null && /^\(:/.test(ex.expected.trim()))
+    // A PLAYGROUND example (from examples.ts) is exempt: it has NO in-browser Check — it's just loaded
+    // and Run — and the harness asserts its value ONLY in this authored s-expr surface (the ML-toggle
+    // call has surface==="ml" and skips this block), so an s-expr-canonical compound is stable to pin.
+    const isPlayground = ex.file === "src/playground/examples.ts";
+    if (!isPlayground && ex.expected != null && /^\(:/.test(ex.expected.trim()))
       return `${ex.file} [Exercise] (${where}): \`expected\` is a COMPOUND value (${JSON.stringify(ex.expected.slice(0, 40))}…) — graded exercises must return a SCALAR (it's compared in the reader's surface, and a compound renders differently in ML vs s-expr). Show the compound as a Runnable instead.\n    ${brief}`;
     let got;
     try {
