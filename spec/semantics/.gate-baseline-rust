@@ -1363,6 +1363,7 @@ pass	a returned lambda captures+applies a closure param bound to a TOP-LEVEL def
 pass	a returned lookup result consumed with a wildcard never inspects the payload
 pass	a returned runtime string with a multi-byte scalar renders the scalar verbatim
 pass	a returned runtime string with a non-printable scalar renders it verbatim, not a u-escape
+pass	a reverse wrapper seeding a second generic helper with an accumulator at two element types declines pending the transitive tie
 pass	a right shift by a floating-point count does not silently promote
 pass	a right shift by the bit width or more traps rather than masking
 pass	a rope in a record field equals its flat-twin field

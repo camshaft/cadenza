@@ -4014,6 +4014,45 @@
             (export main)))
   (declines))
 
+; SECOND witness of the same transitive-delegate tie — the seed is an ACCUMULATOR, not the head. `reverse`
+; is a wrapper `(reverse it) = (rev-onto it (GIter.Nil))` that seeds a SECOND recursive-generic helper
+; `rev-onto` with a bare `GIter.Nil` accumulator; at TWO element types it declines (CDZ0201 here — a
+; different manifestation than the reduce/go message, same family). This GENERALIZES the finding: the
+; trigger is ANY element-typed value threaded through a second recursive-generic delegate whose parameter
+; is not tied across the wrapper's two monomorphizations — the seed can be the head element (reduce1/go
+; above) OR a bare-Nil accumulator (reverse/rev-onto here). A DIRECT element-typed fold composes at two
+; types; only the wrapper→second-helper delegation is unrealized. Single element type compiles+runs (icount
+; of the reversed 3-list = 3). Pinned as a clean decline so a future transitive-tie fix flips it to a run
+; (3 + 2 = 5) and never a miscompile. (v-iterators' reverse residual, sibling of the reduce case above.)
+
+(case "a reverse wrapper seeding a second generic helper with an accumulator at two element types declines pending the transitive tie"
+  (doc    "`reverse` wraps a second recursive-generic helper `rev-onto` seeded with a bare `GIter.Nil`
+           accumulator: `(reverse it) = (rev-onto it (GIter.Nil))`. Used at TWO element types (reversing
+           an Int64 list [1,2,3] and a String list [\"a\",\"b\"]) in one program, it declines — `rev-onto`'s
+           accumulator element is not tied across `reverse`'s two monomorphizations. The ACCUMULATOR-seeded
+           sibling of the head-seeded reduce case above: together they show the transitive-delegate tie is
+           not head-specific — it is any element-typed value threaded through a second recursive-generic
+           helper. A DIRECT fold at two types composes; only this wrapper→second-helper delegation is
+           unrealized. Rejects CDZ0201 (the monomorphizer cannot bind the untied element — a CODED
+           rejection here, vs the reduce/go sibling's uncoded 'annotate' decline; same family, two
+           manifestations). Single element type compiles and runs (icount of the reversed 3-element list =
+           3). Intended value when the tie lands: icount of the reversed Int64 list (3) plus the reversed
+           String list (2) = 5.")
+  (input  (do
+            (type GIter (Nil) (Cons a (GIter a)))
+            (def (from-list xs)
+              (match xs ((list) (GIter.Nil)) ((list h .. t) (GIter.Cons h (from-list t)))))
+            (def (rev-onto it acc)
+              (match it ((GIter.Nil) acc) ((GIter.Cons h rest) (rev-onto rest (GIter.Cons h acc)))))
+            (def (reverse it) (rev-onto it (GIter.Nil)))
+            (def (icount it)
+              (match it ((GIter.Nil) 0) ((GIter.Cons h rest) (+ 1 (icount rest)))))
+            (def (main)
+              (+ (icount (reverse (from-list (list 1 2 3))))
+                 (icount (reverse (from-list (list "a" "b"))))))
+            (export main)))
+  (error  CDZ0201))
+
 ; TYPE-VALUED PARAMETERS — the spec's model for a generic definition (`type-system.md §Generics Are
 ; Type-Valued Parameters`): a generic def takes the TYPE as an ordinary parameter (annotated `(: t Type)`,
 ; the kind of types), uses it as a type-constructor argument in a later parameter's annotation `(Box t)`,
