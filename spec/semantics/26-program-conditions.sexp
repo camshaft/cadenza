@@ -440,3 +440,53 @@
                        (match nonground  ((Option.None) true) ((Option.Some _) false))))))
             (export main)))
   (output (: true Bool)))
+
+; ── SOUNDNESS PIN: a ground add that OVERFLOWS during discharge TRAPS, it does not wrap-and-forge ────
+; (breaker overflow-axis vectors, 2026-07-17 — folded here rather than promoted separately.)
+(case "le-ax of a ground add that OVERFLOWS Int64 traps during evaluation — it cannot wrap to forge a false bound"
+  (doc    "The overflow axis of the axiom-base soundness (breaker). `eval-ground` computes a ground `add`
+           with Cadenza's CHECKED `+`, so `eval-ground (add MAXINT 1)` TRAPS with `integer overflow` rather
+           than wrapping to MININT. This matters because a wrapping `+` would let `le-ax (add MAXINT 1)
+           MAXINT` mint `⊢ (add MAXINT 1) ≤ MAXINT` (since MININT ≤ MAXINT) — a FALSE no-overflow fact that
+           would license an unsound elision. Because `+` traps, the discharge fails LOUDLY instead: no wrong
+           `Thm` is ever minted. The entry attempts exactly that forge — `le-ax (add MAXINT 1) MAXINT` — and
+           the run TRAPS. Pins that the checked-ground-axiom base cannot be defeated via arithmetic overflow:
+           the side-condition either holds on true ground values or the evaluation traps, never wraps. (b3
+           NOTE: when the compiler compile-time-evals this discharge, it must treat the trap as fail-closed —
+           'not licensed / keep the guard' — never a build abort; pinned at b3.)")
+  (module "bounds"
+    (do
+      (type Term (Var Int64) (Num Int64) (Comb Term Term) (Const Int64))
+      (type Thm (Seq (List Term) Term))
+      (def (add (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 0) a) b))
+      (def (le  (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 1) a) b))
+      (def (maxint) (Term.Num 9223372036854775807))
+      (def (eval-ground (: t Term))
+        (match t
+          ((Term.Num n) (Option.Some n))
+          ((Term.Comb (Term.Comb (Term.Const 0) a) b)
+            (match (eval-ground a)
+              ((Option.Some av) (match (eval-ground b)
+                                  ((Option.Some bv) (Option.Some (+ av bv)))
+                                  ((Option.None) (Option.None))))
+              ((Option.None) (Option.None))))
+          (_ (Option.None))))
+      (def (le-ax (: lhs Term) (: rhs Term))
+        (match (eval-ground lhs)
+          ((Option.Some lv) (match (eval-ground rhs)
+                              ((Option.Some rv) (if (<= lv rv)
+                                                  (Option.Some (Thm.Seq (list) (le lhs rhs)))
+                                                  (Option.None)))
+                              ((Option.None) (Option.None))))
+          ((Option.None) (Option.None))))
+      (export (. Term *)) (export Thm) (export add le maxint eval-ground le-ax)))
+  (input  (do
+            (import "bounds" (Term Thm add le maxint eval-ground le-ax))
+            (def (main)
+              ; attempt the forge: le-ax (add MAXINT 1) MAXINT. eval-ground(MAXINT+1) traps (checked +),
+              ; so the run halts on integer overflow — no wrapped MININT, no forged fact.
+              (match (le-ax (add (maxint) (Term.Num 1)) (maxint))
+                ((Option.Some _) true)
+                ((Option.None) false)))
+            (export main)))
+  (trap   "integer overflow"))
