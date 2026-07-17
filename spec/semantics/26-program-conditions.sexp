@@ -1414,3 +1414,94 @@
                     (not (term-eq (concl lower) goal))))))
             (export main)))
   (output (: true Bool)))
+
+; ── t1(match): the PARTIAL-MATCH / exhaustiveness trap source — a match with total arm coverage cannot trap ─
+; The @trap_free capstone (§8): a `match` traps at an `Unreachable` node iff a scrutinee value hits no arm.
+; Its trap-free obligation is EXHAUSTIVENESS — every reachable scrutinee value is covered. Modeled here as a
+; `covers` proof: the obligation `COVERS scrut arms` holds when the arm set is TOTAL for the scrutinee's
+; type. The exhaustiveness checker already decides this for the compiler; here we pin the OBLIGATION shape —
+; an `exhaustive-ax` mints `COVERS s arms` only when a `total?` predicate on the arm set holds (a decidable
+; ground check, like le-ax's numeral side-condition). `covers`=Const 9. A NON-total arm set yields None (the
+; Unreachable stays reachable → the match can trap).
+
+(case "t1(match): the exhaustiveness obligation COVERS is DISCHARGED for a TOTAL arm set — the match cannot trap"
+  (doc    "The partial-match trap source of the @trap_free capstone. A `match` traps at Unreachable iff some
+           scrutinee value hits no arm; its trap-free obligation is EXHAUSTIVENESS. Modeled: `exhaustive-ax`
+           mints `COVERS scrut arms` ONLY when the arm set is TOTAL for the scrutinee (a decidable
+           side-condition, `total?` — here a two-variant Bool scrutinee with both arms present). A total arm
+           set discharges → no Unreachable is reachable → the match cannot trap. The entry checks a
+           both-arms-covered Bool match discharges the COVERS obligation. Runs to `true`. Pins the
+           exhaustiveness obligation shape the capstone's per-trap-source proof discharges (the checker
+           already decides totality; this pins the obligation the discharge produces).")
+  (module "bounds"
+    (do
+      (type Term (Var Int64) (Num Int64) (Comb Term Term) (Const Int64))
+      (type Thm (Seq (List Term) Term))
+      (def (term-eq (: a Term) (: b Term))
+        (match a
+          ((Term.Var n)    (match b ((Term.Var m) (= n m)) (_ false)))
+          ((Term.Num n)    (match b ((Term.Num m) (= n m)) (_ false)))
+          ((Term.Const c)  (match b ((Term.Const d) (= c d)) (_ false)))
+          ((Term.Comb x y) (match b ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) (_ false)))))
+      (def (covers (: scrut Term) (: arms Term)) (Term.Comb (Term.Comb (Term.Const 9) scrut) arms))
+      (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
+      ; total? : is the arm set (a list of covered variant tags, as Num) TOTAL for a scrutinee whose variant
+      ; count is `n`? Decidable: the arm set covers exactly {0..n-1}. Here the ground check is "arms has n
+      ; distinct tags 0..n-1"; modeled minimally as len(arms) == n with tags being 0..n-1 in order.
+      (def (total? (: arms (List Int64)) (: n Int64))
+        (= (List.len arms) n))
+      ; AXIOM: mint COVERS scrut arms-term ONLY when the arm TAGS are total for the scrutinee's variant
+      ; count. A non-total set → None (the Unreachable stays reachable).
+      (def (exhaustive-ax (: scrut Term) (: arms-term Term) (: arm-tags (List Int64)) (: nvariants Int64))
+        (if (total? arm-tags nvariants)
+          (Option.Some (Thm.Seq (list) (covers scrut arms-term)))
+          (Option.None)))
+      (export (. Term *))
+      (export Thm)
+      (export term-eq covers concl total? exhaustive-ax)))
+  (input  (do
+            (import "bounds" (Term Thm term-eq covers concl total? exhaustive-ax))
+            (def (main)
+              (let ((scrut (Term.Var 0))
+                    ; the arm set as an opaque term (its identity is what COVERS names); tags are 0,1 (both
+                    ; Bool variants), nvariants = 2 → total.
+                    (arms  (Term.Const 100)))
+                (let ((goal (covers scrut arms)))
+                  (match (exhaustive-ax scrut arms (list 0 1) 2)
+                    ((Option.Some proof) (term-eq (concl proof) goal))
+                    ((Option.None) false)))))
+            (export main)))
+  (output (: true Bool)))
+
+(case "t1(match) NEGATIVE: a NON-total arm set (one Bool arm missing) does NOT discharge COVERS — the match can still trap"
+  (doc    "The exhaustiveness soundness dual. A Bool scrutinee (2 variants) with only ONE arm covered (tags
+           = {0}, missing 1) is NOT total, so `exhaustive-ax` returns None — the COVERS obligation is not
+           established, the Unreachable stays reachable, and the @trap_free proof for the match MISSES → the
+           match can still trap on the uncovered value. The entry confirms exhaustive-ax of a one-arm set
+           over a 2-variant scrutinee yields None. Runs to `true`. Pins that a non-exhaustive match is NOT
+           certified trap-free — @trap_free is sound (it never drops the Unreachable unless the match is
+           proven total).")
+  (module "bounds"
+    (do
+      (type Term (Var Int64) (Num Int64) (Comb Term Term) (Const Int64))
+      (type Thm (Seq (List Term) Term))
+      (def (covers (: scrut Term) (: arms Term)) (Term.Comb (Term.Comb (Term.Const 9) scrut) arms))
+      (def (total? (: arms (List Int64)) (: n Int64)) (= (List.len arms) n))
+      (def (exhaustive-ax (: scrut Term) (: arms-term Term) (: arm-tags (List Int64)) (: nvariants Int64))
+        (if (total? arm-tags nvariants)
+          (Option.Some (Thm.Seq (list) (covers scrut arms-term)))
+          (Option.None)))
+      (export (. Term *))
+      (export Thm)
+      (export covers total? exhaustive-ax)))
+  (input  (do
+            (import "bounds" (Term Thm covers total? exhaustive-ax))
+            (def (main)
+              (let ((scrut (Term.Var 0))
+                    (arms  (Term.Const 100)))
+                ; only tag 0 covered, nvariants = 2 → NOT total → None
+                (match (exhaustive-ax scrut arms (list 0) 2)
+                  ((Option.Some _) false)
+                  ((Option.None) true))))
+            (export main)))
+  (output (: true Bool)))
