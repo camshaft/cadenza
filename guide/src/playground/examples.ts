@@ -256,6 +256,70 @@ export const EXAMPLES: Example[] = [
   (export main))`,
   },
   {
+    // Shows off: nested recursion for a real algorithm — count primes ≤ N by trial division.
+    // isprime tests divisibility up to √n; count folds over the range. Primes ≤ 100 = 25.
+    name: "Count primes (trial division)",
+    surface: "sexpr",
+    source: `(module m
+  ; Trial division: n is prime if no d with d*d <= n divides it.
+  (def (isprime-from d n)
+    (if (> (* d d) n)
+        true
+        (if (= (% n d) 0) false (isprime-from (+ d 1) n))))
+  (def (isprime n) (if (< n 2) false (isprime-from 2 n)))
+  ; Count the primes in 2..=n.
+  (def (count k n acc)
+    (if (> k n)
+        acc
+        (count (+ k 1) n (if (isprime k) (+ acc 1) acc))))
+  (def (main) (count 2 100 0))
+  (export main))`,
+  },
+  {
+    // Shows off: a cellular automaton — Rule 110, one of the simplest Turing-complete systems — as a
+    // list transformation. Each generation maps a row of 0/1 cells to the next via a neighbourhood
+    // rule. Returns the row after 4 generations of a single seed cell.
+    name: "Rule 110 cellular automaton",
+    surface: "sexpr",
+    source: `(module m
+  ; Elementary cellular automaton Rule 110 — a row of 0/1 cells, each new cell a
+  ; function of its left/center/right neighbours. Famously Turing-complete.
+  (def (cell xs i) (match (List.at xs i) ((Some v) v) ((None) 0)))
+  (def (rule l c r)
+    ; The output bit for each neighbourhood, indexed by (l*4 + c*2 + r).
+    (match (+ (+ (* l 4) (* c 2)) r)
+      (0 0) (1 1) (2 1) (3 1) (4 0) (5 1) (6 1) (7 0) (_ 0)))
+  (def (step-from xs i n acc)
+    (if (= i n)
+        acc
+        (step-from xs (+ i 1) n
+          (List.push acc (rule (cell xs (- i 1)) (cell xs i) (cell xs (+ i 1)))))))
+  (def (step xs) (step-from xs 0 (List.len xs) (list)))
+  (def (gens xs k) (if (= k 0) xs (gens (step xs) (- k 1))))
+  (def (main) (gens (list 0 0 0 0 0 0 0 1) 4))
+  (export main))`,
+  },
+  {
+    // Shows off: records + a list of them = a little data pipeline. Aggregate a field (average age)
+    // over a list of (name, age) records by index-recursion. (36 + 41 + 40) / 3 = 39.
+    name: "Data pipeline over records",
+    surface: "sexpr",
+    source: `(module m
+  ; A list of records — access a field with (. r age) — aggregated into an average.
+  (def (sum-age xs i n acc)
+    (if (= i n)
+        acc
+        (match (List.at xs i)
+          ((Some r) (sum-age xs (+ i 1) n (+ acc (. r age))))
+          ((None) acc))))
+  (def (main)
+    (let ((people (list (record (name "Ada") (age 36))
+                        (record (name "Alan") (age 41))
+                        (record (name "Grace") (age 40)))))
+      (/ (sum-age people 0 (List.len people) 0) (List.len people))))
+  (export main))`,
+  },
+  {
     name: "A type error (see the squiggle)",
     surface: "sexpr",
     source: `(module m
