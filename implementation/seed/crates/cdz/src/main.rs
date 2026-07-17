@@ -5280,13 +5280,21 @@ fn run_instantiations(args: &InstantiationsArgs) -> ExitCode {
         }
         None => args.file.clone(),
     };
+    let mut malformed = false;
     for line in text.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
         let mut cols = line.split('\t');
         match cols.next() {
             Some("disp") => {
                 let (node, disp) = match (cols.next(), cols.next()) {
                     (Some(n), Some(d)) => (n, d),
-                    _ => continue,
+                    _ => {
+                        report_malformed_query_row("instantiations", line);
+                        malformed = true;
+                        continue;
+                    }
                 };
                 // Present the disposition set readably, and gloss what it MEANS (why there is / isn't a
                 // function to point at) so the status is self-explanatory. A `transformed→copy` tag or a
@@ -5308,7 +5316,11 @@ fn run_instantiations(args: &InstantiationsArgs) -> ExitCode {
             Some("inst") => {
                 let (spec, node, arglist) = match (cols.next(), cols.next(), cols.next()) {
                     (Some(s), Some(n), Some(a)) => (s, n, a),
-                    _ => continue,
+                    _ => {
+                        report_malformed_query_row("instantiations", line);
+                        malformed = true;
+                        continue;
+                    }
                 };
                 let pretty = arglist
                     .split(';')
@@ -5317,10 +5329,19 @@ fn run_instantiations(args: &InstantiationsArgs) -> ExitCode {
                     .join(", ");
                 println!("{}:   {}[{pretty}] → {spec}", loc_of(node), args.name);
             }
-            _ => continue,
+            // A row whose leading tag is neither `disp` nor `inst` is a format skew — fail loudly rather
+            // than silently drop it (the silent-skip class; the other query readers already do this).
+            _ => {
+                report_malformed_query_row("instantiations", line);
+                malformed = true;
+            }
         }
     }
-    ExitCode::SUCCESS
+    if malformed {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
 }
 
 /// `cdz highlight FILE` — semantic syntax highlighting: every classified token as `file:line:col: kind`.
@@ -5419,10 +5440,11 @@ fn run_sidecar_many(
 }
 
 /// Report a sidecar QUERY RESULT ROW that did not parse into its expected shape — the shared loud-failure
-/// path for every `cdz` query reader (`symbols`/`exports`/`scope`/`uses`/`highlight`/`instantiations`/
-/// `param-manifest`). Each reader splits a query's TAB-separated output into a fixed set of fields; a row
-/// that does not match is NOT silently dropped (which would mask a sidecar output-format regression behind
-/// a success exit + a silently-short result — the class Copilot flagged on `param-manifest`, PR #525).
+/// path for the `cdz` query readers that call it: `uses`, `scope`, `exports`, `symbols`, `highlight`, and
+/// `instantiations`. (`param-manifest` has its OWN equivalent error path — the original fix from PR #525 —
+/// and does not route through here.) Each reader splits a query's TAB-separated output into a fixed set of
+/// fields; a row that does not match is NOT silently dropped (which would mask a sidecar output-format
+/// regression behind a success exit + a silently-short result — the class Copilot flagged, PR #525/#530).
 /// Instead the reader calls this to name the query + the offending line, then FAILS at the end. `query` is
 /// the query name for the message; returns nothing — the caller sets its own `malformed` flag.
 fn report_malformed_query_row(query: &str, line: &str) {
