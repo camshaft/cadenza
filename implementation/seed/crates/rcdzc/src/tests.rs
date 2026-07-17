@@ -17365,7 +17365,10 @@ mod match_engine {
         let bytes = cadenza_syntax::codec::encode(&syntax);
         // rcdzc's OWN codec decodes the bridge bytes (the invariant the bundled-kernel path relies on).
         let decoded = crate::codec::decode(&bytes).expect("kernel bytes decode with rcdzc codec");
-        assert!(!decoded.structure.is_empty(), "decoded kernel arena is non-empty");
+        assert!(
+            !decoded.structure.is_empty(),
+            "decoded kernel arena is non-empty"
+        );
         // WRITE the checked-in artifact next to the source (idempotent — same source → same bytes).
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/src/verify_kernel.bin");
         std::fs::write(path, &bytes).expect("write verify_kernel.bin");

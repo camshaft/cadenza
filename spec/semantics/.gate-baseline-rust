@@ -3719,3 +3719,5 @@ pass	a stacked @test @ensures def called as a function returns its value, not un
 pass	a stacked @test @ensures with a FALSE postcondition traps when the def is called (test semantics preserved)
 pass	nested-Option equality observes the OUTER variant and matches identical nesting
 pass	an earlier name-binding arm shadows a later literal arm — first-match-wins, not specificity-ordered
+pass	t1(trap): an explicit trap under guard (lt x 0) is UNREACHABLE when @requires(>= x 0) — the trap is dead
+pass	t1(trap) NEGATIVE: a trap guard NOT contradicted by the precondition is NOT unreachable — the trap STAYS
