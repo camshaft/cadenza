@@ -992,38 +992,16 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
         // an unbound name. (A pragma inside a nested module is collected by the pragma pass and its module's
         // members never reach `unknown_top_forms`, so this fires only for a top-level/root-scope pragma.)
         if head == "pragma" {
-            // Only emit the placement message for a RECOGNIZED, WELL-FORMED directive — a top-level
-            // `(pragma <key> <T>)` with a registry key and the correct arity whose SOLE defect is its
-            // placement. A malformed pragma (an unknown key `nonesuch`, a wrong arity, a bad type) ALSO gets
-            // a more-specific reject from the pragma-registry pass (CDZ0601 naming the key / CDZ0602 arity /
-            // CDZ0303 domain), which is MORE actionable than "it's mis-scoped" — so skip the placement
-            // message there and let the registry message be the one primary. Gate on the exact shape the
-            // registry pass accepts: a registry key with exactly one argument (`ptail.len() == 2`) that
-            // passes its key's domain check, so a bad type still gets CDZ0303 alone.
-            let ptail = db.ast.as_form(occ, "pragma").map(<[_]>::to_vec);
-            let well_formed_default = ptail.as_deref().is_some_and(|t| {
-                if t.len() != 2 {
-                    return false;
-                }
-                // A domain-bad type argument is the registry's CDZ0303 — defer to it, no placement noise.
-                match t.first().and_then(|&k| db.ast.as_name(k)) {
-                    Some("default-integer") => non_integer_default_fault(db, occ, t[1]).is_none(),
-                    Some("default-fraction") => non_rational_default_fault(db, occ, t[1]).is_none(),
-                    Some("default-float") => non_float_default_fault(db, occ, t[1]).is_none(),
-                    _ => false,
-                }
-            });
-            if well_formed_default {
-                faults.push(
-                    Reject::coded(
-                        Code::UnknownDirective,
-                        "a `(pragma …)` directive has effect only inside a nested `(module NAME …)` \
-                         declaration (one written in a `(do …)` block); at the program's top level it \
-                         has no effect — wrap the module carrying it in a `(do …)`",
-                    )
-                    .at(occ),
-                );
-            }
+            // A well-formed TOP-LEVEL default pragma (`(pragma default-integer|default-fraction|default-
+            // float <T>)` at the root / file-top) now TAKES EFFECT — `Db::load` harvests it over the root
+            // scope's `(def …)` literals, exactly as a nested `(module …)` pragma is harvested for its
+            // members (numeric-model.md §"A Module May Declare Its Default … Literal Type" — no do-nesting
+            // requirement; a file IS a module). So it is NO LONGER mis-scoped: emit NO placement fault for
+            // it. A MALFORMED pragma (unknown key / wrong arity / domain-bad type) is still rejected by the
+            // pragma-REGISTRY pass below (CDZ0601 key / CDZ0602 arity / CDZ0303 domain), which owns those;
+            // this branch only ever emitted the placement message, now obsolete for the well-formed default.
+            // `continue` (no placement fault) — the registry pass is the single authority for a malformed
+            // one, and a well-formed one is now honored.
             continue;
         }
         // FIRST: is the head a plausible TYPO of a top-level DECLARATION KEYWORD (`exprot`→`export`,

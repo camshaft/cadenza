@@ -893,6 +893,61 @@
             ((. m x) unit)))
   (error  CDZ0303))
 
+; --- A FILE-TOP / root-scope pragma takes effect, exactly as a nested-module one does ------
+; numeric-model.md #A Module May Declare Its Default … Literal Type says a MODULE may declare its default
+; via a module directive, with NO do-nesting requirement — and a file IS a module. So a `(pragma <key>
+; <T>)` written as a TOP-LEVEL item (the root program's own directive, not inside a nested `(module NAME
+; …)`) declares the default for the whole root scope's literals, the file-top analogue of the nested-module
+; cases above. Previously the impl honored ONLY a nested-module pragma and rejected a root-level one
+; (CDZ0601 "has effect only inside a nested module") — a spec-conformance gap that made file-top exact-by-
+; default (a units/CAD app, a bignum library) unreachable. These pin the root-scope harvest + that a
+; MALFORMED root pragma still rejects with the same codes a nested one does.
+
+(case "a file-top default-fraction pragma grounds a bare literal to its exact fraction"
+  (doc    "A `(pragma default-fraction Rational)` written at the program's TOP LEVEL (not inside a nested
+           `(module …)`) grounds the root scope's bare literals: `(/ 1 2)` is exact `1/2 : Rational`, not
+           the Int64 truncation `0`. Pins that a file-top module directive takes effect exactly as a
+           nested-module one does (numeric-model.md #A Module May Declare Its Default Fraction Literal
+           Type — a file is a module, no do-nesting required).")
+  (input  (do
+            (pragma default-fraction Rational)
+            (def (main) (/ 1 2))
+            (export main)))
+  (output (: 1/2 Rational)))
+
+(case "a file-top default-integer pragma fixes a bare literal's type"
+  (doc    "The integer twin: a top-level `(pragma default-integer Int32)` makes the root scope's bare
+           literals Int32, so `(+ 1 2)` computes at Int32 = 3. Pins that the root-scope harvest covers
+           `default-integer` as well as `default-fraction`.")
+  (input  (do
+            (pragma default-integer Int32)
+            (def (main) (+ 1 2))
+            (export main)))
+  (output (: 3 Int32)))
+
+(case "a file-top default-fraction pragma fixes a type but adds no conversion — no-promotion still holds"
+  (doc    "The load-bearing invariant survives the file-top scope: under a top-level `(pragma default-
+           fraction Rational)`, the bare `1` is a Rational, so `(+ 1 (: 2.0 Float64))` mixes Rational with
+           an explicitly-Float64 value and is REJECTED (CDZ0301) exactly as any cross-type mix is. The
+           file-top default changed what type the literal STARTS as, it did NOT introduce a coercion —
+           same as the nested-module no-promotion case.")
+  (input  (do
+            (pragma default-fraction Rational)
+            (def (main) (+ 1 (: 2.0 Float64)))
+            (export main)))
+  (error  CDZ0301))
+
+(case "a malformed file-top pragma is rejected with the same code a nested one gets"
+  (doc    "A root-level pragma is validated by the SAME registry pass as a nested one: an unknown key at
+           the top level is CDZ0601 (`nonesuch` is not a directive the fixed set defines), not silently
+           honored. Pins that lifting the mis-scoped-placement reject (so a well-formed root pragma takes
+           effect) did NOT weaken validation of a malformed root pragma.")
+  (input  (do
+            (pragma nonesuch Rational)
+            (def (main) 1)
+            (export main)))
+  (error  CDZ0601))
+
 (case "floating-point uses the fixed rounding mode"
   (doc    "The round-to-nearest-even sum under the pinned deterministic float mode
            (contracts/determinism-and-fuel.md); byte-identical on every conforming runtime. Written with

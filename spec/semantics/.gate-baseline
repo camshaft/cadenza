@@ -796,6 +796,9 @@ pass	a field is projected off a record bound through a match arm
 pass	a field is projected off a record unwrapped from a result with expect
 pass	a field is projected off a record unwrapped from an optional with expect
 pass	a field read follows the record's SORTED field order, not its written order
+pass	a file-top default-fraction pragma fixes a type but adds no conversion — no-promotion still holds
+pass	a file-top default-fraction pragma grounds a bare literal to its exact fraction
+pass	a file-top default-integer pragma fixes a bare literal's type
 pass	a final bytes segment binds the remainder after the sized segments
 pass	a final unquote-splice binds the remaining elements as a list
 pass	a fixed-arity list binding pattern is refutable and rejected
@@ -1084,6 +1087,7 @@ pass	a lowercase type variable in a USER-GENERIC parameter annotation is rejecte
 pass	a lowercase-named type cross-references another lowercase-named type in a field
 pass	a lowercase-named type is referenceable in a field (types are values, not gated by case)
 pass	a magic header and a length-prefixed chunk parse together
+pass	a malformed file-top pragma is rejected with the same code a nested one gets
 pass	a malformed integer width — negative or non-natural — is rejected at compile time
 pass	a many-arm match consumed in non-tail position yields into the enclosing expression
 pass	a many-arm match let-bound then consumed yields into the enclosing expression
