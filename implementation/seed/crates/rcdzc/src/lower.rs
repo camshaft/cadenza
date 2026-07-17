@@ -10261,8 +10261,27 @@ fn emit_call_or_specialize(db: &mut Db, head: StructId, callee: usize, args: &[S
         Some(s) => s,
         None => {
             trace!(target: "rcdzc::lower", head = head.0, callee, "call: callee signature undetermined → decline (A2)");
+            // The connected parameter solve (A2, `solve_recursive_params`) left a parameter undetermined —
+            // no use in the body pinned its type, so it grounds to `Any` and has no machine width. TWO
+            // shapes reach here and the actionable advice DIFFERS, so name both rather than always saying
+            // "annotate its parameters" (which OVERPROMISES: a generic helper has no writable annotation).
+            //   (a) A MONOMORPHIC recursive helper whose parameter is only ever passed through (never used
+            //       in a width-fixing operation): an explicit annotation `(: p Int64)` DOES ground it.
+            //   (b) A recursive-GENERIC helper — one THREADED from a generic producer, where the param's
+            //       element type is a type VARIABLE tied to the caller's instantiation (`(def (go it acc f)
+            //       …)` seeded by a `reduce`-shaped wrapper at ≥2 element types) — CANNOT be annotated: the
+            //       element is polymorphic, and a lowercase `(GIter a)` in an annotation is an unbound type
+            //       name (CDZ0101, no forall-binder), so `(: it GIter)` fails CDZ0203 (GIter needs a type
+            //       argument). The real fix is the recursive-generic monomorphization tie (a tracked
+            //       inference follow-up), not an annotation — so don't send the author down a dead end.
             return Core::Poison(Reject::decline(
-                "a recursive function with an unannotated parameter is not yet inferred (annotate its parameters)",
+                "this recursive function has a parameter whose type could not be inferred — no use in its \
+                 body fixes the parameter's type, so it has no machine representation. If the parameter is \
+                 a plain (monomorphic) value, add an explicit annotation, e.g. `(: p Int64)`. If it is a \
+                 GENERIC helper threaded from a producer (its element type varies with the caller), an \
+                 annotation cannot express the polymorphic element — this is the recursive-generic \
+                 monomorphization tie, a known inference limitation, so use a single concrete element type \
+                 or a non-delegating fold until it lands",
             ));
         }
     };
