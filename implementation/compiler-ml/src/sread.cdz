@@ -11,7 +11,7 @@
 /// `read-form` + a test here. Reuses `strlex`'s char helpers (`char-at`, `is-digit`, `scan-number`) and
 /// `parse-db`'s `Node`/`Tree`/`add-node`/`empty-tree`.
 
-import { Node, Tree, empty-tree, add-node, node-at, is-lit, is-bool-lit, is-bin-op, is-if } from "parse-db"
+import { Node, Tree, empty-tree, add-node, node-at, is-lit, is-bool-lit, is-bin-op, is-if, is-var, is-let } from "parse-db"
 
 /// The 1-char string at position `i` of `s`, or `""` past the end. (strlex has an identical private helper;
 /// sread keeps its own so it depends only on parse-db, not strlex's internals.)
@@ -69,6 +69,19 @@ def op-code-of(sym: String) =
    else (if sym == "<=" then 63 else (if sym == ">=" then 64 else (if sym == "!=" then 65
    else 0 - 1)))))))))))
 
+/// A DETERMINISTIC name-id for an identifier string: a polynomial hash over its BYTES (`String.to-bytes`,
+/// the proven boundary-safe op). Same string → same id every time, so a `let`-binder and its `NVar` uses
+/// share the id with NO interner table threaded through the read (resolve-db matches binder↔use by this id).
+/// Collisions are astronomically unlikely for the short identifiers in the corpus subset; the DB semantics
+/// only need consistency-within-a-program, which a pure function of the name gives for free.
+def name-id-fold(bytes: Bytes, i: Int64, acc: Int64) =
+  (if i == Bytes.len(bytes) then acc
+   else (match Bytes.at(bytes, i) with
+     | Option.Some(b) => name-id-fold(bytes, i + 1, acc * 31 + b)
+     | Option.None(_) => acc))
+
+def name-id(name: String) = name-id-fold(String.to-bytes(name), 0, 7)
+
 /// Read ONE form starting at index `i` (leading space skipped here). Returns `(rootId, nextIndex, tree')`.
 /// SLICE 2 handles: non-negative INT literal; `true`/`false` bool literals; and a PARENTHESISED PREFIX form
 /// `(op a b)` where `op` is a binary operator symbol → `NBin(code, a, b)`. Unrecognized lead → recovery
@@ -84,26 +97,28 @@ def read-form(s: String, i: Int64, tree: Tree) =
         (match scan-atom(s, j, "") with | (atom, k) =>
           (if (atom == "true") then (match add-node(tree, Node.NBoolLit(1)) with | (id, t1) => (id, k, t1))
            else (if (atom == "false") then (match add-node(tree, Node.NBoolLit(0)) with | (id, t1) => (id, k, t1))
-           else (match add-node(tree, Node.NLit(0)) with | (id, t1) => (id, k, t1)))))
+           else
+             // a bare identifier is a VARIABLE reference → NVar keyed by the name's deterministic id.
+             (match add-node(tree, Node.NVar(name-id(atom))) with | (id, t1) => (id, k, t1)))))
      else (match add-node(tree, Node.NLit(0)) with | (id, t1) => (id, j + 1, t1)))))))
 
 /// Consume a `)` at/after index `i` (skipping space); tolerate a missing one. Returns the next index.
 def close-paren(s: String, i: Int64) =
   (let k = skip-space(s, i) in (if (char-at(s, k) == ")") then k + 1 else k))
 
-/// After a `(` at index `i`: read the HEAD atom and dispatch. `(if c t e)` → `NIf(cond,then,else)` (three
-/// sub-forms); otherwise a binary PREFIX op `(sym a b)` → `NBin(op-code, a, b)`. A missing `)` is tolerated.
-/// The reader stays TOTAL: an unrecognized head symbol still reads two operands as `NBin(-1,…)` (→ infer
-/// TErr). (`let`/vars are the next slice — they need a name-intern table threaded through the read.)
+/// After a `(` at index `i`: read the HEAD atom and dispatch. `(if c t e)` → `NIf`; `(let ((x v)) b)` →
+/// `NLet`; otherwise a binary PREFIX op `(sym a b)` → `NBin(op-code, a, b)`. A missing `)` is tolerated. The
+/// reader stays TOTAL: an unrecognized head symbol still reads two operands as `NBin(-1,…)` (→ infer TErr).
 def read-paren-form(s: String, i: Int64, tree: Tree) =
   (let h = skip-space(s, i) in
    (match scan-atom(s, h, "") with | (sym, a0) =>
      (if (sym == "if") then read-if-form(s, a0, tree)
+      else (if (sym == "let") then read-let-form(s, a0, tree)
       else
         (match read-form(s, a0, tree) with | (leftId, a1, t1) =>
           (match read-form(s, a1, t1) with | (rightId, a2, t2) =>
             (let a3 = close-paren(s, a2) in
-             (match add-node(t2, Node.NBin(op-code-of(sym), leftId, rightId)) with | (id, t3) => (id, a3, t3))))))))
+             (match add-node(t2, Node.NBin(op-code-of(sym), leftId, rightId)) with | (id, t3) => (id, a3, t3)))))))))
 
 /// After `(if` (index `i` past the `if` atom): read cond, then, else forms + consume `)` → `NIf`.
 def read-if-form(s: String, i: Int64, tree: Tree) =
@@ -112,6 +127,26 @@ def read-if-form(s: String, i: Int64, tree: Tree) =
       (match read-form(s, a2, t2) with | (elseId, a3, t3) =>
         (let a4 = close-paren(s, a3) in
          (match add-node(t3, Node.NIf(condId, thenId, elseId)) with | (id, t4) => (id, a4, t4))))))
+
+/// Consume a `(` at/after index `i` (skipping space); tolerate a missing one. Returns the next index.
+def open-paren(s: String, i: Int64) =
+  (let k = skip-space(s, i) in (if (char-at(s, k) == "(") then k + 1 else k))
+
+/// After `(let` (index `i` past the `let` atom): parse `((x v)) body` → `NLet(nameId, valueId, bodyId)`.
+/// SUBSET: a SINGLE binding `((name value))` then the body. Grammar: `(` `(` name value `)` `)` body — then
+/// the caller-form's own `)`. All parens tolerated-if-missing (total). `let` is NON-recursive: value read
+/// before the binding is in scope (resolve-db enforces the scoping; the reader just builds the node).
+def read-let-form(s: String, i: Int64, tree: Tree) =
+  (let b0 = open-paren(s, i) in            // outer bindings-list `(`
+   (let b1 = open-paren(s, b0) in          // first binding `(`
+    (let h = skip-space(s, b1) in
+     (match scan-atom(s, h, "") with | (nm, v0) =>
+       (match read-form(s, v0, tree) with | (valId, v1, t1) =>
+         (let c1 = close-paren(s, v1) in    // close the binding `)`
+          (let c2 = close-paren(s, c1) in   // close the bindings-list `)`
+           (match read-form(s, c2, t1) with | (bodyId, e0, t2) =>
+             (let e1 = close-paren(s, e0) in // close the `let` `)`
+              (match add-node(t2, Node.NLet(name-id(nm), valId, bodyId)) with | (id, t3) => (id, e1, t3)))))))))))
 
 /// The reader ENTRY: source text → `(rootId, Tree)`, the shape `eval-db.eval-tree(tree, root)` consumes.
 def read-source(s: String) = match read-form(s, 0, empty-tree()) with | (root, _, tree) => (root, tree)
@@ -201,4 +236,40 @@ def sr-nested-if-in-else() =
       | Option.Some(Node.NIf(_, _, els)) => (if is-if(tree, els) then unit else trap("else is a nested if"))
       | _ => trap("root is an NIf")))
 
-export { skip-space, read-form, read-source, scan-atom, op-code-of }
+@test
+def sr-var() =
+  // "x" (bare identifier) → NVar keyed by name-id("x").
+  (match read-source("x") with | (root, tree) =>
+    (if is-var(tree, root, name-id("x")) then unit else trap("root is NVar x")))
+
+@test
+def sr-let-shape() =
+  // "(let ((x 10)) x)" → NLet(id x, NLit 10, NVar x): the body var's id equals the binder's id.
+  (match read-source("(let ((x 10)) x)") with | (root, tree) =>
+    (match node-at(tree, root) with
+      | Option.Some(Node.NLet(nm, valId, bodyId)) =>
+        (if nm == name-id("x") then
+           (if is-lit(tree, valId, 10) then (if is-var(tree, bodyId, name-id("x")) then unit else trap("body is NVar x")) else trap("value NLit 10"))
+         else trap("let binds x"))
+      | _ => trap("root is an NLet")))
+
+@test
+def sr-let-binder-use-share-id() =
+  // the binder id and the use id are the SAME (so resolve-db will bind them) — the whole point of name-id.
+  (match read-source("(let ((y 5)) y)") with | (root, tree) =>
+    (match node-at(tree, root) with
+      | Option.Some(Node.NLet(nm, _, bodyId)) =>
+        (match node-at(tree, bodyId) with
+          | Option.Some(Node.NVar(useId)) => (if useId == nm then unit else trap("binder id == use id"))
+          | _ => trap("body is a var"))
+      | _ => trap("root is an NLet")))
+
+@test
+def sr-let-body-arith() =
+  // "(let ((x 3)) (+ x 1))" → body is a + Bin whose left is NVar x.
+  (match read-source("(let ((x 3)) (+ x 1))") with | (root, tree) =>
+    (match node-at(tree, root) with
+      | Option.Some(Node.NLet(_, _, bodyId)) => (if is-bin-op(tree, bodyId, 43) then unit else trap("body is a + Bin"))
+      | _ => trap("root is an NLet")))
+
+export { skip-space, read-form, read-source, scan-atom, op-code-of, name-id }
