@@ -56,7 +56,9 @@ function Control({
             step={widget.step}
             value={Number(value)}
             onChange={(e) => onChange(Number(e.target.value))}
-            className="flex-1 accent-cadenza-500"
+            // Mobile: a 44px-tall hit area below `sm` so the slider is comfortable to drag by thumb (the
+            // track stays thin; the extra height is the grab zone). Compact on desktop.
+            className="min-h-11 flex-1 accent-cadenza-500 sm:min-h-0"
             data-testid={`widget-${widget.name}`}
           />
           <span className="w-16 shrink-0 text-right font-mono text-xs text-slate-400">{String(value)}</span>
@@ -71,7 +73,7 @@ function Control({
           step={widget.step}
           value={Number(value)}
           onChange={(e) => onChange(Number(e.target.value))}
-          className="w-32 rounded border border-slate-700 bg-slate-800 px-2 py-1 font-mono text-sm text-slate-200"
+          className="min-h-11 w-32 rounded border border-slate-700 bg-slate-800 px-2 font-mono text-sm text-slate-200 sm:min-h-0 sm:py-1"
           data-testid={`widget-${widget.name}`}
         />
       );
@@ -81,7 +83,7 @@ function Control({
           type="text"
           value={String(value)}
           onChange={(e) => onChange(e.target.value)}
-          className="flex-1 rounded border border-slate-700 bg-slate-800 px-2 py-1 font-mono text-sm text-slate-200"
+          className="min-h-11 flex-1 rounded border border-slate-700 bg-slate-800 px-2 font-mono text-sm text-slate-200 sm:min-h-0 sm:py-1"
           data-testid={`widget-${widget.name}`}
         />
       );
@@ -100,7 +102,7 @@ function Control({
         <select
           value={String(value)}
           onChange={(e) => onChange(e.target.value)}
-          className="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-sm text-slate-200"
+          className="min-h-11 rounded border border-slate-700 bg-slate-800 px-2 text-sm text-slate-200 sm:min-h-0 sm:py-1"
           data-testid={`widget-${widget.name}`}
         >
           {widget.options.map((opt) => (

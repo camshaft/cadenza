@@ -199,16 +199,20 @@ export default function NotebookPage() {
     <div className="mx-auto min-h-screen max-w-4xl px-4 py-6">
       <div className="mb-4 flex items-baseline justify-between gap-3">
         <h1 className="text-lg font-bold text-slate-100 sm:text-xl">Cadenza Notebook</h1>
-        <div className="flex shrink-0 items-center gap-3 text-xs">
+        {/* Mobile touch targets: header actions get a 44px min-height below `sm`, compact text-links at sm+. */}
+        <div className="flex shrink-0 items-center gap-1 text-xs sm:gap-3">
           <button
             type="button"
             onClick={() => setEditing((e) => !e)}
-            className="text-cadenza-400 hover:text-cadenza-300"
+            className="flex min-h-11 items-center px-2 text-cadenza-400 hover:text-cadenza-300 sm:min-h-0 sm:px-0"
             data-testid="edit-toggle"
           >
             {editing ? "Hide source" : "Edit source"}
           </button>
-          <Link to="/playground" className="text-cadenza-400 hover:text-cadenza-300">
+          <Link
+            to="/playground"
+            className="flex min-h-11 items-center px-2 text-cadenza-400 hover:text-cadenza-300 sm:min-h-0 sm:px-0"
+          >
             Playground →
           </Link>
         </div>
