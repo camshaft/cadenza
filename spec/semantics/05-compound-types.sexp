@@ -7697,7 +7697,6 @@
             (def (f (: r Rec)) (match r ((Rec.Mk a b p) (+ (Int64.wrap a) (if p b 0))) ((Rec.Z) -1)))
             (def (main (: k Int64)) (f (Rec.Mk (UInt8.wrap 5) k true)))
             (export main)))
-  (needs  sum-type-declaration)
   (call   main (: 100 Int64))
   (output (: 105 Int64)))
 
@@ -7720,7 +7719,6 @@
                 ((T.Q)                   -2)))
             (def (main (: k Int64)) (f (T.P 0 (Option.Some k))))
             (export main)))
-  (needs  sum-type-declaration)
   (call   main (: 7 Int64))
   (output (: 7 Int64)))
 
@@ -7737,7 +7735,6 @@
               (match q ((Quad.Mk w x y z) (+ w (+ (if x 10 0) (+ y (if z 100 0))))) ((Quad.Z) -1)))
             (def (main (: k Int64)) (f (Quad.Mk k true 5 false)))
             (export main)))
-  (needs  sum-type-declaration)
   (call   main (: 1 Int64))
   (output (: 16 Int64)))
 
@@ -7755,7 +7752,6 @@
                 ((Option.None)                -1)))
             (def (main (: k Int64)) (f k))
             (export main)))
-  (needs  sum-type-declaration)
   (call   main (: 9 Int64))
   (output (: 9 Int64)))
 
@@ -7774,7 +7770,6 @@
             (def (f (: w W)) (match w ((W.Ok n) n) ((W.Bad v) (match v))))
             (def (main (: k Int64)) (f (W.Ok k)))
             (export main)))
-  (needs  sum-type-declaration)
   (call   main (: 5 Int64))
   (output (: 5 Int64)))
 
@@ -7794,7 +7789,6 @@
                   (let ((s2 (step s1)))
                     (match s2 ((St.A n) n) ((St.B n) (+ n 1000)))))))
             (export main)))
-  (needs  sum-type-declaration)
   (call   main (: 5 Int64))
   (output (: 12 Int64)))
 

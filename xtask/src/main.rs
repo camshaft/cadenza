@@ -3457,7 +3457,61 @@ fn check(paths: &Paths, profile: &str) {
         repo,
     );
 
+    // Corpus-hygiene lint: the `(needs …)` capability tag is RETIRED (the grade mechanism no longer
+    // early-returns on it @d572403 — decline is the sole "todo" signal; see
+    // `issues/DIRECTIVE-retire-needs-tag.md`). The clause is inert but concurrent corpus work keeps
+    // re-introducing it (the parser's clause loop has a catch-all, so a stray `(needs …)` is silently
+    // ignored, not rejected — removing the parser arm would NOT stop re-introduction). This lint is the
+    // durable fix: it FAILS `check` on any `(needs …)` clause in `spec/semantics/*.sexp`, so a
+    // re-introduced tag is a hard, self-explanatory error rather than silent rot.
+    log.step_native("needs-free", || needs_free_lint(paths));
+
     println!("\ncheck: all green ✓  (full log: {})", log.path.display());
+}
+
+/// The 1-based line numbers in `text` that open a `(needs …)` clause — a line whose first
+/// non-whitespace token is `(needs` (the shape the corpus uses and the codemod strips). Pure, so the
+/// lint's matching is unit-tested without touching the filesystem.
+fn needs_clause_lines(text: &str) -> Vec<usize> {
+    text.lines()
+        .enumerate()
+        .filter(|(_, line)| line.trim_start().starts_with("(needs "))
+        .map(|(i, _)| i + 1)
+        .collect()
+}
+
+/// Scan every `spec/semantics/*.sexp` for a `(needs …)` clause (the retired capability tag) and return
+/// an actionable error listing each `file:line` if any survive. Returns `Ok(())` when needs-free.
+fn needs_free_lint(paths: &Paths) -> Result<(), String> {
+    let dir = paths.repo.join("spec/semantics");
+    let mut hits: Vec<String> = Vec::new();
+    let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
+        .map(|rd| {
+            rd.filter_map(|e| e.ok().map(|e| e.path()))
+                .filter(|p| p.extension().is_some_and(|x| x == "sexp"))
+                .collect()
+        })
+        .unwrap_or_default();
+    files.sort();
+    for file in &files {
+        let Ok(text) = std::fs::read_to_string(file) else {
+            continue;
+        };
+        let rel = file.strip_prefix(&paths.repo).unwrap_or(file).display();
+        for line_no in needs_clause_lines(&text) {
+            hits.push(format!("{rel}:{line_no}"));
+        }
+    }
+    if hits.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "found {} `(needs …)` clause(s) — this tag is RETIRED (see \
+         issues/DIRECTIVE-retire-needs-tag.md). Fix: delete each `(needs …)` clause; decline is the \
+         sole todo signal (a case the compiler declines already grades Todo automatically). At:\n  {}",
+        hits.len(),
+        hits.join("\n  ")
+    ))
 }
 
 /// A captured-output log for a multi-step command. Each step's child process writes its stdout and
@@ -3500,6 +3554,27 @@ impl Log {
     /// output is a concise, useful signal (the gate's tally), not build noise.
     fn step_show(&mut self, name: &str, cmd: &str, dir: &Path) {
         self.run_step(name, cmd, dir, true, &[]);
+    }
+
+    /// Run a NATIVE (in-process) check step — a closure that returns `Ok(())` on pass or `Err(msg)`
+    /// with an actionable message on fail. Used for a check that isn't a subprocess (e.g. a corpus
+    /// lint that scans files). Same console/log contract as `step`: `✓ name` on success; on failure
+    /// the message is written to the log and dumped, then exit non-zero.
+    fn step_native(&mut self, name: &str, check: impl FnOnce() -> Result<(), String>) {
+        use std::io::Write;
+        writeln!(self.file, "\n==== {name}: (native) ====").ok();
+        match check() {
+            Ok(()) => {
+                self.file.flush().ok();
+                println!("  ✓ {name}");
+            }
+            Err(msg) => {
+                writeln!(self.file, "{msg}").ok();
+                self.file.flush().ok();
+                eprintln!("  ✗ {name} — FAILED");
+                self.dump_and_exit(name);
+            }
+        }
     }
 
     fn run_step(&mut self, name: &str, cmd: &str, dir: &Path, show: bool, env: &[(&str, &str)]) {
@@ -3943,6 +4018,28 @@ pub(crate) fn build_component_with_features(
 #[cfg(test)]
 mod trap_grading_tests {
     use super::*;
+
+    #[test]
+    fn needs_clause_lint_flags_only_leading_needs_clauses() {
+        // A retired `(needs …)` clause is caught wherever it opens a line (leading whitespace ok),
+        // reported by 1-based line number — the corpus's exact shape (`  (needs  sum-type-declaration)`).
+        let corpus = "(case\n  (program …)\n  (needs  sum-type-declaration)\n  (output 1))\n";
+        assert_eq!(needs_clause_lines(corpus), vec![3]);
+
+        // A needs-free case yields nothing (the post-strip / steady state).
+        let clean = "(case\n  (program …)\n  (output 1))\n";
+        assert!(needs_clause_lines(clean).is_empty());
+
+        // Only a LEADING `(needs` token counts — a `needs` mentioned mid-line or as prose (e.g. a
+        // comment / a `(def needs …)`) must NOT false-positive and redden an innocent corpus edit.
+        let innocent =
+            "; this generation needs nothing\n(def (needs-check x) x)\n  (call needs 1)\n";
+        assert!(needs_clause_lines(innocent).is_empty());
+
+        // Multiple clauses across a file are all reported, in order.
+        let many = "(needs a)\nx\n  (needs b)\n";
+        assert_eq!(needs_clause_lines(many), vec![1, 3]);
+    }
 
     #[test]
     fn trap_kind_maps_corpus_and_wasmtime_vocabularies_to_one_token() {
