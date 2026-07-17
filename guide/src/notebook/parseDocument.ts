@@ -21,12 +21,15 @@ export type CellDirective =
   | { kind: "widget" }
   | { kind: "hidden" };
 
-/// One cell of a parsed notebook, in document order.
+/// One cell of a parsed notebook, in document order. `id` is an OPTIONAL stable identity for a stacked
+/// per-cell UI (React keys that survive edits/reorder — P0 #13): `parseDocument` does NOT set it (it stays
+/// a pure structural split), a separate `assignIds` pass stamps it, and `setCellSource` preserves it. It's
+/// optional so a manually-constructed cell (tests, programmatic edits) needn't carry one.
 export type Cell =
   /// Markdown prose between code fences (or a non-cadenza fenced block, kept verbatim as prose).
-  | { kind: "prose"; markdown: string }
+  | { kind: "prose"; markdown: string; id?: number }
   /// A ```cadenza code cell: its Cadenza source (fence lines stripped) + its render directive.
-  | { kind: "code"; source: string; directive: CellDirective };
+  | { kind: "code"; source: string; directive: CellDirective; id?: number };
 
 /// The fence markers markdown recognizes. A fence opens with ≥3 of one char; the CLOSING fence must be
 /// the SAME char and at least as long (CommonMark). We support both to match reader expectation.
@@ -243,6 +246,19 @@ export function setCellSource(cells: Cell[], index: number, newSource: string): 
   if (!cell) throw new RangeError(`setCellSource: no cell at index ${index}`);
   if (cell.kind !== "code") throw new TypeError(`setCellSource: cell ${index} is prose, not code`);
   const next = cells.slice();
-  next[index] = { kind: "code", source: newSource, directive: cell.directive };
+  // Preserve the cell's stable `id` (React key) across the edit — only the source changes. Spread the old
+  // cell so an id-LESS cell stays id-less (no injected `id: undefined`) and an id-bearing one keeps its id.
+  next[index] = { ...cell, kind: "code", source: newSource, directive: cell.directive };
   return next;
+}
+
+/// Stamp each cell with a stable monotonic `id` (document order: 0, 1, 2, …), returning a NEW cell array.
+/// A stacked per-cell UI keys its editor list by `id` so a cell keeps identity across edits (an edit via
+/// `setCellSource` preserves the id) — index keys would remount/lose focus on insert/reorder/delete (P0
+/// #13). `parseDocument` deliberately does NOT assign ids (it stays a pure structural split); the UI calls
+/// `assignIds(parseDocument(md))` once. Idempotent in effect (re-stamps 0..n-1); a caller that inserts a
+/// cell should give the new cell a fresh id beyond the current max, not re-run `assignIds` (that would
+/// renumber existing cells and break their keys).
+export function assignIds(cells: Cell[]): Cell[] {
+  return cells.map((cell, i) => ({ ...cell, id: i }));
 }
