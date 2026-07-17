@@ -140,6 +140,32 @@ fn a_failing_test_fails_the_run() {
 }
 
 #[test]
+fn a_test_compile_decline_reports_the_source_location() {
+    // A `cdz test` compile DECLINE (here: an invalid-kebab `@test` name — `small-5`'s `-5` segment is a
+    // digit-led boundary segment, CDZ0201) must report `file:line:col: error [CODE]: …` — the SAME located
+    // shape `cdz check` uses — not a bare `cdz: error [CODE]: …` that drops the anchor. `cdz test` holds the
+    // program's source + span table, and the diagnostic carries a node, so the reporter maps it to a
+    // location (report_errors_located). Pins the fix for the dropped-span gap v-diagnostics flagged.
+    let d = dir("decline-loc");
+    let f = write(&d, "m.cdz", "@test def small-5() = unit\n");
+    let (ok, _stdout, stderr) = run(&["test", &f]);
+    assert!(
+        !ok,
+        "an invalid-kebab @test name declines (non-zero exit): {stderr}"
+    );
+    assert!(
+        stderr.contains("[CDZ0201]"),
+        "the decline carries its code: {stderr}"
+    );
+    // The located shape: the diagnostic is anchored at the file with a line:col, not the bare `cdz:` prefix.
+    assert!(
+        stderr.contains(&format!("{f}:")) && !stderr.trim_start().starts_with("cdz: error"),
+        "the decline reports file:line:col (not a span-dropped `cdz: error …`): {stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
 fn a_directory_with_a_manifest_runs_the_declared_tests() {
     // Project.cdz names `m.cdz` as the suite; a SECOND module NOT in `tests` is ignored. Comments in the
     // manifest are tolerated (the reader wraps a leading `//` around the def; the manifest parser peels it).
