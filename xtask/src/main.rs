@@ -3493,7 +3493,85 @@ fn check(paths: &Paths, profile: &str) {
     // re-introduced tag is a hard, self-explanatory error rather than silent rot.
     log.step_native("needs-free", || needs_free_lint(paths));
 
+    // Baseline title-set agreement: the three gate baselines (`.gate-baseline`, `-rust`,
+    // `-rust-async`) must cover the SAME set of case descriptions — the pass/todo VERDICTS legitimately
+    // differ per backend (a case the rust backend declines is todo there, pass on wasm), but the SET of
+    // cases is the corpus and is backend-independent. A corpus MR that runs the default `gate --save`
+    // (wasm only) + lands leaves the rust/async baselines missing the new/renamed titles, so
+    // `gate --check --target rust` goes red on clean trunk and stays that way silently (this omnibus
+    // `check` gates only the WASM baseline). This lint catches that title-set divergence AT CHECK TIME
+    // — cheap (it reads the three baseline files, no rust rebuild) — so the fix is a `gate --save
+    // --target rust`+`rust-async` heal, caught now rather than ticks later.
+    log.step_native("baseline-titles-agree", || {
+        baseline_titles_agree_lint(paths)
+    });
+
     println!("\ncheck: all green ✓  (full log: {})", log.path.display());
+}
+
+/// The set of case DESCRIPTIONS in a gate-baseline file (the `verdict\tdescription` lines, skipping
+/// the `#` header/blank lines). Pure, so the agreement lint is unit-tested without the filesystem.
+fn baseline_titles(text: &str) -> std::collections::BTreeSet<String> {
+    text.lines()
+        .filter(|l| !l.starts_with('#') && !l.is_empty())
+        .filter_map(|l| l.split_once('\t').map(|(_v, d)| d.to_string()))
+        .collect()
+}
+
+/// Assert the three gate baselines (wasm / rust / rust-async) cover the SAME set of case descriptions.
+/// A title present in one baseline but absent from another is a stale-baseline error (typically a
+/// wasm-only `gate --save` that left the rust baselines behind). Returns an actionable error naming the
+/// diverging titles + the heal command; `Ok(())` when all three agree (or a baseline is absent —
+/// nothing to compare, and `gate --check` already errors on a missing baseline).
+fn baseline_titles_agree_lint(paths: &Paths) -> Result<(), String> {
+    let targets = [
+        (".gate-baseline", GateTarget::Wasm),
+        (".gate-baseline-rust", GateTarget::Rust),
+        (".gate-baseline-rust-async", GateTarget::RustAsync),
+    ];
+    let mut sets: Vec<(&str, std::collections::BTreeSet<String>)> = Vec::new();
+    for (name, target) in targets {
+        let path = baseline_path(paths, target);
+        // A baseline that doesn't exist yet is not a divergence (the rust baselines are opt-in to
+        // create); `gate --check --target <t>` is what errors on a missing one. Skip absent files.
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        sets.push((name, baseline_titles(&text)));
+    }
+    if sets.len() < 2 {
+        return Ok(());
+    }
+    // The union of all titles is the reference set; report any baseline missing any of them.
+    let mut union: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for (_, s) in &sets {
+        union.extend(s.iter().cloned());
+    }
+    let mut problems: Vec<String> = Vec::new();
+    for (name, s) in &sets {
+        let missing: Vec<&String> = union.difference(s).collect();
+        if !missing.is_empty() {
+            problems.push(format!(
+                "{name} is missing {} title(s) present in another baseline:\n    {}",
+                missing.len(),
+                missing
+                    .iter()
+                    .map(|d| d.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n    ")
+            ));
+        }
+    }
+    if problems.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "the gate baselines disagree on their case-title SET (a wasm-only `gate --save` likely left \
+         the rust baselines stale). Heal with `cargo xtask gate --save --target rust` and `--target \
+         rust-async` (re-run each backend's gate + re-save), so all three cover the same cases. \
+         Divergences:\n  {}",
+        problems.join("\n  ")
+    ))
 }
 
 /// The 1-based line numbers in `text` that open a `(needs …)` clause — a line whose first
@@ -4103,6 +4181,64 @@ mod trap_grading_tests {
         std::fs::create_dir_all(root.join("spec/semantics")).unwrap();
         let err = needs_free_lint(&paths).expect_err("empty corpus dir must be a hard error");
         assert!(err.contains("no *.sexp corpus files"), "got: {err}");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn baseline_titles_extracts_descriptions_ignoring_verdict_and_header() {
+        // Descriptions come from the `verdict\tdescription` lines; `#` header + blanks are skipped, and
+        // the VERDICT is dropped (only the case-title SET matters — verdicts differ per backend).
+        let text =
+            "# gate baseline\npass\ta case that passes\ntodo\ta case the backend declines\n\n";
+        let titles = baseline_titles(text);
+        assert!(titles.contains("a case that passes"));
+        assert!(titles.contains("a case the backend declines"));
+        assert_eq!(titles.len(), 2);
+    }
+
+    #[test]
+    fn baseline_titles_agree_lint_flags_a_wasm_only_stale_rust_baseline() {
+        // Simulate the recurring bug: wasm baseline has a NEW case the rust baselines lack (a wasm-only
+        // `gate --save`). The lint must flag rust + rust-async as missing that title, with the heal cmd.
+        let tick = std::process::id();
+        let root = std::env::temp_dir().join(format!("baseline-agree-{tick}"));
+        let sem = root.join("spec/semantics");
+        std::fs::create_dir_all(&sem).unwrap();
+        let paths = Paths {
+            seed: root.join("implementation/seed"),
+            repo: root.clone(),
+        };
+        // wasm has the extra title; rust + async share the old set only.
+        std::fs::write(
+            sem.join(".gate-baseline"),
+            "pass\tshared case\npass\tNEW wasm-only case\n",
+        )
+        .unwrap();
+        std::fs::write(sem.join(".gate-baseline-rust"), "todo\tshared case\n").unwrap();
+        std::fs::write(sem.join(".gate-baseline-rust-async"), "todo\tshared case\n").unwrap();
+        let err = baseline_titles_agree_lint(&paths).expect_err("a title-set divergence must fail");
+        assert!(err.contains("NEW wasm-only case"), "got: {err}");
+        assert!(
+            err.contains("gate --save --target rust"),
+            "heal cmd named: {err}"
+        );
+
+        // Now make all three agree (verdicts still differ) → passes: the SET matches, verdicts are free.
+        std::fs::write(
+            sem.join(".gate-baseline-rust"),
+            "todo\tshared case\ntodo\tNEW wasm-only case\n",
+        )
+        .unwrap();
+        std::fs::write(
+            sem.join(".gate-baseline-rust-async"),
+            "pass\tshared case\ntodo\tNEW wasm-only case\n",
+        )
+        .unwrap();
+        assert!(
+            baseline_titles_agree_lint(&paths).is_ok(),
+            "agreeing title-sets with differing verdicts must pass"
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }
