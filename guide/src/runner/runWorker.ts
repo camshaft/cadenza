@@ -142,7 +142,11 @@ async function runTests(job: RunJob): Promise<RunResult> {
       continue;
     }
     try {
-      (fn as () => unknown)();
+      // AWAIT the invoke: a test export may be async (returns a Promise) — invoking it synchronously and
+      // marking pass:true immediately would record a FALSE PASS for an async test that later rejects
+      // (its trap/assertion escaping the sync try/catch). Awaiting a thenable makes an async rejection land
+      // in the catch below. A plain (non-thenable) return awaits to itself — no behavior change.
+      await (fn as () => unknown)();
       results.push({ name, pass: true });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
