@@ -11,7 +11,7 @@
 /// `read-form` + a test here. Reuses `strlex`'s char helpers (`char-at`, `is-digit`, `scan-number`) and
 /// `parse-db`'s `Node`/`Tree`/`add-node`/`empty-tree`.
 
-import { Node, Tree, empty-tree, add-node, node-at, is-lit, is-bool-lit, is-bin-op } from "parse-db"
+import { Node, Tree, empty-tree, add-node, node-at, is-lit, is-bool-lit, is-bin-op, is-if } from "parse-db"
 
 /// The 1-char string at position `i` of `s`, or `""` past the end. (strlex has an identical private helper;
 /// sread keeps its own so it depends only on parse-db, not strlex's internals.)
@@ -87,18 +87,31 @@ def read-form(s: String, i: Int64, tree: Tree) =
            else (match add-node(tree, Node.NLit(0)) with | (id, t1) => (id, k, t1)))))
      else (match add-node(tree, Node.NLit(0)) with | (id, t1) => (id, j + 1, t1)))))))
 
-/// After a `(` at index `i`: read the operator SYMBOL atom, then two operand forms, then consume the `)`.
-/// Builds `NBin(op-code, leftId, rightId)`. A missing `)` is tolerated (error recovery). Only binary prefix
-/// forms this slice — an unrecognized head symbol still reads two operands and builds `NBin(-1, …)` (which
-/// infer will type as `TErr`), keeping the reader total.
+/// Consume a `)` at/after index `i` (skipping space); tolerate a missing one. Returns the next index.
+def close-paren(s: String, i: Int64) =
+  (let k = skip-space(s, i) in (if (char-at(s, k) == ")") then k + 1 else k))
+
+/// After a `(` at index `i`: read the HEAD atom and dispatch. `(if c t e)` → `NIf(cond,then,else)` (three
+/// sub-forms); otherwise a binary PREFIX op `(sym a b)` → `NBin(op-code, a, b)`. A missing `)` is tolerated.
+/// The reader stays TOTAL: an unrecognized head symbol still reads two operands as `NBin(-1,…)` (→ infer
+/// TErr). (`let`/vars are the next slice — they need a name-intern table threaded through the read.)
 def read-paren-form(s: String, i: Int64, tree: Tree) =
   (let h = skip-space(s, i) in
    (match scan-atom(s, h, "") with | (sym, a0) =>
-     (match read-form(s, a0, tree) with | (leftId, a1, t1) =>
-       (match read-form(s, a1, t1) with | (rightId, a2, t2) =>
-         (let a3 = skip-space(s, a2) in
-          (let a4 = (if (char-at(s, a3) == ")") then a3 + 1 else a3) in
-           (match add-node(t2, Node.NBin(op-code-of(sym), leftId, rightId)) with | (id, t3) => (id, a4, t3))))))))
+     (if (sym == "if") then read-if-form(s, a0, tree)
+      else
+        (match read-form(s, a0, tree) with | (leftId, a1, t1) =>
+          (match read-form(s, a1, t1) with | (rightId, a2, t2) =>
+            (let a3 = close-paren(s, a2) in
+             (match add-node(t2, Node.NBin(op-code-of(sym), leftId, rightId)) with | (id, t3) => (id, a3, t3))))))))
+
+/// After `(if` (index `i` past the `if` atom): read cond, then, else forms + consume `)` → `NIf`.
+def read-if-form(s: String, i: Int64, tree: Tree) =
+  (match read-form(s, i, tree) with | (condId, a1, t1) =>
+    (match read-form(s, a1, t1) with | (thenId, a2, t2) =>
+      (match read-form(s, a2, t2) with | (elseId, a3, t3) =>
+        (let a4 = close-paren(s, a3) in
+         (match add-node(t3, Node.NIf(condId, thenId, elseId)) with | (id, t4) => (id, a4, t4))))))
 
 /// The reader ENTRY: source text → `(rootId, Tree)`, the shape `eval-db.eval-tree(tree, root)` consumes.
 def read-source(s: String) = match read-form(s, 0, empty-tree()) with | (root, _, tree) => (root, tree)
@@ -162,5 +175,30 @@ def sr-prefix-eqeq() =
   // "(== 5 5)" → op 61 (the two-char == symbol scans as one atom).
   (match read-source("(== 5 5)") with | (root, tree) =>
     (if is-bin-op(tree, root, 61) then unit else trap("root is a == Bin (op 61)")))
+
+@test
+def sr-if-shape() =
+  // "(if true 1 2)" → NIf; cond is a bool literal, then/else the int literals.
+  (match read-source("(if true 1 2)") with | (root, tree) =>
+    (match node-at(tree, root) with
+      | Option.Some(Node.NIf(cond, thn, els)) =>
+        (if is-bool-lit(tree, cond, 1) then (if is-lit(tree, thn, 1) then (if is-lit(tree, els, 2) then unit else trap("else NLit 2")) else trap("then NLit 1")) else trap("cond is true"))
+      | _ => trap("root is an NIf")))
+
+@test
+def sr-if-with-comparison-cond() =
+  // "(if (< 1 2) 10 20)" → NIf whose cond is a < Bin (nested prefix in the condition).
+  (match read-source("(if (< 1 2) 10 20)") with | (root, tree) =>
+    (match node-at(tree, root) with
+      | Option.Some(Node.NIf(cond, _, _)) => (if is-bin-op(tree, cond, 60) then unit else trap("cond is a < Bin"))
+      | _ => trap("root is an NIf")))
+
+@test
+def sr-nested-if-in-else() =
+  // "(if false 1 (if true 2 3))" → else-branch is itself an NIf.
+  (match read-source("(if false 1 (if true 2 3))") with | (root, tree) =>
+    (match node-at(tree, root) with
+      | Option.Some(Node.NIf(_, _, els)) => (if is-if(tree, els) then unit else trap("else is a nested if"))
+      | _ => trap("root is an NIf")))
 
 export { skip-space, read-form, read-source, scan-atom, op-code-of }
