@@ -39,19 +39,21 @@ use lsp_types::notification::{
     PublishDiagnostics,
 };
 use lsp_types::request::{
-    CodeActionRequest, CodeLensRequest, Completion, DocumentSymbolRequest, GotoDefinition,
-    HoverRequest, References, Request as _, SemanticTokensFullRequest, Shutdown,
+    CodeActionRequest, CodeLensRequest, Completion, DocumentHighlightRequest,
+    DocumentSymbolRequest, GotoDefinition, HoverRequest, References, Request as _,
+    SemanticTokensFullRequest, Shutdown,
 };
 use lsp_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionParams, CodeActionResponse,
     CodeLens, CodeLensOptions, CodeLensParams, CompletionItem, CompletionItemKind,
     CompletionOptions, CompletionParams, CompletionResponse, Diagnostic, DiagnosticSeverity,
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-    DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams, GotoDefinitionResponse,
-    Hover, HoverContents, HoverParams, HoverProviderCapability, InitializeParams, InitializeResult,
-    Location, MarkedString, Position, PublishDiagnosticsParams, Range, ReferenceParams,
-    SemanticToken, SemanticTokenType, SemanticTokens, SemanticTokensFullOptions,
-    SemanticTokensLegend, SemanticTokensOptions, SemanticTokensParams, SemanticTokensResult,
+    DocumentHighlight, DocumentHighlightKind, DocumentHighlightParams, DocumentSymbolParams,
+    DocumentSymbolResponse, GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents,
+    HoverParams, HoverProviderCapability, InitializeParams, InitializeResult, Location,
+    MarkedString, Position, PublishDiagnosticsParams, Range, ReferenceParams, SemanticToken,
+    SemanticTokenType, SemanticTokens, SemanticTokensFullOptions, SemanticTokensLegend,
+    SemanticTokensOptions, SemanticTokensParams, SemanticTokensResult,
     SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo, SymbolKind,
     TextDocumentContentChangeEvent, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit,
     Uri, WorkDoneProgressOptions, WorkspaceEdit,
@@ -107,6 +109,10 @@ fn capabilities() -> ServerCapabilities {
         hover_provider: Some(HoverProviderCapability::Simple(true)),
         definition_provider: Some(lsp_types::OneOf::Left(true)),
         references_provider: Some(lsp_types::OneOf::Left(true)),
+        // Highlight every occurrence of the symbol under the cursor WITHIN the buffer (the editor's
+        // subtle same-symbol highlight as you rest the caret on a name) — the single-document sibling of
+        // find-references, backed by the same `UsesOf` query + shadowing guard.
+        document_highlight_provider: Some(lsp_types::OneOf::Left(true)),
         // The document outline (Ctrl-Shift-O / the breadcrumb bar) — every top-level declaration, backed
         // by the `Symbols` query.
         document_symbol_provider: Some(lsp_types::OneOf::Left(true)),
@@ -282,6 +288,11 @@ impl Server {
                 let result = self.references(&params);
                 self.send_response(Response::new_ok(id, result))
             }
+            DocumentHighlightRequest::METHOD => {
+                let (id, params) = cast_request::<DocumentHighlightRequest>(req)?;
+                let result = self.document_highlight(&params);
+                self.send_response(Response::new_ok(id, result))
+            }
             Completion::METHOD => {
                 let (id, params) = cast_request::<Completion>(req)?;
                 let result = self.completion(&params);
@@ -425,6 +436,30 @@ impl Server {
             uri,
             include_decl,
         ))
+    }
+
+    /// Answer a `textDocument/documentHighlight`: every occurrence of the symbol under the cursor WITHIN
+    /// THIS buffer — the editor's live same-symbol highlight (VS Code paints the caret's symbol wherever
+    /// else it appears). This is the SINGLE-DOCUMENT sibling of `references`: unlike find-references it
+    /// never spans files, so it uses the single-buffer `references_at` (with the declaration included, so
+    /// the def site highlights too) rather than the cross-file package path. Each hit becomes a `Text`
+    /// highlight (we don't distinguish read/write — Cadenza bindings are immutable, so every occurrence
+    /// is a read). `None`/empty when the cursor is not on a resolvable name — total, like `references`.
+    fn document_highlight(
+        &self,
+        params: &DocumentHighlightParams,
+    ) -> Option<Vec<DocumentHighlight>> {
+        let pos = &params.text_document_position_params;
+        let uri = &pos.text_document.uri;
+        let doc = self.docs.get(uri)?;
+        let highlights = references_at(&doc.text, doc.is_ml, pos.position, uri, true)
+            .into_iter()
+            .map(|loc| DocumentHighlight {
+                range: loc.range,
+                kind: Some(DocumentHighlightKind::TEXT),
+            })
+            .collect();
+        Some(highlights)
     }
 
     /// Answer a `textDocument/completion`: the names in scope at the cursor — local bindings (backed by
@@ -3462,6 +3497,85 @@ mod tests {
             "the genuine top-level use should be found, got {refs:?}"
         );
         assert_eq!(refs[0].range.start.line, 1);
+    }
+
+    #[test]
+    fn document_highlight_marks_every_occurrence_including_the_declaration() {
+        // documentHighlight is the single-document sibling of references, but ALWAYS includes the
+        // declaration (the editor highlights the def site too, unlike the default find-references). On a
+        // `helper` used twice + declared once, a highlight from any occurrence marks all three lines.
+        let (mut server, _client) = memory_server();
+        let uri = test_uri();
+        let text = "def helper(x: Int64) -> Int64 = x\n\
+                    def a = helper(1)\n\
+                    def b = helper(2)";
+        server
+            .handle_notification(did_open_note(&uri, text))
+            .expect("didOpen dispatches");
+        // Cursor on the `helper` use in `a` (line 1, col 8).
+        let params = DocumentHighlightParams {
+            text_document_position_params: lsp_types::TextDocumentPositionParams {
+                text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+                position: Position::new(1, 8),
+            },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        };
+        let hls = server
+            .document_highlight(&params)
+            .expect("a highlight list");
+        let lines: Vec<u32> = hls.iter().map(|h| h.range.start.line).collect();
+        assert!(
+            lines.contains(&0) && lines.contains(&1) && lines.contains(&2),
+            "declaration (0) + both uses (1,2) highlighted: {lines:?}"
+        );
+        // Every hit is a plain TEXT highlight (Cadenza bindings are immutable — no read/write split).
+        assert!(
+            hls.iter()
+                .all(|h| h.kind == Some(DocumentHighlightKind::TEXT)),
+            "all highlights are TEXT kind: {hls:?}"
+        );
+    }
+
+    #[test]
+    fn document_highlight_off_a_name_is_empty_not_none() {
+        // A cursor on a literal (not a resolvable name) yields an EMPTY list, not None and not a panic —
+        // total, mirroring references_off_a_name_is_empty. (None is reserved for an unopened document.)
+        let (mut server, _client) = memory_server();
+        let uri = test_uri();
+        server
+            .handle_notification(did_open_note(&uri, "def answer = 42"))
+            .expect("didOpen dispatches");
+        // Cursor on the `42` literal (col 13).
+        let params = DocumentHighlightParams {
+            text_document_position_params: lsp_types::TextDocumentPositionParams {
+                text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+                position: Position::new(0, 13),
+            },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        };
+        let hls = server
+            .document_highlight(&params)
+            .expect("Some(empty), not None");
+        assert!(
+            hls.is_empty(),
+            "a literal has no symbol to highlight: {hls:?}"
+        );
+    }
+
+    #[test]
+    fn document_highlight_capability_is_advertised() {
+        // The server must advertise documentHighlight so a client requests it (the caret same-symbol
+        // highlight is off by default unless the server offers the provider).
+        let value = serde_json::to_value(capabilities()).expect("serializes");
+        assert_eq!(
+            value
+                .get("documentHighlightProvider")
+                .and_then(|v| v.as_bool()),
+            Some(true),
+            "documentHighlightProvider must be advertised: {value}"
+        );
     }
 
     #[test]
