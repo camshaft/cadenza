@@ -16926,6 +16926,58 @@ mod match_engine {
         }
     }
 
+    /// A NESTED `(@ …)` annotation — one in EXPRESSION position (a `do`-block, an argument), NOT wrapping a
+    /// top-level def — must report ONE clean CDZ0201 "cannot appear here", not a CASCADE of unbound-name
+    /// errors for its internal tokens. `strip_annotations` unwraps a well-formed def-wrapping `(@ …)` in
+    /// place; the top-level `malformed_annotation_forms` scan (in `collect_faults`) catches a top-level
+    /// survivor — but it MISSES a nested one, which fell through to resolve as "unbound name `@`" PLUS a
+    /// spurious unbound-name for each internal token (`param`/`tag`, `widget`/`x`, …) — a baffling pile for
+    /// a user who wrote an annotation, not name references (v-metaprogramming diagnostic-quality report,
+    /// 2026-07-17). A resolve-time `(@ …)` guard now reports it once and resolves none of its internals.
+    #[test]
+    fn a_nested_annotation_reports_one_clean_reject_not_an_unbound_name_cascade() {
+        use crate::testkit::parse;
+        for (src, internal_tokens) in [
+            // nested @param in a do-block (the reported repro A)
+            (
+                "(module m (def (main) (do (: (@ (param (: widget slider)) width) Int64) 1)) (export main))",
+                ["param", "widget", "slider"].as_slice(),
+            ),
+            // nested @tag — proves it is general to all annotations (repro B)
+            (
+                "(module m (def (main) (do (: (@ (tag x) foo) Int64) 1)) (export main))",
+                ["tag", "foo"].as_slice(),
+            ),
+        ] {
+            let ds = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+            // ONE clean CDZ0201 naming the misplacement.
+            let anno = ds
+                .iter()
+                .find(|d| d.message.contains("annotation cannot appear here"))
+                .unwrap_or_else(|| panic!("a nested `(@ …)` must be named: {src}"));
+            assert_eq!(
+                anno.code.as_deref(),
+                Some("CDZ0201"),
+                "got: {}",
+                anno.message
+            );
+            // NO cascade: the misleading "unbound name `@`" and the annotation's internal tokens must NOT
+            // surface as spurious unbound-name errors.
+            assert!(
+                !ds.iter().any(|d| d.message.contains("unbound name `@`")),
+                "the misleading `unbound name @` is superseded: {src}"
+            );
+            for tok in internal_tokens {
+                assert!(
+                    !ds.iter()
+                        .any(|d| d.message.contains(&format!("unbound name `{tok}`"))),
+                    "the annotation's internal token `{tok}` must NOT cascade an unbound-name error: {src} — {:?}",
+                    ds.iter().map(|d| &d.message).collect::<Vec<_>>()
+                );
+            }
+        }
+    }
+
     /// A MALFORMED `@tag` — `(@ (tag …) def)` whose argument is not exactly ONE STRING — must be REJECTED,
     /// not silently dropped. `strip_annotations` records the tag only for `(tag "string")`; any other arg
     /// shape (`(tag 5)`, `(tag foo)`, `(tag)`, `(tag "a" "b")`) recorded the tag NOWHERE, so the def was
