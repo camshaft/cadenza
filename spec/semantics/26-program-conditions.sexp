@@ -1018,3 +1018,103 @@
                       ((Option.None) false))))))
             (export main)))
   (output (: true Bool)))
+
+; ── b(sub): a no-UNDERFLOW discharge — for x >= 0, (x - 1) >= MININT (the lower-bound / `-` direction) ──
+; The b1 discharge pinned `+`/overflow (upper bound vs MAXINT). Overflow elision (b3) also covers `-`/`*`;
+; this pins the SUBTRACTION / lower-bound direction the same convention handles: for a checked `x - 1` under
+; `@requires(>= x 0)`, the no-underflow obligation is `GE (sub x 1) MININT` (x-1 must not fall below the
+; Int64 minimum). The arithmetic base gains a `ge` order + `sub` head + a `mono-sub-r` rule (subtracting a
+; constant from both sides of a `>=` preserves it) + the CHECKED ground `ge-ax`. From `assume (GE x 0)`:
+; mono-sub-r → `GE (sub x 1) (sub 0 1)` = `GE (sub x 1) -1`, and `ge-ax (sub 0 1) MININT` mints `GE -1 MININT`
+; (eval-ground (sub 0 1) = -1, and -1 >= MININT holds), then trans-ge closes to `GE (sub x 1) MININT`.
+
+(case "b(sub): a no-underflow obligation is DISCHARGED — for x >= 0, (x - 1) >= MININT via monotonicity + a CHECKED numeral fact"
+  (doc    "The subtraction / lower-bound dual of the b1 overflow discharge. A checked `x - 1 : Int64` under
+           `@requires(>= x 0)` has the no-underflow obligation `GE (sub x 1) MININT`. The `bounds` kernel
+           discharges it with no arithmetic primitive: from `assume (GE x 0)`, `mono-sub-r` (subtracting 1
+           from both sides of a `>=`) gives `GE (sub x 1) (sub 0 1)`, then the CHECKED ground axiom
+           `ge-ax (sub 0 1) MININT` mints `GE (sub 0 1) MININT` — only because `eval-ground (sub 0 1) = -1`
+           and `-1 >= MININT` holds — and `trans-ge` closes it to `GE (sub x 1) MININT`. Pins that the
+           discharge convention generalizes to SUBTRACTION and the lower-bound (MININT) direction the b3
+           elision covers for `-`, using the same side-condition-checked axiom base. `sub`=Const 3, `ge`=
+           Const 2.")
+  (module "bounds"
+    (do
+      (type Term (Var Int64) (Num Int64) (Comb Term Term) (Const Int64))
+      (type Thm (Seq (List Term) Term))
+      (def (term-eq (: a Term) (: b Term))
+        (match a
+          ((Term.Var n)    (match b ((Term.Var m) (= n m)) (_ false)))
+          ((Term.Num n)    (match b ((Term.Num m) (= n m)) (_ false)))
+          ((Term.Const c)  (match b ((Term.Const d) (= c d)) (_ false)))
+          ((Term.Comb x y) (match b ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) (_ false)))))
+      (def (sub (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 3) a) b))
+      (def (ge  (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 2) a) b))
+      (def (minint) (Term.Num -9223372036854775808))
+      (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
+      (def (hyps  (: th Thm)) (match th ((Thm.Seq h _) h)))
+      (def (assume (: p Term)) (Thm.Seq (list p) p))
+      ; ground evaluator over numerals + `sub`
+      (def (eval-ground (: t Term))
+        (match t
+          ((Term.Num n) (Option.Some n))
+          ((Term.Comb (Term.Comb (Term.Const 3) a) b)
+            (match (eval-ground a)
+              ((Option.Some av) (match (eval-ground b)
+                                  ((Option.Some bv) (Option.Some (- av bv)))
+                                  ((Option.None) (Option.None))))
+              ((Option.None) (Option.None))))
+          (_ (Option.None))))
+      ; CHECKED ground axiom for `>=`: mint |- (ge lhs rhs) only when both ground-numeric and lhs >= rhs
+      (def (ge-ax (: lhs Term) (: rhs Term))
+        (match (eval-ground lhs)
+          ((Option.Some lv) (match (eval-ground rhs)
+                              ((Option.Some rv) (if (>= lv rv)
+                                                  (Option.Some (Thm.Seq (list) (ge lhs rhs)))
+                                                  (Option.None)))
+                              ((Option.None) (Option.None))))
+          ((Option.None) (Option.None))))
+      ; RULE: monotonicity of - on the right — from G |- (ge x c) derive G |- (ge (sub x k) (sub c k))
+      (def (mono-sub-r (: th Thm) (: k Term))
+        (match (concl th)
+          ((Term.Comb (Term.Comb (Term.Const 2) x) c)
+            (Option.Some (Thm.Seq (hyps th) (ge (sub x k) (sub c k)))))
+          (_ (Option.None))))
+      ; RULE: transitivity of >= — from G |- (ge a b) and D |- (ge b c) derive G++D |- (ge a c)
+      (def (trans-ge (: t1 Thm) (: t2 Thm))
+        (match (concl t1)
+          ((Term.Comb (Term.Comb (Term.Const 2) a) b)
+            (match (concl t2)
+              ((Term.Comb (Term.Comb (Term.Const 2) b2) c)
+                (if (term-eq b b2)
+                  (Option.Some (Thm.Seq (List.concat (hyps t1) (hyps t2)) (ge a c)))
+                  (Option.None)))
+              (_ (Option.None))))
+          (_ (Option.None))))
+      (export (. Term *))
+      (export Thm)
+      (export term-eq sub ge minint concl hyps assume ge-ax mono-sub-r trans-ge)))
+  (input  (do
+            (import "bounds" (Term Thm term-eq sub ge minint concl hyps assume ge-ax mono-sub-r trans-ge))
+            (def (main)
+              (let ((x    (Term.Var 0))
+                    (one  (Term.Num 1))
+                    (zero (Term.Num 0)))
+                ; obligation: (ge (sub x 1) MININT) — x-1 does not underflow
+                (let ((goal (ge (sub x one) (minint))))
+                  ; step 1: assume (ge x 0)
+                  (let ((pre (assume (ge x zero))))
+                    ; step 2: monotonicity → (ge (sub x 1) (sub 0 1))
+                    (match (mono-sub-r pre one)
+                      ((Option.Some step1)
+                        ; step 3: CHECKED numeral fact (ge (sub 0 1) MININT) — -1 >= MININT holds
+                        (match (ge-ax (sub zero one) (minint))
+                          ((Option.Some fact)
+                            ; step 4: transitivity → (ge (sub x 1) MININT)
+                            (match (trans-ge step1 fact)
+                              ((Option.Some proof) (term-eq (concl proof) goal))
+                              ((Option.None) false)))
+                          ((Option.None) false)))
+                      ((Option.None) false))))))
+            (export main)))
+  (output (: true Bool)))
