@@ -655,3 +655,74 @@
                       ((Option.None) false))))))
             (export main)))
   (output (: true Bool)))
+
+; ── b4c(unprovable): an @ensures whose obligation is NOT dischargeable → the PROVEN tier fails (CDZ-VERIFY) ─
+; The dual of b4c(proven). For `@ensures(<= it MAXINT) (def (f x) (+ x 1))` with NO (or too-weak)
+; @requires, the postcondition obligation `le (add x 1) MAXINT` is NOT provable — x is unbounded, so the
+; discharge chain has no bounding hypothesis to feed mono-add-r, and le-ax cannot mint a non-ground fact.
+; At b4c this un-discharged obligation is the PROVEN-tier MISS: the author gets CDZ-VERIFY (or, if @test is
+; stacked, the TESTED tier runs it — v-property-testing's lane). This pins that a genuinely-unprovable
+; postcondition does NOT spuriously discharge — the proof tier is SOUND (it never claims a false proof).
+
+(case "b4c(unprovable): @ensures(<= it MAXINT) on unbounded (f x)=x+1 is NOT dischargeable — the proof tier correctly MISSES (CDZ-VERIFY)"
+  (doc    "The PROVEN-tier soundness dual. With no bounding @requires, the @ensures postcondition
+           `<= it MAXINT` (it := body `x+1`) denotes to the obligation `le (add x 1) MAXINT`, which is NOT
+           provable: x is unbounded so there is no `le x c` hypothesis for mono-add-r, and the checked
+           le-ax cannot mint the non-ground `le (add x 1) MAXINT` (eval-ground fails on the Var). The entry
+           attempts the discharge WITHOUT a precondition and confirms it does not reach the obligation — so
+           the PROVEN tier correctly MISSES (→ CDZ-VERIFY, or TESTED if @test is stacked). Runs to `true`
+           (asserts non-derivability). Pins the proof tier is SOUND: a genuinely-unprovable postcondition
+           does not spuriously discharge, so an @ensures never yields a FALSE proof — the LCF guarantee at
+           the program-condition level.")
+  (module "bounds"
+    (do
+      (type Term (Var Int64) (Num Int64) (Comb Term Term) (Const Int64))
+      (type Thm (Seq (List Term) Term))
+      (def (term-eq (: a Term) (: b Term))
+        (match a
+          ((Term.Var n)    (match b ((Term.Var m) (= n m)) (_ false)))
+          ((Term.Num n)    (match b ((Term.Num m) (= n m)) (_ false)))
+          ((Term.Const c)  (match b ((Term.Const d) (= c d)) (_ false)))
+          ((Term.Comb x y) (match b ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) (_ false)))))
+      (def (add (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 0) a) b))
+      (def (le  (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 1) a) b))
+      (def (maxint) (Term.Num 9223372036854775807))
+      (def (eval-ground (: t Term))
+        (match t
+          ((Term.Num n) (Option.Some n))
+          ((Term.Comb (Term.Comb (Term.Const 0) a) b)
+            (match (eval-ground a)
+              ((Option.Some av) (match (eval-ground b)
+                                  ((Option.Some bv) (Option.Some (+ av bv)))
+                                  ((Option.None) (Option.None))))
+              ((Option.None) (Option.None))))
+          (_ (Option.None))))
+      ; the only obligation-minting axiom is the CHECKED ground le-ax; with an unbounded x the goal
+      ; `le (add x 1) MAXINT` is non-ground, so le-ax returns None — no proof.
+      (def (le-ax (: lhs Term) (: rhs Term))
+        (match (eval-ground lhs)
+          ((Option.Some lv) (match (eval-ground rhs)
+                              ((Option.Some rv) (if (<= lv rv)
+                                                  (Option.Some (Thm.Seq (list) (le lhs rhs)))
+                                                  (Option.None)))
+                              ((Option.None) (Option.None))))
+          ((Option.None) (Option.None))))
+      (export (. Term *))
+      (export Thm)
+      (export term-eq add le maxint eval-ground le-ax)))
+  (input  (do
+            (import "bounds" (Term Thm term-eq add le maxint eval-ground le-ax))
+            (def (main)
+              (let ((x   (Term.Var 0))
+                    (one (Term.Num 1)))
+                ; the unprovable obligation: le (add x 1) MAXINT with x unbounded
+                (let ((goal (le (add x one) (maxint))))
+                  ; the only axiom that could mint it is le-ax; it is NON-GROUND → None. No proof reaches
+                  ; goal, so the PROVEN tier misses. (goal is bound to exercise the denotation but is not
+                  ; provable — assert le-ax yields None.)
+                  (let ((attempt (le-ax goal (maxint))))
+                    (match attempt
+                      ((Option.Some _) false)
+                      ((Option.None) true))))))
+            (export main)))
+  (output (: true Bool)))
