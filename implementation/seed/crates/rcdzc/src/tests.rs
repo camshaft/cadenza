@@ -5867,6 +5867,49 @@ fn a_helper_state_advance_in_a_branch_lost_to_a_later_read_is_a_known_miscompile
     }
 }
 
+/// KNOWN LATENT SILENT MISCOMPILE — the WIDEST witness of the SAME call-boundary bug as the pin above
+/// (breaker mapped the blast radius 2026-07-17; v-effects confirmed + rescoped the queued fix to "thread
+/// each called helper's advanced out-state back to the caller's continuation", NOT branch-specific — the
+/// locus is `effects.rs` `call_reaches_discharged_effect`, the cross-function inline path for a NON-TAIL
+/// call). The bug is NOT a branch: an effectful STATE-ADVANCING op in a CALLED HELPER has its handler-state
+/// advance dropped at the call-return boundary (verified: conditional/unconditional put, let-init/sequence
+/// all miscompile; inline in one body is sound). This DOUBLE-CALL witness is the strongest sentinel: two
+/// `demand`s of the SAME key — the first should fill `5→25`, the second should HIT it (get→Some 25→25), so
+/// `a + b = 50`. But the first `demand`'s `put` out-state never reaches the second call, so the SECOND ALSO
+/// MISSES and RE-COMPUTES `999` → `25 + 999` = 1024. The cumulative loss + re-compute across two calls
+/// proves the advance never reaches the caller's continuation (not merely a one-shot arm-thread bug).
+/// When the call-out-state fix lands, this becomes "50" — FLIP to assert_eq!(v, "50") then.
+#[test]
+fn two_helper_state_advances_both_lost_to_the_caller_is_the_widest_known_miscompile() {
+    use crate::testkit::parse;
+    let src = "(do \
+        (effect Db (op get (-> Int64 (Option Int64))) (op put (-> (Tuple Int64 Int64) Unit))) \
+        (def (demand (: k Int64) (: compute Int64)) \
+          (match (Db.get k) \
+            (((. Option Some) v) v) \
+            (((. Option None) u) (do (Db.put (tuple k compute)) compute)))) \
+        (def (run-twice) \
+          (handle Db (Map.empty) \
+            ((get (k) s (resume (Map.lookup s k) s)) \
+             (put (kv) s (match kv ((tuple k v) (resume unit (Map.insert s k v)))))) \
+            (let ((a (demand 5 25)) (b (demand 5 999))) (+ a b)))) \
+        (export run-twice))";
+    // Currently COMPILES (silent — a wrong value, not a decline). Pin that it still compiles (catches a
+    // regression to a decline/leak) — the value is WRONG today: the first `demand`'s `put` out-state is
+    // dropped at the call boundary, so `b = demand 5 999` MISSES and re-computes 999 → 25 + 999 = 1024,
+    // not the sound `25 + 25` = 50.
+    let bytes = compile_component(&crate::codec::encode(&parse(src)))
+        .expect("known-latent silent miscompile: currently COMPILES (does not decline) — see doc");
+    if let Some(v) = run_linked(&bytes, "run-twice") {
+        // KNOWN-WRONG: the second `demand` re-computes (dropped out-state) → 25 + 999 = 1024. When the
+        // call-out-state fix lands, this becomes "50" — FLIP to assert_eq!(v, "50") then.
+        assert_eq!(
+            v, "1024",
+            "KNOWN MISCOMPILE (helper-call out-state lost): 2nd demand re-computes → 1024; should be 50 once fixed"
+        );
+    }
+}
+
 /// The residual sub-case of the effectful-helper-in-a-self-call-arg family: an inlined helper whose perform
 /// sits UNDER A CONDITIONAL (`if`/`match`) — either in a branch (`if c then acc + B.b x else acc`) or in the
 /// condition (`if B.b x == 1 then …`). The deep-fresh-copy fixes fold a helper that performs on its
