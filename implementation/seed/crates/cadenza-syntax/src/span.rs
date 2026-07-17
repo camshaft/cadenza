@@ -137,4 +137,69 @@ mod tests {
         let s = Span::new(3, 11);
         assert_eq!(Span::from(Range::from(s)), s);
     }
+
+    /// A tiny deterministic PRNG (SplitMix64) — reproducible fuzz without a dependency, matching the
+    /// lexer/codec/parser house style (the crate stays "plain").
+    struct SplitMix64(u64);
+    impl SplitMix64 {
+        fn next(&mut self) -> u64 {
+            self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+            z ^ (z >> 31)
+        }
+    }
+
+    #[test]
+    fn merge_is_a_bounding_semilattice_over_generated_spans() {
+        // `Span::merge` is a min-start/max-end bounding join — a SEMILATTICE. `merge_is_the_bounding_span`
+        // pins a few cases; this sweeps the algebraic laws that the lexer (extending a token span through
+        // each bumped char) and every arena builder (a parent span = the merge of its children) rely on:
+        //   * IDEMPOTENT:    a.merge(a) == a
+        //   * COMMUTATIVE:   a.merge(b) == b.merge(a)
+        //   * ASSOCIATIVE:   (a.merge(b)).merge(c) == a.merge(b.merge(c))
+        //   * ABSORBING:     a.merge(b) contains_span BOTH a and b  (for well-formed start<=end spans)
+        //   * the merge is the exact bounding box: start = min starts, end = max ends.
+        // A regression in any (e.g. a max/min swap, or an off-by-one in contains_span) breaks span
+        // extension silently — a token/node would report a wrong source range with no error.
+        let mut seed = SplitMix64(0x5a4c_0de5_0bad_f00d);
+        // A well-formed span (start <= end) drawn from a small coordinate space so overlaps/nesting occur.
+        let span = |s: &mut SplitMix64| {
+            let a = (s.next() % 40) as usize;
+            let b = (s.next() % 40) as usize;
+            Span::new(a.min(b), a.max(b))
+        };
+        for _ in 0..20_000 {
+            let a = span(&mut seed);
+            let b = span(&mut seed);
+            let c = span(&mut seed);
+            // Idempotent.
+            assert_eq!(a.merge(a), a, "merge not idempotent for {a:?}");
+            // Commutative.
+            assert_eq!(
+                a.merge(b),
+                b.merge(a),
+                "merge not commutative for {a:?}, {b:?}"
+            );
+            // Associative.
+            assert_eq!(
+                a.merge(b).merge(c),
+                a.merge(b.merge(c)),
+                "merge not associative for {a:?}, {b:?}, {c:?}"
+            );
+            // The result is the exact bounding box…
+            let m = a.merge(b);
+            assert_eq!(
+                m,
+                Span::new(a.start.min(b.start), a.end.max(b.end)),
+                "merge is not the bounding box for {a:?}, {b:?}"
+            );
+            // …and absorbs both operands (each is contained in the merge).
+            assert!(
+                m.contains_span(a) && m.contains_span(b),
+                "merge {m:?} does not contain both {a:?} and {b:?}"
+            );
+        }
+    }
 }
