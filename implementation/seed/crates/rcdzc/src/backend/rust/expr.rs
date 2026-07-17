@@ -2431,6 +2431,33 @@ fn emit_arith(
                      if c >= {width} {{ panic!(\"shift count out of range\") }} v >> c }}"
                 ))
             } else {
+                // `<<` GUARD ELISION — Core-tier parity with the wasm backend's `emit_shift` fast path
+                // (`select.rs`). When the shift provably cannot overflow, BOTH the count guard and the
+                // overflow round-trip are dead, so emit the bare `v << count`. Two sound cases, mirroring
+                // wasm exactly:
+                //   • CONSTANT count `k` with `0 <= k < width` AND `lower::shl_provably_in_range(lhs, k)`
+                //     (`(<< (& x 15) 2)` = [0,60]) — the fixed shift fits, and `k < width` means no count
+                //     guard is needed.
+                //   • RUNTIME count whose range is known AND `lower::shl_provably_in_range_dynamic(lhs,
+                //     rhs)` (`(<< (& x 15) (& k 3))`) — the dynamic predicate requires `chi < width`, so
+                //     the count is provably in range too (both guards dead).
+                // Until this, the rust `<<` emit consulted neither predicate, so this Core-tier elision
+                // was silently wasm-only (the same gap the arith consult closed for `+`/`-`/`*`).
+                let const_count = match core_of(db, rhs) {
+                    Core::ConstInt(v) => v.to_i64(),
+                    _ => None,
+                };
+                let elide = const_count.is_some_and(|k| {
+                    (0..width as i64).contains(&k)
+                        && crate::lower::shl_provably_in_range(db, lhs, k as u32)
+                }) || (const_count.is_none()
+                    && crate::lower::shl_provably_in_range_dynamic(db, lhs, rhs));
+                if elide {
+                    // Provably in range: the modular `<<` IS the true value (no dropped bit), and the count
+                    // is provably `< width`, so no guard is needed — byte-identical to the guarded form on
+                    // every reachable input, exactly like the elided wasm path.
+                    return Ok(format!("{{ let v: {vty} = {l}; v << ({count}) }}"));
+                }
                 // `<<`: guard the count, shift, then round-trip to detect an overflow (a dropped bit).
                 Ok(format!(
                     "{{ let v: {vty} = {l}; let c = ({count}) as u32; \

@@ -2069,6 +2069,62 @@ fn rustc_roundtrip_shift_computes_and_traps() {
 }
 
 #[test]
+fn a_provably_in_range_left_shift_elides_its_overflow_guard_on_the_rust_backend() {
+    // BOTH-BACKEND PARITY (v-core-opt Slice-4): the rust `<<` emit now consults the SAME Core-tier
+    // shl_provably_in_range / _dynamic predicates the wasm backend uses (select.rs emit_shift), so a
+    // provably-in-range left shift sheds BOTH its count guard and its overflow round-trip on BOTH
+    // backends — one Core-tier decision, not a wasm-only elision. Emit the bare `v << count`.
+    //
+    // CONSTANT count: `(<< (& a 15) 2)` — value ∈ [0,15], << 2 = [0,60] ⊆ Int64, count 2 < 64 → bare shift.
+    let konst = compile_rust("(module m (def (f (: a Int64)) (<< (& a 15) 2)) (export f))");
+    assert!(
+        konst.contains("v << (") && !konst.contains("(r >> c) != v") && !konst.contains("c >= 64"),
+        "a provably-in-range constant-count `<<` drops both guards:\n{konst}"
+    );
+    // DYNAMIC (masked runtime) count: `(<< (& a 15) (& k 3))` — value ∈ [0,15], count ∈ [0,7], max
+    // 15 << 7 = 1920 ⊆ Int64, count < 64 → bare shift via shl_provably_in_range_dynamic.
+    let dynamic = compile_rust(
+        "(module m (def (f (: a Int64) (: k Int64)) (<< (& a 15) (& k 3))) (export f))",
+    );
+    assert!(
+        !dynamic.contains("(r >> c) != v") && !dynamic.contains("c >= 64"),
+        "a provably-in-range masked-dynamic-count `<<` drops both guards:\n{dynamic}"
+    );
+    // A FULL-RANGE `<<` (unbounded value/count) is NOT provable → KEEPS both guards. The dual proving
+    // the elision is opt-in on a proof of safety, never on the absence of a disproof.
+    let kept = compile_rust("(module m (def (f (: a Int64) (: b Int64)) (<< a b)) (export f))");
+    assert!(
+        kept.contains("c >= 64") && kept.contains("(r >> c) != v"),
+        "a full-range `<<` keeps its count guard + overflow round-trip:\n{kept}"
+    );
+}
+
+#[test]
+fn rustc_roundtrip_provably_in_range_left_shift_elision_computes_identically_and_unproven_still_traps()
+ {
+    // The `<<` elision is BEHAVIOR-PRESERVING end-to-end: a provably-in-range shift computes the SAME
+    // value with both guards elided as it would guarded, AND an unproven shift still TRAPS on overflow.
+    let elided = compile_rust("(module m (def (f (: a Int64)) (<< (& a 15) 2)) (export f))");
+    // a=255 → (255&15) << 2 = 15 << 2 = 60. Same value the guarded form computes; no trap.
+    if let Some(out) = rustc_run(&elided, "f(255)") {
+        assert_eq!(
+            out, "60",
+            "provably-in-range `<<` computes identically when elided"
+        );
+    }
+    // An UNPROVEN full-range `<< 63` still traps on genuine overflow — 1 << 63 leaves Int64.
+    let checked = compile_rust("(module m (def (f (: a Int64)) (<< a 63)) (export f))");
+    match rustc_run_traps(&checked, "f(1)") {
+        TrapRun::Trapped(msg) => assert!(
+            msg.contains("overflow"),
+            "unproven `<<` still traps on overflow, got: {msg}"
+        ),
+        TrapRun::RanOk(out) => panic!("1 << 63 must TRAP (overflow), but ran → {out}"),
+        TrapRun::NoRustc => {}
+    }
+}
+
+#[test]
 fn rustc_roundtrip_overflow_traps() {
     // Int8 100+100 = 200 leaves the type → Cadenza traps → the emitted Rust panics.
     let rs = compile_rust("(module m (def (add8 (: a Int8) (: b Int8)) (+ a b)) (export add8))");
