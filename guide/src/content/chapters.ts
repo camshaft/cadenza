@@ -259,6 +259,13 @@ export const CHAPTERS: Chapter[] = [
     Component: lazy(() => import("./chapters/PropertyTesting.tsx")),
   },
   {
+    slug: "example-apps",
+    title: "Example applications",
+    blurb: "Full interactive apps built in Cadenza — the differentiators running for real: playground, calculator, CAD, notebook.",
+    section: "Example applications",
+    Component: lazy(() => import("./chapters/ExampleApps.tsx")),
+  },
+  {
     // NOT "playground": the top-level `/playground` route (the full IDE) is matched before `/:slug`,
     // so a chapter with that slug would be shadowed and unreachable. Use a distinct slug.
     slug: "using-the-playground",
