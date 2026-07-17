@@ -482,6 +482,22 @@ pub fn beta_reduce(db: &mut Db, body: StructId, arg_of: &HashMap<StructId, Struc
         };
         return db.push_atom(leaf);
     }
+    // A `do` SEQUENCE `(do stmt… last)` resolves to `Ref{last}` (`resolve_do` collapses it — every
+    // intermediate is a value expression whose value is discarded). But β-reduction must PRESERVE the do's
+    // STRUCTURE: an intermediate may be an EFFECTFUL perform whose value is discarded yet whose EFFECT must
+    // run (`(do (Db.put …) v)` — a helper's state-advancing statement before its return). Following the
+    // `Ref{last}` collapse via the substitution branch below would substitute the LAST form and DROP the
+    // intermediates — silently discarding the `Db.put` when the helper inlines (the helper-call out-state
+    // miscompile: the later `Db.get` then misses the write). Copy the do structurally (each item β-reduced,
+    // so its param refs still substitute) so the intermediates survive: a PURE intermediate is harmlessly
+    // re-collapsed by `resolve_do` at type/lower time, and an effectful one is threaded by the handler
+    // fold's `do` arm. This makes the substituting path CONSISTENT with `copy_pure` (empty-subst β-reduce),
+    // which already preserves a do structurally — the collapse only ever fired when a substitution chased
+    // through the `Ref{last}` to a substituted param, an asymmetry that dropped effects on exactly the
+    // inline path. (Checked BEFORE the `Ref`-substitution branch, which is what performed the collapse.)
+    if db.ast.as_form(body, "do").is_some() {
+        return copy_structural(db, body, arg_of);
+    }
     // A reference to a substituted parameter → its argument. A parameter reference resolves to
     // `Ref { value: <param binder occ> }`; if that binder is one we're substituting, use the arg. The
     // ref is followed TRANSITIVELY: a MATCH-ARM BINDER `k` resolves (Case 5) to the scrutinee

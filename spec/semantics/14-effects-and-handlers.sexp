@@ -3644,3 +3644,29 @@
                 (run 3 1)))
             (export main)))
   (output (: 8 Int64)))
+
+(case "a state-advancing helper called before a later read threads its write through the continuation"
+  (doc    "A memoized-DB shape (a self-hosting compiler's `demand`): the helper `demand` reads state, and on a
+           MISS writes it (`(do (Db.put …) compute)`) before returning; a LATER read in the caller's
+           continuation must SEE that write. `demand` inlines into the handle body, and its `None` arm's
+           effectful `(Db.put …)` sits inside a `do` under a `match`. Two composed loci made this a silent
+           miscompile (→ 99): (1) inlining `demand` collapsed its `(do (Db.put …) compute)` to bare `compute`
+           (a `do` resolves to its last form — dropping the effectful intermediate on the substituting inline
+           path); (2) even preserved, a branch's state advance was dropped as the conditional's out-state. The
+           fix preserves the `do` on inline and re-hoists the exposed conditional to tail position so the
+           branch `put` threads. `demand 5 25` misses → writes 5→25 → returns 25; the later `Db.get 5` now
+           HITS (Some 25) → 25 + 25 = 50. A drop of the write takes the None arm → 99.")
+  (input  (do
+            (effect Db (op get (-> Int64 (Option Int64))) (op put (-> (Tuple Int64 Int64) Unit)))
+            (def (demand (: k Int64) (: compute Int64))
+              (match (Db.get k)
+                (((. Option Some) v) v)
+                (((. Option None) u) (do (Db.put (tuple k compute)) compute))))
+            (def (run-then-get)
+              (handle Db (Map.empty)
+                ((get (k) s (resume (Map.lookup s k) s))
+                 (put (kv) s (match kv ((tuple k v) (resume unit (Map.insert s k v))))))
+                (let ((a (demand 5 25)))
+                  (match (Db.get 5) (((. Option Some) v) (+ a v)) (((. Option None) u) 99)))))
+            (export run-then-get)))
+  (output (: 50 Int64)))

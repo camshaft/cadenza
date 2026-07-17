@@ -1608,6 +1608,18 @@ pub fn reduce_handle(
     } else {
         body
     };
+    // RE-HOIST after inlining. `reduce_applied_lambdas` above β-reduces a performing helper CALL into its
+    // body — surfacing a conditional that was HIDDEN behind the call (`(let ((a (demand 5 25))) cont)` →
+    // `(let ((a (match (Db.get k) … (do (Db.put …) …)))) cont)`). The first `hoist_resumptive_conditional`
+    // ran BEFORE that inline, so it saw only the opaque `(demand …)` call and could not lift the branch-
+    // performing conditional now exposed in the `let` init. Without re-hoisting, the tail fold threads the
+    // surfaced conditional's out-state as its post-scrutinee state — the branch's `put` advance is dropped
+    // and a later `(Db.get k)` in the continuation reads the stale pre-branch state (the helper-call
+    // out-state silent miscompile). Re-running the hoist lifts the exposed conditional to tail position (via
+    // Site 4, the `let`-init distribution) where per-arm threading carries the advance through the
+    // continuation. Idempotent + cheap: a no-op (returns `body` unchanged) when the inline surfaced no
+    // branch-performing conditional, so a body with no such helper is untouched.
+    let body = hoist_resumptive_conditional(db, body, &ctx);
     // E5 PURE ONE-HOLE-CONTINUATION fold (general one-shot, the pure-continuation case). When the handle
     // BODY reaches EXACTLY ONE discharged perform `P` through STRICT, UNCONDITIONAL, effect-free positions
     // (`pure_hole`), its delimited continuation is the PURE one-hole context `C = body[P := □]`. Resuming
@@ -2539,6 +2551,59 @@ fn hoist_resumptive_once(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> Optio
             (true_lit, rhs) // (or lhs rhs) ≡ (if lhs true rhs)
         };
         return Some(db.push_list(vec![if_head, lhs, then_, else_]));
+    }
+    // Site 4: a `let` whose BINDING INIT is a branch-performing conditional — the shape an inlined helper
+    // leaves (`reduce_applied_lambdas` turns `(let ((a (demand 5 25))) cont)` into `(let ((a (match (Db.get
+    // k) … (do (Db.put …) c)))) cont)`). The `let`-init threading (the `let` arm in `thread_bounded`) threads
+    // the init and takes its out-state as the post-INIT state — but for a branch-performing conditional init
+    // that out-state is the post-SCRUTINEE state (the `Match`/`If` thread arms drop each branch's advance),
+    // so the branch's `put` advance never reaches the following bindings / body: a later `(Db.get k)` reads
+    // the stale pre-branch state (the helper-call out-state silent miscompile). Distribute the CONTINUATION
+    // (this binder + every following binding + the body) INTO each branch, keeping the PRECEDING bindings as
+    // an outer `let` prefix so the conditional's own condition/scrutinee still sees them:
+    //   `(let (p… (nk (if c t e)) r…) body)`
+    //     ≡ `(let (p…) (if c (let ((nk t) r…) body) (let ((nk e) r…) body)))`
+    // Now the conditional is in TAIL position of the outer `let` and each branch binds `nk` to the branch
+    // value and threads the continuation UNDER the branch-advanced state (the per-branch `let` threading
+    // carries the advance). Sound: the preceding inits stay in place and in order (a performing one is still
+    // threaded once, before the condition — same order as the original); the condition/scrutinee is evaluated
+    // exactly once (it is the single distributed `if`/`match` head); the continuation is duplicated across the
+    // branches but only one runs at runtime, so every effect in it happens exactly once, in order. Only the
+    // FIRST branch-performing init is distributed per pass (the fixpoint loop lifts a second one next pass).
+    if let Some(pairs_form) = db.ast.as_form(node, "let").map(|t| t.to_vec())
+        && pairs_form.len() == 2
+        && let Struct::List(pairs) = db.ast.get(pairs_form[0]).clone()
+    {
+        let body_occ = pairs_form[1];
+        for (k, &pair) in pairs.iter().enumerate() {
+            let Struct::List(kv) = db.ast.get(pair).clone() else {
+                continue;
+            };
+            if kv.len() == 2 && conditional_branch_performs(db, kv[1], ctx) {
+                let binder = kv[0];
+                let init = kv[1];
+                // The continuation = this binder (bound to the branch value) + the remaining bindings +
+                // the body, rebuilt as a `let` around each branch.
+                let rest_pairs: Vec<StructId> = pairs[k + 1..].to_vec();
+                let wrap = |db: &mut Db, branch: StructId| -> StructId {
+                    let let_head = db.push_atom(Leaf::Name("let".to_string()));
+                    let this_pair = db.push_list(vec![binder, branch]);
+                    let mut bindings = vec![this_pair];
+                    bindings.extend_from_slice(&rest_pairs);
+                    let bindings_list = db.push_list(bindings);
+                    db.push_list(vec![let_head, bindings_list, body_occ])
+                };
+                let distributed = map_conditional_branches(db, init, wrap);
+                // Preceding bindings (pure or performing — both stay in place, in order) become the outer
+                // `let` prefix. With none, the distributed conditional IS the whole value.
+                if k == 0 {
+                    return Some(distributed);
+                }
+                let let_head = db.push_atom(Leaf::Name("let".to_string()));
+                let prefix_bindings = db.push_list(pairs[..k].to_vec());
+                return Some(db.push_list(vec![let_head, prefix_bindings, distributed]));
+            }
+        }
     }
     // Not a site here — recurse into children, rebuilding with the FIRST rewritten child (so a
     // conditional nested inside a `let` init / branch / arm is lifted within that sub-position, then the
